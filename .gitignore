@@ -1,0 +1,17 @@
+.env
+
+# .NET build outputs
+bin/
+obj/
+TestResults/
+
+# Visual Studio / Rider / VS Code .NET user files
+.vs/
+*.user
+*.rsuser
+*.suo
+*.userprefs
+
+# NuGet
+packages/
+artifacts/
