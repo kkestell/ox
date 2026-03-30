@@ -74,6 +74,24 @@ try
         baseLayer.Content.WriteString(4, 5, $"Key:   {lastKey}", white, bg);
         baseLayer.Content.WriteString(4, 7, "Press 'm' to toggle modal, 'q' to quit", new Color(128, 128, 128), bg);
 
+        // Fill background with text to show shadow compositing
+        var colors = new[]
+        {
+            new Color(180, 80, 80),
+            new Color(80, 180, 80),
+            new Color(80, 80, 180),
+            new Color(180, 180, 80),
+            new Color(180, 80, 180),
+            new Color(80, 180, 180),
+        };
+        for (var row = 9; row < h - 1; row++)
+        {
+            var color = colors[row % colors.Length];
+            var line = new string("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 "
+                .AsSpan(0, Math.Min(63, w - 4)).ToArray());
+            baseLayer.Content.WriteString(2, row, line, color, bg);
+        }
+
         // Render overlay
         overlayLayer.Clear();
         if (overlayLayer.Width != w || overlayLayer.Height != h)
