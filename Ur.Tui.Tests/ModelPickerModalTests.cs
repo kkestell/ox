@@ -24,12 +24,28 @@ public class ModelPickerModalTests
     private static KeyEvent Char(char c) => new(Key.Unknown, Modifiers.None, c);
     private static KeyEvent Named(Key key) => new(key, Modifiers.None, null);
 
-    private string ReadRow(int y, int startX, int width)
+    private string ReadRow(Buffer buffer, int y, int startX, int width)
     {
         var chars = new char[width];
         for (var i = 0; i < width; i++)
-            chars[i] = _buffer.Get(startX + i, y).Char;
+            chars[i] = buffer.Get(startX + i, y).Char;
         return new string(chars).TrimEnd();
+    }
+
+    private static List<DummyModelInfo> BuildManyModels(int count)
+    {
+        var models = new List<DummyModelInfo>(count);
+        for (var i = 0; i < count; i++)
+        {
+            models.Add(new DummyModelInfo(
+                $"test/model-{i:D2}",
+                $"Model {i:D2}",
+                128_000,
+                0.000001m,
+                0.000002m));
+        }
+
+        return models;
     }
 
     [Fact]
@@ -42,7 +58,7 @@ public class ModelPickerModalTests
         var foundGpt = false;
         for (var y = 0; y < _buffer.Height; y++)
         {
-            var row = ReadRow(y, 0, _buffer.Width);
+            var row = ReadRow(_buffer, y, 0, _buffer.Width);
             if (row.Contains("Claude Sonnet 4.6")) foundClaude = true;
             if (row.Contains("GPT-4o")) foundGpt = true;
         }
@@ -156,5 +172,23 @@ public class ModelPickerModalTests
 
         _modal.HandleKey(Named(Key.Enter));
         Assert.Equal("Gemini 2.5 Pro", _modal.SelectedModel!.Name);
+    }
+
+    [Fact]
+    public void Render_DetailArea_DoesNotOverwriteLastVisibleListItem()
+    {
+        var modal = new ModelPickerModal(BuildManyModels(count: 15));
+        var buffer = new Buffer(80, 24);
+        var modalX = (_area.Width - ModelPickerModal.ModalWidth) / 2;
+        var modalY = (_area.Height - ModelPickerModal.ModalHeight) / 2;
+
+        for (var i = 0; i < 12; i++)
+            modal.HandleKey(Named(Key.Down));
+
+        modal.Render(buffer, _area);
+
+        Assert.Contains("Model 12", ReadRow(buffer, y: modalY + 16, startX: modalX + 2, width: 40));
+        Assert.Contains("test/model-12", ReadRow(buffer, y: modalY + 17, startX: modalX + 2, width: 40));
+        Assert.DoesNotContain("Model 12", ReadRow(buffer, y: modalY + 17, startX: modalX + 2, width: 40));
     }
 }

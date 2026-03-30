@@ -11,8 +11,10 @@ public sealed class ModelPickerModal : IComponent
 {
     public const int ModalWidth = 60;
     public const int ModalHeight = 20;
-    private const int ListHeight = 14; // Height available for the model list
-    private const int DetailHeight = 2; // Height for selected model details
+    private const int ListStartRow = 4;
+    private const int DetailHeight = 2; // Height reserved for selected model details
+    private const int BottomBorderPadding = 1;
+    private const int ListHeight = ModalHeight - ListStartRow - DetailHeight - BottomBorderPadding;
 
     private static readonly Color BorderFg = new(220, 220, 220);
     private static readonly Color ModalBg = new(30, 30, 60);
@@ -68,7 +70,7 @@ public sealed class ModelPickerModal : IComponent
             buffer.Set(mx + 1 + x, my + 3, new Cell('─', HintFg, ModalBg));
 
         // Model list
-        var listStartY = my + 4;
+        var listStartY = my + ListStartRow;
         var visibleCount = Math.Min(ListHeight, _filtered.Count - _scrollOffset);
         for (var i = 0; i < visibleCount; i++)
         {
@@ -91,9 +93,9 @@ public sealed class ModelPickerModal : IComponent
 
         // Scroll indicators
         if (_scrollOffset > 0)
-            buffer.WriteString(mx + ModalWidth - 4, my + 4, "▲", HintFg, ModalBg);
+            buffer.WriteString(mx + ModalWidth - 4, listStartY, "▲", HintFg, ModalBg);
         if (_scrollOffset + ListHeight < _filtered.Count)
-            buffer.WriteString(mx + ModalWidth - 4, my + 4 + ListHeight - 1, "▼", HintFg, ModalBg);
+            buffer.WriteString(mx + ModalWidth - 4, listStartY + ListHeight - 1, "▼", HintFg, ModalBg);
 
         // Detail area for selected model
         var detailY = my + ModalHeight - DetailHeight - 1;
