@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using Microsoft.Extensions.AI;
 using Ur.Configuration;
 using Ur.Configuration.Keyring;
@@ -17,7 +18,7 @@ public sealed class UrHost
     public SettingsSchemaRegistry SchemaRegistry { get; }
     public Settings Settings { get; }
     public SessionStore Sessions { get; }
-    public IKeyring Keyring { get; }
+    internal IKeyring Keyring { get; }
 
     private UrHost(
         Workspace workspace,
@@ -38,7 +39,7 @@ public sealed class UrHost
     /// <summary>
     /// Creates an IChatClient for the user's selected model (from settings).
     /// </summary>
-    public IChatClient CreateChatClient()
+    internal IChatClient CreateChatClient()
     {
         var modelId = Settings.Get<string>("ur.model")
             ?? throw new InvalidOperationException("No model selected. Use /model to choose one.");
@@ -50,7 +51,7 @@ public sealed class UrHost
     /// Creates an IChatClient for a specific model.
     /// API key is resolved from the keyring.
     /// </summary>
-    public IChatClient CreateChatClient(string modelId)
+    internal IChatClient CreateChatClient(string modelId)
     {
         var apiKey = Keyring.GetSecret("ur", "openrouter")
             ?? throw new InvalidOperationException(
@@ -61,17 +62,20 @@ public sealed class UrHost
 
     /// <summary>
     /// Boots the Ur system:
-    /// 1. Workspace setup
-    /// 2. Model catalog (load cache)
-    /// 3. Schema registration
-    /// 4. Settings load/validate
-    /// 5. Session store
+    /// 1. Platform keyring (or injected override)
+    /// 2. Workspace setup
+    /// 3. Model catalog (load cache)
+    /// 4. Schema registration
+    /// 5. Settings load/validate
+    /// 6. Session store
     /// </summary>
     public static UrHost Start(
         string workspacePath,
-        IKeyring keyring,
+        IKeyring? keyring = null,
         string? userSettingsPath = null)
     {
+        keyring ??= CreatePlatformKeyring();
+
         var workspace = new Workspace(workspacePath);
         workspace.EnsureDirectories();
 
@@ -96,6 +100,16 @@ public sealed class UrHost
         var sessions = new SessionStore(workspace.SessionsDirectory);
 
         return new UrHost(workspace, modelCatalog, schemaRegistry, settings, sessions, keyring);
+    }
+
+    private static IKeyring CreatePlatformKeyring()
+    {
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
+            return new MacOSKeyring();
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
+            return new LinuxKeyring();
+
+        throw new PlatformNotSupportedException("Ur requires macOS or Linux.");
     }
 
     private static void RegisterCoreSchemas(SettingsSchemaRegistry registry)

@@ -21,7 +21,7 @@ Manages provider configuration and model discovery. Currently OpenRouter-only �
 | ----------------------- | --------------------------------- | -------------------------------- |
 | Microsoft.Extensions.AI | Chat client abstraction           | `IChatClient`                    |
 | OpenAI SDK              | OpenAI-compatible client impl     | `ChatClient.AsIChatClient()`     |
-| IKeyring                | API key retrieval                 | `GetSecret(service, account)`    |
+| IKeyring                | API key retrieval                 | `GetSecret(service, account)` — library-managed, not host-provided |
 | OpenRouter Models API   | Model catalog (context, pricing)  | `GET /api/v1/models`             |
 
 ### Dependents
@@ -46,9 +46,9 @@ Manages provider configuration and model discovery. Currently OpenRouter-only �
 - **Inputs:** Model ID (e.g. `"anthropic/claude-sonnet-4.6"`). This is the OpenRouter model ID, not a qualified `provider/model` form — since OpenRouter is the only provider, the OpenRouter ID is the canonical ID.
 - **Outputs:** Model metadata (context length, pricing, supported parameters) or null if unknown.
 
-### Create Chat Client
+### Create Chat Client (internal)
 
-- **Purpose:** Create a configured `IChatClient` for a given model. Internal operation — the library owns client creation end-to-end. See [ADR-0011](decisions/adr-0011-library-owns-chat-client-creation.md).
+- **Purpose:** Create a configured `IChatClient` for a given model. Internal to the library — consumed by the agent loop, not exposed to frontends. See [ADR-0011](decisions/adr-0011-library-owns-chat-client-and-keyring.md).
 - **Inputs:** Model ID. API key resolved from keyring. Endpoint is the hardcoded OpenRouter chat endpoint.
 - **Outputs:** `IChatClient` ready to use.
 - **Preconditions:** API key must be in keyring.

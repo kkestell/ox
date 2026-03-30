@@ -19,7 +19,7 @@ Manages a unified settings system (core + extension + model settings) with JSON 
 | ----------------- | ------------------------------------------ | ----------------------------- |
 | Extension System  | Extension settings schemas                 | JSON schemas per extension    |
 | Provider Registry | Per-model settings schemas                 | JSON schemas per model        |
-| System keyring    | Secure secret storage                      | OS keyring API                |
+| System keyring    | Secure secret storage (library-managed)    | `IKeyring` — platform auto-detected |
 | Workspace         | Workspace-level settings file path         | Filesystem path               |
 
 ### Dependents
