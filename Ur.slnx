@@ -6,4 +6,5 @@
   <Project Path="Ur.Terminal/Ur.Terminal.csproj" />
   <Project Path="Ur.Terminal.Tests/Ur.Terminal.Tests.csproj" />
   <Project Path="Ur.Tui/Ur.Tui.csproj" />
+  <Project Path="Ur.Tui.Tests/Ur.Tui.Tests.csproj" />
 </Solution>
