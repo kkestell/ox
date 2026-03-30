@@ -87,8 +87,11 @@ try
             var my = (h - modalH) / 2;
             var modalRect = new Rect(mx, my, modalW, modalH);
 
-            // Shadow behind modal
-            overlayLayer.MarkShadow(new Rect(mx + 2, my + 1, modalW, modalH));
+            // Shadow: L-shaped strip offset from modal (right edge + bottom edge)
+            // Right strip: 2 columns wide, full modal height, to the right of modal
+            overlayLayer.MarkShadow(new Rect(mx + modalW, my + 1, 2, modalH));
+            // Bottom strip: full modal width, 1 row tall, below the modal
+            overlayLayer.MarkShadow(new Rect(mx + 2, my + modalH, modalW, 1));
 
             // Modal box
             var modalFg = new Color(220, 220, 220);
