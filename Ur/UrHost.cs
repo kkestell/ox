@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices;
 using Microsoft.Extensions.AI;
+using Ur.AgentLoop;
 using Ur.Configuration;
 using Ur.Configuration.Keyring;
 using Ur.Providers;
@@ -13,47 +14,43 @@ namespace Ur;
 /// </summary>
 public sealed class UrHost
 {
-    public Workspace Workspace { get; }
-    public ModelCatalog ModelCatalog { get; }
-    public SettingsSchemaRegistry SchemaRegistry { get; }
-    public Settings Settings { get; }
-    public SessionStore Sessions { get; }
-    internal IKeyring Keyring { get; }
+    private readonly Workspace _workspace;
+    private readonly ModelCatalog _modelCatalog;
+    private readonly Settings _settings;
+    private readonly SessionStore _sessions;
+    private readonly IKeyring _keyring;
+    private readonly Func<string, IChatClient>? _chatClientFactoryOverride;
+
+    public string WorkspacePath => _workspace.RootPath;
+    public UrConfiguration Configuration { get; }
 
     private UrHost(
         Workspace workspace,
         ModelCatalog modelCatalog,
-        SettingsSchemaRegistry schemaRegistry,
         Settings settings,
         SessionStore sessions,
-        IKeyring keyring)
+        IKeyring keyring,
+        Func<string, IChatClient>? chatClientFactoryOverride = null,
+        ToolRegistry? tools = null)
     {
-        Workspace = workspace;
-        ModelCatalog = modelCatalog;
-        SchemaRegistry = schemaRegistry;
-        Settings = settings;
-        Sessions = sessions;
-        Keyring = keyring;
+        _workspace = workspace;
+        _modelCatalog = modelCatalog;
+        _settings = settings;
+        _sessions = sessions;
+        _keyring = keyring;
+        _chatClientFactoryOverride = chatClientFactoryOverride;
+        Tools = tools ?? new ToolRegistry();
+        Configuration = new UrConfiguration(modelCatalog, settings, keyring);
     }
 
-    /// <summary>
-    /// Creates an IChatClient for the user's selected model (from settings).
-    /// </summary>
-    internal IChatClient CreateChatClient()
-    {
-        var modelId = Settings.Get<string>("ur.model")
-            ?? throw new InvalidOperationException("No model selected. Use /model to choose one.");
+    internal ToolRegistry Tools { get; }
 
-        return CreateChatClient(modelId);
-    }
-
-    /// <summary>
-    /// Creates an IChatClient for a specific model.
-    /// API key is resolved from the keyring.
-    /// </summary>
     internal IChatClient CreateChatClient(string modelId)
     {
-        var apiKey = Keyring.GetSecret("ur", "openrouter")
+        if (_chatClientFactoryOverride is not null)
+            return _chatClientFactoryOverride(modelId);
+
+        var apiKey = _keyring.GetSecret("ur", "openrouter")
             ?? throw new InvalidOperationException(
                 "No OpenRouter API key configured. Set one with 'ur setup'.");
 
@@ -72,7 +69,15 @@ public sealed class UrHost
     public static UrHost Start(
         string workspacePath,
         IKeyring? keyring = null,
-        string? userSettingsPath = null)
+        string? userSettingsPath = null) =>
+        Start(workspacePath, keyring, userSettingsPath, chatClientFactoryOverride: null, tools: null);
+
+    internal static UrHost Start(
+        string workspacePath,
+        IKeyring? keyring,
+        string? userSettingsPath,
+        Func<string, IChatClient>? chatClientFactoryOverride,
+        ToolRegistry? tools)
     {
         keyring ??= CreatePlatformKeyring();
 
@@ -99,8 +104,38 @@ public sealed class UrHost
         // Session store
         var sessions = new SessionStore(workspace.SessionsDirectory);
 
-        return new UrHost(workspace, modelCatalog, schemaRegistry, settings, sessions, keyring);
+        return new UrHost(
+            workspace,
+            modelCatalog,
+            settings,
+            sessions,
+            keyring,
+            chatClientFactoryOverride,
+            tools);
     }
+
+    public IReadOnlyList<UrSessionInfo> ListSessions() =>
+        _sessions.List()
+            .Select(session => new UrSessionInfo(session.Id, session.CreatedAt))
+            .ToList();
+
+    public UrSession CreateSession() =>
+        new(this, _sessions.Create(), [], isPersisted: false, activeModelId: null);
+
+    public async Task<UrSession?> OpenSessionAsync(
+        string sessionId,
+        CancellationToken ct = default)
+    {
+        var session = _sessions.Get(sessionId);
+        if (session is null)
+            return null;
+
+        var messages = (await _sessions.ReadAllAsync(session, ct)).ToList();
+        return new UrSession(this, session, messages, isPersisted: true, activeModelId: null);
+    }
+
+    internal Task AppendMessageAsync(Session session, ChatMessage message, CancellationToken ct = default) =>
+        _sessions.AppendAsync(session, message, ct);
 
     private static IKeyring CreatePlatformKeyring()
     {

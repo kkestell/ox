@@ -3,7 +3,7 @@ namespace Ur.Sessions;
 /// <summary>
 /// A conversation within a workspace, persisted as a JSONL file.
 /// </summary>
-public sealed class Session
+internal sealed class Session
 {
     public string Id { get; }
     public string FilePath { get; }

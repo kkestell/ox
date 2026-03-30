@@ -20,44 +20,68 @@ public sealed class SettingsLoader
     /// </summary>
     public Settings Load(string? userSettingsPath, string? workspaceSettingsPath)
     {
-        var merged = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
+        var userValues = ReadValues(userSettingsPath);
+        var workspaceValues = ReadValues(workspaceSettingsPath);
+        var merged = Merge(userValues, workspaceValues);
 
-        MergeFrom(merged, userSettingsPath);
-        MergeFrom(merged, workspaceSettingsPath);
+        Validate(_schemaRegistry, merged);
 
-        Validate(merged);
-
-        return new Settings(merged);
+        return new Settings(
+            _schemaRegistry,
+            userSettingsPath,
+            workspaceSettingsPath,
+            userValues,
+            workspaceValues,
+            merged);
     }
 
-    private static void MergeFrom(Dictionary<string, JsonElement> target, string? path)
+    internal static Dictionary<string, JsonElement> ReadValues(string? path)
     {
+        var values = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
+
         if (path is null || !File.Exists(path))
-            return;
+            return values;
 
         var json = File.ReadAllText(path);
         using var doc = JsonDocument.Parse(json);
 
         foreach (var property in doc.RootElement.EnumerateObject())
-        {
-            target[property.Name] = property.Value.Clone();
-        }
+            values[property.Name] = property.Value.Clone();
+
+        return values;
     }
 
-    private void Validate(Dictionary<string, JsonElement> values)
+    internal static Dictionary<string, JsonElement> Merge(
+        Dictionary<string, JsonElement> userValues,
+        Dictionary<string, JsonElement> workspaceValues)
+    {
+        var merged = new Dictionary<string, JsonElement>(userValues.Count + workspaceValues.Count, StringComparer.Ordinal);
+
+        foreach (var (key, value) in userValues)
+            merged[key] = value.Clone();
+
+        foreach (var (key, value) in workspaceValues)
+            merged[key] = value.Clone();
+
+        return merged;
+    }
+
+    internal static void Validate(
+        SettingsSchemaRegistry schemaRegistry,
+        Dictionary<string, JsonElement> values)
     {
         var errors = new List<string>();
 
         foreach (var (key, value) in values)
         {
-            if (!_schemaRegistry.IsKnown(key))
+            if (!schemaRegistry.IsKnown(key))
             {
                 // Unknown keys: warn but don't fail.
                 // TODO: hook into a logging/warning system
                 continue;
             }
 
-            if (_schemaRegistry.TryGetSchema(key, out var schema))
+            if (schemaRegistry.TryGetSchema(key, out var schema))
             {
                 var expectedType = GetExpectedType(schema);
                 if (expectedType is not null && !MatchesType(value, expectedType))

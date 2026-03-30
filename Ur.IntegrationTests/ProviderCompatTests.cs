@@ -14,6 +14,8 @@ namespace Ur.IntegrationTests;
 /// </summary>
 public class ProviderCompatTests
 {
+    private const string RunIntegrationEnvVar = "UR_RUN_PROVIDER_COMPAT_TESTS";
+
     private readonly ITestOutputHelper _output;
 
     public ProviderCompatTests(ITestOutputHelper output)
@@ -108,8 +110,18 @@ public class ProviderCompatTests
     [Fact]
     public async Task CaptureAllProviders()
     {
+        if (!ShouldRunLiveProviders())
+        {
+            _output.WriteLine($"Set {RunIntegrationEnvVar}=1 to run live provider compatibility tests.");
+            return;
+        }
+
         var clients = CreateClients();
-        Assert.NotEmpty(clients);
+        if (clients.Count == 0)
+        {
+            _output.WriteLine("No provider API keys configured. Skipping.");
+            return;
+        }
 
         var captured = 0;
         foreach (var (name, client) in clients)
@@ -136,6 +148,12 @@ public class ProviderCompatTests
     [Fact]
     public async Task CrossProviderFeeding()
     {
+        if (!ShouldRunLiveProviders())
+        {
+            _output.WriteLine($"Set {RunIntegrationEnvVar}=1 to run live provider compatibility tests.");
+            return;
+        }
+
         var clients = CreateClients();
         if (clients.Count < 2)
         {
@@ -222,6 +240,12 @@ public class ProviderCompatTests
                 _output.WriteLine($"    msg_props: {string.Join(", ", mp.Keys)}");
         }
     }
+
+    private static bool ShouldRunLiveProviders() =>
+        string.Equals(
+            Environment.GetEnvironmentVariable(RunIntegrationEnvVar),
+            "1",
+            StringComparison.Ordinal);
 
     private static List<ChatMessage> StripAdditionalProperties(List<ChatMessage> messages)
     {

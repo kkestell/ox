@@ -152,7 +152,7 @@ public sealed class UrChatNotReadyException : Exception
 - **Key operations:**
   - `Messages` read-only view
   - `RunTurnAsync(userInput, turnCallbacks?, ct) -> IAsyncEnumerable<AgentLoopEvent>`
-  - Possibly `SetActiveModelAsync(...)` later if mid-session model switching is surfaced explicitly
+  - `ActiveModelId` reflects the model currently selected for the session in v1; richer per-message provenance is deferred
 
 ### `UrConfiguration`
 
@@ -193,6 +193,7 @@ public sealed class UrChatNotReadyException : Exception
   - `Messages` is read-only to callers.
   - Message mutation happens only through `RunTurnAsync` and internal persistence logic.
   - The session can exist even when chat is not ready; readiness is separate from session existence.
+  - `ActiveModelId` tracks the session's current model selection in memory. It is not yet reconstructed from per-message persisted provenance.
 
 ### `UrChatReadiness`
 
@@ -295,7 +296,7 @@ If the caller attempts a turn while setup blockers remain, the operation should 
 ### Session IDs are assigned at birth
 
 - **Context:** An in-memory `UrSession` still needs a stable identity before its first persisted message.
-- **Choice:** `CreateSessionAsync()` assigns the session ID immediately, not lazily on first persistence.
+- **Choice:** `CreateSession()` assigns the session ID immediately, not lazily on first persistence.
 - **Rationale:** Stable identity simplifies UI state, logging, and internal references. The runtime object should not change identity based on whether the user has sent the first message yet.
 - **Consequences:** Some session IDs will never correspond to persisted files if the user abandons the session before the first message. This is acceptable because only persisted sessions appear in `ListSessions()`.
 

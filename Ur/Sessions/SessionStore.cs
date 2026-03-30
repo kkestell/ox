@@ -7,10 +7,13 @@ namespace Ur.Sessions;
 /// Manages session lifecycle and persistence as JSONL files.
 /// Each line is a JSON-serialized ChatMessage using M.E.AI's polymorphic serialization.
 /// </summary>
-public sealed class SessionStore
+internal sealed class SessionStore
 {
     private readonly string _sessionsDirectory;
-    private static readonly JsonSerializerOptions JsonOptions = AIJsonUtilities.DefaultOptions;
+    private static readonly JsonSerializerOptions JsonOptions = new(AIJsonUtilities.DefaultOptions)
+    {
+        WriteIndented = false,
+    };
 
     public SessionStore(string sessionsDirectory)
     {
@@ -19,10 +22,10 @@ public sealed class SessionStore
 
     public Session Create()
     {
-        var id = DateTimeOffset.UtcNow.ToString("yyyyMMdd-HHmmss-fff");
+        var createdAt = DateTimeOffset.UtcNow;
+        var id = createdAt.ToString("yyyyMMdd-HHmmss-fff");
         var filePath = Path.Combine(_sessionsDirectory, $"{id}.jsonl");
-        Directory.CreateDirectory(_sessionsDirectory);
-        return new Session(id, filePath, DateTimeOffset.UtcNow);
+        return new Session(id, filePath, createdAt);
     }
 
     public IReadOnlyList<Session> List()
@@ -35,7 +38,7 @@ public sealed class SessionStore
             .Select(path =>
             {
                 var id = Path.GetFileNameWithoutExtension(path);
-                var created = File.GetCreationTimeUtc(path);
+                var created = new DateTimeOffset(File.GetCreationTimeUtc(path), TimeSpan.Zero);
                 return new Session(id, path, created);
             })
             .ToList();
@@ -47,12 +50,13 @@ public sealed class SessionStore
         if (!File.Exists(filePath))
             return null;
 
-        var created = File.GetCreationTimeUtc(filePath);
+        var created = new DateTimeOffset(File.GetCreationTimeUtc(filePath), TimeSpan.Zero);
         return new Session(id, filePath, created);
     }
 
     public async Task AppendAsync(Session session, ChatMessage message, CancellationToken ct = default)
     {
+        Directory.CreateDirectory(_sessionsDirectory);
         var json = JsonSerializer.Serialize(message, JsonOptions);
         await File.AppendAllTextAsync(session.FilePath, json + "\n", ct);
     }

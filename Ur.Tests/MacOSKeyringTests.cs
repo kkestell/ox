@@ -1,65 +1,79 @@
 using Ur.Configuration.Keyring;
+using System.Runtime.InteropServices;
 
 namespace Ur.Tests;
 
 public class MacOSKeyringTests
 {
-    private readonly MacOSKeyring _keyring = new();
-
     [Fact]
     public void RoundTrip_StoreAndRetrieve()
     {
+        if (!RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
+            return;
+
+        var keyring = new MacOSKeyring();
         var service = "ur-test";
         var account = "spike-roundtrip";
         var secret = $"test-secret-{Guid.NewGuid()}";
 
         try
         {
-            _keyring.SetSecret(service, account, secret);
-            var retrieved = _keyring.GetSecret(service, account);
+            keyring.SetSecret(service, account, secret);
+            var retrieved = keyring.GetSecret(service, account);
             Assert.Equal(secret, retrieved);
         }
         finally
         {
-            _keyring.DeleteSecret(service, account);
+            keyring.DeleteSecret(service, account);
         }
     }
 
     [Fact]
     public void GetSecret_NotFound_ReturnsNull()
     {
-        var result = _keyring.GetSecret("ur-test", "nonexistent-account");
+        if (!RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
+            return;
+
+        var result = new MacOSKeyring().GetSecret("ur-test", "nonexistent-account");
         Assert.Null(result);
     }
 
     [Fact]
     public void DeleteSecret_ThenLookup_ReturnsNull()
     {
+        if (!RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
+            return;
+
+        var keyring = new MacOSKeyring();
         var service = "ur-test";
         var account = "spike-delete";
 
-        _keyring.SetSecret(service, account, "to-be-deleted");
-        _keyring.DeleteSecret(service, account);
+        keyring.SetSecret(service, account, "to-be-deleted");
+        keyring.DeleteSecret(service, account);
 
-        var result = _keyring.GetSecret(service, account);
+        var result = keyring.GetSecret(service, account);
         Assert.Null(result);
     }
 
     [Fact]
     public void SetSecret_Overwrite_ReturnsLatest()
     {
+        if (!RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
+            return;
+
+        var keyring = new MacOSKeyring();
         var service = "ur-test";
         var account = "spike-overwrite";
 
         try
         {
-            _keyring.SetSecret(service, account, "first");
-            _keyring.SetSecret(service, account, "second");
-            Assert.Equal("second", _keyring.GetSecret(service, account));
+            keyring.SetSecret(service, account, "first");
+            keyring.SetSecret(service, account, "second");
+            Assert.Equal("second", keyring.GetSecret(service, account));
         }
         finally
         {
-            _keyring.DeleteSecret(service, account);
+            keyring.DeleteSecret(service, account);
         }
     }
 }

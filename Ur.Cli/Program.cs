@@ -7,7 +7,7 @@ DotEnv.Load(options: new DotEnvOptions(
 
 var host = UrHost.Start(Environment.CurrentDirectory);
 
-Console.WriteLine($"ur — {host.Workspace.RootPath}");
+Console.WriteLine($"ur — {host.WorkspacePath}");
 
-await host.ModelCatalog.EnsureLoadedAsync();
-Console.WriteLine($"Model catalog: {host.ModelCatalog.Models.Count} models");
+Console.WriteLine($"Model catalog: {host.Configuration.AvailableModels.Count} models");
+Console.WriteLine($"Chat ready: {host.Configuration.Readiness.CanRunTurns}");
