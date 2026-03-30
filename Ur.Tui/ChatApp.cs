@@ -81,6 +81,9 @@ public sealed class ChatApp
 
     private bool ProcessKey(KeyEvent key)
     {
+        if (key.EventType == KeyEventType.Release)
+            return true;
+
         // Ctrl+C: cancel turn if running, exit if idle
         if (key is { Key: Key.C, Mods: Modifiers.Ctrl })
         {

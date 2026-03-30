@@ -96,7 +96,7 @@ All implement `IComponent` from Ur.Terminal.
 
 **MessageList** — The most complex component. Renders messages bottom-up: latest message at the bottom of the rect, previous messages stacked upward. Each message type (user, assistant, tool call, system) has distinct rendering (prefix, color, formatting). Message height is dynamic (word wrapping). If messages overflow the top of the rect, the topmost message is clipped. Scroll offset shifts the viewport.
 
-**ChatInput** — Multi-line text editor. Handles character input, backspace, delete, arrow key navigation within the text. Enter submits (sends the message or dispatches a slash command). Shift+Enter inserts a newline — not available until Kitty keyboard protocol support is added, documented here as a future capability. In v1, input is single-line (Enter submits).
+**ChatInput** — Multi-line text editor. Handles character input, backspace, delete, arrow key navigation within the text. Enter submits (sends the message or dispatches a slash command). The framework can now detect `Shift+Enter` via `KeyEvent.Mods`, but the chat input still intentionally treats Enter as single-line submit until multiline behavior lands in a separate change.
 
 **ApiKeyModal** — Masked text input in a bordered box. Enter submits, Esc dismisses (on first run: exits the app). Characters display as `*`.
 

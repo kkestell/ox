@@ -86,11 +86,12 @@ A minimal TUI framework that provides the building blocks for terminal-based UIs
 ### KeyEvent
 
 - **Purpose:** An abstracted keyboard event.
-- **Shape:** `readonly record struct KeyEvent(Key Key, Modifiers Mods, char? Char)`
+- **Shape:** `readonly record struct KeyEvent(Key Key, Modifiers Mods, char? Char, KeyEventType EventType)`
   - `Key`: enum covering named keys (A-Z, Digits, Enter, Escape, Tab, Backspace, Delete, Up/Down/Left/Right, Home, End, PageUp, PageDown, F1-F12)
   - `Modifiers`: flags enum (`None`, `Shift`, `Ctrl`, `Alt`)
   - `Char`: the printable character if applicable, null for non-printable keys
-- **Why this shape:** The `Key` enum + `Modifiers` flags provide a stable API that works whether the backend parses basic ANSI sequences (v1) or Kitty keyboard protocol (later). Code that checks `key.Mods.HasFlag(Modifiers.Shift)` compiles today — it just returns false until Kitty support lands. The `Char` field gives components direct access to printable input without mapping through the enum.
+  - `EventType`: `Press`, `Repeat`, or `Release`
+- **Why this shape:** The `Key` enum + `Modifiers` flags provide a stable API across basic ANSI and Kitty keyboard protocol input. `EventType` lets applications distinguish key press, repeat, and release without reparsing escape sequences, while `Char` gives components direct access to safe single-character input.
 
 ### IComponent
 
@@ -168,9 +169,7 @@ This is where **all ANSI escape code knowledge lives**. Nothing above `Screen` k
 
 Runs on a dedicated background thread (not async — blocking reads from `/dev/tty`). Parses incoming bytes into `KeyEvent` values.
 
-v1 parsing: basic ANSI escape sequences for arrow keys, function keys, and single-byte keys. Modifiers are not reliably detectable from basic ANSI, so `Modifiers` is always `None`.
-
-Future: Kitty keyboard protocol parsing. Same `KeyEvent` output, but `Modifiers` is populated. App code doesn't change.
+Current parsing supports the existing ANSI subset plus Kitty keyboard protocol sequences for modifier-aware printable keys, cursor keys, `~`-style named keys, and explicit `Press`/`Repeat`/`Release` event types. Legacy ANSI sequences still surface as implicit `Press` events and generally leave `Modifiers` as `None`.
 
 Parsed events are placed into a concurrent queue. The render loop (or app) drains the queue each frame.
 

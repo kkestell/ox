@@ -5,10 +5,19 @@ namespace Ur.Terminal.Terminal;
 
 public sealed class AnsiTerminal : ITerminal
 {
+    private const string EnterAlternateBufferSequence = "\x1b[?1049h";
+    private const string ExitAlternateBufferSequence = "\x1b[?1049l";
+    private const string HideCursorSequence = "\x1b[?25l";
+    private const string ShowCursorSequence = "\x1b[?25h";
+    private const string ResetFormattingSequence = "\x1b[0m";
+    private const string EnableKittyKeyboardSequence = "\x1b[>11u";
+    private const string DisableKittyKeyboardSequence = "\x1b[<u";
+
     private readonly Stream _stdout;
     private bool _inRawMode;
     private bool _inAlternateBuffer;
     private bool _cursorHidden;
+    private bool _kittyKeyboardEnabled;
     private bool _disposed;
 
     public int Width => Console.WindowWidth;
@@ -23,40 +32,47 @@ public sealed class AnsiTerminal : ITerminal
 
     public void EnterRawMode()
     {
-        RunStty("-echo -icanon min 1");
+        if (_inRawMode)
+            return;
+
+        RunStty("-echo -icanon min 0 time 1");
         _inRawMode = true;
     }
 
     public void ExitRawMode()
     {
         if (!_inRawMode) return;
+        DisableKittyKeyboard();
         RunStty("echo icanon");
         _inRawMode = false;
     }
 
     public void EnterAlternateBuffer()
     {
-        WriteEscape("\x1b[?1049h");
+        WriteEscape(EnterAlternateBufferSequence);
         _inAlternateBuffer = true;
+
+        if (_inRawMode)
+            ReassertKittyKeyboard();
     }
 
     public void ExitAlternateBuffer()
     {
         if (!_inAlternateBuffer) return;
-        WriteEscape("\x1b[?1049l");
+        WriteEscape(ExitAlternateBufferSequence);
         _inAlternateBuffer = false;
     }
 
     public void HideCursor()
     {
-        WriteEscape("\x1b[?25l");
+        WriteEscape(HideCursorSequence);
         _cursorHidden = true;
     }
 
     public void ShowCursor()
     {
         if (!_cursorHidden) return;
-        WriteEscape("\x1b[?25h");
+        WriteEscape(ShowCursorSequence);
         _cursorHidden = false;
     }
 
@@ -82,7 +98,7 @@ public sealed class AnsiTerminal : ITerminal
         _disposed = true;
 
         ShowCursor();
-        WriteEscape("\x1b[0m");
+        WriteEscape(ResetFormattingSequence);
         ExitAlternateBuffer();
         ExitRawMode();
 
@@ -98,6 +114,30 @@ public sealed class AnsiTerminal : ITerminal
     private void OnProcessExit(object? sender, EventArgs e)
     {
         Dispose();
+    }
+
+    private void EnableKittyKeyboard()
+    {
+        if (_kittyKeyboardEnabled)
+            return;
+
+        WriteEscape(EnableKittyKeyboardSequence);
+        _kittyKeyboardEnabled = true;
+    }
+
+    private void ReassertKittyKeyboard()
+    {
+        WriteEscape(EnableKittyKeyboardSequence);
+        _kittyKeyboardEnabled = true;
+    }
+
+    private void DisableKittyKeyboard()
+    {
+        if (!_kittyKeyboardEnabled)
+            return;
+
+        WriteEscape(DisableKittyKeyboardSequence);
+        _kittyKeyboardEnabled = false;
     }
 
     private void WriteEscape(string sequence)

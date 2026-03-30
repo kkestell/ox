@@ -28,6 +28,15 @@ public class ChatAppTests
     private static KeyEvent Char(char c) => new(Key.Unknown, Modifiers.None, c);
     private static KeyEvent Named(Key key) => new(key, Modifiers.None, null);
     private static KeyEvent CtrlC() => new(Key.C, Modifiers.Ctrl, null);
+    private static KeyEvent Parsed(params byte[] input)
+    {
+        var result = KeyParser.Parse(input, out var consumed);
+
+        Assert.NotNull(result);
+        Assert.Equal(input.Length, consumed);
+
+        return result.Value;
+    }
 
     private bool Frame(params KeyEvent[] keys)
     {
@@ -162,6 +171,32 @@ public class ChatAppTests
         var result = Frame(Named(Key.Escape));
         Assert.True(result);
         Assert.Null(_app.State.ActiveModal);
+    }
+
+    [Fact]
+    public void KittyDownArrow_MovesModelSelectionEndToEnd()
+    {
+        Frame();
+        Frame(Char('k'), Named(Key.Enter));
+
+        var result = Frame(Parsed(0x1B, 0x5B, 0x31, 0x3B, 0x31, 0x42), Named(Key.Enter));
+
+        Assert.True(result);
+        Assert.Null(_app.State.ActiveModal);
+        Assert.Equal("anthropic/claude-opus-4-6", _config.SelectedModelId);
+    }
+
+    [Fact]
+    public void KittyReleaseEvent_IsIgnoredByChatApp()
+    {
+        Frame();
+        Frame(Char('k'), Named(Key.Enter));
+
+        var result = Frame(Parsed(0x1B, 0x5B, 0x31, 0x3B, 0x31, 0x3A, 0x33, 0x42), Named(Key.Enter));
+
+        Assert.True(result);
+        Assert.Null(_app.State.ActiveModal);
+        Assert.Equal("anthropic/claude-sonnet-4-6", _config.SelectedModelId);
     }
 
     [Fact]

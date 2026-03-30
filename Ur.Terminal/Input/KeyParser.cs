@@ -1,7 +1,12 @@
+using System.Text;
+
 namespace Ur.Terminal.Input;
 
 public static class KeyParser
 {
+    private const byte EscapeByte = 0x1B;
+    private const byte CsiByte = 0x5B;
+
     public static KeyEvent? Parse(ReadOnlySpan<byte> input, out int consumed)
     {
         consumed = 0;
@@ -11,7 +16,7 @@ public static class KeyParser
         var b = input[0];
 
         // Escape or CSI sequence
-        if (b == 0x1B)
+        if (b == EscapeByte)
             return ParseEscape(input, out consumed);
 
         // Ctrl+A through Ctrl+Z (0x01-0x1A), except special cases
@@ -57,17 +62,10 @@ public static class KeyParser
         }
 
         // Not a CSI sequence — treat as bare Escape
-        if (input[1] != 0x5B)
+        if (input[1] != CsiByte)
         {
             consumed = 1;
             return new KeyEvent(Key.Escape, Modifiers.None, null);
-        }
-
-        // CSI sequence: \e[...
-        if (input.Length < 3)
-        {
-            // Incomplete CSI — need more data
-            return null;
         }
 
         return ParseCsi(input, out consumed);
@@ -76,89 +74,26 @@ public static class KeyParser
     private static KeyEvent? ParseCsi(ReadOnlySpan<byte> input, out int consumed)
     {
         consumed = 0;
-        var b = input[2];
 
-        // Simple single-byte CSI finals
-        switch (b)
-        {
-            case 0x41:
-                consumed = 3;
-                return new KeyEvent(Key.Up, Modifiers.None, null);
-            case 0x42:
-                consumed = 3;
-                return new KeyEvent(Key.Down, Modifiers.None, null);
-            case 0x43:
-                consumed = 3;
-                return new KeyEvent(Key.Right, Modifiers.None, null);
-            case 0x44:
-                consumed = 3;
-                return new KeyEvent(Key.Left, Modifiers.None, null);
-            case 0x48:
-                consumed = 3;
-                return new KeyEvent(Key.Home, Modifiers.None, null);
-            case 0x46:
-                consumed = 3;
-                return new KeyEvent(Key.End, Modifiers.None, null);
-        }
-
-        // If the byte is not a parameter digit (0x30-0x39), it's an unknown CSI final
-        if (b < 0x30 || b > 0x39)
-        {
-            consumed = 3;
-            return new KeyEvent(Key.Unknown, Modifiers.None, null);
-        }
-
-        // Extended CSI sequences: \e[N~ format
-        if (input.Length < 4)
+        var sequenceLength = FindCsiSequenceLength(input, out var invalid);
+        if (sequenceLength == 0)
             return null;
 
-        if (input[3] == 0x7E)
-        {
-            consumed = 4;
-            return b switch
-            {
-                0x33 => new KeyEvent(Key.Delete, Modifiers.None, null),
-                0x35 => new KeyEvent(Key.PageUp, Modifiers.None, null),
-                0x36 => new KeyEvent(Key.PageDown, Modifiers.None, null),
-                _ => new KeyEvent(Key.Unknown, Modifiers.None, null),
-            };
-        }
+        consumed = sequenceLength;
+        if (invalid)
+            return new KeyEvent(Key.Unknown, Modifiers.None, null);
 
-        // Function keys: \e[1N~ format (F1-F4: \e[11~ through \e[14~)
-        if (b == 0x31 && input.Length >= 5 && input[4] == 0x7E)
-        {
-            consumed = 5;
-            return input[3] switch
-            {
-                0x31 => new KeyEvent(Key.F1, Modifiers.None, null), // \e[11~
-                0x32 => new KeyEvent(Key.F2, Modifiers.None, null), // \e[12~
-                0x33 => new KeyEvent(Key.F3, Modifiers.None, null), // \e[13~
-                0x34 => new KeyEvent(Key.F4, Modifiers.None, null), // \e[14~
-                0x35 => new KeyEvent(Key.F5, Modifiers.None, null), // \e[15~
-                0x37 => new KeyEvent(Key.F6, Modifiers.None, null), // \e[17~
-                0x38 => new KeyEvent(Key.F7, Modifiers.None, null), // \e[18~
-                0x39 => new KeyEvent(Key.F8, Modifiers.None, null), // \e[19~
-                _ => new KeyEvent(Key.Unknown, Modifiers.None, null),
-            };
-        }
+        var finalByte = input[sequenceLength - 1];
+        var parameters = input[2..(sequenceLength - 1)];
 
-        // Function keys: \e[2N~ format (F9-F12: \e[20~ through \e[24~)
-        if (b == 0x32 && input.Length >= 5 && input[4] == 0x7E)
+        return finalByte switch
         {
-            consumed = 5;
-            return input[3] switch
-            {
-                0x30 => new KeyEvent(Key.F9, Modifiers.None, null),  // \e[20~
-                0x31 => new KeyEvent(Key.F10, Modifiers.None, null), // \e[21~
-                0x33 => new KeyEvent(Key.F11, Modifiers.None, null), // \e[23~
-                0x34 => new KeyEvent(Key.F12, Modifiers.None, null), // \e[24~
-                _ => new KeyEvent(Key.Unknown, Modifiers.None, null),
-            };
-        }
-
-        // Unknown CSI
-        consumed = 3;
-        return new KeyEvent(Key.Unknown, Modifiers.None, null);
+            (byte)'A' or (byte)'B' or (byte)'C' or (byte)'D' or (byte)'H' or (byte)'F'
+                => ParseCursorKey(parameters, finalByte),
+            (byte)'~' => ParseTildeKey(parameters),
+            (byte)'u' => ParseKittyKey(parameters),
+            _ => new KeyEvent(Key.Unknown, Modifiers.None, null),
+        };
     }
 
     private static KeyEvent ParseCtrl(byte b, out int consumed)
@@ -182,4 +117,280 @@ public static class KeyParser
         >= (byte)'0' and <= (byte)'9' => Key.D0 + (b - (byte)'0'),
         _ => Key.Unknown,
     };
+
+    private static int FindCsiSequenceLength(ReadOnlySpan<byte> input, out bool invalid)
+    {
+        invalid = false;
+
+        if (input.Length < 3)
+            return 0;
+
+        for (var i = 2; i < input.Length; i++)
+        {
+            var b = input[i];
+            if (b >= 0x40 && b <= 0x7E)
+                return i + 1;
+
+            if (b is < 0x20 or > 0x3F)
+            {
+                invalid = true;
+                return i + 1;
+            }
+        }
+
+        return 0;
+    }
+
+    private static KeyEvent ParseCursorKey(ReadOnlySpan<byte> parameters, byte finalByte)
+    {
+        var key = finalByte switch
+        {
+            (byte)'A' => Key.Up,
+            (byte)'B' => Key.Down,
+            (byte)'C' => Key.Right,
+            (byte)'D' => Key.Left,
+            (byte)'H' => Key.Home,
+            (byte)'F' => Key.End,
+            _ => Key.Unknown,
+        };
+
+        if (key == Key.Unknown)
+            return new KeyEvent(Key.Unknown, Modifiers.None, null);
+
+        if (!TryParseCursorModifiers(parameters, out var mods, out var eventType))
+            return new KeyEvent(Key.Unknown, Modifiers.None, null);
+
+        return new KeyEvent(key, mods, null, eventType);
+    }
+
+    private static KeyEvent ParseTildeKey(ReadOnlySpan<byte> parameters)
+    {
+        var text = Encoding.ASCII.GetString(parameters);
+        var parts = text.Split(';');
+
+        if (parts.Length == 0 || !TryParseNumber(parts[0], out var number))
+            return new KeyEvent(Key.Unknown, Modifiers.None, null);
+
+        var key = MapTildeKey(number);
+        if (key == Key.Unknown)
+            return new KeyEvent(Key.Unknown, Modifiers.None, null);
+
+        if (parts.Length > 2)
+            return new KeyEvent(Key.Unknown, Modifiers.None, null);
+
+        if (parts.Length == 1)
+            return new KeyEvent(key, Modifiers.None, null);
+
+        if (!TryParseKittyModifierSegment(parts[1], out var mods, out var eventType))
+            return new KeyEvent(Key.Unknown, Modifiers.None, null);
+
+        return new KeyEvent(key, mods, null, eventType);
+    }
+
+    private static KeyEvent ParseKittyKey(ReadOnlySpan<byte> parameters)
+    {
+        var text = Encoding.ASCII.GetString(parameters);
+        var parts = text.Split(';');
+        if (parts.Length == 0 || parts.Length > 2)
+            return new KeyEvent(Key.Unknown, Modifiers.None, null);
+
+        var keyPart = parts[0];
+        var colonIndex = keyPart.IndexOf(':');
+        if (colonIndex >= 0)
+            keyPart = keyPart[..colonIndex];
+
+        if (!TryParseNumber(keyPart, out var keyCode))
+            return new KeyEvent(Key.Unknown, Modifiers.None, null);
+
+        var mods = Modifiers.None;
+        var eventType = KeyEventType.Press;
+
+        if (parts.Length == 2 && !TryParseKittyModifierSegment(parts[1], out mods, out eventType))
+            return new KeyEvent(Key.Unknown, Modifiers.None, null);
+
+        var key = MapKittyKey(keyCode, ref mods, out var ch);
+        return new KeyEvent(key, mods, ch, eventType);
+    }
+
+    private static bool TryParseCursorModifiers(
+        ReadOnlySpan<byte> parameters,
+        out Modifiers mods,
+        out KeyEventType eventType)
+    {
+        mods = Modifiers.None;
+        eventType = KeyEventType.Press;
+
+        if (parameters.IsEmpty)
+            return true;
+
+        var text = Encoding.ASCII.GetString(parameters);
+        var parts = text.Split(';');
+        if (parts.Length == 0)
+            return true;
+
+        return TryParseKittyModifierSegment(parts[^1], out mods, out eventType);
+    }
+
+    private static bool TryParseKittyModifierSegment(
+        string segment,
+        out Modifiers mods,
+        out KeyEventType eventType)
+    {
+        mods = Modifiers.None;
+        eventType = KeyEventType.Press;
+
+        if (string.IsNullOrEmpty(segment))
+            return true;
+
+        var colonIndex = segment.IndexOf(':');
+        if (colonIndex < 0)
+        {
+            if (!TryParseEncodedModifiers(segment, out mods))
+                return false;
+
+            return true;
+        }
+
+        var modifierText = segment[..colonIndex];
+        if (!string.IsNullOrEmpty(modifierText) && !TryParseEncodedModifiers(modifierText, out mods))
+            return false;
+
+        var eventTypeText = segment[(colonIndex + 1)..];
+        return string.IsNullOrEmpty(eventTypeText) || TryParseEventType(eventTypeText, out eventType);
+    }
+
+    private static bool TryParseEncodedModifiers(string text, out Modifiers mods)
+    {
+        mods = Modifiers.None;
+        if (!TryParseNumber(text, out var encoded) || encoded < 1)
+            return false;
+
+        mods = TranslateKittyModifiers(encoded - 1);
+        return true;
+    }
+
+    private static bool TryParseEventType(string text, out KeyEventType eventType)
+    {
+        eventType = KeyEventType.Press;
+        if (!TryParseNumber(text, out var encoded))
+            return false;
+
+        eventType = encoded switch
+        {
+            1 => KeyEventType.Press,
+            2 => KeyEventType.Repeat,
+            3 => KeyEventType.Release,
+            _ => default,
+        };
+
+        return encoded is >= 1 and <= 3;
+    }
+
+    private static bool TryParseNumber(string text, out int value)
+    {
+        value = 0;
+        if (string.IsNullOrEmpty(text))
+            return false;
+
+        foreach (var ch in text)
+        {
+            if (ch is < '0' or > '9')
+                return false;
+
+            var digit = ch - '0';
+            if (value > (int.MaxValue - digit) / 10)
+                return false;
+
+            value = (value * 10) + digit;
+        }
+
+        return true;
+    }
+
+    private static Modifiers TranslateKittyModifiers(int kittyBits)
+    {
+        var mods = Modifiers.None;
+
+        if ((kittyBits & 0b001) != 0)
+            mods |= Modifiers.Shift;
+
+        if ((kittyBits & 0b010) != 0)
+            mods |= Modifiers.Alt;
+
+        if ((kittyBits & 0b100) != 0)
+            mods |= Modifiers.Ctrl;
+
+        return mods;
+    }
+
+    private static Key MapTildeKey(int number) => number switch
+    {
+        1 => Key.Home,
+        3 => Key.Delete,
+        4 => Key.End,
+        5 => Key.PageUp,
+        6 => Key.PageDown,
+        11 => Key.F1,
+        12 => Key.F2,
+        13 => Key.F3,
+        14 => Key.F4,
+        15 => Key.F5,
+        17 => Key.F6,
+        18 => Key.F7,
+        19 => Key.F8,
+        20 => Key.F9,
+        21 => Key.F10,
+        23 => Key.F11,
+        24 => Key.F12,
+        _ => Key.Unknown,
+    };
+
+    private static Key MapKittyKey(int keyCode, ref Modifiers mods, out char? ch)
+    {
+        ch = null;
+
+        switch (keyCode)
+        {
+            case 9:
+                return Key.Tab;
+            case 13:
+                return Key.Enter;
+            case 27:
+                return Key.Escape;
+            case 32:
+                ch = ' ';
+                return Key.Space;
+            case 127:
+                return Key.Backspace;
+        }
+
+        if (keyCode is < char.MinValue or > char.MaxValue)
+            return Key.Unknown;
+
+        var value = (char)keyCode;
+
+        if (value is >= 'A' and <= 'Z')
+        {
+            mods |= Modifiers.Shift;
+            ch = value;
+            return Key.A + (value - 'A');
+        }
+
+        if (value is >= 'a' and <= 'z')
+        {
+            ch = value;
+            return Key.A + (value - 'a');
+        }
+
+        if (value is >= '0' and <= '9')
+        {
+            ch = value;
+            return Key.D0 + (value - '0');
+        }
+
+        if (!char.IsControl(value) && !char.IsSurrogate(value))
+            ch = value;
+
+        return value <= 0x7E ? MapPrintable((byte)value) : Key.Unknown;
+    }
 }
