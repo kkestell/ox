@@ -62,13 +62,15 @@ Users interact with Ur through a UI layer (CLI REPL initially, GUI/IDE later). U
 - **JSONL session storage.** Sessions are append-only JSONL files, one per session. Simple, human-readable, and trivially parseable.
 - **AoT compilation.** The binary is published as a self-contained, ahead-of-time compiled executable. This constrains the design (no runtime reflection, no dynamic loading) but delivers fast startup and zero dependencies.
 - **Library owns chat client and keyring creation.** The library carries the provider SDK (OpenAI), creates `IChatClient` instances internally, and handles platform detection and keyring creation. Frontends provide nothing — `UrHost.Start(cwd)` is the entire API. An optional `IKeyring` parameter exists for testing only. `CreateChatClient` is internal; only the agent loop consumes it. See [ADR-0011](decisions/adr-0011-library-owns-chat-client-and-keyring.md).
+- **Public runtime surface via `UrHost` and `UrSession`.** `UrHost` is the workspace-scoped root for listing, creating, and opening sessions. All conversation activity happens through `UrSession`, which owns read-only history, turn execution, and auto-persistence. Startup is non-interactive: the host can exist in a "not ready to chat yet" state until configuration is completed.
 - **OpenRouter-only with API-based model discovery.** Model metadata (context length, pricing, capabilities) is fetched from the OpenRouter `GET /api/v1/models` endpoint and cached to `~/.ur/cache/models.json`. No static model catalog to maintain.
-- **Linear startup via `UrHost.Start`.** Workspace → load model cache (or fetch) → schema registration → settings load/validate → return `UrHost`. Extensions are not yet wired into startup. When they are, a two-phase approach is likely: load extension metadata/schemas first (no config access), then validate settings, then initialize extensions with resolved settings.
+- **Linear startup via `UrHost.Start`.** Workspace → load model cache (or fetch) → schema registration → settings load/validate → return `UrHost`. Missing API key or model selection does not fail startup; those surface as chat-readiness blockers on the configuration/runtime API. Extensions are not yet wired into startup. When they are, a two-phase approach is likely: load extension metadata/schemas first (no config access), then validate settings, then initialize extensions with resolved settings.
 
 ## Building Blocks
 
 | Block             | Responsibility                                                                                                | Document                                     |
 | ----------------- | ------------------------------------------------------------------------------------------------------------- | -------------------------------------------- |
+| Host & Session API | Public runtime surface for UIs. `UrHost` owns workspace-scoped operations; `UrSession` owns conversation turns, history, and chat readiness integration. | [host-session-api.md](host-session-api.md)   |
 | Agent Loop        | Drives the conversation cycle: user input → middleware → LLM → tool calls → repeat.                           | [agent-loop.md](agent-loop.md)               |
 | Extension System  | Discovers, loads, and manages Lua extensions. Exposes C# APIs to Lua. Manages lifecycle (enable/disable).     | [extension-system.md](extension-system.md)   |
 | Permission System | Gates sensitive operations (writes, network, out-of-workspace reads). Prompts user with scoped approvals.     | [permission-system.md](permission-system.md) |
@@ -84,6 +86,8 @@ Users interact with Ur through a UI layer (CLI REPL initially, GUI/IDE later). U
 
 - **Workspace** — A directory on disk. Has a `.ur/` subdirectory for workspace-scoped state (sessions, config, extensions). Identified by its absolute path.
 - **Session** — A conversation within a workspace. Stored as a JSONL file where each line is an envelope wrapping a serialized `ChatMessage` with provenance (provider, model, settings). Models can change mid-session. Identified by a timestamp-based ID.
+- **UrHost** — Workspace-scoped public root returned by `UrHost.Start`. Exposes session lifecycle and configuration/readiness.
+- **UrSession** — Conversation-scoped public object. Exposes read-only history and is the only entry point for running agent turns.
 - **Extension** — A Lua script (or directory with a main script) loaded from one of the three extension directories. Has metadata (name, description, source tier) and a lifecycle (loaded, enabled, disabled).
 - **Permission Grant** — User approval for a sensitive operation, scoped to once/session/workspace/always. Some scopes are restricted for dangerous operations.
 - **Provider** — Currently OpenRouter only. Has an API key in the keyring and a models discovery endpoint.
@@ -118,6 +122,14 @@ Users interact with Ur through a UI layer (CLI REPL initially, GUI/IDE later). U
 3. Extensions are discovered and loaded (system → user → workspace).
 4. A new session is created (JSONL file in `$WORKSPACE/.ur/sessions/`).
 5. User types a message → agent loop runs a turn → response is displayed.
+
+### Scenario: First run with no API key and no model
+
+1. User runs `ur` in a project directory.
+2. `UrHost.Start` succeeds and returns a host even though chat is not yet ready.
+3. The UI inspects the configuration/readiness surface and sees blockers: missing API key and missing model selection.
+4. The UI prompts for an API key, stores it in the system keyring, then shows a model picker backed by the cached/fetched model catalog.
+5. Once readiness becomes "ready," the user can create/open a session and run turns normally.
 
 ### Scenario: Extension provides a custom tool
 
