@@ -167,7 +167,8 @@ public static class KeyParser
 
         return b switch
         {
-            0x0D => new KeyEvent(Key.Enter, Modifiers.None, null),
+            0x0A => new KeyEvent(Key.Enter, Modifiers.None, null), // LF — Enter after icrnl translation
+            0x0D => new KeyEvent(Key.Enter, Modifiers.None, null), // CR — Enter without icrnl
             0x09 => new KeyEvent(Key.Tab, Modifiers.None, null),
             0x08 => new KeyEvent(Key.Backspace, Modifiers.None, null),
             _ => new KeyEvent((Key)(Key.A + (b - 1)), Modifiers.Ctrl, null),

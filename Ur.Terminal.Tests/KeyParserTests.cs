@@ -16,9 +16,19 @@ public class KeyParserTests
     }
 
     [Fact]
-    public void Enter_ReturnsEnter()
+    public void Enter_CR_ReturnsEnter()
     {
         var result = KeyParser.Parse([0x0D], out var consumed);
+        Assert.NotNull(result);
+        Assert.Equal(Key.Enter, result.Value.Key);
+        Assert.Equal(1, consumed);
+    }
+
+    [Fact]
+    public void Enter_LF_ReturnsEnter()
+    {
+        // LF (0x0A) is what the app receives when icrnl is active (default in stty -icanon)
+        var result = KeyParser.Parse([0x0A], out var consumed);
         Assert.NotNull(result);
         Assert.Equal(Key.Enter, result.Value.Key);
         Assert.Equal(1, consumed);
