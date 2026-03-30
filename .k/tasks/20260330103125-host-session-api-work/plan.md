@@ -9,7 +9,7 @@ Turn the architecture in `docs/host-session-api.md` into the actual public runti
 - `UrHost.Start(...)` remains the only startup entry point and stays non-interactive.
 - Frontends can list, create, and open sessions through stable public types.
 - Chat readiness, API-key management, model selection, and model browsing move behind a configuration API.
-- Turn execution moves behind `UrSession.RunTurnAsync(...)`, with readiness preflight, automatic persistence, and per-turn permission callbacks.
+- Turn execution moves behind `UrSession.RunTurnAsync(...)`, with readiness preflight and automatic persistence. Per-turn permission callbacks remain reserved for the follow-up tool-approval task.
 
 ## Related documents
 
@@ -82,6 +82,7 @@ No saved research notes or brainstorm docs existed under `.k/tasks/2026033010312
 - `RunTurnAsync(...)` throws `UrChatNotReadyException` before yielding any events when readiness blockers remain.
 - `ActiveModelId` is the session's currently selected model in v1. Full per-message provenance and session-envelope persistence are explicitly out of scope for this pass.
 - `CreateSession()` remains synchronous. The stray `CreateSessionAsync()` mention in the doc is treated as a documentation typo and should be corrected as part of this work.
+- `UrTurnCallbacks` is kept as the future per-turn callback surface, but actual permission-prompt consumption is deferred until gated tool execution is wired into the runtime path.
 
 ## Out of scope
 
@@ -116,9 +117,22 @@ No saved research notes or brainstorm docs existed under `.k/tasks/2026033010312
 - [x] Add settings write-through support for user/workspace scopes so configuration changes update in-memory state and persist to the correct `settings.json` file without bypassing existing validation rules.
 - [x] Add runtime session types: lightweight `UrSessionInfo` for persisted session lists and `UrSession` for in-memory conversation state, eager ID assignment, read-only messages, and `IsPersisted` tracking.
 - [x] Keep `SessionStore` as the persistence layer but adapt it to the runtime API: list/open persisted sessions, create in-memory session identity without eagerly creating files, and persist on first appended message.
-- [x] Extend `AgentLoop` integration so `UrSession.RunTurnAsync(...)` owns user-message creation, readiness preflight, chat-client acquisition, permission callback forwarding, and automatic persistence of user/assistant/tool messages.
+- [x] Extend `AgentLoop` integration so `UrSession.RunTurnAsync(...)` owns user-message creation, readiness preflight, chat-client acquisition, and automatic persistence of user/assistant/tool messages. Keep `UrTurnCallbacks` as the reserved callback surface for the follow-up tool-approval task.
 - [x] Update the CLI to consume only the new public API surface and remove reliance on exposed internals.
 - [x] Add and pass tests covering host startup without configuration, readiness blockers, configuration writes, session create/list/open semantics, first-message persistence, and `UrChatNotReadyException` preflight behavior.
+
+## Task outcome
+
+- Delivered in this task:
+  - Public host/configuration/session runtime types and readiness primitives.
+  - Write-through configuration APIs for API key management and selected-model persistence.
+  - Session create/list/open behavior with lazy first-message persistence.
+  - `UrSession.RunTurnAsync(...)` readiness preflight, chat-client acquisition, and automatic message persistence.
+  - CLI adoption of the new public startup/configuration surface.
+- Deferred to the next task:
+  - TUI setup UX for entering the API key and selecting a model based on `UrConfiguration.Readiness`.
+  - Conversational CLI/TUI flows that create or open a session and drive `UrSession.RunTurnAsync(...)`.
+  - Permission-prompt integration through `UrTurnCallbacks` once gated tool execution actually needs approval.
 
 ## Impact assessment
 
@@ -149,3 +163,4 @@ No saved research notes or brainstorm docs existed under `.k/tasks/2026033010312
 
 - Risk: Retrofitting runtime writes into the current `Settings` shape may expose the need for a dedicated settings-writer abstraction.
 - Follow-up: Session-envelope/provenance work remains a separate task once the public runtime API is in place.
+- Follow-up: Build the first real frontend flow on top of this API: readiness/setup UI first, then conversational session UX, then tool-approval prompting when the runtime actually needs it.

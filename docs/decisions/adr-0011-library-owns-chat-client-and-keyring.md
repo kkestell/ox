@@ -31,10 +31,12 @@ Ur's architecture declares that the CLI is a thin consumer of the Ur class libra
 **Description:** Library owns provider SDKs and client creation. `UrHost.Start()` accepts a required `IKeyring`.
 
 **Pros:**
+
 - Frontends don't touch provider SDKs or endpoints.
 - `IKeyring` is a clean platform boundary.
 
 **Cons:**
+
 - Every frontend must still do platform detection and keyring construction — identical code in every host.
 - `CreateChatClient` as public API invites frontends to manage chat clients directly, which is the agent loop's job.
 
@@ -45,12 +47,14 @@ Ur's architecture declares that the CLI is a thin consumer of the Ur class libra
 **Description:** Library does platform detection and creates the default keyring internally. `UrHost.Start()` accepts an optional `IKeyring?` for testing. `CreateChatClient` is internal — only the agent loop uses it.
 
 **Pros:**
+
 - Frontend is maximally thin: `UrHost.Start(cwd)`.
 - Platform detection lives in one place (the library), not duplicated per frontend.
 - `CreateChatClient` is internal, so frontends can't misuse it. Chat client lifecycle is fully library-managed.
 - Still testable: pass a mock `IKeyring` in tests.
 
 **Cons:**
+
 - Library takes a hard dependency on knowing which platforms exist. Acceptable — Ur already declares macOS and Linux as the only supported platforms.
 - If a frontend needs a truly exotic keyring (not macOS or Linux), it must be added to the library. Unlikely given the platform constraints.
 

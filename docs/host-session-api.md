@@ -6,6 +6,16 @@
 
 Defines the public runtime surface consumed by UIs. `UrHost` is the workspace-scoped root object; `UrSession` is the conversation-scoped object. The goal is to give frontends a stable, high-level API for session lifecycle, chat readiness, turn execution, and configuration without exposing storage, provider, or agent-loop internals.
 
+## Current Status
+
+- Implemented in this pass:
+  - `UrHost`, `UrConfiguration`, `UrSession`, `UrSessionInfo`, `UrChatReadiness`, and `UrChatNotReadyException` are now the public runtime surface.
+  - `UrSession.RunTurnAsync(...)` now owns readiness preflight, user-message append, chat-client acquisition, and automatic persistence of appended messages.
+  - Runtime configuration writes for API key storage and model selection now go through `UrConfiguration`.
+- Still outstanding:
+  - The UI flow that prompts for an API key and model selection is still frontend work built on top of `UrConfiguration`.
+  - `UrTurnCallbacks` is reserved for future gated tool-approval prompts. The callback contract exists now, but runtime consumption is deferred until tool execution actually needs permission prompts.
+
 ### Non-Goals
 
 - Does not render UI or own interaction widgets. The TUI/GUI still decides how to present sessions, setup flows, and streamed output.
@@ -171,6 +181,7 @@ public sealed class UrChatNotReadyException : Exception
 
 - **Purpose:** UI-implemented decision points needed while a turn is actively running.
 - **v1 scope:** Permission prompts only.
+- **Implementation status:** Defined as the future per-turn callback surface, but not yet consumed by the runtime because gated tool-approval flows are not in use yet.
 - **Shape:**
   - `RequestPermissionAsync(PermissionRequest, CancellationToken) -> ValueTask<PermissionResponse>`
 - **Why this shape:** Permission prompts are synchronous from the library's point of view, but may require asynchronous UI work. Keeping callbacks bundled in a per-turn object leaves room for future turn-scoped interactions without polluting the main `RunTurnAsync` signature.
@@ -241,9 +252,11 @@ Setup flows are driven explicitly by the UI through the configuration API. They 
 
 1. Validate readiness.
 2. Append the user message internally.
-3. Execute the agent loop, invoking `UrTurnCallbacks.RequestPermissionAsync(...)` if a gated operation needs approval.
+3. Execute the agent loop.
 4. Append/persist assistant/tool messages as they are finalized.
 5. Expose streamed events to the UI.
+
+The current implementation delivers readiness preflight, chat-client creation, event streaming, and persistence. Permission callbacks remain a follow-up step for the first gated tool-execution path that actually needs user approval.
 
 If the caller attempts a turn while setup blockers remain, the operation should fail with a **structured setup-required failure**, not a generic `InvalidOperationException` and not an event-stream-only signal.
 

@@ -11,6 +11,8 @@ Ur is a class library; every UI (CLI, GUI, IDE extension) is a separate consumer
 
 Both mechanisms follow the same principle: the library defines the data contract (event types, request/response records); the UI implements the rendering and interaction. The library never assumes terminal I/O, widget toolkits, or any specific presentation layer.
 
+First-run readiness flows such as entering an API key or selecting a model are not callbacks. They are explicit UI flows built on top of `UrConfiguration`.
+
 ## Event Stream
 
 The agent loop's `RunTurnAsync` returns `IAsyncEnumerable<AgentLoopEvent>`. The current event hierarchy (defined in [`Ur/AgentLoop/AgentLoopEvent.cs`](../Ur/AgentLoop/AgentLoopEvent.cs)):
@@ -35,6 +37,8 @@ When a gated operation needs user approval, the [Permission System](permission-s
 - **Response:** `PermissionResponse(Granted, Scope)` — defined in [`Ur/Permissions/PermissionResponse.cs`](../Ur/Permissions/PermissionResponse.cs).
 
 The UI renders the prompt (terminal dialog, modal window, etc.), collects the user's choice, and returns the response. The callback is synchronous from the library's perspective — the agent loop blocks until the UI returns an answer.
+
+The callback contract is defined ahead of full runtime use. The current host/session implementation focuses first on readiness, configuration, and turn orchestration; permission prompting will be wired when gated tool execution actually needs approval.
 
 ### Provider Management
 
