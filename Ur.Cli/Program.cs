@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using dotenv.net;
 using Microsoft.Extensions.AI;
 using Ur;
@@ -7,7 +8,12 @@ DotEnv.Load(options: new DotEnvOptions(
     probeForEnv: true,
     probeLevelsToSearch: 8));
 
-var keyring = new LinuxKeyring();
+IKeyring keyring = RuntimeInformation.IsOSPlatform(OSPlatform.OSX)
+    ? new MacOSKeyring()
+    : RuntimeInformation.IsOSPlatform(OSPlatform.Linux)
+        ? new LinuxKeyring()
+        : throw new PlatformNotSupportedException("Ur requires macOS or Linux.");
+
 var host = UrHost.Start(Environment.CurrentDirectory, keyring);
 
 Console.WriteLine($"ur — {host.Workspace.RootPath}");

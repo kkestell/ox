@@ -97,7 +97,7 @@ Implementation details:
 
 ### Neutral
 
-- macOS implementation will follow the same pattern against `Security.framework`.
+- macOS implementation uses the `security` CLI (`/usr/bin/security`) rather than `LibraryImport` P/Invoke into Security.framework. The `security` tool ships with every macOS install, the `-w` flag returns just the password (no output parsing), and three `Process.Start` calls replace ~150 lines of CoreFoundation/Security.framework interop. The ADR's Option 3 cons (brittle output, tool may not be installed) apply to Linux's `secret-tool` but not to macOS's `security`.
 
 ## Confirmation
 
