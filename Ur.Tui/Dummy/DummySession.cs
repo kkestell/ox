@@ -53,6 +53,7 @@ public sealed class DummySession
             await Task.Delay(Random.Shared.Next(30, 80), ct);
         }
 
-        yield return new DummyTurnCompleted();
+        // TurnCompleted is enqueued by the caller's finally block,
+        // mirroring how the real integration wraps the stream.
     }
 }
