@@ -3,7 +3,7 @@ namespace Ur;
 /// <summary>
 /// A directory on disk that scopes sessions, configuration, and workspace extensions.
 /// </summary>
-public sealed class Workspace
+internal sealed class Workspace
 {
     public string RootPath { get; }
     public string UrDirectory => Path.Combine(RootPath, ".ur");

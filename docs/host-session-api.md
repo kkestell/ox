@@ -6,6 +6,16 @@
 
 Defines the public runtime surface consumed by UIs. `UrHost` is the workspace-scoped root object; `UrSession` is the conversation-scoped object. The goal is to give frontends a stable, high-level API for session lifecycle, chat readiness, turn execution, and configuration without exposing storage, provider, or agent-loop internals.
 
+## Current Status
+
+- Implemented in this pass:
+  - `UrHost`, `UrConfiguration`, `UrSession`, `UrSessionInfo`, `UrChatReadiness`, and `UrChatNotReadyException` are now the public runtime surface.
+  - `UrSession.RunTurnAsync(...)` now owns readiness preflight, user-message append, chat-client acquisition, and automatic persistence of appended messages.
+  - Runtime configuration writes for API key storage and model selection now go through `UrConfiguration`.
+- Still outstanding:
+  - The UI flow that prompts for an API key and model selection is still frontend work built on top of `UrConfiguration`.
+  - `UrTurnCallbacks` is reserved for future gated tool-approval prompts. The callback contract exists now, but runtime consumption is deferred until tool execution actually needs permission prompts.
+
 ### Non-Goals
 
 - Does not render UI or own interaction widgets. The TUI/GUI still decides how to present sessions, setup flows, and streamed output.
@@ -152,7 +162,7 @@ public sealed class UrChatNotReadyException : Exception
 - **Key operations:**
   - `Messages` read-only view
   - `RunTurnAsync(userInput, turnCallbacks?, ct) -> IAsyncEnumerable<AgentLoopEvent>`
-  - Possibly `SetActiveModelAsync(...)` later if mid-session model switching is surfaced explicitly
+  - `ActiveModelId` reflects the model currently selected for the session in v1; richer per-message provenance is deferred
 
 ### `UrConfiguration`
 
@@ -171,6 +181,7 @@ public sealed class UrChatNotReadyException : Exception
 
 - **Purpose:** UI-implemented decision points needed while a turn is actively running.
 - **v1 scope:** Permission prompts only.
+- **Implementation status:** Defined as the future per-turn callback surface, but not yet consumed by the runtime because gated tool-approval flows are not in use yet.
 - **Shape:**
   - `RequestPermissionAsync(PermissionRequest, CancellationToken) -> ValueTask<PermissionResponse>`
 - **Why this shape:** Permission prompts are synchronous from the library's point of view, but may require asynchronous UI work. Keeping callbacks bundled in a per-turn object leaves room for future turn-scoped interactions without polluting the main `RunTurnAsync` signature.
@@ -193,6 +204,7 @@ public sealed class UrChatNotReadyException : Exception
   - `Messages` is read-only to callers.
   - Message mutation happens only through `RunTurnAsync` and internal persistence logic.
   - The session can exist even when chat is not ready; readiness is separate from session existence.
+  - `ActiveModelId` tracks the session's current model selection in memory. It is not yet reconstructed from per-message persisted provenance.
 
 ### `UrChatReadiness`
 
@@ -240,9 +252,11 @@ Setup flows are driven explicitly by the UI through the configuration API. They 
 
 1. Validate readiness.
 2. Append the user message internally.
-3. Execute the agent loop, invoking `UrTurnCallbacks.RequestPermissionAsync(...)` if a gated operation needs approval.
+3. Execute the agent loop.
 4. Append/persist assistant/tool messages as they are finalized.
 5. Expose streamed events to the UI.
+
+The current implementation delivers readiness preflight, chat-client creation, event streaming, and persistence. Permission callbacks remain a follow-up step for the first gated tool-execution path that actually needs user approval.
 
 If the caller attempts a turn while setup blockers remain, the operation should fail with a **structured setup-required failure**, not a generic `InvalidOperationException` and not an event-stream-only signal.
 
@@ -295,7 +309,7 @@ If the caller attempts a turn while setup blockers remain, the operation should 
 ### Session IDs are assigned at birth
 
 - **Context:** An in-memory `UrSession` still needs a stable identity before its first persisted message.
-- **Choice:** `CreateSessionAsync()` assigns the session ID immediately, not lazily on first persistence.
+- **Choice:** `CreateSession()` assigns the session ID immediately, not lazily on first persistence.
 - **Rationale:** Stable identity simplifies UI state, logging, and internal references. The runtime object should not change identity based on whether the user has sent the first message yet.
 - **Consequences:** Some session IDs will never correspond to persisted files if the user abandons the session before the first message. This is acceptable because only persisted sessions appear in `ListSessions()`.
 
