@@ -1,4 +1,7 @@
 .env
+.DS_Store
+.ur/
+test-output/
 
 # .NET build outputs
 bin/
