@@ -3,4 +3,7 @@
   <Project Path="Ur.Tests/Ur.Tests.csproj" />
   <Project Path="Ur/Ur.csproj" />
   <Project Path="Ur.Cli/Ur.Cli.csproj" />
+  <Project Path="Ur.Terminal/Ur.Terminal.csproj" />
+  <Project Path="Ur.Terminal.Tests/Ur.Terminal.Tests.csproj" />
+  <Project Path="Ur.Tui/Ur.Tui.csproj" />
 </Solution>
