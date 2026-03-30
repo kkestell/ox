@@ -13,8 +13,6 @@
 
   <ItemGroup>
     <PackageReference Include="dotenv.net" Version="4.0.0" />
-    <PackageReference Include="Google_GenerativeAI.Microsoft" Version="3.6.4" />
-    <PackageReference Include="Microsoft.Extensions.AI.OpenAI" Version="10.4.1" />
   </ItemGroup>
 
 </Project>

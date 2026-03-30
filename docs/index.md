@@ -61,7 +61,9 @@ Users interact with Ur through a UI layer (CLI REPL initially, GUI/IDE later). U
 - **Unified settings with schema validation.** One settings file (VS Code-style flat dot-namespaced keys) for core, extension, and model settings. Validated against JSON schemas declared by each component.
 - **JSONL session storage.** Sessions are append-only JSONL files, one per session. Simple, human-readable, and trivially parseable.
 - **AoT compilation.** The binary is published as a self-contained, ahead-of-time compiled executable. This constrains the design (no runtime reflection, no dynamic loading) but delivers fast startup and zero dependencies.
-- **Linear startup via `UrHost.Start`.** Workspace → load `~/.ur/providers.json` → schema registration (core + provider) → settings load/validate → return `UrHost`. Extensions are not yet wired into startup. When they are, a two-phase approach is likely: load extension metadata/schemas first (no config access), then validate settings, then initialize extensions with resolved settings.
+- **Library owns chat client creation.** The library carries the provider SDK (OpenAI) and creates `IChatClient` instances internally. Frontends provide only an `IKeyring` (platform-specific secret storage). See [ADR-0011](decisions/adr-0011-library-owns-chat-client-creation.md).
+- **OpenRouter-only with API-based model discovery.** Model metadata (context length, pricing, capabilities) is fetched from the OpenRouter `GET /api/v1/models` endpoint and cached to `~/.ur/cache/models.json`. No static model catalog to maintain.
+- **Linear startup via `UrHost.Start`.** Workspace → load model cache (or fetch) → schema registration → settings load/validate → return `UrHost`. Extensions are not yet wired into startup. When they are, a two-phase approach is likely: load extension metadata/schemas first (no config access), then validate settings, then initialize extensions with resolved settings.
 
 ## Building Blocks
 
@@ -70,7 +72,7 @@ Users interact with Ur through a UI layer (CLI REPL initially, GUI/IDE later). U
 | Agent Loop        | Drives the conversation cycle: user input → middleware → LLM → tool calls → repeat.                           | [agent-loop.md](agent-loop.md)               |
 | Extension System  | Discovers, loads, and manages Lua extensions. Exposes C# APIs to Lua. Manages lifecycle (enable/disable).     | [extension-system.md](extension-system.md)   |
 | Permission System | Gates sensitive operations (writes, network, out-of-workspace reads). Prompts user with scoped approvals.     | [permission-system.md](permission-system.md) |
-| Provider Registry | Declares LLM providers, models, per-model settings schemas, and read-only properties (context length, cost).  | [provider-registry.md](provider-registry.md) |
+| Provider Registry | Manages provider config and model discovery. Currently OpenRouter-only; fetches model catalog from API, caches to disk. | [provider-registry.md](provider-registry.md) |
 | Configuration     | Unified settings file, schema validation, two-level merging, keyring-based secret storage.                    | [configuration.md](configuration.md)         |
 | Session Storage   | Persists conversation history as JSONL. Manages session lifecycle (create, resume, list) scoped to workspace. | [session-storage.md](session-storage.md)     |
 | Tool Registry     | Maintains available tools. Core provides the registry; extensions register tools into it.                     | [tool-registry.md](tool-registry.md)         |
@@ -81,11 +83,11 @@ Users interact with Ur through a UI layer (CLI REPL initially, GUI/IDE later). U
 ### Core Entities
 
 - **Workspace** — A directory on disk. Has a `.ur/` subdirectory for workspace-scoped state (sessions, config, extensions). Identified by its absolute path.
-- **Session** — A conversation within a workspace. Stored as a JSONL file where each line is a serialized `Microsoft.Extensions.AI.ChatMessage` (using M.E.AI's polymorphic `$type` discriminators). This preserves provider-specific metadata (e.g. Gemini's `ThoughtSignature`) needed for correct round-tripping. Identified by a timestamp-based ID.
+- **Session** — A conversation within a workspace. Stored as a JSONL file where each line is an envelope wrapping a serialized `ChatMessage` with provenance (provider, model, settings). Models can change mid-session. Identified by a timestamp-based ID.
 - **Extension** — A Lua script (or directory with a main script) loaded from one of the three extension directories. Has metadata (name, description, source tier) and a lifecycle (loaded, enabled, disabled).
 - **Permission Grant** — User approval for a sensitive operation, scoped to once/session/workspace/always. Some scopes are restricted for dangerous operations.
-- **Provider** — An LLM API backend (OpenAI, Anthropic, Google, OpenRouter, Ollama). Has models, an API key in the keyring, and an enabled/disabled state.
-- **Model** — A specific LLM. Read-only properties (context length, cost) and configurable settings with per-model JSON schemas.
+- **Provider** — Currently OpenRouter only. Has an API key in the keyring and a models discovery endpoint.
+- **Model** — A specific LLM available on OpenRouter. Metadata (context length, cost, supported parameters) fetched from the OpenRouter API and cached to disk.
 - **Settings** — Unified JSON file with flat dot-namespaced keys. Core, extension, and model settings in one file, validated against declared schemas.
 
 ### Key Invariants
@@ -95,7 +97,7 @@ Users interact with Ur through a UI layer (CLI REPL initially, GUI/IDE later). U
 - Workspace extensions are disabled by default; system and user extensions are enabled by default.
 - Permission grants for out-of-workspace writes and network access: "once" scope only.
 - Every setting has a JSON schema. Unknown keys warn; type mismatches error.
-- The provider/model registry is separate from user settings. The registry is the schema; settings.json is the user's overrides.
+- The model catalog (API-fetched) is separate from user settings. The catalog is what's available; settings record what the user chose.
 - API keys live in the system keyring, never in settings files.
 
 ## Quality Attributes
@@ -143,12 +145,12 @@ Users interact with Ur through a UI layer (CLI REPL initially, GUI/IDE later). U
 | Three-tier extension loading with trust defaults            | System/user enabled by default, workspace disabled. Prevents supply-chain-style attacks via repo contributions. | [ADR-0004](decisions/adr-0004-three-tier-extension-loading.md)   |
 | Scoped permission grants with restrictions on dangerous ops | "Always allow network" is a footgun. Restricting dangerous ops to "once" forces deliberate approval.            | [ADR-0005](decisions/adr-0005-scoped-permission-restrictions.md) |
 | Unified settings file (VS Code-style flat dot keys)         | One file for core, extension, and model settings. Simpler than multiple config files. Familiar to developers.   | [ADR-0006](decisions/adr-0006-unified-settings-file.md)          |
-| Separate provider registry from user settings               | Registry is the schema (what exists, what's valid). Settings are values (user choices). Clean separation.       | [ADR-0009](decisions/adr-0009-separate-provider-registry.md)     |
+| Separate model catalog from user settings                   | Catalog is API-fetched truth (what's available). Settings are user choices (what's selected).                   | [ADR-0009](decisions/adr-0009-separate-provider-registry.md)     |
 | API keys in system keyring, never in config files           | Secrets must not end up in version control or be readable by extensions scanning config.                        | [ADR-0008](decisions/adr-0008-libraryimport-keyring.md)          |
-| Model change starts a new session                           | Provider-specific metadata in stored messages is incompatible across providers. One model per session.           | [ADR-0010](decisions/adr-0010-model-change-new-session.md)       |
-| Always-qualified model identifiers (`provider/model`)       | Same model can exist on multiple providers (e.g. native API vs OpenRouter). Qualified IDs prevent ambiguity.    | —                                                                |
-| Extensions cannot add providers                             | Keeps registry static, avoids load-order complexity. Users edit `providers.json` for custom endpoints.          | —                                                                |
-| Provider enabled = API key in keyring                       | No separate enabled flag. Enable = enter key, disable = delete key.                                             | —                                                                |
+| Mid-session model switching with per-message envelope       | Empirically verified: messages are interchangeable across OpenAI-compatible providers. Runtime stripping for edge cases. | [ADR-0010](decisions/adr-0010-mid-session-model-switch.md)       |
+| OpenRouter-only for v1                                      | One provider, one API key, one auth flow. OpenRouter covers the broadest model set.                             | —                                                                |
+| API-based model discovery (not static catalog)              | 345+ models that change frequently. OpenRouter API is the source of truth, cached to disk.                     | —                                                                |
+| Library owns chat client creation                           | Provider SDKs are a provider concern, not a UI concern. Frontends provide IKeyring only.                        | [ADR-0011](decisions/adr-0011-library-owns-chat-client-creation.md) |
 | Microsoft.Extensions.AI for LLM abstraction                 | Official .NET AI abstraction. Provider-agnostic.                                                                | —                                                                |
 
 ## Risks and Technical Debt
@@ -183,7 +185,7 @@ System-level questions that span multiple components. Component-specific questio
 | Agent loop          | The core cycle: user input → middleware → LLM → tool calls → repeat.                            |
 | Middleware          | Extension hook that intercepts the agent loop pipeline (before LLM call, after response, etc.). |
 | Permission grant    | User approval for a sensitive operation, scoped to once/session/workspace/always.               |
-| Provider            | An LLM API backend (OpenAI, Anthropic, Google, OpenRouter, Ollama).                             |
-| Provider registry   | Static data declaring providers, models, per-model properties, and settings schemas.            |
-| Model properties    | Read-only model attributes (context length, cost). Used by core, not user-configurable.         |
+| Provider            | An LLM API backend. Currently OpenRouter only.                                                  |
+| Model catalog       | Model metadata fetched from the OpenRouter API and cached to disk.                              |
+| Model properties    | Read-only model attributes (context length, cost). Fetched from provider API, not user-configurable. |
 | AoT                 | Ahead-of-Time compilation. Native binary, no JIT or runtime dependency.                         |

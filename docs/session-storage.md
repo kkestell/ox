@@ -68,24 +68,29 @@ Persists conversation history as append-only JSONL files, one per session, scope
 
 ### JSONL Line Format
 
-Each line in the session file is a JSON-serialized `ChatMessage`. The serialization uses M.E.AI's built-in polymorphic `$type` discriminator for `AIContent` subtypes (`text`, `functionCall`, `functionResult`, etc.).
+Each line in the session file is a **per-message envelope** wrapping a JSON-serialized `ChatMessage` with provenance metadata. The `ChatMessage` serialization uses M.E.AI's built-in polymorphic `$type` discriminator for `AIContent` subtypes (`text`, `functionCall`, `functionResult`, etc.).
 
-- **Why `ChatMessage` directly:** Different LLM providers include provider-specific metadata in the M.E.AI content model. For example, Gemini 2.5 attaches a `ThoughtSignature` to `FunctionCallContent.AdditionalProperties` that must be echoed back on the next request or the API returns an error. By storing the `ChatMessage` as-is — including `AdditionalProperties` at both the message and content level — we preserve this metadata without needing to know what each provider requires. The M.E.AI provider libraries handle the translation on the way out; we just need to not lose data on the way in.
-- **Invariants:** Every line deserializes to a valid `ChatMessage`. Lines are append-only; partial writes (crash mid-append) are handled by skipping malformed trailing lines on read.
-- **Human readability:** The `$type` discriminator and flat JSON structure remain inspectable with `cat` and `jq`, consistent with ADR-0003's rationale.
+- **Why an envelope:** Mid-session model switching is supported (see [ADR-0010](decisions/adr-0010-mid-session-model-switch.md)). Each message records which provider, model, and settings were active when it was produced. This enables the runtime translation layer to know what stripping is needed when sending history to a different provider, and supports future features like cost tracking and replay.
+- **Why `ChatMessage` directly inside the envelope:** Provider-specific metadata in `AdditionalProperties` is preserved without the session layer needing to know about providers. The on-disk format is full-fidelity; any lossy transformation for cross-provider compatibility happens at runtime, in memory only.
+- **Invariants:** Every line deserializes to a valid envelope containing a valid `ChatMessage`. Lines are append-only; partial writes (crash mid-append) are handled by skipping malformed trailing lines on read.
+- **Human readability:** The envelope adds a thin wrapper but the `ChatMessage` inside remains inspectable with `cat` and `jq`, consistent with ADR-0003's rationale.
+- **Migration:** Session files without envelope metadata (from before this format change) are treated as having unknown provenance. The session reader detects bare `ChatMessage` lines (no `provider` key at the root) and wraps them on read.
 
-#### Example: tool-calling round-trip (3 lines)
+#### Example: tool-calling round-trip with provenance (3 lines)
 
 ```jsonl
-{"Role":"user","Contents":[{"$type":"text","Text":"What's the weather in Tokyo?"}]}
-{"Role":"assistant","Contents":[{"$type":"text","Text":"I'll check the weather."},{"$type":"functionCall","Name":"get_weather","CallId":"call_abc123","Arguments":{"city":"Tokyo"}}],"AdditionalProperties":null}
-{"Role":"tool","Contents":[{"$type":"functionResult","CallId":"call_abc123","Result":"Sunny, 22°C"}]}
+{"provider":"openai","model":"gpt-5-nano","settings":{},"message":{"role":"user","contents":[{"$type":"text","text":"What's the weather in Tokyo?"}]}}
+{"provider":"openai","model":"gpt-5-nano","settings":{},"message":{"role":"assistant","contents":[{"$type":"text","text":"I'll check the weather."},{"$type":"functionCall","name":"get_weather","callId":"call_abc123","arguments":{"city":"Tokyo"}}]}}
+{"provider":"openai","model":"gpt-5-nano","settings":{},"message":{"role":"tool","contents":[{"$type":"functionResult","callId":"call_abc123","result":"Sunny, 22°C"}]}}
 ```
 
-#### Example: Gemini with ThoughtSignature (preserved in AdditionalProperties)
+#### Example: mid-session model switch
 
 ```jsonl
-{"Role":"assistant","Contents":[{"$type":"functionCall","Name":"get_weather","CallId":"get_weather","Arguments":{"city":"Tokyo"},"AdditionalProperties":{"ThoughtSignature":"CuwBAb4+9vs..."}}]}
+{"provider":"openai","model":"gpt-5-nano","settings":{},"message":{"role":"user","contents":[{"$type":"text","text":"Summarize this file."}]}}
+{"provider":"openai","model":"gpt-5-nano","settings":{},"message":{"role":"assistant","contents":[{"$type":"text","text":"Here's a summary..."}]}}
+{"provider":"openrouter","model":"anthropic/claude-sonnet-4","settings":{"temperature":0.7},"message":{"role":"user","contents":[{"$type":"text","text":"Now refactor it."}]}}
+{"provider":"openrouter","model":"anthropic/claude-sonnet-4","settings":{"temperature":0.7},"message":{"role":"assistant","contents":[{"$type":"text","text":"Here's the refactored version..."}]}}
 ```
 
 ## Internal Design
@@ -94,9 +99,9 @@ The `SessionStore` is a thin layer over the filesystem. No caching, no indexing,
 
 **Serialization:** Use `System.Text.Json` with `JsonSerializerOptions` configured for M.E.AI's polymorphic content types. M.E.AI provides `AIJsonUtilities.CreateDefaultOptions()` which registers the `$type` discriminators for `AIContent` subtypes. This is critical — without it, `FunctionCallContent` serializes as a base `AIContent` and loses its fields.
 
-**Append:** Serialize `ChatMessage` → JSON string → append line to file. One message per line.
+**Append:** Build envelope (`{ provider, model, settings, message }`) → serialize to JSON string → append line to file. One envelope per line.
 
-**Read:** Read all lines → skip empty/malformed → deserialize each to `ChatMessage`. Malformed trailing lines (from a crash mid-write) are silently skipped rather than failing the entire read.
+**Read:** Read all lines → skip empty/malformed → deserialize each. If a line has a `provider` key at the root, it's an envelope — extract the `ChatMessage` from `message`. If it's a bare `ChatMessage` (legacy format), wrap it with unknown provenance. Malformed trailing lines (from a crash mid-write) are silently skipped.
 
 ## Error Handling and Failure Modes
 

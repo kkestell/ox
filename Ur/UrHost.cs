@@ -1,5 +1,6 @@
 using Microsoft.Extensions.AI;
 using Ur.Configuration;
+using Ur.Configuration.Keyring;
 using Ur.Providers;
 using Ur.Sessions;
 
@@ -7,100 +8,101 @@ namespace Ur;
 
 /// <summary>
 /// Top-level entry point for the Ur library.
-/// Orchestrates startup: workspace → provider registry → schemas → settings → sessions.
+/// Orchestrates startup: workspace → model catalog → schemas → settings → sessions.
 /// </summary>
 public sealed class UrHost
 {
     public Workspace Workspace { get; }
-    public ProviderRegistry ProviderRegistry { get; }
+    public ModelCatalog ModelCatalog { get; }
     public SettingsSchemaRegistry SchemaRegistry { get; }
     public Settings Settings { get; }
     public SessionStore Sessions { get; }
-    public IChatClientFactory ChatClientFactory { get; }
+    public IKeyring Keyring { get; }
 
     private UrHost(
         Workspace workspace,
-        ProviderRegistry providerRegistry,
+        ModelCatalog modelCatalog,
         SettingsSchemaRegistry schemaRegistry,
         Settings settings,
         SessionStore sessions,
-        IChatClientFactory chatClientFactory)
+        IKeyring keyring)
     {
         Workspace = workspace;
-        ProviderRegistry = providerRegistry;
+        ModelCatalog = modelCatalog;
         SchemaRegistry = schemaRegistry;
         Settings = settings;
         Sessions = sessions;
-        ChatClientFactory = chatClientFactory;
+        Keyring = keyring;
     }
 
     /// <summary>
-    /// Creates an IChatClient for the default model (from settings).
+    /// Creates an IChatClient for the user's selected model (from settings).
     /// </summary>
-    public IChatClient CreateChatClient(string apiKey)
+    public IChatClient CreateChatClient()
     {
-        var modelId = Settings.Get<string>("ur.defaultModel")
-            ?? throw new InvalidOperationException("No default model configured. Set 'ur.defaultModel' in settings.");
+        var modelId = Settings.Get<string>("ur.model")
+            ?? throw new InvalidOperationException("No model selected. Use /model to choose one.");
 
-        var model = ProviderRegistry.GetModel(modelId)
-            ?? throw new InvalidOperationException($"Unknown model '{modelId}'. Check provider registry.");
-
-        return ChatClientFactory.Create(model.ProviderId, model.Id, apiKey);
+        return CreateChatClient(modelId);
     }
 
     /// <summary>
     /// Creates an IChatClient for a specific model.
+    /// API key is resolved from the keyring.
     /// </summary>
-    public IChatClient CreateChatClient(string modelId, string apiKey)
+    public IChatClient CreateChatClient(string modelId)
     {
-        var model = ProviderRegistry.GetModel(modelId)
-            ?? throw new InvalidOperationException($"Unknown model '{modelId}'. Check provider registry.");
+        var apiKey = Keyring.GetSecret("ur", "openrouter")
+            ?? throw new InvalidOperationException(
+                "No OpenRouter API key configured. Set one with 'ur setup'.");
 
-        return ChatClientFactory.Create(model.ProviderId, model.Id, apiKey);
+        return ChatClientFactory.Create(modelId, apiKey);
     }
 
     /// <summary>
-    /// Boots the Ur system with the two-phase startup:
-    /// Phase 1: Load provider registry + extension metadata (schemas only).
-    /// Phase 2: Validate and load configuration.
+    /// Boots the Ur system:
+    /// 1. Workspace setup
+    /// 2. Model catalog (load cache)
+    /// 3. Schema registration
+    /// 4. Settings load/validate
+    /// 5. Session store
     /// </summary>
     public static UrHost Start(
         string workspacePath,
-        IChatClientFactory chatClientFactory,
+        IKeyring keyring,
         string? userSettingsPath = null)
     {
         var workspace = new Workspace(workspacePath);
         workspace.EnsureDirectories();
 
-        // Phase 1: Build the schema registry
+        // Model catalog — load from disk cache (no network hit at startup).
+        var cacheDir = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+            ".ur", "cache");
+        var modelCatalog = new ModelCatalog(cacheDir);
+        modelCatalog.LoadCache();
+
+        // Schema registry
         var schemaRegistry = new SettingsSchemaRegistry();
-        var providerRegistry = new ProviderRegistry();
-
-        // TODO: Load embedded provider registry data
         // TODO: Load extensions (metadata/schemas only)
-
-        // Register provider model settings schemas
-        providerRegistry.RegisterSettingsSchemas(schemaRegistry);
-
-        // Register core settings schemas
         RegisterCoreSchemas(schemaRegistry);
 
-        // Phase 2: Load and validate configuration
+        // Load and validate configuration
         userSettingsPath ??= DefaultUserSettingsPath();
         var loader = new SettingsLoader(schemaRegistry);
         var settings = loader.Load(userSettingsPath, workspace.SettingsPath);
 
-        // Phase 3: Create session store
+        // Session store
         var sessions = new SessionStore(workspace.SessionsDirectory);
 
-        return new UrHost(workspace, providerRegistry, schemaRegistry, settings, sessions, chatClientFactory);
+        return new UrHost(workspace, modelCatalog, schemaRegistry, settings, sessions, keyring);
     }
 
     private static void RegisterCoreSchemas(SettingsSchemaRegistry registry)
     {
         var stringSchema = System.Text.Json.JsonDocument.Parse("""{"type":"string"}""").RootElement.Clone();
 
-        registry.Register("ur.defaultModel", stringSchema);
+        registry.Register("ur.model", stringSchema);
     }
 
     private static string DefaultUserSettingsPath() =>
