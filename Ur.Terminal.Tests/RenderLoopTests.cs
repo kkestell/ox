@@ -24,7 +24,7 @@ public class RenderLoopTests
         await loop.RunAsync(_ =>
         {
             callCount++;
-            return callCount < 3;
+            return ValueTask.FromResult(callCount < 3);
         }, cts.Token);
 
         Assert.True(callCount >= 3);
@@ -43,7 +43,7 @@ public class RenderLoopTests
         var frame = 0;
 
         using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(200));
-        await loop.RunAsync(_ => ++frame < 2, cts.Token);
+        await loop.RunAsync(_ => ValueTask.FromResult(++frame < 2), cts.Token);
 
         Assert.NotEmpty(terminal.Writes);
     }
@@ -59,7 +59,7 @@ public class RenderLoopTests
         var reader = new KeyReader(terminal);
         var loop = new RenderLoop(terminal, compositor, reader, targetFps: 60);
 
-        await loop.RunAsync(_ => false, CancellationToken.None);
+        await loop.RunAsync(_ => ValueTask.FromResult(false), CancellationToken.None);
 
         // If we get here, the loop exited. Success.
         Assert.True(true);
@@ -77,7 +77,7 @@ public class RenderLoopTests
         var loop = new RenderLoop(terminal, compositor, reader, targetFps: 60);
 
         using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(100));
-        await loop.RunAsync(_ => true, cts.Token);
+        await loop.RunAsync(_ => ValueTask.FromResult(true), cts.Token);
 
         // If we get here without exception, cancellation was handled cleanly.
         Assert.True(true);

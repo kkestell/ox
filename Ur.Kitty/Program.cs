@@ -64,7 +64,7 @@ file sealed class KittyApp
         _trace = trace;
     }
 
-    public bool ProcessFrame(ReadOnlySpan<KeyEvent> keys)
+    public ValueTask<bool> ProcessFrame(IReadOnlyList<KeyEvent> keys)
     {
         var width = _compositor.Width;
         var height = _compositor.Height;
@@ -79,11 +79,11 @@ file sealed class KittyApp
             _trace($"Rendered event: {line}");
 
             if (key is { Key: Key.C, Mods: Modifiers.Ctrl, EventType: not KeyEventType.Release })
-                return false;
+                return ValueTask.FromResult(false);
         }
 
         Render();
-        return true;
+        return ValueTask.FromResult(true);
     }
 
     private void AddEvent(string line)

@@ -3,7 +3,6 @@ using System.Diagnostics;
 using Ur.Terminal.Input;
 using Ur.Terminal.Rendering;
 using Ur.Terminal.Terminal;
-using Buffer = Ur.Terminal.Core.Buffer;
 
 namespace Ur.Terminal.App;
 
@@ -22,10 +21,10 @@ public sealed class RenderLoop
         _targetFps = targetFps;
     }
 
-    public async Task RunAsync(Func<ReadOnlySpan<KeyEvent>, bool> processFrame, CancellationToken ct)
+    public async Task RunAsync(Func<IReadOnlyList<KeyEvent>, ValueTask<bool>> processFrame, CancellationToken ct)
     {
         var frameInterval = TimeSpan.FromMilliseconds(1000.0 / _targetFps);
-        var previous = new Buffer(_compositor.Width, _compositor.Height);
+        var previous = new Core.Buffer(_compositor.Width, _compositor.Height);
         var outputWriter = new ArrayBufferWriter<byte>(4096);
         var keys = new List<KeyEvent>();
         var sw = new Stopwatch();
@@ -41,7 +40,7 @@ public sealed class RenderLoop
             if (newWidth != _compositor.Width || newHeight != _compositor.Height)
             {
                 _compositor.Resize(newWidth, newHeight);
-                previous = new Buffer(newWidth, newHeight);
+                previous = new Core.Buffer(newWidth, newHeight);
                 firstFrame = true;
             }
 
@@ -50,8 +49,7 @@ public sealed class RenderLoop
             _keyReader.Drain(keys);
 
             // Process frame
-            var keySpan = System.Runtime.InteropServices.CollectionsMarshal.AsSpan(keys);
-            if (!processFrame(keySpan))
+            if (!await processFrame(keys))
                 break;
 
             // Compose

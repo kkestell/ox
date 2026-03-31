@@ -1,20 +1,20 @@
+using Ur.Providers;
 using Ur.Terminal.Core;
 using Ur.Terminal.Input;
 using Ur.Tui.Components;
-using Ur.Tui.Dummy;
 using Buffer = Ur.Terminal.Core.Buffer;
 
 namespace Ur.Tui.Tests;
 
 public class ModelPickerModalTests
 {
-    private static readonly List<DummyModelInfo> TestModels =
+    private static readonly List<ModelInfo> TestModels =
     [
-        new("anthropic/claude-sonnet-4-6", "Claude Sonnet 4.6", 200_000, 0.000003m, 0.000015m),
-        new("anthropic/claude-opus-4-6", "Claude Opus 4.6", 200_000, 0.000015m, 0.000075m),
-        new("openai/gpt-4o", "GPT-4o", 128_000, 0.0000025m, 0.00001m),
-        new("openai/gpt-4o-mini", "GPT-4o Mini", 128_000, 0.00000015m, 0.0000006m),
-        new("google/gemini-2.5-pro", "Gemini 2.5 Pro", 1_000_000, 0.00000125m, 0.00001m),
+        new("anthropic/claude-sonnet-4-6", "Claude Sonnet 4.6", 200_000, 8_192, 0.000003m, 0.000015m, []),
+        new("anthropic/claude-opus-4-6", "Claude Opus 4.6", 200_000, 8_192, 0.000015m, 0.000075m, []),
+        new("openai/gpt-4o", "GPT-4o", 128_000, 16_384, 0.0000025m, 0.00001m, []),
+        new("openai/gpt-4o-mini", "GPT-4o Mini", 128_000, 16_384, 0.00000015m, 0.0000006m, []),
+        new("google/gemini-2.5-pro", "Gemini 2.5 Pro", 1_000_000, 65_536, 0.00000125m, 0.00001m, []),
     ];
 
     private readonly ModelPickerModal _modal = new(TestModels);
@@ -32,17 +32,19 @@ public class ModelPickerModalTests
         return new string(chars).TrimEnd();
     }
 
-    private static List<DummyModelInfo> BuildManyModels(int count)
+    private static List<ModelInfo> BuildManyModels(int count)
     {
-        var models = new List<DummyModelInfo>(count);
+        var models = new List<ModelInfo>(count);
         for (var i = 0; i < count; i++)
         {
-            models.Add(new DummyModelInfo(
+            models.Add(new ModelInfo(
                 $"test/model-{i:D2}",
                 $"Model {i:D2}",
                 128_000,
+                8_192,
                 0.000001m,
-                0.000002m));
+                0.000002m,
+                []));
         }
 
         return models;

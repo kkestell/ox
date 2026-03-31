@@ -19,6 +19,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\Ur\Ur.csproj" />
     <ProjectReference Include="..\Ur.Tui\Ur.Tui.csproj" />
     <ProjectReference Include="..\Ur.Terminal\Ur.Terminal.csproj" />
   </ItemGroup>

@@ -1,18 +1,17 @@
 using System.Collections.Concurrent;
+using Ur.AgentLoop;
 using Ur.Terminal.Components;
 using Ur.Terminal.Core;
 using Ur.Terminal.Input;
 using Ur.Terminal.Rendering;
 using Ur.Tui.Components;
-using Ur.Tui.Dummy;
 using Ur.Tui.State;
-using Buffer = Ur.Terminal.Core.Buffer;
 
 namespace Ur.Tui;
 
 public sealed class ChatApp
 {
-    private readonly DummyConfiguration _config;
+    private readonly IChatBackend _backend;
     private readonly Layer _baseLayer;
     private readonly Layer _overlayLayer;
     private readonly Compositor _compositor;
@@ -20,16 +19,16 @@ public sealed class ChatApp
     private readonly MessageList _messageList;
     private readonly ChatInput _chatInput = new();
     private readonly Dictionary<string, Action<string>> _slashCommands;
-    private readonly ConcurrentQueue<DummyAgentLoopEvent> _eventQueue = new();
+    private readonly ConcurrentQueue<AgentLoopEvent> _eventQueue = new();
 
-    private DummySession? _session;
+    private IChatSession? _session;
     private CancellationTokenSource? _turnCts;
     private bool _exitRequested;
     private bool _isFirstRun = true;
 
-    public ChatApp(DummyConfiguration config, Compositor compositor, Layer baseLayer, Layer overlayLayer)
+    public ChatApp(IChatBackend backend, Compositor compositor, Layer baseLayer, Layer overlayLayer)
     {
-        _config = config;
+        _backend = backend;
         _compositor = compositor;
         _baseLayer = baseLayer;
         _overlayLayer = overlayLayer;
@@ -49,7 +48,7 @@ public sealed class ChatApp
     internal ChatState State => _state;
     internal ChatInput ChatInput => _chatInput;
 
-    public bool ProcessFrame(ReadOnlySpan<KeyEvent> keys)
+    public async ValueTask<bool> ProcessFrame(IReadOnlyList<KeyEvent> keys)
     {
         var w = _compositor.Width;
         var h = _compositor.Height;
@@ -66,7 +65,7 @@ public sealed class ChatApp
         // Process key events
         foreach (var key in keys)
         {
-            if (!ProcessKey(key))
+            if (!await ProcessKeyAsync(key))
                 return false;
         }
 
@@ -79,7 +78,7 @@ public sealed class ChatApp
         return true;
     }
 
-    private bool ProcessKey(KeyEvent key)
+    private async ValueTask<bool> ProcessKeyAsync(KeyEvent key)
     {
         if (key.EventType == KeyEventType.Release)
             return true;
@@ -100,7 +99,7 @@ public sealed class ChatApp
         {
             var consumed = _state.ActiveModal.HandleKey(key);
             if (!consumed)
-                return HandleModalResult();
+                return await HandleModalResultAsync();
             return true;
         }
 
@@ -130,14 +129,14 @@ public sealed class ChatApp
         return true;
     }
 
-    private bool HandleModalResult()
+    private async ValueTask<bool> HandleModalResultAsync()
     {
         switch (_state.ActiveModal)
         {
             case ApiKeyModal apiKey:
                 if (apiKey.Submitted && !string.IsNullOrWhiteSpace(apiKey.Value))
                 {
-                    _config.SetApiKey(apiKey.Value);
+                    await _backend.SetApiKeyAsync(apiKey.Value);
                     _state.ActiveModal = null;
                     CheckReadiness();
                     return true;
@@ -154,12 +153,12 @@ public sealed class ChatApp
             case ModelPickerModal picker:
                 if (picker.Submitted && picker.SelectedModel is not null)
                 {
-                    _config.SetSelectedModel(picker.SelectedModel.Id);
+                    await _backend.SetSelectedModelAsync(picker.SelectedModel.Id);
                     _state.ActiveModal = null;
                     if (_isFirstRun)
                     {
                         _isFirstRun = false;
-                        _session = new DummySession();
+                        _session = _backend.CreateSession();
                         AddSystemMessage("Ready. Type a message or /help for commands.");
                     }
                     return true;
@@ -180,15 +179,15 @@ public sealed class ChatApp
 
     private void CheckReadiness()
     {
-        var readiness = _config.Readiness;
-        if (readiness.BlockingIssues.Contains(DummyBlockingIssue.MissingApiKey))
+        var readiness = _backend.Readiness;
+        if (readiness.BlockingIssues.Contains(UrChatBlockingIssue.MissingApiKey))
         {
             _state.ActiveModal = new ApiKeyModal();
             return;
         }
-        if (readiness.BlockingIssues.Contains(DummyBlockingIssue.MissingModelSelection))
+        if (readiness.BlockingIssues.Contains(UrChatBlockingIssue.MissingModelSelection))
         {
-            _state.ActiveModal = new ModelPickerModal(_config.AvailableModels);
+            _state.ActiveModal = new ModelPickerModal(_backend.AvailableModels);
             return;
         }
 
@@ -196,14 +195,14 @@ public sealed class ChatApp
         if (_isFirstRun)
         {
             _isFirstRun = false;
-            _session = new DummySession();
+            _session = _backend.CreateSession();
             AddSystemMessage("Ready. Type a message or /help for commands.");
         }
     }
 
     private void OpenModelPicker()
     {
-        _state.ActiveModal = new ModelPickerModal(_config.AvailableModels);
+        _state.ActiveModal = new ModelPickerModal(_backend.AvailableModels);
     }
 
     private bool DispatchSlashCommand(string text)
@@ -255,11 +254,11 @@ public sealed class ChatApp
             }
             catch (Exception ex)
             {
-                _eventQueue.Enqueue(new DummyError { Message = ex.Message, IsFatal = false });
+                _eventQueue.Enqueue(new Error { Message = ex.Message, IsFatal = false });
             }
             finally
             {
-                _eventQueue.Enqueue(new DummyTurnCompleted());
+                _eventQueue.Enqueue(new TurnCompleted());
             }
         });
     }
@@ -270,12 +269,12 @@ public sealed class ChatApp
         {
             switch (evt)
             {
-                case DummyResponseChunk chunk:
+                case ResponseChunk chunk:
                     var streamingMsg = GetStreamingMessage();
                     streamingMsg?.Content.Append(chunk.Text);
                     break;
 
-                case DummyToolCallStarted tool:
+                case ToolCallStarted tool:
                     var toolMsg = new DisplayMessage(MessageRole.Tool) { ToolName = tool.ToolName };
                     toolMsg.Content.Append($"Running {tool.ToolName}...");
                     // Insert before the streaming assistant message
@@ -286,7 +285,7 @@ public sealed class ChatApp
                         _state.Messages.Add(toolMsg);
                     break;
 
-                case DummyToolCallCompleted toolDone:
+                case ToolCallCompleted toolDone:
                     // Find and update the tool message
                     for (var i = _state.Messages.Count - 1; i >= 0; i--)
                     {
@@ -299,7 +298,7 @@ public sealed class ChatApp
                     }
                     break;
 
-                case DummyTurnCompleted:
+                case TurnCompleted:
                     var sm = GetStreamingMessage();
                     if (sm is not null)
                         sm.IsStreaming = false;
@@ -308,7 +307,7 @@ public sealed class ChatApp
                     _turnCts = null;
                     break;
 
-                case DummyError error:
+                case Error error:
                     var errMsg = new DisplayMessage(MessageRole.System) { IsError = true };
                     errMsg.Content.Append(error.Message);
                     _state.Messages.Add(errMsg);

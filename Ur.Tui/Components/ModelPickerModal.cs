@@ -1,8 +1,8 @@
 using System.Text;
+using Ur.Providers;
 using Ur.Terminal.Components;
 using Ur.Terminal.Core;
 using Ur.Terminal.Input;
-using Ur.Tui.Dummy;
 using Buffer = Ur.Terminal.Core.Buffer;
 
 namespace Ur.Tui.Components;
@@ -26,24 +26,24 @@ public sealed class ModelPickerModal : IComponent
     private static readonly Color SelectedBg = new(60, 60, 120);
     private static readonly Color DetailFg = new(160, 160, 160);
 
-    private readonly IReadOnlyList<DummyModelInfo> _allModels;
+    private readonly IReadOnlyList<ModelInfo> _allModels;
     private readonly StringBuilder _filter = new();
-    private List<DummyModelInfo> _filtered;
+    private List<ModelInfo> _filtered;
     private int _selectedIndex;
     private int _scrollOffset;
 
     public bool Submitted { get; private set; }
     public bool Dismissed { get; private set; }
-    public DummyModelInfo? SelectedModel { get; private set; }
+    public ModelInfo? SelectedModel { get; private set; }
 
-    public ModelPickerModal(IReadOnlyList<DummyModelInfo> models)
+    public ModelPickerModal(IReadOnlyList<ModelInfo> models)
     {
         _allModels = models;
         _filtered = models.ToList();
     }
 
     public string Filter => _filter.ToString();
-    public IReadOnlyList<DummyModelInfo> FilteredModels => _filtered;
+    public IReadOnlyList<ModelInfo> FilteredModels => _filtered;
 
     public void Render(Buffer buffer, Rect area)
     {

@@ -1,9 +1,18 @@
+using dotenv.net;
+using Ur;
 using Ur.Terminal.App;
 using Ur.Terminal.Input;
 using Ur.Terminal.Rendering;
 using Ur.Terminal.Terminal;
 using Ur.Tui;
-using Ur.Tui.Dummy;
+
+var host = UrHost.Start(Environment.CurrentDirectory);
+
+// Ensure model catalog is populated (fetches from OpenRouter if cache is empty)
+if (host.Configuration.AvailableModels.Count == 0)
+    await host.Configuration.RefreshModelsAsync();
+
+var backend = new UrChatBackend(host);
 
 using var terminal = new AnsiTerminal();
 terminal.EnterRawMode();
@@ -21,8 +30,7 @@ compositor.AddLayer(overlayLayer);
 var keyReader = new KeyReader(terminal);
 keyReader.Start(CancellationToken.None);
 
-var config = new DummyConfiguration();
-var app = new ChatApp(config, compositor, baseLayer, overlayLayer);
+var app = new ChatApp(backend, compositor, baseLayer, overlayLayer);
 
 var renderLoop = new RenderLoop(terminal, compositor, keyReader, targetFps: 30);
 
