@@ -35,7 +35,7 @@ public class MessageListTests
 
         // Message should appear at the bottom row
         var row = ReadRow(buffer, 4, 0, 40);
-        Assert.StartsWith("You: hello", row);
+        Assert.StartsWith("hello", row);
     }
 
     [Fact]
@@ -56,7 +56,7 @@ public class MessageListTests
 
         // User message should be one row above
         var aboveRow = ReadRow(buffer, 3, 0, 40);
-        Assert.StartsWith("You: first", aboveRow);
+        Assert.StartsWith("first", aboveRow);
     }
 
     [Fact]
@@ -77,7 +77,7 @@ public class MessageListTests
 
         // With scroll offset 3, the bottom visible message should be msg6 (10 - 3 - 1 = 6)
         var bottomRow = ReadRow(buffer, 4, 0, 40);
-        Assert.StartsWith("You: msg6", bottomRow);
+        Assert.StartsWith("msg6", bottomRow);
     }
 
     [Fact]

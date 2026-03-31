@@ -340,8 +340,8 @@ public sealed class ChatApp
 
     private void RenderFrame(int w, int h)
     {
-        // Layout
-        var inputHeight = 1;
+        // Layout – input grows with line count, message list shrinks to fit
+        var inputHeight = _chatInput.GetInputHeight(w);
         var messageHeight = h - inputHeight;
         var messageRect = new Rect(0, 0, w, messageHeight);
         var inputRect = new Rect(0, messageHeight, w, inputHeight);

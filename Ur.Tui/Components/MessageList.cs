@@ -76,7 +76,7 @@ public sealed class MessageList : IComponent
         var lines = new List<RenderedLine>();
         var (prefix, fg) = msg.Role switch
         {
-            MessageRole.User => ("You: ", UserFg),
+            MessageRole.User => ("", UserFg),
             MessageRole.Assistant => ("", AssistantFg),
             MessageRole.Tool => ($"[tool: {msg.ToolName}] ", ToolFg),
             MessageRole.System => ("System: ", msg.IsError ? ErrorFg : SystemFg),

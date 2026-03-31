@@ -11,6 +11,24 @@ public static class WordWrap
             return [""];
 
         var lines = new List<string>();
+
+        // Split on hard newlines first, then word-wrap each paragraph
+        foreach (var paragraph in text.Split('\n'))
+        {
+            WrapParagraph(paragraph, width, lines);
+        }
+
+        return lines;
+    }
+
+    private static void WrapParagraph(string text, int width, List<string> lines)
+    {
+        if (text.Length == 0)
+        {
+            lines.Add("");
+            return;
+        }
+
         var remaining = text.AsSpan();
 
         while (remaining.Length > 0)
@@ -53,7 +71,5 @@ public static class WordWrap
                 remaining = remaining[(breakAt + 1)..];
             }
         }
-
-        return lines;
     }
 }
