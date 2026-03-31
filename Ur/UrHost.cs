@@ -3,6 +3,7 @@ using Microsoft.Extensions.AI;
 using Ur.AgentLoop;
 using Ur.Configuration;
 using Ur.Configuration.Keyring;
+using Ur.Extensions;
 using Ur.Providers;
 using Ur.Sessions;
 
@@ -23,12 +24,14 @@ public sealed class UrHost
 
     public string WorkspacePath => _workspace.RootPath;
     public UrConfiguration Configuration { get; }
+    public IReadOnlyList<Extension> Extensions { get; }
 
     private UrHost(
         Workspace workspace,
         ModelCatalog modelCatalog,
         Settings settings,
         SessionStore sessions,
+        IReadOnlyList<Extension> extensions,
         IKeyring keyring,
         Func<string, IChatClient>? chatClientFactoryOverride = null,
         ToolRegistry? tools = null)
@@ -37,6 +40,7 @@ public sealed class UrHost
         _modelCatalog = modelCatalog;
         _settings = settings;
         _sessions = sessions;
+        Extensions = extensions;
         _keyring = keyring;
         _chatClientFactoryOverride = chatClientFactoryOverride;
         Tools = tools ?? new ToolRegistry();
@@ -66,20 +70,33 @@ public sealed class UrHost
     /// 5. Settings load/validate
     /// 6. Session store
     /// </summary>
-    public static UrHost Start(
+    public static Task<UrHost> StartAsync(
         string workspacePath,
         IKeyring? keyring = null,
-        string? userSettingsPath = null) =>
-        Start(workspacePath, keyring, userSettingsPath, chatClientFactoryOverride: null, tools: null);
+        string? userSettingsPath = null,
+        CancellationToken ct = default) =>
+        StartAsync(
+            workspacePath,
+            keyring,
+            userSettingsPath,
+            chatClientFactoryOverride: null,
+            tools: null,
+            systemExtensionsPath: null,
+            userExtensionsPath: null,
+            ct);
 
-    internal static UrHost Start(
+    internal static async Task<UrHost> StartAsync(
         string workspacePath,
         IKeyring? keyring,
         string? userSettingsPath,
         Func<string, IChatClient>? chatClientFactoryOverride,
-        ToolRegistry? tools)
+        ToolRegistry? tools,
+        string? systemExtensionsPath = null,
+        string? userExtensionsPath = null,
+        CancellationToken ct = default)
     {
         keyring ??= CreatePlatformKeyring();
+        tools ??= new ToolRegistry();
 
         var workspace = new Workspace(workspacePath);
         workspace.EnsureDirectories();
@@ -93,13 +110,25 @@ public sealed class UrHost
 
         // Schema registry
         var schemaRegistry = new SettingsSchemaRegistry();
-        // TODO: Load extensions (metadata/schemas only)
         RegisterCoreSchemas(schemaRegistry);
+        var discoveredExtensions = await ExtensionLoader.DiscoverAllAsync(
+                systemExtensionsPath ?? DefaultSystemExtensionsPath(),
+                userExtensionsPath ?? DefaultUserExtensionsPath(),
+                workspace.ExtensionsDirectory,
+                ct)
+            .ConfigureAwait(false);
+        var extensions = RegisterExtensionSchemas(schemaRegistry, discoveredExtensions);
 
         // Load and validate configuration
         userSettingsPath ??= DefaultUserSettingsPath();
         var loader = new SettingsLoader(schemaRegistry);
         var settings = loader.Load(userSettingsPath, workspace.SettingsPath);
+
+        foreach (var extension in extensions)
+        {
+            await ExtensionLoader.InitializeAsync(extension, tools, ct)
+                .ConfigureAwait(false);
+        }
 
         // Session store
         var sessions = new SessionStore(workspace.SessionsDirectory);
@@ -109,6 +138,7 @@ public sealed class UrHost
             modelCatalog,
             settings,
             sessions,
+            extensions,
             keyring,
             chatClientFactoryOverride,
             tools);
@@ -153,6 +183,49 @@ public sealed class UrHost
 
         registry.Register("ur.model", stringSchema);
     }
+
+    private static List<Extension> RegisterExtensionSchemas(
+        SettingsSchemaRegistry registry,
+        IEnumerable<Extension> discoveredExtensions)
+    {
+        var extensions = new List<Extension>();
+
+        foreach (var extension in discoveredExtensions)
+        {
+            try
+            {
+                var duplicateKey = extension.SettingsSchemas.Keys
+                    .FirstOrDefault(registry.IsKnown);
+                if (duplicateKey is not null)
+                {
+                    throw new InvalidOperationException(
+                        $"Settings key '{duplicateKey}' is already registered.");
+                }
+
+                foreach (var (key, schema) in extension.SettingsSchemas)
+                    registry.Register(key, schema);
+
+                extensions.Add(extension);
+            }
+            catch (InvalidOperationException ex)
+            {
+                Console.Error.WriteLine(
+                    $"Extension '{extension.Name}' skipped: failed to register settings schemas: {ex.Message}");
+            }
+        }
+
+        return extensions;
+    }
+
+    private static string DefaultSystemExtensionsPath() =>
+        Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+            ".ur", "extensions", "system");
+
+    private static string DefaultUserExtensionsPath() =>
+        Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+            ".ur", "extensions", "user");
 
     private static string DefaultUserSettingsPath() =>
         Path.Combine(

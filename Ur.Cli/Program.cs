@@ -5,7 +5,7 @@ DotEnv.Load(options: new DotEnvOptions(
     probeForEnv: true,
     probeLevelsToSearch: 8));
 
-var host = UrHost.Start(Environment.CurrentDirectory);
+var host = await UrHost.StartAsync(Environment.CurrentDirectory);
 
 Console.WriteLine($"ur — {host.WorkspacePath}");
 

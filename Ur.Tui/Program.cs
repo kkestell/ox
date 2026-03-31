@@ -6,7 +6,7 @@ using Ur.Terminal.Rendering;
 using Ur.Terminal.Terminal;
 using Ur.Tui;
 
-var host = UrHost.Start(Environment.CurrentDirectory);
+var host = await UrHost.StartAsync(Environment.CurrentDirectory);
 
 // Ensure model catalog is populated (fetches from OpenRouter if cache is empty)
 if (host.Configuration.AvailableModels.Count == 0)

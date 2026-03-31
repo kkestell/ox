@@ -8,10 +8,10 @@ namespace Ur.Tests;
 public class HostSessionApiTests
 {
     [Fact]
-    public void Start_WithoutApiKeyOrModel_ReportsReadinessBlockers()
+    public async Task StartAsync_WithoutApiKeyOrModel_ReportsReadinessBlockers()
     {
         using var workspace = new TempWorkspace();
-        var host = CreateHost(workspace);
+        var host = await CreateHostAsync(workspace);
 
         var readiness = host.Configuration.Readiness;
 
@@ -25,7 +25,7 @@ public class HostSessionApiTests
     public async Task Configuration_ModelSelection_WritesUserAndWorkspaceScopes()
     {
         using var workspace = new TempWorkspace();
-        var host = CreateHost(workspace);
+        var host = await CreateHostAsync(workspace);
 
         await host.Configuration.SetSelectedModelAsync("user-model");
         Assert.Equal("user-model", host.Configuration.SelectedModelId);
@@ -48,7 +48,7 @@ public class HostSessionApiTests
     public async Task RunTurnAsync_WhenNotReady_ThrowsBeforePersisting()
     {
         using var workspace = new TempWorkspace();
-        var host = CreateHost(workspace);
+        var host = await CreateHostAsync(workspace);
         var session = host.CreateSession();
 
         var ex = await Assert.ThrowsAsync<UrChatNotReadyException>(async () =>
@@ -69,7 +69,7 @@ public class HostSessionApiTests
     {
         using var workspace = new TempWorkspace();
         var keyring = new TestKeyring();
-        var host = CreateHost(workspace, keyring, _ => new FakeChatClient("hello from assistant"));
+        var host = await CreateHostAsync(workspace, keyring, _ => new FakeChatClient("hello from assistant"));
 
         await host.Configuration.SetApiKeyAsync("test-key");
         await host.Configuration.SetSelectedModelAsync("test-model");
@@ -104,11 +104,11 @@ public class HostSessionApiTests
         Assert.Equal("test-model", reopened.ActiveModelId);
     }
 
-    private static UrHost CreateHost(
+    private static Task<UrHost> CreateHostAsync(
         TempWorkspace workspace,
         IKeyring? keyring = null,
         Func<string, IChatClient>? chatClientFactory = null) =>
-        UrHost.Start(
+        UrHost.StartAsync(
             workspace.WorkspacePath,
             keyring ?? new TestKeyring(),
             workspace.UserSettingsPath,
