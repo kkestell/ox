@@ -4,7 +4,7 @@
 
 ## Purpose and Scope
 
-The terminal chat client for Ur. A persistent chat UI with a message list, multi-line input, modal overlays, and a slash command system. Built on the [Ur.Terminal](terminal-framework.md) framework. Consumes the Ur library's public API (`UrHost`, `UrSession`, `UrConfiguration`) and renders `AgentLoopEvent` streams as a live chat experience.
+The terminal chat client for Ur. A persistent chat UI with a message list, multi-line input, modal overlays, and a slash command system. Built on the [Ur.Terminal](terminal-framework.md) framework. Consumes the Ur library's public API (`UrHost`, `UrSession`, `UrConfiguration`, `UrExtensionCatalog`) and renders `AgentLoopEvent` streams as a live chat experience.
 
 ### Non-Goals
 
@@ -102,6 +102,8 @@ All implement `IComponent` from Ur.Terminal.
 
 **ModelPickerModal** — Searchable list in a bordered box. Type to filter (by model name or ID), arrow keys to navigate, Enter to select, Esc to dismiss. Shows model metadata (context length, cost) for the selected item. Must handle 345+ models efficiently — filtering and rendering only the visible window.
 
+**ExtensionManagerModal** — Searchable list of discovered extensions. Shows tier, enabled/disabled/error state, description, and version. Enter toggles the selected extension; resetting to default is available as a secondary action. Enabling a workspace extension requires an explicit confirmation step because it is a trust decision, not a cosmetic preference. In v1, toggles are only allowed while no turn is running.
+
 ### Key Routing
 
 Each frame, the app drains pending key events and routes them:
@@ -119,6 +121,7 @@ Input starting with `/` is parsed as a command:
 | Command | Action |
 |---|---|
 | `/model` | Open `ModelPickerModal` |
+| `/extensions` | Open `ExtensionManagerModal` |
 | `/quit` | Exit the app |
 
 Extensible: the command table is a `Dictionary<string, Action<string>>` (command name → handler with argument string). Adding commands doesn't require structural changes.
@@ -158,16 +161,13 @@ When the user submits a message:
 - **Choice:** Esc exits cleanly.
 - **Rationale:** Hostile to trap a user in a modal. They can come back.
 
+### Management flows stay modal-based in v1
+
+- **Context:** The TUI already has modal affordances for API keys and model selection. Extension management is another structured interactive flow.
+- **Choice:** Add `/extensions` as the entry point to an `ExtensionManagerModal`, rather than introducing a separate screen or a family of slash subcommands first.
+- **Rationale:** This keeps the interaction model consistent and lets users browse, search, and inspect state before toggling anything.
+- **Consequences:** The slash command table stays small. If scripting-oriented extension commands become important later, they can be added on top of the same library API.
+
 ## Open Questions
 
-- **Question:** Should Ctrl+C cancel an in-flight turn, or exit the app?
-  **Context:** Two behaviors for one key, context-dependent.
-  **Current thinking:** Ctrl+C cancels the current turn if one is running. At the idle input prompt, Ctrl+C exits. Matches "interrupt what's happening."
-
-- **Question:** How should terminal resize be handled?
-  **Context:** Terminal dimensions can change mid-session.
-  **Current thinking:** The render loop checks `terminal.Width`/`Height` each frame. If dimensions changed, recompute layout. No explicit resize event needed.
-
-- **Question:** What shadow offset and size looks best for modals?
-  **Context:** The shadow is a visual effect — offset (1,1)? (2,1)? How many cells?
-  **Current thinking:** Start with offset (2, 1) — 2 columns right, 1 row down. Adjust after seeing it rendered.
+None currently.

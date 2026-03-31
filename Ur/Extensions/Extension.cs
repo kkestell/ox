@@ -6,38 +6,35 @@ using Ur.AgentLoop;
 namespace Ur.Extensions;
 
 /// <summary>
-/// A loaded extension. Holds metadata, Lua runtime state, registered tools,
-/// and enable/disable lifecycle. Created by <see cref="ExtensionLoader"/>.
+/// A discovered extension together with its transient runtime state.
 /// </summary>
 public sealed class Extension
 {
     private readonly List<AIFunction> _tools = [];
+    private readonly ExtensionDescriptor _descriptor;
     private LuaState? _luaState;
 
-    internal Extension(
-        string name,
-        string description,
-        string version,
-        ExtensionTier tier,
-        string directory,
-        IReadOnlyDictionary<string, JsonElement> settingsSchemas)
+    internal Extension(ExtensionDescriptor descriptor)
     {
-        Name = name;
-        Description = description;
-        Version = version;
-        Tier = tier;
-        Directory = directory;
-        SettingsSchemas = settingsSchemas;
+        _descriptor = descriptor;
     }
 
-    public string Name { get; }
-    public string Description { get; }
-    public string Version { get; }
-    public ExtensionTier Tier { get; }
-    public string Directory { get; }
-    public bool Enabled { get; private set; }
+    public string Id => _descriptor.Id.ToString();
+    public string Name => _descriptor.Name;
+    public string Description => _descriptor.Description;
+    public string Version => _descriptor.Version;
+    public ExtensionTier Tier => _descriptor.Tier;
+    public string Directory => _descriptor.Directory;
+    public bool DefaultEnabled => _descriptor.DefaultEnabled;
+    public bool DesiredEnabled { get; private set; }
+    public bool HasOverride { get; private set; }
+    public bool IsActive { get; private set; }
+    public bool Enabled => IsActive;
+    public string? LoadError { get; private set; }
     public IReadOnlyList<AIFunction> Tools => _tools;
-    public IReadOnlyDictionary<string, JsonElement> SettingsSchemas { get; }
+    public IReadOnlyDictionary<string, JsonElement> SettingsSchemas => _descriptor.SettingsSchemas;
+
+    internal ExtensionId ExtensionId => _descriptor.Id;
 
     internal LuaState? LuaState
     {
@@ -45,28 +42,43 @@ public sealed class Extension
         set => _luaState = value;
     }
 
-    /// <summary>
-    /// Registers all tools into the registry and marks the extension as enabled.
-    /// </summary>
-    public void Enable(ToolRegistry registry)
+    internal void SetDesiredState(bool desiredEnabled, bool hasOverride)
+    {
+        DesiredEnabled = desiredEnabled;
+        HasOverride = hasOverride;
+    }
+
+    internal void MarkActivated(ToolRegistry registry)
     {
         foreach (var tool in _tools)
             registry.Register(tool);
-        Enabled = true;
+
+        IsActive = true;
+        LoadError = null;
     }
 
-    /// <summary>
-    /// Removes all tools from the registry and marks the extension as disabled.
-    /// </summary>
-    public void Disable(ToolRegistry registry)
+    internal void RegisterTool(AIFunction tool) => _tools.Add(tool);
+
+    internal void MarkActivationFailed(ToolRegistry registry, string message)
+    {
+        ResetRuntimeState(registry);
+        LoadError = message;
+    }
+
+    internal void MarkDeactivated(ToolRegistry registry)
+    {
+        ResetRuntimeState(registry);
+        LoadError = null;
+    }
+
+    internal void ResetRuntimeState(ToolRegistry registry)
     {
         foreach (var tool in _tools)
             registry.Remove(tool.Name);
-        Enabled = false;
-    }
 
-    /// <summary>
-    /// Called during main.lua execution to record a tool registered by the extension.
-    /// </summary>
-    internal void RegisterTool(AIFunction tool) => _tools.Add(tool);
+        _tools.Clear();
+        _luaState?.Dispose();
+        _luaState = null;
+        IsActive = false;
+    }
 }

@@ -10,8 +10,16 @@ public interface IChatBackend
 {
     UrChatReadiness Readiness { get; }
     IReadOnlyList<ModelInfo> AvailableModels { get; }
+    IReadOnlyList<UrExtensionInfo> ListExtensions();
     Task SetApiKeyAsync(string apiKey);
     Task SetSelectedModelAsync(string modelId);
+    Task<UrExtensionInfo> SetExtensionEnabledAsync(
+        string extensionId,
+        bool enabled,
+        CancellationToken ct = default);
+    Task<UrExtensionInfo> ResetExtensionAsync(
+        string extensionId,
+        CancellationToken ct = default);
     IChatSession CreateSession();
 }
 

@@ -38,6 +38,7 @@ public sealed class ChatApp
         {
             ["quit"] = _ => _exitRequested = true,
             ["model"] = _ => OpenModelPicker(),
+            ["extensions"] = _ => OpenExtensionManager(),
         };
 
         // Check readiness on startup
@@ -97,6 +98,9 @@ public sealed class ChatApp
         // Modal routing
         if (_state.ActiveModal is not null)
         {
+            if (_state.ActiveModal is ExtensionManagerModal extensionManager)
+                extensionManager.IsMutationBlocked = _state.IsTurnRunning;
+
             var consumed = _state.ActiveModal.HandleKey(key);
             if (!consumed)
                 return await HandleModalResultAsync();
@@ -171,6 +175,57 @@ public sealed class ChatApp
                     return true;
                 }
                 break;
+
+            case ExtensionManagerModal extensionManager:
+                if (extensionManager.RequestedAction is { } action)
+                {
+                    try
+                    {
+                        UrExtensionInfo updated = action.Kind switch
+                        {
+                            ExtensionManagerActionKind.SetEnabled =>
+                                await _backend.SetExtensionEnabledAsync(action.ExtensionId, action.Enabled),
+                            ExtensionManagerActionKind.Reset =>
+                                await _backend.ResetExtensionAsync(action.ExtensionId),
+                            _ => throw new InvalidOperationException($"Unknown extension action '{action.Kind}'."),
+                        };
+
+                        extensionManager.ClearRequestedAction();
+                        extensionManager.ReplaceExtensions(_backend.ListExtensions());
+
+                        if (updated.LoadError is not null)
+                        {
+                            var message = $"Failed to activate {updated.Name}: {updated.LoadError}";
+                            extensionManager.SetFeedback(message, isError: true);
+                            AddSystemMessage(message, isError: true);
+                            return true;
+                        }
+
+                        var successMessage = action.Kind switch
+                        {
+                            ExtensionManagerActionKind.Reset => $"Reset {updated.Name} to its default state.",
+                            _ when updated.DesiredEnabled => $"Enabled {updated.Name}.",
+                            _ => $"Disabled {updated.Name}.",
+                        };
+                        extensionManager.SetFeedback(successMessage, isError: false);
+                        AddSystemMessage(successMessage);
+                        return true;
+                    }
+                    catch (Exception ex)
+                    {
+                        extensionManager.ClearRequestedAction();
+                        extensionManager.SetFeedback(ex.Message, isError: true);
+                        AddSystemMessage(ex.Message, isError: true);
+                        return true;
+                    }
+                }
+
+                if (extensionManager.Dismissed)
+                {
+                    _state.ActiveModal = null;
+                    return true;
+                }
+                break;
         }
 
         _state.ActiveModal = null;
@@ -203,6 +258,14 @@ public sealed class ChatApp
     private void OpenModelPicker()
     {
         _state.ActiveModal = new ModelPickerModal(_backend.AvailableModels);
+    }
+
+    private void OpenExtensionManager()
+    {
+        _state.ActiveModal = new ExtensionManagerModal(_backend.ListExtensions())
+        {
+            IsMutationBlocked = _state.IsTurnRunning,
+        };
     }
 
     private bool DispatchSlashCommand(string text)
@@ -331,9 +394,12 @@ public sealed class ChatApp
         _turnCts?.Cancel();
     }
 
-    private void AddSystemMessage(string text)
+    private void AddSystemMessage(string text, bool isError = false)
     {
-        var msg = new DisplayMessage(MessageRole.System);
+        var msg = new DisplayMessage(MessageRole.System)
+        {
+            IsError = isError,
+        };
         msg.Content.Append(text);
         _state.Messages.Add(msg);
     }
@@ -363,6 +429,7 @@ public sealed class ChatApp
             {
                 ApiKeyModal => (ApiKeyModal.ModalWidth, ApiKeyModal.ModalHeight),
                 ModelPickerModal => (ModelPickerModal.ModalWidth, ModelPickerModal.ModalHeight),
+                ExtensionManagerModal => (ExtensionManagerModal.ModalWidth, ExtensionManagerModal.ModalHeight),
                 _ => (40, 10),
             };
             var mx = (w - mw) / 2;

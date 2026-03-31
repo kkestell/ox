@@ -12,11 +12,25 @@ public sealed class UrChatBackend(UrHost host) : IChatBackend
 
     public IReadOnlyList<ModelInfo> AvailableModels => host.Configuration.AvailableModels;
 
+    public IReadOnlyList<UrExtensionInfo> ListExtensions() =>
+        host.Extensions.List();
+
     public Task SetApiKeyAsync(string apiKey) =>
         host.Configuration.SetApiKeyAsync(apiKey);
 
     public Task SetSelectedModelAsync(string modelId) =>
         host.Configuration.SetSelectedModelAsync(modelId);
+
+    public Task<UrExtensionInfo> SetExtensionEnabledAsync(
+        string extensionId,
+        bool enabled,
+        CancellationToken ct = default) =>
+        host.Extensions.SetEnabledAsync(extensionId, enabled, ct);
+
+    public Task<UrExtensionInfo> ResetExtensionAsync(
+        string extensionId,
+        CancellationToken ct = default) =>
+        host.Extensions.ResetAsync(extensionId, ct);
 
     public IChatSession CreateSession() =>
         new UrChatSessionAdapter(host.CreateSession());

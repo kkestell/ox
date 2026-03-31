@@ -37,10 +37,10 @@ Discovers, loads, and manages Lua extensions. Provides the Lua runtime (via Lua-
 
 - **Purpose:** Discover and load extensions from the three-tier directory structure.
 - **Inputs:** System dir (`~/.ur/extensions/system`), user dir (`~/.ur/extensions/user`), workspace dir (`$WORKSPACE/.ur/extensions`).
-- **Outputs:** Set of loaded extensions, each with metadata and registered capabilities (tools, middleware).
+- **Outputs:** Set of discovered extensions with manifest metadata, plus the subset of extensions whose effective state is enabled and therefore active.
 - **Errors:** Malformed manifest (warning, skip extension). Lua parse/runtime error on load (warning, skip extension).
 - **Preconditions:** Directories may or may not exist.
-- **Postconditions:** System and user extensions are enabled by default. Workspace extensions are disabled by default. Loading order: system, then user, then workspace. Within a tier, order is unspecified.
+- **Postconditions:** System and user extensions are enabled by default. Workspace extensions are disabled by default. Effective state is resolved by [Extension Management](extension-management.md): tier defaults plus persisted overrides. Only effective-enabled extensions are initialized. Loading order: system, then user, then workspace. Within a tier, order is unspecified.
 
 ### Enable / Disable Extension
 
@@ -48,7 +48,7 @@ Discovers, loads, and manages Lua extensions. Provides the Lua runtime (via Lua-
 - **Inputs:** Extension identifier, desired state.
 - **Outputs:** Confirmation of state change.
 - **Errors:** Unknown extension ID.
-- **Postconditions:** Disabled extensions' tools are removed from the tool registry; their middleware is bypassed.
+- **Postconditions:** Disabled extensions have no active runtime state; their tools are removed from the tool registry and their middleware is absent from the pipeline. Enabling an inactive extension initializes its runtime on demand.
 
 ## Data Structures
 
@@ -62,18 +62,18 @@ Discovers, loads, and manages Lua extensions. Provides the Lua runtime (via Lua-
 ### Extension Manifest
 
 - **Purpose:** Declares metadata and capabilities of an extension.
-- **Shape:** TBD — likely a table returned from a `manifest.lua` or a JSON file. Contains: name, version, description, declared settings (with JSON schemas), required permissions.
+- **Shape:** A Lua table returned from `manifest.lua`. Contains: name, version, description, and declared settings (with JSON schemas). Permission declarations can be added later without changing the discovery model.
 - **Invariants:** Name is required. Version is required (semver).
-- **Why this shape:** Manifest is read before the extension's main code executes, so the system knows what to expect (settings, permissions) before granting any capabilities.
+- **Why this shape:** Manifest discovery stays homogeneous with the rest of the extension toolchain and gives the system metadata before `main.lua` executes.
 
 ## Internal Design
 
-Each extension is a directory containing a manifest and a main Lua script. On load:
+Each extension is a directory containing a manifest and a main Lua script. Startup is split into discovery and activation:
 
-1. Read the manifest to get metadata, settings schema, and declared permissions.
-2. Create a sandboxed `LuaState` with a `LuaPlatform` configured per the extension's tier and permissions.
-3. Execute the main Lua script. The script calls Ur APIs to register tools and middleware.
-4. If any step fails, log a warning and skip the extension. Do not abort startup.
+1. Read `manifest.lua` to get metadata and settings schema.
+2. Resolve effective enabled state from tier defaults plus persisted overrides in [Extension Management](extension-management.md).
+3. For each effective-enabled extension, create a sandboxed `LuaState`, execute `main.lua`, and let the script register tools and middleware.
+4. If activation fails, record the failure, leave the extension inactive, and continue startup. Do not abort host creation.
 
 Extensions share no Lua state with each other. Each gets its own `LuaState`.
 
@@ -112,19 +112,21 @@ See [ADR-0004](decisions/adr-0004-three-tier-extension-loading.md) for full anal
 - **Rationale:** Workspace extensions live in the repo and could be contributed by anyone. A `git pull` shouldn't silently activate new agent capabilities.
 - **Consequences:** Users must explicitly enable workspace extensions. This adds friction but prevents supply-chain-style attacks via repo contributions.
 
-## Open Questions
+### Disabled extensions are discovered but not initialized
 
-- **Question:** What does the extension manifest look like concretely? `manifest.lua` (a Lua table) or `extension.json`?
-  **Context:** Lua is more natural for a Lua extension system, but JSON is language-agnostic and easier to parse without running code.
-  **Current thinking:** Leaning toward `manifest.lua` that returns a table. Keeps the toolchain homogeneous. The manifest is evaluated in a minimal sandbox (no I/O, no network).
+See [ADR-0012](decisions/adr-0012-extension-enablement-state-and-lazy-activation.md) for full analysis.
+
+- **Context:** Discovery metadata is needed for listing and management, but "disabled" should mean the extension has not executed code in the current process.
+- **Options considered:** Eager initialization for all discovered extensions; lazy initialization only for effective-enabled ones.
+- **Choice:** Only effective-enabled extensions are initialized.
+- **Rationale:** This keeps the security meaning of workspace-default-disabled intact and leaves room for richer extension APIs later.
+- **Consequences:** Enabling an extension is an activation path, not just a registry flip. Disabled extensions remain visible in the management UI because their manifest metadata is still discovered.
+
+## Open Questions
 
 - **Question:** How do extensions declare dependencies on other extensions?
   **Context:** A "git-tools" extension might want to use a utility function from a "process" extension.
   **Current thinking:** Not needed in v1. Keep extensions independent. If deps are needed later, the manifest can declare them and the loader can topologically sort.
-
-- **Question:** What happens when two extensions in different tiers have the same name?
-  **Context:** E.g., a system extension "git" and a workspace extension "git".
-  **Current thinking:** Higher-trust tier wins (system > user > workspace). The lower-tier extension is skipped with a warning.
 
 - **Question:** Can extensions be installed/managed from a registry (like npm or VS Code marketplace)?
   **Context:** Currently extensions are just directories. A package manager is a big scope addition.

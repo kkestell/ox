@@ -11,6 +11,7 @@ internal sealed class Workspace
     public string ExtensionsDirectory => Path.Combine(UrDirectory, "extensions");
     public string SettingsPath => Path.Combine(UrDirectory, "settings.json");
     public string PermissionsPath => Path.Combine(UrDirectory, "permissions");
+    public string StateHash => Extensions.ExtensionOverrideStore.ComputeWorkspaceHash(RootPath);
 
     public Workspace(string rootPath)
     {

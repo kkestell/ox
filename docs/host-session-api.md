@@ -55,6 +55,7 @@ public sealed class UrHost
 
     public string WorkspacePath { get; }
     public UrConfiguration Configuration { get; }
+    public UrExtensionCatalog Extensions { get; }
 
     public IReadOnlyList<UrSessionInfo> ListSessions();
     public UrSession CreateSession();
@@ -108,6 +109,34 @@ public sealed class UrConfiguration
         CancellationToken ct = default);
 }
 
+public sealed class UrExtensionCatalog
+{
+    public IReadOnlyList<UrExtensionInfo> List();
+
+    public Task<UrExtensionInfo> SetEnabledAsync(
+        string extensionId,
+        bool enabled,
+        CancellationToken ct = default);
+
+    public Task<UrExtensionInfo> ResetAsync(
+        string extensionId,
+        CancellationToken ct = default);
+}
+
+public sealed class UrExtensionInfo
+{
+    public string Id { get; }
+    public string Name { get; }
+    public ExtensionTier Tier { get; }
+    public string Description { get; }
+    public string Version { get; }
+    public bool DefaultEnabled { get; }
+    public bool DesiredEnabled { get; }
+    public bool IsActive { get; }
+    public bool HasOverride { get; }
+    public string? LoadError { get; }
+}
+
 public sealed class UrTurnCallbacks
 {
     public Func<PermissionRequest, CancellationToken, ValueTask<PermissionResponse>>?
@@ -144,16 +173,18 @@ public sealed class UrChatNotReadyException : Exception
 - `OpenSessionAsync(...)` is asynchronous because it may need to load persisted message history from disk.
 - `WorkspacePath` is exposed, not the internal `Workspace` object. The public API should not leak internal path-construction helpers.
 - `AvailableModels` is part of configuration because model browsing is primarily a setup/configuration concern in v1.
+- Extension management is a separate host-scoped service because enabling/disabling mutates runtime capabilities and uses dedicated management state rather than ordinary settings.
 
 ### `UrHost`
 
 - **Purpose:** Workspace-scoped entry point. Created once per launched workspace.
-- **Responsibilities:** Enumerate sessions, create/open sessions, expose configuration and readiness, expose model catalog for selection UIs.
+- **Responsibilities:** Enumerate sessions, create/open sessions, expose configuration and readiness, expose model catalog for selection UIs, and expose extension management for the current workspace.
 - **Key operations:**
   - `ListSessions() -> IReadOnlyList<UrSessionInfo>`
   - `CreateSession() -> UrSession`
   - `OpenSessionAsync(sessionId, ...) -> UrSession?`
   - `Configuration` property for setup and readiness
+  - `Extensions` property for listing and toggling extensions
 
 ### `UrSession`
 
@@ -176,6 +207,15 @@ public sealed class UrChatNotReadyException : Exception
   - `SetSelectedModelAsync(modelId, scope = ConfigurationScope.User)`
   - `ClearSelectedModelAsync(scope = ConfigurationScope.User)`
   - Persist model selection to user scope by default, with workspace scope as an explicit opt-in
+
+### `UrExtensionCatalog`
+
+- **Purpose:** Public workspace-scoped extension management surface used by UIs.
+- **Responsibilities:** List discovered extensions, report desired vs active state, persist overrides, and activate/deactivate extensions through the library rather than through frontend-owned logic.
+- **Key operations:**
+  - `List() -> IReadOnlyList<UrExtensionInfo>`
+  - `SetEnabledAsync(extensionId, enabled, ct)`
+  - `ResetAsync(extensionId, ct)`
 
 ### `UrTurnCallbacks`
 
@@ -326,6 +366,13 @@ If the caller attempts a turn while setup blockers remain, the operation should 
 - **Choice:** `UrConfiguration` exposes explicit read/write methods and readiness state. No host- or configuration-level callbacks are defined.
 - **Rationale:** This keeps startup deterministic and easy to reason about. The library reports state; the UI decides when to prompt and which flow to show.
 - **Consequences:** The callback surface stays minimal and focused on true mid-turn decision points.
+
+### Extension management is host-scoped, not configuration-scoped
+
+- **Context:** Listing and toggling extensions affects the active tool/middleware surface and uses dedicated management state that is intentionally separate from settings.
+- **Choice:** Expose extension management as `UrHost.Extensions`, not as methods on `UrConfiguration`.
+- **Rationale:** This keeps configuration focused on settings and secrets while giving frontends a single workspace root for mutable runtime capabilities.
+- **Consequences:** Frontends use one host-scoped root object for sessions, configuration, and extensions, but the lifecycle semantics stay separate and clearer.
 
 ### Turn callbacks are permission-only in v1
 

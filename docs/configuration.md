@@ -10,6 +10,7 @@ Manages a unified settings system (core + extension + model settings) with JSON 
 
 - Does not define what settings exist — core, extensions, and the provider registry each declare their own schemas. This component validates and stores values against those schemas.
 - Does not manage the provider/model registry itself — that is [Provider Registry](provider-registry.md). But it does store and validate model settings overrides.
+- Does not persist extension enable/disable state. That is [Extension Management](extension-management.md), because extension enablement is a trust/lifecycle concern rather than ordinary configuration.
 
 ## Context
 
@@ -120,12 +121,12 @@ See [ADR-0006](decisions/adr-0006-unified-settings-file.md) for full analysis.
 - **Rationale:** Unknown keys are likely typos or stale settings from uninstalled extensions — annoying but not dangerous. Type mismatches indicate a real problem (wrong value type will cause runtime errors downstream).
 - **Consequences:** Users see warnings for leftover settings after uninstalling an extension. They must fix type errors before Ur will start.
 
-### Settings are mutable at runtime, persisted through the API (planned — not yet implemented)
+### Settings are mutable at runtime, persisted through the API
 
 - **Context:** Should settings reload when the file changes, or only at startup?
 - **Options considered:** File watch (VS Code style), load once at startup (simplest), mutable via API with write-through to disk.
 - **Choice:** Settings are loaded at startup. Changes at runtime go through the settings API, which updates both in-memory state and the settings file on disk. No file watcher.
-- **Current state:** `SettingsLoader.Load()` implements the startup path (read, merge, validate). The runtime mutation API (set + write-through) is not yet implemented — `Settings` is currently read-only after load.
+- **Current state:** Implemented. `Settings.SetAsync(...)` and `Settings.ClearAsync(...)` rebuild the merged view, re-validate, and write the affected scope back to disk.
 - **Rationale:** All settings mutations originate from within the application (e.g. UI, extensions). The API is the single writer — it updates memory and persists to disk in one operation. File watching adds complexity for a scenario (external edits during a session) that doesn't need to be supported. External edits take effect on the next session.
 - **Consequences:** Components read from the in-memory settings object, which is always current. The settings file on disk stays in sync for the next session or for external tooling to inspect.
 

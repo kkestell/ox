@@ -24,14 +24,14 @@ public sealed class UrHost
 
     public string WorkspacePath => _workspace.RootPath;
     public UrConfiguration Configuration { get; }
-    public IReadOnlyList<Extension> Extensions { get; }
+    public UrExtensionCatalog Extensions { get; }
 
     private UrHost(
         Workspace workspace,
         ModelCatalog modelCatalog,
         Settings settings,
         SessionStore sessions,
-        IReadOnlyList<Extension> extensions,
+        UrExtensionCatalog extensions,
         IKeyring keyring,
         Func<string, IChatClient>? chatClientFactoryOverride = null,
         ToolRegistry? tools = null)
@@ -83,6 +83,7 @@ public sealed class UrHost
             tools: null,
             systemExtensionsPath: null,
             userExtensionsPath: null,
+            userDataDirectory: null,
             ct);
 
     internal static async Task<UrHost> StartAsync(
@@ -93,18 +94,18 @@ public sealed class UrHost
         ToolRegistry? tools,
         string? systemExtensionsPath = null,
         string? userExtensionsPath = null,
+        string? userDataDirectory = null,
         CancellationToken ct = default)
     {
         keyring ??= CreatePlatformKeyring();
         tools ??= new ToolRegistry();
+        userDataDirectory ??= DefaultUserDataDirectory();
 
         var workspace = new Workspace(workspacePath);
         workspace.EnsureDirectories();
 
         // Model catalog — load from disk cache (no network hit at startup).
-        var cacheDir = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-            ".ur", "cache");
+        var cacheDir = Path.Combine(userDataDirectory, "cache");
         var modelCatalog = new ModelCatalog(cacheDir);
         modelCatalog.LoadCache();
 
@@ -112,23 +113,25 @@ public sealed class UrHost
         var schemaRegistry = new SettingsSchemaRegistry();
         RegisterCoreSchemas(schemaRegistry);
         var discoveredExtensions = await ExtensionLoader.DiscoverAllAsync(
-                systemExtensionsPath ?? DefaultSystemExtensionsPath(),
-                userExtensionsPath ?? DefaultUserExtensionsPath(),
+                systemExtensionsPath ?? DefaultSystemExtensionsPath(userDataDirectory),
+                userExtensionsPath ?? DefaultUserExtensionsPath(userDataDirectory),
                 workspace.ExtensionsDirectory,
                 ct)
             .ConfigureAwait(false);
-        var extensions = RegisterExtensionSchemas(schemaRegistry, discoveredExtensions);
+        var extensionEntries = RegisterExtensionSchemas(schemaRegistry, discoveredExtensions);
 
         // Load and validate configuration
-        userSettingsPath ??= DefaultUserSettingsPath();
+        userSettingsPath ??= DefaultUserSettingsPath(userDataDirectory);
         var loader = new SettingsLoader(schemaRegistry);
         var settings = loader.Load(userSettingsPath, workspace.SettingsPath);
 
-        foreach (var extension in extensions)
-        {
-            await ExtensionLoader.InitializeAsync(extension, tools, ct)
-                .ConfigureAwait(false);
-        }
+        var overrideStore = new ExtensionOverrideStore(userDataDirectory, workspace);
+        var extensions = await UrExtensionCatalog.CreateAsync(
+                extensionEntries,
+                overrideStore,
+                tools,
+                ct)
+            .ConfigureAwait(false);
 
         // Session store
         var sessions = new SessionStore(workspace.SessionsDirectory);
@@ -217,18 +220,17 @@ public sealed class UrHost
         return extensions;
     }
 
-    private static string DefaultSystemExtensionsPath() =>
+    private static string DefaultUserDataDirectory() =>
         Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-            ".ur", "extensions", "system");
+            ".ur");
 
-    private static string DefaultUserExtensionsPath() =>
-        Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-            ".ur", "extensions", "user");
+    private static string DefaultSystemExtensionsPath(string userDataDirectory) =>
+        Path.Combine(userDataDirectory, "extensions", "system");
 
-    private static string DefaultUserSettingsPath() =>
-        Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-            ".ur", "settings.json");
+    private static string DefaultUserExtensionsPath(string userDataDirectory) =>
+        Path.Combine(userDataDirectory, "extensions", "user");
+
+    private static string DefaultUserSettingsPath(string userDataDirectory) =>
+        Path.Combine(userDataDirectory, "settings.json");
 }

@@ -1,6 +1,5 @@
 using Microsoft.Extensions.AI;
 using Ur.AgentLoop;
-using Ur.Configuration.Keyring;
 using Ur.Extensions;
 
 namespace Ur.Tests;
@@ -8,7 +7,19 @@ namespace Ur.Tests;
 public sealed class ExtensionSystemTests
 {
     [Fact]
-    public async Task DiscoverAllAsync_HigherTierWinsAndSkipsDirectoriesWithoutManifest()
+    public void ExtensionId_SerializesAndParsesRoundTrip()
+    {
+        var extensionId = new ExtensionId(ExtensionTier.Workspace, "sample.echo");
+
+        var serialized = extensionId.ToString();
+        var reparsed = ExtensionId.Parse(serialized);
+
+        Assert.Equal("workspace:sample.echo", serialized);
+        Assert.Equal(extensionId, reparsed);
+    }
+
+    [Fact]
+    public async Task DiscoverAllAsync_HigherTierWinsAndStableOrderIsPreserved()
     {
         using var env = new TempExtensionEnvironment();
         await env.WriteManifestOnlyExtensionAsync(
@@ -22,7 +33,43 @@ public sealed class ExtensionSystemTests
             """);
         await env.WriteManifestOnlyExtensionAsync(
             env.UserExtensionsPath,
-            "user-shared",
+            "user-zulu",
+            """
+            return {
+              name = "sample.zulu",
+              version = "1.0.0"
+            }
+            """);
+        await env.WriteManifestOnlyExtensionAsync(
+            env.UserExtensionsPath,
+            "user-alpha",
+            """
+            return {
+              name = "sample.alpha",
+              version = "1.0.0"
+            }
+            """);
+        await env.WriteManifestOnlyExtensionAsync(
+            env.WorkspaceExtensionsPath,
+            "workspace-zulu",
+            """
+            return {
+              name = "sample.workspace.zulu",
+              version = "1.0.0"
+            }
+            """);
+        await env.WriteManifestOnlyExtensionAsync(
+            env.WorkspaceExtensionsPath,
+            "workspace-alpha",
+            """
+            return {
+              name = "sample.workspace.alpha",
+              version = "1.0.0"
+            }
+            """);
+        await env.WriteManifestOnlyExtensionAsync(
+            env.UserExtensionsPath,
+            "user-shadowed",
             """
             return {
               name = "sample.shared",
@@ -30,15 +77,6 @@ public sealed class ExtensionSystemTests
             }
             """);
         Directory.CreateDirectory(Path.Combine(env.WorkspaceExtensionsPath, "missing-manifest"));
-        await env.WriteManifestOnlyExtensionAsync(
-            env.WorkspaceExtensionsPath,
-            "workspace-only",
-            """
-            return {
-              name = "sample.workspace",
-              version = "1.0.0"
-            }
-            """);
 
         var extensions = await ExtensionLoader.DiscoverAllAsync(
             env.SystemExtensionsPath,
@@ -49,12 +87,27 @@ public sealed class ExtensionSystemTests
             extensions,
             extension =>
             {
-                Assert.Equal("sample.shared", extension.Name);
+                Assert.Equal("system:sample.shared", extension.Id);
                 Assert.Equal(ExtensionTier.System, extension.Tier);
             },
             extension =>
             {
-                Assert.Equal("sample.workspace", extension.Name);
+                Assert.Equal("user:sample.alpha", extension.Id);
+                Assert.Equal(ExtensionTier.User, extension.Tier);
+            },
+            extension =>
+            {
+                Assert.Equal("user:sample.zulu", extension.Id);
+                Assert.Equal(ExtensionTier.User, extension.Tier);
+            },
+            extension =>
+            {
+                Assert.Equal("workspace:sample.workspace.alpha", extension.Id);
+                Assert.Equal(ExtensionTier.Workspace, extension.Tier);
+            },
+            extension =>
+            {
+                Assert.Equal("workspace:sample.workspace.zulu", extension.Id);
                 Assert.Equal(ExtensionTier.Workspace, extension.Tier);
             });
     }
@@ -115,7 +168,7 @@ public sealed class ExtensionSystemTests
     }
 
     [Fact]
-    public async Task InitializeAsync_TrustedExtensionRegistersInvocableTool()
+    public async Task ActivateAsync_TrustedExtensionRegistersInvocableTool()
     {
         using var env = new TempExtensionEnvironment();
         await env.WriteSampleExtensionAsync(
@@ -130,9 +183,11 @@ public sealed class ExtensionSystemTests
             env.UserExtensionsPath,
             null));
         var registry = new ToolRegistry();
+        extension.SetDesiredState(desiredEnabled: true, hasOverride: false);
 
-        await ExtensionLoader.InitializeAsync(extension, registry);
+        await ExtensionLoader.ActivateAsync(extension, registry);
 
+        Assert.True(extension.IsActive);
         Assert.True(extension.Enabled);
         var tool = Assert.IsAssignableFrom<AIFunction>(registry.Get("sample.echo"));
 
@@ -143,161 +198,56 @@ public sealed class ExtensionSystemTests
     }
 
     [Fact]
-    public async Task InitializeAsync_WorkspaceExtensionRemainsDisabled()
-    {
-        using var env = new TempExtensionEnvironment();
-        await env.WriteSampleExtensionAsync(
-            env.WorkspaceExtensionsPath,
-            "sample-echo",
-            extensionName: "sample.workspace",
-            toolName: "sample.workspace.echo",
-            settingKey: "sample.workspace.mode");
-
-        var extension = Assert.Single(await ExtensionLoader.DiscoverAllAsync(
-            null,
-            null,
-            env.WorkspaceExtensionsPath));
-        var registry = new ToolRegistry();
-
-        await ExtensionLoader.InitializeAsync(extension, registry);
-
-        Assert.False(extension.Enabled);
-        Assert.Single(extension.Tools);
-        Assert.Null(registry.Get("sample.workspace.echo"));
-    }
-
-    [Fact]
-    public async Task StartAsync_LoadsExtensionsAndKeepsWorkspaceExtensionsDisabledByDefault()
+    public async Task Deactivate_RemovesRegisteredToolsAndClearsRuntimeState()
     {
         using var env = new TempExtensionEnvironment();
         await env.WriteSampleExtensionAsync(
             env.UserExtensionsPath,
-            "user-sample",
-            extensionName: "sample.user",
-            toolName: "sample.user.echo",
+            "sample-echo",
+            extensionName: "sample.echo",
+            toolName: "sample.echo",
             settingKey: "sample.mode");
-        await env.WriteSampleExtensionAsync(
+
+        var extension = Assert.Single(await ExtensionLoader.DiscoverAllAsync(
+            null,
+            env.UserExtensionsPath,
+            null));
+        var registry = new ToolRegistry();
+        extension.SetDesiredState(desiredEnabled: true, hasOverride: false);
+        await ExtensionLoader.ActivateAsync(extension, registry);
+
+        ExtensionLoader.Deactivate(extension, registry);
+
+        Assert.False(extension.IsActive);
+        Assert.Empty(extension.Tools);
+        Assert.Null(extension.LuaState);
+        Assert.Null(registry.Get("sample.echo"));
+    }
+
+    [Fact]
+    public async Task StartAsync_DisabledWorkspaceExtensionDoesNotExecuteMainLua()
+    {
+        using var env = new TempExtensionEnvironment();
+        await env.WriteExtensionAsync(
             env.WorkspaceExtensionsPath,
-            "workspace-sample",
-            extensionName: "sample.workspace",
-            toolName: "sample.workspace.echo",
-            settingKey: "sample.workspace.mode");
-        await File.WriteAllTextAsync(
-            env.UserSettingsPath,
+            "workspace-broken",
             """
-            {
-              "sample.mode": "fast"
+            return {
+              name = "sample.workspace",
+              version = "1.0.0"
             }
+            """,
+            """
+            this is not valid lua
             """);
 
-        var host = await UrHost.StartAsync(
-            env.WorkspacePath,
-            new TestKeyring(),
-            env.UserSettingsPath,
-            chatClientFactoryOverride: null,
-            tools: null,
-            systemExtensionsPath: env.SystemExtensionsPath,
-            userExtensionsPath: env.UserExtensionsPath);
+        var host = await env.StartHostAsync();
+        var extension = Assert.Single(host.Extensions.List());
 
-        Assert.Collection(
-            host.Extensions.OrderBy(extension => extension.Name),
-            extension =>
-            {
-                Assert.Equal("sample.user", extension.Name);
-                Assert.True(extension.Enabled);
-            },
-            extension =>
-            {
-                Assert.Equal("sample.workspace", extension.Name);
-                Assert.False(extension.Enabled);
-            });
-
-        var trustedTool = Assert.IsAssignableFrom<AIFunction>(host.Tools.Get("sample.user.echo"));
-        var trustedResult = await trustedTool.InvokeAsync(
-            new AIFunctionArguments(new Dictionary<string, object?> { ["text"] = "hi" }));
-
-        Assert.Equal("hi", trustedResult);
-        Assert.Null(host.Tools.Get("sample.workspace.echo"));
-    }
-
-    private sealed class TempExtensionEnvironment : IDisposable
-    {
-        private readonly string _rootPath = Path.Combine(
-            Path.GetTempPath(),
-            "ur-extension-tests",
-            Guid.NewGuid().ToString("N"));
-
-        public string SystemExtensionsPath => Path.Combine(_rootPath, "system");
-        public string UserExtensionsPath => Path.Combine(_rootPath, "user");
-        public string WorkspacePath => Path.Combine(_rootPath, "workspace");
-        public string WorkspaceExtensionsPath => Path.Combine(WorkspacePath, ".ur", "extensions");
-        public string UserSettingsPath => Path.Combine(_rootPath, "settings", "user-settings.json");
-
-        public TempExtensionEnvironment()
-        {
-            Directory.CreateDirectory(SystemExtensionsPath);
-            Directory.CreateDirectory(UserExtensionsPath);
-            Directory.CreateDirectory(WorkspacePath);
-            Directory.CreateDirectory(Path.GetDirectoryName(UserSettingsPath)!);
-        }
-
-        public async Task WriteManifestOnlyExtensionAsync(
-            string parentDirectory,
-            string directoryName,
-            string manifestContents)
-        {
-            var extensionDirectory = Path.Combine(parentDirectory, directoryName);
-            Directory.CreateDirectory(extensionDirectory);
-            await File.WriteAllTextAsync(
-                Path.Combine(extensionDirectory, "manifest.lua"),
-                manifestContents);
-        }
-
-        public async Task WriteSampleExtensionAsync(
-            string parentDirectory,
-            string directoryName,
-            string extensionName,
-            string toolName,
-            string settingKey)
-        {
-            var extensionDirectory = Path.Combine(parentDirectory, directoryName);
-            Directory.CreateDirectory(extensionDirectory);
-
-            var manifest = (await File.ReadAllTextAsync(SampleExtensionPath("manifest.lua")))
-                .Replace("__EXTENSION_NAME__", extensionName, StringComparison.Ordinal)
-                .Replace("__SETTING_KEY__", settingKey, StringComparison.Ordinal);
-            var main = (await File.ReadAllTextAsync(SampleExtensionPath("main.lua")))
-                .Replace("__TOOL_NAME__", toolName, StringComparison.Ordinal);
-
-            await File.WriteAllTextAsync(Path.Combine(extensionDirectory, "manifest.lua"), manifest);
-            await File.WriteAllTextAsync(Path.Combine(extensionDirectory, "main.lua"), main);
-        }
-
-        public void Dispose()
-        {
-            if (Directory.Exists(_rootPath))
-                Directory.Delete(_rootPath, recursive: true);
-        }
-
-        private static string SampleExtensionPath(string fileName) =>
-            Path.Combine(
-                AppContext.BaseDirectory,
-                "TestData",
-                "Extensions",
-                "sample-echo",
-                fileName);
-    }
-
-    private sealed class TestKeyring : IKeyring
-    {
-        public string? GetSecret(string service, string account) => null;
-
-        public void SetSecret(string service, string account, string secret)
-        {
-        }
-
-        public void DeleteSecret(string service, string account)
-        {
-        }
+        Assert.Equal("workspace:sample.workspace", extension.Id);
+        Assert.False(extension.DesiredEnabled);
+        Assert.False(extension.IsActive);
+        Assert.Null(extension.LoadError);
+        Assert.Null(host.Tools.Get("sample.workspace"));
     }
 }

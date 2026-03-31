@@ -1,7 +1,6 @@
 using System.Runtime.CompilerServices;
 using Microsoft.Extensions.AI;
 using Ur.AgentLoop;
-using Ur.Configuration.Keyring;
 
 namespace Ur.Tests;
 
@@ -104,16 +103,267 @@ public class HostSessionApiTests
         Assert.Equal("test-model", reopened.ActiveModelId);
     }
 
+    [Fact]
+    public async Task Extensions_List_IncludesDisabledAndActiveEntriesInStableOrder()
+    {
+        using var env = new TempExtensionEnvironment();
+        await env.WriteSampleExtensionAsync(
+            env.SystemExtensionsPath,
+            "system-ext",
+            extensionName: "sample.system",
+            toolName: "sample.system.echo",
+            settingKey: "sample.system.mode");
+        await env.WriteSampleExtensionAsync(
+            env.UserExtensionsPath,
+            "user-ext",
+            extensionName: "sample.user",
+            toolName: "sample.user.echo",
+            settingKey: "sample.user.mode");
+        await env.WriteSampleExtensionAsync(
+            env.WorkspaceExtensionsPath,
+            "workspace-ext",
+            extensionName: "sample.workspace",
+            toolName: "sample.workspace.echo",
+            settingKey: "sample.workspace.mode");
+
+        var host = await env.StartHostAsync();
+
+        Assert.Collection(
+            host.Extensions.List(),
+            extension =>
+            {
+                Assert.Equal("system:sample.system", extension.Id);
+                Assert.True(extension.DefaultEnabled);
+                Assert.True(extension.DesiredEnabled);
+                Assert.True(extension.IsActive);
+            },
+            extension =>
+            {
+                Assert.Equal("user:sample.user", extension.Id);
+                Assert.True(extension.DefaultEnabled);
+                Assert.True(extension.DesiredEnabled);
+                Assert.True(extension.IsActive);
+            },
+            extension =>
+            {
+                Assert.Equal("workspace:sample.workspace", extension.Id);
+                Assert.False(extension.DefaultEnabled);
+                Assert.False(extension.DesiredEnabled);
+                Assert.False(extension.IsActive);
+            });
+    }
+
+    [Fact]
+    public async Task Extensions_SetEnabledAsync_EnablesWorkspaceExtensionAndPersistsWorkspaceOverride()
+    {
+        using var env = new TempExtensionEnvironment();
+        await env.WriteSampleExtensionAsync(
+            env.WorkspaceExtensionsPath,
+            "workspace-ext",
+            extensionName: "sample.workspace",
+            toolName: "sample.workspace.echo",
+            settingKey: "sample.workspace.mode");
+        var host = await env.StartHostAsync();
+
+        var updated = await host.Extensions.SetEnabledAsync("workspace:sample.workspace", enabled: true);
+
+        Assert.True(updated.DesiredEnabled);
+        Assert.True(updated.IsActive);
+        Assert.True(updated.HasOverride);
+        Assert.NotNull(host.Tools.Get("sample.workspace.echo"));
+        Assert.Contains("\"workspace:sample.workspace\": true", await File.ReadAllTextAsync(env.WorkspaceOverridesPath));
+    }
+
+    [Fact]
+    public async Task Extensions_SetEnabledAsync_DisablesUserExtensionAndPersistsGlobalOverride()
+    {
+        using var env = new TempExtensionEnvironment();
+        await env.WriteSampleExtensionAsync(
+            env.UserExtensionsPath,
+            "user-ext",
+            extensionName: "sample.user",
+            toolName: "sample.user.echo",
+            settingKey: "sample.user.mode");
+        var host = await env.StartHostAsync();
+
+        var updated = await host.Extensions.SetEnabledAsync("user:sample.user", enabled: false);
+
+        Assert.False(updated.DesiredEnabled);
+        Assert.False(updated.IsActive);
+        Assert.True(updated.HasOverride);
+        Assert.Null(host.Tools.Get("sample.user.echo"));
+        Assert.Contains("\"user:sample.user\": false", await File.ReadAllTextAsync(env.GlobalOverridesPath));
+    }
+
+    [Fact]
+    public async Task Extensions_ResetAsync_ClearsOverrideAndRestoresTierDefaultBehavior()
+    {
+        using var env = new TempExtensionEnvironment();
+        await env.WriteSampleExtensionAsync(
+            env.WorkspaceExtensionsPath,
+            "workspace-ext",
+            extensionName: "sample.workspace",
+            toolName: "sample.workspace.echo",
+            settingKey: "sample.workspace.mode");
+        var host = await env.StartHostAsync();
+        await host.Extensions.SetEnabledAsync("workspace:sample.workspace", enabled: true);
+
+        var updated = await host.Extensions.ResetAsync("workspace:sample.workspace");
+
+        Assert.False(updated.DesiredEnabled);
+        Assert.False(updated.IsActive);
+        Assert.False(updated.HasOverride);
+        Assert.Null(host.Tools.Get("sample.workspace.echo"));
+        Assert.False(File.Exists(env.WorkspaceOverridesPath));
+    }
+
+    [Fact]
+    public async Task Extensions_SetEnabledAsync_ActivationFailureSurfacesLoadErrorWithoutCrashingHost()
+    {
+        using var env = new TempExtensionEnvironment();
+        await env.WriteExtensionAsync(
+            env.WorkspaceExtensionsPath,
+            "broken-workspace",
+            """
+            return {
+              name = "sample.workspace",
+              version = "1.0.0"
+            }
+            """,
+            """
+            this is not valid lua
+            """);
+        var host = await env.StartHostAsync();
+
+        var updated = await host.Extensions.SetEnabledAsync("workspace:sample.workspace", enabled: true);
+
+        Assert.True(updated.DesiredEnabled);
+        Assert.False(updated.IsActive);
+        Assert.True(updated.HasOverride);
+        Assert.NotNull(updated.LoadError);
+    }
+
+    [Fact]
+    public async Task Extensions_SetEnabledAsync_UnknownExtensionIdFailsCleanly()
+    {
+        using var env = new TempExtensionEnvironment();
+        var host = await env.StartHostAsync();
+
+        var ex = await Assert.ThrowsAsync<ArgumentException>(() =>
+            host.Extensions.SetEnabledAsync("workspace:missing", enabled: true));
+
+        Assert.Equal("extensionId", ex.ParamName);
+    }
+
+    [Fact]
+    public async Task StartAsync_GlobalOverrideFileDisablesUserExtensionOnStartup()
+    {
+        using var env = new TempExtensionEnvironment();
+        await env.WriteSampleExtensionAsync(
+            env.UserExtensionsPath,
+            "user-ext",
+            extensionName: "sample.user",
+            toolName: "sample.user.echo",
+            settingKey: "sample.user.mode");
+        await env.WriteGlobalOverridesAsync(
+            """
+            {
+              "version": 1,
+              "extensions": {
+                "user:sample.user": false
+              }
+            }
+            """);
+
+        var host = await env.StartHostAsync();
+        var extension = Assert.Single(host.Extensions.List());
+
+        Assert.False(extension.DesiredEnabled);
+        Assert.False(extension.IsActive);
+        Assert.True(extension.HasOverride);
+        Assert.Null(host.Tools.Get("sample.user.echo"));
+    }
+
+    [Fact]
+    public async Task StartAsync_WorkspaceOverrideFileEnablesWorkspaceExtensionOnStartup()
+    {
+        using var env = new TempExtensionEnvironment();
+        await env.WriteSampleExtensionAsync(
+            env.WorkspaceExtensionsPath,
+            "workspace-ext",
+            extensionName: "sample.workspace",
+            toolName: "sample.workspace.echo",
+            settingKey: "sample.workspace.mode");
+        await env.WriteWorkspaceOverridesAsync(
+            $$"""
+            {
+              "version": 1,
+              "workspacePath": "{{env.WorkspacePath}}",
+              "extensions": {
+                "workspace:sample.workspace": true
+              }
+            }
+            """);
+
+        var host = await env.StartHostAsync();
+        var extension = Assert.Single(host.Extensions.List());
+
+        Assert.True(extension.DesiredEnabled);
+        Assert.True(extension.IsActive);
+        Assert.True(extension.HasOverride);
+        Assert.NotNull(host.Tools.Get("sample.workspace.echo"));
+    }
+
+    [Fact]
+    public async Task StartAsync_MalformedOverrideFileFallsBackToDefaultsWithoutCrashing()
+    {
+        using var env = new TempExtensionEnvironment();
+        await env.WriteSampleExtensionAsync(
+            env.WorkspaceExtensionsPath,
+            "workspace-ext",
+            extensionName: "sample.workspace",
+            toolName: "sample.workspace.echo",
+            settingKey: "sample.workspace.mode");
+        await env.WriteWorkspaceOverridesAsync("{ not json");
+
+        var host = await env.StartHostAsync();
+        var extension = Assert.Single(host.Extensions.List());
+
+        Assert.False(extension.DesiredEnabled);
+        Assert.False(extension.IsActive);
+        Assert.False(extension.HasOverride);
+        Assert.Null(extension.LoadError);
+    }
+
+    [Fact]
+    public async Task Extensions_PersistOnlyDeltasNotRedundantDefaults()
+    {
+        using var env = new TempExtensionEnvironment();
+        await env.WriteSampleExtensionAsync(
+            env.UserExtensionsPath,
+            "user-ext",
+            extensionName: "sample.user",
+            toolName: "sample.user.echo",
+            settingKey: "sample.user.mode");
+        var host = await env.StartHostAsync();
+
+        await host.Extensions.SetEnabledAsync("user:sample.user", enabled: false);
+        await host.Extensions.ResetAsync("user:sample.user");
+
+        Assert.False(File.Exists(env.GlobalOverridesPath));
+    }
+
     private static Task<UrHost> CreateHostAsync(
         TempWorkspace workspace,
-        IKeyring? keyring = null,
+        TestKeyring? keyring = null,
         Func<string, IChatClient>? chatClientFactory = null) =>
         UrHost.StartAsync(
             workspace.WorkspacePath,
             keyring ?? new TestKeyring(),
             workspace.UserSettingsPath,
             chatClientFactory,
-            tools: null);
+            tools: null,
+            userDataDirectory: workspace.UserDataDirectory);
 
     private static async Task<List<AgentLoopEvent>> CollectEventsAsync(IAsyncEnumerable<AgentLoopEvent> events)
     {
@@ -122,45 +372,6 @@ public class HostSessionApiTests
             collected.Add(evt);
 
         return collected;
-    }
-
-    private sealed class TempWorkspace : IDisposable
-    {
-        public string WorkspacePath { get; }
-        public string UserSettingsPath { get; }
-
-        public TempWorkspace()
-        {
-            WorkspacePath = Path.Combine(Path.GetTempPath(), "ur-tests", Guid.NewGuid().ToString("N"));
-            UserSettingsPath = Path.Combine(Path.GetTempPath(), "ur-tests", Guid.NewGuid().ToString("N"), "settings.json");
-            Directory.CreateDirectory(WorkspacePath);
-        }
-
-        public void Dispose()
-        {
-            TryDelete(Path.GetDirectoryName(UserSettingsPath)!);
-            TryDelete(WorkspacePath);
-        }
-
-        private static void TryDelete(string path)
-        {
-            if (Directory.Exists(path))
-                Directory.Delete(path, recursive: true);
-        }
-    }
-
-    private sealed class TestKeyring : IKeyring
-    {
-        private readonly Dictionary<(string Service, string Account), string> _secrets = new();
-
-        public string? GetSecret(string service, string account) =>
-            _secrets.TryGetValue((service, account), out var secret) ? secret : null;
-
-        public void SetSecret(string service, string account, string secret) =>
-            _secrets[(service, account)] = secret;
-
-        public void DeleteSecret(string service, string account) =>
-            _secrets.Remove((service, account));
     }
 
     private sealed class FakeChatClient : IChatClient

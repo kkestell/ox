@@ -13,11 +13,6 @@ namespace Ur.Extensions;
 /// </summary>
 internal static class ExtensionLoader
 {
-    /// <summary>
-    /// Discovers extensions from the three-tier directory structure.
-    /// Returns metadata-only extensions (no Lua runtime yet — call
-    /// <see cref="InitializeAsync"/> for phase 2).
-    /// </summary>
     public static async Task<List<Extension>> DiscoverAllAsync(
         string? systemDir,
         string? userDir,
@@ -35,22 +30,25 @@ internal static class ExtensionLoader
         await DiscoverTierAsync(workspaceDir, ExtensionTier.Workspace, seen, extensions, ct)
             .ConfigureAwait(false);
 
-        return extensions;
+        return extensions
+            .OrderBy(extension => TierSortOrder(extension.Tier))
+            .ThenBy(extension => extension.Name, StringComparer.Ordinal)
+            .ToList();
     }
 
-    /// <summary>
-    /// Phase 2: creates the Lua runtime for an extension, injects the
-    /// <c>ur.tool.register</c> API, and executes <c>main.lua</c>.
-    /// System/user extensions are enabled; workspace extensions stay disabled.
-    /// </summary>
-    public static async Task InitializeAsync(
+    public static async Task ActivateAsync(
         Extension extension,
         ToolRegistry toolRegistry,
         CancellationToken ct = default)
     {
+        extension.ResetRuntimeState(toolRegistry);
+
         var mainPath = Path.Combine(extension.Directory, "main.lua");
         if (!File.Exists(mainPath))
+        {
+            extension.MarkActivated(toolRegistry);
             return;
+        }
 
         try
         {
@@ -61,17 +59,19 @@ internal static class ExtensionLoader
             var script = await File.ReadAllTextAsync(mainPath, ct).ConfigureAwait(false);
             await state.DoStringAsync(script, mainPath, ct).ConfigureAwait(false);
 
-            if (extension.Tier is ExtensionTier.System or ExtensionTier.User)
-                extension.Enable(toolRegistry);
+            extension.MarkActivated(toolRegistry);
         }
         catch (Exception ex) when (
             ex is LuaRuntimeException or LuaParseException or LuaCompileException or InvalidOperationException)
         {
+            extension.MarkActivationFailed(toolRegistry, ex.Message);
             Console.Error.WriteLine(
                 $"Extension '{extension.Name}': main.lua failed: {ex.Message}");
-            extension.Disable(toolRegistry);
         }
     }
+
+    public static void Deactivate(Extension extension, ToolRegistry toolRegistry) =>
+        extension.MarkDeactivated(toolRegistry);
 
     private static async Task DiscoverTierAsync(
         string? directory,
@@ -146,7 +146,13 @@ internal static class ExtensionLoader
             }
         }
 
-        return new Extension(name, description, version, tier, extDir, settingsSchemas);
+        return new Extension(
+            new ExtensionDescriptor(
+                new ExtensionId(tier, name),
+                description,
+                version,
+                extDir,
+                settingsSchemas));
     }
 
     private static LuaState CreateSandboxedState()
@@ -275,6 +281,15 @@ internal static class ExtensionLoader
     {
         return table[key].TryRead<string>(out var s) ? s : null;
     }
+
+    private static int TierSortOrder(ExtensionTier tier) =>
+        tier switch
+        {
+            ExtensionTier.System => 0,
+            ExtensionTier.User => 1,
+            ExtensionTier.Workspace => 2,
+            _ => throw new ArgumentOutOfRangeException(nameof(tier), tier, null),
+        };
 
     // --- Sandboxed platform implementations ---
 

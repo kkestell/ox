@@ -1,6 +1,7 @@
 using Ur.Terminal.Core;
 using Ur.Terminal.Input;
 using Ur.Terminal.Rendering;
+using Ur.Tui;
 using Ur.Tui.Components;
 using Ur.Tui.State;
 
@@ -102,6 +103,16 @@ public class ChatAppTests
     }
 
     [Fact]
+    public async Task SlashExtensions_OpensExtensionManager()
+    {
+        await SetupChatReady();
+
+        await Frame(Char('/'), Char('e'), Char('x'), Char('t'), Char('e'), Char('n'), Char('s'), Char('i'), Char('o'), Char('n'), Char('s'), Named(Key.Enter));
+
+        Assert.IsType<ExtensionManagerModal>(_app.State.ActiveModal);
+    }
+
+    [Fact]
     public async Task SubmitMessage_AddsToChatState()
     {
         await SetupChatReady();
@@ -173,6 +184,18 @@ public class ChatAppTests
     }
 
     [Fact]
+    public async Task EscDuringChat_ExtensionManager_Dismisses()
+    {
+        await SetupChatReady();
+        await Frame(Char('/'), Char('e'), Char('x'), Char('t'), Char('e'), Char('n'), Char('s'), Char('i'), Char('o'), Char('n'), Char('s'), Named(Key.Enter));
+
+        var result = await Frame(Named(Key.Escape));
+
+        Assert.True(result);
+        Assert.Null(_app.State.ActiveModal);
+    }
+
+    [Fact]
     public async Task KittyDownArrow_MovesModelSelectionEndToEnd()
     {
         await Frame();
@@ -207,5 +230,86 @@ public class ChatAppTests
 
         Assert.Contains(_app.State.Messages,
             m => m.Role == MessageRole.System && m.Content.ToString().Contains("Unknown command"));
+    }
+
+    [Fact]
+    public async Task ExtensionsModal_ToggleUserOrSystemExtension_UpdatesVisibleState()
+    {
+        await SetupChatReady();
+        await Frame(Char('/'), Char('e'), Char('x'), Char('t'), Char('e'), Char('n'), Char('s'), Char('i'), Char('o'), Char('n'), Char('s'), Named(Key.Enter));
+
+        var modal = Assert.IsType<ExtensionManagerModal>(_app.State.ActiveModal);
+        Assert.Equal("system:sample.system", modal.SelectedExtension!.Id);
+
+        await Frame(Named(Key.Enter));
+
+        modal = Assert.IsType<ExtensionManagerModal>(_app.State.ActiveModal);
+        Assert.Equal(1, _backend.SetExtensionEnabledCallCount);
+        Assert.False(modal.SelectedExtension!.DesiredEnabled);
+        Assert.Contains(_app.State.Messages, message => message.Content.ToString().Contains("Disabled sample.system."));
+    }
+
+    [Fact]
+    public async Task ExtensionsModal_EnablingWorkspaceExtension_RequiresConfirmation()
+    {
+        await SetupChatReady();
+        await Frame(Char('/'), Char('e'), Char('x'), Char('t'), Char('e'), Char('n'), Char('s'), Char('i'), Char('o'), Char('n'), Char('s'), Named(Key.Enter));
+        await Frame(Named(Key.Down), Named(Key.Down));
+
+        var modal = Assert.IsType<ExtensionManagerModal>(_app.State.ActiveModal);
+        Assert.Equal("workspace:sample.workspace", modal.SelectedExtension!.Id);
+
+        await Frame(Named(Key.Enter));
+
+        modal = Assert.IsType<ExtensionManagerModal>(_app.State.ActiveModal);
+        Assert.True(modal.IsAwaitingWorkspaceEnableConfirmation);
+        Assert.Equal(0, _backend.SetExtensionEnabledCallCount);
+
+        await Frame(Named(Key.Enter));
+
+        modal = Assert.IsType<ExtensionManagerModal>(_app.State.ActiveModal);
+        Assert.Equal(1, _backend.SetExtensionEnabledCallCount);
+        Assert.True(modal.SelectedExtension!.DesiredEnabled);
+        Assert.True(modal.SelectedExtension.IsActive);
+    }
+
+    [Fact]
+    public async Task ExtensionsModal_ActivationFailure_SurfacesErrorMessage()
+    {
+        _backend.ActivationFailureMessage = "activation failed";
+        await SetupChatReady();
+        await Frame(Char('/'), Char('e'), Char('x'), Char('t'), Char('e'), Char('n'), Char('s'), Char('i'), Char('o'), Char('n'), Char('s'), Named(Key.Enter));
+        await Frame(Named(Key.Down), Named(Key.Down));
+        await Frame(Named(Key.Enter));
+
+        await Frame(Named(Key.Enter));
+
+        var modal = Assert.IsType<ExtensionManagerModal>(_app.State.ActiveModal);
+        Assert.Equal("activation failed", modal.SelectedExtension!.LoadError);
+        Assert.Contains(_app.State.Messages, message => message.IsError && message.Content.ToString().Contains("Failed to activate sample.workspace"));
+    }
+
+    [Fact]
+    public async Task ExtensionsModal_TogglingWhileTurnIsRunning_IsBlocked()
+    {
+        await SetupChatReady();
+        await Frame(Char('h'), Char('i'), Named(Key.Enter));
+        Assert.True(_app.State.IsTurnRunning);
+
+        await Frame(Char('/'), Char('e'), Char('x'), Char('t'), Char('e'), Char('n'), Char('s'), Char('i'), Char('o'), Char('n'), Char('s'), Named(Key.Enter));
+        var modal = Assert.IsType<ExtensionManagerModal>(_app.State.ActiveModal);
+        Assert.True(modal.IsMutationBlocked);
+
+        await Frame(Named(Key.Enter));
+
+        modal = Assert.IsType<ExtensionManagerModal>(_app.State.ActiveModal);
+        Assert.Equal(0, _backend.SetExtensionEnabledCallCount);
+        Assert.Equal("Read-only while a turn is running.", modal.FeedbackMessage);
+
+        for (var i = 0; i < 10 && _app.State.IsTurnRunning; i++)
+        {
+            Thread.Sleep(50);
+            await Frame();
+        }
     }
 }
