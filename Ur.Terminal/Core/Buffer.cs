@@ -51,30 +51,54 @@ public sealed class Buffer
         }
     }
 
-    public void DrawBox(Rect area, Color fg, Color bg)
+    public void DrawBox(Rect area, Color fg, Color bg) =>
+        DrawBorder(area, top: true, bottom: true, left: true, right: true, fg, bg);
+
+    public void DrawBorder(Rect area, bool top, bool bottom, bool left, bool right, Color fg, Color bg)
     {
-        if (area.Width < 2 || area.Height < 2)
+        if (area.Width < 1 || area.Height < 1)
             return;
 
-        var right = area.Right - 1;
-        var bottom = area.Bottom - 1;
+        var r = area.Right - 1;
+        var b = area.Bottom - 1;
 
-        Set(area.X, area.Y, new Cell('┌', fg, bg));
-        Set(right, area.Y, new Cell('┐', fg, bg));
-        Set(area.X, bottom, new Cell('└', fg, bg));
-        Set(right, bottom, new Cell('┘', fg, bg));
-
-        for (var x = area.X + 1; x < right; x++)
+        if (top)
         {
-            Set(x, area.Y, new Cell('─', fg, bg));
-            Set(x, bottom, new Cell('─', fg, bg));
+            var startX = left ? area.X + 1 : area.X;
+            var endX = right ? r : area.Right;
+            for (var x = startX; x < endX; x++)
+                Set(x, area.Y, new Cell('─', fg, bg));
         }
 
-        for (var y = area.Y + 1; y < bottom; y++)
+        if (bottom)
         {
-            Set(area.X, y, new Cell('│', fg, bg));
-            Set(right, y, new Cell('│', fg, bg));
+            var startX = left ? area.X + 1 : area.X;
+            var endX = right ? r : area.Right;
+            for (var x = startX; x < endX; x++)
+                Set(x, b, new Cell('─', fg, bg));
         }
+
+        if (left)
+        {
+            var startY = top ? area.Y + 1 : area.Y;
+            var endY = bottom ? b : area.Bottom;
+            for (var y = startY; y < endY; y++)
+                Set(area.X, y, new Cell('│', fg, bg));
+        }
+
+        if (right)
+        {
+            var startY = top ? area.Y + 1 : area.Y;
+            var endY = bottom ? b : area.Bottom;
+            for (var y = startY; y < endY; y++)
+                Set(r, y, new Cell('│', fg, bg));
+        }
+
+        // Corners — only where both adjacent sides are active
+        if (top && left)   Set(area.X, area.Y, new Cell('┌', fg, bg));
+        if (top && right)  Set(r, area.Y,       new Cell('┐', fg, bg));
+        if (bottom && left)  Set(area.X, b,     new Cell('└', fg, bg));
+        if (bottom && right) Set(r, b,           new Cell('┘', fg, bg));
     }
 
     public void Clear()

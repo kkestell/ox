@@ -9,14 +9,18 @@ namespace Ur.Tui.Components;
 public sealed class ChatInput : Widget
 {
     private const int MaxVisibleLines = 5;
+    private const string Prompt = "❯ ";
+    private const int PromptWidth = 2; // "❯ " occupies 2 terminal columns
     private static readonly Color TextFg = Color.White;
+    private static readonly Color PromptFg = new(100, 200, 100);
     private static readonly Color Bg = Color.Black;
     private static readonly Color CursorFg = Color.Black;
     private static readonly Color CursorBg = Color.White;
 
     public ChatInput()
     {
-        Border = true;
+        BorderTop = true;
+        BorderBottom = true;
         BorderForeground = new Color(80, 80, 80);
         BorderBackground = Bg;
         Background = Bg;
@@ -47,7 +51,7 @@ public sealed class ChatInput : Widget
 
     protected override int? MeasureContentHeight(int availableWidth)
     {
-        var totalVisualLines = CountVisualLines(availableWidth);
+        var totalVisualLines = CountVisualLines(Math.Max(1, availableWidth - PromptWidth));
         return Math.Min(totalVisualLines, MaxVisibleLines);
     }
 
@@ -62,7 +66,7 @@ public sealed class ChatInput : Widget
 
     protected override void RenderContent(Buffer buffer, Rect area)
     {
-        _width = area.Width;
+        _width = Math.Max(1, area.Width - PromptWidth);
 
         var visualRows = BuildVisualRows(_width);
         var totalVisual = visualRows.Count;
@@ -88,11 +92,17 @@ public sealed class ChatInput : Widget
             var y = area.Y + i;
             if (y >= area.Bottom) break;
 
-            buffer.WriteString(area.X, y, row.Text, TextFg, Bg);
+            // First visible row gets the prompt glyph; subsequent rows get indent.
+            var isFirstVisible = i == 0;
+            var prefix = isFirstVisible ? Prompt : "  ";
+            buffer.WriteString(area.X, y, prefix, isFirstVisible ? PromptFg : TextFg, Bg);
+
+            var textX = area.X + PromptWidth;
+            buffer.WriteString(textX, y, row.Text, TextFg, Bg);
 
             if (rowIdx == cursorVisualRow)
             {
-                var cursorX = area.X + cursorVisualCol;
+                var cursorX = textX + cursorVisualCol;
                 if (cursorX < area.Right)
                 {
                     if (cursorVisualCol < row.Text.Length)

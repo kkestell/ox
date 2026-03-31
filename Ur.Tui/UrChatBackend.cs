@@ -12,6 +12,8 @@ public sealed class UrChatBackend(UrHost host) : IChatBackend
 
     public IReadOnlyList<ModelInfo> AvailableModels => host.Configuration.AvailableModels;
 
+    public string? SelectedModelId => host.Configuration.SelectedModelId;
+
     public IReadOnlyList<UrExtensionInfo> ListExtensions() =>
         host.Extensions.List();
 

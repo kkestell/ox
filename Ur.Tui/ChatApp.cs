@@ -19,6 +19,7 @@ public sealed class ChatApp
     private readonly ChatState _state = new();
     private readonly MessageList _messageList;
     private readonly ChatInput _chatInput = new();
+    private readonly ModelStatusBar _modelStatusBar;
     private readonly Dictionary<string, Action<string>> _slashCommands;
     private readonly ConcurrentQueue<AgentLoopEvent> _eventQueue = new();
 
@@ -34,6 +35,7 @@ public sealed class ChatApp
         _baseLayer = baseLayer;
         _overlayLayer = overlayLayer;
         _messageList = new MessageList(_state);
+        _modelStatusBar = new ModelStatusBar(_backend);
 
         _slashCommands = new Dictionary<string, Action<string>>(StringComparer.OrdinalIgnoreCase)
         {
@@ -409,11 +411,12 @@ public sealed class ChatApp
     {
         var screenRect = new Rect(0, 0, w, h);
 
-        // Base layer: VerticalStack with MessageList (fill) + ChatInput (content-measured).
+        // Base layer: VerticalStack with MessageList (fill) + ChatInput (content-measured) + ModelStatusBar.
         _baseLayer.Clear();
         var stack = new VerticalStack(
             new VerticalStack.Entry(_messageList, new SizeConstraint.Fill()),
-            new VerticalStack.Entry(_chatInput, new SizeConstraint.Content()));
+            new VerticalStack.Entry(_chatInput, new SizeConstraint.Content()),
+            new VerticalStack.Entry(_modelStatusBar, new SizeConstraint.Content()));
         stack.Render(_baseLayer.Content, screenRect);
 
         // Overlay layer: centered modal.
@@ -423,7 +426,7 @@ public sealed class ChatApp
             var (mw, mh) = _state.ActiveModal switch
             {
                 ApiKeyModal => (ApiKeyModal.ModalWidth, ApiKeyModal.ModalHeight),
-                ModelPickerModal => (ModelPickerModal.ModalWidth, ModelPickerModal.ModalHeight),
+                ModelPickerModal => (w - ModelPickerModal.HorizontalPadding * 2, h - ModelPickerModal.VerticalPadding * 2),
                 ExtensionManagerModal => (ExtensionManagerModal.ModalWidth, ExtensionManagerModal.ModalHeight),
                 _ => (40, 10),
             };

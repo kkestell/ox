@@ -10,6 +10,7 @@ public interface IChatBackend
 {
     UrChatReadiness Readiness { get; }
     IReadOnlyList<ModelInfo> AvailableModels { get; }
+    string? SelectedModelId { get; }
     IReadOnlyList<UrExtensionInfo> ListExtensions();
     Task SetApiKeyAsync(string apiKey);
     Task SetSelectedModelAsync(string modelId);
