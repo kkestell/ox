@@ -193,6 +193,51 @@ public class KeyParserTests
     }
 
     [Fact]
+    public void KittyAssociatedText_ShiftA_ReturnsUppercase()
+    {
+        // CSI 97;2;65u — keycode=97='a', mod=2=Shift, text=65='A'
+        // Associated text provides the actual printable character
+        var result = Parse([0x1B, 0x5B, 0x39, 0x37, 0x3B, 0x32, 0x3B, 0x36, 0x35, 0x75], expectedConsumed: 10);
+
+        Assert.Equal(Key.A, result.Key);
+        Assert.Equal(Modifiers.Shift, result.Mods);
+        Assert.Equal('A', result.Char);
+    }
+
+    [Fact]
+    public void KittyAssociatedText_ShiftDigit1_ReturnsExclamation()
+    {
+        // CSI 49;2;33u — keycode=49='1', mod=2=Shift, text=33='!'
+        var result = Parse([0x1B, 0x5B, 0x34, 0x39, 0x3B, 0x32, 0x3B, 0x33, 0x33, 0x75], expectedConsumed: 10);
+
+        Assert.Equal(Key.D1, result.Key);
+        Assert.Equal(Modifiers.Shift, result.Mods);
+        Assert.Equal('!', result.Char);
+    }
+
+    [Fact]
+    public void KittyAssociatedText_PlainA_ReturnsLowercase()
+    {
+        // CSI 97;1;97u — keycode=97='a', mod=1=none, text=97='a'
+        var result = Parse([0x1B, 0x5B, 0x39, 0x37, 0x3B, 0x31, 0x3B, 0x39, 0x37, 0x75], expectedConsumed: 10);
+
+        Assert.Equal(Key.A, result.Key);
+        Assert.Equal(Modifiers.None, result.Mods);
+        Assert.Equal('a', result.Char);
+    }
+
+    [Fact]
+    public void KittyAssociatedText_OverridesBaseChar()
+    {
+        // CSI 59;2;58u — keycode=59=';', mod=2=Shift, text=58=':'
+        // Shift+semicolon = colon (layout-dependent, terminal provides it)
+        var result = Parse([0x1B, 0x5B, 0x35, 0x39, 0x3B, 0x32, 0x3B, 0x35, 0x38, 0x75], expectedConsumed: 10);
+
+        Assert.Equal(Modifiers.Shift, result.Mods);
+        Assert.Equal(':', result.Char);
+    }
+
+    [Fact]
     public void KittyRepeatEvent_ReturnsRepeat()
     {
         var result = Parse([0x1B, 0x5B, 0x39, 0x37, 0x3B, 0x31, 0x3A, 0x32, 0x75], expectedConsumed: 9);

@@ -10,7 +10,7 @@ public sealed class AnsiTerminal : ITerminal
     private const string HideCursorSequence = "\x1b[?25l";
     private const string ShowCursorSequence = "\x1b[?25h";
     private const string ResetFormattingSequence = "\x1b[0m";
-    private const string EnableKittyKeyboardSequence = "\x1b[>11u";
+    private const string EnableKittyKeyboardSequence = "\x1b[>27u";
     private const string DisableKittyKeyboardSequence = "\x1b[<u";
 
     private readonly Stream _stdout;

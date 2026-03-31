@@ -191,9 +191,10 @@ public static class KeyParser
     {
         var text = Encoding.ASCII.GetString(parameters);
         var parts = text.Split(';');
-        if (parts.Length == 0 || parts.Length > 2)
+        if (parts.Length is 0 or > 3)
             return new KeyEvent(Key.Unknown, Modifiers.None, null);
 
+        // First parameter: unicode-key-code[:shifted-key[:base-layout-key]]
         var keyPart = parts[0];
         var colonIndex = keyPart.IndexOf(':');
         if (colonIndex >= 0)
@@ -202,14 +203,49 @@ public static class KeyParser
         if (!TryParseNumber(keyPart, out var keyCode))
             return new KeyEvent(Key.Unknown, Modifiers.None, null);
 
+        // Second parameter: modifiers[:event-type]
         var mods = Modifiers.None;
         var eventType = KeyEventType.Press;
 
-        if (parts.Length == 2 && !TryParseKittyModifierSegment(parts[1], out mods, out eventType))
+        if (parts.Length >= 2 && !TryParseKittyModifierSegment(parts[1], out mods, out eventType))
             return new KeyEvent(Key.Unknown, Modifiers.None, null);
 
+        // Third parameter: associated text as codepoints (colon-separated)
+        char? associatedText = null;
+        if (parts.Length == 3)
+            associatedText = ParseAssociatedText(parts[2]);
+
         var key = MapKittyKey(keyCode, ref mods, out var ch);
+
+        // Associated text from the terminal is the authoritative printable character
+        if (associatedText.HasValue)
+            ch = associatedText.Value;
+
         return new KeyEvent(key, mods, ch, eventType);
+    }
+
+    /// <summary>
+    /// Parses the associated text parameter (third field in CSI u).
+    /// Text is encoded as colon-separated Unicode codepoints.
+    /// Returns the first codepoint as a char, or null if empty/invalid.
+    /// </summary>
+    private static char? ParseAssociatedText(string textParam)
+    {
+        if (string.IsNullOrEmpty(textParam))
+            return null;
+
+        // Take the first codepoint (before any colon separator)
+        var colonIndex = textParam.IndexOf(':');
+        var first = colonIndex >= 0 ? textParam[..colonIndex] : textParam;
+
+        if (!TryParseNumber(first, out var codepoint))
+            return null;
+
+        if (codepoint is < char.MinValue or > char.MaxValue)
+            return null;
+
+        var c = (char)codepoint;
+        return char.IsControl(c) ? null : c;
     }
 
     private static bool TryParseCursorModifiers(
