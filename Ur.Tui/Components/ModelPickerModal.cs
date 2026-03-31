@@ -7,16 +7,15 @@ using Buffer = Ur.Terminal.Core.Buffer;
 
 namespace Ur.Tui.Components;
 
-public sealed class ModelPickerModal : IComponent
+public sealed class ModelPickerModal : Widget
 {
     public const int ModalWidth = 60;
     public const int ModalHeight = 20;
-    private const int ListStartRow = 4;
-    private const int DetailHeight = 2; // Height reserved for selected model details
-    private const int BottomBorderPadding = 1;
-    private const int ListHeight = ModalHeight - ListStartRow - DetailHeight - BottomBorderPadding;
 
-    private static readonly Color BorderFg = new(220, 220, 220);
+    // Layout: row 0 = title, row 1 = filter, row 2 = separator, rows 3..N-3 = list, rows N-2..N-1 = detail.
+    private const int HeaderRows = 3;
+    private const int DetailRows = 2;
+
     private static readonly Color ModalBg = new(30, 30, 60);
     private static readonly Color TitleFg = new(255, 255, 100);
     private static readonly Color FilterFg = Color.White;
@@ -29,8 +28,8 @@ public sealed class ModelPickerModal : IComponent
     private readonly IReadOnlyList<ModelInfo> _allModels;
     private readonly StringBuilder _filter = new();
     private List<ModelInfo> _filtered;
-    private int _selectedIndex;
-    private int _scrollOffset;
+
+    private readonly ScrollableList<ModelInfo> _list;
 
     public bool Submitted { get; private set; }
     public bool Dismissed { get; private set; }
@@ -38,87 +37,70 @@ public sealed class ModelPickerModal : IComponent
 
     public ModelPickerModal(IReadOnlyList<ModelInfo> models)
     {
+        Border = true;
+        BorderForeground = new Color(220, 220, 220);
+        BorderBackground = ModalBg;
+        Background = ModalBg;
+
         _allModels = models;
         _filtered = models.ToList();
+
+        _list = new ScrollableList<ModelInfo>
+        {
+            Background = ModalBg,
+            ItemRenderer = RenderItem,
+            Items = _filtered,
+        };
     }
 
     public string Filter => _filter.ToString();
     public IReadOnlyList<ModelInfo> FilteredModels => _filtered;
 
-    public void Render(Buffer buffer, Rect area)
+    protected override void RenderContent(Buffer buffer, Rect area)
     {
-        var mx = (area.Width - ModalWidth) / 2 + area.X;
-        var my = (area.Height - ModalHeight) / 2 + area.Y;
-        var modalRect = new Rect(mx, my, ModalWidth, ModalHeight);
-
-        buffer.Fill(modalRect, new Cell(' ', BorderFg, ModalBg));
-        buffer.DrawBox(modalRect, BorderFg, ModalBg);
+        var bg = ModalBg;
 
         // Title
-        buffer.WriteString(mx + 2, my + 1, "Select Model", TitleFg, ModalBg);
+        buffer.WriteString(area.X, area.Y, "Select Model", TitleFg, bg);
 
         // Filter input
         var filterLabel = "Filter: ";
-        buffer.WriteString(mx + 2, my + 2, filterLabel, HintFg, ModalBg);
-        var filterText = _filter.ToString();
-        var filterX = mx + 2 + filterLabel.Length;
-        buffer.WriteString(filterX, my + 2, filterText, FilterFg, ModalBg);
+        buffer.WriteString(area.X, area.Y + 1, filterLabel, HintFg, bg);
+        buffer.WriteString(area.X + filterLabel.Length, area.Y + 1, _filter.ToString(), FilterFg, bg);
 
         // Separator
-        var sepWidth = ModalWidth - 2;
-        for (var x = 0; x < sepWidth; x++)
-            buffer.Set(mx + 1 + x, my + 3, new Cell('─', HintFg, ModalBg));
+        for (var x = 0; x < area.Width; x++)
+            buffer.Set(area.X + x, area.Y + 2, new Cell('─', HintFg, bg));
 
-        // Model list
-        var listStartY = my + ListStartRow;
-        var visibleCount = Math.Min(ListHeight, _filtered.Count - _scrollOffset);
-        for (var i = 0; i < visibleCount; i++)
+        // List area
+        var listHeight = area.Height - HeaderRows - DetailRows;
+        if (listHeight > 0)
         {
-            var modelIndex = _scrollOffset + i;
-            var model = _filtered[modelIndex];
-            var isSelected = modelIndex == _selectedIndex;
-            var fg = isSelected ? SelectedFg : ItemFg;
-            var bg = isSelected ? SelectedBg : ModalBg;
-            var itemWidth = ModalWidth - 4;
-
-            // Fill the row background for selected item
-            if (isSelected)
-                buffer.Fill(new Rect(mx + 2, listStartY + i, itemWidth, 1), new Cell(' ', fg, bg));
-
-            var displayText = model.Name.Length > itemWidth
-                ? model.Name[..(itemWidth - 1)] + "…"
-                : model.Name;
-            buffer.WriteString(mx + 2, listStartY + i, displayText, fg, bg);
+            var listRect = new Rect(area.X, area.Y + HeaderRows, area.Width, listHeight);
+            _list.Render(buffer, listRect);
         }
 
-        // Scroll indicators
-        if (_scrollOffset > 0)
-            buffer.WriteString(mx + ModalWidth - 4, listStartY, "▲", HintFg, ModalBg);
-        if (_scrollOffset + ListHeight < _filtered.Count)
-            buffer.WriteString(mx + ModalWidth - 4, listStartY + ListHeight - 1, "▼", HintFg, ModalBg);
-
         // Detail area for selected model
-        var detailY = my + ModalHeight - DetailHeight - 1;
-        if (_selectedIndex >= 0 && _selectedIndex < _filtered.Count)
+        var detailY = area.Y + area.Height - DetailRows;
+        if (_list.SelectedItem is { } selected)
         {
-            var selected = _filtered[_selectedIndex];
             var contextStr = selected.ContextLength >= 1_000_000
                 ? $"{selected.ContextLength / 1_000_000.0:F1}M"
                 : $"{selected.ContextLength / 1_000}K";
             var detail = $"{selected.Id}  ctx:{contextStr}";
-            buffer.WriteString(mx + 2, detailY, detail, DetailFg, ModalBg);
+            buffer.WriteString(area.X, detailY, detail, DetailFg, bg);
         }
     }
 
-    public bool HandleKey(KeyEvent key)
+    public override bool HandleKey(KeyEvent key)
     {
         switch (key.Key)
         {
             case Key.Enter:
-                if (_selectedIndex >= 0 && _selectedIndex < _filtered.Count)
+                if (_list.SelectedItem is { } selected)
                 {
                     Submitted = true;
-                    SelectedModel = _filtered[_selectedIndex];
+                    SelectedModel = selected;
                 }
                 return false;
 
@@ -126,21 +108,8 @@ public sealed class ModelPickerModal : IComponent
                 Dismissed = true;
                 return false;
 
-            case Key.Up:
-                if (_selectedIndex > 0)
-                {
-                    _selectedIndex--;
-                    EnsureVisible();
-                }
-                return true;
-
-            case Key.Down:
-                if (_selectedIndex < _filtered.Count - 1)
-                {
-                    _selectedIndex++;
-                    EnsureVisible();
-                }
-                return true;
+            case Key.Up or Key.Down or Key.Home or Key.End or Key.PageUp or Key.PageDown:
+                return _list.HandleKey(key);
 
             case Key.Backspace:
                 if (_filter.Length > 0)
@@ -175,15 +144,21 @@ public sealed class ModelPickerModal : IComponent
                 .ToList();
         }
 
-        _selectedIndex = 0;
-        _scrollOffset = 0;
+        _list.Items = _filtered;
+        _list.SetSelectedIndex(0);
     }
 
-    private void EnsureVisible()
+    private static void RenderItem(Buffer buffer, Rect rect, ModelInfo model, bool isSelected)
     {
-        if (_selectedIndex < _scrollOffset)
-            _scrollOffset = _selectedIndex;
-        else if (_selectedIndex >= _scrollOffset + ListHeight)
-            _scrollOffset = _selectedIndex - ListHeight + 1;
+        var fg = isSelected ? SelectedFg : ItemFg;
+        var bg = isSelected ? SelectedBg : ModalBg;
+
+        if (isSelected)
+            buffer.Fill(rect, new Cell(' ', fg, bg));
+
+        var displayText = model.Name.Length > rect.Width
+            ? model.Name[..(rect.Width - 1)] + "…"
+            : model.Name;
+        buffer.WriteString(rect.X, rect.Y, displayText, fg, bg);
     }
 }

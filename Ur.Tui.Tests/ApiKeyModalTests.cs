@@ -8,8 +8,8 @@ namespace Ur.Tui.Tests;
 public class ApiKeyModalTests
 {
     private readonly ApiKeyModal _modal = new();
-    private readonly Buffer _buffer = new(80, 24);
-    private readonly Rect _area = new(0, 0, 80, 24);
+    private readonly Buffer _buffer = new(ApiKeyModal.ModalWidth, ApiKeyModal.ModalHeight);
+    private readonly Rect _area = new(0, 0, ApiKeyModal.ModalWidth, ApiKeyModal.ModalHeight);
 
     private static KeyEvent Char(char c) => new(Key.Unknown, Modifiers.None, c);
     private static KeyEvent Named(Key key) => new(key, Modifiers.None, null);
@@ -40,11 +40,9 @@ public class ApiKeyModalTests
         }
         Assert.True(found, "Title 'API Key' should appear in rendered buffer");
 
-        // Check for box-drawing corners
-        var mx = (80 - ApiKeyModal.ModalWidth) / 2;
-        var my = (24 - ApiKeyModal.ModalHeight) / 2;
-        Assert.Equal('┌', _buffer.Get(mx, my).Char);
-        Assert.Equal('┐', _buffer.Get(mx + ApiKeyModal.ModalWidth - 1, my).Char);
+        // Check for box-drawing corners (modal renders at 0,0 with its own size).
+        Assert.Equal('┌', _buffer.Get(0, 0).Char);
+        Assert.Equal('┐', _buffer.Get(ApiKeyModal.ModalWidth - 1, 0).Char);
     }
 
     [Fact]
@@ -59,10 +57,9 @@ public class ApiKeyModalTests
 
         _modal.Render(_buffer, _area);
 
-        // Find the row with masked chars (stars)
-        var mx = (80 - ApiKeyModal.ModalWidth) / 2;
-        var my = (24 - ApiKeyModal.ModalHeight) / 2;
-        var inputRow = ReadRow(my + 4, mx + 2, 10);
+        // Masked input is in the content area: border (1) + padding row offset.
+        // Content starts at y=1. Title at y=1, hint at y=3, input at y=4.
+        var inputRow = ReadRow(4, 1, 10);
         Assert.Equal("******", inputRow);
     }
 

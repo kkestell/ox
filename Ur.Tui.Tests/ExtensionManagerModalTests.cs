@@ -14,8 +14,8 @@ public class ExtensionManagerModalTests
         CreateExtension("user:sample.user", ExtensionTier.User, desiredEnabled: false, isActive: false, hasOverride: true),
         CreateExtension("workspace:sample.workspace", ExtensionTier.Workspace, desiredEnabled: true, isActive: false, loadError: "boom"),
     ]);
-    private readonly Buffer _buffer = new(80, 24);
-    private readonly Rect _area = new(0, 0, 80, 24);
+    private readonly Buffer _buffer = new(ExtensionManagerModal.ModalWidth, ExtensionManagerModal.ModalHeight);
+    private readonly Rect _area = new(0, 0, ExtensionManagerModal.ModalWidth, ExtensionManagerModal.ModalHeight);
 
     private static KeyEvent Char(char c) => new(Key.Unknown, Modifiers.None, c);
     private static KeyEvent Named(Key key) => new(key, Modifiers.None, null);

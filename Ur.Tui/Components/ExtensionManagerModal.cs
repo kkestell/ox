@@ -18,16 +18,18 @@ internal readonly record struct ExtensionManagerAction(
     string ExtensionId,
     bool Enabled);
 
-public sealed class ExtensionManagerModal : IComponent
+public sealed class ExtensionManagerModal : Widget
 {
     public const int ModalWidth = 76;
     public const int ModalHeight = 18;
 
-    private const int ListStartRow = 4;
-    private const int DetailHeight = 4;
+    // Layout: row 0 = title, row 1 = filter, row 2 = separator, rows 3..N-5 = list,
+    // separator, then 3 detail rows, then footer row.
+    private const int HeaderRows = 3;
+    private const int DetailRows = 4;
+    private const int FooterRows = 1;
     private const string MutationBlockedMessage = "Read-only while a turn is running.";
 
-    private static readonly Color BorderFg = new(220, 220, 220);
     private static readonly Color ModalBg = new(30, 30, 60);
     private static readonly Color TitleFg = new(255, 255, 100);
     private static readonly Color HintFg = new(128, 128, 128);
@@ -44,13 +46,25 @@ public sealed class ExtensionManagerModal : IComponent
     private readonly StringBuilder _filter = new();
     private List<UrExtensionInfo> _allExtensions;
     private List<UrExtensionInfo> _filtered;
-    private int _selectedIndex;
-    private int _scrollOffset;
+
+    private readonly ScrollableList<UrExtensionInfo> _list;
 
     public ExtensionManagerModal(IReadOnlyList<UrExtensionInfo> extensions)
     {
+        Border = true;
+        BorderForeground = new Color(220, 220, 220);
+        BorderBackground = ModalBg;
+        Background = ModalBg;
+
         _allExtensions = SortExtensions(extensions).ToList();
         _filtered = _allExtensions.ToList();
+
+        _list = new ScrollableList<UrExtensionInfo>
+        {
+            Background = ModalBg,
+            ItemRenderer = RenderItem,
+            Items = _filtered,
+        };
     }
 
     public bool Dismissed { get; private set; }
@@ -61,77 +75,64 @@ public sealed class ExtensionManagerModal : IComponent
     public IReadOnlyList<UrExtensionInfo> FilteredExtensions => _filtered;
     public string? FeedbackMessage { get; private set; }
     public bool FeedbackIsError { get; private set; }
-    public UrExtensionInfo? SelectedExtension =>
-        _selectedIndex >= 0 && _selectedIndex < _filtered.Count ? _filtered[_selectedIndex] : null;
+    public UrExtensionInfo? SelectedExtension => _list.SelectedItem;
 
-    public void Render(Buffer buffer, Rect area)
+    protected override void RenderContent(Buffer buffer, Rect area)
     {
-        var mx = (area.Width - ModalWidth) / 2 + area.X;
-        var my = (area.Height - ModalHeight) / 2 + area.Y;
-        var modalRect = new Rect(mx, my, ModalWidth, ModalHeight);
-        var listHeight = ModalHeight - ListStartRow - DetailHeight - 2;
+        var bg = ModalBg;
 
-        buffer.Fill(modalRect, new Cell(' ', BorderFg, ModalBg));
-        buffer.DrawBox(modalRect, BorderFg, ModalBg);
+        // Title
+        buffer.WriteString(area.X, area.Y, "Extensions", TitleFg, bg);
 
-        buffer.WriteString(mx + 2, my + 1, "Extensions", TitleFg, ModalBg);
-        buffer.WriteString(mx + 2, my + 2, "Filter: ", HintFg, ModalBg);
-        buffer.WriteString(mx + 10, my + 2, _filter.ToString(), FilterFg, ModalBg);
+        // Filter
+        buffer.WriteString(area.X, area.Y + 1, "Filter: ", HintFg, bg);
+        buffer.WriteString(area.X + 8, area.Y + 1, _filter.ToString(), FilterFg, bg);
 
-        for (var x = 0; x < ModalWidth - 2; x++)
-            buffer.Set(mx + 1 + x, my + 3, new Cell('─', HintFg, ModalBg));
+        // Separator
+        for (var x = 0; x < area.Width; x++)
+            buffer.Set(area.X + x, area.Y + 2, new Cell('─', HintFg, bg));
 
-        var listStartY = my + ListStartRow;
-        var visibleCount = Math.Min(listHeight, Math.Max(0, _filtered.Count - _scrollOffset));
-        for (var i = 0; i < visibleCount; i++)
+        // List area
+        var listHeight = area.Height - HeaderRows - DetailRows - FooterRows - 1; // -1 for detail separator
+        if (listHeight > 0)
         {
-            var extensionIndex = _scrollOffset + i;
-            var extension = _filtered[extensionIndex];
-            var isSelected = extensionIndex == _selectedIndex;
-            var fg = isSelected ? SelectedFg : ItemFg;
-            var bg = isSelected ? SelectedBg : ModalBg;
-            var rowWidth = ModalWidth - 4;
-
-            if (isSelected)
-                buffer.Fill(new Rect(mx + 2, listStartY + i, rowWidth, 1), new Cell(' ', fg, bg));
-
-            var rowText = FormatRow(extension, rowWidth);
-            buffer.WriteString(mx + 2, listStartY + i, rowText, fg, bg);
+            var listRect = new Rect(area.X, area.Y + HeaderRows, area.Width, listHeight);
+            _list.Render(buffer, listRect);
         }
 
-        if (_scrollOffset > 0)
-            buffer.WriteString(mx + ModalWidth - 4, listStartY, "▲", HintFg, ModalBg);
-        if (_scrollOffset + listHeight < _filtered.Count)
-            buffer.WriteString(mx + ModalWidth - 4, listStartY + listHeight - 1, "▼", HintFg, ModalBg);
+        // Detail separator
+        var detailSepY = area.Y + HeaderRows + Math.Max(0, listHeight);
+        for (var x = 0; x < area.Width; x++)
+            buffer.Set(area.X + x, detailSepY, new Cell('─', HintFg, bg));
 
-        var detailTop = my + ModalHeight - DetailHeight - 1;
-        for (var x = 0; x < ModalWidth - 2; x++)
-            buffer.Set(mx + 1 + x, detailTop - 1, new Cell('─', HintFg, ModalBg));
-
+        // Detail area
+        var detailTop = detailSepY + 1;
         if (SelectedExtension is { } selected)
         {
-            buffer.WriteString(mx + 2, detailTop, selected.Name, TitleFg, ModalBg);
-            buffer.WriteString(mx + 2, detailTop + 1, selected.Description, HintFg, ModalBg);
+            buffer.WriteString(area.X, detailTop, selected.Name, TitleFg, bg);
+            buffer.WriteString(area.X, detailTop + 1, selected.Description, HintFg, bg);
             buffer.WriteString(
-                mx + 2,
+                area.X,
                 detailTop + 2,
                 $"Version {selected.Version}  Tier {selected.Tier}  Default {(selected.DefaultEnabled ? "enabled" : "disabled")}",
                 HintFg,
-                ModalBg);
+                bg);
         }
         else
         {
-            buffer.WriteString(mx + 2, detailTop, "No extensions match the current filter.", HintFg, ModalBg);
+            buffer.WriteString(area.X, detailTop, "No extensions match the current filter.", HintFg, bg);
         }
 
+        // Footer
+        var footerY = area.Y + area.Height - 1;
         var footer = BuildFooterText();
         var footerColor = FeedbackMessage is null
             ? HintFg
             : FeedbackIsError ? FooterErrorFg : FooterOkFg;
-        buffer.WriteString(mx + 2, my + ModalHeight - 2, footer, footerColor, ModalBg);
+        buffer.WriteString(area.X, footerY, footer, footerColor, bg);
     }
 
-    public bool HandleKey(KeyEvent key)
+    public override bool HandleKey(KeyEvent key)
     {
         switch (key.Key)
         {
@@ -152,15 +153,9 @@ public sealed class ExtensionManagerModal : IComponent
                 Dismissed = true;
                 return false;
 
-            case Key.Up:
+            case Key.Up or Key.Down or Key.Home or Key.End or Key.PageUp or Key.PageDown:
                 CancelConfirmation();
-                MoveSelection(-1);
-                return true;
-
-            case Key.Down:
-                CancelConfirmation();
-                MoveSelection(1);
-                return true;
+                return _list.HandleKey(key);
 
             case Key.Backspace:
                 CancelConfirmation();
@@ -265,34 +260,17 @@ public sealed class ExtensionManagerModal : IComponent
                 extension.Description.Contains(filterText, StringComparison.OrdinalIgnoreCase))
             .ToList();
 
-        _selectedIndex = 0;
+        _list.Items = _filtered;
+
+        var selectedIndex = 0;
         if (preferredSelectionId is not null)
         {
             var index = _filtered.FindIndex(extension => extension.Id == preferredSelectionId);
             if (index >= 0)
-                _selectedIndex = index;
+                selectedIndex = index;
         }
 
-        _scrollOffset = 0;
-        EnsureVisible();
-    }
-
-    private void MoveSelection(int delta)
-    {
-        if (_filtered.Count == 0)
-            return;
-
-        _selectedIndex = Math.Clamp(_selectedIndex + delta, 0, _filtered.Count - 1);
-        EnsureVisible();
-    }
-
-    private void EnsureVisible()
-    {
-        var listHeight = ModalHeight - ListStartRow - DetailHeight - 2;
-        if (_selectedIndex < _scrollOffset)
-            _scrollOffset = _selectedIndex;
-        else if (_selectedIndex >= _scrollOffset + listHeight)
-            _scrollOffset = _selectedIndex - listHeight + 1;
+        _list.SetSelectedIndex(selectedIndex);
     }
 
     private void CancelConfirmation() =>
@@ -333,6 +311,18 @@ public sealed class ExtensionManagerModal : IComponent
         if (extension.LoadError is not null)
             return 1;
         return 2;
+    }
+
+    private static void RenderItem(Buffer buffer, Rect rect, UrExtensionInfo extension, bool isSelected)
+    {
+        var fg = isSelected ? SelectedFg : ItemFg;
+        var bg = isSelected ? SelectedBg : ModalBg;
+
+        if (isSelected)
+            buffer.Fill(rect, new Cell(' ', fg, bg));
+
+        var rowText = FormatRow(extension, rect.Width);
+        buffer.WriteString(rect.X, rect.Y, rowText, fg, bg);
     }
 
     private static string FormatRow(UrExtensionInfo extension, int width)

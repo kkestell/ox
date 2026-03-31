@@ -3,6 +3,7 @@ using Ur.AgentLoop;
 using Ur.Terminal.Components;
 using Ur.Terminal.Core;
 using Ur.Terminal.Input;
+using Ur.Terminal.Layout;
 using Ur.Terminal.Rendering;
 using Ur.Tui.Components;
 using Ur.Tui.State;
@@ -406,25 +407,19 @@ public sealed class ChatApp
 
     private void RenderFrame(int w, int h)
     {
-        // Layout – input grows with line count, message list shrinks to fit
-        var inputHeight = _chatInput.GetInputHeight(w);
-        var messageHeight = h - inputHeight;
-        var messageRect = new Rect(0, 0, w, messageHeight);
-        var inputRect = new Rect(0, messageHeight, w, inputHeight);
+        var screenRect = new Rect(0, 0, w, h);
 
-        // Render base layer
+        // Base layer: VerticalStack with MessageList (fill) + ChatInput (content-measured).
         _baseLayer.Clear();
-        _messageList.Render(_baseLayer.Content, messageRect);
-        _chatInput.Render(_baseLayer.Content, inputRect);
+        var stack = new VerticalStack(
+            new VerticalStack.Entry(_messageList, new SizeConstraint.Fill()),
+            new VerticalStack.Entry(_chatInput, new SizeConstraint.Content()));
+        stack.Render(_baseLayer.Content, screenRect);
 
-        // Render overlay layer
+        // Overlay layer: centered modal.
         _overlayLayer.Clear();
         if (_state.ActiveModal is not null)
         {
-            var screenRect = new Rect(0, 0, w, h);
-            _state.ActiveModal.Render(_overlayLayer.Content, screenRect);
-
-            // Shadow for the modal
             var (mw, mh) = _state.ActiveModal switch
             {
                 ApiKeyModal => (ApiKeyModal.ModalWidth, ApiKeyModal.ModalHeight),
@@ -432,12 +427,8 @@ public sealed class ChatApp
                 ExtensionManagerModal => (ExtensionManagerModal.ModalWidth, ExtensionManagerModal.ModalHeight),
                 _ => (40, 10),
             };
-            var mx = (w - mw) / 2;
-            var my = (h - mh) / 2;
-
-            // L-shaped shadow: right strip + bottom strip
-            _overlayLayer.MarkShadow(new Rect(mx + mw, my + 1, 2, mh));
-            _overlayLayer.MarkShadow(new Rect(mx + 2, my + mh, mw, 1));
+            var center = new Center(_state.ActiveModal, mw, mh);
+            center.Render(_overlayLayer.Content, screenRect);
         }
     }
 }

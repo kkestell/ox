@@ -192,22 +192,22 @@ public class ChatInputTests
         const int width = 40;
 
         // 1 line -> 3 rows (top border + 1 line + bottom border)
-        Assert.Equal(3, _input.GetInputHeight(width));
+        Assert.Equal(3, _input.MeasureHeight(width));
 
         _input.HandleKey(Char('a'));
         _input.HandleKey(ShiftEnter());
         // 2 lines -> 4 rows
-        Assert.Equal(4, _input.GetInputHeight(width));
+        Assert.Equal(4, _input.MeasureHeight(width));
 
         _input.HandleKey(ShiftEnter());
         _input.HandleKey(ShiftEnter());
         _input.HandleKey(ShiftEnter());
         // 5 lines -> 7 rows
-        Assert.Equal(7, _input.GetInputHeight(width));
+        Assert.Equal(7, _input.MeasureHeight(width));
 
         _input.HandleKey(ShiftEnter());
         // 6 lines -> still capped at 7 rows
-        Assert.Equal(7, _input.GetInputHeight(width));
+        Assert.Equal(7, _input.MeasureHeight(width));
     }
 
     [Fact]
@@ -225,7 +225,7 @@ public class ChatInputTests
         _input.HandleKey(Named(Key.Backspace));
 
         Assert.Equal("abcd", _input.Text);
-        Assert.Equal(3, _input.GetInputHeight(40)); // back to 1 line
+        Assert.Equal(3, _input.MeasureHeight(40)); // back to 1 line
     }
 
     [Fact]
@@ -446,14 +446,14 @@ public class ChatInputTests
     // --- Soft wrapping ---
 
     [Fact]
-    public void GetInputHeight_AccountsForWrappedLines()
+    public void MeasureHeight_AccountsForWrappedLines()
     {
         // Type 15 characters into a 12-wide area (10 columns of content): wraps to 2 visual lines
         foreach (var c in "hello world foo")
             _input.HandleKey(Char(c));
 
         // 2 visual rows (wrapped) + 2 borders = 4
-        Assert.Equal(4, _input.GetInputHeight(12));
+        Assert.Equal(4, _input.MeasureHeight(12));
     }
 
     [Fact]

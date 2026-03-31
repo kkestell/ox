@@ -7,7 +7,7 @@ using Buffer = Ur.Terminal.Core.Buffer;
 
 namespace Ur.Tui.Components;
 
-public sealed class MessageList : IComponent
+public sealed class MessageList : Widget
 {
     private static readonly Color UserFg = new(0, 200, 200);
     private static readonly Color AssistantFg = Color.White;
@@ -23,7 +23,7 @@ public sealed class MessageList : IComponent
         _state = state;
     }
 
-    public void Render(Buffer buffer, Rect area)
+    protected override void RenderContent(Buffer buffer, Rect area)
     {
         if (area.Width < 1 || area.Height < 1)
             return;
@@ -56,7 +56,7 @@ public sealed class MessageList : IComponent
         }
     }
 
-    public bool HandleKey(KeyEvent key)
+    public override bool HandleKey(KeyEvent key)
     {
         switch (key.Key)
         {

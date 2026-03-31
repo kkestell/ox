@@ -6,14 +6,21 @@ using Buffer = Ur.Terminal.Core.Buffer;
 
 namespace Ur.Tui.Components;
 
-public sealed class ChatInput : IComponent
+public sealed class ChatInput : Widget
 {
     private const int MaxVisibleLines = 5;
     private static readonly Color TextFg = Color.White;
     private static readonly Color Bg = Color.Black;
     private static readonly Color CursorFg = Color.Black;
     private static readonly Color CursorBg = Color.White;
-    private static readonly Color BorderFg = new(80, 80, 80);
+
+    public ChatInput()
+    {
+        Border = true;
+        BorderForeground = new Color(80, 80, 80);
+        BorderBackground = Bg;
+        Background = Bg;
+    }
 
     private readonly List<StringBuilder> _lines = [new()];
     private int _cursorLine;
@@ -38,11 +45,10 @@ public sealed class ChatInput : IComponent
         }
     }
 
-    /// <summary>Top border + visible text lines + bottom border.</summary>
-    public int GetInputHeight(int width)
+    protected override int? MeasureContentHeight(int availableWidth)
     {
-        var totalVisualLines = CountVisualLines(GetContentWidth(width));
-        return 2 + Math.Min(totalVisualLines, MaxVisibleLines);
+        var totalVisualLines = CountVisualLines(availableWidth);
+        return Math.Min(totalVisualLines, MaxVisibleLines);
     }
 
     public void Clear()
@@ -54,29 +60,21 @@ public sealed class ChatInput : IComponent
         _scrollOffset = 0;
     }
 
-    public void Render(Buffer buffer, Rect area)
+    protected override void RenderContent(Buffer buffer, Rect area)
     {
-        if (area.Width < 1 || area.Height < 1)
-            return;
+        _width = area.Width;
 
-        _width = GetContentWidth(area.Width);
-
-        buffer.Fill(area, new Cell(' ', TextFg, Bg));
-        RenderBorder(buffer, area);
-
-        var bottomY = area.Bottom - 1;
-        var contentX = area.X + 1;
         var visualRows = BuildVisualRows(_width);
         var totalVisual = visualRows.Count;
         var (cursorVisualRow, cursorVisualCol) = FindCursorVisual(visualRows);
 
-        // Adjust scroll offset to keep cursor visible
+        // Adjust scroll offset to keep cursor visible.
         if (cursorVisualRow < _scrollOffset)
             _scrollOffset = cursorVisualRow;
         else if (cursorVisualRow >= _scrollOffset + MaxVisibleLines)
             _scrollOffset = cursorVisualRow - MaxVisibleLines + 1;
 
-        // Clamp scroll offset
+        // Clamp scroll offset.
         var maxScroll = Math.Max(0, totalVisual - MaxVisibleLines);
         _scrollOffset = Math.Clamp(_scrollOffset, 0, maxScroll);
 
@@ -87,30 +85,26 @@ public sealed class ChatInput : IComponent
             if (rowIdx >= totalVisual) break;
 
             var row = visualRows[rowIdx];
-            var y = area.Y + 1 + i;
-            if (y >= bottomY) break;
+            var y = area.Y + i;
+            if (y >= area.Bottom) break;
 
-            buffer.WriteString(contentX, y, row.Text, TextFg, Bg);
+            buffer.WriteString(area.X, y, row.Text, TextFg, Bg);
 
             if (rowIdx == cursorVisualRow)
             {
-                var cursorX = contentX + cursorVisualCol;
-                if (cursorX < area.Right - 1)
+                var cursorX = area.X + cursorVisualCol;
+                if (cursorX < area.Right)
                 {
                     if (cursorVisualCol < row.Text.Length)
-                    {
                         buffer.Set(cursorX, y, new Cell(row.Text[cursorVisualCol], CursorFg, CursorBg));
-                    }
                     else
-                    {
                         buffer.Set(cursorX, y, new Cell(' ', CursorFg, CursorBg));
-                    }
                 }
             }
         }
     }
 
-    public bool HandleKey(KeyEvent key)
+    public override bool HandleKey(KeyEvent key)
     {
         switch (key.Key)
         {
@@ -334,39 +328,4 @@ public sealed class ChatInput : IComponent
         return segments;
     }
 
-    private static int GetContentWidth(int totalWidth)
-    {
-        return Math.Max(0, totalWidth - 2);
-    }
-
-    private static void RenderBorder(Buffer buffer, Rect area)
-    {
-        var rightX = area.Right - 1;
-        var bottomY = area.Bottom - 1;
-
-        buffer.Set(area.X, area.Y, new Cell('┌', BorderFg, Bg));
-        if (rightX > area.X)
-            buffer.Set(rightX, area.Y, new Cell('┐', BorderFg, Bg));
-
-        if (bottomY > area.Y)
-        {
-            buffer.Set(area.X, bottomY, new Cell('└', BorderFg, Bg));
-            if (rightX > area.X)
-                buffer.Set(rightX, bottomY, new Cell('┘', BorderFg, Bg));
-        }
-
-        for (var x = area.X + 1; x < rightX; x++)
-        {
-            buffer.Set(x, area.Y, new Cell('─', BorderFg, Bg));
-            if (bottomY > area.Y)
-                buffer.Set(x, bottomY, new Cell('─', BorderFg, Bg));
-        }
-
-        for (var y = area.Y + 1; y < bottomY; y++)
-        {
-            buffer.Set(area.X, y, new Cell('│', BorderFg, Bg));
-            if (rightX > area.X)
-                buffer.Set(rightX, y, new Cell('│', BorderFg, Bg));
-        }
-    }
 }
