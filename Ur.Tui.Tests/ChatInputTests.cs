@@ -50,18 +50,21 @@ public class ChatInputTests
         _input.Render(buffer, area);
 
         // Top border
-        Assert.Equal('─', buffer.Get(0, 0).Char);
-        Assert.Equal('─', buffer.Get(39, 0).Char);
+        Assert.Equal('┌', buffer.Get(0, 0).Char);
+        Assert.Equal('┐', buffer.Get(39, 0).Char);
 
         // Text on row 1
-        Assert.Equal('h', buffer.Get(0, 1).Char);
-        Assert.Equal('e', buffer.Get(1, 1).Char);
-        Assert.Equal('l', buffer.Get(2, 1).Char);
+        Assert.Equal('│', buffer.Get(0, 1).Char);
+        Assert.Equal('h', buffer.Get(1, 1).Char);
+        Assert.Equal('e', buffer.Get(2, 1).Char);
         Assert.Equal('l', buffer.Get(3, 1).Char);
-        Assert.Equal('o', buffer.Get(4, 1).Char);
+        Assert.Equal('l', buffer.Get(4, 1).Char);
+        Assert.Equal('o', buffer.Get(5, 1).Char);
+        Assert.Equal('│', buffer.Get(39, 1).Char);
 
         // Bottom border
-        Assert.Equal('─', buffer.Get(0, 2).Char);
+        Assert.Equal('└', buffer.Get(0, 2).Char);
+        Assert.Equal('┘', buffer.Get(39, 2).Char);
     }
 
     [Fact]
@@ -166,7 +169,7 @@ public class ChatInputTests
         _input.Render(buffer, area);
 
         // Cursor is at col 1 (after 'a'), on text row (y=1) — inverted colors
-        var cursorCell = buffer.Get(1, 1);
+        var cursorCell = buffer.Get(2, 1);
         Assert.Equal(' ', cursorCell.Char);
         Assert.Equal(Color.Black, cursorCell.Fg);
         Assert.Equal(Color.White, cursorCell.Bg);
@@ -273,18 +276,20 @@ public class ChatInputTests
         _input.Render(buffer, area);
 
         // Top border
-        Assert.Equal('─', buffer.Get(0, 0).Char);
+        Assert.Equal('┌', buffer.Get(0, 0).Char);
 
         // Line 1
-        Assert.Equal('a', buffer.Get(0, 1).Char);
-        Assert.Equal('b', buffer.Get(1, 1).Char);
+        Assert.Equal('│', buffer.Get(0, 1).Char);
+        Assert.Equal('a', buffer.Get(1, 1).Char);
+        Assert.Equal('b', buffer.Get(2, 1).Char);
 
         // Line 2
-        Assert.Equal('c', buffer.Get(0, 2).Char);
-        Assert.Equal('d', buffer.Get(1, 2).Char);
+        Assert.Equal('│', buffer.Get(0, 2).Char);
+        Assert.Equal('c', buffer.Get(1, 2).Char);
+        Assert.Equal('d', buffer.Get(2, 2).Char);
 
         // Bottom border
-        Assert.Equal('─', buffer.Get(0, 3).Char);
+        Assert.Equal('└', buffer.Get(0, 3).Char);
     }
 
     // --- Ctrl+A / Ctrl+E ---
@@ -443,62 +448,62 @@ public class ChatInputTests
     [Fact]
     public void GetInputHeight_AccountsForWrappedLines()
     {
-        // Type 15 characters into a 10-wide area: wraps to 2 visual lines
+        // Type 15 characters into a 12-wide area (10 columns of content): wraps to 2 visual lines
         foreach (var c in "hello world foo")
             _input.HandleKey(Char(c));
 
         // 2 visual rows (wrapped) + 2 borders = 4
-        Assert.Equal(4, _input.GetInputHeight(10));
+        Assert.Equal(4, _input.GetInputHeight(12));
     }
 
     [Fact]
     public void Render_SoftWrapsLongLine()
     {
-        // "abcde fghij" at width 6 should word-wrap to "abcde " / "fghij"
+        // "abcde fghij" at width 8 should word-wrap within 6 content columns to "abcde " / "fghij"
         foreach (var c in "abcde fghij")
             _input.HandleKey(Char(c));
 
         // 2 visual lines + 2 borders = 4 rows
-        var buffer = new Buffer(6, 4);
-        _input.Render(buffer, new Rect(0, 0, 6, 4));
+        var buffer = new Buffer(8, 4);
+        _input.Render(buffer, new Rect(0, 0, 8, 4));
 
         // First visual row: "abcde "
-        Assert.Equal('a', buffer.Get(0, 1).Char);
-        Assert.Equal('e', buffer.Get(4, 1).Char);
+        Assert.Equal('a', buffer.Get(1, 1).Char);
+        Assert.Equal('e', buffer.Get(5, 1).Char);
 
         // Second visual row: "fghij"
-        Assert.Equal('f', buffer.Get(0, 2).Char);
-        Assert.Equal('j', buffer.Get(4, 2).Char);
+        Assert.Equal('f', buffer.Get(1, 2).Char);
+        Assert.Equal('j', buffer.Get(5, 2).Char);
     }
 
     [Fact]
     public void Render_HardWrapsWhenNoSpace()
     {
-        // "abcdefghij" at width 6 has no space, so hard break at 6
+        // "abcdefghij" at width 8 has 6 columns of content and no space, so it hard-breaks at 6
         foreach (var c in "abcdefghij")
             _input.HandleKey(Char(c));
 
-        var buffer = new Buffer(6, 4);
-        _input.Render(buffer, new Rect(0, 0, 6, 4));
+        var buffer = new Buffer(8, 4);
+        _input.Render(buffer, new Rect(0, 0, 8, 4));
 
         // First visual row: "abcdef"
-        Assert.Equal('a', buffer.Get(0, 1).Char);
-        Assert.Equal('f', buffer.Get(5, 1).Char);
+        Assert.Equal('a', buffer.Get(1, 1).Char);
+        Assert.Equal('f', buffer.Get(6, 1).Char);
 
         // Second visual row: "ghij"
-        Assert.Equal('g', buffer.Get(0, 2).Char);
-        Assert.Equal('j', buffer.Get(3, 2).Char);
+        Assert.Equal('g', buffer.Get(1, 2).Char);
+        Assert.Equal('j', buffer.Get(4, 2).Char);
     }
 
     [Fact]
     public void Up_NavigatesAcrossWrappedVisualRows()
     {
-        // "abcde fghij" at width 6 wraps to "abcde " / "fghij"
+        // "abcde fghij" at width 8 wraps within 6 content columns to "abcde " / "fghij"
         // Cursor ends at col 11 (after 'j') = visual row 1, visual col 5
         foreach (var c in "abcde fghij")
             _input.HandleKey(Char(c));
 
-        RenderAt(6, 4);
+        RenderAt(8, 4);
         _input.HandleKey(Named(Key.Up));
         // Should be on visual row 0, col 5 → logical col 5 (the space)
         _input.HandleKey(Char('x'));
@@ -509,12 +514,12 @@ public class ChatInputTests
     [Fact]
     public void Down_NavigatesAcrossWrappedVisualRows()
     {
-        // "abcde fghij" at width 6 wraps to "abcde " / "fghij"
+        // "abcde fghij" at width 8 wraps within 6 content columns to "abcde " / "fghij"
         foreach (var c in "abcde fghij")
             _input.HandleKey(Char(c));
 
         // Move cursor to col 2 on visual row 0
-        RenderAt(6, 4);
+        RenderAt(8, 4);
         _input.HandleKey(Named(Key.Home)); // col 0
         _input.HandleKey(Named(Key.Right));
         _input.HandleKey(Named(Key.Right)); // col 2
@@ -544,7 +549,7 @@ public class ChatInputTests
         _input.Render(buffer, new Rect(0, 0, 40, 7));
 
         // Last visible row (y=5) should show 'g' (the line with cursor)
-        Assert.Equal('g', buffer.Get(0, 5).Char);
+        Assert.Equal('g', buffer.Get(1, 5).Char);
 
         // Move cursor to top
         for (var i = 0; i < 6; i++)
@@ -553,13 +558,13 @@ public class ChatInputTests
         _input.Render(buffer, new Rect(0, 0, 40, 7));
 
         // First visible row (y=1) should now show 'a'
-        Assert.Equal('a', buffer.Get(0, 1).Char);
+        Assert.Equal('a', buffer.Get(1, 1).Char);
     }
 
     [Fact]
     public void Render_ScrollsWrappedContent()
     {
-        // Create a long line that wraps into many visual rows at width 5
+        // Create a long line that wraps into many visual rows at width 7
         // 25 chars = 5 visual rows at width 5, plus one more line = 6 visual rows
         foreach (var c in "abcdefghijklmnopqrstuvwxy")
             _input.HandleKey(Char(c));
@@ -567,11 +572,11 @@ public class ChatInputTests
         _input.HandleKey(Char('z'));
 
         // 6 visual rows total, max visible 5. Cursor on last row.
-        var buffer = new Buffer(5, 7);
-        _input.Render(buffer, new Rect(0, 0, 5, 7));
+        var buffer = new Buffer(7, 7);
+        _input.Render(buffer, new Rect(0, 0, 7, 7));
 
         // Last visible row should show 'z'
-        Assert.Equal('z', buffer.Get(0, 5).Char);
+        Assert.Equal('z', buffer.Get(1, 5).Char);
     }
 
     [Fact]

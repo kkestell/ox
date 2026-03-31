@@ -6,12 +6,16 @@
 
 The terminal chat client for Ur. A persistent chat UI with a message list, multi-line input, modal overlays, and a slash command system. Built on the [Ur.Terminal](terminal-framework.md) framework. Consumes the Ur library's public API (`UrHost`, `UrSession`, `UrConfiguration`, `UrExtensionCatalog`) and renders `AgentLoopEvent` streams as a live chat experience.
 
+The detailed runtime/orchestration design lives in [tui-runtime.md](tui-runtime.md). This document stays focused on the TUI as a building block; the runtime doc captures the missing application layer between render-loop integration and leaf widgets.
+
 ### Non-Goals
 
-- Does not own any business logic. Session lifecycle, configuration, readiness, and turn execution are Ur library concerns.
+- Does not own Ur domain business rules. Session persistence, readiness evaluation, extension lifecycle, and turn execution are library concerns.
 - Does not handle session resume in v1. Always creates a new session.
 - Does not render Markdown or rich text in v1. Assistant responses are plain text.
 - Does not implement its own terminal primitives. All cell/buffer/layer/compositor work is delegated to Ur.Terminal.
+
+The TUI does own interaction workflow: routing keys, driving first-run setup, dispatching slash commands, and projecting backend events into display state.
 
 ## Context
 
@@ -72,27 +76,28 @@ Two layers in the compositor:
 
 ### Layout
 
-Layout is arithmetic computed each frame based on terminal dimensions and component state:
+Layout is handled by the [terminal layout system](terminal-layout.md) rather than manual arithmetic.
 
+**Base layer (message list + input):**
 ```
-screenHeight = terminal.Height
-inputHeight  = chatInput.LineCount   (minimum 1, grows with content)
-messageHeight = screenHeight - inputHeight
-messageRect  = Rect(0, 0, terminal.Width, messageHeight)
-inputRect    = Rect(0, messageHeight, terminal.Width, inputHeight)
-
-if modal active:
-  modalWidth  = fixed (e.g., 60)
-  modalHeight = fixed (depends on modal)
-  modalRect   = centered on screen
-  shadowRect  = modalRect offset by (1, 1)   — or (2, 1), TBD
+VerticalStack
+├── MessageList                  [SizeConstraint.Fill]
+└── ChatInput (Border = true)    [SizeConstraint.Content → MeasureHeight includes border]
 ```
 
-No layout engine. Just math.
+The VerticalStack calls `ChatInput.MeasureHeight(width)`, which internally calls `MeasureContentHeight` (wrapped line count) and adds border + padding overhead. MessageList gets the remaining space. Both are Widgets — ChatInput has `Border = true`, MessageList has no chrome.
+
+**Overlay layer (modals):**
+```
+Center(modalWidth, modalHeight)
+└── ApiKeyModal (Border = true, Background = color, Padding = ...)
+```
+
+Center positions the modal in the screen center. The modal's base `Widget.Render` draws border/background, then calls `RenderContent` with the inner rect. Modal widgets no longer compute their own centering, border drawing, or background fills — their `RenderContent` just renders content.
 
 ### Components
 
-All implement `IComponent` from Ur.Terminal.
+All extend `Widget` from Ur.Terminal.
 
 **MessageList** — The most complex component. Renders messages bottom-up: latest message at the bottom of the rect, previous messages stacked upward. Each message type (user, assistant, tool call, system) has distinct rendering (prefix, color, formatting). Message height is dynamic (word wrapping). If messages overflow the top of the rect, the topmost message is clipped. Scroll offset shifts the viewport.
 
@@ -100,9 +105,9 @@ All implement `IComponent` from Ur.Terminal.
 
 **ApiKeyModal** — Masked text input in a bordered box. Enter submits, Esc dismisses (on first run: exits the app). Characters display as `*`.
 
-**ModelPickerModal** — Searchable list in a bordered box. Type to filter (by model name or ID), arrow keys to navigate, Enter to select, Esc to dismiss. Shows model metadata (context length, cost) for the selected item. Must handle 345+ models efficiently — filtering and rendering only the visible window.
+**ModelPickerModal** — Searchable list in a bordered box. Type to filter (by model name or ID), Enter to select, Esc to dismiss. Shows model metadata (context length, cost) for the selected item. Must handle 345+ models efficiently — filtering and rendering only the visible window. Delegates list rendering and selection/scroll management to `ScrollableList<T>` from [Ur.Terminal](terminal-layout.md); provides an item render callback for model-specific formatting.
 
-**ExtensionManagerModal** — Searchable list of discovered extensions. Shows tier, enabled/disabled/error state, description, and version. Enter toggles the selected extension; resetting to default is available as a secondary action. Enabling a workspace extension requires an explicit confirmation step because it is a trust decision, not a cosmetic preference. In v1, toggles are only allowed while no turn is running.
+**ExtensionManagerModal** — Searchable list of discovered extensions. Shows tier, enabled/disabled/error state, description, and version. Enter toggles the selected extension; resetting to default is available as a secondary action. Enabling a workspace extension requires an explicit confirmation step because it is a trust decision, not a cosmetic preference. In v1, toggles are only allowed while no turn is running. Delegates list rendering and selection/scroll management to `ScrollableList<T>` from [Ur.Terminal](terminal-layout.md).
 
 ### Key Routing
 
@@ -136,10 +141,12 @@ When the user submits a message:
 4. The background task drains `AgentLoopEvent`s into a concurrent queue.
 5. Each frame, the app drains the agent event queue:
    - `ResponseChunk` → append text to the streaming assistant message
-   - `ToolCallStarted` → add a `DisplayMessage(Role: Tool)` with tool name
-   - `ToolCallCompleted` → update the tool message with result/error
+   - `ToolCallStarted` → add a `DisplayMessage(Role: Tool)` with tool name and retain the tool-call identity
+   - `ToolCallCompleted` → update the matching tool message by `CallId`, not only by tool name
    - `TurnCompleted` → mark streaming message as `IsStreaming = false`, set `IsTurnRunning = false`
    - `Error` → add a system error message. If fatal, stop the turn.
+
+The current implementation does this inside `ChatApp`; the target refactor splits the frame shell, turn runner, and event projector as described in [tui-runtime.md](tui-runtime.md).
 
 ### Cancellation
 
@@ -170,4 +177,5 @@ When the user submits a message:
 
 ## Open Questions
 
-None currently.
+- How much widget-local state should remain inside modal components versus move into explicit runtime state?
+- Should slash commands stay dictionary-dispatched, or should the TUI parse them into typed intents before applying workflow logic?

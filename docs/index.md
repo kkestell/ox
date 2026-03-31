@@ -81,7 +81,7 @@ Users interact with Ur through a UI layer (CLI REPL initially, GUI/IDE later). U
 | Session Storage   | Persists conversation history as JSONL. Manages session lifecycle (create, resume, list) scoped to workspace. | [session-storage.md](session-storage.md)     |
 | Tool Registry     | Maintains available tools. Core provides the registry; extensions register tools into it.                     | [tool-registry.md](tool-registry.md)         |
 | Workspace         | Represents the launch directory. Scopes sessions, config, and workspace extensions.                           | [workspace.md](workspace.md)                 |
-| Terminal Framework | Minimal TUI framework: cell grid, buffer, layer/compositor with shadows, HAL, key input, render loop, IComponent contract. | [terminal-framework.md](terminal-framework.md) |
+| Terminal Framework | Minimal TUI framework: cell grid, buffer, layer/compositor, HAL, key input, render loop, IComponent contract, layout primitives (vertical stack, centering, widget decorator), scrollable list. | [terminal-framework.md](terminal-framework.md), [terminal-layout.md](terminal-layout.md) |
 | TUI Chat Client   | Terminal chat client built on Ur.Terminal. Message list, multi-line input, modals, slash commands.             | [cli-tui.md](cli-tui.md)                     |
 
 ## Data Architecture

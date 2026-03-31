@@ -4,12 +4,11 @@
 
 ## Purpose and Scope
 
-A minimal TUI framework that provides the building blocks for terminal-based UIs. Owns the terminal HAL (raw mode, ANSI output, key input), a cell-based rendering model, a layer/compositor system with shadow support, a component contract, and a frame-based render loop. Purpose-built for Ur's needs but decoupled from any Ur domain types — the framework knows nothing about chat, LLMs, or sessions.
+A minimal TUI framework that provides the building blocks for terminal-based UIs. Owns the terminal HAL (raw mode, ANSI output, key input), a cell-based rendering model, a layer/compositor system with shadow support, a component contract, a frame-based render loop, and a small set of [layout primitives and reusable components](terminal-layout.md). Purpose-built for Ur's needs but decoupled from any Ur domain types — the framework knows nothing about chat, LLMs, or sessions.
 
 ### Non-Goals
 
-- Not a general-purpose widget toolkit. No built-in text input, list view, or dialog widgets. The framework provides the contract (`IComponent`); applications implement their own components.
-- No layout engine. Applications compute their own rects (region sizes, positions). The framework renders what it's told.
+- Not a general-purpose layout engine or widget toolkit. The framework provides targeted layout primitives (vertical stack, centering, widget decorator) and a scrollable list — see [terminal-layout.md](terminal-layout.md). No CSS-style flexbox, grid, constraint solver, or arbitrary nesting.
 - No focus system. Applications route key events to components based on their own state.
 - No component tree, dirty tracking, or lifecycle management. Components are stateless renderers from the framework's perspective — the application owns their state and decides when to call them.
 - No text shaping, Unicode grapheme segmentation, or bidirectional text. Cells are one character wide. Full-width characters and combining marks are out of scope for v1.
@@ -93,20 +92,17 @@ A minimal TUI framework that provides the building blocks for terminal-based UIs
   - `EventType`: `Press`, `Repeat`, or `Release`
 - **Why this shape:** The `Key` enum + `Modifiers` flags provide a stable API across basic ANSI and Kitty keyboard protocol input. `EventType` lets applications distinguish key press, repeat, and release without reparsing escape sequences, while `Char` gives components direct access to safe single-character input.
 
-### IComponent
+### Widget (abstract base class)
 
-- **Purpose:** The minimal contract for renderable, interactive UI elements.
-- **Shape:**
-  ```
-  interface IComponent
-  {
-      void Render(Buffer buffer, Rect area);
-      bool HandleKey(KeyEvent key);
-  }
-  ```
-- **`Render`:** Draw into `buffer` within `area`. May be called every frame. Must not access terminal I/O directly. Must stay within `area` bounds (out-of-bounds writes are clipped by Buffer, but components should respect their area).
-- **`HandleKey`:** Process a key event. Return `true` if consumed, `false` to let the application route it elsewhere.
-- **What the framework does NOT enforce:** The application decides which component gets `Render` calls (all of them, every frame? only dirty ones?), which component gets key events (focus routing), and how components compose spatially. The interface is just the calling convention.
+- **Purpose:** The unified base type for all renderable, interactive UI elements. Replaces the former `IComponent` interface. Every component — layout containers, leaf components, reusable pieces — extends Widget.
+- **Shape:** See [terminal-layout.md](terminal-layout.md) for the full data structure. In brief:
+  - Chrome properties: `Border`, `BorderForeground`, `BorderBackground`, `Background`, `Padding`
+  - `Render(Buffer, Rect)` — not virtual. Draws chrome, calls `RenderContent`.
+  - `RenderContent(Buffer, Rect)` — abstract. Subclasses implement this. The rect has chrome subtracted.
+  - `HandleKey(KeyEvent) → bool` — abstract. Return true if consumed.
+  - `MeasureHeight(int width) → int?` — public, not virtual. Calls `MeasureContentHeight` and adds chrome.
+  - `MeasureContentHeight(int width) → int?` — protected virtual, returns null. Subclasses override for content-based sizing.
+- **What the framework does NOT enforce:** The application decides which widget gets `Render` calls, which gets key events (focus routing), and how widgets compose spatially. Widget is just the calling convention and chrome rendering.
 
 ## Internal Design
 
@@ -119,6 +115,7 @@ Ur.Terminal/
     Cell.cs
     Rect.cs
     Buffer.cs
+    Thickness.cs        — four-sided spacing value (padding)
   Rendering/
     Layer.cs
     Compositor.cs
@@ -132,10 +129,17 @@ Ur.Terminal/
     ITerminal.cs        — HAL interface
     AnsiTerminal.cs     — ANSI implementation
   Components/
-    IComponent.cs
+    Widget.cs           — abstract base class (replaces IComponent)
+    ScrollableList.cs   — generic scrollable list with selection
+  Layout/
+    SizeConstraint.cs   — Fixed | Content | Fill
+    VerticalStack.cs    — vertical partitioning
+    Center.cs           — centering container
   App/
     RenderLoop.cs       — frame timer at configurable FPS
 ```
+
+See [terminal-layout.md](terminal-layout.md) for detailed design of the Layout and new Components types.
 
 ### Compositor
 
