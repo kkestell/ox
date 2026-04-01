@@ -8,4 +8,5 @@
   <Project Path="Ur.Terminal.Tests/Ur.Terminal.Tests.csproj" />
   <Project Path="Ur.Tui/Ur.Tui.csproj" />
   <Project Path="Ur.Tui.Tests/Ur.Tui.Tests.csproj" />
+  <Project Path="Ur.Gui/Ur.Gui.csproj" />
 </Solution>

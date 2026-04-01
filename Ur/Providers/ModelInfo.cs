@@ -10,4 +10,9 @@ public sealed record ModelInfo(
     int MaxOutputTokens,
     decimal InputCostPerToken,
     decimal OutputCostPerToken,
-    IReadOnlyList<string> SupportedParameters);
+    IReadOnlyList<string> SupportedParameters,
+    string? Modality)
+{
+    public decimal InputCostPerMToken => InputCostPerToken * 1_000_000;
+    public decimal OutputCostPerMToken => OutputCostPerToken * 1_000_000;
+}

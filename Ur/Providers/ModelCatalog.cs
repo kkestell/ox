@@ -46,6 +46,10 @@ public sealed class ModelCatalog
             if (entries is null)
                 return false;
 
+            // If no entries have modality data, cache is from before that field was added.
+            if (entries.All(e => e.Architecture is null))
+                return false;
+
             _models = BuildIndex(entries.Select(ToModelInfo));
             return true;
         }
@@ -96,7 +100,8 @@ public sealed class ModelCatalog
         MaxOutputTokens: m.TopProvider?.MaxCompletionTokens ?? 0,
         InputCostPerToken: ParseDecimal(m.Pricing?.Prompt),
         OutputCostPerToken: ParseDecimal(m.Pricing?.Completion),
-        SupportedParameters: m.SupportedParameters ?? []);
+        SupportedParameters: m.SupportedParameters ?? [],
+        Modality: m.Architecture?.Modality);
 
     private static ModelInfo ToModelInfo(ModelCacheEntry e) => new(
         Id: e.Id,
@@ -105,7 +110,8 @@ public sealed class ModelCatalog
         MaxOutputTokens: e.TopProvider?.MaxCompletionTokens ?? 0,
         InputCostPerToken: ParseDecimal(e.Pricing?.Prompt),
         OutputCostPerToken: ParseDecimal(e.Pricing?.Completion),
-        SupportedParameters: e.SupportedParameters ?? []);
+        SupportedParameters: e.SupportedParameters ?? [],
+        Modality: e.Architecture?.Modality);
 
     private static decimal ParseDecimal(string? s) =>
         decimal.TryParse(s, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var v)
@@ -147,6 +153,9 @@ public sealed class ModelCatalog
 
         [JsonPropertyName("supported_parameters")]
         public List<string>? SupportedParameters { get; set; }
+
+        [JsonPropertyName("architecture")]
+        public ArchitectureInfo? Architecture { get; set; }
     }
 
     // Cache entries share the same shape as the API response for simplicity.
@@ -169,6 +178,15 @@ public sealed class ModelCatalog
 
         [JsonPropertyName("supported_parameters")]
         public List<string>? SupportedParameters { get; set; }
+
+        [JsonPropertyName("architecture")]
+        public ArchitectureInfo? Architecture { get; set; }
+    }
+
+    internal sealed class ArchitectureInfo
+    {
+        [JsonPropertyName("modality")]
+        public string? Modality { get; set; }
     }
 
     internal sealed class PricingInfo

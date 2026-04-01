@@ -83,6 +83,7 @@ Users interact with Ur through a UI layer (CLI REPL initially, GUI/IDE later). U
 | Workspace         | Represents the launch directory. Scopes sessions, config, and workspace extensions.                           | [workspace.md](workspace.md)                 |
 | Terminal Framework | Minimal TUI framework: cell grid, buffer, layer/compositor, HAL, key input, render loop, IComponent contract, layout primitives (vertical stack, centering, widget decorator), scrollable list. | [terminal-framework.md](terminal-framework.md), [terminal-layout.md](terminal-layout.md) |
 | TUI Chat Client   | Terminal chat client built on Ur.Terminal. Message list, multi-line input, modals, slash commands.             | [cli-tui.md](cli-tui.md)                     |
+| GUI Chat Client   | Native desktop chat client built with AvaloniaUI MVVM. Provides the same conversation experience as the TUI with a richer rendering canvas (Markdown, code blocks, diffs). | [gui.md](gui.md) |
 
 ## Data Architecture
 
@@ -168,6 +169,7 @@ Users interact with Ur through a UI layer (CLI REPL initially, GUI/IDE later). U
 | API-based model discovery (not static catalog)              | 345+ models that change frequently. OpenRouter API is the source of truth, cached to disk.                     | —                                                                |
 | Library owns chat client and keyring creation               | Provider SDKs, keyring creation, and platform detection are library concerns. Frontends provide nothing.         | [ADR-0011](decisions/adr-0011-library-owns-chat-client-and-keyring.md) |
 | Microsoft.Extensions.AI for LLM abstraction                 | Official .NET AI abstraction. Provider-agnostic.                                                                | —                                                                |
+| Avalonia MVVM without ReactiveUI for Ur.Gui                 | CommunityToolkit.Mvvm source generators. AoT-safe, no Rx overhead for the simple streaming model.              | [ADR-0013](decisions/adr-0013-avalonia-mvvm-no-reactiveui.md)    |
 
 ## Risks and Technical Debt
 

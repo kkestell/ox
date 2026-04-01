@@ -10,16 +10,19 @@ public class ModelPickerModalTests
 {
     private static readonly List<ModelInfo> TestModels =
     [
-        new("anthropic/claude-sonnet-4-6", "Claude Sonnet 4.6", 200_000, 8_192, 0.000003m, 0.000015m, []),
-        new("anthropic/claude-opus-4-6", "Claude Opus 4.6", 200_000, 8_192, 0.000015m, 0.000075m, []),
-        new("openai/gpt-4o", "GPT-4o", 128_000, 16_384, 0.0000025m, 0.00001m, []),
-        new("openai/gpt-4o-mini", "GPT-4o Mini", 128_000, 16_384, 0.00000015m, 0.0000006m, []),
-        new("google/gemini-2.5-pro", "Gemini 2.5 Pro", 1_000_000, 65_536, 0.00000125m, 0.00001m, []),
+        new("anthropic/claude-sonnet-4-6", "Claude Sonnet 4.6", 200_000, 8_192, 0.000003m, 0.000015m, [], "text->text"),
+        new("anthropic/claude-opus-4-6", "Claude Opus 4.6", 200_000, 8_192, 0.000015m, 0.000075m, [], "text->text"),
+        new("openai/gpt-4o", "GPT-4o", 128_000, 16_384, 0.0000025m, 0.00001m, [], "text->text"),
+        new("openai/gpt-4o-mini", "GPT-4o Mini", 128_000, 16_384, 0.00000015m, 0.0000006m, [], "text->text"),
+        new("google/gemini-2.5-pro", "Gemini 2.5 Pro", 1_000_000, 65_536, 0.00000125m, 0.00001m, [], "text->text"),
     ];
 
+    private const int TestWidth = 72;
+    private const int TestHeight = 20;
+
     private readonly ModelPickerModal _modal = new(TestModels);
-    private readonly Buffer _buffer = new(ModelPickerModal.ModalWidth, ModelPickerModal.ModalHeight);
-    private readonly Rect _area = new(0, 0, ModelPickerModal.ModalWidth, ModelPickerModal.ModalHeight);
+    private readonly Buffer _buffer = new(TestWidth, TestHeight);
+    private readonly Rect _area = new(0, 0, TestWidth, TestHeight);
 
     private static KeyEvent Char(char c) => new(Key.Unknown, Modifiers.None, c);
     private static KeyEvent Named(Key key) => new(key, Modifiers.None, null);
@@ -44,7 +47,8 @@ public class ModelPickerModalTests
                 8_192,
                 0.000001m,
                 0.000002m,
-                []));
+                [],
+                "text->text"));
         }
 
         return models;
@@ -55,17 +59,16 @@ public class ModelPickerModalTests
     {
         _modal.Render(_buffer, _area);
 
-        // Find model names in the rendered buffer
         var foundClaude = false;
         var foundGpt = false;
         for (var y = 0; y < _buffer.Height; y++)
         {
             var row = ReadRow(_buffer, y, 0, _buffer.Width);
-            if (row.Contains("Claude Sonnet 4.6")) foundClaude = true;
-            if (row.Contains("GPT-4o")) foundGpt = true;
+            if (row.Contains("anthropic/claude-sonnet-4-6")) foundClaude = true;
+            if (row.Contains("openai/gpt-4o")) foundGpt = true;
         }
-        Assert.True(foundClaude, "Should show Claude Sonnet in list");
-        Assert.True(foundGpt, "Should show GPT-4o in list");
+        Assert.True(foundClaude, "Should show anthropic/claude-sonnet-4-6 in list");
+        Assert.True(foundGpt, "Should show openai/gpt-4o in list");
     }
 
     [Fact]
@@ -177,11 +180,11 @@ public class ModelPickerModalTests
     }
 
     [Fact]
-    public void Render_DetailArea_DoesNotOverwriteLastVisibleListItem()
+    public void Render_ScrolledList_ShowsSelectedItem()
     {
         var modal = new ModelPickerModal(BuildManyModels(count: 15));
-        var mw = ModelPickerModal.ModalWidth;
-        var mh = ModelPickerModal.ModalHeight;
+        var mw = TestWidth;
+        var mh = TestHeight;
         var buffer = new Buffer(mw, mh);
         var modalRect = new Rect(0, 0, mw, mh);
 
@@ -190,18 +193,40 @@ public class ModelPickerModalTests
 
         modal.Render(buffer, modalRect);
 
-        // Border at row 0, content starts at row 1. List starts at row 4 (header=3 + border=1).
-        // With 15 items and 12 Down presses, selected = 12. Last visible list row and detail area
-        // should not overlap.
         var found12 = false;
-        var detailHasId = false;
         for (var y = 0; y < mh; y++)
         {
             var row = ReadRow(buffer, y, 0, mw);
-            if (row.Contains("Model 12")) found12 = true;
-            if (row.Contains("test/model-12")) detailHasId = true;
+            if (row.Contains("model-12")) found12 = true;
         }
-        Assert.True(found12, "Selected item 'Model 12' should appear in the list");
-        Assert.True(detailHasId, "Detail area should show the selected model's ID");
+        Assert.True(found12, "Selected item 'model-12' should appear in the list");
+    }
+
+    [Fact]
+    public void Render_ShowsColumnsAligned()
+    {
+        _modal.Render(_buffer, _area);
+
+        var rows = new List<string>();
+        for (var y = 0; y < _buffer.Height; y++)
+        {
+            var row = ReadRow(_buffer, y, 0, _buffer.Width);
+            if (row.Contains("anthropic/") || row.Contains("openai/") || row.Contains("google/"))
+                rows.Add(row);
+        }
+
+        Assert.True(rows.Count >= 3, "Should have at least 3 model rows");
+
+        // Verify price columns appear in each row
+        foreach (var row in rows)
+            Assert.Contains("$", row);
+
+        // Both anthropic models have "200k" context — verify they align at the same column
+        var anthropicRows = rows.Where(r => r.Contains("anthropic/")).ToList();
+        Assert.True(anthropicRows.Count >= 2);
+        var ctxOffset0 = anthropicRows[0].IndexOf("200k", StringComparison.Ordinal);
+        var ctxOffset1 = anthropicRows[1].IndexOf("200k", StringComparison.Ordinal);
+        Assert.True(ctxOffset0 > 0, "Should contain '200k'");
+        Assert.Equal(ctxOffset0, ctxOffset1);
     }
 }

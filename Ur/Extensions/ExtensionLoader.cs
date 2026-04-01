@@ -183,7 +183,7 @@ internal static class ExtensionLoader
         {
             var def = context.GetArgument<LuaTable>(0);
 
-            var name = ReadRequiredString(def, "name");
+            var name = SanitizeToolName(ReadRequiredString(def, "name"));
             var description = ReadOptionalString(def, "description") ?? "";
             var handler = def["handler"].TryRead<LuaFunction>(out var fn)
                 ? fn
@@ -281,6 +281,12 @@ internal static class ExtensionLoader
     {
         return table[key].TryRead<string>(out var s) ? s : null;
     }
+
+    private static readonly System.Text.RegularExpressions.Regex InvalidToolNameChars =
+        new("[^a-zA-Z0-9_-]", System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    private static string SanitizeToolName(string name) =>
+        InvalidToolNameChars.Replace(name, "_");
 
     private static int TierSortOrder(ExtensionTier tier) =>
         tier switch

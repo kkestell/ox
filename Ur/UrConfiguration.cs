@@ -27,7 +27,9 @@ public sealed class UrConfiguration
     public string? SelectedModelId => _settings.Get<string>(ModelSettingKey);
 
     public IReadOnlyList<ModelInfo> AvailableModels => _modelCatalog.Models
-        .OrderBy(model => model.Id, StringComparer.OrdinalIgnoreCase)
+        .Where(m => m.Modality is { } mod && mod.Split("->") is [var input, var output] && input.Split('+').Contains("text") && output.Split('+').Contains("text"))
+        .Where(m => m.SupportedParameters.Contains("tools", StringComparer.OrdinalIgnoreCase))
+        .OrderBy(m => m.Id, StringComparer.OrdinalIgnoreCase)
         .ToList();
 
     public ModelInfo? GetModel(string modelId) => _modelCatalog.GetModel(modelId);
