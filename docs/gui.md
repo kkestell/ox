@@ -22,7 +22,7 @@ The initial spike reproduces Ur.Tui's functionality using idiomatic Avalonia (st
 
 | Dependency | What it provides | Interface |
 |---|---|---|
-| Ur (library) | Session creation, turn execution, readiness, model catalog, extension catalog | `UrHost`, `UrSession`, `UrConfiguration`, `UrExtensionCatalog` |
+| Ur (library) | Session creation, turn execution, readiness, model catalog, extension catalog | `UrHost`, `UrSession`, `UrConfiguration`, `ExtensionCatalog` |
 | AvaloniaUI | Window, controls, XAML binding, layout, theming | Avalonia 11 desktop APIs |
 
 ### Dependents
@@ -147,7 +147,7 @@ This is the same projection logic as the TUI's frame-drain loop, driven by `Disp
 
 First-run setup dialogs (API key, model picker) and the extension manager are Avalonia `Window` dialogs shown with `ShowDialog`. They are not ViewModels-as-modals — Avalonia's dialog system is the idiomatic mechanism.
 
-The parent ViewModel (typically `MainWindowViewModel`) constructs each dialog ViewModel with exactly the data it needs as constructor arguments — no more. The model picker receives the model list (a plain collection fetched from `UrConfiguration`); the extension manager receives the extension info collection from `UrExtensionCatalog`. Neither dialog ViewModel holds a reference to `UrHost`, `UrConfiguration`, or any other broad application object.
+The parent ViewModel (typically `MainWindowViewModel`) constructs each dialog ViewModel with exactly the data it needs as constructor arguments — no more. The model picker receives the model list (a plain collection fetched from `UrConfiguration`); the extension manager receives the extension info collection from `ExtensionCatalog`. Neither dialog ViewModel holds a reference to `UrHost`, `UrConfiguration`, or any other broad application object.
 
 ## Error Handling and Failure Modes
 

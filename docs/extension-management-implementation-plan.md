@@ -115,7 +115,7 @@ Expose a real workspace-scoped extension management surface for frontends.
 
 ### Scope
 
-- Add `UrExtensionCatalog` and `UrExtensionInfo`.
+- Add `ExtensionCatalog` and `ExtensionInfo`.
 - Move callers away from raw runtime objects as the primary management interface.
 - Support list, enable/disable, and reset-to-default operations.
 
@@ -129,7 +129,7 @@ Expose a real workspace-scoped extension management surface for frontends.
 ### Work Items
 
 1. Add `UrHost.Extensions` as a catalog/service rather than a raw list.
-2. Define `UrExtensionInfo` fields:
+2. Define `ExtensionInfo` fields:
    - `Id`
    - `Name`
    - `Tier`
@@ -180,7 +180,7 @@ Prepare the TUI to consume the new library API in a testable way before adding u
 ### Likely Code Areas
 
 - `Ur.Tui/IChatBackend.cs`
-- `Ur.Tui/UrChatBackend.cs`
+- `Ur.Tui/ChatBackend.cs`
 - `Ur.Tui.Tests/TestChatBackend.cs`
 - New modal/view-model code under `Ur.Tui/Components/`
 - New tests in `Ur.Tui.Tests/`

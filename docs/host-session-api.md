@@ -9,12 +9,12 @@ Defines the public runtime surface consumed by UIs. `UrHost` is the workspace-sc
 ## Current Status
 
 - Implemented in this pass:
-  - `UrHost`, `UrConfiguration`, `UrSession`, `UrSessionInfo`, `UrChatReadiness`, and `UrChatNotReadyException` are now the public runtime surface.
+  - `UrHost`, `UrConfiguration`, `UrSession`, `SessionInfo`, `ChatReadiness`, and `ChatNotReadyException` are now the public runtime surface.
   - `UrSession.RunTurnAsync(...)` now owns readiness preflight, user-message append, chat-client acquisition, and automatic persistence of appended messages.
   - Runtime configuration writes for API key storage and model selection now go through `UrConfiguration`.
 - Still outstanding:
   - The UI flow that prompts for an API key and model selection is still frontend work built on top of `UrConfiguration`.
-  - `UrTurnCallbacks` is reserved for future gated tool-approval prompts. The callback contract exists now, but runtime consumption is deferred until tool execution actually needs permission prompts.
+  - `TurnCallbacks` is reserved for future gated tool-approval prompts. The callback contract exists now, but runtime consumption is deferred until tool execution actually needs permission prompts.
 
 ### Non-Goals
 
@@ -55,16 +55,16 @@ public sealed class UrHost
 
     public string WorkspacePath { get; }
     public UrConfiguration Configuration { get; }
-    public UrExtensionCatalog Extensions { get; }
+    public ExtensionCatalog Extensions { get; }
 
-    public IReadOnlyList<UrSessionInfo> ListSessions();
+    public IReadOnlyList<SessionInfo> ListSessions();
     public UrSession CreateSession();
     public Task<UrSession?> OpenSessionAsync(
         string sessionId,
         CancellationToken ct = default);
 }
 
-public sealed class UrSessionInfo
+public sealed class SessionInfo
 {
     public string Id { get; }
     public DateTimeOffset CreatedAt { get; }
@@ -80,13 +80,13 @@ public sealed class UrSession
 
     public IAsyncEnumerable<AgentLoopEvent> RunTurnAsync(
         string userInput,
-        UrTurnCallbacks? turnCallbacks = null,
+        TurnCallbacks? turnCallbacks = null,
         CancellationToken ct = default);
 }
 
 public sealed class UrConfiguration
 {
-    public UrChatReadiness Readiness { get; }
+    public ChatReadiness Readiness { get; }
     public string? SelectedModelId { get; }
     public IReadOnlyList<ModelInfo> AvailableModels { get; }
 
@@ -109,21 +109,21 @@ public sealed class UrConfiguration
         CancellationToken ct = default);
 }
 
-public sealed class UrExtensionCatalog
+public sealed class ExtensionCatalog
 {
-    public IReadOnlyList<UrExtensionInfo> List();
+    public IReadOnlyList<ExtensionInfo> List();
 
-    public Task<UrExtensionInfo> SetEnabledAsync(
+    public Task<ExtensionInfo> SetEnabledAsync(
         string extensionId,
         bool enabled,
         CancellationToken ct = default);
 
-    public Task<UrExtensionInfo> ResetAsync(
+    public Task<ExtensionInfo> ResetAsync(
         string extensionId,
         CancellationToken ct = default);
 }
 
-public sealed class UrExtensionInfo
+public sealed class ExtensionInfo
 {
     public string Id { get; }
     public string Name { get; }
@@ -137,19 +137,19 @@ public sealed class UrExtensionInfo
     public string? LoadError { get; }
 }
 
-public sealed class UrTurnCallbacks
+public sealed class TurnCallbacks
 {
     public Func<PermissionRequest, CancellationToken, ValueTask<PermissionResponse>>?
         RequestPermissionAsync { get; init; }
 }
 
-public sealed class UrChatReadiness
+public sealed class ChatReadiness
 {
     public bool CanRunTurns { get; }
-    public IReadOnlyList<UrChatBlockingIssue> BlockingIssues { get; }
+    public IReadOnlyList<ChatBlockingIssue> BlockingIssues { get; }
 }
 
-public enum UrChatBlockingIssue
+public enum ChatBlockingIssue
 {
     MissingApiKey,
     MissingModelSelection,
@@ -161,9 +161,9 @@ public enum ConfigurationScope
     Workspace,
 }
 
-public sealed class UrChatNotReadyException : Exception
+public sealed class ChatNotReadyException : Exception
 {
-    public UrChatReadiness Readiness { get; }
+    public ChatReadiness Readiness { get; }
 }
 ```
 
@@ -180,7 +180,7 @@ public sealed class UrChatNotReadyException : Exception
 - **Purpose:** Workspace-scoped entry point. Created once per launched workspace.
 - **Responsibilities:** Enumerate sessions, create/open sessions, expose configuration and readiness, expose model catalog for selection UIs, and expose extension management for the current workspace.
 - **Key operations:**
-  - `ListSessions() -> IReadOnlyList<UrSessionInfo>`
+  - `ListSessions() -> IReadOnlyList<SessionInfo>`
   - `CreateSession() -> UrSession`
   - `OpenSessionAsync(sessionId, ...) -> UrSession?`
   - `Configuration` property for setup and readiness
@@ -208,16 +208,16 @@ public sealed class UrChatNotReadyException : Exception
   - `ClearSelectedModelAsync(scope = ConfigurationScope.User)`
   - Persist model selection to user scope by default, with workspace scope as an explicit opt-in
 
-### `UrExtensionCatalog`
+### `ExtensionCatalog`
 
 - **Purpose:** Public workspace-scoped extension management surface used by UIs.
 - **Responsibilities:** List discovered extensions, report desired vs active state, persist overrides, and activate/deactivate extensions through the library rather than through frontend-owned logic.
 - **Key operations:**
-  - `List() -> IReadOnlyList<UrExtensionInfo>`
+  - `List() -> IReadOnlyList<ExtensionInfo>`
   - `SetEnabledAsync(extensionId, enabled, ct)`
   - `ResetAsync(extensionId, ct)`
 
-### `UrTurnCallbacks`
+### `TurnCallbacks`
 
 - **Purpose:** UI-implemented decision points needed while a turn is actively running.
 - **v1 scope:** Permission prompts only.
@@ -228,7 +228,7 @@ public sealed class UrChatNotReadyException : Exception
 
 ## Data Structures
 
-### `UrSessionInfo`
+### `SessionInfo`
 
 - **Purpose:** Lightweight entry for session lists.
 - **Shape:** `{ Id, CreatedAt }`
@@ -246,7 +246,7 @@ public sealed class UrChatNotReadyException : Exception
   - The session can exist even when chat is not ready; readiness is separate from session existence.
   - `ActiveModelId` tracks the session's current model selection in memory. It is not yet reconstructed from per-message persisted provenance.
 
-### `UrChatReadiness`
+### `ChatReadiness`
 
 - **Purpose:** Describe whether the host/session is ready to execute turns.
 - **Shape:** A small structured value with:
@@ -257,7 +257,7 @@ public sealed class UrChatNotReadyException : Exception
   - Missing selected model
 - **Why this shape:** First-run setup is not a turn-execution concern. The UI should be able to detect and resolve blockers before attempting a turn.
 
-### `UrChatNotReadyException`
+### `ChatNotReadyException`
 
 - **Purpose:** Structured failure for callers who invoke `RunTurnAsync(...)` while readiness blockers remain.
 - **Shape:** `{ Readiness }`
@@ -280,7 +280,7 @@ Setup flows are driven explicitly by the UI through the configuration API. They 
 
 ### Session Lifecycle
 
-- `ListSessions()` returns lightweight `UrSessionInfo` values.
+- `ListSessions()` returns lightweight `SessionInfo` values.
 - `CreateSession()` returns a new in-memory `UrSession` for the workspace.
 - `OpenSessionAsync()` loads history into a `UrSession`.
 - A newly created session is in-memory only until the first user message is persisted.
@@ -304,8 +304,8 @@ If the caller attempts a turn while setup blockers remain, the operation should 
 
 | Failure Mode | Detection | Recovery | Impact on UI |
 |---|---|---|---|
-| Missing API key | `UrChatReadiness` contains blocker | Prompt and save credential | Setup flow before first turn |
-| Missing model selection | `UrChatReadiness` contains blocker | Show model picker and persist selection | Setup flow before first turn |
+| Missing API key | `ChatReadiness` contains blocker | Prompt and save credential | Setup flow before first turn |
+| Missing model selection | `ChatReadiness` contains blocker | Show model picker and persist selection | Setup flow before first turn |
 | Caller ignores readiness and calls `RunTurnAsync` anyway | Preflight in `UrSession` | Return structured setup-required failure | UI can redirect to setup |
 | Session not found | `OpenSessionAsync` returns `null` | UI offers create-new path | No crash |
 
@@ -379,7 +379,7 @@ If the caller attempts a turn while setup blockers remain, the operation should 
 - **Context:** The UI contract needs some synchronous-from-the-library decision point during turn execution.
 - **Choice:** The only v1 turn callback is permission prompting.
 - **Rationale:** This is the only known blocker where the library must pause an active turn and wait for the UI's answer. Other interactions should not be speculated into existence yet.
-- **Consequences:** `UrTurnCallbacks` remains small and future additions are opt-in rather than baked into the core too early.
+- **Consequences:** `TurnCallbacks` remains small and future additions are opt-in rather than baked into the core too early.
 
 ## Open Questions
 

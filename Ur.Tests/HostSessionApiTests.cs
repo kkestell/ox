@@ -15,8 +15,8 @@ public class HostSessionApiTests
         var readiness = host.Configuration.Readiness;
 
         Assert.False(readiness.CanRunTurns);
-        Assert.Contains(UrChatBlockingIssue.MissingApiKey, readiness.BlockingIssues);
-        Assert.Contains(UrChatBlockingIssue.MissingModelSelection, readiness.BlockingIssues);
+        Assert.Contains(ChatBlockingIssue.MissingApiKey, readiness.BlockingIssues);
+        Assert.Contains(ChatBlockingIssue.MissingModelSelection, readiness.BlockingIssues);
         Assert.Empty(host.ListSessions());
     }
 
@@ -50,7 +50,7 @@ public class HostSessionApiTests
         var host = await CreateHostAsync(workspace);
         var session = host.CreateSession();
 
-        var ex = await Assert.ThrowsAsync<UrChatNotReadyException>(async () =>
+        var ex = await Assert.ThrowsAsync<ChatNotReadyException>(async () =>
         {
             await foreach (var _ in session.RunTurnAsync("hello"))
             {

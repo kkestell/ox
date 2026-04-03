@@ -4,7 +4,7 @@
 
 ## Purpose and Scope
 
-The terminal chat client for Ur. A persistent chat UI with a message list, multi-line input, modal overlays, and a slash command system. Built on the [Ur.Terminal](terminal-framework.md) framework. Consumes the Ur library's public API (`UrHost`, `UrSession`, `UrConfiguration`, `UrExtensionCatalog`) and renders `AgentLoopEvent` streams as a live chat experience.
+The terminal chat client for Ur. A persistent chat UI with a message list, multi-line input, modal overlays, and a slash command system. Built on the [Ur.Terminal](terminal-framework.md) framework. Consumes the Ur library's public API (`UrHost`, `UrSession`, `UrConfiguration`, `ExtensionCatalog`) and renders `AgentLoopEvent` streams as a live chat experience.
 
 The detailed runtime/orchestration design lives in [tui-runtime.md](tui-runtime.md). This document stays focused on the TUI as a building block; the runtime doc captures the missing application layer between render-loop integration and leaf widgets.
 

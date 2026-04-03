@@ -22,7 +22,7 @@ public sealed class UrConfiguration
         _keyring = keyring;
     }
 
-    public UrChatReadiness Readiness => new(GetBlockingIssues());
+    public ChatReadiness Readiness => new(GetBlockingIssues());
 
     public string? SelectedModelId => _settings.Get<string>(ModelSettingKey);
 
@@ -65,15 +65,15 @@ public sealed class UrConfiguration
     internal bool HasApiKey() =>
         !string.IsNullOrWhiteSpace(_keyring.GetSecret(SecretService, SecretAccount));
 
-    private List<UrChatBlockingIssue> GetBlockingIssues()
+    private List<ChatBlockingIssue> GetBlockingIssues()
     {
-        var issues = new List<UrChatBlockingIssue>();
+        var issues = new List<ChatBlockingIssue>();
 
         if (!HasApiKey())
-            issues.Add(UrChatBlockingIssue.MissingApiKey);
+            issues.Add(ChatBlockingIssue.MissingApiKey);
 
         if (string.IsNullOrWhiteSpace(SelectedModelId))
-            issues.Add(UrChatBlockingIssue.MissingModelSelection);
+            issues.Add(ChatBlockingIssue.MissingModelSelection);
 
         return issues;
     }

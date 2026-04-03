@@ -184,7 +184,7 @@ public sealed class ChatApp
                 {
                     try
                     {
-                        UrExtensionInfo updated = action.Kind switch
+                        ExtensionInfo updated = action.Kind switch
                         {
                             ExtensionManagerActionKind.SetEnabled =>
                                 await _backend.SetExtensionEnabledAsync(action.ExtensionId, action.Enabled),
@@ -238,12 +238,12 @@ public sealed class ChatApp
     private void CheckReadiness()
     {
         var readiness = _backend.Readiness;
-        if (readiness.BlockingIssues.Contains(UrChatBlockingIssue.MissingApiKey))
+        if (readiness.BlockingIssues.Contains(ChatBlockingIssue.MissingApiKey))
         {
             _state.ActiveModal = new ApiKeyModal();
             return;
         }
-        if (readiness.BlockingIssues.Contains(UrChatBlockingIssue.MissingModelSelection))
+        if (readiness.BlockingIssues.Contains(ChatBlockingIssue.MissingModelSelection))
         {
             _state.ActiveModal = new ModelPickerModal(_backend.AvailableModels);
             return;

@@ -29,7 +29,7 @@ Implementation plan: [extension-management-implementation-plan.md](extension-man
 
 | Dependent | What it needs | Interface |
 |-----------|---------------|-----------|
-| Host & Session API | Public workspace-scoped extension management surface | `UrExtensionCatalog` |
+| Host & Session API | Public workspace-scoped extension management surface | `ExtensionCatalog` |
 | TUI Chat Client | List/search/toggle extensions | `List()`, `SetEnabledAsync(...)`, `ResetAsync(...)` |
 | Future CLI/GUI frontends | Same as above | Same |
 
@@ -39,7 +39,7 @@ Implementation plan: [extension-management-implementation-plan.md](extension-man
 
 - **Purpose:** Return a UI-friendly snapshot of all discovered extensions for the current workspace.
 - **Inputs:** None.
-- **Outputs:** Ordered list of `UrExtensionInfo` values.
+- **Outputs:** Ordered list of `ExtensionInfo` values.
 - **Errors:** None. Discovery/activation failures are reflected in the returned info rather than failing the list operation.
 - **Preconditions:** Host startup has completed manifest discovery.
 - **Postconditions / Invariants:** The list includes disabled and faulted extensions, not just active ones. Order is stable: system, user, workspace; then by name within each tier.
@@ -48,7 +48,7 @@ Implementation plan: [extension-management-implementation-plan.md](extension-man
 
 - **Purpose:** Change whether an extension should be active for this user in this scope.
 - **Inputs:** `extensionId`, `enabled`.
-- **Outputs:** Updated `UrExtensionInfo`.
+- **Outputs:** Updated `ExtensionInfo`.
 - **Errors:** Unknown extension ID; persistence failure while writing override state.
 - **Preconditions:** Caller should invoke this between turns in v1. Mutating extension state during an active turn is out of scope.
 - **Postconditions / Invariants:** If the requested state differs from the tier default, a persisted override exists. If the requested state matches the default, any persisted override is removed. Disabling unregisters capabilities and tears down runtime state. Enabling initializes the runtime and registers capabilities; activation failure leaves the extension inactive and records `LoadError`.
@@ -57,7 +57,7 @@ Implementation plan: [extension-management-implementation-plan.md](extension-man
 
 - **Purpose:** Remove a persisted override and return an extension to its tier default.
 - **Inputs:** `extensionId`.
-- **Outputs:** Updated `UrExtensionInfo`.
+- **Outputs:** Updated `ExtensionInfo`.
 - **Errors:** Unknown extension ID; persistence failure while clearing override state.
 - **Preconditions:** Same as `Set Enabled State`.
 - **Postconditions / Invariants:** The effective state becomes the tier default: system/user enabled, workspace disabled.
@@ -79,7 +79,7 @@ Implementation plan: [extension-management-implementation-plan.md](extension-man
 - **Invariants:** Unique within a host instance. Tier is part of the identity even though lower-trust collisions are currently skipped.
 - **Why this shape:** It is human-readable, stable across restarts, and unambiguous in persisted state.
 
-### `UrExtensionInfo`
+### `ExtensionInfo`
 
 - **Purpose:** Public snapshot exposed to UIs.
 - **Shape:** `{ Id, Name, Tier, Description, Version, DefaultEnabled, DesiredEnabled, IsActive, HasOverride, LoadError? }`.

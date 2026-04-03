@@ -8,17 +8,17 @@ namespace Ur.Tui;
 /// </summary>
 public interface IChatBackend
 {
-    UrChatReadiness Readiness { get; }
+    ChatReadiness Readiness { get; }
     IReadOnlyList<ModelInfo> AvailableModels { get; }
     string? SelectedModelId { get; }
-    IReadOnlyList<UrExtensionInfo> ListExtensions();
+    IReadOnlyList<ExtensionInfo> ListExtensions();
     Task SetApiKeyAsync(string apiKey);
     Task SetSelectedModelAsync(string modelId);
-    Task<UrExtensionInfo> SetExtensionEnabledAsync(
+    Task<ExtensionInfo> SetExtensionEnabledAsync(
         string extensionId,
         bool enabled,
         CancellationToken ct = default);
-    Task<UrExtensionInfo> ResetExtensionAsync(
+    Task<ExtensionInfo> ResetExtensionAsync(
         string extensionId,
         CancellationToken ct = default);
     IChatSession CreateSession();

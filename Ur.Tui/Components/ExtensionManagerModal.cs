@@ -44,12 +44,12 @@ public sealed class ExtensionManagerModal : Widget
     private static readonly Color FooterOkFg = new(180, 220, 180);
 
     private readonly StringBuilder _filter = new();
-    private List<UrExtensionInfo> _allExtensions;
-    private List<UrExtensionInfo> _filtered;
+    private List<ExtensionInfo> _allExtensions;
+    private List<ExtensionInfo> _filtered;
 
-    private readonly ScrollableList<UrExtensionInfo> _list;
+    private readonly ScrollableList<ExtensionInfo> _list;
 
-    public ExtensionManagerModal(IReadOnlyList<UrExtensionInfo> extensions)
+    public ExtensionManagerModal(IReadOnlyList<ExtensionInfo> extensions)
     {
         Border = true;
         BorderForeground = new Color(220, 220, 220);
@@ -59,7 +59,7 @@ public sealed class ExtensionManagerModal : Widget
         _allExtensions = SortExtensions(extensions).ToList();
         _filtered = _allExtensions.ToList();
 
-        _list = new ScrollableList<UrExtensionInfo>
+        _list = new ScrollableList<ExtensionInfo>
         {
             Background = ModalBg,
             ItemRenderer = RenderItem,
@@ -72,10 +72,10 @@ public sealed class ExtensionManagerModal : Widget
     public bool IsAwaitingWorkspaceEnableConfirmation { get; private set; }
     internal ExtensionManagerAction? RequestedAction { get; private set; }
     public string Filter => _filter.ToString();
-    public IReadOnlyList<UrExtensionInfo> FilteredExtensions => _filtered;
+    public IReadOnlyList<ExtensionInfo> FilteredExtensions => _filtered;
     public string? FeedbackMessage { get; private set; }
     public bool FeedbackIsError { get; private set; }
-    public UrExtensionInfo? SelectedExtension => _list.SelectedItem;
+    public ExtensionInfo? SelectedExtension => _list.SelectedItem;
 
     protected override void RenderContent(Buffer buffer, Rect area)
     {
@@ -177,7 +177,7 @@ public sealed class ExtensionManagerModal : Widget
         }
     }
 
-    internal void ReplaceExtensions(IReadOnlyList<UrExtensionInfo> extensions)
+    internal void ReplaceExtensions(IReadOnlyList<ExtensionInfo> extensions)
     {
         var selectedId = SelectedExtension?.Id;
         _allExtensions = SortExtensions(extensions).ToList();
@@ -289,7 +289,7 @@ public sealed class ExtensionManagerModal : Widget
             : "Enter toggle  Del reset  Esc close";
     }
 
-    private static IEnumerable<UrExtensionInfo> SortExtensions(IReadOnlyList<UrExtensionInfo> extensions) =>
+    private static IEnumerable<ExtensionInfo> SortExtensions(IReadOnlyList<ExtensionInfo> extensions) =>
         extensions
             .OrderBy(extension => TierOrder(extension.Tier))
             .ThenBy(extension => StatusOrder(extension))
@@ -304,7 +304,7 @@ public sealed class ExtensionManagerModal : Widget
             _ => 3,
         };
 
-    private static int StatusOrder(UrExtensionInfo extension)
+    private static int StatusOrder(ExtensionInfo extension)
     {
         if (extension.IsActive)
             return 0;
@@ -313,7 +313,7 @@ public sealed class ExtensionManagerModal : Widget
         return 2;
     }
 
-    private static void RenderItem(Buffer buffer, Rect rect, UrExtensionInfo extension, bool isSelected)
+    private static void RenderItem(Buffer buffer, Rect rect, ExtensionInfo extension, bool isSelected)
     {
         var fg = isSelected ? SelectedFg : ItemFg;
         var bg = isSelected ? SelectedBg : ModalBg;
@@ -325,7 +325,7 @@ public sealed class ExtensionManagerModal : Widget
         buffer.WriteString(rect.X, rect.Y, rowText, fg, bg);
     }
 
-    private static string FormatRow(UrExtensionInfo extension, int width)
+    private static string FormatRow(ExtensionInfo extension, int width)
     {
         var status = extension.LoadError is not null
             ? "error"

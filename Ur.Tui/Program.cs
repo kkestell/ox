@@ -12,7 +12,7 @@ var host = await UrHost.StartAsync(Environment.CurrentDirectory);
 if (host.Configuration.AvailableModels.Count == 0)
     await host.Configuration.RefreshModelsAsync();
 
-var backend = new UrChatBackend(host);
+var backend = new ChatBackend(host);
 
 using var terminal = new AnsiTerminal();
 terminal.EnterRawMode();

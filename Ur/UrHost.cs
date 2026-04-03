@@ -24,14 +24,14 @@ public sealed class UrHost
 
     public string WorkspacePath => _workspace.RootPath;
     public UrConfiguration Configuration { get; }
-    public UrExtensionCatalog Extensions { get; }
+    public ExtensionCatalog Extensions { get; }
 
     private UrHost(
         Workspace workspace,
         ModelCatalog modelCatalog,
         Settings settings,
         SessionStore sessions,
-        UrExtensionCatalog extensions,
+        ExtensionCatalog extensions,
         IKeyring keyring,
         Func<string, IChatClient>? chatClientFactoryOverride = null,
         ToolRegistry? tools = null)
@@ -126,7 +126,7 @@ public sealed class UrHost
         var settings = loader.Load(userSettingsPath, workspace.SettingsPath);
 
         var overrideStore = new ExtensionOverrideStore(userDataDirectory, workspace);
-        var extensions = await UrExtensionCatalog.CreateAsync(
+        var extensions = await ExtensionCatalog.CreateAsync(
                 extensionEntries,
                 overrideStore,
                 tools,
@@ -147,9 +147,9 @@ public sealed class UrHost
             tools);
     }
 
-    public IReadOnlyList<UrSessionInfo> ListSessions() =>
+    public IReadOnlyList<SessionInfo> ListSessions() =>
         _sessions.List()
-            .Select(session => new UrSessionInfo(session.Id, session.CreatedAt))
+            .Select(session => new SessionInfo(session.Id, session.CreatedAt))
             .ToList();
 
     public UrSession CreateSession() =>

@@ -37,12 +37,12 @@ public sealed class UrSession
 
     public async IAsyncEnumerable<AgentLoop.AgentLoopEvent> RunTurnAsync(
         string userInput,
-        UrTurnCallbacks? turnCallbacks = null,
+        TurnCallbacks? turnCallbacks = null,
         [EnumeratorCancellation] CancellationToken ct = default)
     {
         var readiness = _host.Configuration.Readiness;
         if (!readiness.CanRunTurns)
-            throw new UrChatNotReadyException(readiness);
+            throw new ChatNotReadyException(readiness);
 
         _activeModelId = _host.Configuration.SelectedModelId;
 
