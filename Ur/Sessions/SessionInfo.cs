@@ -1,4 +1,4 @@
-namespace Ur;
+namespace Ur.Sessions;
 
 public sealed class SessionInfo
 {

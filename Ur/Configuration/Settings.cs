@@ -3,8 +3,16 @@ using System.Text.Json;
 namespace Ur.Configuration;
 
 /// <summary>
-/// Merged, validated settings. Flat dot-namespaced keys.
-/// Workspace values override user values.
+/// Merged, validated settings built from two JSON files: user-level and
+/// workspace-level. Keys are flat dot-namespaced strings (e.g. "ur.model",
+/// "my-extension.debug") and values are raw <see cref="JsonElement"/>s so
+/// that any JSON type can be stored without custom serialization per key.
+///
+/// Merge semantics: workspace values override user values for the same key.
+/// Writes go to a single scope (user or workspace) and trigger an immediate
+/// re-merge and re-validation. If the write or validation fails, the in-memory
+/// state is rolled back to the snapshot taken before the write attempt, so
+/// the process never operates on an invalid configuration.
 /// </summary>
 public sealed class Settings
 {
@@ -17,6 +25,8 @@ public sealed class Settings
     private readonly string? _userSettingsPath;
     private readonly string? _workspaceSettingsPath;
 
+    // Three separate dictionaries: raw user values, raw workspace values, and
+    // the merged result. The merged view is rebuilt whenever either scope changes.
     private Dictionary<string, JsonElement> _userValues;
     private Dictionary<string, JsonElement> _workspaceValues;
     private Dictionary<string, JsonElement> _mergedValues;
@@ -37,11 +47,16 @@ public sealed class Settings
         _mergedValues = mergedValues;
     }
 
+    /// <summary>Gets a value from the merged view, or null if not set.</summary>
     public JsonElement? Get(string key)
     {
         return _mergedValues.TryGetValue(key, out var value) ? value : null;
     }
 
+    /// <summary>
+    /// Typed getter — deserializes the merged JSON value as <typeparamref name="T"/>.
+    /// Returns default (typically null) if the key is not present.
+    /// </summary>
     public T? Get<T>(string key)
     {
         if (!_mergedValues.TryGetValue(key, out var value))
@@ -51,12 +66,17 @@ public sealed class Settings
 
     public IEnumerable<string> Keys => _mergedValues.Keys;
 
+    /// <summary>
+    /// Sets a value in the given scope, re-merges, validates, and persists.
+    /// On failure (I/O or validation), rolls back to the pre-write state.
+    /// </summary>
     internal async Task SetAsync(
         string key,
         JsonElement value,
         ConfigurationScope scope,
         CancellationToken ct = default)
     {
+        // Snapshot both scopes before mutating so we can roll back atomically.
         var originalUserValues = CloneValues(_userValues);
         var originalWorkspaceValues = CloneValues(_workspaceValues);
 
@@ -75,6 +95,9 @@ public sealed class Settings
         }
     }
 
+    /// <summary>
+    /// Removes a key from the given scope and persists. Same rollback semantics as SetAsync.
+    /// </summary>
     internal async Task ClearAsync(
         string key,
         ConfigurationScope scope,
@@ -112,6 +135,11 @@ public sealed class Settings
         _ => throw new ArgumentOutOfRangeException(nameof(scope)),
     };
 
+    /// <summary>
+    /// Rebuilds the merged dictionary and validates against the schema registry.
+    /// Throws <see cref="SettingsValidationException"/> if any value's type
+    /// doesn't match its registered schema — this is what triggers the rollback.
+    /// </summary>
     private void RebuildMergedValues()
     {
         var mergedValues = SettingsLoader.Merge(_userValues, _workspaceValues);
@@ -133,6 +161,11 @@ public sealed class Settings
         await File.WriteAllTextAsync(path, json, ct);
     }
 
+    /// <summary>
+    /// Deep-clones a settings dictionary. Required because <see cref="JsonElement"/>
+    /// is bound to its parent <see cref="JsonDocument"/> — cloning detaches it so
+    /// it survives after the original document is disposed.
+    /// </summary>
     private static Dictionary<string, JsonElement> CloneValues(Dictionary<string, JsonElement> values)
     {
         var clone = new Dictionary<string, JsonElement>(values.Count, StringComparer.Ordinal);

@@ -1,6 +1,4 @@
-using Ur.Extensions;
-
-namespace Ur;
+namespace Ur.Extensions;
 
 /// <summary>
 /// A UI-friendly snapshot of one discovered extension and its current runtime status.

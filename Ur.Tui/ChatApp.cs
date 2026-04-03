@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using Ur.AgentLoop;
+using Ur.Configuration;
 using Ur.Terminal.Components;
 using Ur.Terminal.Core;
 using Ur.Terminal.Input;
@@ -10,6 +11,25 @@ using Ur.Tui.State;
 
 namespace Ur.Tui;
 
+/// <summary>
+/// The main TUI application — orchestrates user input, agent loop events, and rendering.
+///
+/// Architecture:
+///   The app runs inside a 30 FPS render loop provided by <c>RenderLoop</c>.
+///   Each frame, <see cref="ProcessFrame"/> is called with the latest key events.
+///   The method drains pending agent events from <see cref="_eventQueue"/>,
+///   processes keys, and renders the current state to the compositor layers.
+///
+///   The agent loop runs on a background <see cref="Task"/> started by
+///   <see cref="SubmitMessage"/>. It produces <see cref="AgentLoopEvent"/>s
+///   which are enqueued on <see cref="_eventQueue"/> and drained on the main
+///   frame thread. This avoids blocking the UI while waiting for LLM responses.
+///
+///   The rendering uses a two-layer compositor: the base layer holds the chat
+///   content (message list + input bar + status bar), and the overlay layer
+///   holds any active modal dialog. The overlay is transparent (no background
+///   clear) when no modal is active, so the base layer shows through.
+/// </summary>
 public sealed class ChatApp
 {
     private readonly IChatBackend _backend;
@@ -20,12 +40,22 @@ public sealed class ChatApp
     private readonly MessageList _messageList;
     private readonly ChatInput _chatInput = new();
     private readonly ModelStatusBar _modelStatusBar;
+
+    // Slash commands dispatch table: /quit, /model, /extensions
     private readonly Dictionary<string, Action<string>> _slashCommands;
+
+    // Bridge between the background agent loop task and the main frame thread.
+    // ConcurrentQueue is lock-free for single-producer (agent task) / single-consumer
+    // (frame thread) which is exactly our access pattern.
     private readonly ConcurrentQueue<AgentLoopEvent> _eventQueue = new();
 
     private IChatSession? _session;
     private CancellationTokenSource? _turnCts;
     private bool _exitRequested;
+
+    // Tracks whether this is the first time the app has checked readiness.
+    // On first run, dismissing a required modal (API key / model) exits the app
+    // rather than leaving the user in an unusable state.
     private bool _isFirstRun = true;
 
     public ChatApp(IChatBackend backend, Compositor compositor, Layer baseLayer, Layer overlayLayer)

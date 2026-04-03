@@ -1,6 +1,7 @@
 using System.Runtime.CompilerServices;
 using Microsoft.Extensions.AI;
 using Ur.AgentLoop;
+using Ur.Configuration;
 
 namespace Ur.Tests;
 
@@ -111,19 +112,19 @@ public class HostSessionApiTests
             env.SystemExtensionsPath,
             "system-ext",
             extensionName: "sample.system",
-            toolName: "sample.system.echo",
+            toolName: "sample_system_echo",
             settingKey: "sample.system.mode");
         await env.WriteSampleExtensionAsync(
             env.UserExtensionsPath,
             "user-ext",
             extensionName: "sample.user",
-            toolName: "sample.user.echo",
+            toolName: "sample_user_echo",
             settingKey: "sample.user.mode");
         await env.WriteSampleExtensionAsync(
             env.WorkspaceExtensionsPath,
             "workspace-ext",
             extensionName: "sample.workspace",
-            toolName: "sample.workspace.echo",
+            toolName: "sample_workspace_echo",
             settingKey: "sample.workspace.mode");
 
         var host = await env.StartHostAsync();
@@ -161,7 +162,7 @@ public class HostSessionApiTests
             env.WorkspaceExtensionsPath,
             "workspace-ext",
             extensionName: "sample.workspace",
-            toolName: "sample.workspace.echo",
+            toolName: "sample_workspace_echo",
             settingKey: "sample.workspace.mode");
         var host = await env.StartHostAsync();
 
@@ -170,7 +171,7 @@ public class HostSessionApiTests
         Assert.True(updated.DesiredEnabled);
         Assert.True(updated.IsActive);
         Assert.True(updated.HasOverride);
-        Assert.NotNull(host.Tools.Get("sample.workspace.echo"));
+        Assert.NotNull(host.Tools.Get("sample_workspace_echo"));
         Assert.Contains("\"workspace:sample.workspace\": true", await File.ReadAllTextAsync(env.WorkspaceOverridesPath));
     }
 
@@ -182,7 +183,7 @@ public class HostSessionApiTests
             env.UserExtensionsPath,
             "user-ext",
             extensionName: "sample.user",
-            toolName: "sample.user.echo",
+            toolName: "sample_user_echo",
             settingKey: "sample.user.mode");
         var host = await env.StartHostAsync();
 
@@ -191,7 +192,7 @@ public class HostSessionApiTests
         Assert.False(updated.DesiredEnabled);
         Assert.False(updated.IsActive);
         Assert.True(updated.HasOverride);
-        Assert.Null(host.Tools.Get("sample.user.echo"));
+        Assert.Null(host.Tools.Get("sample_user_echo"));
         Assert.Contains("\"user:sample.user\": false", await File.ReadAllTextAsync(env.GlobalOverridesPath));
     }
 
@@ -203,7 +204,7 @@ public class HostSessionApiTests
             env.WorkspaceExtensionsPath,
             "workspace-ext",
             extensionName: "sample.workspace",
-            toolName: "sample.workspace.echo",
+            toolName: "sample_workspace_echo",
             settingKey: "sample.workspace.mode");
         var host = await env.StartHostAsync();
         await host.Extensions.SetEnabledAsync("workspace:sample.workspace", enabled: true);
@@ -213,7 +214,7 @@ public class HostSessionApiTests
         Assert.False(updated.DesiredEnabled);
         Assert.False(updated.IsActive);
         Assert.False(updated.HasOverride);
-        Assert.Null(host.Tools.Get("sample.workspace.echo"));
+        Assert.Null(host.Tools.Get("sample_workspace_echo"));
         Assert.False(File.Exists(env.WorkspaceOverridesPath));
     }
 
@@ -263,7 +264,7 @@ public class HostSessionApiTests
             env.UserExtensionsPath,
             "user-ext",
             extensionName: "sample.user",
-            toolName: "sample.user.echo",
+            toolName: "sample_user_echo",
             settingKey: "sample.user.mode");
         await env.WriteGlobalOverridesAsync(
             """
@@ -281,7 +282,7 @@ public class HostSessionApiTests
         Assert.False(extension.DesiredEnabled);
         Assert.False(extension.IsActive);
         Assert.True(extension.HasOverride);
-        Assert.Null(host.Tools.Get("sample.user.echo"));
+        Assert.Null(host.Tools.Get("sample_user_echo"));
     }
 
     [Fact]
@@ -292,7 +293,7 @@ public class HostSessionApiTests
             env.WorkspaceExtensionsPath,
             "workspace-ext",
             extensionName: "sample.workspace",
-            toolName: "sample.workspace.echo",
+            toolName: "sample_workspace_echo",
             settingKey: "sample.workspace.mode");
         await env.WriteWorkspaceOverridesAsync(
             $$"""
@@ -311,7 +312,7 @@ public class HostSessionApiTests
         Assert.True(extension.DesiredEnabled);
         Assert.True(extension.IsActive);
         Assert.True(extension.HasOverride);
-        Assert.NotNull(host.Tools.Get("sample.workspace.echo"));
+        Assert.NotNull(host.Tools.Get("sample_workspace_echo"));
     }
 
     [Fact]
@@ -322,7 +323,7 @@ public class HostSessionApiTests
             env.WorkspaceExtensionsPath,
             "workspace-ext",
             extensionName: "sample.workspace",
-            toolName: "sample.workspace.echo",
+            toolName: "sample_workspace_echo",
             settingKey: "sample.workspace.mode");
         await env.WriteWorkspaceOverridesAsync("{ not json");
 
@@ -343,7 +344,7 @@ public class HostSessionApiTests
             env.UserExtensionsPath,
             "user-ext",
             extensionName: "sample.user",
-            toolName: "sample.user.echo",
+            toolName: "sample_user_echo",
             settingKey: "sample.user.mode");
         var host = await env.StartHostAsync();
 

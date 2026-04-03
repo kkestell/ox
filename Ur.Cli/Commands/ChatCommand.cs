@@ -1,0 +1,155 @@
+using System.CommandLine;
+using Ur;
+using Ur.AgentLoop;
+using Ur.Cli;
+using Ur.Configuration;
+using Ur.Permissions;
+using Ur.Sessions;
+
+namespace Ur.Cli.Commands;
+
+/// <summary>
+/// `ur chat &lt;message&gt; [--session &lt;id&gt;] [--model &lt;id&gt;]` — run a single chat turn.
+///
+/// This command is the end-to-end test path for the agent loop.  It:
+///   1. Creates a new session (or opens an existing one if --session is given).
+///   2. Optionally overrides the model for this turn via --model.
+///   3. Streams the agent loop events, writing response text to stdout and tool
+///      status to stderr so the two streams can be separated when scripting.
+///   4. Exits 0 on success, 1 if the chat system is not ready (no API key / model).
+///
+/// Ctrl+C is forwarded to the agent loop via CancellationToken so in-flight
+/// requests are cancelled cleanly.
+///
+/// NOTE: Permission prompts (TurnCallbacks.RequestPermissionAsync) are not yet
+/// wired — the runtime doesn't call the callback yet.  The callbacks parameter
+/// is intentionally left null until that wiring is in place.
+/// </summary>
+internal static class ChatCommand
+{
+    public static Command Build()
+    {
+        var messageArg = new Argument<string>("message")
+        {
+            Description = "The message to send to the agent"
+        };
+
+        var sessionOpt = new Option<string?>("--session", "-S")
+        {
+            Description = "Resume an existing session by ID (default: create a new session)"
+        };
+
+        var modelOpt = new Option<string?>("--model", "-m")
+        {
+            Description = "Override the selected model for this turn only"
+        };
+
+        var cmd = new Command("chat", "Send a message and stream the response");
+        cmd.Add(messageArg);
+        cmd.Add(sessionOpt);
+        cmd.Add(modelOpt);
+
+        cmd.SetAction(async (parseResult, ct) =>
+            await HostRunner.RunAsync(async (host, ct) =>
+            {
+                var message   = parseResult.GetValue(messageArg)!;
+                var sessionId = parseResult.GetValue(sessionOpt);
+                var modelId   = parseResult.GetValue(modelOpt);
+
+                // Check readiness up-front so the error message is useful.
+                // If a model override is given we skip the model-readiness check because
+                // SetSelectedModelAsync below will satisfy that requirement within this turn.
+                var readiness = host.Configuration.Readiness;
+                if (!readiness.CanRunTurns && modelId is null)
+                {
+                    foreach (var issue in readiness.BlockingIssues)
+                    {
+                        Console.Error.WriteLine(issue switch
+                        {
+                            ChatBlockingIssue.MissingApiKey         => "No API key set. Run: ur config set-api-key <key>",
+                            ChatBlockingIssue.MissingModelSelection => "No model selected. Run: ur config set-model <model-id>",
+                            _                                       => issue.ToString()
+                        });
+                    }
+                    return 1;
+                }
+
+                // Apply per-turn model override at user scope.  This sets the active model
+                // in the configuration so RunTurnAsync picks it up; it persists to disk which
+                // is intentional — the user explicitly chose this model for the turn.
+                if (modelId is not null)
+                    await host.Configuration.SetSelectedModelAsync(modelId, ct: ct);
+
+                // Open an existing session or create a fresh one.
+                UrSession session;
+                if (sessionId is not null)
+                {
+                    var opened = await host.OpenSessionAsync(sessionId, ct);
+                    if (opened is null)
+                    {
+                        Console.Error.WriteLine($"Session not found: {sessionId}");
+                        return 1;
+                    }
+                    session = opened;
+                }
+                else
+                {
+                    session = host.CreateSession();
+                }
+
+                // Stream the agent loop, routing response text to stdout and tool
+                // status to stderr.  This lets callers capture just the assistant
+                // response with `ur chat "..." > output.txt`.
+                var turnComplete = false;
+
+                await foreach (var evt in session.RunTurnAsync(message, turnCallbacks: null, ct))
+                {
+                    switch (evt)
+                    {
+                        case ResponseChunk chunk:
+                            // Write text as it arrives — no newline between chunks so the
+                            // streaming output reads as a single flowing paragraph.
+                            Console.Write(chunk.Text);
+                            break;
+
+                        case ToolCallStarted started:
+                            Console.Error.WriteLine($"\n[tool: {started.ToolName}]");
+                            break;
+
+                        case ToolCallCompleted completed:
+                            // Truncate long tool results to avoid flooding the terminal.
+                            var result = completed.Result.Length > 200
+                                ? completed.Result[..200] + "…"
+                                : completed.Result;
+                            var status = completed.IsError ? "error" : "ok";
+                            Console.Error.WriteLine($"[tool: {completed.ToolName} → {status}] {result}");
+                            break;
+
+                        case TurnCompleted:
+                            // Add a newline after the streamed response so the prompt
+                            // appears on a new line.
+                            Console.WriteLine();
+                            turnComplete = true;
+                            break;
+
+                        case Error error:
+                            Console.Error.WriteLine($"\n[error] {error.Message}");
+                            if (error.IsFatal)
+                                return 1;
+                            break;
+                    }
+                }
+
+                if (!turnComplete)
+                {
+                    // The loop ended without a TurnCompleted event — likely a cancellation.
+                    Console.WriteLine();
+                }
+
+                Console.Error.WriteLine($"[session: {session.Id}]");
+                return 0;
+            }, ct));
+
+        return cmd;
+    }
+}

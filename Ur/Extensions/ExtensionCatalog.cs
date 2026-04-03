@@ -1,8 +1,7 @@
 using System.Threading;
 using Ur.AgentLoop;
-using Ur.Extensions;
 
-namespace Ur;
+namespace Ur.Extensions;
 
 /// <summary>
 /// Provides listing and enablement management for extensions discovered in the current host.

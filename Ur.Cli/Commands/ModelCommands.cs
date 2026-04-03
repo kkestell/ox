@@ -1,0 +1,159 @@
+using System.CommandLine;
+using Ur;
+using Ur.Cli;
+using Ur.Providers;
+
+namespace Ur.Cli.Commands;
+
+/// <summary>
+/// `ur models *` — browse the OpenRouter model catalog.
+///
+/// Subcommands:
+///   list [--all]         tabular list of models; filters to text+tool-capable by default
+///   refresh              fetch the latest catalog from the OpenRouter API
+///   show &lt;model-id&gt;     print complete metadata for one model
+///
+/// The catalog is cached on disk and loaded at host startup, so `list` is instant.
+/// `refresh` is the only command that makes a network request.
+/// </summary>
+internal static class ModelCommands
+{
+    public static Command Build()
+    {
+        var models = new Command("models", "Browse the model catalog");
+
+        models.Add(BuildList());
+        models.Add(BuildRefresh());
+        models.Add(BuildShow());
+
+        return models;
+    }
+
+    // -------------------------------------------------------------------------
+    // ur models list [--all]
+    // -------------------------------------------------------------------------
+
+    private static Command BuildList()
+    {
+        var allOpt = new Option<bool>("--all")
+        {
+            Description = "Show every model in the catalog, not just text+tool capable ones"
+        };
+
+        var cmd = new Command("list", "List available models");
+        cmd.Add(allOpt);
+
+        cmd.SetAction(async (parseResult, ct) =>
+            await HostRunner.RunAsync(async (host, ct) =>
+            {
+                // AvailableModels filters to text+tool-capable models, which is the meaningful
+                // subset for chat use.  The public library API doesn't yet expose the raw
+                // catalog, so --all shows the same set for now; it will expand once the library
+                // adds an unfiltered accessor.
+                _ = parseResult.GetValue(allOpt); // consumed — reserved for future use
+                var models = host.Configuration.AvailableModels;
+
+                if (models.Count == 0)
+                {
+                    Console.WriteLine("No models in catalog. Run: ur models refresh");
+                    return 0;
+                }
+
+                // Column widths — measured from typical OpenRouter IDs and names.
+                const int idWidth   = 44;
+                const int nameWidth = 36;
+
+                Console.WriteLine(
+                    $"{"ID",-idWidth}  {"Name",-nameWidth}  {"Context",8}  {"In $/M",8}  {"Out $/M",8}");
+                Console.WriteLine(new string('-', idWidth + nameWidth + 38));
+
+                foreach (var m in models)
+                    PrintRow(m, idWidth, nameWidth);
+
+                Console.WriteLine();
+                Console.WriteLine($"{models.Count} model(s) listed.");
+                return 0;
+            }, ct));
+
+        return cmd;
+    }
+
+    private static void PrintRow(ModelInfo m, int idWidth, int nameWidth)
+    {
+        // Truncate long IDs and names so the table stays readable in a normal terminal.
+        // PadRight is used instead of interpolated alignment because alignment widths
+        // must be constants in C# string interpolation.
+        var id   = Truncate(m.Id, idWidth).PadRight(idWidth);
+        var name = Truncate(m.Name, nameWidth).PadRight(nameWidth);
+        Console.WriteLine(
+            $"{id}  {name}  {m.ContextLength,8:N0}  {m.InputCostPerMToken,8:F2}  {m.OutputCostPerMToken,8:F2}");
+    }
+
+    // -------------------------------------------------------------------------
+    // ur models refresh
+    // -------------------------------------------------------------------------
+
+    private static Command BuildRefresh()
+    {
+        var cmd = new Command("refresh", "Fetch the latest model catalog from OpenRouter");
+
+        cmd.SetAction(async (parseResult, ct) =>
+            await HostRunner.RunAsync(async (host, ct) =>
+            {
+                Console.Write("Refreshing model catalog... ");
+                await host.Configuration.RefreshModelsAsync(ct);
+                Console.WriteLine($"done. {host.Configuration.AvailableModels.Count} models available.");
+                return 0;
+            }, ct));
+
+        return cmd;
+    }
+
+    // -------------------------------------------------------------------------
+    // ur models show <model-id>
+    // -------------------------------------------------------------------------
+
+    private static Command BuildShow()
+    {
+        var modelArg = new Argument<string>("model-id")
+        {
+            Description = "Model identifier (e.g. openai/gpt-4o)"
+        };
+
+        var cmd = new Command("show", "Print full metadata for a specific model");
+        cmd.Add(modelArg);
+
+        cmd.SetAction(async (parseResult, ct) =>
+            await HostRunner.RunAsync(async (host, ct) =>
+            {
+                var modelId = parseResult.GetValue(modelArg)!;
+                var model   = host.Configuration.GetModel(modelId);
+
+                if (model is null)
+                {
+                    Console.Error.WriteLine($"Model not found: {modelId}");
+                    Console.Error.WriteLine("Run 'ur models list' to see available models, or 'ur models refresh' to update the catalog.");
+                    return 1;
+                }
+
+                Console.WriteLine($"ID:           {model.Id}");
+                Console.WriteLine($"Name:         {model.Name}");
+                Console.WriteLine($"Context:      {model.ContextLength:N0} tokens");
+                Console.WriteLine($"Max output:   {model.MaxOutputTokens:N0} tokens");
+                Console.WriteLine($"Input cost:   ${model.InputCostPerMToken:F4}/M tokens");
+                Console.WriteLine($"Output cost:  ${model.OutputCostPerMToken:F4}/M tokens");
+                Console.WriteLine($"Parameters:   {string.Join(", ", model.SupportedParameters)}");
+                Console.WriteLine($"Modality:     {model.Modality ?? "(not specified)"}");
+                return 0;
+            }, ct));
+
+        return cmd;
+    }
+
+    // -------------------------------------------------------------------------
+    // Shared helpers
+    // -------------------------------------------------------------------------
+
+    private static string Truncate(string s, int maxLength) =>
+        s.Length <= maxLength ? s : s[..(maxLength - 1)] + "…";
+}

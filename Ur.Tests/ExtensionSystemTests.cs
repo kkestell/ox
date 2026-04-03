@@ -175,7 +175,7 @@ public sealed class ExtensionSystemTests
             env.UserExtensionsPath,
             "sample-echo",
             extensionName: "sample.echo",
-            toolName: "sample.echo",
+            toolName: "sample_echo",
             settingKey: "sample.mode");
 
         var extension = Assert.Single(await ExtensionLoader.DiscoverAllAsync(
@@ -189,7 +189,7 @@ public sealed class ExtensionSystemTests
 
         Assert.True(extension.IsActive);
         Assert.True(extension.Enabled);
-        var tool = Assert.IsAssignableFrom<AIFunction>(registry.Get("sample.echo"));
+        var tool = Assert.IsAssignableFrom<AIFunction>(registry.Get("sample_echo"));
 
         var result = await tool.InvokeAsync(
             new AIFunctionArguments(new Dictionary<string, object?> { ["text"] = "hello" }));
@@ -205,7 +205,7 @@ public sealed class ExtensionSystemTests
             env.UserExtensionsPath,
             "sample-echo",
             extensionName: "sample.echo",
-            toolName: "sample.echo",
+            toolName: "sample_echo",
             settingKey: "sample.mode");
 
         var extension = Assert.Single(await ExtensionLoader.DiscoverAllAsync(
@@ -221,7 +221,7 @@ public sealed class ExtensionSystemTests
         Assert.False(extension.IsActive);
         Assert.Empty(extension.Tools);
         Assert.Null(extension.LuaState);
-        Assert.Null(registry.Get("sample.echo"));
+        Assert.Null(registry.Get("sample_echo"));
     }
 
     [Fact]
@@ -248,6 +248,6 @@ public sealed class ExtensionSystemTests
         Assert.False(extension.DesiredEnabled);
         Assert.False(extension.IsActive);
         Assert.Null(extension.LoadError);
-        Assert.Null(host.Tools.Get("sample.workspace"));
+        Assert.Null(host.Tools.Get("sample_workspace"));
     }
 }

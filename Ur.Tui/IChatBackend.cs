@@ -1,10 +1,15 @@
 using Ur.AgentLoop;
+using Ur.Configuration;
+using Ur.Extensions;
 using Ur.Providers;
 
 namespace Ur.Tui;
 
 /// <summary>
-/// The narrow contract ChatApp needs from the backend.
+/// The narrow contract <see cref="ChatApp"/> needs from the backend.
+/// Extracted as an interface so the TUI can be tested with a mock backend
+/// that doesn't require a real <see cref="UrHost"/> or network access.
+/// The production implementation is <see cref="ChatBackend"/>.
 /// </summary>
 public interface IChatBackend
 {
@@ -25,7 +30,8 @@ public interface IChatBackend
 }
 
 /// <summary>
-/// A single chat session that can run conversational turns.
+/// A single chat session that can run conversational turns. Wraps
+/// <see cref="UrSession.RunTurnAsync"/> behind an interface for testability.
 /// </summary>
 public interface IChatSession
 {

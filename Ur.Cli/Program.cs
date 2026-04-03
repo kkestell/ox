@@ -1,13 +1,18 @@
-using dotenv.net;
-using Ur;
+using System.CommandLine;
+using Ur.Cli.Commands;
 
-DotEnv.Load(options: new DotEnvOptions(
-    probeForEnv: true,
-    probeLevelsToSearch: 8));
+// CLI entry point. Uses System.CommandLine to parse arguments and dispatch to
+// the appropriate subcommand. Each command is built by its own class in Commands/
+// and follows the same pattern: define arguments/options, then use HostRunner
+// to boot the Ur host before executing the command logic.
 
-var host = await UrHost.StartAsync(Environment.CurrentDirectory);
+var root = new RootCommand("ur — AI agent framework");
 
-Console.WriteLine($"ur — {host.WorkspacePath}");
+root.Add(StatusCommand.Build());      // ur status
+root.Add(ConfigCommands.Build());     // ur config set-api-key, set-model, get, set, clear
+root.Add(ModelCommands.Build());      // ur models list, refresh, show
+root.Add(SessionCommands.Build());    // ur sessions list, show
+root.Add(ExtensionCommands.Build());  // ur extensions list, enable, disable, reset
+root.Add(ChatCommand.Build());        // ur chat <message>
 
-Console.WriteLine($"Model catalog: {host.Configuration.AvailableModels.Count} models");
-Console.WriteLine($"Chat ready: {host.Configuration.Readiness.CanRunTurns}");
+return await root.Parse(args).InvokeAsync();

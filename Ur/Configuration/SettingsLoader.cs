@@ -66,6 +66,13 @@ public sealed class SettingsLoader
         return merged;
     }
 
+    /// <summary>
+    /// Validates all settings values against their registered schemas. Unknown
+    /// keys (not registered by core or any extension) are silently tolerated so
+    /// that stale settings from uninstalled extensions don't crash the system.
+    /// Known keys with wrong types cause a <see cref="SettingsValidationException"/>
+    /// which triggers a rollback in <see cref="Settings"/>.
+    /// </summary>
     internal static void Validate(
         SettingsSchemaRegistry schemaRegistry,
         Dictionary<string, JsonElement> values)
@@ -76,7 +83,8 @@ public sealed class SettingsLoader
         {
             if (!schemaRegistry.IsKnown(key))
             {
-                // Unknown keys: warn but don't fail.
+                // Unknown keys are tolerated — they may come from extensions
+                // that are no longer installed, or from a newer version of Ur.
                 // TODO: hook into a logging/warning system
                 continue;
             }
