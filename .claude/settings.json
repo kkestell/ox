@@ -1,0 +1,10 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "command": "dotnet build --nologo -v q 2>&1 | tail -5"
+      }
+    ]
+  }
+}
