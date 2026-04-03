@@ -8,11 +8,6 @@ This document catalogs features that are designed but not wired, partially imple
 ## Critical: Not Wired
 
 
-### Error Events
-- `AgentLoopEvent.Error` is defined in `AgentLoop/AgentLoopEvent.cs`
-- `AgentLoop.cs` catches exceptions but never yields `Error` events
-- Consumers receive no notification when a turn fails due to an exception
-
 ---
 
 ## Incomplete Features

@@ -393,6 +393,50 @@ public class HostSessionApiTests
         Assert.True(errorEvent.IsFatal);
     }
 
+    [Fact]
+    public async Task RunTurnAsync_WhenLlmThrowsAfterPartialOutput_YieldsChunksThenErrorThenStops()
+    {
+        // Verifies two things: (1) ResponseChunk events emitted before the throw
+        // are preserved, and (2) the stream terminates after the Error — no stray
+        // events follow it.
+        using var workspace = new TempWorkspace();
+        var host = await CreateHostAsync(workspace, chatClientFactory: _ => new PartiallyThrowingChatClient("mid-stream failure"));
+
+        await host.Configuration.SetApiKeyAsync("test-key");
+        await host.Configuration.SetSelectedModelAsync("test-model");
+
+        var session = host.CreateSession();
+        var events = await CollectEventsAsync(session.RunTurnAsync("hello"));
+
+        Assert.Equal(2, events.Count);
+        Assert.IsType<ResponseChunk>(events[0]);
+        var errorEvent = Assert.IsType<Ur.AgentLoop.Error>(events[1]);
+        Assert.Equal("mid-stream failure", errorEvent.Message);
+        Assert.True(errorEvent.IsFatal);
+    }
+
+    [Fact]
+    public async Task RunTurnAsync_WhenCancelled_PropagatesOperationCanceledException()
+    {
+        // OperationCanceledException must propagate, not be swallowed as an Error event.
+        // Cancellation is intentional; callers (TUI Ctrl+C) need to distinguish it from
+        // a real failure.
+        using var workspace = new TempWorkspace();
+        using var cts = new CancellationTokenSource();
+        var host = await CreateHostAsync(workspace, chatClientFactory: _ => new CancellingChatClient(cts));
+
+        await host.Configuration.SetApiKeyAsync("test-key");
+        await host.Configuration.SetSelectedModelAsync("test-model");
+
+        var session = host.CreateSession();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
+        {
+            await foreach (var _ in session.RunTurnAsync("hello", cts.Token))
+            {
+            }
+        });
+    }
+
     private sealed class FakeChatClient : IChatClient
     {
         private readonly string _responseText;
@@ -450,6 +494,79 @@ public class HostSessionApiTests
         {
             await Task.CompletedTask;
             throw new InvalidOperationException(_message);
+#pragma warning disable CS0162 // unreachable — required to make this an iterator method
+            yield break;
+#pragma warning restore CS0162
+        }
+
+        public object? GetService(Type serviceType, object? serviceKey = null) => null;
+
+        public void Dispose()
+        {
+        }
+    }
+
+    /// <summary>
+    /// Yields one text chunk, then throws — exercises the partial-output-before-error path.
+    /// </summary>
+    private sealed class PartiallyThrowingChatClient : IChatClient
+    {
+        private readonly string _message;
+
+        public PartiallyThrowingChatClient(string message)
+        {
+            _message = message;
+        }
+
+        public Task<ChatResponse> GetResponseAsync(
+            IEnumerable<ChatMessage> messages,
+            ChatOptions? options = null,
+            CancellationToken cancellationToken = default) =>
+            throw new InvalidOperationException(_message);
+
+        public async IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
+            IEnumerable<ChatMessage> messages,
+            ChatOptions? options = null,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            yield return new ChatResponseUpdate(ChatRole.Assistant, "partial");
+            await Task.CompletedTask;
+            throw new InvalidOperationException(_message);
+        }
+
+        public object? GetService(Type serviceType, object? serviceKey = null) => null;
+
+        public void Dispose()
+        {
+        }
+    }
+
+    /// <summary>
+    /// Cancels the provided token source when iterated, simulating a Ctrl+C mid-stream.
+    /// </summary>
+    private sealed class CancellingChatClient : IChatClient
+    {
+        private readonly CancellationTokenSource _cts;
+
+        public CancellingChatClient(CancellationTokenSource cts)
+        {
+            _cts = cts;
+        }
+
+        public Task<ChatResponse> GetResponseAsync(
+            IEnumerable<ChatMessage> messages,
+            ChatOptions? options = null,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public async IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
+            IEnumerable<ChatMessage> messages,
+            ChatOptions? options = null,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            await Task.CompletedTask;
+            _cts.Cancel();
+            cancellationToken.ThrowIfCancellationRequested();
 #pragma warning disable CS0162 // unreachable — required to make this an iterator method
             yield break;
 #pragma warning restore CS0162
