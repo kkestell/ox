@@ -375,6 +375,24 @@ public class HostSessionApiTests
         return collected;
     }
 
+    [Fact]
+    public async Task RunTurnAsync_WhenLlmThrows_YieldsErrorEventInsteadOfPropagating()
+    {
+        using var workspace = new TempWorkspace();
+        var host = await CreateHostAsync(workspace, chatClientFactory: _ => new ThrowingChatClient("API error"));
+
+        await host.Configuration.SetApiKeyAsync("test-key");
+        await host.Configuration.SetSelectedModelAsync("test-model");
+
+        var session = host.CreateSession();
+        var events = await CollectEventsAsync(session.RunTurnAsync("hello"));
+
+        var error = Assert.Single(events);
+        var errorEvent = Assert.IsType<Ur.AgentLoop.Error>(error);
+        Assert.Equal("API error", errorEvent.Message);
+        Assert.True(errorEvent.IsFatal);
+    }
+
     private sealed class FakeChatClient : IChatClient
     {
         private readonly string _responseText;
@@ -401,6 +419,40 @@ public class HostSessionApiTests
             cancellationToken.ThrowIfCancellationRequested();
             yield return new ChatResponseUpdate(ChatRole.Assistant, _responseText);
             await Task.CompletedTask;
+        }
+
+        public object? GetService(Type serviceType, object? serviceKey = null) => null;
+
+        public void Dispose()
+        {
+        }
+    }
+
+    private sealed class ThrowingChatClient : IChatClient
+    {
+        private readonly string _message;
+
+        public ThrowingChatClient(string message)
+        {
+            _message = message;
+        }
+
+        public Task<ChatResponse> GetResponseAsync(
+            IEnumerable<ChatMessage> messages,
+            ChatOptions? options = null,
+            CancellationToken cancellationToken = default) =>
+            throw new InvalidOperationException(_message);
+
+        public async IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
+            IEnumerable<ChatMessage> messages,
+            ChatOptions? options = null,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            await Task.CompletedTask;
+            throw new InvalidOperationException(_message);
+#pragma warning disable CS0162 // unreachable — required to make this an iterator method
+            yield break;
+#pragma warning restore CS0162
         }
 
         public object? GetService(Type serviceType, object? serviceKey = null) => null;

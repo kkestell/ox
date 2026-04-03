@@ -45,7 +45,12 @@ public sealed class AgentLoop
             ChatMessage assistantMessage = new(ChatRole.Assistant, []);
             string? text = null;
 
-            await foreach (var update in _client.GetStreamingResponseAsync(messages, options, ct))
+            // C# prohibits yield inside try/catch, so we route LLM errors through
+            // a side-channel: StreamLlmAsync catches API exceptions, stores them in
+            // errorSink, and terminates the stream cleanly. We check and emit the
+            // Error event after the await foreach finishes.
+            var errorSink = new Exception?[1];
+            await foreach (var update in StreamLlmAsync(messages, options, errorSink, ct))
             {
                 foreach (var content in update.Contents)
                 {
@@ -61,6 +66,12 @@ public sealed class AgentLoop
                             break;
                     }
                 }
+            }
+
+            if (errorSink[0] is { } llmError)
+            {
+                yield return new Error { Message = llmError.Message, IsFatal = true };
+                yield break;
             }
 
             // Build the assistant message from what we accumulated.
@@ -141,6 +152,55 @@ public sealed class AgentLoop
             messages.Add(toolResultMessage);
 
             // Loop back to send tool results to the LLM.
+        }
+    }
+
+    /// <summary>
+    /// Streams LLM response updates, routing any non-cancellation exception into
+    /// <paramref name="errorSink"/> rather than propagating it. This indirection
+    /// exists because C# prohibits yield statements inside try/catch blocks — callers
+    /// check errorSink[0] after the foreach to emit an Error event.
+    /// </summary>
+    private async IAsyncEnumerable<ChatResponseUpdate> StreamLlmAsync(
+        IEnumerable<ChatMessage> messages,
+        ChatOptions options,
+        Exception?[] errorSink,
+        [EnumeratorCancellation] CancellationToken ct)
+    {
+        var enumerator = _client.GetStreamingResponseAsync(messages, options, ct)
+            .GetAsyncEnumerator(ct);
+        try
+        {
+            while (true)
+            {
+                bool hasNext;
+
+                // MoveNextAsync is in its own try/catch so we can react to errors
+                // without having a yield inside the catch block (which C# forbids).
+                try
+                {
+                    hasNext = await enumerator.MoveNextAsync();
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    errorSink[0] = ex;
+                    hasNext = false;
+                }
+
+                if (!hasNext)
+                    break;
+
+                // yield is outside the try/catch above, satisfying the C# constraint.
+                yield return enumerator.Current;
+            }
+        }
+        finally
+        {
+            await enumerator.DisposeAsync();
         }
     }
 
