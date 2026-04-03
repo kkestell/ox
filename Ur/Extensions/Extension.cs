@@ -2,6 +2,7 @@ using System.Text.Json;
 using Lua;
 using Microsoft.Extensions.AI;
 using Ur.AgentLoop;
+using Ur.Permissions;
 
 namespace Ur.Extensions;
 
@@ -50,8 +51,10 @@ public sealed class Extension
 
     internal void MarkActivated(ToolRegistry registry)
     {
+        // Lua-defined tools are registered as WriteInWorkspace — the conservative safe
+        // default. A future extension API could let tools self-declare their operation type.
         foreach (var tool in _tools)
-            registry.Register(tool);
+            registry.Register(tool, OperationType.WriteInWorkspace, extensionId: Id);
 
         IsActive = true;
         LoadError = null;

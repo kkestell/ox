@@ -28,6 +28,8 @@ public sealed class UrSession
     private readonly Session _session;
     private readonly List<ChatMessage> _messages;
     private readonly ReadOnlyCollection<ChatMessage> _messagesView;
+    private readonly TurnCallbacks? _hostCallbacks;
+    private readonly PermissionGrantStore _grantStore;
     private bool _isPersisted;
     private string? _activeModelId;
 
@@ -36,7 +38,10 @@ public sealed class UrSession
         Session session,
         List<ChatMessage> messages,
         bool isPersisted,
-        string? activeModelId)
+        string? activeModelId,
+        TurnCallbacks? callbacks,
+        string workspacePermissionsPath,
+        string alwaysPermissionsPath)
     {
         _host = host;
         _session = session;
@@ -47,6 +52,8 @@ public sealed class UrSession
         _messagesView = _messages.AsReadOnly();
         _isPersisted = isPersisted;
         _activeModelId = activeModelId;
+        _hostCallbacks = callbacks;
+        _grantStore = new PermissionGrantStore(workspacePermissionsPath, alwaysPermissionsPath);
     }
 
     public string Id => _session.Id;
@@ -74,11 +81,9 @@ public sealed class UrSession
     /// iteration so that a crash mid-turn preserves as much work as possible.
     /// </summary>
     /// <param name="userInput">The raw text from the user.</param>
-    /// <param name="turnCallbacks">Optional callbacks for permission prompts (not yet wired).</param>
     /// <param name="ct">Cancellation token — typically Ctrl+C from the UI.</param>
     public async IAsyncEnumerable<AgentLoop.AgentLoopEvent> RunTurnAsync(
         string userInput,
-        TurnCallbacks? turnCallbacks = null,
         [EnumeratorCancellation] CancellationToken ct = default)
     {
         // Gate: refuse to run if the system isn't fully configured (missing API
@@ -110,13 +115,18 @@ public sealed class UrSession
             throw;
         }
 
+        // Build a wrapped TurnCallbacks that layers grant-store checking in front
+        // of the host-provided callback. This keeps grant persistence in the session
+        // layer where it belongs — AgentLoop only sees a simple approve/deny callback.
+        var wrappedCallbacks = BuildWrappedCallbacks(ct);
+
         // Track how many messages have been flushed to disk. The agent loop
         // appends to _messages as it runs, and we flush after each iteration
         // so that tool call results survive a crash.
         var persistedCount = _messages.Count;
         var agentLoop = new AgentLoop.AgentLoop(_host.CreateChatClient(_activeModelId!), _host.Tools);
 
-        await foreach (var loopEvent in agentLoop.RunTurnAsync(_messages, ct))
+        await foreach (var loopEvent in agentLoop.RunTurnAsync(_messages, wrappedCallbacks, ct))
         {
             persistedCount = await PersistPendingMessagesAsync(persistedCount, ct);
             yield return loopEvent;
@@ -124,6 +134,52 @@ public sealed class UrSession
 
         // Final flush for any messages produced after the last yield.
         await PersistPendingMessagesAsync(persistedCount, ct);
+    }
+
+    /// <summary>
+    /// Builds a TurnCallbacks that wraps the host-provided callback with grant-store
+    /// checking. The wrapped callback:
+    ///   1. Returns granted immediately if an existing grant already covers the request.
+    ///   2. Denies (without prompting) if no host callback was configured.
+    ///   3. Delegates to the host callback otherwise, and stores durable grants.
+    /// </summary>
+    private TurnCallbacks? BuildWrappedCallbacks(CancellationToken ct)
+    {
+        // If no callback configured, the null propagates and AgentLoop auto-denies.
+        // Return a callback so the "no callback = auto-deny" path in AgentLoop fires
+        // for all sensitive ops, but we still get the benefit of the grant store when
+        // a host callback IS present.
+        return new TurnCallbacks
+        {
+            RequestPermissionAsync = async (request, innerCt) =>
+            {
+                // Grant store covers it — no need to bother the user.
+                if (_grantStore.IsCovered(request))
+                    return new PermissionResponse(true, Scope: null);
+
+                // No host callback: auto-deny.
+                if (_hostCallbacks?.RequestPermissionAsync is null)
+                    return new PermissionResponse(false, Scope: null);
+
+                // Ask the host (CLI prompt, GUI dialog, etc).
+                var response = await _hostCallbacks.RequestPermissionAsync(request, innerCt)
+                    .ConfigureAwait(false);
+
+                // Persist durable grants so the user isn't re-asked next turn (or next session).
+                if (response.Granted && response.Scope is not null and not PermissionScope.Once)
+                {
+                    var grant = new PermissionGrant(
+                        request.OperationType,
+                        request.Target,
+                        response.Scope.Value,
+                        request.RequestingExtension);
+
+                    await _grantStore.StoreAsync(grant, ct).ConfigureAwait(false);
+                }
+
+                return response;
+            }
+        };
     }
 
     /// <summary>

@@ -79,7 +79,7 @@ internal static class SessionCommands
             await HostRunner.RunAsync(async (host, ct) =>
             {
                 var sessionId = parseResult.GetValue(idArg)!;
-                var session   = await host.OpenSessionAsync(sessionId, ct);
+                var session   = await host.OpenSessionAsync(sessionId, callbacks: null, ct);
 
                 if (session is null)
                 {

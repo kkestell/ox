@@ -4,6 +4,7 @@ using Ur.AgentLoop;
 using Ur.Configuration;
 using Ur.Configuration.Keyring;
 using Ur.Extensions;
+using Ur.Permissions;
 using Ur.Providers;
 using Ur.Sessions;
 
@@ -21,6 +22,7 @@ public sealed class UrHost
     private readonly SessionStore _sessions;
     private readonly IKeyring _keyring;
     private readonly Func<string, IChatClient>? _chatClientFactoryOverride;
+    private readonly string _userDataDirectory;
 
     public string WorkspacePath => _workspace.RootPath;
     public UrConfiguration Configuration { get; }
@@ -33,6 +35,7 @@ public sealed class UrHost
         SessionStore sessions,
         ExtensionCatalog extensions,
         IKeyring keyring,
+        string userDataDirectory,
         Func<string, IChatClient>? chatClientFactoryOverride = null,
         ToolRegistry? tools = null)
     {
@@ -42,6 +45,7 @@ public sealed class UrHost
         _sessions = sessions;
         Extensions = extensions;
         _keyring = keyring;
+        _userDataDirectory = userDataDirectory;
         _chatClientFactoryOverride = chatClientFactoryOverride;
         Tools = tools ?? new ToolRegistry();
         Configuration = new UrConfiguration(modelCatalog, settings, keyring);
@@ -143,6 +147,7 @@ public sealed class UrHost
             sessions,
             extensions,
             keyring,
+            userDataDirectory,
             chatClientFactoryOverride,
             tools);
     }
@@ -152,11 +157,21 @@ public sealed class UrHost
             .Select(session => new SessionInfo(session.Id, session.CreatedAt))
             .ToList();
 
-    public UrSession CreateSession() =>
-        new(this, _sessions.Create(), [], isPersisted: false, activeModelId: null);
+    /// <summary>
+    /// Creates a new chat session. The optional <paramref name="callbacks"/> delegate is
+    /// captured for the entire session lifetime — the same callback handles all turns.
+    /// Pass null to auto-deny all sensitive operations (headless/test use).
+    /// </summary>
+    public UrSession CreateSession(TurnCallbacks? callbacks = null) =>
+        new(this, _sessions.Create(), [], isPersisted: false, activeModelId: null,
+            callbacks, _workspace.PermissionsPath, DefaultUserPermissionsPath());
 
+    /// <summary>
+    /// Opens an existing session by ID. See <see cref="CreateSession"/> for callback semantics.
+    /// </summary>
     public async Task<UrSession?> OpenSessionAsync(
         string sessionId,
+        TurnCallbacks? callbacks = null,
         CancellationToken ct = default)
     {
         var session = _sessions.Get(sessionId);
@@ -164,7 +179,8 @@ public sealed class UrHost
             return null;
 
         var messages = (await _sessions.ReadAllAsync(session, ct)).ToList();
-        return new UrSession(this, session, messages, isPersisted: true, activeModelId: null);
+        return new UrSession(this, session, messages, isPersisted: true, activeModelId: null,
+            callbacks, _workspace.PermissionsPath, DefaultUserPermissionsPath());
     }
 
     internal Task AppendMessageAsync(Session session, ChatMessage message, CancellationToken ct = default) =>
@@ -233,4 +249,7 @@ public sealed class UrHost
 
     private static string DefaultUserSettingsPath(string userDataDirectory) =>
         Path.Combine(userDataDirectory, "settings.json");
+
+    private string DefaultUserPermissionsPath() =>
+        Path.Combine(_userDataDirectory, "permissions.jsonl");
 }

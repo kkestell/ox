@@ -21,9 +21,9 @@ namespace Ur.Cli.Commands;
 /// Ctrl+C is forwarded to the agent loop via CancellationToken so in-flight
 /// requests are cancelled cleanly.
 ///
-/// NOTE: Permission prompts (TurnCallbacks.RequestPermissionAsync) are not yet
-/// wired — the runtime doesn't call the callback yet.  The callbacks parameter
-/// is intentionally left null until that wiring is in place.
+/// Permission prompts are written to stderr and read from stdin.  The user can
+/// approve once ("y"), or grant a durable scope: "session", "workspace", or "always".
+/// Any other input (including empty) denies the request.
 /// </summary>
 internal static class ChatCommand
 {
@@ -80,11 +80,44 @@ internal static class ChatCommand
                 if (modelId is not null)
                     await host.Configuration.SetSelectedModelAsync(modelId, ct: ct);
 
+                // Build a permission callback that prompts the user on stderr/stdin.
+                // Only scope options valid for the specific operation are presented.
+                var callbacks = new TurnCallbacks
+                {
+                    RequestPermissionAsync = (req, _) =>
+                    {
+                        // Filter to just the scopes allowed for this operation type,
+                        // then build a short hint string like " [session, workspace, always]".
+                        var scopeHints = req.AllowedScopes.Count > 1
+                            ? $" [{string.Join(", ", req.AllowedScopes.Select(s => s.ToString().ToLowerInvariant()))}]"
+                            : "";
+
+                        Console.Error.Write(
+                            $"\nAllow {req.OperationType} on '{req.Target}' by '{req.RequestingExtension}'?"
+                            + $" (y/n{scopeHints}): ");
+
+                        var input = Console.ReadLine()?.Trim().ToLowerInvariant();
+
+                        // Match the raw input against "y"/"yes" for once-approval,
+                        // or a scope name for a durable grant.
+                        var response = input switch
+                        {
+                            "y" or "yes"   => new PermissionResponse(true,  PermissionScope.Once),
+                            "session"      => new PermissionResponse(true,  PermissionScope.Session),
+                            "workspace"    => new PermissionResponse(true,  PermissionScope.Workspace),
+                            "always"       => new PermissionResponse(true,  PermissionScope.Always),
+                            _              => new PermissionResponse(false, null),
+                        };
+
+                        return ValueTask.FromResult(response);
+                    }
+                };
+
                 // Open an existing session or create a fresh one.
                 UrSession session;
                 if (sessionId is not null)
                 {
-                    var opened = await host.OpenSessionAsync(sessionId, ct);
+                    var opened = await host.OpenSessionAsync(sessionId, callbacks, ct);
                     if (opened is null)
                     {
                         Console.Error.WriteLine($"Session not found: {sessionId}");
@@ -94,7 +127,7 @@ internal static class ChatCommand
                 }
                 else
                 {
-                    session = host.CreateSession();
+                    session = host.CreateSession(callbacks);
                 }
 
                 // Stream the agent loop, routing response text to stdout and tool
@@ -102,7 +135,7 @@ internal static class ChatCommand
                 // response with `ur chat "..." > output.txt`.
                 var turnComplete = false;
 
-                await foreach (var evt in session.RunTurnAsync(message, turnCallbacks: null, ct))
+                await foreach (var evt in session.RunTurnAsync(message, ct))
                 {
                     switch (evt)
                     {
