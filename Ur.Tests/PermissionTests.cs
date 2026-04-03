@@ -1,4 +1,6 @@
 using System.Runtime.CompilerServices;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using Microsoft.Extensions.AI;
 using Ur.AgentLoop;
 using Ur.Permissions;
@@ -172,17 +174,67 @@ public sealed class PermissionGrantStoreTests
     }
 
     // -------------------------------------------------------------------------
+    // IsCovered — empty target prefix covers any target
+    // -------------------------------------------------------------------------
+
+    [Fact]
+    public async Task IsCovered_EmptyTargetPrefix_CoversAnyTarget()
+    {
+        using var tmp = new TempGrantDir();
+        var store = tmp.CreateStore();
+
+        // An empty prefix means "grant this operation type everywhere".
+        await store.StoreAsync(new PermissionGrant(
+            OperationType.WriteInWorkspace,
+            "",
+            PermissionScope.Session,
+            "ext"));
+
+        Assert.True(store.IsCovered(new PermissionRequest(
+            OperationType.WriteInWorkspace, "/any/path/at/all.txt", "ext", [])));
+        Assert.True(store.IsCovered(new PermissionRequest(
+            OperationType.WriteInWorkspace, "/completely/different/path", "other-ext", [])));
+    }
+
+    // -------------------------------------------------------------------------
+    // Round-trip: StoreAsync then fresh store instance reads it back
+    // -------------------------------------------------------------------------
+
+    [Fact]
+    public async Task StoreAsync_ThenFreshStoreInstance_CanReadPersistedGrant()
+    {
+        using var tmp = new TempGrantDir();
+
+        // Write via one store instance.
+        var writer = tmp.CreateStore();
+        await writer.StoreAsync(new PermissionGrant(
+            OperationType.WriteInWorkspace,
+            "/proj/",
+            PermissionScope.Workspace,
+            "ext"));
+
+        // A fresh instance (simulating a new session) must find the grant on disk.
+        var reader = tmp.CreateStore();
+        Assert.True(reader.IsCovered(new PermissionRequest(
+            OperationType.WriteInWorkspace, "/proj/src/main.cs", "ext", [])));
+    }
+
+    // -------------------------------------------------------------------------
     // Helpers
     // -------------------------------------------------------------------------
+
+    // Match the serialization options used by PermissionGrantStore so that
+    // pre-seeded test data is readable by the store under test.
+    private static readonly JsonSerializerOptions _grantJsonOptions = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+        Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase) },
+    };
 
     private static async Task WriteGrantToFileAsync(string path, PermissionGrant grant)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-        var json = System.Text.Json.JsonSerializer.Serialize(grant,
-            new System.Text.Json.JsonSerializerOptions
-            {
-                PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase
-            });
+        var json = JsonSerializer.Serialize(grant, _grantJsonOptions);
         await File.WriteAllTextAsync(path, json + "\n");
     }
 
@@ -419,13 +471,19 @@ public sealed class UrSessionPermissionTests
 
         var session = host.CreateSession(callbacks);
 
-        // Turn 1 — callback fires, grants Session scope.
-        await DrainAsync(session.RunTurnAsync("turn 1"));
+        // Turn 1 — callback fires, tool executes, grants Session scope.
+        var turn1Events = await CollectAsync(session.RunTurnAsync("turn 1"));
         Assert.Equal(1, callCount);
+        var turn1Completed = turn1Events.OfType<ToolCallCompleted>().Single();
+        Assert.False(turn1Completed.IsError);  // tool ran successfully
+        Assert.Equal("ok", turn1Completed.Result);
 
         // Turn 2 — same operation; session grant should suppress the callback.
-        await DrainAsync(session.RunTurnAsync("turn 2"));
+        var turn2Events = await CollectAsync(session.RunTurnAsync("turn 2"));
         Assert.Equal(1, callCount); // still 1 — no second prompt
+        var turn2Completed = turn2Events.OfType<ToolCallCompleted>().Single();
+        Assert.False(turn2Completed.IsError);  // tool still ran successfully via cached grant
+        Assert.Equal("ok", turn2Completed.Result);
     }
 
     // -------------------------------------------------------------------------
@@ -461,8 +519,14 @@ public sealed class UrSessionPermissionTests
         await host.Configuration.SetSelectedModelAsync("test-model");
 
         var session = host.CreateSession(callbacks);
-        await DrainAsync(session.RunTurnAsync("write something"));
+        var events = await CollectAsync(session.RunTurnAsync("write something"));
 
+        // Tool ran successfully.
+        var completed = events.OfType<ToolCallCompleted>().Single();
+        Assert.False(completed.IsError);
+        Assert.Equal("ok", completed.Result);
+
+        // Grant persisted to disk with correct operation type.
         var permissionsFile = Path.Combine(workspace.WorkspacePath, ".ur", "permissions.jsonl");
         Assert.True(File.Exists(permissionsFile));
         var content = await File.ReadAllTextAsync(permissionsFile);
@@ -476,6 +540,13 @@ public sealed class UrSessionPermissionTests
     private static async Task DrainAsync(IAsyncEnumerable<AgentLoopEvent> events)
     {
         await foreach (var _ in events) { }
+    }
+
+    private static async Task<List<AgentLoopEvent>> CollectAsync(IAsyncEnumerable<AgentLoopEvent> events)
+    {
+        var list = new List<AgentLoopEvent>();
+        await foreach (var e in events) list.Add(e);
+        return list;
     }
 
     /// <summary>

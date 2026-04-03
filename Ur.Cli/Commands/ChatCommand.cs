@@ -98,9 +98,11 @@ internal static class ChatCommand
 
                         var input = Console.ReadLine()?.Trim().ToLowerInvariant();
 
-                        // Match the raw input against "y"/"yes" for once-approval,
-                        // or a scope name for a durable grant.
-                        var response = input switch
+                        // Match input against "y"/"yes" (once-approval) or a scope name for
+                        // a durable grant. Then validate the chosen scope is actually allowed
+                        // for this operation — PermissionPolicy may restrict certain operations
+                        // to Once-only, and we must not grant broader scopes than allowed.
+                        var candidate = input switch
                         {
                             "y" or "yes"   => new PermissionResponse(true,  PermissionScope.Once),
                             "session"      => new PermissionResponse(true,  PermissionScope.Session),
@@ -108,6 +110,13 @@ internal static class ChatCommand
                             "always"       => new PermissionResponse(true,  PermissionScope.Always),
                             _              => new PermissionResponse(false, null),
                         };
+
+                        // If the user requested a scope that this operation doesn't permit,
+                        // treat it as a denial rather than silently granting more than allowed.
+                        var response = candidate.Granted && candidate.Scope is not null
+                            && !req.AllowedScopes.Contains(candidate.Scope.Value)
+                            ? new PermissionResponse(false, null)
+                            : candidate;
 
                         return ValueTask.FromResult(response);
                     }

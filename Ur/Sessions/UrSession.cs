@@ -118,7 +118,7 @@ public sealed class UrSession
         // Build a wrapped TurnCallbacks that layers grant-store checking in front
         // of the host-provided callback. This keeps grant persistence in the session
         // layer where it belongs — AgentLoop only sees a simple approve/deny callback.
-        var wrappedCallbacks = BuildWrappedCallbacks(ct);
+        var wrappedCallbacks = BuildWrappedCallbacks();
 
         // Track how many messages have been flushed to disk. The agent loop
         // appends to _messages as it runs, and we flush after each iteration
@@ -138,17 +138,17 @@ public sealed class UrSession
 
     /// <summary>
     /// Builds a TurnCallbacks that wraps the host-provided callback with grant-store
-    /// checking. The wrapped callback:
-    ///   1. Returns granted immediately if an existing grant already covers the request.
-    ///   2. Denies (without prompting) if no host callback was configured.
-    ///   3. Delegates to the host callback otherwise, and stores durable grants.
+    /// checking. The wrapped callback is always non-null so that:
+    ///   1. The grant store is consulted on every request (regardless of host callback).
+    ///   2. Auto-deny happens here (not in AgentLoop) so grant checking always runs first.
+    ///
+    /// Decision flow:
+    ///   1. Grant store already covers the request → approve immediately, no prompt.
+    ///   2. No host callback configured → deny without prompting.
+    ///   3. Host callback present → delegate; on durable grant, persist to grant store.
     /// </summary>
-    private TurnCallbacks? BuildWrappedCallbacks(CancellationToken ct)
+    private TurnCallbacks BuildWrappedCallbacks()
     {
-        // If no callback configured, the null propagates and AgentLoop auto-denies.
-        // Return a callback so the "no callback = auto-deny" path in AgentLoop fires
-        // for all sensitive ops, but we still get the benefit of the grant store when
-        // a host callback IS present.
         return new TurnCallbacks
         {
             RequestPermissionAsync = async (request, innerCt) =>
@@ -166,6 +166,7 @@ public sealed class UrSession
                     .ConfigureAwait(false);
 
                 // Persist durable grants so the user isn't re-asked next turn (or next session).
+                // Use innerCt here — this I/O is part of the callback's own async operation.
                 if (response.Granted && response.Scope is not null and not PermissionScope.Once)
                 {
                     var grant = new PermissionGrant(
@@ -174,7 +175,7 @@ public sealed class UrSession
                         response.Scope.Value,
                         request.RequestingExtension);
 
-                    await _grantStore.StoreAsync(grant, ct).ConfigureAwait(false);
+                    await _grantStore.StoreAsync(grant, innerCt).ConfigureAwait(false);
                 }
 
                 return response;
