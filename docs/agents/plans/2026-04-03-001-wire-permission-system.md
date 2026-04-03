@@ -94,26 +94,26 @@ var session = host.CreateSession(new TurnCallbacks
 
 ### 1. Extend ToolRegistry with permission metadata
 
-- [ ] Add an overload `ToolRegistry.Register(AIFunction tool, OperationType operationType, string? extensionId = null, Func<AIFunctionArguments, string>? targetExtractor = null)`
-- [ ] Store `(OperationType, extensionId, targetExtractor)` in a parallel `Dictionary<string, PermissionMeta>` keyed by tool name
-- [ ] Add `ToolRegistry.GetPermissionMeta(string toolName) → PermissionMeta?` (returns null for unknown tools)
-- [ ] Update `Extension.MarkActivated` to pass `OperationType.WriteInWorkspace` when registering Lua tools (conservative default; Lua tools can write files)
-- [ ] Update `Extension.ResetRuntimeState` — no change needed (tools are removed by name)
+- [x] Add an overload `ToolRegistry.Register(AIFunction tool, OperationType operationType, string? extensionId = null, Func<AIFunctionArguments, string>? targetExtractor = null)`
+- [x] Store `(OperationType, extensionId, targetExtractor)` in a parallel `Dictionary<string, PermissionMeta>` keyed by tool name
+- [x] Add `ToolRegistry.GetPermissionMeta(string toolName) → PermissionMeta?` (returns null for unknown tools)
+- [x] Update `Extension.MarkActivated` to pass `OperationType.WriteInWorkspace` when registering Lua tools (conservative default; Lua tools can write files)
+- [x] Update `Extension.ResetRuntimeState` — no change needed (tools are removed by name)
 
 ### 2. Add PermissionGrantStore
 
-- [ ] Create `Ur/Permissions/PermissionGrantStore.cs`
-- [ ] Store session grants in-memory: `List<PermissionGrant>` (scope `Session`)
-- [ ] Read/write workspace grants from `{workspace}/.ur/permissions.jsonl` (scope `Workspace`)
-- [ ] Read/write always grants from `{userDataDir}/permissions.jsonl` (scope `Always`)
-- [ ] `bool IsCovered(PermissionRequest)` — checks if any active grant matches `operationType` + target prefix
-- [ ] `Task StoreAsync(PermissionGrant, CancellationToken)` — persists by scope; `Once` is not stored
-- [ ] Load workspace and always grants lazily (read on first `IsCovered` check, not at construction)
+- [x] Create `Ur/Permissions/PermissionGrantStore.cs`
+- [x] Store session grants in-memory: `List<PermissionGrant>` (scope `Session`)
+- [x] Read/write workspace grants from `{workspace}/.ur/permissions.jsonl` (scope `Workspace`)
+- [x] Read/write always grants from `{userDataDir}/permissions.jsonl` (scope `Always`)
+- [x] `bool IsCovered(PermissionRequest)` — checks if any active grant matches `operationType` + target prefix
+- [x] `Task StoreAsync(PermissionGrant, CancellationToken)` — persists by scope; `Once` is not stored
+- [x] Load workspace and always grants lazily (read on first `IsCovered` check, not at construction)
 
 ### 3. Wire AgentLoop to call the callback
 
-- [ ] Add `TurnCallbacks?` parameter to `AgentLoop.RunTurnAsync` (before `CancellationToken`)
-- [ ] Before executing each tool call:
+- [x] Add `TurnCallbacks?` parameter to `AgentLoop.RunTurnAsync` (before `CancellationToken`)
+- [x] Before executing each tool call:
   - Look up `PermissionMeta` from registry; default to `WriteInWorkspace` if not found
   - If `PermissionPolicy.RequiresPrompt(operationType)` and `RequestPermissionAsync` is not null:
     - Extract target: call `meta.TargetExtractor(call.Arguments)` or fall back to tool name
@@ -124,20 +124,20 @@ var session = host.CreateSession(new TurnCallbacks
 
 ### 4. UrSession: own the grant store, wrap the callback, create with TurnCallbacks
 
-- [ ] Add `PermissionGrantStore _grantStore` field to `UrSession`
-- [ ] Change `UrHost.CreateSession()` signature to `UrSession CreateSession(TurnCallbacks? callbacks = null)`; pass callbacks + workspace/userDataDir paths to `UrSession`
-- [ ] Change `UrHost.OpenSessionAsync` similarly
-- [ ] Remove `TurnCallbacks?` parameter from `UrSession.RunTurnAsync` (it's now session-level state)
-- [ ] In `UrSession.RunTurnAsync`, build a wrapped `TurnCallbacks`:
+- [x] Add `PermissionGrantStore _grantStore` field to `UrSession`
+- [x] Change `UrHost.CreateSession()` signature to `UrSession CreateSession(TurnCallbacks? callbacks = null)`; pass callbacks + workspace/userDataDir paths to `UrSession`
+- [x] Change `UrHost.OpenSessionAsync` similarly
+- [x] Remove `TurnCallbacks?` parameter from `UrSession.RunTurnAsync` (it's now session-level state)
+- [x] In `UrSession.RunTurnAsync`, build a wrapped `TurnCallbacks`:
   1. Check `_grantStore.IsCovered(request)` → if yes, return `Granted: true, Scope: null`
   2. If no stored callback (host passed `null`): return `Granted: false, Scope: null`
   3. Delegate to the host's `RequestPermissionAsync`
   4. On grant: call `_grantStore.StoreAsync(new PermissionGrant(...), ct)` for non-Once scopes
-- [ ] Pass the wrapped `TurnCallbacks` to `AgentLoop.RunTurnAsync`
+- [x] Pass the wrapped `TurnCallbacks` to `AgentLoop.RunTurnAsync`
 
 ### 5. CLI: implement the approval prompt
 
-- [ ] In `ChatCommand.cs`, build `TurnCallbacks` before calling `CreateSession`:
+- [x] In `ChatCommand.cs`, build `TurnCallbacks` before calling `CreateSession`:
   ```
   RequestPermissionAsync = async (req, ct) =>
   {
@@ -157,20 +157,20 @@ var session = host.CreateSession(new TurnCallbacks
       };
   }
   ```
-- [ ] Pass `TurnCallbacks` to `host.CreateSession(callbacks)`
-- [ ] Note: only scope options valid for the operation type should be presented; filter `req.AllowedScopes`
+- [x] Pass `TurnCallbacks` to `host.CreateSession(callbacks)`
+- [x] Note: only scope options valid for the operation type should be presented; filter `req.AllowedScopes`
 
 ### 6. Ensure Workspace.EnsureDirectories() creates the permissions directory
 
-- [ ] `Workspace.EnsureDirectories()` should not need to change since `PermissionsPath` is a file, not a directory — but verify the parent `.ur` directory is created (it already is)
+- [x] `Workspace.EnsureDirectories()` should not need to change since `PermissionsPath` is a file, not a directory — but verify the parent `.ur` directory is created (it already is)
 
 ### 7. Tests
 
-- [ ] Unit test: `PermissionGrantStore.IsCovered` — session grant covers exact match and prefix match; workspace grant loaded from file; `Once` is never stored
-- [ ] Unit test: `AgentLoop` with a callback that denies — tool call produces a "Permission denied" function result, loop continues
-- [ ] Unit test: `AgentLoop` with a callback that grants — tool executes normally
-- [ ] Unit test: `UrSession` grant-wrapping decorator — covered grant skips the host callback; uncovered grant invokes callback; `Workspace`-scope grant is stored
-- [ ] Integration test: `HostSessionApiTests` or a new `PermissionTests` — end-to-end: tool registered with `WriteInWorkspace`, callback invoked once, `Session`-scope grant prevents second prompt
+- [x] Unit test: `PermissionGrantStore.IsCovered` — session grant covers exact match and prefix match; workspace grant loaded from file; `Once` is never stored
+- [x] Unit test: `AgentLoop` with a callback that denies — tool call produces a "Permission denied" function result, loop continues
+- [x] Unit test: `AgentLoop` with a callback that grants — tool executes normally
+- [x] Unit test: `UrSession` grant-wrapping decorator — covered grant skips the host callback; uncovered grant invokes callback; `Workspace`-scope grant is stored
+- [x] Integration test: `HostSessionApiTests` or a new `PermissionTests` — end-to-end: tool registered with `WriteInWorkspace`, callback invoked once, `Session`-scope grant prevents second prompt
 
 ## Impact assessment
 
