@@ -7,16 +7,6 @@ This document catalogs features that are designed but not wired, partially imple
 
 ## Critical: Not Wired
 
-### Permission System
-The permission architecture is complete and well-designed, but entirely disconnected from execution.
-
-- `PermissionRequest`, `PermissionResponse`, `PermissionGrant`, `TurnCallbacks`, `PermissionPolicy`, `PermissionScope`, `OperationType` — all defined in `Ur/Permissions/`
-- `TurnCallbacks.RequestPermissionAsync` callback exists as a parameter to `UrSession.RunTurnAsync`
-- `AgentLoop.cs` never invokes it — the parameter is accepted and ignored
-- `Workspace.PermissionsPath` is defined but nothing reads or writes to it
-- No permission grant backing store exists
-- `ChatCommand.cs` line 26 passes `null` for `TurnCallbacks`, with a comment that permission prompts are not yet wired
-- **Effect:** Every tool call is silently permitted with no user oversight
 
 ### Error Events
 - `AgentLoopEvent.Error` is defined in `AgentLoop/AgentLoopEvent.cs`

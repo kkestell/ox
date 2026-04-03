@@ -1,6 +1,6 @@
 ---
 name: work
-description: "Execute a repo plan end to end: implement, commit logical units, validate with parallel subagent review at the end, and prepare the branch for `/verify`."
+description: "Execute a repo plan end to end: implement, commit logical units, and validate with parallel subagent review at the end."
 argument-hint: "[docs/agents/plans/... plan, specification, or docs/agents/todo/... file path]"
 disable-model-invocation: true
 ---
@@ -27,7 +27,7 @@ disable-model-invocation: true
    - Better to ask once before starting than to build the wrong thing. Get user approval to proceed.
    - Skip this step if the plan is clear and the path forward is obvious.
 5. Verify the repo setup and baseline quality commands before major edits — run this in a subagent.
-   - Launch a subagent (model: "haiku") that confirms dependencies are installed, then runs tests, lint, formatter, and type checks using the commands from `CLAUDE.md`.
+   - Launch a subagent (model: "sonnet") that confirms dependencies are installed, then runs tests, lint, formatter, and type checks using the commands from `CLAUDE.md`.
    - The subagent should return a concise summary: what passed, what failed, and any broken baseline issues.
    - If the baseline is already broken, tell the user before proceeding.
 6. Create a Todo list from the plan's implementation tasks.
@@ -71,21 +71,19 @@ After all plan work is complete and committed, validate the full body of work wi
     - Use the commands from `CLAUDE.md`, not ad hoc substitutes.
     - Fix any failures and commit the fixes before proceeding.
 11. Launch two review subagents **in parallel** using the Agent tool.
-    - Both subagents must use `model: "haiku"` for speed and cost efficiency.
+    - Both subagents must use `model: "sonnet"` for speed and cost efficiency.
     - Each Agent invocation starts with fresh context — include all necessary details in the prompt.
     - Build each subagent prompt by reading the corresponding template, then filling in the specifics of the full plan.
     - **Completeness review** — Read `${CLAUDE_SKILL_DIR}/assets/completeness-review-prompt.md` for the prompt framework. Fill in the plan path, all tasks completed, and the list of all changed files. The subagent reads the plan and all changed files, then evaluates whether the work is genuinely complete with no omissions, hacks, disabled warnings, or workarounds. The subagent should assume that the code builds and the tests pass and should not verify this itself.
     - **Test quality review** — Read `${CLAUDE_SKILL_DIR}/assets/test-quality-review-prompt.md` for the prompt framework. Fill in the plan path, all tasks completed, the test files, and the implementation files. The subagent reads the implementation and tests, then evaluates whether the tests verify real behavior, cover edge cases, and would actually catch bugs.
 12. Act on review findings.
-    - If either reviewer reports issues worth fixing: fix them, re-run the relevant quality checks, then re-launch both subagents to confirm the fixes.
-    - If the second round still finds issues, report the remaining findings to the user and ask how to proceed rather than looping further.
+    - If either reviewer reports issues worth fixing: fix them, then re-run the relevant quality checks.
     - If both reviewers pass, proceed to handoff.
 
 ### Handoff
 
 13. Commit any remaining validated work.
 14. Report what shipped, quality-check results, commit summary, branch name, and any follow-up work.
-15. Then offer `/verify`.
 
 ## Principles
 

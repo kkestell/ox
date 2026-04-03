@@ -1,7 +1,0 @@
-interface:
-  display_name: "Verification"
-  short_description: "Verify repo changes against a plan"
-  default_prompt: "Use $verify to verify the current repo state against a supplied plan or spec."
-
-policy:
-  allow_implicit_invocation: false
