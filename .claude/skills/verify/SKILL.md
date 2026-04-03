@@ -1,7 +1,7 @@
 ---
-name: tverify
-description: Verify completed work against a supplied plan, spec, or brainstorm doc, run the repo's quality gates, and report readiness for handoff.
-argument-hint: "[plan path, spec path, or verification target]"
+name: verify
+description: Verify completed work against a supplied `docs/agents/plans/` plan, `docs/agents/todo/` follow-up doc, spec, or brainstorm doc, run the repo's quality gates, and report readiness for handoff.
+argument-hint: "[docs/agents/plans/... path, docs/agents/todo/... path, spec path, or verification target]"
 disable-model-invocation: true
 ---
 

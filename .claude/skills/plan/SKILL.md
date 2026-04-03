@@ -1,6 +1,6 @@
 ---
-name: tplan
-description: Brainstorm a feature or change with the user, explore the repo to understand how it fits, then produce a concrete implementation plan. Creates `docs/plans/<index>-<slug>.md`.
+name: plan
+description: Brainstorm a feature or change with the user, explore the repo to understand how it fits, then produce a concrete implementation plan. Creates `docs/agents/plans/YYYY-MM-DD-NNN-slug.md`.
 argument-hint: "[feature idea, bug report, or improvement to explore]"
 disable-model-invocation: true
 ---
@@ -12,7 +12,7 @@ disable-model-invocation: true
 1. Read `<feature_description> $ARGUMENTS </feature_description>`; if it is empty, ask what they want to plan and stop.
 2. Decide whether brainstorming is needed.
    - If the request already has concrete scope, clear acceptance criteria, and constrained behavior, skip to Phase 2.
-   - If the idea is fuzzy, broad, or has multiple possible interpretations, brainstorm first.
+   - If the idea is fuzzy, broad, or has multiple possible interpretations, or if the user requests it, brainstorm first.
 3. Brainstorm through collaborative dialogue.
    - Reframe the problem as a "How might we..." question.
    - Start with "why" questions and go a few levels deep. The stated request is often a proxy for the real problem.
@@ -27,7 +27,6 @@ disable-model-invocation: true
 ### Phase 2 — Explore the repo
 
 4. Explore the codebase to understand how the feature fits.
-   - Read `CLAUDE.md` guidance, conventions, and established patterns.
    - Find similar features, adjacent code, and prior attempts at the same problem.
    - Read the files that will actually need to change, not just grep for keywords.
    - Understand the existing architecture. Map the layers, modules, and boundaries the change will touch.
@@ -38,7 +37,6 @@ disable-model-invocation: true
    - **Encapsulation** — Does the change respect existing boundaries? Would it require exposing internals that should stay private?
    - If the cleanest solution requires refactoring existing code, say so. The architecture is a living thing. New features should not be bolted on — they should be integrated thoughtfully. It is better to refactor first and then add the feature cleanly than to wedge it in and create structural debt.
 6. Decide whether more research is needed and announce the decision.
-   - **Always research:** security, payments, external APIs, data privacy — the cost of guessing wrong is too high.
    - **Skip research:** strong local patterns already exist, `CLAUDE.md` has guidance, and the user has clear intent.
    - **Research when uncertain:** unfamiliar territory, no codebase examples, new technology or library, ambiguous behavior.
 
@@ -52,14 +50,15 @@ disable-model-invocation: true
    - Ask the user which approach they prefer using `AskUserQuestion`. Refine until aligned.
 
 ### Phase 4 — Write the plan
-e
-9. Generate the plan filename: `docs/plans/####-slug.md` #### is the next available plan number and the slug is a short kebab-case summary (3-5 words). Create the `docs/plans/` directory if it does not exist.
+
+9. Generate the plan filename: `docs/agents/plans/YYYY-MM-DD-NNN-slug.md` where `YYYY-MM-DD` is today's date, `NNN` is the next available zero-padded sequence for that date, and the slug is a short kebab-case summary (3-5 words). Create the `docs/agents/plans/` directory if it does not exist.
 10. Write the plan from `${CLAUDE_SKILL_DIR}/assets/plan-template.md`.
     - Use the template as a scaffold, not a rigid form. Keep only the sections that apply, and add sections when the work needs more structure.
     - Every implementation task gets an actionable checkbox. A reader should be able to execute the plan without re-reading the codebase.
     - If refactoring is part of the plan, list refactoring tasks before feature tasks. Explain what each refactor achieves structurally.
     - Include validation steps: what tests to write, what commands to run, what to verify manually.
-    - Include open questions for anything still unresolved.
+    - Include open questions for anything still unresolved. When the user later answers an open question, fold the decision into the relevant plan sections (goal, implementation tasks, structural considerations, etc.) and delete the question. Never rename "Open questions" to "Resolved questions" or leave answered questions in place — a plan should read as a coherent document, not a Q&A transcript.
     - `Related code` must be concrete: repo-relative paths plus one-line reasons each file matters. Vague references like "the auth module" are not useful.
 11. After writing, print the plan path and stop.
-12. Never code here.
+12. Strongly suggest that the user run `/clear` before starting `/work` with this plan. Planning conversations consume significant context — starting `/work` in a fresh session preserves context for the actual implementation.
+13. Never code here.

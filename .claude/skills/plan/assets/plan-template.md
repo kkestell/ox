@@ -82,11 +82,13 @@ Summarize findings that matter for this plan.
 
 ## Gaps and follow-up
 
-Features or functionality this plan depends on but cannot deliver. Stub plans for these live in `.k/todo/` if created.
+Features or functionality this plan depends on but cannot deliver. Stub follow-up docs for these live in `docs/agents/todo/YYYY-MM-DD-NNN-slug.md` if created.
 
 - Gap:
 - Follow-up:
 
 ## Open questions
+
+Questions that need user input before implementation can proceed. When the user answers a question, fold the decision into the relevant section of the plan and delete the question. This section should shrink over time and be removed entirely once all questions are resolved.
 
 - Question:

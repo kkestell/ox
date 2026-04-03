@@ -71,7 +71,7 @@ find_linked_docs() {
       add_candidate "${source_dir}/${ref}"
       add_candidate "${repo_root}/${ref}"
     fi
-  done < <(rg -o --no-filename '(?:/)?(?:[A-Za-z0-9._-]+/)*(?:plan|brainstorm)\.md|(?:/)?(?:[A-Za-z0-9._-]+/)*docs/plans/[A-Za-z0-9._-]+\.md' "$source_path" || true)
+  done < <(rg -o --no-filename '(?:/)?(?:[A-Za-z0-9._-]+/)*(?:plan|brainstorm)\.md|(?:/)?(?:[A-Za-z0-9._-]+/)*docs/(?:agents/plans|agents/todo|plans)/[A-Za-z0-9._-]+\.md' "$source_path" || true)
 }
 
 primary_path=""
@@ -83,7 +83,7 @@ if [[ -f "$resolved_target" ]]; then
   find_linked_docs "$resolved_target"
 
   case "$resolved_target" in
-    */plan.md|*/docs/plans/*.md)
+    */plan.md|*/docs/plans/*.md|*/docs/agents/plans/*.md|*/docs/agents/todo/*.md)
       add_candidate "${resolved_target%/*}/brainstorm.md"
       ;;
     */brainstorm.md)
@@ -106,7 +106,7 @@ brainstorm_path=""
 
 for candidate in "${candidates[@]}"; do
   case "$candidate" in
-    */plan.md|*/docs/plans/*.md)
+    */plan.md|*/docs/plans/*.md|*/docs/agents/plans/*.md|*/docs/agents/todo/*.md)
       if [[ -z "$plan_path" ]]; then
         plan_path="$candidate"
       fi
