@@ -36,7 +36,7 @@ class ChatDemoApp : Application
 
         var scrollView = new ScrollView(_listView) { AutoScroll = true };
 
-        var root = Stack.Vertical();
+        var root = Flex.Vertical();
         root.HorizontalSizing = SizingMode.Grow;
         root.VerticalSizing = SizingMode.Grow;
 

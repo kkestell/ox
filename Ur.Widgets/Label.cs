@@ -42,6 +42,17 @@ public class Label : Widget
 
     public string[] Lines => _lines;
 
+    /// <summary>
+    /// Sets Width to the available width (constrained by parent) or the natural text
+    /// width when unconstrained. Height is always the natural line count — Labels never
+    /// shrink vertically regardless of what the parent offers.
+    /// </summary>
+    public override void Layout(int availableWidth, int availableHeight)
+    {
+        Width  = availableWidth > 0 ? availableWidth : PreferredWidth;
+        Height = PreferredHeight;
+    }
+
     public override void Draw(ICanvas canvas)
     {
         var y = 0;

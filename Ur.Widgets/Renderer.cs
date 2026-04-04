@@ -18,13 +18,6 @@ public static class Renderer
     }
 
     /// <summary>
-    /// Renders a widget subtree into the provided canvas.
-    /// Temporary bridge used by ScrollView's offscreen-buffer path until Phase 7
-    /// rewrites ScrollView to use native Renderer clipping instead.
-    /// </summary>
-    internal static void RenderTree(Widget root, ICanvas canvas) => RenderWidget(root, canvas);
-
-    /// <summary>
     /// Renders widget W into the provided canvas, then recurses into its children.
     ///
     /// Key design change from the old renderer: children are drawn relative to the

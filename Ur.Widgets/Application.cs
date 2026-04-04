@@ -133,7 +133,9 @@ public abstract class Application
 
             // Render the initial frame before any input arrives, so the user
             // sees the UI immediately rather than a blank screen.
-            LayoutEngine.LayoutWithConstraints(Root, 0, 0, driver.Width, driver.Height);
+            Root.X = 0;
+            Root.Y = 0;
+            Root.Layout(driver.Width, driver.Height);
             var screen = Renderer.Render(Root);
             driver.Present(screen);
 
@@ -155,7 +157,9 @@ public abstract class Application
                 // Check after draining — Ctrl-C might have been in the batch.
                 if (!running) break;
 
-                LayoutEngine.LayoutWithConstraints(Root, 0, 0, driver.Width, driver.Height);
+                Root.X = 0;
+                Root.Y = 0;
+                Root.Layout(driver.Width, driver.Height);
                 screen = Renderer.Render(Root);
                 driver.Present(screen);
             }

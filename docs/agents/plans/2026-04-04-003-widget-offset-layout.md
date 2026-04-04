@@ -142,9 +142,9 @@ baked in. `Stack` can be deleted (or kept as `class Stack : Flex` for one releas
 
 ### Phase 4 — Flex widget (replaces Stack + LayoutEngine)
 
-- [ ] Create `Ur.Widgets/Flex.cs`. `Flex` extends `Widget`. Constructor accepts
+- [x] Create `Ur.Widgets/Flex.cs`. `Flex` extends `Widget`. Constructor accepts
   `LayoutDirection direction = LayoutDirection.Vertical` (same as current `Stack`).
-- [ ] Move the 7-pass layout algorithm from `LayoutEngine` into `Flex.Layout(int w, int h)`:
+- [x] Move the 7-pass layout algorithm from `LayoutEngine` into `Flex.Layout(int w, int h)`:
   - Set `this.Width`/`Height` based on `HorizontalSizing`/`VerticalSizing` and `w`/`h`.
   - Run Passes 1–7 on `Children` using the existing helpers in `Calculations`,
     `GrowShrink`, and `Traversal` (these files stay as internal helpers, now only
@@ -154,30 +154,30 @@ baked in. `Stack` can be deleted (or kept as `class Stack : Flex` for one releas
     from the current absolute-coordinate pass.
   - After positioning, call `child.Layout(child.Width, child.Height)` for each child
     so containers recurse.
-- [ ] `Flex.Draw(ICanvas canvas)` remains empty (same as current `Stack.Draw`).
-- [ ] Add `static Flex Vertical()` and `static Flex Horizontal()` factory methods
+- [x] `Flex.Draw(ICanvas canvas)` remains empty (same as current `Stack.Draw`).
+- [x] Add `static Flex Vertical()` and `static Flex Horizontal()` factory methods
   matching current `Stack.Vertical()` / `Stack.Horizontal()`.
-- [ ] Delete `Ur.Widgets/LayoutEngine.cs` once Flex uses the algorithm.
-- [ ] Delete `Ur.Widgets/Stack.cs` and update all references to `Stack` → `Flex`.
+- [x] Delete `Ur.Widgets/LayoutEngine.cs` once Flex uses the algorithm.
+- [x] Delete `Ur.Widgets/Stack.cs` and update all references to `Stack` → `Flex`.
 
 ### Phase 5 — Leaf widgets: implement Layout
 
-- [ ] `Label.Layout(int w, int h)`: set `Width = w > 0 ? w : PreferredWidth`,
+- [x] `Label.Layout(int w, int h)`: set `Width = w > 0 ? w : PreferredWidth`,
   `Height = PreferredHeight`. (Width may be constrained by Flex; height is always
   natural line count.)
-- [ ] `TextInput.Layout(int w, int h)`: set `Width = w > 0 ? w : PreferredWidth`,
+- [x] `TextInput.Layout(int w, int h)`: set `Width = w > 0 ? w : PreferredWidth`,
   `Height = 1`.
 
 ### Phase 6 — ListView: implement Layout
 
-- [ ] `ListView<T>.Layout(int w, int h)`: same logic as `Flex.Layout` for a vertical
+- [x] `ListView<T>.Layout(int w, int h)`: same logic as `Flex.Layout` for a vertical
   container. Position children at parent-relative coords, call each child's `Layout`.
   This is identical to `Flex.Layout(w, h)` with `Direction = Vertical` — consider
   making `ListView` extend `Flex` or delegating to shared vertical-layout logic.
 
 ### Phase 7 — ScrollView: simplify
 
-- [ ] Rewrite `ScrollView`:
+- [x] Rewrite `ScrollView`:
   - Keep `_content` in `Children` (the Renderer now handles offset+clip natively).
   - `Layout(int w, int h)`: set `Width = w`, `Height = h`, then call
     `_content.Layout(w - 1, 0)` (0 = unconstrained height). Set `_content.X = 0`,
@@ -191,7 +191,7 @@ baked in. `Stack` can be deleted (or kept as `class Stack : Flex` for one releas
 
 ### Phase 8 — Application: call Layout instead of LayoutEngine
 
-- [ ] In `Application.cs`, replace:
+- [x] In `Application.cs`, replace:
   ```csharp
   LayoutEngine.LayoutWithConstraints(Root, 0, 0, driver.Width, driver.Height);
   ```

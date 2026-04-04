@@ -11,7 +11,7 @@ namespace Ur.Widgets;
 ///
 /// Design:
 /// - ListView is a thin wrapper over the normal container mechanism. It does not
-///   own any layout or rendering logic; Draw() is empty, just like Stack.
+///   own any layout or rendering logic; Draw() is empty, just like Flex.
 /// - The LayoutEngine positions children, and the Renderer draws them, exactly
 ///   as with any other container.
 /// - A parallel <see cref="_itemWidgets"/> list maps each item index to its widget
@@ -103,6 +103,30 @@ public class ListView<T> : Widget
                 }
                 break;
         }
+    }
+
+    /// <summary>
+    /// Lays out children as a vertical stack, sizing each one to the available width
+    /// and letting it determine its own height. Total height is the sum of children.
+    ///
+    /// availableHeight=0 means unconstrained (the ScrollView convention): we report
+    /// our natural height so ScrollView can compute the scrollbar ratio.
+    /// </summary>
+    public override void Layout(int availableWidth, int availableHeight)
+    {
+        Width  = availableWidth > 0 ? availableWidth : PreferredWidth;
+
+        var y = 0;
+        foreach (var child in Children)
+        {
+            child.X = 0;
+            child.Y = y;
+            child.Layout(Width, 0); // unconstrained height — let child report natural size
+            y += child.Height + ChildGap;
+        }
+
+        // Natural height is the sum of children — no vertical constraint imposed.
+        Height = y > 0 ? y - ChildGap : 0;
     }
 
     /// <summary>

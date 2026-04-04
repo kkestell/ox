@@ -47,6 +47,16 @@ public class TextInput : Widget
     }
 
     /// <summary>
+    /// TextInput is always one row tall; width fills the available space so the
+    /// colored background extends edge-to-edge across the parent container.
+    /// </summary>
+    public override void Layout(int availableWidth, int availableHeight)
+    {
+        Width  = availableWidth > 0 ? availableWidth : PreferredWidth;
+        Height = 1;
+    }
+
+    /// <summary>
     /// Handles keyboard input when this widget has focus.
     /// Characters are inserted at the cursor position; Backspace deletes behind
     /// the cursor; Left/Right arrow keys move the cursor within the value.
