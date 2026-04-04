@@ -6,8 +6,8 @@ public static class Renderer
 {
     /// <summary>
     /// Renders a laid-out widget tree into a Screen.
-    /// The root widget's X/Y/Width/Height must already be set by the layout engine.
-    /// All widget coordinates are absolute (relative to the root canvas origin).
+    /// Root.Layout(w, h) must have been called before this — the Renderer only draws,
+    /// it does not participate in sizing or positioning.
     /// </summary>
     public static Screen Render(Widget root)
     {
@@ -19,28 +19,46 @@ public static class Renderer
 
     /// <summary>
     /// Renders a widget subtree into the provided canvas.
-    /// Used by ScrollView to render its offscreen content buffer independently of the main tree walk.
-    /// The root widget's layout coordinates must already be set before calling this.
+    /// Temporary bridge used by ScrollView's offscreen-buffer path until Phase 7
+    /// rewrites ScrollView to use native Renderer clipping instead.
     /// </summary>
-    public static void RenderTree(Widget root, ICanvas canvas) => RenderWidget(root, canvas);
+    internal static void RenderTree(Widget root, ICanvas canvas) => RenderWidget(root, canvas);
 
-    private static void RenderWidget(Widget widget, ICanvas rootCanvas)
+    /// <summary>
+    /// Renders widget W into the provided canvas, then recurses into its children.
+    ///
+    /// Key design change from the old renderer: children are drawn relative to the
+    /// *parent's canvas*, not the root canvas. Each child's sub-canvas is carved out
+    /// of its parent's canvas at position (child.X - parent.OffsetX, child.Y - parent.OffsetY).
+    ///
+    /// This is the standard retained-mode model: parent-relative coordinates accumulate
+    /// naturally as we descend the tree, and SubCanvas handles clipping at each level.
+    /// OffsetX/OffsetY on the parent translate the entire child layer — ScrollView uses
+    /// OffsetY to scroll without any special-casing in the Renderer.
+    /// </summary>
+    private static void RenderWidget(Widget widget, ICanvas widgetCanvas)
     {
         if (widget.Width <= 0 || widget.Height <= 0)
             return;
 
-        // Widget X/Y are absolute screen coordinates set by the layout engine,
-        // so we always create sub-canvases relative to the root canvas (origin 0,0)
-        // rather than relative to the parent widget's canvas.
-        var sub = rootCanvas.SubCanvas(new Rect(
-            Math.Max(0, widget.X),
-            Math.Max(0, widget.Y),
-            widget.Width,
-            widget.Height));
-
-        widget.Draw(sub);
+        widget.Draw(widgetCanvas);
 
         foreach (var child in widget.Children)
-            RenderWidget(child, rootCanvas);
+        {
+            // Position the child relative to the parent's canvas, applying the parent's
+            // scroll offset as a translation. A positive OffsetY scrolls content up,
+            // so a child at Y=10 with OffsetY=10 appears at row 0 of the parent canvas.
+            var childRect = new Rect(
+                child.X - widget.OffsetX,
+                child.Y - widget.OffsetY,
+                child.Width,
+                child.Height);
+
+            // SubCanvas clamps negative origins to zero and reduces the visible size
+            // accordingly, clipping children scrolled outside the parent viewport.
+            var childCanvas = widgetCanvas.SubCanvas(childRect);
+
+            RenderWidget(child, childCanvas);
+        }
     }
 }

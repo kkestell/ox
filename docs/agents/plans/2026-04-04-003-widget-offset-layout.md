@@ -126,7 +126,7 @@ baked in. `Stack` can be deleted (or kept as `class Stack : Flex` for one releas
 
 ### Phase 3 — Renderer: parent-canvas + offset translation
 
-- [ ] Rewrite `Renderer.RenderWidget` to pass the **parent's sub-canvas** to children
+- [x] Rewrite `Renderer.RenderWidget` to pass the **parent's sub-canvas** to children
   instead of the root canvas. When rendering widget W's children, create each child's
   sub-canvas as:
   ```
@@ -136,10 +136,9 @@ baked in. `Stack` can be deleted (or kept as `class Stack : Flex` for one releas
       child.Width, child.Height))
   ```
   SubCanvas clipping (from Phase 1) handles children outside the viewport automatically.
-- [ ] Update `Renderer.Render(Widget root)` to create the root canvas from the screen
+- [x] Update `Renderer.Render(Widget root)` to create the root canvas from the screen
   and call `RenderWidget(root, screenCanvas)` where root's sub-canvas is the full screen.
-- [ ] Remove `Renderer.RenderTree` (the method used by `ScrollView` to render private
-  content into an offscreen canvas). It will no longer be needed.
+- [ ] Remove `Renderer.RenderTree` (kept as internal bridge for ScrollView until Phase 7).
 
 ### Phase 4 — Flex widget (replaces Stack + LayoutEngine)
 
