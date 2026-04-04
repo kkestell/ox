@@ -43,22 +43,42 @@ public class Flex : Widget
     /// </summary>
     public override void Layout(int availableWidth, int availableHeight)
     {
-        // Passes 1-6 compute Width/Height for every node in our subtree.
+        // Width axis: compute natural widths bottom-up, fix our own width, then
+        // distribute to Grow children. Our own width must be set before Pass 3 so
+        // the GrowShrink pass knows the actual space available for Grow children
+        // (e.g. a root Flex with Grow sizing must reflect the terminal width before
+        // distributing that width to child widgets).
         Pass1_FitWidth(this);
+        if (Parent == null) MaybeDumpTree(this, "1: FitWidth");
         Pass2_ApplyMinMaxWidth(this);
+        if (Parent == null) MaybeDumpTree(this, "2: ApplyMinMaxWidth");
+        ApplyOwnWidth(availableWidth);
+        if (Parent == null) MaybeDumpTree(this, "3a: ApplyOwnWidth");
         Pass3_GrowShrinkWidth(this);
-        Pass4_FitHeight(this);
-        Pass5_ApplyMinMaxHeight(this);
-        Pass6_GrowShrinkHeight(this);
+        if (Parent == null) MaybeDumpTree(this, "3b: GrowShrinkWidth");
 
-        // Apply our own sizing relative to the available space given by our parent.
-        // This must happen after the bottom-up passes so we know our children's natural
-        // sizes, and before Pass 7 so position offsets are based on our final size.
-        ApplyOwnSizing(availableWidth, availableHeight);
+        // Height axis: same pattern. Natural heights must come after widths are
+        // final so that wrapping widgets can report the correct line count.
+        Pass4_FitHeight(this);
+        if (Parent == null) MaybeDumpTree(this, "4: FitHeight");
+        Pass5_ApplyMinMaxHeight(this);
+        if (Parent == null) MaybeDumpTree(this, "5: ApplyMinMaxHeight");
+        ApplyOwnHeight(availableHeight);
+        if (Parent == null) MaybeDumpTree(this, "6a: ApplyOwnHeight");
+        Pass6_GrowShrinkHeight(this);
+        if (Parent == null) MaybeDumpTree(this, "6b: GrowShrinkHeight");
 
         // Pass 7 sets child X/Y in parent-relative coordinates (origin = our top-left)
         // and then calls child.Layout() so nested containers recurse.
         Pass7_Position(this);
+
+        // Debug aid: when OX_DUMP_TREE is set to a positive integer and this is the
+        // root Flex (Parent == null means no container owns us), print the full widget
+        // tree to stderr. The value is the maximum depth to descend (e.g. "5" shows
+        // up to 5 levels). Invalid values and 0 are silently ignored so the env var
+        // can be left set without affecting normal operation.
+        if (Parent == null)
+            MaybeDumpTree(this, "7: Position");
     }
 
     // --- Private pass implementations ---
@@ -108,12 +128,11 @@ public class Flex : Widget
         Traversal.BreadthFirst(root, widget => GrowShrink.Apply(widget, isWidth: false));
 
     /// <summary>
-    /// Applies this Flex's own sizing mode relative to the available space provided
-    /// by the parent. Grow fills the available space; Fixed uses the declared size;
-    /// Fit keeps whatever the bottom-up passes computed.
-    /// Called after passes 1-6 so natural child sizes are already known.
+    /// Fixes our own width before Pass 3 distributes space to Grow children.
+    /// Grow takes the available space from the parent; Fixed uses the declared size;
+    /// Fit keeps the natural width already computed by Pass 1.
     /// </summary>
-    private void ApplyOwnSizing(int availableWidth, int availableHeight)
+    private void ApplyOwnWidth(int availableWidth)
     {
         Width = HorizontalSizing switch
         {
@@ -121,12 +140,57 @@ public class Flex : Widget
             SizingMode.Grow  => availableWidth,
             _                => Width // Fit: already set by Pass 1
         };
+    }
+
+    /// <summary>
+    /// Fixes our own height before Pass 6 distributes space to Grow children.
+    /// Same logic as ApplyOwnWidth but on the vertical axis.
+    /// </summary>
+    private void ApplyOwnHeight(int availableHeight)
+    {
         Height = VerticalSizing switch
         {
             SizingMode.Fixed => FixedHeight,
             SizingMode.Grow  => availableHeight,
             _                => Height // Fit: already set by Pass 4
         };
+    }
+
+    /// <summary>
+    /// Prints the widget tree to stderr when OX_DUMP_TREE is set to a positive
+    /// integer. Called once per frame on the root Flex (Parent == null). Each line
+    /// shows the widget type, its absolute screen position (accumulated from root),
+    /// its size, and its horizontal/vertical sizing mode. Children are indented by
+    /// two spaces per level; the env var value caps how deep the dump descends.
+    /// </summary>
+    private static void MaybeDumpTree(Widget root, string label = "")
+    {
+        var envVal = Environment.GetEnvironmentVariable("OX_DUMP_TREE");
+        if (!int.TryParse(envVal, out var maxDepth) || maxDepth < 1)
+            return;
+
+        var header = string.IsNullOrEmpty(label) ? "=== OX_DUMP_TREE ===" : $"=== OX_DUMP_TREE: {label} ===";
+        System.Console.Error.WriteLine(header);
+        DumpWidget(root, depth: 0, maxDepth: maxDepth, absX: 0, absY: 0);
+    }
+
+    private static void DumpWidget(Widget widget, int depth, int maxDepth, int absX, int absY)
+    {
+        if (depth > maxDepth)
+            return;
+
+        var indent  = new string(' ', depth * 2);
+        var name    = widget.GetType().Name;
+        var screenX = absX + widget.X;
+        var screenY = absY + widget.Y;
+
+        System.Console.Error.WriteLine(
+            $"{indent}{name} pos=({screenX},{screenY}) size={widget.Width}x{widget.Height} " +
+            $"h={widget.HorizontalSizing} v={widget.VerticalSizing}");
+
+        // Children have X/Y in this widget's coordinate space, so accumulate.
+        foreach (var child in widget.Children)
+            DumpWidget(child, depth + 1, maxDepth, screenX, screenY);
     }
 
     /// <summary>

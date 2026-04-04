@@ -51,7 +51,7 @@ class ChatDemoApp : Application
         // the scroll view. HorizontalSizing=Grow stretches it to the full width.
         var textInput = new TextInput
         {
-            HorizontalSizing = SizingMode.Grow,
+            HorizontalSizing = SizingMode.Grow
         };
         root.AddChild(textInput);
 

@@ -11,9 +11,9 @@ namespace Ur.Widgets;
 ///
 /// Design:
 /// - ListView is a thin wrapper over the normal container mechanism. It does not
-///   own any layout or rendering logic; Draw() is empty, just like Flex.
-/// - The LayoutEngine positions children, and the Renderer draws them, exactly
-///   as with any other container.
+///   own any rendering logic; Draw() is empty, just like Flex.
+/// - ListView.Layout() positions children in parent-relative coordinates and calls
+///   each child's Layout(). The Renderer draws them as with any other container.
 /// - A parallel <see cref="_itemWidgets"/> list maps each item index to its widget
 ///   so that CollectionChanged Remove events can find the right widget to evict.
 /// - Typical usage: wrap in a ScrollView to get scrolling + scrollbar behavior.

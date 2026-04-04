@@ -29,6 +29,9 @@ public class TextInput : Widget
         Focusable = true;
         PreferredWidth = MinEditWidth;
         PreferredHeight = 1;
+        // TextInput is always exactly one row tall. MinHeight ensures ShrinkOnAxis
+        // cannot collapse it to zero when a sibling (e.g. ScrollView) overflows.
+        MinHeight = 1;
     }
 
     /// <summary>

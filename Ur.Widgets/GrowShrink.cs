@@ -37,8 +37,12 @@ internal static class GrowShrink
     private static void ShrinkOnAxis(Widget container, bool isWidth, int availableSpace, int childrenSize)
     {
         var overflow = childrenSize - availableSpace;
+
+        // Only Grow children absorb overflow — symmetric with GrowOnAxis which only
+        // distributes extra space to Grow children. Fit children claim their natural
+        // size (just like Fixed) and must not be crushed when a Grow sibling overflows.
         var shrinkableChildren = container.Children
-            .Where(c => GetSizing(c, isWidth) != SizingMode.Fixed)
+            .Where(c => GetSizing(c, isWidth) == SizingMode.Grow)
             .ToList();
 
         var totalShrinkableSpace = shrinkableChildren.Sum(c => isWidth ? c.Width : c.Height);

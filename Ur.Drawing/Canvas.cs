@@ -41,22 +41,25 @@ internal sealed class Canvas : ICanvas
     ///
     /// rect is in parent-canvas-relative coordinates and may have a negative X or Y —
     /// this happens when the Renderer positions a scrolled child above or left of the
-    /// viewport origin. When the origin is negative we shrink the effective size by the
-    /// overlap and clamp to zero, so the resulting canvas represents only the visible
-    /// portion. The right/bottom edges are then clamped to the parent's bounds as before.
+    /// viewport origin. The absolute origin is preserved (not clamped) so that the
+    /// coordinate system inside the sub-canvas correctly maps local child positions
+    /// to screen positions.
+    ///
+    /// Clipping is handled in two complementary ways:
+    ///   - Right/bottom: width and height are clamped to the parent boundary here,
+    ///     preventing canvas allocations that extend beyond the viewport.
+    ///   - Top/left: the parent's Bounds are pushed onto the clip stack, so SetCell
+    ///     rejects writes whose absolute coordinates fall outside the parent viewport.
+    ///     This is necessary because a negative absoluteY can still land on a valid
+    ///     screen row (e.g. a scrolled child whose first visible row overwrites a
+    ///     sibling widget above the scroll view).
     /// </summary>
     public ICanvas SubCanvas(Rect rect)
     {
-        // Clamp the origin to 0 and reduce dimensions by the same amount,
-        // so a child that starts e.g. 3 rows above the parent is clipped to start at 0
-        // with 3 fewer rows of visible height.
-        var clampedX = Math.Max(0, rect.X);
-        var clampedY = Math.Max(0, rect.Y);
-        var width = rect.Width - (clampedX - rect.X);
-        var height = rect.Height - (clampedY - rect.Y);
-
-        var absoluteX = Bounds.X + clampedX;
-        var absoluteY = Bounds.Y + clampedY;
+        var absoluteX = Bounds.X + rect.X;
+        var absoluteY = Bounds.Y + rect.Y;
+        var width = rect.Width;
+        var height = rect.Height;
 
         // Clip the right/bottom edges to the parent canvas boundaries.
         if (absoluteX >= Bounds.Right)
@@ -73,7 +76,13 @@ internal sealed class Canvas : ICanvas
         height = Math.Max(0, height);
 
         var absoluteBounds = new Rect(absoluteX, absoluteY, width, height);
-        return new Canvas(_screen, absoluteBounds, []);
+
+        // Accumulate the parent's bounds as a clip rect. Each SubCanvas level adds
+        // its parent to the stack, so SetCell enforces the intersection of all
+        // ancestor viewports — correctly clipping the top/left edges that the
+        // width/height clamping above cannot guard against.
+        var newClipStack = new List<Rect>(_clipStack) { Bounds };
+        return new Canvas(_screen, absoluteBounds, newClipStack);
     }
 
     /// <summary>

@@ -139,6 +139,11 @@ public abstract class Application
             var screen = Renderer.Render(Root);
             driver.Present(screen);
 
+            // When OX_DUMP_TREE is active the caller wants one-shot layout diagnostics:
+            // exit immediately after the first frame so stderr output is readable.
+            if (!string.IsNullOrEmpty(Environment.GetEnvironmentVariable("OX_DUMP_TREE")))
+                return;
+
             // Main loop: block until work arrives, drain everything, re-render.
             // This is the heart of the event-driven design — the loop doesn't know
             // or care whether work came from keyboard input or Invoke().

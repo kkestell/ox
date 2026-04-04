@@ -18,6 +18,9 @@ public class Label : Widget
         var maxWidth = _lines.Max(l => l.Length);
         PreferredWidth = maxWidth;
         PreferredHeight = _lines.Length;
+        // MinHeight prevents ShrinkOnAxis from collapsing this label to zero when a
+        // sibling (e.g. a ScrollView with lots of content) overflows the container.
+        MinHeight = _lines.Length;
         Width = maxWidth;
         Height = _lines.Length;
     }
@@ -37,6 +40,7 @@ public class Label : Widget
             var maxWidth = _lines.Max(l => l.Length);
             PreferredWidth = maxWidth;
             PreferredHeight = _lines.Length;
+            MinHeight = _lines.Length;
         }
     }
 

@@ -28,7 +28,6 @@ disable-model-invocation: true
 
 4. Explore the codebase to understand how the feature fits.
    - Find similar features, adjacent code, and prior attempts at the same problem.
-   - Read the files that will actually need to change, not just grep for keywords.
    - Understand the existing architecture. Map the layers, modules, and boundaries the change will touch.
 5. Evaluate the change through PHAME lenses.
    - **Hierarchy** — Does the change respect the existing layer structure? Do dependencies flow in the right direction?

@@ -7,8 +7,13 @@ namespace Ur.Widgets;
 /// Abstract base for all layout and rendering elements in the TUI.
 /// Widgets form a tree where each node can have children and must implement Draw()
 /// to render its content to a canvas.
-/// The LayoutEngine mutates the X, Y, Width, Height properties to position widgets
-/// on the screen; Draw() receives a canvas constrained to that region.
+///
+/// Sizing and positioning follow a top-down Layout() protocol: the parent calls
+/// Layout(w, h) on each child with the space it is allocating. The child sets its
+/// own Width/Height and positions its own children in parent-relative coordinates
+/// (origin = this widget's top-left corner). The Renderer then draws each widget
+/// into a sub-canvas derived from its parent's canvas, accumulating the transform
+/// as it descends the tree.
 /// </summary>
 public abstract class Widget
 {
@@ -25,22 +30,24 @@ public abstract class Widget
     public IList<Widget> Children { get; } = new List<Widget>();
 
     /// <summary>
-    /// Absolute X coordinate assigned by the layout engine.
+    /// X position in parent-relative coordinates (0 = left edge of parent's content area).
+    /// Set by the parent's Layout() call before this widget is rendered.
     /// </summary>
     public int X { get; set; }
 
     /// <summary>
-    /// Absolute Y coordinate assigned by the layout engine.
+    /// Y position in parent-relative coordinates (0 = top edge of parent's content area).
+    /// Set by the parent's Layout() call before this widget is rendered.
     /// </summary>
     public int Y { get; set; }
 
     /// <summary>
-    /// Width in columns assigned by the layout engine.
+    /// Width in columns. Set by this widget's own Layout() call.
     /// </summary>
     public int Width { get; set; }
 
     /// <summary>
-    /// Height in rows assigned by the layout engine.
+    /// Height in rows. Set by this widget's own Layout() call.
     /// </summary>
     public int Height { get; set; }
 
@@ -100,7 +107,8 @@ public abstract class Widget
     public int MaxHeight { get; set; }
 
     /// <summary>
-    /// Space in rows/columns between adjacent children (used by LayoutEngine).
+    /// Space in rows/columns between adjacent children. Applied by container
+    /// widgets (Flex, ListView) during their Layout() pass.
     /// </summary>
     public int ChildGap { get; set; }
 
@@ -170,9 +178,10 @@ public abstract class Widget
     /// child.X/Y in parent-relative coordinates (origin = top-left of this widget),
     /// and recursively calls Layout on each child.
     ///
-    /// The default is a no-op — leaf widgets that set PreferredWidth/Height directly
-    /// (Label, TextInput) are fine until Phase 5 overrides arrive.
-    /// Container widgets (Flex, ScrollView, ListView) override this.
+    /// The default is a no-op. Leaf widgets (Label, TextInput) override this to
+    /// apply the available width and report their natural height. Container widgets
+    /// (Flex, ScrollView, ListView) override this to run the layout algorithm and
+    /// recurse into children.
     /// </summary>
     public virtual void Layout(int availableWidth, int availableHeight) { }
 
@@ -187,7 +196,7 @@ public abstract class Widget
     /// <summary>
     /// Called by runners that support direct widget input handling (e.g., OopRunner).
     /// The default implementation is a no-op so that widgets which don't handle input
-    /// (like Label, Stack) need no changes. Subclasses override this to respond to
+    /// (like Label, Flex) need no changes. Subclasses override this to respond to
     /// keyboard events when they have focus.
     /// </summary>
     public virtual void HandleInput(InputEvent input) { }
