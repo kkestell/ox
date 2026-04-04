@@ -7,6 +7,7 @@ using Ur.Extensions;
 using Ur.Permissions;
 using Ur.Providers;
 using Ur.Sessions;
+using Ur.Tools;
 
 namespace Ur;
 
@@ -107,6 +108,9 @@ public sealed class UrHost
 
         var workspace = new Workspace(workspacePath);
         workspace.EnsureDirectories();
+
+        // Register built-in file tools before extensions so they can't be shadowed.
+        BuiltinTools.RegisterAll(tools, workspace);
 
         // Model catalog — load from disk cache (no network hit at startup).
         var cacheDir = Path.Combine(userDataDirectory, "cache");

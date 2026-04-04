@@ -43,26 +43,26 @@ Add three built-in tools implemented in C# (not via the Lua extension system) th
 
 ## Implementation plan
 
-- [ ] **Create `Ur/Tools/ReadFileTool.cs`** — `AIFunction` subclass. Parameters: `file_path` (string, required), `offset` (integer, optional, default 0 — zero-based line to start from), `limit` (integer, optional, default 2000 — max lines to return). Define `private const int DefaultLimit = 2000;` at the top of the class. Behavior: resolve path, validate it's inside the workspace, read the file, apply offset/limit, append a `[truncated: showing lines {offset+1}-{offset+returned} of {total} lines]` message when the output doesn't cover the entire file. Return file content as a string. JSON schema defined as a static `JsonElement` parsed once.
+- [x] **Create `Ur/Tools/ReadFileTool.cs`** — `AIFunction` subclass. Parameters: `file_path` (string, required), `offset` (integer, optional, default 0 — zero-based line to start from), `limit` (integer, optional, default 2000 — max lines to return). Define `private const int DefaultLimit = 2000;` at the top of the class. Behavior: resolve path, validate it's inside the workspace, read the file, apply offset/limit, append a `[truncated: showing lines {offset+1}-{offset+returned} of {total} lines]` message when the output doesn't cover the entire file. Return file content as a string. JSON schema defined as a static `JsonElement` parsed once.
 
-- [ ] **Create `Ur/Tools/WriteFileTool.cs`** — `AIFunction` subclass. Parameters: `file_path` (string, required), `content` (string, required). Behavior: resolve path, validate workspace boundary, create parent directories if needed, write content to file. Return a confirmation message like `"Wrote N bytes to path"`.
+- [x] **Create `Ur/Tools/WriteFileTool.cs`** — `AIFunction` subclass. Parameters: `file_path` (string, required), `content` (string, required). Behavior: resolve path, validate workspace boundary, create parent directories if needed, write content to file. Return a confirmation message like `"Wrote N bytes to path"`.
 
-- [ ] **Create `Ur/Tools/UpdateFileTool.cs`** — `AIFunction` subclass. Parameters: `file_path` (string, required), `old_string` (string, required), `new_string` (string, required). Behavior: resolve path, validate workspace boundary, read file, count occurrences of `old_string`. If count == 0, throw with "old_string not found in file". If count > 1, throw with "old_string appears N times; must be unique". If count == 1, replace and write back. Return a confirmation message.
+- [x] **Create `Ur/Tools/UpdateFileTool.cs`** — `AIFunction` subclass. Parameters: `file_path` (string, required), `old_string` (string, required), `new_string` (string, required). Behavior: resolve path, validate workspace boundary, read file, count occurrences of `old_string`. If count == 0, throw with "old_string not found in file". If count > 1, throw with "old_string appears N times; must be unique". If count == 1, replace and write back. Return a confirmation message.
 
-- [ ] **Create `Ur/Tools/BuiltinTools.cs`** — static class with `RegisterAll(ToolRegistry registry, Workspace workspace)`. Instantiates all three tools and registers them with appropriate permission metadata:
+- [x] **Create `Ur/Tools/BuiltinTools.cs`** — static class with `RegisterAll(ToolRegistry registry, Workspace workspace)`. Instantiates all three tools and registers them with appropriate permission metadata:
   - `read_file`: `OperationType.ReadInWorkspace`, target extractor returns `file_path` argument
   - `write_file`: `OperationType.WriteInWorkspace`, target extractor returns `file_path` argument
   - `update_file`: `OperationType.WriteInWorkspace`, target extractor returns `file_path` argument
 
-- [ ] **Wire registration into `UrHost.StartAsync`** — call `BuiltinTools.RegisterAll(tools, workspace)` after the workspace is created and before extensions are loaded (so extensions can't shadow built-in tool names, though name collision handling is a future concern).
+- [x] **Wire registration into `UrHost.StartAsync`** — call `BuiltinTools.RegisterAll(tools, workspace)` after the workspace is created and before extensions are loaded (so extensions can't shadow built-in tool names, though name collision handling is a future concern).
 
-- [ ] **Add unit tests in `Ur.Tests/BuiltinToolTests.cs`** — test each tool in isolation:
+- [x] **Add unit tests in `Ur.Tests/BuiltinToolTests.cs`** — test each tool in isolation:
   - `read_file`: reads a file, truncates long files, rejects paths outside workspace, handles missing files
   - `write_file`: writes content, creates directories, rejects paths outside workspace
   - `update_file`: replaces unique match, errors on zero matches, errors on multiple matches, rejects paths outside workspace
   - Verify tools appear in `ToolRegistry.All()` after `UrHost.StartAsync`
 
-- [ ] **Verify build and all tests pass** — `dotnet build` and `dotnet test`
+- [x] **Verify build and all tests pass** — `dotnet build` and `dotnet test`
 
 ## Validation
 
