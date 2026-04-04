@@ -3,8 +3,4 @@
   <Project Path="Ur.Tests/Ur.Tests.csproj" />
   <Project Path="Ur/Ur.csproj" />
   <Project Path="Ur.Cli/Ur.Cli.csproj" />
-  <Project Path="Ur.Console/Ur.Console.csproj" />
-  <Project Path="Ur.Demo/Ur.Demo.csproj" />
-  <Project Path="Ur.Drawing/Ur.Drawing.csproj" />
-  <Project Path="Ur.Widgets/Ur.Widgets.csproj" />
 </Solution>
