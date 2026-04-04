@@ -12,34 +12,16 @@ This document catalogs features that are designed but not wired, partially imple
 
 ## Incomplete Features
 
-### Session Resume in TUI
-- `UrSession` supports loading existing sessions by ID
-- The CLI `ur sessions list` / `ur sessions show` work
-- `ur chat --session <id>` resumes a session from the CLI
-- The TUI has no session picker or resume flow — it always starts a new session
-- `ChatApp.cs` constructs a new session on startup with no way to load prior history
-
-### TUI Slash Commands
-Only three slash commands are dispatched in `ChatApp.cs`:
-- `/quit`
-- `/model`
-- `/extensions`
-
-The welcome message implies more exist. Missing:
-- `/help` — referenced conceptually, not implemented
-- `/clear` — no session-clear command
-- `/new` or `/new-session` — no explicit new-session command
-- `/load <session-id>` or any session navigation
-
-### Extension Settings Configuration
+### Extension Settings Discoverability
 - `ExtensionDescriptor` carries a `SettingsSchemas` dictionary (extension-defined JSON schemas)
-- `ExtensionManagerModal.cs` renders extension info (name, version, description, status) but never displays or edits settings schemas
-- No UI path to configure extension settings exists anywhere (TUI or CLI)
+- Extension settings can be read and written via the generic `ur config get/set` commands
+- No way to list what settings an extension supports or their schemas (e.g. `ur extensions settings <id>`)
+- The schemas are registered and validated but never surfaced to the user
 
 ### Model List `--all` Flag
 - `ur models list --all` is defined and parsed in `ModelCommands.cs`
 - The flag is explicitly noted as "reserved for future use" — the library does not yet expose the unfiltered catalog
-- `ModelCatalog` only exposes filtered (tool-capable) models publicly
+- `ModelCatalog` only exposes filtered (tool-capable) models publicly via `UrConfiguration.AvailableModels`
 
 ---
 
@@ -51,34 +33,19 @@ The welcome message implies more exist. Missing:
 - No `ILogger` or logging framework is wired anywhere in the library
 - Unknown settings keys are silently tolerated
 
-### Windows Support
-- `UrHost.CreatePlatformKeyring()` throws `PlatformNotSupportedException` on Windows
-- Only `MacOSKeyring` and `LinuxKeyring` are implemented
-- No Windows Credential Manager implementation
-
 ### Session Metadata
 - Sessions only store ID and `CreatedAt`
 - No title, summary, or tags
-- `ur sessions list` shows raw GUIDs with timestamps, no human-readable labels
+- `ur sessions list` shows raw timestamp-based IDs with no human-readable labels
 
 ---
 
 ## Test Coverage Gaps
 
-### TUI Components Untested
-- No tests for `ChatInput`, `MessageList`, `ApiKeyModal`, `ModelPickerModal`, `ExtensionManagerModal`
-- No tests for the compositor layer (base+overlay rendering)
-- No tests for scroll behavior, modal state transitions, or the 30 FPS render loop
-- No tests for the slash command dispatcher
-
 ### CLI Commands Untested
 - All CLI commands are implemented but have no integration tests
 - No tests for `System.CommandLine` argument parsing or error output formatting
 - `HostSessionApiTests.cs` covers the underlying library but not the command layer
-
-### Permission System Untested
-- No tests for permission grant persistence (because there is no persistence)
-- No tests for the `TurnCallbacks` integration (because it is not wired)
 
 ---
 
@@ -86,11 +53,12 @@ The welcome message implies more exist. Missing:
 
 | Location | Issue |
 |---|---|
+| `Ur.csproj` | `Google_GenerativeAI.Microsoft` package referenced but never used in any source file |
 | `ModelCatalog.cs` | New `HttpClient` created per `RefreshAsync` call; no retry on network failure |
 | `ModelCatalog.cs` | Cache version detected by checking for `Architecture` field — fragile heuristic |
+| `ModelCatalog.cs` | `LoadCache()` is synchronous despite being called during async startup |
 | `SessionStore.cs` | Malformed trailing lines silently skipped on load (intentional but lossy) |
 | `SettingsLoader.cs` | Unknown settings keys silently tolerated; TODO to warn |
-| `ExtensionLoader.cs` | Sandbox blocks known-dangerous Lua libs but has no explicit allowlist of safe ones |
 | `Workspace.cs` | No validation that the workspace directory exists or is writable at boot |
 | `UrHost.cs` | `RegisterCoreSchemas` registers only `ur.model`; other core settings not schema-validated |
 
@@ -100,11 +68,11 @@ The welcome message implies more exist. Missing:
 
 For context, these areas are well-implemented and have solid test coverage:
 
-- **Core agent loop** — streaming, tool call collection, multi-turn continuation
+- **Core agent loop** — streaming, tool call collection, multi-turn continuation, error handling
 - **Session persistence** — JSONL append-only store with atomic writes and rollback
-- **Extension system** — three-tier discovery, sandboxed Lua evaluation, enable/disable/reset lifecycle, workspace-scoped overrides
+- **Extension system** — three-tier discovery, sandboxed Lua evaluation (allowlist: basic, string, table, math), enable/disable/reset lifecycle, workspace-scoped overrides
 - **Configuration** — user/workspace scoped settings, JSON schema validation, atomic writes
 - **Keyring** — macOS and Linux implementations
 - **Model catalog** — OpenRouter fetch, disk cache, modality filtering
-- **All CLI commands** — status, config, models, sessions, extensions, chat
-- **All TUI components** — rendering, input, modals, state management
+- **Permission system** — grant store with three lifetimes (session/workspace/always), prefix matching, TurnCallbacks integration, JSONL persistence
+- **All CLI commands** — status, config, models, sessions, extensions, chat (with streaming output and permission prompts)

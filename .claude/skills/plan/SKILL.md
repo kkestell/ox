@@ -54,7 +54,7 @@ disable-model-invocation: true
 9. Generate the plan filename: `docs/agents/plans/YYYY-MM-DD-NNN-slug.md` where `YYYY-MM-DD` is today's date, `NNN` is the next available zero-padded sequence for that date, and the slug is a short kebab-case summary (3-5 words). Create the `docs/agents/plans/` directory if it does not exist.
 10. Write the plan from `${CLAUDE_SKILL_DIR}/assets/plan-template.md`.
     - Use the template as a scaffold, not a rigid form. Keep only the sections that apply, and add sections when the work needs more structure.
-    - Every implementation task gets an actionable checkbox. A reader should be able to execute the plan without re-reading the codebase.
+    - Every implementation task gets an actionable checkbUr. A reader should be able to execute the plan without re-reading the codebase.
     - If refactoring is part of the plan, list refactoring tasks before feature tasks. Explain what each refactor achieves structurally.
     - Include validation steps: what tests to write, what commands to run, what to verify manually.
     - Include open questions for anything still unresolved. When the user later answers an open question, fold the decision into the relevant plan sections (goal, implementation tasks, structural considerations, etc.) and delete the question. Never rename "Open questions" to "Resolved questions" or leave answered questions in place — a plan should read as a coherent document, not a Q&A transcript.
