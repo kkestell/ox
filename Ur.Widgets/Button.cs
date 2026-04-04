@@ -4,21 +4,37 @@ using Ur.Drawing;
 namespace Ur.Widgets;
 
 /// <summary>
-/// A clickable button widget. Renders its label wrapped in square brackets ([Label])
-/// and fires a Clicked event when activated.
+/// A clickable button widget rendered as a solid filled block with a subtle
+/// highlight on the top edge.
+///
+/// Visual structure (3 rows):
+///   ▇▇▇▇▇▇▇   ← lower-7/8 blocks: fg = button color, bg = lighter highlight
+///   █LABEL█   ← full blocks + label text on button-colored background
+///   ███████   ← full blocks in button color
+///
+/// The lower-7/8 block (▇) on the top row leaves a 1/8-cell gap that exposes
+/// the lighter background color, creating a soft top-edge highlight without
+/// needing a separate border character. The result is a chunky, solid button
+/// with a subtle 3D feel.
 ///
 /// Buttons are focusable and activated by pressing Enter when focused.
-/// The background highlights when focused so the user can see which button
-/// is currently selected in the focus ring.
 /// </summary>
 public class Button : Widget
 {
     private string _text;
 
-    // Distinct background colors mirror TextInput's focus treatment: bright when
-    // active, grey when reachable but inactive.
-    private static readonly Style FocusedStyle   = new(Color.Black,      Color.BrightWhite);
-    private static readonly Style UnfocusedStyle = new(Color.BrightWhite, Color.BrightBlack);
+    // Block characters used to build the solid button shape.
+    private const char LowerSevenEighths = '\u2587'; // ▇
+    private const char FullBlock         = '\u2588'; // █
+
+    // Button fill color and a slightly lighter variant for the top-edge highlight.
+    private static readonly Color ButtonColor    = Color.FromRgb(50, 100, 200);
+    private static readonly Color HighlightColor = Color.FromRgb(80, 135, 235);
+
+    // Focused buttons use a brighter shade so the user can see which button is
+    // currently selected in the focus ring.
+    private static readonly Color FocusedButtonColor    = Color.FromRgb(70, 130, 240);
+    private static readonly Color FocusedHighlightColor = Color.FromRgb(110, 165, 255);
 
     /// <summary>
     /// Fired when the user activates the button by pressing Enter while focused.
@@ -30,15 +46,15 @@ public class Button : Widget
         _text = text ?? "";
         Focusable = true;
 
-        // Width = brackets + label; height is always one row.
-        PreferredWidth  = _text.Length + 2; // "[" + text + "]"
-        PreferredHeight = 1;
-        MinHeight       = 1;
+        // Width = padding + label + padding; height is always 3 rows.
+        PreferredWidth  = _text.Length + 2;
+        PreferredHeight = 3;
+        MinHeight       = 3;
     }
 
     /// <summary>
-    /// The button label (without brackets). Updating this recalculates preferred
-    /// width so the layout engine can resize the button on the next pass.
+    /// The button label. Updating this recalculates preferred width so the
+    /// layout engine can resize the button on the next pass.
     /// </summary>
     public string Text
     {
@@ -51,12 +67,12 @@ public class Button : Widget
     }
 
     /// <summary>
-    /// Buttons size to their label by default and never stretch vertically.
+    /// Buttons size to their label by default. Height is always 3 rows.
     /// </summary>
     public override void Layout(int availableWidth, int availableHeight)
     {
         Width  = availableWidth > 0 ? availableWidth : PreferredWidth;
-        Height = 1;
+        Height = 3;
     }
 
     /// <summary>
@@ -70,15 +86,33 @@ public class Button : Widget
     }
 
     /// <summary>
-    /// Renders "[Text]" with the full width filled so the background color
-    /// extends edge-to-edge, making the focused state clearly visible.
+    /// Draws the button as a solid block with a highlight strip on the top row.
+    ///
+    /// Row 0: lower-7/8 blocks — fg is the button color (fills most of the cell),
+    ///        bg is the lighter highlight (peeks through the 1/8 gap at the top).
+    /// Row 1: label text on a solid button-colored background, padded with full
+    ///        blocks on either side.
+    /// Row 2: full blocks in the button color for a solid bottom edge.
     /// </summary>
     public override void Draw(ICanvas canvas)
     {
-        var style = IsFocused ? FocusedStyle : UnfocusedStyle;
+        var btnColor = IsFocused ? FocusedButtonColor : ButtonColor;
+        var hlColor  = IsFocused ? FocusedHighlightColor : HighlightColor;
 
-        // Fill background across the whole cell so focus highlight covers padding.
-        canvas.DrawHLine(0, 0, Width, ' ', style);
-        canvas.DrawText(0, 0, $"[{_text}]", style);
+        // Row 0: lower-7/8 blocks create the top highlight edge.
+        // The fg fills most of the cell; the bg shows through the thin gap at top.
+        var topStyle = new Style(btnColor, hlColor);
+        canvas.DrawHLine(0, 0, Width, LowerSevenEighths, topStyle);
+
+        // Row 1: solid background for the label row. Full blocks on the sides,
+        // label text centered with white foreground on the button color.
+        var blockStyle = new Style(btnColor, Color.Black);
+        canvas.DrawHLine(0, 1, Width, FullBlock, blockStyle);
+        var textStyle = new Style(Color.BrightWhite, btnColor);
+        var textX = Math.Max(0, (Width - _text.Length) / 2);
+        canvas.DrawText(textX, 1, _text, textStyle);
+
+        // Row 2: solid full blocks for the bottom edge.
+        canvas.DrawHLine(0, 2, Width, FullBlock, blockStyle);
     }
 }

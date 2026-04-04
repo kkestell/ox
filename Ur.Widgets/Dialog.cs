@@ -13,11 +13,13 @@ namespace Ur.Widgets;
 /// like any other container widget.
 ///
 /// Layout structure (top to bottom):
-///   ╭── Title ──╮
+///   ┌── Title ──┐
 ///   │ Content    │  ← subclass populates via protected Content property
 ///   ├────────────┤
-///   │   [OK] [X] │  ← right-aligned button row
-///   ╰────────────╯
+///   │  ┌──┐ ┌─┐ │  ← right-aligned bordered buttons (3 rows)
+///   │  │OK│ │X│ │
+///   │  └──┘ └─┘ │
+///   └────────────┘
 ///
 /// Follows the ScrollView pattern: a container widget with chrome (border, title,
 /// separator) that manages child positioning directly in Layout() rather than
@@ -112,24 +114,26 @@ public class Dialog : Widget
         var interiorWidth = Width - 2; // inside left and right border columns
 
         // Measure content with unconstrained height (height=0 convention) to find
-        // its natural size, then add chrome: top border, separator, button row,
-        // bottom border = 4 extra rows.
+        // its natural size, then add chrome: top border, separator, button row
+        // (3 rows for bordered buttons), bottom border = 6 extra rows.
         Content.Layout(interiorWidth, 0);
-        var naturalHeight = Content.Height + 4;
+        var naturalHeight = Content.Height + 6;
         var maxHeight = (int)(availableHeight * 0.8);
-        Height = Math.Clamp(naturalHeight, 5, maxHeight);
+        Height = Math.Clamp(naturalHeight, 7, maxHeight);
 
         // Position content inside the border, between the top border and separator.
         // Available content height is total minus chrome rows.
-        var contentHeight = Height - 4;
+        var contentHeight = Height - 6;
         Content.X = 1;
         Content.Y = 1;
         Content.Layout(interiorWidth, contentHeight);
 
-        // Button row: one row above the bottom border, below the separator.
+        // Button row: sits between the separator and the bottom border.
+        // Buttons are 3 rows tall (bordered), so the row starts 4 above the bottom
+        // (3 for buttons + 1 for the bottom border).
         _buttonRow.X = 1;
-        _buttonRow.Y = Height - 2;
-        _buttonRow.Layout(interiorWidth, 1);
+        _buttonRow.Y = Height - 4;
+        _buttonRow.Layout(interiorWidth, 3);
     }
 
     /// <summary>
@@ -145,9 +149,9 @@ public class Dialog : Widget
         // than showing through to the dimmed application behind it.
         canvas.DrawRect(new Rect(1, 1, Width - 2, Height - 2), ' ', style);
 
-        // Rounded border gives dialogs a softer, modern look that visually
-        // distinguishes them from the main application's UI chrome.
-        canvas.DrawBorder(new Rect(0, 0, Width, Height), style, BorderSet.Rounded);
+        // Square-cornered border for a consistent look with bordered buttons
+        // and text inputs.
+        canvas.DrawBorder(new Rect(0, 0, Width, Height), style, BorderSet.Single);
 
         // Title centered in the top border row, flanked by spaces for readability.
         if (!string.IsNullOrEmpty(_title))
@@ -158,9 +162,9 @@ public class Dialog : Widget
         }
 
         // Horizontal separator between content and button row. Uses single-line
-        // tee characters (├ ┤) which connect cleanly to the rounded border's
-        // vertical lines (│).
-        var separatorY = Height - 3;
+        // tee characters (├ ┤) which connect cleanly to the border's vertical
+        // lines (│). Positioned one row above the 3-row button area.
+        var separatorY = Height - 5;
         canvas.SetCell(0, separatorY, '├', style);
         canvas.DrawHLine(1, separatorY, Width - 2, '─', style);
         canvas.SetCell(Width - 1, separatorY, '┤', style);
