@@ -120,6 +120,21 @@ public abstract class Widget
     public Style Style { get; set; } = Style.Default;
 
     /// <summary>
+    /// Horizontal scroll offset in columns. When the Renderer draws this widget's
+    /// children, each child is positioned at (child.X - OffsetX) within this canvas,
+    /// so positive OffsetX scrolls content left. Used by ScrollView for horizontal pan.
+    /// </summary>
+    public int OffsetX { get; set; }
+
+    /// <summary>
+    /// Vertical scroll offset in rows. When the Renderer draws this widget's
+    /// children, each child is positioned at (child.Y - OffsetY) within this canvas,
+    /// so positive OffsetY scrolls content up. ScrollView sets this instead of
+    /// maintaining a separate scroll field.
+    /// </summary>
+    public int OffsetY { get; set; }
+
+    /// <summary>
     /// Whether this widget can receive keyboard focus (not currently enforced).
     /// </summary>
     public bool Focusable { get; set; }
@@ -149,10 +164,23 @@ public abstract class Widget
     }
 
     /// <summary>
+    /// Sizes this widget and positions its children given the available space.
+    /// Called top-down by the parent: the parent decides how much space is available,
+    /// then calls Layout on each child. The child sets its own Width/Height, sets
+    /// child.X/Y in parent-relative coordinates (origin = top-left of this widget),
+    /// and recursively calls Layout on each child.
+    ///
+    /// The default is a no-op — leaf widgets that set PreferredWidth/Height directly
+    /// (Label, TextInput) are fine until Phase 5 overrides arrive.
+    /// Container widgets (Flex, ScrollView, ListView) override this.
+    /// </summary>
+    public virtual void Layout(int availableWidth, int availableHeight) { }
+
+    /// <summary>
     /// Renders this widget to the provided canvas.
-    /// X, Y, Width, Height have been set by the layout engine to constrain drawing.
+    /// Width/Height have been set by Layout before Draw is called.
     /// The canvas is already clipped to this widget's bounds.
-    /// Subclasses should fill their content and may call canvas.Fill(), canvas.Write(), etc.
+    /// Subclasses should fill their content and may call canvas methods.
     /// </summary>
     public abstract void Draw(ICanvas canvas);
 

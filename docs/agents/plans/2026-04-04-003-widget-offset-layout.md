@@ -117,7 +117,7 @@ baked in. `Stack` can be deleted (or kept as `class Stack : Flex` for one releas
 
 ### Phase 2 — Widget base: OffsetX/OffsetY + virtual Layout
 
-- [ ] In `Ur.Widgets/Widget.cs`:
+- [x] In `Ur.Widgets/Widget.cs`:
   - Add `public int OffsetX { get; set; }` and `public int OffsetY { get; set; }`.
   - Add `public virtual void Layout(int availableWidth, int availableHeight) {}`.
     The default is a no-op — widgets that don't need layout (leaf widgets with
