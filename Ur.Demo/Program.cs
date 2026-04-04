@@ -47,13 +47,27 @@ class ChatDemoApp : Application
 
         root.AddChild(scrollView);
 
-        // Text input sits below the message list; Tab cycles focus between it and
-        // the scroll view. HorizontalSizing=Grow stretches it to the full width.
+        // Input row: a growing text field with a Send button to its right.
+        // Flex.Horizontal() places them side-by-side; the TextInput grows to
+        // fill remaining width while the Button stays its natural label size.
         var textInput = new TextInput
         {
             HorizontalSizing = SizingMode.Grow
         };
-        root.AddChild(textInput);
+
+        var sendButton = new Button("Send");
+        sendButton.Clicked += () =>
+        {
+            if (string.IsNullOrWhiteSpace(textInput.Value)) return;
+            _listView.Items.Add(new UserMessage("You", textInput.Value));
+            textInput.Value = "";
+        };
+
+        var inputRow = Flex.Horizontal();
+        inputRow.HorizontalSizing = SizingMode.Grow;
+        inputRow.AddChild(textInput);
+        inputRow.AddChild(sendButton);
+        root.AddChild(inputRow);
 
         root.AddChild(new Label("Tab to switch focus  ·  ↑/↓ to scroll  ·  Ctrl-C to quit")
         {
