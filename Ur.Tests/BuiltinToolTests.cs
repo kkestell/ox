@@ -296,20 +296,6 @@ public sealed class BuiltinToolTests
     // ─── Registration ──────────────────────────────────────────────────
 
     [Fact]
-    public void RegisterAll_AddsAllThreeToolsToRegistry()
-    {
-        using var env = new ToolTestEnvironment();
-        var registry = new ToolRegistry();
-
-        BuiltinTools.RegisterAll(registry, env.Workspace);
-
-        // Verify each tool is retrievable by name.
-        Assert.NotNull(registry.Get("read_file"));
-        Assert.NotNull(registry.Get("write_file"));
-        Assert.NotNull(registry.Get("update_file"));
-    }
-
-    [Fact]
     public async Task BuiltinTools_AppearAfterHostStartup()
     {
         using var env = new TempExtensionEnvironment();
@@ -318,6 +304,9 @@ public sealed class BuiltinToolTests
         Assert.NotNull(host.Tools.Get("read_file"));
         Assert.NotNull(host.Tools.Get("write_file"));
         Assert.NotNull(host.Tools.Get("update_file"));
+        Assert.NotNull(host.Tools.Get("glob"));
+        Assert.NotNull(host.Tools.Get("grep"));
+        Assert.NotNull(host.Tools.Get("bash"));
     }
 
     [Fact]
@@ -388,5 +377,373 @@ public sealed class BuiltinToolTests
                 ("new_string", "x")));
 
         Assert.Contains("outside the workspace", ex.Message);
+    }
+
+    // ─── glob ──────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task Glob_MatchesFilesByPattern()
+    {
+        using var env = new ToolTestEnvironment();
+        env.WriteFile("a.cs", "");
+        env.WriteFile("b.cs", "");
+        env.WriteFile("readme.md", "");
+
+        var tool = new GlobTool(env.Workspace);
+        var result = (string?)await InvokeAsync(tool, ("pattern", "*.cs"));
+
+        Assert.Contains("a.cs", result);
+        Assert.Contains("b.cs", result);
+        Assert.DoesNotContain("readme.md", result);
+    }
+
+    [Fact]
+    public async Task Glob_RespectsSubdirectoryScoping()
+    {
+        using var env = new ToolTestEnvironment();
+        env.WriteFile("root.cs", "");
+        env.WriteFile("src/nested.cs", "");
+
+        var tool = new GlobTool(env.Workspace);
+        var result = (string?)await InvokeAsync(tool,
+            ("pattern", "*.cs"),
+            ("path", "src"));
+
+        Assert.Contains("nested.cs", result);
+        Assert.DoesNotContain("root.cs", result);
+    }
+
+    [Fact]
+    public async Task Glob_ReturnsPathsRelativeToWorkspaceRoot()
+    {
+        using var env = new ToolTestEnvironment();
+        env.WriteFile("src/deep/file.cs", "");
+
+        var tool = new GlobTool(env.Workspace);
+        var result = (string?)await InvokeAsync(tool, ("pattern", "**/*.cs"));
+
+        // Should be workspace-relative, not absolute.
+        Assert.Contains(Path.Combine("src", "deep", "file.cs"), result);
+        Assert.DoesNotContain(env.WorkspacePath, result);
+    }
+
+    [Fact]
+    public async Task Glob_RejectsPathOutsideWorkspace()
+    {
+        using var env = new ToolTestEnvironment();
+        var tool = new GlobTool(env.Workspace);
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => InvokeAsync(tool,
+                ("pattern", "*.cs"),
+                ("path", "/tmp")));
+
+        Assert.Contains("outside the workspace", ex.Message);
+    }
+
+    [Fact]
+    public async Task Glob_RejectsPathTraversal()
+    {
+        using var env = new ToolTestEnvironment();
+        var tool = new GlobTool(env.Workspace);
+
+        // Attempt to escape the workspace via ../
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => InvokeAsync(tool,
+                ("pattern", "*.txt"),
+                ("path", "../../outside")));
+
+        Assert.Contains("outside the workspace", ex.Message);
+    }
+
+    [Fact]
+    public async Task Glob_ReturnsEmptyForNoMatches()
+    {
+        using var env = new ToolTestEnvironment();
+        env.WriteFile("test.txt", "");
+
+        var tool = new GlobTool(env.Workspace);
+        var result = (string?)await InvokeAsync(tool, ("pattern", "*.cs"));
+
+        Assert.Equal("", result);
+    }
+
+    [Fact]
+    public async Task Glob_TruncatesLargeResultSets()
+    {
+        using var env = new ToolTestEnvironment();
+        // Create more files than the truncation limit (1000).
+        for (var i = 0; i < 1100; i++)
+            env.WriteFile($"file{i:D4}.txt", "");
+
+        var tool = new GlobTool(env.Workspace);
+        var result = (string?)await InvokeAsync(tool, ("pattern", "*.txt"));
+
+        Assert.Contains("[truncated: showing 1000 of 1100 matches]", result);
+    }
+
+    // ─── grep ──────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task Grep_FindsMatchingLinesInFiles()
+    {
+        using var env = new ToolTestEnvironment();
+        env.WriteFile("code.cs", "int x = 42;\nstring y = \"hello\";\nint z = 99;");
+
+        // Force .NET fallback so the test doesn't depend on rg being installed.
+        GrepTool.SetRipgrepAvailable(false);
+        try
+        {
+            var tool = new GrepTool(env.Workspace);
+            var result = (string?)await InvokeAsync(tool, ("pattern", "int"));
+
+            Assert.Contains("code.cs", result);
+            Assert.Contains("int x = 42", result);
+            Assert.Contains("int z = 99", result);
+            Assert.DoesNotContain("hello", result);
+        }
+        finally
+        {
+            GrepTool.SetRipgrepAvailable(null); // Reset for other tests.
+        }
+    }
+
+    [Fact]
+    public async Task Grep_RespectsIncludeFilter()
+    {
+        using var env = new ToolTestEnvironment();
+        env.WriteFile("code.cs", "needle");
+        env.WriteFile("readme.md", "needle");
+
+        GrepTool.SetRipgrepAvailable(false);
+        try
+        {
+            var tool = new GrepTool(env.Workspace);
+            var result = (string?)await InvokeAsync(tool,
+                ("pattern", "needle"),
+                ("include", "*.cs"));
+
+            Assert.Contains("code.cs", result);
+            Assert.DoesNotContain("readme.md", result);
+        }
+        finally
+        {
+            GrepTool.SetRipgrepAvailable(null);
+        }
+    }
+
+    [Fact]
+    public async Task Grep_ReturnsLineNumbers()
+    {
+        using var env = new ToolTestEnvironment();
+        env.WriteFile("lines.txt", "aaa\nbbb\nccc\nbbb\neee");
+
+        GrepTool.SetRipgrepAvailable(false);
+        try
+        {
+            var tool = new GrepTool(env.Workspace);
+            var result = (string?)await InvokeAsync(tool, ("pattern", "bbb"));
+
+            // Should contain line numbers (1-based) in file:line:content format.
+            Assert.Contains("lines.txt:2:", result);
+            Assert.Contains("lines.txt:4:", result);
+        }
+        finally
+        {
+            GrepTool.SetRipgrepAvailable(null);
+        }
+    }
+
+    [Fact]
+    public async Task Grep_RejectsPathOutsideWorkspace()
+    {
+        using var env = new ToolTestEnvironment();
+
+        GrepTool.SetRipgrepAvailable(false);
+        try
+        {
+            var tool = new GrepTool(env.Workspace);
+
+            var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+                () => InvokeAsync(tool,
+                    ("pattern", "test"),
+                    ("path", "/tmp")));
+
+            Assert.Contains("outside the workspace", ex.Message);
+        }
+        finally
+        {
+            GrepTool.SetRipgrepAvailable(null);
+        }
+    }
+
+    [Fact]
+    public async Task Grep_ReturnsEmptyForNoMatches()
+    {
+        using var env = new ToolTestEnvironment();
+        env.WriteFile("code.cs", "nothing here");
+
+        GrepTool.SetRipgrepAvailable(false);
+        try
+        {
+            var tool = new GrepTool(env.Workspace);
+            var result = (string?)await InvokeAsync(tool, ("pattern", "zzz_not_found"));
+
+            Assert.Equal("", result);
+        }
+        finally
+        {
+            GrepTool.SetRipgrepAvailable(null);
+        }
+    }
+
+    [Fact]
+    public async Task Grep_HandlesContextLines()
+    {
+        using var env = new ToolTestEnvironment();
+        env.WriteFile("ctx.txt", "line1\nline2\nMATCH\nline4\nline5");
+
+        GrepTool.SetRipgrepAvailable(false);
+        try
+        {
+            var tool = new GrepTool(env.Workspace);
+            var result = (string?)await InvokeAsync(tool,
+                ("pattern", "MATCH"),
+                ("context_lines", 1));
+
+            // Should include the line before and after the match, but not
+            // lines outside the 1-line context window.
+            Assert.Contains("line2", result);
+            Assert.Contains("MATCH", result);
+            Assert.Contains("line4", result);
+            Assert.DoesNotContain("line1", result);
+            Assert.DoesNotContain("line5", result);
+        }
+        finally
+        {
+            GrepTool.SetRipgrepAvailable(null);
+        }
+    }
+
+    [Fact]
+    public async Task Grep_UsesRipgrepWhenAvailable()
+    {
+        // This test exercises the ripgrep backend. If rg is not installed,
+        // it verifies the .NET fallback produces the same output contract.
+        using var env = new ToolTestEnvironment();
+        env.WriteFile("rg_test.txt", "alpha\nbeta\ngamma");
+
+        // Reset to auto-detect so we exercise whichever backend is available.
+        GrepTool.SetRipgrepAvailable(null);
+        try
+        {
+            var tool = new GrepTool(env.Workspace);
+            var result = (string?)await InvokeAsync(tool, ("pattern", "beta"));
+
+            // Both backends should produce file:line:content format.
+            Assert.Contains("rg_test.txt", result);
+            Assert.Contains("beta", result);
+            Assert.DoesNotContain("alpha", result);
+            Assert.DoesNotContain("gamma", result);
+        }
+        finally
+        {
+            GrepTool.SetRipgrepAvailable(null);
+        }
+    }
+
+    // ─── bash ──────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task Bash_ExecutesCommandAndReturnsOutput()
+    {
+        using var env = new ToolTestEnvironment();
+        var tool = new BashTool(env.Workspace);
+        var result = (string?)await InvokeAsync(tool, ("command", "echo hello"));
+
+        Assert.Contains("Exit code: 0", result);
+        Assert.Contains("hello", result);
+    }
+
+    [Fact]
+    public async Task Bash_ReturnsExitCode()
+    {
+        using var env = new ToolTestEnvironment();
+        var tool = new BashTool(env.Workspace);
+        var result = (string?)await InvokeAsync(tool, ("command", "exit 42"));
+
+        Assert.Contains("Exit code: 42", result);
+    }
+
+    [Fact]
+    public async Task Bash_CapturesStderr()
+    {
+        using var env = new ToolTestEnvironment();
+        var tool = new BashTool(env.Workspace);
+        var result = (string?)await InvokeAsync(tool,
+            ("command", "echo error_msg >&2"));
+
+        Assert.Contains("stderr", result);
+        Assert.Contains("error_msg", result);
+    }
+
+    [Fact]
+    public async Task Bash_TimesOutLongRunningCommands()
+    {
+        using var env = new ToolTestEnvironment();
+        var tool = new BashTool(env.Workspace);
+
+        // Use a very short timeout to trigger the timeout path.
+        var result = (string?)await InvokeAsync(tool,
+            ("command", "sleep 60"),
+            ("timeout_ms", 500));
+
+        Assert.Contains("timed out", result);
+    }
+
+    [Fact]
+    public async Task Bash_TruncatesLargeOutput()
+    {
+        using var env = new ToolTestEnvironment();
+        var tool = new BashTool(env.Workspace);
+
+        // Generate more than 2000 lines of output.
+        var result = (string?)await InvokeAsync(tool,
+            ("command", "seq 1 3000"));
+
+        Assert.Contains("[truncated]", result);
+    }
+
+    [Fact]
+    public async Task Bash_SetsWorkingDirectoryToWorkspaceRoot()
+    {
+        using var env = new ToolTestEnvironment();
+        // Write a marker file so we can verify pwd matches exactly, not a parent.
+        env.WriteFile("marker.txt", "");
+
+        var tool = new BashTool(env.Workspace);
+        var result = (string?)await InvokeAsync(tool,
+            ("command", "pwd && test -f marker.txt && echo MARKER_FOUND"));
+
+        Assert.Contains(env.WorkspacePath, result);
+        Assert.Contains("MARKER_FOUND", result);
+    }
+
+    // ─── Registration (updated) ────────────────────────────────────────
+
+    [Fact]
+    public void RegisterAll_AddsAllSixToolsToRegistry()
+    {
+        using var env = new ToolTestEnvironment();
+        var registry = new ToolRegistry();
+
+        BuiltinTools.RegisterAll(registry, env.Workspace);
+
+        Assert.NotNull(registry.Get("read_file"));
+        Assert.NotNull(registry.Get("write_file"));
+        Assert.NotNull(registry.Get("update_file"));
+        Assert.NotNull(registry.Get("glob"));
+        Assert.NotNull(registry.Get("grep"));
+        Assert.NotNull(registry.Get("bash"));
     }
 }

@@ -23,6 +23,19 @@ internal static class ToolArgHelpers
         };
     }
 
+    public static string? GetOptionalString(AIFunctionArguments args, string key)
+    {
+        if (!args.TryGetValue(key, out var value) || value is null)
+            return null;
+
+        return value switch
+        {
+            string s => s,
+            JsonElement { ValueKind: JsonValueKind.String } je => je.GetString(),
+            _ => value.ToString()
+        };
+    }
+
     public static int? GetOptionalInt(AIFunctionArguments args, string key)
     {
         if (!args.TryGetValue(key, out var value) || value is null)

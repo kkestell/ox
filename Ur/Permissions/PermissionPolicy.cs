@@ -12,6 +12,7 @@ public static class PermissionPolicy
         OperationType.WriteInWorkspace => [PermissionScope.Once, PermissionScope.Session, PermissionScope.Workspace, PermissionScope.Always],
         OperationType.WriteOutsideWorkspace => [PermissionScope.Once],
         OperationType.Network => [PermissionScope.Once],
+        OperationType.ExecuteCommand => [PermissionScope.Once],
         _ => [PermissionScope.Once],
     };
 

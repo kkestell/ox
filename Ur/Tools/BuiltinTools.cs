@@ -42,6 +42,32 @@ internal static class BuiltinTools
                 OperationType.WriteInWorkspace,
                 targetExtractor: args => ExtractFilePath(args));
         }
+
+        // glob and grep are read operations — auto-allowed like read_file.
+        if (registry.Get("glob") is null)
+        {
+            registry.Register(
+                new GlobTool(workspace),
+                OperationType.ReadInWorkspace,
+                targetExtractor: args => ExtractStringArg(args, "pattern"));
+        }
+
+        if (registry.Get("grep") is null)
+        {
+            registry.Register(
+                new GrepTool(workspace),
+                OperationType.ReadInWorkspace,
+                targetExtractor: args => ExtractStringArg(args, "pattern"));
+        }
+
+        // bash requires per-invocation approval — ExecuteCommand is Once-only.
+        if (registry.Get("bash") is null)
+        {
+            registry.Register(
+                new BashTool(workspace),
+                OperationType.ExecuteCommand,
+                targetExtractor: args => ExtractStringArg(args, "command"));
+        }
     }
 
     /// <summary>
@@ -49,9 +75,16 @@ internal static class BuiltinTools
     /// prompt can show the user which file is being accessed. Handles both
     /// native strings (from tests) and JsonElement (from real LLM responses).
     /// </summary>
-    private static string ExtractFilePath(IDictionary<string, object?> args)
+    private static string ExtractFilePath(IDictionary<string, object?> args) =>
+        ExtractStringArg(args, "file_path");
+
+    /// <summary>
+    /// Generic extraction of a named string argument for permission target display.
+    /// Handles both native strings (from tests) and JsonElement (from real LLM responses).
+    /// </summary>
+    private static string ExtractStringArg(IDictionary<string, object?> args, string key)
     {
-        if (!args.TryGetValue("file_path", out var v) || v is null)
+        if (!args.TryGetValue(key, out var v) || v is null)
             return "(unknown)";
 
         return v switch

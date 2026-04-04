@@ -14,4 +14,5 @@ public enum OperationType
     WriteInWorkspace,
     WriteOutsideWorkspace,
     Network,
+    ExecuteCommand,
 }
