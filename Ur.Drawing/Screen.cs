@@ -12,18 +12,18 @@ public sealed class Screen
     /// <summary>
     /// Width of the screen in columns.
     /// </summary>
-    public ushort Width { get; }
+    public int Width { get; }
 
     /// <summary>
     /// Height of the screen in rows.
     /// </summary>
-    public ushort Height { get; }
+    public int Height { get; }
 
     /// <summary>
     /// Creates a new Screen with the specified dimensions.
     /// All cells are initialized to the default (space with default style).
     /// </summary>
-    public Screen(ushort width, ushort height)
+    public Screen(int width, int height)
     {
         Width = width;
         Height = height;
@@ -33,11 +33,11 @@ public sealed class Screen
 
     /// <summary>
     /// Sets the cell at the specified absolute screen coordinates.
-    /// Coordinates outside the screen bounds are ignored (no-op).
+    /// Coordinates outside the screen bounds (including negative) are ignored (no-op).
     /// </summary>
-    public void Set(ushort x, ushort y, Cell cell)
+    public void Set(int x, int y, Cell cell)
     {
-        if (x >= Width || y >= Height)
+        if (x < 0 || y < 0 || x >= Width || y >= Height)
             return;
         _cells[y * Width + x] = cell;
     }
@@ -46,9 +46,9 @@ public sealed class Screen
     /// Gets the cell at the specified absolute screen coordinates.
     /// Returns Default cell if coordinates are out of bounds.
     /// </summary>
-    public Cell Get(ushort x, ushort y)
+    public Cell Get(int x, int y)
     {
-        if (x >= Width || y >= Height)
+        if (x < 0 || y < 0 || x >= Width || y >= Height)
             return Cell.Default;
         return _cells[y * Width + x];
     }

@@ -47,7 +47,7 @@ public class Label : Widget
         var y = 0;
         foreach (var line in _lines)
         {
-            canvas.DrawText(0, (ushort)y, line, Style);
+            canvas.DrawText(0, y, line, Style);
             y++;
         }
     }

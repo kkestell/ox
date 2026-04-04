@@ -65,12 +65,12 @@ public sealed class ConsoleDriver : IDriver
         var sb = new StringBuilder();
         Style? currentStyle = null;
 
-        for (ushort row = 0; row < screen.Height; row++)
+        for (var row = 0; row < screen.Height; row++)
         {
             // Rows and columns are 1-based in ANSI escape sequences.
             sb.Append($"\e[{row + 1};1H");
 
-            for (ushort col = 0; col < screen.Width; col++)
+            for (var col = 0; col < screen.Width; col++)
             {
                 var cell = screen.Get(col, row);
                 if (currentStyle != cell.Style)

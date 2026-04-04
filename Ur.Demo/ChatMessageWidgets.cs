@@ -34,7 +34,7 @@ public class UserMessageWidget : Widget
         // The author prefix is measured so the body starts at the correct column.
         var prefix = $"{_author}: ";
         canvas.DrawText(0, 0, prefix, AuthorStyle);
-        canvas.DrawText((ushort)prefix.Length, 0, _content, ContentStyle);
+        canvas.DrawText(prefix.Length, 0, _content, ContentStyle);
     }
 }
 
@@ -97,6 +97,6 @@ public class ToolMessageWidget : Widget
         canvas.DrawText(0, 0, $"[{_toolName}]", HeaderStyle);
 
         for (var i = 0; i < _contentLines.Length; i++)
-            canvas.DrawText(0, (ushort)(i + 1), _contentLines[i], BodyStyle);
+            canvas.DrawText(0, i + 1, _contentLines[i], BodyStyle);
     }
 }

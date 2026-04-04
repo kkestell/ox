@@ -11,7 +11,7 @@ public static class Renderer
     /// </summary>
     public static Screen Render(Widget root)
     {
-        var screen = new Screen((ushort)root.Width, (ushort)root.Height);
+        var screen = new Screen(root.Width, root.Height);
         var canvas = CanvasFactory.CreateCanvas(screen);
         RenderWidget(root, canvas);
         return screen;
@@ -33,10 +33,10 @@ public static class Renderer
         // so we always create sub-canvases relative to the root canvas (origin 0,0)
         // rather than relative to the parent widget's canvas.
         var sub = rootCanvas.SubCanvas(new Rect(
-            (ushort)Math.Max(0, widget.X),
-            (ushort)Math.Max(0, widget.Y),
-            (ushort)widget.Width,
-            (ushort)widget.Height));
+            Math.Max(0, widget.X),
+            Math.Max(0, widget.Y),
+            widget.Width,
+            widget.Height));
 
         widget.Draw(sub);
 

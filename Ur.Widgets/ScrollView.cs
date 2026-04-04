@@ -104,7 +104,7 @@ public class ScrollView : Widget
         // Render the full content into an offscreen screen buffer.
         // The entire content tree is rendered here every frame. For TUI scale
         // (hundreds of rows at most), this is not a performance concern.
-        var offscreen = new Screen((ushort)contentWidth, (ushort)contentHeight);
+        var offscreen = new Screen(contentWidth, contentHeight);
         var offscreenCanvas = CanvasFactory.CreateCanvas(offscreen);
         Renderer.RenderTree(_content, offscreenCanvas);
 
@@ -119,8 +119,8 @@ public class ScrollView : Widget
 
             for (var col = 0; col < contentWidth; col++)
             {
-                var cell = offscreen.Get((ushort)col, (ushort)sourceRow);
-                canvas.SetCell((ushort)col, (ushort)row, cell.Rune, cell.Style);
+                var cell = offscreen.Get(col, sourceRow);
+                canvas.SetCell(col, row, cell.Rune, cell.Style);
             }
         }
 
@@ -159,12 +159,12 @@ public class ScrollView : Widget
     /// </summary>
     private void DrawScrollbar(ICanvas canvas, int contentHeight)
     {
-        var scrollbarX = (ushort)(Width - 1);
+        var scrollbarX = Width - 1;
 
         if (contentHeight <= Height)
         {
             // Content fits — draw track only to visually mark the scrollbar region.
-            canvas.DrawVLine(scrollbarX, 0, (ushort)Height, '│', Style.Default);
+            canvas.DrawVLine(scrollbarX, 0, Height, '│', Style.Default);
             return;
         }
 
@@ -179,7 +179,7 @@ public class ScrollView : Widget
         for (var row = 0; row < Height; row++)
         {
             var ch = (row >= thumbTop && row < thumbTop + thumbSize) ? '█' : '│';
-            canvas.SetCell(scrollbarX, (ushort)row, ch, Style.Default);
+            canvas.SetCell(scrollbarX, row, ch, Style.Default);
         }
     }
 }

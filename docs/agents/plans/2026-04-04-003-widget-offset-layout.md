@@ -101,18 +101,18 @@ baked in. `Stack` can be deleted (or kept as `class Stack : Flex` for one releas
 
 ### Phase 1 — Drawing layer: `ushort → int`
 
-- [ ] In `Ur.Drawing/Geometry.cs`: change `Rect` record parameters and computed
+- [x] In `Ur.Drawing/Geometry.cs`: change `Rect` record parameters and computed
   properties (`Right`, `Bottom`, `Contains`, `Create`) from `ushort` to `int`.
-- [ ] In `Ur.Drawing/Screen.cs`: change `Width`, `Height`, constructor parameters,
+- [x] In `Ur.Drawing/Screen.cs`: change `Width`, `Height`, constructor parameters,
   and `Set`/`Get` coordinates from `ushort` to `int`. Update the bounds check
   (`x >= Width || y >= Height`) to also guard `x < 0 || y < 0`.
-- [ ] In `Ur.Drawing/ICanvas.cs`: change all `ushort` parameters to `int`.
-- [ ] In `Ur.Drawing/Canvas.cs`:
+- [x] In `Ur.Drawing/ICanvas.cs`: change all `ushort` parameters to `int`.
+- [x] In `Ur.Drawing/Canvas.cs`:
   - Change all `ushort` parameters and locals to `int`.
   - Update `SubCanvas` to handle negative `rect.X`/`rect.Y`: if the rect origin is
     negative, shrink the width/height by the overlap and clamp the origin to 0, so
     partially-offscreen children are clipped rather than wrapping.
-- [ ] Fix any resulting compile errors in widgets that call canvas methods with
+- [x] Fix any resulting compile errors in widgets that call canvas methods with
   `ushort` literals or casts — remove the casts.
 
 ### Phase 2 — Widget base: OffsetX/OffsetY + virtual Layout

@@ -38,25 +38,39 @@ internal sealed class Canvas : ICanvas
 
     /// <summary>
     /// Creates a new Canvas that is a sub-region of this canvas.
-    /// The sub-canvas's bounds are clamped to the parent's bounds.
+    ///
+    /// rect is in parent-canvas-relative coordinates and may have a negative X or Y —
+    /// this happens when the Renderer positions a scrolled child above or left of the
+    /// viewport origin. When the origin is negative we shrink the effective size by the
+    /// overlap and clamp to zero, so the resulting canvas represents only the visible
+    /// portion. The right/bottom edges are then clamped to the parent's bounds as before.
     /// </summary>
     public ICanvas SubCanvas(Rect rect)
     {
-        var absoluteX = (ushort)(Bounds.X + rect.X);
-        var absoluteY = (ushort)(Bounds.Y + rect.Y);
+        // Clamp the origin to 0 and reduce dimensions by the same amount,
+        // so a child that starts e.g. 3 rows above the parent is clipped to start at 0
+        // with 3 fewer rows of visible height.
+        var clampedX = Math.Max(0, rect.X);
+        var clampedY = Math.Max(0, rect.Y);
+        var width = rect.Width - (clampedX - rect.X);
+        var height = rect.Height - (clampedY - rect.Y);
 
-        ushort width = rect.Width;
-        ushort height = rect.Height;
+        var absoluteX = Bounds.X + clampedX;
+        var absoluteY = Bounds.Y + clampedY;
 
+        // Clip the right/bottom edges to the parent canvas boundaries.
         if (absoluteX >= Bounds.Right)
             width = 0;
         else if (absoluteX + width > Bounds.Right)
-            width = (ushort)(Bounds.Right - absoluteX);
+            width = Bounds.Right - absoluteX;
 
         if (absoluteY >= Bounds.Bottom)
             height = 0;
         else if (absoluteY + height > Bounds.Bottom)
-            height = (ushort)(Bounds.Bottom - absoluteY);
+            height = Bounds.Bottom - absoluteY;
+
+        width = Math.Max(0, width);
+        height = Math.Max(0, height);
 
         var absoluteBounds = new Rect(absoluteX, absoluteY, width, height);
         return new Canvas(_screen, absoluteBounds, []);
@@ -66,13 +80,13 @@ internal sealed class Canvas : ICanvas
     /// Sets the content and style of a single cell at coordinates (x, y).
     /// Coordinates are relative to canvas origin. Clipped if outside clip stack.
     /// </summary>
-    public void SetCell(ushort x, ushort y, char rune, Style style)
+    public void SetCell(int x, int y, char rune, Style style)
     {
-        if (x >= Bounds.Width || y >= Bounds.Height)
+        if (x < 0 || y < 0 || x >= Bounds.Width || y >= Bounds.Height)
             return;
 
-        var absX = (ushort)(Bounds.X + x);
-        var absY = (ushort)(Bounds.Y + y);
+        var absX = Bounds.X + x;
+        var absY = Bounds.Y + y;
 
         foreach (var clipRect in _clipStack)
         {
@@ -87,13 +101,13 @@ internal sealed class Canvas : ICanvas
     /// Gets the content and style of a single cell at coordinates (x, y).
     /// Returns Default cell if coordinates are out of bounds.
     /// </summary>
-    public Cell GetCell(ushort x, ushort y)
+    public Cell GetCell(int x, int y)
     {
-        if (x >= Bounds.Width || y >= Bounds.Height)
+        if (x < 0 || y < 0 || x >= Bounds.Width || y >= Bounds.Height)
             return Cell.Default;
 
-        var absX = (ushort)(Bounds.X + x);
-        var absY = (ushort)(Bounds.Y + y);
+        var absX = Bounds.X + x;
+        var absY = Bounds.Y + y;
 
         return _screen.Get(absX, absY);
     }
@@ -104,13 +118,11 @@ internal sealed class Canvas : ICanvas
     public void Clear(Style style)
     {
         var cell = Cell.Create(' ', style);
-        for (ushort y = 0; y < Bounds.Height; y++)
+        for (var y = 0; y < Bounds.Height; y++)
         {
-            for (ushort x = 0; x < Bounds.Width; x++)
+            for (var x = 0; x < Bounds.Width; x++)
             {
-                var absX = (ushort)(Bounds.X + x);
-                var absY = (ushort)(Bounds.Y + y);
-                _screen.Set(absX, absY, cell);
+                _screen.Set(Bounds.X + x, Bounds.Y + y, cell);
             }
         }
     }
@@ -119,7 +131,7 @@ internal sealed class Canvas : ICanvas
     /// Draws a string starting at (x, y), applying the style to all characters.
     /// Handles newlines by moving to the next line at the same x offset.
     /// </summary>
-    public void DrawText(ushort x, ushort y, string text, Style style)
+    public void DrawText(int x, int y, string text, Style style)
     {
         var col = x;
         var row = y;
@@ -166,42 +178,42 @@ internal sealed class Canvas : ICanvas
             return;
 
         SetCell(rect.X, rect.Y, borderSet.TopLeft, style);
-        SetCell((ushort)(rect.X + rect.Width - 1), rect.Y, borderSet.TopRight, style);
-        SetCell(rect.X, (ushort)(rect.Y + rect.Height - 1), borderSet.BottomLeft, style);
-        SetCell((ushort)(rect.X + rect.Width - 1), (ushort)(rect.Y + rect.Height - 1), borderSet.BottomRight, style);
+        SetCell(rect.X + rect.Width - 1, rect.Y, borderSet.TopRight, style);
+        SetCell(rect.X, rect.Y + rect.Height - 1, borderSet.BottomLeft, style);
+        SetCell(rect.X + rect.Width - 1, rect.Y + rect.Height - 1, borderSet.BottomRight, style);
 
-        for (var x = (ushort)(rect.X + 1); x < rect.X + rect.Width - 1; x++)
+        for (var x = rect.X + 1; x < rect.X + rect.Width - 1; x++)
         {
             SetCell(x, rect.Y, borderSet.Horizontal, style);
-            SetCell(x, (ushort)(rect.Y + rect.Height - 1), borderSet.Horizontal, style);
+            SetCell(x, rect.Y + rect.Height - 1, borderSet.Horizontal, style);
         }
 
-        for (var y = (ushort)(rect.Y + 1); y < rect.Y + rect.Height - 1; y++)
+        for (var y = rect.Y + 1; y < rect.Y + rect.Height - 1; y++)
         {
             SetCell(rect.X, y, borderSet.Vertical, style);
-            SetCell((ushort)(rect.X + rect.Width - 1), y, borderSet.Vertical, style);
+            SetCell(rect.X + rect.Width - 1, y, borderSet.Vertical, style);
         }
     }
 
     /// <summary>
     /// Draws a horizontal line segment of 'width' length starting at (x, y).
     /// </summary>
-    public void DrawHLine(ushort x, ushort y, ushort width, char rune, Style style)
+    public void DrawHLine(int x, int y, int width, char rune, Style style)
     {
-        for (var i = (ushort)0; i < width; i++)
+        for (var i = 0; i < width; i++)
         {
-            SetCell((ushort)(x + i), y, rune, style);
+            SetCell(x + i, y, rune, style);
         }
     }
 
     /// <summary>
     /// Draws a vertical line segment of 'height' length starting at (x, y).
     /// </summary>
-    public void DrawVLine(ushort x, ushort y, ushort height, char rune, Style style)
+    public void DrawVLine(int x, int y, int height, char rune, Style style)
     {
-        for (var i = (ushort)0; i < height; i++)
+        for (var i = 0; i < height; i++)
         {
-            SetCell(x, (ushort)(y + i), rune, style);
+            SetCell(x, y + i, rune, style);
         }
     }
 

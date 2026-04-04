@@ -91,7 +91,7 @@ public class TextInput : Widget
 
         // Fill the entire line so the background color extends edge-to-edge,
         // making the input field visually distinct from surrounding labels.
-        canvas.DrawHLine(0, 0, (ushort)Width, ' ', style);
+        canvas.DrawHLine(0, 0, Width, ' ', style);
         canvas.DrawText(0, 0, _value, style);
 
         // Only show the cursor when focused — unfocused inputs just display the value.
@@ -99,7 +99,7 @@ public class TextInput : Widget
         {
             var charUnderCursor = _cursorPos < _value.Length ? _value[_cursorPos] : ' ';
             var cursorStyle = new Style(style.Bg, style.Fg);
-            canvas.SetCell((ushort)_cursorPos, 0, charUnderCursor, cursorStyle);
+            canvas.SetCell(_cursorPos, 0, charUnderCursor, cursorStyle);
         }
     }
 

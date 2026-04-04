@@ -4,7 +4,7 @@ namespace Ur.Drawing;
 /// Defines the minimal drawing primitives for the TUI library.
 /// A Canvas is a rectangular sub-region of a Screen (like a slice is to an array).
 /// All coordinates are relative to the canvas's origin.
-/// 
+///
 /// The canvas abstraction allows widgets to draw without knowing their absolute
 /// screen position, enabling nested layouts and clipping.
 /// </summary>
@@ -14,13 +14,13 @@ public interface ICanvas
     /// Sets the content and style of a single cell at coordinates (x, y).
     /// Coordinates are relative to the canvas origin, not the screen.
     /// </summary>
-    void SetCell(ushort x, ushort y, char rune, Style style);
+    void SetCell(int x, int y, char rune, Style style);
 
     /// <summary>
     /// Gets the content and style of a single cell at coordinates (x, y).
     /// Returns Default cell if coordinates are out of bounds.
     /// </summary>
-    Cell GetCell(ushort x, ushort y);
+    Cell GetCell(int x, int y);
 
     /// <summary>
     /// Fills the canvas area with a space character and the specified style.
@@ -31,7 +31,7 @@ public interface ICanvas
     /// Draws a string starting at (x, y), applying the style to all characters.
     /// Handles newlines by moving to the next line.
     /// </summary>
-    void DrawText(ushort x, ushort y, string text, Style style);
+    void DrawText(int x, int y, string text, Style style);
 
     /// <summary>
     /// Fills the interior of the Rect with a single character and style.
@@ -46,16 +46,18 @@ public interface ICanvas
     /// <summary>
     /// Draws a horizontal line segment of 'width' length starting at (x, y).
     /// </summary>
-    void DrawHLine(ushort x, ushort y, ushort width, char rune, Style style);
+    void DrawHLine(int x, int y, int width, char rune, Style style);
 
     /// <summary>
     /// Draws a vertical line segment of 'height' length starting at (x, y).
     /// </summary>
-    void DrawVLine(ushort x, ushort y, ushort height, char rune, Style style);
+    void DrawVLine(int x, int y, int height, char rune, Style style);
 
     /// <summary>
     /// Creates a new Canvas that is a sub-region of this canvas.
     /// The sub-canvas's origin becomes (parent origin + rect position).
+    /// rect.X and rect.Y may be negative when content is scrolled; SubCanvas
+    /// clamps the resulting bounds so negative-origin children are clipped, not wrapped.
     /// </summary>
     ICanvas SubCanvas(Rect rect);
 
