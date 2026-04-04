@@ -16,6 +16,12 @@ namespace Ur.Widgets;
 /// thread that calls Run). External code on background threads can schedule
 /// work on the UI thread via Invoke(Action), following the same pattern as
 /// WinForms' Control.Invoke(). This means widget code never needs locking.
+///
+/// Modal dialogs: Application maintains a stack of modal dialogs that overlay
+/// the main content. When a modal is active, input is scoped to the dialog's
+/// widget subtree (the focus ring is rebuilt from the dialog, not Root), and
+/// Escape dismisses the topmost dialog. This follows the WinForms ShowDialog
+/// pattern — dialogs are peers to the main tree, not children of it.
 /// </summary>
 public abstract class Application
 {
@@ -34,6 +40,22 @@ public abstract class Application
     private readonly BlockingCollection<Action> _queue = new();
 
     /// <summary>
+    /// Stack of active modal dialogs. The topmost dialog receives all input
+    /// and is rendered as a centered overlay. When empty, input goes to Root.
+    /// This is a new concept in the widget system: widgets that exist outside
+    /// the Root tree but participate in layout and rendering.
+    /// </summary>
+    private readonly Stack<Dialog> _modalStack = new();
+
+    /// <summary>
+    /// The current focus ring — all focusable widgets under the active focus
+    /// root (topmost modal or Root). Stored as instance state so ShowModal and
+    /// CloseModal can rebuild it without plumbing locals through the main loop.
+    /// </summary>
+    private List<Widget> _focusRing = new();
+    private int _focusIndex;
+
+    /// <summary>
     /// Schedules an action to run on the UI thread during the next iteration
     /// of the main loop. Thread-safe — can be called from any thread.
     ///
@@ -46,6 +68,36 @@ public abstract class Application
     /// one or more widgets, e.g. <c>app.Invoke(() => label.Text = msg)</c>.
     /// </param>
     public void Invoke(Action action) => _queue.Add(action);
+
+    /// <summary>
+    /// Pushes a dialog onto the modal stack, making it the active input target.
+    /// The focus ring is rebuilt from the dialog's focusable widgets, so Tab
+    /// only cycles between dialog controls. Subscribes to the dialog's Closed
+    /// event so CloseModal() is called automatically when the dialog dismisses.
+    /// </summary>
+    public void ShowModal(Dialog dialog)
+    {
+        _modalStack.Push(dialog);
+
+        // Auto-close: when the dialog fires Closed (OK button, Cancel button,
+        // or Escape key), pop it off the stack and restore focus to whatever
+        // is underneath (next modal or Root).
+        dialog.Closed += _ => CloseModal();
+
+        RebuildFocusRing();
+    }
+
+    /// <summary>
+    /// Pops the topmost modal dialog and restores the focus ring to the next
+    /// modal down (or Root if no modals remain). Called automatically by the
+    /// Closed event subscription set up in ShowModal.
+    /// </summary>
+    public void CloseModal()
+    {
+        if (_modalStack.Count == 0) return;
+        _modalStack.Pop();
+        RebuildFocusRing();
+    }
 
     /// <summary>
     /// Starts the event loop with the given terminal driver. Owns the full lifecycle:
@@ -62,14 +114,9 @@ public abstract class Application
         {
             driver.Init();
 
-            // Build the focus ring once at startup by collecting all focusable widgets
-            // in depth-first order. The ring is stable because the tree is persistent —
-            // no widgets are added or removed during the loop.
-            var focusRing = CollectFocusable(Root);
-            var focusIndex = 0;
-
-            if (focusRing.Count > 0)
-                focusRing[0].IsFocused = true;
+            // Build the initial focus ring from Root. ShowModal/CloseModal will
+            // rebuild it from the active focus root when modals are pushed/popped.
+            RebuildFocusRing();
 
             var running = true;
 
@@ -97,17 +144,27 @@ public abstract class Application
                                 return;
                             }
 
-                            if (input is KeyEvent { Key: Key.Tab } && focusRing.Count > 0)
+                            // Escape dismisses the topmost modal with Cancel result.
+                            // This fires the Closed event, which auto-pops via the
+                            // subscription in ShowModal. Must check before Tab so
+                            // Escape doesn't cycle focus.
+                            if (input is KeyEvent { Key: Key.Escape } && _modalStack.Count > 0)
+                            {
+                                _modalStack.Peek().Close(DialogResult.Cancel);
+                                return;
+                            }
+
+                            if (input is KeyEvent { Key: Key.Tab } && _focusRing.Count > 0)
                             {
                                 // Move focus forward through the ring.
-                                focusRing[focusIndex].IsFocused = false;
-                                focusIndex = (focusIndex + 1) % focusRing.Count;
-                                focusRing[focusIndex].IsFocused = true;
+                                _focusRing[_focusIndex].IsFocused = false;
+                                _focusIndex = (_focusIndex + 1) % _focusRing.Count;
+                                _focusRing[_focusIndex].IsFocused = true;
                             }
-                            else if (focusRing.Count > 0)
+                            else if (_focusRing.Count > 0)
                             {
                                 // Dispatch all other input to the focused widget.
-                                focusRing[focusIndex].HandleInput(input);
+                                _focusRing[_focusIndex].HandleInput(input);
                             }
                         });
                     }
@@ -133,11 +190,7 @@ public abstract class Application
 
             // Render the initial frame before any input arrives, so the user
             // sees the UI immediately rather than a blank screen.
-            Root.X = 0;
-            Root.Y = 0;
-            Root.Layout(driver.Width, driver.Height);
-            var screen = Renderer.Render(Root);
-            driver.Present(screen);
+            RenderFrame(driver);
 
             // When OX_DUMP_TREE is active the caller wants one-shot layout diagnostics:
             // exit immediately after the first frame so stderr output is readable.
@@ -162,17 +215,56 @@ public abstract class Application
                 // Check after draining — Ctrl-C might have been in the batch.
                 if (!running) break;
 
-                Root.X = 0;
-                Root.Y = 0;
-                Root.Layout(driver.Width, driver.Height);
-                screen = Renderer.Render(Root);
-                driver.Present(screen);
+                RenderFrame(driver);
             }
 
             // Signal the background thread to stop. Its next Add() will throw
             // InvalidOperationException, which it catches and exits cleanly.
             _queue.CompleteAdding();
         }
+    }
+
+    /// <summary>
+    /// Lays out and renders the full frame: Root tree first, then the topmost
+    /// modal dialog as a centered overlay. Extracted from the main loop to avoid
+    /// duplicating the layout+render+present sequence for the initial frame and
+    /// the per-event render.
+    /// </summary>
+    private void RenderFrame(IDriver driver)
+    {
+        Root.X = 0;
+        Root.Y = 0;
+        Root.Layout(driver.Width, driver.Height);
+
+        // Layout the topmost modal (if any) against the full terminal dimensions.
+        // The Renderer will center it and dim the background.
+        Dialog? topModal = _modalStack.Count > 0 ? _modalStack.Peek() : null;
+        topModal?.Layout(driver.Width, driver.Height);
+
+        var screen = Renderer.Render(Root, topModal);
+        driver.Present(screen);
+    }
+
+    /// <summary>
+    /// Rebuilds the focus ring from the active focus root. When a modal is open,
+    /// focus is scoped to the dialog's widgets — Tab only cycles between dialog
+    /// controls, not the main application's widgets. When no modal is open,
+    /// focus returns to Root's subtree.
+    /// </summary>
+    private void RebuildFocusRing()
+    {
+        // Clear focus on the previously focused widget so it doesn't render
+        // as focused after the ring changes.
+        if (_focusRing.Count > 0 && _focusIndex < _focusRing.Count)
+            _focusRing[_focusIndex].IsFocused = false;
+
+        // Scope focus to the topmost modal, or fall back to Root.
+        Widget focusRoot = _modalStack.Count > 0 ? _modalStack.Peek() : Root;
+        _focusRing = CollectFocusable(focusRoot);
+        _focusIndex = 0;
+
+        if (_focusRing.Count > 0)
+            _focusRing[0].IsFocused = true;
     }
 
     /// <summary>

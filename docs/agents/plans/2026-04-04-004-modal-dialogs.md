@@ -64,9 +64,9 @@ Three interrelated design challenges were explored:
 
 ### Phase 1: Infrastructure
 
-- [ ] **Create `Ur.Widgets/DialogResult.cs`** — `enum DialogResult { OK, Cancel }`. Simple enum, separate file for discoverability.
+- [x] **Create `Ur.Widgets/DialogResult.cs`** — `enum DialogResult { OK, Cancel }`. Simple enum, separate file for discoverability.
 
-- [ ] **Create `Ur.Widgets/Dialog.cs`** — The dialog widget:
+- [x] **Create `Ur.Widgets/Dialog.cs`** — The dialog widget:
   - Constructor takes `string title`, optional `bool showCancelButton = true`
   - Internal structure: `Flex.Vertical` layout containing `_content` (Flex.Vertical, Grow) + `_buttonRow` (Flex.Horizontal)
   - Button row: a grow-mode spacer `Flex` to push buttons right, then OK and Cancel `Button`s
@@ -87,7 +87,7 @@ Three interrelated design challenges were explored:
 
 ### Phase 2: Application integration
 
-- [ ] **Modify `Ur.Widgets/Application.cs`** — Add modal dialog support:
+- [x] **Modify `Ur.Widgets/Application.cs`** — Add modal dialog support:
   - Private field: `private readonly Stack<Widget> _modalStack = new()`
   - `public void ShowModal(Dialog dialog)` — pushes dialog onto stack, subscribes to `dialog.Closed` to auto-close, rebuilds focus ring from dialog
   - `public void CloseModal()` — pops topmost modal, rebuilds focus ring from next modal or Root
@@ -98,7 +98,7 @@ Three interrelated design challenges were explored:
 
 ### Phase 3: Renderer changes
 
-- [ ] **Modify `Ur.Widgets/Renderer.cs`** — Two-pass rendering:
+- [x] **Modify `Ur.Widgets/Renderer.cs`** — Two-pass rendering:
   - Change `Render(Widget root)` signature to `Render(Widget root, Widget? modal = null)`
   - After rendering Root, if modal is non-null:
     - Dim the background: iterate all screen cells, apply `Modifier.Dim` or darken colors
@@ -107,18 +107,18 @@ Three interrelated design challenges were explored:
 
 ### Phase 4: Demo
 
-- [ ] **Create dialog subclass in `Ur.Demo/Program.cs`** — `ApiKeyDialog : Dialog`:
+- [x] **Create dialog subclass in `Ur.Demo/Program.cs`** — `ApiKeyDialog : Dialog`:
   - Contains a `Label("Enter your OpenRouter API Key:")` and a `TextInput`
   - Exposes `TextInput ApiKeyInput` property so caller can read the value after close
 
-- [ ] **Wire up dialog in `ChatDemoApp`** — When [Send] button is clicked:
+- [x] **Wire up dialog in `ChatDemoApp`** — When [Send] button is clicked:
   - Create `ApiKeyDialog`, subscribe to `Closed` event
   - On `DialogResult.OK`, add a system message showing the key was set
   - Call `ShowModal(dialog)`
 
 ### Phase 5: Validation
 
-- [ ] **Build and verify** — `dotnet build` succeeds with no warnings
+- [x] **Build and verify** — `dotnet build` succeeds with no warnings
 - [ ] **Manual test** — Run `Ur.Demo`, click Send, verify dialog appears centered over dimmed background, Tab between fields, OK/Cancel/Escape all work correctly
 
 ## Impact assessment

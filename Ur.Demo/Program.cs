@@ -5,6 +5,30 @@ using Ur.Widgets;
 namespace Ur.Demo;
 
 /// <summary>
+/// A dialog that prompts for an OpenRouter API key.
+/// Demonstrates subclassing Dialog to build custom forms: add widgets
+/// to the protected Content area and expose accessors for the caller
+/// to read values after the dialog closes.
+/// </summary>
+class ApiKeyDialog : Dialog
+{
+    private readonly TextInput _apiKeyInput;
+
+    public ApiKeyDialog() : base("OpenRouter API Key")
+    {
+        Content.AddChild(new Label("Enter your OpenRouter API Key:"));
+
+        _apiKeyInput = new TextInput { HorizontalSizing = SizingMode.Grow };
+        Content.AddChild(_apiKeyInput);
+    }
+
+    /// <summary>
+    /// The value entered by the user. Read this after Closed fires with OK.
+    /// </summary>
+    public string ApiKey => _apiKeyInput.Value;
+}
+
+/// <summary>
 /// Chat UI demo showing ListView, ScrollView, TextInput, and heterogeneous message
 /// widgets working together. A background task simulates incoming messages of
 /// different types (user, system, tool) via Application.Invoke() so all widget
@@ -17,7 +41,7 @@ namespace Ur.Demo;
 ///   [     UserMessageWidget              ]
 ///   [     SystemMessageWidget            ]
 ///   [     ToolMessageWidget              ]
-///   [ TextInput (focusable)              ]
+///   [ [TextInput] [Send]                 ]
 ///   [ hint label                         ]
 /// </summary>
 class ChatDemoApp : Application
@@ -58,9 +82,22 @@ class ChatDemoApp : Application
         var sendButton = new Button("Send");
         sendButton.Clicked += () =>
         {
-            if (string.IsNullOrWhiteSpace(textInput.Value)) return;
-            _listView.Items.Add(new UserMessage("You", textInput.Value));
-            textInput.Value = "";
+            // Open an API key dialog instead of posting a message. This
+            // demonstrates the modal dialog system — the dialog overlays
+            // the chat UI and captures all input until dismissed.
+            var dialog = new ApiKeyDialog();
+            dialog.Closed += result =>
+            {
+                if (result == DialogResult.OK && !string.IsNullOrWhiteSpace(dialog.ApiKey))
+                {
+                    _listView.Items.Add(new SystemMessage($"API key set: {dialog.ApiKey[..4]}****"));
+                }
+                else
+                {
+                    _listView.Items.Add(new SystemMessage("API key dialog cancelled."));
+                }
+            };
+            ShowModal(dialog);
         };
 
         var inputRow = Flex.Horizontal();
@@ -77,7 +114,7 @@ class ChatDemoApp : Application
         Root = root;
     }
 
-    /// <summary>   
+    /// <summary>
     /// Starts a background task that simulates a multi-participant chat session.
     /// Messages are posted to the UI thread via Invoke() at irregular intervals
     /// to mimic real conversation pacing and demonstrate auto-scroll behavior.
