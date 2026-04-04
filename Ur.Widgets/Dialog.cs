@@ -116,9 +116,15 @@ public class Dialog : Widget
         // Measure content with unconstrained height (height=0 convention) to find
         // its natural size, then add chrome: top border, separator, button row
         // (3 rows for bordered buttons), bottom border = 6 extra rows.
+        // When Content contains Grow-sized children (e.g. a Table), the unconstrained
+        // pass returns 0 because Grow widgets have no natural height. In that case,
+        // fall back to the maximum height so the dialog fills its allowed space and
+        // the Grow children get usable room on the constrained pass.
         Content.Layout(interiorWidth, 0);
         var naturalHeight = Content.Height + 6;
         var maxHeight = (int)(availableHeight * 0.8);
+        if (naturalHeight <= 6)
+            naturalHeight = maxHeight;
         Height = Math.Clamp(naturalHeight, 7, maxHeight);
 
         // Position content inside the border, between the top border and separator.

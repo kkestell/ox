@@ -1,8 +1,15 @@
+using System.Collections.ObjectModel;
 using Ur.Console;
 using Ur.Drawing;
 using Ur.Widgets;
 
 namespace Ur.Demo;
+
+/// <summary>
+/// Simple record representing a model option in the model picker dialog.
+/// Each row has a display name, provider, and context window size.
+/// </summary>
+record ModelOption(string Name, string Provider, string ContextWindow);
 
 /// <summary>
 /// A dialog that prompts for an OpenRouter API key.
@@ -26,6 +33,63 @@ class ApiKeyDialog : Dialog
     /// The value entered by the user. Read this after Closed fires with OK.
     /// </summary>
     public string ApiKey => _apiKeyInput.Value;
+}
+
+/// <summary>
+/// A dialog that presents a scrollable table of model options for the user to
+/// pick from. Demonstrates the Table{T} widget with row selection, scroll-to-center,
+/// and activation-on-Enter. Populated with 100 dummy rows to exercise scrolling.
+/// </summary>
+class ModelDialog : Dialog
+{
+    private readonly Table<ModelOption> _table;
+
+    // Rotating provider names and context sizes for dummy data generation.
+    private static readonly string[] Providers = ["OpenAI", "Anthropic", "Google", "Meta", "Mistral"];
+    private static readonly string[] ContextSizes = ["4K", "8K", "16K", "32K", "128K", "200K", "1M"];
+
+    public ModelDialog() : base("Select Model")
+    {
+        // The Dialog's Content area defaults to Fit sizing, which works for labels
+        // and text inputs that have a natural height. For growable content like a
+        // Table, switch to Grow so the Flex takes the constrained height from Dialog
+        // and passes it through to the Table.
+        Content.VerticalSizing = SizingMode.Grow;
+
+        var dataSource = new ObservableCollection<ModelOption>();
+
+        // Populate with 100 dummy rows, rotating through providers and context sizes
+        // to give the table varied data for visual testing.
+        for (var i = 0; i < 100; i++)
+        {
+            dataSource.Add(new ModelOption(
+                $"model-{i}",
+                Providers[i % Providers.Length],
+                ContextSizes[i % ContextSizes.Length]));
+        }
+
+        var columns = new List<TableColumn<ModelOption>>
+        {
+            new("Model Name", m => m.Name),
+            new("Provider", m => m.Provider),
+            new("Context Window", m => m.ContextWindow),
+        };
+
+        _table = new Table<ModelOption>(dataSource, columns);
+
+        // Enter on a row dismisses the picker immediately — the consumer reads
+        // SelectedModel to find out what was chosen.
+        _table.ItemActivated += _ => Close(DialogResult.OK);
+
+        Content.AddChild(_table);
+    }
+
+    /// <summary>
+    /// The model the user selected, or null if the dialog was cancelled or the
+    /// table was empty. Read this after Closed fires.
+    /// </summary>
+    public ModelOption? SelectedModel =>
+        _table.SelectedIndex >= 0 ? _table.DataSource[_table.SelectedIndex] : null;
 }
 
 /// <summary>
@@ -100,10 +164,25 @@ class ChatDemoApp : Application
             ShowModal(dialog);
         };
 
+        var modelButton = new Button("Model");
+        modelButton.Clicked += () =>
+        {
+            var dialog = new ModelDialog();
+            dialog.Closed += result =>
+            {
+                if (result == DialogResult.OK && dialog.SelectedModel is { } model)
+                {
+                    _listView.Items.Add(new SystemMessage($"Selected model: {model.Name} ({model.Provider}, {model.ContextWindow})"));
+                }
+            };
+            ShowModal(dialog);
+        };
+
         var inputRow = Flex.Horizontal();
         inputRow.HorizontalSizing = SizingMode.Grow;
         inputRow.AddChild(textInput);
         inputRow.AddChild(sendButton);
+        inputRow.AddChild(modelButton);
         root.AddChild(inputRow);
 
         root.AddChild(new Label("Tab to switch focus  ·  ↑/↓ to scroll  ·  Ctrl-C to quit")
