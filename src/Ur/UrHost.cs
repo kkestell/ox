@@ -93,8 +93,17 @@ public sealed class UrHost
         // Built-in file, search, and shell tools.
         BuiltinTools.RegisterAll(registry, _workspace);
 
-        // Skill invocation tool, bound to this session's ID.
-        BuiltinTools.RegisterSkillTool(registry, Skills, sessionId);
+        // Skill invocation tool, bound to this session's ID for variable
+        // substitution (${UR_SESSION_ID}). Registered here at the orchestration
+        // layer where both Tools and Skills are visible, avoiding an upward
+        // dependency from the Tools namespace into Skills.
+        if (registry.Get("skill") is null)
+        {
+            registry.Register(
+                new SkillTool(Skills, sessionId),
+                Permissions.OperationType.ReadInWorkspace,
+                targetExtractor: args => ToolArgHelpers.ExtractStringArg(args, "skill"));
+        }
 
         // Tools from active extensions (Lua-defined).
         Extensions.RegisterActiveToolsInto(registry);
@@ -144,48 +153,15 @@ public sealed class UrHost
         keyring ??= CreatePlatformKeyring();
         userDataDirectory ??= DefaultUserDataDirectory();
 
-        var workspace = new Workspace(workspacePath);
-        workspace.EnsureDirectories();
-
-        // Model catalog — load from disk cache (no network hit at startup).
-        var cacheDir = Path.Combine(userDataDirectory, "cache");
-        var modelCatalog = new ModelCatalog(cacheDir);
-        modelCatalog.LoadCache();
-
-        // Schema registry
-        var schemaRegistry = new SettingsSchemaRegistry();
-        RegisterCoreSchemas(schemaRegistry);
-        var discoveredExtensions = await ExtensionLoader.DiscoverAllAsync(
-                systemExtensionsPath ?? DefaultSystemExtensionsPath(userDataDirectory),
-                userExtensionsPath ?? DefaultUserExtensionsPath(userDataDirectory),
-                workspace.ExtensionsDirectory,
-                ct)
-            .ConfigureAwait(false);
-        var extensionEntries = RegisterExtensionSchemas(schemaRegistry, discoveredExtensions);
-
-        // Load and validate configuration
-        userSettingsPath ??= DefaultUserSettingsPath(userDataDirectory);
-        var loader = new SettingsLoader(schemaRegistry);
-        var settings = loader.Load(userSettingsPath, workspace.SettingsPath);
-
-        var overrideStore = new ExtensionOverrideStore(userDataDirectory, workspace);
-        var extensions = await ExtensionCatalog.CreateAsync(
-                extensionEntries,
-                overrideStore,
-                ct)
-            .ConfigureAwait(false);
-
-        // Skill loading — discover SKILL.md files from user (~/.ur/skills/) and
-        // workspace (.ur/skills/) directories. Skills are a peer subsystem to
-        // extensions: both are loaded at startup, but skills are prompt templates
-        // while extensions are Lua code registering tools.
-        var userSkillsDir = Path.Combine(userDataDirectory, "skills");
-        var loadedSkills = await SkillLoader.LoadAllAsync(
-                userSkillsDir, workspace.SkillsDirectory, ct)
-            .ConfigureAwait(false);
-        var skillRegistry = new SkillRegistry(loadedSkills);
-
-        // Session store
+        var workspace = InitializeWorkspace(workspacePath);
+        var modelCatalog = InitializeModelCatalog(userDataDirectory);
+        var (schemaRegistry, extensionEntries) = await InitializeExtensionsAsync(
+            workspace, userDataDirectory, systemExtensionsPath, userExtensionsPath, ct);
+        var settings = LoadSettings(
+            schemaRegistry, userSettingsPath, workspace, userDataDirectory);
+        var extensions = await ActivateExtensionsAsync(
+            extensionEntries, workspace, userDataDirectory, ct);
+        var skillRegistry = await LoadSkillsAsync(userDataDirectory, workspace, ct);
         var sessions = new SessionStore(workspace.SessionsDirectory);
 
         return new UrHost(
@@ -199,6 +175,100 @@ public sealed class UrHost
             userDataDirectory,
             chatClientFactoryOverride,
             additionalTools);
+    }
+
+    /// <summary>
+    /// Creates and initializes the workspace directory structure.
+    /// </summary>
+    private static Workspace InitializeWorkspace(string workspacePath)
+    {
+        var workspace = new Workspace(workspacePath);
+        workspace.EnsureDirectories();
+        return workspace;
+    }
+
+    /// <summary>
+    /// Loads the model catalog from the disk cache. No network hit at startup —
+    /// the cache is populated lazily when the user first queries available models.
+    /// </summary>
+    private static ModelCatalog InitializeModelCatalog(string userDataDirectory)
+    {
+        var cacheDir = Path.Combine(userDataDirectory, "cache");
+        var modelCatalog = new ModelCatalog(cacheDir);
+        modelCatalog.LoadCache();
+        return modelCatalog;
+    }
+
+    /// <summary>
+    /// Discovers extensions from all three tiers (system, user, workspace) and
+    /// registers their settings schemas. Returns both the schema registry (needed
+    /// for settings loading) and the extension entries (needed for activation).
+    /// </summary>
+    private static async Task<(SettingsSchemaRegistry, List<Extension>)> InitializeExtensionsAsync(
+        Workspace workspace,
+        string userDataDirectory,
+        string? systemExtensionsPath,
+        string? userExtensionsPath,
+        CancellationToken ct)
+    {
+        var schemaRegistry = new SettingsSchemaRegistry();
+        RegisterCoreSchemas(schemaRegistry);
+
+        var discoveredExtensions = await ExtensionLoader.DiscoverAllAsync(
+                systemExtensionsPath ?? DefaultSystemExtensionsPath(userDataDirectory),
+                userExtensionsPath ?? DefaultUserExtensionsPath(userDataDirectory),
+                workspace.ExtensionsDirectory,
+                ct)
+            .ConfigureAwait(false);
+
+        var extensionEntries = RegisterExtensionSchemas(schemaRegistry, discoveredExtensions);
+        return (schemaRegistry, extensionEntries);
+    }
+
+    /// <summary>
+    /// Loads and validates user + workspace settings against the schema registry.
+    /// </summary>
+    private static Settings LoadSettings(
+        SettingsSchemaRegistry schemaRegistry,
+        string? userSettingsPath,
+        Workspace workspace,
+        string userDataDirectory)
+    {
+        userSettingsPath ??= DefaultUserSettingsPath(userDataDirectory);
+        var loader = new SettingsLoader(schemaRegistry);
+        return loader.Load(userSettingsPath, workspace.SettingsPath);
+    }
+
+    /// <summary>
+    /// Activates discovered extensions by running their Lua entry points and
+    /// applying persisted override state (enabled/disabled per extension).
+    /// </summary>
+    private static async Task<ExtensionCatalog> ActivateExtensionsAsync(
+        List<Extension> extensionEntries,
+        Workspace workspace,
+        string userDataDirectory,
+        CancellationToken ct)
+    {
+        var overrideStore = new ExtensionOverrideStore(userDataDirectory, workspace);
+        return await ExtensionCatalog.CreateAsync(extensionEntries, overrideStore, ct)
+            .ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Discovers SKILL.md files from user (~/.ur/skills/) and workspace (.ur/skills/)
+    /// directories. Skills are a peer subsystem to extensions: both are loaded at
+    /// startup, but skills are prompt templates while extensions are Lua code.
+    /// </summary>
+    private static async Task<SkillRegistry> LoadSkillsAsync(
+        string userDataDirectory,
+        Workspace workspace,
+        CancellationToken ct)
+    {
+        var userSkillsDir = Path.Combine(userDataDirectory, "skills");
+        var loadedSkills = await SkillLoader.LoadAllAsync(
+                userSkillsDir, workspace.SkillsDirectory, ct)
+            .ConfigureAwait(false);
+        return new SkillRegistry(loadedSkills);
     }
 
     public IReadOnlyList<SessionInfo> ListSessions() =>

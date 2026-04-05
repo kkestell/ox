@@ -1,4 +1,3 @@
-using System.Text.Json;
 using Ur.AgentLoop;
 using Ur.Permissions;
 
@@ -49,7 +48,7 @@ internal static class BuiltinTools
             registry.Register(
                 new GlobTool(workspace),
                 OperationType.ReadInWorkspace,
-                targetExtractor: args => ExtractStringArg(args, "pattern"));
+                targetExtractor: args => ToolArgHelpers.ExtractStringArg(args, "pattern"));
         }
 
         if (registry.Get("grep") is null)
@@ -57,7 +56,7 @@ internal static class BuiltinTools
             registry.Register(
                 new GrepTool(workspace),
                 OperationType.ReadInWorkspace,
-                targetExtractor: args => ExtractStringArg(args, "pattern"));
+                targetExtractor: args => ToolArgHelpers.ExtractStringArg(args, "pattern"));
         }
 
         // bash requires per-invocation approval — ExecuteCommand is Once-only.
@@ -66,51 +65,14 @@ internal static class BuiltinTools
             registry.Register(
                 new BashTool(workspace),
                 OperationType.ExecuteCommand,
-                targetExtractor: args => ExtractStringArg(args, "command"));
-        }
-    }
-
-    /// <summary>
-    /// Registers the skill tool into a session-scoped registry. Called per-session
-    /// because the skill tool is bound to a specific session ID for variable
-    /// substitution (${UR_SESSION_ID}).
-    /// </summary>
-    public static void RegisterSkillTool(
-        ToolRegistry registry,
-        Skills.SkillRegistry skills,
-        string sessionId)
-    {
-        if (registry.Get("skill") is null)
-        {
-            registry.Register(
-                new SkillTool(skills, sessionId),
-                Permissions.OperationType.ReadInWorkspace,
-                targetExtractor: args => ExtractStringArg(args, "skill"));
+                targetExtractor: args => ToolArgHelpers.ExtractStringArg(args, "command"));
         }
     }
 
     /// <summary>
     /// Pulls the file_path argument out of the tool arguments so the permission
-    /// prompt can show the user which file is being accessed. Handles both
-    /// native strings (from tests) and JsonElement (from real LLM responses).
+    /// prompt can show the user which file is being accessed.
     /// </summary>
     private static string ExtractFilePath(IDictionary<string, object?> args) =>
-        ExtractStringArg(args, "file_path");
-
-    /// <summary>
-    /// Generic extraction of a named string argument for permission target display.
-    /// Handles both native strings (from tests) and JsonElement (from real LLM responses).
-    /// </summary>
-    private static string ExtractStringArg(IDictionary<string, object?> args, string key)
-    {
-        if (!args.TryGetValue(key, out var v) || v is null)
-            return "(unknown)";
-
-        return v switch
-        {
-            string s => s,
-            JsonElement { ValueKind: JsonValueKind.String } je => je.GetString() ?? "(unknown)",
-            _ => v.ToString() ?? "(unknown)"
-        };
-    }
+        ToolArgHelpers.ExtractStringArg(args, "file_path");
 }

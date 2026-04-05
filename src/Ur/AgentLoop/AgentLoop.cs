@@ -252,8 +252,7 @@ public sealed class AgentLoop
             return true;
 
         // Extract a human-readable target from the call's arguments.
-        var rawArgs = call.Arguments as IDictionary<string, object?> ?? new Dictionary<string, object?>();
-        var target = meta?.TargetExtractor?.Invoke(rawArgs) ?? call.Name;
+        var target = meta?.ResolveTarget(call) ?? call.Name;
 
         var extensionId = meta?.ExtensionId ?? call.Name;
         var allowedScopes = PermissionPolicy.AllowedScopes(operationType);

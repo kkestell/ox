@@ -73,6 +73,25 @@ internal static class ToolArgHelpers
     }
 
     /// <summary>
+    /// Extracts a named string argument from raw tool arguments for permission
+    /// target display. Handles both native strings (from tests) and JsonElement
+    /// (from real LLM responses). This is the canonical overload used by
+    /// <see cref="Ur.AgentLoop.PermissionMeta.TargetExtractor"/> lambdas.
+    /// </summary>
+    internal static string ExtractStringArg(IDictionary<string, object?> args, string key)
+    {
+        if (!args.TryGetValue(key, out var v) || v is null)
+            return "(unknown)";
+
+        return v switch
+        {
+            string s => s,
+            JsonElement { ValueKind: JsonValueKind.String } je => je.GetString() ?? "(unknown)",
+            _ => v.ToString() ?? "(unknown)"
+        };
+    }
+
+    /// <summary>
     /// Truncate output to fit within line and byte limits, appending a
     /// [truncated] marker when content is dropped. Used by bash, grep, and
     /// any other tool that returns unbounded process/search output.

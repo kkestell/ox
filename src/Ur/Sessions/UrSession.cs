@@ -108,7 +108,7 @@ public sealed class UrSession
                 // Unknown skill or not user-invocable — emit an error and stop the turn.
                 yield return new AgentLoop.Error
                 {
-                    Message = $"Unknown skill: {ParseSlashCommandName(userInput)}",
+                    Message = $"Unknown skill: {SlashCommandParser.ParseName(userInput)}",
                     IsFatal = false,
                 };
                 yield break;
@@ -172,43 +172,21 @@ public sealed class UrSession
     /// <summary>
     /// Attempts to expand a slash command into a skill invocation. Returns the
     /// expanded content wrapped in tags, or null if the skill is not found or
-    /// not user-invocable.
+    /// not user-invocable. Delegates parsing and formatting to
+    /// <see cref="SlashCommandParser"/> — this method only coordinates the lookup
+    /// and expansion.
     /// </summary>
     private string? TryExpandSlashCommand(string input)
     {
-        var skillName = ParseSlashCommandName(input);
-        var args = ParseSlashCommandArgs(input);
+        var skillName = SlashCommandParser.ParseName(input);
+        var args = SlashCommandParser.ParseArgs(input);
 
         var skill = _host.Skills.Get(skillName);
         if (skill is null || !skill.UserInvocable)
             return null;
 
         var expanded = SkillExpander.Expand(skill, args, _session.Id);
-
-        // Wrap in tags so the model knows this came from a slash command invocation,
-        // matching the reference implementation's format.
-        return $"""
-            <command-name>/{skillName}</command-name>
-            <command-args>{args}</command-args>
-
-            {expanded}
-            """;
-    }
-
-    /// <summary>Extracts the skill name from a slash command (e.g. "/commit -m fix" → "commit").</summary>
-    private static string ParseSlashCommandName(string input)
-    {
-        var withoutSlash = input[1..];
-        var spaceIndex = withoutSlash.IndexOf(' ');
-        return spaceIndex < 0 ? withoutSlash : withoutSlash[..spaceIndex];
-    }
-
-    /// <summary>Extracts the arguments from a slash command (e.g. "/commit -m fix" → "-m fix").</summary>
-    private static string ParseSlashCommandArgs(string input)
-    {
-        var withoutSlash = input[1..];
-        var spaceIndex = withoutSlash.IndexOf(' ');
-        return spaceIndex < 0 ? "" : withoutSlash[(spaceIndex + 1)..];
+        return SlashCommandParser.FormatExpansion(skillName, args, expanded);
     }
 
     /// <summary>

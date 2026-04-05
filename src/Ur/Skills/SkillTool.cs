@@ -1,8 +1,8 @@
 using System.Text.Json;
 using Microsoft.Extensions.AI;
-using Ur.Skills;
+using Ur.Tools;
 
-namespace Ur.Tools;
+namespace Ur.Skills;
 
 /// <summary>
 /// Built-in tool that the model calls to invoke a skill. This is the bridge

@@ -1,6 +1,5 @@
 using Microsoft.Extensions.AI;
 using Ur.Skills;
-using Ur.Tools;
 
 namespace Ur.Tests.Skills;
 

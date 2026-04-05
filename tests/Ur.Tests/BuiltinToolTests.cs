@@ -734,7 +734,7 @@ public sealed class BuiltinToolTests
     // ─── Registration (updated) ────────────────────────────────────────
 
     [Fact]
-    public void RegisterAll_AddsAllSixToolsToRegistry()
+    public void RegisterAll_AddsAllBuiltinTools()
     {
         using var env = new ToolTestEnvironment();
         var registry = new ToolRegistry();

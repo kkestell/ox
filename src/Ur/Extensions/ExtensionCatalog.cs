@@ -164,12 +164,12 @@ public sealed class ExtensionCatalog
         if (extension.Tier is ExtensionTier.Workspace)
         {
             await _overrideStore.WriteWorkspaceAsync(updatedOverrides, ct).ConfigureAwait(false);
-            ReplaceOverrides(_workspaceOverrides, updatedOverrides);
+            CopyOverrides(_workspaceOverrides, updatedOverrides);
             return;
         }
 
         await _overrideStore.WriteGlobalAsync(updatedOverrides, ct).ConfigureAwait(false);
-        ReplaceOverrides(_globalOverrides, updatedOverrides);
+        CopyOverrides(_globalOverrides, updatedOverrides);
     }
 
     private Extension GetRequiredExtension(string extensionId)
@@ -185,7 +185,12 @@ public sealed class ExtensionCatalog
         return extension;
     }
 
-    private static void ReplaceOverrides(
+    /// <summary>
+    /// Copies all entries from <paramref name="source"/> into <paramref name="destination"/>,
+    /// clearing any existing entries first. Mutates in-place rather than swapping the
+    /// reference so that the field stays pointing at the same dictionary instance.
+    /// </summary>
+    private static void CopyOverrides(
         Dictionary<ExtensionId, bool> destination,
         Dictionary<ExtensionId, bool> source)
     {
