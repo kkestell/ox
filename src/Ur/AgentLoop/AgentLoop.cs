@@ -37,9 +37,8 @@ public sealed class AgentLoop(IChatClient client, ToolRegistry tools)
 
         while (true)
         {
-            // Send messages to LLM and stream the response. We prepend the
-            // system prompt (if any) to a transient view of the messages — it's
-            // never added to the persistent `messages` list so it won't be saved to disk.
+            // We prepend the system prompt (if any) to a transient view of the messages —
+            // it's never added to the persistent `messages` list so it won't be saved to disk.
             var llmMessages = BuildLlmMessages(systemPrompt, messages);
 
             List<FunctionCallContent> toolCalls = [];
@@ -75,7 +74,6 @@ public sealed class AgentLoop(IChatClient client, ToolRegistry tools)
                 yield break;
             }
 
-            // Build the assistant message from what we accumulated.
             if (text is not null)
                 assistantMessage.Contents.Add(new TextContent(text));
 
@@ -84,14 +82,12 @@ public sealed class AgentLoop(IChatClient client, ToolRegistry tools)
 
             messages.Add(assistantMessage);
 
-            // If no tool calls, the turn is done.
             if (toolCalls.Count == 0)
             {
                 yield return new TurnCompleted();
                 yield break;
             }
 
-            // Execute tool calls and collect results.
             ChatMessage toolResultMessage = new(ChatRole.Tool, []);
 
             foreach (var call in toolCalls)
@@ -151,8 +147,6 @@ public sealed class AgentLoop(IChatClient client, ToolRegistry tools)
             }
 
             messages.Add(toolResultMessage);
-
-            // Loop back to send tool results to the LLM.
         }
     }
 

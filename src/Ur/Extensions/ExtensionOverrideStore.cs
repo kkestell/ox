@@ -74,9 +74,6 @@ internal sealed class ExtensionOverrideStore
         string scopeName,
         CancellationToken ct)
     {
-        if (!File.Exists(path))
-            return [];
-
         try
         {
             await using var stream = File.OpenRead(path);

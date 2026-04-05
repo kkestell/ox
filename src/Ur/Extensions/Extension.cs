@@ -35,12 +35,24 @@ public sealed class Extension
 
     internal ExtensionId ExtensionId => _descriptor.Id;
 
-    internal LuaState? LuaState { get; set; }
+    internal LuaState? LuaState { get; private set; }
 
     internal void SetDesiredState(bool desiredEnabled, bool hasOverride)
     {
         DesiredEnabled = desiredEnabled;
         HasOverride = hasOverride;
+    }
+
+    /// <summary>
+    /// Atomically assigns the Lua runtime and marks the extension active.
+    /// Keeps the object consistent — there is no window where LuaState is
+    /// set but IsActive is false.
+    /// </summary>
+    internal void Activate(LuaState state)
+    {
+        LuaState = state;
+        IsActive = true;
+        LoadError = null;
     }
 
     internal void MarkActivated()

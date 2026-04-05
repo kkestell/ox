@@ -93,10 +93,11 @@ public sealed class UrHost
         // substitution (${UR_SESSION_ID}). Registered here at the orchestration
         // layer where both Tools and Skills are visible, avoiding an upward
         // dependency from the Tools namespace into Skills.
-        if (registry.Get("skill") is null)
+        var skillTool = new SkillTool(Skills, sessionId);
+        if (registry.Get(skillTool.Name) is null)
         {
             registry.Register(
-                new SkillTool(Skills, sessionId),
+                skillTool,
                 OperationType.ReadInWorkspace,
                 targetExtractor: args => ToolArgHelpers.ExtractStringArg(args, "skill"));
         }
@@ -314,7 +315,7 @@ public sealed class UrHost
     {
         var stringSchema = System.Text.Json.JsonDocument.Parse("""{"type":"string"}""").RootElement.Clone();
 
-        registry.Register("ur.model", stringSchema);
+        registry.Register(UrConfiguration.ModelSettingKey, stringSchema);
     }
 
     private static List<Extension> RegisterExtensionSchemas(

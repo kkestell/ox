@@ -48,10 +48,15 @@ internal sealed class UpdateFileTool(Workspace workspace) : AIFunction
         if (!workspace.Contains(fullPath))
             throw new InvalidOperationException($"Path is outside the workspace: {filePath}");
 
-        if (!File.Exists(fullPath))
+        string content;
+        try
+        {
+            content = File.ReadAllText(fullPath);
+        }
+        catch (FileNotFoundException)
+        {
             throw new InvalidOperationException($"File not found: {filePath}");
-
-        var content = File.ReadAllText(fullPath);
+        }
 
         // Count occurrences to enforce the uniqueness constraint.
         var count = CountOccurrences(content, oldString);

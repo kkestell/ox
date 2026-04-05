@@ -63,7 +63,8 @@ internal sealed class SessionStore(string sessionsDirectory)
         if (!File.Exists(filePath))
             return null;
 
-        var created = new DateTimeOffset(File.GetCreationTimeUtc(filePath), TimeSpan.Zero);
+        var created = ParseSessionTimestamp(id)
+            ?? new DateTimeOffset(File.GetCreationTimeUtc(filePath), TimeSpan.Zero);
         return new Session(id, filePath, created);
     }
 

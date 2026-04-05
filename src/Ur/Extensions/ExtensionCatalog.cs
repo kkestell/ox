@@ -86,29 +86,8 @@ public sealed class ExtensionCatalog
         CancellationToken ct = default)
     {
         var extension = GetRequiredExtension(extensionId);
-
-        await _gate.WaitAsync(ct).ConfigureAwait(false);
-        try
-        {
-            await PersistDesiredStateAsync(extension, enabled, ct).ConfigureAwait(false);
-            extension.SetDesiredState(enabled, enabled != extension.DefaultEnabled);
-
-            if (enabled)
-            {
-                await ExtensionLoader.ActivateAsync(extension, ct)
-                    .ConfigureAwait(false);
-            }
-            else
-            {
-                ExtensionLoader.Deactivate(extension);
-            }
-
-            return ToInfo(extension);
-        }
-        finally
-        {
-            _gate.Release();
-        }
+        return await ApplyDesiredStateAsync(extension, enabled, enabled != extension.DefaultEnabled, ct)
+            .ConfigureAwait(false);
     }
 
     /// <summary>
@@ -119,23 +98,26 @@ public sealed class ExtensionCatalog
         CancellationToken ct = default)
     {
         var extension = GetRequiredExtension(extensionId);
-        var defaultEnabled = extension.DefaultEnabled;
+        return await ApplyDesiredStateAsync(extension, extension.DefaultEnabled, hasOverride: false, ct)
+            .ConfigureAwait(false);
+    }
 
+    private async Task<ExtensionInfo> ApplyDesiredStateAsync(
+        Extension extension,
+        bool desired,
+        bool hasOverride,
+        CancellationToken ct)
+    {
         await _gate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            await PersistDesiredStateAsync(extension, defaultEnabled, ct).ConfigureAwait(false);
-            extension.SetDesiredState(defaultEnabled, hasOverride: false);
+            await PersistDesiredStateAsync(extension, desired, ct).ConfigureAwait(false);
+            extension.SetDesiredState(desired, hasOverride);
 
-            if (defaultEnabled)
-            {
-                await ExtensionLoader.ActivateAsync(extension, ct)
-                    .ConfigureAwait(false);
-            }
+            if (desired)
+                await ExtensionLoader.ActivateAsync(extension, ct).ConfigureAwait(false);
             else
-            {
                 ExtensionLoader.Deactivate(extension);
-            }
 
             return ToInfo(extension);
         }

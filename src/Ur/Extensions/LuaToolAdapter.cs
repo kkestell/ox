@@ -24,12 +24,10 @@ internal sealed class LuaToolAdapter(
         AIFunctionArguments arguments,
         CancellationToken cancellationToken)
     {
-        // Marshal arguments into a Lua table.
         var argsTable = new LuaTable();
         foreach (var (key, value) in arguments)
             argsTable[key] = MarshalToLua(value);
 
-        // Call the Lua handler with the arguments table.
         var results = await state.CallAsync(
             handler,
             new LuaValue[] { argsTable },

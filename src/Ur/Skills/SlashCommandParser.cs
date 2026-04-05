@@ -12,23 +12,22 @@ internal static class SlashCommandParser
     /// Extracts the skill name from a slash command input.
     /// For example, "/commit -m fix" → "commit".
     /// </summary>
-    internal static string ParseName(string input)
-    {
-        var withoutSlash = input[1..];
-        var spaceIndex = withoutSlash.IndexOf(' ');
-        return spaceIndex < 0 ? withoutSlash : withoutSlash[..spaceIndex];
-    }
+    internal static string ParseName(string input) => ParseParts(input).Name;
 
     /// <summary>
     /// Extracts the arguments portion from a slash command input.
     /// For example, "/commit -m fix" → "-m fix". Returns empty string
     /// if no arguments are present.
     /// </summary>
-    internal static string ParseArgs(string input)
+    internal static string ParseArgs(string input) => ParseParts(input).Args;
+
+    private static (string Name, string Args) ParseParts(string input)
     {
         var withoutSlash = input[1..];
         var spaceIndex = withoutSlash.IndexOf(' ');
-        return spaceIndex < 0 ? "" : withoutSlash[(spaceIndex + 1)..];
+        return spaceIndex < 0
+            ? (withoutSlash, "")
+            : (withoutSlash[..spaceIndex], withoutSlash[(spaceIndex + 1)..]);
     }
 
     /// <summary>

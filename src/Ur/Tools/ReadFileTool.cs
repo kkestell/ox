@@ -48,9 +48,6 @@ internal sealed class ReadFileTool(Workspace workspace) : AIFunction
         if (!workspace.Contains(fullPath))
             throw new InvalidOperationException($"Path is outside the workspace: {filePath}");
 
-        if (!File.Exists(fullPath))
-            throw new InvalidOperationException($"File not found: {filePath}");
-
         var start = ToolArgHelpers.GetOptionalInt(arguments, "offset") ?? 0;
         var limit = ToolArgHelpers.GetOptionalInt(arguments, "limit") ?? DefaultLimit;
 
@@ -60,11 +57,18 @@ internal sealed class ReadFileTool(Workspace workspace) : AIFunction
         var selected = new List<string>();
         var totalLines = 0;
 
-        foreach (var line in File.ReadLines(fullPath))
+        try
         {
-            if (totalLines >= start && selected.Count < limit)
-                selected.Add(line);
-            totalLines++;
+            foreach (var line in File.ReadLines(fullPath))
+            {
+                if (totalLines >= start && selected.Count < limit)
+                    selected.Add(line);
+                totalLines++;
+            }
+        }
+        catch (FileNotFoundException)
+        {
+            throw new InvalidOperationException($"File not found: {filePath}");
         }
 
         var result = string.Join('\n', selected);

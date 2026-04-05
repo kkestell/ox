@@ -17,56 +17,32 @@ internal static class BuiltinTools
         // before host startup without having them overwritten.
 
         // read_file is auto-allowed (ReadInWorkspace doesn't prompt).
-        if (registry.Get("read_file") is null)
-        {
-            registry.Register(
-                new ReadFileTool(workspace),
-                OperationType.ReadInWorkspace,
-                targetExtractor: ExtractFilePath);
-        }
+        var readFileTool = new ReadFileTool(workspace);
+        if (registry.Get(readFileTool.Name) is null)
+            registry.Register(readFileTool, OperationType.ReadInWorkspace, targetExtractor: ExtractFilePath);
 
         // write_file and update_file both require write permission.
-        if (registry.Get("write_file") is null)
-        {
-            registry.Register(
-                new WriteFileTool(workspace),
-                OperationType.WriteInWorkspace,
-                targetExtractor: ExtractFilePath);
-        }
+        var writeFileTool = new WriteFileTool(workspace);
+        if (registry.Get(writeFileTool.Name) is null)
+            registry.Register(writeFileTool, OperationType.WriteInWorkspace, targetExtractor: ExtractFilePath);
 
-        if (registry.Get("update_file") is null)
-        {
-            registry.Register(
-                new UpdateFileTool(workspace),
-                OperationType.WriteInWorkspace,
-                targetExtractor: ExtractFilePath);
-        }
+        var updateFileTool = new UpdateFileTool(workspace);
+        if (registry.Get(updateFileTool.Name) is null)
+            registry.Register(updateFileTool, OperationType.WriteInWorkspace, targetExtractor: ExtractFilePath);
 
         // glob and grep are read operations — auto-allowed like read_file.
-        if (registry.Get("glob") is null)
-        {
-            registry.Register(
-                new GlobTool(workspace),
-                OperationType.ReadInWorkspace,
-                targetExtractor: args => ToolArgHelpers.ExtractStringArg(args, "pattern"));
-        }
+        var globTool = new GlobTool(workspace);
+        if (registry.Get(globTool.Name) is null)
+            registry.Register(globTool, OperationType.ReadInWorkspace, targetExtractor: args => ToolArgHelpers.ExtractStringArg(args, "pattern"));
 
-        if (registry.Get("grep") is null)
-        {
-            registry.Register(
-                new GrepTool(workspace),
-                OperationType.ReadInWorkspace,
-                targetExtractor: args => ToolArgHelpers.ExtractStringArg(args, "pattern"));
-        }
+        var grepTool = new GrepTool(workspace);
+        if (registry.Get(grepTool.Name) is null)
+            registry.Register(grepTool, OperationType.ReadInWorkspace, targetExtractor: args => ToolArgHelpers.ExtractStringArg(args, "pattern"));
 
         // bash requires per-invocation approval — ExecuteCommand is Once-only.
-        if (registry.Get("bash") is null)
-        {
-            registry.Register(
-                new BashTool(workspace),
-                OperationType.ExecuteCommand,
-                targetExtractor: args => ToolArgHelpers.ExtractStringArg(args, "command"));
-        }
+        var bashTool = new BashTool(workspace);
+        if (registry.Get(bashTool.Name) is null)
+            registry.Register(bashTool, OperationType.ExecuteCommand, targetExtractor: args => ToolArgHelpers.ExtractStringArg(args, "command"));
     }
 
     /// <summary>

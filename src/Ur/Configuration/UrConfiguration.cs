@@ -22,7 +22,7 @@ namespace Ur.Configuration;
 public sealed class UrConfiguration
 {
     // Settings keys are dot-namespaced to avoid collisions between core and extensions.
-    private const string ModelSettingKey = "ur.model";
+    internal const string ModelSettingKey = "ur.model";
 
     // Keyring service/account identifiers. The OS keyring (macOS Keychain /
     // Linux libsecret) stores the OpenRouter API key under this service+account

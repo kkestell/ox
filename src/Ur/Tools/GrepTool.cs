@@ -47,6 +47,7 @@ internal sealed class GrepTool(Workspace workspace) : AIFunction
 
     // Lazily detect whether ripgrep is available. null = not yet checked.
     private static bool? _ripgrepAvailable;
+    private static readonly Lock RipgrepDetectionLock = new();
 
     public override string Name => "grep";
     public override string Description => "Search file contents by regex pattern. Uses ripgrep if available, otherwise falls back to .NET regex.";
@@ -230,24 +231,30 @@ internal sealed class GrepTool(Workspace workspace) : AIFunction
         if (_ripgrepAvailable.HasValue)
             return _ripgrepAvailable.Value;
 
-        try
+        lock (RipgrepDetectionLock)
         {
-            var psi = new ProcessStartInfo
+            if (_ripgrepAvailable.HasValue)
+                return _ripgrepAvailable.Value;
+
+            try
             {
-                FileName = "rg",
-                Arguments = "--version",
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true
-            };
-            using var process = Process.Start(psi);
-            process?.WaitForExit(3000);
-            _ripgrepAvailable = process?.ExitCode == 0;
-        }
-        catch
-        {
-            _ripgrepAvailable = false;
+                var psi = new ProcessStartInfo
+                {
+                    FileName = "rg",
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                };
+                psi.ArgumentList.Add("--version");
+                using var process = Process.Start(psi);
+                process?.WaitForExit(3000);
+                _ripgrepAvailable = process?.ExitCode == 0;
+            }
+            catch
+            {
+                _ripgrepAvailable = false;
+            }
         }
 
         return _ripgrepAvailable.Value;

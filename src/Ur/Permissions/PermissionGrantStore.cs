@@ -53,7 +53,6 @@ internal sealed class PermissionGrantStore
     /// </summary>
     public bool IsCovered(PermissionRequest request)
     {
-        // Ensure persisted grants have been loaded before checking.
         EnsureWorkspaceGrantsLoaded();
         EnsureAlwaysGrantsLoaded();
 
@@ -121,24 +120,28 @@ internal sealed class PermissionGrantStore
     {
         var grants = new List<PermissionGrant>();
 
-        if (!File.Exists(path))
-            return grants;
-
-        foreach (var line in File.ReadLines(path))
+        try
         {
-            if (string.IsNullOrWhiteSpace(line))
-                continue;
+            foreach (var line in File.ReadLines(path))
+            {
+                if (string.IsNullOrWhiteSpace(line))
+                    continue;
 
-            try
-            {
-                var grant = JsonSerializer.Deserialize(line, JsonContext.PermissionGrant);
-                if (grant is not null)
-                    grants.Add(grant);
+                try
+                {
+                    var grant = JsonSerializer.Deserialize(line, JsonContext.PermissionGrant);
+                    if (grant is not null)
+                        grants.Add(grant);
+                }
+                catch (JsonException)
+                {
+                    // Skip malformed lines — don't crash the host because of a bad grant file.
+                }
             }
-            catch (JsonException)
-            {
-                // Skip malformed lines — don't crash the host because of a bad grant file.
-            }
+        }
+        catch (IOException)
+        {
+            // File doesn't exist yet or can't be read — return empty grants.
         }
 
         return grants;

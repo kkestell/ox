@@ -52,13 +52,12 @@ internal static partial class ExtensionLoader
         try
         {
             var state = CreateSandboxedState();
-            extension.LuaState = state;
             InjectToolApi(state, extension);
 
             var script = await File.ReadAllTextAsync(mainPath, ct).ConfigureAwait(false);
             await state.DoStringAsync(script, mainPath, ct).ConfigureAwait(false);
 
-            extension.MarkActivated();
+            extension.Activate(state);
         }
         catch (Exception ex) when (
             ex is LuaRuntimeException or LuaParseException or LuaCompileException or InvalidOperationException)
