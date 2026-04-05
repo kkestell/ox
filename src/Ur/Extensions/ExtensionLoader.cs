@@ -169,8 +169,12 @@ internal static partial class ExtensionLoader
                 : throw new InvalidOperationException(
                     $"ur.tool.register: tool '{name}' missing 'handler' function.");
 
+            // Coerce schema array fields after conversion — Lua's empty tables
+            // are ambiguous (no array vs object distinction), so "required = {}"
+            // would serialize as a JSON object and crash the OpenAI SDK which
+            // expects an array.
             var schema = def["parameters"].TryRead<LuaTable>(out var paramsTable)
-                ? LuaJsonHelpers.ToJsonElement(paramsTable)
+                ? LuaJsonHelpers.CoerceSchemaArrayFields(LuaJsonHelpers.ToJsonElement(paramsTable))
                 : EmptyObjectSchema();
 
             var adapter = new LuaToolAdapter(name, description, schema, state, handler);

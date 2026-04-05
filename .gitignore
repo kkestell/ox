@@ -16,6 +16,7 @@ TestResults/
 *.rsuser
 *.suo
 *.userprefs
+coverage-results/
 
 # NuGet
 packages/

@@ -1,0 +1,22 @@
+[project]
+name = "boo"
+version = "0.1.0"
+description = "Terminal automation library backed by a native shared library"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+boo = "boo.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+artifacts = ["boo/*.so", "boo/*.dylib", "boo/*.dll"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[dependency-groups]
+dev = ["pytest"]

@@ -74,6 +74,12 @@ internal static class LuaJsonHelpers
     /// <summary>
     /// Writes a Lua table as either a JSON array (sequential integer keys from 1)
     /// or a JSON object (string-keyed hash entries).
+    ///
+    /// Empty tables are ambiguous in Lua — <c>{}</c> has both ArrayLength and
+    /// HashMapCount equal to zero. We default to an empty JSON object, which is
+    /// correct for most schema positions (e.g. <c>properties</c>). Callers that
+    /// need array semantics for specific fields (e.g. <c>required</c>) should
+    /// post-process via <see cref="CoerceSchemaArrayFields"/>.
     /// </summary>
     private static void WriteTable(Utf8JsonWriter writer, LuaTable table)
     {
@@ -96,5 +102,55 @@ internal static class LuaJsonHelpers
             }
             writer.WriteEndObject();
         }
+    }
+
+    /// <summary>
+    /// Fixes up JSON Schema fields that must be arrays but may have been
+    /// serialized as empty objects due to the Lua empty-table ambiguity.
+    /// Specifically, <c>required</c> must be a JSON array per JSON Schema spec,
+    /// but an empty Lua table <c>{}</c> produces <c>{}</c> (object) since Lua
+    /// has no way to distinguish empty arrays from empty objects.
+    /// </summary>
+    internal static JsonElement CoerceSchemaArrayFields(JsonElement schema)
+    {
+        if (schema.ValueKind != JsonValueKind.Object)
+            return schema;
+
+        using var stream = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(stream))
+        {
+            WriteCoercedObject(writer, schema);
+        }
+
+        return JsonDocument.Parse(stream.ToArray()).RootElement.Clone();
+    }
+
+    private static void WriteCoercedObject(Utf8JsonWriter writer, JsonElement obj)
+    {
+        writer.WriteStartObject();
+        foreach (var prop in obj.EnumerateObject())
+        {
+            writer.WritePropertyName(prop.Name);
+
+            // "required" must be a JSON array per JSON Schema. Lua's empty
+            // table {} serializes as an empty object, which crashes the OpenAI
+            // SDK deserializer. Coerce it to an empty array at this position.
+            switch (prop)
+            {
+                case { Name: "required", Value.ValueKind: JsonValueKind.Object }:
+                    writer.WriteStartArray();
+                    writer.WriteEndArray();
+                    break;
+                case { Value.ValueKind: JsonValueKind.Object }:
+                    // Recurse into nested objects (e.g. properties contain
+                    // their own "required" fields in nested schemas).
+                    WriteCoercedObject(writer, prop.Value);
+                    break;
+                default:
+                    prop.Value.WriteTo(writer);
+                    break;
+            }
+        }
+        writer.WriteEndObject();
     }
 }
