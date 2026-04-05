@@ -38,7 +38,13 @@ internal sealed class PermissionGrantStore
     private List<PermissionGrant>? _alwaysGrants;
 
     // Source-gen context with AoT-safe generic enum converters for human-readable
-    // JSONL output (e.g. "writeInWorkspace" instead of 2).
+    // JSONL output (e.g. "write" instead of 1).
+    //
+    // NOTE: The enum values changed in the OperationType simplification (Read/Write/Execute
+    // replaced ReadInWorkspace/WriteInWorkspace/etc.). Grants persisted before that change
+    // will fail to deserialize and be silently skipped — users will be re-prompted.
+    // This is intentional: the project is early-stage and backward compat for grant files
+    // is not yet a constraint.
     private static readonly PermissionGrantJsonContext JsonContext = new(new JsonSerializerOptions
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,

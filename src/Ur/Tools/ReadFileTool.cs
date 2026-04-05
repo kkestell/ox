@@ -45,9 +45,6 @@ internal sealed class ReadFileTool(Workspace workspace) : AIFunction
         var filePath = ToolArgHelpers.GetRequiredString(arguments, "file_path");
         var fullPath = ToolArgHelpers.ResolvePath(workspace.RootPath, filePath);
 
-        if (!workspace.Contains(fullPath))
-            throw new InvalidOperationException($"Path is outside the workspace: {filePath}");
-
         var start = ToolArgHelpers.GetOptionalInt(arguments, "offset") ?? 0;
         var limit = ToolArgHelpers.GetOptionalInt(arguments, "limit") ?? DefaultLimit;
 

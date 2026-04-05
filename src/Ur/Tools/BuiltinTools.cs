@@ -21,10 +21,10 @@ internal static class BuiltinTools
         // Skip tools that are already registered — this lets tests inject fakes
         // before host startup without having them overwritten.
 
-        // read_file is auto-allowed (ReadInWorkspace doesn't prompt).
+        // read_file is auto-allowed (Read in workspace doesn't prompt).
         var readFileTool = new ReadFileTool(workspace);
         if (registry.Get(readFileTool.Name) is null)
-            registry.Register(readFileTool, OperationType.ReadInWorkspace, targetExtractor: FilePathExtractor);
+            registry.Register(readFileTool, OperationType.Read, targetExtractor: FilePathExtractor);
 
         // write_file and update_file both require write permission.
         var writeFileTool = new WriteFileTool(workspace);
@@ -38,15 +38,15 @@ internal static class BuiltinTools
         // glob and grep are read operations — auto-allowed like read_file.
         var globTool = new GlobTool(workspace);
         if (registry.Get(globTool.Name) is null)
-            registry.Register(globTool, OperationType.ReadInWorkspace, targetExtractor: PatternExtractor);
+            registry.Register(globTool, OperationType.Read, targetExtractor: PatternExtractor);
 
         var grepTool = new GrepTool(workspace);
         if (registry.Get(grepTool.Name) is null)
-            registry.Register(grepTool, OperationType.ReadInWorkspace, targetExtractor: PatternExtractor);
+            registry.Register(grepTool, OperationType.Read, targetExtractor: PatternExtractor);
 
-        // bash requires per-invocation approval — ExecuteCommand is Once-only.
+        // bash requires per-invocation approval — Execute is Once-only.
         var bashTool = new BashTool(workspace);
         if (registry.Get(bashTool.Name) is null)
-            registry.Register(bashTool, OperationType.ExecuteCommand, targetExtractor: CommandExtractor);
+            registry.Register(bashTool, OperationType.Execute, targetExtractor: CommandExtractor);
     }
 }

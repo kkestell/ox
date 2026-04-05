@@ -26,7 +26,7 @@ public sealed class PermissionMetaTests
     public void ResolveTarget_WithExtractor_ReturnsExtractedValue()
     {
         var meta = new PermissionMeta(
-            OperationType.WriteInWorkspace,
+            OperationType.Write,
             ExtensionId: null,
             TargetExtractor: TargetExtractors.FromKey("file_path"));
 
@@ -41,7 +41,7 @@ public sealed class PermissionMetaTests
     public void ResolveTarget_NullExtractor_FallsBackToCallName()
     {
         var meta = new PermissionMeta(
-            OperationType.WriteInWorkspace,
+            OperationType.Write,
             ExtensionId: null,
             TargetExtractor: null);
 
@@ -57,7 +57,7 @@ public sealed class PermissionMetaTests
     {
         var extractorCalled = false;
         var meta = new PermissionMeta(
-            OperationType.WriteInWorkspace,
+            OperationType.Write,
             ExtensionId: null,
             TargetExtractor: new LambdaExtractor(args =>
             {
@@ -81,7 +81,7 @@ public sealed class PermissionMetaTests
         // TargetExtractors.FromKey falls back to "(unknown)" when the key is absent
         // from the arguments dictionary — verifies the default fallback path.
         var meta = new PermissionMeta(
-            OperationType.WriteInWorkspace,
+            OperationType.Write,
             ExtensionId: null,
             TargetExtractor: TargetExtractors.FromKey("file_path"));
 
@@ -96,7 +96,7 @@ public sealed class PermissionMetaTests
     public void ResolveTarget_MissingKey_UsesCustomFallback()
     {
         var meta = new PermissionMeta(
-            OperationType.WriteInWorkspace,
+            OperationType.Write,
             ExtensionId: null,
             TargetExtractor: TargetExtractors.FromKey("file_path", fallback: "unnamed file"));
 
@@ -114,7 +114,7 @@ public sealed class PermissionMetaTests
         // Verifies that KeyExtractor correctly handles JsonElement values
         // by delegating to ToolArgHelpers coercion logic.
         var meta = new PermissionMeta(
-            OperationType.WriteInWorkspace,
+            OperationType.Write,
             ExtensionId: null,
             TargetExtractor: TargetExtractors.FromKey("file_path"));
 

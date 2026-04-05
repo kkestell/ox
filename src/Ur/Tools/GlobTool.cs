@@ -45,9 +45,6 @@ internal sealed class GlobTool(Workspace workspace) : AIFunction
 
         var searchRoot = ToolArgHelpers.ResolvePath(workspace.RootPath, subPath);
 
-        if (!workspace.Contains(searchRoot))
-            throw new InvalidOperationException($"Path is outside the workspace: {subPath}");
-
         if (!Directory.Exists(searchRoot))
             return new ValueTask<object?>("");
 

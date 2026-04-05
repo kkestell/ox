@@ -45,9 +45,6 @@ internal sealed class UpdateFileTool(Workspace workspace) : AIFunction
         var newString = ToolArgHelpers.GetRequiredString(arguments, "new_string");
         var fullPath = ToolArgHelpers.ResolvePath(workspace.RootPath, filePath);
 
-        if (!workspace.Contains(fullPath))
-            throw new InvalidOperationException($"Path is outside the workspace: {filePath}");
-
         string content;
         try
         {

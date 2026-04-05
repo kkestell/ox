@@ -156,7 +156,7 @@ public sealed class UrSession
         // appends to _messages as it runs, and we flush after each iteration
         // so that tool call results survive a crash.
         var persistedCount = _messages.Count;
-        var agentLoop = new AgentLoop.AgentLoop(_host.CreateChatClient(_activeModelId!), tools);
+        var agentLoop = new AgentLoop.AgentLoop(_host.CreateChatClient(_activeModelId!), tools, _host.Workspace);
 
         await foreach (var loopEvent in agentLoop.RunTurnAsync(_messages, wrappedCallbacks, systemPrompt, ct))
         {

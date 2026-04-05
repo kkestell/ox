@@ -17,7 +17,6 @@ namespace Ur;
 /// </summary>
 public sealed class UrHost
 {
-    private readonly Workspace _workspace;
     private readonly SessionStore _sessions;
     private readonly Func<string, IChatClient>? _chatClientFactoryOverride;
 
@@ -26,9 +25,15 @@ public sealed class UrHost
     // production code path. Last-write-wins in ToolRegistry means these override builtins.
     private readonly ToolRegistry? _additionalTools;
 
-    public string WorkspacePath => _workspace.RootPath;
+    public string WorkspacePath => Workspace.RootPath;
     public UrConfiguration Configuration { get; }
     public ExtensionCatalog Extensions { get; }
+
+    /// <summary>
+    /// Exposed internally so UrSession can pass the workspace to the AgentLoop,
+    /// which uses it to enforce workspace-boundary permission policy at invocation time.
+    /// </summary>
+    internal Workspace Workspace { get; }
 
     /// <summary>
     /// The loaded skill registry. Exposed internally so UrSession can access it
@@ -50,7 +55,7 @@ public sealed class UrHost
         Func<string, IChatClient>? chatClientFactoryOverride = null,
         ToolRegistry? additionalTools = null)
     {
-        _workspace = workspace;
+        Workspace = workspace;
         _sessions = sessions;
         Extensions = extensions;
         Skills = skills;
@@ -86,7 +91,7 @@ public sealed class UrHost
         var registry = new ToolRegistry();
 
         // Built-in file, search, and shell tools.
-        BuiltinTools.RegisterAll(registry, _workspace);
+        BuiltinTools.RegisterAll(registry, Workspace);
 
         // Skill invocation tool, bound to this session's ID for variable
         // substitution (${UR_SESSION_ID}). Registered here at the orchestration
@@ -97,7 +102,7 @@ public sealed class UrHost
         {
             registry.Register(
                 skillTool,
-                OperationType.ReadInWorkspace,
+                OperationType.Read,
                 targetExtractor: TargetExtractors.FromKey("skill"));
         }
 
@@ -279,7 +284,7 @@ public sealed class UrHost
     /// </summary>
     public UrSession CreateSession(TurnCallbacks? callbacks = null) =>
         new(this, _sessions.Create(), [], isPersisted: false, activeModelId: null,
-            callbacks, _workspace.PermissionsPath, DefaultUserPermissionsPath());
+            callbacks, Workspace.PermissionsPath, DefaultUserPermissionsPath());
 
     /// <summary>
     /// Opens an existing session by ID. See <see cref="CreateSession"/> for callback semantics.
@@ -295,7 +300,7 @@ public sealed class UrHost
 
         var messages = (await SessionStore.ReadAllAsync(session, ct)).ToList();
         return new UrSession(this, session, messages, isPersisted: true, activeModelId: null,
-            callbacks, _workspace.PermissionsPath, DefaultUserPermissionsPath());
+            callbacks, Workspace.PermissionsPath, DefaultUserPermissionsPath());
     }
 
     internal Task AppendMessageAsync(Session session, ChatMessage message, CancellationToken ct = default) =>

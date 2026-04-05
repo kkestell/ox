@@ -39,9 +39,6 @@ internal sealed class WriteFileTool(Workspace workspace) : AIFunction
         var content = ToolArgHelpers.GetRequiredString(arguments, "content");
         var fullPath = ToolArgHelpers.ResolvePath(workspace.RootPath, filePath);
 
-        if (!workspace.Contains(fullPath))
-            throw new InvalidOperationException($"Path is outside the workspace: {filePath}");
-
         // Ensure the parent directory exists so the LLM can write to new subdirectories.
         var directory = Path.GetDirectoryName(fullPath);
         if (directory is not null)

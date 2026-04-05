@@ -112,23 +112,13 @@ internal static class SkillFrontmatter
     /// splitting, trimming, colon detection, and unquoting so callers iterate
     /// clean pairs without touching string mechanics.
     /// </summary>
-    private static IEnumerable<(string Key, string Value)> ParseKeyValues(string yaml)
-    {
-        foreach (var rawLine in yaml.Split('\n'))
-        {
-            var line = rawLine.TrimEnd('\r').Trim();
-            if (line.Length == 0)
-                continue;
-
-            var colonIndex = line.IndexOf(':');
-            if (colonIndex < 0)
-                continue;
-
-            var key = line[..colonIndex].Trim();
-            var value = UnquoteYaml(line[(colonIndex + 1)..].Trim());
-            yield return (key, value);
-        }
-    }
+    private static IEnumerable<(string Key, string Value)> ParseKeyValues(string yaml) =>
+        yaml.Split('\n')
+            .Select(rawLine => rawLine.TrimEnd('\r').Trim())
+            .Where(line => line.Length > 0)
+            .Select(line => (Index: line.IndexOf(':'), Line: line))
+            .Where(t => t.Index >= 0)
+            .Select(t => (t.Line[..t.Index].Trim(), UnquoteYaml(t.Line[(t.Index + 1)..].Trim())));
 
     /// <summary>
     /// Strips surrounding double-quotes from a YAML value, if present.

@@ -31,21 +31,21 @@ internal static class SkillExpander
         // Any leftover arguments (beyond the named ones) become the new $ARGUMENTS value.
         var remainingArgs = args;
 
-        if (skill.ArgumentNames is { Length: > 0 })
+        if (skill.ArgumentNames is not { Length: > 0 })
+            return ApplyBuiltins(content, remainingArgs, skill.SkillDirectory, sessionId);
+
+        var parts = SplitArgs(args, skill.ArgumentNames.Length);
+
+        for (var i = 0; i < skill.ArgumentNames.Length; i++)
         {
-            var parts = SplitArgs(args, skill.ArgumentNames.Length);
-
-            for (var i = 0; i < skill.ArgumentNames.Length; i++)
-            {
-                var value = i < parts.Length ? parts[i] : "";
-                content = content.Replace($"${skill.ArgumentNames[i]}", value, StringComparison.Ordinal);
-            }
-
-            // Leftover args: everything after the named arguments.
-            remainingArgs = parts.Length > skill.ArgumentNames.Length
-                ? parts[^1]
-                : "";
+            var value = i < parts.Length ? parts[i] : "";
+            content = content.Replace($"${skill.ArgumentNames[i]}", value, StringComparison.Ordinal);
         }
+
+        // Leftover args: everything after the named arguments.
+        remainingArgs = parts.Length > skill.ArgumentNames.Length
+            ? parts[^1]
+            : "";
 
         return ApplyBuiltins(content, remainingArgs, skill.SkillDirectory, sessionId);
     }

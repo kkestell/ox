@@ -12,8 +12,13 @@ namespace Ur.AgentLoop;
 /// single-level workflow (stream → yield events → persist) without inline tool dispatch
 /// mechanics. The invoker owns the permission check and result construction that were
 /// previously spread across 40+ lines inside the turn loop.
+///
+/// Workspace containment is enforced here. Tools are not responsible for knowing
+/// whether a path is inside or outside the workspace — that is a policy concern
+/// belonging to this layer. The invoker resolves the target path, checks containment,
+/// and passes both the operation type and the containment result to PermissionPolicy.
 /// </summary>
-internal sealed class ToolInvoker(ToolRegistry tools)
+internal sealed class ToolInvoker(ToolRegistry tools, Workspace workspace)
 {
     /// <summary>
     /// Invokes all tool calls from a single LLM response, appending results to
@@ -84,10 +89,15 @@ internal sealed class ToolInvoker(ToolRegistry tools)
 
     /// <summary>
     /// Returns true if the tool call should be blocked (permission not granted).
-    /// Looks up the tool's <see cref="PermissionMeta"/> from the registry, checks
-    /// whether the operation type requires a prompt, and delegates to the callback.
-    /// Falls back to <see cref="OperationType.WriteInWorkspace"/> for tools without
-    /// explicit metadata (conservative default).
+    ///
+    /// Looks up the tool's <see cref="PermissionMeta"/>, resolves the target to an
+    /// absolute path, checks workspace containment, and passes both to
+    /// <see cref="PermissionPolicy"/> to determine if a prompt is needed. This is
+    /// the single enforcement point for workspace boundary policy — tools themselves
+    /// do not check containment.
+    ///
+    /// Falls back to <see cref="OperationType.Write"/> for tools without explicit
+    /// metadata (conservative default).
     /// </summary>
     private async ValueTask<bool> IsPermissionDeniedAsync(
         FunctionCallContent call,
@@ -95,23 +105,32 @@ internal sealed class ToolInvoker(ToolRegistry tools)
         CancellationToken ct)
     {
         var meta = tools.GetPermissionMeta(call.Name);
-        var operationType = meta?.OperationType ?? OperationType.WriteInWorkspace;
+        var operationType = meta?.OperationType ?? OperationType.Write;
 
-        // ReadInWorkspace never requires a prompt.
-        if (!PermissionPolicy.RequiresPrompt(operationType))
+        // Extract a human-readable target from the call's arguments.
+        var target = meta?.ResolveTarget(call) ?? call.Name;
+
+        // Resolve the target to an absolute path to check workspace containment.
+        // Execute operations are treated as always outside-workspace: commands can
+        // reach anything and should never be auto-allowed based on a file path check.
+        var isInWorkspace = operationType != OperationType.Execute
+            && workspace.Contains(ToolArgHelpers.ResolvePath(workspace.RootPath, target));
+
+        // In-workspace reads are auto-allowed — no prompt needed.
+        if (!PermissionPolicy.RequiresPrompt(operationType, isInWorkspace))
             return false;
 
         // No callback configured — auto-deny all sensitive operations.
         if (callbacks?.RequestPermissionAsync is null)
             return true;
 
-        // Extract a human-readable target from the call's arguments.
-        var target = meta?.ResolveTarget(call) ?? call.Name;
-
         var extensionId = meta?.ExtensionId ?? call.Name;
-        var allowedScopes = PermissionPolicy.AllowedScopes(operationType);
+        var allowedScopes = PermissionPolicy.AllowedScopes(operationType, isInWorkspace);
 
-        var request = new PermissionRequest(operationType, target, extensionId, allowedScopes);
+        // Use the resolved absolute path as the target so grant prefix matching
+        // works correctly against stored grants (which also use absolute paths).
+        var resolvedTarget = ToolArgHelpers.ResolvePath(workspace.RootPath, target);
+        var request = new PermissionRequest(operationType, resolvedTarget, extensionId, allowedScopes);
         var response = await callbacks.RequestPermissionAsync(request, ct).ConfigureAwait(false);
 
         return !response.Granted;

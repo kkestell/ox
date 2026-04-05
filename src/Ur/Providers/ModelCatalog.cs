@@ -5,20 +5,6 @@ using System.Text.Json.Serialization;
 namespace Ur.Providers;
 
 /// <summary>
-/// Communicates whether the model catalog has been successfully populated.
-/// Replaces the sentinel pattern of checking <c>Models.Count &gt; 0</c>.
-/// </summary>
-public enum CatalogState
-{
-    /// <summary>No load has been attempted, or the cache was missing.</summary>
-    Empty,
-    /// <summary>Models were successfully loaded from cache or API.</summary>
-    Loaded,
-    /// <summary>A load was attempted but failed (corrupt cache, network error).</summary>
-    LoadFailed
-}
-
-/// <summary>
 /// Fetches and caches model metadata from the OpenRouter API.
 /// </summary>
 public sealed class ModelCatalog
@@ -43,17 +29,6 @@ public sealed class ModelCatalog
     public IReadOnlyCollection<ModelInfo> Models => _models.Values;
 
     /// <summary>
-    /// Explicit load state so callers don't need to infer readiness from
-    /// <c>Models.Count &gt; 0</c>. Set on every load/refresh attempt.
-    /// </summary>
-    public CatalogState State { get; private set; } = CatalogState.Empty;
-
-    /// <summary>
-    /// Convenience property: true when models have been successfully loaded.
-    /// </summary>
-    public bool IsReady => State == CatalogState.Loaded;
-
-    /// <summary>
     /// Look up a model by ID. Returns null if not in catalog.
     /// </summary>
     public ModelInfo? GetModel(string id) =>
@@ -61,7 +36,6 @@ public sealed class ModelCatalog
 
     /// <summary>
     /// Loads models from disk cache. Returns true if cache was loaded, false if missing or corrupt.
-    /// Sets <see cref="State"/> to reflect the outcome.
     /// </summary>
     public bool LoadCache()
     {
@@ -74,32 +48,27 @@ public sealed class ModelCatalog
             var entries = JsonSerializer.Deserialize(json, ModelCatalogJsonContext.Default.ListOpenRouterModel);
             if (entries is null)
             {
-                State = CatalogState.LoadFailed;
                 return false;
             }
 
             // If no entries have modality data, cache is from before that field was added.
             if (entries.All(e => e.Architecture is null))
             {
-                State = CatalogState.LoadFailed;
                 return false;
             }
 
             _models = BuildIndex(entries.Select(ToModelInfo));
-            State = CatalogState.Loaded;
             return true;
         }
         catch (JsonException)
         {
             // Corrupt cache — caller should re-fetch.
-            State = CatalogState.LoadFailed;
             return false;
         }
     }
 
     /// <summary>
     /// Fetches the model list from the OpenRouter API and updates the disk cache.
-    /// Sets <see cref="State"/> to <see cref="CatalogState.Loaded"/> on success.
     /// </summary>
     public async Task RefreshAsync(CancellationToken ct = default)
     {
@@ -116,7 +85,6 @@ public sealed class ModelCatalog
         await File.WriteAllTextAsync(_cachePath, cacheJson, ct);
 
         _models = BuildIndex(response.Data.Select(ToModelInfo));
-        State = CatalogState.Loaded;
     }
 
     private static ModelInfo ToModelInfo(OpenRouterModel m) => new(

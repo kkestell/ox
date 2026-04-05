@@ -23,13 +23,13 @@ public sealed class PermissionGrantStoreTests
         var store = tmp.CreateStore();
 
         await store.StoreAsync(new PermissionGrant(
-            OperationType.WriteInWorkspace,
+            OperationType.Write,
             "/proj/foo.txt",
             PermissionScope.Session,
             "ext"));
 
         var request = new PermissionRequest(
-            OperationType.WriteInWorkspace,
+            OperationType.Write,
             "/proj/foo.txt",
             "ext",
             []);
@@ -45,13 +45,13 @@ public sealed class PermissionGrantStoreTests
 
         // Grant covers the /proj/ directory — any child path should be covered.
         await store.StoreAsync(new PermissionGrant(
-            OperationType.WriteInWorkspace,
+            OperationType.Write,
             "/proj/",
             PermissionScope.Session,
             "ext"));
 
         var request = new PermissionRequest(
-            OperationType.WriteInWorkspace,
+            OperationType.Write,
             "/proj/subdir/bar.cs",
             "ext",
             []);
@@ -66,13 +66,13 @@ public sealed class PermissionGrantStoreTests
         var store = tmp.CreateStore();
 
         await store.StoreAsync(new PermissionGrant(
-            OperationType.ReadOutsideWorkspace,
+            OperationType.Read,
             "/proj/foo.txt",
             PermissionScope.Session,
             "ext"));
 
         var request = new PermissionRequest(
-            OperationType.WriteInWorkspace,
+            OperationType.Write,
             "/proj/foo.txt",
             "ext",
             []);
@@ -87,7 +87,7 @@ public sealed class PermissionGrantStoreTests
         var store = tmp.CreateStore();
 
         var request = new PermissionRequest(
-            OperationType.WriteInWorkspace,
+            OperationType.Write,
             "/proj/foo.txt",
             "ext",
             []);
@@ -107,7 +107,7 @@ public sealed class PermissionGrantStoreTests
         // Write the grant directly to the workspace JSONL file before creating the store,
         // simulating a grant that was persisted in a previous session.
         var grant = new PermissionGrant(
-            OperationType.WriteInWorkspace,
+            OperationType.Write,
             "/proj/",
             PermissionScope.Workspace,
             "ext");
@@ -116,7 +116,7 @@ public sealed class PermissionGrantStoreTests
         var store = tmp.CreateStore();
 
         var request = new PermissionRequest(
-            OperationType.WriteInWorkspace,
+            OperationType.Write,
             "/proj/main.cs",
             "ext",
             []);
@@ -135,14 +135,14 @@ public sealed class PermissionGrantStoreTests
         var store = tmp.CreateStore();
 
         await store.StoreAsync(new PermissionGrant(
-            OperationType.WriteInWorkspace,
+            OperationType.Write,
             "/proj/foo.txt",
             PermissionScope.Once,
             "ext"));
 
         // A second request for the same target must not be covered — Once is single-use.
         var request = new PermissionRequest(
-            OperationType.WriteInWorkspace,
+            OperationType.Write,
             "/proj/foo.txt",
             "ext",
             []);
@@ -163,7 +163,7 @@ public sealed class PermissionGrantStoreTests
         var store = tmp.CreateStore();
 
         await store.StoreAsync(new PermissionGrant(
-            OperationType.WriteInWorkspace,
+            OperationType.Write,
             "/proj/src/",
             PermissionScope.Workspace,
             "my-ext"));
@@ -172,7 +172,7 @@ public sealed class PermissionGrantStoreTests
         var lines = await File.ReadAllLinesAsync(tmp.WorkspacePermissionsPath);
         var nonEmpty = lines.Where(l => !string.IsNullOrWhiteSpace(l)).ToList();
         Assert.Single(nonEmpty);
-        Assert.Contains("writeInWorkspace", nonEmpty[0]);
+        Assert.Contains("\"write\"", nonEmpty[0]);
     }
 
     // -------------------------------------------------------------------------
@@ -187,15 +187,15 @@ public sealed class PermissionGrantStoreTests
 
         // An empty prefix means "grant this operation type everywhere".
         await store.StoreAsync(new PermissionGrant(
-            OperationType.WriteInWorkspace,
+            OperationType.Write,
             "",
             PermissionScope.Session,
             "ext"));
 
         Assert.True(store.IsCovered(new PermissionRequest(
-            OperationType.WriteInWorkspace, "/any/path/at/all.txt", "ext", [])));
+            OperationType.Write, "/any/path/at/all.txt", "ext", [])));
         Assert.True(store.IsCovered(new PermissionRequest(
-            OperationType.WriteInWorkspace, "/completely/different/path", "other-ext", [])));
+            OperationType.Write, "/completely/different/path", "other-ext", [])));
     }
 
     // -------------------------------------------------------------------------
@@ -210,7 +210,7 @@ public sealed class PermissionGrantStoreTests
         // Write via one store instance.
         var writer = tmp.CreateStore();
         await writer.StoreAsync(new PermissionGrant(
-            OperationType.WriteInWorkspace,
+            OperationType.Write,
             "/proj/",
             PermissionScope.Workspace,
             "ext"));
@@ -218,7 +218,7 @@ public sealed class PermissionGrantStoreTests
         // A fresh instance (simulating a new session) must find the grant on disk.
         var reader = tmp.CreateStore();
         Assert.True(reader.IsCovered(new PermissionRequest(
-            OperationType.WriteInWorkspace, "/proj/src/main.cs", "ext", [])));
+            OperationType.Write, "/proj/src/main.cs", "ext", [])));
     }
 
     // -------------------------------------------------------------------------
@@ -259,8 +259,27 @@ public sealed class PermissionGrantStoreTests
     }
 }
 
-public sealed class AgentLoopPermissionTests
+public sealed class AgentLoopPermissionTests : IDisposable
 {
+    // Each test gets a real Workspace so ToolInvoker can resolve containment.
+    // We use a shared temp directory for the class; Dispose cleans it up.
+    private readonly string _workspaceRoot = Path.Combine(
+        Path.GetTempPath(), "ur-loop-tests", Guid.NewGuid().ToString("N"));
+
+    public AgentLoopPermissionTests()
+    {
+        Directory.CreateDirectory(_workspaceRoot);
+    }
+
+    public void Dispose()
+    {
+        if (Directory.Exists(_workspaceRoot))
+            Directory.Delete(_workspaceRoot, recursive: true);
+    }
+
+    private AgentLoopClass MakeLoop(IChatClient client, ToolRegistry tools) =>
+        new(client, tools, new Workspace(_workspaceRoot));
+
     // -------------------------------------------------------------------------
     // Callback denies — tool produces "Permission denied." result, loop continues
     // -------------------------------------------------------------------------
@@ -273,7 +292,7 @@ public sealed class AgentLoopPermissionTests
         tools.Register(tool);
 
         var client = new FakeToolCallingClient("write_file");
-        var loop   = new AgentLoopClass(client, tools);
+        var loop   = MakeLoop(client, tools);
 
         var denyingCallbacks = new TurnCallbacks
         {
@@ -299,7 +318,7 @@ public sealed class AgentLoopPermissionTests
         tools.Register(tool);
 
         var client = new FakeToolCallingClient("write_file");
-        var loop   = new AgentLoopClass(client, tools);
+        var loop   = MakeLoop(client, tools);
 
         var grantingCallbacks = new TurnCallbacks
         {
@@ -326,9 +345,9 @@ public sealed class AgentLoopPermissionTests
         tools.Register(tool);
 
         var client = new FakeToolCallingClient("write_file");
-        var loop   = new AgentLoopClass(client, tools);
+        var loop   = MakeLoop(client, tools);
 
-        // No callbacks — should auto-deny WriteInWorkspace.
+        // No callbacks — should auto-deny Write operations.
         var events = await CollectEventsAsync(loop.RunTurnAsync([], callbacks: null));
 
         var completed = events.OfType<ToolCallCompleted>().Single();
@@ -337,19 +356,24 @@ public sealed class AgentLoopPermissionTests
     }
 
     // -------------------------------------------------------------------------
-    // ReadInWorkspace — never prompts, always executes
+    // Read + in-workspace — never prompts, always executes
     // -------------------------------------------------------------------------
 
     [Fact]
-    public async Task RunTurnAsync_ReadInWorkspace_NeverCallsCallback()
+    public async Task RunTurnAsync_Read_InWorkspace_NeverCallsCallback()
     {
+        // Register a Read tool with a file_path extractor pointing inside the workspace.
+        // Because the resolved path is inside the workspace, ToolInvoker auto-allows.
         var tools     = new ToolRegistry();
         var tool      = MakeTool("read_file", "Reads a file", "file contents");
         var callCount = 0;
-        tools.Register(tool, OperationType.ReadInWorkspace);
+        tools.Register(tool, OperationType.Read, targetExtractor: TargetExtractors.FromKey("file_path"));
 
-        var client = new FakeToolCallingClient("read_file");
-        var loop   = new AgentLoopClass(client, tools);
+        // The client emits a call with a file_path inside the workspace.
+        var insidePath = Path.Combine(_workspaceRoot, "notes.txt");
+        var client = new FakeToolCallingClient("read_file",
+            new Dictionary<string, object?> { ["file_path"] = insidePath });
+        var loop = MakeLoop(client, tools);
 
         var callbacks = new TurnCallbacks
         {
@@ -367,6 +391,113 @@ public sealed class AgentLoopPermissionTests
         var completed = events.OfType<ToolCallCompleted>().Single();
         Assert.Equal("file contents", completed.Result);
         Assert.False(completed.IsError);
+    }
+
+    // -------------------------------------------------------------------------
+    // Read + outside-workspace — prompts (same operation type, different location)
+    // -------------------------------------------------------------------------
+
+    [Fact]
+    public async Task RunTurnAsync_Read_OutsideWorkspace_CallsCallback()
+    {
+        // This is the key new behavior: the same OperationType.Read that is
+        // auto-allowed for in-workspace paths requires a prompt for outside paths.
+        // Location is resolved at invocation time — not baked into the registration.
+        var tools = new ToolRegistry();
+        var tool  = MakeTool("read_file", "Reads a file", "secret contents");
+        tools.Register(tool, OperationType.Read, targetExtractor: TargetExtractors.FromKey("file_path"));
+
+        var outsidePath = Path.Combine(Path.GetTempPath(), "outside", "secret.txt");
+        var callCount = 0;
+
+        var client = new FakeToolCallingClient("read_file",
+            new Dictionary<string, object?> { ["file_path"] = outsidePath });
+        var loop = MakeLoop(client, tools);
+
+        var callbacks = new TurnCallbacks
+        {
+            RequestPermissionAsync = (_, _) =>
+            {
+                callCount++;
+                // Deny so we can verify the callback was invoked.
+                return ValueTask.FromResult(new PermissionResponse(false, null));
+            }
+        };
+
+        var events = await CollectEventsAsync(loop.RunTurnAsync([], callbacks));
+
+        // Callback must have been invoked — outside-workspace reads are not auto-allowed.
+        Assert.Equal(1, callCount);
+        var completed = events.OfType<ToolCallCompleted>().Single();
+        Assert.Equal("Permission denied.", completed.Result);
+        Assert.True(completed.IsError);
+    }
+
+    // -------------------------------------------------------------------------
+    // Write — always prompts regardless of location
+    // -------------------------------------------------------------------------
+
+    [Fact]
+    public async Task RunTurnAsync_Write_OutsideWorkspace_CallsCallback()
+    {
+        // Write operations targeting outside-workspace paths must also prompt.
+        // The restriction is tighter than inside-workspace writes (Once-only scopes).
+        var tools = new ToolRegistry();
+        var tool  = MakeTool("write_file", "Writes a file", "wrote it");
+        var callCount = 0;
+        tools.Register(tool, targetExtractor: TargetExtractors.FromKey("file_path"));
+
+        var outsidePath = Path.Combine(Path.GetTempPath(), "outside", "escape.txt");
+        var client = new FakeToolCallingClient("write_file",
+            new Dictionary<string, object?> { ["file_path"] = outsidePath });
+        var loop = MakeLoop(client, tools);
+
+        var callbacks = new TurnCallbacks
+        {
+            RequestPermissionAsync = (_, _) =>
+            {
+                callCount++;
+                return ValueTask.FromResult(new PermissionResponse(false, null));
+            }
+        };
+
+        await CollectEventsAsync(loop.RunTurnAsync([], callbacks));
+
+        Assert.Equal(1, callCount);
+    }
+
+    // -------------------------------------------------------------------------
+    // Execute — always prompts regardless of workspace location
+    // -------------------------------------------------------------------------
+
+    [Fact]
+    public async Task RunTurnAsync_Execute_AlwaysCallsCallback()
+    {
+        // Execute operations are always high-risk — they must prompt even when
+        // the command string happens to resolve to an in-workspace path.
+        var tools = new ToolRegistry();
+        var tool  = MakeTool("bash", "Runs a command", "exit 0");
+        var callCount = 0;
+        tools.Register(tool, OperationType.Execute, targetExtractor: TargetExtractors.FromKey("command"));
+
+        // Pass an in-workspace path as the command — Execute should still prompt.
+        var insidePath = Path.Combine(_workspaceRoot, "script.sh");
+        var client = new FakeToolCallingClient("bash",
+            new Dictionary<string, object?> { ["command"] = insidePath });
+        var loop = MakeLoop(client, tools);
+
+        var callbacks = new TurnCallbacks
+        {
+            RequestPermissionAsync = (_, _) =>
+            {
+                callCount++;
+                return ValueTask.FromResult(new PermissionResponse(false, null));
+            }
+        };
+
+        await CollectEventsAsync(loop.RunTurnAsync([], callbacks));
+
+        Assert.Equal(1, callCount);
     }
 
     // -------------------------------------------------------------------------
@@ -390,8 +521,12 @@ public sealed class AgentLoopPermissionTests
 
     /// <summary>
     /// Fake IChatClient that emits exactly one tool call then a final text response.
+    /// Accepts an optional arguments dictionary so tests can supply specific path values
+    /// for workspace containment checks.
     /// </summary>
-    private sealed class FakeToolCallingClient(string toolName) : IChatClient
+    private sealed class FakeToolCallingClient(
+        string toolName,
+        Dictionary<string, object?>? arguments = null) : IChatClient
     {
         private bool _toolCallEmitted;
 
@@ -408,7 +543,7 @@ public sealed class AgentLoopPermissionTests
                 _toolCallEmitted = true;
                 yield return new ChatResponseUpdate
                 {
-                    Contents = [new FunctionCallContent("call-1", toolName, new Dictionary<string, object?>())]
+                    Contents = [new FunctionCallContent("call-1", toolName, arguments ?? new Dictionary<string, object?>())]
                 };
             }
             else
@@ -529,7 +664,7 @@ public sealed class UrSessionPermissionTests
         var permissionsFile = Path.Combine(workspace.WorkspacePath, ".ur", "permissions.jsonl");
         Assert.True(File.Exists(permissionsFile));
         var content = await File.ReadAllTextAsync(permissionsFile);
-        Assert.Contains("writeInWorkspace", content);
+        Assert.Contains("\"write\"", content);
     }
 
     // -------------------------------------------------------------------------

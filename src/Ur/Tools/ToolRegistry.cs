@@ -11,7 +11,7 @@ public sealed class ToolRegistry
 {
     private readonly Dictionary<string, AIFunction> _tools = new(StringComparer.Ordinal);
     // Parallel metadata dictionary — same key as _tools. Not every tool needs an entry;
-    // absence means "treat as WriteInWorkspace" (conservative default).
+    // absence means "treat as Write" (conservative default).
     private readonly Dictionary<string, PermissionMeta> _meta = new(StringComparer.Ordinal);
 
     // Cached tool list — invalidated on Register/Remove to avoid allocating
@@ -20,14 +20,14 @@ public sealed class ToolRegistry
 
     /// <summary>
     /// Registers a tool with optional permission metadata. When metadata is omitted,
-    /// the tool is treated as WriteInWorkspace (the conservative safe choice).
+    /// the tool is treated as Write (the conservative safe choice).
     ///
     /// A single overload replaces the former public/internal pair — optional parameters
     /// cover both "just the tool" and "tool with explicit permission metadata" use cases.
     /// </summary>
     public void Register(
         AIFunction tool,
-        OperationType operationType = OperationType.WriteInWorkspace,
+        OperationType operationType = OperationType.Write,
         string? extensionId = null,
         ITargetExtractor? targetExtractor = null)
     {

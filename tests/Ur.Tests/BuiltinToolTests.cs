@@ -22,13 +22,9 @@ public sealed class BuiltinToolTests
         public string WorkspacePath => Path.Combine(_root, "workspace");
         public Workspace Workspace { get; }
 
-        // A path that sits outside the workspace — used to verify boundary checks.
-        public string OutsidePath => Path.Combine(_root, "outside", "file.txt");
-
         public ToolTestEnvironment()
         {
             Directory.CreateDirectory(WorkspacePath);
-            Directory.CreateDirectory(Path.Combine(_root, "outside"));
             Workspace = new Workspace(WorkspacePath);
         }
 
@@ -118,19 +114,6 @@ public sealed class BuiltinToolTests
     }
 
     [Fact]
-    public async Task ReadFile_RejectsPathOutsideWorkspace()
-    {
-        using var env = new ToolTestEnvironment();
-        await File.WriteAllTextAsync(env.OutsidePath, "secret");
-
-        var tool = new ReadFileTool(env.Workspace);
-        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
-            () => InvokeAsync(tool, ("file_path", env.OutsidePath)));
-
-        Assert.Contains("outside the workspace", ex.Message);
-    }
-
-    [Fact]
     public async Task ReadFile_ErrorsOnMissingFile()
     {
         using var env = new ToolTestEnvironment();
@@ -184,20 +167,6 @@ public sealed class BuiltinToolTests
 
         Assert.True(File.Exists(filePath));
         Assert.Equal("deep", await File.ReadAllTextAsync(filePath));
-    }
-
-    [Fact]
-    public async Task WriteFile_RejectsPathOutsideWorkspace()
-    {
-        using var env = new ToolTestEnvironment();
-        var tool = new WriteFileTool(env.Workspace);
-
-        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
-            () => InvokeAsync(tool,
-                ("file_path", env.OutsidePath),
-                ("content", "nope")));
-
-        Assert.Contains("outside the workspace", ex.Message);
     }
 
     [Fact]
@@ -263,22 +232,6 @@ public sealed class BuiltinToolTests
     }
 
     [Fact]
-    public async Task UpdateFile_RejectsPathOutsideWorkspace()
-    {
-        using var env = new ToolTestEnvironment();
-        await File.WriteAllTextAsync(env.OutsidePath, "content");
-
-        var tool = new UpdateFileTool(env.Workspace);
-        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
-            () => InvokeAsync(tool,
-                ("file_path", env.OutsidePath),
-                ("old_string", "c"),
-                ("new_string", "x")));
-
-        Assert.Contains("outside the workspace", ex.Message);
-    }
-
-    [Fact]
     public async Task UpdateFile_ErrorsOnMissingFile()
     {
         using var env = new ToolTestEnvironment();
@@ -334,52 +287,10 @@ public sealed class BuiltinToolTests
 
     // ─── Path traversal ────────────────────────────────────────────────
 
-    [Fact]
-    public async Task ReadFile_RejectsPathTraversal()
-    {
-        using var env = new ToolTestEnvironment();
-        await File.WriteAllTextAsync(env.OutsidePath, "secret");
-
-        // Attempt to escape the workspace via ../
-        var traversalPath = Path.Combine(env.WorkspacePath, "..", "outside", "file.txt");
-        var tool = new ReadFileTool(env.Workspace);
-
-        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
-            () => InvokeAsync(tool, ("file_path", traversalPath)));
-
-        Assert.Contains("outside the workspace", ex.Message);
-    }
-
-    [Fact]
-    public async Task WriteFile_RejectsPathTraversal()
-    {
-        using var env = new ToolTestEnvironment();
-        var traversalPath = Path.Combine(env.WorkspacePath, "..", "outside", "escape.txt");
-        var tool = new WriteFileTool(env.Workspace);
-
-        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
-            () => InvokeAsync(tool, ("file_path", traversalPath), ("content", "nope")));
-
-        Assert.Contains("outside the workspace", ex.Message);
-    }
-
-    [Fact]
-    public async Task UpdateFile_RejectsPathTraversal()
-    {
-        using var env = new ToolTestEnvironment();
-        await File.WriteAllTextAsync(env.OutsidePath, "content");
-
-        var traversalPath = Path.Combine(env.WorkspacePath, "..", "outside", "file.txt");
-        var tool = new UpdateFileTool(env.Workspace);
-
-        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
-            () => InvokeAsync(tool,
-                ("file_path", traversalPath),
-                ("old_string", "c"),
-                ("new_string", "x")));
-
-        Assert.Contains("outside the workspace", ex.Message);
-    }
+    // Note: path traversal for individual tools is no longer tested here.
+    // Workspace boundary enforcement has moved to ToolInvoker, which checks
+    // containment at invocation time before the tool is called.
+    // See AgentLoopPermissionTests for sandbox-level boundary tests.
 
     // ─── glob ──────────────────────────────────────────────────────────
 
@@ -427,35 +338,6 @@ public sealed class BuiltinToolTests
         // Should be workspace-relative, not absolute.
         Assert.Contains(Path.Combine("src", "deep", "file.cs"), result);
         Assert.DoesNotContain(env.WorkspacePath, result);
-    }
-
-    [Fact]
-    public async Task Glob_RejectsPathOutsideWorkspace()
-    {
-        using var env = new ToolTestEnvironment();
-        var tool = new GlobTool(env.Workspace);
-
-        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
-            () => InvokeAsync(tool,
-                ("pattern", "*.cs"),
-                ("path", "/tmp")));
-
-        Assert.Contains("outside the workspace", ex.Message);
-    }
-
-    [Fact]
-    public async Task Glob_RejectsPathTraversal()
-    {
-        using var env = new ToolTestEnvironment();
-        var tool = new GlobTool(env.Workspace);
-
-        // Attempt to escape the workspace via ../
-        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
-            () => InvokeAsync(tool,
-                ("pattern", "*.txt"),
-                ("path", "../../outside")));
-
-        Assert.Contains("outside the workspace", ex.Message);
     }
 
     [Fact]
@@ -549,29 +431,6 @@ public sealed class BuiltinToolTests
             // Should contain line numbers (1-based) in file:line:content format.
             Assert.Contains("lines.txt:2:", result);
             Assert.Contains("lines.txt:4:", result);
-        }
-        finally
-        {
-            GrepTool.SetRipgrepAvailable(null);
-        }
-    }
-
-    [Fact]
-    public async Task Grep_RejectsPathOutsideWorkspace()
-    {
-        using var env = new ToolTestEnvironment();
-
-        GrepTool.SetRipgrepAvailable(false);
-        try
-        {
-            var tool = new GrepTool(env.Workspace);
-
-            var ex = await Assert.ThrowsAsync<InvalidOperationException>(
-                () => InvokeAsync(tool,
-                    ("pattern", "test"),
-                    ("path", "/tmp")));
-
-            Assert.Contains("outside the workspace", ex.Message);
         }
         finally
         {
