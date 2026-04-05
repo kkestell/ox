@@ -62,13 +62,8 @@ internal static class SkillExpander
     /// The last piece captures everything remaining (so named args get individual
     /// tokens while the rest is preserved as a single string for $ARGUMENTS).
     /// </summary>
-    private static string[] SplitArgs(string args, int maxParts)
-    {
-        if (string.IsNullOrWhiteSpace(args))
-            return [];
-
-        // Split into maxParts + 1: one for each named arg, plus one for the remainder.
-        // The +1 captures leftover text that will be used for $ARGUMENTS.
-        return args.Split((char[]?)null, maxParts + 1, StringSplitOptions.RemoveEmptyEntries);
-    }
+    private static string[] SplitArgs(string args, int maxParts) =>
+        string.IsNullOrWhiteSpace(args)
+            ? []
+            : args.Split((char[]?)null, maxParts + 1, StringSplitOptions.RemoveEmptyEntries);
 }

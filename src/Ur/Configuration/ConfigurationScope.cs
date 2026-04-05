@@ -8,5 +8,5 @@ namespace Ur.Configuration;
 public enum ConfigurationScope
 {
     User,
-    Workspace,
+    Workspace
 }

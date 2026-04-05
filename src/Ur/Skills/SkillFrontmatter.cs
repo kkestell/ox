@@ -40,7 +40,7 @@ internal static class SkillFrontmatter
                 Description = "",
                 Content = body,
                 SkillDirectory = skillDirectory,
-                Source = source,
+                Source = source
             };
         }
 
@@ -112,7 +112,7 @@ internal static class SkillFrontmatter
             Version = version,
             Content = body,
             SkillDirectory = skillDirectory,
-            Source = source,
+            Source = source
         };
     }
 
@@ -122,12 +122,8 @@ internal static class SkillFrontmatter
     /// the quoted form is used when the value contains characters that would
     /// otherwise be interpreted as YAML syntax (e.g. commas in path lists).
     /// </summary>
-    private static string UnquoteYaml(string value)
-    {
-        if (value.Length >= 2 && value[0] == '"' && value[^1] == '"')
-            return value[1..^1];
-        return value;
-    }
+    private static string UnquoteYaml(string value) =>
+        value is ['"', .., '"'] ? value[1..^1] : value;
 
     /// <summary>
     /// Parses a YAML boolean value. Accepts "true"/"false" (case-insensitive).
@@ -194,11 +190,8 @@ internal static class SkillFrontmatter
     /// Splits a comma-separated string into a trimmed array. Returns null for null/empty input.
     /// Used for "arguments", "paths", and "allowed-tools" frontmatter fields.
     /// </summary>
-    private static string[]? ParseCommaSeparated(string? value)
-    {
-        if (string.IsNullOrWhiteSpace(value))
-            return null;
-
-        return value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-    }
+    private static string[]? ParseCommaSeparated(string? value) =>
+        string.IsNullOrWhiteSpace(value)
+            ? null
+            : value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 }

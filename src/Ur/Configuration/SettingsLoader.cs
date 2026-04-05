@@ -6,15 +6,8 @@ namespace Ur.Configuration;
 /// Loads and merges settings from user and workspace files,
 /// validates against the schema registry.
 /// </summary>
-public sealed class SettingsLoader
+public sealed class SettingsLoader(SettingsSchemaRegistry schemaRegistry)
 {
-    private readonly SettingsSchemaRegistry _schemaRegistry;
-
-    public SettingsLoader(SettingsSchemaRegistry schemaRegistry)
-    {
-        _schemaRegistry = schemaRegistry;
-    }
-
     /// <summary>
     /// Loads settings from the user and workspace paths, merging workspace over user.
     /// </summary>
@@ -24,10 +17,10 @@ public sealed class SettingsLoader
         var workspaceValues = ReadValues(workspaceSettingsPath);
         var merged = Merge(userValues, workspaceValues);
 
-        Validate(_schemaRegistry, merged);
+        Validate(schemaRegistry, merged);
 
         return new Settings(
-            _schemaRegistry,
+            schemaRegistry,
             userSettingsPath,
             workspaceSettingsPath,
             userValues,
@@ -35,7 +28,7 @@ public sealed class SettingsLoader
             merged);
     }
 
-    internal static Dictionary<string, JsonElement> ReadValues(string? path)
+    private static Dictionary<string, JsonElement> ReadValues(string? path)
     {
         var values = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
 
@@ -89,14 +82,14 @@ public sealed class SettingsLoader
                 continue;
             }
 
-            if (schemaRegistry.TryGetSchema(key, out var schema))
+            if (!schemaRegistry.TryGetSchema(key, out var schema))
+                continue;
+
+            var expectedType = GetExpectedType(schema);
+            if (expectedType is not null && !MatchesType(value, expectedType))
             {
-                var expectedType = GetExpectedType(schema);
-                if (expectedType is not null && !MatchesType(value, expectedType))
-                {
-                    errors.Add(
-                        $"Setting '{key}': expected type '{expectedType}', got '{value.ValueKind}'.");
-                }
+                errors.Add(
+                    $"Setting '{key}': expected type '{expectedType}', got '{value.ValueKind}'.");
             }
         }
 
@@ -104,21 +97,16 @@ public sealed class SettingsLoader
             throw new SettingsValidationException(errors);
     }
 
-    private static string? GetExpectedType(JsonElement schema)
-    {
-        if (schema.TryGetProperty("type", out var typeProp))
-            return typeProp.GetString();
-        return null;
-    }
+    private static string? GetExpectedType(JsonElement schema) =>
+        schema.TryGetProperty("type", out var typeProp) ? typeProp.GetString() : null;
 
     private static bool MatchesType(JsonElement value, string expectedType) => expectedType switch
     {
         "string" => value.ValueKind == JsonValueKind.String,
-        "number" => value.ValueKind == JsonValueKind.Number,
-        "integer" => value.ValueKind == JsonValueKind.Number,
+        "number" or "integer" => value.ValueKind == JsonValueKind.Number,
         "boolean" => value.ValueKind is JsonValueKind.True or JsonValueKind.False,
         "array" => value.ValueKind == JsonValueKind.Array,
         "object" => value.ValueKind == JsonValueKind.Object,
-        _ => true,
+        _ => true
     };
 }

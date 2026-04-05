@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Lua;
 using Lua.IO;
 using Lua.Platforms;
@@ -10,7 +11,7 @@ namespace Ur.Extensions;
 /// Discovers extension directories, evaluates manifests, initializes Lua runtimes,
 /// and wires up the <c>ur.tool.register</c> API.
 /// </summary>
-internal static class ExtensionLoader
+internal static partial class ExtensionLoader
 {
     public static async Task<List<Extension>> DiscoverAllAsync(
         string? systemDir,
@@ -63,7 +64,7 @@ internal static class ExtensionLoader
             ex is LuaRuntimeException or LuaParseException or LuaCompileException or InvalidOperationException)
         {
             extension.MarkActivationFailed(ex.Message);
-            Console.Error.WriteLine(
+            await Console.Error.WriteLineAsync(
                 $"Extension '{extension.Name}': main.lua failed: {ex.Message}");
         }
     }
@@ -95,7 +96,7 @@ internal static class ExtensionLoader
                 // Higher-trust tier wins on name collision.
                 if (seen.TryGetValue(ext.Name, out var existingTier))
                 {
-                    Console.Error.WriteLine(
+                    await Console.Error.WriteLineAsync(
                         $"Extension '{ext.Name}' from {tier} tier skipped: " +
                         $"already loaded from {existingTier} tier.");
                     continue;
@@ -108,7 +109,7 @@ internal static class ExtensionLoader
                 ex is LuaRuntimeException or LuaParseException or
                 LuaCompileException or InvalidOperationException)
             {
-                Console.Error.WriteLine(
+                await Console.Error.WriteLineAsync(
                     $"Extension at '{extDir}' skipped: {ex.Message}");
             }
         }
@@ -132,17 +133,19 @@ internal static class ExtensionLoader
         var description = ReadOptionalString(manifest, "description") ?? "";
 
         var settingsSchemas = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
-        if (manifest["settings"].TryRead<LuaTable>(out var settingsTable))
-        {
-            foreach (var (key, value) in settingsTable)
-            {
-                if (key.TryRead<string>(out var settingKey) &&
-                    value.TryRead<LuaTable>(out var schemaTable))
-                {
-                    settingsSchemas[settingKey] = LuaJsonHelpers.ToJsonElement(schemaTable);
-                }
-            }
-        }
+        if (!manifest["settings"].TryRead<LuaTable>(out var settingsTable))
+            return new Extension(
+                new ExtensionDescriptor(
+                    new ExtensionId(tier, name),
+                    description,
+                    version,
+                    extDir,
+                    settingsSchemas));
+
+        foreach (var (key, value) in settingsTable)
+            if (key.TryRead<string>(out var settingKey) &&
+                value.TryRead<LuaTable>(out var schemaTable))
+                settingsSchemas[settingKey] = LuaJsonHelpers.ToJsonElement(schemaTable);
 
         return new Extension(
             new ExtensionDescriptor(
@@ -174,10 +177,9 @@ internal static class ExtensionLoader
 
     private static void InjectToolApi(LuaState state, Extension extension)
     {
-        var urTable = new LuaTable();
-        var toolTable = new LuaTable();
-
-        toolTable["register"] = new LuaFunction("ur.tool.register", (context, _) =>
+        var toolTable = new LuaTable
+        {
+            ["register"] = new LuaFunction("ur.tool.register", (context, _) =>
         {
             var def = context.GetArgument<LuaTable>(0);
 
@@ -188,19 +190,20 @@ internal static class ExtensionLoader
                 : throw new InvalidOperationException(
                     $"ur.tool.register: tool '{name}' missing 'handler' function.");
 
-            JsonElement schema;
-            if (def["parameters"].TryRead<LuaTable>(out var paramsTable))
-                schema = LuaJsonHelpers.ToJsonElement(paramsTable);
-            else
-                schema = EmptyObjectSchema();
+            var schema = def["parameters"].TryRead<LuaTable>(out var paramsTable)
+                ? LuaJsonHelpers.ToJsonElement(paramsTable)
+                : EmptyObjectSchema();
 
             var adapter = new LuaToolAdapter(name, description, schema, state, handler);
             extension.RegisterTool(adapter);
 
             return new ValueTask<int>(context.Return());
-        });
-
-        urTable["tool"] = toolTable;
+        })
+        };
+        var urTable = new LuaTable
+        {
+            ["tool"] = toolTable
+        };
         state.Environment["ur"] = urTable;
     }
 
@@ -212,23 +215,21 @@ internal static class ExtensionLoader
 
     // --- String helpers ---
 
-    private static string ReadRequiredString(LuaTable table, string key)
-    {
-        if (table[key].TryRead<string>(out var s))
-            return s;
-        throw new InvalidOperationException($"Missing required field '{key}'.");
-    }
+    private static string ReadRequiredString(LuaTable table, string key) =>
+        table[key].TryRead<string>(out var s)
+            ? s
+            : throw new InvalidOperationException($"Missing required field '{key}'.");
 
     private static string? ReadOptionalString(LuaTable table, string key)
     {
         return table[key].TryRead<string>(out var s) ? s : null;
     }
 
-    private static readonly System.Text.RegularExpressions.Regex InvalidToolNameChars =
-        new("[^a-zA-Z0-9_-]", System.Text.RegularExpressions.RegexOptions.Compiled);
+    [GeneratedRegex("[^a-zA-Z0-9_-]")]
+    private static partial Regex InvalidToolNameCharsRegex();
 
     private static string SanitizeToolName(string name) =>
-        InvalidToolNameChars.Replace(name, "_");
+        InvalidToolNameCharsRegex().Replace(name, "_");
 
     private static int TierSortOrder(ExtensionTier tier) =>
         tier switch
@@ -236,7 +237,7 @@ internal static class ExtensionLoader
             ExtensionTier.System => 0,
             ExtensionTier.User => 1,
             ExtensionTier.Workspace => 2,
-            _ => throw new ArgumentOutOfRangeException(nameof(tier), tier, null),
+            _ => throw new ArgumentOutOfRangeException(nameof(tier), tier, null)
         };
 
     // --- Sandboxed platform implementations ---

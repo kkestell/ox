@@ -17,10 +17,11 @@ internal static class SessionCommands
 {
     public static Command Build()
     {
-        var sessions = new Command("sessions", "List and inspect chat sessions");
-
-        sessions.Add(BuildList());
-        sessions.Add(BuildShow());
+        var sessions = new Command("sessions", "List and inspect chat sessions")
+        {
+            BuildList(),
+            BuildShow()
+        };
 
         return sessions;
     }
@@ -34,17 +35,17 @@ internal static class SessionCommands
         var cmd = new Command("list", "List all sessions in the current workspace");
 
         cmd.SetAction(async (_, cancellationToken) =>
-            await HostRunner.RunAsync(async (host, _) =>
+            await HostRunner.RunAsync((host, _) =>
             {
                 var sessions = host.ListSessions();
 
                 if (sessions.Count == 0)
                 {
                     Console.WriteLine("No sessions found.");
-                    return 0;
+                    return Task.FromResult(0);
                 }
 
-                Console.WriteLine($"{"ID",-26}  {"Created"}");
+                Console.WriteLine($"{"ID",-26}  Created");
                 Console.WriteLine(new string('-', 50));
 
                 foreach (var s in sessions)
@@ -52,7 +53,7 @@ internal static class SessionCommands
 
                 Console.WriteLine();
                 Console.WriteLine($"{sessions.Count} session(s).");
-                return 0;
+                return Task.FromResult(0);
             }, cancellationToken));
 
         return cmd;
@@ -71,8 +72,7 @@ internal static class SessionCommands
             Description = "Session ID to display"
         };
 
-        var cmd = new Command("show", "Print the message history for a session");
-        cmd.Add(idArg);
+        var cmd = new Command("show", "Print the message history for a session") { idArg };
 
         cmd.SetAction(async (parseResult, cancellationToken) =>
             await HostRunner.RunAsync(async (host, _) =>
@@ -82,7 +82,7 @@ internal static class SessionCommands
 
                 if (session is null)
                 {
-                    Console.Error.WriteLine($"Session not found: {sessionId}");
+                    await Console.Error.WriteLineAsync($"Session not found: {sessionId}");
                     return 1;
                 }
 
@@ -119,8 +119,7 @@ internal static class SessionCommands
         if (role == ChatRole.User)      return "user     ";
         if (role == ChatRole.Assistant) return "assistant";
         if (role == ChatRole.Tool)      return "tool     ";
-        if (role == ChatRole.System)    return "system   ";
-        return role.Value.PadRight(9);
+        return role == ChatRole.System ? "system   " : role.Value.PadRight(9);
     }
 
     /// <summary>
@@ -133,19 +132,14 @@ internal static class SessionCommands
         if (msg.Text is { } text)
             return text;
 
-        if (msg.Contents is { Count: > 0 } parts)
-        {
-            var texts = parts
-                .OfType<TextContent>()
-                .Select(t => t.Text)
-                .Where(t => !string.IsNullOrWhiteSpace(t));
-            var joined = string.Join(" ", texts);
-            if (!string.IsNullOrWhiteSpace(joined))
-                return joined;
+        if (msg.Contents is not { Count: > 0 } parts)
+            return "(empty)";
 
-            return $"({parts.Count} content part(s))";
-        }
-
-        return "(empty)";
+        var texts = parts
+            .OfType<TextContent>()
+            .Select(t => t.Text)
+            .Where(t => !string.IsNullOrWhiteSpace(t));
+        var joined = string.Join(" ", texts);
+        return !string.IsNullOrWhiteSpace(joined) ? joined : $"({parts.Count} content part(s))";
     }
 }

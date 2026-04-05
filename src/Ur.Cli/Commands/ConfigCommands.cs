@@ -23,15 +23,16 @@ internal static class ConfigCommands
 {
     public static Command Build()
     {
-        var config = new Command("config", "Read and write configuration settings");
-
-        config.Add(BuildSetApiKey());
-        config.Add(BuildClearApiKey());
-        config.Add(BuildSetModel());
-        config.Add(BuildClearModel());
-        config.Add(BuildGet());
-        config.Add(BuildSet());
-        config.Add(BuildClear());
+        var config = new Command("config", "Read and write configuration settings")
+        {
+            BuildSetApiKey(),
+            BuildClearApiKey(),
+            BuildSetModel(),
+            BuildClearModel(),
+            BuildGet(),
+            BuildSet(),
+            BuildClear()
+        };
 
         return config;
     }
@@ -47,8 +48,7 @@ internal static class ConfigCommands
             Description = "OpenRouter API key"
         };
 
-        var cmd = new Command("set-api-key", "Store the OpenRouter API key in the system keyring");
-        cmd.Add(keyArg);
+        var cmd = new Command("set-api-key", "Store the OpenRouter API key in the system keyring") { keyArg };
 
         cmd.SetAction(async (parseResult, cancellationToken) =>
             await HostRunner.RunAsync(async (host, _) =>
@@ -93,9 +93,7 @@ internal static class ConfigCommands
         };
         var scopeOpt = ScopeOption();
 
-        var cmd = new Command("set-model", "Set the default model");
-        cmd.Add(modelArg);
-        cmd.Add(scopeOpt);
+        var cmd = new Command("set-model", "Set the default model") { modelArg, scopeOpt };
 
         cmd.SetAction(async (parseResult, cancellationToken) =>
             await HostRunner.RunAsync(async (host, _) =>
@@ -118,8 +116,7 @@ internal static class ConfigCommands
     {
         var scopeOpt = ScopeOption();
 
-        var cmd = new Command("clear-model", "Clear the selected model for a scope");
-        cmd.Add(scopeOpt);
+        var cmd = new Command("clear-model", "Clear the selected model for a scope") { scopeOpt };
 
         cmd.SetAction(async (parseResult, cancellationToken) =>
             await HostRunner.RunAsync(async (host, _) =>
@@ -144,21 +141,17 @@ internal static class ConfigCommands
             Description = "Dot-separated settings key (e.g. ur.model)"
         };
 
-        var cmd = new Command("get", "Get the merged value for a settings key");
-        cmd.Add(keyArg);
+        var cmd = new Command("get", "Get the merged value for a settings key") { keyArg };
 
         cmd.SetAction(async (parseResult, cancellationToken) =>
-            await HostRunner.RunAsync(async (host, _) =>
+            await HostRunner.RunAsync((host, _) =>
             {
                 var key   = parseResult.GetValue(keyArg)!;
                 var value = host.Configuration.GetSetting(key);
 
-                if (value is null)
-                    Console.WriteLine("(not set)");
-                else
-                    Console.WriteLine(value.Value.ToString());
+                Console.WriteLine(value is null ? "(not set)" : value.Value.ToString());
 
-                return 0;
+                return Task.FromResult(0);
             }, cancellationToken));
 
         return cmd;
@@ -174,10 +167,7 @@ internal static class ConfigCommands
         var valueArg = new Argument<string>("value") { Description = "JSON value to store" };
         var scopeOpt = ScopeOption();
 
-        var cmd = new Command("set", "Write a raw JSON value for a settings key");
-        cmd.Add(keyArg);
-        cmd.Add(valueArg);
-        cmd.Add(scopeOpt);
+        var cmd = new Command("set", "Write a raw JSON value for a settings key") { keyArg, valueArg, scopeOpt };
 
         cmd.SetAction(async (parseResult, cancellationToken) =>
             await HostRunner.RunAsync(async (host, _) =>
@@ -195,7 +185,7 @@ internal static class ConfigCommands
                 {
                     // The value must be valid JSON — catch at the boundary so the user
                     // gets a clear message instead of an unhandled exception.
-                    Console.Error.WriteLine($"Invalid JSON value: {ex.Message}");
+                    await Console.Error.WriteLineAsync($"Invalid JSON value: {ex.Message}");
                     return 1;
                 }
 
@@ -216,9 +206,7 @@ internal static class ConfigCommands
         var keyArg   = new Argument<string>("key") { Description = "Dot-separated settings key" };
         var scopeOpt = ScopeOption();
 
-        var cmd = new Command("clear", "Remove a settings key from the given scope");
-        cmd.Add(keyArg);
-        cmd.Add(scopeOpt);
+        var cmd = new Command("clear", "Remove a settings key from the given scope") { keyArg, scopeOpt };
 
         cmd.SetAction(async (parseResult, cancellationToken) =>
             await HostRunner.RunAsync(async (host, _) =>
@@ -242,16 +230,16 @@ internal static class ConfigCommands
     /// Defaults to "user" so the most common case requires no explicit flag.
     /// </summary>
     private static Option<string> ScopeOption() =>
-        new Option<string>("--scope", "-s")
+        new("--scope", "-s")
         {
             Description            = "Configuration scope: user (default) or workspace",
-            DefaultValueFactory    = _ => "user",
+            DefaultValueFactory    = _ => "user"
         };
 
     private static ConfigurationScope ParseScope(string? value) =>
         value?.ToLowerInvariant() switch
         {
             "workspace" => ConfigurationScope.Workspace,
-            _           => ConfigurationScope.User,
+            _           => ConfigurationScope.User
         };
 }

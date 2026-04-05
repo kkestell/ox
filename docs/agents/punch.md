@@ -18,10 +18,10 @@ This document catalogs features that are designed but not wired, partially imple
 - No way to list what settings an extension supports or their schemas (e.g. `ur extensions settings <id>`)
 - The schemas are registered and validated but never surfaced to the user
 
-### Model List `--all` Flag
+****### Model List `--all` Flag
 - `ur models list --all` is defined and parsed in `ModelCommands.cs`
 - The flag is explicitly noted as "reserved for future use" — the library does not yet expose the unfiltered catalog
-- `ModelCatalog` only exposes filtered (tool-capable) models publicly via `UrConfiguration.AvailableModels`
+- `ModelCatalog` only exposes filtered (tool-capable) models publicly via `UrConfiguration.AvailableModels`****
 
 ---
 

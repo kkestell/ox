@@ -7,7 +7,7 @@ namespace Ur.Tools;
 /// Built-in tool that creates or overwrites a file in the workspace.
 /// Automatically creates parent directories if they don't exist.
 /// </summary>
-internal sealed class WriteFileTool : AIFunction
+internal sealed class WriteFileTool(Workspace workspace) : AIFunction
 {
     private static readonly JsonElement Schema = JsonDocument.Parse("""
         {
@@ -27,13 +27,6 @@ internal sealed class WriteFileTool : AIFunction
         }
         """).RootElement.Clone();
 
-    private readonly Workspace _workspace;
-
-    public WriteFileTool(Workspace workspace)
-    {
-        _workspace = workspace;
-    }
-
     public override string Name => "write_file";
     public override string Description => "Create or overwrite a file in the workspace.";
     public override JsonElement JsonSchema => Schema;
@@ -44,9 +37,9 @@ internal sealed class WriteFileTool : AIFunction
     {
         var filePath = ToolArgHelpers.GetRequiredString(arguments, "file_path");
         var content = ToolArgHelpers.GetRequiredString(arguments, "content");
-        var fullPath = ToolArgHelpers.ResolvePath(_workspace.RootPath, filePath);
+        var fullPath = ToolArgHelpers.ResolvePath(workspace.RootPath, filePath);
 
-        if (!_workspace.Contains(fullPath))
+        if (!workspace.Contains(fullPath))
             throw new InvalidOperationException($"Path is outside the workspace: {filePath}");
 
         // Ensure the parent directory exists so the LLM can write to new subdirectories.

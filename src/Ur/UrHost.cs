@@ -191,7 +191,7 @@ public sealed class UrHost
     {
         var cacheDir = Path.Combine(userDataDirectory, "cache");
         var modelCatalog = new ModelCatalog(cacheDir);
-        modelCatalog.LoadCache();
+        _ = modelCatalog.LoadCache();
         return modelCatalog;
     }
 
@@ -293,7 +293,7 @@ public sealed class UrHost
         if (session is null)
             return null;
 
-        var messages = (await _sessions.ReadAllAsync(session, ct)).ToList();
+        var messages = (await SessionStore.ReadAllAsync(session, ct)).ToList();
         return new UrSession(this, session, messages, isPersisted: true, activeModelId: null,
             callbacks, _workspace.PermissionsPath, DefaultUserPermissionsPath());
     }
@@ -305,10 +305,9 @@ public sealed class UrHost
     {
         if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
             return new MacOsKeyring();
-        if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
-            return new LinuxKeyring();
-
-        throw new PlatformNotSupportedException("Ur requires macOS or Linux.");
+        return RuntimeInformation.IsOSPlatform(OSPlatform.Linux)
+            ? new LinuxKeyring()
+            : throw new PlatformNotSupportedException("Ur requires macOS or Linux.");
     }
 
     private static void RegisterCoreSchemas(SettingsSchemaRegistry registry)

@@ -83,18 +83,6 @@ public sealed class ModelCatalog
         _models = BuildIndex(response.Data.Select(ToModelInfo));
     }
 
-    /// <summary>
-    /// Ensures models are loaded — from cache if available, otherwise fetches from API.
-    /// </summary>
-    public async Task EnsureLoadedAsync(CancellationToken ct = default)
-    {
-        if (_models.Count > 0)
-            return;
-
-        if (!LoadCache())
-            await RefreshAsync(ct);
-    }
-
     private static ModelInfo ToModelInfo(OpenRouterModel m) => new(
         Id: m.Id,
         Name: m.Name ?? m.Id,
@@ -179,6 +167,4 @@ public sealed class ModelCatalog
 /// </summary>
 [JsonSerializable(typeof(ModelCatalog.OpenRouterModelsResponse))]
 [JsonSerializable(typeof(List<ModelCatalog.OpenRouterModel>))]
-internal partial class ModelCatalogJsonContext : JsonSerializerContext
-{
-}
+internal partial class ModelCatalogJsonContext : JsonSerializerContext;

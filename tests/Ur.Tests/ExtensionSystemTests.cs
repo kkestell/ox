@@ -23,7 +23,7 @@ public sealed class ExtensionSystemTests
     public async Task DiscoverAllAsync_HigherTierWinsAndStableOrderIsPreserved()
     {
         using var env = new TempExtensionEnvironment();
-        await env.WriteManifestOnlyExtensionAsync(
+        await TempExtensionEnvironment.WriteManifestOnlyExtensionAsync(
             env.SystemExtensionsPath,
             "system-shared",
             """
@@ -32,7 +32,7 @@ public sealed class ExtensionSystemTests
               version = "1.0.0"
             }
             """);
-        await env.WriteManifestOnlyExtensionAsync(
+        await TempExtensionEnvironment.WriteManifestOnlyExtensionAsync(
             env.UserExtensionsPath,
             "user-zulu",
             """
@@ -41,7 +41,7 @@ public sealed class ExtensionSystemTests
               version = "1.0.0"
             }
             """);
-        await env.WriteManifestOnlyExtensionAsync(
+        await TempExtensionEnvironment.WriteManifestOnlyExtensionAsync(
             env.UserExtensionsPath,
             "user-alpha",
             """
@@ -50,7 +50,7 @@ public sealed class ExtensionSystemTests
               version = "1.0.0"
             }
             """);
-        await env.WriteManifestOnlyExtensionAsync(
+        await TempExtensionEnvironment.WriteManifestOnlyExtensionAsync(
             env.WorkspaceExtensionsPath,
             "workspace-zulu",
             """
@@ -59,7 +59,7 @@ public sealed class ExtensionSystemTests
               version = "1.0.0"
             }
             """);
-        await env.WriteManifestOnlyExtensionAsync(
+        await TempExtensionEnvironment.WriteManifestOnlyExtensionAsync(
             env.WorkspaceExtensionsPath,
             "workspace-alpha",
             """
@@ -68,7 +68,7 @@ public sealed class ExtensionSystemTests
               version = "1.0.0"
             }
             """);
-        await env.WriteManifestOnlyExtensionAsync(
+        await TempExtensionEnvironment.WriteManifestOnlyExtensionAsync(
             env.UserExtensionsPath,
             "user-shadowed",
             """
@@ -120,7 +120,7 @@ public sealed class ExtensionSystemTests
     public async Task DiscoverAllAsync_ManifestSettingsAreConvertedToJsonSchema()
     {
         using var env = new TempExtensionEnvironment();
-        await env.WriteManifestOnlyExtensionAsync(
+        await TempExtensionEnvironment.WriteManifestOnlyExtensionAsync(
             env.UserExtensionsPath,
             "settings-ext",
             """
@@ -151,7 +151,7 @@ public sealed class ExtensionSystemTests
     public async Task DiscoverAllAsync_ManifestSandboxViolationSkipsExtension()
     {
         using var env = new TempExtensionEnvironment();
-        await env.WriteManifestOnlyExtensionAsync(
+        await TempExtensionEnvironment.WriteManifestOnlyExtensionAsync(
             env.UserExtensionsPath,
             "sandboxed-out",
             """
@@ -175,7 +175,7 @@ public sealed class ExtensionSystemTests
     public async Task ActivateAsync_TrustedExtensionRegistersInvocableTool()
     {
         using var env = new TempExtensionEnvironment();
-        await env.WriteSampleExtensionAsync(
+        await TempExtensionEnvironment.WriteSampleExtensionAsync(
             env.UserExtensionsPath,
             "sample-echo",
             extensionName: "sample.echo",
@@ -195,7 +195,7 @@ public sealed class ExtensionSystemTests
         // Verify the tool is accessible via RegisterToolsInto.
         var registry = new ToolRegistry();
         extension.RegisterToolsInto(registry);
-        var tool = Assert.IsAssignableFrom<AIFunction>(registry.Get("sample_echo"));
+        var tool = Assert.IsType<AIFunction>(registry.Get("sample_echo"), exactMatch: false);
 
         var result = await tool.InvokeAsync(
             new AIFunctionArguments(new Dictionary<string, object?> { ["text"] = "hello" }));
@@ -207,7 +207,7 @@ public sealed class ExtensionSystemTests
     public async Task Deactivate_ClearsToolsAndRuntimeState()
     {
         using var env = new TempExtensionEnvironment();
-        await env.WriteSampleExtensionAsync(
+        await TempExtensionEnvironment.WriteSampleExtensionAsync(
             env.UserExtensionsPath,
             "sample-echo",
             extensionName: "sample.echo",
@@ -232,7 +232,7 @@ public sealed class ExtensionSystemTests
     public async Task StartAsync_DisabledWorkspaceExtensionDoesNotExecuteMainLua()
     {
         using var env = new TempExtensionEnvironment();
-        await env.WriteExtensionAsync(
+        await TempExtensionEnvironment.WriteExtensionAsync(
             env.WorkspaceExtensionsPath,
             "workspace-broken",
             """
@@ -241,9 +241,7 @@ public sealed class ExtensionSystemTests
               version = "1.0.0"
             }
             """,
-            """
-            this is not valid lua
-            """);
+            "this is not valid lua");
 
         var host = await env.StartHostAsync();
         var extension = Assert.Single(host.Extensions.List());
@@ -263,7 +261,7 @@ public sealed class ExtensionSystemTests
         // all the way from the manifest through ExtensionCatalog to the caller,
         // and that the same data is reachable via ExtensionInfo.SettingsSchemas.
         using var env = new TempExtensionEnvironment();
-        await env.WriteManifestOnlyExtensionAsync(
+        await TempExtensionEnvironment.WriteManifestOnlyExtensionAsync(
             env.UserExtensionsPath,
             "settings-ext",
             """

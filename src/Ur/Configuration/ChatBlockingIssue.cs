@@ -10,5 +10,5 @@ public enum ChatBlockingIssue
     /// <summary>No OpenRouter API key stored in the OS keyring.</summary>
     MissingApiKey,
     /// <summary>No model selected in user or workspace settings.</summary>
-    MissingModelSelection,
+    MissingModelSelection
 }

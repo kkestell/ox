@@ -8,31 +8,17 @@ namespace Ur.Extensions;
 /// Wraps a Lua function as an <see cref="AIFunction"/> so the agent loop
 /// can invoke extension-defined tools through the standard tool registry.
 /// </summary>
-internal sealed class LuaToolAdapter : AIFunction
+internal sealed class LuaToolAdapter(
+    string name,
+    string description,
+    JsonElement jsonSchema,
+    LuaState state,
+    LuaFunction handler)
+    : AIFunction
 {
-    private readonly LuaState _state;
-    private readonly LuaFunction _handler;
-    private readonly string _name;
-    private readonly string _description;
-    private readonly JsonElement _jsonSchema;
-
-    public LuaToolAdapter(
-        string name,
-        string description,
-        JsonElement jsonSchema,
-        LuaState state,
-        LuaFunction handler)
-    {
-        _name = name;
-        _description = description;
-        _jsonSchema = jsonSchema;
-        _state = state;
-        _handler = handler;
-    }
-
-    public override string Name => _name;
-    public override string Description => _description;
-    public override JsonElement JsonSchema => _jsonSchema;
+    public override string Name { get; } = name;
+    public override string Description { get; } = description;
+    public override JsonElement JsonSchema { get; } = jsonSchema;
 
     protected override async ValueTask<object?> InvokeCoreAsync(
         AIFunctionArguments arguments,
@@ -44,15 +30,12 @@ internal sealed class LuaToolAdapter : AIFunction
             argsTable[key] = MarshalToLua(value);
 
         // Call the Lua handler with the arguments table.
-        var results = await _state.CallAsync(
-            _handler,
+        var results = await state.CallAsync(
+            handler,
             new LuaValue[] { argsTable },
             cancellationToken);
 
-        if (results.Length == 0)
-            return null;
-
-        return MarshalFromLua(results[0]);
+        return results.Length == 0 ? null : MarshalFromLua(results[0]);
     }
 
     private static LuaValue MarshalToLua(object? value) => value switch
@@ -102,7 +85,6 @@ internal sealed class LuaToolAdapter : AIFunction
         if (value.TryRead<string>(out var s)) return s;
         if (value.TryRead<double>(out var d)) return d;
         if (value.TryRead<bool>(out var b)) return b;
-        if (value.TryRead<LuaTable>(out var t)) return LuaJsonHelpers.ToJsonString(t);
-        return null;
+        return value.TryRead<LuaTable>(out var t) ? LuaJsonHelpers.ToJsonString(t) : null;
     }
 }

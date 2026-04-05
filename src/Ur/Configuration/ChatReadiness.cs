@@ -8,14 +8,8 @@ namespace Ur.Configuration;
 /// This is computed on demand by <see cref="UrConfiguration.Readiness"/> so
 /// that the UI always gets a fresh snapshot.
 /// </summary>
-public sealed class ChatReadiness
+public sealed class ChatReadiness(IReadOnlyList<ChatBlockingIssue> blockingIssues)
 {
-    public bool CanRunTurns { get; }
-    public IReadOnlyList<ChatBlockingIssue> BlockingIssues { get; }
-
-    public ChatReadiness(IReadOnlyList<ChatBlockingIssue> blockingIssues)
-    {
-        BlockingIssues = blockingIssues;
-        CanRunTurns = blockingIssues.Count == 0;
-    }
+    public bool CanRunTurns { get; } = blockingIssues.Count == 0;
+    public IReadOnlyList<ChatBlockingIssue> BlockingIssues { get; } = blockingIssues;
 }

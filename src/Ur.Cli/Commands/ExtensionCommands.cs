@@ -20,13 +20,14 @@ internal static class ExtensionCommands
 {
     public static Command Build()
     {
-        var extensions = new Command("extensions", "Manage the extension catalog");
-
-        extensions.Add(BuildList());
-        extensions.Add(BuildEnable());
-        extensions.Add(BuildDisable());
-        extensions.Add(BuildReset());
-        extensions.Add(BuildSettings());
+        var extensions = new Command("extensions", "Manage the extension catalog")
+        {
+            BuildList(),
+            BuildEnable(),
+            BuildDisable(),
+            BuildReset(),
+            BuildSettings()
+        };
 
         return extensions;
     }
@@ -40,14 +41,14 @@ internal static class ExtensionCommands
         var cmd = new Command("list", "List all discovered extensions and their current state");
 
         cmd.SetAction(async (_, cancellationToken) =>
-            await HostRunner.RunAsync(async (host, _) =>
+            await HostRunner.RunAsync((host, _) =>
             {
                 var extensions = host.Extensions.List();
 
                 if (extensions.Count == 0)
                 {
                     Console.WriteLine("No extensions found.");
-                    return 0;
+                    return Task.FromResult(0);
                 }
 
                 const int idWidth      = 30;
@@ -74,7 +75,7 @@ internal static class ExtensionCommands
 
                 Console.WriteLine();
                 Console.WriteLine($"{extensions.Count} extension(s).");
-                return 0;
+                return Task.FromResult(0);
             }, cancellationToken));
 
         return cmd;
@@ -87,8 +88,7 @@ internal static class ExtensionCommands
     private static Command BuildEnable()
     {
         var idArg = ExtensionIdArgument();
-        var cmd   = new Command("enable", "Enable an extension");
-        cmd.Add(idArg);
+        var cmd   = new Command("enable", "Enable an extension") { idArg };
 
         cmd.SetAction(async (parseResult, cancellationToken) =>
             await HostRunner.RunAsync(async (host, ct) =>
@@ -109,8 +109,7 @@ internal static class ExtensionCommands
     private static Command BuildDisable()
     {
         var idArg = ExtensionIdArgument();
-        var cmd   = new Command("disable", "Disable an extension");
-        cmd.Add(idArg);
+        var cmd   = new Command("disable", "Disable an extension") { idArg };
 
         cmd.SetAction(async (parseResult, cancellationToken) =>
             await HostRunner.RunAsync(async (host, ct) =>
@@ -131,8 +130,7 @@ internal static class ExtensionCommands
     private static Command BuildReset()
     {
         var idArg = ExtensionIdArgument();
-        var cmd   = new Command("reset", "Remove any override and restore the tier default for an extension");
-        cmd.Add(idArg);
+        var cmd   = new Command("reset", "Remove any override and restore the tier default for an extension") { idArg };
 
         cmd.SetAction(async (parseResult, cancellationToken) =>
             await HostRunner.RunAsync(async (host, ct) =>
@@ -154,11 +152,10 @@ internal static class ExtensionCommands
     private static Command BuildSettings()
     {
         var idArg = ExtensionIdArgument();
-        var cmd   = new Command("settings", "List settings declared by an extension, with schemas and current values");
-        cmd.Add(idArg);
+        var cmd   = new Command("settings", "List settings declared by an extension, with schemas and current values") { idArg };
 
         cmd.SetAction(async (parseResult, cancellationToken) =>
-            await HostRunner.RunAsync(async (host, _) =>
+            await HostRunner.RunAsync((host, _) =>
             {
                 var id      = parseResult.GetValue(idArg)!;
                 var schemas = host.Extensions.GetExtensionSettings(id);
@@ -166,7 +163,7 @@ internal static class ExtensionCommands
                 if (schemas.Count == 0)
                 {
                     Console.WriteLine($"No settings defined for {id}.");
-                    return 0;
+                    return Task.FromResult(0);
                 }
 
                 // Print each setting as: key name, current value (if any), then the
@@ -182,15 +179,13 @@ internal static class ExtensionCommands
                         ? $"Current value: {current.Value}"
                         : "Current value: (not set)");
 
-                    var prettySchema = JsonSerializer.Serialize(
-                        schema,
-                        new JsonSerializerOptions { WriteIndented = true });
+                    var prettySchema = JsonSerializer.Serialize(schema, IndentedJsonOptions);
                     Console.WriteLine("Schema:");
                     Console.WriteLine(prettySchema);
                     Console.WriteLine();
                 }
 
-                return 0;
+                return Task.FromResult(0);
             }, cancellationToken));
 
         return cmd;
@@ -200,8 +195,12 @@ internal static class ExtensionCommands
     // Shared helpers
     // -------------------------------------------------------------------------
 
+    // Reused for all JSON-schema pretty-printing — avoids allocating a new
+    // JsonSerializerOptions on every extension settings display.
+    private static readonly JsonSerializerOptions IndentedJsonOptions = new() { WriteIndented = true };
+
     private static Argument<string> ExtensionIdArgument() =>
-        new Argument<string>("extension-id")
+        new("extension-id")
         {
             Description = "Extension ID in the form <tier>:<name> (e.g. system:git)"
         };

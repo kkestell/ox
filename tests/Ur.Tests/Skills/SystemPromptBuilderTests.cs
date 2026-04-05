@@ -17,7 +17,7 @@ public sealed class SystemPromptBuilderTests
             DisableModelInvocation = disableModelInvocation,
             Content = "content",
             SkillDirectory = $"/skills/{name}",
-            Source = "user",
+            Source = "user"
         };
 
     [Fact]
@@ -32,7 +32,7 @@ public sealed class SystemPromptBuilderTests
     public void Build_OnlyDisabledSkills_ReturnsNull()
     {
         var registry = new SkillRegistry([
-            MakeSkill("hidden", disableModelInvocation: true),
+            MakeSkill("hidden", disableModelInvocation: true)
         ]);
 
         // No model-invocable skills → no system prompt.
@@ -43,7 +43,7 @@ public sealed class SystemPromptBuilderTests
     public void Build_IncludesSkillNameAndDescription()
     {
         var registry = new SkillRegistry([
-            MakeSkill("commit", description: "Commit staged changes"),
+            MakeSkill("commit", description: "Commit staged changes")
         ]);
 
         var prompt = SystemPromptBuilder.Build(registry);
@@ -57,7 +57,7 @@ public sealed class SystemPromptBuilderTests
     public void Build_IncludesWhenToUse()
     {
         var registry = new SkillRegistry([
-            MakeSkill("deploy", description: "Deploy the app", whenToUse: "When user wants to deploy"),
+            MakeSkill("deploy", description: "Deploy the app", whenToUse: "When user wants to deploy")
         ]);
 
         var prompt = SystemPromptBuilder.Build(registry);
@@ -71,7 +71,7 @@ public sealed class SystemPromptBuilderTests
     {
         var longHint = new string('x', 300);
         var registry = new SkillRegistry([
-            MakeSkill("verbose", whenToUse: longHint),
+            MakeSkill("verbose", whenToUse: longHint)
         ]);
 
         var prompt = SystemPromptBuilder.Build(registry);
@@ -87,7 +87,7 @@ public sealed class SystemPromptBuilderTests
     {
         var exact = new string('y', 250);
         var registry = new SkillRegistry([
-            MakeSkill("exact", whenToUse: exact),
+            MakeSkill("exact", whenToUse: exact)
         ]);
 
         var prompt = SystemPromptBuilder.Build(registry);
@@ -102,7 +102,7 @@ public sealed class SystemPromptBuilderTests
     {
         var registry = new SkillRegistry([
             MakeSkill("visible", description: "I should appear"),
-            MakeSkill("hidden", description: "I should not", disableModelInvocation: true),
+            MakeSkill("hidden", description: "I should not", disableModelInvocation: true)
         ]);
 
         var prompt = SystemPromptBuilder.Build(registry);
@@ -118,7 +118,7 @@ public sealed class SystemPromptBuilderTests
         var registry = new SkillRegistry([
             MakeSkill("commit", description: "Commit changes"),
             MakeSkill("deploy", description: "Deploy app"),
-            MakeSkill("review", description: "Review PR"),
+            MakeSkill("review", description: "Review PR")
         ]);
 
         var prompt = SystemPromptBuilder.Build(registry);

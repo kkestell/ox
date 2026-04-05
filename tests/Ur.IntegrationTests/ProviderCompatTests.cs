@@ -41,7 +41,7 @@ public class ProviderCompatTests
                 "qwen/qwen3.5-flash-02-23",
                 new ApiKeyCredential(key),
                 new OpenAIClientOptions { Endpoint = new Uri("https://openrouter.ai/api/v1") })
-                .AsIChatClient()),
+                .AsIChatClient())
     ];
 
     private static Dictionary<string, IChatClient> CreateClients()
@@ -70,18 +70,18 @@ public class ProviderCompatTests
     /// Turn 1: user asks about weather → model calls get_weather.
     /// Turn 2: tool result sent back → model gives final answer.
     /// </summary>
-    private async Task<List<ChatMessage>> RunToolCallingConversation(IChatClient client)
+    private static async Task<List<ChatMessage>> RunToolCallingConversation(IChatClient client)
     {
         var messages = new List<ChatMessage>
         {
             new(ChatRole.System, "You have access to tools. You MUST call tools when asked about weather — do not answer from your own knowledge."),
-            new(ChatRole.User, "What's the weather in Tokyo?"),
+            new(ChatRole.User, "What's the weather in Tokyo?")
         };
 
         var options = new ChatOptions
         {
             Tools = [WeatherTool],
-            ToolMode = ChatToolMode.Auto,
+            ToolMode = ChatToolMode.Auto
         };
 
         // Turn 1: expect tool call
@@ -90,17 +90,17 @@ public class ProviderCompatTests
         messages.Add(assistantMsg);
 
         var toolCalls = assistantMsg.Contents.OfType<FunctionCallContent>().ToList();
-        if (toolCalls.Count > 0)
-        {
-            var toolMessage = new ChatMessage(ChatRole.Tool, []);
-            foreach (var call in toolCalls)
-                toolMessage.Contents.Add(new FunctionResultContent(call.CallId, "Sunny, 22°C in Tokyo"));
-            messages.Add(toolMessage);
+        if (toolCalls.Count == 0)
+            return messages;
 
-            // Turn 2: final text response
-            var response2 = await client.GetResponseAsync(messages, options);
-            messages.Add(response2.Messages[^1]);
-        }
+        var toolMessage = new ChatMessage(ChatRole.Tool, []);
+        foreach (var call in toolCalls)
+            toolMessage.Contents.Add(new FunctionResultContent(call.CallId, "Sunny, 22°C in Tokyo"));
+        messages.Add(toolMessage);
+
+        // Turn 2: final text response
+        var response2 = await client.GetResponseAsync(messages, options);
+        messages.Add(response2.Messages[^1]);
 
         return messages;
     }

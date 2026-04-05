@@ -1,13 +1,7 @@
 namespace Ur.Sessions;
 
-public sealed class SessionInfo
+public sealed class SessionInfo(string id, DateTimeOffset createdAt)
 {
-    public string Id { get; }
-    public DateTimeOffset CreatedAt { get; }
-
-    public SessionInfo(string id, DateTimeOffset createdAt)
-    {
-        Id = id;
-        CreatedAt = createdAt;
-    }
+    public string Id { get; } = id;
+    public DateTimeOffset CreatedAt { get; } = createdAt;
 }

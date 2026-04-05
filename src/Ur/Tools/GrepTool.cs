@@ -15,7 +15,7 @@ namespace Ur.Tools;
 /// content search across large repos; glob-style file filtering uses
 /// the FileSystemGlobbing package in both paths.
 /// </summary>
-internal sealed class GrepTool : AIFunction
+internal sealed class GrepTool(Workspace workspace) : AIFunction
 {
     private const int RipgrepTimeoutSeconds = 30;
 
@@ -48,13 +48,6 @@ internal sealed class GrepTool : AIFunction
     // Lazily detect whether ripgrep is available. null = not yet checked.
     private static bool? _ripgrepAvailable;
 
-    private readonly Workspace _workspace;
-
-    public GrepTool(Workspace workspace)
-    {
-        _workspace = workspace;
-    }
-
     public override string Name => "grep";
     public override string Description => "Search file contents by regex pattern. Uses ripgrep if available, otherwise falls back to .NET regex.";
     public override JsonElement JsonSchema => Schema;
@@ -68,9 +61,9 @@ internal sealed class GrepTool : AIFunction
         var include = ToolArgHelpers.GetOptionalString(arguments, "include");
         var contextLines = ToolArgHelpers.GetOptionalInt(arguments, "context_lines") ?? 0;
 
-        var searchRoot = ToolArgHelpers.ResolvePath(_workspace.RootPath, subPath);
+        var searchRoot = ToolArgHelpers.ResolvePath(workspace.RootPath, subPath);
 
-        if (!_workspace.Contains(searchRoot))
+        if (!workspace.Contains(searchRoot))
             throw new InvalidOperationException($"Path is outside the workspace: {subPath}");
 
         if (!Directory.Exists(searchRoot))
@@ -92,7 +85,7 @@ internal sealed class GrepTool : AIFunction
         {
             "--line-number",
             "--no-heading",
-            "--color", "never",
+            "--color", "never"
         };
 
         if (contextLines > 0)
@@ -114,11 +107,11 @@ internal sealed class GrepTool : AIFunction
         var psi = new ProcessStartInfo
         {
             FileName = "rg",
-            WorkingDirectory = _workspace.RootPath,
+            WorkingDirectory = workspace.RootPath,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false,
-            CreateNoWindow = true,
+            CreateNoWindow = true
         };
 
         foreach (var arg in args)
@@ -181,7 +174,7 @@ internal sealed class GrepTool : AIFunction
                 continue;
             }
 
-            var relativePath = Path.GetRelativePath(_workspace.RootPath, file);
+            var relativePath = Path.GetRelativePath(workspace.RootPath, file);
 
             for (var i = 0; i < lines.Length; i++)
             {
@@ -246,7 +239,7 @@ internal sealed class GrepTool : AIFunction
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 UseShellExecute = false,
-                CreateNoWindow = true,
+                CreateNoWindow = true
             };
             using var process = Process.Start(psi);
             process?.WaitForExit(3000);

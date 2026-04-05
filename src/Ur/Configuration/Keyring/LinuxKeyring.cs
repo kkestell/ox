@@ -125,7 +125,7 @@ public sealed partial class LinuxKeyring : IKeyring
             Flags = SecretSchemaNone,
             Attr0 = new SecretSchemaAttribute { Name = AttrServiceName, Type = SecretSchemaAttributeString },
             Attr1 = new SecretSchemaAttribute { Name = AttrAccountName, Type = SecretSchemaAttributeString },
-            Attr2 = new SecretSchemaAttribute { Name = 0, Type = 0 },
+            Attr2 = new SecretSchemaAttribute { Name = 0, Type = 0 }
         };
     }
 

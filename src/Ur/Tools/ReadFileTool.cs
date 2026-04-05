@@ -8,7 +8,7 @@ namespace Ur.Tools;
 /// Supports optional offset/limit parameters for reading specific line ranges,
 /// and appends a truncation message when the output doesn't cover the entire file.
 /// </summary>
-internal sealed class ReadFileTool : AIFunction
+internal sealed class ReadFileTool(Workspace workspace) : AIFunction
 {
     private const int DefaultLimit = 2000;
 
@@ -34,13 +34,6 @@ internal sealed class ReadFileTool : AIFunction
         }
         """).RootElement.Clone();
 
-    private readonly Workspace _workspace;
-
-    public ReadFileTool(Workspace workspace)
-    {
-        _workspace = workspace;
-    }
-
     public override string Name => "read_file";
     public override string Description => "Read the contents of a file in the workspace.";
     public override JsonElement JsonSchema => Schema;
@@ -50,9 +43,9 @@ internal sealed class ReadFileTool : AIFunction
         CancellationToken cancellationToken)
     {
         var filePath = ToolArgHelpers.GetRequiredString(arguments, "file_path");
-        var fullPath = ToolArgHelpers.ResolvePath(_workspace.RootPath, filePath);
+        var fullPath = ToolArgHelpers.ResolvePath(workspace.RootPath, filePath);
 
-        if (!_workspace.Contains(fullPath))
+        if (!workspace.Contains(fullPath))
             throw new InvalidOperationException($"Path is outside the workspace: {filePath}");
 
         if (!File.Exists(fullPath))

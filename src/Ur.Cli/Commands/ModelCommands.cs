@@ -18,11 +18,12 @@ internal static class ModelCommands
 {
     public static Command Build()
     {
-        var models = new Command("models", "Browse the model catalog");
-
-        models.Add(BuildList());
-        models.Add(BuildRefresh());
-        models.Add(BuildShow());
+        var models = new Command("models", "Browse the model catalog")
+        {
+            BuildList(),
+            BuildRefresh(),
+            BuildShow()
+        };
 
         return models;
     }
@@ -38,11 +39,10 @@ internal static class ModelCommands
             Description = "Show every model in the catalog, not just text+tool capable ones"
         };
 
-        var cmd = new Command("list", "List available models");
-        cmd.Add(allOpt);
+        var cmd = new Command("list", "List available models") { allOpt };
 
         cmd.SetAction(async (parseResult, cancellationToken) =>
-            await HostRunner.RunAsync(async (host, _) =>
+            await HostRunner.RunAsync((host, _) =>
             {
                 var showAll = parseResult.GetValue(allOpt);
                 var models  = showAll
@@ -52,7 +52,7 @@ internal static class ModelCommands
                 if (models.Count == 0)
                 {
                     Console.WriteLine("No models in catalog. Run: ur models refresh");
-                    return 0;
+                    return Task.FromResult(0);
                 }
 
                 // Column widths — measured from typical OpenRouter IDs and names.
@@ -69,7 +69,7 @@ internal static class ModelCommands
                 Console.WriteLine();
                 var view = showAll ? "all models" : "text+tool-capable models";
                 Console.WriteLine($"{models.Count} model(s) listed ({view}).");
-                return 0;
+                return Task.FromResult(0);
             }, cancellationToken));
 
         return cmd;
@@ -117,8 +117,7 @@ internal static class ModelCommands
             Description = "Model identifier (e.g. openai/gpt-4o)"
         };
 
-        var cmd = new Command("show", "Print full metadata for a specific model");
-        cmd.Add(modelArg);
+        var cmd = new Command("show", "Print full metadata for a specific model") { modelArg };
 
         cmd.SetAction(async (parseResult, cancellationToken) =>
             await HostRunner.RunAsync(async (host, _) =>
@@ -128,8 +127,8 @@ internal static class ModelCommands
 
                 if (model is null)
                 {
-                    Console.Error.WriteLine($"Model not found: {modelId}");
-                    Console.Error.WriteLine("Run 'ur models list' to see available models, or 'ur models refresh' to update the catalog.");
+                    await Console.Error.WriteLineAsync($"Model not found: {modelId}");
+                    await Console.Error.WriteLineAsync("Run 'ur models list' to see available models, or 'ur models refresh' to update the catalog.");
                     return 1;
                 }
 

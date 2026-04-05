@@ -11,7 +11,7 @@ namespace Ur.Tools;
 /// process execution — the permission system gates it behind per-invocation
 /// user approval (ExecuteCommand with Once-only scope).
 /// </summary>
-internal sealed class BashTool : AIFunction
+internal sealed class BashTool(Workspace workspace) : AIFunction
 {
     private const int DefaultTimeoutMs = 120_000; // 2 minutes
 
@@ -33,13 +33,6 @@ internal sealed class BashTool : AIFunction
         }
         """).RootElement.Clone();
 
-    private readonly Workspace _workspace;
-
-    public BashTool(Workspace workspace)
-    {
-        _workspace = workspace;
-    }
-
     public override string Name => "bash";
     public override string Description => "Execute a shell command in the workspace directory.";
     public override JsonElement JsonSchema => Schema;
@@ -54,11 +47,11 @@ internal sealed class BashTool : AIFunction
         var psi = new ProcessStartInfo
         {
             FileName = "/bin/bash",
-            WorkingDirectory = _workspace.RootPath,
+            WorkingDirectory = workspace.RootPath,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false,
-            CreateNoWindow = true,
+            CreateNoWindow = true
         };
         psi.ArgumentList.Add("-c");
         psi.ArgumentList.Add(command);
@@ -70,8 +63,7 @@ internal sealed class BashTool : AIFunction
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         cts.CancelAfter(TimeSpan.FromMilliseconds(timeoutMs));
 
-        string stdout, stderr;
-        bool timedOut = false;
+        var timedOut = false;
 
         // Read stdout and stderr concurrently via Task.WhenAll to avoid
         // deadlocks — sequential awaits can block if the process fills one
@@ -93,8 +85,8 @@ internal sealed class BashTool : AIFunction
         }
 
         // Recover whatever output completed, even on timeout.
-        stdout = stdoutTask.IsCompletedSuccessfully ? stdoutTask.Result : "";
-        stderr = stderrTask.IsCompletedSuccessfully ? stderrTask.Result : "";
+        var stdout = stdoutTask.IsCompletedSuccessfully ? stdoutTask.Result : "";
+        var stderr = stderrTask.IsCompletedSuccessfully ? stderrTask.Result : "";
 
         // After a kill, ExitCode may not be available immediately — wait
         // briefly for the OS to reap the process before reading exit code.

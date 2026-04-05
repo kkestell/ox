@@ -22,7 +22,7 @@ internal static class BuiltinTools
             registry.Register(
                 new ReadFileTool(workspace),
                 OperationType.ReadInWorkspace,
-                targetExtractor: args => ExtractFilePath(args));
+                targetExtractor: ExtractFilePath);
         }
 
         // write_file and update_file both require write permission.
@@ -31,7 +31,7 @@ internal static class BuiltinTools
             registry.Register(
                 new WriteFileTool(workspace),
                 OperationType.WriteInWorkspace,
-                targetExtractor: args => ExtractFilePath(args));
+                targetExtractor: ExtractFilePath);
         }
 
         if (registry.Get("update_file") is null)
@@ -39,7 +39,7 @@ internal static class BuiltinTools
             registry.Register(
                 new UpdateFileTool(workspace),
                 OperationType.WriteInWorkspace,
-                targetExtractor: args => ExtractFilePath(args));
+                targetExtractor: ExtractFilePath);
         }
 
         // glob and grep are read operations — auto-allowed like read_file.

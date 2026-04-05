@@ -21,7 +21,7 @@ public sealed class SkillToolTests
             DisableModelInvocation = disableModelInvocation,
             UserInvocable = userInvocable,
             SkillDirectory = $"/skills/{name}",
-            Source = "user",
+            Source = "user"
         };
 
     private static async Task<string?> InvokeAsync(

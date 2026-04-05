@@ -7,7 +7,7 @@ format-docs:
 # Requires: dotnet tool install -g JetBrains.ReSharper.GlobalTools
 # Requires: jq
 inspect:
-	@jb inspectcode Ur.slnx -o=inspection-results.xml --severity=WARNING --build > /dev/null 2>&1
+	@jb inspectcode Ur.slnx -o=inspection-results.xml --severity=INFO --build > /dev/null 2>&1
 	@./scripts/format-inspection-results.sh > inspection-results.txt
 	@rm -f inspection-results.xml
 	@echo "Wrote inspection-results.txt"

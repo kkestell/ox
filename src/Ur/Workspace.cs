@@ -3,21 +3,17 @@ namespace Ur;
 /// <summary>
 /// A directory on disk that scopes sessions, configuration, and workspace extensions.
 /// </summary>
-internal sealed class Workspace
+internal sealed class Workspace(string rootPath)
 {
-    public string RootPath { get; }
-    public string UrDirectory => Path.Combine(RootPath, ".ur");
+    // RootPath normalizes the input: GetFullPath resolves . and relative segments.
+    public string RootPath { get; } = Path.GetFullPath(rootPath);
+    private string UrDirectory => Path.Combine(RootPath, ".ur");
     public string SessionsDirectory => Path.Combine(UrDirectory, "sessions");
     public string ExtensionsDirectory => Path.Combine(UrDirectory, "extensions");
     public string SkillsDirectory => Path.Combine(UrDirectory, "skills");
     public string SettingsPath => Path.Combine(UrDirectory, "settings.json");
     public string PermissionsPath => Path.Combine(UrDirectory, "permissions.jsonl");
     public string StateHash => Extensions.ExtensionOverrideStore.ComputeWorkspaceHash(RootPath);
-
-    public Workspace(string rootPath)
-    {
-        RootPath = Path.GetFullPath(rootPath);
-    }
 
     /// <summary>
     /// Ensures the .ur directory structure exists.

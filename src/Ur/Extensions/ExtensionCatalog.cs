@@ -15,7 +15,7 @@ public sealed class ExtensionCatalog
     private readonly ExtensionOverrideStore _overrideStore;
     private readonly SemaphoreSlim _gate = new(1, 1);
 
-    internal ExtensionCatalog(
+    private ExtensionCatalog(
         IReadOnlyList<Extension> extensions,
         ExtensionOverrideStore overrideStore,
         IReadOnlyDictionary<ExtensionId, bool> globalOverrides,

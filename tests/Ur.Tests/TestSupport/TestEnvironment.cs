@@ -10,12 +10,12 @@ internal sealed class TempExtensionEnvironment : IDisposable
         "ur-extension-tests",
         Guid.NewGuid().ToString("N"));
 
-    public string UserDataDirectory => Path.Combine(_rootPath, "user-data");
+    private string UserDataDirectory => Path.Combine(_rootPath, "user-data");
     public string SystemExtensionsPath => Path.Combine(UserDataDirectory, "extensions", "system");
     public string UserExtensionsPath => Path.Combine(UserDataDirectory, "extensions", "user");
     public string WorkspacePath => Path.Combine(_rootPath, "workspace");
     public string WorkspaceExtensionsPath => Path.Combine(WorkspacePath, ".ur", "extensions");
-    public string UserSettingsPath => Path.Combine(UserDataDirectory, "settings.json");
+    private string UserSettingsPath => Path.Combine(UserDataDirectory, "settings.json");
     public string GlobalOverridesPath => Path.Combine(UserDataDirectory, "extensions-state.json");
 
     public string WorkspaceOverridesPath => Path.Combine(
@@ -32,7 +32,7 @@ internal sealed class TempExtensionEnvironment : IDisposable
         Directory.CreateDirectory(UserDataDirectory);
     }
 
-    public async Task WriteManifestOnlyExtensionAsync(
+    public static async Task WriteManifestOnlyExtensionAsync(
         string parentDirectory,
         string directoryName,
         string manifestContents)
@@ -45,7 +45,7 @@ internal sealed class TempExtensionEnvironment : IDisposable
             .ConfigureAwait(false);
     }
 
-    public async Task WriteExtensionAsync(
+    public static async Task WriteExtensionAsync(
         string parentDirectory,
         string directoryName,
         string manifestContents,
@@ -68,7 +68,7 @@ internal sealed class TempExtensionEnvironment : IDisposable
         }
     }
 
-    public async Task WriteSampleExtensionAsync(
+    public static async Task WriteSampleExtensionAsync(
         string parentDirectory,
         string directoryName,
         string extensionName,
@@ -162,7 +162,7 @@ internal sealed class TestKeyring : IKeyring
     private readonly Dictionary<(string Service, string Account), string> _secrets = new();
 
     public string? GetSecret(string service, string account) =>
-        _secrets.TryGetValue((service, account), out var secret) ? secret : null;
+        _secrets.GetValueOrDefault((service, account));
 
     public void SetSecret(string service, string account, string secret) =>
         _secrets[(service, account)] = secret;

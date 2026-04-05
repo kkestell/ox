@@ -19,6 +19,4 @@ public sealed class SettingsSchemaRegistry
     public bool TryGetSchema(string key, out JsonElement schema) => _schemas.TryGetValue(key, out schema);
 
     public bool IsKnown(string key) => _schemas.ContainsKey(key);
-
-    public IEnumerable<string> Keys => _schemas.Keys;
 }

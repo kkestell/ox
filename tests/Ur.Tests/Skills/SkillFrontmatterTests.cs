@@ -12,7 +12,7 @@ public sealed class SkillFrontmatterTests
     [Fact]
     public void Parse_CompleteFrontmatter_MapsAllFields()
     {
-        var content = """
+        const string content = """
             ---
             name: commit
             description: Commit staged changes
@@ -56,7 +56,7 @@ public sealed class SkillFrontmatterTests
     [Fact]
     public void Parse_NoFrontmatter_UsesDirectoryNameAndDefaults()
     {
-        var content = "Just some prompt text, no frontmatter.";
+        const string content = "Just some prompt text, no frontmatter.";
 
         var skill = SkillFrontmatter.Parse(content, SkillDir, Source);
 
@@ -74,7 +74,7 @@ public sealed class SkillFrontmatterTests
     [Fact]
     public void Parse_MissingName_DefaultsToDirectoryName()
     {
-        var content = """
+        const string content = """
             ---
             description: A skill without an explicit name
             ---
@@ -91,7 +91,7 @@ public sealed class SkillFrontmatterTests
     [Fact]
     public void Parse_CommaSeparatedArguments_ParsedIntoArray()
     {
-        var content = """
+        const string content = """
             ---
             arguments: first, second, third
             ---
@@ -106,7 +106,7 @@ public sealed class SkillFrontmatterTests
     [Fact]
     public void Parse_CommaSeparatedPaths_ParsedIntoArray()
     {
-        var content = """
+        const string content = """
             ---
             paths: "*.cs, *.fs"
             ---
@@ -126,7 +126,7 @@ public sealed class SkillFrontmatterTests
     [Fact]
     public void Parse_UserInvocableFalse_ParsedCorrectly()
     {
-        var content = """
+        const string content = """
             ---
             user-invocable: false
             ---
@@ -141,7 +141,7 @@ public sealed class SkillFrontmatterTests
     [Fact]
     public void Parse_DisableModelInvocationTrue_ParsedCorrectly()
     {
-        var content = """
+        const string content = """
             ---
             disable-model-invocation: true
             ---
@@ -158,7 +158,7 @@ public sealed class SkillFrontmatterTests
     [Fact]
     public void Parse_EmptyFrontmatter_UsesDefaults()
     {
-        var content = """
+        const string content = """
             ---
             ---
             Just body content.
@@ -175,7 +175,7 @@ public sealed class SkillFrontmatterTests
     public void Parse_FrontmatterWithoutClosingDelimiter_TreatedAsNoFrontmatter()
     {
         // A "---" at the start but no closing "---" means no valid frontmatter block.
-        var content = "---\nname: broken\nThis is not closed properly.";
+        const string content = "---\nname: broken\nThis is not closed properly.";
 
         var skill = SkillFrontmatter.Parse(content, SkillDir, Source);
 

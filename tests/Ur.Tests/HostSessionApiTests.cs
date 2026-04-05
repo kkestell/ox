@@ -96,7 +96,7 @@ public class HostSessionApiTests
 
         var sessionPath = Path.Combine(workspace.WorkspacePath, ".ur", "sessions", $"{session.Id}.jsonl");
         Assert.True(File.Exists(sessionPath));
-        Assert.Equal(2, File.ReadAllLines(sessionPath).Length);
+        Assert.Equal(2, (await File.ReadAllLinesAsync(sessionPath)).Length);
 
         var reopened = await host.OpenSessionAsync(session.Id);
         Assert.NotNull(reopened);
@@ -109,19 +109,19 @@ public class HostSessionApiTests
     public async Task Extensions_List_IncludesDisabledAndActiveEntriesInStableOrder()
     {
         using var env = new TempExtensionEnvironment();
-        await env.WriteSampleExtensionAsync(
+        await TempExtensionEnvironment.WriteSampleExtensionAsync(
             env.SystemExtensionsPath,
             "system-ext",
             extensionName: "sample.system",
             toolName: "sample_system_echo",
             settingKey: "sample.system.mode");
-        await env.WriteSampleExtensionAsync(
+        await TempExtensionEnvironment.WriteSampleExtensionAsync(
             env.UserExtensionsPath,
             "user-ext",
             extensionName: "sample.user",
             toolName: "sample_user_echo",
             settingKey: "sample.user.mode");
-        await env.WriteSampleExtensionAsync(
+        await TempExtensionEnvironment.WriteSampleExtensionAsync(
             env.WorkspaceExtensionsPath,
             "workspace-ext",
             extensionName: "sample.workspace",
@@ -162,7 +162,7 @@ public class HostSessionApiTests
     public async Task Extensions_SetEnabledAsync_EnablesWorkspaceExtensionAndPersistsWorkspaceOverride()
     {
         using var env = new TempExtensionEnvironment();
-        await env.WriteSampleExtensionAsync(
+        await TempExtensionEnvironment.WriteSampleExtensionAsync(
             env.WorkspaceExtensionsPath,
             "workspace-ext",
             extensionName: "sample.workspace",
@@ -183,7 +183,7 @@ public class HostSessionApiTests
     public async Task Extensions_SetEnabledAsync_DisablesUserExtensionAndPersistsGlobalOverride()
     {
         using var env = new TempExtensionEnvironment();
-        await env.WriteSampleExtensionAsync(
+        await TempExtensionEnvironment.WriteSampleExtensionAsync(
             env.UserExtensionsPath,
             "user-ext",
             extensionName: "sample.user",
@@ -204,7 +204,7 @@ public class HostSessionApiTests
     public async Task Extensions_ResetAsync_ClearsOverrideAndRestoresTierDefaultBehavior()
     {
         using var env = new TempExtensionEnvironment();
-        await env.WriteSampleExtensionAsync(
+        await TempExtensionEnvironment.WriteSampleExtensionAsync(
             env.WorkspaceExtensionsPath,
             "workspace-ext",
             extensionName: "sample.workspace",
@@ -226,7 +226,7 @@ public class HostSessionApiTests
     public async Task Extensions_SetEnabledAsync_ActivationFailureSurfacesLoadErrorWithoutCrashingHost()
     {
         using var env = new TempExtensionEnvironment();
-        await env.WriteExtensionAsync(
+        await TempExtensionEnvironment.WriteExtensionAsync(
             env.WorkspaceExtensionsPath,
             "broken-workspace",
             """
@@ -235,9 +235,7 @@ public class HostSessionApiTests
               version = "1.0.0"
             }
             """,
-            """
-            this is not valid lua
-            """);
+            "this is not valid lua");
         var host = await env.StartHostAsync();
 
         var updated = await host.Extensions.SetEnabledAsync("workspace:sample.workspace", enabled: true);
@@ -264,7 +262,7 @@ public class HostSessionApiTests
     public async Task StartAsync_GlobalOverrideFileDisablesUserExtensionOnStartup()
     {
         using var env = new TempExtensionEnvironment();
-        await env.WriteSampleExtensionAsync(
+        await TempExtensionEnvironment.WriteSampleExtensionAsync(
             env.UserExtensionsPath,
             "user-ext",
             extensionName: "sample.user",
@@ -293,7 +291,7 @@ public class HostSessionApiTests
     public async Task StartAsync_WorkspaceOverrideFileEnablesWorkspaceExtensionOnStartup()
     {
         using var env = new TempExtensionEnvironment();
-        await env.WriteSampleExtensionAsync(
+        await TempExtensionEnvironment.WriteSampleExtensionAsync(
             env.WorkspaceExtensionsPath,
             "workspace-ext",
             extensionName: "sample.workspace",
@@ -323,7 +321,7 @@ public class HostSessionApiTests
     public async Task StartAsync_MalformedOverrideFileFallsBackToDefaultsWithoutCrashing()
     {
         using var env = new TempExtensionEnvironment();
-        await env.WriteSampleExtensionAsync(
+        await TempExtensionEnvironment.WriteSampleExtensionAsync(
             env.WorkspaceExtensionsPath,
             "workspace-ext",
             extensionName: "sample.workspace",
@@ -344,7 +342,7 @@ public class HostSessionApiTests
     public async Task Extensions_PersistOnlyDeltasNotRedundantDefaults()
     {
         using var env = new TempExtensionEnvironment();
-        await env.WriteSampleExtensionAsync(
+        await TempExtensionEnvironment.WriteSampleExtensionAsync(
             env.UserExtensionsPath,
             "user-ext",
             extensionName: "sample.user",
@@ -428,8 +426,8 @@ public class HostSessionApiTests
         using var cts = new CancellationTokenSource();
         var host = await CreateHostAsync(workspace, chatClientFactory: _ => new CancellingChatClient(cts));
 
-        await host.Configuration.SetApiKeyAsync("test-key");
-        await host.Configuration.SetSelectedModelAsync("test-model");
+        await host.Configuration.SetApiKeyAsync("test-key", CancellationToken.None);
+        await host.Configuration.SetSelectedModelAsync("test-model", ct: CancellationToken.None);
 
         var session = host.CreateSession();
         await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
@@ -440,22 +438,15 @@ public class HostSessionApiTests
         });
     }
 
-    private sealed class FakeChatClient : IChatClient
+    private sealed class FakeChatClient(string responseText) : IChatClient
     {
-        private readonly string _responseText;
-
-        public FakeChatClient(string responseText)
-        {
-            _responseText = responseText;
-        }
-
         public Task<ChatResponse> GetResponseAsync(
             IEnumerable<ChatMessage> messages,
             ChatOptions? options = null,
             CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            return Task.FromResult(new ChatResponse(new ChatMessage(ChatRole.Assistant, _responseText)));
+            return Task.FromResult(new ChatResponse(new ChatMessage(ChatRole.Assistant, responseText)));
         }
 
         public async IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
@@ -464,7 +455,7 @@ public class HostSessionApiTests
             [EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            yield return new ChatResponseUpdate(ChatRole.Assistant, _responseText);
+            yield return new ChatResponseUpdate(ChatRole.Assistant, responseText);
             await Task.CompletedTask;
         }
 
@@ -475,20 +466,13 @@ public class HostSessionApiTests
         }
     }
 
-    private sealed class ThrowingChatClient : IChatClient
+    private sealed class ThrowingChatClient(string message) : IChatClient
     {
-        private readonly string _message;
-
-        public ThrowingChatClient(string message)
-        {
-            _message = message;
-        }
-
         public Task<ChatResponse> GetResponseAsync(
             IEnumerable<ChatMessage> messages,
             ChatOptions? options = null,
             CancellationToken cancellationToken = default) =>
-            throw new InvalidOperationException(_message);
+            throw new InvalidOperationException(message);
 
         public async IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
             IEnumerable<ChatMessage> messages,
@@ -498,7 +482,7 @@ public class HostSessionApiTests
 // ReSharper disable HeuristicUnreachableCode — yield break is required to make this an async iterator method
 #pragma warning disable CS0162
             await Task.CompletedTask;
-            throw new InvalidOperationException(_message);
+            throw new InvalidOperationException(message);
             yield break;
 #pragma warning restore CS0162
 // ReSharper restore HeuristicUnreachableCode
@@ -514,20 +498,13 @@ public class HostSessionApiTests
     /// <summary>
     /// Yields one text chunk, then throws — exercises the partial-output-before-error path.
     /// </summary>
-    private sealed class PartiallyThrowingChatClient : IChatClient
+    private sealed class PartiallyThrowingChatClient(string message) : IChatClient
     {
-        private readonly string _message;
-
-        public PartiallyThrowingChatClient(string message)
-        {
-            _message = message;
-        }
-
         public Task<ChatResponse> GetResponseAsync(
             IEnumerable<ChatMessage> messages,
             ChatOptions? options = null,
             CancellationToken cancellationToken = default) =>
-            throw new InvalidOperationException(_message);
+            throw new InvalidOperationException(message);
 
         public async IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
             IEnumerable<ChatMessage> messages,
@@ -536,7 +513,7 @@ public class HostSessionApiTests
         {
             yield return new ChatResponseUpdate(ChatRole.Assistant, "partial");
             await Task.CompletedTask;
-            throw new InvalidOperationException(_message);
+            throw new InvalidOperationException(message);
         }
 
         public object? GetService(Type serviceType, object? serviceKey = null) => null;
@@ -549,15 +526,8 @@ public class HostSessionApiTests
     /// <summary>
     /// Cancels the provided token source when iterated, simulating a Ctrl+C mid-stream.
     /// </summary>
-    private sealed class CancellingChatClient : IChatClient
+    private sealed class CancellingChatClient(CancellationTokenSource cts) : IChatClient
     {
-        private readonly CancellationTokenSource _cts;
-
-        public CancellingChatClient(CancellationTokenSource cts)
-        {
-            _cts = cts;
-        }
-
         public Task<ChatResponse> GetResponseAsync(
             IEnumerable<ChatMessage> messages,
             ChatOptions? options = null,
@@ -570,7 +540,7 @@ public class HostSessionApiTests
             [EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
             await Task.CompletedTask;
-            _cts.Cancel();
+            await cts.CancelAsync();
             cancellationToken.ThrowIfCancellationRequested();
 #pragma warning disable CS0162 // unreachable — required to make this an iterator method
             yield break;

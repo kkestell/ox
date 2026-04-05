@@ -183,24 +183,21 @@ public sealed class SkillSessionTests : IDisposable
     /// Simple chat client that returns a fixed response. Same as the one in
     /// HostSessionApiTests but duplicated here for test isolation.
     /// </summary>
-    private sealed class FakeChatClient : IChatClient
+    private sealed class FakeChatClient(string response) : IChatClient
     {
-        private readonly string _response;
-
-        public FakeChatClient(string response) => _response = response;
 
         public Task<ChatResponse> GetResponseAsync(
             IEnumerable<ChatMessage> messages,
             ChatOptions? options = null,
             CancellationToken cancellationToken = default) =>
-            Task.FromResult(new ChatResponse(new ChatMessage(ChatRole.Assistant, _response)));
+            Task.FromResult(new ChatResponse(new ChatMessage(ChatRole.Assistant, response)));
 
         public async IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
             IEnumerable<ChatMessage> messages,
             ChatOptions? options = null,
             [EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
-            yield return new ChatResponseUpdate(ChatRole.Assistant, _response);
+            yield return new ChatResponseUpdate(ChatRole.Assistant, response);
             await Task.CompletedTask;
         }
 

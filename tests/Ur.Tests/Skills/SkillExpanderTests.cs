@@ -15,7 +15,7 @@ public sealed class SkillExpanderTests
             ArgumentNames = argumentNames,
             Content = content,
             SkillDirectory = skillDir,
-            Source = "user",
+            Source = "user"
         };
 
     // ─── $ARGUMENTS substitution ──────────────────────────────────────

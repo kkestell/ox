@@ -36,8 +36,8 @@ internal sealed class PermissionGrantStore
         Converters =
         {
             new JsonStringEnumConverter<OperationType>(JsonNamingPolicy.CamelCase),
-            new JsonStringEnumConverter<PermissionScope>(JsonNamingPolicy.CamelCase),
-        },
+            new JsonStringEnumConverter<PermissionScope>(JsonNamingPolicy.CamelCase)
+        }
     });
 
     internal PermissionGrantStore(string workspacePermissionsPath, string alwaysPermissionsPath)
@@ -90,24 +90,16 @@ internal sealed class PermissionGrantStore
                 _alwaysGrants!.Add(grant);
                 await AppendGrantAsync(_alwaysPermissionsPath, grant, ct).ConfigureAwait(false);
                 break;
+
+            default:
+                throw new ArgumentOutOfRangeException(nameof(grant));
         }
     }
 
-    private static bool IsListCovered(IEnumerable<PermissionGrant> grants, PermissionRequest request)
-    {
-        foreach (var grant in grants)
-        {
-            if (grant.OperationType != request.OperationType)
-                continue;
-
-            // An empty prefix covers any target; otherwise check prefix match.
-            if (grant.TargetPrefix.Length == 0
-                || request.Target.StartsWith(grant.TargetPrefix, StringComparison.Ordinal))
-                return true;
-        }
-
-        return false;
-    }
+    private static bool IsListCovered(IEnumerable<PermissionGrant> grants, PermissionRequest request) =>
+        grants.Any(grant => grant.OperationType == request.OperationType
+            && (grant.TargetPrefix.Length == 0
+                || request.Target.StartsWith(grant.TargetPrefix, StringComparison.Ordinal)));
 
     private void EnsureWorkspaceGrantsLoaded()
     {

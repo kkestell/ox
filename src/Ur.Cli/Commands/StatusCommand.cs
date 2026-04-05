@@ -23,7 +23,7 @@ internal static class StatusCommand
         var cmd = new Command("status", "Show workspace configuration and readiness");
 
         cmd.SetAction(async (_, cancellationToken) =>
-            await HostRunner.RunAsync(async (host, _) =>
+            await HostRunner.RunAsync((host, _) =>
             {
                 var cfg = host.Configuration;
                 var readiness = cfg.Readiness;
@@ -48,7 +48,7 @@ internal static class StatusCommand
                 var enabled = extensions.Count(e => e.DesiredEnabled);
                 Console.WriteLine($"Extensions: {enabled} enabled / {extensions.Count} total");
 
-                return 0;
+                return Task.FromResult(0);
             }, cancellationToken));
 
         return cmd;
@@ -58,6 +58,6 @@ internal static class StatusCommand
     {
         ChatBlockingIssue.MissingApiKey         => "No API key configured. Run: ur config set-api-key <key>",
         ChatBlockingIssue.MissingModelSelection => "No model selected. Run: ur config set-model <model-id>",
-        _                                       => issue.ToString(),
+        _                                       => issue.ToString()
     };
 }

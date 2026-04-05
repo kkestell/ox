@@ -9,7 +9,7 @@ public static class PermissionPolicy
     {
         OperationType.ReadInWorkspace => [],  // Always allowed, no grant needed
         OperationType.WriteInWorkspace => [PermissionScope.Once, PermissionScope.Session, PermissionScope.Workspace, PermissionScope.Always],
-        _ => [PermissionScope.Once],  // ReadOutsideWorkspace, WriteOutsideWorkspace, Network, ExecuteCommand
+        _ => [PermissionScope.Once]  // ReadOutsideWorkspace, ExecuteCommand
     };
 
     public static bool RequiresPrompt(OperationType operationType) =>

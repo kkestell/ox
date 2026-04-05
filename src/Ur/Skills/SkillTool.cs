@@ -21,7 +21,7 @@ namespace Ur.Skills;
 /// TODO: Forked execution (context: "fork") — always runs inline for now.
 /// Requires a sub-agent mechanism to run a skill in a separate context.
 /// </summary>
-internal sealed class SkillTool : AIFunction
+internal sealed class SkillTool(SkillRegistry skills, string sessionId) : AIFunction
 {
     private static readonly JsonElement Schema = JsonDocument.Parse("""
         {
@@ -40,15 +40,6 @@ internal sealed class SkillTool : AIFunction
             "additionalProperties": false
         }
         """).RootElement.Clone();
-
-    private readonly SkillRegistry _skills;
-    private readonly string _sessionId;
-
-    public SkillTool(SkillRegistry skills, string sessionId)
-    {
-        _skills = skills;
-        _sessionId = sessionId;
-    }
 
     public override string Name => "skill";
 
@@ -87,7 +78,7 @@ internal sealed class SkillTool : AIFunction
         if (skillName.StartsWith('/'))
             skillName = skillName[1..];
 
-        var skill = _skills.Get(skillName);
+        var skill = skills.Get(skillName);
 
         if (skill is null)
             return new ValueTask<object?>($"Unknown skill: {skillName}");
@@ -95,7 +86,7 @@ internal sealed class SkillTool : AIFunction
         if (skill.DisableModelInvocation)
             return new ValueTask<object?>($"Skill '{skillName}' cannot be invoked by the model.");
 
-        var expanded = SkillExpander.Expand(skill, args, _sessionId);
+        var expanded = SkillExpander.Expand(skill, args, sessionId);
         return new ValueTask<object?>(expanded);
     }
 }

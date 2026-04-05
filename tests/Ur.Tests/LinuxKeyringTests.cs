@@ -12,8 +12,8 @@ public class LinuxKeyringTests
             return;
 
         var keyring = new LinuxKeyring();
-        var service = "ur-test";
-        var account = "spike-roundtrip";
+        const string service = "ur-test";
+        const string account = "spike-roundtrip";
         var secret = $"test-secret-{Guid.NewGuid()}";
 
         try
@@ -45,8 +45,8 @@ public class LinuxKeyringTests
             return;
 
         var keyring = new LinuxKeyring();
-        var service = "ur-test";
-        var account = "spike-delete";
+        const string service = "ur-test";
+        const string account = "spike-delete";
 
         keyring.SetSecret(service, account, "to-be-deleted");
         keyring.DeleteSecret(service, account);
@@ -62,8 +62,8 @@ public class LinuxKeyringTests
             return;
 
         var keyring = new LinuxKeyring();
-        var service = "ur-test";
-        var account = "spike-overwrite";
+        const string service = "ur-test";
+        const string account = "spike-overwrite";
 
         try
         {

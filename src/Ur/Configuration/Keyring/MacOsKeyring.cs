@@ -19,10 +19,9 @@ public sealed class MacOsKeyring : IKeyring
         if (exitCode == ItemNotFound)
             return null;
 
-        if (exitCode != 0)
-            throw new InvalidOperationException($"security find-generic-password failed: {stderr}");
-
-        return stdout.TrimEnd('\n', '\r');
+        return exitCode != 0
+            ? throw new InvalidOperationException($"security find-generic-password failed: {stderr}")
+            : stdout.TrimEnd('\n', '\r');
     }
 
     public void SetSecret(string service, string account, string secret)
@@ -55,7 +54,7 @@ public sealed class MacOsKeyring : IKeyring
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false,
-            CreateNoWindow = true,
+            CreateNoWindow = true
         };
 
         foreach (var arg in args)

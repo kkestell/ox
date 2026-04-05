@@ -229,7 +229,7 @@ public sealed class PermissionGrantStoreTests
     private static readonly JsonSerializerOptions GrantJsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-        Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase) },
+        Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase) }
     };
 
     private static async Task WriteGrantToFileAsync(string path, PermissionGrant grant)
@@ -390,12 +390,9 @@ public sealed class AgentLoopPermissionTests
     /// <summary>
     /// Fake IChatClient that emits exactly one tool call then a final text response.
     /// </summary>
-    private sealed class FakeToolCallingClient : IChatClient
+    private sealed class FakeToolCallingClient(string toolName) : IChatClient
     {
-        private readonly string _toolName;
         private bool _toolCallEmitted;
-
-        public FakeToolCallingClient(string toolName) => _toolName = toolName;
 
         public async IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
             IEnumerable<ChatMessage> messages,
@@ -410,7 +407,7 @@ public sealed class AgentLoopPermissionTests
                 _toolCallEmitted = true;
                 yield return new ChatResponseUpdate
                 {
-                    Contents = [new FunctionCallContent("call-1", _toolName, new Dictionary<string, object?>())]
+                    Contents = [new FunctionCallContent("call-1", toolName, new Dictionary<string, object?>())]
                 };
             }
             else
@@ -549,12 +546,9 @@ public sealed class UrSessionPermissionTests
     /// Fake client that calls a tool once per turn for two turns.
     /// The tool call ID is made unique per turn to avoid any dedup logic.
     /// </summary>
-    private sealed class TwoTurnToolCallingClient : IChatClient
+    private sealed class TwoTurnToolCallingClient(string toolName) : IChatClient
     {
-        private readonly string _toolName;
         private int _turnCallCount;
-
-        public TwoTurnToolCallingClient(string toolName) => _toolName = toolName;
 
         public async IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
             IEnumerable<ChatMessage> messages,
@@ -575,7 +569,7 @@ public sealed class UrSessionPermissionTests
                 var callId = $"call-turn-{_turnCallCount++}";
                 yield return new ChatResponseUpdate
                 {
-                    Contents = [new FunctionCallContent(callId, _toolName, new Dictionary<string, object?>())]
+                    Contents = [new FunctionCallContent(callId, toolName, new Dictionary<string, object?>())]
                 };
             }
         }
@@ -593,12 +587,9 @@ public sealed class UrSessionPermissionTests
     /// <summary>
     /// Fake client that calls a tool exactly once, then returns text.
     /// </summary>
-    private sealed class SingleTurnToolCallingClient : IChatClient
+    private sealed class SingleTurnToolCallingClient(string toolName) : IChatClient
     {
-        private readonly string _toolName;
         private bool _toolCallEmitted;
-
-        public SingleTurnToolCallingClient(string toolName) => _toolName = toolName;
 
         public async IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
             IEnumerable<ChatMessage> messages,
@@ -613,7 +604,7 @@ public sealed class UrSessionPermissionTests
                 _toolCallEmitted = true;
                 yield return new ChatResponseUpdate
                 {
-                    Contents = [new FunctionCallContent("call-1", _toolName, new Dictionary<string, object?>())]
+                    Contents = [new FunctionCallContent("call-1", toolName, new Dictionary<string, object?>())]
                 };
             }
             else

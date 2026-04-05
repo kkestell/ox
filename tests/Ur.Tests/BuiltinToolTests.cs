@@ -122,7 +122,7 @@ public sealed class BuiltinToolTests
     public async Task ReadFile_RejectsPathOutsideWorkspace()
     {
         using var env = new ToolTestEnvironment();
-        File.WriteAllText(env.OutsidePath, "secret");
+        await File.WriteAllTextAsync(env.OutsidePath, "secret");
 
         var tool = new ReadFileTool(env.Workspace);
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(
@@ -170,7 +170,7 @@ public sealed class BuiltinToolTests
             ("content", "hello world"));
 
         Assert.True(File.Exists(filePath));
-        Assert.Equal("hello world", File.ReadAllText(filePath));
+        Assert.Equal("hello world", await File.ReadAllTextAsync(filePath));
         Assert.Contains("Wrote", result);
     }
 
@@ -184,7 +184,7 @@ public sealed class BuiltinToolTests
         await InvokeAsync(tool, ("file_path", filePath), ("content", "deep"));
 
         Assert.True(File.Exists(filePath));
-        Assert.Equal("deep", File.ReadAllText(filePath));
+        Assert.Equal("deep", await File.ReadAllTextAsync(filePath));
     }
 
     [Fact]
@@ -210,7 +210,7 @@ public sealed class BuiltinToolTests
         var tool = new WriteFileTool(env.Workspace);
         await InvokeAsync(tool, ("file_path", path), ("content", "new content"));
 
-        Assert.Equal("new content", File.ReadAllText(path));
+        Assert.Equal("new content", await File.ReadAllTextAsync(path));
     }
 
     // ─── update_file ───────────────────────────────────────────────────
@@ -227,7 +227,7 @@ public sealed class BuiltinToolTests
             ("old_string", "bar"),
             ("new_string", "qux"));
 
-        Assert.Equal("foo qux baz", File.ReadAllText(path));
+        Assert.Equal("foo qux baz", await File.ReadAllTextAsync(path));
         Assert.Contains("Updated", result);
     }
 
@@ -267,7 +267,7 @@ public sealed class BuiltinToolTests
     public async Task UpdateFile_RejectsPathOutsideWorkspace()
     {
         using var env = new ToolTestEnvironment();
-        File.WriteAllText(env.OutsidePath, "content");
+        await File.WriteAllTextAsync(env.OutsidePath, "content");
 
         var tool = new UpdateFileTool(env.Workspace);
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(
@@ -339,7 +339,7 @@ public sealed class BuiltinToolTests
     public async Task ReadFile_RejectsPathTraversal()
     {
         using var env = new ToolTestEnvironment();
-        File.WriteAllText(env.OutsidePath, "secret");
+        await File.WriteAllTextAsync(env.OutsidePath, "secret");
 
         // Attempt to escape the workspace via ../
         var traversalPath = Path.Combine(env.WorkspacePath, "..", "outside", "file.txt");
@@ -368,7 +368,7 @@ public sealed class BuiltinToolTests
     public async Task UpdateFile_RejectsPathTraversal()
     {
         using var env = new ToolTestEnvironment();
-        File.WriteAllText(env.OutsidePath, "content");
+        await File.WriteAllTextAsync(env.OutsidePath, "content");
 
         var traversalPath = Path.Combine(env.WorkspacePath, "..", "outside", "file.txt");
         var tool = new UpdateFileTool(env.Workspace);

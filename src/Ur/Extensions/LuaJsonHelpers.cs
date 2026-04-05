@@ -47,7 +47,7 @@ internal static class LuaJsonHelpers
     /// Writes a Lua value as JSON. Handles strings, numbers, booleans, tables
     /// (detecting array vs object by checking ArrayLength/HashMapCount), and null.
     /// </summary>
-    internal static void WriteValue(Utf8JsonWriter writer, LuaValue value)
+    private static void WriteValue(Utf8JsonWriter writer, LuaValue value)
     {
         if (value.TryRead<string>(out var s))
         {
@@ -77,7 +77,7 @@ internal static class LuaJsonHelpers
     /// </summary>
     private static void WriteTable(Utf8JsonWriter writer, LuaTable table)
     {
-        if (table.ArrayLength > 0 && table.HashMapCount == 0)
+        if (table is { ArrayLength: > 0, HashMapCount: 0 })
         {
             writer.WriteStartArray();
             for (var i = 1; i <= table.ArrayLength; i++)
@@ -89,11 +89,10 @@ internal static class LuaJsonHelpers
             writer.WriteStartObject();
             foreach (var (key, value) in table)
             {
-                if (key.TryRead<string>(out var k))
-                {
-                    writer.WritePropertyName(k);
-                    WriteValue(writer, value);
-                }
+                if (!key.TryRead<string>(out var k))
+                    continue;
+                writer.WritePropertyName(k);
+                WriteValue(writer, value);
             }
             writer.WriteEndObject();
         }

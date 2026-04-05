@@ -11,7 +11,7 @@ internal sealed class ExtensionOverrideStore
 
     private static readonly ExtensionOverrideJsonContext JsonContext = new(new JsonSerializerOptions
     {
-        WriteIndented = true,
+        WriteIndented = true
     });
 
     private readonly string _rootDirectory;
@@ -26,10 +26,10 @@ internal sealed class ExtensionOverrideStore
         _workspace = workspace;
     }
 
-    public string GlobalOverridesPath =>
+    private string GlobalOverridesPath =>
         Path.Combine(_rootDirectory, "extensions-state.json");
 
-    public string WorkspaceOverridesPath =>
+    private string WorkspaceOverridesPath =>
         Path.Combine(_rootDirectory, "workspaces", _workspace.StateHash, "extensions-state.json");
 
     public async Task<ExtensionOverrideSnapshot> LoadAsync(CancellationToken ct = default)
@@ -68,7 +68,7 @@ internal sealed class ExtensionOverrideStore
             fileFactory: entries => new OverrideFile(CurrentVersion, _workspace.RootPath, entries),
             ct);
 
-    private async Task<Dictionary<ExtensionId, bool>> LoadOverridesAsync(
+    private static async Task<Dictionary<ExtensionId, bool>> LoadOverridesAsync(
         string path,
         Func<ExtensionTier, bool> allowedTier,
         string scopeName,
@@ -88,7 +88,7 @@ internal sealed class ExtensionOverrideStore
 
             if (file.Version != CurrentVersion)
             {
-                Console.Error.WriteLine(
+                await Console.Error.WriteLineAsync(
                     $"Extension overrides at '{path}' ignored: unsupported version {file.Version}.");
                 return [];
             }
@@ -98,14 +98,14 @@ internal sealed class ExtensionOverrideStore
             {
                 if (!ExtensionId.TryParse(serializedId, out var extensionId))
                 {
-                    Console.Error.WriteLine(
+                    await Console.Error.WriteLineAsync(
                         $"Extension overrides at '{path}' ignored entry '{serializedId}': invalid extension ID.");
                     continue;
                 }
 
                 if (!allowedTier(extensionId.Tier))
                 {
-                    Console.Error.WriteLine(
+                    await Console.Error.WriteLineAsync(
                         $"Extension overrides at '{path}' ignored entry '{serializedId}': invalid tier for {scopeName} overrides.");
                     continue;
                 }
@@ -117,7 +117,7 @@ internal sealed class ExtensionOverrideStore
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
         {
-            Console.Error.WriteLine(
+            await Console.Error.WriteLineAsync(
                 $"Extension overrides at '{path}' ignored: {ex.Message}");
             return [];
         }

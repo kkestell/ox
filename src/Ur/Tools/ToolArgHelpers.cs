@@ -51,16 +51,10 @@ internal static class ToolArgHelpers
     /// workspace root when <paramref name="subPath"/> is null/empty, otherwise
     /// resolves relative paths against the root.
     /// </summary>
-    public static string ResolvePath(string workspaceRoot, string? subPath)
-    {
-        if (string.IsNullOrEmpty(subPath))
-            return workspaceRoot;
-
-        if (!Path.IsPathRooted(subPath))
-            return Path.GetFullPath(Path.Combine(workspaceRoot, subPath));
-
-        return Path.GetFullPath(subPath);
-    }
+    public static string ResolvePath(string workspaceRoot, string? subPath) =>
+        string.IsNullOrEmpty(subPath)
+            ? workspaceRoot
+            : Path.GetFullPath(Path.IsPathRooted(subPath) ? subPath : Path.Combine(workspaceRoot, subPath));
 
     /// <summary>
     /// Extracts a named string argument from raw tool arguments for permission

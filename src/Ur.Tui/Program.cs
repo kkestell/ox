@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using dotenv.net;
 using Ur.AgentLoop;
 using Ur.Configuration;
@@ -14,14 +15,14 @@ namespace Ur.Tui;
 /// Escape cancels a running turn. Ctrl+C exits the process.
 /// There are no dependencies beyond the core Ur library and dotenv.net.
 /// </summary>
-static class Program
+internal static class Program
 {
     // Shared flag that pauses the Escape key monitor while the permission
     // callback is reading from stdin. Without this, the key monitor would
     // race with Console.ReadLine and swallow input characters.
     private static volatile bool _pauseKeyReader;
 
-    static async Task<int> Main(string[] _)
+    private static async Task<int> Main(string[] _)
     {
         // --- Boot ---
         // Load .env files by probing upward from cwd (same strategy as the CLI)
@@ -98,7 +99,7 @@ static class Program
 
                 // Ensure the key monitor exits before we loop back to Console.ReadLine,
                 // otherwise it could steal keystrokes from the next prompt.
-                turnCts.Cancel();
+                await turnCts.CancelAsync();
                 await keyMonitor;
             }
             finally
@@ -144,6 +145,9 @@ static class Program
                             return false;
                         await host.Configuration.SetSelectedModelAsync(model, ct: ct);
                         break;
+
+                    default:
+                        throw new UnreachableException($"Unexpected {nameof(ChatBlockingIssue)}: {issue}");
                 }
             }
         }
@@ -182,12 +186,12 @@ static class Program
                         "session"    => new PermissionResponse(true, PermissionScope.Session),
                         "workspace"  => new PermissionResponse(true, PermissionScope.Workspace),
                         "always"     => new PermissionResponse(true, PermissionScope.Always),
-                        _            => new PermissionResponse(false, null),
+                        _            => new PermissionResponse(false, null)
                     };
 
                     // If the user chose a scope that this operation doesn't allow,
                     // deny rather than silently granting more than permitted.
-                    var response = candidate.Granted && candidate.Scope is not null
+                    var response = candidate is { Granted: true, Scope: not null }
                         && !req.AllowedScopes.Contains(candidate.Scope.Value)
                         ? new PermissionResponse(false, null)
                         : candidate;
@@ -267,11 +271,11 @@ static class Program
                     continue;
 
                 var key = Console.ReadKey(intercept: true);
-                if (key.Key == ConsoleKey.Escape)
-                {
-                    turnCts.Cancel();
-                    return;
-                }
+                if (key.Key != ConsoleKey.Escape)
+                    continue;
+
+                await turnCts.CancelAsync();
+                return;
             }
         });
     }

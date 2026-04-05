@@ -14,5 +14,5 @@ public enum PermissionScope
     Once,
     Session,
     Workspace,
-    Always,
+    Always
 }

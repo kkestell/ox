@@ -51,17 +51,6 @@ public sealed class ToolRegistry
         _meta.GetValueOrDefault(toolName);
 
     /// <summary>
-    /// Removes a tool by name. Returns true if it was found and removed.
-    /// </summary>
-    public bool Remove(string name)
-    {
-        _meta.Remove(name);
-        var removed = _tools.Remove(name);
-        if (removed) _allCache = null;
-        return removed;
-    }
-
-    /// <summary>
     /// Looks up a tool by name. Returns null if not found.
     /// </summary>
     public AIFunction? Get(string name) =>

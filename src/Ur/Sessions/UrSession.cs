@@ -31,7 +31,6 @@ public sealed class UrSession
     private readonly ReadOnlyCollection<ChatMessage> _messagesView;
     private readonly TurnCallbacks? _hostCallbacks;
     private readonly PermissionGrantStore _grantStore;
-    private bool _isPersisted;
     private string? _activeModelId;
 
     internal UrSession(
@@ -51,7 +50,7 @@ public sealed class UrSession
         // list without being able to mutate it — mutation must go through
         // RunTurnAsync so persistence stays in sync.
         _messagesView = _messages.AsReadOnly();
-        _isPersisted = isPersisted;
+        IsPersisted = isPersisted;
         _activeModelId = activeModelId;
         _hostCallbacks = callbacks;
         _grantStore = new PermissionGrantStore(workspacePermissionsPath, alwaysPermissionsPath);
@@ -64,7 +63,7 @@ public sealed class UrSession
     /// Whether this session has been written to disk at least once.
     /// A new session becomes persisted after the first user message is appended.
     /// </summary>
-    public bool IsPersisted => _isPersisted;
+    public bool IsPersisted { get; private set; }
 
     public IReadOnlyList<ChatMessage> Messages => _messagesView;
 
@@ -109,7 +108,7 @@ public sealed class UrSession
                 yield return new AgentLoop.Error
                 {
                     Message = $"Unknown skill: {SlashCommandParser.ParseName(userInput)}",
-                    IsFatal = false,
+                    IsFatal = false
                 };
                 yield break;
             }
@@ -130,7 +129,7 @@ public sealed class UrSession
         try
         {
             await _host.AppendMessageAsync(_session, userMessage, ct);
-            _isPersisted = true;
+            IsPersisted = true;
         }
         catch
         {
@@ -220,16 +219,16 @@ public sealed class UrSession
 
                 // Persist durable grants so the user isn't re-asked next turn (or next session).
                 // Use innerCt here — this I/O is part of the callback's own async operation.
-                if (response.Granted && response.Scope is not null and not PermissionScope.Once)
-                {
-                    var grant = new PermissionGrant(
-                        request.OperationType,
-                        request.Target,
-                        response.Scope.Value,
-                        request.RequestingExtension);
+                if (response is not { Granted: true, Scope: not null and not PermissionScope.Once })
+                    return response;
 
-                    await _grantStore.StoreAsync(grant, innerCt).ConfigureAwait(false);
-                }
+                var grant = new PermissionGrant(
+                    request.OperationType,
+                    request.Target,
+                    response.Scope.Value,
+                    request.RequestingExtension);
+
+                await _grantStore.StoreAsync(grant, innerCt).ConfigureAwait(false);
 
                 return response;
             }
@@ -253,7 +252,7 @@ public sealed class UrSession
             try
             {
                 await _host.AppendMessageAsync(_session, _messages[persistedCount], ct);
-                _isPersisted = true;
+                IsPersisted = true;
                 persistedCount++;
             }
             catch

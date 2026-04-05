@@ -24,7 +24,7 @@ public sealed class SkillLoaderTests : IDisposable
             Directory.Delete(_root, recursive: true);
     }
 
-    private void WriteSkill(string parentDir, string skillName, string content)
+    private static void WriteSkill(string parentDir, string skillName, string content)
     {
         var dir = Path.Combine(parentDir, skillName);
         Directory.CreateDirectory(dir);

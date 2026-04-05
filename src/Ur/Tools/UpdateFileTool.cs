@@ -8,7 +8,7 @@ namespace Ur.Tools;
 /// The old string must appear exactly once — zero or multiple matches are errors,
 /// preventing ambiguous edits.
 /// </summary>
-internal sealed class UpdateFileTool : AIFunction
+internal sealed class UpdateFileTool(Workspace workspace) : AIFunction
 {
     private static readonly JsonElement Schema = JsonDocument.Parse("""
         {
@@ -32,13 +32,6 @@ internal sealed class UpdateFileTool : AIFunction
         }
         """).RootElement.Clone();
 
-    private readonly Workspace _workspace;
-
-    public UpdateFileTool(Workspace workspace)
-    {
-        _workspace = workspace;
-    }
-
     public override string Name => "update_file";
     public override string Description => "Find and replace a unique string in a workspace file.";
     public override JsonElement JsonSchema => Schema;
@@ -50,9 +43,9 @@ internal sealed class UpdateFileTool : AIFunction
         var filePath = ToolArgHelpers.GetRequiredString(arguments, "file_path");
         var oldString = ToolArgHelpers.GetRequiredString(arguments, "old_string");
         var newString = ToolArgHelpers.GetRequiredString(arguments, "new_string");
-        var fullPath = ToolArgHelpers.ResolvePath(_workspace.RootPath, filePath);
+        var fullPath = ToolArgHelpers.ResolvePath(workspace.RootPath, filePath);
 
-        if (!_workspace.Contains(fullPath))
+        if (!workspace.Contains(fullPath))
             throw new InvalidOperationException($"Path is outside the workspace: {filePath}");
 
         if (!File.Exists(fullPath))
@@ -63,11 +56,13 @@ internal sealed class UpdateFileTool : AIFunction
         // Count occurrences to enforce the uniqueness constraint.
         var count = CountOccurrences(content, oldString);
 
-        if (count == 0)
-            throw new InvalidOperationException("old_string not found in file");
-
-        if (count > 1)
-            throw new InvalidOperationException($"old_string appears {count} times; must be unique");
+        switch (count)
+        {
+            case 0:
+                throw new InvalidOperationException("old_string not found in file");
+            case > 1:
+                throw new InvalidOperationException($"old_string appears {count} times; must be unique");
+        }
 
         var updated = content.Replace(oldString, newString, StringComparison.Ordinal);
         File.WriteAllText(fullPath, updated);

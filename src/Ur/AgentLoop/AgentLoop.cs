@@ -8,17 +8,8 @@ namespace Ur.AgentLoop;
 /// Drives the core conversation cycle: user input → LLM → tool calls → repeat.
 /// Emits events for the UI layer to render.
 /// </summary>
-public sealed class AgentLoop
+public sealed class AgentLoop(IChatClient client, ToolRegistry tools)
 {
-    private readonly IChatClient _client;
-    private readonly ToolRegistry _tools;
-
-    public AgentLoop(IChatClient client, ToolRegistry tools)
-    {
-        _client = client;
-        _tools = tools;
-    }
-
     /// <summary>
     /// Runs a single turn: sends the user message (plus conversation history) to the LLM,
     /// streams the response, executes any tool calls, and loops until the LLM produces
@@ -40,8 +31,8 @@ public sealed class AgentLoop
     {
         var options = new ChatOptions
         {
-            Tools = _tools.All(),
-            ToolMode = ChatToolMode.Auto,
+            Tools = tools.All(),
+            ToolMode = ChatToolMode.Auto
         };
 
         while (true)
@@ -108,7 +99,7 @@ public sealed class AgentLoop
                 yield return new ToolCallStarted
                 {
                     CallId = call.CallId,
-                    ToolName = call.Name,
+                    ToolName = call.Name
                 };
 
                 string result;
@@ -125,7 +116,7 @@ public sealed class AgentLoop
                 }
                 else
                 {
-                    var handler = _tools.Get(call.Name);
+                    var handler = tools.Get(call.Name);
                     if (handler is null)
                     {
                         result = $"Unknown tool: {call.Name}";
@@ -155,7 +146,7 @@ public sealed class AgentLoop
                     CallId = call.CallId,
                     ToolName = call.Name,
                     Result = result,
-                    IsError = isError,
+                    IsError = isError
                 };
             }
 
@@ -193,7 +184,7 @@ public sealed class AgentLoop
         Exception?[] errorSink,
         [EnumeratorCancellation] CancellationToken ct)
     {
-        var enumerator = _client.GetStreamingResponseAsync(messages, options, ct)
+        var enumerator = client.GetStreamingResponseAsync(messages, options, ct)
             .GetAsyncEnumerator(ct);
         try
         {
@@ -240,7 +231,7 @@ public sealed class AgentLoop
         TurnCallbacks? callbacks,
         CancellationToken ct)
     {
-        var meta = _tools.GetPermissionMeta(call.Name);
+        var meta = tools.GetPermissionMeta(call.Name);
         var operationType = meta?.OperationType ?? OperationType.WriteInWorkspace;
 
         // ReadInWorkspace never requires a prompt.

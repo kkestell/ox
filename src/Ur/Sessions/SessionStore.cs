@@ -8,12 +8,11 @@ namespace Ur.Sessions;
 /// Manages session lifecycle and persistence as JSONL files.
 /// Each line is a JSON-serialized ChatMessage using M.E.AI's polymorphic serialization.
 /// </summary>
-internal sealed class SessionStore
+internal sealed class SessionStore(string sessionsDirectory)
 {
-    private readonly string _sessionsDirectory;
     private static readonly JsonSerializerOptions JsonOptions = new(AIJsonUtilities.DefaultOptions)
     {
-        WriteIndented = false,
+        WriteIndented = false
     };
 
     // Resolved once from the M.E.AI source-gen resolver chain for AoT-safe
@@ -21,25 +20,20 @@ internal sealed class SessionStore
     private static readonly JsonTypeInfo<ChatMessage> ChatMessageTypeInfo =
         (JsonTypeInfo<ChatMessage>)JsonOptions.GetTypeInfo(typeof(ChatMessage));
 
-    public SessionStore(string sessionsDirectory)
-    {
-        _sessionsDirectory = sessionsDirectory;
-    }
-
     public Session Create()
     {
         var createdAt = DateTimeOffset.UtcNow;
         var id = createdAt.ToString("yyyyMMdd-HHmmss-fff");
-        var filePath = Path.Combine(_sessionsDirectory, $"{id}.jsonl");
+        var filePath = Path.Combine(sessionsDirectory, $"{id}.jsonl");
         return new Session(id, filePath, createdAt);
     }
 
     public IReadOnlyList<Session> List()
     {
-        if (!Directory.Exists(_sessionsDirectory))
+        if (!Directory.Exists(sessionsDirectory))
             return [];
 
-        return Directory.GetFiles(_sessionsDirectory, "*.jsonl")
+        return Directory.GetFiles(sessionsDirectory, "*.jsonl")
             .Order()
             .Select(path =>
             {
@@ -65,7 +59,7 @@ internal sealed class SessionStore
 
     public Session? Get(string id)
     {
-        var filePath = Path.Combine(_sessionsDirectory, $"{id}.jsonl");
+        var filePath = Path.Combine(sessionsDirectory, $"{id}.jsonl");
         if (!File.Exists(filePath))
             return null;
 
@@ -75,12 +69,12 @@ internal sealed class SessionStore
 
     public async Task AppendAsync(Session session, ChatMessage message, CancellationToken ct = default)
     {
-        Directory.CreateDirectory(_sessionsDirectory);
+        Directory.CreateDirectory(sessionsDirectory);
         var json = JsonSerializer.Serialize(message, ChatMessageTypeInfo);
         await File.AppendAllTextAsync(session.FilePath, json + "\n", ct);
     }
 
-    public async Task<IReadOnlyList<ChatMessage>> ReadAllAsync(Session session, CancellationToken ct = default)
+    public static async Task<IReadOnlyList<ChatMessage>> ReadAllAsync(Session session, CancellationToken ct = default)
     {
         if (!File.Exists(session.FilePath))
             return [];

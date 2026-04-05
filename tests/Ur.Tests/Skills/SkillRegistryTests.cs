@@ -16,7 +16,7 @@ public sealed class SkillRegistryTests
             DisableModelInvocation = disableModelInvocation,
             Content = "content",
             SkillDirectory = $"/skills/{name}",
-            Source = "user",
+            Source = "user"
         };
 
     [Fact]
@@ -42,7 +42,7 @@ public sealed class SkillRegistryTests
     {
         var registry = new SkillRegistry([
             MakeSkill("public-skill"),
-            MakeSkill("hidden", disableModelInvocation: true),
+            MakeSkill("hidden", disableModelInvocation: true)
         ]);
 
         var modelSkills = registry.ModelInvocable();
@@ -56,7 +56,7 @@ public sealed class SkillRegistryTests
     {
         var registry = new SkillRegistry([
             MakeSkill("slash-cmd"),
-            MakeSkill("model-only", userInvocable: false),
+            MakeSkill("model-only", userInvocable: false)
         ]);
 
         var userSkills = registry.UserInvocable();
@@ -71,7 +71,7 @@ public sealed class SkillRegistryTests
         var registry = new SkillRegistry([
             MakeSkill("a"),
             MakeSkill("b", userInvocable: false),
-            MakeSkill("c", disableModelInvocation: true),
+            MakeSkill("c", disableModelInvocation: true)
         ]);
 
         Assert.Equal(3, registry.All().Count);
@@ -93,7 +93,7 @@ public sealed class SkillRegistryTests
     {
         // A skill can be model-only: user-invocable=false but model invocation allowed.
         var registry = new SkillRegistry([
-            MakeSkill("model-only", userInvocable: false, disableModelInvocation: false),
+            MakeSkill("model-only", userInvocable: false, disableModelInvocation: false)
         ]);
 
         Assert.Single(registry.ModelInvocable());
@@ -105,7 +105,7 @@ public sealed class SkillRegistryTests
     {
         // A skill can be user-only: disable-model-invocation=true but user-invocable=true.
         var registry = new SkillRegistry([
-            MakeSkill("user-only", userInvocable: true, disableModelInvocation: true),
+            MakeSkill("user-only", userInvocable: true, disableModelInvocation: true)
         ]);
 
         Assert.Empty(registry.ModelInvocable());

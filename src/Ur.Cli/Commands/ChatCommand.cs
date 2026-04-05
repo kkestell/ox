@@ -42,10 +42,12 @@ internal static class ChatCommand
             Description = "Override the selected model for this turn only"
         };
 
-        var cmd = new Command("chat", "Send a message and stream the response");
-        cmd.Add(messageArg);
-        cmd.Add(sessionOpt);
-        cmd.Add(modelOpt);
+        var cmd = new Command("chat", "Send a message and stream the response")
+        {
+            messageArg,
+            sessionOpt,
+            modelOpt
+        };
 
         cmd.SetAction(async (parseResult, cancellationToken) =>
             await HostRunner.RunAsync(async (host, ct) =>
@@ -62,7 +64,7 @@ internal static class ChatCommand
                 {
                     foreach (var issue in readiness.BlockingIssues)
                     {
-                        Console.Error.WriteLine(issue switch
+                        await Console.Error.WriteLineAsync(issue switch
                         {
                             ChatBlockingIssue.MissingApiKey         => "No API key set. Run: ur config set-api-key <key>",
                             ChatBlockingIssue.MissingModelSelection => "No model selected. Run: ur config set-model <model-id>",
@@ -106,12 +108,12 @@ internal static class ChatCommand
                             "session"      => new PermissionResponse(true,  PermissionScope.Session),
                             "workspace"    => new PermissionResponse(true,  PermissionScope.Workspace),
                             "always"       => new PermissionResponse(true,  PermissionScope.Always),
-                            _              => new PermissionResponse(false, null),
+                            _              => new PermissionResponse(false, null)
                         };
 
                         // If the user requested a scope that this operation doesn't permit,
                         // treat it as a denial rather than silently granting more than allowed.
-                        var response = candidate.Granted && candidate.Scope is not null
+                        var response = candidate is { Granted: true, Scope: not null }
                             && !req.AllowedScopes.Contains(candidate.Scope.Value)
                             ? new PermissionResponse(false, null)
                             : candidate;
@@ -127,7 +129,7 @@ internal static class ChatCommand
                     var opened = await host.OpenSessionAsync(sessionId, callbacks, ct);
                     if (opened is null)
                     {
-                        Console.Error.WriteLine($"Session not found: {sessionId}");
+                        await Console.Error.WriteLineAsync($"Session not found: {sessionId}");
                         return 1;
                     }
                     session = opened;
@@ -153,7 +155,7 @@ internal static class ChatCommand
                             break;
 
                         case ToolCallStarted started:
-                            Console.Error.WriteLine($"\n[tool: {started.ToolName}]");
+                            await Console.Error.WriteLineAsync($"\n[tool: {started.ToolName}]");
                             break;
 
                         case ToolCallCompleted completed:
@@ -162,7 +164,7 @@ internal static class ChatCommand
                                 ? completed.Result[..200] + "…"
                                 : completed.Result;
                             var status = completed.IsError ? "error" : "ok";
-                            Console.Error.WriteLine($"[tool: {completed.ToolName} → {status}] {result}");
+                            await Console.Error.WriteLineAsync($"[tool: {completed.ToolName} → {status}] {result}");
                             break;
 
                         case TurnCompleted:
@@ -173,7 +175,7 @@ internal static class ChatCommand
                             break;
 
                         case Error error:
-                            Console.Error.WriteLine($"\n[error] {error.Message}");
+                            await Console.Error.WriteLineAsync($"\n[error] {error.Message}");
                             if (error.IsFatal)
                                 return 1;
                             break;
@@ -186,7 +188,7 @@ internal static class ChatCommand
                     Console.WriteLine();
                 }
 
-                Console.Error.WriteLine($"[session: {session.Id}]");
+                await Console.Error.WriteLineAsync($"[session: {session.Id}]");
                 return 0;
             }, cancellationToken));
 

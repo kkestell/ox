@@ -13,7 +13,6 @@ public sealed class Extension
 {
     private readonly List<AIFunction> _tools = [];
     private readonly ExtensionDescriptor _descriptor;
-    private LuaState? _luaState;
 
     internal Extension(ExtensionDescriptor descriptor)
     {
@@ -36,11 +35,7 @@ public sealed class Extension
 
     internal ExtensionId ExtensionId => _descriptor.Id;
 
-    internal LuaState? LuaState
-    {
-        get => _luaState;
-        set => _luaState = value;
-    }
+    internal LuaState? LuaState { get; set; }
 
     internal void SetDesiredState(bool desiredEnabled, bool hasOverride)
     {
@@ -83,8 +78,8 @@ public sealed class Extension
     internal void ResetRuntimeState()
     {
         _tools.Clear();
-        _luaState?.Dispose();
-        _luaState = null;
+        LuaState?.Dispose();
+        LuaState = null;
         IsActive = false;
     }
 }

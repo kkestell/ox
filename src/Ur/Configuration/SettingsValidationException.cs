@@ -7,18 +7,9 @@ namespace Ur.Configuration;
 /// and <see cref="Settings.ClearAsync"/> to prevent the process from running
 /// with an invalid configuration.
 /// </summary>
-public sealed class SettingsValidationException : Exception
+public sealed class SettingsValidationException(IReadOnlyList<string> errors)
+    : Exception($"Settings validation failed:\n{string.Join("\n", errors)}")
 {
-    /// <summary>
-    /// The list of validation errors. Captured for programmatic error handling
-    /// and displayed to the user via the exception message.
-    /// </summary>
-    // ReSharper disable once UnusedAutoPropertyAccessor.Global — public API for programmatic error inspection
-    public IReadOnlyList<string> Errors { get; }
-
-    public SettingsValidationException(IReadOnlyList<string> errors)
-        : base($"Settings validation failed:\n{string.Join("\n", errors)}")
-    {
-        Errors = errors;
-    }
+    // ReSharper disable once UnusedMember.Global — public API for programmatic error inspection
+    public IReadOnlyList<string> Errors { get; } = errors;
 }

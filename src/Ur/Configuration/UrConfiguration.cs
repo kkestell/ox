@@ -128,7 +128,7 @@ public sealed class UrConfiguration
     internal string? GetApiKey() =>
         _keyring.GetSecret(SecretService, SecretAccount);
 
-    internal bool HasApiKey() =>
+    private bool HasApiKey() =>
         !string.IsNullOrWhiteSpace(GetApiKey());
 
     private List<ChatBlockingIssue> GetBlockingIssues()

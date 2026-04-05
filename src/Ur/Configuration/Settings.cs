@@ -19,7 +19,7 @@ public sealed class Settings
 {
     private static readonly SettingsJsonContext WriteContext = new(new JsonSerializerOptions
     {
-        WriteIndented = true,
+        WriteIndented = true
     });
 
     private readonly SettingsSchemaRegistry _schemaRegistry;
@@ -65,8 +65,6 @@ public sealed class Settings
             return null;
         return value.ValueKind == JsonValueKind.String ? value.GetString() : value.GetRawText();
     }
-
-    public IEnumerable<string> Keys => _mergedValues.Keys;
 
     /// <summary>
     /// Sets a value in the given scope, re-merges, validates, and persists.
@@ -121,6 +119,7 @@ public sealed class Settings
         {
             case ConfigurationScope.User: _userValues = snapshot; break;
             case ConfigurationScope.Workspace: _workspaceValues = snapshot; break;
+            default: throw new ArgumentOutOfRangeException(nameof(scope));
         }
     }
 
@@ -128,14 +127,14 @@ public sealed class Settings
     {
         ConfigurationScope.User => _userValues,
         ConfigurationScope.Workspace => _workspaceValues,
-        _ => throw new ArgumentOutOfRangeException(nameof(scope)),
+        _ => throw new ArgumentOutOfRangeException(nameof(scope))
     };
 
     private string? GetPath(ConfigurationScope scope) => scope switch
     {
         ConfigurationScope.User => _userSettingsPath,
         ConfigurationScope.Workspace => _workspaceSettingsPath,
-        _ => throw new ArgumentOutOfRangeException(nameof(scope)),
+        _ => throw new ArgumentOutOfRangeException(nameof(scope))
     };
 
     /// <summary>

@@ -4,5 +4,5 @@ public enum ExtensionTier
 {
     System,
     User,
-    Workspace,
+    Workspace
 }

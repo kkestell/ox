@@ -3,16 +3,9 @@ namespace Ur.Sessions;
 /// <summary>
 /// A conversation within a workspace, persisted as a JSONL file.
 /// </summary>
-internal sealed class Session
+internal sealed class Session(string id, string filePath, DateTimeOffset createdAt)
 {
-    public string Id { get; }
-    public string FilePath { get; }
-    public DateTimeOffset CreatedAt { get; }
-
-    public Session(string id, string filePath, DateTimeOffset createdAt)
-    {
-        Id = id;
-        FilePath = filePath;
-        CreatedAt = createdAt;
-    }
+    public string Id { get; } = id;
+    public string FilePath { get; } = filePath;
+    public DateTimeOffset CreatedAt { get; } = createdAt;
 }

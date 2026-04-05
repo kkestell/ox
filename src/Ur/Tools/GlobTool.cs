@@ -10,7 +10,7 @@ namespace Ur.Tools;
 /// Uses Microsoft.Extensions.FileSystemGlobbing for proper ** support,
 /// returning matching paths relative to the workspace root.
 /// </summary>
-internal sealed class GlobTool : AIFunction
+internal sealed class GlobTool(Workspace workspace) : AIFunction
 {
     private const int MaxResults = 1000;
 
@@ -32,13 +32,6 @@ internal sealed class GlobTool : AIFunction
         }
         """).RootElement.Clone();
 
-    private readonly Workspace _workspace;
-
-    public GlobTool(Workspace workspace)
-    {
-        _workspace = workspace;
-    }
-
     public override string Name => "glob";
     public override string Description => "Find files by glob pattern within the workspace.";
     public override JsonElement JsonSchema => Schema;
@@ -50,9 +43,9 @@ internal sealed class GlobTool : AIFunction
         var pattern = ToolArgHelpers.GetRequiredString(arguments, "pattern");
         var subPath = ToolArgHelpers.GetOptionalString(arguments, "path");
 
-        var searchRoot = ToolArgHelpers.ResolvePath(_workspace.RootPath, subPath);
+        var searchRoot = ToolArgHelpers.ResolvePath(workspace.RootPath, subPath);
 
-        if (!_workspace.Contains(searchRoot))
+        if (!workspace.Contains(searchRoot))
             throw new InvalidOperationException($"Path is outside the workspace: {subPath}");
 
         if (!Directory.Exists(searchRoot))
@@ -67,7 +60,7 @@ internal sealed class GlobTool : AIFunction
         // Convert matches to workspace-relative paths for consistency.
         var relativePaths = matchResult.Files
             .Select(m => Path.GetRelativePath(
-                _workspace.RootPath,
+                workspace.RootPath,
                 Path.Combine(searchRoot, m.Path)))
             .OrderBy(p => p, StringComparer.Ordinal)
             .ToList();
