@@ -1,6 +1,7 @@
 using System.Runtime.CompilerServices;
 using Microsoft.Extensions.AI;
 using Ur.Permissions;
+using Ur.Tools;
 
 namespace Ur.AgentLoop;
 
@@ -46,7 +47,9 @@ public sealed class AgentLoop(IChatClient client, ToolRegistry tools)
     {
         var options = new ChatOptions
         {
-            Tools = tools.All(),
+            // All() returns IReadOnlyList to prevent external mutation, but the
+            // underlying List<AITool> also implements IList<AITool> which ChatOptions needs.
+            Tools = (IList<AITool>)tools.All(),
             ToolMode = ChatToolMode.Auto
         };
 

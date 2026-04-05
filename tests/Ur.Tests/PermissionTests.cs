@@ -4,6 +4,7 @@ using System.Text.Json.Serialization;
 using Microsoft.Extensions.AI;
 using Ur.AgentLoop;
 using Ur.Permissions;
+using Ur.Tools;
 using Ur.Tests.TestSupport;
 using AgentLoopClass = Ur.AgentLoop.AgentLoop;
 

@@ -1,6 +1,7 @@
 using System.Runtime.CompilerServices;
 using Microsoft.Extensions.AI;
 using Ur.Permissions;
+using Ur.Tools;
 
 namespace Ur.AgentLoop;
 

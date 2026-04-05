@@ -1,7 +1,7 @@
 using System.Text.Json;
 using Lua;
 using Microsoft.Extensions.AI;
-using Ur.AgentLoop;
+using Ur.Tools;
 
 namespace Ur.Extensions;
 

@@ -1,6 +1,5 @@
 using System.Runtime.InteropServices;
 using Microsoft.Extensions.AI;
-using Ur.AgentLoop;
 using Ur.Configuration;
 using Ur.Configuration.Keyring;
 using Ur.Extensions;
@@ -99,7 +98,7 @@ public sealed class UrHost
             registry.Register(
                 skillTool,
                 OperationType.ReadInWorkspace,
-                targetExtractor: args => ToolArgHelpers.GetOptionalString(args, "skill") ?? "(unknown)");
+                targetExtractor: TargetExtractors.FromKey("skill"));
         }
 
         // Tools from active extensions (Lua-defined).

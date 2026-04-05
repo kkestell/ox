@@ -1,7 +1,7 @@
 using Microsoft.Extensions.AI;
 using Ur.Permissions;
 
-namespace Ur.AgentLoop;
+namespace Ur.Tools;
 
 /// <summary>
 /// Maintains available tools. Core provides the registry; extensions register tools into it.
@@ -16,7 +16,7 @@ public sealed class ToolRegistry
 
     // Cached tool list — invalidated on Register/Remove to avoid allocating
     // a new list on every call to All() (which runs each agent loop iteration).
-    private IList<AITool>? _allCache;
+    private IReadOnlyList<AITool>? _allCache;
 
     /// <summary>
     /// Registers a tool with optional permission metadata. When metadata is omitted,
@@ -29,7 +29,7 @@ public sealed class ToolRegistry
         AIFunction tool,
         OperationType operationType = OperationType.WriteInWorkspace,
         string? extensionId = null,
-        Func<AIFunctionArguments, string>? targetExtractor = null)
+        ITargetExtractor? targetExtractor = null)
     {
         _tools[tool.Name] = tool;
         _meta[tool.Name] = new PermissionMeta(operationType, extensionId, targetExtractor);
@@ -68,6 +68,7 @@ public sealed class ToolRegistry
 
     /// <summary>
     /// Returns all registered tools as AITool instances for passing to ChatOptions.
+    /// Returns a read-only list to prevent accidental mutation of the cached snapshot.
     /// </summary>
-    public IList<AITool> All() => _allCache ??= _tools.Values.ToList<AITool>();
+    public IReadOnlyList<AITool> All() => _allCache ??= _tools.Values.ToList<AITool>();
 }

@@ -49,7 +49,7 @@ public sealed class Settings
     }
 
     /// <summary>Gets a value from the merged view, or null if not set.</summary>
-    public JsonElement? Get(string key)
+    internal JsonElement? Get(string key)
     {
         return _mergedValues.TryGetValue(key, out var value) ? value : null;
     }
