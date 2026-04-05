@@ -1,7 +1,3 @@
-src/Ur/Configuration/UrConfiguration.cs:116: [note] Method 'GetStringSetting' is never used
-src/Ur/Configuration/UrConfiguration.cs:126: [note] Method 'GetBoolSetting' is never used
-src/Ur/Configuration/UrConfiguration.cs:148: [note] Method 'SetStringSettingAsync' is never used
-src/Ur/Configuration/UrConfiguration.cs:158: [note] Method 'SetBoolSettingAsync' is never used
 src/Ur/Providers/ModelCatalog.cs:49: [note] Property 'State' can be made private
 src/Ur/Providers/ModelCatalog.cs:54: [note] Property 'IsReady' is never used
 src/Ur/Skills/SkillExpander.cs:34: [note] Invert 'if' statement to reduce nesting
