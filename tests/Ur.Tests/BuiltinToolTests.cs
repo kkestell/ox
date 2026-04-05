@@ -415,7 +415,7 @@ public sealed class BuiltinToolTests
         env.WriteFile("code.cs", "int x = 42;\nstring y = \"hello\";\nint z = 99;");
 
         // Force .NET fallback so the test doesn't depend on rg being installed.
-        GrepTool.SetRipgrepAvailable(false);
+        ToolArgHelpers.SetRipgrepAvailable(false);
         try
         {
             var tool = new GrepTool(env.Workspace);
@@ -428,7 +428,7 @@ public sealed class BuiltinToolTests
         }
         finally
         {
-            GrepTool.SetRipgrepAvailable(null); // Reset for other tests.
+            ToolArgHelpers.SetRipgrepAvailable(null); // Reset for other tests.
         }
     }
 
@@ -439,7 +439,7 @@ public sealed class BuiltinToolTests
         env.WriteFile("code.cs", "needle");
         env.WriteFile("readme.md", "needle");
 
-        GrepTool.SetRipgrepAvailable(false);
+        ToolArgHelpers.SetRipgrepAvailable(false);
         try
         {
             var tool = new GrepTool(env.Workspace);
@@ -452,7 +452,7 @@ public sealed class BuiltinToolTests
         }
         finally
         {
-            GrepTool.SetRipgrepAvailable(null);
+            ToolArgHelpers.SetRipgrepAvailable(null);
         }
     }
 
@@ -462,7 +462,7 @@ public sealed class BuiltinToolTests
         using var env = new ToolTestEnvironment();
         env.WriteFile("lines.txt", "aaa\nbbb\nccc\nbbb\neee");
 
-        GrepTool.SetRipgrepAvailable(false);
+        ToolArgHelpers.SetRipgrepAvailable(false);
         try
         {
             var tool = new GrepTool(env.Workspace);
@@ -474,7 +474,7 @@ public sealed class BuiltinToolTests
         }
         finally
         {
-            GrepTool.SetRipgrepAvailable(null);
+            ToolArgHelpers.SetRipgrepAvailable(null);
         }
     }
 
@@ -484,7 +484,7 @@ public sealed class BuiltinToolTests
         using var env = new ToolTestEnvironment();
         env.WriteFile("code.cs", "nothing here");
 
-        GrepTool.SetRipgrepAvailable(false);
+        ToolArgHelpers.SetRipgrepAvailable(false);
         try
         {
             var tool = new GrepTool(env.Workspace);
@@ -494,7 +494,7 @@ public sealed class BuiltinToolTests
         }
         finally
         {
-            GrepTool.SetRipgrepAvailable(null);
+            ToolArgHelpers.SetRipgrepAvailable(null);
         }
     }
 
@@ -504,7 +504,7 @@ public sealed class BuiltinToolTests
         using var env = new ToolTestEnvironment();
         env.WriteFile("ctx.txt", "line1\nline2\nMATCH\nline4\nline5");
 
-        GrepTool.SetRipgrepAvailable(false);
+        ToolArgHelpers.SetRipgrepAvailable(false);
         try
         {
             var tool = new GrepTool(env.Workspace);
@@ -522,7 +522,7 @@ public sealed class BuiltinToolTests
         }
         finally
         {
-            GrepTool.SetRipgrepAvailable(null);
+            ToolArgHelpers.SetRipgrepAvailable(null);
         }
     }
 
@@ -535,7 +535,7 @@ public sealed class BuiltinToolTests
         env.WriteFile("rg_test.txt", "alpha\nbeta\ngamma");
 
         // Reset to auto-detect so we exercise whichever backend is available.
-        GrepTool.SetRipgrepAvailable(null);
+        ToolArgHelpers.SetRipgrepAvailable(null);
         try
         {
             var tool = new GrepTool(env.Workspace);
@@ -549,7 +549,7 @@ public sealed class BuiltinToolTests
         }
         finally
         {
-            GrepTool.SetRipgrepAvailable(null);
+            ToolArgHelpers.SetRipgrepAvailable(null);
         }
     }
 

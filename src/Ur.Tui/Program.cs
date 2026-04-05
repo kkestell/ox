@@ -221,7 +221,7 @@ internal static class Program
                 break;
 
             case ToolCallStarted started:
-                Console.WriteLine($"\n[tool: {started.ToolName}]");
+                Console.WriteLine($"\n[tool: {started.FormatCall()}]");
                 break;
 
             case ToolCallCompleted completed:

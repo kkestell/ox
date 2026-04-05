@@ -155,7 +155,7 @@ internal static class ChatCommand
                             break;
 
                         case ToolCallStarted started:
-                            await Console.Error.WriteLineAsync($"\n[tool: {started.ToolName}]");
+                            await Console.Error.WriteLineAsync($"\n[tool: {started.FormatCall()}]");
                             break;
 
                         case ToolCallCompleted completed:

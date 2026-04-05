@@ -45,10 +45,6 @@ internal sealed class GrepTool(Workspace workspace) : AIFunction
         }
         """).RootElement.Clone();
 
-    // Lazily detect whether ripgrep is available. null = not yet checked.
-    private static bool? _ripgrepAvailable;
-    private static readonly Lock RipgrepDetectionLock = new();
-
     public override string Name => "grep";
     public override string Description => "Search file contents by regex pattern. Uses ripgrep if available, otherwise falls back to .NET regex.";
     public override JsonElement JsonSchema => Schema;
@@ -67,7 +63,7 @@ internal sealed class GrepTool(Workspace workspace) : AIFunction
         if (!Directory.Exists(searchRoot))
             return "";
 
-        if (IsRipgrepAvailable())
+        if (ToolArgHelpers.IsRipgrepAvailable())
             return await SearchWithRipgrep(pattern, searchRoot, include, contextLines, cancellationToken);
 
         return SearchWithDotNet(pattern, searchRoot, include, contextLines);
@@ -208,60 +204,17 @@ internal sealed class GrepTool(Workspace workspace) : AIFunction
 
     /// <summary>
     /// Enumerate files in the search root, optionally filtered by a glob pattern.
+    /// Always excludes .git/ — the ripgrep path handles .gitignore natively;
+    /// this fallback at minimum avoids searching version-control internals.
     /// </summary>
     private static IEnumerable<string> EnumerateFiles(string searchRoot, string? include)
     {
-        if (string.IsNullOrEmpty(include))
-            return Directory.EnumerateFiles(searchRoot, "*", SearchOption.AllDirectories);
-
         var matcher = new Matcher();
-        matcher.AddInclude(include);
+        matcher.AddInclude(string.IsNullOrEmpty(include) ? "**/*" : include);
+        matcher.AddExclude(".git/**");
         var directoryInfo = new DirectoryInfoWrapper(new DirectoryInfo(searchRoot));
         var result = matcher.Execute(directoryInfo);
         return result.Files.Select(m => Path.Combine(searchRoot, m.Path));
     }
 
-    // ─── Shared helpers ───────────────────────────────────────────────
-
-    private static bool IsRipgrepAvailable()
-    {
-        if (_ripgrepAvailable.HasValue)
-            return _ripgrepAvailable.Value;
-
-        lock (RipgrepDetectionLock)
-        {
-            if (_ripgrepAvailable.HasValue)
-                return _ripgrepAvailable.Value;
-
-            try
-            {
-                var psi = new ProcessStartInfo
-                {
-                    FileName = "rg",
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                    UseShellExecute = false,
-                    CreateNoWindow = true
-                };
-                psi.ArgumentList.Add("--version");
-                using var process = Process.Start(psi);
-                process?.WaitForExit(3000);
-                _ripgrepAvailable = process?.ExitCode == 0;
-            }
-            catch
-            {
-                _ripgrepAvailable = false;
-            }
-        }
-
-        return _ripgrepAvailable.Value;
-    }
-
-    /// <summary>
-    /// Allows tests to force a specific backend by overriding the ripgrep detection.
-    /// </summary>
-    internal static void SetRipgrepAvailable(bool? available)
-    {
-        _ripgrepAvailable = available;
-    }
 }

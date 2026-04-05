@@ -39,7 +39,8 @@ internal sealed class ToolInvoker(ToolRegistry tools, Workspace workspace)
             yield return new ToolCallStarted
             {
                 CallId = call.CallId,
-                ToolName = call.Name
+                ToolName = call.Name,
+                Arguments = call.Arguments ?? new Dictionary<string, object?>()
             };
 
             var (result, isError) = await InvokeOneAsync(call, callbacks, ct);

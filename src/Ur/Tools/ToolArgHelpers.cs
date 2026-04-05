@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.AI;
@@ -5,7 +6,7 @@ using Microsoft.Extensions.AI;
 namespace Ur.Tools;
 
 /// <summary>
-/// Shared helpers for tool argument extraction and output formatting.
+/// Shared helpers for tool argument extraction, output formatting, and backend detection.
 /// Tool arguments arrive as strings from tests but as JsonElement from real
 /// LLM responses — these helpers handle both transparently.
 /// </summary>
@@ -14,6 +15,55 @@ internal static class ToolArgHelpers
     // Default output limits shared by all tools that truncate process/search output.
     internal const int MaxOutputLines = 2000;
     internal const int MaxOutputBytes = 100 * 1024; // 100 KB
+
+    // ─── Ripgrep detection ────────────────────────────────────────────
+
+    // Lazily detect whether ripgrep is available. null = not yet checked.
+    private static bool? _ripgrepAvailable;
+    private static readonly Lock RipgrepDetectionLock = new();
+
+    /// <summary>
+    /// Returns true if ripgrep (rg) is available on PATH. Result is cached process-wide
+    /// so the detection process only runs once across all tools.
+    /// </summary>
+    public static bool IsRipgrepAvailable()
+    {
+        if (_ripgrepAvailable.HasValue)
+            return _ripgrepAvailable.Value;
+
+        lock (RipgrepDetectionLock)
+        {
+            if (_ripgrepAvailable.HasValue)
+                return _ripgrepAvailable.Value;
+
+            try
+            {
+                var psi = new ProcessStartInfo
+                {
+                    FileName = "rg",
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true
+                };
+                psi.ArgumentList.Add("--version");
+                using var process = Process.Start(psi);
+                process?.WaitForExit(3000);
+                _ripgrepAvailable = process?.ExitCode == 0;
+            }
+            catch
+            {
+                _ripgrepAvailable = false;
+            }
+        }
+
+        return _ripgrepAvailable.Value;
+    }
+
+    /// <summary>
+    /// Overrides ripgrep detection for tests. Pass null to re-enable auto-detection.
+    /// </summary>
+    internal static void SetRipgrepAvailable(bool? available) => _ripgrepAvailable = available;
 
     public static string GetRequiredString(AIFunctionArguments args, string key)
     {

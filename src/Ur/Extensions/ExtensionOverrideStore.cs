@@ -76,6 +76,11 @@ internal sealed class ExtensionOverrideStore
     {
         try
         {
+            // Return empty overrides silently if the file or its parent directory doesn't exist yet —
+            // that's the normal case before any overrides have been configured.
+            if (!File.Exists(path))
+                return [];
+
             await using var stream = File.OpenRead(path);
             var file = await JsonSerializer.DeserializeAsync(stream, JsonContext.OverrideFile, ct)
                 .ConfigureAwait(false);

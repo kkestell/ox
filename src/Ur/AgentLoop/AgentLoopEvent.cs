@@ -1,3 +1,5 @@
+using System.Text.Json;
+
 namespace Ur.AgentLoop;
 
 /// <summary>
@@ -22,6 +24,37 @@ public sealed class ToolCallStarted : AgentLoopEvent
     // ReSharper disable once UnusedAutoPropertyAccessor.Global — init-only; retained for event correlation and serialization
     public required string CallId { get; init; }
     public required string ToolName { get; init; }
+    // Arguments are carried here so UIs can render an informative status line
+    // without needing to intercept or re-parse the raw LLM message.
+    public required IDictionary<string, object?> Arguments { get; init; }
+
+    /// <summary>
+    /// Formats the call as <c>tool_name(key: "val", ...)</c> for display.
+    /// Each argument value is truncated to 40 characters to avoid flooding narrow terminals.
+    /// </summary>
+    public string FormatCall()
+    {
+        const int maxLen = 40;
+
+        if (Arguments.Count == 0)
+            return ToolName;
+
+        var parts = Arguments.Select(kvp =>
+        {
+            var val = FormatValue(kvp.Value);
+            var display = val.Length > maxLen ? val[..maxLen] + "..." : val;
+            return $"{kvp.Key}: \"{display}\"";
+        });
+
+        return $"{ToolName}({string.Join(", ", parts)})";
+    }
+
+    private static string FormatValue(object? value) => value switch
+    {
+        null => "null",
+        JsonElement { ValueKind: JsonValueKind.String } je => je.GetString() ?? "",
+        _ => value.ToString() ?? ""
+    };
 }
 
 /// <summary>

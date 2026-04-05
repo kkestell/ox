@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text.Json;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.FileSystemGlobbing;
@@ -7,12 +8,15 @@ namespace Ur.Tools;
 
 /// <summary>
 /// Built-in tool that finds files by glob pattern within the workspace.
-/// Uses Microsoft.Extensions.FileSystemGlobbing for proper ** support,
-/// returning matching paths relative to the workspace root.
+///
+/// Prefers ripgrep (rg --files) for its native .gitignore support; falls back to
+/// Microsoft.Extensions.FileSystemGlobbing when rg is unavailable, explicitly
+/// excluding .git to avoid surfacing version-control internals.
 /// </summary>
 internal sealed class GlobTool(Workspace workspace) : AIFunction
 {
     private const int MaxResults = 1000;
+    private const int RipgrepTimeoutSeconds = 30;
 
     private static readonly JsonElement Schema = JsonDocument.Parse("""
         {
@@ -36,7 +40,7 @@ internal sealed class GlobTool(Workspace workspace) : AIFunction
     public override string Description => "Find files by glob pattern within the workspace.";
     public override JsonElement JsonSchema => Schema;
 
-    protected override ValueTask<object?> InvokeCoreAsync(
+    protected override async ValueTask<object?> InvokeCoreAsync(
         AIFunctionArguments arguments,
         CancellationToken cancellationToken)
     {
@@ -46,10 +50,78 @@ internal sealed class GlobTool(Workspace workspace) : AIFunction
         var searchRoot = ToolArgHelpers.ResolvePath(workspace.RootPath, subPath);
 
         if (!Directory.Exists(searchRoot))
-            return new ValueTask<object?>("");
+            return "";
 
+        if (ToolArgHelpers.IsRipgrepAvailable())
+            return await SearchWithRipgrepAsync(pattern, searchRoot, cancellationToken);
+
+        return SearchWithDotNet(pattern, searchRoot);
+    }
+
+    // ─── Ripgrep backend ──────────────────────────────────────────────
+
+    private async Task<string> SearchWithRipgrepAsync(
+        string pattern, string searchRoot, CancellationToken ct)
+    {
+        var psi = new ProcessStartInfo
+        {
+            FileName = "rg",
+            WorkingDirectory = workspace.RootPath,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true
+        };
+        psi.ArgumentList.Add("--files");
+        psi.ArgumentList.Add("--glob");
+        psi.ArgumentList.Add(pattern);
+        psi.ArgumentList.Add(searchRoot);
+
+        using var process = Process.Start(psi)!;
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        cts.CancelAfter(TimeSpan.FromSeconds(RipgrepTimeoutSeconds));
+
+        string output;
+        try
+        {
+            output = await process.StandardOutput.ReadToEndAsync(cts.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            process.Kill(entireProcessTree: true);
+            return "[search timed out]";
+        }
+
+        await process.WaitForExitAsync(ct);
+
+        // Convert absolute rg output paths to workspace-relative paths for consistency.
+        var relativePaths = output.Split('\n')
+            .Where(line => !string.IsNullOrEmpty(line))
+            .Select(line => Path.GetRelativePath(workspace.RootPath, line))
+            .OrderBy(p => p, StringComparer.Ordinal)
+            .ToList();
+
+        if (relativePaths.Count == 0)
+            return "";
+
+        var truncated = relativePaths.Count > MaxResults;
+        var result = string.Join('\n', truncated ? relativePaths.Take(MaxResults) : relativePaths);
+
+        if (truncated)
+            result += $"\n[truncated: showing {MaxResults} of {relativePaths.Count} matches]";
+
+        return result;
+    }
+
+    // ─── .NET fallback ────────────────────────────────────────────────
+
+    private string SearchWithDotNet(string pattern, string searchRoot)
+    {
         var matcher = new Matcher();
         matcher.AddInclude(pattern);
+        // Exclude .git so version-control internals never appear in results.
+        // Without rg we can't read .gitignore, but .git/ is the most common noise.
+        matcher.AddExclude(".git/**");
 
         var directoryInfo = new DirectoryInfoWrapper(new DirectoryInfo(searchRoot));
         var matchResult = matcher.Execute(directoryInfo);
@@ -63,7 +135,7 @@ internal sealed class GlobTool(Workspace workspace) : AIFunction
             .ToList();
 
         if (relativePaths.Count == 0)
-            return new ValueTask<object?>("");
+            return "";
 
         var truncated = relativePaths.Count > MaxResults;
         var output = string.Join('\n', truncated ? relativePaths.Take(MaxResults) : relativePaths);
@@ -71,7 +143,6 @@ internal sealed class GlobTool(Workspace workspace) : AIFunction
         if (truncated)
             output += $"\n[truncated: showing {MaxResults} of {relativePaths.Count} matches]";
 
-        return new ValueTask<object?>(output);
+        return output;
     }
-
 }
