@@ -44,7 +44,7 @@ internal sealed class WriteFileTool : AIFunction
     {
         var filePath = ToolArgHelpers.GetRequiredString(arguments, "file_path");
         var content = ToolArgHelpers.GetRequiredString(arguments, "content");
-        var fullPath = ResolvePath(filePath);
+        var fullPath = ToolArgHelpers.ResolvePath(_workspace.RootPath, filePath);
 
         if (!_workspace.Contains(fullPath))
             throw new InvalidOperationException($"Path is outside the workspace: {filePath}");
@@ -58,13 +58,6 @@ internal sealed class WriteFileTool : AIFunction
 
         var bytes = System.Text.Encoding.UTF8.GetByteCount(content);
         return new ValueTask<object?>($"Wrote {bytes} bytes to {filePath}");
-    }
-
-    private string ResolvePath(string filePath)
-    {
-        if (!Path.IsPathRooted(filePath))
-            return Path.GetFullPath(Path.Combine(_workspace.RootPath, filePath));
-        return Path.GetFullPath(filePath);
     }
 
 }

@@ -17,8 +17,6 @@ namespace Ur.Tools;
 /// </summary>
 internal sealed class GrepTool : AIFunction
 {
-    private const int MaxOutputLines = 2000;
-    private const int MaxOutputBytes = 100 * 1024; // 100 KB
     private const int RipgrepTimeoutSeconds = 30;
 
     private static readonly JsonElement Schema = JsonDocument.Parse("""
@@ -70,7 +68,7 @@ internal sealed class GrepTool : AIFunction
         var include = ToolArgHelpers.GetOptionalString(arguments, "include");
         var contextLines = ToolArgHelpers.GetOptionalInt(arguments, "context_lines") ?? 0;
 
-        var searchRoot = ResolveSearchRoot(subPath);
+        var searchRoot = ToolArgHelpers.ResolvePath(_workspace.RootPath, subPath);
 
         if (!_workspace.Contains(searchRoot))
             throw new InvalidOperationException($"Path is outside the workspace: {subPath}");
@@ -154,7 +152,7 @@ internal sealed class GrepTool : AIFunction
                 ? line[prefix.Length..]
                 : line));
 
-        return TruncateOutput(output);
+        return ToolArgHelpers.TruncateOutput(output);
     }
 
     // ─── .NET regex fallback ──────────────────────────────────────────
@@ -169,7 +167,7 @@ internal sealed class GrepTool : AIFunction
 
         foreach (var file in files)
         {
-            if (sb.Length >= MaxOutputBytes || lineCount >= MaxOutputLines)
+            if (sb.Length >= ToolArgHelpers.MaxOutputBytes || lineCount >= ToolArgHelpers.MaxOutputLines)
                 break;
 
             string[] lines;
@@ -187,7 +185,7 @@ internal sealed class GrepTool : AIFunction
 
             for (var i = 0; i < lines.Length; i++)
             {
-                if (sb.Length >= MaxOutputBytes || lineCount >= MaxOutputLines)
+                if (sb.Length >= ToolArgHelpers.MaxOutputBytes || lineCount >= ToolArgHelpers.MaxOutputLines)
                     break;
 
                 if (!regex.IsMatch(lines[i]))
@@ -199,7 +197,7 @@ internal sealed class GrepTool : AIFunction
 
                 for (var c = contextStart; c <= contextEnd; c++)
                 {
-                    if (lineCount >= MaxOutputLines)
+                    if (lineCount >= ToolArgHelpers.MaxOutputLines)
                         break;
 
                     // Use : for the match line, - for context lines (same as rg).
@@ -211,7 +209,7 @@ internal sealed class GrepTool : AIFunction
         }
 
         var result = sb.ToString().TrimEnd();
-        if (lineCount >= MaxOutputLines || sb.Length >= MaxOutputBytes)
+        if (lineCount >= ToolArgHelpers.MaxOutputLines || sb.Length >= ToolArgHelpers.MaxOutputBytes)
             result += "\n[truncated]";
 
         return result;
@@ -268,35 +266,5 @@ internal sealed class GrepTool : AIFunction
     internal static void SetRipgrepAvailable(bool? available)
     {
         _ripgrepAvailable = available;
-    }
-
-    private static string TruncateOutput(string output)
-    {
-        var lines = output.Split('\n');
-        if (lines.Length <= MaxOutputLines && output.Length <= MaxOutputBytes)
-            return output.TrimEnd();
-
-        var sb = new StringBuilder();
-        var count = 0;
-        foreach (var line in lines)
-        {
-            if (count >= MaxOutputLines || sb.Length >= MaxOutputBytes)
-                break;
-            sb.AppendLine(line);
-            count++;
-        }
-
-        return sb.ToString().TrimEnd() + "\n[truncated]";
-    }
-
-    private string ResolveSearchRoot(string? subPath)
-    {
-        if (string.IsNullOrEmpty(subPath))
-            return _workspace.RootPath;
-
-        if (!Path.IsPathRooted(subPath))
-            return Path.GetFullPath(Path.Combine(_workspace.RootPath, subPath));
-
-        return Path.GetFullPath(subPath);
     }
 }

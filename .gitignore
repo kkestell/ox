@@ -11,6 +11,7 @@ TestResults/
 
 # Visual Studio / Rider / VS Code .NET user files
 .vs/
+.idea/
 *.user
 *.rsuser
 *.suo

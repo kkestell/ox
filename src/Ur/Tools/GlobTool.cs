@@ -50,7 +50,7 @@ internal sealed class GlobTool : AIFunction
         var pattern = ToolArgHelpers.GetRequiredString(arguments, "pattern");
         var subPath = ToolArgHelpers.GetOptionalString(arguments, "path");
 
-        var searchRoot = ResolveSearchRoot(subPath);
+        var searchRoot = ToolArgHelpers.ResolvePath(_workspace.RootPath, subPath);
 
         if (!_workspace.Contains(searchRoot))
             throw new InvalidOperationException($"Path is outside the workspace: {subPath}");
@@ -84,14 +84,4 @@ internal sealed class GlobTool : AIFunction
         return new ValueTask<object?>(output);
     }
 
-    private string ResolveSearchRoot(string? subPath)
-    {
-        if (string.IsNullOrEmpty(subPath))
-            return _workspace.RootPath;
-
-        if (!Path.IsPathRooted(subPath))
-            return Path.GetFullPath(Path.Combine(_workspace.RootPath, subPath));
-
-        return Path.GetFullPath(subPath);
-    }
 }

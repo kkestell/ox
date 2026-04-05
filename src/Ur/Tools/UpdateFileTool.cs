@@ -50,7 +50,7 @@ internal sealed class UpdateFileTool : AIFunction
         var filePath = ToolArgHelpers.GetRequiredString(arguments, "file_path");
         var oldString = ToolArgHelpers.GetRequiredString(arguments, "old_string");
         var newString = ToolArgHelpers.GetRequiredString(arguments, "new_string");
-        var fullPath = ResolvePath(filePath);
+        var fullPath = ToolArgHelpers.ResolvePath(_workspace.RootPath, filePath);
 
         if (!_workspace.Contains(fullPath))
             throw new InvalidOperationException($"Path is outside the workspace: {filePath}");
@@ -89,13 +89,6 @@ internal sealed class UpdateFileTool : AIFunction
             index += search.Length;
         }
         return count;
-    }
-
-    private string ResolvePath(string filePath)
-    {
-        if (!Path.IsPathRooted(filePath))
-            return Path.GetFullPath(Path.Combine(_workspace.RootPath, filePath));
-        return Path.GetFullPath(filePath);
     }
 
 }

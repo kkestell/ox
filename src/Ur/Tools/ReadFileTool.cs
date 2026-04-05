@@ -50,7 +50,7 @@ internal sealed class ReadFileTool : AIFunction
         CancellationToken cancellationToken)
     {
         var filePath = ToolArgHelpers.GetRequiredString(arguments, "file_path");
-        var fullPath = ResolvePath(filePath);
+        var fullPath = ToolArgHelpers.ResolvePath(_workspace.RootPath, filePath);
 
         if (!_workspace.Contains(fullPath))
             throw new InvalidOperationException($"Path is outside the workspace: {filePath}");
@@ -76,14 +76,6 @@ internal sealed class ReadFileTool : AIFunction
             result += $"\n[truncated: showing lines {start + 1}-{start + count} of {totalLines} lines]";
 
         return new ValueTask<object?>(result);
-    }
-
-    private string ResolvePath(string filePath)
-    {
-        // If the path is relative, resolve it against the workspace root.
-        if (!Path.IsPathRooted(filePath))
-            return Path.GetFullPath(Path.Combine(_workspace.RootPath, filePath));
-        return Path.GetFullPath(filePath);
     }
 
 }

@@ -1,6 +1,7 @@
 <Solution>
-  <Project Path="Ur.IntegrationTests/Ur.IntegrationTests.csproj" />
-  <Project Path="Ur.Tests/Ur.Tests.csproj" />
-  <Project Path="Ur/Ur.csproj" />
-  <Project Path="Ur.Cli/Ur.Cli.csproj" />
+  <Project Path="src/Ur/Ur.csproj" />
+  <Project Path="src/Ur.Cli/Ur.Cli.csproj" />
+  <Project Path="src/Ur.Tui/Ur.Tui.csproj" />
+  <Project Path="tests/Ur.Tests/Ur.Tests.csproj" />
+  <Project Path="tests/Ur.IntegrationTests/Ur.IntegrationTests.csproj" />
 </Solution>

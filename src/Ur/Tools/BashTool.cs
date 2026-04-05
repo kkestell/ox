@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.AI;
 
@@ -15,8 +14,6 @@ namespace Ur.Tools;
 internal sealed class BashTool : AIFunction
 {
     private const int DefaultTimeoutMs = 120_000; // 2 minutes
-    private const int MaxOutputLines = 2000;
-    private const int MaxOutputBytes = 100 * 1024; // 100 KB
 
     private static readonly JsonElement Schema = JsonDocument.Parse("""
         {
@@ -70,8 +67,6 @@ internal sealed class BashTool : AIFunction
         if (process is null)
             return "Failed to start process.";
 
-        // Read stdout and stderr concurrently to avoid deadlocks when
-        // the process writes enough to fill an OS pipe buffer.
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         cts.CancelAfter(TimeSpan.FromMilliseconds(timeoutMs));
 
@@ -123,49 +118,30 @@ internal sealed class BashTool : AIFunction
 
     private static string FormatResult(int exitCode, string stdout, string stderr, bool timedOut)
     {
-        var sb = new StringBuilder();
+        var parts = new List<string>();
 
         if (timedOut)
-            sb.AppendLine("[command timed out]");
+            parts.Add("[command timed out]");
 
-        sb.AppendLine($"Exit code: {exitCode}");
+        parts.Add($"Exit code: {exitCode}");
 
         if (!string.IsNullOrEmpty(stdout))
         {
-            sb.AppendLine("--- stdout ---");
-            sb.AppendLine(TruncateOutput(stdout));
+            parts.Add("--- stdout ---");
+            parts.Add(ToolArgHelpers.TruncateOutput(stdout));
         }
 
         if (!string.IsNullOrEmpty(stderr))
         {
-            sb.AppendLine("--- stderr ---");
-            sb.AppendLine(TruncateOutput(stderr));
+            parts.Add("--- stderr ---");
+            parts.Add(ToolArgHelpers.TruncateOutput(stderr));
         }
 
         // If the process produced no output at all, say so explicitly
         // so the LLM doesn't think it missed something.
         if (string.IsNullOrEmpty(stdout) && string.IsNullOrEmpty(stderr) && !timedOut)
-            sb.AppendLine("(no output)");
+            parts.Add("(no output)");
 
-        return sb.ToString().TrimEnd();
-    }
-
-    private static string TruncateOutput(string output)
-    {
-        var lines = output.Split('\n');
-        if (lines.Length <= MaxOutputLines && output.Length <= MaxOutputBytes)
-            return output.TrimEnd();
-
-        var sb = new StringBuilder();
-        var count = 0;
-        foreach (var line in lines)
-        {
-            if (count >= MaxOutputLines || sb.Length >= MaxOutputBytes)
-                break;
-            sb.AppendLine(line);
-            count++;
-        }
-
-        return sb.ToString().TrimEnd() + "\n[truncated]";
+        return string.Join('\n', parts);
     }
 }
