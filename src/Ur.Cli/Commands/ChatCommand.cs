@@ -82,8 +82,40 @@ internal static class ChatCommand
 
                 // Build a permission callback that prompts the user on stderr/stdin.
                 // Only scope options valid for the specific operation are presented.
+                // SubagentEventEmitted relays sub-agent events to stderr with a >>>> prefix
+                // so scripted callers can separate parent response text (stdout) from
+                // sub-agent activity (stderr).
                 var callbacks = new TurnCallbacks
                 {
+                    SubagentEventEmitted = evt =>
+                    {
+                        // Route sub-agent events to stderr with >>>> prefix.
+                        // Response chunks go to stdout, matching parent agent output routing.
+                        switch (evt)
+                        {
+                            case SubagentEvent { Inner: ResponseChunk innerChunk }:
+                                Console.Write($">>>> {innerChunk.Text}");
+                                break;
+                            case SubagentEvent { Inner: ToolCallStarted innerStarted }:
+                                Console.Error.WriteLine($"\n>>>> [tool: {innerStarted.FormatCall()}]");
+                                break;
+                            case SubagentEvent { Inner: ToolCallCompleted innerCompleted }:
+                                var innerRes = innerCompleted.Result.Length > 200
+                                    ? innerCompleted.Result[..200] + "\u2026"
+                                    : innerCompleted.Result;
+                                var innerSts = innerCompleted.IsError ? "error" : "ok";
+                                Console.Error.WriteLine($">>>> [tool: {innerCompleted.ToolName} \u2192 {innerSts}] {innerRes}");
+                                break;
+                            case SubagentEvent { Inner: TurnCompleted }:
+                                Console.WriteLine();
+                                break;
+                            case SubagentEvent { Inner: Error innerError }:
+                                Console.Error.WriteLine($"\n>>>> [error] {innerError.Message}");
+                                break;
+                        }
+                        return ValueTask.CompletedTask;
+                    },
+
                     RequestPermissionAsync = (req, _) =>
                     {
                         // Filter to just the scopes allowed for this operation type,
@@ -178,6 +210,13 @@ internal static class ChatCommand
                             await Console.Error.WriteLineAsync($"\n[error] {error.Message}");
                             if (error.IsFatal)
                                 return 1;
+                            break;
+
+                        case SubagentEvent:
+                            // SubagentEvent handling is fully handled by TurnCallbacks.SubagentEventEmitted
+                            // above. Events never reach the turn stream — SubagentRunner invokes the
+                            // callback directly. This case is a safety net for any future path that
+                            // might yield them into the session stream.
                             break;
                     }
                 }

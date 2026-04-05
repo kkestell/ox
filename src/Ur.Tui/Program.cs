@@ -174,6 +174,14 @@ internal static class Program
     {
         return new TurnCallbacks
         {
+            // Relay sub-agent events straight into RenderEvent so the user sees
+            // what the sub-agent is doing while it runs.
+            SubagentEventEmitted = evt =>
+            {
+                RenderEvent(evt);
+                return ValueTask.CompletedTask;
+            },
+
             RequestPermissionAsync = (req, ct) =>
             {
                 // Build a hint showing the available scope options beyond simple y/n.
@@ -221,9 +229,20 @@ internal static class Program
     /// <summary>
     /// Renders a single <see cref="AgentLoopEvent"/> to the console.
     /// Response text streams inline; tool status and errors get bracketed markers.
+    /// SubagentEvent envelopes are unwrapped via a loop rather than recursion so the
+    /// call stack stays flat regardless of nesting depth.
     /// </summary>
     private static void RenderEvent(AgentLoopEvent evt)
     {
+        // Unwrap SubagentEvent envelopes first, emitting the >>>> prefix for each layer.
+        // In practice the inner event is always a base type (never another SubagentEvent),
+        // but the loop guards against unbounded stack growth if that ever changes.
+        while (evt is SubagentEvent subagentEvt)
+        {
+            Console.Write(">>>> ");
+            evt = subagentEvt.Inner;
+        }
+
         switch (evt)
         {
             // Stream text as it arrives — no newline between chunks so the

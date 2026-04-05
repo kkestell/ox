@@ -82,3 +82,22 @@ public sealed class Error : AgentLoopEvent
     public required string Message { get; init; }
     public required bool IsFatal { get; init; }
 }
+
+/// <summary>
+/// A relay envelope that wraps an event emitted by a running sub-agent.
+///
+/// Architecture: rather than tagging every event type with an optional SubagentId field,
+/// we wrap at the boundary. SubagentRunner produces these; the UI layer unwraps them
+/// and renders with a visual prefix so the user can see what the sub-agent is doing.
+/// The SubagentId is a short identifier that can later be used to group or indent
+/// concurrent sub-agent streams without changing this envelope's shape.
+/// </summary>
+public sealed class SubagentEvent : AgentLoopEvent
+{
+    // The short ID (8-char hex) of the sub-agent that emitted this event.
+    // Generated once per SubagentRunner.RunAsync call; consistent across all events from that run.
+    public required string SubagentId { get; init; }
+
+    // The inner event exactly as produced by the sub-agent's loop.
+    public required AgentLoopEvent Inner { get; init; }
+}

@@ -44,6 +44,34 @@ public sealed class SubagentRunnerTests
     }
 
     /// <summary>
+    /// Throws during streaming, causing AgentLoop to produce a fatal Error event.
+    /// Used to verify that SubagentRunner relays the error event before re-raising.
+    /// </summary>
+    private sealed class ThrowingStreamClient : IChatClient
+    {
+        public Task<ChatResponse> GetResponseAsync(
+            IEnumerable<ChatMessage> messages,
+            ChatOptions? options = null,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException("SubagentRunner uses streaming");
+
+        public async IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
+            IEnumerable<ChatMessage> messages,
+            ChatOptions? options = null,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            await Task.CompletedTask;
+            throw new HttpRequestException("simulated API failure");
+#pragma warning disable CS0162 // Unreachable — yield needed to make this an async iterator
+            yield break;
+#pragma warning restore CS0162
+        }
+
+        public object? GetService(Type serviceType, object? serviceKey = null) => null;
+        public void Dispose() { }
+    }
+
+    /// <summary>
     /// Returns no streaming content, causing AgentLoop to produce an empty assistant
     /// message and terminate (TurnCompleted with zero tool calls means no tool dispatch).
     /// </summary>
@@ -244,5 +272,110 @@ public sealed class SubagentRunnerTests
     {
         public Task<string> RunAsync(string task, CancellationToken ct)
             => Task.FromResult("stub");
+    }
+
+    // ─── SubagentEventEmitted relay tests ──────────────────────────────
+
+    [Fact]
+    public async Task RunAsync_RelaysEventsToSubagentEventEmittedCallback()
+    {
+        // SubagentRunner must invoke SubagentEventEmitted for each event the inner
+        // loop produces, so the parent UI sees sub-agent activity in real time.
+        var workspace = MakeTempWorkspace();
+        var relayedEvents = new List<AgentLoopEvent>();
+
+        var callbacks = new TurnCallbacks
+        {
+            SubagentEventEmitted = evt =>
+            {
+                relayedEvents.Add(evt);
+                return ValueTask.CompletedTask;
+            }
+        };
+
+        var runner = new SubagentRunner(
+            new TextOnlyClient("hello"),
+            new ToolRegistry(),
+            workspace,
+            callbacks: callbacks,
+            systemPrompt: null);
+
+        await runner.RunAsync("do something", CancellationToken.None);
+
+        // At minimum a ResponseChunk and a TurnCompleted should have been relayed.
+        Assert.NotEmpty(relayedEvents);
+        Assert.Contains(relayedEvents, e => e is SubagentEvent { Inner: ResponseChunk });
+        Assert.Contains(relayedEvents, e => e is SubagentEvent { Inner: TurnCompleted });
+    }
+
+    [Fact]
+    public async Task RunAsync_AllRelayedEventsHaveConsistentSubagentId()
+    {
+        // All events relayed from a single RunAsync call must share the same SubagentId,
+        // so the parent UI can group them correctly when multiple sub-agents run.
+        var workspace = MakeTempWorkspace();
+        var relayedEvents = new List<AgentLoopEvent>();
+
+        var callbacks = new TurnCallbacks
+        {
+            SubagentEventEmitted = evt =>
+            {
+                relayedEvents.Add(evt);
+                return ValueTask.CompletedTask;
+            }
+        };
+
+        var runner = new SubagentRunner(
+            new TextOnlyClient("response"),
+            new ToolRegistry(),
+            workspace,
+            callbacks: callbacks,
+            systemPrompt: null);
+
+        await runner.RunAsync("any task", CancellationToken.None);
+
+        var subagentEvents = relayedEvents.OfType<SubagentEvent>().ToList();
+        Assert.NotEmpty(subagentEvents);
+
+        // All events from this run must have the same SubagentId.
+        var distinctIds = subagentEvents.Select(e => e.SubagentId).Distinct().ToList();
+        Assert.Single(distinctIds);
+
+        // The ID must be non-empty and stable — the exact format is an implementation
+        // detail, but it must be a non-blank string that groups events from this run.
+        Assert.False(string.IsNullOrWhiteSpace(distinctIds[0]));
+    }
+
+    [Fact]
+    public async Task RunAsync_FatalErrorEventIsRelayedBeforeExceptionPropagates()
+    {
+        // The relay must fire BEFORE SubagentRunner's switch re-raises the fatal error.
+        // If the relay call and the throw were transposed, the callback would never fire
+        // for fatal errors and the parent UI would silently miss the error event.
+        var workspace = MakeTempWorkspace();
+        var relayedEvents = new List<AgentLoopEvent>();
+
+        var callbacks = new TurnCallbacks
+        {
+            SubagentEventEmitted = evt =>
+            {
+                relayedEvents.Add(evt);
+                return ValueTask.CompletedTask;
+            }
+        };
+
+        var runner = new SubagentRunner(
+            new ThrowingStreamClient(),
+            new ToolRegistry(),
+            workspace,
+            callbacks: callbacks,
+            systemPrompt: null);
+
+        // The runner must throw because the inner loop hit a fatal error.
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => runner.RunAsync("trigger error", CancellationToken.None));
+
+        // Even though an exception was thrown, the fatal Error event must have been relayed.
+        Assert.Contains(relayedEvents, e => e is SubagentEvent { Inner: Error { IsFatal: true } });
     }
 }

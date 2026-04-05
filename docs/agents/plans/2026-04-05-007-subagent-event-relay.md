@@ -73,13 +73,13 @@ There is also a specific bug: when the subagent requests permission for a tool (
 
 ## Implementation plan
 
-- [ ] Add `SubagentEvent : AgentLoopEvent` to `src/Ur/AgentLoop/AgentLoopEvent.cs` with `required string SubagentId { get; init; }` and `required AgentLoopEvent Inner { get; init; }`. Add a doc comment explaining it is a relay envelope.
-- [ ] Add `Func<AgentLoopEvent, ValueTask>? SubagentEventEmitted { get; init; }` to `src/Ur/Permissions/TurnCallbacks.cs`. Doc comment: fires for each event relayed from a running sub-agent, tagged with its SubagentId.
-- [ ] In `SubagentRunner.RunAsync`: generate a short ID (`Guid.NewGuid().ToString("N")[..8]`), and after calling `agentLoop.RunTurnAsync`, for each event before switching on it, wrap it in `SubagentEvent` and invoke `callbacks?.SubagentEventEmitted?.Invoke(wrapped)` (fire-and-forget via `.AsTask().GetAwaiter().GetResult()` for now, since RunAsync is not IAsyncEnumerable and ValueTask can't be awaited in a switch body without refactoring — or use `.ConfigureAwait(false)` in a local helper).
-- [ ] In `src/Ur.Tui/Program.cs`, add `SubagentEventEmitted` to the `TurnCallbacks` construction that calls `RenderEvent` with the wrapped event.
-- [ ] In TUI `RenderEvent`, add a `SubagentEvent` case that prepends `>>>> ` to all output from the inner event. The simplest approach: capture console output or just call a helper `RenderEvent(subagentEvent.Inner)` after printing the prefix on its own line. Since tool status lines use `Console.WriteLine`, and response chunks use `Console.Write`, the cleanest option is to print `>>>> ` as a prefix before delegating — implemented by printing the prefix then delegating to `RenderEvent(inner)`.
-- [ ] Add matching `SubagentEvent` handling in `src/Ur.Cli/Commands/ChatCommand.cs` event render switch (same pattern as TUI).
-- [ ] Update tests in `tests/Ur.Tests/BuiltinToolTests.cs` if any existing test asserts that subagent events are absent from the parent stream.
+- [x] Add `SubagentEvent : AgentLoopEvent` to `src/Ur/AgentLoop/AgentLoopEvent.cs` with `required string SubagentId { get; init; }` and `required AgentLoopEvent Inner { get; init; }`. Add a doc comment explaining it is a relay envelope.
+- [x] Add `Func<AgentLoopEvent, ValueTask>? SubagentEventEmitted { get; init; }` to `src/Ur/Permissions/TurnCallbacks.cs`. Doc comment: fires for each event relayed from a running sub-agent, tagged with its SubagentId.
+- [x] In `SubagentRunner.RunAsync`: generate a short ID (`Guid.NewGuid().ToString("N")[..8]`), and after calling `agentLoop.RunTurnAsync`, for each event before switching on it, wrap it in `SubagentEvent` and invoke `callbacks?.SubagentEventEmitted?.Invoke(wrapped)` (fire-and-forget via `.AsTask().GetAwaiter().GetResult()` for now, since RunAsync is not IAsyncEnumerable and ValueTask can't be awaited in a switch body without refactoring — or use `.ConfigureAwait(false)` in a local helper).
+- [x] In `src/Ur.Tui/Program.cs`, add `SubagentEventEmitted` to the `TurnCallbacks` construction that calls `RenderEvent` with the wrapped event.
+- [x] In TUI `RenderEvent`, add a `SubagentEvent` case that prepends `>>>> ` to all output from the inner event. The simplest approach: capture console output or just call a helper `RenderEvent(subagentEvent.Inner)` after printing the prefix on its own line. Since tool status lines use `Console.WriteLine`, and response chunks use `Console.Write`, the cleanest option is to print `>>>> ` as a prefix before delegating — implemented by printing the prefix then delegating to `RenderEvent(inner)`.
+- [x] Add matching `SubagentEvent` handling in `src/Ur.Cli/Commands/ChatCommand.cs` event render switch (same pattern as TUI).
+- [x] Update tests in `tests/Ur.Tests/BuiltinToolTests.cs` if any existing test asserts that subagent events are absent from the parent stream.
 
 ## Validation
 

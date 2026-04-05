@@ -1,1 +1,1 @@
-src/Ur.Tui/Program.cs:279: [note] Convert 'if' statement into 'switch' statement
+src/Ur.Tui/Program.cs:298: [note] Convert 'if' statement into 'switch' statement

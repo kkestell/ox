@@ -48,6 +48,11 @@ internal sealed class SubagentRunner(
         // imported via ToolRegistry.
         var subAgentTools = parentTools.FilteredCopy(SubagentTool.ToolName);
 
+        // Short identifier for this sub-agent run — used to tag relayed events so
+        // the parent UI can group or prefix them. An 8-char hex prefix is long enough
+        // to distinguish concurrent runs without flooding the display.
+        var subagentId = Guid.NewGuid().ToString("N")[..8];
+
         var messages = new List<ChatMessage>
         {
             new(ChatRole.User, task)
@@ -61,6 +66,14 @@ internal sealed class SubagentRunner(
 
         await foreach (var loopEvent in agentLoop.RunTurnAsync(messages, callbacks, systemPrompt, ct))
         {
+            // Relay every event to the parent before processing it locally.
+            // This surfaces sub-agent activity (tool calls, streaming text) in the parent
+            // UI in real time rather than only showing the final accumulated result.
+            // The SubagentEvent wrapper carries the subagentId so the parent can visually
+            // distinguish sub-agent output from parent-agent output.
+            if (callbacks?.SubagentEventEmitted is { } relay)
+                await relay(new SubagentEvent { SubagentId = subagentId, Inner = loopEvent });
+
             switch (loopEvent)
             {
                 case ResponseChunk chunk:
