@@ -254,4 +254,54 @@ public sealed class ExtensionSystemTests
         Assert.Null(extension.LoadError);
         Assert.Null(host.BuildSessionToolRegistry("test").Get("sample_workspace"));
     }
+
+    [Fact]
+    public async Task GetExtensionSettings_ReturnsSchemaForKnownExtension()
+    {
+        // GetExtensionSettings() is the public API consumed by the CLI's
+        // `ur extensions settings` command.  This verifies that schemas flow
+        // all the way from the manifest through ExtensionCatalog to the caller,
+        // and that the same data is reachable via ExtensionInfo.SettingsSchemas.
+        using var env = new TempExtensionEnvironment();
+        await env.WriteManifestOnlyExtensionAsync(
+            env.UserExtensionsPath,
+            "settings-ext",
+            """
+            return {
+              name = "sample.settings",
+              version = "1.0.0",
+              settings = {
+                ["sample.enabled"] = {
+                  type = "boolean",
+                  description = "Enable the extension"
+                }
+              }
+            }
+            """);
+
+        var host = await env.StartHostAsync();
+
+        var schemas = host.Extensions.GetExtensionSettings("user:sample.settings");
+
+        Assert.True(schemas.ContainsKey("sample.enabled"));
+        Assert.Equal("boolean", schemas["sample.enabled"].GetProperty("type").GetString());
+
+        // Also verify the same data surfaces on ExtensionInfo so ToInfo() is exercised.
+        var info = Assert.Single(host.Extensions.List());
+        Assert.True(info.SettingsSchemas.ContainsKey("sample.enabled"));
+    }
+
+    [Fact]
+    public async Task GetExtensionSettings_ThrowsForUnknownExtensionId()
+    {
+        // Unknown IDs should throw ArgumentException, consistent with the
+        // SetEnabledAsync / ResetAsync error contract on ExtensionCatalog.
+        using var env = new TempExtensionEnvironment();
+        var host = await env.StartHostAsync();
+
+        var ex = Assert.Throws<ArgumentException>(
+            () => host.Extensions.GetExtensionSettings("user:no-such-extension"));
+
+        Assert.Contains("no-such-extension", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
 }

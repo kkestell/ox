@@ -67,6 +67,15 @@ public sealed class UrConfiguration
         .OrderBy(m => m.Id, StringComparer.OrdinalIgnoreCase)
         .ToList();
 
+    /// <summary>
+    /// All models in the raw catalog, sorted by ID. Unlike <see cref="AvailableModels"/>,
+    /// this includes models that lack tool support or non-text modalities — useful for
+    /// browsing or debugging what OpenRouter offers beyond the chat-capable subset.
+    /// </summary>
+    public IReadOnlyList<ModelInfo> AllModels => _modelCatalog.Models
+        .OrderBy(m => m.Id, StringComparer.OrdinalIgnoreCase)
+        .ToList();
+
     public ModelInfo? GetModel(string modelId) => _modelCatalog.GetModel(modelId);
 
     public Task RefreshModelsAsync(CancellationToken ct = default) =>

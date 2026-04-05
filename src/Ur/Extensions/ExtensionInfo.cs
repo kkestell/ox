@@ -1,3 +1,5 @@
+using System.Text.Json;
+
 namespace Ur.Extensions;
 
 /// <summary>
@@ -18,7 +20,8 @@ public sealed class ExtensionInfo
         bool desiredEnabled,
         bool isActive,
         bool hasOverride,
-        string? loadError)
+        string? loadError,
+        IReadOnlyDictionary<string, JsonElement> settingsSchemas)
     {
         Id = id;
         Name = name;
@@ -30,6 +33,7 @@ public sealed class ExtensionInfo
         IsActive = isActive;
         HasOverride = hasOverride;
         LoadError = loadError;
+        SettingsSchemas = settingsSchemas;
     }
 
     /// <summary>
@@ -83,4 +87,12 @@ public sealed class ExtensionInfo
     /// Gets the last activation error captured in the current process, if any.
     /// </summary>
     public string? LoadError { get; }
+
+    /// <summary>
+    /// Gets the JSON Schema definitions declared by this extension, keyed by setting name.
+    /// This mirrors the extension's settings registration and allows tooling to surface
+    /// what configuration the extension accepts without loading Lua.
+    /// </summary>
+    // ReSharper disable once UnusedAutoPropertyAccessor.Global — public API, consumed by ExtensionCatalog.GetExtensionSettings() and CLI
+    public IReadOnlyDictionary<string, JsonElement> SettingsSchemas { get; }
 }

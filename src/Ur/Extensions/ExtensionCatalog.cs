@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Ur.AgentLoop;
 
 namespace Ur.Extensions;
@@ -185,6 +186,18 @@ public sealed class ExtensionCatalog
     }
 
     /// <summary>
+    /// Returns the settings schemas declared by a specific extension, keyed by setting name.
+    /// Throws <see cref="ArgumentException"/> if the extension ID is not recognised.
+    /// This is the public API counterpart to the per-session tool registration path;
+    /// it allows CLI and UI tooling to inspect extension configuration without a running session.
+    /// </summary>
+    public IReadOnlyDictionary<string, JsonElement> GetExtensionSettings(string extensionId)
+    {
+        var extension = GetRequiredExtension(extensionId);
+        return extension.SettingsSchemas;
+    }
+
+    /// <summary>
     /// Copies all entries from <paramref name="source"/> into <paramref name="destination"/>,
     /// clearing any existing entries first. Mutates in-place rather than swapping the
     /// reference so that the field stays pointing at the same dictionary instance.
@@ -209,5 +222,6 @@ public sealed class ExtensionCatalog
             extension.DesiredEnabled,
             extension.IsActive,
             extension.HasOverride,
-            extension.LoadError);
+            extension.LoadError,
+            extension.SettingsSchemas);
 }

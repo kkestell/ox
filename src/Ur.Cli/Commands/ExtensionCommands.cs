@@ -1,4 +1,5 @@
 using System.CommandLine;
+using System.Text.Json;
 
 namespace Ur.Cli.Commands;
 
@@ -10,6 +11,7 @@ namespace Ur.Cli.Commands;
 ///   enable &lt;extension-id&gt;       enable an extension for its tier (user or workspace)
 ///   disable &lt;extension-id&gt;      disable an extension for its tier
 ///   reset &lt;extension-id&gt;        remove any override and restore the tier default
+///   settings &lt;extension-id&gt;     list all settings declared by an extension with their schemas and current values
 ///
 /// Extension IDs take the form "&lt;tier&gt;:&lt;name&gt;" (e.g. "system:git",
 /// "user:my-tools").  Run `ur extensions list` to see all IDs.
@@ -24,6 +26,7 @@ internal static class ExtensionCommands
         extensions.Add(BuildEnable());
         extensions.Add(BuildDisable());
         extensions.Add(BuildReset());
+        extensions.Add(BuildSettings());
 
         return extensions;
     }
@@ -138,6 +141,55 @@ internal static class ExtensionCommands
                 var info = await host.Extensions.ResetAsync(id, ct);
                 Console.WriteLine(
                     $"Reset {info.Id}: enabled={info.DesiredEnabled}, active={info.IsActive}.");
+                return 0;
+            }, cancellationToken));
+
+        return cmd;
+    }
+
+    // -------------------------------------------------------------------------
+    // ur extensions settings <extension-id>
+    // -------------------------------------------------------------------------
+
+    private static Command BuildSettings()
+    {
+        var idArg = ExtensionIdArgument();
+        var cmd   = new Command("settings", "List settings declared by an extension, with schemas and current values");
+        cmd.Add(idArg);
+
+        cmd.SetAction(async (parseResult, cancellationToken) =>
+            await HostRunner.RunAsync(async (host, _) =>
+            {
+                var id      = parseResult.GetValue(idArg)!;
+                var schemas = host.Extensions.GetExtensionSettings(id);
+
+                if (schemas.Count == 0)
+                {
+                    Console.WriteLine($"No settings defined for {id}.");
+                    return 0;
+                }
+
+                // Print each setting as: key name, current value (if any), then the
+                // schema as pretty-printed JSON.  The schema describes the type, default,
+                // and any constraints — together with the live value this is a one-stop
+                // diagnostic view for extension configuration.
+                foreach (var (key, schema) in schemas)
+                {
+                    Console.WriteLine($"--- {key} ---");
+
+                    var current = host.Configuration.GetSetting(key);
+                    Console.WriteLine(current.HasValue
+                        ? $"Current value: {current.Value}"
+                        : "Current value: (not set)");
+
+                    var prettySchema = JsonSerializer.Serialize(
+                        schema,
+                        new JsonSerializerOptions { WriteIndented = true });
+                    Console.WriteLine("Schema:");
+                    Console.WriteLine(prettySchema);
+                    Console.WriteLine();
+                }
+
                 return 0;
             }, cancellationToken));
 

@@ -42,14 +42,12 @@ internal static class ModelCommands
         cmd.Add(allOpt);
 
         cmd.SetAction(async (parseResult, cancellationToken) =>
-            await HostRunner.RunAsync(async (host, ct) =>
+            await HostRunner.RunAsync(async (host, _) =>
             {
-                // AvailableModels filters to text+tool-capable models, which is the meaningful
-                // subset for chat use.  The public library API doesn't yet expose the raw
-                // catalog, so --all shows the same set for now; it will expand once the library
-                // adds an unfiltered accessor.
-                _ = parseResult.GetValue(allOpt); // consumed — reserved for future use
-                var models = host.Configuration.AvailableModels;
+                var showAll = parseResult.GetValue(allOpt);
+                var models  = showAll
+                    ? host.Configuration.AllModels
+                    : host.Configuration.AvailableModels;
 
                 if (models.Count == 0)
                 {
@@ -69,7 +67,8 @@ internal static class ModelCommands
                     PrintRow(m, idWidth, nameWidth);
 
                 Console.WriteLine();
-                Console.WriteLine($"{models.Count} model(s) listed.");
+                var view = showAll ? "all models" : "text+tool-capable models";
+                Console.WriteLine($"{models.Count} model(s) listed ({view}).");
                 return 0;
             }, cancellationToken));
 
