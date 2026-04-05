@@ -38,11 +38,24 @@ internal sealed class SessionStore
             .Select(path =>
             {
                 var id = Path.GetFileNameWithoutExtension(path);
-                var created = new DateTimeOffset(File.GetCreationTimeUtc(path), TimeSpan.Zero);
+                // Parse the creation timestamp from the session ID (format: yyyyMMdd-HHmmss-fff)
+                // instead of hitting the filesystem for each file's metadata.
+                var created = ParseSessionTimestamp(id)
+                    ?? new DateTimeOffset(File.GetCreationTimeUtc(path), TimeSpan.Zero);
                 return new Session(id, path, created);
             })
             .ToList();
     }
+
+    private static DateTimeOffset? ParseSessionTimestamp(string id) =>
+        DateTimeOffset.TryParseExact(
+            id,
+            "yyyyMMdd-HHmmss-fff",
+            System.Globalization.CultureInfo.InvariantCulture,
+            System.Globalization.DateTimeStyles.AssumeUniversal,
+            out var parsed)
+            ? parsed
+            : null;
 
     public Session? Get(string id)
     {

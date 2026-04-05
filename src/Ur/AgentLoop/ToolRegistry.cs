@@ -14,6 +14,10 @@ public sealed class ToolRegistry
     // absence means "treat as WriteInWorkspace" (conservative default).
     private readonly Dictionary<string, PermissionMeta> _meta = new(StringComparer.Ordinal);
 
+    // Cached tool list — invalidated on Register/Remove to avoid allocating
+    // a new list on every call to All() (which runs each agent loop iteration).
+    private IList<AITool>? _allCache;
+
     /// <summary>
     /// Registers a tool without permission metadata.
     /// The tool will be treated as WriteInWorkspace by default — the conservative safe choice.
@@ -21,6 +25,7 @@ public sealed class ToolRegistry
     public void Register(AIFunction tool)
     {
         _tools[tool.Name] = tool;
+        _allCache = null;
     }
 
     /// <summary>
@@ -35,6 +40,7 @@ public sealed class ToolRegistry
     {
         _tools[tool.Name] = tool;
         _meta[tool.Name] = new PermissionMeta(operationType, extensionId, targetExtractor);
+        _allCache = null;
     }
 
     /// <summary>
@@ -50,7 +56,9 @@ public sealed class ToolRegistry
     public bool Remove(string name)
     {
         _meta.Remove(name);
-        return _tools.Remove(name);
+        var removed = _tools.Remove(name);
+        if (removed) _allCache = null;
+        return removed;
     }
 
     /// <summary>
@@ -79,5 +87,5 @@ public sealed class ToolRegistry
     /// <summary>
     /// Returns all registered tools as AITool instances for passing to ChatOptions.
     /// </summary>
-    public IList<AITool> All() => _tools.Values.ToList<AITool>();
+    public IList<AITool> All() => _allCache ??= _tools.Values.ToList<AITool>();
 }

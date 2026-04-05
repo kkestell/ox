@@ -30,7 +30,6 @@ public sealed class Extension
     public bool DesiredEnabled { get; private set; }
     public bool HasOverride { get; private set; }
     public bool IsActive { get; private set; }
-    public bool Enabled => IsActive;
     public string? LoadError { get; private set; }
     public IReadOnlyList<AIFunction> Tools => _tools;
     public IReadOnlyDictionary<string, JsonElement> SettingsSchemas => _descriptor.SettingsSchemas;

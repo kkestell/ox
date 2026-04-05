@@ -140,7 +140,7 @@ internal static class ExtensionLoader
                 if (key.TryRead<string>(out var settingKey) &&
                     value.TryRead<LuaTable>(out var schemaTable))
                 {
-                    settingsSchemas[settingKey] = LuaTableToJsonElement(schemaTable);
+                    settingsSchemas[settingKey] = LuaJsonHelpers.ToJsonElement(schemaTable);
                 }
             }
         }
@@ -191,7 +191,7 @@ internal static class ExtensionLoader
 
             JsonElement schema;
             if (def["parameters"].TryRead<LuaTable>(out var paramsTable))
-                schema = LuaTableToJsonElement(paramsTable);
+                schema = LuaJsonHelpers.ToJsonElement(paramsTable);
             else
                 schema = EmptyObjectSchema();
 
@@ -203,62 +203,6 @@ internal static class ExtensionLoader
 
         urTable["tool"] = toolTable;
         state.Environment["ur"] = urTable;
-    }
-
-    // --- Lua table → JSON Schema conversion ---
-
-    /// <summary>
-    /// Converts a Lua table representing a JSON Schema into a <see cref="JsonElement"/>.
-    /// Handles: type, properties, required, description, items, enum, default.
-    /// </summary>
-    internal static JsonElement LuaTableToJsonElement(LuaTable table)
-    {
-        using var stream = new MemoryStream();
-        using (var writer = new Utf8JsonWriter(stream))
-        {
-            WriteLuaTableAsJson(writer, table);
-        }
-
-        var doc = JsonDocument.Parse(stream.ToArray());
-        return doc.RootElement.Clone();
-    }
-
-    private static void WriteLuaTableAsJson(Utf8JsonWriter writer, LuaTable table)
-    {
-        // Detect array: has array portion and no hash entries.
-        if (table.ArrayLength > 0 && table.HashMapCount == 0)
-        {
-            writer.WriteStartArray();
-            for (var i = 1; i <= table.ArrayLength; i++)
-                WriteLuaValueAsJson(writer, table[i]);
-            writer.WriteEndArray();
-        }
-        else
-        {
-            writer.WriteStartObject();
-            foreach (var (key, value) in table)
-            {
-                if (!key.TryRead<string>(out var k))
-                    continue;
-                writer.WritePropertyName(k);
-                WriteLuaValueAsJson(writer, value);
-            }
-            writer.WriteEndObject();
-        }
-    }
-
-    private static void WriteLuaValueAsJson(Utf8JsonWriter writer, LuaValue value)
-    {
-        if (value.TryRead<string>(out var s))
-            writer.WriteStringValue(s);
-        else if (value.TryRead<double>(out var d))
-            writer.WriteNumberValue(d);
-        else if (value.TryRead<bool>(out var b))
-            writer.WriteBooleanValue(b);
-        else if (value.TryRead<LuaTable>(out var t))
-            WriteLuaTableAsJson(writer, t);
-        else
-            writer.WriteNullValue();
     }
 
     private static JsonElement EmptyObjectSchema()

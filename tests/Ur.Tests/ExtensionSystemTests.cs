@@ -187,7 +187,6 @@ public sealed class ExtensionSystemTests
         await ExtensionLoader.ActivateAsync(extension);
 
         Assert.True(extension.IsActive);
-        Assert.True(extension.Enabled);
 
         // Verify the tool is accessible via RegisterToolsInto.
         var registry = new ToolRegistry();

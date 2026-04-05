@@ -102,60 +102,7 @@ internal sealed class LuaToolAdapter : AIFunction
         if (value.TryRead<string>(out var s)) return s;
         if (value.TryRead<double>(out var d)) return d;
         if (value.TryRead<bool>(out var b)) return b;
-        if (value.TryRead<LuaTable>(out var t)) return MarshalLuaTableToJson(t);
+        if (value.TryRead<LuaTable>(out var t)) return LuaJsonHelpers.ToJsonString(t);
         return null;
-    }
-
-    private static string MarshalLuaTableToJson(LuaTable table)
-    {
-        using var stream = new System.IO.MemoryStream();
-        using var writer = new Utf8JsonWriter(stream);
-        WriteLuaValue(writer, table);
-        writer.Flush();
-        return System.Text.Encoding.UTF8.GetString(stream.ToArray());
-    }
-
-    private static void WriteLuaValue(Utf8JsonWriter writer, LuaValue value)
-    {
-        if (value.TryRead<string>(out var s))
-        {
-            writer.WriteStringValue(s);
-        }
-        else if (value.TryRead<double>(out var d))
-        {
-            writer.WriteNumberValue(d);
-        }
-        else if (value.TryRead<bool>(out var b))
-        {
-            writer.WriteBooleanValue(b);
-        }
-        else if (value.TryRead<LuaTable>(out var t))
-        {
-            // Determine if this is an array (sequential integer keys from 1) or object.
-            if (t.ArrayLength > 0 && t.HashMapCount == 0)
-            {
-                writer.WriteStartArray();
-                for (var i = 1; i <= t.ArrayLength; i++)
-                    WriteLuaValue(writer, t[i]);
-                writer.WriteEndArray();
-            }
-            else
-            {
-                writer.WriteStartObject();
-                foreach (var (k, v) in t)
-                {
-                    if (k.TryRead<string>(out var key))
-                    {
-                        writer.WritePropertyName(key);
-                        WriteLuaValue(writer, v);
-                    }
-                }
-                writer.WriteEndObject();
-            }
-        }
-        else
-        {
-            writer.WriteNullValue();
-        }
     }
 }

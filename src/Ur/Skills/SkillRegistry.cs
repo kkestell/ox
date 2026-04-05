@@ -14,12 +14,22 @@ public sealed class SkillRegistry
 {
     private readonly Dictionary<string, SkillDefinition> _skills;
 
+    // Precomputed filtered views. The registry is immutable after construction,
+    // so these never need invalidation — avoids per-turn LINQ allocations.
+    private readonly IReadOnlyList<SkillDefinition> _modelInvocable;
+    private readonly IReadOnlyList<SkillDefinition> _userInvocable;
+    private readonly IReadOnlyList<SkillDefinition> _all;
+
     public SkillRegistry(IEnumerable<SkillDefinition> skills)
     {
         // Case-insensitive lookup so "/Commit" and "/commit" both resolve.
         _skills = new Dictionary<string, SkillDefinition>(StringComparer.OrdinalIgnoreCase);
         foreach (var skill in skills)
             _skills[skill.Name] = skill;
+
+        _modelInvocable = _skills.Values.Where(s => !s.DisableModelInvocation).ToList();
+        _userInvocable = _skills.Values.Where(s => s.UserInvocable).ToList();
+        _all = _skills.Values.ToList();
     }
 
     /// <summary>
@@ -33,18 +43,11 @@ public sealed class SkillRegistry
         _skills.GetValueOrDefault(name);
 
     /// <summary>All skills the model can invoke (excludes DisableModelInvocation).</summary>
-    public IReadOnlyList<SkillDefinition> ModelInvocable() =>
-        _skills.Values
-            .Where(s => !s.DisableModelInvocation)
-            .ToList();
+    public IReadOnlyList<SkillDefinition> ModelInvocable() => _modelInvocable;
 
     /// <summary>All skills the user can invoke via slash commands (excludes !UserInvocable).</summary>
-    public IReadOnlyList<SkillDefinition> UserInvocable() =>
-        _skills.Values
-            .Where(s => s.UserInvocable)
-            .ToList();
+    public IReadOnlyList<SkillDefinition> UserInvocable() => _userInvocable;
 
     /// <summary>All loaded skills regardless of invocation restrictions.</summary>
-    public IReadOnlyList<SkillDefinition> All() =>
-        _skills.Values.ToList();
+    public IReadOnlyList<SkillDefinition> All() => _all;
 }

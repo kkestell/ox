@@ -112,8 +112,15 @@ public sealed class UrConfiguration
         CancellationToken ct = default) =>
         _settings.ClearAsync(key, scope, ct);
 
+    /// <summary>
+    /// Retrieves the API key from the OS keyring. Returns null if not configured.
+    /// This is the single source of truth for keyring service/account constants.
+    /// </summary>
+    internal string? GetApiKey() =>
+        _keyring.GetSecret(SecretService, SecretAccount);
+
     internal bool HasApiKey() =>
-        !string.IsNullOrWhiteSpace(_keyring.GetSecret(SecretService, SecretAccount));
+        !string.IsNullOrWhiteSpace(GetApiKey());
 
     private List<ChatBlockingIssue> GetBlockingIssues()
     {

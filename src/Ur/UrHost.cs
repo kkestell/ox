@@ -22,7 +22,6 @@ public sealed class UrHost
     private readonly ModelCatalog _modelCatalog;
     private readonly Settings _settings;
     private readonly SessionStore _sessions;
-    private readonly IKeyring _keyring;
     private readonly Func<string, IChatClient>? _chatClientFactoryOverride;
     private readonly string _userDataDirectory;
 
@@ -59,7 +58,6 @@ public sealed class UrHost
         _sessions = sessions;
         Extensions = extensions;
         Skills = skills;
-        _keyring = keyring;
         _userDataDirectory = userDataDirectory;
         _chatClientFactoryOverride = chatClientFactoryOverride;
         _additionalTools = additionalTools;
@@ -71,7 +69,7 @@ public sealed class UrHost
         if (_chatClientFactoryOverride is not null)
             return _chatClientFactoryOverride(modelId);
 
-        var apiKey = _keyring.GetSecret("ur", "openrouter")
+        var apiKey = Configuration.GetApiKey()
             ?? throw new InvalidOperationException(
                 "No OpenRouter API key configured. Set one with 'ur setup'.");
 

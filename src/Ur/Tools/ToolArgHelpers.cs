@@ -20,12 +20,7 @@ internal static class ToolArgHelpers
         if (!args.TryGetValue(key, out var value) || value is null)
             throw new ArgumentException($"Missing required parameter: {key}");
 
-        return value switch
-        {
-            string s => s,
-            JsonElement { ValueKind: JsonValueKind.String } je => je.GetString()!,
-            _ => value.ToString()!
-        };
+        return CoerceToString(value)!;
     }
 
     public static string? GetOptionalString(AIFunctionArguments args, string key)
@@ -33,12 +28,7 @@ internal static class ToolArgHelpers
         if (!args.TryGetValue(key, out var value) || value is null)
             return null;
 
-        return value switch
-        {
-            string s => s,
-            JsonElement { ValueKind: JsonValueKind.String } je => je.GetString(),
-            _ => value.ToString()
-        };
+        return CoerceToString(value);
     }
 
     public static int? GetOptionalInt(AIFunctionArguments args, string key)
@@ -83,13 +73,21 @@ internal static class ToolArgHelpers
         if (!args.TryGetValue(key, out var v) || v is null)
             return "(unknown)";
 
-        return v switch
-        {
-            string s => s,
-            JsonElement { ValueKind: JsonValueKind.String } je => je.GetString() ?? "(unknown)",
-            _ => v.ToString() ?? "(unknown)"
-        };
+        return CoerceToString(v) ?? "(unknown)";
     }
+
+    /// <summary>
+    /// Converts a tool argument value to a string. Tool arguments arrive as
+    /// native strings from tests but as JsonElement from real LLM responses —
+    /// this handles both transparently.
+    /// </summary>
+    private static string? CoerceToString(object? value) => value switch
+    {
+        null => null,
+        string s => s,
+        JsonElement { ValueKind: JsonValueKind.String } je => je.GetString(),
+        _ => value.ToString()
+    };
 
     /// <summary>
     /// Truncate output to fit within line and byte limits, appending a

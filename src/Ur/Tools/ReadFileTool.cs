@@ -58,22 +58,27 @@ internal sealed class ReadFileTool : AIFunction
         if (!File.Exists(fullPath))
             throw new InvalidOperationException($"File not found: {filePath}");
 
-        var offset = ToolArgHelpers.GetOptionalInt(arguments, "offset") ?? 0;
+        var start = ToolArgHelpers.GetOptionalInt(arguments, "offset") ?? 0;
         var limit = ToolArgHelpers.GetOptionalInt(arguments, "limit") ?? DefaultLimit;
 
-        var allLines = File.ReadAllLines(fullPath);
-        var totalLines = allLines.Length;
+        // Stream lines lazily so only the selected range is held in memory.
+        // The full file is still read from disk to compute totalLines for the
+        // truncation notice, but the GC pressure is much lower for large files.
+        var selected = new List<string>();
+        var totalLines = 0;
 
-        // Clamp offset to the file length so we don't throw on out-of-range values.
-        var start = Math.Min(offset, totalLines);
-        var count = Math.Min(limit, totalLines - start);
-        var selectedLines = allLines.AsSpan(start, count);
+        foreach (var line in File.ReadLines(fullPath))
+        {
+            if (totalLines >= start && selected.Count < limit)
+                selected.Add(line);
+            totalLines++;
+        }
 
-        var result = string.Join('\n', selectedLines.ToArray());
+        var result = string.Join('\n', selected);
 
         // Append a truncation notice when the returned window doesn't cover the whole file.
-        if (start > 0 || start + count < totalLines)
-            result += $"\n[truncated: showing lines {start + 1}-{start + count} of {totalLines} lines]";
+        if (start > 0 || start + selected.Count < totalLines)
+            result += $"\n[truncated: showing lines {start + 1}-{start + selected.Count} of {totalLines} lines]";
 
         return new ValueTask<object?>(result);
     }

@@ -70,54 +70,55 @@ public sealed class Settings
     /// Sets a value in the given scope, re-merges, validates, and persists.
     /// On failure (I/O or validation), rolls back to the pre-write state.
     /// </summary>
-    internal async Task SetAsync(
+    internal Task SetAsync(
         string key,
         JsonElement value,
         ConfigurationScope scope,
-        CancellationToken ct = default)
+        CancellationToken ct = default) =>
+        MutateAndPersistAsync(scope, dict => dict[key] = value.Clone(), ct);
+
+    /// <summary>
+    /// Removes a key from the given scope and persists. Same rollback semantics as SetAsync.
+    /// </summary>
+    internal Task ClearAsync(
+        string key,
+        ConfigurationScope scope,
+        CancellationToken ct = default) =>
+        MutateAndPersistAsync(scope, dict => dict.Remove(key), ct);
+
+    /// <summary>
+    /// Applies a mutation to one scope's dictionary, re-merges, validates, and persists.
+    /// On failure, restores the pre-mutation snapshot so the process never
+    /// operates on an invalid configuration.
+    /// </summary>
+    private async Task MutateAndPersistAsync(
+        ConfigurationScope scope,
+        Action<Dictionary<string, JsonElement>> mutation,
+        CancellationToken ct)
     {
-        // Snapshot both scopes before mutating so we can roll back atomically.
-        var originalUserValues = CloneValues(_userValues);
-        var originalWorkspaceValues = CloneValues(_workspaceValues);
+        // Only snapshot the scope being modified — the other scope is untouched.
+        var original = CloneValues(GetValues(scope));
 
         try
         {
-            GetValues(scope)[key] = value.Clone();
+            mutation(GetValues(scope));
             RebuildMergedValues();
             await PersistScopeAsync(scope, ct);
         }
         catch
         {
-            _userValues = originalUserValues;
-            _workspaceValues = originalWorkspaceValues;
+            RestoreScope(scope, original);
             _mergedValues = SettingsLoader.Merge(_userValues, _workspaceValues);
             throw;
         }
     }
 
-    /// <summary>
-    /// Removes a key from the given scope and persists. Same rollback semantics as SetAsync.
-    /// </summary>
-    internal async Task ClearAsync(
-        string key,
-        ConfigurationScope scope,
-        CancellationToken ct = default)
+    private void RestoreScope(ConfigurationScope scope, Dictionary<string, JsonElement> snapshot)
     {
-        var originalUserValues = CloneValues(_userValues);
-        var originalWorkspaceValues = CloneValues(_workspaceValues);
-
-        try
+        switch (scope)
         {
-            GetValues(scope).Remove(key);
-            RebuildMergedValues();
-            await PersistScopeAsync(scope, ct);
-        }
-        catch
-        {
-            _userValues = originalUserValues;
-            _workspaceValues = originalWorkspaceValues;
-            _mergedValues = SettingsLoader.Merge(_userValues, _workspaceValues);
-            throw;
+            case ConfigurationScope.User: _userValues = snapshot; break;
+            case ConfigurationScope.Workspace: _workspaceValues = snapshot; break;
         }
     }
 
