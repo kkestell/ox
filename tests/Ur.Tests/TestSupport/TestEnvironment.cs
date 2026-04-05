@@ -1,7 +1,7 @@
 using Ur.Configuration.Keyring;
 using Ur.Extensions;
 
-namespace Ur.Tests;
+namespace Ur.Tests.TestSupport;
 
 internal sealed class TempExtensionEnvironment : IDisposable
 {

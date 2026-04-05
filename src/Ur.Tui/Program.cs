@@ -1,9 +1,7 @@
 using dotenv.net;
-using Ur;
 using Ur.AgentLoop;
 using Ur.Configuration;
 using Ur.Permissions;
-using Ur.Sessions;
 
 namespace Ur.Tui;
 
@@ -23,7 +21,7 @@ static class Program
     // race with Console.ReadLine and swallow input characters.
     private static volatile bool _pauseKeyReader;
 
-    static async Task<int> Main(string[] args)
+    static async Task<int> Main(string[] _)
     {
         // --- Boot ---
         // Load .env files by probing upward from cwd (same strategy as the CLI)
@@ -35,7 +33,7 @@ static class Program
         // Top-level CTS wired to Ctrl+C for graceful shutdown. Every per-turn
         // CTS is linked to this so that Ctrl+C cancels both the current turn
         // and the outer REPL loop.
-        using var appCts = new CancellationTokenSource();
+        var appCts = new CancellationTokenSource();
         Console.CancelKeyPress += (_, e) =>
         {
             e.Cancel = true;  // Prevent immediate process termination
@@ -72,33 +70,41 @@ static class Program
 
             // Per-turn CTS linked to the app-level token so Ctrl+C also cancels
             // the turn immediately rather than waiting for the next loop iteration.
-            using var turnCts = CancellationTokenSource.CreateLinkedTokenSource(appCts.Token);
+            // ReSharper disable once AccessToDisposedClosure — monitor is awaited before disposal
+            var turnCts = CancellationTokenSource.CreateLinkedTokenSource(appCts.Token);
 
             // Start a background task that watches for Escape and cancels the turn.
             var keyMonitor = MonitorEscapeKeyAsync(turnCts);
 
             try
             {
-                await foreach (var evt in session.RunTurnAsync(input, turnCts.Token))
+                try
                 {
-                    RenderEvent(evt);
+                    await foreach (var evt in session.RunTurnAsync(input, turnCts.Token))
+                    {
+                        RenderEvent(evt);
 
-                    // Fatal errors end the REPL — no point continuing if the
-                    // provider is unreachable or the session is corrupted.
-                    if (evt is Error { IsFatal: true })
-                        return 1;
+                        // Fatal errors end the REPL — no point continuing if the
+                        // provider is unreachable or the session is corrupted.
+                        if (evt is Error { IsFatal: true })
+                            return 1;
+                    }
                 }
-            }
-            catch (OperationCanceledException) when (!appCts.Token.IsCancellationRequested)
-            {
-                // Escape was pressed — cancel just this turn, not the whole app.
-                Console.WriteLine("\n[cancelled]");
-            }
+                catch (OperationCanceledException) when (!appCts.Token.IsCancellationRequested)
+                {
+                    // Escape was pressed — cancel just this turn, not the whole app.
+                    Console.WriteLine("\n[cancelled]");
+                }
 
-            // Ensure the key monitor exits before we loop back to Console.ReadLine,
-            // otherwise it could steal keystrokes from the next prompt.
-            turnCts.Cancel();
-            await keyMonitor;
+                // Ensure the key monitor exits before we loop back to Console.ReadLine,
+                // otherwise it could steal keystrokes from the next prompt.
+                turnCts.Cancel();
+                await keyMonitor;
+            }
+            finally
+            {
+                turnCts.Dispose();
+            }
 
             Console.WriteLine();
         }

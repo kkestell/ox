@@ -1,6 +1,7 @@
 using Microsoft.Extensions.AI;
 using Ur.AgentLoop;
 using Ur.Tools;
+using Ur.Tests.TestSupport;
 
 namespace Ur.Tests;
 

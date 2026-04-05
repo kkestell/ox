@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Serialization.Metadata;
 using Microsoft.Extensions.AI;
 
 namespace Ur.Sessions;
@@ -14,6 +15,11 @@ internal sealed class SessionStore
     {
         WriteIndented = false,
     };
+
+    // Resolved once from the M.E.AI source-gen resolver chain for AoT-safe
+    // serialize/deserialize calls.
+    private static readonly JsonTypeInfo<ChatMessage> ChatMessageTypeInfo =
+        (JsonTypeInfo<ChatMessage>)JsonOptions.GetTypeInfo(typeof(ChatMessage));
 
     public SessionStore(string sessionsDirectory)
     {
@@ -70,7 +76,7 @@ internal sealed class SessionStore
     public async Task AppendAsync(Session session, ChatMessage message, CancellationToken ct = default)
     {
         Directory.CreateDirectory(_sessionsDirectory);
-        var json = JsonSerializer.Serialize(message, JsonOptions);
+        var json = JsonSerializer.Serialize(message, ChatMessageTypeInfo);
         await File.AppendAllTextAsync(session.FilePath, json + "\n", ct);
     }
 
@@ -88,7 +94,7 @@ internal sealed class SessionStore
 
             try
             {
-                var msg = JsonSerializer.Deserialize<ChatMessage>(line, JsonOptions);
+                var msg = JsonSerializer.Deserialize(line, ChatMessageTypeInfo);
                 if (msg is not null)
                     messages.Add(msg);
             }

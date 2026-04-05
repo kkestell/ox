@@ -28,13 +28,17 @@ internal sealed class PermissionGrantStore
     private List<PermissionGrant>? _workspaceGrants;
     private List<PermissionGrant>? _alwaysGrants;
 
-    private static readonly JsonSerializerOptions _jsonOptions = new()
+    // Source-gen context with AoT-safe generic enum converters for human-readable
+    // JSONL output (e.g. "writeInWorkspace" instead of 2).
+    private static readonly PermissionGrantJsonContext JsonContext = new(new JsonSerializerOptions
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-        // Serialize enums as camelCase strings so the JSONL file is human-readable
-        // (e.g. "writeInWorkspace" instead of 2).
-        Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase) },
-    };
+        Converters =
+        {
+            new JsonStringEnumConverter<OperationType>(JsonNamingPolicy.CamelCase),
+            new JsonStringEnumConverter<PermissionScope>(JsonNamingPolicy.CamelCase),
+        },
+    });
 
     internal PermissionGrantStore(string workspacePermissionsPath, string alwaysPermissionsPath)
     {
@@ -135,7 +139,7 @@ internal sealed class PermissionGrantStore
 
             try
             {
-                var grant = JsonSerializer.Deserialize<PermissionGrant>(line, _jsonOptions);
+                var grant = JsonSerializer.Deserialize(line, JsonContext.PermissionGrant);
                 if (grant is not null)
                     grants.Add(grant);
             }
@@ -155,7 +159,16 @@ internal sealed class PermissionGrantStore
         if (directory is not null)
             Directory.CreateDirectory(directory);
 
-        var line = JsonSerializer.Serialize(grant, _jsonOptions) + "\n";
+        var line = JsonSerializer.Serialize(grant, JsonContext.PermissionGrant) + "\n";
         await File.AppendAllTextAsync(path, line, ct).ConfigureAwait(false);
     }
 }
+
+/// <summary>
+/// Source-generated JSON serialization context for AoT compatibility.
+/// The actual options (naming policy, enum converters) are supplied at construction
+/// time in <see cref="PermissionGrantStore"/> so that enum values serialize as
+/// camelCase strings.
+/// </summary>
+[JsonSerializable(typeof(PermissionGrant))]
+internal partial class PermissionGrantJsonContext : JsonSerializerContext;

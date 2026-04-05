@@ -19,6 +19,7 @@ public sealed class ResponseChunk : AgentLoopEvent
 /// </summary>
 public sealed class ToolCallStarted : AgentLoopEvent
 {
+    // ReSharper disable once UnusedAutoPropertyAccessor.Global — init-only; retained for event correlation and serialization
     public required string CallId { get; init; }
     public required string ToolName { get; init; }
 }
@@ -28,6 +29,7 @@ public sealed class ToolCallStarted : AgentLoopEvent
 /// </summary>
 public sealed class ToolCallCompleted : AgentLoopEvent
 {
+    // ReSharper disable once UnusedAutoPropertyAccessor.Global — init-only; retained for event correlation and serialization
     public required string CallId { get; init; }
     public required string ToolName { get; init; }
     public required string Result { get; init; }

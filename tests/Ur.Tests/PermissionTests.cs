@@ -4,6 +4,7 @@ using System.Text.Json.Serialization;
 using Microsoft.Extensions.AI;
 using Ur.AgentLoop;
 using Ur.Permissions;
+using Ur.Tests.TestSupport;
 using AgentLoopClass = Ur.AgentLoop.AgentLoop;
 
 namespace Ur.Tests;
@@ -225,7 +226,7 @@ public sealed class PermissionGrantStoreTests
 
     // Match the serialization options used by PermissionGrantStore so that
     // pre-seeded test data is readable by the store under test.
-    private static readonly JsonSerializerOptions _grantJsonOptions = new()
+    private static readonly JsonSerializerOptions GrantJsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
         Converters = { new JsonStringEnumConverter(JsonNamingPolicy.CamelCase) },
@@ -234,7 +235,7 @@ public sealed class PermissionGrantStoreTests
     private static async Task WriteGrantToFileAsync(string path, PermissionGrant grant)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-        var json = JsonSerializer.Serialize(grant, _grantJsonOptions);
+        var json = JsonSerializer.Serialize(grant, GrantJsonOptions);
         await File.WriteAllTextAsync(path, json + "\n");
     }
 
@@ -536,11 +537,6 @@ public sealed class UrSessionPermissionTests
     // -------------------------------------------------------------------------
     // Helpers
     // -------------------------------------------------------------------------
-
-    private static async Task DrainAsync(IAsyncEnumerable<AgentLoopEvent> events)
-    {
-        await foreach (var _ in events) { }
-    }
 
     private static async Task<List<AgentLoopEvent>> CollectAsync(IAsyncEnumerable<AgentLoopEvent> events)
     {

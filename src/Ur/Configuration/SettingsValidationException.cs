@@ -9,6 +9,11 @@ namespace Ur.Configuration;
 /// </summary>
 public sealed class SettingsValidationException : Exception
 {
+    /// <summary>
+    /// The list of validation errors. Captured for programmatic error handling
+    /// and displayed to the user via the exception message.
+    /// </summary>
+    // ReSharper disable once UnusedAutoPropertyAccessor.Global — public API for programmatic error inspection
     public IReadOnlyList<string> Errors { get; }
 
     public SettingsValidationException(IReadOnlyList<string> errors)

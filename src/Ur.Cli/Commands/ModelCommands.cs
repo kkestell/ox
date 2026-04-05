@@ -1,6 +1,4 @@
 using System.CommandLine;
-using Ur;
-using Ur.Cli;
 using Ur.Providers;
 
 namespace Ur.Cli.Commands;
@@ -43,7 +41,7 @@ internal static class ModelCommands
         var cmd = new Command("list", "List available models");
         cmd.Add(allOpt);
 
-        cmd.SetAction(async (parseResult, ct) =>
+        cmd.SetAction(async (parseResult, cancellationToken) =>
             await HostRunner.RunAsync(async (host, ct) =>
             {
                 // AvailableModels filters to text+tool-capable models, which is the meaningful
@@ -73,7 +71,7 @@ internal static class ModelCommands
                 Console.WriteLine();
                 Console.WriteLine($"{models.Count} model(s) listed.");
                 return 0;
-            }, ct));
+            }, cancellationToken));
 
         return cmd;
     }
@@ -97,14 +95,14 @@ internal static class ModelCommands
     {
         var cmd = new Command("refresh", "Fetch the latest model catalog from OpenRouter");
 
-        cmd.SetAction(async (parseResult, ct) =>
-            await HostRunner.RunAsync(async (host, ct) =>
+        cmd.SetAction(async (_, cancellationToken) =>
+            await HostRunner.RunAsync(async (host, _) =>
             {
                 Console.Write("Refreshing model catalog... ");
-                await host.Configuration.RefreshModelsAsync(ct);
+                await host.Configuration.RefreshModelsAsync(CancellationToken.None);
                 Console.WriteLine($"done. {host.Configuration.AvailableModels.Count} models available.");
                 return 0;
-            }, ct));
+            }, cancellationToken));
 
         return cmd;
     }
@@ -123,8 +121,8 @@ internal static class ModelCommands
         var cmd = new Command("show", "Print full metadata for a specific model");
         cmd.Add(modelArg);
 
-        cmd.SetAction(async (parseResult, ct) =>
-            await HostRunner.RunAsync(async (host, ct) =>
+        cmd.SetAction(async (parseResult, cancellationToken) =>
+            await HostRunner.RunAsync(async (host, _) =>
             {
                 var modelId = parseResult.GetValue(modelArg)!;
                 var model   = host.Configuration.GetModel(modelId);
@@ -145,7 +143,7 @@ internal static class ModelCommands
                 Console.WriteLine($"Parameters:   {string.Join(", ", model.SupportedParameters)}");
                 Console.WriteLine($"Modality:     {model.Modality ?? "(not specified)"}");
                 return 0;
-            }, ct));
+            }, cancellationToken));
 
         return cmd;
     }

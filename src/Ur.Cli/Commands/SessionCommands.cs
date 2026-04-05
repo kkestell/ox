@@ -1,6 +1,5 @@
 using System.CommandLine;
 using Microsoft.Extensions.AI;
-using Ur.Cli;
 
 namespace Ur.Cli.Commands;
 
@@ -34,8 +33,8 @@ internal static class SessionCommands
     {
         var cmd = new Command("list", "List all sessions in the current workspace");
 
-        cmd.SetAction(async (parseResult, ct) =>
-            await HostRunner.RunAsync(async (host, ct) =>
+        cmd.SetAction(async (_, cancellationToken) =>
+            await HostRunner.RunAsync(async (host, _) =>
             {
                 var sessions = host.ListSessions();
 
@@ -54,7 +53,7 @@ internal static class SessionCommands
                 Console.WriteLine();
                 Console.WriteLine($"{sessions.Count} session(s).");
                 return 0;
-            }, ct));
+            }, cancellationToken));
 
         return cmd;
     }
@@ -65,7 +64,7 @@ internal static class SessionCommands
 
     private static Command BuildShow()
     {
-        const int MaxContentLength = 200;
+        const int maxContentLength = 200;
 
         var idArg = new Argument<string>("session-id")
         {
@@ -75,11 +74,11 @@ internal static class SessionCommands
         var cmd = new Command("show", "Print the message history for a session");
         cmd.Add(idArg);
 
-        cmd.SetAction(async (parseResult, ct) =>
-            await HostRunner.RunAsync(async (host, ct) =>
+        cmd.SetAction(async (parseResult, cancellationToken) =>
+            await HostRunner.RunAsync(async (host, _) =>
             {
                 var sessionId = parseResult.GetValue(idArg)!;
-                var session   = await host.OpenSessionAsync(sessionId, callbacks: null, ct);
+                var session   = await host.OpenSessionAsync(sessionId, callbacks: null, CancellationToken.None);
 
                 if (session is null)
                 {
@@ -98,15 +97,15 @@ internal static class SessionCommands
                     var content = ExtractText(msg);
 
                     // Truncate long content so tool results don't flood the terminal.
-                    var display = content.Length > MaxContentLength
-                        ? content[..MaxContentLength] + "…"
+                    var display = content.Length > maxContentLength
+                        ? content[..maxContentLength] + "…"
                         : content;
 
                     Console.WriteLine($"[{role}] {display}");
                 }
 
                 return 0;
-            }, ct));
+            }, cancellationToken));
 
         return cmd;
     }

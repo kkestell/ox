@@ -1,6 +1,7 @@
 using Microsoft.Extensions.AI;
 using Ur.AgentLoop;
 using Ur.Extensions;
+using Ur.Tests.TestSupport;
 
 namespace Ur.Tests;
 
@@ -83,6 +84,7 @@ public sealed class ExtensionSystemTests
             env.UserExtensionsPath,
             env.WorkspaceExtensionsPath);
 
+        // ReSharper disable ParameterOnlyUsedForPreconditionCheck.Local — Assert.Collection lambda validates properties
         Assert.Collection(
             extensions,
             extension =>
@@ -109,7 +111,9 @@ public sealed class ExtensionSystemTests
             {
                 Assert.Equal("workspace:sample.workspace.zulu", extension.Id);
                 Assert.Equal(ExtensionTier.Workspace, extension.Tier);
-            });
+            }
+            );
+        // ReSharper restore ParameterOnlyUsedForPreconditionCheck.Local
     }
 
     [Fact]

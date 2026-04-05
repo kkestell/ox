@@ -1,5 +1,4 @@
 using System.CommandLine;
-using Ur.Cli;
 using Ur.Configuration;
 
 namespace Ur.Cli.Commands;
@@ -23,8 +22,8 @@ internal static class StatusCommand
     {
         var cmd = new Command("status", "Show workspace configuration and readiness");
 
-        cmd.SetAction(async (parseResult, ct) =>
-            await HostRunner.RunAsync(async (host, ct) =>
+        cmd.SetAction(async (_, cancellationToken) =>
+            await HostRunner.RunAsync(async (host, _) =>
             {
                 var cfg = host.Configuration;
                 var readiness = cfg.Readiness;
@@ -50,7 +49,7 @@ internal static class StatusCommand
                 Console.WriteLine($"Extensions: {enabled} enabled / {extensions.Count} total");
 
                 return 0;
-            }, ct));
+            }, cancellationToken));
 
         return cmd;
     }

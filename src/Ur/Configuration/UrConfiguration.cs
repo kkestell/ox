@@ -51,7 +51,7 @@ public sealed class UrConfiguration
     /// <summary>
     /// The currently selected model ID from merged settings, or null if unset.
     /// </summary>
-    public string? SelectedModelId => _settings.Get<string>(ModelSettingKey);
+    public string? SelectedModelId => _settings.GetString(ModelSettingKey);
 
     /// <summary>
     /// Models suitable for the chat interface. Filters the full OpenRouter
@@ -90,7 +90,7 @@ public sealed class UrConfiguration
         string modelId,
         ConfigurationScope scope = ConfigurationScope.User,
         CancellationToken ct = default) =>
-        _settings.SetAsync(ModelSettingKey, JsonSerializer.SerializeToElement(modelId), scope, ct);
+        _settings.SetAsync(ModelSettingKey, JsonSerializer.SerializeToElement(modelId, SettingsJsonContext.Default.String), scope, ct);
 
     public Task ClearSelectedModelAsync(
         ConfigurationScope scope = ConfigurationScope.User,

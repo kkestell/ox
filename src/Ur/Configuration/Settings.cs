@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace Ur.Configuration;
 
@@ -16,10 +17,10 @@ namespace Ur.Configuration;
 /// </summary>
 public sealed class Settings
 {
-    private static readonly JsonSerializerOptions WriteOptions = new()
+    private static readonly SettingsJsonContext WriteContext = new(new JsonSerializerOptions
     {
         WriteIndented = true,
-    };
+    });
 
     private readonly SettingsSchemaRegistry _schemaRegistry;
     private readonly string? _userSettingsPath;
@@ -54,14 +55,15 @@ public sealed class Settings
     }
 
     /// <summary>
-    /// Typed getter — deserializes the merged JSON value as <typeparamref name="T"/>.
-    /// Returns default (typically null) if the key is not present.
+    /// Reads a string value from the merged view, or null if not set.
+    /// Uses <see cref="JsonElement.GetString"/> rather than generic deserialization
+    /// to stay AoT-safe.
     /// </summary>
-    public T? Get<T>(string key)
+    public string? GetString(string key)
     {
         if (!_mergedValues.TryGetValue(key, out var value))
-            return default;
-        return value.Deserialize<T>();
+            return null;
+        return value.ValueKind == JsonValueKind.String ? value.GetString() : value.GetRawText();
     }
 
     public IEnumerable<string> Keys => _mergedValues.Keys;
@@ -158,7 +160,7 @@ public sealed class Settings
         if (!string.IsNullOrEmpty(directory))
             Directory.CreateDirectory(directory);
 
-        var json = JsonSerializer.Serialize(GetValues(scope), WriteOptions);
+        var json = JsonSerializer.Serialize(GetValues(scope), WriteContext.DictionaryStringJsonElement);
         await File.WriteAllTextAsync(path, json, ct);
     }
 
@@ -176,3 +178,11 @@ public sealed class Settings
         return clone;
     }
 }
+
+/// <summary>
+/// Source-generated JSON serialization context for AoT-safe settings persistence.
+/// Also used by <see cref="UrConfiguration"/> for <see cref="string"/> serialization.
+/// </summary>
+[JsonSerializable(typeof(Dictionary<string, JsonElement>))]
+[JsonSerializable(typeof(string))]
+internal partial class SettingsJsonContext : JsonSerializerContext;

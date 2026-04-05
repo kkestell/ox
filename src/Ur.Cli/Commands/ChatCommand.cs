@@ -1,7 +1,5 @@
 using System.CommandLine;
-using Ur;
 using Ur.AgentLoop;
-using Ur.Cli;
 using Ur.Configuration;
 using Ur.Permissions;
 using Ur.Sessions;
@@ -49,7 +47,7 @@ internal static class ChatCommand
         cmd.Add(sessionOpt);
         cmd.Add(modelOpt);
 
-        cmd.SetAction(async (parseResult, ct) =>
+        cmd.SetAction(async (parseResult, cancellationToken) =>
             await HostRunner.RunAsync(async (host, ct) =>
             {
                 var message   = parseResult.GetValue(messageArg)!;
@@ -190,7 +188,7 @@ internal static class ChatCommand
 
                 Console.Error.WriteLine($"[session: {session.Id}]");
                 return 0;
-            }, ct));
+            }, cancellationToken));
 
         return cmd;
     }

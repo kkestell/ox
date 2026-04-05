@@ -8,12 +8,8 @@ public static class PermissionPolicy
     public static IReadOnlyList<PermissionScope> AllowedScopes(OperationType operationType) => operationType switch
     {
         OperationType.ReadInWorkspace => [],  // Always allowed, no grant needed
-        OperationType.ReadOutsideWorkspace => [PermissionScope.Once],
         OperationType.WriteInWorkspace => [PermissionScope.Once, PermissionScope.Session, PermissionScope.Workspace, PermissionScope.Always],
-        OperationType.WriteOutsideWorkspace => [PermissionScope.Once],
-        OperationType.Network => [PermissionScope.Once],
-        OperationType.ExecuteCommand => [PermissionScope.Once],
-        _ => [PermissionScope.Once],
+        _ => [PermissionScope.Once],  // ReadOutsideWorkspace, WriteOutsideWorkspace, Network, ExecuteCommand
     };
 
     public static bool RequiresPrompt(OperationType operationType) =>

@@ -49,7 +49,9 @@ public sealed class ExtensionInfo
 
     /// <summary>
     /// Gets the manifest description for the extension.
+    /// Captured for potential UI display though not currently accessed by consumers.
     /// </summary>
+    // ReSharper disable once UnusedAutoPropertyAccessor.Global — public API, retained for UI consumers
     public string Description { get; }
 
     /// <summary>

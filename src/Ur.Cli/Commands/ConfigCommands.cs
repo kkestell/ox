@@ -1,7 +1,5 @@
 using System.CommandLine;
 using System.Text.Json;
-using Ur;
-using Ur.Cli;
 using Ur.Configuration;
 
 namespace Ur.Cli.Commands;
@@ -52,14 +50,14 @@ internal static class ConfigCommands
         var cmd = new Command("set-api-key", "Store the OpenRouter API key in the system keyring");
         cmd.Add(keyArg);
 
-        cmd.SetAction(async (parseResult, ct) =>
-            await HostRunner.RunAsync(async (host, ct) =>
+        cmd.SetAction(async (parseResult, cancellationToken) =>
+            await HostRunner.RunAsync(async (host, _) =>
             {
                 var key = parseResult.GetValue(keyArg)!;
-                await host.Configuration.SetApiKeyAsync(key, ct);
+                await host.Configuration.SetApiKeyAsync(key, CancellationToken.None);
                 Console.WriteLine("API key saved.");
                 return 0;
-            }, ct));
+            }, cancellationToken));
 
         return cmd;
     }
@@ -72,13 +70,13 @@ internal static class ConfigCommands
     {
         var cmd = new Command("clear-api-key", "Remove the stored OpenRouter API key");
 
-        cmd.SetAction(async (parseResult, ct) =>
-            await HostRunner.RunAsync(async (host, ct) =>
+        cmd.SetAction(async (_, cancellationToken) =>
+            await HostRunner.RunAsync(async (host, _) =>
             {
-                await host.Configuration.ClearApiKeyAsync(ct);
+                await host.Configuration.ClearApiKeyAsync(CancellationToken.None);
                 Console.WriteLine("API key cleared.");
                 return 0;
-            }, ct));
+            }, cancellationToken));
 
         return cmd;
     }
@@ -99,15 +97,15 @@ internal static class ConfigCommands
         cmd.Add(modelArg);
         cmd.Add(scopeOpt);
 
-        cmd.SetAction(async (parseResult, ct) =>
-            await HostRunner.RunAsync(async (host, ct) =>
+        cmd.SetAction(async (parseResult, cancellationToken) =>
+            await HostRunner.RunAsync(async (host, _) =>
             {
                 var modelId = parseResult.GetValue(modelArg)!;
                 var scope    = ParseScope(parseResult.GetValue(scopeOpt));
-                await host.Configuration.SetSelectedModelAsync(modelId, scope, ct);
+                await host.Configuration.SetSelectedModelAsync(modelId, scope, CancellationToken.None);
                 Console.WriteLine($"Model set to \"{modelId}\" ({scope.ToString().ToLowerInvariant()}).");
                 return 0;
-            }, ct));
+            }, cancellationToken));
 
         return cmd;
     }
@@ -123,14 +121,14 @@ internal static class ConfigCommands
         var cmd = new Command("clear-model", "Clear the selected model for a scope");
         cmd.Add(scopeOpt);
 
-        cmd.SetAction(async (parseResult, ct) =>
-            await HostRunner.RunAsync(async (host, ct) =>
+        cmd.SetAction(async (parseResult, cancellationToken) =>
+            await HostRunner.RunAsync(async (host, _) =>
             {
                 var scope = ParseScope(parseResult.GetValue(scopeOpt));
-                await host.Configuration.ClearSelectedModelAsync(scope, ct);
+                await host.Configuration.ClearSelectedModelAsync(scope, CancellationToken.None);
                 Console.WriteLine($"Model selection cleared ({scope.ToString().ToLowerInvariant()}).");
                 return 0;
-            }, ct));
+            }, cancellationToken));
 
         return cmd;
     }
@@ -149,8 +147,8 @@ internal static class ConfigCommands
         var cmd = new Command("get", "Get the merged value for a settings key");
         cmd.Add(keyArg);
 
-        cmd.SetAction(async (parseResult, ct) =>
-            await HostRunner.RunAsync(async (host, ct) =>
+        cmd.SetAction(async (parseResult, cancellationToken) =>
+            await HostRunner.RunAsync(async (host, _) =>
             {
                 var key   = parseResult.GetValue(keyArg)!;
                 var value = host.Configuration.GetSetting(key);
@@ -161,7 +159,7 @@ internal static class ConfigCommands
                     Console.WriteLine(value.Value.ToString());
 
                 return 0;
-            }, ct));
+            }, cancellationToken));
 
         return cmd;
     }
@@ -181,8 +179,8 @@ internal static class ConfigCommands
         cmd.Add(valueArg);
         cmd.Add(scopeOpt);
 
-        cmd.SetAction(async (parseResult, ct) =>
-            await HostRunner.RunAsync(async (host, ct) =>
+        cmd.SetAction(async (parseResult, cancellationToken) =>
+            await HostRunner.RunAsync(async (host, _) =>
             {
                 var key   = parseResult.GetValue(keyArg)!;
                 var raw   = parseResult.GetValue(valueArg)!;
@@ -201,10 +199,10 @@ internal static class ConfigCommands
                     return 1;
                 }
 
-                await host.Configuration.SetSettingAsync(key, element, scope, ct);
+                await host.Configuration.SetSettingAsync(key, element, scope, CancellationToken.None);
                 Console.WriteLine($"Set {key} = {raw} ({scope.ToString().ToLowerInvariant()}).");
                 return 0;
-            }, ct));
+            }, cancellationToken));
 
         return cmd;
     }
@@ -222,15 +220,15 @@ internal static class ConfigCommands
         cmd.Add(keyArg);
         cmd.Add(scopeOpt);
 
-        cmd.SetAction(async (parseResult, ct) =>
-            await HostRunner.RunAsync(async (host, ct) =>
+        cmd.SetAction(async (parseResult, cancellationToken) =>
+            await HostRunner.RunAsync(async (host, _) =>
             {
                 var key   = parseResult.GetValue(keyArg)!;
                 var scope = ParseScope(parseResult.GetValue(scopeOpt));
-                await host.Configuration.ClearSettingAsync(key, scope, ct);
+                await host.Configuration.ClearSettingAsync(key, scope, CancellationToken.None);
                 Console.WriteLine($"Cleared {key} ({scope.ToString().ToLowerInvariant()}).");
                 return 0;
-            }, ct));
+            }, cancellationToken));
 
         return cmd;
     }

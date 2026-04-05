@@ -9,10 +9,10 @@ internal sealed class ExtensionOverrideStore
 {
     private const int CurrentVersion = 1;
 
-    private static readonly JsonSerializerOptions JsonOptions = new()
+    private static readonly ExtensionOverrideJsonContext JsonContext = new(new JsonSerializerOptions
     {
         WriteIndented = true,
-    };
+    });
 
     private readonly string _rootDirectory;
     private readonly Workspace _workspace;
@@ -80,7 +80,7 @@ internal sealed class ExtensionOverrideStore
         try
         {
             await using var stream = File.OpenRead(path);
-            var file = await JsonSerializer.DeserializeAsync<OverrideFile>(stream, JsonOptions, ct)
+            var file = await JsonSerializer.DeserializeAsync(stream, JsonContext.OverrideFile, ct)
                 .ConfigureAwait(false);
 
             if (file is null)
@@ -146,7 +146,7 @@ internal sealed class ExtensionOverrideStore
         Directory.CreateDirectory(directory);
 
         await using var stream = File.Create(path);
-        await JsonSerializer.SerializeAsync(stream, fileFactory(serializedOverrides), JsonOptions, ct)
+        await JsonSerializer.SerializeAsync(stream, fileFactory(serializedOverrides), JsonContext.OverrideFile, ct)
             .ConfigureAwait(false);
     }
 
@@ -162,8 +162,14 @@ internal sealed class ExtensionOverrideStore
         IReadOnlyDictionary<ExtensionId, bool> Global,
         IReadOnlyDictionary<ExtensionId, bool> Workspace);
 
-    private sealed record OverrideFile(
+    internal sealed record OverrideFile(
         [property: JsonPropertyName("version")] int Version,
         [property: JsonPropertyName("workspacePath")] string? WorkspacePath,
         [property: JsonPropertyName("extensions")] Dictionary<string, bool> Extensions);
 }
+
+/// <summary>
+/// Source-generated JSON serialization context for AoT-safe extension override persistence.
+/// </summary>
+[JsonSerializable(typeof(ExtensionOverrideStore.OverrideFile))]
+internal partial class ExtensionOverrideJsonContext : JsonSerializerContext;

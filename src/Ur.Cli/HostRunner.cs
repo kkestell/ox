@@ -1,5 +1,4 @@
 using dotenv.net;
-using Ur;
 
 namespace Ur.Cli;
 

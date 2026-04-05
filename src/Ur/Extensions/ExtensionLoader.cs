@@ -3,7 +3,6 @@ using Lua;
 using Lua.IO;
 using Lua.Platforms;
 using Lua.Standard;
-using Ur.AgentLoop;
 
 namespace Ur.Extensions;
 
@@ -159,7 +158,7 @@ internal static class ExtensionLoader
         var platform = new LuaPlatform(
             FileSystem: new NoOpFileSystem(),
             OsEnvironment: new NoOpOsEnvironment(),
-            StandardIO: new NoOpStandardIO(),
+            StandardIO: new NoOpStandardIo(),
             TimeProvider: TimeProvider.System);
 
         var state = LuaState.Create(platform);
@@ -279,7 +278,7 @@ internal static class ExtensionLoader
         public double GetTotalProcessorTime() => 0;
     }
 
-    private sealed class NoOpStandardIO : ILuaStandardIO
+    private sealed class NoOpStandardIo : ILuaStandardIO
     {
         public ILuaStream Input { get; } = ILuaStream.CreateFromString("");
         public ILuaStream Output { get; } = ILuaStream.CreateFromString("");

@@ -6,7 +6,7 @@ namespace Ur.Configuration.Keyring;
 /// macOS keyring implementation using the security CLI (/usr/bin/security).
 /// Stores generic passwords in the default (login) keychain.
 /// </summary>
-public sealed class MacOSKeyring : IKeyring
+public sealed class MacOsKeyring : IKeyring
 {
     private const string SecurityPath = "/usr/bin/security";
     private const int ItemNotFound = 44;

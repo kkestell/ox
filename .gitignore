@@ -20,3 +20,6 @@ TestResults/
 # NuGet
 packages/
 artifacts/
+
+# ReSharper CLI inspection output
+inspection-results.xml

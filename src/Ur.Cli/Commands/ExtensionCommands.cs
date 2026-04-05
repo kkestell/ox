@@ -1,6 +1,4 @@
 using System.CommandLine;
-using Ur;
-using Ur.Cli;
 
 namespace Ur.Cli.Commands;
 
@@ -38,8 +36,8 @@ internal static class ExtensionCommands
     {
         var cmd = new Command("list", "List all discovered extensions and their current state");
 
-        cmd.SetAction(async (parseResult, ct) =>
-            await HostRunner.RunAsync(async (host, ct) =>
+        cmd.SetAction(async (_, cancellationToken) =>
+            await HostRunner.RunAsync(async (host, _) =>
             {
                 var extensions = host.Extensions.List();
 
@@ -74,7 +72,7 @@ internal static class ExtensionCommands
                 Console.WriteLine();
                 Console.WriteLine($"{extensions.Count} extension(s).");
                 return 0;
-            }, ct));
+            }, cancellationToken));
 
         return cmd;
     }
@@ -89,14 +87,14 @@ internal static class ExtensionCommands
         var cmd   = new Command("enable", "Enable an extension");
         cmd.Add(idArg);
 
-        cmd.SetAction(async (parseResult, ct) =>
+        cmd.SetAction(async (parseResult, cancellationToken) =>
             await HostRunner.RunAsync(async (host, ct) =>
             {
                 var id   = parseResult.GetValue(idArg)!;
                 var info = await host.Extensions.SetEnabledAsync(id, enabled: true, ct);
                 Console.WriteLine($"Enabled {info.Id} (active: {(info.IsActive ? "yes" : "no")}).");
                 return 0;
-            }, ct));
+            }, cancellationToken));
 
         return cmd;
     }
@@ -111,14 +109,14 @@ internal static class ExtensionCommands
         var cmd   = new Command("disable", "Disable an extension");
         cmd.Add(idArg);
 
-        cmd.SetAction(async (parseResult, ct) =>
+        cmd.SetAction(async (parseResult, cancellationToken) =>
             await HostRunner.RunAsync(async (host, ct) =>
             {
                 var id   = parseResult.GetValue(idArg)!;
                 var info = await host.Extensions.SetEnabledAsync(id, enabled: false, ct);
                 Console.WriteLine($"Disabled {info.Id}.");
                 return 0;
-            }, ct));
+            }, cancellationToken));
 
         return cmd;
     }
@@ -133,7 +131,7 @@ internal static class ExtensionCommands
         var cmd   = new Command("reset", "Remove any override and restore the tier default for an extension");
         cmd.Add(idArg);
 
-        cmd.SetAction(async (parseResult, ct) =>
+        cmd.SetAction(async (parseResult, cancellationToken) =>
             await HostRunner.RunAsync(async (host, ct) =>
             {
                 var id   = parseResult.GetValue(idArg)!;
@@ -141,7 +139,7 @@ internal static class ExtensionCommands
                 Console.WriteLine(
                     $"Reset {info.Id}: enabled={info.DesiredEnabled}, active={info.IsActive}.");
                 return 0;
-            }, ct));
+            }, cancellationToken));
 
         return cmd;
     }

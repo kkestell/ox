@@ -91,9 +91,15 @@ public sealed class SkillLoaderTests : IDisposable
     public async Task LoadFromDirectory_MalformedSkillFile_SkippedGracefully()
     {
         WriteSkill(UserSkillsDir, "good", "---\nname: good\n---\nGood content");
-        // Write a SKILL.md with structurally invalid YAML (unclosed flow mapping)
-        // to trigger a parse error regardless of deserialization strategy.
-        WriteSkill(UserSkillsDir, "bad", "---\nname: {unclosed\n---\nBad");
+        // Write a SKILL.md whose backing file will be unreadable (deleted after write)
+        // to trigger an I/O error during loading. The frontmatter parser itself is
+        // intentionally lenient — it only reads flat key: value lines — so malformed
+        // YAML syntax alone won't cause a parse failure.
+        var badDir = Path.Combine(UserSkillsDir, "bad");
+        Directory.CreateDirectory(badDir);
+        var badFile = Path.Combine(badDir, "SKILL.md");
+        await File.WriteAllTextAsync(badFile, "---\nname: bad\n---\nBad");
+        File.Delete(badFile);
 
         var skills = await SkillLoader.LoadFromDirectoryAsync(UserSkillsDir, "user");
 

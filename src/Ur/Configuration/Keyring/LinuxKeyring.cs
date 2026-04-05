@@ -13,10 +13,10 @@ public sealed partial class LinuxKeyring : IKeyring
     private const string LibGLib = "libglib-2.0.so.0";
 
     // SecretSchemaFlags
-    private const int SECRET_SCHEMA_NONE = 0;
+    private const int SecretSchemaNone = 0;
 
     // SecretSchemaAttributeType
-    private const int SECRET_SCHEMA_ATTRIBUTE_STRING = 0;
+    private const int SecretSchemaAttributeString = 0;
 
     #region LibSecret P/Invoke
 
@@ -57,14 +57,14 @@ public sealed partial class LinuxKeyring : IKeyring
     // to properly free the g_strdup'd strings when the table is destroyed.
     [LibraryImport(LibGLib)]
     private static partial nint g_hash_table_new_full(
-        nint hash_func, nint equal_func,
-        nint key_destroy_func, nint value_destroy_func);
+        nint hashFunc, nint equalFunc,
+        nint keyDestroyFunc, nint valueDestroyFunc);
 
     [LibraryImport(LibGLib)]
-    private static partial void g_hash_table_insert(nint hash_table, nint key, nint value);
+    private static partial void g_hash_table_insert(nint hashTable, nint key, nint value);
 
     [LibraryImport(LibGLib)]
-    private static partial void g_hash_table_destroy(nint hash_table);
+    private static partial void g_hash_table_destroy(nint hashTable);
 
     [LibraryImport(LibGLib)]
     private static partial void g_error_free(nint error);
@@ -122,9 +122,9 @@ public sealed partial class LinuxKeyring : IKeyring
         return new SecretSchemaManaged
         {
             Name = SchemaName,
-            Flags = SECRET_SCHEMA_NONE,
-            Attr0 = new SecretSchemaAttribute { Name = AttrServiceName, Type = SECRET_SCHEMA_ATTRIBUTE_STRING },
-            Attr1 = new SecretSchemaAttribute { Name = AttrAccountName, Type = SECRET_SCHEMA_ATTRIBUTE_STRING },
+            Flags = SecretSchemaNone,
+            Attr0 = new SecretSchemaAttribute { Name = AttrServiceName, Type = SecretSchemaAttributeString },
+            Attr1 = new SecretSchemaAttribute { Name = AttrAccountName, Type = SecretSchemaAttributeString },
             Attr2 = new SecretSchemaAttribute { Name = 0, Type = 0 },
         };
     }
@@ -198,7 +198,7 @@ public sealed partial class LinuxKeyring : IKeyring
         var attrs = CreateAttributeTable(service, account);
         try
         {
-            secret_password_clearv_sync(ref schema, attrs, 0, out var error);
+            _ = secret_password_clearv_sync(ref schema, attrs, 0, out var error);
             ThrowIfError(error);
         }
         finally

@@ -3,7 +3,7 @@ using System.Runtime.InteropServices;
 
 namespace Ur.Tests;
 
-public class MacOSKeyringTests
+public class MacOsKeyringTests
 {
     [Fact]
     public void RoundTrip_StoreAndRetrieve()
@@ -11,7 +11,7 @@ public class MacOSKeyringTests
         if (!RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
             return;
 
-        var keyring = new MacOSKeyring();
+        var keyring = new MacOsKeyring();
         var service = "ur-test";
         var account = "spike-roundtrip";
         var secret = $"test-secret-{Guid.NewGuid()}";
@@ -34,7 +34,7 @@ public class MacOSKeyringTests
         if (!RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
             return;
 
-        var result = new MacOSKeyring().GetSecret("ur-test", "nonexistent-account");
+        var result = new MacOsKeyring().GetSecret("ur-test", "nonexistent-account");
         Assert.Null(result);
     }
 
@@ -44,7 +44,7 @@ public class MacOSKeyringTests
         if (!RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
             return;
 
-        var keyring = new MacOSKeyring();
+        var keyring = new MacOsKeyring();
         var service = "ur-test";
         var account = "spike-delete";
 
@@ -61,7 +61,7 @@ public class MacOSKeyringTests
         if (!RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
             return;
 
-        var keyring = new MacOSKeyring();
+        var keyring = new MacOsKeyring();
         var service = "ur-test";
         var account = "spike-overwrite";
 

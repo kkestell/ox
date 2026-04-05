@@ -1,6 +1,3 @@
-using YamlDotNet.Serialization;
-using YamlDotNet.Serialization.NamingConventions;
-
 namespace Ur.Skills;
 
 /// <summary>
@@ -11,16 +8,15 @@ namespace Ur.Skills;
 /// provides metadata (name, description, arguments, etc.) while the body is the
 /// actual content that gets expanded and sent to the model.
 ///
+/// Frontmatter is flat key: value pairs with hyphenated keys (e.g. "when-to-use: ...").
+/// We parse it by hand rather than pulling in a YAML library — the format is simple
+/// enough that a line-oriented parser keeps the dependency graph lean and AOT-clean.
+///
 /// If frontmatter is missing entirely, the skill gets default metadata derived
 /// from its directory name — this allows minimal skills that are just a markdown file.
 /// </summary>
 internal static class SkillFrontmatter
 {
-    private static readonly IDeserializer YamlDeserializer = new DeserializerBuilder()
-        .WithNamingConvention(HyphenatedNamingConvention.Instance)
-        .IgnoreUnmatchedProperties()
-        .Build();
-
     /// <summary>
     /// Parses a SKILL.md file's content into a <see cref="SkillDefinition"/>.
     /// </summary>
@@ -33,7 +29,8 @@ internal static class SkillFrontmatter
         var (frontmatter, body) = SplitFrontmatter(fileContent);
 
         // Derive a fallback name from the directory (e.g. "/home/user/.ur/skills/commit" → "commit").
-        var directoryName = Path.GetFileName(skillDirectory) ?? "unknown";
+        var fileName = Path.GetFileName(skillDirectory);
+        var directoryName = string.IsNullOrEmpty(fileName) ? "unknown" : fileName;
 
         if (frontmatter is null)
         {
@@ -47,28 +44,97 @@ internal static class SkillFrontmatter
             };
         }
 
-        var raw = YamlDeserializer.Deserialize<RawFrontmatter>(frontmatter) ?? new RawFrontmatter();
+        return ParseFrontmatter(frontmatter, directoryName, body, skillDirectory, source);
+    }
+
+    /// <summary>
+    /// Parses the YAML frontmatter block into a <see cref="SkillDefinition"/>.
+    /// The format is strictly flat "key: value" lines with hyphenated keys.
+    /// Unknown keys are silently ignored so new frontmatter fields don't break
+    /// older versions of the parser.
+    /// </summary>
+    private static SkillDefinition ParseFrontmatter(
+        string yaml, string directoryName, string body, string skillDirectory, string source)
+    {
+        string? name = null, description = null, whenToUse = null;
+        bool? userInvocable = null, disableModelInvocation = null;
+        string? argumentHint = null, arguments = null, context = null;
+        string? agent = null, paths = null, allowedTools = null;
+        string? model = null, version = null;
+
+        foreach (var rawLine in yaml.Split('\n'))
+        {
+            var line = rawLine.TrimEnd('\r').Trim();
+            if (line.Length == 0)
+                continue;
+
+            // Split on the first colon to get "key" and "value".
+            var colonIndex = line.IndexOf(':');
+            if (colonIndex < 0)
+                continue;
+
+            var key = line[..colonIndex].Trim();
+            var value = UnquoteYaml(line[(colonIndex + 1)..].Trim());
+
+            switch (key)
+            {
+                case "name":                      name = value; break;
+                case "description":               description = value; break;
+                case "when-to-use":               whenToUse = value; break;
+                case "user-invocable":            userInvocable = ParseBool(value); break;
+                case "disable-model-invocation":  disableModelInvocation = ParseBool(value); break;
+                case "argument-hint":             argumentHint = value; break;
+                case "arguments":                 arguments = value; break;
+                case "context":                   context = value; break;
+                case "agent":                     agent = value; break;
+                case "paths":                     paths = value; break;
+                case "allowed-tools":             allowedTools = value; break;
+                case "model":                     model = value; break;
+                case "version":                   version = value; break;
+                // Unknown keys are ignored — forward-compatibility.
+            }
+        }
 
         return new SkillDefinition
         {
-            Name = raw.Name ?? directoryName,
-            Description = raw.Description ?? "",
-            WhenToUse = raw.WhenToUse,
-            UserInvocable = raw.UserInvocable ?? true,
-            DisableModelInvocation = raw.DisableModelInvocation ?? false,
-            ArgumentHint = raw.ArgumentHint,
-            ArgumentNames = ParseCommaSeparated(raw.Arguments),
-            Context = raw.Context,
-            Agent = raw.Agent,
-            Paths = ParseCommaSeparated(raw.Paths),
-            AllowedTools = ParseCommaSeparated(raw.AllowedTools),
-            Model = raw.Model,
-            Version = raw.Version,
+            Name = name ?? directoryName,
+            Description = description ?? "",
+            WhenToUse = whenToUse,
+            UserInvocable = userInvocable ?? true,
+            DisableModelInvocation = disableModelInvocation ?? false,
+            ArgumentHint = argumentHint,
+            ArgumentNames = ParseCommaSeparated(arguments),
+            Context = context,
+            Agent = agent,
+            Paths = ParseCommaSeparated(paths),
+            AllowedTools = ParseCommaSeparated(allowedTools),
+            Model = model,
+            Version = version,
             Content = body,
             SkillDirectory = skillDirectory,
             Source = source,
         };
     }
+
+    /// <summary>
+    /// Strips surrounding double-quotes from a YAML value, if present.
+    /// YAML allows both <c>key: value</c> and <c>key: "value"</c> forms;
+    /// the quoted form is used when the value contains characters that would
+    /// otherwise be interpreted as YAML syntax (e.g. commas in path lists).
+    /// </summary>
+    private static string UnquoteYaml(string value)
+    {
+        if (value.Length >= 2 && value[0] == '"' && value[^1] == '"')
+            return value[1..^1];
+        return value;
+    }
+
+    /// <summary>
+    /// Parses a YAML boolean value. Accepts "true"/"false" (case-insensitive).
+    /// Returns null for anything else, letting the caller fall back to a default.
+    /// </summary>
+    private static bool? ParseBool(string value) =>
+        bool.TryParse(value, out var result) ? result : null;
 
     /// <summary>
     /// Splits a SKILL.md file into its frontmatter YAML string and body content.
@@ -134,28 +200,5 @@ internal static class SkillFrontmatter
             return null;
 
         return value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-    }
-
-    /// <summary>
-    /// Intermediate deserialization target for YAML frontmatter. YamlDotNet maps
-    /// hyphenated keys (e.g. "when-to-use") to these properties via the
-    /// HyphenatedNamingConvention. All fields are nullable because any frontmatter
-    /// key can be omitted.
-    /// </summary>
-    private sealed class RawFrontmatter
-    {
-        public string? Name { get; set; }
-        public string? Description { get; set; }
-        public string? WhenToUse { get; set; }
-        public bool? UserInvocable { get; set; }
-        public bool? DisableModelInvocation { get; set; }
-        public string? ArgumentHint { get; set; }
-        public string? Arguments { get; set; }
-        public string? Context { get; set; }
-        public string? Agent { get; set; }
-        public string? Paths { get; set; }
-        public string? AllowedTools { get; set; }
-        public string? Model { get; set; }
-        public string? Version { get; set; }
     }
 }

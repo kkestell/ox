@@ -19,11 +19,8 @@ namespace Ur;
 public sealed class UrHost
 {
     private readonly Workspace _workspace;
-    private readonly ModelCatalog _modelCatalog;
-    private readonly Settings _settings;
     private readonly SessionStore _sessions;
     private readonly Func<string, IChatClient>? _chatClientFactoryOverride;
-    private readonly string _userDataDirectory;
 
     // Test-only: additional tools to merge into every session registry. Allows
     // tests to inject fake tools (e.g. a mock write_file) without changing the
@@ -40,6 +37,8 @@ public sealed class UrHost
     /// </summary>
     internal SkillRegistry Skills { get; }
 
+    private readonly string _userDataDirectory;
+
     private UrHost(
         Workspace workspace,
         ModelCatalog modelCatalog,
@@ -53,14 +52,13 @@ public sealed class UrHost
         ToolRegistry? additionalTools = null)
     {
         _workspace = workspace;
-        _modelCatalog = modelCatalog;
-        _settings = settings;
         _sessions = sessions;
         Extensions = extensions;
         Skills = skills;
         _userDataDirectory = userDataDirectory;
         _chatClientFactoryOverride = chatClientFactoryOverride;
         _additionalTools = additionalTools;
+        // modelCatalog and settings are used only to construct Configuration and are not stored.
         Configuration = new UrConfiguration(modelCatalog, settings, keyring);
     }
 
@@ -99,7 +97,7 @@ public sealed class UrHost
         {
             registry.Register(
                 new SkillTool(Skills, sessionId),
-                Permissions.OperationType.ReadInWorkspace,
+                OperationType.ReadInWorkspace,
                 targetExtractor: args => ToolArgHelpers.ExtractStringArg(args, "skill"));
         }
 
@@ -306,7 +304,7 @@ public sealed class UrHost
     private static IKeyring CreatePlatformKeyring()
     {
         if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
-            return new MacOSKeyring();
+            return new MacOsKeyring();
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
             return new LinuxKeyring();
 

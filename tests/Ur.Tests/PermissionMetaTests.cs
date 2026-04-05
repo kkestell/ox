@@ -6,7 +6,7 @@ namespace Ur.Tests;
 
 /// <summary>
 /// Unit tests for <see cref="PermissionMeta.ResolveTarget"/>. This method
-/// encapsulates the argument marshaling that <see cref="AgentLoop.AgentLoop"/>
+/// encapsulates the argument marshaling that <see cref="AgentLoop"/>
 /// uses to build human-readable permission targets. The tests verify the three
 /// branching paths: extractor present, extractor null, and non-dictionary arguments.
 /// </summary>

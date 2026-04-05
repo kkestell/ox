@@ -2,6 +2,7 @@ using System.Runtime.CompilerServices;
 using Microsoft.Extensions.AI;
 using Ur.AgentLoop;
 using Ur.Configuration;
+using Ur.Tests.TestSupport;
 
 namespace Ur.Tests;
 
@@ -99,7 +100,7 @@ public class HostSessionApiTests
 
         var reopened = await host.OpenSessionAsync(session.Id);
         Assert.NotNull(reopened);
-        Assert.True(reopened!.IsPersisted);
+        Assert.True(reopened.IsPersisted);
         Assert.Equal(2, reopened.Messages.Count);
         Assert.Equal("test-model", reopened.ActiveModelId);
     }
@@ -129,6 +130,7 @@ public class HostSessionApiTests
 
         var host = await env.StartHostAsync();
 
+        // ReSharper disable ParameterOnlyUsedForPreconditionCheck.Local — Assert.Collection lambda validates properties
         Assert.Collection(
             host.Extensions.List(),
             extension =>
@@ -151,7 +153,9 @@ public class HostSessionApiTests
                 Assert.False(extension.DefaultEnabled);
                 Assert.False(extension.DesiredEnabled);
                 Assert.False(extension.IsActive);
-            });
+            }
+            );
+        // ReSharper restore ParameterOnlyUsedForPreconditionCheck.Local
     }
 
     [Fact]
@@ -387,7 +391,7 @@ public class HostSessionApiTests
         var events = await CollectEventsAsync(session.RunTurnAsync("hello"));
 
         var error = Assert.Single(events);
-        var errorEvent = Assert.IsType<Ur.AgentLoop.Error>(error);
+        var errorEvent = Assert.IsType<Error>(error);
         Assert.Equal("API error", errorEvent.Message);
         Assert.True(errorEvent.IsFatal);
     }
@@ -409,7 +413,7 @@ public class HostSessionApiTests
 
         Assert.Equal(2, events.Count);
         Assert.IsType<ResponseChunk>(events[0]);
-        var errorEvent = Assert.IsType<Ur.AgentLoop.Error>(events[1]);
+        var errorEvent = Assert.IsType<Error>(events[1]);
         Assert.Equal("mid-stream failure", errorEvent.Message);
         Assert.True(errorEvent.IsFatal);
     }
@@ -491,11 +495,13 @@ public class HostSessionApiTests
             ChatOptions? options = null,
             [EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
+// ReSharper disable HeuristicUnreachableCode — yield break is required to make this an async iterator method
+#pragma warning disable CS0162
             await Task.CompletedTask;
             throw new InvalidOperationException(_message);
-#pragma warning disable CS0162 // unreachable — required to make this an iterator method
             yield break;
 #pragma warning restore CS0162
+// ReSharper restore HeuristicUnreachableCode
         }
 
         public object? GetService(Type serviceType, object? serviceKey = null) => null;
