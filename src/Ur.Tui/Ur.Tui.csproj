@@ -8,6 +8,10 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <PackageReference Include="dotenv.net" Version="3.*" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\Ur\Ur.csproj" />
   </ItemGroup>
 

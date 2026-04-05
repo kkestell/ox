@@ -58,20 +58,20 @@ This respects the existing hierarchy: `Ur.Tui → Ur` (never the reverse). No ch
 
 All work is in `src/Ur.Tui/`. The entire TUI fits in `Program.cs`.
 
-- [ ] **Add `dotenv.net` dependency** to `Ur.Tui.csproj` (needed for .env loading, matching the CLI pattern).
+- [x] **Add `dotenv.net` dependency** to `Ur.Tui.csproj` (needed for .env loading, matching the CLI pattern).
 
-- [ ] **Write the boot sequence** in `Program.cs`:
+- [x] **Write the boot sequence** in `Program.cs`:
   - Load .env files with `DotEnv.Load` (same options as `HostRunner`).
   - Call `UrHost.StartAsync(Environment.CurrentDirectory)`.
   - Wire up `Console.CancelKeyPress` to a top-level `CancellationTokenSource` for graceful shutdown.
 
-- [ ] **Write the setup / configuration check**:
+- [x] **Write the setup / configuration check**:
   - Check `host.Configuration.Readiness`.
   - If `MissingApiKey`: print message, prompt with `Console.ReadLine()`, call `SetApiKeyAsync`.
   - If `MissingModelSelection`: print message, prompt with `Console.ReadLine()`, call `SetSelectedModelAsync`.
   - Re-check readiness after each fix. Loop until `CanRunTurns` is true (or the user provides empty input to bail).
 
-- [ ] **Write the REPL loop**:
+- [x] **Write the REPL loop**:
   - Create a session: `host.CreateSession(callbacks)`.
   - Loop:
     1. Print `> ` prompt.
@@ -83,21 +83,21 @@ All work is in `src/Ur.Tui/`. The entire TUI fits in `Program.cs`.
     7. Catch `OperationCanceledException` — print "[cancelled]" and continue the loop.
     8. Dispose the per-turn CTS.
 
-- [ ] **Write the Escape key monitor**:
+- [x] **Write the Escape key monitor**:
   - A helper method that returns a `Task` and accepts the `CancellationTokenSource` to cancel plus a `Func<bool>` pause predicate.
   - Polls `Console.KeyAvailable` every 50ms.
   - On Escape, calls `cts.Cancel()` and exits.
   - On turn completion (token already cancelled or turn CTS disposed), exits.
   - Uses `volatile bool` to pause during permission prompts.
 
-- [ ] **Write the event renderer** (a `switch` on `AgentLoopEvent`):
+- [x] **Write the event renderer** (a `switch` on `AgentLoopEvent`):
   - `ResponseChunk` → `Console.Write(chunk.Text)` (no newline, streams naturally).
   - `ToolCallStarted` → `Console.WriteLine($"\n[tool: {started.ToolName}]")`.
   - `ToolCallCompleted` → `Console.WriteLine($"[tool: {completed.ToolName} -> {status}] {result}")` (truncate result to 200 chars).
   - `TurnCompleted` → `Console.WriteLine()` (newline after response).
   - `Error` → `Console.WriteLine($"[error] {error.Message}")`. If fatal, exit the REPL.
 
-- [ ] **Write the permission callback** (in `TurnCallbacks`):
+- [x] **Write the permission callback** (in `TurnCallbacks`):
   - Set `pauseKeyReader = true`.
   - Print the prompt: `"Allow {opType} on '{target}'? (y/n [scopes]): "`.
   - Read input via `Console.ReadLine()`.
@@ -106,7 +106,7 @@ All work is in `src/Ur.Tui/`. The entire TUI fits in `Program.cs`.
   - Set `pauseKeyReader = false`.
   - Return `PermissionResponse`.
 
-- [ ] **Verify it builds**: `dotnet build src/Ur.Tui/Ur.Tui.csproj`.
+- [x] **Verify it builds**: `dotnet build src/Ur.Tui/Ur.Tui.csproj`.
 
 - [ ] **Manual verification**: Run `dotnet run --project src/Ur.Tui`, confirm:
   - Setup prompt appears if API key / model missing.
