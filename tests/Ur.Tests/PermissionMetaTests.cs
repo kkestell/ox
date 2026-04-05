@@ -52,7 +52,8 @@ public sealed class PermissionMetaTests
             TargetExtractor: args =>
             {
                 extractorCalled = true;
-                // With null arguments, ResolveTarget provides an empty dictionary.
+                // With null arguments, ResolveTarget provides an empty dictionary
+                // wrapped in AIFunctionArguments.
                 return args.Count == 0 ? "empty" : "has-args";
             });
 

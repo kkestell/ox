@@ -180,8 +180,9 @@ public sealed class Settings
 
 /// <summary>
 /// Source-generated JSON serialization context for AoT-safe settings persistence.
-/// Also used by <see cref="UrConfiguration"/> for <see cref="string"/> serialization.
+/// Also used by <see cref="UrConfiguration"/> for typed setting serialization.
 /// </summary>
 [JsonSerializable(typeof(Dictionary<string, JsonElement>))]
 [JsonSerializable(typeof(string))]
+[JsonSerializable(typeof(bool))]
 internal partial class SettingsJsonContext : JsonSerializerContext;

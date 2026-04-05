@@ -5,11 +5,26 @@ using Ur.Permissions;
 namespace Ur.AgentLoop;
 
 /// <summary>
+/// Carries an LLM exception out of <see cref="AgentLoop.StreamLlmAsync"/> into
+/// the caller. C# prohibits yield inside try/catch, so StreamLlmAsync catches
+/// API errors and stores them here. The caller checks after iteration completes.
+/// Using a named record instead of a raw <c>Exception?[1]</c> array makes the
+/// side-channel's purpose explicit at every usage site.
+/// </summary>
+internal record LlmErrorHolder
+{
+    public Exception? Exception { get; set; }
+}
+
+/// <summary>
 /// Drives the core conversation cycle: user input → LLM → tool calls → repeat.
 /// Emits events for the UI layer to render.
 /// </summary>
 public sealed class AgentLoop(IChatClient client, ToolRegistry tools)
 {
+    // Delegate tool dispatch (permission check → lookup → invoke → result) to a
+    // dedicated helper so RunTurnAsync stays at a single abstraction level.
+    private readonly ToolInvoker _toolInvoker = new(tools);
     /// <summary>
     /// Runs a single turn: sends the user message (plus conversation history) to the LLM,
     /// streams the response, executes any tool calls, and loops until the LLM produces
@@ -47,10 +62,10 @@ public sealed class AgentLoop(IChatClient client, ToolRegistry tools)
 
             // C# prohibits yield inside try/catch, so we route LLM errors through
             // a side-channel: StreamLlmAsync catches API exceptions, stores them in
-            // errorSink, and terminates the stream cleanly. We check and emit the
-            // Error event after the await foreach finishes.
-            var errorSink = new Exception?[1];
-            await foreach (var update in StreamLlmAsync(llmMessages, options, errorSink, ct))
+            // the error holder, and terminates the stream cleanly. We check and emit
+            // the Error event after the await foreach finishes.
+            var errorHolder = new LlmErrorHolder();
+            await foreach (var update in StreamLlmAsync(llmMessages, options, errorHolder, ct))
             {
                 foreach (var content in update.Contents)
                 {
@@ -68,7 +83,7 @@ public sealed class AgentLoop(IChatClient client, ToolRegistry tools)
                 }
             }
 
-            if (errorSink[0] is { } llmError)
+            if (errorHolder.Exception is { } llmError)
             {
                 yield return new Error { Message = llmError.Message, IsFatal = true };
                 yield break;
@@ -88,63 +103,13 @@ public sealed class AgentLoop(IChatClient client, ToolRegistry tools)
                 yield break;
             }
 
+            // Dispatch all tool calls through the invoker, which handles permission
+            // checks, handler lookup, invocation, and result construction. We only
+            // need to collect events and add the result message to the conversation.
             ChatMessage toolResultMessage = new(ChatRole.Tool, []);
 
-            foreach (var call in toolCalls)
-            {
-                yield return new ToolCallStarted
-                {
-                    CallId = call.CallId,
-                    ToolName = call.Name
-                };
-
-                string result;
-                bool isError;
-
-                // Check permission before invoking the tool. If the operation requires
-                // a prompt and no callback is wired, deny silently. On denial, add a
-                // "Permission denied" result and continue to the next tool call — the
-                // LLM will see the denial and may respond accordingly.
-                if (await IsPermissionDeniedAsync(call, callbacks, ct))
-                {
-                    result = "Permission denied.";
-                    isError = true;
-                }
-                else
-                {
-                    var handler = tools.Get(call.Name);
-                    if (handler is null)
-                    {
-                        result = $"Unknown tool: {call.Name}";
-                        isError = true;
-                    }
-                    else
-                    {
-                        try
-                        {
-                            var args = new AIFunctionArguments(call.Arguments ?? new Dictionary<string, object?>());
-                            var raw = await handler.InvokeAsync(args, ct);
-                            result = raw?.ToString() ?? "";
-                            isError = false;
-                        }
-                        catch (Exception ex)
-                        {
-                            result = ex.Message;
-                            isError = true;
-                        }
-                    }
-                }
-
-                toolResultMessage.Contents.Add(new FunctionResultContent(call.CallId, result));
-
-                yield return new ToolCallCompleted
-                {
-                    CallId = call.CallId,
-                    ToolName = call.Name,
-                    Result = result,
-                    IsError = isError
-                };
-            }
+            await foreach (var toolEvent in _toolInvoker.InvokeAllAsync(toolCalls, toolResultMessage, callbacks, ct))
+                yield return toolEvent;
 
             messages.Add(toolResultMessage);
         }
@@ -168,14 +133,14 @@ public sealed class AgentLoop(IChatClient client, ToolRegistry tools)
 
     /// <summary>
     /// Streams LLM response updates, routing any non-cancellation exception into
-    /// <paramref name="errorSink"/> rather than propagating it. This indirection
+    /// <paramref name="errorHolder"/> rather than propagating it. This indirection
     /// exists because C# prohibits yield statements inside try/catch blocks — callers
-    /// check errorSink[0] after the foreach to emit an Error event.
+    /// check <see cref="LlmErrorHolder.Exception"/> after the foreach to emit an Error event.
     /// </summary>
     private async IAsyncEnumerable<ChatResponseUpdate> StreamLlmAsync(
         IEnumerable<ChatMessage> messages,
         ChatOptions options,
-        Exception?[] errorSink,
+        LlmErrorHolder errorHolder,
         [EnumeratorCancellation] CancellationToken ct)
     {
         var enumerator = client.GetStreamingResponseAsync(messages, options, ct)
@@ -198,7 +163,7 @@ public sealed class AgentLoop(IChatClient client, ToolRegistry tools)
                 }
                 catch (Exception ex)
                 {
-                    errorSink[0] = ex;
+                    errorHolder.Exception = ex;
                     hasNext = false;
                 }
 
@@ -215,36 +180,4 @@ public sealed class AgentLoop(IChatClient client, ToolRegistry tools)
         }
     }
 
-    /// <summary>
-    /// Returns true if the tool call should be blocked (i.e. permission was not granted).
-    /// Looks up the tool's PermissionMeta from the registry, checks RequiresPrompt,
-    /// and delegates to the callback. Falls back to WriteInWorkspace for unknown tools.
-    /// </summary>
-    private async ValueTask<bool> IsPermissionDeniedAsync(
-        FunctionCallContent call,
-        TurnCallbacks? callbacks,
-        CancellationToken ct)
-    {
-        var meta = tools.GetPermissionMeta(call.Name);
-        var operationType = meta?.OperationType ?? OperationType.WriteInWorkspace;
-
-        // ReadInWorkspace never requires a prompt.
-        if (!PermissionPolicy.RequiresPrompt(operationType))
-            return false;
-
-        // No callback configured — auto-deny all sensitive operations.
-        if (callbacks?.RequestPermissionAsync is null)
-            return true;
-
-        // Extract a human-readable target from the call's arguments.
-        var target = meta?.ResolveTarget(call) ?? call.Name;
-
-        var extensionId = meta?.ExtensionId ?? call.Name;
-        var allowedScopes = PermissionPolicy.AllowedScopes(operationType);
-
-        var request = new PermissionRequest(operationType, target, extensionId, allowedScopes);
-        var response = await callbacks.RequestPermissionAsync(request, ct).ConfigureAwait(false);
-
-        return !response.Granted;
-    }
 }

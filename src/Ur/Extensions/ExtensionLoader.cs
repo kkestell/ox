@@ -40,12 +40,15 @@ internal static partial class ExtensionLoader
         Extension extension,
         CancellationToken ct = default)
     {
-        extension.ResetRuntimeState();
+        // Reset to a clean slate before activation — clears any previous Lua
+        // runtime and tools from a prior activation attempt.
+        extension.ApplyState(ExtensionState.Inactive);
 
         var mainPath = Path.Combine(extension.Directory, "main.lua");
         if (!File.Exists(mainPath))
         {
-            extension.MarkActivated();
+            // Manifest-only extension — no Lua runtime, but still considered active.
+            extension.ApplyState(ExtensionState.Active);
             return;
         }
 
@@ -57,19 +60,19 @@ internal static partial class ExtensionLoader
             var script = await File.ReadAllTextAsync(mainPath, ct).ConfigureAwait(false);
             await state.DoStringAsync(script, mainPath, ct).ConfigureAwait(false);
 
-            extension.Activate(state);
+            extension.ApplyState(ExtensionState.Active, lua: state);
         }
         catch (Exception ex) when (
             ex is LuaRuntimeException or LuaParseException or LuaCompileException or InvalidOperationException)
         {
-            extension.MarkActivationFailed(ex.Message);
+            extension.ApplyState(ExtensionState.Failed, error: ex.Message);
             await Console.Error.WriteLineAsync(
                 $"Extension '{extension.Name}': main.lua failed: {ex.Message}");
         }
     }
 
     public static void Deactivate(Extension extension) =>
-        extension.MarkDeactivated();
+        extension.ApplyState(ExtensionState.Inactive);
 
     private static async Task DiscoverTierAsync(
         string? directory,
@@ -120,6 +123,7 @@ internal static partial class ExtensionLoader
         ExtensionTier tier,
         CancellationToken ct)
     {
+        // Lua I/O: evaluate the manifest script to get the raw table.
         using var state = CreateSandboxedState();
         var script = await File.ReadAllTextAsync(manifestPath, ct).ConfigureAwait(false);
         var results = await state.DoStringAsync(script, manifestPath, ct).ConfigureAwait(false);
@@ -127,32 +131,8 @@ internal static partial class ExtensionLoader
         if (results.Length == 0 || !results[0].TryRead<LuaTable>(out var manifest))
             throw new InvalidOperationException("manifest.lua must return a table.");
 
-        var name = ReadRequiredString(manifest, "name");
-        var version = ReadRequiredString(manifest, "version");
-        var description = ReadOptionalString(manifest, "description") ?? "";
-
-        var settingsSchemas = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
-        if (!manifest["settings"].TryRead<LuaTable>(out var settingsTable))
-            return new Extension(
-                new ExtensionDescriptor(
-                    new ExtensionId(tier, name),
-                    description,
-                    version,
-                    extDir,
-                    settingsSchemas));
-
-        foreach (var (key, value) in settingsTable)
-            if (key.TryRead<string>(out var settingKey) &&
-                value.TryRead<LuaTable>(out var schemaTable))
-                settingsSchemas[settingKey] = LuaJsonHelpers.ToJsonElement(schemaTable);
-
-        return new Extension(
-            new ExtensionDescriptor(
-                new ExtensionId(tier, name),
-                description,
-                version,
-                extDir,
-                settingsSchemas));
+        // Domain mapping: translate the Lua table to a typed Extension.
+        return ManifestParser.FromLuaTable(manifest, extDir, tier);
     }
 
     private static LuaState CreateSandboxedState()

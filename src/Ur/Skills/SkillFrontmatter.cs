@@ -62,20 +62,11 @@ internal static class SkillFrontmatter
         string? agent = null, paths = null, allowedTools = null;
         string? model = null, version = null;
 
-        foreach (var rawLine in yaml.Split('\n'))
+        // Iterate clean key-value pairs — the parsing mechanics (split, trim,
+        // colon detection, unquoting) are encapsulated in ParseKeyValues so this
+        // method only switches on semantic keys.
+        foreach (var (key, value) in ParseKeyValues(yaml))
         {
-            var line = rawLine.TrimEnd('\r').Trim();
-            if (line.Length == 0)
-                continue;
-
-            // Split on the first colon to get "key" and "value".
-            var colonIndex = line.IndexOf(':');
-            if (colonIndex < 0)
-                continue;
-
-            var key = line[..colonIndex].Trim();
-            var value = UnquoteYaml(line[(colonIndex + 1)..].Trim());
-
             switch (key)
             {
                 case "name":                      name = value; break;
@@ -114,6 +105,29 @@ internal static class SkillFrontmatter
             SkillDirectory = skillDirectory,
             Source = source
         };
+    }
+
+    /// <summary>
+    /// Parses flat YAML key-value lines from a frontmatter block. Handles line
+    /// splitting, trimming, colon detection, and unquoting so callers iterate
+    /// clean pairs without touching string mechanics.
+    /// </summary>
+    private static IEnumerable<(string Key, string Value)> ParseKeyValues(string yaml)
+    {
+        foreach (var rawLine in yaml.Split('\n'))
+        {
+            var line = rawLine.TrimEnd('\r').Trim();
+            if (line.Length == 0)
+                continue;
+
+            var colonIndex = line.IndexOf(':');
+            if (colonIndex < 0)
+                continue;
+
+            var key = line[..colonIndex].Trim();
+            var value = UnquoteYaml(line[(colonIndex + 1)..].Trim());
+            yield return (key, value);
+        }
     }
 
     /// <summary>

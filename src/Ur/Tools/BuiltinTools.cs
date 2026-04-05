@@ -24,31 +24,31 @@ internal static class BuiltinTools
         // write_file and update_file both require write permission.
         var writeFileTool = new WriteFileTool(workspace);
         if (registry.Get(writeFileTool.Name) is null)
-            registry.Register(writeFileTool, OperationType.WriteInWorkspace, targetExtractor: ExtractFilePath);
+            registry.Register(writeFileTool, targetExtractor: ExtractFilePath);
 
         var updateFileTool = new UpdateFileTool(workspace);
         if (registry.Get(updateFileTool.Name) is null)
-            registry.Register(updateFileTool, OperationType.WriteInWorkspace, targetExtractor: ExtractFilePath);
+            registry.Register(updateFileTool, targetExtractor: ExtractFilePath);
 
         // glob and grep are read operations — auto-allowed like read_file.
         var globTool = new GlobTool(workspace);
         if (registry.Get(globTool.Name) is null)
-            registry.Register(globTool, OperationType.ReadInWorkspace, targetExtractor: args => ToolArgHelpers.ExtractStringArg(args, "pattern"));
+            registry.Register(globTool, OperationType.ReadInWorkspace, targetExtractor: args => ToolArgHelpers.GetOptionalString(args, "pattern") ?? "(unknown)");
 
         var grepTool = new GrepTool(workspace);
         if (registry.Get(grepTool.Name) is null)
-            registry.Register(grepTool, OperationType.ReadInWorkspace, targetExtractor: args => ToolArgHelpers.ExtractStringArg(args, "pattern"));
+            registry.Register(grepTool, OperationType.ReadInWorkspace, targetExtractor: args => ToolArgHelpers.GetOptionalString(args, "pattern") ?? "(unknown)");
 
         // bash requires per-invocation approval — ExecuteCommand is Once-only.
         var bashTool = new BashTool(workspace);
         if (registry.Get(bashTool.Name) is null)
-            registry.Register(bashTool, OperationType.ExecuteCommand, targetExtractor: args => ToolArgHelpers.ExtractStringArg(args, "command"));
+            registry.Register(bashTool, OperationType.ExecuteCommand, targetExtractor: args => ToolArgHelpers.GetOptionalString(args, "command") ?? "(unknown)");
     }
 
     /// <summary>
     /// Pulls the file_path argument out of the tool arguments so the permission
     /// prompt can show the user which file is being accessed.
     /// </summary>
-    private static string ExtractFilePath(IDictionary<string, object?> args) =>
-        ToolArgHelpers.ExtractStringArg(args, "file_path");
+    private static string ExtractFilePath(Microsoft.Extensions.AI.AIFunctionArguments args) =>
+        ToolArgHelpers.GetOptionalString(args, "file_path") ?? "(unknown)";
 }

@@ -19,24 +19,17 @@ public sealed class ToolRegistry
     private IList<AITool>? _allCache;
 
     /// <summary>
-    /// Registers a tool without permission metadata.
-    /// The tool will be treated as WriteInWorkspace by default — the conservative safe choice.
+    /// Registers a tool with optional permission metadata. When metadata is omitted,
+    /// the tool is treated as WriteInWorkspace (the conservative safe choice).
+    ///
+    /// A single overload replaces the former public/internal pair — optional parameters
+    /// cover both "just the tool" and "tool with explicit permission metadata" use cases.
     /// </summary>
-    public void Register(AIFunction tool)
-    {
-        _tools[tool.Name] = tool;
-        _allCache = null;
-    }
-
-    /// <summary>
-    /// Registers a tool with explicit permission metadata. Prefer this overload for any tool
-    /// that has a well-known operation type so the user sees an accurate permission prompt.
-    /// </summary>
-    internal void Register(
+    public void Register(
         AIFunction tool,
-        OperationType operationType,
+        OperationType operationType = OperationType.WriteInWorkspace,
         string? extensionId = null,
-        Func<IDictionary<string, object?>, string>? targetExtractor = null)
+        Func<AIFunctionArguments, string>? targetExtractor = null)
     {
         _tools[tool.Name] = tool;
         _meta[tool.Name] = new PermissionMeta(operationType, extensionId, targetExtractor);

@@ -99,7 +99,7 @@ public sealed class UrHost
             registry.Register(
                 skillTool,
                 OperationType.ReadInWorkspace,
-                targetExtractor: args => ToolArgHelpers.ExtractStringArg(args, "skill"));
+                targetExtractor: args => ToolArgHelpers.GetOptionalString(args, "skill") ?? "(unknown)");
         }
 
         // Tools from active extensions (Lua-defined).

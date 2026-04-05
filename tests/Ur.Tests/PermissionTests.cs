@@ -269,7 +269,7 @@ public sealed class AgentLoopPermissionTests
     {
         var tools = new ToolRegistry();
         var tool  = MakeTool("write_file", "Writes a file", "ok");
-        tools.Register(tool, OperationType.WriteInWorkspace);
+        tools.Register(tool);
 
         var client = new FakeToolCallingClient("write_file");
         var loop   = new AgentLoopClass(client, tools);
@@ -295,7 +295,7 @@ public sealed class AgentLoopPermissionTests
     {
         var tools = new ToolRegistry();
         var tool  = MakeTool("write_file", "Writes a file", "wrote it");
-        tools.Register(tool, OperationType.WriteInWorkspace);
+        tools.Register(tool);
 
         var client = new FakeToolCallingClient("write_file");
         var loop   = new AgentLoopClass(client, tools);
@@ -322,7 +322,7 @@ public sealed class AgentLoopPermissionTests
     {
         var tools = new ToolRegistry();
         var tool  = MakeTool("write_file", "Writes a file", "wrote it");
-        tools.Register(tool, OperationType.WriteInWorkspace);
+        tools.Register(tool);
 
         var client = new FakeToolCallingClient("write_file");
         var loop   = new AgentLoopClass(client, tools);
@@ -450,7 +450,7 @@ public sealed class UrSessionPermissionTests
 
         var tools    = new ToolRegistry();
         var fakeTool = AIFunctionFactory.Create(() => "ok", "write_file", "writes a file");
-        tools.Register(fakeTool, OperationType.WriteInWorkspace);
+        tools.Register(fakeTool);
 
         // Client calls the tool on the first turn; on the second turn it calls it again
         // (to verify the session grant suppresses the second prompt).
@@ -501,7 +501,7 @@ public sealed class UrSessionPermissionTests
 
         var tools    = new ToolRegistry();
         var fakeTool = AIFunctionFactory.Create(() => "ok", "write_file", "writes a file");
-        tools.Register(fakeTool, OperationType.WriteInWorkspace);
+        tools.Register(fakeTool);
 
         var client = new SingleTurnToolCallingClient("write_file");
 

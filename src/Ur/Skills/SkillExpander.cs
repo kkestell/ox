@@ -47,13 +47,21 @@ internal static class SkillExpander
                 : "";
         }
 
-        // $ARGUMENTS gets the raw args (or leftover after named args are consumed).
+        return ApplyBuiltins(content, remainingArgs, skill.SkillDirectory, sessionId);
+    }
+
+    /// <summary>
+    /// Replaces built-in variable placeholders ($ARGUMENTS, ${UR_SKILL_DIR},
+    /// ${UR_SESSION_ID}) in the content template. Separated from <see cref="Expand"/>
+    /// so the main method only handles named-argument logic while this method handles
+    /// the fixed set of built-in substitutions.
+    /// </summary>
+    private static string ApplyBuiltins(
+        string content, string remainingArgs, string skillDirectory, string sessionId)
+    {
         content = content.Replace("$ARGUMENTS", remainingArgs, StringComparison.Ordinal);
-
-        // Built-in variable substitutions.
-        content = content.Replace("${UR_SKILL_DIR}", skill.SkillDirectory, StringComparison.Ordinal);
+        content = content.Replace("${UR_SKILL_DIR}", skillDirectory, StringComparison.Ordinal);
         content = content.Replace("${UR_SESSION_ID}", sessionId, StringComparison.Ordinal);
-
         return content;
     }
 

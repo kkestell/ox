@@ -14,6 +14,15 @@ namespace Ur.Permissions;
 /// the first IsCovered check, not at construction, so startup is not delayed by
 /// disk I/O.
 ///
+/// <b>Lazy-load trade-off:</b> <see cref="IsCovered"/> performs synchronous file I/O
+/// on the first call (via <c>EnsureWorkspaceGrantsLoaded</c> / <c>EnsureAlwaysGrantsLoaded</c>).
+/// An async factory would be cleaner, but <see cref="PermissionGrantStore"/> is created inside
+/// <c>UrSession</c>'s constructor (called synchronously by <c>UrHost.CreateSession</c>),
+/// and making that path async would cascade through the session creation API. The lazy
+/// approach keeps the public API simple at the cost of a single synchronous file read
+/// on the first permission check — acceptable because the files are small (a few KB
+/// of JSONL) and the read happens exactly once per session.
+///
 /// Grant checking uses prefix matching: a grant whose TargetPrefix is a prefix of
 /// the requested target covers that request. An empty prefix covers everything.
 /// </summary>

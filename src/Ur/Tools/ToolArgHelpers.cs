@@ -57,20 +57,6 @@ internal static class ToolArgHelpers
             : Path.GetFullPath(Path.IsPathRooted(subPath) ? subPath : Path.Combine(workspaceRoot, subPath));
 
     /// <summary>
-    /// Extracts a named string argument from raw tool arguments for permission
-    /// target display. Handles both native strings (from tests) and JsonElement
-    /// (from real LLM responses). This is the canonical overload used by
-    /// <see cref="Ur.AgentLoop.PermissionMeta.TargetExtractor"/> lambdas.
-    /// </summary>
-    internal static string ExtractStringArg(IDictionary<string, object?> args, string key)
-    {
-        if (!args.TryGetValue(key, out var v) || v is null)
-            return "(unknown)";
-
-        return CoerceToString(v) ?? "(unknown)";
-    }
-
-    /// <summary>
     /// Converts a tool argument value to a string. Tool arguments arrive as
     /// native strings from tests but as JsonElement from real LLM responses —
     /// this handles both transparently.

@@ -2,9 +2,22 @@ using System.Text.Json;
 using Lua;
 using Microsoft.Extensions.AI;
 using Ur.AgentLoop;
-using Ur.Permissions;
 
 namespace Ur.Extensions;
+
+/// <summary>
+/// Lifecycle states for an extension's runtime. Only <see cref="Active"/> has a
+/// live <see cref="LuaState"/>; the others represent idle or error conditions.
+/// </summary>
+internal enum ExtensionState
+{
+    /// <summary>Extension is not running — no Lua runtime, no tools.</summary>
+    Inactive,
+    /// <summary>Extension is loaded and running — Lua runtime and tools are live.</summary>
+    Active,
+    /// <summary>Activation was attempted but failed — error message is set.</summary>
+    Failed
+}
 
 /// <summary>
 /// A discovered extension together with its transient runtime state.
@@ -44,21 +57,40 @@ public sealed class Extension
     }
 
     /// <summary>
-    /// Atomically assigns the Lua runtime and marks the extension active.
-    /// Keeps the object consistent — there is no window where LuaState is
-    /// set but IsActive is false.
+    /// Transitions the extension to the given lifecycle state. Centralizes all
+    /// state-mutation logic so callers (primarily <see cref="ExtensionLoader"/>)
+    /// don't manipulate individual properties directly.
+    ///
+    /// <paramref name="lua"/> is required when transitioning to <see cref="ExtensionState.Active"/>
+    /// with a Lua runtime (pass null for manifest-only extensions with no main.lua).
+    /// <paramref name="error"/> is required when transitioning to <see cref="ExtensionState.Failed"/>.
     /// </summary>
-    internal void Activate(LuaState state)
+    internal void ApplyState(ExtensionState state, LuaState? lua = null, string? error = null)
     {
-        LuaState = state;
-        IsActive = true;
-        LoadError = null;
-    }
+        switch (state)
+        {
+            case ExtensionState.Active:
+                // If a new Lua runtime is provided, assign it and mark active.
+                // If lua is null, this is a manifest-only activation (no main.lua).
+                if (lua is not null)
+                    LuaState = lua;
+                IsActive = true;
+                LoadError = null;
+                break;
 
-    internal void MarkActivated()
-    {
-        IsActive = true;
-        LoadError = null;
+            case ExtensionState.Inactive:
+                ResetRuntimeState();
+                LoadError = null;
+                break;
+
+            case ExtensionState.Failed:
+                ResetRuntimeState();
+                LoadError = error;
+                break;
+
+            default:
+                throw new ArgumentOutOfRangeException(nameof(state), state, null);
+        }
     }
 
     internal void RegisterTool(AIFunction tool) => _tools.Add(tool);
@@ -72,22 +104,10 @@ public sealed class Extension
         // Lua-defined tools are registered as WriteInWorkspace — the conservative safe
         // default. A future extension API could let tools self-declare their operation type.
         foreach (var tool in _tools)
-            registry.Register(tool, OperationType.WriteInWorkspace, extensionId: Id);
+            registry.Register(tool, extensionId: Id);
     }
 
-    internal void MarkActivationFailed(string message)
-    {
-        ResetRuntimeState();
-        LoadError = message;
-    }
-
-    internal void MarkDeactivated()
-    {
-        ResetRuntimeState();
-        LoadError = null;
-    }
-
-    internal void ResetRuntimeState()
+    private void ResetRuntimeState()
     {
         _tools.Clear();
         LuaState?.Dispose();

@@ -108,12 +108,59 @@ public sealed class UrConfiguration
 
     public JsonElement? GetSetting(string key) => _settings.Get(key);
 
+    /// <summary>
+    /// Typed accessor for string settings. Returns null if the key is absent or the
+    /// stored value is not a JSON string. Prefer this over <see cref="GetSetting"/>
+    /// so callers don't need to handle <see cref="JsonElement"/> directly.
+    /// </summary>
+    public string? GetStringSetting(string key)
+    {
+        var element = _settings.Get(key);
+        return element is { ValueKind: JsonValueKind.String } je ? je.GetString() : null;
+    }
+
+    /// <summary>
+    /// Typed accessor for boolean settings. Returns null if the key is absent or the
+    /// stored value is not a JSON boolean.
+    /// </summary>
+    public bool? GetBoolSetting(string key)
+    {
+        var element = _settings.Get(key);
+        return element switch
+        {
+            { ValueKind: JsonValueKind.True } => true,
+            { ValueKind: JsonValueKind.False } => false,
+            _ => null
+        };
+    }
+
     public Task SetSettingAsync(
         string key,
         JsonElement value,
         ConfigurationScope scope = ConfigurationScope.User,
         CancellationToken ct = default) =>
         _settings.SetAsync(key, value, scope, ct);
+
+    /// <summary>
+    /// Typed setter for string settings. Serializes the string to a
+    /// <see cref="JsonElement"/> internally so callers don't need to handle JSON.
+    /// </summary>
+    public Task SetStringSettingAsync(
+        string key,
+        string value,
+        ConfigurationScope scope = ConfigurationScope.User,
+        CancellationToken ct = default) =>
+        _settings.SetAsync(key, JsonSerializer.SerializeToElement(value, SettingsJsonContext.Default.String), scope, ct);
+
+    /// <summary>
+    /// Typed setter for boolean settings.
+    /// </summary>
+    public Task SetBoolSettingAsync(
+        string key,
+        bool value,
+        ConfigurationScope scope = ConfigurationScope.User,
+        CancellationToken ct = default) =>
+        _settings.SetAsync(key, JsonSerializer.SerializeToElement(value, SettingsJsonContext.Default.Boolean), scope, ct);
 
     public Task ClearSettingAsync(
         string key,
