@@ -40,8 +40,11 @@ Define a small `ISubagentRunner` interface in `Ur.AgentLoop`. Implement it in a 
 class that wires chat client + tool registry + workspace into a fresh `AgentLoop` call.
 `SubagentTool` (in `Ur.Tools`) depends only on `ISubagentRunner`, breaking the
 `Tools → AgentLoop → Tools` cycle at the interface boundary.
-Register `SubagentTool` in `UrHost.BuildSessionToolRegistry` (not `BuiltinTools.RegisterAll`),
-mirroring how `SkillTool` is registered there because it also has cross-layer dependencies.
+
+Registration follows the factory pattern introduced by plan 005: add a factory lambda in
+`UrHost.BuildSessionToolRegistry` (not `BuiltinToolFactories.All`), mirroring how `SkillTool`
+is handled there because it also needs cross-layer wiring (closing over `ISubagentRunner` built
+from per-turn context). SubagentTool implements `IToolMeta` to declare its `OperationType`.
 
 - **Pros:** Testable via mock; explicit contract; extensible (depth limits, model override, etc.)
   can be added to the interface without changing call sites.
@@ -62,42 +65,50 @@ Register it manually in `BuildSessionToolRegistry`.
 
 **Option B** — `ISubagentRunner` interface.
 
-This is a direct parallel to how `SkillTool` is handled: a tool with a cross-layer dependency
-(on `Skills`) is registered at the orchestration level (`UrHost.BuildSessionToolRegistry`) rather
-than in the all-builtin `BuiltinTools.RegisterAll` sweep. The interface makes the boundary
-explicit and keeps SubagentTool testable without pulling in a real agent loop.
+This parallels how `SkillTool` is handled: a tool with a cross-layer dependency is registered
+in `UrHost.BuildSessionToolRegistry` via a factory lambda (not in `BuiltinToolFactories.All`),
+because it needs more than the minimal `ToolContext` that builtin factories receive. The
+interface makes the boundary explicit and keeps `SubagentTool` testable without pulling in a
+real agent loop.
 
 Key tradeoffs:
 - One extra interface type in exchange for clean testability and a stable contract.
-- Subagent tool registration moves into the orchestration layer (UrHost), consistent with
-  SkillTool and consistent with the comment there explaining why.
+- Subagent tool registration lives in `BuildSessionToolRegistry`, consistent with `SkillTool`.
+- `ToolContext` must be extended with `ChatClient`, `TurnCallbacks?`, and `SystemPrompt?`
+  before subagent factories can close over them. The comment in `UrSession.RunTurnAsync`
+  already anticipates this step.
 
 ## Related code
 
-- `src/Ur/Tools/BuiltinTools.cs` — all builtin tool registration; SubagentTool explicitly NOT added here (see SkillTool precedent)
-- `src/Ur/UrHost.cs` — `BuildSessionToolRegistry` is the wiring point; SubagentTool registered when creating session tool registries
-- `src/Ur/Sessions/UrSession.cs` — where `BuildSessionToolRegistry` is called; confirms subagent inherits the session's grant store and callbacks naturally
+- `src/Ur/Tools/BuiltinToolFactories.cs` — all builtin tool factories; SubagentTool explicitly NOT added here (see SkillTool precedent)
+- `src/Ur/UrHost.cs` — `BuildSessionToolRegistry` is the wiring point; SubagentTool registered here alongside SkillTool and extension tools
+- `src/Ur/Sessions/UrSession.cs` — calls `BuildSessionToolRegistry`; comment anticipates extending `ToolContext` with per-turn fields for future tools like SubagentTool
+- `src/Ur/ToolContext.cs` — currently carries `Workspace` and `SessionId`; must be extended with `ChatClient`, `TurnCallbacks?`, `SystemPrompt?` before SubagentTool can be registered via a factory
 - `src/Ur/AgentLoop/AgentLoop.cs` — the loop SubagentRunner will instantiate; constructor is `(IChatClient, ToolRegistry, Workspace)`
 - `src/Ur/AgentLoop/ToolInvoker.cs` — permission enforcement happens here; subagent uses the same invoker path automatically
 - `src/Ur/Tools/PermissionMeta.cs` — SubagentTool will register as `OperationType.Execute`
-- `src/Ur/Tools/SkillTool.cs` — model for a tool registered at host level due to cross-layer deps
+- `src/Ur/Tools/SkillTool.cs` — model for a tool registered at host level via factory lambda in `BuildSessionToolRegistry`; also implements `IToolMeta`
 - `tests/Ur.Tests/BuiltinToolTests.cs` — pattern to follow for new tool tests
-- `tests/Ur.Tests/TestSupport/` — test helpers (AgentLoopPermissionTests pattern for wiring)
 
 ## Current state
 
 - `AgentLoop` is stateless: it takes a mutable `List<ChatMessage>` and runs until the LLM
   produces no tool calls. A fresh empty list produces a fully isolated turn — exactly what a
   subagent needs.
-- `UrSession.RunTurnAsync` builds a `ToolRegistry`, wraps callbacks, builds a system prompt,
-  then constructs and runs an `AgentLoop`. A `SubagentRunner` does the same steps without session
-  persistence.
+- `UrSession.RunTurnAsync` builds wrapped callbacks and a system prompt, then calls
+  `UrHost.BuildSessionToolRegistry` to get the tool registry, then constructs and runs an
+  `AgentLoop`. A `SubagentRunner` does the same steps without session persistence.
+- Tool registration is factory-based (plan 005): `BuiltinToolFactories.All` contains a factory
+  tuple per builtin tool; `SkillTool` and extension tools are added in `BuildSessionToolRegistry`
+  alongside them. The same pattern applies for SubagentTool.
+- `ToolContext` currently carries only `Workspace` and `SessionId`. Its comment explicitly
+  names SubagentTool as the motivator for extending it with `ChatClient`, `TurnCallbacks?`, and
+  `SystemPrompt?`. This extension is a prerequisite for SubagentTool implementation.
 - Permission grants live in `PermissionGrantStore` inside `UrSession`. The subagent will run
   inside the same session turn — it reuses the session's wrapped callbacks, so grants already
   obtained by the parent (e.g., file write permissions) carry over naturally.
-- `BuiltinTools.RegisterAll` has a `if (registry.Get(name) is null)` guard that prevents
-  double-registration; SubagentTool registration in `BuildSessionToolRegistry` should follow the
-  same guard.
+- `BuildSessionToolRegistry` uses `if (registry.Get(name) is null)` guards to prevent
+  double-registration; SubagentTool registration should follow the same guard.
 
 ## Structural considerations
 
