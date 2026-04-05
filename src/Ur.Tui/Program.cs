@@ -17,6 +17,12 @@ namespace Ur.Tui;
 /// </summary>
 internal static class Program
 {
+    // ANSI escape sequences for tool-status lines. Tool activity is intentionally
+    // rendered in dark gray so it visually recedes — the assistant's response is
+    // the primary signal, and the bracket lines are housekeeping noise.
+    private const string DarkGray = "\e[90m";
+    private const string Reset    = "\e[0m";
+
     // Shared flag that pauses the Escape key monitor while the permission
     // callback is reading from stdin. Without this, the key monitor would
     // race with Console.ReadLine and swallow input characters.
@@ -54,7 +60,7 @@ internal static class Program
         var session = host.CreateSession(callbacks);
 
         Console.WriteLine($"Session: {session.Id}");
-        Console.WriteLine("Type a message to chat. Escape cancels a turn. Ctrl+C exits.\n");
+        Console.WriteLine("Type a message to chat. Escape cancels a turn. Ctrl+C exits.");
 
         while (!appCts.Token.IsCancellationRequested)
         {
@@ -106,8 +112,6 @@ internal static class Program
             {
                 turnCts.Dispose();
             }
-
-            Console.WriteLine();
         }
 
         return 0;
@@ -220,16 +224,17 @@ internal static class Program
                 Console.Write(chunk.Text);
                 break;
 
+            // Tool status lines are rendered in dark gray so they recede visually;
+            // the assistant's response text is the primary content. No leading blank
+            // line — the previous write (prompt echo or prior status line) already
+            // ends with a newline.
             case ToolCallStarted started:
-                Console.WriteLine($"\n[tool: {started.FormatCall()}]");
+                Console.WriteLine($"{DarkGray}[tool: {started.FormatCall()}]{Reset}");
                 break;
 
             case ToolCallCompleted completed:
-                var result = completed.Result.Length > 200
-                    ? completed.Result[..200] + "…"
-                    : completed.Result;
                 var status = completed.IsError ? "error" : "ok";
-                Console.WriteLine($"[tool: {completed.ToolName} → {status}] {result}");
+                Console.WriteLine($"{DarkGray}[tool: {completed.ToolName} \u2192 {status}]{Reset}");
                 break;
 
             // Newline after the streamed response so the next prompt starts clean.
