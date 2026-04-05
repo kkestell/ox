@@ -60,6 +60,23 @@ public sealed class ToolRegistry
         _tools.GetValueOrDefault(name);
 
     /// <summary>
+    /// Copies all tools (and their metadata) from this registry into <paramref name="target"/>.
+    /// Last-write-wins: tools in this registry will overwrite same-named tools in the target.
+    /// Used by tests to inject fake tools into session registries.
+    /// </summary>
+    internal void MergeInto(ToolRegistry target)
+    {
+        foreach (var (name, tool) in _tools)
+        {
+            var meta = _meta.GetValueOrDefault(name);
+            if (meta is not null)
+                target.Register(tool, meta.OperationType, meta.ExtensionId, meta.TargetExtractor);
+            else
+                target.Register(tool);
+        }
+    }
+
+    /// <summary>
     /// Returns all registered tools as AITool instances for passing to ChatOptions.
     /// </summary>
     public IList<AITool> All() => _tools.Values.ToList<AITool>();

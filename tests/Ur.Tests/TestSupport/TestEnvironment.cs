@@ -110,7 +110,7 @@ internal sealed class TempExtensionEnvironment : IDisposable
                 keyring ?? new TestKeyring(),
                 UserSettingsPath,
                 chatClientFactoryOverride,
-                tools: null,
+                additionalTools: null,
                 systemExtensionsPath: SystemExtensionsPath,
                 userExtensionsPath: UserExtensionsPath,
                 userDataDirectory: UserDataDirectory,

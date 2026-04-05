@@ -9,6 +9,7 @@ internal sealed class Workspace
     public string UrDirectory => Path.Combine(RootPath, ".ur");
     public string SessionsDirectory => Path.Combine(UrDirectory, "sessions");
     public string ExtensionsDirectory => Path.Combine(UrDirectory, "extensions");
+    public string SkillsDirectory => Path.Combine(UrDirectory, "skills");
     public string SettingsPath => Path.Combine(UrDirectory, "settings.json");
     public string PermissionsPath => Path.Combine(UrDirectory, "permissions.jsonl");
     public string StateHash => Extensions.ExtensionOverrideStore.ComputeWorkspaceHash(RootPath);

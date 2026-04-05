@@ -7,6 +7,7 @@ using Ur.Extensions;
 using Ur.Permissions;
 using Ur.Providers;
 using Ur.Sessions;
+using Ur.Skills;
 using Ur.Tools;
 
 namespace Ur;
@@ -25,9 +26,20 @@ public sealed class UrHost
     private readonly Func<string, IChatClient>? _chatClientFactoryOverride;
     private readonly string _userDataDirectory;
 
+    // Test-only: additional tools to merge into every session registry. Allows
+    // tests to inject fake tools (e.g. a mock write_file) without changing the
+    // production code path. Last-write-wins in ToolRegistry means these override builtins.
+    private readonly ToolRegistry? _additionalTools;
+
     public string WorkspacePath => _workspace.RootPath;
     public UrConfiguration Configuration { get; }
     public ExtensionCatalog Extensions { get; }
+
+    /// <summary>
+    /// The loaded skill registry. Exposed internally so UrSession can access it
+    /// for slash command lookup and system prompt building.
+    /// </summary>
+    internal SkillRegistry Skills { get; }
 
     private UrHost(
         Workspace workspace,
@@ -35,24 +47,24 @@ public sealed class UrHost
         Settings settings,
         SessionStore sessions,
         ExtensionCatalog extensions,
+        SkillRegistry skills,
         IKeyring keyring,
         string userDataDirectory,
         Func<string, IChatClient>? chatClientFactoryOverride = null,
-        ToolRegistry? tools = null)
+        ToolRegistry? additionalTools = null)
     {
         _workspace = workspace;
         _modelCatalog = modelCatalog;
         _settings = settings;
         _sessions = sessions;
         Extensions = extensions;
+        Skills = skills;
         _keyring = keyring;
         _userDataDirectory = userDataDirectory;
         _chatClientFactoryOverride = chatClientFactoryOverride;
-        Tools = tools ?? new ToolRegistry();
+        _additionalTools = additionalTools;
         Configuration = new UrConfiguration(modelCatalog, settings, keyring);
     }
-
-    internal ToolRegistry Tools { get; }
 
     internal IChatClient CreateChatClient(string modelId)
     {
@@ -64,6 +76,33 @@ public sealed class UrHost
                 "No OpenRouter API key configured. Set one with 'ur setup'.");
 
         return ChatClientFactory.Create(modelId, apiKey);
+    }
+
+    /// <summary>
+    /// Builds a fresh tool registry for a session. Each session gets its own
+    /// snapshot of the current tool state: built-in tools, active extension tools,
+    /// and the skill tool (bound to this session's ID for variable substitution).
+    ///
+    /// This per-session approach eliminates shared mutable state — enabling or
+    /// disabling an extension mid-conversation takes effect on the next session.
+    /// </summary>
+    internal ToolRegistry BuildSessionToolRegistry(string sessionId)
+    {
+        var registry = new ToolRegistry();
+
+        // Built-in file, search, and shell tools.
+        BuiltinTools.RegisterAll(registry, _workspace);
+
+        // Skill invocation tool, bound to this session's ID.
+        BuiltinTools.RegisterSkillTool(registry, Skills, sessionId);
+
+        // Tools from active extensions (Lua-defined).
+        Extensions.RegisterActiveToolsInto(registry);
+
+        // Test-injected tools override anything above (last-write-wins).
+        _additionalTools?.MergeInto(registry);
+
+        return registry;
     }
 
     /// <summary>
@@ -85,7 +124,7 @@ public sealed class UrHost
             keyring,
             userSettingsPath,
             chatClientFactoryOverride: null,
-            tools: null,
+            additionalTools: null,
             systemExtensionsPath: null,
             userExtensionsPath: null,
             userDataDirectory: null,
@@ -96,21 +135,17 @@ public sealed class UrHost
         IKeyring? keyring,
         string? userSettingsPath,
         Func<string, IChatClient>? chatClientFactoryOverride,
-        ToolRegistry? tools,
+        ToolRegistry? additionalTools = null,
         string? systemExtensionsPath = null,
         string? userExtensionsPath = null,
         string? userDataDirectory = null,
         CancellationToken ct = default)
     {
         keyring ??= CreatePlatformKeyring();
-        tools ??= new ToolRegistry();
         userDataDirectory ??= DefaultUserDataDirectory();
 
         var workspace = new Workspace(workspacePath);
         workspace.EnsureDirectories();
-
-        // Register built-in file tools before extensions so they can't be shadowed.
-        BuiltinTools.RegisterAll(tools, workspace);
 
         // Model catalog — load from disk cache (no network hit at startup).
         var cacheDir = Path.Combine(userDataDirectory, "cache");
@@ -137,9 +172,18 @@ public sealed class UrHost
         var extensions = await ExtensionCatalog.CreateAsync(
                 extensionEntries,
                 overrideStore,
-                tools,
                 ct)
             .ConfigureAwait(false);
+
+        // Skill loading — discover SKILL.md files from user (~/.ur/skills/) and
+        // workspace (.ur/skills/) directories. Skills are a peer subsystem to
+        // extensions: both are loaded at startup, but skills are prompt templates
+        // while extensions are Lua code registering tools.
+        var userSkillsDir = Path.Combine(userDataDirectory, "skills");
+        var loadedSkills = await SkillLoader.LoadAllAsync(
+                userSkillsDir, workspace.SkillsDirectory, ct)
+            .ConfigureAwait(false);
+        var skillRegistry = new SkillRegistry(loadedSkills);
 
         // Session store
         var sessions = new SessionStore(workspace.SessionsDirectory);
@@ -150,10 +194,11 @@ public sealed class UrHost
             settings,
             sessions,
             extensions,
+            skillRegistry,
             keyring,
             userDataDirectory,
             chatClientFactoryOverride,
-            tools);
+            additionalTools);
     }
 
     public IReadOnlyList<SessionInfo> ListSessions() =>

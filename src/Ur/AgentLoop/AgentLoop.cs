@@ -24,12 +24,18 @@ public sealed class AgentLoop
     /// streams the response, executes any tool calls, and loops until the LLM produces
     /// a final text response with no further tool calls.
     ///
+    /// <paramref name="systemPrompt"/> is an optional transient system message prepended
+    /// to what the LLM sees each iteration, but never added to the persistent
+    /// <paramref name="messages"/> list. This keeps ephemeral context (skill listings,
+    /// instructions) out of the on-disk conversation history.
+    ///
     /// <paramref name="callbacks"/> is invoked before each tool call that requires a prompt.
     /// If callbacks is null and the operation requires a prompt, the call is denied silently.
     /// </summary>
     public async IAsyncEnumerable<AgentLoopEvent> RunTurnAsync(
         List<ChatMessage> messages,
         TurnCallbacks? callbacks = null,
+        string? systemPrompt = null,
         [EnumeratorCancellation] CancellationToken ct = default)
     {
         var options = new ChatOptions
@@ -40,7 +46,11 @@ public sealed class AgentLoop
 
         while (true)
         {
-            // Send messages to LLM and stream the response.
+            // Send messages to LLM and stream the response. We prepend the
+            // system prompt (if any) to a transient view of the messages — it's
+            // never added to the persistent `messages` list so it won't be saved to disk.
+            var llmMessages = BuildLlmMessages(systemPrompt, messages);
+
             List<FunctionCallContent> toolCalls = [];
             ChatMessage assistantMessage = new(ChatRole.Assistant, []);
             string? text = null;
@@ -50,7 +60,7 @@ public sealed class AgentLoop
             // errorSink, and terminates the stream cleanly. We check and emit the
             // Error event after the await foreach finishes.
             var errorSink = new Exception?[1];
-            await foreach (var update in StreamLlmAsync(messages, options, errorSink, ct))
+            await foreach (var update in StreamLlmAsync(llmMessages, options, errorSink, ct))
             {
                 foreach (var content in update.Contents)
                 {
@@ -153,6 +163,22 @@ public sealed class AgentLoop
 
             // Loop back to send tool results to the LLM.
         }
+    }
+
+    /// <summary>
+    /// Builds the message list the LLM sees: optional system prompt + conversation.
+    /// We don't add the system message to `messages` because that list is persisted
+    /// to disk by UrSession — the system prompt is transient and rebuilt each turn.
+    /// </summary>
+    private static IEnumerable<ChatMessage> BuildLlmMessages(
+        string? systemPrompt,
+        List<ChatMessage> messages)
+    {
+        if (systemPrompt is not null)
+            yield return new ChatMessage(ChatRole.System, systemPrompt);
+
+        foreach (var msg in messages)
+            yield return msg;
     }
 
     /// <summary>

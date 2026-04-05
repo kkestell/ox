@@ -71,6 +71,25 @@ internal static class BuiltinTools
     }
 
     /// <summary>
+    /// Registers the skill tool into a session-scoped registry. Called per-session
+    /// because the skill tool is bound to a specific session ID for variable
+    /// substitution (${UR_SESSION_ID}).
+    /// </summary>
+    public static void RegisterSkillTool(
+        ToolRegistry registry,
+        Skills.SkillRegistry skills,
+        string sessionId)
+    {
+        if (registry.Get("skill") is null)
+        {
+            registry.Register(
+                new SkillTool(skills, sessionId),
+                Permissions.OperationType.ReadInWorkspace,
+                targetExtractor: args => ExtractStringArg(args, "skill"));
+        }
+    }
+
+    /// <summary>
     /// Pulls the file_path argument out of the tool arguments so the permission
     /// prompt can show the user which file is being accessed. Handles both
     /// native strings (from tests) and JsonElement (from real LLM responses).

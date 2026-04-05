@@ -38,15 +38,14 @@ internal static class ExtensionLoader
 
     public static async Task ActivateAsync(
         Extension extension,
-        ToolRegistry toolRegistry,
         CancellationToken ct = default)
     {
-        extension.ResetRuntimeState(toolRegistry);
+        extension.ResetRuntimeState();
 
         var mainPath = Path.Combine(extension.Directory, "main.lua");
         if (!File.Exists(mainPath))
         {
-            extension.MarkActivated(toolRegistry);
+            extension.MarkActivated();
             return;
         }
 
@@ -59,19 +58,19 @@ internal static class ExtensionLoader
             var script = await File.ReadAllTextAsync(mainPath, ct).ConfigureAwait(false);
             await state.DoStringAsync(script, mainPath, ct).ConfigureAwait(false);
 
-            extension.MarkActivated(toolRegistry);
+            extension.MarkActivated();
         }
         catch (Exception ex) when (
             ex is LuaRuntimeException or LuaParseException or LuaCompileException or InvalidOperationException)
         {
-            extension.MarkActivationFailed(toolRegistry, ex.Message);
+            extension.MarkActivationFailed(ex.Message);
             Console.Error.WriteLine(
                 $"Extension '{extension.Name}': main.lua failed: {ex.Message}");
         }
     }
 
-    public static void Deactivate(Extension extension, ToolRegistry toolRegistry) =>
-        extension.MarkDeactivated(toolRegistry);
+    public static void Deactivate(Extension extension) =>
+        extension.MarkDeactivated();
 
     private static async Task DiscoverTierAsync(
         string? directory,

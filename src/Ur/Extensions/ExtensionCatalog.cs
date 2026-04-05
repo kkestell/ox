@@ -13,19 +13,16 @@ public sealed class ExtensionCatalog
     private readonly Dictionary<ExtensionId, bool> _globalOverrides;
     private readonly Dictionary<ExtensionId, bool> _workspaceOverrides;
     private readonly ExtensionOverrideStore _overrideStore;
-    private readonly ToolRegistry _toolRegistry;
     private readonly SemaphoreSlim _gate = new(1, 1);
 
     internal ExtensionCatalog(
         IReadOnlyList<Extension> extensions,
         ExtensionOverrideStore overrideStore,
-        ToolRegistry toolRegistry,
         IReadOnlyDictionary<ExtensionId, bool> globalOverrides,
         IReadOnlyDictionary<ExtensionId, bool> workspaceOverrides)
     {
         _extensions = extensions;
         _overrideStore = overrideStore;
-        _toolRegistry = toolRegistry;
         _extensionsById = extensions.ToDictionary(extension => extension.ExtensionId);
         _globalOverrides = new Dictionary<ExtensionId, bool>(globalOverrides);
         _workspaceOverrides = new Dictionary<ExtensionId, bool>(workspaceOverrides);
@@ -34,7 +31,6 @@ public sealed class ExtensionCatalog
     internal static async Task<ExtensionCatalog> CreateAsync(
         IReadOnlyList<Extension> extensions,
         ExtensionOverrideStore overrideStore,
-        ToolRegistry toolRegistry,
         CancellationToken ct = default)
     {
         var snapshot = await overrideStore.LoadAsync(ct).ConfigureAwait(false);
@@ -50,7 +46,7 @@ public sealed class ExtensionCatalog
             extension.SetDesiredState(desiredEnabled, hasOverride);
             if (desiredEnabled)
             {
-                await ExtensionLoader.ActivateAsync(extension, toolRegistry, ct)
+                await ExtensionLoader.ActivateAsync(extension, ct)
                     .ConfigureAwait(false);
             }
         }
@@ -58,9 +54,21 @@ public sealed class ExtensionCatalog
         return new ExtensionCatalog(
             extensions,
             overrideStore,
-            toolRegistry,
             snapshot.Global,
             snapshot.Workspace);
+    }
+
+    /// <summary>
+    /// Registers all active extension tools into the given registry. Called per-session
+    /// when building a fresh tool set — each session gets its own snapshot of tools.
+    /// </summary>
+    internal void RegisterActiveToolsInto(ToolRegistry registry)
+    {
+        foreach (var extension in _extensions)
+        {
+            if (extension.IsActive)
+                extension.RegisterToolsInto(registry);
+        }
     }
 
     /// <summary>
@@ -87,12 +95,12 @@ public sealed class ExtensionCatalog
 
             if (enabled)
             {
-                await ExtensionLoader.ActivateAsync(extension, _toolRegistry, ct)
+                await ExtensionLoader.ActivateAsync(extension, ct)
                     .ConfigureAwait(false);
             }
             else
             {
-                ExtensionLoader.Deactivate(extension, _toolRegistry);
+                ExtensionLoader.Deactivate(extension);
             }
 
             return ToInfo(extension);
@@ -121,12 +129,12 @@ public sealed class ExtensionCatalog
 
             if (defaultEnabled)
             {
-                await ExtensionLoader.ActivateAsync(extension, _toolRegistry, ct)
+                await ExtensionLoader.ActivateAsync(extension, ct)
                     .ConfigureAwait(false);
             }
             else
             {
-                ExtensionLoader.Deactivate(extension, _toolRegistry);
+                ExtensionLoader.Deactivate(extension);
             }
 
             return ToInfo(extension);

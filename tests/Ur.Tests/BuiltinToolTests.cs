@@ -296,17 +296,19 @@ public sealed class BuiltinToolTests
     // ─── Registration ──────────────────────────────────────────────────
 
     [Fact]
-    public async Task BuiltinTools_AppearAfterHostStartup()
+    public async Task BuiltinTools_AppearInSessionToolRegistry()
     {
         using var env = new TempExtensionEnvironment();
         var host = await env.StartHostAsync();
+        var tools = host.BuildSessionToolRegistry("test");
 
-        Assert.NotNull(host.Tools.Get("read_file"));
-        Assert.NotNull(host.Tools.Get("write_file"));
-        Assert.NotNull(host.Tools.Get("update_file"));
-        Assert.NotNull(host.Tools.Get("glob"));
-        Assert.NotNull(host.Tools.Get("grep"));
-        Assert.NotNull(host.Tools.Get("bash"));
+        Assert.NotNull(tools.Get("read_file"));
+        Assert.NotNull(tools.Get("write_file"));
+        Assert.NotNull(tools.Get("update_file"));
+        Assert.NotNull(tools.Get("glob"));
+        Assert.NotNull(tools.Get("grep"));
+        Assert.NotNull(tools.Get("bash"));
+        Assert.NotNull(tools.Get("skill"));
     }
 
     [Fact]

@@ -3,6 +3,7 @@ using System.Runtime.CompilerServices;
 using Microsoft.Extensions.AI;
 using Ur.Configuration;
 using Ur.Permissions;
+using Ur.Skills;
 
 namespace Ur.Sessions;
 
@@ -94,6 +95,28 @@ public sealed class UrSession
         if (!readiness.CanRunTurns)
             throw new ChatNotReadyException(readiness);
 
+        // Slash command interception: if the input starts with "/", treat it as
+        // a skill invocation. Look up the skill, expand its template, and replace
+        // the user input with the expanded content wrapped in tags so the model
+        // knows it came from a skill invocation.
+        var effectiveInput = userInput;
+        if (userInput.StartsWith('/') && userInput.Length > 1)
+        {
+            var expanded = TryExpandSlashCommand(userInput);
+            if (expanded is null)
+            {
+                // Unknown skill or not user-invocable — emit an error and stop the turn.
+                yield return new AgentLoop.Error
+                {
+                    Message = $"Unknown skill: {ParseSlashCommandName(userInput)}",
+                    IsFatal = false,
+                };
+                yield break;
+            }
+
+            effectiveInput = expanded;
+        }
+
         // Snapshot the model ID at turn start so that a concurrent config change
         // doesn't swap the model mid-conversation.
         _activeModelId = _host.Configuration.SelectedModelId;
@@ -101,7 +124,7 @@ public sealed class UrSession
         // Optimistically add the user message to the in-memory list and persist
         // it. If the write fails, roll back the in-memory state so the list
         // stays consistent with what's on disk.
-        var userMessage = new ChatMessage(ChatRole.User, userInput);
+        var userMessage = new ChatMessage(ChatRole.User, effectiveInput);
         _messages.Add(userMessage);
 
         try
@@ -120,13 +143,23 @@ public sealed class UrSession
         // layer where it belongs — AgentLoop only sees a simple approve/deny callback.
         var wrappedCallbacks = BuildWrappedCallbacks();
 
+        // Build the system prompt listing available skills. This is transient —
+        // it's prepended to what the LLM sees each turn but never persisted to
+        // conversation history, so it reflects the current skill state.
+        var systemPrompt = SystemPromptBuilder.Build(_host.Skills);
+
+        // Build a per-session tool registry containing builtins, extension tools,
+        // and the skill tool (bound to this session's ID). Each session gets a
+        // fresh snapshot so there's no shared mutable tool state.
+        var tools = _host.BuildSessionToolRegistry(_session.Id);
+
         // Track how many messages have been flushed to disk. The agent loop
         // appends to _messages as it runs, and we flush after each iteration
         // so that tool call results survive a crash.
         var persistedCount = _messages.Count;
-        var agentLoop = new AgentLoop.AgentLoop(_host.CreateChatClient(_activeModelId!), _host.Tools);
+        var agentLoop = new AgentLoop.AgentLoop(_host.CreateChatClient(_activeModelId!), tools);
 
-        await foreach (var loopEvent in agentLoop.RunTurnAsync(_messages, wrappedCallbacks, ct))
+        await foreach (var loopEvent in agentLoop.RunTurnAsync(_messages, wrappedCallbacks, systemPrompt, ct))
         {
             persistedCount = await PersistPendingMessagesAsync(persistedCount, ct);
             yield return loopEvent;
@@ -134,6 +167,48 @@ public sealed class UrSession
 
         // Final flush for any messages produced after the last yield.
         await PersistPendingMessagesAsync(persistedCount, ct);
+    }
+
+    /// <summary>
+    /// Attempts to expand a slash command into a skill invocation. Returns the
+    /// expanded content wrapped in tags, or null if the skill is not found or
+    /// not user-invocable.
+    /// </summary>
+    private string? TryExpandSlashCommand(string input)
+    {
+        var skillName = ParseSlashCommandName(input);
+        var args = ParseSlashCommandArgs(input);
+
+        var skill = _host.Skills.Get(skillName);
+        if (skill is null || !skill.UserInvocable)
+            return null;
+
+        var expanded = SkillExpander.Expand(skill, args, _session.Id);
+
+        // Wrap in tags so the model knows this came from a slash command invocation,
+        // matching the reference implementation's format.
+        return $"""
+            <command-name>/{skillName}</command-name>
+            <command-args>{args}</command-args>
+
+            {expanded}
+            """;
+    }
+
+    /// <summary>Extracts the skill name from a slash command (e.g. "/commit -m fix" → "commit").</summary>
+    private static string ParseSlashCommandName(string input)
+    {
+        var withoutSlash = input[1..];
+        var spaceIndex = withoutSlash.IndexOf(' ');
+        return spaceIndex < 0 ? withoutSlash : withoutSlash[..spaceIndex];
+    }
+
+    /// <summary>Extracts the arguments from a slash command (e.g. "/commit -m fix" → "-m fix").</summary>
+    private static string ParseSlashCommandArgs(string input)
+    {
+        var withoutSlash = input[1..];
+        var spaceIndex = withoutSlash.IndexOf(' ');
+        return spaceIndex < 0 ? "" : withoutSlash[(spaceIndex + 1)..];
     }
 
     /// <summary>

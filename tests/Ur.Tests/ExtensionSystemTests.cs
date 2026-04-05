@@ -182,13 +182,16 @@ public sealed class ExtensionSystemTests
             null,
             env.UserExtensionsPath,
             null));
-        var registry = new ToolRegistry();
         extension.SetDesiredState(desiredEnabled: true, hasOverride: false);
 
-        await ExtensionLoader.ActivateAsync(extension, registry);
+        await ExtensionLoader.ActivateAsync(extension);
 
         Assert.True(extension.IsActive);
         Assert.True(extension.Enabled);
+
+        // Verify the tool is accessible via RegisterToolsInto.
+        var registry = new ToolRegistry();
+        extension.RegisterToolsInto(registry);
         var tool = Assert.IsAssignableFrom<AIFunction>(registry.Get("sample_echo"));
 
         var result = await tool.InvokeAsync(
@@ -198,7 +201,7 @@ public sealed class ExtensionSystemTests
     }
 
     [Fact]
-    public async Task Deactivate_RemovesRegisteredToolsAndClearsRuntimeState()
+    public async Task Deactivate_ClearsToolsAndRuntimeState()
     {
         using var env = new TempExtensionEnvironment();
         await env.WriteSampleExtensionAsync(
@@ -212,16 +215,14 @@ public sealed class ExtensionSystemTests
             null,
             env.UserExtensionsPath,
             null));
-        var registry = new ToolRegistry();
         extension.SetDesiredState(desiredEnabled: true, hasOverride: false);
-        await ExtensionLoader.ActivateAsync(extension, registry);
+        await ExtensionLoader.ActivateAsync(extension);
 
-        ExtensionLoader.Deactivate(extension, registry);
+        ExtensionLoader.Deactivate(extension);
 
         Assert.False(extension.IsActive);
         Assert.Empty(extension.Tools);
         Assert.Null(extension.LuaState);
-        Assert.Null(registry.Get("sample_echo"));
     }
 
     [Fact]
@@ -248,6 +249,6 @@ public sealed class ExtensionSystemTests
         Assert.False(extension.DesiredEnabled);
         Assert.False(extension.IsActive);
         Assert.Null(extension.LoadError);
-        Assert.Null(host.Tools.Get("sample_workspace"));
+        Assert.Null(host.BuildSessionToolRegistry("test").Get("sample_workspace"));
     }
 }

@@ -171,7 +171,7 @@ public class HostSessionApiTests
         Assert.True(updated.DesiredEnabled);
         Assert.True(updated.IsActive);
         Assert.True(updated.HasOverride);
-        Assert.NotNull(host.Tools.Get("sample_workspace_echo"));
+        Assert.NotNull(host.BuildSessionToolRegistry("test").Get("sample_workspace_echo"));
         Assert.Contains("\"workspace:sample.workspace\": true", await File.ReadAllTextAsync(env.WorkspaceOverridesPath));
     }
 
@@ -192,7 +192,7 @@ public class HostSessionApiTests
         Assert.False(updated.DesiredEnabled);
         Assert.False(updated.IsActive);
         Assert.True(updated.HasOverride);
-        Assert.Null(host.Tools.Get("sample_user_echo"));
+        Assert.Null(host.BuildSessionToolRegistry("test").Get("sample_user_echo"));
         Assert.Contains("\"user:sample.user\": false", await File.ReadAllTextAsync(env.GlobalOverridesPath));
     }
 
@@ -214,7 +214,7 @@ public class HostSessionApiTests
         Assert.False(updated.DesiredEnabled);
         Assert.False(updated.IsActive);
         Assert.False(updated.HasOverride);
-        Assert.Null(host.Tools.Get("sample_workspace_echo"));
+        Assert.Null(host.BuildSessionToolRegistry("test").Get("sample_workspace_echo"));
         Assert.False(File.Exists(env.WorkspaceOverridesPath));
     }
 
@@ -282,7 +282,7 @@ public class HostSessionApiTests
         Assert.False(extension.DesiredEnabled);
         Assert.False(extension.IsActive);
         Assert.True(extension.HasOverride);
-        Assert.Null(host.Tools.Get("sample_user_echo"));
+        Assert.Null(host.BuildSessionToolRegistry("test").Get("sample_user_echo"));
     }
 
     [Fact]
@@ -312,7 +312,7 @@ public class HostSessionApiTests
         Assert.True(extension.DesiredEnabled);
         Assert.True(extension.IsActive);
         Assert.True(extension.HasOverride);
-        Assert.NotNull(host.Tools.Get("sample_workspace_echo"));
+        Assert.NotNull(host.BuildSessionToolRegistry("test").Get("sample_workspace_echo"));
     }
 
     [Fact]
@@ -363,7 +363,6 @@ public class HostSessionApiTests
             keyring ?? new TestKeyring(),
             workspace.UserSettingsPath,
             chatClientFactory,
-            tools: null,
             userDataDirectory: workspace.UserDataDirectory);
 
     private static async Task<List<AgentLoopEvent>> CollectEventsAsync(IAsyncEnumerable<AgentLoopEvent> events)

@@ -49,36 +49,40 @@ public sealed class Extension
         HasOverride = hasOverride;
     }
 
-    internal void MarkActivated(ToolRegistry registry)
+    internal void MarkActivated()
     {
-        // Lua-defined tools are registered as WriteInWorkspace — the conservative safe
-        // default. A future extension API could let tools self-declare their operation type.
-        foreach (var tool in _tools)
-            registry.Register(tool, OperationType.WriteInWorkspace, extensionId: Id);
-
         IsActive = true;
         LoadError = null;
     }
 
     internal void RegisterTool(AIFunction tool) => _tools.Add(tool);
 
-    internal void MarkActivationFailed(ToolRegistry registry, string message)
+    /// <summary>
+    /// Copies this extension's tools into the given registry with the correct
+    /// permission metadata. Called per-session when building a fresh tool set.
+    /// </summary>
+    internal void RegisterToolsInto(ToolRegistry registry)
     {
-        ResetRuntimeState(registry);
+        // Lua-defined tools are registered as WriteInWorkspace — the conservative safe
+        // default. A future extension API could let tools self-declare their operation type.
+        foreach (var tool in _tools)
+            registry.Register(tool, OperationType.WriteInWorkspace, extensionId: Id);
+    }
+
+    internal void MarkActivationFailed(string message)
+    {
+        ResetRuntimeState();
         LoadError = message;
     }
 
-    internal void MarkDeactivated(ToolRegistry registry)
+    internal void MarkDeactivated()
     {
-        ResetRuntimeState(registry);
+        ResetRuntimeState();
         LoadError = null;
     }
 
-    internal void ResetRuntimeState(ToolRegistry registry)
+    internal void ResetRuntimeState()
     {
-        foreach (var tool in _tools)
-            registry.Remove(tool.Name);
-
         _tools.Clear();
         _luaState?.Dispose();
         _luaState = null;
