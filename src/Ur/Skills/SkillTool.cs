@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Microsoft.Extensions.AI;
+using Ur.Permissions;
 using Ur.Tools;
 
 namespace Ur.Skills;
@@ -14,6 +15,10 @@ namespace Ur.Skills;
 /// operation (no side effects beyond prompt expansion), so it uses
 /// ReadInWorkspace permission and is auto-allowed without a user prompt.
 ///
+/// Implements <see cref="IToolMeta"/> so the registration loop can read permission
+/// metadata directly from this class instead of having it hard-coded at every
+/// call site that registers this tool.
+///
 /// TODO: Allowed-tools and model override — the skill definition stores these
 /// fields but they aren't enforced yet. Enforcement requires AgentLoop to
 /// accept per-turn tool/model overrides.
@@ -21,8 +26,16 @@ namespace Ur.Skills;
 /// TODO: Forked execution (context: "fork") — always runs inline for now.
 /// Requires a sub-agent mechanism to run a skill in a separate context.
 /// </summary>
-internal sealed class SkillTool(SkillRegistry skills, string sessionId) : AIFunction
+internal sealed class SkillTool(SkillRegistry skills, string sessionId) : AIFunction, IToolMeta
 {
+    // Skill invocation is side-effect-free (only expands a template) — Read is
+    // the correct classification and results in auto-allow without user prompting.
+    OperationType IToolMeta.OperationType => OperationType.Read;
+
+    // The "skill" argument names which skill is being invoked — use it as the
+    // permission target so grant-store and approval prompts show the skill name.
+    ITargetExtractor IToolMeta.TargetExtractor => TargetExtractors.FromKey("skill");
+
     private static readonly JsonElement Schema = JsonDocument.Parse("""
         {
             "type": "object",

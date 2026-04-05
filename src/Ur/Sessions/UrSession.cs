@@ -147,16 +147,19 @@ public sealed class UrSession
         // conversation history, so it reflects the current skill state.
         var systemPrompt = SystemPromptBuilder.Build(_host.Skills);
 
-        // Build a per-session tool registry containing builtins, extension tools,
-        // and the skill tool (bound to this session's ID). Each session gets a
-        // fresh snapshot so there's no shared mutable tool state.
+        // Build the per-turn tool registry via the host's factory loop. The factory
+        // loop (BuiltinToolFactories → SkillTool → extensions) is centralised in
+        // UrHost.BuildSessionToolRegistry so that tests and production take the same
+        // code path. When a future tool needs per-turn context (callbacks, chat client,
+        // system prompt), we'll extract into ToolContext and bring the loop back here.
+        var chatClient = _host.CreateChatClient(_activeModelId!);
         var tools = _host.BuildSessionToolRegistry(_session.Id);
 
         // Track how many messages have been flushed to disk. The agent loop
         // appends to _messages as it runs, and we flush after each iteration
         // so that tool call results survive a crash.
         var persistedCount = _messages.Count;
-        var agentLoop = new AgentLoop.AgentLoop(_host.CreateChatClient(_activeModelId!), tools, _host.Workspace);
+        var agentLoop = new AgentLoop.AgentLoop(chatClient, tools, _host.Workspace);
 
         await foreach (var loopEvent in agentLoop.RunTurnAsync(_messages, wrappedCallbacks, systemPrompt, ct))
         {

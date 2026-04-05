@@ -1,4 +1,5 @@
 using Microsoft.Extensions.AI;
+using Ur.Permissions;
 using Ur.Tools;
 using Ur.Tests.TestSupport;
 
@@ -265,7 +266,45 @@ public sealed class BuiltinToolTests
     }
 
     [Fact]
-    public void RegisterAll_SkipsAlreadyRegisteredTools()
+    public async Task BuiltinTools_HaveCorrectPermissionMetadata()
+    {
+        // The security model depends entirely on each tool having the right OperationType:
+        //   Read    → auto-allowed, no user prompt
+        //   Write   → prompts once per target with a durable grant option
+        //   Execute → prompts every invocation, never auto-granted
+        // A miscategorization (e.g. bash as Read) would silently bypass prompting.
+        using var env = new TempExtensionEnvironment();
+        var host = await env.StartHostAsync();
+        var tools = host.BuildSessionToolRegistry("test");
+
+        Assert.Equal(OperationType.Read,    tools.GetPermissionMeta("read_file")!.OperationType);
+        Assert.Equal(OperationType.Write,   tools.GetPermissionMeta("write_file")!.OperationType);
+        Assert.Equal(OperationType.Write,   tools.GetPermissionMeta("update_file")!.OperationType);
+        Assert.Equal(OperationType.Read,    tools.GetPermissionMeta("glob")!.OperationType);
+        Assert.Equal(OperationType.Read,    tools.GetPermissionMeta("grep")!.OperationType);
+        Assert.Equal(OperationType.Execute, tools.GetPermissionMeta("bash")!.OperationType);
+        Assert.Equal(OperationType.Read,    tools.GetPermissionMeta("skill")!.OperationType);
+    }
+
+    [Fact]
+    public async Task SkillTool_TargetExtractorUsesSkillArgument()
+    {
+        // The "skill" argument names which skill is being invoked — it should be
+        // used as the permission target so approval prompts show the skill name
+        // (e.g. "commit") rather than the generic tool name "skill".
+        using var env = new TempExtensionEnvironment();
+        var host = await env.StartHostAsync();
+        var tools = host.BuildSessionToolRegistry("test");
+        var meta = tools.GetPermissionMeta("skill")!;
+
+        // Simulate a tool call where the model passes skill = "commit".
+        var call = new FunctionCallContent("call-1", "skill",
+            new Dictionary<string, object?> { ["skill"] = "commit" });
+        Assert.Equal("commit", meta.ResolveTarget(call));
+    }
+
+    [Fact]
+    public void RegisterBuiltins_SkipsAlreadyRegisteredTools()
     {
         using var env = new ToolTestEnvironment();
         var registry = new ToolRegistry();
@@ -274,13 +313,14 @@ public sealed class BuiltinToolTests
         var fake = AIFunctionFactory.Create(() => "fake", "read_file", "a fake");
         registry.Register(fake);
 
-        BuiltinTools.RegisterAll(registry, env.Workspace);
+        // Run the factory loop — the guard in each factory call prevents overwriting.
+        RegisterBuiltins(registry, env.Workspace);
 
         // The registry should still hold the original fake, not the real ReadFileTool.
         var retrieved = registry.Get("read_file");
         Assert.Same(fake, retrieved);
 
-        // The other two should still be registered normally.
+        // The other tools should still be registered normally.
         Assert.NotNull(registry.Get("write_file"));
         Assert.NotNull(registry.Get("update_file"));
     }
@@ -590,15 +630,15 @@ public sealed class BuiltinToolTests
         Assert.Contains("MARKER_FOUND", result);
     }
 
-    // ─── Registration (updated) ────────────────────────────────────────
+    // ─── Registration ──────────────────────────────────────────────────
 
     [Fact]
-    public void RegisterAll_AddsAllBuiltinTools()
+    public void RegisterBuiltins_AddsAllBuiltinTools()
     {
         using var env = new ToolTestEnvironment();
         var registry = new ToolRegistry();
 
-        BuiltinTools.RegisterAll(registry, env.Workspace);
+        RegisterBuiltins(registry, env.Workspace);
 
         Assert.NotNull(registry.Get("read_file"));
         Assert.NotNull(registry.Get("write_file"));
@@ -606,5 +646,21 @@ public sealed class BuiltinToolTests
         Assert.NotNull(registry.Get("glob"));
         Assert.NotNull(registry.Get("grep"));
         Assert.NotNull(registry.Get("bash"));
+    }
+
+    /// <summary>
+    /// Registers all builtin tools into the given registry using the factory loop.
+    /// Mirrors the production path in UrSession.RunTurnAsync but without a real
+    /// chat client or turn context (neither is needed for registration-only tests).
+    /// </summary>
+    private static void RegisterBuiltins(ToolRegistry registry, Workspace workspace)
+    {
+        var context = new ToolContext(workspace, "test");
+        foreach (var (factory, operationType, targetExtractor) in BuiltinToolFactories.All)
+        {
+            var tool = factory(context);
+            if (registry.Get(tool.Name) is null)
+                registry.Register(tool, operationType, targetExtractor: targetExtractor);
+        }
     }
 }

@@ -79,37 +79,54 @@ public sealed class UrHost
     }
 
     /// <summary>
-    /// Builds a fresh tool registry for a session. Each session gets its own
-    /// snapshot of the current tool state: built-in tools, active extension tools,
-    /// and the skill tool (bound to this session's ID for variable substitution).
+    /// Builds a tool registry using the unified factory pattern. Convenience method
+    /// used by tests that need to verify tool registration (e.g. checking that an
+    /// extension's tools appear after activation). Production code should prefer the
+    /// factory loop in <see cref="Sessions.UrSession.RunTurnAsync"/>, which has a full
+    /// <see cref="ToolContext"/> including a live chat client and turn callbacks.
     ///
-    /// This per-session approach eliminates shared mutable state — enabling or
-    /// disabling an extension mid-conversation takes effect on the next session.
+    /// ChatClient is null here because this is called outside of a turn — no
+    /// client is needed to verify that tools are registered. Tools that require
+    /// a ChatClient at invocation time (e.g. a future SubagentTool) will throw
+    /// at invocation, not at registration.
     /// </summary>
     internal ToolRegistry BuildSessionToolRegistry(string sessionId)
     {
         var registry = new ToolRegistry();
+        // Build a minimal ToolContext — sufficient for all current tool factories which
+        // only need Workspace and SessionId. Per-turn context (ChatClient, callbacks,
+        // system prompt) will be added to ToolContext when a tool that needs them is implemented.
+        var context = new ToolContext(Workspace, sessionId);
 
-        // Built-in file, search, and shell tools.
-        BuiltinTools.RegisterAll(registry, Workspace);
+        // Register builtins via the same factory list used by RunTurnAsync.
+        foreach (var (factory, operationType, targetExtractor) in BuiltinToolFactories.All)
+        {
+            var tool = factory(context);
+            if (registry.Get(tool.Name) is null)
+                registry.Register(tool, operationType, targetExtractor: targetExtractor);
+        }
 
-        // Skill invocation tool, bound to this session's ID for variable
-        // substitution (${UR_SESSION_ID}). Registered here at the orchestration
-        // layer where both Tools and Skills are visible, avoiding an upward
-        // dependency from the Tools namespace into Skills.
-        var skillTool = new SkillTool(Skills, sessionId);
+        // Skill tool, bound to the session ID from the context for variable substitution.
+        // Using context.SessionId (rather than the local parameter) keeps the context object
+        // the single source of truth for per-session state passed to factories.
+        var skillTool = new SkillTool(Skills, context.SessionId);
         if (registry.Get(skillTool.Name) is null)
         {
             registry.Register(
                 skillTool,
-                OperationType.Read,
-                targetExtractor: TargetExtractors.FromKey("skill"));
+                ((IToolMeta)skillTool).OperationType,
+                targetExtractor: ((IToolMeta)skillTool).TargetExtractor);
         }
 
-        // Tools from active extensions (Lua-defined).
-        Extensions.RegisterActiveToolsInto(registry);
+        // Extension tools from all active extensions.
+        foreach (var (extFactory, extensionId) in Extensions.GetActiveToolFactories())
+        {
+            var tool = extFactory(context);
+            if (registry.Get(tool.Name) is null)
+                registry.Register(tool, extensionId: extensionId);
+        }
 
-        // Test-injected tools override anything above (last-write-wins).
+        // Test-injected overrides (last-write-wins).
         _additionalTools?.MergeInto(registry);
 
         return registry;

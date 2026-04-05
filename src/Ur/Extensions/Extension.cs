@@ -96,16 +96,19 @@ public sealed class Extension
     internal void RegisterTool(AIFunction tool) => _tools.Add(tool);
 
     /// <summary>
-    /// Copies this extension's tools into the given registry with the correct
-    /// permission metadata. Called per-session when building a fresh tool set.
+    /// Returns factories for all tools defined by this extension. Each Lua-defined
+    /// tool is wrapped in a factory that ignores the <see cref="ToolContext"/> —
+    /// extensions don't participate in context-aware construction, they just provide
+    /// static <see cref="AIFunction"/> instances that were built at activation time.
+    ///
+    /// This method is the extension side of the unified factory pattern: the
+    /// registration loop in <see cref="Ur.Sessions.UrSession"/> doesn't need to
+    /// know whether a factory came from a builtin or an extension.
     /// </summary>
-    internal void RegisterToolsInto(ToolRegistry registry)
-    {
-        // Lua-defined tools are registered as WriteInWorkspace — the conservative safe
-        // default. A future extension API could let tools self-declare their operation type.
-        foreach (var tool in _tools)
-            registry.Register(tool, extensionId: Id);
-    }
+    internal IEnumerable<ToolFactory> GetToolFactories() =>
+        // Each pre-built Lua tool becomes a factory that ignores context — the tool
+        // was already fully constructed during extension activation.
+        _tools.Select<AIFunction, ToolFactory>(tool => _ => tool);
 
     private void ResetRuntimeState()
     {

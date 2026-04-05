@@ -59,17 +59,20 @@ public sealed class ExtensionCatalog
     }
 
     /// <summary>
-    /// Registers all active extension tools into the given registry. Called per-session
-    /// when building a fresh tool set — each session gets its own snapshot of tools.
+    /// Returns factories for all tools from currently-active extensions. Called
+    /// during per-turn tool registration so active extension tools are included
+    /// in the same unified factory loop as builtin tools.
+    ///
+    /// Each extension tool is a pre-built Lua-backed <see cref="Microsoft.Extensions.AI.AIFunction"/>
+    /// wrapped in a factory that ignores context — the extension activation process
+    /// already built the tool; the factory just presents the uniform factory interface.
     /// </summary>
-    internal void RegisterActiveToolsInto(ToolRegistry registry)
-    {
-        foreach (var extension in _extensions)
-        {
-            if (extension.IsActive)
-                extension.RegisterToolsInto(registry);
-        }
-    }
+    internal IEnumerable<(ToolFactory Factory, string ExtensionId)> GetActiveToolFactories() =>
+        // Flatten active extensions into (factory, extensionId) pairs. Each extension
+        // may expose multiple Lua-backed tools, each wrapped as a ToolFactory.
+        _extensions
+            .Where(ext => ext.IsActive)
+            .SelectMany(ext => ext.GetToolFactories().Select(f => (f, ext.Id)));
 
     /// <summary>
     /// Returns a stable snapshot of every discovered extension for this host.

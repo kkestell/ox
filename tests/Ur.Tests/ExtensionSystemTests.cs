@@ -192,9 +192,13 @@ public sealed class ExtensionSystemTests
 
         Assert.True(extension.IsActive);
 
-        // Verify the tool is accessible via RegisterToolsInto.
+        // Verify the tool is accessible via the factory pattern. Extension tools
+        // are pre-built Lua functions; the factory ignores context and returns them directly.
         var registry = new ToolRegistry();
-        extension.RegisterToolsInto(registry);
+        var context = new ToolContext(Workspace: null!, SessionId: "test");
+        foreach (var factory in extension.GetToolFactories())
+            registry.Register(factory(context));
+
         var tool = Assert.IsType<AIFunction>(registry.Get("sample_echo"), exactMatch: false);
 
         var result = await tool.InvokeAsync(
