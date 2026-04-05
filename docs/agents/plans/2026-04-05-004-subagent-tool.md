@@ -161,36 +161,36 @@ constructed inside `SubagentRunner` from the parent registry, not exposed to the
 
 ## Implementation plan
 
-- [ ] **Define `ISubagentRunner`** — create `src/Ur/AgentLoop/ISubagentRunner.cs` with a single
+- [x] **Define `ISubagentRunner`** — create `src/Ur/AgentLoop/ISubagentRunner.cs` with a single
   `Task<string> RunAsync(string task, CancellationToken ct)` method; mark `internal`.
 
-- [ ] **Implement `SubagentRunner`** — create `src/Ur/AgentLoop/SubagentRunner.cs`.
+- [x] **Implement `SubagentRunner`** — create `src/Ur/AgentLoop/SubagentRunner.cs`.
   Constructor: `(IChatClient client, ToolRegistry tools, Workspace workspace, TurnCallbacks? callbacks, string? systemPrompt)`.
   `RunAsync`: create an empty `List<ChatMessage>`, prepend task as the first user `ChatMessage`,
   instantiate a fresh `AgentLoop`, run `RunTurnAsync` to completion, return the last
   `ResponseChunk` text accumulated or a default "no response" string if the subagent emitted only
   tool calls with no final text.
 
-- [ ] **Implement `SubagentTool`** — create `src/Ur/Tools/SubagentTool.cs`.
+- [x] **Implement `SubagentTool`** — create `src/Ur/Tools/SubagentTool.cs`.
   Constructor: `(ISubagentRunner runner)`.
   Name: `"run_subagent"`. Single required string param `task`.
   `InvokeCoreAsync`: extract `task`, call `_runner.RunAsync(task, ct)`, return result string.
   No exception handling beyond what `InvokeCoreAsync` already catches — errors propagate as tool
   error results via `ToolInvoker`.
 
-- [ ] **Build subagent-scoped tool registry inside `SubagentRunner`** — when `SubagentRunner` is
+- [x] **Build subagent-scoped tool registry inside `SubagentRunner`** — when `SubagentRunner` is
   constructed it receives the parent's `ToolRegistry`. Create a filtered copy that omits
   `run_subagent` (to prevent direct self-recursion). Pass this filtered registry to `AgentLoop`.
   Add a `FilteredCopy(params string[] excludedNames)` method to `ToolRegistry` (or a simpler
   defensive `Clone` + removal approach).
 
-- [ ] **Register `SubagentTool` in `UrHost.BuildSessionToolRegistry`** — after building the base
+- [x] **Register `SubagentTool` in `UrHost.BuildSessionToolRegistry`** — after building the base
   registry (builtins + skill + extensions), construct a `SubagentRunner` from the session's chat
   client, tool registry, workspace, and pass-through callbacks. Create and register
   `SubagentTool` with `OperationType.Execute` and a `TargetExtractors.FromKey("task")` extractor.
   Guard with `if (registry.Get(...) is null)` like the other registrations.
 
-- [ ] **Thread callbacks and system prompt through `SubagentRunner`** — `UrSession.RunTurnAsync`
+- [x] **Thread callbacks and system prompt through `SubagentRunner`** — `UrSession.RunTurnAsync`
   builds `wrappedCallbacks` and `systemPrompt` before creating `AgentLoop`. These need to reach
   `SubagentRunner`. The runner is created inside `BuildSessionToolRegistry`, but callbacks and the
   system prompt are built in `RunTurnAsync`. **Adjustment:** move `SubagentTool` registration out
@@ -198,18 +198,18 @@ constructed inside `SubagentRunner` from the parent registry, not exposed to the
   `systemPrompt` are available. Register it by calling a new
   `BuiltinTools.RegisterSubagentTool(registry, runner)` helper or inline.
 
-- [ ] **Add `ToolRegistry.Clone` or `FilteredCopy`** — needed so `SubagentRunner` can produce a
+- [x] **Add `ToolRegistry.Clone` or `FilteredCopy`** — needed so `SubagentRunner` can produce a
   registry without `run_subagent`. Implement as an internal method on `ToolRegistry` that copies
   all registered tools and their `PermissionMeta` except the excluded names.
 
-- [ ] **Write unit tests** — in `tests/Ur.Tests/`:
+- [x] **Write unit tests** — in `tests/Ur.Tests/`:
   - `SubagentToolTests.cs`: mock `ISubagentRunner`; verify task string passed through; verify
     result returned as tool output; verify error propagation.
   - Extend `BuiltinToolTests.cs` or add `SubagentRunnerTests.cs` for the runner: use a fake
     `IChatClient` that returns one message with no tool calls; assert SubagentRunner returns the
     message text.
 
-- [ ] **Run `make inspect` and fix any issues** before committing.
+- [x] **Run `make inspect` and fix any issues** before committing.
 
 ## Impact assessment
 

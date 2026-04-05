@@ -50,6 +50,34 @@ public sealed class ToolRegistry
         _tools.GetValueOrDefault(name);
 
     /// <summary>
+    /// Returns a new registry containing all tools from this one except those whose
+    /// names appear in <paramref name="excludedNames"/>.
+    ///
+    /// Used by <c>SubagentRunner</c> to produce a child registry that omits
+    /// <c>run_subagent</c>, preventing direct self-recursion without needing a
+    /// depth counter. All permission metadata is preserved on the kept tools.
+    /// </summary>
+    internal ToolRegistry FilteredCopy(params string[] excludedNames)
+    {
+        var excluded = new HashSet<string>(excludedNames, StringComparer.Ordinal);
+        var copy = new ToolRegistry();
+
+        foreach (var (name, tool) in _tools)
+        {
+            if (excluded.Contains(name))
+                continue;
+
+            var meta = _meta.GetValueOrDefault(name);
+            if (meta is not null)
+                copy.Register(tool, meta.OperationType, meta.ExtensionId, meta.TargetExtractor);
+            else
+                copy.Register(tool);
+        }
+
+        return copy;
+    }
+
+    /// <summary>
     /// Copies all tools (and their metadata) from this registry into <paramref name="target"/>.
     /// Last-write-wins: tools in this registry will overwrite same-named tools in the target.
     /// Used by tests to inject fake tools into session registries.

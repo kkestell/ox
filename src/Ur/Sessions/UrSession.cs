@@ -4,6 +4,7 @@ using Microsoft.Extensions.AI;
 using Ur.Configuration;
 using Ur.Permissions;
 using Ur.Skills;
+using Ur.Tools;
 
 namespace Ur.Sessions;
 
@@ -147,13 +148,26 @@ public sealed class UrSession
         // conversation history, so it reflects the current skill state.
         var systemPrompt = SystemPromptBuilder.Build(_host.Skills);
 
-        // Build the per-turn tool registry via the host's factory loop. The factory
-        // loop (BuiltinToolFactories → SkillTool → extensions) is centralised in
-        // UrHost.BuildSessionToolRegistry so that tests and production take the same
-        // code path. When a future tool needs per-turn context (callbacks, chat client,
-        // system prompt), we'll extract into ToolContext and bring the loop back here.
+        // Build the per-turn tool registry from the shared factory loop in UrHost,
+        // then append SubagentTool — which can only be wired here because it needs
+        // per-turn context (chat client, callbacks, system prompt) not available in
+        // BuildSessionToolRegistry.
         var chatClient = _host.CreateChatClient(_activeModelId!);
         var tools = _host.BuildSessionToolRegistry(_session.Id);
+
+        // SubagentTool is registered after the base registry is built so the runner
+        // can close over the fully-populated registry (the sub-agent inherits all
+        // parent tools except run_subagent itself, which SubagentRunner excludes).
+        var subagentRunner = new AgentLoop.SubagentRunner(
+            chatClient, tools, _host.Workspace, wrappedCallbacks, systemPrompt);
+        var subagentTool = new SubagentTool(subagentRunner);
+        if (tools.Get(subagentTool.Name) is null)
+        {
+            tools.Register(
+                subagentTool,
+                ((IToolMeta)subagentTool).OperationType,
+                targetExtractor: ((IToolMeta)subagentTool).TargetExtractor);
+        }
 
         // Track how many messages have been flushed to disk. The agent loop
         // appends to _messages as it runs, and we flush after each iteration
