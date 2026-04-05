@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text;
 using dotenv.net;
 using Ur.AgentLoop;
 using Ur.Configuration;
@@ -65,7 +66,7 @@ internal static class Program
         while (!appCts.Token.IsCancellationRequested)
         {
             Console.Write("> ");
-            var input = Console.ReadLine();
+            var input = CancellableReadLine(appCts.Token);
 
             // EOF (Ctrl+D on Unix, Ctrl+Z on Windows) exits the REPL.
             if (input is null)
@@ -102,6 +103,13 @@ internal static class Program
                     // Escape was pressed — cancel just this turn, not the whole app.
                     Console.WriteLine("\n[cancelled]");
                 }
+                catch (OperationCanceledException) when (appCts.Token.IsCancellationRequested)
+                {
+                    // Ctrl+C during a turn — print a newline so the cursor
+                    // is clean, then fall through to cancel the turn CTS and
+                    // await the key monitor before the while-loop exits.
+                    Console.WriteLine();
+                }
 
                 // Ensure the key monitor exits before we loop back to Console.ReadLine,
                 // otherwise it could steal keystrokes from the next prompt.
@@ -136,7 +144,7 @@ internal static class Program
                 {
                     case ChatBlockingIssue.MissingApiKey:
                         Console.Write("No API key configured. Enter your OpenRouter API key (or blank to exit): ");
-                        var key = Console.ReadLine()?.Trim();
+                        var key = CancellableReadLine(ct)?.Trim();
                         if (string.IsNullOrEmpty(key))
                             return false;
                         await host.Configuration.SetApiKeyAsync(key, ct);
@@ -144,7 +152,7 @@ internal static class Program
 
                     case ChatBlockingIssue.MissingModelSelection:
                         Console.Write("No model selected. Enter a model ID (or blank to exit): ");
-                        var model = Console.ReadLine()?.Trim();
+                        var model = CancellableReadLine(ct)?.Trim();
                         if (string.IsNullOrEmpty(model))
                             return false;
                         await host.Configuration.SetSelectedModelAsync(model, ct: ct);
@@ -166,7 +174,7 @@ internal static class Program
     {
         return new TurnCallbacks
         {
-            RequestPermissionAsync = (req, _) =>
+            RequestPermissionAsync = (req, ct) =>
             {
                 // Build a hint showing the available scope options beyond simple y/n.
                 var scopeHints = req.AllowedScopes.Count > 1
@@ -180,7 +188,7 @@ internal static class Program
                         $"\nAllow {req.OperationType} on '{req.Target}' by '{req.RequestingExtension}'?"
                         + $" (y/n{scopeHints}): ");
 
-                    var input = Console.ReadLine()?.Trim().ToLowerInvariant();
+                    var input = CancellableReadLine(ct)?.Trim().ToLowerInvariant();
 
                     // Parse the user's response: "y"/"yes" grants once, a scope
                     // name grants durably, anything else denies.
@@ -229,12 +237,12 @@ internal static class Program
             // line — the previous write (prompt echo or prior status line) already
             // ends with a newline.
             case ToolCallStarted started:
-                Console.WriteLine($"{DarkGray}[tool: {started.FormatCall()}]{Reset}");
+                Console.WriteLine($"{DarkGray}{started.FormatCall()}{Reset}");
                 break;
 
             case ToolCallCompleted completed:
                 var status = completed.IsError ? "error" : "ok";
-                Console.WriteLine($"{DarkGray}[tool: {completed.ToolName} \u2192 {status}]{Reset}");
+                Console.WriteLine($"{DarkGray}{completed.ToolName} \u2192 {status}{Reset}");
                 break;
 
             // Newline after the streamed response so the next prompt starts clean.
@@ -246,6 +254,67 @@ internal static class Program
                 Console.WriteLine($"\n[error] {error.Message}");
                 break;
         }
+    }
+
+    /// <summary>
+    /// Reads a line from stdin, returning <c>null</c> if
+    /// <paramref name="ct"/> is cancelled or EOF is received (Ctrl+D).
+    /// Unlike <see cref="Console.ReadLine()"/>, this method is responsive to
+    /// cancellation because it polls <see cref="Console.KeyAvailable"/> instead
+    /// of issuing a single blocking read.
+    /// </summary>
+    private static string? CancellableReadLine(CancellationToken ct)
+    {
+        var buffer = new StringBuilder();
+        while (!ct.IsCancellationRequested)
+        {
+            if (!Console.KeyAvailable)
+            {
+                Thread.Sleep(50);
+                continue;
+            }
+
+            var key = Console.ReadKey(intercept: true);
+
+            if (key.Key == ConsoleKey.Enter)
+            {
+                Console.WriteLine();
+                return buffer.ToString();
+            }
+
+            if (key.Key == ConsoleKey.Backspace)
+            {
+                if (buffer.Length > 0)
+                {
+                    buffer.Remove(buffer.Length - 1, 1);
+                    Console.Write("\b \b");
+                }
+                continue;
+            }
+
+            // Ctrl+D on an empty buffer signals EOF (matching standard
+            // Unix terminal behavior).
+            if (key.Key == ConsoleKey.D
+                && key.Modifiers.HasFlag(ConsoleModifiers.Control)
+                && buffer.Length == 0)
+            {
+                return null;
+            }
+
+            // Skip other control characters — Ctrl+C is handled by the
+            // CancelKeyPress event, and filtering keeps noise out of
+            // the buffer.
+            if (char.IsControl(key.KeyChar))
+                continue;
+
+            buffer.Append(key.KeyChar);
+            Console.Write(key.KeyChar);
+        }
+
+        // Cancellation — print a newline so the cursor doesn't sit on
+        // the prompt line.
+        Console.WriteLine();
+        return null;
     }
 
     /// <summary>

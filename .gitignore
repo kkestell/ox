@@ -24,6 +24,7 @@ artifacts/
 
 # ReSharper CLI inspection output
 inspection-results.xml
+inspection-results.txt
 
 # Published binaries
 publish/
