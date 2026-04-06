@@ -1,3 +1,4 @@
+using Ur.AgentLoop;
 using Ur.Tui.Rendering;
 
 namespace Ur.Tests;
@@ -232,98 +233,164 @@ public sealed class TextRenderableTests
 }
 
 // ---------------------------------------------------------------------------
-// SubagentRenderable
+// ToolRenderable
+// ---------------------------------------------------------------------------
+
+public sealed class ToolRenderableTests
+{
+    private static string RowText(CellRow row) =>
+        new(row.Cells.Select(c => c.Rune).ToArray());
+
+    /// <summary>Helper to create a ToolCallStarted with a simple signature.</summary>
+    private static ToolCallStarted MakeStarted(string toolName = "read_file", string? arg = "foo.txt") =>
+        new()
+        {
+            CallId = "call_1",
+            ToolName = toolName,
+            Arguments = arg is not null
+                ? new Dictionary<string, object?> { ["path"] = arg }
+                : new Dictionary<string, object?>()
+        };
+
+    [Fact]
+    public void Render_Started_ShowsSignatureOnly()
+    {
+        // Initial state: just the call signature, no suffix, yellow circle.
+        var tool = new ToolRenderable(MakeStarted());
+        var rows = tool.Render(80);
+        var text = RowText(rows[0]);
+        Assert.Contains("read_file", text);
+        Assert.DoesNotContain("[awaiting approval]", text);
+        Assert.Equal(Color.Yellow, tool.CircleColor);
+    }
+
+    [Fact]
+    public void Render_Completed_DoesNotShowArrowOk()
+    {
+        // Circle color (green) conveys success — no text suffix needed.
+        var tool = new ToolRenderable(MakeStarted());
+        tool.SetCompleted(isError: false);
+        var rows = tool.Render(80);
+        var text = RowText(rows[0]);
+        Assert.Contains("read_file", text);
+        Assert.DoesNotContain("→ ok", text);
+        Assert.Equal(Color.Green, tool.CircleColor);
+    }
+
+    [Fact]
+    public void Render_CompletedError_DoesNotShowArrowError()
+    {
+        // Circle color (red) conveys failure — no text suffix needed.
+        var tool = new ToolRenderable(MakeStarted());
+        tool.SetCompleted(isError: true);
+        var rows = tool.Render(80);
+        var text = RowText(rows[0]);
+        Assert.Contains("read_file", text);
+        Assert.DoesNotContain("→ error", text);
+        Assert.Equal(Color.Red, tool.CircleColor);
+    }
+
+    [Fact]
+    public void Render_AwaitingApproval_StillShowsApprovalText()
+    {
+        // Yellow circle alone doesn't distinguish "awaiting" from "running",
+        // so the text label is retained.
+        var tool = new ToolRenderable(MakeStarted());
+        tool.SetAwaitingApproval();
+        var rows = tool.Render(80);
+        var text = RowText(rows[0]);
+        Assert.Contains("read_file", text);
+        Assert.Contains("[awaiting approval]", text);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// SubagentRenderable — tree-based subagent rendering
 // ---------------------------------------------------------------------------
 
 public sealed class SubagentRenderableTests
 {
-    // Helper: extract all rune characters from a row as a string.
     private static string RowText(CellRow row) =>
         new(row.Cells.Select(c => c.Rune).ToArray());
 
     [Fact]
-    public void Render_AlwaysHasHeaderAndFooter_EvenWithNoChildren()
+    public void Render_NoChildren_ReturnsJustSignatureRow()
     {
-        // Footer is structural — present regardless of SetCompleted or child count.
-        var r    = new SubagentRenderable("abc123");
+        // With no inner events, only the tool call signature is rendered.
+        var r    = new SubagentRenderable("abc123", "run_subagent(prompt: \"hello\")");
         var rows = r.Render(40);
-        Assert.Equal(2, rows.Count); // header + footer
-        Assert.Contains("abc123", RowText(rows[0]));
-        Assert.Contains('─', rows[1].Cells.Select(c => c.Rune));
+        Assert.Single(rows);
+        Assert.Contains("run_subagent", RowText(rows[0]));
     }
 
     [Fact]
-    public void Render_SetCompleted_DoesNotChangeRowCount()
+    public void Render_WithChildren_SignaturePlusInnerTreeRows()
     {
-        // SetCompleted exists for the finalization contract; it no longer adds a footer
-        // row because the footer is always rendered structurally.
-        var r = new SubagentRenderable("abc123");
-        var rowsBefore = r.Render(40).Count;
-        r.SetCompleted();
-        var rowsAfter = r.Render(40).Count;
-        Assert.Equal(rowsBefore, rowsAfter);
-    }
-
-    [Fact]
-    public void Render_InnerRowsAreIndentedByIndentWidth()
-    {
-        // Inner rows are prepended with IndentWidth space cells. With IndentWidth=0 the
-        // inner EventList's own chrome (margin at col 0, bar at col 1) appears directly
-        // without any leading offset — verifying no spurious cells are inserted.
-        var r     = new SubagentRenderable("xyz");
+        // The signature row is followed by inner EventList tree output.
+        // Inner children are orphan Circles (no User root in the inner list),
+        // so they get tree connectors (├─/└─) from the inner EventList.
+        var r     = new SubagentRenderable("abc", "run_subagent(prompt: \"hi\")");
         var child = new TextRenderable();
         child.SetText("hello");
-        r.AddChild(child, BubbleStyle.System);
+        r.AddChild(child, BubbleStyle.Circle, () => Color.Green);
 
         var rows = r.Render(40);
-        // rows[0] = header, rows[last] = footer.
-        // The content row (inner EventList chrome) must have the EventList's own left
-        // margin at col 0 and bar glyph at col 1 — no extra indent cells before them.
-        var contentRow = rows.Skip(1).First(r => r.Cells.Any(c => c.Rune == '▎'));
-        Assert.Equal(' ',  contentRow.Cells[0].Rune); // inner EventList margin
-        Assert.Equal('▎', contentRow.Cells[1].Rune); // bar glyph at col 1, no indent offset
+        Assert.Equal(2, rows.Count);
+        Assert.Contains("run_subagent", RowText(rows[0]));
+        // The inner orphan child gets └─ ● chrome — circle at col 3.
+        Assert.Equal('●', rows[1].Cells[3].Rune);
+    }
+
+    [Fact]
+    public void CircleColor_YellowWhileRunning_GreenOnCompletion()
+    {
+        var r = new SubagentRenderable("abc", "run_subagent(prompt: \"hi\")");
+        Assert.Equal(Color.Yellow, r.CircleColor);
+        r.SetCompleted();
+        Assert.Equal(Color.Green, r.CircleColor);
     }
 
     [Fact]
     public void SetCompleted_IsIdempotent()
     {
-        // Calling SetCompleted twice must not affect row count.
-        var r = new SubagentRenderable("abc");
+        var r = new SubagentRenderable("abc", "run_subagent(prompt: \"hi\")");
         r.SetCompleted();
-        r.SetCompleted();
-        var rows = r.Render(40);
-        Assert.Equal(2, rows.Count); // header + footer, no duplicates
+        r.SetCompleted(); // Second call should not throw or change state.
+        Assert.Equal(Color.Green, r.CircleColor);
     }
 
     [Fact]
     public void Render_TailClips_WhenInnerRowsExceedMaxInnerRows()
     {
-        // Each child in a System bubble produces 3 inner rows (top-pad, content, bottom-pad)
-        // plus 1 blank separator (except the first). Seven children: 3*7 + 6 = 27 inner rows,
-        // which exceeds MaxInnerRows (20). The visible count must be capped to exactly 20.
-        var r = new SubagentRenderable("clip-test");
-        for (var i = 0; i < 7; i++)
+        // Each Circle child in the inner EventList produces 1 tree row.
+        // Add enough children to exceed MaxInnerRows (20). The visible inner
+        // row count (below the signature) must be capped, plus an ellipsis row.
+        var r = new SubagentRenderable("clip-test", "run_subagent(prompt: \"big\")");
+        for (var i = 0; i < 30; i++)
         {
             var child = new TextRenderable();
             child.SetText($"line {i}");
-            r.AddChild(child, BubbleStyle.System);
+            r.AddChild(child, BubbleStyle.Circle, () => Color.White);
         }
 
         var rows = r.Render(80);
-        var innerRowCount = rows.Count - 2; // subtract header + footer
-        // 7 children × 3 rows + 6 separators = 27 inner rows → tail-clip to exactly 20.
-        Assert.Equal(20, innerRowCount);
+        // Row 0 = signature, row 1 = ellipsis (├─ ● ...), rows 2+ = 20 tail-clipped inner rows.
+        var innerRowCount = rows.Count - 1; // subtract signature
+        // 20 clipped rows + 1 ellipsis = 21 inner rows.
+        Assert.Equal(21, innerRowCount);
+        // Verify the ellipsis row is present.
+        Assert.Contains("...", RowText(rows[1]));
     }
 
     [Fact]
     public void AddChild_FiresChangedEvent()
     {
-        var r     = new SubagentRenderable("abc");
+        var r     = new SubagentRenderable("abc", "run_subagent(prompt: \"hi\")");
         var fired = false;
         r.Changed += () => fired = true;
 
         var child = new TextRenderable();
-        r.AddChild(child, BubbleStyle.System);
+        r.AddChild(child, BubbleStyle.Circle);
 
         Assert.True(fired);
     }
@@ -332,9 +399,9 @@ public sealed class SubagentRenderableTests
     public void ChildMutation_BubblesChangedEventUp()
     {
         // When a child's content changes, the SubagentRenderable's Changed should fire.
-        var r     = new SubagentRenderable("abc");
+        var r     = new SubagentRenderable("abc", "run_subagent(prompt: \"hi\")");
         var child = new TextRenderable();
-        r.AddChild(child, BubbleStyle.System);
+        r.AddChild(child, BubbleStyle.Circle);
 
         var fired = false;
         r.Changed += () => fired = true;
@@ -345,14 +412,13 @@ public sealed class SubagentRenderableTests
 }
 
 // ---------------------------------------------------------------------------
-// EventList — bubble chrome
+// EventList — tree rendering
 // ---------------------------------------------------------------------------
 
 public sealed class EventListTests
 {
-    // Helpers to navigate bubble-wrapped rows.
+    // Helper to get a specific cell's rune.
     private static char RuneAt(CellRow row, int col) => row.Cells[col].Rune;
-    private static Color BgAt(CellRow row, int col) => row.Cells[col].Background;
 
     [Fact]
     public void Render_EmptyList_ReturnsEmpty()
@@ -362,70 +428,358 @@ public sealed class EventListTests
     }
 
     [Fact]
-    public void Render_OneChild_HasPaddingRowsAroundContent()
+    public void Render_SingleUser_PromptGlyphOnFirstRow()
     {
-        // Structure: top-pad, content-rows, bottom-pad (no blank separator for first bubble).
+        // A lone User item renders with ❯ prefix and no tree connectors below.
         var list  = new EventList();
         var child = new TextRenderable();
         child.SetText("hello");
-        list.Add(child, BubbleStyle.Assistant);
+        list.Add(child);
 
-        var rows = list.Render(20);
-        // top-pad + 1 content row + bottom-pad = 3 rows
-        Assert.Equal(3, rows.Count);
+        var rows = list.Render(40);
+        Assert.Single(rows);
+        // Col 0: ❯, col 1: space, col 2+: "hello"
+        Assert.Equal('❯', RuneAt(rows[0], 0));
+        Assert.Equal(' ', RuneAt(rows[0], 1));
+        Assert.Equal('h', RuneAt(rows[0], 2));
     }
 
     [Fact]
-    public void Render_TwoChildren_HasBlankRowBetweenBubbles()
+    public void Render_UserWithOneChild_LastChildBranch()
     {
+        // User root + one Circle child: the child gets └─ ● (last child connector).
         var list = new EventList();
-        var c1   = new TextRenderable();
-        c1.SetText("one");
+        var user = new TextRenderable();
+        user.SetText("msg");
+        list.Add(user);
+
+        var tool = new TextRenderable();
+        tool.SetText("read_file");
+        list.Add(tool, BubbleStyle.Circle, () => Color.Green);
+
+        var rows = list.Render(40);
+        Assert.Equal(2, rows.Count);
+
+        // Row 0: user root
+        Assert.Equal('❯', RuneAt(rows[0], 0));
+
+        // Row 1: last (and only) child — └─ ● prefix
+        Assert.Equal('└', RuneAt(rows[1], 0));
+        Assert.Equal('─', RuneAt(rows[1], 1));
+        Assert.Equal(' ', RuneAt(rows[1], 2));
+        Assert.Equal('●', RuneAt(rows[1], 3));
+        Assert.Equal(' ', RuneAt(rows[1], 4));
+    }
+
+    [Fact]
+    public void Render_UserWithTwoChildren_BranchAndLastBranch()
+    {
+        // User root + two children: first gets ├─ ●, second gets └─ ●.
+        var list = new EventList();
+        var user = new TextRenderable();
+        user.SetText("msg");
+        list.Add(user);
+
+        var c1 = new TextRenderable();
+        c1.SetText("first");
+        list.Add(c1, BubbleStyle.Circle, () => Color.Yellow);
+
         var c2 = new TextRenderable();
-        c2.SetText("two");
-        list.Add(c1, BubbleStyle.System);
-        list.Add(c2, BubbleStyle.System);
+        c2.SetText("second");
+        list.Add(c2, BubbleStyle.Circle, () => Color.Green);
 
-        var rows = list.Render(20);
-        // bubble1: top+content+bottom = 3, blank separator = 1, bubble2: 3 → total = 7
-        Assert.Equal(7, rows.Count);
-        // The blank separator is rows[3] — it should be an empty CellRow.
-        Assert.Empty(rows[3].Cells);
+        var rows = list.Render(40);
+        Assert.Equal(3, rows.Count);
+
+        // Row 1: non-last child — ├─ ●
+        Assert.Equal('├', RuneAt(rows[1], 0));
+        Assert.Equal('─', RuneAt(rows[1], 1));
+
+        // Row 2: last child — └─ ●
+        Assert.Equal('└', RuneAt(rows[2], 0));
+        Assert.Equal('─', RuneAt(rows[2], 1));
     }
 
     [Fact]
-    public void Render_ContentRow_HasBarGlyphAtColumnOne()
+    public void Render_UserContinuationWithChildren_VerticalBar()
     {
-        var list  = new EventList();
+        // When a User message wraps and has children, continuation rows use │ prefix
+        // to signal the vertical trunk continues to the children below.
+        var list = new EventList();
+        var user = new TextRenderable();
+        user.SetText("hello world"); // will wrap at narrow width
+        list.Add(user);
+
         var child = new TextRenderable();
-        child.SetText("x");
-        list.Add(child);
+        child.SetText("tool");
+        list.Add(child, BubbleStyle.Circle, () => Color.White);
 
-        var rows = list.Render(20);
-        // rows[0] = top padding, rows[1] = content row
-        var contentRow = rows[1];
-        // col 0 = left margin (space), col 1 = bar glyph '▎'
-        Assert.Equal(' ',  RuneAt(contentRow, 0));
-        Assert.Equal('▎', RuneAt(contentRow, 1));
+        // Width 8: root chrome = 2 → content width = 6.
+        // "hello world" at width 6 → "hello" + "world" (wraps at space).
+        var rows = list.Render(8);
+
+        // Row 0: ❯ hello
+        Assert.Equal('❯', RuneAt(rows[0], 0));
+        // Row 1: │ world (continuation with vertical bar because children follow)
+        Assert.Equal('│', RuneAt(rows[1], 0));
+        Assert.Equal(' ', RuneAt(rows[1], 1));
+        // Row 2: └─ ● tool (the child)
+        Assert.Equal('└', RuneAt(rows[2], 0));
     }
 
     [Fact]
-    public void Render_ContentRow_DefaultChildBackgroundReplacedWithBubbleBg()
+    public void Render_UserContinuationWithoutChildren_NoVerticalBar()
     {
-        // TextRenderable uses Color.Default background. EventList must override it
-        // with the bubble background so the fill is seamless.
-        var list  = new EventList();
-        var child = new TextRenderable(); // default fg, default bg
-        child.SetText("x");
-        list.Add(child);
+        // When a User message wraps but has no children, continuation rows use spaces
+        // (no vertical bar) since there's nothing to connect to below.
+        var list = new EventList();
+        var user = new TextRenderable();
+        user.SetText("hello world");
+        list.Add(user);
 
-        var rows = list.Render(20);
-        var contentRow = rows[1];
-        // The content cells start at col 3 (0=margin, 1=bar, 2=inner-pad, 3=first char).
-        // Their background should be the User bubble bg (Color.FromIndex(236)), not Default.
-        var contentCellBg = BgAt(contentRow, 3);
-        Assert.NotEqual(Color.Default, contentCellBg);
-        Assert.Equal(Color.FromIndex(236), contentCellBg);
+        // Width 8: content width = 6, "hello world" wraps.
+        var rows = list.Render(8);
+        Assert.Equal(2, rows.Count);
+
+        // Row 1: continuation — space + space (no │), then content continues.
+        Assert.Equal(' ', RuneAt(rows[1], 0));
+        Assert.Equal(' ', RuneAt(rows[1], 1));
+        Assert.Equal('w', RuneAt(rows[1], 2)); // "world" content starts at col 2
+    }
+
+    [Fact]
+    public void Render_ChildContinuation_VerticalBarForNonLast()
+    {
+        // When a non-last child's content wraps, continuation rows use │ + 4 spaces
+        // to maintain the vertical trunk for siblings below.
+        var list = new EventList();
+        var user = new TextRenderable();
+        user.SetText("msg");
+        list.Add(user);
+
+        var c1 = new TextRenderable();
+        c1.SetText("abcdefghij"); // will wrap at narrow width
+        list.Add(c1, BubbleStyle.Circle, () => Color.White);
+
+        var c2 = new TextRenderable();
+        c2.SetText("end");
+        list.Add(c2, BubbleStyle.Circle, () => Color.White);
+
+        // Width 10: child chrome = 5 → child content width = 5.
+        // "abcdefghij" at width 5 → hard break: "abcde" + "fghij".
+        var rows = list.Render(10);
+
+        // Row 0: ❯ msg
+        // Row 1: ├─ ● abcde (non-last child, first row)
+        Assert.Equal('├', RuneAt(rows[1], 0));
+        // Row 2: │    fghij (non-last child, continuation — │ + 4 spaces)
+        Assert.Equal('│', RuneAt(rows[2], 0));
+        Assert.Equal(' ', RuneAt(rows[2], 1));
+        Assert.Equal(' ', RuneAt(rows[2], 2));
+        Assert.Equal(' ', RuneAt(rows[2], 3));
+        Assert.Equal(' ', RuneAt(rows[2], 4));
+        // Row 3: └─ ● end (last child)
+        Assert.Equal('└', RuneAt(rows[3], 0));
+    }
+
+    [Fact]
+    public void Render_ChildContinuation_SpacesForLastChild()
+    {
+        // When the last child's content wraps, continuation rows use 5 spaces
+        // (no vertical bar) since there are no more siblings below.
+        var list = new EventList();
+        var user = new TextRenderable();
+        user.SetText("msg");
+        list.Add(user);
+
+        var child = new TextRenderable();
+        child.SetText("abcdefghij"); // will wrap
+        list.Add(child, BubbleStyle.Circle, () => Color.White);
+
+        // Width 10: child content = 5. "abcdefghij" → "abcde" + "fghij".
+        var rows = list.Render(10);
+
+        // Row 1: └─ ● abcde (last child, first row)
+        Assert.Equal('└', RuneAt(rows[1], 0));
+        // Row 2: continuation — 5 spaces (no │)
+        Assert.Equal(' ', RuneAt(rows[2], 0));
+        Assert.Equal(' ', RuneAt(rows[2], 1));
+        Assert.Equal(' ', RuneAt(rows[2], 2));
+        Assert.Equal(' ', RuneAt(rows[2], 3));
+        Assert.Equal(' ', RuneAt(rows[2], 4));
+    }
+
+    [Fact]
+    public void Render_TwoGroups_NoBlankRowBetweenThem()
+    {
+        // Two User groups rendered consecutively with no blank separator.
+        var list = new EventList();
+
+        var user1 = new TextRenderable();
+        user1.SetText("first");
+        list.Add(user1);
+        var c1 = new TextRenderable();
+        c1.SetText("tool1");
+        list.Add(c1, BubbleStyle.Circle, () => Color.White);
+
+        var user2 = new TextRenderable();
+        user2.SetText("second");
+        list.Add(user2);
+        var c2 = new TextRenderable();
+        c2.SetText("tool2");
+        list.Add(c2, BubbleStyle.Circle, () => Color.White);
+
+        var rows = list.Render(40);
+        // Group 1: user + child = 2 rows. Group 2: user + child = 2 rows. No separator.
+        Assert.Equal(4, rows.Count);
+        // Row 0: ❯ first, Row 1: └─ ● tool1, Row 2: ❯ second, Row 3: └─ ● tool2
+        Assert.Equal('❯', RuneAt(rows[0], 0));
+        Assert.Equal('└', RuneAt(rows[1], 0));
+        Assert.Equal('❯', RuneAt(rows[2], 0));
+        Assert.Equal('└', RuneAt(rows[3], 0));
+    }
+
+    [Fact]
+    public void Render_OrphanGroup_CircleChildrenWithNoRoot()
+    {
+        // Items before the first User form an orphan group — rendered as Circle children
+        // with ├─/└─ connectors but no ❯ root row above them.
+        var list = new EventList();
+        var orphan = new TextRenderable();
+        orphan.SetText("welcome");
+        list.Add(orphan, BubbleStyle.Circle, () => Color.BrightBlack);
+
+        var rows = list.Render(40);
+        Assert.Single(rows);
+        // The orphan is the sole (and last) child: └─ ● welcome
+        Assert.Equal('└', RuneAt(rows[0], 0));
+        Assert.Equal('─', RuneAt(rows[0], 1));
+        Assert.Equal('●', RuneAt(rows[0], 3));
+    }
+
+    [Fact]
+    public void Render_OrphanGroupFollowedByUserGroup_NoBlankSeparator()
+    {
+        // Orphan group + User group: rendered consecutively with no separator.
+        var list = new EventList();
+
+        var orphan = new TextRenderable();
+        orphan.SetText("welcome");
+        list.Add(orphan, BubbleStyle.Circle, () => Color.BrightBlack);
+
+        var user = new TextRenderable();
+        user.SetText("hello");
+        list.Add(user);
+
+        var rows = list.Render(40);
+        // Orphan: 1 row. User: 1 row. Total: 2 (no blank separator).
+        Assert.Equal(2, rows.Count);
+        Assert.Equal('└', RuneAt(rows[0], 0)); // orphan tree child
+        Assert.Equal('❯', RuneAt(rows[1], 0)); // user root
+    }
+
+    [Fact]
+    public void Render_PlainItem_RendersVerbatimWithNoChrome()
+    {
+        // Plain items render at full width with no tree prefix.
+        var list = new EventList();
+        var plain = new TextRenderable();
+        plain.SetText("Session: abc123");
+        list.Add(plain, BubbleStyle.Plain);
+
+        var rows = list.Render(40);
+        Assert.Single(rows);
+        // First character is 'S' — no ❯, no ●, no tree connectors.
+        Assert.Equal('S', RuneAt(rows[0], 0));
+    }
+
+    [Fact]
+    public void Render_PlainFollowedByUserGroup_NoSeparator()
+    {
+        // Plain item followed by a User group — no blank separator between them.
+        var list = new EventList();
+
+        var plain = new TextRenderable();
+        plain.SetText("Session: abc123");
+        list.Add(plain, BubbleStyle.Plain);
+
+        var user = new TextRenderable();
+        user.SetText("hello");
+        list.Add(user);
+
+        var child = new TextRenderable();
+        child.SetText("response");
+        list.Add(child, BubbleStyle.Circle, () => Color.White);
+
+        var rows = list.Render(40);
+        // Plain: 1 row. User: 1 row. Child: 1 row. Total: 3 (no separators).
+        Assert.Equal(3, rows.Count);
+        Assert.Equal('S', RuneAt(rows[0], 0)); // plain text
+        Assert.Equal('❯', RuneAt(rows[1], 0)); // user root
+        Assert.Equal('└', RuneAt(rows[2], 0)); // child
+    }
+
+    [Fact]
+    public void Render_CircleColor_PassedThroughToGlyph()
+    {
+        // The circle color from getCircleColor appears on the ● glyph cell.
+        var list  = new EventList();
+        var user  = new TextRenderable();
+        user.SetText("msg");
+        list.Add(user);
+
+        var child = new TextRenderable();
+        child.SetText("tool");
+        list.Add(child, BubbleStyle.Circle, () => Color.Red);
+
+        var rows = list.Render(40);
+        // The ● glyph is at col 3 of the child row.
+        var circleCell = rows[1].Cells[3];
+        Assert.Equal('●', circleCell.Rune);
+        Assert.Equal(Color.Red, circleCell.Foreground);
+    }
+
+    [Fact]
+    public void Render_CircleColorDefault_UsesWhite()
+    {
+        // When no getCircleColor is provided, the ● glyph defaults to white.
+        var list  = new EventList();
+        var user  = new TextRenderable();
+        user.SetText("msg");
+        list.Add(user);
+
+        var child = new TextRenderable();
+        child.SetText("tool");
+        list.Add(child, BubbleStyle.Circle);
+
+        var rows = list.Render(40);
+        var circleCell = rows[1].Cells[3];
+        Assert.Equal('●', circleCell.Rune);
+        Assert.Equal(Color.White, circleCell.Foreground);
+    }
+
+    [Fact]
+    public void Render_NoBlankSeparatorBetweenSiblingsInGroup()
+    {
+        // Within a single tree group, children are rendered consecutively
+        // with no blank rows between them.
+        var list = new EventList();
+        var user = new TextRenderable();
+        user.SetText("msg");
+        list.Add(user);
+
+        var c1 = new TextRenderable();
+        c1.SetText("a");
+        list.Add(c1, BubbleStyle.Circle, () => Color.White);
+
+        var c2 = new TextRenderable();
+        c2.SetText("b");
+        list.Add(c2, BubbleStyle.Circle, () => Color.White);
+
+        var rows = list.Render(40);
+        // 1 root + 2 children = 3 rows, none empty.
+        Assert.Equal(3, rows.Count);
+        Assert.All(rows, row => Assert.NotEmpty(row.Cells));
     }
 
     [Fact]
@@ -453,115 +807,5 @@ public sealed class EventListTests
         child.Append("new content");
 
         Assert.True(fired);
-    }
-
-    [Fact]
-    public void Render_BubbleStyleNone_EmitsChildRowsWithoutChrome()
-    {
-        // BubbleStyle.None must pass child rows through verbatim — no bar glyph,
-        // no top/bottom padding rows, no background override, no content truncation.
-        // Used for containers (like SubagentRenderable) that supply their own frame.
-        const int width = 20;
-        var child = new TextRenderable();
-        child.SetText("x");
-
-        // Capture the raw child output before wrapping in EventList.
-        var directRows = child.Render(width);
-
-        var list = new EventList();
-        list.Add(child, BubbleStyle.None);
-        var rows = list.Render(width);
-
-        // TextRenderable.SetText produces exactly 1 row — None must not add padding.
-        Assert.Single(rows);
-        // No bar glyph should appear anywhere in the row.
-        Assert.DoesNotContain(rows[0].Cells, c => c.Rune == '▎');
-        // Cell runes must be identical to the direct render — verbatim passthrough.
-        Assert.Equal(
-            directRows[0].Cells.Select(c => c.Rune),
-            rows[0].Cells.Select(c => c.Rune));
-    }
-
-    [Fact]
-    public void Render_BubbleStyleNone_StillEmitsBlankSeparatorBetweenBubbles()
-    {
-        // Even with BubbleStyle.None, consecutive bubbles must be separated by a blank row
-        // so visual grouping between items is preserved.
-        var list = new EventList();
-        var c1   = new TextRenderable();
-        c1.SetText("one");
-        var c2 = new TextRenderable();
-        c2.SetText("two");
-        list.Add(c1, BubbleStyle.None);
-        list.Add(c2, BubbleStyle.None);
-
-        var rows = list.Render(20);
-        // Each text child → 1 row; blank separator in between → 3 total.
-        Assert.Equal(3, rows.Count);
-        Assert.Empty(rows[1].Cells); // blank separator between the two bubbles
-    }
-
-    [Fact]
-    public void Render_BubbleStyleNone_InterleavedWithChromedBubbles_HasCorrectSeparators()
-    {
-        // In production, EventList holds chromed bubbles on either side of a BubbleStyle.None
-        // child (e.g. SubagentRenderable). Verify separators appear on both sides of the
-        // None child and that the None branch doesn't disrupt the first-bubble flag.
-        //
-        // Expected structure:
-        //   [0..2]  System bubble 1: top-pad, content, bottom-pad
-        //   [3]     blank separator
-        //   [4]     None child (1 verbatim row)
-        //   [5]     blank separator
-        //   [6..8]  System bubble 2: top-pad, content, bottom-pad
-        var list = new EventList();
-        var s1   = new TextRenderable();
-        s1.SetText("sys1");
-        var none = new TextRenderable();
-        none.SetText("bare");
-        var s2 = new TextRenderable();
-        s2.SetText("sys2");
-        list.Add(s1,   BubbleStyle.System);
-        list.Add(none, BubbleStyle.None);
-        list.Add(s2,   BubbleStyle.System);
-
-        var rows = list.Render(20);
-        Assert.Equal(9, rows.Count);
-        Assert.Empty(rows[3].Cells); // separator before None child
-        Assert.Empty(rows[5].Cells); // separator after None child
-        // None child row must not carry a bar glyph.
-        Assert.DoesNotContain(rows[4].Cells, c => c.Rune == '▎');
-    }
-
-    [Fact]
-    public void Render_AssistantBubble_BarGlyphHasYellowForeground()
-    {
-        // The Assistant bubble uses a yellow bar to distinguish it from System
-        // (black/invisible bar) and User (blue bar). Verifies StyleColors branches.
-        var list  = new EventList();
-        var child = new TextRenderable();
-        child.SetText("hi");
-        list.Add(child, BubbleStyle.Assistant);
-
-        var rows = list.Render(20);
-        // rows[0] = top padding, rows[1] = content row; col 1 = bar glyph
-        Assert.Equal('▎',         rows[1].Cells[1].Rune);
-        Assert.Equal(Color.Yellow, rows[1].Cells[1].Foreground);
-    }
-
-    [Fact]
-    public void Render_SystemBubble_BarGlyphHasBlackForeground()
-    {
-        // The System bubble uses a black-on-black bar (invisible) to visually suppress
-        // the left-bar chrome for tool/error messages. Verifies StyleColors branch.
-        var list  = new EventList();
-        var child = new TextRenderable();
-        child.SetText("err");
-        list.Add(child, BubbleStyle.System);
-
-        var rows = list.Render(20);
-        // rows[0] = top padding, rows[1] = content row; col 1 = bar glyph
-        Assert.Equal('▎',        rows[1].Cells[1].Rune);
-        Assert.Equal(Color.Black, rows[1].Cells[1].Foreground);
     }
 }

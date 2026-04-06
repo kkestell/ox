@@ -39,7 +39,7 @@ internal sealed class ToolRenderable : IRenderable
 
     /// <summary>
     /// Called when the tool call completes (successfully or with an error).
-    /// Finalizes the rendered row with a "→ ok" or "→ error" suffix.
+    /// Updates the circle color to green (success) or red (error).
     /// </summary>
     public void SetCompleted(bool isError)
     {
@@ -48,6 +48,22 @@ internal sealed class ToolRenderable : IRenderable
         Changed?.Invoke();
     }
 
+    /// <summary>
+    /// The color to use for the ● circle glyph when this tool call is rendered
+    /// in <see cref="BubbleStyle.Circle"/> mode. Evaluated on every render pass
+    /// so the icon updates in-place as the tool transitions through its lifecycle:
+    ///   Started / AwaitingApproval → yellow (pending)
+    ///   Completed (success)        → green
+    ///   Completed (error)          → red
+    /// </summary>
+    public Color CircleColor => _state switch
+    {
+        ToolState.Started          => Color.Yellow,
+        ToolState.AwaitingApproval => Color.Yellow,
+        ToolState.Completed        => _isError ? Color.Red : Color.Green,
+        _                          => Color.BrightBlack
+    };
+
     public IReadOnlyList<CellRow> Render(int availableWidth)
     {
         var row = new CellRow();
@@ -55,22 +71,13 @@ internal sealed class ToolRenderable : IRenderable
         // Tool signature in dark gray — always present in every state.
         row.Append(_formattedCall, Color.BrightBlack, Color.Default);
 
-        switch (_state)
+        // Only AwaitingApproval adds a text suffix — the yellow circle alone doesn't
+        // distinguish "awaiting" from "running". Completed states rely on circle color
+        // (green/red) to convey success/failure, so no → ok / → error suffixes.
+        if (_state == ToolState.AwaitingApproval)
         {
-            case ToolState.AwaitingApproval:
-                // Highlight that the user must act: separate the suffix with a space,
-                // then render "[awaiting approval]" in yellow to draw attention.
-                row.Append(" ", Color.BrightBlack, Color.Default);
-                row.Append("[awaiting approval]", Color.Yellow, Color.Default);
-                break;
-
-            case ToolState.Completed when _isError:
-                row.Append(" \u2192 error", Color.BrightBlack, Color.Default);
-                break;
-
-            case ToolState.Completed:
-                row.Append(" \u2192 ok", Color.BrightBlack, Color.Default);
-                break;
+            row.Append(" ", Color.BrightBlack, Color.Default);
+            row.Append("[awaiting approval]", Color.Yellow, Color.Default);
         }
 
         return [row];

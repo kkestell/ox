@@ -71,9 +71,10 @@ internal static class Program
         viewport.Start();
 
         // Show a welcome message as the first item in the conversation list.
-        var welcome = new TextRenderable();
+        // Plain style — renders as a regular line of text with no tree chrome.
+        var welcome = new TextRenderable(foreground: Color.BrightBlack);
         welcome.SetText($"Session: {session.Id}  (type a message · Esc = cancel turn · Ctrl+C = exit)");
-        eventList.Add(welcome, BubbleStyle.System);
+        eventList.Add(welcome, BubbleStyle.Plain);
 
         while (!appCts.Token.IsCancellationRequested)
         {
@@ -116,9 +117,10 @@ internal static class Program
                 catch (OperationCanceledException) when (!appCts.Token.IsCancellationRequested)
                 {
                     // Escape cancelled this turn; add a visual marker and reset state.
+                    // Circle child (not a User root) — belongs to the current turn's tree group.
                     var cancelled = new TextRenderable();
                     cancelled.SetText("[cancelled]");
-                    eventList.Add(cancelled);
+                    eventList.Add(cancelled, BubbleStyle.Circle, () => Color.BrightBlack);
                     router.ResetTurnState();
                 }
                 catch (OperationCanceledException) when (appCts.Token.IsCancellationRequested)
@@ -417,13 +419,12 @@ internal static class Program
         // not ToolRenderables, so ToolCallCompleted must treat them differently.
         private readonly HashSet<string> _subagentCallIds = [];
 
-        // Maps run_subagent CallId to the SubagentId assigned by SubagentRunner.
-        // Populated in RouteSubagentEvent when the first event for a new SubagentId
-        // arrives. The SubagentId is not known at ToolCallStarted time — it's only
-        // available from SubagentEvent.SubagentId. Used by ToolCallCompleted to
-        // defensively finalize the SubagentRenderable if it wasn't finalized via
-        // a SubagentEvent { Inner: TurnCompleted } callback (e.g. on error paths).
-        private readonly Queue<(string CallId, string? SubagentId)> _pendingSubagentCalls = new();
+        // Queues run_subagent calls with their formatted signatures. The SubagentId
+        // is not known at ToolCallStarted time — it arrives later via SubagentEvent.
+        // When RouteSubagentEvent creates a SubagentRenderable, it dequeues the oldest
+        // pending call to get the formatted signature and to pair CallId → SubagentId
+        // for defensive finalization in ToolCallCompleted.
+        private readonly Queue<(string CallId, string FormattedCall)> _pendingSubagentCalls = new();
         private readonly Dictionary<string, string> _callIdToSubagentId = new();
 
         // ---- Subagent state (keyed by SubagentId, the 8-char hex from SubagentRunner) ----
@@ -460,7 +461,7 @@ internal static class Program
                     if (_currentText is null)
                     {
                         _currentText = new TextRenderable();
-                        eventList.Add(_currentText, BubbleStyle.Assistant);
+                        eventList.Add(_currentText, BubbleStyle.Circle, () => Color.White);
                     }
                     _currentText.Append(text);
                     break;
@@ -471,8 +472,10 @@ internal static class Program
                     // The SubagentRenderable is created lazily in RouteSubagentEvent
                     // when the first SubagentEvent with the subagent's ID arrives,
                     // because SubagentId is not known until that first event.
+                    // Store the formatted call string now so it's available for the
+                    // SubagentRenderable's tool signature row when it's created.
                     _subagentCallIds.Add(started.CallId);
-                    _pendingSubagentCalls.Enqueue((started.CallId, null));
+                    _pendingSubagentCalls.Enqueue((started.CallId, started.FormatCall()));
                     _currentText = null;
                     break;
 
@@ -480,7 +483,9 @@ internal static class Program
                     var tool = new ToolRenderable(started);
                     _toolCallMap[started.CallId] = tool;
                     _lastStartedTool = tool;
-                    eventList.Add(tool, BubbleStyle.System);
+                    // Capture tool in a local so the lambda closes over the right instance.
+                    var capturedTool = tool;
+                    eventList.Add(tool, BubbleStyle.Circle, () => capturedTool.CircleColor);
                     _currentText = null;
                     break;
 
@@ -515,7 +520,7 @@ internal static class Program
                 case Error { Message: var msg }:
                     var errorText = new TextRenderable(foreground: Color.Red);
                     errorText.SetText($"[error] {msg}");
-                    eventList.Add(errorText, BubbleStyle.System);
+                    eventList.Add(errorText, BubbleStyle.Circle, () => Color.Red);
                     _currentText = null;
                     break;
             }
@@ -533,22 +538,27 @@ internal static class Program
             // Lazily create the SubagentRenderable the first time an event arrives
             // for this subagent run. All subsequent events use the same renderable.
             // The SubagentId (from SubagentRunner) is not known at ToolCallStarted time,
-            // so we defer creation until here. Associate this SubagentId with the oldest
-            // pending run_subagent CallId so ToolCallCompleted can defensively finalize.
+            // so we defer creation until here. Dequeue the oldest pending call to get
+            // the formatted signature and pair CallId → SubagentId for finalization.
             if (!_subagentById.TryGetValue(subId, out var subRenderable))
             {
-                subRenderable = new SubagentRenderable(subId);
+                // Dequeue to get the formatted call string stored at ToolCallStarted time.
+                var formattedCall = "";
+                if (_pendingSubagentCalls.TryDequeue(out var pending))
+                {
+                    _callIdToSubagentId[pending.CallId] = subId;
+                    formattedCall = pending.FormattedCall;
+                }
+
+                subRenderable = new SubagentRenderable(subId, formattedCall);
                 _subagentById[subId] = subRenderable;
                 _subagentCurrentText[subId] = null;
                 _subagentToolCalls[subId] = new Dictionary<string, ToolRenderable>();
-                // BubbleStyle.None: SubagentRenderable provides its own bordered frame;
-                // applying outer bubble chrome would double-indent the inner content.
-                eventList.Add(subRenderable, BubbleStyle.None);
 
-                // Pair this SubagentId with the oldest unclaimed run_subagent CallId.
-                // With sequential execution there is always exactly one pending call.
-                if (_pendingSubagentCalls.TryDequeue(out var pending))
-                    _callIdToSubagentId[pending.CallId] = subId;
+                // Circle child in the outer tree. The circle color tracks the subagent's
+                // lifecycle: yellow while running, green on completion.
+                var capturedSub = subRenderable;
+                eventList.Add(subRenderable, BubbleStyle.Circle, () => capturedSub.CircleColor);
             }
 
             switch (evt.Inner)
@@ -560,7 +570,7 @@ internal static class Program
                     {
                         subText = new TextRenderable();
                         _subagentCurrentText[subId] = subText;
-                        subRenderable.AddChild(subText, BubbleStyle.Assistant);
+                        subRenderable.AddChild(subText, BubbleStyle.Circle, () => Color.White);
                     }
                     subText.Append(text);
                     break;
@@ -569,7 +579,10 @@ internal static class Program
                     var subTool = new ToolRenderable(subStarted);
                     _subagentToolCalls[subId][subStarted.CallId] = subTool;
                     _lastStartedTool = subTool;
-                    subRenderable.AddChild(subTool, BubbleStyle.System);
+                    // Capture subTool so the lambda closes over the right instance,
+                    // same pattern as RouteMainEvent's top-level tool circle color.
+                    var capturedSubTool = subTool;
+                    subRenderable.AddChild(subTool, BubbleStyle.Circle, () => capturedSubTool.CircleColor);
                     _subagentCurrentText[subId] = null;
                     break;
 
@@ -591,7 +604,7 @@ internal static class Program
                 case Error { Message: var subErrMsg }:
                     var subErrText = new TextRenderable(foreground: Color.Red);
                     subErrText.SetText($"[error] {subErrMsg}");
-                    subRenderable.AddChild(subErrText, BubbleStyle.System);
+                    subRenderable.AddChild(subErrText, BubbleStyle.Circle, () => Color.Red);
                     subRenderable.SetCompleted();
                     _subagentCurrentText[subId] = null;
                     break;
