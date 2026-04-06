@@ -428,9 +428,10 @@ public sealed class EventListTests
     }
 
     [Fact]
-    public void Render_SingleUser_PromptGlyphOnFirstRow()
+    public void Render_SingleUser_CircleGlyphWithBlueColor()
     {
-        // A lone User item renders with ❯ prefix and no tree connectors below.
+        // A lone User item renders as a Circle child with └─ ● (last top-level).
+        // The circle glyph at col 3 is blue.
         var list  = new EventList();
         var child = new TextRenderable();
         child.SetText("hello");
@@ -438,16 +439,21 @@ public sealed class EventListTests
 
         var rows = list.Render(40);
         Assert.Single(rows);
-        // Col 0: ❯, col 1: space, col 2+: "hello"
-        Assert.Equal('❯', RuneAt(rows[0], 0));
-        Assert.Equal(' ', RuneAt(rows[0], 1));
-        Assert.Equal('h', RuneAt(rows[0], 2));
+        // Col 0: └, col 1: ─, col 2: space, col 3: ● (blue), col 4: space, col 5+: "hello"
+        Assert.Equal('└', RuneAt(rows[0], 0));
+        Assert.Equal('─', RuneAt(rows[0], 1));
+        Assert.Equal(' ', RuneAt(rows[0], 2));
+        Assert.Equal('●', RuneAt(rows[0], 3));
+        Assert.Equal(Color.Blue, rows[0].Cells[3].Foreground);
+        Assert.Equal(' ', RuneAt(rows[0], 4));
+        Assert.Equal('h', RuneAt(rows[0], 5));
     }
 
     [Fact]
-    public void Render_UserWithOneChild_LastChildBranch()
+    public void Render_UserWithOneChild_NestedLastChildBranch()
     {
-        // User root + one Circle child: the child gets └─ ● (last child connector).
+        // User (last top-level, └─ ●) + one Circle child nested underneath.
+        // The nested child gets 3-space nest prefix + └─ ● (last nested).
         var list = new EventList();
         var user = new TextRenderable();
         user.SetText("msg");
@@ -460,21 +466,27 @@ public sealed class EventListTests
         var rows = list.Render(40);
         Assert.Equal(2, rows.Count);
 
-        // Row 0: user root
-        Assert.Equal('❯', RuneAt(rows[0], 0));
+        // Row 0: user as last top-level Circle child — └─ ● (blue)
+        Assert.Equal('└', RuneAt(rows[0], 0));
+        Assert.Equal('●', RuneAt(rows[0], 3));
+        Assert.Equal(Color.Blue, rows[0].Cells[3].Foreground);
 
-        // Row 1: last (and only) child — └─ ● prefix
-        Assert.Equal('└', RuneAt(rows[1], 0));
-        Assert.Equal('─', RuneAt(rows[1], 1));
+        // Row 1: nested child — `   └─ ● read_file` (3-space nest + last child)
+        Assert.Equal(' ', RuneAt(rows[1], 0));
+        Assert.Equal(' ', RuneAt(rows[1], 1));
         Assert.Equal(' ', RuneAt(rows[1], 2));
-        Assert.Equal('●', RuneAt(rows[1], 3));
-        Assert.Equal(' ', RuneAt(rows[1], 4));
+        Assert.Equal('└', RuneAt(rows[1], 3));
+        Assert.Equal('─', RuneAt(rows[1], 4));
+        Assert.Equal(' ', RuneAt(rows[1], 5));
+        Assert.Equal('●', RuneAt(rows[1], 6));
+        Assert.Equal(' ', RuneAt(rows[1], 7));
     }
 
     [Fact]
-    public void Render_UserWithTwoChildren_BranchAndLastBranch()
+    public void Render_UserWithTwoChildren_NestedBranchAndLastBranch()
     {
-        // User root + two children: first gets ├─ ●, second gets └─ ●.
+        // User (last top-level, └─ ●) + two nested children.
+        // First nested: `   ├─ ●`, second nested: `   └─ ●`.
         var list = new EventList();
         var user = new TextRenderable();
         user.SetText("msg");
@@ -491,128 +503,154 @@ public sealed class EventListTests
         var rows = list.Render(40);
         Assert.Equal(3, rows.Count);
 
-        // Row 1: non-last child — ├─ ●
-        Assert.Equal('├', RuneAt(rows[1], 0));
-        Assert.Equal('─', RuneAt(rows[1], 1));
+        // Row 0: user — └─ ● (blue, last top-level)
+        Assert.Equal('└', RuneAt(rows[0], 0));
+        Assert.Equal(Color.Blue, rows[0].Cells[3].Foreground);
 
-        // Row 2: last child — └─ ●
-        Assert.Equal('└', RuneAt(rows[2], 0));
-        Assert.Equal('─', RuneAt(rows[2], 1));
+        // Row 1: non-last nested child — `   ├─ ●` (3-space nest + ├─ ●)
+        Assert.Equal(' ', RuneAt(rows[1], 0)); // nest prefix (last parent = spaces)
+        Assert.Equal('├', RuneAt(rows[1], 3));
+        Assert.Equal('─', RuneAt(rows[1], 4));
+
+        // Row 2: last nested child — `   └─ ●`
+        Assert.Equal(' ', RuneAt(rows[2], 0));
+        Assert.Equal('└', RuneAt(rows[2], 3));
+        Assert.Equal('─', RuneAt(rows[2], 4));
     }
 
     [Fact]
     public void Render_UserContinuationWithChildren_VerticalBar()
     {
-        // When a User message wraps and has children, continuation rows use │ prefix
-        // to signal the vertical trunk continues to the children below.
+        // When a User message wraps and has nested children, continuation rows
+        // use │ + 4 spaces to signal the trunk continues to nested children below.
         var list = new EventList();
         var user = new TextRenderable();
         user.SetText("hello world"); // will wrap at narrow width
         list.Add(user);
 
         var child = new TextRenderable();
-        child.SetText("tool");
+        child.SetText("ok");
         list.Add(child, BubbleStyle.Circle, () => Color.White);
 
-        // Width 8: root chrome = 2 → content width = 6.
+        // Width 11: child chrome = 5 → content width = 6.
         // "hello world" at width 6 → "hello" + "world" (wraps at space).
-        var rows = list.Render(8);
+        var rows = list.Render(11);
 
-        // Row 0: ❯ hello
-        Assert.Equal('❯', RuneAt(rows[0], 0));
-        // Row 1: │ world (continuation with vertical bar because children follow)
+        // Row 0: └─ ● hello (last top-level, blue circle)
+        Assert.Equal('└', RuneAt(rows[0], 0));
+        Assert.Equal('●', RuneAt(rows[0], 3));
+        // Row 1: continuation — │ + 4 spaces (has nested children, so show trunk)
+        // Wait — the user is last top-level, but has nested children. showVertical = true,
+        // so isLast = false → MakeChildContinuationRow emits │ + 4 spaces.
         Assert.Equal('│', RuneAt(rows[1], 0));
         Assert.Equal(' ', RuneAt(rows[1], 1));
-        // Row 2: └─ ● tool (the child)
-        Assert.Equal('└', RuneAt(rows[2], 0));
+        Assert.Equal(' ', RuneAt(rows[1], 2));
+        Assert.Equal(' ', RuneAt(rows[1], 3));
+        Assert.Equal(' ', RuneAt(rows[1], 4));
+        // Row 2: nested child — `   └─ ● ok` (3-space nest for last parent + last nested)
+        Assert.Equal(' ', RuneAt(rows[2], 0));
+        Assert.Equal('└', RuneAt(rows[2], 3));
     }
 
     [Fact]
     public void Render_UserContinuationWithoutChildren_NoVerticalBar()
     {
-        // When a User message wraps but has no children, continuation rows use spaces
-        // (no vertical bar) since there's nothing to connect to below.
+        // When a User message wraps and has no nested children (and is last
+        // top-level), continuation rows use 5 spaces (no vertical bar).
         var list = new EventList();
         var user = new TextRenderable();
         user.SetText("hello world");
         list.Add(user);
 
-        // Width 8: content width = 6, "hello world" wraps.
-        var rows = list.Render(8);
+        // Width 11: child chrome = 5 → content width = 6, "hello world" wraps.
+        var rows = list.Render(11);
         Assert.Equal(2, rows.Count);
 
-        // Row 1: continuation — space + space (no │), then content continues.
+        // Row 0: └─ ● hello
+        Assert.Equal('└', RuneAt(rows[0], 0));
+        // Row 1: continuation — 5 spaces (last top-level, no nested children).
         Assert.Equal(' ', RuneAt(rows[1], 0));
         Assert.Equal(' ', RuneAt(rows[1], 1));
-        Assert.Equal('w', RuneAt(rows[1], 2)); // "world" content starts at col 2
+        Assert.Equal(' ', RuneAt(rows[1], 2));
+        Assert.Equal(' ', RuneAt(rows[1], 3));
+        Assert.Equal(' ', RuneAt(rows[1], 4));
+        Assert.Equal('w', RuneAt(rows[1], 5)); // "world" content starts at col 5
     }
 
     [Fact]
-    public void Render_ChildContinuation_VerticalBarForNonLast()
+    public void Render_NestedChildContinuation_VerticalBarForNonLast()
     {
-        // When a non-last child's content wraps, continuation rows use │ + 4 spaces
-        // to maintain the vertical trunk for siblings below.
+        // When a non-last nested child's content wraps, continuation rows use
+        // nest prefix + │ + 4 spaces to maintain the trunk for siblings below.
         var list = new EventList();
         var user = new TextRenderable();
         user.SetText("msg");
         list.Add(user);
 
         var c1 = new TextRenderable();
-        c1.SetText("abcdefghij"); // will wrap at narrow width
+        c1.SetText("ab"); // will wrap at narrow width
         list.Add(c1, BubbleStyle.Circle, () => Color.White);
 
         var c2 = new TextRenderable();
         c2.SetText("end");
         list.Add(c2, BubbleStyle.Circle, () => Color.White);
 
-        // Width 10: child chrome = 5 → child content width = 5.
-        // "abcdefghij" at width 5 → hard break: "abcde" + "fghij".
-        var rows = list.Render(10);
+        // Width 9: nest chrome = 3, child chrome = 5 → nested content width = 1.
+        // "ab" at width 1 → hard break: "a" + "b".
+        var rows = list.Render(9);
 
-        // Row 0: ❯ msg
-        // Row 1: ├─ ● abcde (non-last child, first row)
-        Assert.Equal('├', RuneAt(rows[1], 0));
-        // Row 2: │    fghij (non-last child, continuation — │ + 4 spaces)
-        Assert.Equal('│', RuneAt(rows[2], 0));
-        Assert.Equal(' ', RuneAt(rows[2], 1));
-        Assert.Equal(' ', RuneAt(rows[2], 2));
-        Assert.Equal(' ', RuneAt(rows[2], 3));
+        // Row 0: └─ ● msg (user, last top-level)
+        Assert.Equal('└', RuneAt(rows[0], 0));
+        // Row 1: `   ├─ ● a` (nested non-last child, 3-space nest + ├─ ● + content)
+        Assert.Equal(' ', RuneAt(rows[1], 0)); // nest prefix (last parent → spaces)
+        Assert.Equal('├', RuneAt(rows[1], 3));
+        // Row 2: `   │    b` (nested non-last continuation: 3-space nest + │ + 4 spaces)
+        Assert.Equal(' ', RuneAt(rows[2], 0));
+        Assert.Equal('│', RuneAt(rows[2], 3));
         Assert.Equal(' ', RuneAt(rows[2], 4));
-        // Row 3: └─ ● end (last child)
-        Assert.Equal('└', RuneAt(rows[3], 0));
+        Assert.Equal(' ', RuneAt(rows[2], 5));
+        Assert.Equal(' ', RuneAt(rows[2], 6));
+        Assert.Equal(' ', RuneAt(rows[2], 7));
+        // Row 3: `   └─ ● end` (nested last child)
+        Assert.Equal('└', RuneAt(rows[3], 3));
     }
 
     [Fact]
-    public void Render_ChildContinuation_SpacesForLastChild()
+    public void Render_NestedChildContinuation_SpacesForLastChild()
     {
-        // When the last child's content wraps, continuation rows use 5 spaces
-        // (no vertical bar) since there are no more siblings below.
+        // When the last nested child wraps, continuation rows use
+        // nest prefix + 5 spaces (no │) since no more siblings below.
         var list = new EventList();
         var user = new TextRenderable();
         user.SetText("msg");
         list.Add(user);
 
         var child = new TextRenderable();
-        child.SetText("abcdefghij"); // will wrap
+        child.SetText("ab"); // will wrap at narrow width
         list.Add(child, BubbleStyle.Circle, () => Color.White);
 
-        // Width 10: child content = 5. "abcdefghij" → "abcde" + "fghij".
-        var rows = list.Render(10);
+        // Width 9: nested content width = 9 - 3 - 5 = 1. "ab" → "a" + "b".
+        var rows = list.Render(9);
 
-        // Row 1: └─ ● abcde (last child, first row)
-        Assert.Equal('└', RuneAt(rows[1], 0));
-        // Row 2: continuation — 5 spaces (no │)
+        // Row 0: └─ ● msg (user, last top-level)
+        // Row 1: `   └─ ● a` (nested last child, 3-space nest + └─ ●)
+        Assert.Equal('└', RuneAt(rows[1], 3));
+        // Row 2: continuation — 3-space nest + 5 spaces (no │)
         Assert.Equal(' ', RuneAt(rows[2], 0));
         Assert.Equal(' ', RuneAt(rows[2], 1));
         Assert.Equal(' ', RuneAt(rows[2], 2));
         Assert.Equal(' ', RuneAt(rows[2], 3));
         Assert.Equal(' ', RuneAt(rows[2], 4));
+        Assert.Equal(' ', RuneAt(rows[2], 5));
+        Assert.Equal(' ', RuneAt(rows[2], 6));
+        Assert.Equal(' ', RuneAt(rows[2], 7));
     }
 
     [Fact]
-    public void Render_TwoGroups_NoBlankRowBetweenThem()
+    public void Render_TwoGroups_ContinuousTree()
     {
-        // Two User groups rendered consecutively with no blank separator.
+        // Two User groups form one continuous tree. First user gets ├─ (non-last),
+        // second user gets └─ (last). Each user's nested child is indented.
         var list = new EventList();
 
         var user1 = new TextRenderable();
@@ -630,20 +668,27 @@ public sealed class EventListTests
         list.Add(c2, BubbleStyle.Circle, () => Color.White);
 
         var rows = list.Render(40);
-        // Group 1: user + child = 2 rows. Group 2: user + child = 2 rows. No separator.
+        // Group 1: user + nested child = 2. Group 2: user + nested child = 2. Total: 4.
         Assert.Equal(4, rows.Count);
-        // Row 0: ❯ first, Row 1: └─ ● tool1, Row 2: ❯ second, Row 3: └─ ● tool2
-        Assert.Equal('❯', RuneAt(rows[0], 0));
-        Assert.Equal('└', RuneAt(rows[1], 0));
-        Assert.Equal('❯', RuneAt(rows[2], 0));
-        Assert.Equal('└', RuneAt(rows[3], 0));
+        // Row 0: ├─ ● first (non-last top-level, blue circle)
+        Assert.Equal('├', RuneAt(rows[0], 0));
+        Assert.Equal(Color.Blue, rows[0].Cells[3].Foreground);
+        // Row 1: │  └─ ● tool1 (nested under non-last parent → │ prefix)
+        Assert.Equal('│', RuneAt(rows[1], 0));
+        Assert.Equal('└', RuneAt(rows[1], 3));
+        // Row 2: └─ ● second (last top-level, blue circle)
+        Assert.Equal('└', RuneAt(rows[2], 0));
+        Assert.Equal(Color.Blue, rows[2].Cells[3].Foreground);
+        // Row 3:    └─ ● tool2 (nested under last parent → space prefix)
+        Assert.Equal(' ', RuneAt(rows[3], 0));
+        Assert.Equal('└', RuneAt(rows[3], 3));
     }
 
     [Fact]
     public void Render_OrphanGroup_CircleChildrenWithNoRoot()
     {
-        // Items before the first User form an orphan group — rendered as Circle children
-        // with ├─/└─ connectors but no ❯ root row above them.
+        // Items before the first User form an orphan group — rendered as top-level
+        // Circle children with ├─/└─ connectors but no parent above them.
         var list = new EventList();
         var orphan = new TextRenderable();
         orphan.SetText("welcome");
@@ -651,16 +696,17 @@ public sealed class EventListTests
 
         var rows = list.Render(40);
         Assert.Single(rows);
-        // The orphan is the sole (and last) child: └─ ● welcome
+        // The orphan is the sole (and last) top-level child: └─ ● welcome
         Assert.Equal('└', RuneAt(rows[0], 0));
         Assert.Equal('─', RuneAt(rows[0], 1));
         Assert.Equal('●', RuneAt(rows[0], 3));
     }
 
     [Fact]
-    public void Render_OrphanGroupFollowedByUserGroup_NoBlankSeparator()
+    public void Render_OrphanGroupFollowedByUserGroup_ContinuousTree()
     {
-        // Orphan group + User group: rendered consecutively with no separator.
+        // Orphan group + User group: both are top-level siblings in one tree.
+        // Orphan gets ├─ (non-last), User gets └─ (last).
         var list = new EventList();
 
         var orphan = new TextRenderable();
@@ -672,10 +718,12 @@ public sealed class EventListTests
         list.Add(user);
 
         var rows = list.Render(40);
-        // Orphan: 1 row. User: 1 row. Total: 2 (no blank separator).
         Assert.Equal(2, rows.Count);
-        Assert.Equal('└', RuneAt(rows[0], 0)); // orphan tree child
-        Assert.Equal('❯', RuneAt(rows[1], 0)); // user root
+        // Row 0: orphan — ├─ ● (non-last, since user follows)
+        Assert.Equal('├', RuneAt(rows[0], 0));
+        // Row 1: user — └─ ● (last top-level, blue circle)
+        Assert.Equal('└', RuneAt(rows[1], 0));
+        Assert.Equal(Color.Blue, rows[1].Cells[3].Foreground);
     }
 
     [Fact]
@@ -697,6 +745,7 @@ public sealed class EventListTests
     public void Render_PlainFollowedByUserGroup_NoSeparator()
     {
         // Plain item followed by a User group — no blank separator between them.
+        // User renders as └─ ● (last top-level), child is nested underneath.
         var list = new EventList();
 
         var plain = new TextRenderable();
@@ -712,17 +761,20 @@ public sealed class EventListTests
         list.Add(child, BubbleStyle.Circle, () => Color.White);
 
         var rows = list.Render(40);
-        // Plain: 1 row. User: 1 row. Child: 1 row. Total: 3 (no separators).
+        // Plain: 1 row. User: 1 row. Nested child: 1 row. Total: 3.
         Assert.Equal(3, rows.Count);
-        Assert.Equal('S', RuneAt(rows[0], 0)); // plain text
-        Assert.Equal('❯', RuneAt(rows[1], 0)); // user root
-        Assert.Equal('└', RuneAt(rows[2], 0)); // child
+        Assert.Equal('S', RuneAt(rows[0], 0)); // plain text verbatim
+        Assert.Equal('└', RuneAt(rows[1], 0)); // user as last top-level circle
+        Assert.Equal(Color.Blue, rows[1].Cells[3].Foreground);
+        Assert.Equal(' ', RuneAt(rows[2], 0)); // nested child (last parent → spaces)
+        Assert.Equal('└', RuneAt(rows[2], 3)); // nested └─ ●
     }
 
     [Fact]
     public void Render_CircleColor_PassedThroughToGlyph()
     {
-        // The circle color from getCircleColor appears on the ● glyph cell.
+        // The circle color from getCircleColor appears on the nested ● glyph cell.
+        // Nested child ● is at col 6 (NestChrome 3 + child col 3 = 6).
         var list  = new EventList();
         var user  = new TextRenderable();
         user.SetText("msg");
@@ -733,8 +785,7 @@ public sealed class EventListTests
         list.Add(child, BubbleStyle.Circle, () => Color.Red);
 
         var rows = list.Render(40);
-        // The ● glyph is at col 3 of the child row.
-        var circleCell = rows[1].Cells[3];
+        var circleCell = rows[1].Cells[6];
         Assert.Equal('●', circleCell.Rune);
         Assert.Equal(Color.Red, circleCell.Foreground);
     }
@@ -742,7 +793,7 @@ public sealed class EventListTests
     [Fact]
     public void Render_CircleColorDefault_UsesWhite()
     {
-        // When no getCircleColor is provided, the ● glyph defaults to white.
+        // When no getCircleColor is provided, the nested ● glyph defaults to white.
         var list  = new EventList();
         var user  = new TextRenderable();
         user.SetText("msg");
@@ -753,15 +804,15 @@ public sealed class EventListTests
         list.Add(child, BubbleStyle.Circle);
 
         var rows = list.Render(40);
-        var circleCell = rows[1].Cells[3];
+        var circleCell = rows[1].Cells[6];
         Assert.Equal('●', circleCell.Rune);
         Assert.Equal(Color.White, circleCell.Foreground);
     }
 
     [Fact]
-    public void Render_NoBlankSeparatorBetweenSiblingsInGroup()
+    public void Render_NoBlankSeparatorBetweenNestedSiblings()
     {
-        // Within a single tree group, children are rendered consecutively
+        // Within a single tree group, nested children are rendered consecutively
         // with no blank rows between them.
         var list = new EventList();
         var user = new TextRenderable();
@@ -777,7 +828,7 @@ public sealed class EventListTests
         list.Add(c2, BubbleStyle.Circle, () => Color.White);
 
         var rows = list.Render(40);
-        // 1 root + 2 children = 3 rows, none empty.
+        // 1 user + 2 nested children = 3 rows, none empty.
         Assert.Equal(3, rows.Count);
         Assert.All(rows, row => Assert.NotEmpty(row.Cells));
     }
@@ -807,5 +858,224 @@ public sealed class EventListTests
         child.Append("new content");
 
         Assert.True(fired);
+    }
+
+    [Fact]
+    public void Render_UserCircleBlue_DoesNotAffectOrphanColor()
+    {
+        // The blue circle is specific to User items — orphan Circles retain
+        // their own color. Verify an orphan followed by a User each has the
+        // correct circle color.
+        var list = new EventList();
+        var orphan = new TextRenderable();
+        orphan.SetText("welcome");
+        list.Add(orphan, BubbleStyle.Circle, () => Color.BrightBlack);
+
+        var user = new TextRenderable();
+        user.SetText("hello");
+        list.Add(user);
+
+        var rows = list.Render(40);
+        Assert.Equal(2, rows.Count);
+        // Orphan circle at col 3: BrightBlack
+        Assert.Equal('●', RuneAt(rows[0], 3));
+        Assert.Equal(Color.BrightBlack, rows[0].Cells[3].Foreground);
+        // User circle at col 3: Blue
+        Assert.Equal('●', RuneAt(rows[1], 3));
+        Assert.Equal(Color.Blue, rows[1].Cells[3].Foreground);
+    }
+
+    [Fact]
+    public void Render_NestedChild_HasCorrectChrome()
+    {
+        // User + one nested child. Verify nested child row has `└─ ● ` starting
+        // at col 3 (after 3-space nest prefix for last parent). Content at col 8.
+        var list = new EventList();
+        var user = new TextRenderable();
+        user.SetText("msg");
+        list.Add(user);
+
+        var child = new TextRenderable();
+        child.SetText("data");
+        list.Add(child, BubbleStyle.Circle, () => Color.Green);
+
+        var rows = list.Render(40);
+        Assert.Equal(2, rows.Count);
+
+        // Nested child row: `   └─ ● data`
+        var nested = rows[1];
+        Assert.Equal(' ', RuneAt(nested, 0)); // nest prefix col 0
+        Assert.Equal(' ', RuneAt(nested, 1)); // nest prefix col 1
+        Assert.Equal(' ', RuneAt(nested, 2)); // nest prefix col 2
+        Assert.Equal('└', RuneAt(nested, 3)); // child branch
+        Assert.Equal('─', RuneAt(nested, 4));
+        Assert.Equal(' ', RuneAt(nested, 5));
+        Assert.Equal('●', RuneAt(nested, 6)); // circle glyph
+        Assert.Equal(Color.Green, nested.Cells[6].Foreground);
+        Assert.Equal(' ', RuneAt(nested, 7));
+        Assert.Equal('d', RuneAt(nested, 8)); // content starts at col 8
+    }
+
+    [Fact]
+    public void Render_NestedChildContinuation_NonLastNestedHasVerticalBar()
+    {
+        // User + two nested children, first child wraps. Verify the continuation
+        // row has nest prefix `│  ` + child continuation `│    ` = 8 cols for a
+        // non-last nested child under a non-last parent.
+        var list = new EventList();
+        var user1 = new TextRenderable();
+        user1.SetText("u1");
+        list.Add(user1);
+
+        var c1 = new TextRenderable();
+        c1.SetText("ab"); // will wrap at 1-char content width
+        list.Add(c1, BubbleStyle.Circle, () => Color.White);
+
+        var c2 = new TextRenderable();
+        c2.SetText("z");
+        list.Add(c2, BubbleStyle.Circle, () => Color.White);
+
+        // Add second user so first user is non-last (gets │ nest prefix).
+        var user2 = new TextRenderable();
+        user2.SetText("u2");
+        list.Add(user2);
+
+        // Width 9: nested content = 9 - 3 - 5 = 1. "ab" → "a" + "b".
+        var rows = list.Render(9);
+
+        // Row 0: ├─ ● u1 (non-last user)
+        Assert.Equal('├', RuneAt(rows[0], 0));
+        // Row 1: │  ├─ ● a (non-last nested child under non-last parent)
+        Assert.Equal('│', RuneAt(rows[1], 0)); // nest prefix │
+        Assert.Equal('├', RuneAt(rows[1], 3)); // non-last child
+        // Row 2: │  │    b (continuation: nest │ + child │ + 4 spaces)
+        Assert.Equal('│', RuneAt(rows[2], 0)); // nest prefix │
+        Assert.Equal('│', RuneAt(rows[2], 3)); // child continuation │
+        Assert.Equal(' ', RuneAt(rows[2], 4));
+        Assert.Equal(' ', RuneAt(rows[2], 5));
+        Assert.Equal(' ', RuneAt(rows[2], 6));
+        Assert.Equal(' ', RuneAt(rows[2], 7));
+        // Row 3: │  └─ ● z (last nested child under non-last parent)
+        Assert.Equal('│', RuneAt(rows[3], 0));
+        Assert.Equal('└', RuneAt(rows[3], 3));
+    }
+
+    [Fact]
+    public void Render_NestedChildContinuation_LastNestedHasSpaces()
+    {
+        // User + one nested child that wraps. Verify the continuation row has
+        // 8 spaces (3-space nest for last parent + 5-space last-child continuation).
+        var list = new EventList();
+        var user = new TextRenderable();
+        user.SetText("msg");
+        list.Add(user);
+
+        var child = new TextRenderable();
+        child.SetText("ab"); // will wrap
+        list.Add(child, BubbleStyle.Circle, () => Color.White);
+
+        // Width 9: nested content = 1. "ab" → "a" + "b".
+        var rows = list.Render(9);
+
+        // Row 0: └─ ● msg (last top-level)
+        // Row 1: `   └─ ● a` (last nested under last parent)
+        Assert.Equal('└', RuneAt(rows[1], 3));
+        // Row 2: continuation — 3-space nest + 5-space last-child = 8 spaces
+        for (var col = 0; col < 8; col++)
+            Assert.Equal(' ', RuneAt(rows[2], col));
+    }
+
+    [Fact]
+    public void Render_NonLastUserNoChildren_ContinuationShowsVerticalBar()
+    {
+        // A non-last User with no nested children still shows │ on continuation
+        // rows, because the trunk must continue to the sibling below.
+        var list = new EventList();
+        var user1 = new TextRenderable();
+        user1.SetText("hello world"); // will wrap
+        list.Add(user1);
+
+        var user2 = new TextRenderable();
+        user2.SetText("bye");
+        list.Add(user2);
+
+        // Width 11: child chrome = 5 → content width = 6. "hello world" wraps.
+        var rows = list.Render(11);
+
+        // Row 0: ├─ ● hello (non-last, no nested children)
+        Assert.Equal('├', RuneAt(rows[0], 0));
+        // Row 1: │    world (continuation — │ because sibling follows, not nested children)
+        Assert.Equal('│', RuneAt(rows[1], 0));
+        Assert.Equal(' ', RuneAt(rows[1], 1));
+        // Row 2: └─ ● bye (last top-level)
+        Assert.Equal('└', RuneAt(rows[2], 0));
+    }
+
+    [Fact]
+    public void Render_TrailingPlainAfterUser_UserIsStillLastTopLevel()
+    {
+        // Plain items don't count as top-level tree nodes. A User followed by
+        // a trailing Plain should still be the last top-level (gets └─).
+        var list = new EventList();
+        var user = new TextRenderable();
+        user.SetText("msg");
+        list.Add(user);
+
+        var plain = new TextRenderable();
+        plain.SetText("footer");
+        list.Add(plain, BubbleStyle.Plain);
+
+        var rows = list.Render(40);
+        Assert.Equal(2, rows.Count);
+        // Row 0: └─ ● msg (user is last top-level)
+        Assert.Equal('└', RuneAt(rows[0], 0));
+        // Row 1: footer (plain, verbatim)
+        Assert.Equal('f', RuneAt(rows[1], 0));
+    }
+
+    [Fact]
+    public void Render_TwoUsers_ContinuousTreeWithNestedChildren()
+    {
+        // Two users each with children. Verify the entire output forms one
+        // continuous tree: first user ├─ ● (col 0), its children nested with
+        // │ prefix; second user └─ ● (col 0), its children nested with spaces.
+        var list = new EventList();
+
+        var user1 = new TextRenderable();
+        user1.SetText("first");
+        list.Add(user1);
+        var c1A = new TextRenderable();
+        c1A.SetText("tool1");
+        list.Add(c1A, BubbleStyle.Circle, () => Color.Yellow);
+        var c1B = new TextRenderable();
+        c1B.SetText("resp1");
+        list.Add(c1B, BubbleStyle.Circle, () => Color.White);
+
+        var user2 = new TextRenderable();
+        user2.SetText("second");
+        list.Add(user2);
+        var c2 = new TextRenderable();
+        c2.SetText("resp2");
+        list.Add(c2, BubbleStyle.Circle, () => Color.Green);
+
+        var rows = list.Render(40);
+        // user1 + 2 nested + user2 + 1 nested = 5 rows
+        Assert.Equal(5, rows.Count);
+
+        // Row 0: ├─ ● first (non-last top-level)
+        Assert.Equal('├', RuneAt(rows[0], 0));
+        Assert.Equal(Color.Blue, rows[0].Cells[3].Foreground);
+        // Row 1: │  ├─ ● tool1 (nested non-last under non-last parent)
+        Assert.Equal('│', RuneAt(rows[1], 0));
+        Assert.Equal('├', RuneAt(rows[1], 3));
+        // Row 2: │  └─ ● resp1 (nested last under non-last parent)
+        Assert.Equal('│', RuneAt(rows[2], 0));
+        Assert.Equal('└', RuneAt(rows[2], 3));
+        // Row 3: └─ ● second (last top-level)
+        Assert.Equal('└', RuneAt(rows[3], 0));
+        Assert.Equal(Color.Blue, rows[3].Cells[3].Foreground);
+        // Row 4:    └─ ● resp2 (nested last under last parent)
+        Assert.Equal(' ', RuneAt(rows[4], 0));
+        Assert.Equal('└', RuneAt(rows[4], 3));
     }
 }

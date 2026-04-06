@@ -2,16 +2,16 @@ namespace Ur.Tui.Rendering;
 
 /// <summary>
 /// Visual style for a tree node in the conversation.
-/// <see cref="User"/> items are tree roots (❯ prefix);
-/// <see cref="Circle"/> items are tree children (● glyph prefix);
+/// <see cref="User"/> items are top-level Circle children (blue ● prefix);
+/// <see cref="Circle"/> items are nested tree children (● glyph prefix);
 /// <see cref="Plain"/> items render as verbatim text with no chrome.
 /// </summary>
 internal enum BubbleStyle
 {
     /// <summary>
-    /// User messages: tree root with ❯ glyph. Starts a new tree group in
-    /// <see cref="EventList"/>. All subsequent Circle items become children
-    /// of this root until the next User item.
+    /// User messages: top-level Circle child with a blue ● glyph. Starts a
+    /// new tree group in <see cref="EventList"/>. All subsequent Circle items
+    /// become nested children underneath this item until the next User item.
     /// </summary>
     User,
     /// <summary>
@@ -33,21 +33,25 @@ internal enum BubbleStyle
 /// The root container for the conversation. Every visible element — assistant
 /// messages, user messages, tool calls, subagent blocks — is a child of this list.
 ///
-/// The conversation is rendered as a tree where <see cref="BubbleStyle.User"/>
-/// items are roots and all <see cref="BubbleStyle.Circle"/> items are children.
-/// Tree-drawing characters (├─, └─, │) connect siblings and parents.
+/// The conversation is rendered as a single continuous tree hanging off the session
+/// banner. <see cref="BubbleStyle.User"/> items are top-level Circle children (blue ●)
+/// and their <see cref="BubbleStyle.Circle"/> items are nested one level deeper.
+/// Tree-drawing characters (├─, └─, │) connect siblings and parents at both levels.
 ///
 /// Target visual:
 ///
-///   ❯ User message
-///   │ Continuation wraps here.
-///   ├─ ● tool_call(arg: "value")
-///   ├─ ● Assistant response text
-///   │    wraps like this.
-///   └─ ● Another assistant message.
+///   Session: 20260406-185135-171
+///   ├─ ● User message
+///   │    Continuation wraps here.
+///   │  ├─ ● tool_call(arg: "value")
+///   │  ├─ ● Assistant response text
+///   │  │    wraps like this.
+///   │  └─ ● Another assistant message.
+///   └─ ● Second user message
+///      └─ ● Response
 ///
-/// Items before the first User form an "orphan" group rendered as children
-/// with no root (e.g., the welcome message). One blank row separates groups.
+/// Items before the first User form an "orphan" group rendered as top-level
+/// children with no parent (e.g., the welcome message).
 ///
 /// The viewport renders the EventList to get the full set of rows, then displays
 /// the tail that fits on screen. Adding a child or mutating any existing child
@@ -58,9 +62,6 @@ internal sealed class EventList : IRenderable
     // ● U+25CF BLACK CIRCLE — status indicator for Circle-style child nodes.
     private const char CircleChar = '●';
 
-    // ❯ U+276F HEAVY RIGHT-POINTING ANGLE QUOTATION MARK — user message root.
-    private const char PromptChar = '❯';
-
     // Tree-drawing box characters used to connect parent and child nodes.
     private const char BranchChar     = '├'; // U+251C — non-last child branch
     private const char LastBranchChar = '└'; // U+2514 — last child branch
@@ -70,11 +71,13 @@ internal sealed class EventList : IRenderable
     // Chrome widths measured in columns. Content width = availableWidth - chrome.
     // No right-pad or right-margin — tree mode has no background fill.
 
-    // Root chrome: `❯ ` or `│ ` — prompt/vertical char + space.
-    private const int RootChrome = 2;
-
     // Child chrome: `├─ ● ` or `└─ ● ` — branch + horizontal + space + circle + space.
     private const int ChildChrome = 5;
+
+    // Nesting chrome: `│  ` or `   ` — the 3-column prefix prepended to nested children
+    // (level-2 items under a User). The nested child's `├`/`└` aligns directly under
+    // the parent User's `●` at column 3.
+    private const int NestChrome = 3;
 
     // Each child is stored with its style and an optional circle-color supplier.
     // The Func<Color>? is only consulted for BubbleStyle.Circle entries; for User
@@ -112,11 +115,17 @@ internal sealed class EventList : IRenderable
         var rows = new List<CellRow>();
 
         // Walk through _children, partitioning into tree groups at render time.
-        // Each User item starts a new group and becomes the root; Circle items
-        // following it are its children. Plain items render verbatim wherever they
-        // appear. Circle items before the first User form an "orphan" group with
-        // tree connectors but no root. Groups are rendered consecutively with no
-        // blank separators between them.
+        // Each User item starts a new group; Circle items following it are nested
+        // children. Plain items render verbatim. Circle items before the first User
+        // form an "orphan" group rendered as top-level children. The entire
+        // conversation forms one continuous tree — no blank separators between groups.
+
+        // Pre-compute the index of the last top-level tree item (User or orphan Circle
+        // that starts a group). This determines which item gets └─ vs ├─ at the
+        // outermost level. We scan backwards: the last User wins; if there are no
+        // Users, the last orphan Circle wins.
+        var lastTopLevelIndex = FindLastTopLevelIndex();
+
         var i = 0;
         while (i < _children.Count)
         {
@@ -128,34 +137,40 @@ internal sealed class EventList : IRenderable
             }
             else if (_children[i].Style == BubbleStyle.User)
             {
-                // Root group: User root followed by zero or more Circle children.
-                var rootIndex = i;
+                // User group: user as a top-level Circle child (blue ●), followed
+                // by zero or more nested Circle children indented one level deeper.
+                var userIndex = i;
                 var childStart = i + 1;
 
-                // Scan ahead to find the end of this group (next User/Plain or end of list).
+                // Scan ahead to find the end of this group (next User/Plain or end).
                 var childEnd = childStart;
                 while (childEnd < _children.Count && _children[childEnd].Style == BubbleStyle.Circle)
                     childEnd++;
 
-                var hasChildren = childEnd > childStart;
-                RenderRoot(rows, rootIndex, hasChildren, availableWidth);
+                var isLastTopLevel = userIndex == lastTopLevelIndex;
+                var hasNestedChildren = childEnd > childStart;
+                RenderUserItem(rows, userIndex, isLastTopLevel, hasNestedChildren, availableWidth);
 
                 for (var ci = childStart; ci < childEnd; ci++)
-                    RenderChild(rows, ci, isLast: ci == childEnd - 1, availableWidth);
+                    RenderNestedChild(rows, ci, isLastNested: ci == childEnd - 1,
+                        isLastParent: isLastTopLevel, availableWidth);
 
                 i = childEnd;
             }
             else
             {
-                // Orphan group: Circle items that appear before the first User item.
-                // Rendered as tree children with ├─/└─ connectors but no root row.
+                // Orphan group: Circle items before the first User. Rendered as
+                // top-level tree children with ├─/└─ connectors.
                 var childStart = i;
                 var childEnd = childStart;
                 while (childEnd < _children.Count && _children[childEnd].Style == BubbleStyle.Circle)
                     childEnd++;
 
                 for (var ci = childStart; ci < childEnd; ci++)
-                    RenderChild(rows, ci, isLast: ci == childEnd - 1, availableWidth);
+                {
+                    var isLast = ci == lastTopLevelIndex;
+                    RenderChild(rows, ci, isLast, availableWidth);
+                }
 
                 i = childEnd;
             }
@@ -165,23 +180,68 @@ internal sealed class EventList : IRenderable
     }
 
     /// <summary>
-    /// Renders a User root item: ❯ prefix on the first row, then │ or blank on
-    /// continuation rows depending on whether the root has children below it.
+    /// Scans backwards to find the index of the last top-level tree item. A User
+    /// item always counts as top-level. Orphan Circle items (before the first User)
+    /// count as top-level only if no User exists after them. Returns -1 if the list
+    /// contains only Plain items (no tree items at all).
     /// </summary>
-    private void RenderRoot(List<CellRow> target, int index, bool hasChildren, int availableWidth)
+    private int FindLastTopLevelIndex()
     {
-        var contentWidth = Math.Max(1, availableWidth - RootChrome);
-        var childRows = _children[index].Child.Render(contentWidth);
+        // A User item is always top-level. If any Users exist, the last one is
+        // the last top-level item (all Circles after a User are nested, not
+        // top-level). If no Users exist, orphan Circles are the only top-level
+        // items and the last one wins. Scan backwards for efficiency.
+        for (var i = _children.Count - 1; i >= 0; i--)
+        {
+            if (_children[i].Style == BubbleStyle.User)
+                return i;
+        }
 
-        for (var ri = 0; ri < childRows.Count; ri++)
-            target.Add(ri == 0
-                ? MakeRootRow(childRows[ri])
-                : MakeRootContinuationRow(childRows[ri], hasChildren));
+        // No Users — find the last Circle (orphan).
+        for (var i = _children.Count - 1; i >= 0; i--)
+        {
+            if (_children[i].Style == BubbleStyle.Circle)
+                return i;
+        }
+
+        // Only Plain items — no tree items at all.
+        return -1;
     }
 
     /// <summary>
-    /// Renders a Circle child item: ├─ ● or └─ ● prefix on the first row,
-    /// then │ + padding or blank padding on continuation rows.
+    /// Renders a User item as a top-level Circle child with a blue ● glyph.
+    /// Content wraps at <c>availableWidth - ChildChrome</c> (same width as any
+    /// other Circle child). Continuation rows use standard child continuation chrome.
+    /// </summary>
+    private void RenderUserItem(List<CellRow> target, int index, bool isLastTopLevel,
+        bool hasNestedChildren, int availableWidth)
+    {
+        var contentWidth = Math.Max(1, availableWidth - ChildChrome);
+        var childRows = _children[index].Child.Render(contentWidth);
+
+        for (var ri = 0; ri < childRows.Count; ri++)
+        {
+            if (ri == 0)
+            {
+                // First row: ├─ ● or └─ ● with a blue circle.
+                target.Add(MakeChildRow(childRows[ri], isLastTopLevel, Color.Blue));
+            }
+            else
+            {
+                // Continuation rows need a │ trunk when something follows below:
+                // either nested children under this user, or sibling items after
+                // it in the top-level tree. Only the last top-level user with no
+                // nested children gets blank continuation (5 spaces).
+                var showVertical = !isLastTopLevel || hasNestedChildren;
+                target.Add(MakeChildContinuationRow(childRows[ri], isLast: !showVertical));
+            }
+        }
+    }
+
+    /// <summary>
+    /// Renders a Circle child item as a top-level tree node: ├─ ● or └─ ● prefix
+    /// on the first row, then │ + padding or blank padding on continuation rows.
+    /// Used for orphan Circles (before the first User).
     /// </summary>
     private void RenderChild(List<CellRow> target, int index, bool isLast, int availableWidth)
     {
@@ -196,6 +256,31 @@ internal sealed class EventList : IRenderable
                 : MakeChildContinuationRow(childRows[ri], isLast));
     }
 
+    /// <summary>
+    /// Renders a Circle item as a nested child (level 2) underneath a User item.
+    /// The inner chrome (├─ ● / └─ ●) is produced by <see cref="MakeChildRow"/>
+    /// and <see cref="MakeChildContinuationRow"/>, then wrapped with a 3-column
+    /// nesting prefix via <see cref="PrependNestPrefix"/>.
+    /// Content width = availableWidth - NestChrome - ChildChrome.
+    /// </summary>
+    private void RenderNestedChild(List<CellRow> target, int index, bool isLastNested,
+        bool isLastParent, int availableWidth)
+    {
+        var (child, _, getCircleColor) = _children[index];
+        var circleColor = getCircleColor?.Invoke() ?? Color.White;
+        var contentWidth = Math.Max(1, availableWidth - NestChrome - ChildChrome);
+        var childRows = child.Render(contentWidth);
+
+        for (var ri = 0; ri < childRows.Count; ri++)
+        {
+            var innerRow = ri == 0
+                ? MakeChildRow(childRows[ri], isLastNested, circleColor)
+                : MakeChildContinuationRow(childRows[ri], isLastNested);
+
+            target.Add(PrependNestPrefix(innerRow, isLastParent));
+        }
+    }
+
     // --- Tree chrome helpers ---
     //
     // Each helper builds a CellRow by prepending the appropriate tree connector
@@ -203,40 +288,26 @@ internal sealed class EventList : IRenderable
     // verbatim — colors and styles are preserved.
 
     /// <summary>
-    /// First row of a tree root: ❯ (white) + space + child content.
+    /// Prepends a 3-column nesting prefix to an existing row. Used to indent nested
+    /// children (level 2) under their parent User item. Non-last parents get `│  `
+    /// (vertical bar + 2 spaces); last parents get `   ` (3 spaces). The vertical
+    /// bar aligns with the parent's `├`/`└` at column 0.
     /// </summary>
-    private static CellRow MakeRootRow(CellRow childRow)
-    {
-        var row = new CellRow();
-        row.Append(PromptChar, Color.White, Color.Default);
-        row.Append(' ', Color.Default, Color.Default);
-
-        foreach (var cell in childRow.Cells)
-            row.Append(cell.Rune, cell.Foreground, cell.Background, cell.Style);
-
-        return row;
-    }
-
-    /// <summary>
-    /// Continuation row of a tree root: │ + space (when children follow, signaling
-    /// the vertical trunk continues) or two spaces (when the root has no children,
-    /// so there's nothing to connect to below).
-    /// </summary>
-    private static CellRow MakeRootContinuationRow(CellRow childRow, bool hasChildren)
+    private static CellRow PrependNestPrefix(CellRow innerRow, bool isLastParent)
     {
         var row = new CellRow();
 
-        if (hasChildren)
+        if (isLastParent)
         {
-            row.Append(VerticalChar, Color.BrightBlack, Color.Default);
-            row.Append(' ', Color.Default, Color.Default);
+            row.Append("   ", Color.Default, Color.Default);
         }
         else
         {
+            row.Append(VerticalChar, Color.BrightBlack, Color.Default);
             row.Append("  ", Color.Default, Color.Default);
         }
 
-        foreach (var cell in childRow.Cells)
+        foreach (var cell in innerRow.Cells)
             row.Append(cell.Rune, cell.Foreground, cell.Background, cell.Style);
 
         return row;
