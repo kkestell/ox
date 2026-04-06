@@ -7,7 +7,7 @@ namespace Ur.Tui.Rendering;
 /// </summary>
 internal enum BubbleStyle
 {
-    /// <summary>User messages: dark-gray background, blue bar.</summary>
+    /// <summary>User messages: dark-gray background, blue bar on black.</summary>
     User,
     /// <summary>System/tool/error messages: black background, invisible (black) bar.</summary>
     System,
@@ -85,44 +85,48 @@ internal sealed class EventList : IRenderable
                 rows.Add(CellRow.Empty);
             first = false;
 
-            var (bg, barFg) = StyleColors(style);
+            var (bg, barFg, barBg) = StyleColors(style);
 
             // Top padding row — full-width colored block with bar gutter, no text.
-            rows.Add(MakePaddingRow(availableWidth, bg, barFg));
+            rows.Add(MakePaddingRow(availableWidth, bg, barFg, barBg));
 
             // Content rows — each child row gets the bar gutter and style background.
             foreach (var childRow in child.Render(contentWidth))
-                rows.Add(MakeContentRow(childRow, availableWidth, bg, barFg));
+                rows.Add(MakeContentRow(childRow, availableWidth, bg, barFg, barBg));
 
             // Bottom padding row — mirrors the top.
-            rows.Add(MakePaddingRow(availableWidth, bg, barFg));
+            rows.Add(MakePaddingRow(availableWidth, bg, barFg, barBg));
         }
 
         return rows;
     }
 
     /// <summary>
-    /// Returns the background and bar-foreground <see cref="Color"/> values for a style.
-    /// System bubbles use a black bar on black bg, making the bar invisible while
-    /// still preserving the same physical layout (the column is occupied but blank).
+    /// Returns the background, bar-foreground, and bar-background <see cref="Color"/> values
+    /// for a style. The bar column always uses <c>barBg</c> so it can differ from the bubble
+    /// body — for user bubbles the body is dark gray while the bar column is black, making
+    /// the colored ▎ glyph pop against the darker strip. System/Assistant bubbles are all
+    /// black so <c>barBg</c> equals <c>bg</c> there.
     /// </summary>
-    private static (Color Bg, Color BarFg) StyleColors(BubbleStyle style) => style switch
+    private static (Color Bg, Color BarFg, Color BarBg) StyleColors(BubbleStyle style) => style switch
     {
-        BubbleStyle.Assistant => (Color.Black,         Color.Yellow),
-        BubbleStyle.System    => (Color.Black,          Color.Black),
-        _                     => (Color.FromIndex(236), Color.Blue),   // User
+        BubbleStyle.Assistant => (Color.Black,          Color.Yellow, Color.Black),
+        BubbleStyle.System    => (Color.Black,          Color.Black,  Color.Black),
+        _                     => (Color.FromIndex(236), Color.Blue,   Color.Black),   // User
     };
 
     /// <summary>
     /// Builds a padding row (top or bottom of a bubble): left-margin, bar glyph,
     /// then space cells filled to the full available width — all in the bubble background.
+    /// The bar glyph cell uses <paramref name="barBg"/> rather than the bubble background
+    /// so the border column can have a distinct (typically black) background.
     /// </summary>
-    private static CellRow MakePaddingRow(int availableWidth, Color bg, Color barFg)
+    private static CellRow MakePaddingRow(int availableWidth, Color bg, Color barFg, Color barBg)
     {
         var row = new CellRow();
-        row.Append(' ',     Color.Default, bg);   // left margin
-        row.Append(BarChar, barFg,         bg);   // bar glyph
-        row.PadRight(availableWidth, bg);          // fill remainder with bubble bg
+        row.Append(' ',     Color.Default, barBg);   // left margin — same bg as bar so the border column is uniform
+        row.Append(BarChar, barFg,         barBg);   // bar glyph
+        row.PadRight(availableWidth, bg);             // fill remainder with bubble bg
         return row;
     }
 
@@ -137,14 +141,15 @@ internal sealed class EventList : IRenderable
     /// was required when renderables produced strings with embedded escape sequences.
     /// </summary>
     private static CellRow MakeContentRow(
-        CellRow childRow, int availableWidth, Color bg, Color barFg)
+        CellRow childRow, int availableWidth, Color bg, Color barFg, Color barBg)
     {
         var row = new CellRow();
 
-        // Left chrome.
-        row.Append(' ',     Color.Default, bg);   // left margin
-        row.Append(BarChar, barFg,         bg);   // bar glyph
-        row.Append(' ',     Color.Default, bg);   // inner left pad
+        // Left chrome: margin and bar share barBg so the border column is a uniform
+        // black strip; inner-left-pad switches to bubble bg to start the content area.
+        row.Append(' ',     Color.Default, barBg);   // left margin — border bg
+        row.Append(BarChar, barFg,         barBg);   // bar glyph — border bg
+        row.Append(' ',     Color.Default, bg);      // inner left pad — content bg
 
         // Child cells: inherit child foreground and style; swap Default background
         // to the bubble background so the bubble fill is seamless even after a child

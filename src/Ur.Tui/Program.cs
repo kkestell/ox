@@ -86,10 +86,10 @@ internal static class Program
             if (string.IsNullOrWhiteSpace(input))
                 continue;
 
-            // Show the user's message in the conversation with a dim style so it
-            // recedes behind the assistant response — same visual hierarchy as before.
-            var userMsg = new TextRenderable(style: CellStyle.Dim);
-            userMsg.SetText($"> {input}");
+            // Show the user's message in the conversation with white text so it
+            // stands out clearly against the black bubble background.
+            var userMsg = new TextRenderable(foreground: Color.White);
+            userMsg.SetText(input);
             eventList.Add(userMsg);
 
             // Switch input row to a running indicator; start the Escape monitor.
@@ -452,9 +452,11 @@ internal static class Program
         {
             switch (evt)
             {
-                case ResponseChunk { Text: var text }:
+                case ResponseChunk { Text: var text } when !string.IsNullOrEmpty(text):
                     // Lazy creation: a new TextRenderable begins each run of response
                     // text (after startup, after each tool call completes).
+                    // Guard on non-empty text so that empty chunks (which the model
+                    // sometimes emits before a tool call) don't produce empty bubbles.
                     if (_currentText is null)
                     {
                         _currentText = new TextRenderable();
@@ -549,7 +551,9 @@ internal static class Program
 
             switch (evt.Inner)
             {
-                case ResponseChunk { Text: var text }:
+                case ResponseChunk { Text: var text } when !string.IsNullOrEmpty(text):
+                    // Same empty-chunk guard as RouteMainEvent — skip creation until
+                    // there is actual text to display.
                     if (!_subagentCurrentText.TryGetValue(subId, out var subText) || subText is null)
                     {
                         subText = new TextRenderable();

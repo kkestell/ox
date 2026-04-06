@@ -5,10 +5,12 @@ namespace Ur.Tui.Rendering;
 /// screen buffer.
 ///
 /// Layout (1-based terminal rows, 0-based buffer rows):
-///   Rows 1 .. (height-3) — conversation viewport (shows the tail of all rows)
-///   Row height-2          — input decoration row (▆ in blue-on-cyan)
-///   Row height-1          — input text row (prompt + user typing on blue bg)
-///   Row height            — input bottom padding row (empty blue)
+///   Rows 1 .. (height-5) — conversation viewport (shows the tail of all rows)
+///   Row height-4          — top margin row (blank/black, separates conversation from input box)
+///   Row height-3          — input decoration row (▆ in blue-on-cyan, inset 1 cell each side)
+///   Row height-2          — input text row (prompt + user typing on blue bg, inset 1 cell each side)
+///   Row height-1          — input bottom padding row (solid blue, inset 1 cell each side)
+///   Row height            — bottom margin row (blank/black)
 ///
 /// Rendering is decoupled from event arrival via a dirty flag. When any renderable
 /// fires <see cref="IRenderable.Changed"/>, we set a flag rather than redrawing
@@ -53,8 +55,9 @@ internal sealed class Viewport : IDisposable
     private static readonly Color InputTextBg = Color.Blue;  // text row and bottom row background
     private const char InputTopChar = '▆'; // U+2586 LOWER THREE QUARTERS BLOCK
 
-    // Number of terminal rows reserved for the input box (decoration + text + bottom pad).
-    private const int InputAreaRows = 3;
+    // Number of terminal rows reserved for the input box:
+    // top margin + decoration + text + bottom padding + bottom margin.
+    private const int InputAreaRows = 5;
 
     public EventList Root => _root;
 
@@ -170,28 +173,40 @@ internal sealed class Viewport : IDisposable
 
             // --- Input box (0-based buffer rows viewportHeight..height-1) ---
 
-            // Decoration row: full-width ▆ glyphs in blue-on-cyan.
+            // Margin row: one blank row separating the conversation from the input box.
+            // Left as Cell.Empty (default colors) so it blends into the terminal background.
+            // viewportHeight + 0 is left blank (no WriteRow call needed).
+
+            // Decoration row: inset by 1 cell on each side so the blue box has black margins.
             // The ▆ character's bottom 3/4 shows the foreground color (blue) and the
             // top 1/4 shows the background (cyan), creating a stepped visual transition
             // into the solid blue text row immediately below.
             var decoRow = new CellRow();
-            decoRow.Append(new string(InputTopChar, width), InputDecoFg, InputDecobg);
-            buffer.WriteRow(viewportHeight, decoRow);
+            decoRow.Append(' ', Color.Default, Color.Default);                      // left margin (black)
+            decoRow.Append(new string(InputTopChar, width - 2), InputDecoFg, InputDecobg); // inset deco
+            decoRow.Append(' ', Color.Default, Color.Default);                      // right margin (black)
+            buffer.WriteRow(viewportHeight + 1, decoRow);
 
-            // Text row: one-cell left margin, prompt text, then a reverse-video cursor cell.
+            // Text row: 1 black margin cell, then blue content inset by 1 on each side.
             // The system cursor is hidden; we paint our own block cursor using CellStyle.Reverse,
             // which swaps fg and bg — producing a light block on the blue background.
             var textRow = new CellRow();
-            textRow.Append(' ', Color.Default, InputTextBg);
+            textRow.Append(' ', Color.Default, Color.Default);                      // left margin (black)
+            textRow.Append(' ', Color.Default, InputTextBg);                        // inner left pad
             textRow.Append(_inputPrompt, Color.Default, InputTextBg);
-            textRow.Append(' ', Color.Default, InputTextBg, CellStyle.Reverse); // block cursor
-            textRow.PadRight(width, InputTextBg);
-            buffer.WriteRow(viewportHeight + 1, textRow);
+            textRow.Append(' ', Color.Default, InputTextBg, CellStyle.Reverse);     // block cursor
+            textRow.PadRight(width - 1, InputTextBg);                               // fill blue to right edge
+            textRow.Append(' ', Color.Default, Color.Default);                      // right margin (black)
+            buffer.WriteRow(viewportHeight + 2, textRow);
 
-            // Bottom padding row: empty blue row that closes the input box visually.
+            // Bottom padding row: solid blue, inset by 1 on each side, closes the box visually.
             var bottomRow = new CellRow();
-            bottomRow.PadRight(width, InputTextBg);
-            buffer.WriteRow(viewportHeight + 2, bottomRow);
+            bottomRow.Append(' ', Color.Default, Color.Default);            // left margin (black)
+            bottomRow.PadRight(width - 1, InputTextBg);                     // solid blue fill
+            bottomRow.Append(' ', Color.Default, Color.Default);            // right margin (black)
+            buffer.WriteRow(viewportHeight + 3, bottomRow);
+
+            // Bottom margin row: left as Cell.Empty (default / black) — symmetric with top margin.
 
             // Flush the completed buffer to the terminal. This is the only call that
             // emits ANSI escape sequences for the entire frame.
