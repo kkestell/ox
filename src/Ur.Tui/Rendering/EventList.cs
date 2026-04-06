@@ -13,6 +13,13 @@ internal enum BubbleStyle
     System,
     /// <summary>Assistant response messages: black background, yellow bar.</summary>
     Assistant,
+    /// <summary>
+    /// No chrome — child rows are emitted verbatim with no bar glyph, no padding rows,
+    /// and no background fill. The blank-row separator between bubbles is still emitted.
+    /// Used for containers like <see cref="SubagentRenderable"/> that supply their own
+    /// bordered frame and must not receive double-indentation from the outer EventList.
+    /// </summary>
+    None
 }
 
 /// <summary>
@@ -85,14 +92,23 @@ internal sealed class EventList : IRenderable
                 rows.Add(CellRow.Empty);
             first = false;
 
+            if (style == BubbleStyle.None)
+            {
+                // No chrome — pass child rows through verbatim at the full available width.
+                // The child (e.g. SubagentRenderable) is responsible for its own framing
+                // and indentation; applying bubble chrome here would double-indent it.
+                rows.AddRange(child.Render(availableWidth));
+                continue;
+            }
+
             var (bg, barFg, barBg) = StyleColors(style);
 
             // Top padding row — full-width colored block with bar gutter, no text.
             rows.Add(MakePaddingRow(availableWidth, bg, barFg, barBg));
 
             // Content rows — each child row gets the bar gutter and style background.
-            foreach (var childRow in child.Render(contentWidth))
-                rows.Add(MakeContentRow(childRow, availableWidth, bg, barFg, barBg));
+            rows.AddRange(child.Render(contentWidth)
+                .Select(r => MakeContentRow(r, availableWidth, bg, barFg, barBg)));
 
             // Bottom padding row — mirrors the top.
             rows.Add(MakePaddingRow(availableWidth, bg, barFg, barBg));
@@ -112,7 +128,7 @@ internal sealed class EventList : IRenderable
     {
         BubbleStyle.Assistant => (Color.Black,          Color.Yellow, Color.Black),
         BubbleStyle.System    => (Color.Black,          Color.Black,  Color.Black),
-        _                     => (Color.FromIndex(236), Color.Blue,   Color.Black),   // User
+        _                     => (Color.FromIndex(236), Color.Blue,   Color.Black)    // User
     };
 
     /// <summary>

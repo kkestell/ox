@@ -2,52 +2,74 @@ namespace Ur.Tui.Rendering;
 
 /// <summary>
 /// Groups all rendering output from a single subagent run into a visually
-/// bounded block. Emits a header row before the children and an optional footer
-/// row once the run completes.
+/// bounded box. Renders as a bordered, indented, tail-clipped EventList nested
+/// inside the outer conversation EventList — the same bubble-chrome rendering
+/// applies inside the subagent box as in the outer conversation.
 ///
-/// Like <see cref="EventList"/>, a SubagentRenderable is a container: it holds
-/// its own sequence of child renderables (the subagent's text, tools, etc.) and
-/// propagates their <see cref="IRenderable.Changed"/> events upward.
+/// Structure (one subagent box):
 ///
-/// Indentation is applied here as prepended space cells on each child row.
-/// Children are unaware of the indent — they render at their own content width
-/// (availableWidth minus indent size) and SubagentRenderable wraps each row.
+///   [indent]─── subagent {id} ──────────────────────  ← header
+///   [indent]▎   assistant text                         ← inner EventList rows
+///   [indent]▎   tool_call(…) → ok                      ←   (clipped to MaxInnerRows)
+///   [indent]─────────────────────────────────────────  ← footer (always present)
+///
+/// The header and footer are structural — they appear regardless of completion
+/// state. <see cref="SetCompleted"/> exists for the defensive-finalization
+/// contract and may be used for future polish (e.g. dimming the header).
+///
+/// This mirrors the Viewport → EventList relationship one level deeper:
+/// Viewport tail-clips the outer EventList; SubagentRenderable tail-clips
+/// its inner EventList. Same pattern, one nesting level lower.
 /// </summary>
 internal sealed class SubagentRenderable : IRenderable
 {
-    // Number of space cells prepended to each child row to create visual nesting.
-    private const int IndentWidth = 2;
+    // Space cells prepended to each inner row for visual nesting.
+    private const int IndentWidth = 0;
 
-    private readonly List<IRenderable> _children = [];
+    // Maximum number of inner rows shown between header and footer.
+    // Older rows scroll off visually once this limit is reached — same
+    // tail-clip logic as Viewport.Redraw().
+    private const int MaxInnerRows = 20;
+
+    // ─ U+2500 BOX DRAWINGS LIGHT HORIZONTAL — used for header/footer rules.
+    private const char RuleChar = '─';
+
+    // The inner EventList handles bubble chrome for the subagent's children.
+    // This is private — EventRouter interacts only through AddChild().
+    private readonly EventList _innerList = new();
+
     private bool _completed;
 
-    public string SubagentId { get; }
+    private string SubagentId { get; }
 
     public event Action? Changed;
 
     public SubagentRenderable(string subagentId)
     {
         SubagentId = subagentId;
+        // Forward inner list changes upward so the viewport redraws when
+        // any subagent child is added or mutated.
+        _innerList.Changed += () => Changed?.Invoke();
     }
 
     /// <summary>
-    /// Appends a child renderable (text block, tool call, etc.) to this subagent's
-    /// output and subscribes to its <see cref="IRenderable.Changed"/> event so that
-    /// any update from the subagent bubbles up to the viewport.
+    /// Appends a child renderable to the inner EventList with the given bubble style.
+    /// The style determines what chrome (bar color, background) the child gets inside
+    /// the subagent box — same styles as the outer conversation.
     /// </summary>
-    public void AddChild(IRenderable child)
+    public void AddChild(IRenderable child, BubbleStyle style)
     {
-        _children.Add(child);
-        // Propagate child changes upward — the viewport only subscribes to the
-        // root EventList's Changed event, so changes must bubble all the way up.
-        child.Changed += () => Changed?.Invoke();
-        Changed?.Invoke();
+        // Delegate to the inner EventList; it subscribes to child.Changed and
+        // fires its own Changed, which propagates to us via the constructor subscription.
+        _innerList.Add(child, style);
     }
 
     /// <summary>
-    /// Marks the subagent run as complete and adds a footer row to bound the block.
-    /// Idempotent — safe to call multiple times (e.g. via both SubagentEvent and
-    /// the parent ToolCallCompleted handler as a defensive fallback).
+    /// Marks the subagent run as complete. The footer is structural (always rendered),
+    /// so this method no longer controls row presence. It exists to fulfill the
+    /// defensive-finalization contract — ToolCallCompleted calls it as a fallback
+    /// in case TurnCompleted is not emitted — and may be used for future visual
+    /// polish (e.g. dimming the subagent ID in the header).
     /// </summary>
     public void SetCompleted()
     {
@@ -61,29 +83,64 @@ internal sealed class SubagentRenderable : IRenderable
     {
         var rows = new List<CellRow>();
 
-        // Header row — visually opens the subagent block.
-        rows.Add(CellRow.FromText($"--- subagent {SubagentId} ---", Color.BrightBlack, Color.Default));
+        // Inner list renders at a narrower width to leave room for the indent.
+        var innerWidth = Math.Max(1, availableWidth - IndentWidth);
+        var innerRows  = _innerList.Render(innerWidth);
 
-        // Render each child with an IndentWidth-space prefix. Reduce availableWidth to
-        // account for the indent so children still word-wrap correctly.
-        var childWidth = Math.Max(1, availableWidth - IndentWidth);
-        foreach (var child in _children)
-        {
-            foreach (var childRow in child.Render(childWidth))
-            {
-                // Build a new row with the indent cells prepended to the child's cells.
-                var indented = new CellRow();
-                indented.Append(new string(' ', IndentWidth), Color.Default, Color.Default);
-                foreach (var cell in childRow.Cells)
-                    indented.Append(cell.Rune, cell.Foreground, cell.Background, cell.Style);
-                rows.Add(indented);
-            }
-        }
+        // Tail-clip to MaxInnerRows — mirrors Viewport.Redraw()'s startIndex logic.
+        var startIndex = Math.Max(0, innerRows.Count - MaxInnerRows);
 
-        // Footer appears once the subagent run is complete.
-        if (_completed)
-            rows.Add(CellRow.FromText("--- subagent complete ---", Color.BrightBlack, Color.Default));
+        rows.Add(MakeHeaderRow(availableWidth));
+
+        for (var i = startIndex; i < innerRows.Count; i++)
+            rows.Add(IndentRow(innerRows[i]));
+
+        rows.Add(MakeFooterRow(availableWidth));
 
         return rows;
+    }
+
+    /// <summary>
+    /// Builds the header: [indent spaces] + "─── subagent {id} " + [─ fill to edge].
+    /// The rule fills the full available width so the border is always terminal-wide.
+    /// </summary>
+    private CellRow MakeHeaderRow(int availableWidth)
+    {
+        var label     = $"─── subagent {SubagentId} ";
+        var fillCount = Math.Max(0, availableWidth - IndentWidth - label.Length);
+        var line      = label + new string(RuleChar, fillCount);
+
+        var row = new CellRow();
+        row.Append(new string(' ', IndentWidth), Color.Default,      Color.Default);
+        row.Append(line,                          Color.BrightBlack, Color.Default);
+        return row;
+    }
+
+    /// <summary>
+    /// Builds the footer: [indent spaces] + [─ fill to edge].
+    /// Always present (not gated on _completed) so the box has a structural bottom.
+    /// </summary>
+    private static CellRow MakeFooterRow(int availableWidth)
+    {
+        var fillCount = Math.Max(0, availableWidth - IndentWidth);
+
+        var row = new CellRow();
+        row.Append(new string(' ', IndentWidth),      Color.Default,      Color.Default);
+        row.Append(new string(RuleChar, fillCount),   Color.BrightBlack, Color.Default);
+        return row;
+    }
+
+    /// <summary>
+    /// Prepends IndentWidth space cells to a child row. The child cells are copied
+    /// verbatim — colors and styles are preserved. This pushes the inner EventList's
+    /// own chrome (margin + bar + inner-pad) inward by IndentWidth columns.
+    /// </summary>
+    private static CellRow IndentRow(CellRow childRow)
+    {
+        var row = new CellRow();
+        row.Append(new string(' ', IndentWidth), Color.Default, Color.Default);
+        foreach (var cell in childRow.Cells)
+            row.Append(cell.Rune, cell.Foreground, cell.Background, cell.Style);
+        return row;
     }
 }

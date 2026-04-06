@@ -237,53 +237,81 @@ public sealed class TextRenderableTests
 
 public sealed class SubagentRenderableTests
 {
+    // Helper: extract all rune characters from a row as a string.
+    private static string RowText(CellRow row) =>
+        new(row.Cells.Select(c => c.Rune).ToArray());
+
     [Fact]
-    public void Render_WithNoChildren_HasOnlyHeader()
+    public void Render_AlwaysHasHeaderAndFooter_EvenWithNoChildren()
     {
+        // Footer is structural — present regardless of SetCompleted or child count.
         var r    = new SubagentRenderable("abc123");
         var rows = r.Render(40);
-        Assert.Single(rows);
-        var text = new string(rows[0].Cells.Select(c => c.Rune).ToArray());
-        Assert.Contains("abc123", text);
+        Assert.Equal(2, rows.Count); // header + footer
+        Assert.Contains("abc123", RowText(rows[0]));
+        Assert.Contains('─', rows[1].Cells.Select(c => c.Rune));
     }
 
     [Fact]
-    public void Render_WithCompletedFlag_HasHeaderAndFooter()
+    public void Render_SetCompleted_DoesNotChangeRowCount()
     {
+        // SetCompleted exists for the finalization contract; it no longer adds a footer
+        // row because the footer is always rendered structurally.
         var r = new SubagentRenderable("abc123");
+        var rowsBefore = r.Render(40).Count;
         r.SetCompleted();
-        var rows = r.Render(40);
-        Assert.Equal(2, rows.Count);
-        var footerText = new string(rows[1].Cells.Select(c => c.Rune).ToArray());
-        Assert.Contains("subagent complete", footerText);
+        var rowsAfter = r.Render(40).Count;
+        Assert.Equal(rowsBefore, rowsAfter);
     }
 
     [Fact]
-    public void Render_ChildRowsAreIndented()
+    public void Render_InnerRowsAreIndentedByIndentWidth()
     {
-        // A child that emits one row of "hello" should be indented by 2 space cells.
+        // All rows between header and footer must start with IndentWidth (4) space cells.
+        // The inner EventList's own chrome (margin + bar + pad) sits after the indent.
         var r     = new SubagentRenderable("xyz");
         var child = new TextRenderable();
         child.SetText("hello");
-        r.AddChild(child);
+        r.AddChild(child, BubbleStyle.System);
 
         var rows = r.Render(40);
-        // rows[0] = header, rows[1] = indented child
-        Assert.Equal(2, rows.Count);
-        Assert.Equal(' ', rows[1].Cells[0].Rune);
-        Assert.Equal(' ', rows[1].Cells[1].Rune);
-        Assert.Equal('h', rows[1].Cells[2].Rune);
+        // rows[0] = header, rows[last] = footer; everything in between is indented.
+        for (var i = 1; i < rows.Count - 1; i++)
+        {
+            for (var col = 0; col < 4; col++)
+                Assert.Equal(' ', rows[i].Cells[col].Rune);
+        }
     }
 
     [Fact]
     public void SetCompleted_IsIdempotent()
     {
-        // Calling SetCompleted twice must not add a second footer.
+        // Calling SetCompleted twice must not affect row count.
         var r = new SubagentRenderable("abc");
         r.SetCompleted();
         r.SetCompleted();
         var rows = r.Render(40);
-        Assert.Equal(2, rows.Count); // header + one footer
+        Assert.Equal(2, rows.Count); // header + footer, no duplicates
+    }
+
+    [Fact]
+    public void Render_TailClips_WhenInnerRowsExceedMaxInnerRows()
+    {
+        // Each child in a System bubble produces 3 inner rows (top-pad, content, bottom-pad)
+        // plus 1 blank separator (except the first). Five children: 3*5 + 4 = 19 inner rows,
+        // which exceeds MaxInnerRows (10). The visible count must be capped.
+        var r = new SubagentRenderable("clip-test");
+        for (var i = 0; i < 5; i++)
+        {
+            var child = new TextRenderable();
+            child.SetText($"line {i}");
+            r.AddChild(child, BubbleStyle.System);
+        }
+
+        var rows = r.Render(80);
+        var innerRowCount = rows.Count - 2; // subtract header + footer
+        // 5 children × 3 rows + 4 separators = 19 inner rows → tail-clip to exactly 10.
+        Assert.Equal(10, innerRowCount);
     }
 
     [Fact]
@@ -294,7 +322,7 @@ public sealed class SubagentRenderableTests
         r.Changed += () => fired = true;
 
         var child = new TextRenderable();
-        r.AddChild(child);
+        r.AddChild(child, BubbleStyle.System);
 
         Assert.True(fired);
     }
@@ -305,7 +333,7 @@ public sealed class SubagentRenderableTests
         // When a child's content changes, the SubagentRenderable's Changed should fire.
         var r     = new SubagentRenderable("abc");
         var child = new TextRenderable();
-        r.AddChild(child);
+        r.AddChild(child, BubbleStyle.System);
 
         var fired = false;
         r.Changed += () => fired = true;
@@ -370,7 +398,7 @@ public sealed class EventListTests
         var list  = new EventList();
         var child = new TextRenderable();
         child.SetText("x");
-        list.Add(child, BubbleStyle.User);
+        list.Add(child);
 
         var rows = list.Render(20);
         // rows[0] = top padding, rows[1] = content row
@@ -388,7 +416,7 @@ public sealed class EventListTests
         var list  = new EventList();
         var child = new TextRenderable(); // default fg, default bg
         child.SetText("x");
-        list.Add(child, BubbleStyle.User);
+        list.Add(child);
 
         var rows = list.Render(20);
         var contentRow = rows[1];
@@ -424,5 +452,115 @@ public sealed class EventListTests
         child.Append("new content");
 
         Assert.True(fired);
+    }
+
+    [Fact]
+    public void Render_BubbleStyleNone_EmitsChildRowsWithoutChrome()
+    {
+        // BubbleStyle.None must pass child rows through verbatim — no bar glyph,
+        // no top/bottom padding rows, no background override, no content truncation.
+        // Used for containers (like SubagentRenderable) that supply their own frame.
+        const int width = 20;
+        var child = new TextRenderable();
+        child.SetText("x");
+
+        // Capture the raw child output before wrapping in EventList.
+        var directRows = child.Render(width);
+
+        var list = new EventList();
+        list.Add(child, BubbleStyle.None);
+        var rows = list.Render(width);
+
+        // TextRenderable.SetText produces exactly 1 row — None must not add padding.
+        Assert.Single(rows);
+        // No bar glyph should appear anywhere in the row.
+        Assert.DoesNotContain(rows[0].Cells, c => c.Rune == '▎');
+        // Cell runes must be identical to the direct render — verbatim passthrough.
+        Assert.Equal(
+            directRows[0].Cells.Select(c => c.Rune),
+            rows[0].Cells.Select(c => c.Rune));
+    }
+
+    [Fact]
+    public void Render_BubbleStyleNone_StillEmitsBlankSeparatorBetweenBubbles()
+    {
+        // Even with BubbleStyle.None, consecutive bubbles must be separated by a blank row
+        // so visual grouping between items is preserved.
+        var list = new EventList();
+        var c1   = new TextRenderable();
+        c1.SetText("one");
+        var c2 = new TextRenderable();
+        c2.SetText("two");
+        list.Add(c1, BubbleStyle.None);
+        list.Add(c2, BubbleStyle.None);
+
+        var rows = list.Render(20);
+        // Each text child → 1 row; blank separator in between → 3 total.
+        Assert.Equal(3, rows.Count);
+        Assert.Empty(rows[1].Cells); // blank separator between the two bubbles
+    }
+
+    [Fact]
+    public void Render_BubbleStyleNone_InterleavedWithChromedBubbles_HasCorrectSeparators()
+    {
+        // In production, EventList holds chromed bubbles on either side of a BubbleStyle.None
+        // child (e.g. SubagentRenderable). Verify separators appear on both sides of the
+        // None child and that the None branch doesn't disrupt the first-bubble flag.
+        //
+        // Expected structure:
+        //   [0..2]  System bubble 1: top-pad, content, bottom-pad
+        //   [3]     blank separator
+        //   [4]     None child (1 verbatim row)
+        //   [5]     blank separator
+        //   [6..8]  System bubble 2: top-pad, content, bottom-pad
+        var list = new EventList();
+        var s1   = new TextRenderable();
+        s1.SetText("sys1");
+        var none = new TextRenderable();
+        none.SetText("bare");
+        var s2 = new TextRenderable();
+        s2.SetText("sys2");
+        list.Add(s1,   BubbleStyle.System);
+        list.Add(none, BubbleStyle.None);
+        list.Add(s2,   BubbleStyle.System);
+
+        var rows = list.Render(20);
+        Assert.Equal(9, rows.Count);
+        Assert.Empty(rows[3].Cells); // separator before None child
+        Assert.Empty(rows[5].Cells); // separator after None child
+        // None child row must not carry a bar glyph.
+        Assert.DoesNotContain(rows[4].Cells, c => c.Rune == '▎');
+    }
+
+    [Fact]
+    public void Render_AssistantBubble_BarGlyphHasYellowForeground()
+    {
+        // The Assistant bubble uses a yellow bar to distinguish it from System
+        // (black/invisible bar) and User (blue bar). Verifies StyleColors branches.
+        var list  = new EventList();
+        var child = new TextRenderable();
+        child.SetText("hi");
+        list.Add(child, BubbleStyle.Assistant);
+
+        var rows = list.Render(20);
+        // rows[0] = top padding, rows[1] = content row; col 1 = bar glyph
+        Assert.Equal('▎',         rows[1].Cells[1].Rune);
+        Assert.Equal(Color.Yellow, rows[1].Cells[1].Foreground);
+    }
+
+    [Fact]
+    public void Render_SystemBubble_BarGlyphHasBlackForeground()
+    {
+        // The System bubble uses a black-on-black bar (invisible) to visually suppress
+        // the left-bar chrome for tool/error messages. Verifies StyleColors branch.
+        var list  = new EventList();
+        var child = new TextRenderable();
+        child.SetText("err");
+        list.Add(child, BubbleStyle.System);
+
+        var rows = list.Render(20);
+        // rows[0] = top padding, rows[1] = content row; col 1 = bar glyph
+        Assert.Equal('▎',        rows[1].Cells[1].Rune);
+        Assert.Equal(Color.Black, rows[1].Cells[1].Foreground);
     }
 }

@@ -541,7 +541,9 @@ internal static class Program
                 _subagentById[subId] = subRenderable;
                 _subagentCurrentText[subId] = null;
                 _subagentToolCalls[subId] = new Dictionary<string, ToolRenderable>();
-                eventList.Add(subRenderable, BubbleStyle.System);
+                // BubbleStyle.None: SubagentRenderable provides its own bordered frame;
+                // applying outer bubble chrome would double-indent the inner content.
+                eventList.Add(subRenderable, BubbleStyle.None);
 
                 // Pair this SubagentId with the oldest unclaimed run_subagent CallId.
                 // With sequential execution there is always exactly one pending call.
@@ -558,7 +560,7 @@ internal static class Program
                     {
                         subText = new TextRenderable();
                         _subagentCurrentText[subId] = subText;
-                        subRenderable.AddChild(subText);
+                        subRenderable.AddChild(subText, BubbleStyle.Assistant);
                     }
                     subText.Append(text);
                     break;
@@ -567,7 +569,7 @@ internal static class Program
                     var subTool = new ToolRenderable(subStarted);
                     _subagentToolCalls[subId][subStarted.CallId] = subTool;
                     _lastStartedTool = subTool;
-                    subRenderable.AddChild(subTool);
+                    subRenderable.AddChild(subTool, BubbleStyle.System);
                     _subagentCurrentText[subId] = null;
                     break;
 
@@ -589,7 +591,7 @@ internal static class Program
                 case Error { Message: var subErrMsg }:
                     var subErrText = new TextRenderable(foreground: Color.Red);
                     subErrText.SetText($"[error] {subErrMsg}");
-                    subRenderable.AddChild(subErrText);
+                    subRenderable.AddChild(subErrText, BubbleStyle.System);
                     subRenderable.SetCompleted();
                     _subagentCurrentText[subId] = null;
                     break;
