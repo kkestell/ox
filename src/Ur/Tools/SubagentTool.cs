@@ -30,9 +30,11 @@ internal sealed class SubagentTool(ISubagentRunner runner) : AIFunction, IToolMe
     // so both stay in sync automatically.
     internal const string ToolName = "run_subagent";
 
-    // Execute: spawning a sub-agent has unpredictable side effects (it may write
-    // files, run bash commands, etc.) — prompt the user before each invocation.
-    OperationType IToolMeta.OperationType => OperationType.Execute;
+    // Read: the subagent does not bypass the permission system — every tool call
+    // it makes is individually gated. Classifying the spawn itself as Execute
+    // adds no security value and would prompt on every use. Treating it as Read
+    // (in-workspace, auto-allowed) matches the actual blast-radius of the call.
+    OperationType IToolMeta.OperationType => OperationType.Read;
 
     // The task string is the target for the permission prompt, but it can be
     // arbitrarily long — truncate so it fits on a single terminal line.

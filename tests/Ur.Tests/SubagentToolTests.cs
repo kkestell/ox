@@ -72,12 +72,13 @@ public sealed class SubagentToolTests
     }
 
     [Fact]
-    public void OperationType_IsExecute()
+    public void OperationType_IsRead()
     {
-        // Execute means "prompt the user before each invocation, never remember" —
-        // appropriate for spawning a sub-agent that may write files or run bash.
+        // Read means "auto-allow when in-workspace" — appropriate here because the
+        // subagent does not bypass the permission system; its own tool calls are
+        // individually gated, so prompting on the spawn itself adds no security value.
         IToolMeta tool = new SubagentTool(new StubRunner("ok"));
-        Assert.Equal(OperationType.Execute, tool.OperationType);
+        Assert.Equal(OperationType.Read, tool.OperationType);
     }
 
     [Fact]
