@@ -4,15 +4,20 @@ namespace Ur.Tui.Rendering;
 /// Full-screen display engine that renders the conversation into the alternate
 /// screen buffer.
 ///
-/// Layout:
-///   Rows 1 .. (height-1) — conversation viewport (shows the tail of all lines)
-///   Row height            — input row (prompt + user typing area)
+/// Layout (1-based terminal rows, 0-based buffer rows):
+///   Rows 1 .. (height-3) — conversation viewport (shows the tail of all rows)
+///   Row height-2          — input decoration row (▆ in blue-on-cyan)
+///   Row height-1          — input text row (prompt + user typing on blue bg)
+///   Row height            — input bottom padding row (empty blue)
 ///
 /// Rendering is decoupled from event arrival via a dirty flag. When any renderable
 /// fires <see cref="IRenderable.Changed"/>, we set a flag rather than redrawing
 /// immediately. A background loop calls <see cref="Redraw"/> at ~30 fps when
 /// dirty. This prevents per-character redraws during fast streaming — the screen
 /// updates at a readable rate regardless of how quickly chunks arrive.
+///
+/// The viewport owns the ScreenBuffer → Terminal.Flush pipeline. No other code
+/// writes to the terminal during a frame; all ANSI encoding happens in Terminal.Flush.
 ///
 /// The viewport must be stopped on every exit path (normal, Ctrl+C, unhandled
 /// exception) to restore the primary screen buffer and cursor visibility. The
@@ -27,7 +32,7 @@ internal sealed class Viewport : IDisposable
 
     // Current input row text (prompt + any typed characters). Redrawn every
     // Redraw() call so the input area always reflects the latest state.
-    private string _inputPrompt = "> ";
+    private string _inputPrompt = "❯ ";
 
     // Background timer that drives redraws at ~30 fps when dirty.
     private readonly Timer _redrawTimer;
@@ -38,6 +43,18 @@ internal sealed class Viewport : IDisposable
 
     // True between Start() and Stop() — prevents stray redraws after shutdown.
     private bool _running;
+
+    // Colors for the input box chrome.
+    // The decoration row uses a ▆ glyph (bottom 3/4 block) with blue-on-cyan:
+    // the top 1/4 shows cyan and the bottom 3/4 shows blue, creating a visual
+    // transition cap into the solid blue input text row below.
+    private static readonly Color InputDecoFg = Color.Blue;  // ▆ glyph foreground
+    private static readonly Color InputDecobg = Color.Cyan;  // decoration row background
+    private static readonly Color InputTextBg = Color.Blue;  // text row and bottom row background
+    private const char InputTopChar = '▆'; // U+2586 LOWER THREE QUARTERS BLOCK
+
+    // Number of terminal rows reserved for the input box (decoration + text + bottom pad).
+    private const int InputAreaRows = 3;
 
     public EventList Root => _root;
 
@@ -95,7 +112,7 @@ internal sealed class Viewport : IDisposable
 
     /// <summary>
     /// Updates the input row prompt text and triggers an immediate redraw.
-    /// The prompt text includes both the fixed prefix (e.g. "> ") and any
+    /// The prompt text includes both the fixed prefix (e.g. "❯ ") and any
     /// characters the user has already typed, so the caller owns the full string.
     /// </summary>
     public void SetInputPrompt(string prompt)
@@ -114,10 +131,10 @@ internal sealed class Viewport : IDisposable
     }
 
     /// <summary>
-    /// Redraws the full viewport: the conversation tail fills rows 1..(H-1),
-    /// and the input prompt occupies row H.
+    /// Redraws the full viewport into a <see cref="ScreenBuffer"/> then flushes it
+    /// to the terminal in one shot via <see cref="Terminal.Flush(ScreenBuffer)"/>.
     ///
-    /// Auto-scroll: we always show the tail (most recent lines). There is no
+    /// Auto-scroll: we always show the tail (most recent rows). There is no
     /// manual scrollback — the alternate buffer owns the display, and the
     /// conversation model is the scroll history.
     /// </summary>
@@ -131,27 +148,54 @@ internal sealed class Viewport : IDisposable
             _dirty = false;
 
             var (width, height) = Terminal.GetSize();
-            var viewportHeight = height - 1; // reserve last row for input
 
-            // Get all content lines from the conversation tree.
-            var allLines = _root.Render(width);
+            // Reserve InputAreaRows rows for the input box; the rest is conversation.
+            var viewportHeight = height - InputAreaRows;
 
-            // Auto-scroll: take only the tail that fits on screen.
-            var startIndex = Math.Max(0, allLines.Count - viewportHeight);
+            // Build a fresh buffer for this frame. All cells start as Cell.Empty.
+            var buffer = new ScreenBuffer(width, height);
 
-            for (var row = 1; row <= viewportHeight; row++)
+            // --- Conversation rows (0-based buffer rows 0..viewportHeight-1) ---
+
+            var allRows   = _root.Render(width);
+            var startIndex = Math.Max(0, allRows.Count - viewportHeight);
+
+            for (var bufRow = 0; bufRow < viewportHeight; bufRow++)
             {
-                var lineIndex = startIndex + (row - 1);
-                var text = lineIndex < allLines.Count ? allLines[lineIndex] : "";
-                Terminal.Write(row, 1, text);
+                var rowIndex = startIndex + bufRow;
+                if (rowIndex < allRows.Count)
+                    buffer.WriteRow(bufRow, allRows[rowIndex]);
+                // Rows beyond the content stay Cell.Empty (blank / default colors).
             }
 
-            // Input row: always at the bottom. ShowCursor / HideCursor bracket
-            // the write so the cursor appears at the end of the input text.
-            Terminal.Write(height, 1, _inputPrompt);
-            Terminal.ShowCursor();
-            // Position the cursor after the prompt text so it appears there.
-            Terminal.MoveCursor(height, _inputPrompt.Length + 1);
+            // --- Input box (0-based buffer rows viewportHeight..height-1) ---
+
+            // Decoration row: full-width ▆ glyphs in blue-on-cyan.
+            // The ▆ character's bottom 3/4 shows the foreground color (blue) and the
+            // top 1/4 shows the background (cyan), creating a stepped visual transition
+            // into the solid blue text row immediately below.
+            var decoRow = new CellRow();
+            decoRow.Append(new string(InputTopChar, width), InputDecoFg, InputDecobg);
+            buffer.WriteRow(viewportHeight, decoRow);
+
+            // Text row: one-cell left margin, prompt text, then a reverse-video cursor cell.
+            // The system cursor is hidden; we paint our own block cursor using CellStyle.Reverse,
+            // which swaps fg and bg — producing a light block on the blue background.
+            var textRow = new CellRow();
+            textRow.Append(' ', Color.Default, InputTextBg);
+            textRow.Append(_inputPrompt, Color.Default, InputTextBg);
+            textRow.Append(' ', Color.Default, InputTextBg, CellStyle.Reverse); // block cursor
+            textRow.PadRight(width, InputTextBg);
+            buffer.WriteRow(viewportHeight + 1, textRow);
+
+            // Bottom padding row: empty blue row that closes the input box visually.
+            var bottomRow = new CellRow();
+            bottomRow.PadRight(width, InputTextBg);
+            buffer.WriteRow(viewportHeight + 2, bottomRow);
+
+            // Flush the completed buffer to the terminal. This is the only call that
+            // emits ANSI escape sequences for the entire frame.
+            Terminal.Flush(buffer);
         }
     }
 

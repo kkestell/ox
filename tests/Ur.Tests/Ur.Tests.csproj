@@ -26,6 +26,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Ur\Ur.csproj" />
+    <ProjectReference Include="..\..\src\Ur.Tui\Ur.Tui.csproj" />
   </ItemGroup>
 
 </Project>

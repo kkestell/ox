@@ -11,44 +11,50 @@ namespace Ur.Tui.Rendering;
 /// Word-wrapping is applied in <see cref="Render"/> so the caller only needs
 /// to supply the available width; the renderable handles layout.
 ///
-/// An optional ANSI prefix applied to every rendered line allows the same type
-/// to show user messages faintly and assistant text at full brightness.
+/// Foreground, background, and style are typed <see cref="Color"/>/<see cref="CellStyle"/>
+/// values rather than raw ANSI strings — the terminal layer is the only place
+/// that knows about escape sequences.
 /// </summary>
 internal sealed class TextRenderable : IRenderable
 {
     private readonly StringBuilder _text = new();
 
-    // Optional ANSI style applied to every line. Empty string = no styling.
-    private readonly string _linePrefix;
-    private readonly string _lineSuffix;
+    private readonly Color     _foreground;
+    private readonly Color     _background;
+    private readonly CellStyle _style;
 
-    // Cache invalidation: only recompute wrapped lines when the text has changed.
+    // Cache invalidation: only recompute wrapped rows when text or width changes.
     private string? _lastText;
     private int _lastWidth;
-    private IReadOnlyList<string>? _cachedLines;
+    private IReadOnlyList<CellRow>? _cachedRows;
 
     public event Action? Changed;
 
-    /// <param name="linePrefix">ANSI code to prepend to each rendered line (e.g. "\e[90m" for dim).</param>
-    /// <param name="lineSuffix">ANSI reset suffix appended after each line (e.g. "\e[0m").</param>
-    public TextRenderable(string linePrefix = "", string lineSuffix = "")
+    /// <param name="foreground">Foreground color applied to every cell in every rendered row.</param>
+    /// <param name="background">Background color applied to every cell in every rendered row.</param>
+    /// <param name="style">Style flags (bold, dim, etc.) applied uniformly across all cells.</param>
+    public TextRenderable(
+        Color     foreground = default,
+        Color     background = default,
+        CellStyle style      = CellStyle.None)
     {
-        _linePrefix = linePrefix;
-        _lineSuffix = lineSuffix;
+        _foreground = foreground;
+        _background = background;
+        _style      = style;
     }
 
     /// <summary>
     /// Appends a streaming chunk to the accumulated text and signals the viewport.
     /// Called on the event-dispatch thread; no locking needed because the viewport
     /// reads on the same thread (the redraw timer fires on a ThreadPool thread but
-    /// accesses the cached lines, not the StringBuilder, after the dirty flag is set).
+    /// accesses the cached rows, not the StringBuilder, after the dirty flag is set).
     /// </summary>
     public void Append(string chunk)
     {
         if (string.IsNullOrEmpty(chunk))
             return;
         _text.Append(chunk);
-        _cachedLines = null; // invalidate cache
+        _cachedRows = null; // invalidate cache
         Changed?.Invoke();
     }
 
@@ -60,58 +66,62 @@ internal sealed class TextRenderable : IRenderable
     {
         _text.Clear();
         _text.Append(text);
-        _cachedLines = null;
+        _cachedRows = null;
         Changed?.Invoke();
     }
 
-    public IReadOnlyList<string> Render(int availableWidth)
+    public IReadOnlyList<CellRow> Render(int availableWidth)
     {
         var current = _text.ToString();
 
         // Return cached result when nothing has changed since last render.
-        if (_cachedLines != null && current == _lastText && availableWidth == _lastWidth)
-            return _cachedLines;
+        if (_cachedRows != null && current == _lastText && availableWidth == _lastWidth)
+            return _cachedRows;
 
-        _lastText = current;
-        _lastWidth = availableWidth;
-        _cachedLines = WrapText(current, availableWidth, _linePrefix, _lineSuffix);
-        return _cachedLines;
+        _lastText   = current;
+        _lastWidth  = availableWidth;
+        _cachedRows = WrapText(current, availableWidth, _foreground, _background, _style);
+        return _cachedRows;
     }
 
     /// <summary>
-    /// Wraps <paramref name="text"/> into lines that fit within <paramref name="width"/>
-    /// visible characters. The wrapping strategy is word-aware: it tries to break at
-    /// spaces, falling back to hard breaks when a single word exceeds the width.
+    /// Wraps <paramref name="text"/> into CellRows that fit within <paramref name="width"/>
+    /// columns. The strategy is word-aware: it tries to break at spaces, falling back to
+    /// hard breaks when a single word exceeds the width.
     ///
     /// Newlines in the source text are treated as hard breaks so that markdown-style
     /// paragraph structure is preserved.
+    ///
+    /// Every character in every row gets the same fg/bg/style — the text block is
+    /// uniformly styled. Per-character styling is not needed by any current consumer.
     /// </summary>
-    private static IReadOnlyList<string> WrapText(string text, int width, string prefix, string suffix)
+    private static IReadOnlyList<CellRow> WrapText(
+        string text, int width, Color fg, Color bg, CellStyle style)
     {
-        var lines = new List<string>();
+        var rows = new List<CellRow>();
 
         if (string.IsNullOrEmpty(text))
         {
-            lines.Add(prefix + suffix);
-            return lines;
+            rows.Add(CellRow.FromText("", fg, bg, style));
+            return rows;
         }
 
-        // Split on '\n' first so explicit newlines always start a new line.
+        // Split on '\n' first so explicit newlines always start a new row.
         var paragraphs = text.Split('\n');
 
         foreach (var para in paragraphs)
         {
             if (para.Length == 0)
             {
-                // Blank line in source → blank rendered line.
-                lines.Add(prefix + suffix);
+                // Blank line in source → blank rendered row.
+                rows.Add(CellRow.Empty);
                 continue;
             }
 
             // If the paragraph fits, emit it directly.
             if (para.Length <= width)
             {
-                lines.Add(prefix + para + suffix);
+                rows.Add(CellRow.FromText(para, fg, bg, style));
                 continue;
             }
 
@@ -121,7 +131,7 @@ internal sealed class TextRenderable : IRenderable
             {
                 if (remaining.Length <= width)
                 {
-                    lines.Add(prefix + remaining.ToString() + suffix);
+                    rows.Add(CellRow.FromText(remaining.ToString(), fg, bg, style));
                     break;
                 }
 
@@ -130,7 +140,7 @@ internal sealed class TextRenderable : IRenderable
                 // e.g. "hello world" at width=5 → ["hello", "world"], not ["hello", " worl", "d"].
                 if (remaining[width] == ' ')
                 {
-                    lines.Add(prefix + remaining[..width].ToString() + suffix);
+                    rows.Add(CellRow.FromText(remaining[..width].ToString(), fg, bg, style));
                     remaining = remaining[(width + 1)..];
                     continue;
                 }
@@ -140,7 +150,7 @@ internal sealed class TextRenderable : IRenderable
                 if (breakAt <= 0)
                     breakAt = width; // no space found — hard break
 
-                lines.Add(prefix + remaining[..breakAt].ToString() + suffix);
+                rows.Add(CellRow.FromText(remaining[..breakAt].ToString(), fg, bg, style));
                 // Skip the space that caused the break; if we hard-broke (breakAt==width),
                 // there is no space to skip so we continue from that position directly.
                 remaining = breakAt < remaining.Length
@@ -149,6 +159,6 @@ internal sealed class TextRenderable : IRenderable
             }
         }
 
-        return lines;
+        return rows;
     }
 }

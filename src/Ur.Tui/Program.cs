@@ -73,11 +73,11 @@ internal static class Program
         // Show a welcome message as the first item in the conversation list.
         var welcome = new TextRenderable();
         welcome.SetText($"Session: {session.Id}  (type a message · Esc = cancel turn · Ctrl+C = exit)");
-        eventList.Add(welcome);
+        eventList.Add(welcome, BubbleStyle.System);
 
         while (!appCts.Token.IsCancellationRequested)
         {
-            var input = ReadLineInViewport("> ", viewport, appCts.Token);
+            var input = ReadLineInViewport("❯ ", viewport, appCts.Token);
 
             // null = EOF (Ctrl+D) or cancellation.
             if (input is null)
@@ -88,7 +88,7 @@ internal static class Program
 
             // Show the user's message in the conversation with a dim style so it
             // recedes behind the assistant response — same visual hierarchy as before.
-            var userMsg = new TextRenderable("\e[2m", "\e[0m");
+            var userMsg = new TextRenderable(style: CellStyle.Dim);
             userMsg.SetText($"> {input}");
             eventList.Add(userMsg);
 
@@ -134,7 +134,7 @@ internal static class Program
                 turnCts.Dispose();
             }
 
-            viewport.SetInputPrompt("> ");
+            viewport.SetInputPrompt("❯ ");
         }
 
         viewport.Stop();
@@ -458,7 +458,7 @@ internal static class Program
                     if (_currentText is null)
                     {
                         _currentText = new TextRenderable();
-                        eventList.Add(_currentText);
+                        eventList.Add(_currentText, BubbleStyle.Assistant);
                     }
                     _currentText.Append(text);
                     break;
@@ -478,7 +478,7 @@ internal static class Program
                     var tool = new ToolRenderable(started);
                     _toolCallMap[started.CallId] = tool;
                     _lastStartedTool = tool;
-                    eventList.Add(tool);
+                    eventList.Add(tool, BubbleStyle.System);
                     _currentText = null;
                     break;
 
@@ -511,9 +511,9 @@ internal static class Program
                     break;
 
                 case Error { Message: var msg }:
-                    var errorText = new TextRenderable("\e[31m", "\e[0m");
+                    var errorText = new TextRenderable(foreground: Color.Red);
                     errorText.SetText($"[error] {msg}");
-                    eventList.Add(errorText);
+                    eventList.Add(errorText, BubbleStyle.System);
                     _currentText = null;
                     break;
             }
@@ -539,7 +539,7 @@ internal static class Program
                 _subagentById[subId] = subRenderable;
                 _subagentCurrentText[subId] = null;
                 _subagentToolCalls[subId] = new Dictionary<string, ToolRenderable>();
-                eventList.Add(subRenderable);
+                eventList.Add(subRenderable, BubbleStyle.System);
 
                 // Pair this SubagentId with the oldest unclaimed run_subagent CallId.
                 // With sequential execution there is always exactly one pending call.
@@ -583,7 +583,7 @@ internal static class Program
                     break;
 
                 case Error { Message: var subErrMsg }:
-                    var subErrText = new TextRenderable("\e[31m", "\e[0m");
+                    var subErrText = new TextRenderable(foreground: Color.Red);
                     subErrText.SetText($"[error] {subErrMsg}");
                     subRenderable.AddChild(subErrText);
                     subRenderable.SetCompleted();

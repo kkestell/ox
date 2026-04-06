@@ -5,22 +5,24 @@ namespace Ur.Tui.Rendering;
 ///
 /// Renderables are "live" objects — their content can change between redraws.
 /// The viewport calls <see cref="Render"/> each frame and writes the returned
-/// lines to the screen. When a renderable's content changes (e.g. a streaming
-/// chunk arrives), it raises <see cref="Changed"/> to tell the viewport a redraw
-/// is needed.
+/// rows to a <see cref="ScreenBuffer"/>. When a renderable's content changes
+/// (e.g. a streaming chunk arrives), it raises <see cref="Changed"/> to tell
+/// the viewport a redraw is needed.
 ///
 /// Renderables do not know about the viewport or the terminal. They produce
-/// plain strings (with embedded ANSI color codes) and let the viewport decide
-/// where those strings land on screen.
+/// typed <see cref="CellRow"/> values — no ANSI escape codes, no string
+/// concatenation, no width-measurement hacks. All ANSI encoding happens in
+/// <see cref="Terminal.Flush(ScreenBuffer)"/>, which is the sole point of
+/// contact with raw escape sequences.
 /// </summary>
 internal interface IRenderable
 {
     /// <summary>
-    /// Returns lines to display, each fitting within <paramref name="availableWidth"/>
-    /// visible characters. ANSI escape sequences embedded in lines do not count
-    /// toward the width — callers are responsible for measuring only printable chars.
+    /// Returns rows to display, each containing cells that fit within
+    /// <paramref name="availableWidth"/> columns. The renderable is responsible
+    /// for word-wrapping text and truncating content to the given width.
     /// </summary>
-    IReadOnlyList<string> Render(int availableWidth);
+    IReadOnlyList<CellRow> Render(int availableWidth);
 
     /// <summary>
     /// Raised when content changes and the viewport should schedule a redraw.

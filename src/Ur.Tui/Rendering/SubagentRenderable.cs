@@ -2,25 +2,21 @@ namespace Ur.Tui.Rendering;
 
 /// <summary>
 /// Groups all rendering output from a single subagent run into a visually
-/// bounded block. Replaces the >>>> prefix convention with explicit header/footer
-/// lines, making it obvious which events belong to which subagent.
+/// bounded block. Emits a header row before the children and an optional footer
+/// row once the run completes.
 ///
 /// Like <see cref="EventList"/>, a SubagentRenderable is a container: it holds
 /// its own sequence of child renderables (the subagent's text, tools, etc.) and
 /// propagates their <see cref="IRenderable.Changed"/> events upward.
 ///
-/// The subagent-specific child list lives here rather than in a shared base class
-/// because subagent rendering has its own indentation and header/footer logic that
-/// does not generalize to the root EventList.
+/// Indentation is applied here as prepended space cells on each child row.
+/// Children are unaware of the indent — they render at their own content width
+/// (availableWidth minus indent size) and SubagentRenderable wraps each row.
 /// </summary>
 internal sealed class SubagentRenderable : IRenderable
 {
-    private const string DarkGray = "\e[90m";
-    private const string Reset    = "\e[0m";
-
-    // The indent prefix applied to every child line so subagent output is
-    // visually nested inside the header/footer markers.
-    private const string Indent = "  ";
+    // Number of space cells prepended to each child row to create visual nesting.
+    private const int IndentWidth = 2;
 
     private readonly List<IRenderable> _children = [];
     private bool _completed;
@@ -49,7 +45,7 @@ internal sealed class SubagentRenderable : IRenderable
     }
 
     /// <summary>
-    /// Marks the subagent run as complete and adds a footer line to bound the block.
+    /// Marks the subagent run as complete and adds a footer row to bound the block.
     /// Idempotent — safe to call multiple times (e.g. via both SubagentEvent and
     /// the parent ToolCallCompleted handler as a defensive fallback).
     /// </summary>
@@ -61,28 +57,33 @@ internal sealed class SubagentRenderable : IRenderable
         Changed?.Invoke();
     }
 
-    public IReadOnlyList<string> Render(int availableWidth)
+    public IReadOnlyList<CellRow> Render(int availableWidth)
     {
-        var lines = new List<string>();
+        var rows = new List<CellRow>();
 
-        // Header line — visually opens the subagent block.
-        lines.Add($"{DarkGray}--- subagent {SubagentId} ---{Reset}");
+        // Header row — visually opens the subagent block.
+        rows.Add(CellRow.FromText($"--- subagent {SubagentId} ---", Color.BrightBlack, Color.Default));
 
-        // Render each child with a 2-space indent. Reduce availableWidth to
+        // Render each child with an IndentWidth-space prefix. Reduce availableWidth to
         // account for the indent so children still word-wrap correctly.
-        var childWidth = Math.Max(1, availableWidth - Indent.Length);
+        var childWidth = Math.Max(1, availableWidth - IndentWidth);
         foreach (var child in _children)
         {
-            foreach (var line in child.Render(childWidth))
+            foreach (var childRow in child.Render(childWidth))
             {
-                lines.Add(Indent + line);
+                // Build a new row with the indent cells prepended to the child's cells.
+                var indented = new CellRow();
+                indented.Append(new string(' ', IndentWidth), Color.Default, Color.Default);
+                foreach (var cell in childRow.Cells)
+                    indented.Append(cell.Rune, cell.Foreground, cell.Background, cell.Style);
+                rows.Add(indented);
             }
         }
 
-        // Footer only appears once the subagent run is complete.
+        // Footer appears once the subagent run is complete.
         if (_completed)
-            lines.Add($"{DarkGray}--- subagent complete ---{Reset}");
+            rows.Add(CellRow.FromText("--- subagent complete ---", Color.BrightBlack, Color.Default));
 
-        return lines;
+        return rows;
     }
 }
