@@ -29,6 +29,20 @@ internal static class Program
     // race with Console.ReadLine and swallow input characters.
     private static volatile bool _pauseKeyReader;
 
+    // Tracks whether the next subagent ResponseChunk starts a new line.
+    // Because streaming yields individual characters, we only print the >>>>
+    // prefix once at the start of each line rather than before every chunk.
+    private static bool _subagentAtLineStart = true;
+
+    // Tracks whether the cursor is at line start for parent agent output.
+    // Mirrors _subagentAtLineStart — used to ensure tool call status lines
+    // start on their own line after streaming response text.
+    private static bool _parentAtLineStart = true;
+
+    // True while a sub-agent is running. Used by the permission callback to
+    // add a >>>> prefix so the prompt visually groups with sub-agent output.
+    private static bool _inSubagentContext;
+
     private static async Task<int> Main(string[] _)
     {
         // --- Boot ---
@@ -101,7 +115,7 @@ internal static class Program
                 catch (OperationCanceledException) when (!appCts.Token.IsCancellationRequested)
                 {
                     // Escape was pressed — cancel just this turn, not the whole app.
-                    Console.WriteLine("\n[cancelled]");
+                    Console.WriteLine("[cancelled]");
                 }
                 catch (OperationCanceledException) when (appCts.Token.IsCancellationRequested)
                 {
@@ -178,7 +192,12 @@ internal static class Program
             // what the sub-agent is doing while it runs.
             SubagentEventEmitted = evt =>
             {
+                _inSubagentContext = true;
                 RenderEvent(evt);
+                // Clear when the sub-agent turn finishes so the parent's own
+                // permission prompts don't get the >>>> prefix.
+                if (evt is SubagentEvent { Inner: TurnCompleted or Error })
+                    _inSubagentContext = false;
                 return ValueTask.CompletedTask;
             },
 
@@ -192,11 +211,24 @@ internal static class Program
                 _pauseKeyReader = true;
                 try
                 {
+                    // If the permission prompt is from a sub-agent tool, prefix
+                    // with >>>> so it visually groups with sub-agent output.
+                    if (_inSubagentContext)
+                    {
+                        if (!_subagentAtLineStart) Console.WriteLine();
+                        Console.Write(">>>> ");
+                    }
+
                     Console.Write(
-                        $"\nAllow {req.OperationType} on '{req.Target}' by '{req.RequestingExtension}'?"
+                        $"Allow {req.OperationType} on '{req.Target}' by '{req.RequestingExtension}'?"
                         + $" (y/n{scopeHints}): ");
 
                     var input = CancellableReadLine(ct)?.Trim().ToLowerInvariant();
+
+                    // After Enter, CancellableReadLine prints a newline — the
+                    // cursor is at line start for the next sub-agent event.
+                    if (_inSubagentContext)
+                        _subagentAtLineStart = true;
 
                     // Parse the user's response: "y"/"yes" grants once, a scope
                     // name grants durably, anything else denies.
@@ -229,26 +261,77 @@ internal static class Program
     /// <summary>
     /// Renders a single <see cref="AgentLoopEvent"/> to the console.
     /// Response text streams inline; tool status and errors get bracketed markers.
-    /// SubagentEvent envelopes are unwrapped via a loop rather than recursion so the
-    /// call stack stays flat regardless of nesting depth.
+    ///
+    /// SubagentEvent envelopes are handled with explicit cases for each inner event type.
+    /// The >>>> prefix is printed per-line for ResponseChunk (chunks can be individual
+    /// characters, so we must not prefix every one) and inline for all other event types.
     /// </summary>
     private static void RenderEvent(AgentLoopEvent evt)
     {
-        // Unwrap SubagentEvent envelopes first, emitting the >>>> prefix for each layer.
-        // In practice the inner event is always a base type (never another SubagentEvent),
-        // but the loop guards against unbounded stack growth if that ever changes.
-        while (evt is SubagentEvent subagentEvt)
-        {
-            Console.Write(">>>> ");
-            evt = subagentEvt.Inner;
-        }
-
         switch (evt)
         {
+            // Subagent response text: prefix each line with >>>> individually.
+            // Streaming chunks can contain multiple newlines, so we split and
+            // prefix each line rather than writing the chunk as a single block.
+            case SubagentEvent { Inner: ResponseChunk { Text: var text } }:
+                if (string.IsNullOrWhiteSpace(text)) break;
+                var saLines = text.Split('\n');
+                for (var i = 0; i < saLines.Length; i++)
+                {
+                    if (_subagentAtLineStart && saLines[i].Length > 0)
+                        Console.Write(">>>> ");
+                    Console.Write(saLines[i]);
+                    if (i < saLines.Length - 1)
+                    {
+                        // Interior newline — move to next line and mark line start.
+                        Console.WriteLine();
+                        _subagentAtLineStart = true;
+                    }
+                    else
+                    {
+                        // Last segment: at line start only if it was empty (text
+                        // ended with '\n', producing a trailing empty segment).
+                        _subagentAtLineStart = saLines[i].Length == 0;
+                    }
+                }
+                break;
+
+            // Subagent tool call lines are complete lines — always prefix and reset.
+            case SubagentEvent { Inner: ToolCallStarted saStarted }:
+                if (!_subagentAtLineStart) Console.WriteLine();
+                Console.WriteLine($">>>> {DarkGray}{saStarted.FormatCall()}{Reset}");
+                _subagentAtLineStart = true;
+                break;
+
+            case SubagentEvent { Inner: ToolCallCompleted saCompleted }:
+                var saStatus = saCompleted.IsError ? "error" : "ok";
+                Console.WriteLine($">>>> {DarkGray}{saCompleted.ToolName} \u2192 {saStatus}{Reset}");
+                _subagentAtLineStart = true;
+                break;
+
+            // Subagent turn end: close an open text line if needed, but don't emit a
+            // decorative >>>> line — the parent agent's output follows immediately.
+            case SubagentEvent { Inner: TurnCompleted }:
+                if (!_subagentAtLineStart) Console.WriteLine();
+                _subagentAtLineStart = true;
+                break;
+
+            case SubagentEvent { Inner: Error { Message: var saMsg } }:
+                if (!_subagentAtLineStart) Console.WriteLine();
+                Console.WriteLine($">>>> [error] {saMsg}");
+                _subagentAtLineStart = true;
+                break;
+
+            // Parent agent events — no >>>> prefix.
+
             // Stream text as it arrives — no newline between chunks so the
             // response reads as a single flowing paragraph.
             case ResponseChunk chunk:
-                Console.Write(chunk.Text);
+                if (!string.IsNullOrWhiteSpace(chunk.Text))
+                {
+                    Console.Write(chunk.Text);
+                    _parentAtLineStart = chunk.Text.EndsWith('\n');
+                }
                 break;
 
             // Tool status lines are rendered in dark gray so they recede visually;
@@ -256,21 +339,26 @@ internal static class Program
             // line — the previous write (prompt echo or prior status line) already
             // ends with a newline.
             case ToolCallStarted started:
+                if (!_parentAtLineStart) Console.WriteLine();
                 Console.WriteLine($"{DarkGray}{started.FormatCall()}{Reset}");
+                _parentAtLineStart = true;
                 break;
 
             case ToolCallCompleted completed:
                 var status = completed.IsError ? "error" : "ok";
                 Console.WriteLine($"{DarkGray}{completed.ToolName} \u2192 {status}{Reset}");
+                _parentAtLineStart = true;
                 break;
 
             // Newline after the streamed response so the next prompt starts clean.
             case TurnCompleted:
                 Console.WriteLine();
+                _parentAtLineStart = true;
                 break;
 
             case Error error:
-                Console.WriteLine($"\n[error] {error.Message}");
+                Console.WriteLine($"[error] {error.Message}");
+                _parentAtLineStart = true;
                 break;
         }
     }

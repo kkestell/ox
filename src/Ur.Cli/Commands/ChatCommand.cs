@@ -84,20 +84,26 @@ internal static class ChatCommand
                 // Only scope options valid for the specific operation are presented.
                 // SubagentEventEmitted relays sub-agent events to stderr with a >>>> prefix
                 // so scripted callers can separate parent response text (stdout) from
-                // sub-agent activity (stderr).
+                // sub-agent activity (stderr). subagentAtLineStart tracks whether we are at
+                // the start of a new line so that streaming chunks don't each get their own
+                // >>>> prefix — only the first chunk on each output line is prefixed.
+                var subagentAtLineStart = true;
                 var callbacks = new TurnCallbacks
                 {
                     SubagentEventEmitted = evt =>
                     {
-                        // Route sub-agent events to stderr with >>>> prefix.
-                        // Response chunks go to stdout, matching parent agent output routing.
                         switch (evt)
                         {
-                            case SubagentEvent { Inner: ResponseChunk innerChunk }:
-                                Console.Write($">>>> {innerChunk.Text}");
+                            case SubagentEvent { Inner: ResponseChunk { Text: var saText } }:
+                                if (string.IsNullOrWhiteSpace(saText)) break;
+                                if (subagentAtLineStart) Console.Write(">>>> ");
+                                Console.Write(saText);
+                                subagentAtLineStart = saText.EndsWith('\n');
                                 break;
                             case SubagentEvent { Inner: ToolCallStarted innerStarted }:
-                                Console.Error.WriteLine($"\n>>>> [tool: {innerStarted.FormatCall()}]");
+                                if (!subagentAtLineStart) Console.Error.WriteLine();
+                                Console.Error.WriteLine($">>>> [tool: {innerStarted.FormatCall()}]");
+                                subagentAtLineStart = true;
                                 break;
                             case SubagentEvent { Inner: ToolCallCompleted innerCompleted }:
                                 var innerRes = innerCompleted.Result.Length > 200
@@ -105,12 +111,16 @@ internal static class ChatCommand
                                     : innerCompleted.Result;
                                 var innerSts = innerCompleted.IsError ? "error" : "ok";
                                 Console.Error.WriteLine($">>>> [tool: {innerCompleted.ToolName} \u2192 {innerSts}] {innerRes}");
+                                subagentAtLineStart = true;
                                 break;
                             case SubagentEvent { Inner: TurnCompleted }:
-                                Console.WriteLine();
+                                if (!subagentAtLineStart) Console.WriteLine();
+                                subagentAtLineStart = true;
                                 break;
-                            case SubagentEvent { Inner: Error innerError }:
-                                Console.Error.WriteLine($"\n>>>> [error] {innerError.Message}");
+                            case SubagentEvent { Inner: Error { Message: var saMsg } }:
+                                if (!subagentAtLineStart) Console.Error.WriteLine();
+                                Console.Error.WriteLine($">>>> [error] {saMsg}");
+                                subagentAtLineStart = true;
                                 break;
                         }
                         return ValueTask.CompletedTask;
@@ -125,7 +135,7 @@ internal static class ChatCommand
                             : "";
 
                         Console.Error.Write(
-                            $"\nAllow {req.OperationType} on '{req.Target}' by '{req.RequestingExtension}'?"
+                            $"Allow {req.OperationType} on '{req.Target}' by '{req.RequestingExtension}'?"
                             + $" (y/n{scopeHints}): ");
 
                         var input = Console.ReadLine()?.Trim().ToLowerInvariant();
@@ -181,13 +191,12 @@ internal static class ChatCommand
                     switch (evt)
                     {
                         case ResponseChunk chunk:
-                            // Write text as it arrives — no newline between chunks so the
-                            // streaming output reads as a single flowing paragraph.
-                            Console.Write(chunk.Text);
+                            if (!string.IsNullOrWhiteSpace(chunk.Text))
+                                Console.Write(chunk.Text);
                             break;
 
                         case ToolCallStarted started:
-                            await Console.Error.WriteLineAsync($"\n[tool: {started.FormatCall()}]");
+                            await Console.Error.WriteLineAsync($"[tool: {started.FormatCall()}]");
                             break;
 
                         case ToolCallCompleted completed:
@@ -207,7 +216,7 @@ internal static class ChatCommand
                             break;
 
                         case Error error:
-                            await Console.Error.WriteLineAsync($"\n[error] {error.Message}");
+                            await Console.Error.WriteLineAsync($"[error] {error.Message}");
                             if (error.IsFatal)
                                 return 1;
                             break;

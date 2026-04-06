@@ -2,7 +2,9 @@ using System.Runtime.CompilerServices;
 using Microsoft.Extensions.AI;
 using Ur.AgentLoop;
 using Ur.Configuration;
+using Ur.Permissions;
 using Ur.Tests.TestSupport;
+using Ur.Tools;
 
 namespace Ur.Tests;
 
@@ -436,6 +438,86 @@ public class HostSessionApiTests
             {
             }
         });
+    }
+
+    [Fact]
+    public async Task RunTurnAsync_SubagentEventEmitted_RelaysSubagentEventsToHostCallback()
+    {
+        // Regression test: BuildWrappedCallbacks() built a new TurnCallbacks with only
+        // RequestPermissionAsync, silently dropping SubagentEventEmitted. This meant
+        // SubagentRunner never had the relay callback and subagent events never reached
+        // the parent UI — tool calls the subagent made were invisible to the host.
+        using var workspace = new TempWorkspace();
+
+        // Three sequential responses from the same client instance (parent and subagent share it):
+        //   Call 1 — parent first turn: call run_subagent
+        //   Call 2 — subagent inner loop: return text (the subagent's "work")
+        //   Call 3 — parent second turn (after subagent result): final response
+        var client = new SequentialResponseClient(
+            [new FunctionCallContent("cid-1", SubagentTool.ToolName, new Dictionary<string, object?> { ["task"] = "do a thing" })],
+            [new TextContent("subagent result")],
+            [new TextContent("all done")]
+        );
+
+        var host = await CreateHostAsync(workspace, chatClientFactory: _ => client);
+        await host.Configuration.SetApiKeyAsync("test-key");
+        await host.Configuration.SetSelectedModelAsync("test-model");
+
+        var relayedEvents = new List<AgentLoopEvent>();
+        var callbacks = new TurnCallbacks
+        {
+            // Record every relayed sub-agent event — this is what the bug suppressed.
+            SubagentEventEmitted = evt =>
+            {
+                relayedEvents.Add(evt);
+                return ValueTask.CompletedTask;
+            },
+            // Auto-approve run_subagent so the tool actually executes.
+            RequestPermissionAsync = (_, _) =>
+                ValueTask.FromResult(new PermissionResponse(true, PermissionScope.Once))
+        };
+
+        var session = host.CreateSession(callbacks);
+        await CollectEventsAsync(session.RunTurnAsync("please delegate to a subagent"));
+
+        // The subagent's ResponseChunk and TurnCompleted must have been relayed.
+        // Before the fix, relayedEvents was always empty.
+        Assert.NotEmpty(relayedEvents);
+        Assert.Contains(relayedEvents, e => e is SubagentEvent { Inner: ResponseChunk });
+        Assert.Contains(relayedEvents, e => e is SubagentEvent { Inner: TurnCompleted });
+    }
+
+    /// <summary>
+    /// Returns a predetermined sequence of content lists for successive streaming calls.
+    /// Both the parent AgentLoop and the subagent's AgentLoop share the same client
+    /// instance, so call order reflects: parent call 1, subagent call 1, parent call 2, etc.
+    /// </summary>
+    private sealed class SequentialResponseClient(params IList<AIContent>[] responseSequence) : IChatClient
+    {
+        private int _callIndex;
+
+        public Task<ChatResponse> GetResponseAsync(
+            IEnumerable<ChatMessage> messages,
+            ChatOptions? options = null,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException("Uses streaming only");
+
+        public async IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
+            IEnumerable<ChatMessage> messages,
+            ChatOptions? options = null,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            var index = Interlocked.Increment(ref _callIndex) - 1;
+            var contents = index < responseSequence.Length
+                ? responseSequence[index]
+                : [new TextContent("(no more responses)")];
+
+            yield return new ChatResponseUpdate { Role = ChatRole.Assistant, Contents = [..contents] };
+            await Task.CompletedTask;
+        }
+
+        public object? GetService(Type serviceType, object? serviceKey = null) => null;
+        public void Dispose() { }
     }
 
     private sealed class FakeChatClient(string responseText) : IChatClient

@@ -2,19 +2,12 @@
 # Builds Ur.Tui and Boo, sets up an isolated temp workspace with a sample
 # skill and extension, then launches a visible Boo session pointing at
 # Ur.Tui. Tear down with: cd boo && uv run boo stop && rm -rf /tmp/ur-tui-test
-#
-# Usage: ./scripts/boo.sh [--headless]
 
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WORKSPACE="/tmp/ur-tui-test"
 UR_TUI="$REPO_ROOT/src/Ur.Tui/bin/Debug/net10.0/Ur.Tui"
-
-visible="--visible"
-if [[ "${1:-}" == "--headless" ]]; then
-  visible=""
-fi
 
 # --- Build -------------------------------------------------------------------
 
@@ -95,7 +88,7 @@ EXT_EOF
 echo "==> Launching Boo session..."
 cd "$REPO_ROOT/boo"
 uv run boo start "cd $WORKSPACE && $UR_TUI" \
-    --cols 120 --rows 50 $visible
+    --cols 120 --rows 50
 
 echo ""
 echo "Session is up. Quick-start:"

@@ -12,7 +12,9 @@ dotnet publish "$REPO_ROOT/src/Ur.Tui/Ur.Tui.csproj" \
     --output "$REPO_ROOT/publish"
 
 # Install the binary to ~/.local/bin/ur.
+# Remove existing binary first to avoid "Text file busy" error when overwriting a running executable.
 mkdir -p "$INSTALL_DIR"
+rm -f "$INSTALL_DIR/ur"
 cp "$REPO_ROOT/publish/Ur.Tui" "$INSTALL_DIR/ur"
 chmod +x "$INSTALL_DIR/ur"
 

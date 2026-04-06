@@ -34,9 +34,9 @@ internal sealed class SubagentTool(ISubagentRunner runner) : AIFunction, IToolMe
     // files, run bash commands, etc.) — prompt the user before each invocation.
     OperationType IToolMeta.OperationType => OperationType.Execute;
 
-    // There is no single "target" argument — the task string is the target.
-    // TargetExtractors.FromKey("task") extracts it for the permission prompt.
-    ITargetExtractor IToolMeta.TargetExtractor => TargetExtractors.FromKey("task");
+    // The task string is the target for the permission prompt, but it can be
+    // arbitrarily long — truncate so it fits on a single terminal line.
+    ITargetExtractor IToolMeta.TargetExtractor => TargetExtractors.FromKeyTruncated("task");
 
     private static readonly JsonElement Schema = JsonDocument.Parse("""
         {

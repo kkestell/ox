@@ -31,7 +31,6 @@ def run_daemon(
     socket_path: str = DEFAULT_SOCKET_PATH,
     cols: int = 80,
     rows: int = 24,
-    visible: bool = False,
 ) -> None:
     """Launch a boo Session and serve commands over a Unix domain socket.
 
@@ -53,7 +52,6 @@ def run_daemon(
         command,
         cols=cols,
         rows=rows,
-        visible=visible,
     )
 
     server_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -292,7 +290,6 @@ def _main() -> None:
     parser.add_argument("--socket", default=DEFAULT_SOCKET_PATH)
     parser.add_argument("--cols", type=int, default=80)
     parser.add_argument("--rows", type=int, default=24)
-    parser.add_argument("--visible", action="store_true", default=False)
     args = parser.parse_args()
 
     run_daemon(
@@ -300,7 +297,6 @@ def _main() -> None:
         socket_path=args.socket,
         cols=args.cols,
         rows=args.rows,
-        visible=args.visible,
     )
 
 

@@ -42,17 +42,6 @@ def main(argv: list[str] | None = None) -> None:
     start_parser.add_argument("cmd", help="Shell command to run in the session")
     start_parser.add_argument("--cols", type=int, default=80, help="Terminal columns")
     start_parser.add_argument("--rows", type=int, default=24, help="Terminal rows")
-    # Mutually exclusive: --visible shows the SDL window, --headless (default)
-    # runs without one.  Only one can be specified.
-    visibility = start_parser.add_mutually_exclusive_group()
-    visibility.add_argument(
-        "--visible", action="store_true", default=False,
-        help="Show the SDL window",
-    )
-    visibility.add_argument(
-        "--headless", action="store_true", default=False,
-        help="Run headless, no SDL window (default)",
-    )
 
     # -- boo screen --------------------------------------------------------
     screen_parser = subparsers.add_parser("screen", help="Print the current screen")
@@ -121,8 +110,6 @@ def _cmd_start(args: argparse.Namespace) -> None:
         "--cols", str(args.cols),
         "--rows", str(args.rows),
     ]
-    if args.visible:
-        daemon_cmd.append("--visible")
 
     # Launch the daemon as a detached subprocess.  stdout is piped so we
     # can wait for the "ready" signal; stderr goes to our stderr for

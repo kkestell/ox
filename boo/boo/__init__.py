@@ -415,7 +415,6 @@ class Session:
         font_size: int = 16,
         padding: int = 4,
         capture_output: bool = False,
-        visible: bool = True,
         window_title: str = "boo",
     ) -> Session:
         handle = _NATIVE.lib.boo_session_new()
@@ -434,7 +433,7 @@ class Session:
                 padding=padding,
                 cwd=cls._encode_optional_path(cwd),
                 env=env_array,
-                visible=visible,
+                visible=True,
                 window_title=window_title.encode("utf-8"),
             )
             # ctypes arrays must stay alive for the native launch call.
@@ -939,7 +938,6 @@ def launch(
     font_size: int = 16,
     padding: int = 4,
     capture_output: bool = False,
-    visible: bool = True,
     window_title: str = "boo",
 ) -> Session:
     return Session.launch(
@@ -951,7 +949,6 @@ def launch(
         font_size=font_size,
         padding=padding,
         capture_output=capture_output,
-        visible=visible,
         window_title=window_title,
     )
 

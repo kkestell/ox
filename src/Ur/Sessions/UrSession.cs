@@ -220,6 +220,10 @@ public sealed class UrSession
     {
         return new TurnCallbacks
         {
+            // Pass SubagentEventEmitted through unchanged — the session layer has no
+            // reason to intercept these; they belong entirely to the UI layer.
+            SubagentEventEmitted = _hostCallbacks?.SubagentEventEmitted,
+
             RequestPermissionAsync = async (request, innerCt) =>
             {
                 // Grant store covers it — no need to bother the user.

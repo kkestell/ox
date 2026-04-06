@@ -33,6 +33,14 @@ public static class TargetExtractors
         => new KeyExtractor(key, fallback);
 
     /// <summary>
+    /// Like <see cref="FromKey"/>, but truncates long values to <paramref name="maxLength"/>
+    /// characters with an ellipsis. Used for free-text arguments like task descriptions
+    /// where the full value would overflow a permission prompt line.
+    /// </summary>
+    public static ITargetExtractor FromKeyTruncated(string key, int maxLength = 60, string fallback = "(unknown)")
+        => new TruncatingKeyExtractor(key, maxLength, fallback);
+
+    /// <summary>
     /// Single-key string extractor. Delegates to <see cref="ToolArgHelpers.GetOptionalString"/>
     /// for consistent coercion of <see cref="System.Text.Json.JsonElement"/> values.
     /// </summary>
@@ -45,6 +53,17 @@ public static class TargetExtractors
             var dict = new Dictionary<string, object?>(arguments);
             var wrapped = new Microsoft.Extensions.AI.AIFunctionArguments(dict);
             return ToolArgHelpers.GetOptionalString(wrapped, key) ?? fallback;
+        }
+    }
+
+    private sealed class TruncatingKeyExtractor(string key, int maxLength, string fallback) : ITargetExtractor
+    {
+        public string Extract(IReadOnlyDictionary<string, object?> arguments)
+        {
+            var dict = new Dictionary<string, object?>(arguments);
+            var wrapped = new Microsoft.Extensions.AI.AIFunctionArguments(dict);
+            var value = ToolArgHelpers.GetOptionalString(wrapped, key) ?? fallback;
+            return value.Length <= maxLength ? value : value[..maxLength] + "…";
         }
     }
 }
