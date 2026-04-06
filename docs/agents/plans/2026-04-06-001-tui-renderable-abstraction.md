@@ -91,7 +91,7 @@ The core `Ur` library (`AgentLoopEvent`, `TurnCallbacks`, `ToolInvoker`, `Subage
 
 ### Phase 1: Terminal abstraction
 
-- [ ] Create `src/Ur.Tui/Rendering/Terminal.cs` — static class wrapping low-level ANSI operations:
+- [x] Create `src/Ur.Tui/Rendering/Terminal.cs` — static class wrapping low-level ANSI operations:
   - `EnterAlternateBuffer()` / `ExitAlternateBuffer()` — `\e[?1049h` / `\e[?1049l`
   - `MoveCursor(row, col)` — `\e[{row};{col}H`
   - `ClearScreen()` — `\e[2J`
@@ -103,7 +103,7 @@ The core `Ur` library (`AgentLoopEvent`, `TurnCallbacks`, `ToolInvoker`, `Subage
 
 ### Phase 2: IRenderable and concrete types
 
-- [ ] Create `src/Ur.Tui/Rendering/IRenderable.cs`:
+- [x] Create `src/Ur.Tui/Rendering/IRenderable.cs`:
   ```csharp
   // Core display contract. Every visual element in the conversation implements this.
   // Renderables are "live" — their content can change, and the Changed event signals
@@ -119,13 +119,13 @@ The core `Ur` library (`AgentLoopEvent`, `TurnCallbacks`, `ToolInvoker`, `Subage
   }
   ```
 
-- [ ] Create `src/Ur.Tui/Rendering/TextRenderable.cs`:
+- [x] Create `src/Ur.Tui/Rendering/TextRenderable.cs`:
   - Implements `IRenderable`. Used for streaming assistant messages and user messages.
   - `Append(string chunk)` — appends text and fires `Changed`.
   - `Render()` splits accumulated text into word-wrapped lines.
   - Optional: prefix/style (e.g., dim for user messages vs. normal for assistant).
 
-- [ ] Create `src/Ur.Tui/Rendering/ToolRenderable.cs`:
+- [x] Create `src/Ur.Tui/Rendering/ToolRenderable.cs`:
   - Implements `IRenderable`. Represents the full lifecycle of a single tool call.
   - Internal state enum: `Started`, `AwaitingApproval`, `Completed`.
   - Constructed with `ToolCallStarted` data (tool name, formatted args).
@@ -137,7 +137,7 @@ The core `Ur` library (`AgentLoopEvent`, `TurnCallbacks`, `ToolInvoker`, `Subage
     - Completed: `{DarkGray}tool_name(arg: "val") -> ok{Reset}` or `-> error`
   - All rendered in dark gray like today, but with state-dependent suffixes.
 
-- [ ] Create `src/Ur.Tui/Rendering/SubagentRenderable.cs`:
+- [x] Create `src/Ur.Tui/Rendering/SubagentRenderable.cs`:
   - Implements `IRenderable`. Groups all events from a single subagent run.
   - Contains an inner list of child `IRenderable` objects (the subagent's own text, tools, etc.).
   - `AddChild(IRenderable child)` — appends and subscribes to child's `Changed`.
@@ -148,7 +148,7 @@ The core `Ur` library (`AgentLoopEvent`, `TurnCallbacks`, `ToolInvoker`, `Subage
   - `SetCompleted()` — marks the subagent as done, fires `Changed`.
   - `SubagentId` property for event routing.
 
-- [ ] Create `src/Ur.Tui/Rendering/EventList.cs`:
+- [x] Create `src/Ur.Tui/Rendering/EventList.cs`:
   - Implements `IRenderable`. The root container for the conversation.
   - `Add(IRenderable child)` — appends child, subscribes to its `Changed`, fires own `Changed`.
   - `Render()` concatenates all children's rendered lines.
@@ -156,7 +156,7 @@ The core `Ur` library (`AgentLoopEvent`, `TurnCallbacks`, `ToolInvoker`, `Subage
 
 ### Phase 3: Viewport / display engine
 
-- [ ] Create `src/Ur.Tui/Rendering/Viewport.cs`:
+- [x] Create `src/Ur.Tui/Rendering/Viewport.cs`:
   - Owns the `EventList` root renderable.
   - Manages the screen layout: conversation area (rows 1 through H-1), input row (row H).
   - `Redraw()` method:
@@ -171,7 +171,7 @@ The core `Ur` library (`AgentLoopEvent`, `TurnCallbacks`, `ToolInvoker`, `Subage
 
 ### Phase 4: Event routing (rewrite Program.cs)
 
-- [ ] Replace `RenderEvent()` and static state variables with an event router:
+- [x] Replace `RenderEvent()` and static state variables with an event router:
   - Maintain a `Dictionary<string, SubagentRenderable>` mapping subagent IDs to their renderables.
   - Maintain a reference to the "current" `TextRenderable` (for streaming chunks) and `ToolRenderable` (for correlating started/completed events by `CallId`).
   - Maintain a `Dictionary<string, ToolRenderable>` mapping `CallId` to renderable for tool correlation.
@@ -187,11 +187,11 @@ The core `Ur` library (`AgentLoopEvent`, `TurnCallbacks`, `ToolInvoker`, `Subage
     - `Error` -> create a `TextRenderable` with error styling, add to `EventList`.
   - For the `run_subagent` tool specifically: when `ToolCallStarted { ToolName: "run_subagent" }` arrives, create a `SubagentRenderable` (not a `ToolRenderable`) and store it keyed by the call ID. The subsequent `SubagentEvent` callbacks populate it. When `ToolCallCompleted` arrives for `run_subagent`, finalize the `SubagentRenderable`.
 
-- [ ] Rewrite `BuildCallbacks()`:
+- [x] Rewrite `BuildCallbacks()`:
   - `SubagentEventEmitted`: route the `SubagentEvent` to the appropriate `SubagentRenderable` (look up by `SubagentId`). The viewport auto-redraws via the `Changed` event chain.
   - `RequestPermissionAsync`: transition the relevant `ToolRenderable` to `AwaitingApproval` state. Update the viewport's input prompt to show the permission question. Read user input from the input area. Parse the response. Transition the `ToolRenderable` based on the decision. Restore the input prompt.
 
-- [ ] Rewrite the REPL loop in `Main()`:
+- [x] Rewrite the REPL loop in `Main()`:
   - On startup: create `Viewport`, call `Start()`.
   - Register cleanup: `AppDomain.ProcessExit` and `Console.CancelKeyPress` both call `viewport.Stop()` to restore the terminal.
   - Idle state: input row shows `> `, user types, Enter sends.
