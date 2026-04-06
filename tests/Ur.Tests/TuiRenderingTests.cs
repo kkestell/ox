@@ -267,20 +267,21 @@ public sealed class SubagentRenderableTests
     [Fact]
     public void Render_InnerRowsAreIndentedByIndentWidth()
     {
-        // All rows between header and footer must start with IndentWidth (4) space cells.
-        // The inner EventList's own chrome (margin + bar + pad) sits after the indent.
+        // Inner rows are prepended with IndentWidth space cells. With IndentWidth=0 the
+        // inner EventList's own chrome (margin at col 0, bar at col 1) appears directly
+        // without any leading offset — verifying no spurious cells are inserted.
         var r     = new SubagentRenderable("xyz");
         var child = new TextRenderable();
         child.SetText("hello");
         r.AddChild(child, BubbleStyle.System);
 
         var rows = r.Render(40);
-        // rows[0] = header, rows[last] = footer; everything in between is indented.
-        for (var i = 1; i < rows.Count - 1; i++)
-        {
-            for (var col = 0; col < 4; col++)
-                Assert.Equal(' ', rows[i].Cells[col].Rune);
-        }
+        // rows[0] = header, rows[last] = footer.
+        // The content row (inner EventList chrome) must have the EventList's own left
+        // margin at col 0 and bar glyph at col 1 — no extra indent cells before them.
+        var contentRow = rows.Skip(1).First(r => r.Cells.Any(c => c.Rune == '▎'));
+        Assert.Equal(' ',  contentRow.Cells[0].Rune); // inner EventList margin
+        Assert.Equal('▎', contentRow.Cells[1].Rune); // bar glyph at col 1, no indent offset
     }
 
     [Fact]
@@ -298,10 +299,10 @@ public sealed class SubagentRenderableTests
     public void Render_TailClips_WhenInnerRowsExceedMaxInnerRows()
     {
         // Each child in a System bubble produces 3 inner rows (top-pad, content, bottom-pad)
-        // plus 1 blank separator (except the first). Five children: 3*5 + 4 = 19 inner rows,
-        // which exceeds MaxInnerRows (10). The visible count must be capped.
+        // plus 1 blank separator (except the first). Seven children: 3*7 + 6 = 27 inner rows,
+        // which exceeds MaxInnerRows (20). The visible count must be capped to exactly 20.
         var r = new SubagentRenderable("clip-test");
-        for (var i = 0; i < 5; i++)
+        for (var i = 0; i < 7; i++)
         {
             var child = new TextRenderable();
             child.SetText($"line {i}");
@@ -310,8 +311,8 @@ public sealed class SubagentRenderableTests
 
         var rows = r.Render(80);
         var innerRowCount = rows.Count - 2; // subtract header + footer
-        // 5 children × 3 rows + 4 separators = 19 inner rows → tail-clip to exactly 10.
-        Assert.Equal(10, innerRowCount);
+        // 7 children × 3 rows + 6 separators = 27 inner rows → tail-clip to exactly 20.
+        Assert.Equal(20, innerRowCount);
     }
 
     [Fact]
