@@ -7,6 +7,7 @@ using Ur;
 using Ur.AgentLoop;
 using Ur.Configuration;
 using Ur.Hosting;
+using Ur.Skills;
 using Ur.Tui;
 using Ur.Tui.Rendering;
 
@@ -34,6 +35,7 @@ await builder.Build().RunAsync();
 /// </summary>
 internal sealed class TuiService(
     UrHost host,
+    CommandRegistry commands,
     IHostApplicationLifetime lifetime,
     ILogger<TuiService> logger) : BackgroundService
 {
@@ -69,7 +71,11 @@ internal sealed class TuiService(
         };
 
         // --- Configuration check (pre-viewport, plain console I/O) ---
-        var inputReader = new InputReader();
+        // AutocompleteEngine is created here so it's available to InputReader
+        // for the REPL phase. EnsureReadyAsync uses ReadLine (not viewport-mode),
+        // so autocomplete doesn't apply there — it activates in the REPL below.
+        var autocomplete = new AutocompleteEngine(commands);
+        var inputReader = new InputReader(autocomplete);
         if (!await EnsureReadyAsync(host, inputReader, stoppingToken))
         {
             lifetime.StopApplication();
@@ -89,7 +95,8 @@ internal sealed class TuiService(
         {
             while (!stoppingToken.IsCancellationRequested)
             {
-                var input = inputReader.ReadLineInViewport("❯ ", viewport.SetInputPrompt, stoppingToken);
+                var input = inputReader.ReadLineInViewport(
+                    "❯ ", viewport.SetInputPrompt, viewport.SetCompletion, stoppingToken);
 
                 // null = EOF (Ctrl+D) or cancellation.
                 if (input is null)

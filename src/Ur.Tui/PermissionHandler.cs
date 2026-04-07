@@ -47,8 +47,9 @@ internal static class PermissionHandler
                     + $" (y/n{scopeHints}): ";
 
                 // InputReader internally pauses the escape monitor while reading,
-                // so no external flag management is needed.
-                var input = inputReader.ReadLineInViewport(promptText, viewport.SetInputPrompt, ct);
+                // so no external flag management is needed. Permission prompts don't
+                // use autocomplete — pass null for onCompletionChanged.
+                var input = inputReader.ReadLineInViewport(promptText, viewport.SetInputPrompt, null, ct);
 
                 input = input?.Trim().ToLowerInvariant();
 

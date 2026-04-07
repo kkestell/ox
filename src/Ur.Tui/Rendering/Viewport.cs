@@ -38,6 +38,11 @@ internal sealed class Viewport : IDisposable
     // Redraw() call so the input area always reflects the latest state.
     private string _inputPrompt = "❯ ";
 
+    // Ghost-text completion suffix currently visible in the input row.
+    // Null when no completion is active. Set by InputReader via the
+    // onCompletionChanged callback, rendered by RenderInputArea.
+    private string? _completionSuffix;
+
     // Background timer that drives redraws at ~30 fps when dirty.
     private readonly Timer _redrawTimer;
 
@@ -144,6 +149,17 @@ internal sealed class Viewport : IDisposable
     public void SetInputPrompt(string prompt)
     {
         _inputPrompt = prompt;
+        _dirty = true;
+    }
+
+    /// <summary>
+    /// Sets the ghost-text completion suffix shown in the input row and triggers
+    /// an immediate redraw. Pass null to clear the ghost text (e.g. after Tab
+    /// accepts the completion or the user presses Enter or Backspace).
+    /// </summary>
+    public void SetCompletion(string? suffix)
+    {
+        _completionSuffix = suffix;
         _dirty = true;
     }
 
@@ -299,10 +315,28 @@ internal sealed class Viewport : IDisposable
         {
             textRow.Append(_inputPrompt, Color.White, Color.Default);
         }
-        // Hide the block cursor while a turn is running — the throbber already
-        // communicates activity and the input row isn't accepting input anyway.
+
+        // Ghost-text rendering: when a completion suffix is active and the
+        // input is accepting keystrokes, show the suggestion in gray. The first
+        // ghost character is rendered with CellStyle.Reverse so the block cursor
+        // appears to "sit on" it — this makes the suggestion feel interactive.
+        // Remaining ghost characters are plain BrightBlack (dim gray).
+        // When no ghost text is active, fall back to the standard blank
+        // reverse-video cursor cell.
         if (!_turnRunning)
-            textRow.Append(' ', Color.Default, Color.Default, CellStyle.Reverse);
+        {
+            if (!string.IsNullOrEmpty(_completionSuffix))
+            {
+                textRow.Append(_completionSuffix[0], Color.BrightBlack, Color.Default, CellStyle.Reverse);
+                if (_completionSuffix.Length > 1)
+                    textRow.Append(_completionSuffix[1..], Color.BrightBlack, Color.Default);
+            }
+            else
+            {
+                textRow.Append(' ', Color.Default, Color.Default, CellStyle.Reverse);
+            }
+        }
+
         buffer.WriteRow(viewportHeight + HeaderRows + 1, textRow);
 
         // Bottom rule: light horizontal line spanning the full width.

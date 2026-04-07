@@ -101,23 +101,26 @@ public sealed class UrSession
             throw new ChatNotReadyException(readiness);
 
         // Slash command interception: if the input starts with "/", treat it as
-        // a skill invocation. Look up the skill, expand its template, and replace
-        // the user input with the expanded content wrapped in tags so the model
-        // knows it came from a skill invocation.
+        // either a built-in command or a skill invocation. Built-ins are handled
+        // here without reaching the LLM (execution is follow-up work). Skills
+        // expand their template and replace the user input with tagged content.
         var effectiveInput = userInput;
         if (userInput.StartsWith('/') && userInput.Length > 1)
         {
-            var expanded = TryExpandSlashCommand(userInput);
-            if (expanded is null)
+            if (!TryExpandSlashCommand(userInput, out var expanded))
             {
-                // Unknown skill or not user-invocable — emit an error and stop the turn.
+                // Unknown command — not a built-in and not a user-invocable skill.
                 yield return new AgentLoop.TurnError
                 {
-                    Message = $"Unknown skill: {SlashCommandParser.ParseName(userInput)}",
+                    Message = $"Unknown command: {SlashCommandParser.ParseName(userInput)}",
                     IsFatal = false
                 };
                 yield break;
             }
+
+            // expanded == null means a built-in was intercepted; stop the turn here.
+            if (expanded is null)
+                yield break;
 
             effectiveInput = expanded;
         }
@@ -198,23 +201,40 @@ public sealed class UrSession
     }
 
     /// <summary>
-    /// Attempts to expand a slash command into a skill invocation. Returns the
-    /// expanded content wrapped in tags, or null if the skill is not found or
-    /// not user-invocable. Delegates parsing and formatting to
-    /// <see cref="SlashCommandParser"/> — this method only coordinates the lookup
-    /// and expansion.
+    /// Attempts to handle a slash command. Returns true if the command was
+    /// recognized (either as a built-in or a user-invocable skill), false if
+    /// unknown. When true, <paramref name="expansion"/> is:
+    ///   - null   → a built-in command was intercepted; the turn should end here
+    ///              without sending anything to the LLM (execution is follow-up work).
+    ///   - non-null → a skill was expanded; use the value as the effective LLM input.
+    ///
+    /// Built-in commands are checked first so they always take priority over any
+    /// skill with the same name. Delegates parsing and formatting to
+    /// <see cref="SlashCommandParser"/>.
     /// </summary>
-    private string? TryExpandSlashCommand(string input)
+    private bool TryExpandSlashCommand(string input, out string? expansion)
     {
-        var skillName = SlashCommandParser.ParseName(input);
-        var args = SlashCommandParser.ParseArgs(input);
+        var commandName = SlashCommandParser.ParseName(input);
 
-        var skill = _host.Skills.Get(skillName);
+        // Built-in interception: log and swallow — actual execution is future work.
+        if (_host.BuiltInCommands.Get(commandName) is not null)
+        {
+            _logger.LogInformation("Built-in command /{Name} invoked (not yet implemented)", commandName);
+            expansion = null;
+            return true;
+        }
+
+        var args = SlashCommandParser.ParseArgs(input);
+        var skill = _host.Skills.Get(commandName);
         if (skill is null || !skill.UserInvocable)
-            return null;
+        {
+            expansion = null;
+            return false;
+        }
 
         var expanded = SkillExpander.Expand(skill, args, _session.Id);
-        return SlashCommandParser.FormatExpansion(skillName, args, expanded);
+        expansion = SlashCommandParser.FormatExpansion(commandName, args, expanded);
+        return true;
     }
 
     /// <summary>

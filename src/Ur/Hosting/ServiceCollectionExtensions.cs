@@ -151,6 +151,14 @@ public static class ServiceCollectionExtensions
             return new SkillRegistry(skills);
         });
 
+        // BuiltInCommandRegistry is a fixed, code-defined list of first-party slash commands.
+        // CommandRegistry merges built-ins and skills into the single ordered list that
+        // autocomplete uses for prefix matching. Both are immutable after construction.
+        services.AddSingleton<BuiltInCommandRegistry>();
+        services.AddSingleton(sp => new CommandRegistry(
+            sp.GetRequiredService<BuiltInCommandRegistry>(),
+            sp.GetRequiredService<SkillRegistry>()));
+
         services.AddSingleton(sp => new UrConfiguration(
             sp.GetRequiredService<ModelCatalog>(),
             sp.GetRequiredService<IOptionsMonitor<UrOptions>>(),
@@ -164,6 +172,7 @@ public static class ServiceCollectionExtensions
             sp.GetRequiredService<SessionStore>(),
             sp.GetRequiredService<ExtensionCatalog>(),
             sp.GetRequiredService<SkillRegistry>(),
+            sp.GetRequiredService<BuiltInCommandRegistry>(),
             sp.GetRequiredService<SettingsSchemaRegistry>(),
             sp.GetRequiredService<UrConfiguration>(),
             sp.GetRequiredService<ILoggerFactory>(),

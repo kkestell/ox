@@ -187,6 +187,47 @@ uv run boo alive
 # Expect: "not alive" (exit code 1 from boo alive)
 ```
 
+### 13. Slash command autocomplete
+
+```bash
+# Type "/p" — first matching command (e.g. /plan or whatever starts with "p")
+# should appear with the suffix in gray and the cursor block on the first gray char.
+uv run boo type /p
+uv run boo screen
+# Expect: "/p" in white, completion suffix in gray, cursor on first gray character.
+
+# Accept the completion with Tab.
+uv run boo press tab
+uv run boo screen
+# Expect: full command name in white (e.g. "/plan"), no ghost text, cursor at end.
+
+# Clear the input and test "/cl" — matches "/clear" (first) and "/clamp" (second).
+uv run boo press backspace
+uv run boo press backspace
+uv run boo press backspace
+uv run boo press backspace
+uv run boo press backspace
+uv run boo type /cl
+uv run boo screen
+# Expect: ghost text shows "ear" (from /clear — first registered match wins).
+
+# Clear and test no-match case.
+uv run boo press backspace
+uv run boo press backspace
+uv run boo press backspace
+uv run boo press backspace
+uv run boo type /xyz
+uv run boo screen
+# Expect: no ghost text visible — cursor is the plain reverse-video blank cell.
+
+# Clear the buffer before the next test.
+uv run boo press backspace
+uv run boo press backspace
+uv run boo press backspace
+uv run boo press backspace
+uv run boo stop
+```
+
 ### Cleanup
 
 ```bash

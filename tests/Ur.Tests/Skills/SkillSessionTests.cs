@@ -106,7 +106,7 @@ public sealed class SkillSessionTests : IDisposable
         var events = await CollectAsync(session.RunTurnAsync("/nonexistent"));
 
         var error = Assert.Single(events.OfType<TurnError>());
-        Assert.Contains("Unknown skill", error.Message);
+        Assert.Contains("Unknown command", error.Message);
         Assert.False(error.IsFatal);
 
         // No messages should have been persisted — the turn aborted early.
@@ -126,7 +126,7 @@ public sealed class SkillSessionTests : IDisposable
         var events = await CollectAsync(session.RunTurnAsync("/hidden"));
 
         var error = Assert.Single(events.OfType<TurnError>());
-        Assert.Contains("Unknown skill", error.Message);
+        Assert.Contains("Unknown command", error.Message);
         Assert.Empty(session.Messages);
     }
 

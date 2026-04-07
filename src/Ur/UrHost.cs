@@ -54,6 +54,12 @@ public sealed class UrHost
     internal SkillRegistry Skills { get; }
 
     /// <summary>
+    /// The built-in command registry. Exposed internally so UrSession can intercept
+    /// built-in commands before they reach the LLM.
+    /// </summary>
+    internal BuiltInCommandRegistry BuiltInCommands { get; }
+
+    /// <summary>
     /// The settings schema registry. Exposed internally so tests can register
     /// additional schemas for validation tests without reflection.
     /// </summary>
@@ -74,6 +80,7 @@ public sealed class UrHost
         SessionStore sessions,
         ExtensionCatalog extensions,
         SkillRegistry skills,
+        BuiltInCommandRegistry builtInCommands,
         SettingsSchemaRegistry settingsSchemas,
         UrConfiguration configuration,
         ILoggerFactory loggerFactory,
@@ -83,6 +90,7 @@ public sealed class UrHost
         _sessions = sessions;
         Extensions = extensions;
         Skills = skills;
+        BuiltInCommands = builtInCommands;
         SettingsSchemas = settingsSchemas;
         Configuration = configuration;
         _loggerFactory = loggerFactory;
