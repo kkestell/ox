@@ -53,6 +53,12 @@ public sealed class UrHost
     internal SkillRegistry Skills { get; }
 
     /// <summary>
+    /// The settings schema registry. Exposed internally so tests can register
+    /// additional schemas for validation tests without reflection.
+    /// </summary>
+    internal SettingsSchemaRegistry SettingsSchemas { get; }
+
+    /// <summary>
     /// Logger factory passed to per-turn objects (AgentLoop, SubagentRunner) that
     /// can't be DI-injected because they're created procedurally with per-call parameters.
     /// </summary>
@@ -67,6 +73,7 @@ public sealed class UrHost
         SessionStore sessions,
         ExtensionCatalog extensions,
         SkillRegistry skills,
+        SettingsSchemaRegistry settingsSchemas,
         UrConfiguration configuration,
         ILoggerFactory loggerFactory,
         UrStartupOptions options)
@@ -75,6 +82,7 @@ public sealed class UrHost
         _sessions = sessions;
         Extensions = extensions;
         Skills = skills;
+        SettingsSchemas = settingsSchemas;
         Configuration = configuration;
         _loggerFactory = loggerFactory;
         _userDataDirectory = options.UserDataDirectory

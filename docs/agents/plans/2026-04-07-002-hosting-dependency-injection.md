@@ -284,17 +284,17 @@ Wire both entry points through `IHost`. Register all services as singletons. Del
 
 ### Phase 4: Migrate configuration to IConfiguration / IOptions<T>
 
-- [ ] Add `Microsoft.Extensions.Configuration` and `Microsoft.Extensions.Options` to `Ur.csproj`.
-- [ ] Create `src/Ur/Configuration/UrOptions.cs`: `public sealed class UrOptions { public string? ModelId { get; set; } }`
-- [ ] Create `src/Ur/Configuration/UrSettingsConfigurationProvider.cs` — reads a single nested-JSON `settings.json` file into `Data`. Keys map directly to `IConfiguration`'s colon-separated model (e.g., `{"ur": {"model": "gpt-4"}}` → `ur:model`).
-- [ ] Create `src/Ur/Configuration/UrSettingsConfigurationSource.cs` wrapping the provider.
-- [ ] Register both providers in `AddUr()` (user file first, workspace file second for override semantics). Bind `IOptions<UrOptions>` to `config.GetSection("ur")`.
-- [ ] Create `src/Ur/Configuration/SettingsWriter.cs` — validates against `SettingsSchemaRegistry`, writes nested JSON to the correct file, calls `IConfigurationRoot.Reload()`.
-- [ ] Add a one-time migration in the configuration provider's `Load()`: if the settings file contains flat dot-namespaced keys (e.g., `"ur.model"`), convert to nested format (`{"ur": {"model": ...}}`) and rewrite the file. This handles existing installations transparently.
-- [ ] Rebuild `UrConfiguration` internals to use `IOptionsMonitor<UrOptions>` + `IKeyring` + `ModelCatalog` + `IConfiguration` + `SettingsWriter`. Public API unchanged.
-- [ ] Delete `src/Ur/Configuration/Settings.cs` and `src/Ur/Configuration/SettingsLoader.cs`.
-- [ ] Update `AddUr()` to register the configuration pipeline instead of `Settings`/`SettingsLoader`.
-- [ ] Verify all tests pass. Verify `ur config get/set/clear` round-trips correctly.
+- [x] Add `Microsoft.Extensions.Configuration` and `Microsoft.Extensions.Options` to `Ur.csproj`.
+- [x] Create `src/Ur/Configuration/UrOptions.cs`: `public sealed class UrOptions { public string? ModelId { get; set; } }`
+- [x] Create `src/Ur/Configuration/UrSettingsConfigurationProvider.cs` — reads a single nested-JSON `settings.json` file into `Data`. Keys map directly to `IConfiguration`'s colon-separated model (e.g., `{"ur": {"model": "gpt-4"}}` → `ur:model`).
+- [x] Create `src/Ur/Configuration/UrSettingsConfigurationSource.cs` wrapping the provider.
+- [x] Register both providers in `AddUr()` (user file first, workspace file second for override semantics). Bind `IOptions<UrOptions>` to `config.GetSection("ur")`.
+- [x] Create `src/Ur/Configuration/SettingsWriter.cs` — validates against `SettingsSchemaRegistry`, writes nested JSON to the correct file, calls `IConfigurationRoot.Reload()`.
+- [x] Add a one-time migration in the configuration provider's `Load()`: if the settings file contains flat dot-namespaced keys (e.g., `"ur.model"`), convert to nested format (`{"ur": {"model": ...}}`) and rewrite the file. This handles existing installations transparently.
+- [x] Rebuild `UrConfiguration` internals to use `IOptionsMonitor<UrOptions>` + `IKeyring` + `ModelCatalog` + `IConfiguration` + `SettingsWriter`. Public API unchanged.
+- [x] Delete `src/Ur/Configuration/Settings.cs` and `src/Ur/Configuration/SettingsLoader.cs`.
+- [x] Update `AddUr()` to register the configuration pipeline instead of `Settings`/`SettingsLoader`.
+- [x] Verify all tests pass. Verify `ur config get/set/clear` round-trips correctly.
 
 ## Validation
 

@@ -5,9 +5,9 @@ using Ur.Tests.TestSupport;
 namespace Ur.Tests;
 
 /// <summary>
-/// Tests for <see cref="UrConfiguration"/> and <see cref="Settings"/> behavior.
-/// These verify the public API that the CLI and TUI consume: typed accessors,
-/// scope merging, schema validation with rollback, and readiness checks.
+/// Tests for <see cref="UrConfiguration"/> behavior: typed accessors, scope merging,
+/// schema validation, and readiness checks. These verify the public API that the
+/// CLI and TUI consume.
 /// </summary>
 public sealed class ConfigurationTests : IDisposable
 {
@@ -16,13 +16,9 @@ public sealed class ConfigurationTests : IDisposable
         "ur-config-tests",
         Guid.NewGuid().ToString("N"));
 
-    private string UserSettingsPath => Path.Combine(_root, "user-settings.json");
-    private string WorkspaceSettingsPath => Path.Combine(_root, "workspace", ".ur", "settings.json");
-
     public ConfigurationTests()
     {
-        Directory.CreateDirectory(Path.GetDirectoryName(UserSettingsPath)!);
-        Directory.CreateDirectory(Path.GetDirectoryName(WorkspaceSettingsPath)!);
+        Directory.CreateDirectory(_root);
     }
 
     public void Dispose()
@@ -158,55 +154,48 @@ public sealed class ConfigurationTests : IDisposable
             host.Configuration.Readiness.BlockingIssues);
     }
 
-    // ─── Settings schema validation with rollback ─────────────────────
+    // ─── Settings schema validation ──────────────────────────────────
 
     [Fact]
-    public async Task SetSetting_ValidationFailure_RollsBackInMemoryState()
+    public async Task SetSetting_ValidationFailure_ThrowsException()
     {
         using var workspace = new TempWorkspace();
         var host = await CreateHostAsync(workspace);
 
-        // Register a schema that expects a boolean for "test.flag".
-        var schema = JsonDocument.Parse("""{"type": "boolean"}""").RootElement;
-        host.Configuration.GetType()
-            .Assembly.GetType("Ur.Configuration.SettingsSchemaRegistry")!
-            .GetMethod("Register")!
-            .Invoke(GetSchemaRegistry(host), [
-                "test.flag",
-                schema.Clone()
-            ]);
+        // Register a schema that expects a boolean for "test.flag" via the
+        // internally-exposed SettingsSchemaRegistry (same instance as DI container).
+        var schema = JsonDocument.Parse("""{"type": "boolean"}""").RootElement.Clone();
+        host.SettingsSchemas.Register("test.flag", schema);
 
         // Set a valid boolean value first.
         await host.Configuration.SetBoolSettingAsync("test.flag", true);
         Assert.True(host.Configuration.GetBoolSetting("test.flag"));
 
-        // Try to set a string where boolean is expected — should fail and rollback.
+        // Try to set a string where boolean is expected — should fail.
         await Assert.ThrowsAsync<SettingsValidationException>(async () =>
             await host.Configuration.SetStringSettingAsync("test.flag", "not-a-bool"));
 
-        // Value should still be the boolean from before the failed write.
+        // The valid boolean value should still be readable (write was rejected).
         Assert.True(host.Configuration.GetBoolSetting("test.flag"));
+    }
+
+    // ─── SelectedModelId via IOptionsMonitor ─────────────────────────
+
+    [Fact]
+    public async Task SelectedModelId_ReflectsSetModel()
+    {
+        using var workspace = new TempWorkspace();
+        var host = await CreateHostAsync(workspace);
+
+        Assert.Null(host.Configuration.SelectedModelId);
+
+        await host.Configuration.SetSelectedModelAsync("openai/gpt-4o");
+
+        Assert.Equal("openai/gpt-4o", host.Configuration.SelectedModelId);
     }
 
     // ─── Helpers ──────────────────────────────────────────────────────
 
     private static Task<UrHost> CreateHostAsync(TempWorkspace workspace) =>
         TestHostBuilder.CreateHostAsync(workspace);
-
-    /// <summary>
-    /// Reaches into the host to get the schema registry for validation tests.
-    /// We access it via the Configuration property's internal wiring rather than
-    /// creating one directly, so the test exercises the real object graph.
-    /// </summary>
-    private static object GetSchemaRegistry(UrHost host)
-    {
-        // Navigate: host.Configuration._settings._schemaRegistry
-        var config = host.Configuration;
-        var settingsField = config.GetType()
-            .GetField("_settings", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;
-        var settings = settingsField.GetValue(config)!;
-        var registryField = settings.GetType()
-            .GetField("_schemaRegistry", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;
-        return registryField.GetValue(settings)!;
-    }
 }

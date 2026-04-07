@@ -32,12 +32,13 @@ public class HostSessionApiTests
 
         await host.Configuration.SetSelectedModelAsync("user-model");
         Assert.Equal("user-model", host.Configuration.SelectedModelId);
-        Assert.Contains("\"ur.model\": \"user-model\"", await File.ReadAllTextAsync(workspace.UserSettingsPath));
+        // Settings are now written in nested JSON format: {"ur": {"model": "..."}}
+        Assert.Contains("\"model\": \"user-model\"", await File.ReadAllTextAsync(workspace.UserSettingsPath));
 
         await host.Configuration.SetSelectedModelAsync("workspace-model", ConfigurationScope.Workspace);
         Assert.Equal("workspace-model", host.Configuration.SelectedModelId);
         Assert.Contains(
-            "\"ur.model\": \"workspace-model\"",
+            "\"model\": \"workspace-model\"",
             await File.ReadAllTextAsync(Path.Combine(workspace.WorkspacePath, ".ur", "settings.json")));
 
         await host.Configuration.ClearSelectedModelAsync(ConfigurationScope.Workspace);

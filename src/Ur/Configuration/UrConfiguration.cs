@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Microsoft.Extensions.Options;
 using Ur.Configuration.Keyring;
 using Ur.Providers;
 
@@ -7,10 +8,12 @@ namespace Ur.Configuration;
 /// <summary>
 /// The public API surface for reading and writing Ur configuration.
 ///
-/// Configuration is split across two backing stores:
-///   • <see cref="Settings"/> — JSON files (user-level and workspace-level) for
-///     model selection, extension settings, and other serializable preferences.
-///     Workspace values override user values.
+/// Configuration is split across three backing stores:
+///   • <see cref="IOptionsMonitor{UrOptions}"/> — strongly-typed core settings
+///     (model selection) backed by <see cref="Microsoft.Extensions.Configuration.IConfiguration"/>.
+///   • <see cref="SettingsWriter"/> — reads and writes arbitrary dot-namespaced
+///     settings to nested JSON files (user-level and workspace-level).
+///     Workspace values override user values via IConfiguration's "last source wins" rule.
 ///   • <see cref="IKeyring"/> — the OS keyring for secrets (API keys). Secrets
 ///     are never written to plain-text JSON files.
 ///
@@ -21,7 +24,8 @@ namespace Ur.Configuration;
 /// </summary>
 public sealed class UrConfiguration
 {
-    // Settings keys are dot-namespaced to avoid collisions between core and extensions.
+    // The dot-namespaced key used by the CLI/TUI and SettingsWriter for model selection.
+    // Maps to IConfiguration path "ur:model" via the nested JSON format.
     internal const string ModelSettingKey = "ur.model";
 
     // Keyring service/account identifiers. The OS keyring (macOS Keychain /
@@ -31,13 +35,19 @@ public sealed class UrConfiguration
     private const string SecretAccount = "openrouter";
 
     private readonly ModelCatalog _modelCatalog;
-    private readonly Settings _settings;
+    private readonly IOptionsMonitor<UrOptions> _optionsMonitor;
+    private readonly SettingsWriter _settingsWriter;
     private readonly IKeyring _keyring;
 
-    internal UrConfiguration(ModelCatalog modelCatalog, Settings settings, IKeyring keyring)
+    internal UrConfiguration(
+        ModelCatalog modelCatalog,
+        IOptionsMonitor<UrOptions> optionsMonitor,
+        SettingsWriter settingsWriter,
+        IKeyring keyring)
     {
         _modelCatalog = modelCatalog;
-        _settings = settings;
+        _optionsMonitor = optionsMonitor;
+        _settingsWriter = settingsWriter;
         _keyring = keyring;
     }
 
@@ -49,9 +59,11 @@ public sealed class UrConfiguration
     public ChatReadiness Readiness => new(GetBlockingIssues());
 
     /// <summary>
-    /// The currently selected model ID from merged settings, or null if unset.
+    /// The currently selected model ID. Reads from IOptionsMonitor which
+    /// tracks the "ur:model" configuration key across both user and workspace
+    /// settings files, with workspace taking priority.
     /// </summary>
-    public string? SelectedModelId => _settings.GetString(ModelSettingKey);
+    public string? SelectedModelId => _optionsMonitor.CurrentValue.Model;
 
     /// <summary>
     /// Models suitable for the chat interface. Filters the full OpenRouter
@@ -99,14 +111,14 @@ public sealed class UrConfiguration
         string modelId,
         ConfigurationScope scope = ConfigurationScope.User,
         CancellationToken ct = default) =>
-        _settings.SetAsync(ModelSettingKey, JsonSerializer.SerializeToElement(modelId, SettingsJsonContext.Default.String), scope, ct);
+        _settingsWriter.SetAsync(ModelSettingKey, JsonSerializer.SerializeToElement(modelId, SettingsJsonContext.Default.String), scope, ct);
 
     public Task ClearSelectedModelAsync(
         ConfigurationScope scope = ConfigurationScope.User,
         CancellationToken ct = default) =>
-        _settings.ClearAsync(ModelSettingKey, scope, ct);
+        _settingsWriter.ClearAsync(ModelSettingKey, scope, ct);
 
-    public JsonElement? GetSetting(string key) => _settings.Get(key);
+    public JsonElement? GetSetting(string key) => _settingsWriter.Get(key);
 
     /// <summary>
     /// Typed accessor for string settings. Returns null if the key is absent or the
@@ -115,7 +127,7 @@ public sealed class UrConfiguration
     /// </summary>
     public string? GetStringSetting(string key)
     {
-        var element = _settings.Get(key);
+        var element = _settingsWriter.Get(key);
         return element is { ValueKind: JsonValueKind.String } je ? je.GetString() : null;
     }
 
@@ -125,7 +137,7 @@ public sealed class UrConfiguration
     /// </summary>
     public bool? GetBoolSetting(string key)
     {
-        var element = _settings.Get(key);
+        var element = _settingsWriter.Get(key);
         return element switch
         {
             { ValueKind: JsonValueKind.True } => true,
@@ -139,7 +151,7 @@ public sealed class UrConfiguration
         JsonElement value,
         ConfigurationScope scope = ConfigurationScope.User,
         CancellationToken ct = default) =>
-        _settings.SetAsync(key, value, scope, ct);
+        _settingsWriter.SetAsync(key, value, scope, ct);
 
     /// <summary>
     /// Typed setter for string settings. Serializes the string to a
@@ -150,7 +162,7 @@ public sealed class UrConfiguration
         string value,
         ConfigurationScope scope = ConfigurationScope.User,
         CancellationToken ct = default) =>
-        _settings.SetAsync(key, JsonSerializer.SerializeToElement(value, SettingsJsonContext.Default.String), scope, ct);
+        _settingsWriter.SetAsync(key, JsonSerializer.SerializeToElement(value, SettingsJsonContext.Default.String), scope, ct);
 
     /// <summary>
     /// Typed setter for boolean settings.
@@ -160,13 +172,13 @@ public sealed class UrConfiguration
         bool value,
         ConfigurationScope scope = ConfigurationScope.User,
         CancellationToken ct = default) =>
-        _settings.SetAsync(key, JsonSerializer.SerializeToElement(value, SettingsJsonContext.Default.Boolean), scope, ct);
+        _settingsWriter.SetAsync(key, JsonSerializer.SerializeToElement(value, SettingsJsonContext.Default.Boolean), scope, ct);
 
     public Task ClearSettingAsync(
         string key,
         ConfigurationScope scope = ConfigurationScope.User,
         CancellationToken ct = default) =>
-        _settings.ClearAsync(key, scope, ct);
+        _settingsWriter.ClearAsync(key, scope, ct);
 
     /// <summary>
     /// Retrieves the API key from the OS keyring. Returns null if not configured.

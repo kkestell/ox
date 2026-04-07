@@ -1,6 +1,8 @@
 using System.Runtime.InteropServices;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using Ur.Configuration;
 using Ur.Configuration.Keyring;
 using Ur.Extensions;
@@ -18,6 +20,12 @@ namespace Ur.Hosting;
 /// resolves them in dependency order. Per-session and per-turn objects (UrSession,
 /// AgentLoop, ToolRegistry, SubagentRunner) stay as procedural construction because
 /// they need per-call parameters (session ID, chat client, callbacks, etc.).
+///
+/// Configuration is backed by two <see cref="UrSettingsConfigurationSource"/> instances
+/// (user-level and workspace-level) feeding into <see cref="IConfiguration"/>. The
+/// workspace source is added second so its values take priority ("last source wins").
+/// <see cref="UrOptions"/> is bound to the "ur" section for strongly-typed access;
+/// extension settings use <see cref="IConfiguration"/> directly with string keys.
 /// </summary>
 public static class ServiceCollectionExtensions
 {
@@ -44,6 +52,33 @@ public static class ServiceCollectionExtensions
             options.KeyringOverride ?? CreatePlatformKeyring());
 
         var userDataDirectory = options.UserDataDirectory ?? DefaultUserDataDirectory();
+        var userSettingsPath = options.UserSettingsPath ?? DefaultUserSettingsPath(userDataDirectory);
+
+        // ── IConfiguration pipeline ──────────────────────────────────────
+        //
+        // Two UrSettingsConfigurationSource instances: user file first, workspace
+        // file second. IConfiguration's "last source wins" rule means workspace
+        // values override user values for the same key — matching the old merge
+        // semantics from Settings/SettingsLoader.
+        services.AddSingleton<IConfigurationRoot>(sp =>
+        {
+            var workspace = sp.GetRequiredService<Workspace>();
+            var builder = new ConfigurationBuilder();
+            builder.Add(new UrSettingsConfigurationSource(userSettingsPath));
+            builder.Add(new UrSettingsConfigurationSource(workspace.SettingsPath));
+            return builder.Build();
+        });
+
+        // IConfiguration delegates to the root — consumers that only need reads
+        // can depend on this interface instead of the concrete root.
+        services.AddSingleton<IConfiguration>(sp =>
+            sp.GetRequiredService<IConfigurationRoot>());
+
+        // Bind the "ur" section to UrOptions for strongly-typed access to core
+        // settings. UrOptionsMonitor reads from IConfiguration on every access,
+        // so it always reflects the latest state after SettingsWriter triggers a reload.
+        services.AddSingleton<IOptionsMonitor<UrOptions>>(sp =>
+            new UrOptionsMonitor(sp.GetRequiredService<IConfiguration>()));
 
         services.AddSingleton(sp =>
         {
@@ -75,12 +110,16 @@ public static class ServiceCollectionExtensions
             return registry;
         });
 
+        // SettingsWriter replaces the old Settings class for read/write operations.
+        // It validates against the schema registry, writes nested JSON, and triggers
+        // an IConfigurationRoot.Reload() so IOptionsMonitor picks up changes.
         services.AddSingleton(sp =>
         {
             var workspace = sp.GetRequiredService<Workspace>();
-            var loader = new SettingsLoader(sp.GetRequiredService<SettingsSchemaRegistry>());
-            return loader.Load(
-                options.UserSettingsPath ?? DefaultUserSettingsPath(userDataDirectory),
+            return new SettingsWriter(
+                sp.GetRequiredService<SettingsSchemaRegistry>(),
+                sp.GetRequiredService<IConfigurationRoot>(),
+                userSettingsPath,
                 workspace.SettingsPath);
         });
 
@@ -102,7 +141,8 @@ public static class ServiceCollectionExtensions
 
         services.AddSingleton(sp => new UrConfiguration(
             sp.GetRequiredService<ModelCatalog>(),
-            sp.GetRequiredService<Settings>(),
+            sp.GetRequiredService<IOptionsMonitor<UrOptions>>(),
+            sp.GetRequiredService<SettingsWriter>(),
             sp.GetRequiredService<IKeyring>()));
 
         // UrHost: registered via factory because the constructor is internal
@@ -112,6 +152,7 @@ public static class ServiceCollectionExtensions
             sp.GetRequiredService<SessionStore>(),
             sp.GetRequiredService<ExtensionCatalog>(),
             sp.GetRequiredService<SkillRegistry>(),
+            sp.GetRequiredService<SettingsSchemaRegistry>(),
             sp.GetRequiredService<UrConfiguration>(),
             sp.GetRequiredService<ILoggerFactory>(),
             sp.GetRequiredService<UrStartupOptions>()));
