@@ -1,7 +1,4 @@
 {
-  "enabledPlugins": {
-    "csharp-lsp@claude-plugins-official": true
-  },
   "permissions": {
     "allow": [
       "Bash(dotnet test:*)",
@@ -9,18 +6,6 @@
       "Bash(git add:*)",
       "Bash(git commit -m ':*)",
       "Bash(find:*)"
-    ]
-  },
-  "hooks": {
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": ".claude/hooks/stop-hook.sh"
-          }
-        ]
-      }
     ]
   }
 }

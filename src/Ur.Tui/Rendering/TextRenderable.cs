@@ -107,7 +107,10 @@ internal sealed class TextRenderable : IRenderable
         }
 
         // Split on '\n' first so explicit newlines always start a new row.
-        var paragraphs = text.Split('\n');
+        // Trim trailing newlines before splitting — the model typically emits a
+        // trailing '\n' before tool calls, which would otherwise produce a blank
+        // row at the end of the text bubble (appearing as a gap before the tool node).
+        var paragraphs = text.TrimEnd('\r', '\n').Split('\n');
 
         foreach (var para in paragraphs)
         {
