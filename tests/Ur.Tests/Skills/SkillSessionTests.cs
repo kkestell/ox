@@ -22,6 +22,9 @@ public sealed class SkillSessionTests : IDisposable
     private string UserSettingsPath => Path.Combine(UserDataDirectory, "settings.json");
     private string WorkspaceSkillsDir => Path.Combine(WorkspacePath, ".ur", "skills");
 
+    // Holds the DI host so it's disposed when the test class is disposed.
+    private TempWorkspace? _hostWorkspace;
+
     public SkillSessionTests()
     {
         Directory.CreateDirectory(WorkspacePath);
@@ -30,6 +33,8 @@ public sealed class SkillSessionTests : IDisposable
 
     public void Dispose()
     {
+        _hostWorkspace?.Dispose();
+
         if (Directory.Exists(_root))
             Directory.Delete(_root, recursive: true);
     }
@@ -43,12 +48,12 @@ public sealed class SkillSessionTests : IDisposable
 
     private async Task<UrHost> StartHostAsync(IChatClient? client = null)
     {
-        return await UrHost.StartAsync(
-                WorkspacePath,
-                new TestKeyring(),
-                UserSettingsPath,
-                _ => client ?? new FakeChatClient("OK"),
-                userDataDirectory: UserDataDirectory)
+        // Non-owning workspace wrapping the local paths. The host is attached to
+        // it and disposed via _hostWorkspace in the test class Dispose.
+        _hostWorkspace = new TempWorkspace(WorkspacePath, UserDataDirectory, UserSettingsPath);
+        return await TestHostBuilder.CreateHostAsync(
+                _hostWorkspace,
+                chatClientFactory: _ => client ?? new FakeChatClient("OK"))
             .ConfigureAwait(false);
     }
 

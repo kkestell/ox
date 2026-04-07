@@ -146,20 +146,20 @@ Custom `UrFileLoggerProvider` writes to `~/.ur/logs/ur-{date}.log` in the existi
 
 Eliminate unnecessary async from the startup path so every service becomes DI-constructible.
 
-- [ ] `ExtensionLoader`: rename `DiscoverAllAsync` → `DiscoverAll`, `ActivateAsync` → `Activate`, `DiscoverTierAsync` → `DiscoverTier`, `EvaluateManifestAsync` → `EvaluateManifest`. Replace `File.ReadAllTextAsync` with `File.ReadAllText`. Replace `Console.Error.WriteLineAsync` with `Console.Error.WriteLine`. For `state.DoStringAsync(...)`, call `.AsTask().GetAwaiter().GetResult()` (safe: CPU-bound Lua, sandboxed no-op I/O).
-- [ ] `ExtensionOverrideStore`: rename `LoadAsync` → `Load`. Replace `JsonSerializer.DeserializeAsync` with `JsonSerializer.Deserialize` (sync stream overload or read file to string first). Replace `Console.Error.WriteLineAsync` with `Console.Error.WriteLine`. Keep `WriteGlobalAsync` and `WriteWorkspaceAsync` as async — these are called from user-initiated commands, not startup.
-- [ ] `ExtensionCatalog`: rename `CreateAsync` → `Create`. Change to call sync `overrideStore.Load()` and sync `ExtensionLoader.Activate()`.
-- [ ] `SkillLoader`: rename `LoadAllAsync` → `LoadAll`, `LoadFromDirectoryAsync` → `LoadFromDirectory`. Replace `File.ReadAllTextAsync` with `File.ReadAllText`, `Console.Error.WriteLineAsync` with `Console.Error.WriteLine`.
-- [ ] Update all call sites of the renamed methods (primarily `UrHost.StartAsync()` and tests).
-- [ ] Verify all tests pass.
+- [x] `ExtensionLoader`: rename `DiscoverAllAsync` → `DiscoverAll`, `ActivateAsync` → `Activate`, `DiscoverTierAsync` → `DiscoverTier`, `EvaluateManifestAsync` → `EvaluateManifest`. Replace `File.ReadAllTextAsync` with `File.ReadAllText`. Replace `Console.Error.WriteLineAsync` with `Console.Error.WriteLine`. For `state.DoStringAsync(...)`, call `.AsTask().GetAwaiter().GetResult()` (safe: CPU-bound Lua, sandboxed no-op I/O).
+- [x] `ExtensionOverrideStore`: rename `LoadAsync` → `Load`. Replace `JsonSerializer.DeserializeAsync` with `JsonSerializer.Deserialize` (sync stream overload or read file to string first). Replace `Console.Error.WriteLineAsync` with `Console.Error.WriteLine`. Keep `WriteGlobalAsync` and `WriteWorkspaceAsync` as async — these are called from user-initiated commands, not startup.
+- [x] `ExtensionCatalog`: rename `CreateAsync` → `Create`. Change to call sync `overrideStore.Load()` and sync `ExtensionLoader.Activate()`.
+- [x] `SkillLoader`: rename `LoadAllAsync` → `LoadAll`, `LoadFromDirectoryAsync` → `LoadFromDirectory`. Replace `File.ReadAllTextAsync` with `File.ReadAllText`, `Console.Error.WriteLineAsync` with `Console.Error.WriteLine`.
+- [x] Update all call sites of the renamed methods (primarily `UrHost.StartAsync()` and tests).
+- [x] Verify all tests pass.
 
 ### Phase 2: Bootstrap the Generic Host and DI container
 
 Wire both entry points through `IHost`. Register all services as singletons. Delete `UrHost.StartAsync()`.
 
-- [ ] Add `Microsoft.Extensions.Hosting` to `Ur.Cli.csproj` and `Ur.Tui.csproj`.
-- [ ] Add `Microsoft.Extensions.DependencyInjection.Abstractions` to `Ur.csproj`.
-- [ ] Create `src/Ur/Hosting/UrStartupOptions.cs`:
+- [x] Add `Microsoft.Extensions.Hosting` to `Ur.Cli.csproj` and `Ur.Tui.csproj`.
+- [x] Add `Microsoft.Extensions.DependencyInjection.Abstractions` to `Ur.csproj`.
+- [x] Create `src/Ur/Hosting/UrStartupOptions.cs`:
   ```csharp
   public sealed class UrStartupOptions
   {
@@ -173,7 +173,7 @@ Wire both entry points through `IHost`. Register all services as singletons. Del
       public ToolRegistry? AdditionalTools { get; init; }
   }
   ```
-- [ ] Create `src/Ur/Hosting/ServiceCollectionExtensions.cs` with `AddUr(this IServiceCollection, UrStartupOptions)`. Register all services as singletons via factory delegates. The container resolves them in dependency order:
+- [x] Create `src/Ur/Hosting/ServiceCollectionExtensions.cs` with `AddUr(this IServiceCollection, UrStartupOptions)`. Register all services as singletons via factory delegates. The container resolves them in dependency order:
   ```csharp
   public static IServiceCollection AddUr(this IServiceCollection services, UrStartupOptions options)
   {
@@ -243,10 +243,10 @@ Wire both entry points through `IHost`. Register all services as singletons. Del
   }
   ```
   No `IHostedService`. No `TaskCompletionSource`. Plain singleton factories.
-- [ ] Change `UrHost` constructor from `private` to `public`/`internal`. Accept all dependencies as constructor parameters. Delete the `static StartAsync()` overloads. Move the static helper methods (`RegisterCoreSchemas`, `RegisterExtensionSchemas`, `CreatePlatformKeyring`, `Default*Path`) into `ServiceCollectionExtensions` or a shared `UrDefaults` helper.
-- [ ] Rewrite `src/Ur.Cli/HostRunner.cs` per D2 above.
-- [ ] Rewrite `src/Ur.Tui/Program.cs` per D3 above: `HostApplicationBuilder` + `TuiService : BackgroundService`.
-- [ ] Update `TempExtensionEnvironment.StartHostAsync()` and test helper methods to build a container:
+- [x] Change `UrHost` constructor from `private` to `public`/`internal`. Accept all dependencies as constructor parameters. Delete the `static StartAsync()` overloads. Move the static helper methods (`RegisterCoreSchemas`, `RegisterExtensionSchemas`, `CreatePlatformKeyring`, `Default*Path`) into `ServiceCollectionExtensions` or a shared `UrDefaults` helper.
+- [x] Rewrite `src/Ur.Cli/HostRunner.cs` per D2 above.
+- [x] Rewrite `src/Ur.Tui/Program.cs` per D3 above: `HostApplicationBuilder` + `TuiService : BackgroundService`.
+- [x] Update `TempExtensionEnvironment.StartHostAsync()` and test helper methods to build a container:
   ```csharp
   public async Task<UrHost> StartHostAsync(IKeyring? keyring = null, ...)
   {
@@ -265,21 +265,21 @@ Wire both entry points through `IHost`. Register all services as singletons. Del
       return _host.Services.GetRequiredService<UrHost>();
   }
   ```
-- [ ] Update all test files. Verify all tests pass.
-- [ ] Verify AoT publishing of Ur.Tui: `dotnet publish src/Ur.Tui -c Release`. If AoT fails with Generic Host, fall back to bare `ServiceCollection` for the TUI.
+- [x] Update all test files. Verify all tests pass.
+- [x] Verify AoT publishing of Ur.Tui: `dotnet publish src/Ur.Tui -c Release`. If AoT fails with Generic Host, fall back to bare `ServiceCollection` for the TUI.
 
 ### Phase 3: Migrate logging to ILogger<T>
 
 5 call sites, 2 files.
 
-- [ ] Add `Microsoft.Extensions.Logging.Abstractions` to `Ur.csproj`.
-- [ ] Create `src/Ur/Logging/UrFileLoggerProvider.cs` — custom `ILoggerProvider` that creates `UrFileLogger` instances.
-- [ ] Create `src/Ur/Logging/UrFileLogger.cs` — custom `ILogger` that writes to `~/.ur/logs/ur-{date}.log`. Same format, daily-rolling, thread-safe, fire-and-forget as current `UrLogger`.
-- [ ] Register in `AddUr()`: `services.AddLogging(b => b.AddProvider(new UrFileLoggerProvider()))`.
-- [ ] Add `ILoggerFactory` parameter to `UrHost`. Store it. Pass to `UrSession` which creates `ILogger<AgentLoop>` per-turn.
-- [ ] Add `ILogger<AgentLoop>` parameter to `AgentLoop`. Replace `UrLogger.Exception("LLM streaming error", ex)` at line 174 with `logger.LogError(ex, "LLM streaming error")`.
-- [ ] In `TuiService`, inject `ILogger<TuiService>`. Replace 4 `UrLogger.*` calls.
-- [ ] Delete `src/Ur/Logging/UrLogger.cs`.
+- [x] Add `Microsoft.Extensions.Logging.Abstractions` to `Ur.csproj`.
+- [x] Create `src/Ur/Logging/UrFileLoggerProvider.cs` — custom `ILoggerProvider` that creates `UrFileLogger` instances.
+- [x] Create `src/Ur/Logging/UrFileLogger.cs` — custom `ILogger` that writes to `~/.ur/logs/ur-{date}.log`. Same format, daily-rolling, thread-safe, fire-and-forget as current `UrLogger`.
+- [x] Register in `AddUr()`: `services.AddLogging(b => b.AddProvider(new UrFileLoggerProvider()))`.
+- [x] Add `ILoggerFactory` parameter to `UrHost`. Store it. Pass to `UrSession` which creates `ILogger<AgentLoop>` per-turn.
+- [x] Add `ILogger<AgentLoop>` parameter to `AgentLoop`. Replace `UrLogger.Exception("LLM streaming error", ex)` at line 174 with `logger.LogError(ex, "LLM streaming error")`.
+- [x] In `TuiService`, inject `ILogger<TuiService>`. Replace 4 `UrLogger.*` calls.
+- [x] Delete `src/Ur/Logging/UrLogger.cs`.
 - [ ] Verify log output by running TUI and checking `~/.ur/logs/`.
 
 ### Phase 4: Migrate configuration to IConfiguration / IOptions<T>

@@ -1,5 +1,6 @@
 using System.Runtime.CompilerServices;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Logging.Abstractions;
 using Ur.AgentLoop;
 using Ur.Permissions;
 using Ur.Tools;
@@ -155,7 +156,8 @@ public sealed class SubagentRunnerTests
             new ToolRegistry(),
             workspace,
             callbacks: null,
-            systemPrompt: null);
+            systemPrompt: null,
+            NullLoggerFactory.Instance);
 
         var result = await runner.RunAsync("do something", CancellationToken.None);
 
@@ -173,7 +175,8 @@ public sealed class SubagentRunnerTests
             new ToolRegistry(),
             workspace,
             callbacks: null,
-            systemPrompt: null);
+            systemPrompt: null,
+            NullLoggerFactory.Instance);
 
         var result = await runner.RunAsync("do something", CancellationToken.None);
 
@@ -200,7 +203,8 @@ public sealed class SubagentRunnerTests
             parentRegistry,
             workspace,
             callbacks: null,
-            systemPrompt: null);
+            systemPrompt: null,
+            NullLoggerFactory.Instance);
 
         await runner.RunAsync("any task", CancellationToken.None);
 
@@ -224,7 +228,8 @@ public sealed class SubagentRunnerTests
             new ToolRegistry(),
             workspace,
             callbacks: null,
-            systemPrompt: null);
+            systemPrompt: null,
+            NullLoggerFactory.Instance);
 
         await runner.RunAsync("summarize the findings", CancellationToken.None);
 
@@ -254,7 +259,8 @@ public sealed class SubagentRunnerTests
             parentRegistry,
             workspace,
             callbacks: null,
-            systemPrompt: null);
+            systemPrompt: null,
+            NullLoggerFactory.Instance);
 
         await runner.RunAsync("any task", CancellationToken.None);
 
@@ -299,7 +305,8 @@ public sealed class SubagentRunnerTests
             new ToolRegistry(),
             workspace,
             callbacks: callbacks,
-            systemPrompt: null);
+            systemPrompt: null,
+            NullLoggerFactory.Instance);
 
         await runner.RunAsync("do something", CancellationToken.None);
 
@@ -331,7 +338,8 @@ public sealed class SubagentRunnerTests
             new ToolRegistry(),
             workspace,
             callbacks: callbacks,
-            systemPrompt: null);
+            systemPrompt: null,
+            NullLoggerFactory.Instance);
 
         await runner.RunAsync("any task", CancellationToken.None);
 
@@ -370,7 +378,8 @@ public sealed class SubagentRunnerTests
             new ToolRegistry(),
             workspace,
             callbacks: callbacks,
-            systemPrompt: null);
+            systemPrompt: null,
+            NullLoggerFactory.Instance);
 
         // The runner must throw because the inner loop hit a fatal error.
         await Assert.ThrowsAsync<InvalidOperationException>(

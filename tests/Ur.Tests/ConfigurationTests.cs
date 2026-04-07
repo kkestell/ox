@@ -191,12 +191,7 @@ public sealed class ConfigurationTests : IDisposable
     // ─── Helpers ──────────────────────────────────────────────────────
 
     private static Task<UrHost> CreateHostAsync(TempWorkspace workspace) =>
-        UrHost.StartAsync(
-            workspace.WorkspacePath,
-            new TestKeyring(),
-            workspace.UserSettingsPath,
-            chatClientFactoryOverride: null,
-            userDataDirectory: workspace.UserDataDirectory);
+        TestHostBuilder.CreateHostAsync(workspace);
 
     /// <summary>
     /// Reaches into the host to get the schema registry for validation tests.

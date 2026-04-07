@@ -28,12 +28,16 @@ public sealed class ExtensionCatalog : IDisposable
         _workspaceOverrides = new Dictionary<ExtensionId, bool>(workspaceOverrides);
     }
 
-    internal static async Task<ExtensionCatalog> CreateAsync(
+    /// <summary>
+    /// Creates a catalog by loading persisted override state and activating enabled
+    /// extensions. Synchronous because both the override store and extension loader
+    /// are now sync (all I/O is local filesystem + CPU-bound Lua eval).
+    /// </summary>
+    internal static ExtensionCatalog Create(
         IReadOnlyList<Extension> extensions,
-        ExtensionOverrideStore overrideStore,
-        CancellationToken ct = default)
+        ExtensionOverrideStore overrideStore)
     {
-        var snapshot = await overrideStore.LoadAsync(ct).ConfigureAwait(false);
+        var snapshot = overrideStore.Load();
 
         foreach (var extension in extensions)
         {
@@ -45,10 +49,7 @@ public sealed class ExtensionCatalog : IDisposable
 
             extension.SetDesiredState(desiredEnabled, hasOverride);
             if (desiredEnabled)
-            {
-                await ExtensionLoader.ActivateAsync(extension, ct)
-                    .ConfigureAwait(false);
-            }
+                ExtensionLoader.Activate(extension);
         }
 
         return new ExtensionCatalog(
@@ -118,7 +119,7 @@ public sealed class ExtensionCatalog : IDisposable
             extension.SetDesiredState(desired, hasOverride);
 
             if (desired)
-                await ExtensionLoader.ActivateAsync(extension, ct).ConfigureAwait(false);
+                ExtensionLoader.Activate(extension);
             else
                 ExtensionLoader.Deactivate(extension);
 

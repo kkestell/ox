@@ -13,22 +13,24 @@ namespace Ur.Extensions;
 /// </summary>
 internal static partial class ExtensionLoader
 {
-    public static async Task<List<Extension>> DiscoverAllAsync(
+    /// <summary>
+    /// Discovers extensions from all three trust tiers. Synchronous because every
+    /// operation (file I/O, Lua evaluation in sandboxed state) completes without
+    /// real async work — the Lua library exposes only ValueTask-returning APIs but
+    /// runs CPU-bound in a no-op I/O sandbox.
+    /// </summary>
+    public static List<Extension> DiscoverAll(
         string? systemDir,
         string? userDir,
-        string? workspaceDir,
-        CancellationToken ct = default)
+        string? workspaceDir)
     {
         var seen = new Dictionary<string, ExtensionTier>(StringComparer.Ordinal);
         var extensions = new List<Extension>();
 
         // Process tiers in trust order: system > user > workspace.
-        await DiscoverTierAsync(systemDir, ExtensionTier.System, seen, extensions, ct)
-            .ConfigureAwait(false);
-        await DiscoverTierAsync(userDir, ExtensionTier.User, seen, extensions, ct)
-            .ConfigureAwait(false);
-        await DiscoverTierAsync(workspaceDir, ExtensionTier.Workspace, seen, extensions, ct)
-            .ConfigureAwait(false);
+        DiscoverTier(systemDir, ExtensionTier.System, seen, extensions);
+        DiscoverTier(userDir, ExtensionTier.User, seen, extensions);
+        DiscoverTier(workspaceDir, ExtensionTier.Workspace, seen, extensions);
 
         return extensions
             .OrderBy(extension => TierSortOrder(extension.Tier))
@@ -36,9 +38,12 @@ internal static partial class ExtensionLoader
             .ToList();
     }
 
-    public static async Task ActivateAsync(
-        Extension extension,
-        CancellationToken ct = default)
+    /// <summary>
+    /// Activates an extension by running its main.lua in a sandboxed Lua state.
+    /// Synchronous for the same reason as <see cref="DiscoverAll"/>: the Lua sandbox
+    /// has no-op I/O, so DoStringAsync completes synchronously as a CPU-bound eval.
+    /// </summary>
+    public static void Activate(Extension extension)
     {
         // Reset to a clean slate before activation — clears any previous Lua
         // runtime and tools from a prior activation attempt.
@@ -57,8 +62,11 @@ internal static partial class ExtensionLoader
             var state = CreateSandboxedState();
             InjectToolApi(state, extension);
 
-            var script = await File.ReadAllTextAsync(mainPath, ct).ConfigureAwait(false);
-            await state.DoStringAsync(script, mainPath, ct).ConfigureAwait(false);
+            var script = File.ReadAllText(mainPath);
+            // DoStringAsync returns ValueTask but completes synchronously — the Lua
+            // state is configured with NoOpFileSystem/NoOpStandardIo so there's no
+            // real async work. Safe to block on.
+            state.DoStringAsync(script, mainPath).AsTask().GetAwaiter().GetResult();
 
             extension.ApplyState(ExtensionState.Active, lua: state);
         }
@@ -66,7 +74,7 @@ internal static partial class ExtensionLoader
             ex is LuaRuntimeException or LuaParseException or LuaCompileException or InvalidOperationException)
         {
             extension.ApplyState(ExtensionState.Failed, error: ex.Message);
-            await Console.Error.WriteLineAsync(
+            Console.Error.WriteLine(
                 $"Extension '{extension.Name}': main.lua failed: {ex.Message}");
         }
     }
@@ -74,12 +82,11 @@ internal static partial class ExtensionLoader
     public static void Deactivate(Extension extension) =>
         extension.ApplyState(ExtensionState.Inactive);
 
-    private static async Task DiscoverTierAsync(
+    private static void DiscoverTier(
         string? directory,
         ExtensionTier tier,
         Dictionary<string, ExtensionTier> seen,
-        List<Extension> extensions,
-        CancellationToken ct)
+        List<Extension> extensions)
     {
         if (directory is null || !Directory.Exists(directory))
             return;
@@ -92,13 +99,12 @@ internal static partial class ExtensionLoader
 
             try
             {
-                var ext = await EvaluateManifestAsync(manifestPath, extDir, tier, ct)
-                    .ConfigureAwait(false);
+                var ext = EvaluateManifest(manifestPath, extDir, tier);
 
                 // Higher-trust tier wins on name collision.
                 if (seen.TryGetValue(ext.Name, out var existingTier))
                 {
-                    await Console.Error.WriteLineAsync(
+                    Console.Error.WriteLine(
                         $"Extension '{ext.Name}' from {tier} tier skipped: " +
                         $"already loaded from {existingTier} tier.");
                     continue;
@@ -111,22 +117,24 @@ internal static partial class ExtensionLoader
                 ex is LuaRuntimeException or LuaParseException or
                 LuaCompileException or InvalidOperationException)
             {
-                await Console.Error.WriteLineAsync(
+                Console.Error.WriteLine(
                     $"Extension at '{extDir}' skipped: {ex.Message}");
             }
         }
     }
 
-    private static async Task<Extension> EvaluateManifestAsync(
+    private static Extension EvaluateManifest(
         string manifestPath,
         string extDir,
-        ExtensionTier tier,
-        CancellationToken ct)
+        ExtensionTier tier)
     {
         // Lua I/O: evaluate the manifest script to get the raw table.
         using var state = CreateSandboxedState();
-        var script = await File.ReadAllTextAsync(manifestPath, ct).ConfigureAwait(false);
-        var results = await state.DoStringAsync(script, manifestPath, ct).ConfigureAwait(false);
+        var script = File.ReadAllText(manifestPath);
+        // Same pattern as Activate — DoStringAsync completes synchronously
+        // in the sandboxed no-op I/O state.
+        var results = state.DoStringAsync(script, manifestPath)
+            .AsTask().GetAwaiter().GetResult();
 
         if (results.Length == 0 || !results[0].TryRead<LuaTable>(out var manifest))
             throw new InvalidOperationException("manifest.lua must return a table.");

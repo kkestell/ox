@@ -34,7 +34,7 @@ public sealed class SkillLoaderTests : IDisposable
     // ─── Basic loading ────────────────────────────────────────────────
 
     [Fact]
-    public async Task LoadFromDirectory_LoadsValidSkills()
+    public void LoadFromDirectory_LoadsValidSkills()
     {
         WriteSkill(UserSkillsDir, "hello", """
             ---
@@ -52,7 +52,7 @@ public sealed class SkillLoaderTests : IDisposable
             Hi there, $ARGUMENTS!
             """);
 
-        var skills = await SkillLoader.LoadFromDirectoryAsync(UserSkillsDir, "user");
+        var skills = SkillLoader.LoadFromDirectory(UserSkillsDir, "user");
 
         Assert.Equal(2, skills.Count);
         Assert.Contains(skills, s => s.Name == "hello");
@@ -62,9 +62,9 @@ public sealed class SkillLoaderTests : IDisposable
     // ─── Missing directory ────────────────────────────────────────────
 
     [Fact]
-    public async Task LoadFromDirectory_NonexistentDirectory_ReturnsEmpty()
+    public void LoadFromDirectory_NonexistentDirectory_ReturnsEmpty()
     {
-        var skills = await SkillLoader.LoadFromDirectoryAsync(
+        var skills = SkillLoader.LoadFromDirectory(
             "/nonexistent/path/skills", "user");
 
         Assert.Empty(skills);
@@ -73,13 +73,13 @@ public sealed class SkillLoaderTests : IDisposable
     // ─── Skips directories without SKILL.md ───────────────────────────
 
     [Fact]
-    public async Task LoadFromDirectory_SkipsDirectoriesWithoutSkillMd()
+    public void LoadFromDirectory_SkipsDirectoriesWithoutSkillMd()
     {
         WriteSkill(UserSkillsDir, "valid", "---\nname: valid\n---\nContent");
         // Create a directory without SKILL.md.
         Directory.CreateDirectory(Path.Combine(UserSkillsDir, "no-skill-file"));
 
-        var skills = await SkillLoader.LoadFromDirectoryAsync(UserSkillsDir, "user");
+        var skills = SkillLoader.LoadFromDirectory(UserSkillsDir, "user");
 
         Assert.Single(skills);
         Assert.Equal("valid", skills[0].Name);
@@ -88,7 +88,7 @@ public sealed class SkillLoaderTests : IDisposable
     // ─── Malformed SKILL.md is skipped without crashing ──────────────
 
     [Fact]
-    public async Task LoadFromDirectory_MalformedSkillFile_SkippedGracefully()
+    public void LoadFromDirectory_MalformedSkillFile_SkippedGracefully()
     {
         WriteSkill(UserSkillsDir, "good", "---\nname: good\n---\nGood content");
         // Write a SKILL.md whose backing file will be unreadable (deleted after write)
@@ -98,10 +98,10 @@ public sealed class SkillLoaderTests : IDisposable
         var badDir = Path.Combine(UserSkillsDir, "bad");
         Directory.CreateDirectory(badDir);
         var badFile = Path.Combine(badDir, "SKILL.md");
-        await File.WriteAllTextAsync(badFile, "---\nname: bad\n---\nBad");
+        File.WriteAllText(badFile, "---\nname: bad\n---\nBad");
         File.Delete(badFile);
 
-        var skills = await SkillLoader.LoadFromDirectoryAsync(UserSkillsDir, "user");
+        var skills = SkillLoader.LoadFromDirectory(UserSkillsDir, "user");
 
         // The good skill should still load; the bad one is skipped.
         Assert.Single(skills);
@@ -111,7 +111,7 @@ public sealed class SkillLoaderTests : IDisposable
     // ─── Workspace overrides user on name collision ───────────────────
 
     [Fact]
-    public async Task LoadAll_WorkspaceSkillsOverrideUserSkills()
+    public void LoadAll_WorkspaceSkillsOverrideUserSkills()
     {
         WriteSkill(UserSkillsDir, "commit", """
             ---
@@ -129,7 +129,7 @@ public sealed class SkillLoaderTests : IDisposable
             Workspace commit
             """);
 
-        var skills = await SkillLoader.LoadAllAsync(UserSkillsDir, WorkspaceSkillsDir);
+        var skills = SkillLoader.LoadAll(UserSkillsDir, WorkspaceSkillsDir);
 
         // Only one "commit" skill should exist, and it should be the workspace version.
         var commit = Assert.Single(skills, s => s.Name == "commit");
@@ -140,12 +140,12 @@ public sealed class SkillLoaderTests : IDisposable
     // ─── Both sources merge correctly ─────────────────────────────────
 
     [Fact]
-    public async Task LoadAll_MergesSkillsFromBothSources()
+    public void LoadAll_MergesSkillsFromBothSources()
     {
         WriteSkill(UserSkillsDir, "user-only", "---\nname: user-only\n---\nUser skill");
         WriteSkill(WorkspaceSkillsDir, "ws-only", "---\nname: ws-only\n---\nWorkspace skill");
 
-        var skills = await SkillLoader.LoadAllAsync(UserSkillsDir, WorkspaceSkillsDir);
+        var skills = SkillLoader.LoadAll(UserSkillsDir, WorkspaceSkillsDir);
 
         Assert.Equal(2, skills.Count);
         Assert.Contains(skills, s => s.Name == "user-only");
@@ -155,11 +155,11 @@ public sealed class SkillLoaderTests : IDisposable
     // ─── Source tracking ──────────────────────────────────────────────
 
     [Fact]
-    public async Task LoadFromDirectory_SetsSourceCorrectly()
+    public void LoadFromDirectory_SetsSourceCorrectly()
     {
         WriteSkill(UserSkillsDir, "test", "---\nname: test\n---\nContent");
 
-        var skills = await SkillLoader.LoadFromDirectoryAsync(UserSkillsDir, "user");
+        var skills = SkillLoader.LoadFromDirectory(UserSkillsDir, "user");
 
         Assert.Single(skills);
         Assert.Equal("user", skills[0].Source);

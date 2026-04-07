@@ -32,20 +32,21 @@ internal sealed class ExtensionOverrideStore
     private string WorkspaceOverridesPath =>
         Path.Combine(_rootDirectory, "workspaces", _workspace.StateHash, "extensions-state.json");
 
-    public async Task<ExtensionOverrideSnapshot> LoadAsync(CancellationToken ct = default)
+    /// <summary>
+    /// Loads persisted override state from both global and workspace files.
+    /// Synchronous because this runs during startup where all I/O is local
+    /// filesystem reads that complete immediately.
+    /// </summary>
+    public ExtensionOverrideSnapshot Load()
     {
-        var global = await LoadOverridesAsync(
-                GlobalOverridesPath,
-                allowedTier: tier => tier is ExtensionTier.System or ExtensionTier.User,
-                scopeName: "global",
-                ct)
-            .ConfigureAwait(false);
-        var workspace = await LoadOverridesAsync(
-                WorkspaceOverridesPath,
-                allowedTier: tier => tier is ExtensionTier.Workspace,
-                scopeName: "workspace",
-                ct)
-            .ConfigureAwait(false);
+        var global = LoadOverrides(
+            GlobalOverridesPath,
+            allowedTier: tier => tier is ExtensionTier.System or ExtensionTier.User,
+            scopeName: "global");
+        var workspace = LoadOverrides(
+            WorkspaceOverridesPath,
+            allowedTier: tier => tier is ExtensionTier.Workspace,
+            scopeName: "workspace");
 
         return new ExtensionOverrideSnapshot(global, workspace);
     }
@@ -68,11 +69,10 @@ internal sealed class ExtensionOverrideStore
             fileFactory: entries => new OverrideFile(CurrentVersion, _workspace.RootPath, entries),
             ct);
 
-    private static async Task<Dictionary<ExtensionId, bool>> LoadOverridesAsync(
+    private static Dictionary<ExtensionId, bool> LoadOverrides(
         string path,
         Func<ExtensionTier, bool> allowedTier,
-        string scopeName,
-        CancellationToken ct)
+        string scopeName)
     {
         try
         {
@@ -81,16 +81,15 @@ internal sealed class ExtensionOverrideStore
             if (!File.Exists(path))
                 return [];
 
-            await using var stream = File.OpenRead(path);
-            var file = await JsonSerializer.DeserializeAsync(stream, JsonContext.OverrideFile, ct)
-                .ConfigureAwait(false);
+            var json = File.ReadAllText(path);
+            var file = JsonSerializer.Deserialize(json, JsonContext.OverrideFile);
 
             if (file is null)
                 return [];
 
             if (file.Version != CurrentVersion)
             {
-                await Console.Error.WriteLineAsync(
+                Console.Error.WriteLine(
                     $"Extension overrides at '{path}' ignored: unsupported version {file.Version}.");
                 return [];
             }
@@ -100,14 +99,14 @@ internal sealed class ExtensionOverrideStore
             {
                 if (!ExtensionId.TryParse(serializedId, out var extensionId))
                 {
-                    await Console.Error.WriteLineAsync(
+                    Console.Error.WriteLine(
                         $"Extension overrides at '{path}' ignored entry '{serializedId}': invalid extension ID.");
                     continue;
                 }
 
                 if (!allowedTier(extensionId.Tier))
                 {
-                    await Console.Error.WriteLineAsync(
+                    Console.Error.WriteLine(
                         $"Extension overrides at '{path}' ignored entry '{serializedId}': invalid tier for {scopeName} overrides.");
                     continue;
                 }
@@ -119,7 +118,7 @@ internal sealed class ExtensionOverrideStore
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
         {
-            await Console.Error.WriteLineAsync(
+            Console.Error.WriteLine(
                 $"Extension overrides at '{path}' ignored: {ex.Message}");
             return [];
         }

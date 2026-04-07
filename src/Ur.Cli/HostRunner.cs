@@ -1,24 +1,26 @@
 using dotenv.net;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Ur.Hosting;
 
 namespace Ur.Cli;
 
 /// <summary>
 /// Shared boot helper used by every CLI command.
 ///
-/// All commands follow the same boot sequence:
-///   1. Load environment variables from a .env file (traverses up the directory tree, so the
-///      developer can place a .env at the repo root with OPENROUTER_API_KEY etc.).
-///   2. Start the UrHost for the current working directory.
+/// Builds an <see cref="IHost"/> with all Ur services registered via
+/// <see cref="ServiceCollectionExtensions.AddUr"/>. All 6 command files remain
+/// unchanged — they still receive <c>(UrHost host, CancellationToken ct)</c>.
 ///
-/// Factoring this here prevents every command from duplicating the startup dance and ensures
-/// consistent behaviour when running any subcommand.
+/// <c>ur --help</c> still skips boot because System.CommandLine handles it
+/// before the handler runs.
 /// </summary>
 internal static class HostRunner
 {
     /// <summary>
     /// Boots the Ur host for the current working directory.
-    /// Loads .env files before handing control to <paramref name="action"/>.
-    /// Returns the exit code returned by <paramref name="action"/> (0 = success).
+    /// Loads .env files, builds the DI container, and hands control to
+    /// <paramref name="action"/>. Returns the exit code (0 = success).
     /// </summary>
     public static async Task<int> RunAsync(
         Func<UrHost, CancellationToken, Task<int>> action,
@@ -30,7 +32,22 @@ internal static class HostRunner
             probeForEnv: true,
             probeLevelsToSearch: 8));
 
-        var host = await UrHost.StartAsync(Environment.CurrentDirectory, ct: ct);
-        return await action(host, ct);
+        var builder = Host.CreateApplicationBuilder();
+        builder.Services.AddUr(new UrStartupOptions
+        {
+            WorkspacePath = Environment.CurrentDirectory
+        });
+
+        using var app = builder.Build();
+        await app.StartAsync(ct);
+
+        try
+        {
+            return await action(app.Services.GetRequiredService<UrHost>(), ct);
+        }
+        finally
+        {
+            await app.StopAsync(ct);
+        }
     }
 }

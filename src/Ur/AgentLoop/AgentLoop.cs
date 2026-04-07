@@ -1,6 +1,6 @@
 using System.Runtime.CompilerServices;
 using Microsoft.Extensions.AI;
-using Ur.Logging;
+using Microsoft.Extensions.Logging;
 using Ur.Permissions;
 using Ur.Tools;
 
@@ -22,7 +22,7 @@ internal record LlmErrorHolder
 /// Drives the core conversation cycle: user input → LLM → tool calls → repeat.
 /// Emits events for the UI layer to render.
 /// </summary>
-internal sealed class AgentLoop(IChatClient client, ToolRegistry tools, Workspace workspace)
+internal sealed class AgentLoop(IChatClient client, ToolRegistry tools, Workspace workspace, ILogger<AgentLoop> logger)
 {
     // Delegate tool dispatch (permission check → lookup → invoke → result) to a
     // dedicated helper so RunTurnAsync stays at a single abstraction level.
@@ -171,7 +171,7 @@ internal sealed class AgentLoop(IChatClient client, ToolRegistry tools, Workspac
                     // Log the full exception here before reducing it to a message string.
                     // Once stored in LlmErrorHolder only the Message survives; the type
                     // and stack trace are lost. This is the only place the full context exists.
-                    UrLogger.Exception("LLM streaming error", ex);
+                    logger.LogError(ex, "LLM streaming error");
                     errorHolder.Exception = ex;
                     hasNext = false;
                 }

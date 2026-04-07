@@ -1,45 +1,51 @@
 using System.Diagnostics;
 using dotenv.net;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
+using Ur;
 using Ur.AgentLoop;
 using Ur.Configuration;
-using Ur.Logging;
+using Ur.Hosting;
+using Ur.Tui;
 using Ur.Tui.Rendering;
 
-namespace Ur.Tui;
+// --- Boot ---
+DotEnv.Load(options: new DotEnvOptions(
+    probeForEnv: true,
+    probeLevelsToSearch: 8));
+
+var builder = Host.CreateApplicationBuilder(args);
+builder.Services.AddUr(new UrStartupOptions
+{
+    WorkspacePath = Environment.CurrentDirectory
+});
+builder.Services.AddHostedService<TuiService>();
+
+await builder.Build().RunAsync();
 
 /// <summary>
-/// A full-screen TUI for Ur built around a retained-mode rendering model.
+/// The REPL loop as a <see cref="BackgroundService"/>.
 ///
-/// Architecture (bottom to top):
-///   Terminal   — raw ANSI escape operations (cursor, alternate buffer, etc.)
-///   Viewport   — display engine; owns EventList, redraws at ~30 fps when dirty
-///   Renderables — live objects (TextRenderable, ToolRenderable, etc.) whose
-///                  content can change between redraws
-///   EventRouter — maps AgentLoopEvents to renderables; encapsulates routing state
-///   Program     — REPL loop, input reading, signal handlers, orchestration
-///
-/// The main agent loop runs in the "await foreach" body. Subagent events arrive
-/// via TurnCallbacks.SubagentEventEmitted and are routed through the same router.
+/// <see cref="IHostApplicationLifetime.StopApplication"/> replaces the hand-rolled
+/// <c>appCts</c> — the host's console lifetime wires Ctrl+C to the stopping token.
+/// Per-turn CTS links to <see cref="BackgroundService.ExecuteAsync"/>'s
+/// <c>stoppingToken</c> (unchanged from the prior pattern with <c>appCts</c>).
+/// Viewport cleanup runs in the <c>finally</c> block and in the <c>ProcessExit</c> handler.
 /// </summary>
-internal static class Program
+internal sealed class TuiService(
+    UrHost host,
+    IHostApplicationLifetime lifetime,
+    ILogger<TuiService> logger) : BackgroundService
 {
-    private static async Task<int> Main(string[] _)
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        UrLogger.Info("Application starting");
-
-        // --- Boot ---
-        DotEnv.Load(options: new DotEnvOptions(
-            probeForEnv: true,
-            probeLevelsToSearch: 8));
-
-        // App-level CTS wired to Ctrl+C. Per-turn CTSs link to this so that
-        // Ctrl+C cancels both the running turn and the outer REPL loop.
-        var appCts = new CancellationTokenSource();
+        logger.LogInformation("Application starting");
 
         // Build the rendering stack before registering signal handlers so
         // cleanup always has a viewport reference to call Stop() on.
         var eventList = new EventList();
-        var viewport   = new Viewport(eventList);
+        var viewport = new Viewport(eventList);
 
         // Restore the terminal on both Ctrl+C and normal process exit.
         // We register both because Ctrl+C triggers CancelKeyPress AND ProcessExit
@@ -47,9 +53,9 @@ internal static class Program
         // viewport.Stop() is idempotent, so double-calling is safe.
         Console.CancelKeyPress += (_, e) =>
         {
-            e.Cancel = true;   // Prevent immediate termination; let the REPL loop exit.
+            e.Cancel = true; // Prevent immediate termination; let the host shut down gracefully.
             viewport.Stop();
-            appCts.Cancel();
+            lifetime.StopApplication();
         };
         AppDomain.CurrentDomain.ProcessExit += (_, _) => viewport.Stop();
 
@@ -60,107 +66,113 @@ internal static class Program
         {
             var ex = e.ExceptionObject as Exception
                 ?? new InvalidOperationException(e.ExceptionObject.ToString() ?? "Unknown error");
-            UrLogger.Exception("Unhandled exception (process terminating)", ex);
+            logger.LogError(ex, "Unhandled exception (process terminating)");
         };
-
-        var host = await UrHost.StartAsync(Environment.CurrentDirectory, ct: appCts.Token);
 
         // --- Configuration check (pre-viewport, plain console I/O) ---
         var inputReader = new InputReader();
-        if (!await EnsureReadyAsync(host, inputReader, appCts.Token))
-            return 1;
+        if (!await EnsureReadyAsync(host, inputReader, stoppingToken))
+        {
+            lifetime.StopApplication();
+            return;
+        }
 
         // --- REPL ---
-        var router    = new EventRouter(eventList);
+        var router = new EventRouter(eventList);
         var callbacks = PermissionHandler.Build(router, inputReader, viewport);
-        var session   = host.CreateSession(callbacks);
+        var session = host.CreateSession(callbacks);
 
         viewport.SetSessionId(session.Id);
         viewport.SetModelId(session.ActiveModelId);
         viewport.Start();
 
-        while (!appCts.Token.IsCancellationRequested)
+        try
         {
-            var input = inputReader.ReadLineInViewport("❯ ", viewport.SetInputPrompt, appCts.Token);
-
-            // null = EOF (Ctrl+D) or cancellation.
-            if (input is null)
-                break;
-
-            if (string.IsNullOrWhiteSpace(input))
-                continue;
-
-            // Show the user's message in the conversation with white text so it
-            // stands out clearly against the black bubble background.
-            var userMsg = new TextRenderable(foreground: Color.White);
-            userMsg.SetText(input);
-            eventList.Add(userMsg);
-
-            // Switch input row to a running indicator and start the throbber.
-            viewport.SetInputPrompt("");
-            viewport.SetTurnRunning(true);
-
-            // Per-turn CTS linked to app token so Ctrl+C also cancels mid-turn.
-            // ReSharper disable once AccessToDisposedClosure — monitor awaited before disposal.
-            var turnCts = CancellationTokenSource.CreateLinkedTokenSource(appCts.Token);
-            var keyMonitor = inputReader.MonitorEscapeKeyAsync(turnCts);
-
-            try
+            while (!stoppingToken.IsCancellationRequested)
             {
+                var input = inputReader.ReadLineInViewport("❯ ", viewport.SetInputPrompt, stoppingToken);
+
+                // null = EOF (Ctrl+D) or cancellation.
+                if (input is null)
+                    break;
+
+                if (string.IsNullOrWhiteSpace(input))
+                    continue;
+
+                // Show the user's message in the conversation with white text so it
+                // stands out clearly against the black bubble background.
+                var userMsg = new TextRenderable(foreground: Color.White);
+                userMsg.SetText(input);
+                eventList.Add(userMsg);
+
+                // Switch input row to a running indicator and start the throbber.
+                viewport.SetInputPrompt("");
+                viewport.SetTurnRunning(true);
+
+                // Per-turn CTS linked to stopping token so Ctrl+C also cancels mid-turn.
+                // ReSharper disable once AccessToDisposedClosure — monitor awaited before disposal.
+                var turnCts = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+                var keyMonitor = inputReader.MonitorEscapeKeyAsync(turnCts);
+
                 try
                 {
-                    await foreach (var evt in session.RunTurnAsync(input, turnCts.Token))
+                    try
                     {
-                        router.RouteMainEvent(evt);
+                        await foreach (var evt in session.RunTurnAsync(input, turnCts.Token))
+                        {
+                            router.RouteMainEvent(evt);
 
-                        // Fatal errors are unrecoverable — log and exit the process.
-                        if (evt is not TurnError { IsFatal: true } fatal)
-                            continue;
+                            // Fatal errors are unrecoverable — log and exit the process.
+                            if (evt is not TurnError { IsFatal: true } fatal)
+                                continue;
 
-                        UrLogger.Error($"Fatal agent error (exiting): {fatal.Message}");
-                        return 1;
+                            logger.LogError("Fatal agent error (exiting): {Message}", fatal.Message);
+                            lifetime.StopApplication();
+                            return;
+                        }
                     }
-                }
-                catch (OperationCanceledException) when (!appCts.Token.IsCancellationRequested)
-                {
-                    // Escape cancelled this turn; add a visual marker and reset state.
-                    // Circle child (not a User root) — belongs to the current turn's tree group.
-                    var cancelled = new TextRenderable();
-                    cancelled.SetText("[cancelled]");
-                    eventList.Add(cancelled, BubbleStyle.Circle, () => Color.BrightBlack);
-                    router.ResetTurnState();
-                }
-                catch (OperationCanceledException) when (appCts.Token.IsCancellationRequested)
-                {
-                    // Ctrl+C during a turn — fall through; outer loop exits.
-                }
-                catch (Exception ex)
-                {
-                    // Any other exception escaping the turn is unexpected. Log it with
-                    // the full stack trace so we can diagnose crashes, then surface a
-                    // brief message in the viewport rather than letting the process die.
-                    UrLogger.Exception("Unexpected exception during turn", ex);
+                    catch (OperationCanceledException) when (!stoppingToken.IsCancellationRequested)
+                    {
+                        // Escape cancelled this turn; add a visual marker and reset state.
+                        // Circle child (not a User root) — belongs to the current turn's tree group.
+                        var cancelled = new TextRenderable();
+                        cancelled.SetText("[cancelled]");
+                        eventList.Add(cancelled, BubbleStyle.Circle, () => Color.BrightBlack);
+                        router.ResetTurnState();
+                    }
+                    catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+                    {
+                        // Ctrl+C during a turn — fall through; outer loop exits.
+                    }
+                    catch (Exception ex)
+                    {
+                        // Any other exception escaping the turn is unexpected. Log it with
+                        // the full stack trace so we can diagnose crashes, then surface a
+                        // brief message in the viewport rather than letting the process die.
+                        logger.LogError(ex, "Unexpected exception during turn");
 
-                    var crashText = new TextRenderable(foreground: Color.Red);
-                    crashText.SetText($"[error] {ex.Message} — see ~/.ur/logs/ for details");
-                    eventList.Add(crashText, BubbleStyle.Circle, () => Color.Red);
-                    router.ResetTurnState();
+                        var crashText = new TextRenderable(foreground: Color.Red);
+                        crashText.SetText($"[error] {ex.Message} — see ~/.ur/logs/ for details");
+                        eventList.Add(crashText, BubbleStyle.Circle, () => Color.Red);
+                        router.ResetTurnState();
+                    }
+
+                    await turnCts.CancelAsync();
+                    await keyMonitor;
+                }
+                finally
+                {
+                    turnCts.Dispose();
                 }
 
-                await turnCts.CancelAsync();
-                await keyMonitor;
+                viewport.SetTurnRunning(false);
+                viewport.SetInputPrompt("❯ ");
             }
-            finally
-            {
-                turnCts.Dispose();
-            }
-
-            viewport.SetTurnRunning(false);
-            viewport.SetInputPrompt("❯ ");
         }
-
-        viewport.Stop();
-        return 0;
+        finally
+        {
+            viewport.Stop();
+        }
     }
 
     /// <summary>
@@ -202,5 +214,4 @@ internal static class Program
             }
         }
     }
-
 }

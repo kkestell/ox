@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using System.Runtime.CompilerServices;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Logging;
 using Ur.Configuration;
 using Ur.Permissions;
 using Ur.Skills;
@@ -159,7 +160,8 @@ public sealed class UrSession
         // can close over the fully-populated registry (the sub-agent inherits all
         // parent tools except run_subagent itself, which SubagentRunner excludes).
         var subagentRunner = new AgentLoop.SubagentRunner(
-            chatClient, tools, _host.Workspace, wrappedCallbacks, systemPrompt);
+            chatClient, tools, _host.Workspace, wrappedCallbacks, systemPrompt,
+            _host.LoggerFactory);
         var subagentTool = new SubagentTool(subagentRunner);
         if (tools.Get(subagentTool.Name) is null)
         {
@@ -173,7 +175,9 @@ public sealed class UrSession
         // appends to _messages as it runs, and we flush after each iteration
         // so that tool call results survive a crash.
         var persistedCount = _messages.Count;
-        var agentLoop = new AgentLoop.AgentLoop(chatClient, tools, _host.Workspace);
+        var agentLoop = new AgentLoop.AgentLoop(
+            chatClient, tools, _host.Workspace,
+            _host.LoggerFactory.CreateLogger<AgentLoop.AgentLoop>());
 
         await foreach (var loopEvent in agentLoop.RunTurnAsync(_messages, wrappedCallbacks, systemPrompt, ct))
         {

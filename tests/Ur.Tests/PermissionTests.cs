@@ -2,6 +2,7 @@ using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Logging.Abstractions;
 using Ur.AgentLoop;
 using Ur.Permissions;
 using Ur.Tools;
@@ -278,7 +279,7 @@ public sealed class AgentLoopPermissionTests : IDisposable
     }
 
     private AgentLoopClass MakeLoop(IChatClient client, ToolRegistry tools) =>
-        new(client, tools, new Workspace(_workspaceRoot));
+        new(client, tools, new Workspace(_workspaceRoot), NullLogger<AgentLoopClass>.Instance);
 
     // -------------------------------------------------------------------------
     // Callback denies — tool produces "Permission denied." result, loop continues
@@ -592,13 +593,10 @@ public sealed class UrSessionPermissionTests
         // (to verify the session grant suppresses the second prompt).
         var client = new TwoTurnToolCallingClient("write_file");
 
-        var host = await UrHost.StartAsync(
-            workspace.WorkspacePath,
-            new TestKeyring(),
-            workspace.UserSettingsPath,
-            _ => client,
-            tools,
-            userDataDirectory: workspace.UserDataDirectory);
+        var host = await TestHostBuilder.CreateHostAsync(
+            workspace,
+            chatClientFactory: _ => client,
+            additionalTools: tools);
 
         await host.Configuration.SetApiKeyAsync("test-key");
         await host.Configuration.SetSelectedModelAsync("test-model");
@@ -641,13 +639,10 @@ public sealed class UrSessionPermissionTests
 
         var client = new SingleTurnToolCallingClient("write_file");
 
-        var host = await UrHost.StartAsync(
-            workspace.WorkspacePath,
-            new TestKeyring(),
-            workspace.UserSettingsPath,
-            _ => client,
-            tools,
-            userDataDirectory: workspace.UserDataDirectory);
+        var host = await TestHostBuilder.CreateHostAsync(
+            workspace,
+            chatClientFactory: _ => client,
+            additionalTools: tools);
 
         await host.Configuration.SetApiKeyAsync("test-key");
         await host.Configuration.SetSelectedModelAsync("test-model");

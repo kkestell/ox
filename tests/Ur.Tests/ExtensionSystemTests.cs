@@ -20,7 +20,7 @@ public sealed class ExtensionSystemTests
     }
 
     [Fact]
-    public async Task DiscoverAllAsync_HigherTierWinsAndStableOrderIsPreserved()
+    public async Task DiscoverAll_HigherTierWinsAndStableOrderIsPreserved()
     {
         using var env = new TempExtensionEnvironment();
         await TempExtensionEnvironment.WriteManifestOnlyExtensionAsync(
@@ -79,7 +79,7 @@ public sealed class ExtensionSystemTests
             """);
         Directory.CreateDirectory(Path.Combine(env.WorkspaceExtensionsPath, "missing-manifest"));
 
-        var extensions = await ExtensionLoader.DiscoverAllAsync(
+        var extensions = ExtensionLoader.DiscoverAll(
             env.SystemExtensionsPath,
             env.UserExtensionsPath,
             env.WorkspaceExtensionsPath);
@@ -117,7 +117,7 @@ public sealed class ExtensionSystemTests
     }
 
     [Fact]
-    public async Task DiscoverAllAsync_ManifestSettingsAreConvertedToJsonSchema()
+    public async Task DiscoverAll_ManifestSettingsAreConvertedToJsonSchema()
     {
         using var env = new TempExtensionEnvironment();
         await TempExtensionEnvironment.WriteManifestOnlyExtensionAsync(
@@ -137,7 +137,7 @@ public sealed class ExtensionSystemTests
             }
             """);
 
-        var extension = Assert.Single(await ExtensionLoader.DiscoverAllAsync(
+        var extension = Assert.Single(ExtensionLoader.DiscoverAll(
             null,
             env.UserExtensionsPath,
             null));
@@ -148,7 +148,7 @@ public sealed class ExtensionSystemTests
     }
 
     [Fact]
-    public async Task DiscoverAllAsync_ManifestSandboxViolationSkipsExtension()
+    public async Task DiscoverAll_ManifestSandboxViolationSkipsExtension()
     {
         using var env = new TempExtensionEnvironment();
         await TempExtensionEnvironment.WriteManifestOnlyExtensionAsync(
@@ -163,7 +163,7 @@ public sealed class ExtensionSystemTests
             }
             """);
 
-        var extensions = await ExtensionLoader.DiscoverAllAsync(
+        var extensions = ExtensionLoader.DiscoverAll(
             null,
             env.UserExtensionsPath,
             null);
@@ -172,7 +172,7 @@ public sealed class ExtensionSystemTests
     }
 
     [Fact]
-    public async Task ActivateAsync_TrustedExtensionRegistersInvocableTool()
+    public async Task Activate_TrustedExtensionRegistersInvocableTool()
     {
         using var env = new TempExtensionEnvironment();
         await TempExtensionEnvironment.WriteSampleExtensionAsync(
@@ -182,13 +182,13 @@ public sealed class ExtensionSystemTests
             toolName: "sample_echo",
             settingKey: "sample.mode");
 
-        var extension = Assert.Single(await ExtensionLoader.DiscoverAllAsync(
+        var extension = Assert.Single(ExtensionLoader.DiscoverAll(
             null,
             env.UserExtensionsPath,
             null));
         extension.SetDesiredState(desiredEnabled: true, hasOverride: false);
 
-        await ExtensionLoader.ActivateAsync(extension);
+        ExtensionLoader.Activate(extension);
 
         Assert.True(extension.IsActive);
 
@@ -218,12 +218,12 @@ public sealed class ExtensionSystemTests
             toolName: "sample_echo",
             settingKey: "sample.mode");
 
-        var extension = Assert.Single(await ExtensionLoader.DiscoverAllAsync(
+        var extension = Assert.Single(ExtensionLoader.DiscoverAll(
             null,
             env.UserExtensionsPath,
             null));
         extension.SetDesiredState(desiredEnabled: true, hasOverride: false);
-        await ExtensionLoader.ActivateAsync(extension);
+        ExtensionLoader.Activate(extension);
 
         ExtensionLoader.Deactivate(extension);
 

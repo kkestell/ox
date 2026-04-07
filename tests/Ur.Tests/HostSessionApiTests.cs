@@ -362,12 +362,7 @@ public class HostSessionApiTests
         TempWorkspace workspace,
         TestKeyring? keyring = null,
         Func<string, IChatClient>? chatClientFactory = null) =>
-        UrHost.StartAsync(
-            workspace.WorkspacePath,
-            keyring ?? new TestKeyring(),
-            workspace.UserSettingsPath,
-            chatClientFactory,
-            userDataDirectory: workspace.UserDataDirectory);
+        TestHostBuilder.CreateHostAsync(workspace, keyring, chatClientFactory);
 
     private static async Task<List<AgentLoopEvent>> CollectEventsAsync(IAsyncEnumerable<AgentLoopEvent> events)
     {

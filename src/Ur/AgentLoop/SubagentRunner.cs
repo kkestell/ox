@@ -1,4 +1,5 @@
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Logging;
 using Ur.Permissions;
 using Ur.Tools;
 
@@ -26,7 +27,8 @@ internal sealed class SubagentRunner(
     ToolRegistry parentTools,
     Workspace workspace,
     TurnCallbacks? callbacks,
-    string? systemPrompt) : ISubagentRunner
+    string? systemPrompt,
+    ILoggerFactory loggerFactory) : ISubagentRunner
 {
     /// <summary>
     /// Runs <paramref name="task"/> as the sole user message in a fresh agent loop.
@@ -58,7 +60,9 @@ internal sealed class SubagentRunner(
             new(ChatRole.User, task)
         };
 
-        var agentLoop = new AgentLoop(client, subAgentTools, workspace);
+        var agentLoop = new AgentLoop(
+            client, subAgentTools, workspace,
+            loggerFactory.CreateLogger<AgentLoop>());
 
         // Accumulate all response text across the loop iterations. The loop may
         // call tools and loop back multiple times before producing a final text.

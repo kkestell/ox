@@ -8,6 +8,9 @@ namespace Ur.Skills;
 /// Loading follows the same resilience pattern as extension loading: individual
 /// malformed or unreadable skill files are logged to stderr and skipped rather
 /// than failing the entire startup.
+///
+/// All methods are synchronous — skill loading is local filesystem I/O only,
+/// and runs during startup where sync construction simplifies DI registration.
 /// </summary>
 internal static class SkillLoader
 {
@@ -16,17 +19,12 @@ internal static class SkillLoader
     /// skills taking precedence on name collision. This matches the reference
     /// implementation's "last writer wins by source priority" deduplication.
     /// </summary>
-    public static async Task<IReadOnlyList<SkillDefinition>> LoadAllAsync(
+    public static IReadOnlyList<SkillDefinition> LoadAll(
         string userSkillsDir,
-        string workspaceSkillsDir,
-        CancellationToken ct = default)
+        string workspaceSkillsDir)
     {
-        // Load from both directories concurrently.
-        var userTask = LoadFromDirectoryAsync(userSkillsDir, "user", ct);
-        var workspaceTask = LoadFromDirectoryAsync(workspaceSkillsDir, "workspace", ct);
-
-        var userSkills = await userTask.ConfigureAwait(false);
-        var workspaceSkills = await workspaceTask.ConfigureAwait(false);
+        var userSkills = LoadFromDirectory(userSkillsDir, "user");
+        var workspaceSkills = LoadFromDirectory(workspaceSkillsDir, "workspace");
 
         // Merge with workspace skills taking precedence over user skills on name collision.
         // Use case-insensitive comparison so "Commit" and "commit" are treated as the same skill.
@@ -48,10 +46,9 @@ internal static class SkillLoader
     /// Directories without SKILL.md are silently skipped; parse errors are
     /// logged to stderr and skipped.
     /// </summary>
-    public static async Task<IReadOnlyList<SkillDefinition>> LoadFromDirectoryAsync(
+    public static IReadOnlyList<SkillDefinition> LoadFromDirectory(
         string skillsDir,
-        string source,
-        CancellationToken ct = default)
+        string source)
     {
         if (!Directory.Exists(skillsDir))
             return [];
@@ -60,23 +57,21 @@ internal static class SkillLoader
 
         foreach (var subDir in Directory.EnumerateDirectories(skillsDir))
         {
-            ct.ThrowIfCancellationRequested();
-
             var skillFile = Path.Combine(subDir, "SKILL.md");
             if (!File.Exists(skillFile))
                 continue;
 
             try
             {
-                var content = await File.ReadAllTextAsync(skillFile, ct).ConfigureAwait(false);
+                var content = File.ReadAllText(skillFile);
                 var skill = SkillFrontmatter.Parse(content, subDir, source);
                 skills.Add(skill);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 // Same resilience pattern as extension loading — log and skip.
-                await Console.Error.WriteLineAsync(
-                    $"Skill '{Path.GetFileName(subDir)}' skipped: {ex.Message}").ConfigureAwait(false);
+                Console.Error.WriteLine(
+                    $"Skill '{Path.GetFileName(subDir)}' skipped: {ex.Message}");
             }
         }
 
