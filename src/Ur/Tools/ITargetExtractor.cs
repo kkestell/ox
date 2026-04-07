@@ -4,10 +4,9 @@ namespace Ur.Tools;
 /// Extracts a human-readable target string from a tool call's arguments for
 /// permission prompts (e.g. the file path being written, the command being run).
 ///
-/// This interface replaces <c>Func&lt;AIFunctionArguments, string&gt;</c> in the
-/// public API, removing the dependency on <c>Microsoft.Extensions.AI</c> types
-/// from the tool registration surface. Implementations receive a read-only
-/// dictionary of the raw arguments rather than the framework-specific wrapper.
+/// Implementations receive a read-only dictionary of the raw arguments, keeping
+/// the tool registration surface free of framework-specific types like
+/// <c>Microsoft.Extensions.AI.AIFunctionArguments</c>.
 /// </summary>
 public interface ITargetExtractor
 {

@@ -5,8 +5,8 @@ using Microsoft.Extensions.Logging;
 namespace Ur.Logging;
 
 /// <summary>
-/// Writes log entries to <c>~/.ur/logs/ur-{date}.log</c>. Same format, daily-rolling,
-/// thread-safe, fire-and-forget semantics as the former static <c>UrLogger</c>.
+/// Writes log entries to <c>~/.ur/logs/ur-{date}.log</c>. Daily-rolling, thread-safe,
+/// fire-and-forget file logger.
 ///
 /// A single static lock guards all file writes across all logger instances — the
 /// underlying file is shared (one file per day, not per category). This prevents
@@ -44,7 +44,7 @@ internal sealed class UrFileLogger(string categoryName, string logDir) : ILogger
             $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}] [{level}] [{categoryName}] {formatter(state, null)}");
 
         // Write the full exception chain (type, message, and stack trace per level)
-        // when an exception is provided — identical to the old UrLogger.Exception format.
+        // when an exception is provided.
         var current = exception;
         var depth = 0;
         while (current is not null)

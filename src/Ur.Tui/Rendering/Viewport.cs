@@ -222,8 +222,7 @@ internal sealed class Viewport : IDisposable
 
     /// <summary>
     /// Core layout engine: builds a frame buffer for the given terminal size.
-    /// Called by both <see cref="Redraw"/> (which then flushes to the terminal)
-    /// and <see cref="BuildFrame"/> (used in tests).
+    /// Called by <see cref="Redraw"/>, which then flushes to the terminal.
     ///
     /// Each region is rendered by a dedicated private method so the overall
     /// layout sequence is immediately visible here. The methods are kept as

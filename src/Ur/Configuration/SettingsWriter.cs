@@ -14,8 +14,7 @@ namespace Ur.Configuration;
 ///
 /// The file format is nested JSON: top-level keys are namespaces (e.g. "ur"),
 /// and their values are objects containing the actual settings. This aligns
-/// with IConfiguration's native section model — "ur.model" in the old flat
-/// format becomes {"ur": {"model": "value"}} in the nested format.
+/// with IConfiguration's native section model (e.g. <c>{"ur": {"model": "value"}}</c>).
 /// </summary>
 internal sealed class SettingsWriter
 {

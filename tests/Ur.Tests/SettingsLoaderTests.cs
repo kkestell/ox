@@ -77,61 +77,6 @@ public sealed class SettingsConfigurationTests : IDisposable
         Assert.Null(config["anything"]);
     }
 
-    // ─── Provider: Flat-to-nested migration ──────────────────────────
-
-    [Fact]
-    public void Provider_MigratesFlatKeysToNestedJson()
-    {
-        // Old format: flat dot-namespaced keys.
-        var userPath = WriteTempJson("""{"ur.model": "gpt-4", "ur.theme": "dark"}""");
-
-        var config = BuildConfig(userPath, null);
-
-        // Should be readable via colon-separated IConfiguration keys.
-        Assert.Equal("gpt-4", config["ur:model"]);
-        Assert.Equal("dark", config["ur:theme"]);
-
-        // The file should have been rewritten in nested format.
-        var rewritten = File.ReadAllText(userPath);
-        using var doc = JsonDocument.Parse(rewritten);
-        Assert.True(doc.RootElement.TryGetProperty("ur", out var urSection));
-        Assert.Equal("gpt-4", urSection.GetProperty("model").GetString());
-    }
-
-    [Fact]
-    public void NeedsFlatToNestedMigration_NestedFormat_ReturnsFalse()
-    {
-        using var doc = JsonDocument.Parse("""{"ur": {"model": "gpt-4"}}""");
-        Assert.False(UrSettingsConfigurationProvider.NeedsFlatToNestedMigration(doc.RootElement));
-    }
-
-    [Fact]
-    public void NeedsFlatToNestedMigration_FlatFormat_ReturnsTrue()
-    {
-        using var doc = JsonDocument.Parse("""{"ur.model": "gpt-4"}""");
-        Assert.True(UrSettingsConfigurationProvider.NeedsFlatToNestedMigration(doc.RootElement));
-    }
-
-    [Fact]
-    public void MigrateFlatToNested_ConvertsCorrectly()
-    {
-        using var doc = JsonDocument.Parse("""{"ur.model": "gpt-4", "ext.debug": true, "plain": 42}""");
-        var result = UrSettingsConfigurationProvider.MigrateFlatToNested(doc.RootElement);
-
-        // "ur.model" → nested under "ur"
-        Assert.True(result.ContainsKey("ur"));
-        Assert.Equal(JsonValueKind.Object, result["ur"].ValueKind);
-        Assert.Equal("gpt-4", result["ur"].GetProperty("model").GetString());
-
-        // "ext.debug" → nested under "ext"
-        Assert.True(result.ContainsKey("ext"));
-        Assert.True(result["ext"].GetProperty("debug").GetBoolean());
-
-        // "plain" → stays at top level (no dot)
-        Assert.True(result.ContainsKey("plain"));
-        Assert.Equal(42, result["plain"].GetInt32());
-    }
-
     // ─── Writer: Validate ────────────────────────────────────────────
 
     [Fact]

@@ -8,10 +8,9 @@ namespace Ur.AgentLoop;
 /// <summary>
 /// Encapsulates the tool dispatch sequence: permission check → lookup → invoke → result.
 ///
-/// Extracted from <see cref="AgentLoop.RunTurnAsync"/> so that the turn loop reads as a
-/// single-level workflow (stream → yield events → persist) without inline tool dispatch
-/// mechanics. The invoker owns the permission check and result construction that were
-/// previously spread across 40+ lines inside the turn loop.
+/// Keeps the turn loop in <see cref="AgentLoop.RunTurnAsync"/> focused on the high-level
+/// workflow (stream → yield events → persist) by owning the permission check and result
+/// construction for each tool call.
 ///
 /// Workspace containment is enforced here. Tools are not responsible for knowing
 /// whether a path is inside or outside the workspace — that is a policy concern

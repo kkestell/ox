@@ -45,7 +45,7 @@ public sealed class SkillRegistry
     /// <summary>All skills the model can invoke (excludes DisableModelInvocation).</summary>
     public IReadOnlyList<SkillDefinition> ModelInvocable() => _modelInvocable;
 
-    /// <summary>All skills the user can invoke via slash commands (excludes !UserInvocable).</summary>
+    /// <summary>All skills the user can invoke via slash commands (only those with UserInvocable set).</summary>
     public IReadOnlyList<SkillDefinition> UserInvocable() => _userInvocable;
 
     /// <summary>All loaded skills regardless of invocation restrictions.</summary>

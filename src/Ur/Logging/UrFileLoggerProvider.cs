@@ -6,8 +6,7 @@ namespace Ur.Logging;
 /// <summary>
 /// Custom <see cref="ILoggerProvider"/> that writes to <c>~/.ur/logs/ur-{date}.log</c>.
 ///
-/// Replaces the static <c>UrLogger</c> class. The daily-rolling, thread-safe,
-/// fire-and-forget behaviour is identical — just wrapped in the standard
+/// Daily-rolling, thread-safe, fire-and-forget file logging wrapped in the standard
 /// <see cref="ILogger"/> / <see cref="ILoggerProvider"/> abstractions so the DI
 /// container can wire logging without a static dependency.
 /// </summary>

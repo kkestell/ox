@@ -1,7 +1,0 @@
-interface:
-  display_name: "Task Execution"
-  short_description: "Execute plans for the active task branch"
-  default_prompt: "Use $work to execute the active task plan, whether it is running in a separate worktree or in place."
-
-policy:
-  allow_implicit_invocation: false

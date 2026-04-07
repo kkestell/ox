@@ -27,10 +27,9 @@ await builder.Build().RunAsync();
 /// <summary>
 /// The REPL loop as a <see cref="BackgroundService"/>.
 ///
-/// <see cref="IHostApplicationLifetime.StopApplication"/> replaces the hand-rolled
-/// <c>appCts</c> — the host's console lifetime wires Ctrl+C to the stopping token.
-/// Per-turn CTS links to <see cref="BackgroundService.ExecuteAsync"/>'s
-/// <c>stoppingToken</c> (unchanged from the prior pattern with <c>appCts</c>).
+/// The host's console lifetime wires Ctrl+C to the stopping token via
+/// <see cref="IHostApplicationLifetime.StopApplication"/>. Per-turn CTS links to
+/// <see cref="BackgroundService.ExecuteAsync"/>'s <c>stoppingToken</c>.
 /// Viewport cleanup runs in the <c>finally</c> block and in the <c>ProcessExit</c> handler.
 /// </summary>
 internal sealed class TuiService(

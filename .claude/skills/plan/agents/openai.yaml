@@ -1,7 +1,0 @@
-interface:
-  display_name: "Plan"
-  short_description: "Brainstorm, explore, and plan a feature or change"
-  default_prompt: "Use $plan to brainstorm this idea with the user, explore how it fits the repo, and produce an implementation plan."
-
-policy:
-  allow_implicit_invocation: false
