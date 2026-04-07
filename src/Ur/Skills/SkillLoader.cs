@@ -1,3 +1,5 @@
+using Microsoft.Extensions.Logging;
+
 namespace Ur.Skills;
 
 /// <summary>
@@ -21,10 +23,11 @@ internal static class SkillLoader
     /// </summary>
     public static IReadOnlyList<SkillDefinition> LoadAll(
         string userSkillsDir,
-        string workspaceSkillsDir)
+        string workspaceSkillsDir,
+        ILogger? logger = null)
     {
-        var userSkills = LoadFromDirectory(userSkillsDir, "user");
-        var workspaceSkills = LoadFromDirectory(workspaceSkillsDir, "workspace");
+        var userSkills = LoadFromDirectory(userSkillsDir, "user", logger);
+        var workspaceSkills = LoadFromDirectory(workspaceSkillsDir, "workspace", logger);
 
         // Merge with workspace skills taking precedence over user skills on name collision.
         // Use case-insensitive comparison so "Commit" and "commit" are treated as the same skill.
@@ -48,7 +51,8 @@ internal static class SkillLoader
     /// </summary>
     public static IReadOnlyList<SkillDefinition> LoadFromDirectory(
         string skillsDir,
-        string source)
+        string source,
+        ILogger? logger = null)
     {
         if (!Directory.Exists(skillsDir))
             return [];
@@ -70,8 +74,8 @@ internal static class SkillLoader
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 // Same resilience pattern as extension loading — log and skip.
-                Console.Error.WriteLine(
-                    $"Skill '{Path.GetFileName(subDir)}' skipped: {ex.Message}");
+                logger?.LogWarning("Skill '{SkillName}' skipped: {Error}",
+                    Path.GetFileName(subDir), ex.Message);
             }
         }
 

@@ -18,7 +18,7 @@ internal sealed class UrFileLogger(string categoryName, string logDir) : ILogger
 
     public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
 
-    public bool IsEnabled(LogLevel logLevel) => logLevel >= LogLevel.Information;
+    public bool IsEnabled(LogLevel logLevel) => logLevel >= LogLevel.Debug;
 
     public void Log<TState>(
         LogLevel logLevel,
@@ -32,6 +32,7 @@ internal sealed class UrFileLogger(string categoryName, string logDir) : ILogger
 
         var level = logLevel switch
         {
+            LogLevel.Debug => "DEBUG",
             LogLevel.Information => "INFO ",
             LogLevel.Warning => "WARN ",
             LogLevel.Error => "ERROR",

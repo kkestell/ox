@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text.Json;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Logging;
 
 namespace Ur.Tools;
 
@@ -11,7 +12,7 @@ namespace Ur.Tools;
 /// process execution — the permission system gates it behind per-invocation
 /// user approval (ExecuteCommand with Once-only scope).
 /// </summary>
-internal sealed class BashTool(Workspace workspace) : AIFunction
+internal sealed class BashTool(Workspace workspace, ILogger? logger = null) : AIFunction
 {
     private const int DefaultTimeoutMs = 120_000; // 2 minutes
 
@@ -80,6 +81,8 @@ internal sealed class BashTool(Workspace workspace) : AIFunction
         {
             // Timeout hit — kill the process tree and recover whatever partial
             // output completed before cancellation.
+            logger?.LogWarning("Bash command timed out after {TimeoutMs}ms: {Command}",
+                timeoutMs, command);
             process.Kill(entireProcessTree: true);
             timedOut = true;
         }
@@ -102,7 +105,11 @@ internal sealed class BashTool(Workspace workspace) : AIFunction
                 process.WaitForExit(3000);
                 exitCode = process.ExitCode;
             }
-            catch { /* Process may not have fully exited yet — use -1 */ }
+            catch
+            {
+                // Process may not have fully exited yet — use -1.
+                logger?.LogDebug("Could not retrieve exit code after timeout for bash command");
+            }
         }
 
         return FormatResult(exitCode, stdout, stderr, timedOut);

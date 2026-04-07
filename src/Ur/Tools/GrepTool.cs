@@ -6,6 +6,7 @@ using System.Text.RegularExpressions;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.FileSystemGlobbing;
 using Microsoft.Extensions.FileSystemGlobbing.Abstractions;
+using Microsoft.Extensions.Logging;
 
 namespace Ur.Tools;
 
@@ -16,7 +17,7 @@ namespace Ur.Tools;
 /// content search across large repos; glob-style file filtering uses
 /// the FileSystemGlobbing package in both paths.
 /// </summary>
-internal sealed class GrepTool(Workspace workspace) : AIFunction
+internal sealed class GrepTool(Workspace workspace, ILogger? logger = null) : AIFunction
 {
     private const int RipgrepTimeoutSeconds = 30;
 
@@ -125,6 +126,8 @@ internal sealed class GrepTool(Workspace workspace) : AIFunction
         }
         catch (OperationCanceledException)
         {
+            logger?.LogWarning("Grep search timed out for pattern '{Pattern}' in '{SearchRoot}'",
+                pattern, searchRoot);
             process.Kill(entireProcessTree: true);
             return "[search timed out]";
         }
@@ -166,6 +169,7 @@ internal sealed class GrepTool(Workspace workspace) : AIFunction
             catch
             {
                 // Skip files that can't be read (binary, locked, etc.)
+                logger?.LogDebug("Skipping unreadable file during grep: '{File}'", file);
                 continue;
             }
 

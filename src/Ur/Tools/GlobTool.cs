@@ -3,6 +3,7 @@ using System.Text.Json;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.FileSystemGlobbing;
 using Microsoft.Extensions.FileSystemGlobbing.Abstractions;
+using Microsoft.Extensions.Logging;
 
 namespace Ur.Tools;
 
@@ -13,7 +14,7 @@ namespace Ur.Tools;
 /// Microsoft.Extensions.FileSystemGlobbing when rg is unavailable, explicitly
 /// excluding .git to avoid surfacing version-control internals.
 /// </summary>
-internal sealed class GlobTool(Workspace workspace) : AIFunction
+internal sealed class GlobTool(Workspace workspace, ILogger? logger = null) : AIFunction
 {
     private const int MaxResults = 1000;
     private const int RipgrepTimeoutSeconds = 30;
@@ -88,6 +89,8 @@ internal sealed class GlobTool(Workspace workspace) : AIFunction
         }
         catch (OperationCanceledException)
         {
+            logger?.LogWarning("Glob search timed out for pattern '{Pattern}' in '{SearchRoot}'",
+                pattern, searchRoot);
             process.Kill(entireProcessTree: true);
             return "[search timed out]";
         }

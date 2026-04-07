@@ -1,6 +1,7 @@
 using dotenv.net;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using Ur.Hosting;
 
 namespace Ur.Cli;
@@ -41,8 +42,11 @@ internal static class HostRunner
         using var app = builder.Build();
         await app.StartAsync(ct);
 
+        var logger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger(nameof(HostRunner));
+
         try
         {
+            logger.LogInformation("CLI command invoked");
             return await action(app.Services.GetRequiredService<UrHost>(), ct);
         }
         finally

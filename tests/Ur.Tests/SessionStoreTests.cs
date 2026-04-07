@@ -43,7 +43,7 @@ public sealed class SessionStoreTests : IDisposable
         await store.AppendAsync(session, userMsg);
         await store.AppendAsync(session, assistantMsg);
 
-        var messages = await SessionStore.ReadAllAsync(session);
+        var messages = await store.ReadAllAsync(session);
 
         Assert.Equal(2, messages.Count);
         Assert.Equal(ChatRole.User, messages[0].Role);
@@ -67,7 +67,7 @@ public sealed class SessionStoreTests : IDisposable
         // Append a truncated JSON line to simulate a crash mid-write.
         await File.AppendAllTextAsync(session.FilePath, "{\"role\":\"assistant\",\"contents\":[{\"$type\":\"tex\n");
 
-        var messages = await SessionStore.ReadAllAsync(session);
+        var messages = await store.ReadAllAsync(session);
 
         Assert.Single(messages);
         Assert.Equal("saved", messages[0].Text);
@@ -83,7 +83,7 @@ public sealed class SessionStoreTests : IDisposable
         Directory.CreateDirectory(SessionsDir);
         await File.WriteAllTextAsync(session.FilePath, "");
 
-        var messages = await SessionStore.ReadAllAsync(session);
+        var messages = await store.ReadAllAsync(session);
 
         Assert.Empty(messages);
     }
@@ -95,7 +95,7 @@ public sealed class SessionStoreTests : IDisposable
         var session = store.Create();
         // Don't write any file — it shouldn't exist.
 
-        var messages = await SessionStore.ReadAllAsync(session);
+        var messages = await store.ReadAllAsync(session);
 
         Assert.Empty(messages);
     }

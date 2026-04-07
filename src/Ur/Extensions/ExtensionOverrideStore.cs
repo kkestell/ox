@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Microsoft.Extensions.Logging;
 
 namespace Ur.Extensions;
 
@@ -16,14 +17,16 @@ internal sealed class ExtensionOverrideStore
 
     private readonly string _rootDirectory;
     private readonly Workspace _workspace;
+    private readonly ILogger? _logger;
 
-    public ExtensionOverrideStore(string rootDirectory, Workspace workspace)
+    public ExtensionOverrideStore(string rootDirectory, Workspace workspace, ILogger? logger = null)
     {
         ArgumentNullException.ThrowIfNull(rootDirectory);
         ArgumentNullException.ThrowIfNull(workspace);
 
         _rootDirectory = rootDirectory;
         _workspace = workspace;
+        _logger = logger;
     }
 
     private string GlobalOverridesPath =>
@@ -42,11 +45,13 @@ internal sealed class ExtensionOverrideStore
         var global = LoadOverrides(
             GlobalOverridesPath,
             allowedTier: tier => tier is ExtensionTier.System or ExtensionTier.User,
-            scopeName: "global");
+            scopeName: "global",
+            _logger);
         var workspace = LoadOverrides(
             WorkspaceOverridesPath,
             allowedTier: tier => tier is ExtensionTier.Workspace,
-            scopeName: "workspace");
+            scopeName: "workspace",
+            _logger);
 
         return new ExtensionOverrideSnapshot(global, workspace);
     }
@@ -72,7 +77,8 @@ internal sealed class ExtensionOverrideStore
     private static Dictionary<ExtensionId, bool> LoadOverrides(
         string path,
         Func<ExtensionTier, bool> allowedTier,
-        string scopeName)
+        string scopeName,
+        ILogger? logger)
     {
         try
         {
@@ -89,8 +95,9 @@ internal sealed class ExtensionOverrideStore
 
             if (file.Version != CurrentVersion)
             {
-                Console.Error.WriteLine(
-                    $"Extension overrides at '{path}' ignored: unsupported version {file.Version}.");
+                logger?.LogWarning(
+                    "Extension overrides at '{Path}' ignored: unsupported version {Version}",
+                    path, file.Version);
                 return [];
             }
 
@@ -99,15 +106,17 @@ internal sealed class ExtensionOverrideStore
             {
                 if (!ExtensionId.TryParse(serializedId, out var extensionId))
                 {
-                    Console.Error.WriteLine(
-                        $"Extension overrides at '{path}' ignored entry '{serializedId}': invalid extension ID.");
+                    logger?.LogWarning(
+                        "Extension overrides at '{Path}' ignored entry '{SerializedId}': invalid extension ID",
+                        path, serializedId);
                     continue;
                 }
 
                 if (!allowedTier(extensionId.Tier))
                 {
-                    Console.Error.WriteLine(
-                        $"Extension overrides at '{path}' ignored entry '{serializedId}': invalid tier for {scopeName} overrides.");
+                    logger?.LogWarning(
+                        "Extension overrides at '{Path}' ignored entry '{SerializedId}': invalid tier for {Scope} overrides",
+                        path, serializedId, scopeName);
                     continue;
                 }
 
@@ -118,8 +127,8 @@ internal sealed class ExtensionOverrideStore
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
         {
-            Console.Error.WriteLine(
-                $"Extension overrides at '{path}' ignored: {ex.Message}");
+            logger?.LogWarning("Extension overrides at '{Path}' ignored: {Error}",
+                path, ex.Message);
             return [];
         }
     }

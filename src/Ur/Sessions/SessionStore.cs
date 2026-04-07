@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Logging;
 
 namespace Ur.Sessions;
 
@@ -9,7 +10,7 @@ namespace Ur.Sessions;
 /// Manages session lifecycle and persistence as JSONL files.
 /// Each line is a JSON-serialized ChatMessage using M.E.AI's polymorphic serialization.
 /// </summary>
-internal sealed class SessionStore(string sessionsDirectory)
+internal sealed class SessionStore(string sessionsDirectory, ILogger<SessionStore>? logger = null)
 {
     private static readonly JsonSerializerOptions JsonOptions = new(AIJsonUtilities.DefaultOptions)
     {
@@ -26,6 +27,7 @@ internal sealed class SessionStore(string sessionsDirectory)
         var createdAt = DateTimeOffset.UtcNow;
         var id = createdAt.ToString("yyyyMMdd-HHmmss-fff", CultureInfo.InvariantCulture);
         var filePath = Path.Combine(sessionsDirectory, $"{id}.jsonl");
+        logger?.LogDebug("Session created: {SessionId}", id);
         return new Session(id, filePath, createdAt);
     }
 
@@ -76,7 +78,7 @@ internal sealed class SessionStore(string sessionsDirectory)
         await File.AppendAllTextAsync(session.FilePath, json + "\n", ct);
     }
 
-    public static async Task<IReadOnlyList<ChatMessage>> ReadAllAsync(Session session, CancellationToken ct = default)
+    public async Task<IReadOnlyList<ChatMessage>> ReadAllAsync(Session session, CancellationToken ct = default)
     {
         if (!File.Exists(session.FilePath))
             return [];
@@ -94,11 +96,16 @@ internal sealed class SessionStore(string sessionsDirectory)
                 if (msg is not null)
                     messages.Add(msg);
             }
-            catch (JsonException)
+            catch (JsonException ex)
             {
-                // Malformed trailing lines (crash during write) are silently skipped.
+                // Malformed trailing lines (crash during write) — log and skip rather than
+                // losing the entire session.
+                logger?.LogWarning("Skipping malformed message in session '{Path}': {Error}",
+                    session.FilePath, ex.Message);
             }
         }
+
+        logger?.LogDebug("Loaded session '{SessionId}': {MessageCount} messages", session.Id, messages.Count);
         return messages;
     }
 }

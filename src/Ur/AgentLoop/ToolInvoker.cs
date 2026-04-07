@@ -1,5 +1,7 @@
+using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Logging;
 using Ur.Permissions;
 using Ur.Tools;
 
@@ -17,7 +19,7 @@ namespace Ur.AgentLoop;
 /// belonging to this layer. The invoker resolves the target path, checks containment,
 /// and passes both the operation type and the containment result to PermissionPolicy.
 /// </summary>
-internal sealed class ToolInvoker(ToolRegistry tools, Workspace workspace)
+internal sealed class ToolInvoker(ToolRegistry tools, Workspace workspace, ILogger<ToolInvoker> logger)
 {
     /// <summary>
     /// Invokes all tool calls from a single LLM response, appending results to
@@ -75,14 +77,23 @@ internal sealed class ToolInvoker(ToolRegistry tools, Workspace workspace)
         if (handler is null)
             return ($"Unknown tool: {call.Name}", true);
 
+        logger.LogInformation("Invoking tool '{ToolName}'", call.Name);
+        var sw = Stopwatch.StartNew();
+
         try
         {
             var args = new AIFunctionArguments(call.Arguments ?? new Dictionary<string, object?>());
             var raw = await handler.InvokeAsync(args, ct);
+            sw.Stop();
+            logger.LogInformation("Tool '{ToolName}' completed in {ElapsedMs}ms", call.Name, sw.ElapsedMilliseconds);
             return (raw?.ToString() ?? "", false);
         }
         catch (Exception ex)
         {
+            sw.Stop();
+            // Log tool failures — these previously vanished, making it hard to
+            // diagnose tool errors from the log file alone.
+            logger.LogError(ex, "Tool '{ToolName}' failed after {ElapsedMs}ms", call.Name, sw.ElapsedMilliseconds);
             return (ex.Message, true);
         }
     }
@@ -118,11 +129,18 @@ internal sealed class ToolInvoker(ToolRegistry tools, Workspace workspace)
 
         // In-workspace reads are auto-allowed — no prompt needed.
         if (!PermissionPolicy.RequiresPrompt(operationType, isInWorkspace))
+        {
+            logger.LogDebug("Permission auto-allowed for '{ToolName}' ({Operation}, inWorkspace={InWorkspace})",
+                call.Name, operationType, isInWorkspace);
             return false;
+        }
 
         // No callback configured — auto-deny all sensitive operations.
         if (callbacks?.RequestPermissionAsync is null)
+        {
+            logger.LogDebug("Permission auto-denied for '{ToolName}': no callback configured", call.Name);
             return true;
+        }
 
         var extensionId = meta?.ExtensionId ?? call.Name;
         var allowedScopes = PermissionPolicy.AllowedScopes(operationType, isInWorkspace);
@@ -132,6 +150,8 @@ internal sealed class ToolInvoker(ToolRegistry tools, Workspace workspace)
         var resolvedTarget = ToolArgHelpers.ResolvePath(workspace.RootPath, target);
         var request = new PermissionRequest(operationType, resolvedTarget, extensionId, allowedScopes);
         var response = await callbacks.RequestPermissionAsync(request, ct).ConfigureAwait(false);
+        logger.LogDebug("Permission {Decision} for '{ToolName}' on '{Target}'",
+            response.Granted ? "granted" : "denied", call.Name, resolvedTarget);
 
         return !response.Granted;
     }

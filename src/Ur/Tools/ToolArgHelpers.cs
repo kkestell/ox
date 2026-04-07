@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Logging;
 
 namespace Ur.Tools;
 
@@ -20,6 +21,7 @@ internal static class ToolArgHelpers
 
     // Lazily detect whether ripgrep is available. null = not yet checked.
     private static bool? _ripgrepAvailable;
+    private static ILogger? _ripgrepDetectionLogger;
     private static readonly Lock RipgrepDetectionLock = new();
 
     /// <summary>
@@ -51,8 +53,9 @@ internal static class ToolArgHelpers
                 process?.WaitForExit(3000);
                 _ripgrepAvailable = process?.ExitCode == 0;
             }
-            catch
+            catch (Exception ex)
             {
+                _ripgrepDetectionLogger?.LogDebug("Ripgrep not available: {Reason}", ex.Message);
                 _ripgrepAvailable = false;
             }
         }
@@ -64,6 +67,12 @@ internal static class ToolArgHelpers
     /// Overrides ripgrep detection for tests. Pass null to re-enable auto-detection.
     /// </summary>
     internal static void SetRipgrepAvailable(bool? available) => _ripgrepAvailable = available;
+
+    /// <summary>
+    /// Sets the logger used during ripgrep detection. Called once at startup from UrHost
+    /// so the one-time detection can log why rg isn't available.
+    /// </summary>
+    internal static void SetDetectionLogger(ILogger? logger) => _ripgrepDetectionLogger = logger;
 
     public static string GetRequiredString(AIFunctionArguments args, string key)
     {

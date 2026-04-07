@@ -42,6 +42,8 @@ internal sealed class SubagentRunner(
     /// a fatal error (e.g., LLM API failure) so the parent's ToolInvoker surfaces an
     /// actionable error result instead of a misleading empty-response string.
     /// </summary>
+    private readonly ILogger _logger = loggerFactory.CreateLogger<SubagentRunner>();
+
     public async Task<string> RunAsync(string task, CancellationToken ct)
     {
         // Filtered copy omits run_subagent from the child registry, blocking direct
@@ -55,6 +57,8 @@ internal sealed class SubagentRunner(
         // to distinguish concurrent runs without flooding the display.
         var subagentId = Guid.NewGuid().ToString("N")[..8];
 
+        _logger.LogInformation("Subagent '{SubagentId}' started", subagentId);
+
         var messages = new List<ChatMessage>
         {
             new(ChatRole.User, task)
@@ -62,7 +66,8 @@ internal sealed class SubagentRunner(
 
         var agentLoop = new AgentLoop(
             client, subAgentTools, workspace,
-            loggerFactory.CreateLogger<AgentLoop>());
+            loggerFactory.CreateLogger<AgentLoop>(),
+            loggerFactory);
 
         // Accumulate all response text across the loop iterations. The loop may
         // call tools and loop back multiple times before producing a final text.
@@ -98,6 +103,8 @@ internal sealed class SubagentRunner(
                     break;
             }
         }
+
+        _logger.LogInformation("Subagent '{SubagentId}' completed", subagentId);
 
         // An empty result means the model produced only tool calls with no prose.
         var result = responseText.ToString();

@@ -33,6 +33,7 @@ public sealed class UrSession
     private readonly ReadOnlyCollection<ChatMessage> _messagesView;
     private readonly TurnCallbacks? _hostCallbacks;
     private readonly PermissionGrantStore _grantStore;
+    private readonly ILogger _logger;
     private string? _activeModelId;
 
     internal UrSession(
@@ -48,6 +49,7 @@ public sealed class UrSession
         _host = host;
         _session = session;
         _messages = messages;
+        _logger = host.LoggerFactory.CreateLogger<UrSession>();
         // Expose a read-only view so callers (TUI, CLI) can render the message
         // list without being able to mutate it — mutation must go through
         // RunTurnAsync so persistence stays in sync.
@@ -55,7 +57,9 @@ public sealed class UrSession
         IsPersisted = isPersisted;
         _activeModelId = activeModelId;
         _hostCallbacks = callbacks;
-        _grantStore = new PermissionGrantStore(workspacePermissionsPath, alwaysPermissionsPath);
+        _grantStore = new PermissionGrantStore(
+            workspacePermissionsPath, alwaysPermissionsPath,
+            host.LoggerFactory.CreateLogger<PermissionGrantStore>());
     }
 
     public string Id => _session.Id;
@@ -121,6 +125,7 @@ public sealed class UrSession
         // Snapshot the model ID at turn start so that a concurrent config change
         // doesn't swap the model mid-conversation.
         _activeModelId = _host.Configuration.SelectedModelId;
+        _logger.LogInformation("Turn started: session={SessionId}, model={ModelId}", Id, _activeModelId);
 
         // Optimistically add the user message to the in-memory list and persist
         // it. If the write fails, roll back the in-memory state so the list
@@ -133,8 +138,9 @@ public sealed class UrSession
             await _host.AppendMessageAsync(_session, userMessage, ct);
             IsPersisted = true;
         }
-        catch
+        catch (Exception ex)
         {
+            _logger.LogError(ex, "Failed to persist user message for session '{SessionId}'", Id);
             _messages.RemoveAt(_messages.Count - 1);
             throw;
         }
@@ -177,7 +183,8 @@ public sealed class UrSession
         var persistedCount = _messages.Count;
         var agentLoop = new AgentLoop.AgentLoop(
             chatClient, tools, _host.Workspace,
-            _host.LoggerFactory.CreateLogger<AgentLoop.AgentLoop>());
+            _host.LoggerFactory.CreateLogger<AgentLoop.AgentLoop>(),
+            _host.LoggerFactory);
 
         await foreach (var loopEvent in agentLoop.RunTurnAsync(_messages, wrappedCallbacks, systemPrompt, ct))
         {
@@ -187,6 +194,7 @@ public sealed class UrSession
 
         // Final flush for any messages produced after the last yield.
         await PersistPendingMessagesAsync(persistedCount, ct);
+        _logger.LogInformation("Turn completed: session={SessionId}", Id);
     }
 
     /// <summary>
@@ -280,10 +288,11 @@ public sealed class UrSession
                 IsPersisted = true;
                 persistedCount++;
             }
-            catch
+            catch (Exception ex)
             {
                 // Roll back un-persisted messages to keep memory consistent
                 // with the on-disk JSONL file.
+                _logger.LogError(ex, "Failed to flush pending messages for session '{SessionId}'", Id);
                 _messages.RemoveRange(persistedCount, _messages.Count - persistedCount);
                 throw;
             }

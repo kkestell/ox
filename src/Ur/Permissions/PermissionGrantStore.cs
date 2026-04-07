@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Microsoft.Extensions.Logging;
 
 namespace Ur.Permissions;
 
@@ -30,6 +31,7 @@ internal sealed class PermissionGrantStore
 {
     private readonly string _workspacePermissionsPath;
     private readonly string _alwaysPermissionsPath;
+    private readonly ILogger? _logger;
 
     // In-memory grants for the three scopes. Session grants live only here.
     // Workspace and Always lists are populated on first access (lazy load).
@@ -55,10 +57,11 @@ internal sealed class PermissionGrantStore
         }
     });
 
-    internal PermissionGrantStore(string workspacePermissionsPath, string alwaysPermissionsPath)
+    internal PermissionGrantStore(string workspacePermissionsPath, string alwaysPermissionsPath, ILogger? logger = null)
     {
         _workspacePermissionsPath = workspacePermissionsPath;
         _alwaysPermissionsPath = alwaysPermissionsPath;
+        _logger = logger;
     }
 
     /// <summary>
@@ -120,7 +123,7 @@ internal sealed class PermissionGrantStore
         if (_workspaceGrants is not null)
             return;
 
-        _workspaceGrants = LoadGrants(_workspacePermissionsPath);
+        _workspaceGrants = LoadGrants(_workspacePermissionsPath, _logger);
     }
 
     private void EnsureAlwaysGrantsLoaded()
@@ -128,10 +131,10 @@ internal sealed class PermissionGrantStore
         if (_alwaysGrants is not null)
             return;
 
-        _alwaysGrants = LoadGrants(_alwaysPermissionsPath);
+        _alwaysGrants = LoadGrants(_alwaysPermissionsPath, _logger);
     }
 
-    private static List<PermissionGrant> LoadGrants(string path)
+    private static List<PermissionGrant> LoadGrants(string path, ILogger? logger)
     {
         var grants = new List<PermissionGrant>();
 
@@ -148,15 +151,19 @@ internal sealed class PermissionGrantStore
                     if (grant is not null)
                         grants.Add(grant);
                 }
-                catch (JsonException)
+                catch (JsonException ex)
                 {
                     // Skip malformed lines — don't crash the host because of a bad grant file.
+                    logger?.LogWarning("Skipping malformed grant line in '{Path}': {Error}",
+                        path, ex.Message);
                 }
             }
         }
-        catch (IOException)
+        catch (IOException ex)
         {
             // File doesn't exist yet or can't be read — return empty grants.
+            logger?.LogWarning("Could not load permission grants from '{Path}': {Error}",
+                path, ex.Message);
         }
 
         return grants;

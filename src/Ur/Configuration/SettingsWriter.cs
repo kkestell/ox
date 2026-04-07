@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
 
 namespace Ur.Configuration;
 
@@ -27,17 +28,20 @@ internal sealed class SettingsWriter
     private readonly IConfigurationRoot _configurationRoot;
     private readonly string? _userSettingsPath;
     private readonly string? _workspaceSettingsPath;
+    private readonly ILogger? _logger;
 
     public SettingsWriter(
         SettingsSchemaRegistry schemaRegistry,
         IConfigurationRoot configurationRoot,
         string? userSettingsPath,
-        string? workspaceSettingsPath)
+        string? workspaceSettingsPath,
+        ILogger? logger = null)
     {
         _schemaRegistry = schemaRegistry;
         _configurationRoot = configurationRoot;
         _userSettingsPath = userSettingsPath;
         _workspaceSettingsPath = workspaceSettingsPath;
+        _logger = logger;
     }
 
     /// <summary>
@@ -238,7 +242,7 @@ internal sealed class SettingsWriter
     /// Reads the nested JSON settings file into a dictionary, or returns an empty
     /// dictionary if the file doesn't exist or is malformed.
     /// </summary>
-    private static Dictionary<string, JsonElement> ReadNestedJson(string? path)
+    private Dictionary<string, JsonElement> ReadNestedJson(string? path)
     {
         if (path is null || !File.Exists(path))
             return new Dictionary<string, JsonElement>(StringComparer.Ordinal);
@@ -257,6 +261,7 @@ internal sealed class SettingsWriter
         }
         catch (Exception ex) when (ex is IOException or JsonException)
         {
+            _logger?.LogError(ex, "Failed to read settings from '{Path}'", path);
             return new Dictionary<string, JsonElement>(StringComparer.Ordinal);
         }
     }
@@ -286,7 +291,7 @@ internal sealed class SettingsWriter
     /// the file is malformed. This preserves the original JSON type (bool, number,
     /// string) that IConfiguration would flatten to a string.
     /// </summary>
-    private static JsonElement? ReadValueFromFile(string? path, string key)
+    private JsonElement? ReadValueFromFile(string? path, string key)
     {
         if (path is null || !File.Exists(path))
             return null;
@@ -316,6 +321,7 @@ internal sealed class SettingsWriter
         }
         catch (Exception ex) when (ex is IOException or JsonException)
         {
+            _logger?.LogError(ex, "Failed to read setting '{Key}' from '{Path}'", key, path);
             return null;
         }
     }

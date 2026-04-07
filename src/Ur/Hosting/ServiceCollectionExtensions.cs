@@ -83,30 +83,36 @@ public static class ServiceCollectionExtensions
         services.AddSingleton(sp =>
         {
             var cacheDir = Path.Combine(userDataDirectory, "cache");
-            var catalog = new ModelCatalog(cacheDir);
+            var logger = sp.GetRequiredService<ILoggerFactory>().CreateLogger(nameof(ModelCatalog));
+            var catalog = new ModelCatalog(cacheDir, logger);
             _ = catalog.LoadCache();
             return catalog;
         });
 
         services.AddSingleton(sp =>
-            new SessionStore(sp.GetRequiredService<Workspace>().SessionsDirectory));
+            new SessionStore(
+                sp.GetRequiredService<Workspace>().SessionsDirectory,
+                sp.GetRequiredService<ILoggerFactory>().CreateLogger<SessionStore>()));
 
         // Extension discovery produces the raw extension list. Schema registry and
         // catalog both depend on it, so it's registered as its own singleton.
         services.AddSingleton(sp =>
         {
             var workspace = sp.GetRequiredService<Workspace>();
+            var logger = sp.GetRequiredService<ILoggerFactory>().CreateLogger(nameof(ExtensionLoader));
             return ExtensionLoader.DiscoverAll(
                 options.SystemExtensionsPath ?? DefaultSystemExtensionsPath(userDataDirectory),
                 options.UserExtensionsPath ?? DefaultUserExtensionsPath(userDataDirectory),
-                workspace.ExtensionsDirectory);
+                workspace.ExtensionsDirectory,
+                logger);
         });
 
         services.AddSingleton(sp =>
         {
             var registry = new SettingsSchemaRegistry();
             RegisterCoreSchemas(registry);
-            RegisterExtensionSchemas(registry, sp.GetRequiredService<List<Extension>>());
+            var logger = sp.GetRequiredService<ILoggerFactory>().CreateLogger(nameof(ServiceCollectionExtensions));
+            RegisterExtensionSchemas(registry, sp.GetRequiredService<List<Extension>>(), logger);
             return registry;
         });
 
@@ -116,26 +122,32 @@ public static class ServiceCollectionExtensions
         services.AddSingleton(sp =>
         {
             var workspace = sp.GetRequiredService<Workspace>();
+            var logger = sp.GetRequiredService<ILoggerFactory>().CreateLogger(nameof(SettingsWriter));
             return new SettingsWriter(
                 sp.GetRequiredService<SettingsSchemaRegistry>(),
                 sp.GetRequiredService<IConfigurationRoot>(),
                 userSettingsPath,
-                workspace.SettingsPath);
+                workspace.SettingsPath,
+                logger);
         });
 
         services.AddSingleton(sp =>
         {
             var workspace = sp.GetRequiredService<Workspace>();
-            var overrideStore = new ExtensionOverrideStore(userDataDirectory, workspace);
+            var loggerFactory = sp.GetRequiredService<ILoggerFactory>();
+            var overrideLogger = loggerFactory.CreateLogger(nameof(ExtensionOverrideStore));
+            var overrideStore = new ExtensionOverrideStore(userDataDirectory, workspace, overrideLogger);
+            var catalogLogger = loggerFactory.CreateLogger(nameof(ExtensionCatalog));
             return ExtensionCatalog.Create(
-                sp.GetRequiredService<List<Extension>>(), overrideStore);
+                sp.GetRequiredService<List<Extension>>(), overrideStore, catalogLogger);
         });
 
         services.AddSingleton(sp =>
         {
             var workspace = sp.GetRequiredService<Workspace>();
+            var logger = sp.GetRequiredService<ILoggerFactory>().CreateLogger(nameof(SkillLoader));
             var skills = SkillLoader.LoadAll(
-                Path.Combine(userDataDirectory, "skills"), workspace.SkillsDirectory);
+                Path.Combine(userDataDirectory, "skills"), workspace.SkillsDirectory, logger);
             return new SkillRegistry(skills);
         });
 
@@ -184,7 +196,8 @@ public static class ServiceCollectionExtensions
     /// </summary>
     internal static void RegisterExtensionSchemas(
         SettingsSchemaRegistry registry,
-        IEnumerable<Extension> discoveredExtensions)
+        IEnumerable<Extension> discoveredExtensions,
+        ILogger? logger = null)
     {
         foreach (var extension in discoveredExtensions)
         {
@@ -203,8 +216,9 @@ public static class ServiceCollectionExtensions
             }
             catch (InvalidOperationException ex)
             {
-                Console.Error.WriteLine(
-                    $"Extension '{extension.Name}' skipped: failed to register settings schemas: {ex.Message}");
+                logger?.LogWarning(
+                    "Extension '{ExtensionName}' skipped: failed to register settings schemas: {Error}",
+                    extension.Name, ex.Message);
             }
         }
     }

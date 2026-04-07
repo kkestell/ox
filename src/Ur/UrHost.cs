@@ -35,6 +35,7 @@ public sealed class UrHost
 
     private readonly string _userDataDirectory;
     private readonly ILoggerFactory _loggerFactory;
+    private readonly ILogger _logger;
 
     public string WorkspacePath => Workspace.RootPath;
     public UrConfiguration Configuration { get; }
@@ -85,10 +86,17 @@ public sealed class UrHost
         SettingsSchemas = settingsSchemas;
         Configuration = configuration;
         _loggerFactory = loggerFactory;
+        _logger = loggerFactory.CreateLogger<UrHost>();
         _userDataDirectory = options.UserDataDirectory
             ?? ServiceCollectionExtensions.DefaultUserDataDirectory();
         _chatClientFactoryOverride = options.ChatClientFactoryOverride;
         _additionalTools = options.AdditionalTools;
+
+        // Log startup summary — extensions and skills are already loaded by the time
+        // the host is constructed (DI resolves them as upstream singletons).
+        _logger.LogInformation(
+            "Ur ready: workspace={WorkspacePath}, extensions={ExtensionCount}, skills={SkillCount}",
+            workspace.RootPath, extensions.List().Count, skills.All().Count);
     }
 
     internal IChatClient CreateChatClient(string modelId)
@@ -183,7 +191,7 @@ public sealed class UrHost
         if (session is null)
             return null;
 
-        var messages = (await SessionStore.ReadAllAsync(session, ct)).ToList();
+        var messages = (await _sessions.ReadAllAsync(session, ct)).ToList();
         return new UrSession(this, session, messages, isPersisted: true, activeModelId: null,
             callbacks, Workspace.PermissionsPath, DefaultUserPermissionsPath());
     }

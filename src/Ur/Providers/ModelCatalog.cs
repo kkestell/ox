@@ -1,6 +1,7 @@
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Microsoft.Extensions.Logging;
 
 namespace Ur.Providers;
 
@@ -15,12 +16,14 @@ public sealed class ModelCatalog
     private static readonly HttpClient SharedHttpClient = new();
 
     private readonly string _cachePath;
+    private readonly ILogger? _logger;
     private Dictionary<string, ModelInfo> _models = new(StringComparer.OrdinalIgnoreCase);
 
-    public ModelCatalog(string cacheDirectory)
+    public ModelCatalog(string cacheDirectory, ILogger? logger = null)
     {
         Directory.CreateDirectory(cacheDirectory);
         _cachePath = Path.Combine(cacheDirectory, "models.json");
+        _logger = logger;
     }
 
     /// <summary>
@@ -60,9 +63,10 @@ public sealed class ModelCatalog
             _models = BuildIndex(entries.Select(ToModelInfo));
             return true;
         }
-        catch (JsonException)
+        catch (JsonException ex)
         {
             // Corrupt cache — caller should re-fetch.
+            _logger?.LogWarning("Model cache corrupted, will refresh: {Error}", ex.Message);
             return false;
         }
     }

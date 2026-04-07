@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Logging;
 
 namespace Ur.Tools;
 
@@ -8,7 +9,7 @@ namespace Ur.Tools;
 /// The old string must appear exactly once — zero or multiple matches are errors,
 /// preventing ambiguous edits.
 /// </summary>
-internal sealed class UpdateFileTool(Workspace workspace) : AIFunction
+internal sealed class UpdateFileTool(Workspace workspace, ILogger? logger = null) : AIFunction
 {
     private static readonly JsonElement Schema = JsonDocument.Parse("""
         {
@@ -52,6 +53,7 @@ internal sealed class UpdateFileTool(Workspace workspace) : AIFunction
         }
         catch (FileNotFoundException)
         {
+            logger?.LogDebug("File not found for update: '{FilePath}'", filePath);
             throw new InvalidOperationException($"File not found: {filePath}");
         }
 

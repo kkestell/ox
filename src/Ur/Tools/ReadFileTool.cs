@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Logging;
 
 namespace Ur.Tools;
 
@@ -8,7 +9,7 @@ namespace Ur.Tools;
 /// Supports optional offset/limit parameters for reading specific line ranges,
 /// and appends a truncation message when the output doesn't cover the entire file.
 /// </summary>
-internal sealed class ReadFileTool(Workspace workspace) : AIFunction
+internal sealed class ReadFileTool(Workspace workspace, ILogger? logger = null) : AIFunction
 {
     private const int DefaultLimit = 2000;
 
@@ -65,6 +66,7 @@ internal sealed class ReadFileTool(Workspace workspace) : AIFunction
         }
         catch (FileNotFoundException)
         {
+            logger?.LogDebug("File not found: '{FilePath}'", filePath);
             throw new InvalidOperationException($"File not found: {filePath}");
         }
 

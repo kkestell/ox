@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Microsoft.Extensions.Logging;
 using Ur.Tools;
 
 namespace Ur.Extensions;
@@ -13,16 +14,19 @@ public sealed class ExtensionCatalog : IDisposable
     private readonly Dictionary<ExtensionId, bool> _globalOverrides;
     private readonly Dictionary<ExtensionId, bool> _workspaceOverrides;
     private readonly ExtensionOverrideStore _overrideStore;
+    private readonly ILogger? _logger;
     private readonly SemaphoreSlim _gate = new(1, 1);
 
     private ExtensionCatalog(
         IReadOnlyList<Extension> extensions,
         ExtensionOverrideStore overrideStore,
         IReadOnlyDictionary<ExtensionId, bool> globalOverrides,
-        IReadOnlyDictionary<ExtensionId, bool> workspaceOverrides)
+        IReadOnlyDictionary<ExtensionId, bool> workspaceOverrides,
+        ILogger? logger = null)
     {
         _extensions = extensions;
         _overrideStore = overrideStore;
+        _logger = logger;
         _extensionsById = extensions.ToDictionary(extension => extension.ExtensionId);
         _globalOverrides = new Dictionary<ExtensionId, bool>(globalOverrides);
         _workspaceOverrides = new Dictionary<ExtensionId, bool>(workspaceOverrides);
@@ -35,7 +39,8 @@ public sealed class ExtensionCatalog : IDisposable
     /// </summary>
     internal static ExtensionCatalog Create(
         IReadOnlyList<Extension> extensions,
-        ExtensionOverrideStore overrideStore)
+        ExtensionOverrideStore overrideStore,
+        ILogger? logger = null)
     {
         var snapshot = overrideStore.Load();
 
@@ -49,14 +54,23 @@ public sealed class ExtensionCatalog : IDisposable
 
             extension.SetDesiredState(desiredEnabled, hasOverride);
             if (desiredEnabled)
-                ExtensionLoader.Activate(extension);
+            {
+                ExtensionLoader.Activate(extension, logger);
+                if (extension.IsActive)
+                    logger?.LogInformation("Activated extension '{ExtensionName}' ({Tier})",
+                        extension.Name, extension.Tier);
+                else
+                    logger?.LogWarning("Extension '{ExtensionName}' failed to activate: {Error}",
+                        extension.Name, extension.LoadError);
+            }
         }
 
         return new ExtensionCatalog(
             extensions,
             overrideStore,
             snapshot.Global,
-            snapshot.Workspace);
+            snapshot.Workspace,
+            logger);
     }
 
     /// <summary>
@@ -119,7 +133,7 @@ public sealed class ExtensionCatalog : IDisposable
             extension.SetDesiredState(desired, hasOverride);
 
             if (desired)
-                ExtensionLoader.Activate(extension);
+                ExtensionLoader.Activate(extension, _logger);
             else
                 ExtensionLoader.Deactivate(extension);
 

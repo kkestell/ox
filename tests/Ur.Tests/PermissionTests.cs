@@ -279,7 +279,7 @@ public sealed class AgentLoopPermissionTests : IDisposable
     }
 
     private AgentLoopClass MakeLoop(IChatClient client, ToolRegistry tools) =>
-        new(client, tools, new Workspace(_workspaceRoot), NullLogger<AgentLoopClass>.Instance);
+        new(client, tools, new Workspace(_workspaceRoot), NullLogger<AgentLoopClass>.Instance, NullLoggerFactory.Instance);
 
     // -------------------------------------------------------------------------
     // Callback denies — tool produces "Permission denied." result, loop continues

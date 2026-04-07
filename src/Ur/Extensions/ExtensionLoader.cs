@@ -4,6 +4,7 @@ using Lua;
 using Lua.IO;
 using Lua.Platforms;
 using Lua.Standard;
+using Microsoft.Extensions.Logging;
 
 namespace Ur.Extensions;
 
@@ -22,15 +23,16 @@ internal static partial class ExtensionLoader
     public static List<Extension> DiscoverAll(
         string? systemDir,
         string? userDir,
-        string? workspaceDir)
+        string? workspaceDir,
+        ILogger? logger = null)
     {
         var seen = new Dictionary<string, ExtensionTier>(StringComparer.Ordinal);
         var extensions = new List<Extension>();
 
         // Process tiers in trust order: system > user > workspace.
-        DiscoverTier(systemDir, ExtensionTier.System, seen, extensions);
-        DiscoverTier(userDir, ExtensionTier.User, seen, extensions);
-        DiscoverTier(workspaceDir, ExtensionTier.Workspace, seen, extensions);
+        DiscoverTier(systemDir, ExtensionTier.System, seen, extensions, logger);
+        DiscoverTier(userDir, ExtensionTier.User, seen, extensions, logger);
+        DiscoverTier(workspaceDir, ExtensionTier.Workspace, seen, extensions, logger);
 
         return extensions
             .OrderBy(extension => TierSortOrder(extension.Tier))
@@ -43,7 +45,7 @@ internal static partial class ExtensionLoader
     /// Synchronous for the same reason as <see cref="DiscoverAll"/>: the Lua sandbox
     /// has no-op I/O, so DoStringAsync completes synchronously as a CPU-bound eval.
     /// </summary>
-    public static void Activate(Extension extension)
+    public static void Activate(Extension extension, ILogger? logger = null)
     {
         // Reset to a clean slate before activation — clears any previous Lua
         // runtime and tools from a prior activation attempt.
@@ -74,8 +76,8 @@ internal static partial class ExtensionLoader
             ex is LuaRuntimeException or LuaParseException or LuaCompileException or InvalidOperationException)
         {
             extension.ApplyState(ExtensionState.Failed, error: ex.Message);
-            Console.Error.WriteLine(
-                $"Extension '{extension.Name}': main.lua failed: {ex.Message}");
+            logger?.LogWarning("Extension '{ExtensionName}': main.lua failed: {Error}",
+                extension.Name, ex.Message);
         }
     }
 
@@ -86,7 +88,8 @@ internal static partial class ExtensionLoader
         string? directory,
         ExtensionTier tier,
         Dictionary<string, ExtensionTier> seen,
-        List<Extension> extensions)
+        List<Extension> extensions,
+        ILogger? logger)
     {
         if (directory is null || !Directory.Exists(directory))
             return;
@@ -104,9 +107,9 @@ internal static partial class ExtensionLoader
                 // Higher-trust tier wins on name collision.
                 if (seen.TryGetValue(ext.Name, out var existingTier))
                 {
-                    Console.Error.WriteLine(
-                        $"Extension '{ext.Name}' from {tier} tier skipped: " +
-                        $"already loaded from {existingTier} tier.");
+                    logger?.LogWarning(
+                        "Extension '{ExtensionName}' from {Tier} tier skipped: already loaded from {ExistingTier} tier",
+                        ext.Name, tier, existingTier);
                     continue;
                 }
 
@@ -117,8 +120,8 @@ internal static partial class ExtensionLoader
                 ex is LuaRuntimeException or LuaParseException or
                 LuaCompileException or InvalidOperationException)
             {
-                Console.Error.WriteLine(
-                    $"Extension at '{extDir}' skipped: {ex.Message}");
+                logger?.LogWarning("Extension at '{ExtensionDir}' skipped: {Error}",
+                    extDir, ex.Message);
             }
         }
     }

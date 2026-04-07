@@ -23,12 +23,12 @@ public sealed class UrFileLoggerTests : IDisposable
 
     [Theory]
     [InlineData(LogLevel.Trace, false)]
-    [InlineData(LogLevel.Debug, false)]
+    [InlineData(LogLevel.Debug, true)]
     [InlineData(LogLevel.Information, true)]
     [InlineData(LogLevel.Warning, true)]
     [InlineData(LogLevel.Error, true)]
     [InlineData(LogLevel.Critical, true)]
-    public void IsEnabled_FiltersLevelsBelowInformation(LogLevel level, bool expected)
+    public void IsEnabled_FiltersLevelsBelowDebug(LogLevel level, bool expected)
     {
         var logger = new UrFileLogger("Test", _logDir);
 
@@ -81,7 +81,7 @@ public sealed class UrFileLoggerTests : IDisposable
     {
         var logger = new UrFileLogger("Test", _logDir);
 
-        logger.LogDebug("This should not appear");
+        logger.LogTrace("This should not appear");
 
         Assert.False(File.Exists(TodayLogPath));
     }

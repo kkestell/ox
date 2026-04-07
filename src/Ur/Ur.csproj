@@ -7,8 +7,10 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
     <AnalysisMode>Recommended</AnalysisMode>
-    <!-- CA1848: Use LoggerMessage delegates for perf — not worth the ceremony for a handful of log calls. -->
-    <NoWarn>$(NoWarn);CA1848</NoWarn>
+    <!-- CA1848: Use LoggerMessage source generators — not worth the ceremony for this project size.
+         CA1873: "Argument evaluation may be expensive" — false positive for trivially cheap ex.Message
+         accesses on nullable logger patterns (logger?.LogWarning). -->
+    <NoWarn>$(NoWarn);CA1848;CA1873</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>

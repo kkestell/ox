@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
 
 namespace Ur.Configuration;
 
@@ -18,10 +19,12 @@ namespace Ur.Configuration;
 internal sealed class UrSettingsConfigurationProvider : ConfigurationProvider
 {
     private readonly string? _filePath;
+    private readonly ILogger? _logger;
 
-    public UrSettingsConfigurationProvider(string? filePath)
+    public UrSettingsConfigurationProvider(string? filePath, ILogger? logger = null)
     {
         _filePath = filePath;
+        _logger = logger;
     }
 
     /// <summary>
@@ -40,9 +43,11 @@ internal sealed class UrSettingsConfigurationProvider : ConfigurationProvider
         {
             json = File.ReadAllText(_filePath);
         }
-        catch (IOException)
+        catch (IOException ex)
         {
             // File disappeared between exists check and read — treat as empty.
+            _logger?.LogWarning("Settings file at '{Path}' could not be read: {Error}",
+                _filePath, ex.Message);
             return;
         }
 
@@ -54,9 +59,11 @@ internal sealed class UrSettingsConfigurationProvider : ConfigurationProvider
         {
             doc = JsonDocument.Parse(json);
         }
-        catch (JsonException)
+        catch (JsonException ex)
         {
             // Malformed JSON — treat as empty rather than crashing startup.
+            _logger?.LogWarning("Settings file at '{Path}' contains malformed JSON: {Error}",
+                _filePath, ex.Message);
             return;
         }
 

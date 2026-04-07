@@ -22,12 +22,12 @@ internal record LlmErrorHolder
 /// Drives the core conversation cycle: user input → LLM → tool calls → repeat.
 /// Emits events for the UI layer to render.
 /// </summary>
-internal sealed class AgentLoop(IChatClient client, ToolRegistry tools, Workspace workspace, ILogger<AgentLoop> logger)
+internal sealed class AgentLoop(IChatClient client, ToolRegistry tools, Workspace workspace, ILogger<AgentLoop> logger, ILoggerFactory loggerFactory)
 {
     // Delegate tool dispatch (permission check → lookup → invoke → result) to a
     // dedicated helper so RunTurnAsync stays at a single abstraction level.
     // Workspace is passed so the invoker can enforce containment at the permission layer.
-    private readonly ToolInvoker _toolInvoker = new(tools, workspace);
+    private readonly ToolInvoker _toolInvoker = new(tools, workspace, loggerFactory.CreateLogger<ToolInvoker>());
     /// <summary>
     /// Runs a single turn: sends the user message (plus conversation history) to the LLM,
     /// streams the response, executes any tool calls, and loops until the LLM produces
