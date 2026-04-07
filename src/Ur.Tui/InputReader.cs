@@ -122,6 +122,9 @@ internal sealed class InputReader
                     case ConsoleKey.D when key.Modifiers.HasFlag(ConsoleModifiers.Control)
                                            && buffer.Length == 0:
                         return null; // EOF
+
+                    default:
+                        break;
                 }
 
                 if (char.IsControl(key.KeyChar))

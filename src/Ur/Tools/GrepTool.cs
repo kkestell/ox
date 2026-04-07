@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -85,7 +86,7 @@ internal sealed class GrepTool(Workspace workspace) : AIFunction
         if (contextLines > 0)
         {
             args.Add("--context");
-            args.Add(contextLines.ToString());
+            args.Add(contextLines.ToString(CultureInfo.InvariantCulture));
         }
 
         if (!string.IsNullOrEmpty(include))
@@ -189,7 +190,7 @@ internal sealed class GrepTool(Workspace workspace) : AIFunction
 
                     // Use : for the match line, - for context lines (same as rg).
                     var separator = c == i ? ":" : "-";
-                    sb.AppendLine($"{relativePath}:{c + 1}{separator}{lines[c]}");
+                    sb.AppendLine(CultureInfo.InvariantCulture, $"{relativePath}:{c + 1}{separator}{lines[c]}");
                     lineCount++;
                 }
             }

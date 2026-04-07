@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text;
 
 namespace Ur.Logging;
@@ -50,12 +51,12 @@ public static class UrLogger
             if (depth > 0)
                 sb.AppendLine("  -- caused by --");
 
-            sb.AppendLine($"  {current.GetType().FullName}: {current.Message}");
+            sb.AppendLine(CultureInfo.InvariantCulture, $"  {current.GetType().FullName}: {current.Message}");
 
             if (current.StackTrace is { } stack)
             {
                 foreach (var line in stack.Split('\n'))
-                    sb.AppendLine($"    {line.TrimEnd()}");
+                    sb.AppendLine(CultureInfo.InvariantCulture, $"    {line.TrimEnd()}");
             }
 
             current = current.InnerException;

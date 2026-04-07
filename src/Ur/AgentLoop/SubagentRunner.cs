@@ -80,7 +80,7 @@ internal sealed class SubagentRunner(
                     responseText.Append(chunk.Text);
                     break;
 
-                case Error { IsFatal: true } fatalError:
+                case TurnError { IsFatal: true } fatalError:
                     // A fatal error (e.g., LLM API failure) must propagate — absorbing it
                     // would make an unrecoverable failure indistinguishable from a silent
                     // no-text response. ToolInvoker wraps this in an error tool result.
@@ -90,7 +90,7 @@ internal sealed class SubagentRunner(
                 // Non-fatal errors and TurnCompleted are terminal; the loop will not
                 // yield further. Let the foreach complete naturally.
                 case TurnCompleted:
-                case Error:
+                case TurnError:
                     break;
             }
         }

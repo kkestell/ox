@@ -130,7 +130,7 @@ internal sealed class EventRouter(EventList eventList)
                 _currentText = null;
                 break;
 
-            case Error { Message: var msg }:
+            case TurnError { Message: var msg }:
                 var errorText = new TextRenderable(foreground: Color.Red);
                 errorText.SetText($"[error] {msg}");
                 eventList.Add(errorText, BubbleStyle.Circle, () => Color.Red);
@@ -211,7 +211,7 @@ internal sealed class EventRouter(EventList eventList)
                 _subagentCurrentText[subId] = null;
                 break;
 
-            case Error { Message: var subErrMsg }:
+            case TurnError { Message: var subErrMsg }:
                 var subErrText = new TextRenderable(foreground: Color.Red);
                 subErrText.SetText($"[error] {subErrMsg}");
                 subRenderable.AddChild(subErrText, BubbleStyle.Circle, () => Color.Red);

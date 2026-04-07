@@ -391,7 +391,7 @@ public class HostSessionApiTests
         var events = await CollectEventsAsync(session.RunTurnAsync("hello"));
 
         var error = Assert.Single(events);
-        var errorEvent = Assert.IsType<Error>(error);
+        var errorEvent = Assert.IsType<TurnError>(error);
         Assert.Equal("API error", errorEvent.Message);
         Assert.True(errorEvent.IsFatal);
     }
@@ -413,7 +413,7 @@ public class HostSessionApiTests
 
         Assert.Equal(2, events.Count);
         Assert.IsType<ResponseChunk>(events[0]);
-        var errorEvent = Assert.IsType<Error>(events[1]);
+        var errorEvent = Assert.IsType<TurnError>(events[1]);
         Assert.Equal("mid-stream failure", errorEvent.Message);
         Assert.True(errorEvent.IsFatal);
     }

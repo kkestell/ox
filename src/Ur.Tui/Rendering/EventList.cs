@@ -142,7 +142,7 @@ internal sealed class EventList : IRenderable
                 break;
             }
 
-            default:
+            case BubbleStyle.Circle:
             {
                 // Orphan group: Circle items before the first User. Rendered as
                 // top-level tree children with ├─/└─ connectors.

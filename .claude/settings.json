@@ -10,5 +10,17 @@
       "Bash(git commit -m ':*)",
       "Bash(find:*)"
     ]
+  },
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": ".claude/hooks/stop-hook.sh"
+          }
+        ]
+      }
+    ]
   }
 }

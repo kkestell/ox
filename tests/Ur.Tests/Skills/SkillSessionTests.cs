@@ -77,7 +77,7 @@ public sealed class SkillSessionTests : IDisposable
         var events = await CollectAsync(session.RunTurnAsync("/hello world"));
 
         // Should NOT yield an error — the skill expanded successfully.
-        Assert.DoesNotContain(events, e => e is Error);
+        Assert.DoesNotContain(events, e => e is TurnError);
 
         // The user message sent to the LLM should contain the expanded content.
         Assert.NotNull(capturingClient.LastMessages);
@@ -100,7 +100,7 @@ public sealed class SkillSessionTests : IDisposable
         var session = host.CreateSession();
         var events = await CollectAsync(session.RunTurnAsync("/nonexistent"));
 
-        var error = Assert.Single(events.OfType<Error>());
+        var error = Assert.Single(events.OfType<TurnError>());
         Assert.Contains("Unknown skill", error.Message);
         Assert.False(error.IsFatal);
 
@@ -120,7 +120,7 @@ public sealed class SkillSessionTests : IDisposable
         var session = host.CreateSession();
         var events = await CollectAsync(session.RunTurnAsync("/hidden"));
 
-        var error = Assert.Single(events.OfType<Error>());
+        var error = Assert.Single(events.OfType<TurnError>());
         Assert.Contains("Unknown skill", error.Message);
         Assert.Empty(session.Messages);
     }

@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text;
 
 namespace Ur.Skills;
@@ -31,17 +32,17 @@ internal static class SystemPromptBuilder
 
         foreach (var skill in modelSkills)
         {
-            sb.Append($"- {skill.Name}");
+            sb.Append(CultureInfo.InvariantCulture, $"- {skill.Name}");
 
             if (!string.IsNullOrWhiteSpace(skill.Description))
-                sb.Append($": {skill.Description}");
+                sb.Append(CultureInfo.InvariantCulture, $": {skill.Description}");
 
             if (!string.IsNullOrWhiteSpace(skill.WhenToUse))
             {
                 var hint = skill.WhenToUse.Length > MaxWhenToUseLength
                     ? skill.WhenToUse[..MaxWhenToUseLength] + "..."
                     : skill.WhenToUse;
-                sb.Append($" — {hint}");
+                sb.Append(CultureInfo.InvariantCulture, $" — {hint}");
             }
 
             sb.AppendLine();

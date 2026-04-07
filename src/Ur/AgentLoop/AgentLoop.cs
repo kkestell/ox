@@ -90,7 +90,7 @@ internal sealed class AgentLoop(IChatClient client, ToolRegistry tools, Workspac
 
             if (errorHolder.Exception is { } llmError)
             {
-                yield return new Error { Message = llmError.Message, IsFatal = true };
+                yield return new TurnError { Message = llmError.Message, IsFatal = true };
                 yield break;
             }
 

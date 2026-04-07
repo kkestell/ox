@@ -59,7 +59,7 @@ internal static class Program
         AppDomain.CurrentDomain.UnhandledException += (_, e) =>
         {
             var ex = e.ExceptionObject as Exception
-                ?? new Exception(e.ExceptionObject.ToString() ?? "Unknown error");
+                ?? new InvalidOperationException(e.ExceptionObject.ToString() ?? "Unknown error");
             UrLogger.Exception("Unhandled exception (process terminating)", ex);
         };
 
@@ -114,7 +114,7 @@ internal static class Program
                         router.RouteMainEvent(evt);
 
                         // Fatal errors are unrecoverable — log and exit the process.
-                        if (evt is not Error { IsFatal: true } fatal)
+                        if (evt is not TurnError { IsFatal: true } fatal)
                             continue;
 
                         UrLogger.Error($"Fatal agent error (exiting): {fatal.Message}");

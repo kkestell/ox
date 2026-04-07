@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
 using Microsoft.Extensions.AI;
@@ -23,7 +24,7 @@ internal sealed class SessionStore(string sessionsDirectory)
     public Session Create()
     {
         var createdAt = DateTimeOffset.UtcNow;
-        var id = createdAt.ToString("yyyyMMdd-HHmmss-fff");
+        var id = createdAt.ToString("yyyyMMdd-HHmmss-fff", CultureInfo.InvariantCulture);
         var filePath = Path.Combine(sessionsDirectory, $"{id}.jsonl");
         return new Session(id, filePath, createdAt);
     }

@@ -106,7 +106,7 @@ public sealed class UrSession
             if (expanded is null)
             {
                 // Unknown skill or not user-invocable — emit an error and stop the turn.
-                yield return new AgentLoop.Error
+                yield return new AgentLoop.TurnError
                 {
                     Message = $"Unknown skill: {SlashCommandParser.ParseName(userInput)}",
                     IsFatal = false

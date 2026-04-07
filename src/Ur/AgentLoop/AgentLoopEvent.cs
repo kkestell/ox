@@ -77,7 +77,7 @@ public sealed class TurnCompleted : AgentLoopEvent;
 /// <summary>
 /// An error occurred during the turn (LLM API failure, etc.).
 /// </summary>
-public sealed class Error : AgentLoopEvent
+public sealed class TurnError : AgentLoopEvent
 {
     public required string Message { get; init; }
     public required bool IsFatal { get; init; }

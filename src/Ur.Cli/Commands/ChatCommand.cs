@@ -117,7 +117,7 @@ internal static class ChatCommand
                                 if (!subagentAtLineStart) Console.WriteLine();
                                 subagentAtLineStart = true;
                                 break;
-                            case SubagentEvent { Inner: Error { Message: var saMsg } }:
+                            case SubagentEvent { Inner: TurnError { Message: var saMsg } }:
                                 if (!subagentAtLineStart) Console.Error.WriteLine();
                                 Console.Error.WriteLine($">>>> [error] {saMsg}");
                                 subagentAtLineStart = true;
@@ -215,7 +215,7 @@ internal static class ChatCommand
                             turnComplete = true;
                             break;
 
-                        case Error error:
+                        case TurnError error:
                             await Console.Error.WriteLineAsync($"[error] {error.Message}");
                             if (error.IsFatal)
                                 return 1;

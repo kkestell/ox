@@ -377,6 +377,6 @@ public sealed class SubagentRunnerTests
             () => runner.RunAsync("trigger error", CancellationToken.None));
 
         // Even though an exception was thrown, the fatal Error event must have been relayed.
-        Assert.Contains(relayedEvents, e => e is SubagentEvent { Inner: Error { IsFatal: true } });
+        Assert.Contains(relayedEvents, e => e is SubagentEvent { Inner: TurnError { IsFatal: true } });
     }
 }

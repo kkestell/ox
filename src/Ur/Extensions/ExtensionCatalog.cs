@@ -6,7 +6,7 @@ namespace Ur.Extensions;
 /// <summary>
 /// Provides listing and enablement management for extensions discovered in the current host.
 /// </summary>
-public sealed class ExtensionCatalog
+public sealed class ExtensionCatalog : IDisposable
 {
     private readonly IReadOnlyList<Extension> _extensions;
     private readonly Dictionary<ExtensionId, Extension> _extensionsById;
@@ -195,6 +195,8 @@ public sealed class ExtensionCatalog
         foreach (var (id, enabled) in source)
             destination[id] = enabled;
     }
+
+    public void Dispose() => _gate.Dispose();
 
     private static ExtensionInfo ToInfo(Extension extension) =>
         new(

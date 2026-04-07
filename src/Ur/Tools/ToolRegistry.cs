@@ -84,5 +84,5 @@ public sealed class ToolRegistry
     /// Returns all registered tools as AITool instances for passing to ChatOptions.
     /// Returns a read-only list to prevent accidental mutation of the cached snapshot.
     /// </summary>
-    public IReadOnlyList<AITool> All() => _allCache ??= _entries.Values.Select(e => (AITool)e.Tool).ToList();
+    public IReadOnlyList<AITool> All() => _allCache ??= new List<AITool>(_entries.Values.Select(e => e.Tool));
 }
