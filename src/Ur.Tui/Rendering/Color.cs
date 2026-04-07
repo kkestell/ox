@@ -13,7 +13,7 @@ internal enum ColorKind
     /// <summary>High-intensity 8-color palette — emits SGR 90–97 (fg) or 100–107 (bg).</summary>
     Bright,
     /// <summary>256-color palette — emits SGR 38;5;N (fg) or 48;5;N (bg).</summary>
-    Color256,
+    Color256
 }
 
 /// <summary>
@@ -36,24 +36,14 @@ internal readonly struct Color : IEquatable<Color>
 
     // --- Standard 8 foreground colors (SGR 30–37 / 40–47) ---
     public static Color Default  => new(ColorKind.Default, 0);
-    public static Color Black    => new(ColorKind.Basic,   0); // SGR 30/40
     public static Color Red      => new(ColorKind.Basic,   1); // SGR 31/41
     public static Color Green    => new(ColorKind.Basic,   2); // SGR 32/42
     public static Color Yellow   => new(ColorKind.Basic,   3); // SGR 33/43
     public static Color Blue     => new(ColorKind.Basic,   4); // SGR 34/44
-    public static Color Magenta  => new(ColorKind.Basic,   5); // SGR 35/45
-    public static Color Cyan     => new(ColorKind.Basic,   6); // SGR 36/46
     public static Color White    => new(ColorKind.Basic,   7); // SGR 37/47
 
     // --- High-intensity variants (SGR 90–97 / 100–107) ---
     public static Color BrightBlack   => new(ColorKind.Bright, 0); // dark gray, SGR 90/100
-    public static Color BrightRed     => new(ColorKind.Bright, 1); // SGR 91/101
-    public static Color BrightGreen   => new(ColorKind.Bright, 2); // SGR 92/102
-    public static Color BrightYellow  => new(ColorKind.Bright, 3); // SGR 93/103
-    public static Color BrightBlue    => new(ColorKind.Bright, 4); // SGR 94/104
-    public static Color BrightMagenta => new(ColorKind.Bright, 5); // SGR 95/105
-    public static Color BrightCyan    => new(ColorKind.Bright, 6); // SGR 96/106
-    public static Color BrightWhite   => new(ColorKind.Bright, 7); // SGR 97/107
 
     /// <summary>256-color palette entry (SGR 38;5;N for fg, 48;5;N for bg).</summary>
     public static Color FromIndex(byte index) => new(ColorKind.Color256, index);

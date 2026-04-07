@@ -12,5 +12,5 @@ internal enum CellStyle
     Dim       = 2,  // SGR 2
     Italic    = 4,  // SGR 3
     Underline = 8,  // SGR 4
-    Reverse   = 16, // SGR 7
+    Reverse   = 16  // SGR 7
 }

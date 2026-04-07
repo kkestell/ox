@@ -119,11 +119,17 @@ internal sealed class SubagentRenderable : IRenderable
     /// <summary>
     /// Builds a static ellipsis row in the same tree-child format as a regular
     /// Circle child: ├─ ● ... in dim BrightBlack to indicate truncation.
+    /// Uses <see cref="TreeChrome"/> constants so the characters stay in sync
+    /// with the rest of the tree rendering.
     /// </summary>
     private static CellRow MakeEllipsisRow()
     {
         var row = new CellRow();
-        row.Append("├─ ● ...", Color.BrightBlack, Color.Default);
+        row.Append(TreeChrome.BranchChar, Color.BrightBlack, Color.Default);
+        row.Append(TreeChrome.HorizontalChar, Color.BrightBlack, Color.Default);
+        row.Append(' ', Color.BrightBlack, Color.Default);
+        row.Append(TreeChrome.CircleChar, Color.BrightBlack, Color.Default);
+        row.Append(" ...", Color.BrightBlack, Color.Default);
         return row;
     }
 }

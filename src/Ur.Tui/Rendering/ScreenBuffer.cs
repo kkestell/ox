@@ -26,11 +26,7 @@ internal sealed class ScreenBuffer
     }
 
     /// <summary>Gets or sets the cell at the given (0-based) row and column.</summary>
-    public Cell this[int row, int col]
-    {
-        get => _cells[row, col];
-        set => _cells[row, col] = value;
-    }
+    public Cell this[int row, int col] => _cells[row, col];
 
     /// <summary>
     /// Writes <paramref name="cellRow"/> into the buffer at the given 0-based row.

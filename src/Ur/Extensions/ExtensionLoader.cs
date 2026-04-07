@@ -162,8 +162,8 @@ internal static partial class ExtensionLoader
         {
             var def = context.GetArgument<LuaTable>(0);
 
-            var name = SanitizeToolName(ReadRequiredString(def, "name"));
-            var description = ReadOptionalString(def, "description") ?? "";
+            var name = SanitizeToolName(LuaTableHelpers.ReadRequiredString(def, "name"));
+            var description = LuaTableHelpers.ReadOptionalString(def, "description") ?? "";
             var handler = def["handler"].TryRead<LuaFunction>(out var fn)
                 ? fn
                 : throw new InvalidOperationException(
@@ -194,18 +194,6 @@ internal static partial class ExtensionLoader
     {
         var doc = JsonDocument.Parse("""{"type":"object","properties":{}}""");
         return doc.RootElement.Clone();
-    }
-
-    // --- String helpers ---
-
-    private static string ReadRequiredString(LuaTable table, string key) =>
-        table[key].TryRead<string>(out var s)
-            ? s
-            : throw new InvalidOperationException($"Missing required field '{key}'.");
-
-    private static string? ReadOptionalString(LuaTable table, string key)
-    {
-        return table[key].TryRead<string>(out var s) ? s : null;
     }
 
     [GeneratedRegex("[^a-zA-Z0-9_-]")]

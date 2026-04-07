@@ -62,6 +62,7 @@ public sealed class SubagentRunnerTests
         {
             await Task.CompletedTask;
             throw new HttpRequestException("simulated API failure");
+            // ReSharper disable once HeuristicUnreachableCode
 #pragma warning disable CS0162 // Unreachable — yield needed to make this an async iterator
             yield break;
 #pragma warning restore CS0162

@@ -42,14 +42,4 @@ internal sealed class CellRow
             _cells.Add(new Cell(ch, fg, bg, style));
     }
 
-    /// <summary>
-    /// Extends this row with space cells up to <paramref name="totalWidth"/> columns.
-    /// Does nothing if the row is already at or beyond that width.
-    /// Used by EventList to fill bubble backgrounds to the bubble edge.
-    /// </summary>
-    public void PadRight(int totalWidth, Color bg)
-    {
-        while (_cells.Count < totalWidth)
-            _cells.Add(new Cell(' ', Color.Default, bg));
-    }
 }

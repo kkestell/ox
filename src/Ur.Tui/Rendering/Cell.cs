@@ -10,20 +10,13 @@ namespace Ur.Tui.Rendering;
 /// Terminal.Flush is the sole consumer; it reads Rune, Foreground, Background,
 /// and Style and emits the appropriate SGR sequences followed by the character.
 /// </summary>
-internal readonly struct Cell : IEquatable<Cell>
+internal readonly struct Cell(char rune, Color foreground, Color background, CellStyle style = CellStyle.None)
+    : IEquatable<Cell>
 {
-    public char       Rune       { get; }
-    public Color      Foreground { get; }
-    public Color      Background { get; }
-    public CellStyle  Style      { get; }
-
-    public Cell(char rune, Color foreground, Color background, CellStyle style = CellStyle.None)
-    {
-        Rune       = rune;
-        Foreground = foreground;
-        Background = background;
-        Style      = style;
-    }
+    public char       Rune       { get; } = rune;
+    public Color      Foreground { get; } = foreground;
+    public Color      Background { get; } = background;
+    public CellStyle  Style      { get; } = style;
 
     /// <summary>
     /// A blank cell with default terminal colors and no styling.

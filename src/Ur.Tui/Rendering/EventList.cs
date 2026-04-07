@@ -59,26 +59,6 @@ internal enum BubbleStyle
 /// </summary>
 internal sealed class EventList : IRenderable
 {
-    // ● U+25CF BLACK CIRCLE — status indicator for Circle-style child nodes.
-    private const char CircleChar = '●';
-
-    // Tree-drawing box characters used to connect parent and child nodes.
-    private const char BranchChar     = '├'; // U+251C — non-last child branch
-    private const char LastBranchChar = '└'; // U+2514 — last child branch
-    private const char VerticalChar   = '│'; // U+2502 — vertical continuation line
-    private const char HorizontalChar = '─'; // U+2500 — horizontal branch connector
-
-    // Chrome widths measured in columns. Content width = availableWidth - chrome.
-    // No right-pad or right-margin — tree mode has no background fill.
-
-    // Child chrome: `├─ ● ` or `└─ ● ` — branch + horizontal + space + circle + space.
-    private const int ChildChrome = 5;
-
-    // Nesting chrome: `│  ` or `   ` — the 3-column prefix prepended to nested children
-    // (level-2 items under a User). The nested child's `├`/`└` aligns directly under
-    // the parent User's `●` at column 3.
-    private const int NestChrome = 3;
-
     // Each child is stored with its style and an optional circle-color supplier.
     // The Func<Color>? is only consulted for BubbleStyle.Circle entries; for User
     // items it is ignored. Storing a Func rather than a Color snapshot allows
@@ -94,8 +74,9 @@ internal sealed class EventList : IRenderable
     /// bubble up to the viewport's redraw trigger.
     ///
     /// <paramref name="getCircleColor"/> is only used when <paramref name="style"/> is
-    /// <see cref="BubbleStyle.Circle"/>. It is called on every render pass so live
-    /// objects (like <see cref="ToolRenderable"/>) can return their current state color.
+    /// <see cref="BubbleStyle.Circle"/>. It is called on every render pass (potentially
+    /// from the timer thread) so implementations must be safe to call from any thread —
+    /// returning an enum field (as all current callers do) satisfies this.
     /// Pass <c>null</c> to use the default white circle.
     /// </summary>
     public void Add(IRenderable child, BubbleStyle style = BubbleStyle.User, Func<Color>? getCircleColor = null)
@@ -129,13 +110,15 @@ internal sealed class EventList : IRenderable
         var i = 0;
         while (i < _children.Count)
         {
-            if (_children[i].Style == BubbleStyle.Plain)
+            switch (_children[i].Style)
             {
+            case BubbleStyle.Plain:
                 // Plain items render verbatim — no tree chrome, no grouping.
                 rows.AddRange(_children[i].Child.Render(availableWidth));
                 i++;
-            }
-            else if (_children[i].Style == BubbleStyle.User)
+                break;
+
+            case BubbleStyle.User:
             {
                 // User group: user as a top-level Circle child (blue ●), followed
                 // by zero or more nested Circle children indented one level deeper.
@@ -156,8 +139,10 @@ internal sealed class EventList : IRenderable
                         isLastParent: isLastTopLevel, availableWidth);
 
                 i = childEnd;
+                break;
             }
-            else
+
+            default:
             {
                 // Orphan group: Circle items before the first User. Rendered as
                 // top-level tree children with ├─/└─ connectors.
@@ -173,6 +158,8 @@ internal sealed class EventList : IRenderable
                 }
 
                 i = childEnd;
+                break;
+            }
             }
         }
 
@@ -210,13 +197,13 @@ internal sealed class EventList : IRenderable
 
     /// <summary>
     /// Renders a User item as a top-level Circle child with a blue ● glyph.
-    /// Content wraps at <c>availableWidth - ChildChrome</c> (same width as any
+    /// Content wraps at <c>availableWidth - TreeChrome.ChildChrome</c> (same width as any
     /// other Circle child). Continuation rows use standard child continuation chrome.
     /// </summary>
     private void RenderUserItem(List<CellRow> target, int index, bool isLastTopLevel,
         bool hasNestedChildren, int availableWidth)
     {
-        var contentWidth = Math.Max(1, availableWidth - ChildChrome);
+        var contentWidth = Math.Max(1, availableWidth - TreeChrome.ChildChrome);
         var childRows = _children[index].Child.Render(contentWidth);
 
         for (var ri = 0; ri < childRows.Count; ri++)
@@ -224,7 +211,7 @@ internal sealed class EventList : IRenderable
             if (ri == 0)
             {
                 // First row: ├─ ● or └─ ● with a blue circle.
-                target.Add(MakeChildRow(childRows[ri], isLastTopLevel, Color.Blue));
+                target.Add(TreeChrome.MakeChildRow(childRows[ri], isLastTopLevel, Color.Blue));
             }
             else
             {
@@ -233,7 +220,7 @@ internal sealed class EventList : IRenderable
                 // it in the top-level tree. Only the last top-level user with no
                 // nested children gets blank continuation (5 spaces).
                 var showVertical = !isLastTopLevel || hasNestedChildren;
-                target.Add(MakeChildContinuationRow(childRows[ri], isLast: !showVertical));
+                target.Add(TreeChrome.MakeChildContinuationRow(childRows[ri], isLast: !showVertical));
             }
         }
     }
@@ -247,118 +234,36 @@ internal sealed class EventList : IRenderable
     {
         var (child, _, getCircleColor) = _children[index];
         var circleColor = getCircleColor?.Invoke() ?? Color.White;
-        var contentWidth = Math.Max(1, availableWidth - ChildChrome);
+        var contentWidth = Math.Max(1, availableWidth - TreeChrome.ChildChrome);
         var childRows = child.Render(contentWidth);
 
-        for (var ri = 0; ri < childRows.Count; ri++)
-            target.Add(ri == 0
-                ? MakeChildRow(childRows[ri], isLast, circleColor)
-                : MakeChildContinuationRow(childRows[ri], isLast));
+        target.AddRange(childRows.Select((row, ri) => ri == 0
+            ? TreeChrome.MakeChildRow(row, isLast, circleColor)
+            : TreeChrome.MakeChildContinuationRow(row, isLast)));
     }
 
     /// <summary>
     /// Renders a Circle item as a nested child (level 2) underneath a User item.
-    /// The inner chrome (├─ ● / └─ ●) is produced by <see cref="MakeChildRow"/>
-    /// and <see cref="MakeChildContinuationRow"/>, then wrapped with a 3-column
-    /// nesting prefix via <see cref="PrependNestPrefix"/>.
-    /// Content width = availableWidth - NestChrome - ChildChrome.
+    /// The inner chrome (├─ ● / └─ ●) is produced by <c>TreeChrome.MakeChildRow</c>
+    /// and <c>TreeChrome.MakeChildContinuationRow</c>, then wrapped with a 3-column
+    /// nesting prefix via <c>TreeChrome.PrependNestPrefix</c>.
+    /// Content width = availableWidth - TreeChrome.NestChrome - TreeChrome.ChildChrome.
     /// </summary>
     private void RenderNestedChild(List<CellRow> target, int index, bool isLastNested,
         bool isLastParent, int availableWidth)
     {
         var (child, _, getCircleColor) = _children[index];
         var circleColor = getCircleColor?.Invoke() ?? Color.White;
-        var contentWidth = Math.Max(1, availableWidth - NestChrome - ChildChrome);
+        var contentWidth = Math.Max(1, availableWidth - TreeChrome.NestChrome - TreeChrome.ChildChrome);
         var childRows = child.Render(contentWidth);
 
-        for (var ri = 0; ri < childRows.Count; ri++)
+        target.AddRange(childRows.Select((row, ri) =>
         {
             var innerRow = ri == 0
-                ? MakeChildRow(childRows[ri], isLastNested, circleColor)
-                : MakeChildContinuationRow(childRows[ri], isLastNested);
-
-            target.Add(PrependNestPrefix(innerRow, isLastParent));
-        }
+                ? TreeChrome.MakeChildRow(row, isLastNested, circleColor)
+                : TreeChrome.MakeChildContinuationRow(row, isLastNested);
+            return TreeChrome.PrependNestPrefix(innerRow, isLastParent);
+        }));
     }
 
-    // --- Tree chrome helpers ---
-    //
-    // Each helper builds a CellRow by prepending the appropriate tree connector
-    // characters to a child-produced content row. The child cells are copied
-    // verbatim — colors and styles are preserved.
-
-    /// <summary>
-    /// Prepends a 3-column nesting prefix to an existing row. Used to indent nested
-    /// children (level 2) under their parent User item. Non-last parents get `│  `
-    /// (vertical bar + 2 spaces); last parents get `   ` (3 spaces). The vertical
-    /// bar aligns with the parent's `├`/`└` at column 0.
-    /// </summary>
-    private static CellRow PrependNestPrefix(CellRow innerRow, bool isLastParent)
-    {
-        var row = new CellRow();
-
-        if (isLastParent)
-        {
-            row.Append("   ", Color.Default, Color.Default);
-        }
-        else
-        {
-            row.Append(VerticalChar, Color.BrightBlack, Color.Default);
-            row.Append("  ", Color.Default, Color.Default);
-        }
-
-        foreach (var cell in innerRow.Cells)
-            row.Append(cell.Rune, cell.Foreground, cell.Background, cell.Style);
-
-        return row;
-    }
-
-    /// <summary>
-    /// First row of a tree child: ├─ ● (non-last) or └─ ● (last child in group).
-    /// The branch and horizontal characters are dim (BrightBlack); the circle
-    /// color reflects the child's live state (e.g., yellow → green as a tool completes).
-    /// </summary>
-    private static CellRow MakeChildRow(CellRow childRow, bool isLast, Color circleColor)
-    {
-        var row = new CellRow();
-
-        // Branch connector: ├─ or └─
-        row.Append(isLast ? LastBranchChar : BranchChar, Color.BrightBlack, Color.Default);
-        row.Append(HorizontalChar, Color.BrightBlack, Color.Default);
-        row.Append(' ', Color.Default, Color.Default);
-
-        // Status circle with live color
-        row.Append(CircleChar, circleColor, Color.Default);
-        row.Append(' ', Color.Default, Color.Default);
-
-        foreach (var cell in childRow.Cells)
-            row.Append(cell.Rune, cell.Foreground, cell.Background, cell.Style);
-
-        return row;
-    }
-
-    /// <summary>
-    /// Continuation row of a tree child: │ + 4 spaces (non-last, the vertical trunk
-    /// continues for siblings below) or 5 spaces (last child, no trunk needed).
-    /// Keeps wrapped text aligned with the child's first-row content column.
-    /// </summary>
-    private static CellRow MakeChildContinuationRow(CellRow childRow, bool isLast)
-    {
-        var row = new CellRow();
-
-        if (isLast)
-        {
-            row.Append("     ", Color.Default, Color.Default);
-        }
-        else
-        {
-            row.Append(VerticalChar, Color.BrightBlack, Color.Default);
-            row.Append("    ", Color.Default, Color.Default);
-        }
-
-        foreach (var cell in childRow.Cells)
-            row.Append(cell.Rune, cell.Foreground, cell.Background, cell.Style);
-
-        return row;
-    }
 }

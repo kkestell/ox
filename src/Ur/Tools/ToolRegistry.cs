@@ -9,21 +9,18 @@ namespace Ur.Tools;
 /// </summary>
 public sealed class ToolRegistry
 {
-    private readonly Dictionary<string, AIFunction> _tools = new(StringComparer.Ordinal);
-    // Parallel metadata dictionary — same key as _tools. Not every tool needs an entry;
-    // absence means "treat as Write" (conservative default).
-    private readonly Dictionary<string, PermissionMeta> _meta = new(StringComparer.Ordinal);
+    // Single dictionary keyed by tool name. Each entry holds the tool function and
+    // its permission metadata together, eliminating the synchronization invariant
+    // that two parallel dictionaries would require.
+    private readonly Dictionary<string, (AIFunction Tool, PermissionMeta Meta)> _entries = new(StringComparer.Ordinal);
 
-    // Cached tool list — invalidated on Register/Remove to avoid allocating
-    // a new list on every call to All() (which runs each agent loop iteration).
+    // Cached tool list — invalidated on Register to avoid allocating a new list
+    // on every call to All() (which runs each agent loop iteration).
     private IReadOnlyList<AITool>? _allCache;
 
     /// <summary>
     /// Registers a tool with optional permission metadata. When metadata is omitted,
     /// the tool is treated as Write (the conservative safe choice).
-    ///
-    /// A single overload replaces the former public/internal pair — optional parameters
-    /// cover both "just the tool" and "tool with explicit permission metadata" use cases.
     /// </summary>
     public void Register(
         AIFunction tool,
@@ -31,8 +28,7 @@ public sealed class ToolRegistry
         string? extensionId = null,
         ITargetExtractor? targetExtractor = null)
     {
-        _tools[tool.Name] = tool;
-        _meta[tool.Name] = new PermissionMeta(operationType, extensionId, targetExtractor);
+        _entries[tool.Name] = (tool, new PermissionMeta(operationType, extensionId, targetExtractor));
         _allCache = null;
     }
 
@@ -41,13 +37,13 @@ public sealed class ToolRegistry
     /// Callers should fall back to WriteInWorkspace when null is returned.
     /// </summary>
     internal PermissionMeta? GetPermissionMeta(string toolName) =>
-        _meta.GetValueOrDefault(toolName);
+        _entries.TryGetValue(toolName, out var entry) ? entry.Meta : null;
 
     /// <summary>
     /// Looks up a tool by name. Returns null if not found.
     /// </summary>
     public AIFunction? Get(string name) =>
-        _tools.GetValueOrDefault(name);
+        _entries.TryGetValue(name, out var entry) ? entry.Tool : null;
 
     /// <summary>
     /// Returns a new registry containing all tools from this one except those whose
@@ -62,16 +58,12 @@ public sealed class ToolRegistry
         var excluded = new HashSet<string>(excludedNames, StringComparer.Ordinal);
         var copy = new ToolRegistry();
 
-        foreach (var (name, tool) in _tools)
+        foreach (var (name, (tool, meta)) in _entries)
         {
             if (excluded.Contains(name))
                 continue;
 
-            var meta = _meta.GetValueOrDefault(name);
-            if (meta is not null)
-                copy.Register(tool, meta.OperationType, meta.ExtensionId, meta.TargetExtractor);
-            else
-                copy.Register(tool);
+            copy.Register(tool, meta.OperationType, meta.ExtensionId, meta.TargetExtractor);
         }
 
         return copy;
@@ -84,19 +76,13 @@ public sealed class ToolRegistry
     /// </summary>
     internal void MergeInto(ToolRegistry target)
     {
-        foreach (var (name, tool) in _tools)
-        {
-            var meta = _meta.GetValueOrDefault(name);
-            if (meta is not null)
-                target.Register(tool, meta.OperationType, meta.ExtensionId, meta.TargetExtractor);
-            else
-                target.Register(tool);
-        }
+        foreach (var (_, (tool, meta)) in _entries)
+            target.Register(tool, meta.OperationType, meta.ExtensionId, meta.TargetExtractor);
     }
 
     /// <summary>
     /// Returns all registered tools as AITool instances for passing to ChatOptions.
     /// Returns a read-only list to prevent accidental mutation of the cached snapshot.
     /// </summary>
-    public IReadOnlyList<AITool> All() => _allCache ??= _tools.Values.ToList<AITool>();
+    public IReadOnlyList<AITool> All() => _allCache ??= _entries.Values.Select(e => (AITool)e.Tool).ToList();
 }

@@ -1,5 +1,6 @@
 using System.Runtime.CompilerServices;
 using Microsoft.Extensions.AI;
+using Ur.Logging;
 using Ur.Permissions;
 using Ur.Tools;
 
@@ -167,6 +168,10 @@ internal sealed class AgentLoop(IChatClient client, ToolRegistry tools, Workspac
                 }
                 catch (Exception ex)
                 {
+                    // Log the full exception here before reducing it to a message string.
+                    // Once stored in LlmErrorHolder only the Message survives; the type
+                    // and stack trace are lost. This is the only place the full context exists.
+                    UrLogger.Exception("LLM streaming error", ex);
                     errorHolder.Exception = ex;
                     hasNext = false;
                 }

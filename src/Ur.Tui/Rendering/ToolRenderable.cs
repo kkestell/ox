@@ -1,5 +1,3 @@
-using Ur.AgentLoop;
-
 namespace Ur.Tui.Rendering;
 
 /// <summary>
@@ -13,19 +11,12 @@ namespace Ur.Tui.Rendering;
 /// styling (BrightBlack) matches the visual convention: tool activity recedes
 /// so the assistant's response text reads as the primary signal.
 /// </summary>
-internal sealed class ToolRenderable : IRenderable
+internal sealed class ToolRenderable(string formattedCall) : IRenderable
 {
-    private readonly string _formattedCall; // e.g. "read_file(path: "foo.txt")"
-
     private ToolState _state = ToolState.Started;
     private bool _isError;
 
     public event Action? Changed;
-
-    public ToolRenderable(ToolCallStarted started)
-    {
-        _formattedCall = started.FormatCall();
-    }
 
     /// <summary>
     /// Called when the user is being asked to approve or deny this tool call.
@@ -69,16 +60,16 @@ internal sealed class ToolRenderable : IRenderable
         var row = new CellRow();
 
         // Tool signature in dark gray — always present in every state.
-        row.Append(_formattedCall, Color.BrightBlack, Color.Default);
+        row.Append(formattedCall, Color.BrightBlack, Color.Default);
 
         // Only AwaitingApproval adds a text suffix — the yellow circle alone doesn't
         // distinguish "awaiting" from "running". Completed states rely on circle color
         // (green/red) to convey success/failure, so no → ok / → error suffixes.
-        if (_state == ToolState.AwaitingApproval)
-        {
-            row.Append(" ", Color.BrightBlack, Color.Default);
-            row.Append("[awaiting approval]", Color.Yellow, Color.Default);
-        }
+        if (_state != ToolState.AwaitingApproval)
+            return [row];
+
+        row.Append(" ", Color.BrightBlack, Color.Default);
+        row.Append("[awaiting approval]", Color.Yellow, Color.Default);
 
         return [row];
     }

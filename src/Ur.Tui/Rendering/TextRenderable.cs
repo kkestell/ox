@@ -95,7 +95,7 @@ internal sealed class TextRenderable : IRenderable
     /// Every character in every row gets the same fg/bg/style — the text block is
     /// uniformly styled. Per-character styling is not needed by any current consumer.
     /// </summary>
-    private static IReadOnlyList<CellRow> WrapText(
+    private static List<CellRow> WrapText(
         string text, int width, Color fg, Color bg, CellStyle style)
     {
         var rows = new List<CellRow>();

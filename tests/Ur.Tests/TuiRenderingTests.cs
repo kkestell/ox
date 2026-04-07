@@ -201,12 +201,12 @@ public sealed class TextRenderableTests
         var r = new TextRenderable(foreground: Color.Red, background: Color.Blue, style: CellStyle.Dim);
         r.SetText("hi");
         var rows = r.Render(80);
-        Assert.All(rows[0].Cells, cell =>
+        foreach (var cell in rows[0].Cells)
         {
             Assert.Equal(Color.Red,    cell.Foreground);
             Assert.Equal(Color.Blue,   cell.Background);
             Assert.Equal(CellStyle.Dim, cell.Style);
-        });
+        }
     }
 
     [Fact]
@@ -256,7 +256,7 @@ public sealed class ToolRenderableTests
     public void Render_Started_ShowsSignatureOnly()
     {
         // Initial state: just the call signature, no suffix, yellow circle.
-        var tool = new ToolRenderable(MakeStarted());
+        var tool = new ToolRenderable(MakeStarted().FormatCall());
         var rows = tool.Render(80);
         var text = RowText(rows[0]);
         Assert.Contains("read_file", text);
@@ -268,7 +268,7 @@ public sealed class ToolRenderableTests
     public void Render_Completed_DoesNotShowArrowOk()
     {
         // Circle color (green) conveys success — no text suffix needed.
-        var tool = new ToolRenderable(MakeStarted());
+        var tool = new ToolRenderable(MakeStarted().FormatCall());
         tool.SetCompleted(isError: false);
         var rows = tool.Render(80);
         var text = RowText(rows[0]);
@@ -281,7 +281,7 @@ public sealed class ToolRenderableTests
     public void Render_CompletedError_DoesNotShowArrowError()
     {
         // Circle color (red) conveys failure — no text suffix needed.
-        var tool = new ToolRenderable(MakeStarted());
+        var tool = new ToolRenderable(MakeStarted().FormatCall());
         tool.SetCompleted(isError: true);
         var rows = tool.Render(80);
         var text = RowText(rows[0]);
@@ -295,7 +295,7 @@ public sealed class ToolRenderableTests
     {
         // Yellow circle alone doesn't distinguish "awaiting" from "running",
         // so the text label is retained.
-        var tool = new ToolRenderable(MakeStarted());
+        var tool = new ToolRenderable(MakeStarted().FormatCall());
         tool.SetAwaitingApproval();
         var rows = tool.Render(80);
         var text = RowText(rows[0]);

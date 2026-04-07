@@ -23,9 +23,9 @@ internal static class ManifestParser
     /// <returns>A new <see cref="Extension"/> with its descriptor populated.</returns>
     internal static Extension FromLuaTable(LuaTable manifest, string extDir, ExtensionTier tier)
     {
-        var name = ReadRequiredString(manifest, "name");
-        var version = ReadRequiredString(manifest, "version");
-        var description = ReadOptionalString(manifest, "description") ?? "";
+        var name = LuaTableHelpers.ReadRequiredString(manifest, "name");
+        var version = LuaTableHelpers.ReadRequiredString(manifest, "version");
+        var description = LuaTableHelpers.ReadOptionalString(manifest, "description") ?? "";
         var settingsSchemas = ParseSettingsSchemas(manifest);
 
         return new Extension(
@@ -57,11 +57,4 @@ internal static class ManifestParser
         return schemas;
     }
 
-    private static string ReadRequiredString(LuaTable table, string key) =>
-        table[key].TryRead<string>(out var s)
-            ? s
-            : throw new InvalidOperationException($"Missing required field '{key}'.");
-
-    private static string? ReadOptionalString(LuaTable table, string key) =>
-        table[key].TryRead<string>(out var s) ? s : null;
 }

@@ -59,18 +59,6 @@ internal static class Terminal
         Console.Write($"{Esc}?25h");
     }
 
-    // --- Cursor movement ---
-
-    /// <summary>
-    /// Moves the cursor to a 1-based (row, col) position on screen.
-    /// Row 1 is the top of the screen; col 1 is the left edge.
-    /// </summary>
-    public static void MoveCursor(int row, int col)
-    {
-        // \e[{row};{col}H — cursor position (CUP). Both values are 1-based.
-        Console.Write($"{Esc}{row};{col}H");
-    }
-
     // --- Screen clearing ---
 
     /// <summary>
@@ -102,7 +90,7 @@ internal static class Terminal
     /// </summary>
     public static void Flush(ScreenBuffer buffer)
     {
-        var out_ = Console.Out;
+        var writer = Console.Out;
 
         // Null means "unknown" — forces SGR emission on the very first cell of each frame.
         Color?    curFg    = null;
@@ -112,7 +100,7 @@ internal static class Terminal
         for (var row = 0; row < buffer.Height; row++)
         {
             // Position the cursor at the start of this row (1-based).
-            out_.Write($"{Esc}{row + 1};1H");
+            writer.Write($"{Esc}{row + 1};1H");
 
             for (var col = 0; col < buffer.Width; col++)
             {
@@ -122,19 +110,19 @@ internal static class Terminal
                 // for long runs of identically-styled cells (e.g. a solid-color background fill).
                 if (cell.Foreground != curFg || cell.Background != curBg || cell.Style != curStyle)
                 {
-                    out_.Write(BuildSgr(cell.Foreground, cell.Background, cell.Style));
+                    writer.Write(BuildSgr(cell.Foreground, cell.Background, cell.Style));
                     curFg    = cell.Foreground;
                     curBg    = cell.Background;
                     curStyle = cell.Style;
                 }
 
-                out_.Write(cell.Rune);
+                writer.Write(cell.Rune);
             }
         }
 
         // Reset all SGR attributes so the terminal is in a known state after the frame.
-        out_.Write($"{Esc}0m");
-        out_.Flush();
+        writer.Write($"{Esc}0m");
+        writer.Flush();
     }
 
     /// <summary>
@@ -180,7 +168,7 @@ internal static class Terminal
         ColorKind.Basic    => background ? $"{40 + color.Value}" : $"{30 + color.Value}",
         ColorKind.Bright   => background ? $"{100 + color.Value}" : $"{90 + color.Value}",
         ColorKind.Color256 => background ? $"48;5;{color.Value}" : $"38;5;{color.Value}",
-        _                  => background ? "49" : "39",
+        _                  => background ? "49" : "39"
     };
 
     // --- Terminal size ---
