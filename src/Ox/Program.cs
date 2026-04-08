@@ -7,9 +7,10 @@ using Ur;
 using Ur.AgentLoop;
 using Ur.Configuration;
 using Ur.Hosting;
+using Ur.Sessions;
 using Ur.Skills;
-using Ur.Tui;
-using Ur.Tui.Rendering;
+using Ox;
+using Ox.Rendering;
 
 // --- Boot ---
 DotEnv.Load(options: new DotEnvOptions(
@@ -89,6 +90,10 @@ internal sealed class TuiService(
 
         viewport.SetSessionId(session.Id);
         viewport.SetModelId(session.ActiveModelId);
+
+        // If resuming a session, show context fill immediately from persisted usage.
+        UpdateContextUsage(viewport, host, session);
+
         viewport.Start();
 
         try
@@ -127,6 +132,10 @@ internal sealed class TuiService(
                         await foreach (var evt in session.RunTurnAsync(input, turnCts.Token))
                         {
                             router.RouteMainEvent(evt);
+
+                            // Update context fill display when a turn completes with usage data.
+                            if (evt is TurnCompleted)
+                                UpdateContextUsage(viewport, host, session);
 
                             // Fatal errors are unrecoverable — log and exit the process.
                             if (evt is not TurnError { IsFatal: true } fatal)
@@ -239,5 +248,25 @@ internal sealed class TuiService(
                 }
             }
         }
+    }
+
+    /// <summary>
+    /// Computes the context fill display string from the session's last input token
+    /// count and the model's context length, then pushes it to the viewport header.
+    /// Format: "125,000 / 250,000 - 50%". No-op if usage data is unavailable.
+    /// </summary>
+    private static void UpdateContextUsage(Viewport viewport, UrHost host, UrSession session)
+    {
+        if (session.LastInputTokens is not { } inputTokens)
+            return;
+
+        var contextLength = host.Configuration
+            .GetModel(session.ActiveModelId ?? "")?.ContextLength ?? 0;
+
+        if (contextLength <= 0)
+            return;
+
+        var pct = (int)Math.Round(inputTokens / (double)contextLength * 100);
+        viewport.SetContextUsage($"{inputTokens:N0} / {contextLength:N0} - {pct}%");
     }
 }

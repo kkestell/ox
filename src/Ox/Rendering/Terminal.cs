@@ -1,4 +1,4 @@
-namespace Ur.Tui.Rendering;
+namespace Ox.Rendering;
 
 /// <summary>
 /// Low-level ANSI terminal operations. This is the only place in the TUI that

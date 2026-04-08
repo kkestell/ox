@@ -1,4 +1,4 @@
-namespace Ur.Tui.Rendering;
+namespace Ox.Rendering;
 
 /// <summary>
 /// SGR style attributes that can be combined on a single cell.

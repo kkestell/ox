@@ -1,4 +1,4 @@
-namespace Ur.Tui.Rendering;
+namespace Ox.Rendering;
 
 /// <summary>
 /// Discriminates which SGR color encoding a <see cref="Color"/> value uses.

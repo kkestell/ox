@@ -1,4 +1,4 @@
-namespace Ur.Tui.Rendering;
+namespace Ox.Rendering;
 
 /// <summary>
 /// Visual style for a tree node in the conversation.

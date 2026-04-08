@@ -1,6 +1,6 @@
 using System.Text;
 
-namespace Ur.Tui;
+namespace Ox;
 
 /// <summary>
 /// Centralizes all Console.ReadKey access into a single class that serializes

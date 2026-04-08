@@ -1,7 +1,7 @@
 using System.Text.RegularExpressions;
 using Ur.Skills;
 
-namespace Ur.Tui;
+namespace Ox;
 
 /// <summary>
 /// Provides prefix-based autocomplete for slash commands typed in the input row.

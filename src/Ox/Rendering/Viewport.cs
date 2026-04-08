@@ -1,4 +1,4 @@
-namespace Ur.Tui.Rendering;
+namespace Ox.Rendering;
 
 /// <summary>
 /// Full-screen display engine that renders the conversation into the alternate
@@ -53,8 +53,10 @@ internal sealed class Viewport : IDisposable
     // True between Start() and Stop() — prevents stray redraws after shutdown.
     private bool _running;
 
-    // Header state: session ID displayed left-aligned in the header row.
+    // Header state: session ID displayed left-aligned in the header row,
+    // context usage displayed right-aligned (e.g. "125,000 / 250,000 - 50%").
     private string? _sessionId;
+    private string? _contextUsageText;
 
     // Status line state: the throbber animates while a turn is running, and the
     // model ID is displayed right-aligned. Both live below the bottom rule.
@@ -176,6 +178,16 @@ internal sealed class Viewport : IDisposable
         _dirty = true;
     }
 
+    /// <summary>
+    /// Sets the pre-formatted context usage text displayed right-aligned in
+    /// the header row (e.g. "125,000 / 250,000 - 50%"). Pass null to clear.
+    /// </summary>
+    public void SetContextUsage(string? text)
+    {
+        _contextUsageText = text;
+        _dirty = true;
+    }
+
     // --- Status line ---
 
     /// <summary>
@@ -245,7 +257,8 @@ internal sealed class Viewport : IDisposable
     /// private helpers in Viewport (no new classes) — appropriate for the
     /// current 4-region layout.
     /// </summary>
-    private ScreenBuffer BuildFrame(int width, int height)
+    // internal for testability — Ur.Tests has InternalsVisibleTo access.
+    internal ScreenBuffer BuildFrame(int width, int height)
     {
         var viewportHeight = height - InputAreaRows - HeaderRows;
         var buffer = new ScreenBuffer(width, height);
@@ -259,15 +272,27 @@ internal sealed class Viewport : IDisposable
     }
 
     /// <summary>
-    /// Renders the header region: session ID (row 0) and a heavy horizontal rule (row 1).
+    /// Renders the header region: session ID left-aligned, context usage right-aligned
+    /// (row 0), and a heavy horizontal rule (row 1).
     /// </summary>
     private void RenderHeader(ScreenBuffer buffer, int width)
     {
+        var headerRow = new CellRow();
+
         // Session ID left-aligned in BrightBlack so it is visually subordinate
         // to the conversation content below.
-        var headerRow = new CellRow();
         if (_sessionId is not null)
             headerRow.Append(_sessionId, Color.BrightBlack, Color.Default);
+
+        // Context usage right-aligned on the same row (e.g. "125,000 / 250,000 - 50%").
+        if (_contextUsageText is not null)
+        {
+            var padNeeded = width - headerRow.Cells.Count - _contextUsageText.Length;
+            for (var i = 0; i < padNeeded; i++)
+                headerRow.Append(' ', Color.Default, Color.Default);
+            headerRow.Append(_contextUsageText, Color.BrightBlack, Color.Default);
+        }
+
         buffer.WriteRow(0, headerRow);
 
         // Heavy horizontal line mirroring the input area top rule.

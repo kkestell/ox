@@ -1,5 +1,5 @@
 using Ur.AgentLoop;
-using Ur.Tui.Rendering;
+using Ox.Rendering;
 
 namespace Ur.Tests;
 
@@ -1077,5 +1077,103 @@ public sealed class EventListTests
         // Row 4:    └─ ● resp2 (nested last under last parent)
         Assert.Equal(' ', RuneAt(rows[4], 0));
         Assert.Equal('└', RuneAt(rows[4], 3));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Viewport header — context usage display
+// ---------------------------------------------------------------------------
+
+public sealed class ViewportHeaderTests
+{
+    /// <summary>
+    /// Helper: extracts a string from a ScreenBuffer row by reading runes.
+    /// </summary>
+    private static string RowText(ScreenBuffer buffer, int row, int width)
+    {
+        var chars = new char[width];
+        for (var col = 0; col < width; col++)
+            chars[col] = buffer[row, col].Rune;
+        return new string(chars);
+    }
+
+    [Fact]
+    public void Header_ShowsSessionIdLeftAligned()
+    {
+        var eventList = new EventList();
+        var viewport = new Viewport(eventList);
+        viewport.SetSessionId("20260406-204144-842");
+
+        var buffer = viewport.BuildFrame(55, 24);
+        var headerText = RowText(buffer, 0, 55).TrimEnd('\0').TrimEnd();
+
+        Assert.StartsWith("20260406-204144-842", headerText);
+    }
+
+    [Fact]
+    public void Header_ShowsContextUsageRightAligned()
+    {
+        var eventList = new EventList();
+        var viewport = new Viewport(eventList);
+        viewport.SetSessionId("20260406-204144-842");
+        viewport.SetContextUsage("125,000 / 250,000 - 50%");
+
+        var buffer = viewport.BuildFrame(55, 24);
+        var headerText = RowText(buffer, 0, 55).TrimEnd('\0').TrimEnd();
+
+        // Session ID left, usage text right.
+        Assert.StartsWith("20260406-204144-842", headerText);
+        Assert.EndsWith("125,000 / 250,000 - 50%", headerText);
+    }
+
+    [Fact]
+    public void Header_UsageTextIsBrightBlack()
+    {
+        var eventList = new EventList();
+        var viewport = new Viewport(eventList);
+        viewport.SetContextUsage("1,000 / 10,000 - 10%");
+
+        var buffer = viewport.BuildFrame(40, 24);
+
+        // The usage text should be rendered in BrightBlack. Find the last non-empty
+        // cell on row 0 and verify its foreground color.
+        var lastNonEmpty = -1;
+        for (var col = 39; col >= 0; col--)
+        {
+            if (buffer[0, col].Rune != '\0' && buffer[0, col] != Cell.Empty)
+            {
+                lastNonEmpty = col;
+                break;
+            }
+        }
+
+        Assert.True(lastNonEmpty >= 0, "Header row should have non-empty cells for usage text");
+        Assert.Equal(Color.BrightBlack, buffer[0, lastNonEmpty].Foreground);
+    }
+
+    [Fact]
+    public void Header_NoUsage_ShowsOnlySessionId()
+    {
+        var eventList = new EventList();
+        var viewport = new Viewport(eventList);
+        viewport.SetSessionId("test-session");
+
+        var buffer = viewport.BuildFrame(40, 24);
+        var headerText = RowText(buffer, 0, 40).TrimEnd('\0').TrimEnd();
+
+        Assert.Equal("test-session", headerText);
+    }
+
+    [Fact]
+    public void Header_Rule_IsHeavyHorizontalLine()
+    {
+        var eventList = new EventList();
+        var viewport = new Viewport(eventList);
+
+        var buffer = viewport.BuildFrame(10, 24);
+
+        // Row 1 should be all '━' (heavy horizontal rule).
+        for (var col = 0; col < 10; col++)
+            Assert.Equal('━', buffer[1, col].Rune);
     }
 }

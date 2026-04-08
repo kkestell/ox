@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.Linq;
 using System.Runtime.CompilerServices;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
@@ -60,6 +61,11 @@ public sealed class UrSession
         _grantStore = new PermissionGrantStore(
             workspacePermissionsPath, alwaysPermissionsPath,
             host.LoggerFactory.CreateLogger<PermissionGrantStore>());
+
+        // Restore token usage from persisted messages so the UI can display
+        // context fill immediately when resuming a session. The last assistant
+        // message's UsageContent reflects the most recent context size.
+        LastInputTokens = ExtractLastInputTokens(messages);
     }
 
     public string Id => _session.Id;
@@ -79,6 +85,13 @@ public sealed class UrSession
     /// per-turn so that a mid-session model switch takes effect on the next turn.
     /// </summary>
     public string? ActiveModelId => _activeModelId ?? _host.Configuration.SelectedModelId;
+
+    /// <summary>
+    /// The input token count from the most recent LLM call. Represents how much
+    /// of the model's context window is filled. Initialized from persisted messages
+    /// on session load and updated after each turn completes.
+    /// </summary>
+    public long? LastInputTokens { get; private set; }
 
     /// <summary>
     /// Runs a single conversational turn: appends the user message, drives the
@@ -192,6 +205,12 @@ public sealed class UrSession
         await foreach (var loopEvent in agentLoop.RunTurnAsync(_messages, wrappedCallbacks, systemPrompt, ct))
         {
             persistedCount = await PersistPendingMessagesAsync(persistedCount, ct);
+
+            // Update the cached context fill level so callers (e.g. session resume)
+            // can read it without re-scanning messages.
+            if (loopEvent is AgentLoop.TurnCompleted { InputTokens: { } tokens })
+                LastInputTokens = tokens;
+
             yield return loopEvent;
         }
 
@@ -319,5 +338,27 @@ public sealed class UrSession
         }
 
         return persistedCount;
+    }
+
+    /// <summary>
+    /// Scans the loaded message list for the last assistant message containing
+    /// <see cref="UsageContent"/> and returns its <see cref="UsageDetails.InputTokenCount"/>.
+    /// Returns null if no usage data was persisted (provider didn't report, or new session).
+    /// </summary>
+    private static long? ExtractLastInputTokens(List<ChatMessage> messages)
+    {
+        // Walk backwards — the most recent assistant message with usage data
+        // reflects the current context fill level.
+        for (var i = messages.Count - 1; i >= 0; i--)
+        {
+            if (messages[i].Role != ChatRole.Assistant)
+                continue;
+
+            var usage = messages[i].Contents.OfType<UsageContent>().LastOrDefault();
+            if (usage?.Details.InputTokenCount is { } tokens)
+                return tokens;
+        }
+
+        return null;
     }
 }

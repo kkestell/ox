@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
-# Builds Ur.Tui and Boo, sets up an isolated temp workspace with a sample
+# Builds Ox and Boo, sets up an isolated temp workspace with a sample
 # skill and extension, then launches a visible Boo session pointing at
-# Ur.Tui. Tear down with: cd boo && uv run boo stop && rm -rf /tmp/ur-tui-test
+# Ox. Tear down with: cd boo && uv run boo stop && rm -rf /tmp/ur-tui-test
 
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WORKSPACE="/tmp/ur-tui-test"
-UR_TUI="$REPO_ROOT/src/Ur.Tui/bin/Debug/net10.0/Ur.Tui"
+OX="$REPO_ROOT/src/Ox/bin/Debug/net10.0/Ox"
 
 # --- Build -------------------------------------------------------------------
 
-echo "==> Building Ur.Tui..."
-dotnet build "$REPO_ROOT/src/Ur.Tui/Ur.Tui.csproj" --nologo -v quiet
+echo "==> Building Ox..."
+dotnet build "$REPO_ROOT/src/Ox/Ox.csproj" --nologo -v quiet
 
 echo "==> Building Boo..."
 make -C "$REPO_ROOT/boo" build
@@ -87,7 +87,7 @@ EXT_EOF
 
 echo "==> Launching Boo session..."
 cd "$REPO_ROOT/boo"
-uv run boo start "cd $WORKSPACE && $UR_TUI" \
+uv run boo start "cd $WORKSPACE && $OX" \
     --cols 120 --rows 50
 
 echo ""

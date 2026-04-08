@@ -19,6 +19,17 @@ internal record LlmErrorHolder
 }
 
 /// <summary>
+/// Carries accumulated token usage out of <see cref="AgentLoop.StreamLlmAsync"/>
+/// into the caller, using the same side-channel pattern as <see cref="LlmErrorHolder"/>.
+/// StreamLlmAsync accumulates <see cref="UsageContent"/> items from the response
+/// stream; the caller reads the result after iteration completes.
+/// </summary>
+internal record UsageHolder
+{
+    public UsageDetails? Usage { get; set; }
+}
+
+/// <summary>
 /// Drives the core conversation cycle: user input → LLM → tool calls → repeat.
 /// Emits events for the UI layer to render.
 /// </summary>
@@ -69,8 +80,11 @@ internal sealed class AgentLoop(IChatClient client, ToolRegistry tools, Workspac
             // a side-channel: StreamLlmAsync catches API exceptions, stores them in
             // the error holder, and terminates the stream cleanly. We check and emit
             // the Error event after the await foreach finishes.
+            // UsageHolder accumulates token counts from the response stream so we can
+            // persist them in the assistant message and report context fill to the UI.
             var errorHolder = new LlmErrorHolder();
-            await foreach (var update in StreamLlmAsync(llmMessages, options, errorHolder, ct))
+            var usageHolder = new UsageHolder();
+            await foreach (var update in StreamLlmAsync(llmMessages, options, errorHolder, usageHolder, ct))
             {
                 foreach (var content in update.Contents)
                 {
@@ -100,11 +114,19 @@ internal sealed class AgentLoop(IChatClient client, ToolRegistry tools, Workspac
             foreach (var call in toolCalls)
                 assistantMessage.Contents.Add(call);
 
+            // Persist token usage in the assistant message so it survives in the
+            // session JSONL file. On session reload, the last assistant message's
+            // UsageContent gives the most recent context fill level.
+            if (usageHolder.Usage is not null)
+                assistantMessage.Contents.Add(new UsageContent(usageHolder.Usage));
+
             messages.Add(assistantMessage);
 
             if (toolCalls.Count == 0)
             {
-                yield return new TurnCompleted();
+                // The last LLM call's InputTokenCount reflects the full conversation
+                // size — this is the context fill level the UI displays.
+                yield return new TurnCompleted { InputTokens = usageHolder.Usage?.InputTokenCount };
                 yield break;
             }
 
@@ -124,6 +146,10 @@ internal sealed class AgentLoop(IChatClient client, ToolRegistry tools, Workspac
     /// Builds the message list the LLM sees: optional system prompt + conversation.
     /// We don't add the system message to `messages` because that list is persisted
     /// to disk by UrSession — the system prompt is transient and rebuilt each turn.
+    ///
+    /// UsageContent items are stripped from message contents before sending — they're
+    /// persisted in the JSONL for session-reload context fill display, but some
+    /// providers (e.g. Gemini) can't map them to native request parts.
     /// </summary>
     private static IEnumerable<ChatMessage> BuildLlmMessages(
         string? systemPrompt,
@@ -133,7 +159,19 @@ internal sealed class AgentLoop(IChatClient client, ToolRegistry tools, Workspac
             yield return new ChatMessage(ChatRole.System, systemPrompt);
 
         foreach (var msg in messages)
-            yield return msg;
+        {
+            // Fast path: most messages have no UsageContent.
+            if (!msg.Contents.Any(c => c is UsageContent))
+            {
+                yield return msg;
+                continue;
+            }
+
+            // Clone with UsageContent filtered out so providers never see it.
+            var filtered = new ChatMessage(msg.Role,
+                msg.Contents.Where(c => c is not UsageContent).ToList());
+            yield return filtered;
+        }
     }
 
     /// <summary>
@@ -146,6 +184,7 @@ internal sealed class AgentLoop(IChatClient client, ToolRegistry tools, Workspac
         IEnumerable<ChatMessage> messages,
         ChatOptions options,
         LlmErrorHolder errorHolder,
+        UsageHolder usageHolder,
         [EnumeratorCancellation] CancellationToken ct)
     {
         var enumerator = client.GetStreamingResponseAsync(messages, options, ct)
@@ -180,6 +219,15 @@ internal sealed class AgentLoop(IChatClient client, ToolRegistry tools, Workspac
                     break;
 
                 // yield is outside the try/catch above, satisfying the C# constraint.
+                // Accumulate token usage from UsageContent items in the stream.
+                // Providers typically report usage on the final chunk; we use Add()
+                // so partial reports are summed correctly.
+                foreach (var uc in enumerator.Current.Contents.OfType<UsageContent>())
+                {
+                    usageHolder.Usage ??= new UsageDetails();
+                    usageHolder.Usage.Add(uc.Details);
+                }
+
                 yield return enumerator.Current;
             }
         }

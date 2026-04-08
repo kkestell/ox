@@ -1,6 +1,6 @@
 using System.Text;
 
-namespace Ur.Tui.Rendering;
+namespace Ox.Rendering;
 
 /// <summary>
 /// A renderable block of flowing text. Used for:

@@ -1,8 +1,8 @@
 using Ur.AgentLoop;
 using Ur.Permissions;
-using Ur.Tui.Rendering;
+using Ox.Rendering;
 
-namespace Ur.Tui;
+namespace Ox;
 
 /// <summary>
 /// Builds <see cref="TurnCallbacks"/> that route events and permission requests

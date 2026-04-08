@@ -1,5 +1,5 @@
 using Ur.Skills;
-using Ur.Tui;
+using Ox;
 
 namespace Ur.Tests;
 

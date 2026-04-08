@@ -1,4 +1,4 @@
-namespace Ur.Tui.Rendering;
+namespace Ox.Rendering;
 
 /// <summary>
 /// A width × height grid of <see cref="Cell"/> values representing a full terminal frame.

@@ -1,4 +1,4 @@
-namespace Ur.Tui.Rendering;
+namespace Ox.Rendering;
 
 /// <summary>
 /// Shared tree-drawing constants and chrome helpers used by <see cref="EventList"/>

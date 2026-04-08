@@ -1,7 +1,7 @@
 using Ur.AgentLoop;
-using Ur.Tui.Rendering;
+using Ox.Rendering;
 
-namespace Ur.Tui;
+namespace Ox;
 
 /// <summary>
 /// Routes <see cref="AgentLoopEvent"/>s to the appropriate renderables,
