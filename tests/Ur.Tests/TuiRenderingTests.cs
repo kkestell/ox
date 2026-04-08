@@ -1279,9 +1279,17 @@ public sealed class ContextSectionTests
         new(row.Cells.Select(c => c.Rune).ToArray());
 
     [Fact]
-    public void HasContent_AlwaysTrue()
+    public void HasContent_FalseBeforeUsageSet()
     {
         var section = new ContextSection();
+        Assert.False(section.HasContent);
+    }
+
+    [Fact]
+    public void HasContent_TrueAfterUsageSet()
+    {
+        var section = new ContextSection();
+        section.SetUsage("125,000 / 250,000 - 50%");
         Assert.True(section.HasContent);
     }
 

@@ -36,7 +36,7 @@ internal static class PermissionHandler
                 return ValueTask.CompletedTask;
             },
 
-            RequestPermissionAsync = (req, ct) =>
+            RequestPermissionAsync = async (req, ct) =>
             {
                 // The awaiting-approval visual transition is now handled by the
                 // ToolAwaitingApproval event emitted by ToolInvoker before this
@@ -56,10 +56,12 @@ internal static class PermissionHandler
                     $"Allow '{req.RequestingExtension}' to {req.OperationType} '{displayTarget}'?"
                     + $" (y/n{scopeHints}): ";
 
-                // InputReader internally pauses the escape monitor while reading,
-                // so no external flag management is needed. Permission prompts don't
-                // use autocomplete — pass null for onCompletionChanged.
-                var input = inputReader.ReadLineInViewport(promptText, viewport.SetInputPrompt, null, ct);
+                // Permission prompts don't use autocomplete — pass null for
+                // onCompletionChanged. The RedrawIfDirty callback ensures the
+                // viewport updates after each keystroke.
+                var input = await inputReader.ReadLineInViewportAsync(
+                    promptText, viewport.SetInputPrompt, null,
+                    viewport.RedrawIfDirty, ct);
 
                 input = input?.Trim().ToLowerInvariant();
 
@@ -83,7 +85,7 @@ internal static class PermissionHandler
                 // the footer returns to the main composer state.
                 viewport.SetInputPrompt("");
 
-                return ValueTask.FromResult(response);
+                return response;
             }
         };
     }

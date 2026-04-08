@@ -387,9 +387,17 @@ public sealed class SidebarTests
     }
 
     [Fact]
-    public void IsVisible_AlwaysTrue()
+    public void IsVisible_FalseWhenEmpty()
     {
         var sidebar = new Sidebar();
+        Assert.False(sidebar.IsVisible);
+    }
+
+    [Fact]
+    public void IsVisible_TrueWhenSectionHasContent()
+    {
+        var sidebar = new Sidebar();
+        sidebar.AddSection(new FakeSection(true, [CellRow.FromText("data", Color.Default, Color.Default)]));
         Assert.True(sidebar.IsVisible);
     }
 

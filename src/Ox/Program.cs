@@ -134,8 +134,9 @@ internal sealed class TuiService(
             {
                 while (!stoppingToken.IsCancellationRequested)
                 {
-                    var input = inputReader.ReadLineInViewport(
-                        "", viewport.SetInputPrompt, viewport.SetCompletion, stoppingToken);
+                    var input = await inputReader.ReadLineInViewportAsync(
+                        "", viewport.SetInputPrompt, viewport.SetCompletion,
+                        viewport.RedrawIfDirty, stoppingToken);
 
                     // null = EOF (Ctrl+C, Ctrl+D) or cancellation.
                     if (input is null)
@@ -161,25 +162,33 @@ internal sealed class TuiService(
                     userMsg.SetText(input);
                     eventList.Add(userMsg);
 
-                    // Clear the submitted text immediately so the composer is
-                    // ready for the next message even while the current turn runs.
+                    // Clear the submitted text and start the throbber immediately.
+                    // Both calls set _dirty; the explicit RedrawIfDirty flushes the
+                    // frame now rather than waiting for the first streamed event.
                     viewport.SetInputPrompt("");
                     viewport.SetTurnRunning(true);
+                    viewport.RedrawIfDirty();
 
                     // Per-turn CTS linked to stopping token so Ctrl+C also cancels mid-turn.
                     var turnCts = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
 
-                    // Monitor Escape key during the turn by subscribing directly to the
-                    // input source's KeyPressed event. The handler fires on the background
-                    // reader thread, but CancellationTokenSource.CancelAsync is thread-safe.
-                    // This replaces the old polling-based MonitorEscapeKeyAsync — no separate
-                    // task or _readingLine flag needed because the input source owns the stream.
+                    // Monitor Escape key during the turn via the coordinator's eager
+                    // KeyReceived event. The handler fires on the background stdin reader
+                    // thread, but CancellationTokenSource.CancelAsync is thread-safe.
+                    // Using the coordinator (not the raw input source) is the single
+                    // input path — all keys flow through InputCoordinator.
                     EventHandler<KeyEventArgs> escapeHandler = (_, e) =>
                     {
                         if (e.KeyCode.WithoutModifiers() == KeyCode.Esc)
                             _ = turnCts.CancelAsync();
                     };
-                    inputSource.KeyPressed += escapeHandler;
+                    coordinator.KeyReceived += escapeHandler;
+
+                    // Per-turn throbber timer: advances the status-line animation at
+                    // 1-second intervals. Disposed in the finally block so it only
+                    // lives for the duration of this turn.
+                    using var throbberTimer = new Timer(
+                        _ => viewport.ThrobberTick(), null, 1000, 1000);
 
                     try
                     {
@@ -188,6 +197,10 @@ internal sealed class TuiService(
                             await foreach (var evt in session.RunTurnAsync(input, turnCts.Token))
                             {
                                 router.RouteMainEvent(evt);
+
+                                // Flush any dirty state after each event so streaming text
+                                // appears incrementally without a background polling timer.
+                                viewport.RedrawIfDirty();
 
                                 // Update context fill display when a turn completes with usage data.
                                 if (evt is TurnCompleted)
@@ -234,11 +247,13 @@ internal sealed class TuiService(
                     {
                         // Always unsubscribe the escape handler before disposing the CTS so
                         // a concurrent escape press doesn't try to cancel an already-disposed token.
-                        inputSource.KeyPressed -= escapeHandler;
+                        coordinator.KeyReceived -= escapeHandler;
                         turnCts.Dispose();
                     }
 
                     viewport.SetTurnRunning(false);
+                    // Ensure the throbber clears from the status line after the turn ends.
+                    viewport.RedrawIfDirty();
                 }
             }
             finally
@@ -284,7 +299,7 @@ internal sealed class TuiService(
                         {
                             Console.WriteLine(message);
                             Console.Write("Enter a model ID in provider/model format, e.g. openai/gpt-5-nano (or blank to exit): ");
-                            var newModel = inputReader.ReadLine(ct)?.Trim();
+                            var newModel = (await inputReader.ReadLineAsync(ct))?.Trim();
                             if (string.IsNullOrEmpty(newModel))
                                 return false;
                             await host.Configuration.SetSelectedModelAsync(newModel, ct: ct);
@@ -294,7 +309,7 @@ internal sealed class TuiService(
                         // Known provider that needs an API key — prompt for it.
                         var providerName = host.Configuration.GetSelectedProviderName()!;
                         Console.Write($"{message} Enter the API key (or blank to exit): ");
-                        var key = inputReader.ReadLine(ct)?.Trim();
+                        var key = (await inputReader.ReadLineAsync(ct))?.Trim();
                         if (string.IsNullOrEmpty(key))
                             return false;
                         await host.Configuration.SetApiKeyAsync(key, providerName, ct);
@@ -303,7 +318,7 @@ internal sealed class TuiService(
 
                     case ChatBlockingIssue.MissingModelSelection:
                         Console.Write("No model selected. Enter a model ID, e.g. openai/gpt-5-nano (or blank to exit): ");
-                        var model = inputReader.ReadLine(ct)?.Trim();
+                        var model = (await inputReader.ReadLineAsync(ct))?.Trim();
                         if (string.IsNullOrEmpty(model))
                             return false;
                         await host.Configuration.SetSelectedModelAsync(model, ct: ct);

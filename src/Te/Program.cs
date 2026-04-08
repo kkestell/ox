@@ -20,7 +20,7 @@ public static class Program
     private const int PromptRow = 2;
     private const int ContentStartRow = 4;
 
-    public static void Main()
+    public static async Task Main()
     {
         if (Console.IsOutputRedirected)
         {
@@ -43,6 +43,8 @@ public static class Program
             state.ShouldExit = true;
         };
 
+        // Events fire eagerly on enqueue (on the background stdin reader thread),
+        // so these handlers update state immediately. The main loop just redraws.
         coordinator.KeyReceived += (_, args) => HandleKey(state, args);
         coordinator.MouseReceived += (_, args) => HandleMouse(state, args);
 
@@ -52,7 +54,7 @@ public static class Program
         {
             EnterAlternateScreen();
             HideCursor();
-            RunDemo(coordinator, state);
+            await RunDemoAsync(coordinator, state);
         }
         finally
         {
@@ -62,7 +64,7 @@ public static class Program
         }
     }
 
-    private static void RunDemo(InputCoordinator coordinator, DemoState state)
+    private static async Task RunDemoAsync(InputCoordinator coordinator, DemoState state)
     {
         var (width, height) = GetTerminalSize();
         var buffer = new ConsoleBuffer(width, height);
@@ -77,12 +79,18 @@ public static class Program
                 state.ClampToBounds(nextWidth, nextHeight);
             }
 
-            coordinator.ProcessPendingInput();
+            // Events already fired eagerly during enqueue (handlers ran on the
+            // stdin reader thread). Drain the channel to prevent unbounded growth,
+            // then redraw.
+            while (coordinator.Reader.TryRead(out _)) { }
 
             DrawFrame(buffer, state);
             buffer.Render(Console.Out);
 
-            Thread.Sleep(16);
+            // Block until the next input event arrives — no polling, no Thread.Sleep.
+            // WaitToReadAsync returns false when the channel completes (coordinator disposed).
+            if (!await coordinator.Reader.WaitToReadAsync())
+                break;
         }
     }
 

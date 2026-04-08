@@ -5,14 +5,14 @@ namespace Ox;
 
 /// <summary>
 /// Centralizes all keyboard input into a single class that reads from a shared
-/// <see cref="InputCoordinator"/>.
+/// <see cref="InputCoordinator"/>'s channel.
 ///
 /// Two ReadLine overloads (viewport-mode and direct-echo) share the same coordinator
 /// so there is no race between concurrent key consumers — the coordinator serializes
-/// events through a queue and dispatches them in ProcessPendingInput.
+/// events through a channel and both methods read from the same ChannelReader.
 ///
 /// The optional <see cref="AutocompleteEngine"/> enables Tab completion in
-/// <see cref="ReadLineInViewport"/>: after each buffer change the engine is
+/// <see cref="ReadLineInViewportAsync"/>: after each buffer change the engine is
 /// queried and the result is broadcast to the viewport via onCompletionChanged.
 /// </summary>
 internal sealed class InputReader(InputCoordinator coordinator, AutocompleteEngine? autocomplete = null)
@@ -25,39 +25,28 @@ internal sealed class InputReader(InputCoordinator coordinator, AutocompleteEngi
     /// <paramref name="onPromptChanged"/>. Tab accepts an active autocomplete
     /// suggestion if one is present. Returns the typed string on Enter,
     /// or null on EOF (Ctrl+D on empty buffer), Escape, or cancellation.
+    ///
+    /// Reads directly from the coordinator's channel — no polling, no Sleep.
+    /// The <paramref name="onInputProcessed"/> callback fires after each key
+    /// so the caller can trigger a redraw (e.g. viewport.RedrawIfDirty).
     /// </summary>
-    /// <param name="promptPrefix">
-    /// Optional text shown before the user's typed text. The main chat composer
-    /// passes an empty prefix; permission prompts pass the full prompt string.
-    /// </param>
-    /// <param name="onPromptChanged">
-    /// Called after every keystroke with the full visible input string
-    /// (prefix + buffer) so the viewport can update the input row in real time.
-    /// </param>
-    /// <param name="onCompletionChanged">
-    /// Called after every buffer change with the current completion suffix (or null
-    /// when no completion applies). The viewport uses this to render ghost text.
-    /// </param>
-    /// <param name="ct">Cancellation token (linked to the app-level CTS).</param>
-    public string? ReadLineInViewport(
+    public async Task<string?> ReadLineInViewportAsync(
         string promptPrefix,
         Action<string> onPromptChanged,
         Action<string?>? onCompletionChanged = null,
+        Action? onInputProcessed = null,
         CancellationToken ct = default)
     {
         var buffer = new StringBuilder();
         onPromptChanged(promptPrefix);
         onCompletionChanged?.Invoke(null);
 
-        // The event handler captures these by-ref so the polling loop can see
-        // the result after each ProcessPendingInput call.
         string? returnValue = null;
         bool done = false;
 
-        // Handles each key event synchronously on the polling-loop thread.
-        // ProcessPendingInput fires KeyReceived before returning, so mutations
-        // to buffer/returnValue/done are visible immediately after the call.
-        void OnKey(object? sender, KeyEventArgs e)
+        // Process each key event read from the channel. Runs on the main thread
+        // so buffer mutations are single-threaded — no cross-thread races.
+        void OnKey(KeyEventArgs e)
         {
             var baseCode = e.KeyCode.WithoutModifiers();
 
@@ -110,8 +99,6 @@ internal sealed class InputReader(InputCoordinator coordinator, AutocompleteEngi
                 case KeyCode.Esc:
                     // Escape during input reading is a no-op: the escape monitor
                     // runs during turns (wired in Program.cs), not during line reading.
-                    // Ignoring here matches the old behaviour where _readingLine blocked
-                    // MonitorEscapeKeyAsync from consuming keystrokes.
                     return;
 
                 default:
@@ -126,25 +113,22 @@ internal sealed class InputReader(InputCoordinator coordinator, AutocompleteEngi
             onCompletionChanged?.Invoke(autocomplete?.GetCompletion(buffer.ToString()));
         }
 
-        _coordinator.KeyReceived += OnKey;
-        try
+        // Read directly from the channel — awaits input without polling.
+        // WaitToReadAsync blocks until at least one item is available or
+        // the channel completes (coordinator disposed), eliminating Thread.Sleep.
+        while (!ct.IsCancellationRequested && !done)
         {
-            while (!ct.IsCancellationRequested && !done)
+            await _coordinator.Reader.WaitToReadAsync(ct);
+            while (_coordinator.Reader.TryRead(out var inputEvent))
             {
-                // ProcessPendingInput dispatches queued events from the
-                // TerminalInputSource's background reader thread. The events
-                // fire synchronously here — OnKey runs before this returns.
-                _coordinator.ProcessPendingInput(ct);
-                if (!done)
-                    Thread.Sleep(20);
+                if (inputEvent is KeyInputEvent keyInput)
+                    OnKey(keyInput.Key);
+                if (done) break;
             }
+            onInputProcessed?.Invoke();
+        }
 
-            return done ? returnValue : null; // null on cancellation
-        }
-        finally
-        {
-            _coordinator.KeyReceived -= OnKey;
-        }
+        return done ? returnValue : null; // null on cancellation
     }
 
     /// <summary>
@@ -157,13 +141,13 @@ internal sealed class InputReader(InputCoordinator coordinator, AutocompleteEngi
     /// writes each printable character to Console.Out explicitly so the user
     /// sees what they type, matching the behaviour of the old cooked-mode readline.
     /// </summary>
-    public string? ReadLine(CancellationToken ct)
+    public async Task<string?> ReadLineAsync(CancellationToken ct)
     {
         var buffer = new StringBuilder();
         string? returnValue = null;
         bool done = false;
 
-        void OnKey(object? sender, KeyEventArgs e)
+        void OnKey(KeyEventArgs e)
         {
             var baseCode = e.KeyCode.WithoutModifiers();
 
@@ -202,23 +186,19 @@ internal sealed class InputReader(InputCoordinator coordinator, AutocompleteEngi
             }
         }
 
-        _coordinator.KeyReceived += OnKey;
-        try
+        while (!ct.IsCancellationRequested && !done)
         {
-            while (!ct.IsCancellationRequested && !done)
+            await _coordinator.Reader.WaitToReadAsync(ct);
+            while (_coordinator.Reader.TryRead(out var inputEvent))
             {
-                _coordinator.ProcessPendingInput(ct);
-                if (!done)
-                    Thread.Sleep(50);
+                if (inputEvent is KeyInputEvent keyInput)
+                    OnKey(keyInput.Key);
+                if (done) break;
             }
+        }
 
-            if (!done)
-                Console.WriteLine();
-            return done ? returnValue : null;
-        }
-        finally
-        {
-            _coordinator.KeyReceived -= OnKey;
-        }
+        if (!done)
+            Console.WriteLine();
+        return done ? returnValue : null;
     }
 }

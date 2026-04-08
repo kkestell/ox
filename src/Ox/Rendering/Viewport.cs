@@ -16,9 +16,10 @@ namespace Ox.Rendering;
 ///
 /// Rendering is decoupled from event arrival via a dirty flag. When any renderable
 /// fires <see cref="IRenderable.Changed"/>, we set a flag rather than redrawing
-/// immediately. A background loop calls <see cref="Redraw"/> at ~30 fps when
-/// dirty. This prevents per-character redraws during fast streaming — the screen
-/// updates at a readable rate regardless of how quickly chunks arrive.
+/// immediately. The main loop calls <see cref="RedrawIfDirty"/> at explicit points
+/// (after processing each input key, after each streamed event). During turns a
+/// per-turn Timer calls <see cref="ThrobberTick"/> at 1-second intervals to
+/// advance the status-line animation. No background polling timer runs.
 ///
 /// The viewport owns a persistent <see cref="ConsoleBuffer"/> (_buffer) that
 /// dirty-tracks cells between frames. BuildFrame writes into _buffer on every
@@ -56,8 +57,6 @@ internal sealed class Viewport : IDisposable
     // onCompletionChanged callback, rendered by RenderInputArea.
     private string? _completionSuffix;
 
-    // Background timer that drives redraws at ~30 fps when dirty.
-    private readonly Timer _redrawTimer;
     private readonly Func<long> _tickCountProvider;
 
     // Guards Redraw() against concurrent calls from the timer and an explicit
@@ -141,16 +140,12 @@ internal sealed class Viewport : IDisposable
         _lastHeight  = initialHeight;
 
         // Subscribe to the root's Changed event so any descendant mutation marks
-        // us dirty. The timer then picks it up within ~33ms.
+        // us dirty. The main loop calls RedrawIfDirty at explicit points to flush.
         _root.Changed += () => _dirty = true;
 
         // Subscribe to sidebar changes so todo updates trigger a redraw.
         if (_sidebar is not null)
             _sidebar.Changed += () => _dirty = true;
-
-        // ~30 fps. We use a period of 33ms with a dueTime of 33ms so the first
-        // tick doesn't fire immediately on creation.
-        _redrawTimer = new Timer(_ => TickRedraw(), null, 33, 33);
     }
 
     // --- Lifecycle ---
@@ -252,24 +247,31 @@ internal sealed class Viewport : IDisposable
     // --- Redraw ---
 
     /// <summary>
-    /// Called by the timer on the ThreadPool. Redraws only when dirty. While a
-    /// turn is running, it also watches for the next throbber counter value and
-    /// marks the frame dirty only when that visible value changes.
+    /// Checks the dirty flag and redraws if needed. Called by the main loop
+    /// after processing input keys and after routing each streamed event.
+    /// No background timer — the caller drives redraws at explicit points.
     /// </summary>
-    private void TickRedraw()
+    public void RedrawIfDirty()
     {
-        if (_turnRunning)
-        {
-            var counter = GetCurrentThrobberCounter();
-            if (counter != _lastAnimatedThrobberCounter)
-            {
-                _lastAnimatedThrobberCounter = counter;
-                _dirty = true;
-            }
-        }
-
         if (_dirty && _running)
             Redraw();
+    }
+
+    /// <summary>
+    /// Advances the throbber animation by one tick. Called by the per-turn
+    /// Timer (1-second period) on a ThreadPool thread. Only redraws if the
+    /// visible counter value actually changed, so the diff-based buffer
+    /// doesn't waste cycles on identical frames.
+    /// </summary>
+    public void ThrobberTick()
+    {
+        if (!_turnRunning) return;
+        var counter = GetCurrentThrobberCounter();
+        if (counter != _lastAnimatedThrobberCounter)
+        {
+            _lastAnimatedThrobberCounter = counter;
+            Redraw(); // Acquires _redrawLock inside
+        }
     }
 
     /// <summary>
@@ -579,9 +581,5 @@ internal sealed class Viewport : IDisposable
     private void FillRowBackground(int row, int width, Color background) =>
         _buffer.FillCells(0, row, width, ' ', Color.Default, background);
 
-    public void Dispose()
-    {
-        _redrawTimer.Dispose();
-        Stop();
-    }
+    public void Dispose() => Stop();
 }
