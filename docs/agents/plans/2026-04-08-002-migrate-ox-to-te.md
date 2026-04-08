@@ -82,19 +82,19 @@ inspect the returned `ScreenBuffer` must switch to reading from `Viewport`'s buf
 
 ### Setup
 
-- [ ] Add a project reference from `src/Ox/Ox.csproj` to `src/Te/Te.csproj`
+- [x] Add a project reference from `src/Ox/Ox.csproj` to `src/Te/Te.csproj`
 
 ### Rendering — Phase 1: Replace primitive types
 
-- [ ] Delete `src/Ox/Rendering/Color.cs` and `src/Ox/Rendering/ColorKind.cs`.
+- [x] Delete `src/Ox/Rendering/Color.cs` and `src/Ox/Rendering/ColorKind.cs`.
       Add `using Te.Rendering;` wherever `Color` was used. Te's `Color` API is identical
       (`Color.Default`, `Color.BrightBlack`, `Color.FromIndex(n)`, etc.).
 
-- [ ] Delete `src/Ox/Rendering/Cell.cs`. Add `using Te.Rendering;` at usage sites.
+- [x] Delete `src/Ox/Rendering/Cell.cs`. Add `using Te.Rendering;` at usage sites.
       Note: Te's `Cell` property is `Decorations`, not `Style` — update any site that
       reads `cell.Style`.
 
-- [ ] Delete `src/Ox/Rendering/CellStyle.cs`. Replace every use of `CellStyle` with
+- [x] Delete `src/Ox/Rendering/CellStyle.cs`. Replace every use of `CellStyle` with
       `TextDecoration` (from `Te.Rendering`). Rename flag references:
   - `CellStyle.None` → `TextDecoration.None`
   - `CellStyle.Bold` → `TextDecoration.Bold`
@@ -103,23 +103,23 @@ inspect the returned `ScreenBuffer` must switch to reading from `Viewport`'s buf
   - `CellStyle.Underline` → `TextDecoration.Underline`
   - `CellStyle.Reverse` → `TextDecoration.Reverse`
 
-- [ ] Update `src/Ox/Rendering/CellRow.cs`:
+- [x] Update `src/Ox/Rendering/CellRow.cs`:
   - Remove `using Ox.Rendering;` for the deleted types, add `using Te.Rendering;`
   - Change `CellStyle` → `TextDecoration` in all method signatures
   - `Cell` constructor arg: `style:` → no change needed since `Cell` is now Te's struct
     (Te's Cell takes `TextDecoration decorations = TextDecoration.None` as 4th arg)
 
-- [ ] Update all renderables (`EventList.cs`, `TextRenderable.cs`, `ToolRenderable.cs`,
+- [x] Update all renderables (`EventList.cs`, `TextRenderable.cs`, `ToolRenderable.cs`,
       `SubagentRenderable.cs`, `TodoSection.cs`, `ContextSection.cs`, `Sidebar.cs`,
       `TreeChrome.cs`) to use `TextDecoration` instead of `CellStyle`.
 
 ### Rendering — Phase 2: Replace ScreenBuffer with ConsoleBuffer
 
-- [ ] Add a `private ConsoleBuffer _buffer` field to `Viewport`. Initialize it in the
+- [x] Add a `private ConsoleBuffer _buffer` field to `Viewport`. Initialize it in the
       constructor with `new ConsoleBuffer(Console.WindowWidth, Console.WindowHeight)`.
       This replaces the per-frame `new ScreenBuffer(width, height)` in `BuildFrame`.
 
-- [ ] Rewrite `Viewport.BuildFrame(int width, int height)`:
+- [x] Rewrite `Viewport.BuildFrame(int width, int height)`:
   - Change return type from `ScreenBuffer` to `void`
   - At the start of the method, call `_buffer.Resize(width, height)` if dimensions
     changed, then `_buffer.Clear()` to reset the back buffer for this frame
@@ -128,21 +128,21 @@ inspect the returned `ScreenBuffer` must switch to reading from `Viewport`'s buf
     (note: ConsoleBuffer is x=col, y=row)
   - Replace every `buffer.WriteCell(row, col, cell)` call with `_buffer.SetCell(col, row, cell)`
 
-- [ ] Rewrite `Viewport.Redraw()`:
+- [x] Rewrite `Viewport.Redraw()`:
   - Remove the `var buffer = BuildFrame(width, height);` line
   - Call `BuildFrame(width, height)` (void return)
   - Replace `Terminal.Flush(buffer)` with `_buffer.Render(Console.Out)`
 
-- [ ] Delete `src/Ox/Rendering/ScreenBuffer.cs`.
+- [x] Delete `src/Ox/Rendering/ScreenBuffer.cs`.
 
-- [ ] Strip `src/Ox/Rendering/Terminal.cs`:
+- [x] Strip `src/Ox/Rendering/Terminal.cs`:
   - Delete `Flush(ScreenBuffer buffer)`, `BuildSgr(...)`, and `SgrForColor(...)` — all
     replaced by `ConsoleBuffer.Render()`
   - Keep `EnterAlternateBuffer()`, `ExitAlternateBuffer()`, `HideCursor()`, `ShowCursor()`,
     `ClearScreen()`, and `GetSize()`
   - Update the class comment to reflect its narrower scope
 
-- [ ] Update `tests/Ur.Tests/TuiRenderingTests.cs`:
+- [x] Update `tests/Ur.Tests/TuiRenderingTests.cs`:
   - `BuildFrame` no longer returns a buffer; expose `Viewport._buffer` as `internal`
     (the test assembly already has `InternalsVisibleTo` access) and assert against
     `_buffer.GetCell(x, y)` instead of `buffer[row, col]`
@@ -150,11 +150,11 @@ inspect the returned `ScreenBuffer` must switch to reading from `Viewport`'s buf
 
 ### Input — Phase 3: Replace InputReader with Te input system
 
-- [ ] In `src/Ox/Program.cs`, create `TerminalInputSource` and `InputCoordinator` once
+- [x] In `src/Ox/Program.cs`, create `TerminalInputSource` and `InputCoordinator` once
       at startup (before the viewport loop). Pass the coordinator into `InputReader`
       (or wherever the line-reading logic lives after this migration).
 
-- [ ] Rewrite `InputReader.ReadLineInViewport()`:
+- [x] Rewrite `InputReader.ReadLineInViewport()`:
   - Remove the `Console.KeyAvailable` + `Console.ReadKey` polling loop
   - Subscribe to `InputCoordinator.KeyReceived` (or call `ProcessPendingInput` in a
     polling loop) and dispatch to the existing switch logic
@@ -168,12 +168,12 @@ inspect the returned `ScreenBuffer` must switch to reading from `Viewport`'s buf
   - Remove the `_readingLine` flag — it is no longer needed because all key events flow
     through one source
 
-- [ ] Fold `MonitorEscapeKeyAsync()` into `ReadLineInViewport()`:
+- [x] Fold `MonitorEscapeKeyAsync()` into `ReadLineInViewport()`:
   - When an Escape key event arrives during line reading, cancel `turnCts` and exit.
     (Escape during line reading means "cancel current turn", same as before.)
   - Delete `MonitorEscapeKeyAsync()` from `InputReader`.
 
-- [ ] Rewrite `InputReader.ReadLine()` (pre-viewport, direct echo):
+- [x] Rewrite `InputReader.ReadLine()` (pre-viewport, direct echo):
   - `TerminalInputSource` puts the terminal in raw mode immediately on construction,
     which disables automatic echo. The pre-viewport `ReadLine()` must now echo
     characters manually (write each printable char to `Console.Out`, write "\b \b"
@@ -182,13 +182,13 @@ inspect the returned `ScreenBuffer` must switch to reading from `Viewport`'s buf
     is to disable raw mode for that phase and re-enable it when the viewport starts.
     Prefer the explicit-echo approach to avoid mode switching.
 
-- [ ] Dispose `TerminalInputSource` and `InputCoordinator` on exit in `Program.cs`.
+- [x] Dispose `TerminalInputSource` and `InputCoordinator` on exit in `Program.cs`.
 
 ### Validation
 
-- [ ] Run `dotnet build` — zero errors
-- [ ] Run `dotnet test` — all tests pass, including updated `TuiRenderingTests`
-- [ ] Run Ox interactively:
+- [x] Run `dotnet build` — zero errors
+- [x] Run `dotnet test` — all tests pass, including updated `TuiRenderingTests`
+- [x] Run Ox interactively:
   - Verify the splash screen renders correctly
   - Type a message — confirm the input row echoes keystrokes and autocomplete works
   - Send a message — confirm the conversation area updates and the throbber animates
