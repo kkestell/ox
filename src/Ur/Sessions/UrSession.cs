@@ -1,5 +1,4 @@
 using System.Collections.ObjectModel;
-using System.Linq;
 using System.Runtime.CompilerServices;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;

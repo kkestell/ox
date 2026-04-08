@@ -159,14 +159,13 @@ internal sealed class InputReader(AutocompleteEngine? autocomplete = null)
                         return null; // EOF
 
                     default:
+                        if (char.IsControl(key.KeyChar))
+                            continue;
+
+                        buffer.Append(key.KeyChar);
+                        Console.Write(key.KeyChar);
                         break;
                 }
-
-                if (char.IsControl(key.KeyChar))
-                    continue;
-
-                buffer.Append(key.KeyChar);
-                Console.Write(key.KeyChar);
             }
 
             Console.WriteLine();

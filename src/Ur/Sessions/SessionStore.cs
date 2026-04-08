@@ -54,8 +54,8 @@ internal sealed class SessionStore(string sessionsDirectory, ILogger<SessionStor
         DateTimeOffset.TryParseExact(
             id,
             "yyyyMMdd-HHmmss-fff",
-            System.Globalization.CultureInfo.InvariantCulture,
-            System.Globalization.DateTimeStyles.AssumeUniversal,
+            CultureInfo.InvariantCulture,
+            DateTimeStyles.AssumeUniversal,
             out var parsed)
             ? parsed
             : null;

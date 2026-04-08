@@ -115,7 +115,7 @@ public class MultiProviderSmokeTests : IDisposable
 
         await foreach (var evt in session.RunTurnAsync("Say hello in exactly one word."))
         {
-            if (evt is Ur.AgentLoop.ResponseChunk chunk)
+            if (evt is AgentLoop.ResponseChunk chunk)
             {
                 output.WriteLine($"chunk: {chunk.Text}");
                 gotText = true;

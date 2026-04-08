@@ -23,9 +23,11 @@ internal sealed partial class AutocompleteEngine(CommandRegistry commands)
     /// is no applicable completion.
     ///
     /// Returns null when:
-    ///   - The buffer does not match "/<one-or-more-letters>".
-    ///   - No command name starts with the typed prefix.
-    ///   - The typed prefix exactly matches a command name (nothing left to complete).
+    /// <list type="bullet">
+    ///   <item><description>The buffer does not match "/<![CDATA[<]]>one-or-more-letters>".</description></item>
+    ///   <item><description>No command name starts with the typed prefix.</description></item>
+    ///   <item><description>The typed prefix exactly matches a command name (nothing left to complete).</description></item>
+    /// </list>
     ///
     /// When multiple commands share the prefix, returns the suffix for the first
     /// match in priority order (built-ins before skills, each in registration/load order).

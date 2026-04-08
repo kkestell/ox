@@ -274,7 +274,7 @@ public sealed class ParallelToolExecutionTests : IDisposable
         // Pass a messages list so we can inspect the toolResultMessage that
         // AgentLoop adds after InvokeAllAsync completes.
         var messages = new List<ChatMessage>();
-        var events = await CollectEventsAsync(loop.RunTurnAsync(messages, callbacks: null));
+        await CollectEventsAsync(loop.RunTurnAsync(messages, callbacks: null));
 
         // Find the Tool-role message — it's the one containing FunctionResultContent.
         var toolMsg = messages.Single(m => m.Role == ChatRole.Tool);

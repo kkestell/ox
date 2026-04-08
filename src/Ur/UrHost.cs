@@ -35,7 +35,6 @@ public sealed class UrHost
 
     private readonly string _userDataDirectory;
     private readonly ILoggerFactory _loggerFactory;
-    private readonly ILogger _logger;
 
     public string WorkspacePath => Workspace.RootPath;
     public UrConfiguration Configuration { get; }
@@ -96,7 +95,6 @@ public sealed class UrHost
         SettingsSchemas = settingsSchemas;
         Configuration = configuration;
         _loggerFactory = loggerFactory;
-        _logger = loggerFactory.CreateLogger<UrHost>();
         _userDataDirectory = options.UserDataDirectory
             ?? ServiceCollectionExtensions.DefaultUserDataDirectory();
         _chatClientFactoryOverride = options.ChatClientFactoryOverride;
@@ -104,7 +102,8 @@ public sealed class UrHost
 
         // Log startup summary — extensions and skills are already loaded by the time
         // the host is constructed (DI resolves them as upstream singletons).
-        _logger.LogInformation(
+        var logger = loggerFactory.CreateLogger<UrHost>();
+        logger.LogInformation(
             "Ur ready: workspace={WorkspacePath}, extensions={ExtensionCount}, skills={SkillCount}",
             workspace.RootPath, extensions.List().Count, skills.All().Count);
     }

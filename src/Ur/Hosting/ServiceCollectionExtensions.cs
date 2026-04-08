@@ -41,14 +41,14 @@ public static class ServiceCollectionExtensions
         // Store options so other registrations and UrHost can access overrides.
         services.AddSingleton(options);
 
-        services.AddSingleton(sp =>
+        services.AddSingleton(_ =>
         {
             var w = new Workspace(options.WorkspacePath);
             w.EnsureDirectories();
             return w;
         });
 
-        services.AddSingleton<IKeyring>(sp =>
+        services.AddSingleton<IKeyring>(_ =>
             options.KeyringOverride ?? CreatePlatformKeyring());
 
         var userDataDirectory = options.UserDataDirectory ?? DefaultUserDataDirectory();

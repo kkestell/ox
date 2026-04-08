@@ -31,7 +31,7 @@ internal sealed class SubagentRunner(
     ILoggerFactory loggerFactory) : ISubagentRunner
 {
     /// <summary>
-    /// Runs <paramref name="task"/> as the sole user message in a fresh agent loop.
+    /// Runs the given task string as the sole user message in a fresh agent loop.
     /// Collects all ResponseChunk text produced across the loop's iterations and
     /// returns the accumulated result when the loop terminates (TurnCompleted or Error).
     ///

@@ -147,12 +147,12 @@ public sealed class ConfigurationTests : IDisposable
             host.Configuration.Readiness.BlockingIssues);
 
         // Set API key for openrouter — ProviderNotReady blocker should clear.
-        await host.Configuration.SetApiKeyAsync("test-key", "openrouter");
+        await host.Configuration.SetApiKeyAsync("test-key");
         Assert.DoesNotContain(ChatBlockingIssue.ProviderNotReady,
             host.Configuration.Readiness.BlockingIssues);
 
         // Clear API key — blocker returns.
-        await host.Configuration.ClearApiKeyAsync("openrouter");
+        await host.Configuration.ClearApiKeyAsync();
         Assert.Contains(ChatBlockingIssue.ProviderNotReady,
             host.Configuration.Readiness.BlockingIssues);
     }

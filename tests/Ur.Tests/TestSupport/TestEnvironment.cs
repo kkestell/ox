@@ -151,7 +151,7 @@ internal sealed class TempExtensionEnvironment : IDisposable
 internal sealed class TempWorkspace : IDisposable
 {
     private readonly string? _rootPath;
-    private Microsoft.Extensions.Hosting.IHost? _host;
+    private IHost? _host;
 
     public string WorkspacePath { get; }
     public string UserDataDirectory { get; }
@@ -162,7 +162,7 @@ internal sealed class TempWorkspace : IDisposable
     /// so it is disposed when the workspace is disposed. Called by
     /// <see cref="TestHostBuilder"/> to prevent host leaks.
     /// </summary>
-    internal void AttachHost(Microsoft.Extensions.Hosting.IHost host) => _host = host;
+    internal void AttachHost(IHost host) => _host = host;
 
     /// <summary>
     /// Creates a self-contained temp workspace with auto-generated paths.
