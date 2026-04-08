@@ -8,8 +8,8 @@ namespace Ur.Cli.Commands;
 /// `ur config *` — manage workspace and user-level configuration.
 ///
 /// Subcommands:
-///   set-api-key &lt;key&gt;                     write the OpenRouter API key to the system keyring
-///   clear-api-key                          delete the stored API key
+///   set-api-key &lt;key&gt; [--provider]        store an API key in the system keyring
+///   clear-api-key [--provider]             delete a stored API key
 ///   set-model &lt;model-id&gt; [--scope]        choose a default model
 ///   clear-model [--scope]                  remove the model preference for the given scope
 ///   get &lt;key&gt;                             print the merged JSON value for an arbitrary setting
@@ -38,24 +38,31 @@ internal static class ConfigCommands
     }
 
     // -------------------------------------------------------------------------
-    // ur config set-api-key <key>
+    // ur config set-api-key <key> [--provider <name>]
     // -------------------------------------------------------------------------
 
     private static Command BuildSetApiKey()
     {
         var keyArg = new Argument<string>("key")
         {
-            Description = "OpenRouter API key"
+            Description = "API key for the provider"
         };
 
-        var cmd = new Command("set-api-key", "Store the OpenRouter API key in the system keyring") { keyArg };
+        var providerOpt = new Option<string>("--provider", "-p")
+        {
+            Description = "Provider name (openrouter, openai, google). Defaults to openrouter.",
+            DefaultValueFactory = _ => "openrouter"
+        };
+
+        var cmd = new Command("set-api-key", "Store an API key in the system keyring") { keyArg, providerOpt };
 
         cmd.SetAction(async (parseResult, cancellationToken) =>
             await HostRunner.RunAsync(async (host, _) =>
             {
                 var key = parseResult.GetValue(keyArg)!;
-                await host.Configuration.SetApiKeyAsync(key, CancellationToken.None);
-                Console.WriteLine("API key saved.");
+                var provider = parseResult.GetValue(providerOpt)!;
+                await host.Configuration.SetApiKeyAsync(key, provider, CancellationToken.None);
+                Console.WriteLine($"API key saved for '{provider}'.");
                 return 0;
             }, cancellationToken));
 
@@ -63,18 +70,25 @@ internal static class ConfigCommands
     }
 
     // -------------------------------------------------------------------------
-    // ur config clear-api-key
+    // ur config clear-api-key [--provider <name>]
     // -------------------------------------------------------------------------
 
     private static Command BuildClearApiKey()
     {
-        var cmd = new Command("clear-api-key", "Remove the stored OpenRouter API key");
+        var providerOpt = new Option<string>("--provider", "-p")
+        {
+            Description = "Provider name (openrouter, openai, google). Defaults to openrouter.",
+            DefaultValueFactory = _ => "openrouter"
+        };
 
-        cmd.SetAction(async (_, cancellationToken) =>
+        var cmd = new Command("clear-api-key", "Remove a stored API key") { providerOpt };
+
+        cmd.SetAction(async (parseResult, cancellationToken) =>
             await HostRunner.RunAsync(async (host, _) =>
             {
-                await host.Configuration.ClearApiKeyAsync(CancellationToken.None);
-                Console.WriteLine("API key cleared.");
+                var provider = parseResult.GetValue(providerOpt)!;
+                await host.Configuration.ClearApiKeyAsync(provider, CancellationToken.None);
+                Console.WriteLine($"API key cleared for '{provider}'.");
                 return 0;
             }, cancellationToken));
 

@@ -25,6 +25,7 @@
     <PackageReference Include="Microsoft.Extensions.FileSystemGlobbing" Version="10.0.5" />
     <PackageReference Include="Microsoft.Extensions.Options" Version="10.0.5" />
     <PackageReference Include="Microsoft.Extensions.Options.ConfigurationExtensions" Version="10.0.5" />
+    <PackageReference Include="OllamaSharp" Version="5.4.25" />
   </ItemGroup>
 
 </Project>

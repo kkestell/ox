@@ -28,27 +28,29 @@ public sealed class UrConfiguration
     // Maps to IConfiguration path "ur:model" via the nested JSON format.
     internal const string ModelSettingKey = "ur.model";
 
-    // Keyring service/account identifiers. The OS keyring (macOS Keychain /
-    // Linux libsecret) stores the OpenRouter API key under this service+account
-    // pair, which is shared across all workspaces.
+    // Keyring service name shared by all providers. Each provider stores its
+    // API key under service="ur", account=<provider-name> (e.g. "openrouter",
+    // "openai", "google"). Ollama needs no key.
     private const string SecretService = "ur";
-    private const string SecretAccount = "openrouter";
 
     private readonly ModelCatalog _modelCatalog;
     private readonly IOptionsMonitor<UrOptions> _optionsMonitor;
     private readonly SettingsWriter _settingsWriter;
     private readonly IKeyring _keyring;
+    private readonly ProviderRegistry _providerRegistry;
 
     internal UrConfiguration(
         ModelCatalog modelCatalog,
         IOptionsMonitor<UrOptions> optionsMonitor,
         SettingsWriter settingsWriter,
-        IKeyring keyring)
+        IKeyring keyring,
+        ProviderRegistry providerRegistry)
     {
         _modelCatalog = modelCatalog;
         _optionsMonitor = optionsMonitor;
         _settingsWriter = settingsWriter;
         _keyring = keyring;
+        _providerRegistry = providerRegistry;
     }
 
     /// <summary>
@@ -93,17 +95,24 @@ public sealed class UrConfiguration
     public Task RefreshModelsAsync(CancellationToken ct = default) =>
         _modelCatalog.RefreshAsync(ct);
 
-    public Task SetApiKeyAsync(string apiKey, CancellationToken ct = default)
+    /// <summary>
+    /// Stores an API key in the OS keyring for the given provider.
+    /// The keyring account is the provider name (e.g. "openai", "google", "openrouter").
+    /// </summary>
+    public Task SetApiKeyAsync(string apiKey, string provider = "openrouter", CancellationToken ct = default)
     {
         ct.ThrowIfCancellationRequested();
-        _keyring.SetSecret(SecretService, SecretAccount, apiKey);
+        _keyring.SetSecret(SecretService, provider, apiKey);
         return Task.CompletedTask;
     }
 
-    public Task ClearApiKeyAsync(CancellationToken ct = default)
+    /// <summary>
+    /// Removes the API key from the OS keyring for the given provider.
+    /// </summary>
+    public Task ClearApiKeyAsync(string provider = "openrouter", CancellationToken ct = default)
     {
         ct.ThrowIfCancellationRequested();
-        _keyring.DeleteSecret(SecretService, SecretAccount);
+        _keyring.DeleteSecret(SecretService, provider);
         return Task.CompletedTask;
     }
 
@@ -181,24 +190,113 @@ public sealed class UrConfiguration
         _settingsWriter.ClearAsync(key, scope, ct);
 
     /// <summary>
-    /// Retrieves the API key from the OS keyring. Returns null if not configured.
-    /// This is the single source of truth for keyring service/account constants.
+    /// Retrieves the API key for the given provider from the OS keyring.
+    /// Returns null if not configured. Each provider stores its key under
+    /// the provider name as the keyring account (e.g. "openai", "google").
     /// </summary>
-    internal string? GetApiKey() =>
-        _keyring.GetSecret(SecretService, SecretAccount);
+    internal string? GetApiKey(string provider = "openrouter") =>
+        _keyring.GetSecret(SecretService, provider);
 
-    private bool HasApiKey() =>
-        !string.IsNullOrWhiteSpace(GetApiKey());
+    /// <summary>
+    /// Exposes the provider registry so the UI layer can look up a provider
+    /// by name for readiness checks and error messages.
+    /// </summary>
+    internal ProviderRegistry ProviderRegistry => _providerRegistry;
+
+    /// <summary>
+    /// Extracts the provider name from the currently selected model ID.
+    /// Returns null if no model is selected or the model ID doesn't contain a slash.
+    /// Used by the TUI to determine which provider needs an API key without
+    /// duplicating the ModelId parsing logic.
+    /// </summary>
+    public string? GetSelectedProviderName()
+    {
+        var modelId = SelectedModelId;
+        if (string.IsNullOrWhiteSpace(modelId))
+            return null;
+
+        try
+        {
+            return ModelId.Parse(modelId).Provider;
+        }
+        catch (ArgumentException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Checks whether the selected model's provider is known and registered.
+    /// Returns false if no model is selected, the model ID can't be parsed,
+    /// or the provider prefix doesn't match any registered provider.
+    /// </summary>
+    public bool IsSelectedProviderKnown()
+    {
+        var providerName = GetSelectedProviderName();
+        return providerName is not null && _providerRegistry.Get(providerName) is not null;
+    }
+
+    /// <summary>
+    /// Returns a human-readable description of why the selected provider is not ready.
+    /// Used by CLI/TUI to show actionable error messages. Returns a generic message
+    /// if the model ID can't be parsed or the provider is unknown.
+    /// </summary>
+    public string GetProviderBlockingMessage()
+    {
+        var modelId = SelectedModelId;
+        if (string.IsNullOrWhiteSpace(modelId))
+            return "No model selected.";
+
+        try
+        {
+            var parsed = ModelId.Parse(modelId);
+            var provider = _providerRegistry.Get(parsed.Provider);
+            if (provider is null)
+                return $"Unknown provider '{parsed.Provider}'. Known providers: {string.Join(", ", _providerRegistry.ProviderNames)}";
+
+            return provider.GetBlockingIssue()
+                ?? "Provider is ready (no blocking issue).";
+        }
+        catch (ArgumentException)
+        {
+            return $"Model ID '{modelId}' is not in 'provider/model' format. Example: openai/gpt-5-nano";
+        }
+    }
 
     private List<ChatBlockingIssue> GetBlockingIssues()
     {
         var issues = new List<ChatBlockingIssue>();
 
-        if (!HasApiKey())
-            issues.Add(ChatBlockingIssue.MissingApiKey);
-
         if (string.IsNullOrWhiteSpace(SelectedModelId))
+        {
+            // No model selected — can't determine a provider, so report just this issue.
             issues.Add(ChatBlockingIssue.MissingModelSelection);
+            return issues;
+        }
+
+        // A model is selected — check whether its provider is ready.
+        // If the model ID doesn't parse or the provider is unknown, report as
+        // a provider issue so the user gets actionable feedback.
+        try
+        {
+            var parsed = ModelId.Parse(SelectedModelId);
+            var provider = _providerRegistry.Get(parsed.Provider);
+            if (provider is null)
+            {
+                issues.Add(ChatBlockingIssue.ProviderNotReady);
+            }
+            else
+            {
+                var issue = provider.GetBlockingIssue();
+                if (issue is not null)
+                    issues.Add(ChatBlockingIssue.ProviderNotReady);
+            }
+        }
+        catch (ArgumentException)
+        {
+            // Model ID doesn't follow provider/model format — legacy model or typo.
+            issues.Add(ChatBlockingIssue.ProviderNotReady);
+        }
 
         return issues;
     }

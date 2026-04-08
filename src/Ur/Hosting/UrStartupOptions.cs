@@ -50,7 +50,7 @@ public sealed class UrStartupOptions
 
     /// <summary>
     /// Inject a chat client factory for testing. When set, UrHost.CreateChatClient
-    /// delegates to this instead of hitting the OpenRouter API.
+    /// delegates to this instead of routing through the provider registry.
     /// </summary>
     public Func<string, IChatClient>? ChatClientFactoryOverride { get; init; }
 

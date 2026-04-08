@@ -159,11 +159,27 @@ public static class ServiceCollectionExtensions
             sp.GetRequiredService<BuiltInCommandRegistry>(),
             sp.GetRequiredService<SkillRegistry>()));
 
+        // Provider registry — maps provider name prefixes to IProvider implementations.
+        // Registered after SettingsWriter and IKeyring (which providers depend on) and
+        // before UrConfiguration (which delegates readiness checks to the selected provider).
+        services.AddSingleton(sp =>
+        {
+            var keyring = sp.GetRequiredService<IKeyring>();
+            var settingsWriter = sp.GetRequiredService<SettingsWriter>();
+            var registry = new ProviderRegistry();
+            registry.Register(new OpenRouterProvider(keyring));
+            registry.Register(new OpenAiProvider(keyring));
+            registry.Register(new GoogleProvider(keyring));
+            registry.Register(new OllamaProvider(settingsWriter));
+            return registry;
+        });
+
         services.AddSingleton(sp => new UrConfiguration(
             sp.GetRequiredService<ModelCatalog>(),
             sp.GetRequiredService<IOptionsMonitor<UrOptions>>(),
             sp.GetRequiredService<SettingsWriter>(),
-            sp.GetRequiredService<IKeyring>()));
+            sp.GetRequiredService<IKeyring>(),
+            sp.GetRequiredService<ProviderRegistry>()));
 
         // UrHost: registered via factory because the constructor is internal
         // (UrHost is a public type but we don't want arbitrary external construction).
@@ -175,6 +191,7 @@ public static class ServiceCollectionExtensions
             sp.GetRequiredService<BuiltInCommandRegistry>(),
             sp.GetRequiredService<SettingsSchemaRegistry>(),
             sp.GetRequiredService<UrConfiguration>(),
+            sp.GetRequiredService<ProviderRegistry>(),
             sp.GetRequiredService<ILoggerFactory>(),
             sp.GetRequiredService<UrStartupOptions>()));
 
@@ -197,6 +214,7 @@ public static class ServiceCollectionExtensions
         var stringSchema = System.Text.Json.JsonDocument.Parse("""{"type":"string"}""")
             .RootElement.Clone();
         registry.Register(UrConfiguration.ModelSettingKey, stringSchema);
+        registry.Register(OllamaProvider.UriSettingKey, stringSchema);
     }
 
     /// <summary>

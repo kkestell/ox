@@ -6,10 +6,14 @@ namespace Ur.Cli.Commands;
 /// <summary>
 /// `ur models *` — browse the OpenRouter model catalog.
 ///
+/// These commands only apply to the OpenRouter provider, which is the only provider
+/// with a remote browsable model catalog. For other providers (openai, google, ollama),
+/// you just need to know the model name — use `ur config set-model provider/model`.
+///
 /// Subcommands:
-///   list [--all]         tabular list of models; filters to text+tool-capable by default
+///   list [--all]         tabular list of OpenRouter models; filters to text+tool-capable by default
 ///   refresh              fetch the latest catalog from the OpenRouter API
-///   show &lt;model-id&gt;     print complete metadata for one model
+///   show &lt;model-id&gt;     print complete metadata for one OpenRouter model
 ///
 /// The catalog is cached on disk and loaded at host startup, so `list` is instant.
 /// `refresh` is the only command that makes a network request.

@@ -66,8 +66,8 @@ internal static class ChatCommand
                     {
                         await Console.Error.WriteLineAsync(issue switch
                         {
-                            ChatBlockingIssue.MissingApiKey         => "No API key set. Run: ur config set-api-key <key>",
-                            ChatBlockingIssue.MissingModelSelection => "No model selected. Run: ur config set-model <model-id>",
+                            ChatBlockingIssue.ProviderNotReady      => host.Configuration.GetProviderBlockingMessage(),
+                            ChatBlockingIssue.MissingModelSelection => "No model selected. Run: ur config set-model <provider/model-id>",
                             _                                       => issue.ToString()
                         });
                     }

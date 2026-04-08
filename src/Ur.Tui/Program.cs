@@ -198,16 +198,36 @@ internal sealed class TuiService(
             {
                 switch (issue)
                 {
-                    case ChatBlockingIssue.MissingApiKey:
-                        Console.Write("No API key configured. Enter your OpenRouter API key (or blank to exit): ");
+                    case ChatBlockingIssue.ProviderNotReady:
+                    {
+                        var message = host.Configuration.GetProviderBlockingMessage();
+
+                        // If the provider is unknown (typo, old format), prompting for an API key
+                        // won't help — the user needs to fix the model ID. Without this check, the
+                        // loop would store a key under the unknown provider name and repeat forever.
+                        if (!host.Configuration.IsSelectedProviderKnown())
+                        {
+                            Console.WriteLine(message);
+                            Console.Write("Enter a model ID in provider/model format, e.g. openai/gpt-5-nano (or blank to exit): ");
+                            var newModel = inputReader.ReadLine(ct)?.Trim();
+                            if (string.IsNullOrEmpty(newModel))
+                                return false;
+                            await host.Configuration.SetSelectedModelAsync(newModel, ct: ct);
+                            break;
+                        }
+
+                        // Known provider that needs an API key — prompt for it.
+                        var providerName = host.Configuration.GetSelectedProviderName()!;
+                        Console.Write($"{message} Enter the API key (or blank to exit): ");
                         var key = inputReader.ReadLine(ct)?.Trim();
                         if (string.IsNullOrEmpty(key))
                             return false;
-                        await host.Configuration.SetApiKeyAsync(key, ct);
+                        await host.Configuration.SetApiKeyAsync(key, providerName, ct);
                         break;
+                    }
 
                     case ChatBlockingIssue.MissingModelSelection:
-                        Console.Write("No model selected. Enter a model ID (or blank to exit): ");
+                        Console.Write("No model selected. Enter a model ID, e.g. openai/gpt-5-nano (or blank to exit): ");
                         var model = inputReader.ReadLine(ct)?.Trim();
                         if (string.IsNullOrEmpty(model))
                             return false;

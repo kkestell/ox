@@ -599,7 +599,7 @@ public sealed class UrSessionPermissionTests
             additionalTools: tools);
 
         await host.Configuration.SetApiKeyAsync("test-key");
-        await host.Configuration.SetSelectedModelAsync("test-model");
+        await host.Configuration.SetSelectedModelAsync("openrouter/test-model");
 
         var session = host.CreateSession(callbacks);
 
@@ -645,7 +645,7 @@ public sealed class UrSessionPermissionTests
             additionalTools: tools);
 
         await host.Configuration.SetApiKeyAsync("test-key");
-        await host.Configuration.SetSelectedModelAsync("test-model");
+        await host.Configuration.SetSelectedModelAsync("openrouter/test-model");
 
         var session = host.CreateSession(callbacks);
         var events = await CollectAsync(session.RunTurnAsync("write something"));

@@ -39,7 +39,7 @@ internal static class StatusCommand
                 {
                     Console.WriteLine("Ready:      no");
                     foreach (var issue in readiness.BlockingIssues)
-                        Console.WriteLine($"  • {DescribeIssue(issue)}");
+                        Console.WriteLine($"  • {DescribeIssue(issue, cfg)}");
                 }
 
                 Console.WriteLine($"Catalog:    {cfg.AvailableModels.Count} models available");
@@ -54,10 +54,10 @@ internal static class StatusCommand
         return cmd;
     }
 
-    private static string DescribeIssue(ChatBlockingIssue issue) => issue switch
+    private static string DescribeIssue(ChatBlockingIssue issue, UrConfiguration cfg) => issue switch
     {
-        ChatBlockingIssue.MissingApiKey         => "No API key configured. Run: ur config set-api-key <key>",
-        ChatBlockingIssue.MissingModelSelection => "No model selected. Run: ur config set-model <model-id>",
+        ChatBlockingIssue.ProviderNotReady      => cfg.GetProviderBlockingMessage(),
+        ChatBlockingIssue.MissingModelSelection => "No model selected. Run: ur config set-model <provider/model-id>",
         _                                       => issue.ToString()
     };
 }

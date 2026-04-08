@@ -139,19 +139,65 @@ public sealed class ConfigurationTests : IDisposable
         using var workspace = new TempWorkspace();
         var host = await CreateHostAsync(workspace);
 
-        // Start with no API key — should be blocked.
-        Assert.Contains(ChatBlockingIssue.MissingApiKey,
+        // Select a model so readiness checks the provider's state.
+        await host.Configuration.SetSelectedModelAsync("openrouter/test-model");
+
+        // No API key for the openrouter provider — should report ProviderNotReady.
+        Assert.Contains(ChatBlockingIssue.ProviderNotReady,
             host.Configuration.Readiness.BlockingIssues);
 
-        // Set API key — MissingApiKey blocker should be removed.
-        await host.Configuration.SetApiKeyAsync("test-key");
-        Assert.DoesNotContain(ChatBlockingIssue.MissingApiKey,
+        // Set API key for openrouter — ProviderNotReady blocker should clear.
+        await host.Configuration.SetApiKeyAsync("test-key", "openrouter");
+        Assert.DoesNotContain(ChatBlockingIssue.ProviderNotReady,
             host.Configuration.Readiness.BlockingIssues);
 
         // Clear API key — blocker returns.
-        await host.Configuration.ClearApiKeyAsync();
-        Assert.Contains(ChatBlockingIssue.MissingApiKey,
+        await host.Configuration.ClearApiKeyAsync("openrouter");
+        Assert.Contains(ChatBlockingIssue.ProviderNotReady,
             host.Configuration.Readiness.BlockingIssues);
+    }
+
+    // ─── Readiness edge cases ───────────────────────────────────────
+
+    [Fact]
+    public async Task Readiness_UnparseableModelId_ReportsProviderNotReady()
+    {
+        // A model ID without a slash (e.g. bare "gpt-4o") can't be dispatched to any provider.
+        // The readiness check should catch this at pre-flight rather than letting it blow up at turn time.
+        using var workspace = new TempWorkspace();
+        var host = await CreateHostAsync(workspace);
+
+        await host.Configuration.SetSelectedModelAsync("gpt-4o-no-provider-prefix");
+
+        Assert.Contains(ChatBlockingIssue.ProviderNotReady,
+            host.Configuration.Readiness.BlockingIssues);
+        Assert.False(host.Configuration.Readiness.CanRunTurns);
+    }
+
+    [Fact]
+    public async Task Readiness_UnknownProvider_ReportsProviderNotReady()
+    {
+        // A model with a valid provider/model format but an unregistered provider prefix.
+        using var workspace = new TempWorkspace();
+        var host = await CreateHostAsync(workspace);
+
+        await host.Configuration.SetSelectedModelAsync("fakeprovider/some-model");
+
+        Assert.Contains(ChatBlockingIssue.ProviderNotReady,
+            host.Configuration.Readiness.BlockingIssues);
+        Assert.False(host.Configuration.Readiness.CanRunTurns);
+    }
+
+    [Fact]
+    public async Task Readiness_OllamaProvider_NeverBlockedByApiKey()
+    {
+        // Ollama runs locally — selecting an Ollama model should not require any API key.
+        using var workspace = new TempWorkspace();
+        var host = await CreateHostAsync(workspace);
+
+        await host.Configuration.SetSelectedModelAsync("ollama/qwen3:4b");
+
+        Assert.True(host.Configuration.Readiness.CanRunTurns);
     }
 
     // ─── Settings schema validation ──────────────────────────────────

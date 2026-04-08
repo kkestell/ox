@@ -18,8 +18,9 @@ public class HostSessionApiTests
 
         var readiness = host.Configuration.Readiness;
 
+        // Without a model selected, only MissingModelSelection is reported — the provider
+        // check only runs once we know which provider the user intends to use.
         Assert.False(readiness.CanRunTurns);
-        Assert.Contains(ChatBlockingIssue.MissingApiKey, readiness.BlockingIssues);
         Assert.Contains(ChatBlockingIssue.MissingModelSelection, readiness.BlockingIssues);
         Assert.Empty(host.ListSessions());
     }
@@ -76,7 +77,7 @@ public class HostSessionApiTests
         var host = await CreateHostAsync(workspace, keyring, _ => new FakeChatClient("hello from assistant"));
 
         await host.Configuration.SetApiKeyAsync("test-key");
-        await host.Configuration.SetSelectedModelAsync("test-model");
+        await host.Configuration.SetSelectedModelAsync("openrouter/test-model");
 
         var session = host.CreateSession();
         Assert.False(session.IsPersisted);
@@ -85,7 +86,7 @@ public class HostSessionApiTests
         var events = await CollectEventsAsync(session.RunTurnAsync("hello"));
 
         Assert.True(session.IsPersisted);
-        Assert.Equal("test-model", session.ActiveModelId);
+        Assert.Equal("openrouter/test-model", session.ActiveModelId);
         Assert.Equal(2, session.Messages.Count);
         Assert.Equal(ChatRole.User, session.Messages[0].Role);
         Assert.Equal(ChatRole.Assistant, session.Messages[1].Role);
@@ -105,7 +106,7 @@ public class HostSessionApiTests
         Assert.NotNull(reopened);
         Assert.True(reopened.IsPersisted);
         Assert.Equal(2, reopened.Messages.Count);
-        Assert.Equal("test-model", reopened.ActiveModelId);
+        Assert.Equal("openrouter/test-model", reopened.ActiveModelId);
     }
 
     [Fact]
@@ -381,7 +382,7 @@ public class HostSessionApiTests
         var host = await CreateHostAsync(workspace, chatClientFactory: _ => new ThrowingChatClient("API error"));
 
         await host.Configuration.SetApiKeyAsync("test-key");
-        await host.Configuration.SetSelectedModelAsync("test-model");
+        await host.Configuration.SetSelectedModelAsync("openrouter/test-model");
 
         var session = host.CreateSession();
         var events = await CollectEventsAsync(session.RunTurnAsync("hello"));
@@ -402,7 +403,7 @@ public class HostSessionApiTests
         var host = await CreateHostAsync(workspace, chatClientFactory: _ => new PartiallyThrowingChatClient("mid-stream failure"));
 
         await host.Configuration.SetApiKeyAsync("test-key");
-        await host.Configuration.SetSelectedModelAsync("test-model");
+        await host.Configuration.SetSelectedModelAsync("openrouter/test-model");
 
         var session = host.CreateSession();
         var events = await CollectEventsAsync(session.RunTurnAsync("hello"));
@@ -424,8 +425,8 @@ public class HostSessionApiTests
         using var cts = new CancellationTokenSource();
         var host = await CreateHostAsync(workspace, chatClientFactory: _ => new CancellingChatClient(cts));
 
-        await host.Configuration.SetApiKeyAsync("test-key", CancellationToken.None);
-        await host.Configuration.SetSelectedModelAsync("test-model", ct: CancellationToken.None);
+        await host.Configuration.SetApiKeyAsync("test-key", ct: CancellationToken.None);
+        await host.Configuration.SetSelectedModelAsync("openrouter/test-model", ct: CancellationToken.None);
 
         var session = host.CreateSession();
         await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
@@ -457,7 +458,7 @@ public class HostSessionApiTests
 
         var host = await CreateHostAsync(workspace, chatClientFactory: _ => client);
         await host.Configuration.SetApiKeyAsync("test-key");
-        await host.Configuration.SetSelectedModelAsync("test-model");
+        await host.Configuration.SetSelectedModelAsync("openrouter/test-model");
 
         var relayedEvents = new List<AgentLoopEvent>();
         var callbacks = new TurnCallbacks

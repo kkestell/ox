@@ -76,7 +76,7 @@ public sealed class SkillSessionTests : IDisposable
         var capturingClient = new CapturingChatClient();
         var host = await StartHostAsync(capturingClient);
         await host.Configuration.SetApiKeyAsync("test-key");
-        await host.Configuration.SetSelectedModelAsync("test-model");
+        await host.Configuration.SetSelectedModelAsync("openrouter/test-model");
 
         var session = host.CreateSession();
         var events = await CollectAsync(session.RunTurnAsync("/hello world"));
@@ -100,7 +100,7 @@ public sealed class SkillSessionTests : IDisposable
         // No skills loaded — any /command should fail.
         var host = await StartHostAsync();
         await host.Configuration.SetApiKeyAsync("test-key");
-        await host.Configuration.SetSelectedModelAsync("test-model");
+        await host.Configuration.SetSelectedModelAsync("openrouter/test-model");
 
         var session = host.CreateSession();
         var events = await CollectAsync(session.RunTurnAsync("/nonexistent"));
@@ -120,7 +120,7 @@ public sealed class SkillSessionTests : IDisposable
 
         var host = await StartHostAsync();
         await host.Configuration.SetApiKeyAsync("test-key");
-        await host.Configuration.SetSelectedModelAsync("test-model");
+        await host.Configuration.SetSelectedModelAsync("openrouter/test-model");
 
         var session = host.CreateSession();
         var events = await CollectAsync(session.RunTurnAsync("/hidden"));
@@ -138,7 +138,7 @@ public sealed class SkillSessionTests : IDisposable
         var capturingClient = new CapturingChatClient();
         var host = await StartHostAsync(capturingClient);
         await host.Configuration.SetApiKeyAsync("test-key");
-        await host.Configuration.SetSelectedModelAsync("test-model");
+        await host.Configuration.SetSelectedModelAsync("openrouter/test-model");
 
         var session = host.CreateSession();
         await CollectAsync(session.RunTurnAsync("just a normal message"));

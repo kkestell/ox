@@ -1,7 +1,6 @@
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using Ur.Configuration;
-using Ur.Configuration.Keyring;
 using Ur.Extensions;
 using Ur.Hosting;
 using Ur.Permissions;
@@ -26,6 +25,7 @@ namespace Ur;
 public sealed class UrHost
 {
     private readonly SessionStore _sessions;
+    private readonly ProviderRegistry _providerRegistry;
     private readonly Func<string, IChatClient>? _chatClientFactoryOverride;
 
     // Test-only: additional tools to merge into every session registry. Allows
@@ -83,11 +83,13 @@ public sealed class UrHost
         BuiltInCommandRegistry builtInCommands,
         SettingsSchemaRegistry settingsSchemas,
         UrConfiguration configuration,
+        ProviderRegistry providerRegistry,
         ILoggerFactory loggerFactory,
         UrStartupOptions options)
     {
         Workspace = workspace;
         _sessions = sessions;
+        _providerRegistry = providerRegistry;
         Extensions = extensions;
         Skills = skills;
         BuiltInCommands = builtInCommands;
@@ -112,11 +114,13 @@ public sealed class UrHost
         if (_chatClientFactoryOverride is not null)
             return _chatClientFactoryOverride(modelId);
 
-        var apiKey = Configuration.GetApiKey()
+        // Parse the "provider/model" format and dispatch to the registered provider.
+        var parsed = ModelId.Parse(modelId);
+        var provider = _providerRegistry.Get(parsed.Provider)
             ?? throw new InvalidOperationException(
-                "No OpenRouter API key configured. Set one with 'ur setup'.");
+                $"Unknown provider '{parsed.Provider}'. Known providers: {string.Join(", ", _providerRegistry.ProviderNames)}");
 
-        return ChatClientFactory.Create(modelId, apiKey);
+        return provider.CreateChatClient(parsed.Model);
     }
 
     /// <summary>
