@@ -46,6 +46,16 @@ internal sealed class ScreenBuffer
         }
     }
 
+    /// <summary>
+    /// Writes a single cell at the given (0-based) row and column.
+    /// Out-of-bounds coordinates are silently ignored.
+    /// </summary>
+    public void WriteCell(int row, int col, Cell cell)
+    {
+        if (row >= 0 && row < Height && col >= 0 && col < Width)
+            _cells[row, col] = cell;
+    }
+
     /// <summary>Resets all cells to <see cref="Cell.Empty"/>.</summary>
     public void Clear()
     {

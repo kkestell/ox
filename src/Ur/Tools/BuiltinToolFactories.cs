@@ -48,6 +48,11 @@ internal static class BuiltinToolFactories
         (ctx => new GrepTool(ctx.Workspace), OperationType.Read, PatternExtractor),
 
         // bash: arbitrary shell commands — Execute (prompts once per command, never remembered).
-        (ctx => new BashTool(ctx.Workspace), OperationType.Execute, CommandExtractor)
+        (ctx => new BashTool(ctx.Workspace), OperationType.Execute, CommandExtractor),
+
+        // todo_write: session-scoped task tracking — read-only, no side effects.
+        // ctx.Todos may be null when called from tests without a session;
+        // TodoWriteTool handles this gracefully (returns an error string).
+        (ctx => new TodoWriteTool(ctx.Todos), OperationType.Read, null)
     ];
 }

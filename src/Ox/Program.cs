@@ -44,10 +44,11 @@ internal sealed class TuiService(
     {
         logger.LogInformation("Application starting");
 
-        // Build the rendering stack before registering signal handlers so
-        // cleanup always has a viewport reference to call Stop() on.
+        // Declare the rendering stack early so signal handlers can reference it.
+        // The viewport is constructed after the session (which provides the sidebar)
+        // but declared here so cleanup handlers always have a reference.
         var eventList = new EventList();
-        var viewport = new Viewport(eventList);
+        Viewport? viewport = null;
 
         // Restore the terminal on both Ctrl+C and normal process exit.
         // We register both because Ctrl+C triggers CancelKeyPress AND ProcessExit
@@ -56,10 +57,10 @@ internal sealed class TuiService(
         Console.CancelKeyPress += (_, e) =>
         {
             e.Cancel = true; // Prevent immediate termination; let the host shut down gracefully.
-            viewport.Stop();
+            viewport?.Stop();
             lifetime.StopApplication();
         };
-        AppDomain.CurrentDomain.ProcessExit += (_, _) => viewport.Stop();
+        AppDomain.CurrentDomain.ProcessExit += (_, _) => viewport?.Stop();
 
         // Log any unhandled exception that escapes to the CLR before the process dies.
         // ProcessExit fires after this, which cleans up the viewport. Without this hook
@@ -84,9 +85,24 @@ internal sealed class TuiService(
         }
 
         // --- REPL ---
+        // Wiring order: the sidebar needs the session's TodoStore, the viewport
+        // needs the sidebar, and the permission callbacks need the viewport.
+        // We create a no-callbacks session first to get the TodoStore, build the
+        // full rendering stack, then create the real session with callbacks.
         var router = new EventRouter(eventList);
+        var todoStore = new Ur.Todo.TodoStore();
+
+        // Build the sidebar bound to the standalone TodoStore. The session's
+        // TodoWriteTool writes to this same store instance.
+        var todoSection = new TodoSection(todoStore);
+        var sidebar = new Sidebar();
+        sidebar.AddSection(todoSection);
+
+        // Construct the viewport now that we have the sidebar.
+        viewport = new Viewport(eventList, sidebar);
+
         var callbacks = PermissionHandler.Build(router, inputReader, viewport);
-        var session = host.CreateSession(callbacks);
+        var session = host.CreateSession(callbacks, todoStore);
 
         viewport.SetSessionId(session.Id);
         viewport.SetModelId(session.ActiveModelId);

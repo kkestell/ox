@@ -5,6 +5,7 @@ using Microsoft.Extensions.Logging;
 using Ur.Configuration;
 using Ur.Permissions;
 using Ur.Skills;
+using Ur.Todo;
 using Ur.Tools;
 
 namespace Ur.Sessions;
@@ -44,12 +45,14 @@ public sealed class UrSession
         string? activeModelId,
         TurnCallbacks? callbacks,
         string workspacePermissionsPath,
-        string alwaysPermissionsPath)
+        string alwaysPermissionsPath,
+        TodoStore? todos = null)
     {
         _host = host;
         _session = session;
         _messages = messages;
         _logger = host.LoggerFactory.CreateLogger<UrSession>();
+        Todos = todos ?? new TodoStore();
         // Expose a read-only view so callers (TUI, CLI) can render the message
         // list without being able to mutate it — mutation must go through
         // RunTurnAsync so persistence stays in sync.
@@ -83,6 +86,14 @@ public sealed class UrSession
     /// host-level default if no turn has been run yet. The model is captured
     /// per-turn so that a mid-session model switch takes effect on the next turn.
     /// </summary>
+    /// <summary>
+    /// Session-scoped todo store. The LLM writes to it via <c>todo_write</c>;
+    /// the TUI reads it to populate the sidebar. Either injected externally
+    /// (when the TUI needs to bind the sidebar before the session is created)
+    /// or constructed fresh in the constructor.
+    /// </summary>
+    public TodoStore Todos { get; }
+
     public string? ActiveModelId => _activeModelId ?? _host.Configuration.SelectedModelId;
 
     /// <summary>
@@ -175,7 +186,7 @@ public sealed class UrSession
         // per-turn context (chat client, callbacks, system prompt) not available in
         // BuildSessionToolRegistry.
         var chatClient = _host.CreateChatClient(_activeModelId!);
-        var tools = _host.BuildSessionToolRegistry(_session.Id);
+        var tools = _host.BuildSessionToolRegistry(_session.Id, Todos);
 
         // SubagentTool is registered after the base registry is built so the runner
         // can close over the fully-populated registry (the sub-agent inherits all

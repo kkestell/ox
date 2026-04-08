@@ -21,22 +21,32 @@ public sealed class SystemPromptBuilderTests
         };
 
     [Fact]
-    public void Build_EmptyRegistry_ReturnsNull()
+    public void Build_EmptyRegistry_StillContainsTodoGuidance()
     {
         var registry = new SkillRegistry();
 
-        Assert.Null(SystemPromptBuilder.Build(registry));
+        var prompt = SystemPromptBuilder.Build(registry);
+
+        // Even with no skills, the todo guidance section is always present.
+        Assert.NotNull(prompt);
+        Assert.Contains("todo_write", prompt);
+        // Should not contain the skills section header.
+        Assert.DoesNotContain("following skills", prompt);
     }
 
     [Fact]
-    public void Build_OnlyDisabledSkills_ReturnsNull()
+    public void Build_OnlyDisabledSkills_StillContainsTodoGuidance()
     {
         var registry = new SkillRegistry([
             MakeSkill("hidden", disableModelInvocation: true)
         ]);
 
-        // No model-invocable skills → no system prompt.
-        Assert.Null(SystemPromptBuilder.Build(registry));
+        var prompt = SystemPromptBuilder.Build(registry);
+
+        // No model-invocable skills → still has todo guidance, but no skills section.
+        Assert.NotNull(prompt);
+        Assert.Contains("todo_write", prompt);
+        Assert.DoesNotContain("hidden", prompt);
     }
 
     [Fact]

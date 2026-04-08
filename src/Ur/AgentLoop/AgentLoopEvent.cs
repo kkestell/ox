@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Ur.Todo;
 
 namespace Ur.AgentLoop;
 
@@ -100,6 +101,19 @@ public sealed class TurnError : AgentLoopEvent
 {
     public required string Message { get; init; }
     public required bool IsFatal { get; init; }
+}
+
+/// <summary>
+/// The todo list was updated by the LLM via the <c>todo_write</c> tool.
+///
+/// This event bridges the Ur and Ox layers — the EventRouter or sidebar can
+/// use it to trigger a redraw. Currently not emitted by the agent loop; the
+/// sidebar subscribes to <see cref="TodoStore.Changed"/> directly. Defined
+/// here as a forward-looking extension point for future event-driven wiring.
+/// </summary>
+public sealed class TodoUpdated : AgentLoopEvent
+{
+    public required IReadOnlyList<TodoItem> Items { get; init; }
 }
 
 /// <summary>

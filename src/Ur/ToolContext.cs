@@ -1,3 +1,5 @@
+using Ur.Todo;
+
 namespace Ur;
 
 /// <summary>
@@ -12,11 +14,12 @@ namespace Ur;
 /// because the cognitive simplicity of one factory shape is worth more than the
 /// minor overhead of passing unused context.
 ///
-/// Currently carries workspace and session context needed by the initial set of
-/// builtin tools. Future tools (e.g. SubagentTool) will extend this with
+/// Currently carries workspace, session, and todo context needed by the initial
+/// set of builtin tools. Future tools (e.g. SubagentTool) will extend this with
 /// ChatClient, tool registry access, callbacks, and system prompt without
 /// changing the factory delegate signature.
 /// </summary>
 internal record ToolContext(
     Workspace Workspace,
-    string SessionId);
+    string SessionId,
+    TodoStore? Todos = null);

@@ -7,6 +7,7 @@ using Ur.Permissions;
 using Ur.Providers;
 using Ur.Sessions;
 using Ur.Skills;
+using Ur.Todo;
 using Ur.Tools;
 
 namespace Ur;
@@ -134,13 +135,13 @@ public sealed class UrHost
     /// a ChatClient at invocation time (e.g. a future SubagentTool) will throw
     /// at invocation, not at registration.
     /// </summary>
-    internal ToolRegistry BuildSessionToolRegistry(string sessionId)
+    internal ToolRegistry BuildSessionToolRegistry(string sessionId, TodoStore? todos = null)
     {
         var registry = new ToolRegistry();
-        // Build a minimal ToolContext — sufficient for all current tool factories which
-        // only need Workspace and SessionId. Per-turn context (ChatClient, callbacks,
-        // system prompt) will be added to ToolContext when a tool that needs them is implemented.
-        var context = new ToolContext(Workspace, sessionId);
+        // Build a ToolContext carrying everything tool factories need. The TodoStore
+        // is nullable because host-level callers (tests, extensions) may not have a
+        // session — TodoWriteTool degrades gracefully when it's null.
+        var context = new ToolContext(Workspace, sessionId, todos);
 
         // Register builtins via the same factory list used by RunTurnAsync.
         foreach (var (factory, operationType, targetExtractor) in BuiltinToolFactories.All)
@@ -185,10 +186,15 @@ public sealed class UrHost
     /// Creates a new chat session. The optional <paramref name="callbacks"/> delegate is
     /// captured for the entire session lifetime — the same callback handles all turns.
     /// Pass null to auto-deny all sensitive operations (headless/test use).
+    ///
+    /// <paramref name="todos"/> optionally injects a pre-existing <see cref="TodoStore"/>
+    /// so the TUI can bind its sidebar before the session is created (breaking the
+    /// sidebar → session → callbacks → viewport circularity). When null, the session
+    /// creates its own store.
     /// </summary>
-    public UrSession CreateSession(TurnCallbacks? callbacks = null) =>
+    public UrSession CreateSession(TurnCallbacks? callbacks = null, TodoStore? todos = null) =>
         new(this, _sessions.Create(), [], isPersisted: false, activeModelId: null,
-            callbacks, Workspace.PermissionsPath, DefaultUserPermissionsPath());
+            callbacks, Workspace.PermissionsPath, DefaultUserPermissionsPath(), todos);
 
     /// <summary>
     /// Opens an existing session by ID. See <see cref="CreateSession"/> for callback semantics.

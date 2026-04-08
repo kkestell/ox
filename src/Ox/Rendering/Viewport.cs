@@ -30,6 +30,7 @@ namespace Ox.Rendering;
 internal sealed class Viewport : IDisposable
 {
     private readonly EventList _root;
+    private readonly Sidebar? _sidebar;
 
     // True when the event list has changed and the next timer tick should redraw.
     private volatile bool _dirty;
@@ -91,13 +92,26 @@ internal sealed class Viewport : IDisposable
     // header content row + heavy rule.
     private const int HeaderRows = 2;
 
-    public Viewport(EventList root)
+    // Maximum sidebar width in columns. Capped to prevent the sidebar from
+    // dominating narrow terminals.
+    private const int MaxSidebarWidth = 36;
+
+    // Box-drawing character for the vertical separator between the left column
+    // and the sidebar.
+    private const char SeparatorChar = '│'; // U+2502 BOX DRAWINGS LIGHT VERTICAL
+
+    public Viewport(EventList root, Sidebar? sidebar = null)
     {
         _root = root;
+        _sidebar = sidebar;
 
         // Subscribe to the root's Changed event so any descendant mutation marks
         // us dirty. The timer then picks it up within ~33ms.
         _root.Changed += () => _dirty = true;
+
+        // Subscribe to sidebar changes so todo updates trigger a redraw.
+        if (_sidebar is not null)
+            _sidebar.Changed += () => _dirty = true;
 
         // ~30 fps. We use a period of 33ms with a dueTime of 33ms so the first
         // tick doesn't fire immediately on creation.
@@ -252,10 +266,15 @@ internal sealed class Viewport : IDisposable
     /// Core layout engine: builds a frame buffer for the given terminal size.
     /// Called by <see cref="Redraw"/>, which then flushes to the terminal.
     ///
+    /// When the sidebar is visible, the terminal is split into two full-height
+    /// columns: left (header + conversation + input + status) and right (sidebar).
+    /// A thin │ separator in BrightBlack divides them. When the sidebar is hidden,
+    /// the left column uses the full terminal width.
+    ///
     /// Each region is rendered by a dedicated private method so the overall
     /// layout sequence is immediately visible here. The methods are kept as
     /// private helpers in Viewport (no new classes) — appropriate for the
-    /// current 4-region layout.
+    /// current layout.
     /// </summary>
     // internal for testability — Ur.Tests has InternalsVisibleTo access.
     internal ScreenBuffer BuildFrame(int width, int height)
@@ -263,10 +282,29 @@ internal sealed class Viewport : IDisposable
         var viewportHeight = height - InputAreaRows - HeaderRows;
         var buffer = new ScreenBuffer(width, height);
 
-        RenderHeader(buffer, width);
-        RenderConversation(buffer, width, viewportHeight);
-        RenderInputArea(buffer, width, viewportHeight);
-        RenderStatusBar(buffer, width, viewportHeight);
+        // Compute sidebar allocation. The sidebar gets up to 1/3 of the terminal
+        // width (capped at MaxSidebarWidth), plus one column for the separator.
+        int leftWidth;
+        int sidebarWidth;
+        if (_sidebar is not null && _sidebar.IsVisible)
+        {
+            sidebarWidth = Math.Min(MaxSidebarWidth, width / 3);
+            var separatorWidth = 1;
+            leftWidth = width - sidebarWidth - separatorWidth;
+        }
+        else
+        {
+            leftWidth = width;
+            sidebarWidth = 0;
+        }
+
+        RenderHeader(buffer, leftWidth);
+        RenderConversation(buffer, leftWidth, viewportHeight);
+        RenderInputArea(buffer, leftWidth, viewportHeight);
+        RenderStatusBar(buffer, leftWidth, viewportHeight);
+
+        if (sidebarWidth > 0)
+            RenderSidebar(buffer, width, height, leftWidth, sidebarWidth);
 
         return buffer;
     }
@@ -401,6 +439,31 @@ internal sealed class Viewport : IDisposable
         }
 
         buffer.WriteRow(viewportHeight + HeaderRows + 3, statusRow);
+    }
+
+    /// <summary>
+    /// Renders the sidebar into the right columns of the buffer. Draws a thin
+    /// vertical separator (│ in BrightBlack) in the separator column for every row,
+    /// then renders the sidebar's content top-aligned.
+    /// </summary>
+    private void RenderSidebar(ScreenBuffer buffer, int totalWidth, int height,
+        int leftWidth, int sidebarWidth)
+    {
+        var separatorCol = leftWidth;
+        var sidebarStartCol = leftWidth + 1; // one column after the separator
+
+        // Draw the vertical separator for every row of the terminal.
+        for (var row = 0; row < height; row++)
+            buffer.WriteCell(row, separatorCol, new Cell(SeparatorChar, Color.BrightBlack, Color.Default));
+
+        // Render sidebar content top-aligned.
+        var sidebarRows = _sidebar!.Render(sidebarWidth);
+        for (var ri = 0; ri < sidebarRows.Count && ri < height; ri++)
+        {
+            var cells = sidebarRows[ri].Cells;
+            for (var ci = 0; ci < cells.Count && sidebarStartCol + ci < totalWidth; ci++)
+                buffer.WriteCell(ri, sidebarStartCol + ci, cells[ci]);
+        }
     }
 
     public void Dispose()
