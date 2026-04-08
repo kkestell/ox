@@ -1,7 +1,8 @@
 using System.ClientModel;
 using System.Text.Json;
 using dotenv.net;
-using GenerativeAI.Microsoft;
+using GeminiDotnet;
+using GeminiDotnet.Extensions.AI;
 using Microsoft.Extensions.AI;
 using OpenAI;
 using Xunit.Abstractions;
@@ -34,7 +35,7 @@ public class ProviderCompatTests
                 .AsIChatClient()),
 
         ("google", "GOOGLE_API_KEY", key =>
-            new GenerativeAIChatClient(key, "gemini-3-flash-preview")),
+            new GeminiChatClient(new GeminiClientOptions { ApiKey = key, ModelId = "gemini-3-flash-preview" })),
 
         ("openrouter", "OPENROUTER_API_KEY", key =>
             new OpenAI.Chat.ChatClient(

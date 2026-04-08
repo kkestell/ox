@@ -1,13 +1,14 @@
-using GenerativeAI.Microsoft;
+using GeminiDotnet;
+using GeminiDotnet.Extensions.AI;
 using Microsoft.Extensions.AI;
 using Ur.Configuration.Keyring;
 
 namespace Ur.Providers;
 
 /// <summary>
-/// Provider for Google's Generative AI (Gemini) models. Uses the
-/// <see cref="GenerativeAIChatClient"/> from the Google_GenerativeAI.Microsoft
-/// package, which directly implements <see cref="IChatClient"/>.
+/// Provider for Google's Generative AI (Gemini) models. Uses the AoT-compatible
+/// <see cref="GeminiChatClient"/> from the GeminiDotnet.Extensions.AI package,
+/// which directly implements <see cref="IChatClient"/>.
 ///
 /// API key is stored in the OS keyring under account "google".
 /// </summary>
@@ -32,7 +33,11 @@ internal sealed class GoogleProvider : IProvider
             ?? throw new InvalidOperationException(
                 "No Google API key configured. Run: ur config set-api-key <key> --provider google");
 
-        return new GenerativeAIChatClient(apiKey, model);
+        return new GeminiChatClient(new GeminiClientOptions
+        {
+            ApiKey = apiKey,
+            ModelId = model
+        });
     }
 
     public string? GetBlockingIssue()
