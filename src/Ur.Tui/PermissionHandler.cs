@@ -34,9 +34,9 @@ internal static class PermissionHandler
 
             RequestPermissionAsync = (req, ct) =>
             {
-                // Transition the in-flight tool to the AwaitingApproval visual state
-                // so the user sees which tool is requesting permission.
-                router.SetLastToolAwaitingApproval();
+                // The awaiting-approval visual transition is now handled by the
+                // ToolAwaitingApproval event emitted by ToolInvoker before this
+                // callback fires — no side-channel call needed here.
 
                 var scopeHints = req.AllowedScopes.Count > 1
                     ? $" [{string.Join(", ", req.AllowedScopes.Select(s => s.ToString().ToLowerInvariant()))}]"

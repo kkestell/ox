@@ -53,12 +53,10 @@ internal sealed class EventRouter(EventList eventList)
     // Per-subagent tool call maps for SetCompleted lookups.
     private readonly Dictionary<string, Dictionary<string, ToolRenderable>> _subagentToolCalls = new();
 
-    // ---- Permission callback support ----
-
-    // The most recently started ToolRenderable in any context. Because tool calls
-    // are sequential (the next tool starts after the previous completes), this is
-    // always the tool currently waiting for permission when the callback fires.
-    private ToolRenderable? _lastStartedTool;
+    // ---- Permission callback support (removed) ----
+    // The old _lastStartedTool field assumed sequential execution. It has been
+    // replaced by the ToolAwaitingApproval event, which carries the CallId of the
+    // specific tool awaiting approval — no ambient "last started" tracking needed.
 
     /// <summary>
     /// Routes a main-stream event. Called for every event yielded by
@@ -97,9 +95,16 @@ internal sealed class EventRouter(EventList eventList)
             case ToolCallStarted started:
                 var tool = new ToolRenderable(started.FormatCall());
                 _toolCallMap[started.CallId] = tool;
-                _lastStartedTool = tool;
                 eventList.Add(tool, BubbleStyle.Circle, () => tool.CircleColor);
                 _currentText = null;
+                break;
+
+            // Parallel dispatch emits this right before prompting the user for
+            // permission. We look up the specific tool by CallId instead of relying
+            // on "the last started tool" — correct even when multiple tools are in flight.
+            case ToolAwaitingApproval { CallId: var awaitingCallId }:
+                if (_toolCallMap.TryGetValue(awaitingCallId, out var awaitingTool))
+                    awaitingTool.SetAwaitingApproval();
                 break;
 
             case ToolCallCompleted completed when _subagentCallIds.Contains(completed.CallId):
@@ -121,8 +126,6 @@ internal sealed class EventRouter(EventList eventList)
                 {
                     completedTool.SetCompleted(completed.IsError);
                     _toolCallMap.Remove(completed.CallId);
-                    if (ReferenceEquals(_lastStartedTool, completedTool))
-                        _lastStartedTool = null;
                 }
                 break;
 
@@ -191,9 +194,15 @@ internal sealed class EventRouter(EventList eventList)
             case ToolCallStarted subStarted:
                 var subTool = new ToolRenderable(subStarted.FormatCall());
                 _subagentToolCalls[subId][subStarted.CallId] = subTool;
-                _lastStartedTool = subTool;
                 subRenderable.AddChild(subTool, BubbleStyle.Circle, () => subTool.CircleColor);
                 _subagentCurrentText[subId] = null;
+                break;
+
+            // Subagent tools can also require approval (they share the parent's
+            // callbacks). Look up by CallId within this subagent's tool map.
+            case ToolAwaitingApproval { CallId: var subAwaitingId }:
+                if (_subagentToolCalls[subId].TryGetValue(subAwaitingId, out var subAwaitingTool))
+                    subAwaitingTool.SetAwaitingApproval();
                 break;
 
             case ToolCallCompleted subCompleted:
@@ -201,8 +210,6 @@ internal sealed class EventRouter(EventList eventList)
                 {
                     subCompletedTool.SetCompleted(subCompleted.IsError);
                     _subagentToolCalls[subId].Remove(subCompleted.CallId);
-                    if (ReferenceEquals(_lastStartedTool, subCompletedTool))
-                        _lastStartedTool = null;
                 }
                 break;
 
@@ -222,12 +229,6 @@ internal sealed class EventRouter(EventList eventList)
     }
 
     /// <summary>
-    /// Transitions the last-started tool to the AwaitingApproval state.
-    /// Called by the permission callback before reading user input.
-    /// </summary>
-    public void SetLastToolAwaitingApproval() => _lastStartedTool?.SetAwaitingApproval();
-
-    /// <summary>
     /// Clears turn-local state after a cancelled or interrupted turn so the
     /// next turn starts fresh. Existing renderables remain in the EventList
     /// (they stay visible as history), but new events will not be appended to
@@ -236,6 +237,5 @@ internal sealed class EventRouter(EventList eventList)
     public void ResetTurnState()
     {
         _currentText = null;
-        _lastStartedTool = null;
     }
 }

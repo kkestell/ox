@@ -1,5 +1,7 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
+using System.Threading.Channels;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using Ur.Permissions;
@@ -35,44 +37,155 @@ internal sealed class ToolInvoker(ToolRegistry tools, Workspace workspace, ILogg
         TurnCallbacks? callbacks,
         [EnumeratorCancellation] CancellationToken ct)
     {
+        // Phase 1: Categorize all calls by permission status. This is fast — no user
+        // interaction, just in-memory policy + grant store lookups.
+        var categorized = calls.Select(call => (Call: call, Permission: CheckPermission(call, callbacks))).ToList();
+
+        // Phase 2: Set up a channel to merge events from concurrent tool executions
+        // into a single ordered stream for the caller's await foreach.
+        var channel = Channel.CreateUnbounded<AgentLoopEvent>(
+            new UnboundedChannelOptions { SingleReader = true });
+
+        // Phase 3: Producer task — fires auto-allowed tools concurrently, runs the
+        // approval pipeline serially for needs-approval tools (each spawning a
+        // concurrent execution on grant).
+        var results = new ConcurrentDictionary<string, FunctionResultContent>();
+
+        var producerTask = Task.Run(async () =>
+        {
+            var executionTasks = new List<Task>();
+
+            try
+            {
+                foreach (var (call, permission) in categorized)
+                {
+                    var args = call.Arguments ?? new Dictionary<string, object?>();
+
+                    switch (permission.Status)
+                    {
+                        case PermissionStatus.Allowed:
+                        {
+                            // Auto-allowed: emit ToolCallStarted and fire execution concurrently.
+                            await channel.Writer.WriteAsync(new ToolCallStarted
+                            {
+                                CallId = call.CallId, ToolName = call.Name, Arguments = args
+                            }, ct);
+
+                            executionTasks.Add(RunToolThenWriteEventsAsync(call, channel.Writer, results, ct));
+                            break;
+                        }
+
+                        case PermissionStatus.RequiresApproval:
+                        {
+                            // Needs approval: emit ToolCallStarted, then ToolAwaitingApproval,
+                            // then prompt the user. Approval prompts run serially so the user
+                            // sees one at a time.
+                            await channel.Writer.WriteAsync(new ToolCallStarted
+                            {
+                                CallId = call.CallId, ToolName = call.Name, Arguments = args
+                            }, ct);
+
+                            await channel.Writer.WriteAsync(new ToolAwaitingApproval
+                            {
+                                CallId = call.CallId
+                            }, ct);
+
+                            var response = await callbacks!.RequestPermissionAsync!(permission.Request!, ct)
+                                .ConfigureAwait(false);
+                            logger.LogDebug("Permission {Decision} for '{ToolName}' on '{Target}'",
+                                response.Granted ? "granted" : "denied", call.Name, permission.Request!.Target);
+
+                            if (response.Granted)
+                            {
+                                // Granted — spawn concurrent execution just like auto-allowed.
+                                executionTasks.Add(RunToolThenWriteEventsAsync(call, channel.Writer, results, ct));
+                            }
+                            else
+                            {
+                                // Denied — write the completed event immediately.
+                                results[call.CallId] = new FunctionResultContent(call.CallId, "Permission denied.");
+                                await channel.Writer.WriteAsync(new ToolCallCompleted
+                                {
+                                    CallId = call.CallId, ToolName = call.Name,
+                                    Result = "Permission denied.", IsError = true
+                                }, ct);
+                            }
+                            break;
+                        }
+
+                        case PermissionStatus.Denied:
+                        {
+                            // Auto-denied (no callback): emit started + completed immediately.
+                            await channel.Writer.WriteAsync(new ToolCallStarted
+                            {
+                                CallId = call.CallId, ToolName = call.Name, Arguments = args
+                            }, ct);
+                            results[call.CallId] = new FunctionResultContent(call.CallId, "Permission denied.");
+                            await channel.Writer.WriteAsync(new ToolCallCompleted
+                            {
+                                CallId = call.CallId, ToolName = call.Name,
+                                Result = "Permission denied.", IsError = true
+                            }, ct);
+                            break;
+                        }
+                    }
+                }
+
+                // Wait for all in-flight tool executions to finish.
+                await Task.WhenAll(executionTasks);
+            }
+            finally
+            {
+                channel.Writer.Complete();
+            }
+        }, ct);
+
+        // Phase 4: Consumer — yield events from the channel as they arrive.
+        await foreach (var evt in channel.Reader.ReadAllAsync(ct))
+            yield return evt;
+
+        // Propagate any unhandled exception from the producer.
+        await producerTask;
+
+        // Phase 5: Populate resultMessage with all tool results in the original call order.
+        // The agent loop adds this message to the conversation after InvokeAllAsync completes.
         foreach (var call in calls)
         {
-            yield return new ToolCallStarted
-            {
-                CallId = call.CallId,
-                ToolName = call.Name,
-                Arguments = call.Arguments ?? new Dictionary<string, object?>()
-            };
-
-            var (result, isError) = await InvokeOneAsync(call, callbacks, ct);
-
-            resultMessage.Contents.Add(new FunctionResultContent(call.CallId, result));
-
-            yield return new ToolCallCompleted
-            {
-                CallId = call.CallId,
-                ToolName = call.Name,
-                Result = result,
-                IsError = isError
-            };
+            if (results.TryGetValue(call.CallId, out var functionResult))
+                resultMessage.Contents.Add(functionResult);
         }
     }
 
     /// <summary>
-    /// Handles a single tool call: checks permission, looks up the handler, invokes it,
-    /// and returns the result string plus an error flag. Each step is a distinct early
-    /// return so the happy path reads linearly.
+    /// Executes a single tool and writes its <see cref="ToolCallCompleted"/> event to
+    /// the channel. Also stores the <see cref="FunctionResultContent"/> in the shared
+    /// results dictionary. Designed to run as a fire-and-forget task within the
+    /// concurrent dispatch pipeline.
     /// </summary>
-    private async ValueTask<(string Result, bool IsError)> InvokeOneAsync(
+    private async Task RunToolThenWriteEventsAsync(
         FunctionCallContent call,
-        TurnCallbacks? callbacks,
+        ChannelWriter<AgentLoopEvent> writer,
+        ConcurrentDictionary<string, FunctionResultContent> results,
         CancellationToken ct)
     {
-        // Permission gate — deny before invoking if the operation requires approval
-        // and none was granted.
-        if (await IsPermissionDeniedAsync(call, callbacks, ct))
-            return ("Permission denied.", true);
+        var (result, isError) = await ExecuteToolAsync(call, ct);
+        results[call.CallId] = new FunctionResultContent(call.CallId, result);
+        await writer.WriteAsync(new ToolCallCompleted
+        {
+            CallId = call.CallId, ToolName = call.Name,
+            Result = result, IsError = isError
+        }, ct);
+    }
 
+    /// <summary>
+    /// Executes a single tool call after permission has already been resolved.
+    /// Looks up the handler, invokes it, and returns the result string plus an
+    /// error flag. Callers are responsible for checking permission before calling.
+    /// </summary>
+    private async ValueTask<(string Result, bool IsError)> ExecuteToolAsync(
+        FunctionCallContent call,
+        CancellationToken ct)
+    {
         var handler = tools.Get(call.Name);
         if (handler is null)
             return ($"Unknown tool: {call.Name}", true);
@@ -99,21 +212,20 @@ internal sealed class ToolInvoker(ToolRegistry tools, Workspace workspace, ILogg
     }
 
     /// <summary>
-    /// Returns true if the tool call should be blocked (permission not granted).
+    /// Categorizes a tool call's permission status without prompting the user.
     ///
-    /// Looks up the tool's <see cref="PermissionMeta"/>, resolves the target to an
-    /// absolute path, checks workspace containment, and passes both to
-    /// <see cref="PermissionPolicy"/> to determine if a prompt is needed. This is
-    /// the single enforcement point for workspace boundary policy — tools themselves
-    /// do not check containment.
+    /// Returns <see cref="PermissionCheckResult.AutoAllowed"/> for operations that
+    /// don't need approval (e.g. in-workspace reads), <see cref="PermissionCheckResult.NeedsApproval"/>
+    /// for operations that require a user prompt, or <see cref="PermissionCheckResult.Denied"/>
+    /// when no callback is available to ask.
     ///
-    /// Falls back to <see cref="OperationType.Write"/> for tools without explicit
-    /// metadata (conservative default).
+    /// This is the first half of what <c>IsPermissionDeniedAsync</c> used to do — it
+    /// resolves the target, checks containment and policy, and builds a
+    /// <see cref="PermissionRequest"/> for the approval path. The actual prompt is
+    /// deferred to the caller so that categorization can run for all calls up front
+    /// before any user interaction happens.
     /// </summary>
-    private async ValueTask<bool> IsPermissionDeniedAsync(
-        FunctionCallContent call,
-        TurnCallbacks? callbacks,
-        CancellationToken ct)
+    private PermissionCheckResult CheckPermission(FunctionCallContent call, TurnCallbacks? callbacks)
     {
         var meta = tools.GetPermissionMeta(call.Name);
         var operationType = meta?.OperationType ?? OperationType.Write;
@@ -132,27 +244,49 @@ internal sealed class ToolInvoker(ToolRegistry tools, Workspace workspace, ILogg
         {
             logger.LogDebug("Permission auto-allowed for '{ToolName}' ({Operation}, inWorkspace={InWorkspace})",
                 call.Name, operationType, isInWorkspace);
-            return false;
+            return PermissionCheckResult.AutoAllowed;
         }
 
         // No callback configured — auto-deny all sensitive operations.
         if (callbacks?.RequestPermissionAsync is null)
         {
             logger.LogDebug("Permission auto-denied for '{ToolName}': no callback configured", call.Name);
-            return true;
+            return PermissionCheckResult.Denied;
         }
 
+        // Build the request for the approval pipeline. The caller will present it
+        // to the user via RequestPermissionAsync at the appropriate time.
         var extensionId = meta?.ExtensionId ?? call.Name;
         var allowedScopes = PermissionPolicy.AllowedScopes(operationType, isInWorkspace);
-
-        // Use the resolved absolute path as the target so grant prefix matching
-        // works correctly against stored grants (which also use absolute paths).
         var resolvedTarget = ToolArgHelpers.ResolvePath(workspace.RootPath, target);
         var request = new PermissionRequest(operationType, resolvedTarget, extensionId, allowedScopes);
-        var response = await callbacks.RequestPermissionAsync(request, ct).ConfigureAwait(false);
-        logger.LogDebug("Permission {Decision} for '{ToolName}' on '{Target}'",
-            response.Granted ? "granted" : "denied", call.Name, resolvedTarget);
 
-        return !response.Granted;
+        return PermissionCheckResult.NeedsApproval(request);
     }
+
+    /// <summary>
+    /// Result of the fast, non-interactive permission categorization.
+    ///
+    /// Three outcomes: the operation is auto-allowed and can execute immediately,
+    /// it needs user approval (with the <see cref="PermissionRequest"/> ready to go),
+    /// or it's denied outright (no callback available).
+    /// </summary>
+    internal readonly struct PermissionCheckResult
+    {
+        public PermissionStatus Status { get; private init; }
+
+        /// <summary>
+        /// The pre-built permission request. Only populated when <see cref="Status"/>
+        /// is <see cref="PermissionStatus.RequiresApproval"/> — callers pass this to
+        /// <see cref="TurnCallbacks.RequestPermissionAsync"/>.
+        /// </summary>
+        public PermissionRequest? Request { get; private init; }
+
+        public static PermissionCheckResult AutoAllowed => new() { Status = PermissionStatus.Allowed };
+        public static PermissionCheckResult Denied => new() { Status = PermissionStatus.Denied };
+        public static PermissionCheckResult NeedsApproval(PermissionRequest request) =>
+            new() { Status = PermissionStatus.RequiresApproval, Request = request };
+    }
+
+    internal enum PermissionStatus { Allowed, RequiresApproval, Denied }
 }

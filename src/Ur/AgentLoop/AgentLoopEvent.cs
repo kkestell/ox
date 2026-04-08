@@ -70,6 +70,20 @@ public sealed class ToolCallCompleted : AgentLoopEvent
 }
 
 /// <summary>
+/// A tool call is waiting for user permission before it can execute.
+///
+/// Emitted by the parallel dispatch pipeline right before calling
+/// <see cref="Permissions.TurnCallbacks.RequestPermissionAsync"/>. The UI layer
+/// uses this to transition the correct tool renderable to the "awaiting approval"
+/// visual state — replacing the old <c>_lastStartedTool</c> side-channel that
+/// assumed sequential execution.
+/// </summary>
+public sealed class ToolAwaitingApproval : AgentLoopEvent
+{
+    public required string CallId { get; init; }
+}
+
+/// <summary>
 /// The turn completed (LLM returned a final response with no further tool calls).
 /// </summary>
 public sealed class TurnCompleted : AgentLoopEvent;
