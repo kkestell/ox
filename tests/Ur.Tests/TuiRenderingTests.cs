@@ -24,8 +24,11 @@ namespace Ur.Tests;
 
 public sealed class ViewportBufferTests
 {
-    // Height of the input area (top rule + text + bottom rule + status + blank).
+    // Height of the input area (top rule + text + spacer + status + blank).
     private const int InputAreaRows = 5;
+    private static readonly Color Grey15 = Color.FromIndex(235);
+    private static readonly Color Grey23 = Color.FromIndex(237);
+    private static readonly Color Grey50 = Color.FromIndex(244);
 
     [Fact]
     public void BuildFrame_ConversationText_AppearsInBuffer()
@@ -52,15 +55,17 @@ public sealed class ViewportBufferTests
     [Fact]
     public void BuildFrame_InputAreaRule_AppearsAtCorrectRow()
     {
-        // The top input-area rule (━) should appear at y = height - InputAreaRows.
+        // The top input-area rule (▇) should appear at y = height - InputAreaRows.
         // This verifies the coordinate convention: GetCell uses (x=col, y=row).
         var viewport = new Viewport(new EventList());
         viewport.BuildFrame(10, 10);
 
         // Top rule row: 10 - 5 = 5.
-        const char topRuleChar = '━';
+        const char topRuleChar = '▇';
         Assert.Equal(topRuleChar, viewport._buffer.GetCell(0, 5).Rune);
         Assert.Equal(topRuleChar, viewport._buffer.GetCell(9, 5).Rune);
+        Assert.Equal(Grey15, viewport._buffer.GetCell(0, 5).Foreground);
+        Assert.Equal(Grey23, viewport._buffer.GetCell(0, 5).Background);
     }
 
     [Fact]
@@ -93,20 +98,177 @@ public sealed class ViewportBufferTests
         // Each BuildFrame call must clear the back buffer before writing so that
         // stale cells from the previous frame do not bleed through. Verify this
         // by rebuilding after changing the input prompt and asserting the new
-        // prompt content appears at the expected cell.
+        // input content appears at the expected cell.
         var viewport = new Viewport(new EventList());
 
-        // First build with default "❯ " prompt. For height=24 the text row is
-        // at y = (24 - 5) + 1 = 20 (viewportHeight + top-rule row + text row).
+        // First build with an empty input row. For height=24 the text row is at
+        // y = (24 - 5) + 1 = 20 (viewportHeight + top-rule row + text row).
+        // With the built-in chevron removed, the cursor now starts at the first
+        // editable column after the footer margin.
         viewport.BuildFrame(80, 24);
         var textRow = 24 - 5 + 1; // 20
-        Assert.Equal('❯', viewport._buffer.GetCell(0, textRow).Rune);
+        var cursorCell = viewport._buffer.GetCell(2, textRow);
+        Assert.Equal(' ', cursorCell.Rune);
+        Assert.Equal(TextDecoration.Reverse, cursorCell.Decorations);
 
-        // Change the input prompt and rebuild — the buffer must clear first,
-        // otherwise the old '❯' at x=0 would survive.
-        viewport.SetInputPrompt("test> ");
+        // Change the input text and rebuild — the buffer must clear first,
+        // otherwise the old cursor cell at x=2 would survive.
+        viewport.SetInputPrompt("test");
         viewport.BuildFrame(80, 24);
-        Assert.Equal('t', viewport._buffer.GetCell(0, textRow).Rune);
+        Assert.Equal('t', viewport._buffer.GetCell(2, textRow).Rune);
+    }
+
+    [Fact]
+    public void BuildFrame_TurnRunning_KeepsInputCursorVisible()
+    {
+        // The footer should stay in composer mode while a turn runs so the
+        // cursor does not disappear when the status line switches to the throbber.
+        var viewport = new Viewport(new EventList());
+        viewport.SetTurnRunning(true);
+
+        viewport.BuildFrame(80, 24);
+
+        var textRow = 24 - 5 + 1;
+        var cursorCell = viewport._buffer.GetCell(2, textRow);
+        Assert.Equal(' ', cursorCell.Rune);
+        Assert.Equal(TextDecoration.Reverse, cursorCell.Decorations);
+    }
+
+    [Fact]
+    public void BuildFrame_InputFooterRows_UseRequestedBackgrounds()
+    {
+        var viewport = new Viewport(new EventList());
+
+        viewport.BuildFrame(10, 10);
+
+        var inputRow = 10 - InputAreaRows + 1;
+        var spacerRow = 10 - InputAreaRows + 2;
+        var statusRow = 10 - InputAreaRows + 3;
+        var blankFooterRow = 10 - InputAreaRows + 4;
+
+        Assert.Equal(Grey15, viewport._buffer.GetCell(0, inputRow).Background);
+        Assert.Equal(Color.Default, viewport._buffer.GetCell(0, inputRow).Foreground);
+        Assert.Equal(Color.Default, viewport._buffer.GetCell(1, inputRow).Foreground);
+        Assert.Equal(Color.Default, viewport._buffer.GetCell(2, inputRow).Foreground);
+        Assert.Equal(Grey15, viewport._buffer.GetCell(9, inputRow).Background);
+
+        Assert.Equal(' ', viewport._buffer.GetCell(0, spacerRow).Rune);
+        Assert.Equal(Grey15, viewport._buffer.GetCell(0, spacerRow).Background);
+        Assert.Equal(Grey15, viewport._buffer.GetCell(9, spacerRow).Background);
+
+        Assert.Equal(Grey15, viewport._buffer.GetCell(0, statusRow).Background);
+        Assert.Equal(Grey15, viewport._buffer.GetCell(9, statusRow).Background);
+
+        Assert.Equal(Grey15, viewport._buffer.GetCell(0, blankFooterRow).Background);
+        Assert.Equal(Grey15, viewport._buffer.GetCell(9, blankFooterRow).Background);
+    }
+
+    [Fact]
+    public void BuildFrame_StatusLine_ModelUsesGrey50OnFooterBackground()
+    {
+        var viewport = new Viewport(new EventList());
+        viewport.SetModelId("openai/gpt");
+
+        viewport.BuildFrame(20, 10);
+
+        var statusRow = 10 - InputAreaRows + 3;
+        var modelStartCol = 20 - "openai/gpt".Length - 2;
+        var firstModelCell = viewport._buffer.GetCell(modelStartCol, statusRow);
+        Assert.Equal('o', firstModelCell.Rune);
+        Assert.Equal(Grey50, firstModelCell.Foreground);
+        Assert.Equal(Grey15, firstModelCell.Background);
+    }
+
+    [Fact]
+    public void BuildThrobberCells_AtTurnStart_RendersOne()
+    {
+        var cells = Viewport.BuildThrobberCells(Viewport.ComputeThrobberCounter(0));
+
+        Assert.Equal(15, cells.Count);
+        var expected = new[]
+        {
+            Color.BrightBlack,
+            Color.BrightBlack,
+            Color.BrightBlack,
+            Color.BrightBlack,
+            Color.BrightBlack,
+            Color.BrightBlack,
+            Color.BrightBlack,
+            Color.White
+        };
+
+        for (var i = 0; i < expected.Length; i++)
+        {
+            Assert.NotEqual(' ', cells[i * 2].Rune);
+            Assert.Equal(expected[i], cells[i * 2].Foreground);
+            Assert.Equal(Color.Default, cells[i * 2].Background);
+
+            if (i < expected.Length - 1)
+            {
+                Assert.Equal(' ', cells[(i * 2) + 1].Rune);
+                Assert.Equal(Color.Default, cells[(i * 2) + 1].Foreground);
+                Assert.Equal(Color.Default, cells[(i * 2) + 1].Background);
+            }
+        }
+    }
+
+    [Fact]
+    public void BuildThrobberCells_RendersCounterAsEightBitBinary()
+    {
+        // After two elapsed seconds the visible value should be 3, so the row
+        // reads 00000011 with the MSB on the left.
+        var cells = Viewport.BuildThrobberCells(Viewport.ComputeThrobberCounter(2_000));
+
+        var expected = new[]
+        {
+            Color.BrightBlack,
+            Color.BrightBlack,
+            Color.BrightBlack,
+            Color.BrightBlack,
+            Color.BrightBlack,
+            Color.BrightBlack,
+            Color.White,
+            Color.White
+        };
+
+        for (var i = 0; i < expected.Length; i++)
+        {
+            Assert.NotEqual(' ', cells[i * 2].Rune);
+            Assert.Equal(expected[i], cells[i * 2].Foreground);
+        }
+    }
+
+    [Fact]
+    public void BuildThrobberCells_After255Seconds_WrapsBackToZero()
+    {
+        var wrapped = Viewport.BuildThrobberCells(Viewport.ComputeThrobberCounter(255_000));
+
+        for (var i = 0; i < 8; i++)
+            Assert.Equal(Color.BrightBlack, wrapped[i * 2].Foreground);
+    }
+
+    [Fact]
+    public void BuildFrame_NewTurn_StartsCounterAtOneInsteadOfProcessUptime()
+    {
+        long tickCountMs = 147_000;
+        var viewport = new Viewport(new EventList(), null, () => tickCountMs);
+
+        viewport.SetTurnRunning(true);
+        viewport.BuildFrame(20, 10);
+
+        var statusRow = 10 - InputAreaRows + 3;
+        var expected = "00000001";
+        for (var i = 0; i < expected.Length; i++)
+        {
+            var cell = viewport._buffer.GetCell(2 + (i * 2), statusRow);
+            Assert.NotEqual(' ', cell.Rune);
+            Assert.Equal(
+                expected[i] == '1' ? Color.White : Color.BrightBlack,
+                cell.Foreground);
+
+            if (i < expected.Length - 1)
+                Assert.Equal(' ', viewport._buffer.GetCell(2 + (i * 2) + 1, statusRow).Rune);
+        }
     }
 }
 

@@ -135,14 +135,25 @@ internal sealed class TuiService(
                 while (!stoppingToken.IsCancellationRequested)
                 {
                     var input = inputReader.ReadLineInViewport(
-                        "❯ ", viewport.SetInputPrompt, viewport.SetCompletion, stoppingToken);
+                        "", viewport.SetInputPrompt, viewport.SetCompletion, stoppingToken);
 
-                    // null = EOF (Ctrl+D) or cancellation.
+                    // null = EOF (Ctrl+C, Ctrl+D) or cancellation.
                     if (input is null)
+                    {
+                        lifetime.StopApplication();
                         break;
+                    }
 
                     if (string.IsNullOrWhiteSpace(input))
                         continue;
+
+                    // /quit is a pure lifecycle command: stop the host and exit the REPL
+                    // immediately without sending anything to the session or the LLM.
+                    if (input.Equals("/quit", StringComparison.OrdinalIgnoreCase))
+                    {
+                        lifetime.StopApplication();
+                        break;
+                    }
 
                     // Show the user's message in the conversation with white text so it
                     // stands out clearly against the black bubble background.
@@ -150,7 +161,8 @@ internal sealed class TuiService(
                     userMsg.SetText(input);
                     eventList.Add(userMsg);
 
-                    // Switch input row to a running indicator and start the throbber.
+                    // Clear the submitted text immediately so the composer is
+                    // ready for the next message even while the current turn runs.
                     viewport.SetInputPrompt("");
                     viewport.SetTurnRunning(true);
 
@@ -227,7 +239,6 @@ internal sealed class TuiService(
                     }
 
                     viewport.SetTurnRunning(false);
-                    viewport.SetInputPrompt("❯ ");
                 }
             }
             finally

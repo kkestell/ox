@@ -2,7 +2,7 @@ using Ur.Skills;
 
 namespace Ur.Tests.Skills;
 
-public sealed class SystemPromptBuilderTests
+public sealed class SkillPromptSectionBuilderTests
 {
     private static SkillDefinition MakeSkill(
         string name,
@@ -21,32 +21,25 @@ public sealed class SystemPromptBuilderTests
         };
 
     [Fact]
-    public void Build_EmptyRegistry_StillContainsTodoGuidance()
+    public void Build_EmptyRegistry_ReturnsEmptyString()
     {
         var registry = new SkillRegistry();
 
-        var prompt = SystemPromptBuilder.Build(registry);
+        var section = SkillPromptSectionBuilder.Build(registry);
 
-        // Even with no skills, the todo guidance section is always present.
-        Assert.NotNull(prompt);
-        Assert.Contains("todo_write", prompt);
-        // Should not contain the skills section header.
-        Assert.DoesNotContain("following skills", prompt);
+        Assert.Equal("", section);
     }
 
     [Fact]
-    public void Build_OnlyDisabledSkills_StillContainsTodoGuidance()
+    public void Build_OnlyDisabledSkills_ReturnsEmptyString()
     {
         var registry = new SkillRegistry([
             MakeSkill("hidden", disableModelInvocation: true)
         ]);
 
-        var prompt = SystemPromptBuilder.Build(registry);
+        var section = SkillPromptSectionBuilder.Build(registry);
 
-        // No model-invocable skills → still has todo guidance, but no skills section.
-        Assert.NotNull(prompt);
-        Assert.Contains("todo_write", prompt);
-        Assert.DoesNotContain("hidden", prompt);
+        Assert.Equal("", section);
     }
 
     [Fact]
@@ -56,11 +49,10 @@ public sealed class SystemPromptBuilderTests
             MakeSkill("commit", description: "Commit staged changes")
         ]);
 
-        var prompt = SystemPromptBuilder.Build(registry);
+        var section = SkillPromptSectionBuilder.Build(registry);
 
-        Assert.NotNull(prompt);
-        Assert.Contains("commit", prompt);
-        Assert.Contains("Commit staged changes", prompt);
+        Assert.Contains("commit", section);
+        Assert.Contains("Commit staged changes", section);
     }
 
     [Fact]
@@ -70,10 +62,9 @@ public sealed class SystemPromptBuilderTests
             MakeSkill("deploy", description: "Deploy the app", whenToUse: "When user wants to deploy")
         ]);
 
-        var prompt = SystemPromptBuilder.Build(registry);
+        var section = SkillPromptSectionBuilder.Build(registry);
 
-        Assert.NotNull(prompt);
-        Assert.Contains("When user wants to deploy", prompt);
+        Assert.Contains("When user wants to deploy", section);
     }
 
     [Fact]
@@ -84,12 +75,10 @@ public sealed class SystemPromptBuilderTests
             MakeSkill("verbose", whenToUse: longHint)
         ]);
 
-        var prompt = SystemPromptBuilder.Build(registry);
+        var section = SkillPromptSectionBuilder.Build(registry);
 
-        Assert.NotNull(prompt);
-        // Should be truncated to 250 chars + "..."
-        Assert.DoesNotContain(longHint, prompt);
-        Assert.Contains("...", prompt);
+        Assert.DoesNotContain(longHint, section);
+        Assert.Contains("...", section);
     }
 
     [Fact]
@@ -100,11 +89,10 @@ public sealed class SystemPromptBuilderTests
             MakeSkill("exact", whenToUse: exact)
         ]);
 
-        var prompt = SystemPromptBuilder.Build(registry);
+        var section = SkillPromptSectionBuilder.Build(registry);
 
-        Assert.NotNull(prompt);
-        Assert.Contains(exact, prompt);
-        Assert.DoesNotContain("...", prompt);
+        Assert.Contains(exact, section);
+        Assert.DoesNotContain("...", section);
     }
 
     [Fact]
@@ -115,11 +103,10 @@ public sealed class SystemPromptBuilderTests
             MakeSkill("hidden", description: "I should not", disableModelInvocation: true)
         ]);
 
-        var prompt = SystemPromptBuilder.Build(registry);
+        var section = SkillPromptSectionBuilder.Build(registry);
 
-        Assert.NotNull(prompt);
-        Assert.Contains("visible", prompt);
-        Assert.DoesNotContain("hidden", prompt);
+        Assert.Contains("visible", section);
+        Assert.DoesNotContain("hidden", section);
     }
 
     [Fact]
@@ -131,11 +118,10 @@ public sealed class SystemPromptBuilderTests
             MakeSkill("review", description: "Review PR")
         ]);
 
-        var prompt = SystemPromptBuilder.Build(registry);
+        var section = SkillPromptSectionBuilder.Build(registry);
 
-        Assert.NotNull(prompt);
-        Assert.Contains("- commit: Commit changes", prompt);
-        Assert.Contains("- deploy: Deploy app", prompt);
-        Assert.Contains("- review: Review PR", prompt);
+        Assert.Contains("- commit: Commit changes", section);
+        Assert.Contains("- deploy: Deploy app", section);
+        Assert.Contains("- review: Review PR", section);
     }
 }

@@ -8,11 +8,11 @@ namespace Ox.Rendering;
 ///
 /// Layout (1-based terminal rows, 0-based buffer rows):
 ///   Rows 1 .. (height-5) — conversation viewport (shows the tail of all rows)
-///   Row height-4          — top rule (━ heavy horizontal line)
-///   Row height-3          — input text row (❯ prompt, typed text in white)
-///   Row height-2          — bottom rule (─ light horizontal line)
+///   Row height-4          — top rule (▇ lower 7/8 block on a darker backing row)
+///   Row height-3          — input text row (typed text in white on gray)
+///   Row height-2          — empty spacer row below the input
 ///   Row height-1          — status line (throbber left, model ID right)
-///   Row height            — blank line
+///   Row height            — blank footer row
 ///
 /// Rendering is decoupled from event arrival via a dirty flag. When any renderable
 /// fires <see cref="IRenderable.Changed"/>, we set a flag rather than redrawing
@@ -46,9 +46,10 @@ internal sealed class Viewport : IDisposable
     // True when the event list has changed and the next timer tick should redraw.
     private volatile bool _dirty;
 
-    // Current input row text (prompt + any typed characters). Redrawn every
-    // Redraw() call so the input area always reflects the latest state.
-    private string _inputPrompt = "❯ ";
+    // Current input row text. The input area no longer owns a built-in prompt
+    // glyph, which keeps the editable column stable and lets the cursor sit at
+    // the same x-position regardless of turn lifecycle.
+    private string _inputPrompt = "";
 
     // Ghost-text completion suffix currently visible in the input row.
     // Null when no completion is active. Set by InputReader via the
@@ -57,6 +58,7 @@ internal sealed class Viewport : IDisposable
 
     // Background timer that drives redraws at ~30 fps when dirty.
     private readonly Timer _redrawTimer;
+    private readonly Func<long> _tickCountProvider;
 
     // Guards Redraw() against concurrent calls from the timer and an explicit
     // caller (e.g. after SetInputPrompt is called mid-turn).
@@ -69,22 +71,18 @@ internal sealed class Viewport : IDisposable
     // model ID is displayed right-aligned. Both live below the bottom rule.
     private volatile bool _turnRunning;
     private string? _modelId;
+    private long _turnStartedAtTickMs = -1;
+    private int _lastAnimatedThrobberCounter = -1;
 
-    // Throbber animation: five identical glyphs that cycle through a
-    // black-to-white grayscale gradient. Each frame shifts which color
-    // maps to which position, creating a pulsing wave effect. The gradient
-    // uses the xterm 256-color grayscale ramp (indices 232–255).
-    private const char ThrobberGlyph = '■';
-    private const int ThrobberCount = 5;
-    private static readonly Color[] ThrobberColors =
-    [
-        Color.FromIndex(232), // near-black
-        Color.FromIndex(238),
-        Color.FromIndex(244), // mid-gray
-        Color.FromIndex(249),
-        Color.FromIndex(255)  // near-white
-    ];
-    private const int ThrobberFrameMs = 200;
+    // Throbber animation: eight fixed sun glyphs that visualize an 8-bit counter.
+    // We leave a blank cell between bits so the binary pattern is easier to scan
+    // in a monospace terminal status line.
+    // Each second advances the counter by one step, which keeps the animation
+    // deterministic and stable within that second so the diff-based buffer only
+    // rewrites the row when the visible state actually changes.
+    private const int ThrobberCount = 8;
+    private const int ThrobberFrameMs = 1000;
+    private const char ThrobberRune = '●';
 
     // ASCII art displayed centered in the conversation area before the user
     // sends their first message. Each line is 12 columns wide.
@@ -95,9 +93,18 @@ internal sealed class Viewport : IDisposable
         "▒█▄▄▄█ ▄▀▒▀▄"
     ];
 
-    // Box-drawing characters for the input area rules.
-    private const char TopRuleChar    = '━'; // U+2501 BOX DRAWINGS HEAVY HORIZONTAL
-    private const char BottomRuleChar = '─'; // U+2500 BOX DRAWINGS LIGHT HORIZONTAL
+    // Footer colors come from the xterm 256-color grayscale ramp so the chat
+    // chrome reads as a single intentional band instead of mixing default
+    // terminal colors with app-owned rows.
+    private static readonly Color FooterBackground = Color.FromIndex(235); // Grey15
+    private static readonly Color TopRuleForeground = Color.FromIndex(235); // Grey15
+    private static readonly Color TopRuleBackground = Color.FromIndex(237); // Grey23
+    private static readonly Color ModelForeground = Color.FromIndex(244); // Grey50
+    private const int FooterHorizontalMargin = 2;
+
+    // The top rule uses a block glyph instead of box drawing so the input area
+    // feels like a surfaced panel rather than a boxed-off subwindow.
+    private const char TopRuleChar = '▇'; // U+2587 LOWER SEVEN EIGHTHS BLOCK
 
     // Number of terminal rows reserved for the input area:
     // top rule + text row + bottom rule + status line + blank line.
@@ -115,9 +122,15 @@ internal sealed class Viewport : IDisposable
     private const char SeparatorChar = '│'; // U+2502 BOX DRAWINGS LIGHT VERTICAL
 
     public Viewport(EventList root, Sidebar? sidebar = null)
+        : this(root, sidebar, static () => Environment.TickCount64)
+    {
+    }
+
+    internal Viewport(EventList root, Sidebar? sidebar, Func<long> tickCountProvider)
     {
         _root    = root;
         _sidebar = sidebar;
+        _tickCountProvider = tickCountProvider;
 
         // Bootstrap the buffer at the current terminal size. Resize() is called
         // at the start of each BuildFrame when dimensions change, so this initial
@@ -180,9 +193,9 @@ internal sealed class Viewport : IDisposable
     // --- Input row ---
 
     /// <summary>
-    /// Updates the input row prompt text and triggers an immediate redraw.
-    /// The prompt text includes both the fixed prefix (e.g. "❯ ") and any
-    /// characters the user has already typed, so the caller owns the full string.
+    /// Updates the input row text and triggers an immediate redraw.
+    /// The caller owns the entire visible string so permission prompts and the
+    /// main chat composer can share the same footer row without separate chrome.
     /// </summary>
     public void SetInputPrompt(string prompt)
     {
@@ -209,6 +222,20 @@ internal sealed class Viewport : IDisposable
     /// </summary>
     public void SetTurnRunning(bool running)
     {
+        if (running && !_turnRunning)
+        {
+            // The throbber is turn-scoped, not process-scoped. Capture the
+            // start tick once so every new turn begins at 00000001 instead of
+            // inheriting an arbitrary value from process uptime.
+            Interlocked.Exchange(ref _turnStartedAtTickMs, _tickCountProvider());
+            _lastAnimatedThrobberCounter = -1;
+        }
+        else if (!running)
+        {
+            Interlocked.Exchange(ref _turnStartedAtTickMs, -1);
+            _lastAnimatedThrobberCounter = -1;
+        }
+
         _turnRunning = running;
         _dirty = true;
     }
@@ -225,14 +252,21 @@ internal sealed class Viewport : IDisposable
     // --- Redraw ---
 
     /// <summary>
-    /// Called by the timer on the ThreadPool. Redraws only when dirty, but
-    /// forces the dirty flag on while the throbber is animating so the
-    /// rotation advances even when no new events arrive.
+    /// Called by the timer on the ThreadPool. Redraws only when dirty. While a
+    /// turn is running, it also watches for the next throbber counter value and
+    /// marks the frame dirty only when that visible value changes.
     /// </summary>
     private void TickRedraw()
     {
         if (_turnRunning)
-            _dirty = true;
+        {
+            var counter = GetCurrentThrobberCounter();
+            if (counter != _lastAnimatedThrobberCounter)
+            {
+                _lastAnimatedThrobberCounter = counter;
+                _dirty = true;
+            }
+        }
 
         if (_dirty && _running)
             Redraw();
@@ -383,54 +417,46 @@ internal sealed class Viewport : IDisposable
     }
 
     /// <summary>
-    /// Renders the input area: top rule, text row (prompt + cursor), and bottom rule.
+    /// Renders the input area as a footer band: a high-contrast top rule, the
+    /// editable input row, and an empty spacer row that keeps the status line
+    /// visually detached without reintroducing a second border.
     /// </summary>
     private void RenderInputArea(int width, int viewportHeight)
     {
-        // Top rule: heavy horizontal line spanning the full width.
-        var topRule = CellRow.FromText(new string(TopRuleChar, width), Color.BrightBlack, Color.Default);
+        var topRule = CellRow.FromText(new string(TopRuleChar, width), TopRuleForeground, TopRuleBackground);
         WriteRow(viewportHeight + HeaderRows, topRule);
 
-        // Text row: chevron in bright black, typed text in white, no background.
+        var textRowIndex = viewportHeight + HeaderRows + 1;
+        var spacerRowIndex = viewportHeight + HeaderRows + 2;
+
+        FillRowBackground(textRowIndex, width, FooterBackground);
+        FillRowBackground(spacerRowIndex, width, FooterBackground);
+
+        // Text row: white input text on the footer background.
         // The system cursor is hidden; we paint our own block cursor using
-        // TextDecoration.Reverse so it's visible against the default background.
+        // TextDecoration.Reverse so it's visible against the footer fill rather
+        // than relying on the terminal's default colors.
         var textRow = new CellRow();
-        if (_inputPrompt.StartsWith('❯'))
+        for (var i = 0; i < FooterHorizontalMargin; i++)
+            textRow.Append(' ', Color.Default, FooterBackground);
+        textRow.Append(_inputPrompt, Color.White, FooterBackground);
+
+        // Ghost-text rendering: show the suggestion in gray whenever one is
+        // active. We intentionally keep the cursor path identical while a turn
+        // is running so the footer never flips into a separate "disabled"
+        // state; the input row remains a composer, not a status indicator.
+        if (!string.IsNullOrEmpty(_completionSuffix))
         {
-            textRow.Append('❯', Color.White, Color.Default);
-            textRow.Append(_inputPrompt[1..], Color.White, Color.Default);
+            textRow.Append(_completionSuffix[0], Color.BrightBlack, FooterBackground, TextDecoration.Reverse);
+            if (_completionSuffix.Length > 1)
+                textRow.Append(_completionSuffix[1..], Color.BrightBlack, FooterBackground);
         }
         else
         {
-            textRow.Append(_inputPrompt, Color.White, Color.Default);
+            textRow.Append(' ', Color.Default, FooterBackground, TextDecoration.Reverse);
         }
 
-        // Ghost-text rendering: when a completion suffix is active and the
-        // input is accepting keystrokes, show the suggestion in gray. The first
-        // ghost character is rendered with TextDecoration.Reverse so the block
-        // cursor appears to "sit on" it — this makes the suggestion feel interactive.
-        // Remaining ghost characters are plain BrightBlack (dim gray).
-        // When no ghost text is active, fall back to the standard blank
-        // reverse-video cursor cell.
-        if (!_turnRunning)
-        {
-            if (!string.IsNullOrEmpty(_completionSuffix))
-            {
-                textRow.Append(_completionSuffix[0], Color.BrightBlack, Color.Default, TextDecoration.Reverse);
-                if (_completionSuffix.Length > 1)
-                    textRow.Append(_completionSuffix[1..], Color.BrightBlack, Color.Default);
-            }
-            else
-            {
-                textRow.Append(' ', Color.Default, Color.Default, TextDecoration.Reverse);
-            }
-        }
-
-        WriteRow(viewportHeight + HeaderRows + 1, textRow);
-
-        // Bottom rule: light horizontal line spanning the full width.
-        var bottomRule = CellRow.FromText(new string(BottomRuleChar, width), Color.BrightBlack, Color.Default);
-        WriteRow(viewportHeight + HeaderRows + 2, bottomRule);
+        WriteRow(textRowIndex, textRow);
     }
 
     /// <summary>
@@ -439,32 +465,85 @@ internal sealed class Viewport : IDisposable
     /// </summary>
     private void RenderStatusBar(int width, int viewportHeight)
     {
+        var statusRowIndex = viewportHeight + HeaderRows + 3;
+        var blankFooterRowIndex = viewportHeight + HeaderRows + 4;
+
+        FillRowBackground(statusRowIndex, width, FooterBackground);
+        FillRowBackground(blankFooterRowIndex, width, FooterBackground);
+
         var statusRow = new CellRow();
+        for (var i = 0; i < FooterHorizontalMargin; i++)
+            statusRow.Append(' ', Color.Default, FooterBackground);
 
         if (_turnRunning)
         {
-            // Cycle the color gradient across positions each frame,
-            // so the bright "peak" appears to travel rightward.
-            var frame = (int)(Environment.TickCount64 / ThrobberFrameMs) % ThrobberColors.Length;
-            for (var i = 0; i < ThrobberCount; i++)
-            {
-                if (i > 0)
-                    statusRow.Append(' ', Color.Default, Color.Default);
-                var colorIdx = ((i - frame) % ThrobberColors.Length + ThrobberColors.Length) % ThrobberColors.Length;
-                statusRow.Append(ThrobberGlyph, ThrobberColors[colorIdx], Color.Default);
-            }
+            foreach (var cell in BuildThrobberCells(GetCurrentThrobberCounter()))
+                statusRow.Append(cell.Rune, cell.Foreground, FooterBackground, cell.Decorations);
         }
 
         if (_modelId is not null)
         {
-            // Pad with spaces so the model ID is flush against the right edge.
-            var padNeeded = width - statusRow.Cells.Count - _modelId.Length;
+            // Reserve a matching trailing gutter so the footer content stays
+            // optically centered within the band instead of touching the edge.
+            var padNeeded = width - statusRow.Cells.Count - _modelId.Length - FooterHorizontalMargin;
             for (var i = 0; i < padNeeded; i++)
-                statusRow.Append(' ', Color.Default, Color.Default);
-            statusRow.Append(_modelId, Color.BrightBlack, Color.Default);
+                statusRow.Append(' ', Color.Default, FooterBackground);
+            statusRow.Append(_modelId, ModelForeground, FooterBackground);
         }
 
-        WriteRow(viewportHeight + HeaderRows + 3, statusRow);
+        WriteRow(statusRowIndex, statusRow);
+    }
+
+    /// <summary>
+    /// Converts turn-relative elapsed time into the visible 8-bit counter value.
+    /// We start at 1 on the first rendered frame so a newly-started turn
+    /// immediately looks active instead of presenting an all-off row.
+    /// </summary>
+    internal static int ComputeThrobberCounter(long elapsedMs)
+    {
+        var normalizedElapsedMs = Math.Max(0, elapsedMs);
+        return (int)(((normalizedElapsedMs / ThrobberFrameMs) + 1) % (1 << ThrobberCount));
+    }
+
+    /// <summary>
+    /// Builds the status-line throbber cells for the supplied counter value.
+    /// Keeping the cell mapping separate from the time math makes the display
+    /// logic easier to verify in unit tests.
+    /// </summary>
+    internal static IReadOnlyList<Cell> BuildThrobberCells(int counter)
+    {
+        var cells = new Cell[(ThrobberCount * 2) - 1];
+
+        // Render the most-significant bit first so the row reads like a normal
+        // binary number instead of a reversed low-bit diagnostic pattern.
+        for (var i = 0; i < ThrobberCount; i++)
+        {
+            var bitIndex = ThrobberCount - 1 - i;
+            var isOn = (counter & (1 << bitIndex)) != 0;
+            cells[i * 2] = new Cell(
+                ThrobberRune,
+                isOn ? Color.White : Color.BrightBlack,
+                Color.Default);
+
+            if (i < ThrobberCount - 1)
+                cells[(i * 2) + 1] = Cell.Empty;
+        }
+
+        return cells;
+    }
+
+    /// <summary>
+    /// Reads the current monotonic clock and converts it into the turn-local
+    /// counter value used by the status-line throbber.
+    /// </summary>
+    private int GetCurrentThrobberCounter()
+    {
+        var startedAtTickMs = Interlocked.Read(ref _turnStartedAtTickMs);
+        if (startedAtTickMs < 0)
+            return ComputeThrobberCounter(0);
+
+        var elapsedMs = Math.Max(0L, _tickCountProvider() - startedAtTickMs);
+        return ComputeThrobberCounter(elapsedMs);
     }
 
     /// <summary>
@@ -492,6 +571,13 @@ internal sealed class Viewport : IDisposable
                 _buffer.SetCell(sidebarStartCol + ci, ri, cells[ci]);
         }
     }
+
+    /// <summary>
+    /// Fills a whole row before overlaying content so footer styling applies to
+    /// trailing whitespace as well as the visible text.
+    /// </summary>
+    private void FillRowBackground(int row, int width, Color background) =>
+        _buffer.FillCells(0, row, width, ' ', Color.Default, background);
 
     public void Dispose()
     {

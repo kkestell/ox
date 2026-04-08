@@ -4,6 +4,7 @@ using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using Ur.Configuration;
 using Ur.Permissions;
+using Ur.Prompting;
 using Ur.Skills;
 using Ur.Todo;
 using Ur.Tools;
@@ -176,10 +177,12 @@ public sealed class UrSession
         // layer where it belongs — AgentLoop only sees a simple approve/deny callback.
         var wrappedCallbacks = BuildWrappedCallbacks();
 
-        // Build the system prompt listing available skills. This is transient —
-        // it's prepended to what the LLM sees each turn but never persisted to
-        // conversation history, so it reflects the current skill state.
-        var systemPrompt = SystemPromptBuilder.Build(_host.Skills);
+        // Build the transient per-turn system prompt by composing the baseline
+        // agent contract with feature-specific sections such as the current skill
+        // listing. Keeping that composition here makes the dependency direction
+        // explicit instead of letting the skills module own global prompt policy.
+        var skillPromptSection = SkillPromptSectionBuilder.Build(_host.Skills);
+        var systemPrompt = SystemPromptBuilder.Build(skillPromptSection);
 
         // Build the per-turn tool registry from the shared factory loop in UrHost,
         // then append SubagentTool — which can only be wired here because it needs

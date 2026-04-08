@@ -8,19 +8,18 @@ namespace Ox.Rendering;
 /// Sits at the top of the sidebar so the user always has a sense of how
 /// much context remains.
 ///
-/// The section is always visible (HasContent = true) so the sidebar
-/// reserves space for it even before the first turn completes. Before
-/// any usage data arrives, it shows a placeholder "Context: —".
+/// Hidden until the first turn completes and token counts are available.
+/// This prevents an empty placeholder from causing the sidebar to appear
+/// before the user has interacted with the session.
 /// </summary>
 internal sealed class ContextSection : ISidebarSection
 {
     private string? _usageText;
 
     /// <summary>
-    /// Always visible — we want the context section to appear in the sidebar
-    /// from startup, even before the first turn reports token counts.
+    /// Only visible once usage data has been received from a completed turn.
     /// </summary>
-    public bool HasContent => true;
+    public bool HasContent => _usageText is not null;
 
     public event Action? Changed;
 

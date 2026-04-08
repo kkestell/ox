@@ -79,7 +79,8 @@ internal static class PermissionHandler
                     ? new PermissionResponse(false, null)
                     : candidate;
 
-                // Restore the running indicator after permission is resolved.
+                // Clear the permission prompt after the decision is resolved so
+                // the footer returns to the main composer state.
                 viewport.SetInputPrompt("");
 
                 return ValueTask.FromResult(response);

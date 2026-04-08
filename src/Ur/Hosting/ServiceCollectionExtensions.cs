@@ -33,10 +33,15 @@ public static class ServiceCollectionExtensions
         this IServiceCollection services,
         UrStartupOptions options)
     {
-        // Custom file logger writes to ~/.ur/logs/ur-{date}.log in the same format
-        // as the former static UrLogger. Registered before services so any factory
-        // that logs during construction will have a provider available.
-        services.AddLogging(builder => builder.AddProvider(new UrFileLoggerProvider()));
+        // Custom file logger writes to ~/.ur/logs/ur-{date}.log.
+        // ClearProviders() removes the console and debug loggers that
+        // Host.CreateApplicationBuilder registers by default — without this,
+        // those providers write directly to stdout and corrupt the TUI.
+        services.AddLogging(builder =>
+        {
+            builder.ClearProviders();
+            builder.AddProvider(new UrFileLoggerProvider());
+        });
 
         // Store options so other registrations and UrHost can access overrides.
         services.AddSingleton(options);

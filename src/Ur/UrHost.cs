@@ -49,7 +49,7 @@ public sealed class UrHost
 
     /// <summary>
     /// The loaded skill registry. Exposed internally so UrSession can access it
-    /// for slash command lookup and system prompt building.
+    /// for slash command lookup and skill-specific prompt sections.
     /// </summary>
     internal SkillRegistry Skills { get; }
 

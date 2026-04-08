@@ -27,11 +27,12 @@ internal sealed class InputReader(InputCoordinator coordinator, AutocompleteEngi
     /// or null on EOF (Ctrl+D on empty buffer), Escape, or cancellation.
     /// </summary>
     /// <param name="promptPrefix">
-    /// Fixed prefix shown before the user's typed text (e.g. "❯ ").
+    /// Optional text shown before the user's typed text. The main chat composer
+    /// passes an empty prefix; permission prompts pass the full prompt string.
     /// </param>
     /// <param name="onPromptChanged">
-    /// Called after every keystroke with the full prompt string (prefix + buffer)
-    /// so the viewport can update the input row in real time.
+    /// Called after every keystroke with the full visible input string
+    /// (prefix + buffer) so the viewport can update the input row in real time.
     /// </param>
     /// <param name="onCompletionChanged">
     /// Called after every buffer change with the current completion suffix (or null
@@ -89,6 +90,15 @@ internal sealed class InputReader(InputCoordinator coordinator, AutocompleteEngi
                         onCompletionChanged?.Invoke(null);
                     }
                     // No completion active — Tab is a no-op.
+                    return;
+
+                case KeyCode.C when e.KeyCode.HasCtrl():
+                    // Ctrl+C: raw mode disables ISIG so no SIGINT is raised — the
+                    // byte arrives here as a regular key event. Treat it as EOF so the
+                    // REPL loop exits cleanly, same as Ctrl+D on an empty buffer.
+                    onCompletionChanged?.Invoke(null);
+                    returnValue = null;
+                    done = true;
                     return;
 
                 case KeyCode.D when e.KeyCode.HasCtrl() && buffer.Length == 0:

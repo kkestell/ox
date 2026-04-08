@@ -16,10 +16,11 @@ internal sealed class Sidebar : IRenderable
     public event Action? Changed;
 
     /// <summary>
-    /// Always true — the sidebar is permanently visible so the layout remains
-    /// stable even when no section has content yet.
+    /// True only when at least one section has content. This hides the sidebar
+    /// (and its separator column) before the user sends their first message,
+    /// giving the full terminal width to the conversation area on startup.
     /// </summary>
-    public bool IsVisible => true;
+    public bool IsVisible => _sections.Any(s => s.HasContent);
 
     /// <summary>
     /// Registers a section and subscribes to its <see cref="IRenderable.Changed"/>
