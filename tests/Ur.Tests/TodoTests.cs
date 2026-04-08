@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Microsoft.Extensions.AI;
+using Te.Rendering;
 using Ur.Todo;
 using Ur.Tools;
 using Ox.Rendering;
@@ -441,22 +442,23 @@ public sealed class SidebarTests
 
 public sealed class ViewportSidebarTests
 {
-    private static string RowText(ScreenBuffer buffer, int row, int width)
+    // ConsoleBuffer uses (x=col, y=row) — helper extracts a full row as a string.
+    private static string RowText(Viewport viewport, int row, int width)
     {
         var chars = new char[width];
         for (var col = 0; col < width; col++)
-            chars[col] = buffer[row, col].Rune;
+            chars[col] = viewport._buffer.GetCell(col, row).Rune;
         return new string(chars);
     }
 
     /// <summary>
     /// Verifies that no │ separator character appears anywhere in the buffer.
     /// </summary>
-    private static void AssertNoSeparator(ScreenBuffer buffer, int width, int height)
+    private static void AssertNoSeparator(Viewport viewport, int width, int height)
     {
         for (var row = 0; row < height; row++)
         for (var col = 0; col < width; col++)
-            Assert.NotEqual('│', buffer[row, col].Rune);
+            Assert.NotEqual('│', viewport._buffer.GetCell(col, row).Rune);
     }
 
     [Fact]
@@ -465,10 +467,10 @@ public sealed class ViewportSidebarTests
         var eventList = new EventList();
         var viewport = new Viewport(eventList);
 
-        var buffer = viewport.BuildFrame(80, 24);
+        viewport.BuildFrame(80, 24);
 
         // No separator should appear anywhere when there's no sidebar.
-        AssertNoSeparator(buffer, 80, 24);
+        AssertNoSeparator(viewport, 80, 24);
     }
 
     [Fact]
@@ -485,12 +487,13 @@ public sealed class ViewportSidebarTests
 
         // Use a 90-wide terminal. Sidebar gets min(36, 90/3)=30.
         // Separator at column 90-30-1=59.
-        var buffer = viewport.BuildFrame(90, 24);
+        viewport.BuildFrame(90, 24);
 
         // The separator column should be │ (U+2502) on every row.
+        // GetCell uses (x=col, y=row).
         var separatorCol = 90 - 30 - 1;
-        Assert.Equal('│', buffer[0, separatorCol].Rune);
-        Assert.Equal(Color.BrightBlack, buffer[0, separatorCol].Foreground);
+        Assert.Equal('│', viewport._buffer.GetCell(separatorCol, 0).Rune);
+        Assert.Equal(Color.BrightBlack, viewport._buffer.GetCell(separatorCol, 0).Foreground);
     }
 
     [Fact]
@@ -505,12 +508,12 @@ public sealed class ViewportSidebarTests
         var eventList = new EventList();
         var viewport = new Viewport(eventList, sidebar);
 
-        var buffer = viewport.BuildFrame(90, 24);
+        viewport.BuildFrame(90, 24);
 
         // Find "Plan" in the sidebar area. The sidebar content starts at
         // leftWidth + 2 (separator + 1-col pad).
         var sidebarContentStart = 90 - 30 + 1;
-        var row0Text = RowText(buffer, 0, 90);
+        var row0Text = RowText(viewport, 0, 90);
         var sidebarText = row0Text[sidebarContentStart..].TrimEnd('\0').TrimEnd();
 
         Assert.Equal("Plan", sidebarText);
@@ -530,9 +533,9 @@ public sealed class ViewportSidebarTests
 
         // 60-wide terminal. Sidebar = min(36, 60/3) = 20.
         // Left column = 60 - 20 - 1 = 39.
-        var buffer = viewport.BuildFrame(60, 24);
+        viewport.BuildFrame(60, 24);
         var separatorCol = 39;
-        Assert.Equal('│', buffer[0, separatorCol].Rune);
+        Assert.Equal('│', viewport._buffer.GetCell(separatorCol, 0).Rune);
     }
 }
 
@@ -542,11 +545,12 @@ public sealed class ViewportSidebarTests
 
 public sealed class ViewportSplashTests
 {
-    private static string RowText(ScreenBuffer buffer, int row, int width)
+    // ConsoleBuffer uses (x=col, y=row) — helper extracts a full row as a string.
+    private static string RowText(Viewport viewport, int row, int width)
     {
         var chars = new char[width];
         for (var col = 0; col < width; col++)
-            chars[col] = buffer[row, col].Rune;
+            chars[col] = viewport._buffer.GetCell(col, row).Rune;
         return new string(chars);
     }
 
@@ -556,13 +560,13 @@ public sealed class ViewportSplashTests
         var eventList = new EventList();
         var viewport = new Viewport(eventList);
 
-        var buffer = viewport.BuildFrame(80, 24);
+        viewport.BuildFrame(80, 24);
 
         // Collect all non-empty text from the conversation area (rows 0 .. height-6).
         var viewportHeight = 24 - 5; // 19 rows
         var allText = string.Concat(
             Enumerable.Range(0, viewportHeight)
-                .Select(r => RowText(buffer, r, 80).TrimEnd('\0')));
+                .Select(r => RowText(viewport, r, 80).TrimEnd('\0')));
 
         Assert.Contains("▒█▀▀▀█", allText);
         Assert.Contains("▒█▄▄▄█", allText);
@@ -574,18 +578,18 @@ public sealed class ViewportSplashTests
         var eventList = new EventList();
         var viewport = new Viewport(eventList);
 
-        var buffer = viewport.BuildFrame(80, 24);
+        viewport.BuildFrame(80, 24);
 
         // The splash is 3 lines tall. Viewport height = 24 - 5 = 19.
         // Centered: startRow = (19 - 3) / 2 = 8.
         var expectedStartRow = (24 - 5 - 3) / 2;
 
         // The row before the splash should be empty.
-        var rowBefore = RowText(buffer, expectedStartRow - 1, 80).TrimEnd('\0').Trim();
+        var rowBefore = RowText(viewport, expectedStartRow - 1, 80).TrimEnd('\0').Trim();
         Assert.Empty(rowBefore);
 
         // The first splash row should contain the first line of the art.
-        var splashRow = RowText(buffer, expectedStartRow, 80).TrimEnd('\0').Trim();
+        var splashRow = RowText(viewport, expectedStartRow, 80).TrimEnd('\0').Trim();
         Assert.Contains("▒█▀▀▀█", splashRow);
     }
 
@@ -595,19 +599,20 @@ public sealed class ViewportSplashTests
         var eventList = new EventList();
         var viewport = new Viewport(eventList);
 
-        var buffer = viewport.BuildFrame(80, 24);
+        viewport.BuildFrame(80, 24);
 
         // The splash art is 12 chars wide. Centered in 80 cols: startCol = (80 - 12) / 2 = 34.
         var expectedStartRow = (24 - 5 - 3) / 2;
         var expectedStartCol = (80 - 12) / 2;
 
         // The cell just before the art should be empty/space.
+        // GetCell uses (x=col, y=row) convention.
         Assert.True(
-            buffer[expectedStartRow, expectedStartCol - 1].Rune is '\0' or ' ',
+            viewport._buffer.GetCell(expectedStartCol - 1, expectedStartRow).Rune is '\0' or ' ',
             "Cell before splash art should be blank");
 
         // The first character of the art should be '▒'.
-        Assert.Equal('▒', buffer[expectedStartRow, expectedStartCol].Rune);
+        Assert.Equal('▒', viewport._buffer.GetCell(expectedStartCol, expectedStartRow).Rune);
     }
 
     [Fact]
@@ -616,13 +621,13 @@ public sealed class ViewportSplashTests
         var eventList = new EventList();
         var viewport = new Viewport(eventList);
 
-        var buffer = viewport.BuildFrame(80, 24);
+        viewport.BuildFrame(80, 24);
 
         // Find the first '▒' in the buffer and verify its color.
         var expectedStartRow = (24 - 5 - 3) / 2;
         var expectedStartCol = (80 - 12) / 2;
 
-        Assert.Equal(Color.BrightBlack, buffer[expectedStartRow, expectedStartCol].Foreground);
+        Assert.Equal(Color.BrightBlack, viewport._buffer.GetCell(expectedStartCol, expectedStartRow).Foreground);
     }
 
     [Fact]
@@ -634,13 +639,13 @@ public sealed class ViewportSplashTests
         eventList.Add(renderable);
 
         var viewport = new Viewport(eventList);
-        var buffer = viewport.BuildFrame(80, 24);
+        viewport.BuildFrame(80, 24);
 
         // The splash characters should not appear anywhere.
         var viewportHeight = 24 - 5;
         var allText = string.Concat(
             Enumerable.Range(0, viewportHeight)
-                .Select(r => RowText(buffer, r, 80).TrimEnd('\0')));
+                .Select(r => RowText(viewport, r, 80).TrimEnd('\0')));
 
         Assert.DoesNotContain("▒█▀▀▀█", allText);
     }

@@ -1,3 +1,5 @@
+using Te.Rendering;
+
 namespace Ox.Rendering;
 
 /// <summary>
@@ -49,7 +51,7 @@ internal static class TreeChrome
         row.Append(' ', Color.Default, Color.Default);
 
         foreach (var cell in childRow.Cells)
-            row.Append(cell.Rune, cell.Foreground, cell.Background, cell.Style);
+            row.Append(cell.Rune, cell.Foreground, cell.Background, cell.Decorations);
 
         return row;
     }
@@ -74,7 +76,7 @@ internal static class TreeChrome
         }
 
         foreach (var cell in childRow.Cells)
-            row.Append(cell.Rune, cell.Foreground, cell.Background, cell.Style);
+            row.Append(cell.Rune, cell.Foreground, cell.Background, cell.Decorations);
 
         return row;
     }
@@ -102,7 +104,7 @@ internal static class TreeChrome
         row.Append(' ', Color.Default, Color.Default);
 
         foreach (var cell in childRow.Cells)
-            row.Append(cell.Rune, cell.Foreground, cell.Background, cell.Style);
+            row.Append(cell.Rune, cell.Foreground, cell.Background, cell.Decorations);
 
         return row;
     }
@@ -128,7 +130,7 @@ internal static class TreeChrome
         }
 
         foreach (var cell in innerRow.Cells)
-            row.Append(cell.Rune, cell.Foreground, cell.Background, cell.Style);
+            row.Append(cell.Rune, cell.Foreground, cell.Background, cell.Decorations);
 
         return row;
     }

@@ -1,11 +1,12 @@
+using Te.Rendering;
 using Ur.AgentLoop;
 using Ox.Rendering;
 
 namespace Ur.Tests;
 
 /// <summary>
-/// Tests for the cell-based TUI rendering layer (Color, Cell, CellRow, ScreenBuffer,
-/// TextRenderable, ToolRenderable, SubagentRenderable, EventList).
+/// Tests for the cell-based TUI rendering layer (Color, Cell, CellRow, ConsoleBuffer,
+/// TextRenderable, ToolRenderable, SubagentRenderable, EventList, Viewport).
 ///
 /// These tests operate entirely on the data model — no ANSI codes, no terminal I/O.
 /// The cell types are pure value types or simple classes; their behavior can be
@@ -13,85 +14,99 @@ namespace Ur.Tests;
 /// </summary>
 
 // ---------------------------------------------------------------------------
-// ScreenBuffer
+// ViewportBuffer — Viewport.BuildFrame / ConsoleBuffer integration
+//
+// Low-level ConsoleBuffer unit tests (SetCell, Resize, Clear, etc.) live in
+// Te.Tests/ConsoleBufferTests.cs. These tests verify that Viewport.BuildFrame
+// correctly populates the persistent _buffer and that the coordinate convention
+// (x=col, y=row in ConsoleBuffer) is applied throughout.
 // ---------------------------------------------------------------------------
 
-public sealed class ScreenBufferTests
+public sealed class ViewportBufferTests
 {
-    [Fact]
-    public void WriteRow_FillsBufferWithCells()
-    {
-        var buffer = new ScreenBuffer(5, 1);
-        var row    = CellRow.FromText("hello", Color.Default, Color.Default);
-        buffer.WriteRow(0, row);
+    // Height of the input area (top rule + text + bottom rule + status + blank).
+    private const int InputAreaRows = 5;
 
-        Assert.Equal('h', buffer[0, 0].Rune);
-        Assert.Equal('e', buffer[0, 1].Rune);
-        Assert.Equal('l', buffer[0, 2].Rune);
-        Assert.Equal('l', buffer[0, 3].Rune);
-        Assert.Equal('o', buffer[0, 4].Rune);
+    [Fact]
+    public void BuildFrame_ConversationText_AppearsInBuffer()
+    {
+        // A single User message should render as a tree row in the conversation
+        // area. The first character of 'hello' should appear somewhere in row 0.
+        var list = new EventList();
+        var text = new TextRenderable();
+        text.SetText("hello");
+        list.Add(text);
+
+        var viewport = new Viewport(list);
+        viewport.BuildFrame(80, 24);
+
+        // EventList wraps the user text with tree chrome (5 cols for ChildChrome),
+        // so 'h' starts at x=5, y=0. Scan row 0 to find it.
+        var row0Text = new string(
+            Enumerable.Range(0, 80)
+                .Select(col => viewport._buffer.GetCell(col, 0).Rune)
+                .ToArray());
+        Assert.Contains("hello", row0Text);
     }
 
     [Fact]
-    public void WriteRow_TruncatesRowsWiderThanBuffer()
+    public void BuildFrame_InputAreaRule_AppearsAtCorrectRow()
     {
-        // A 10-character row into a 5-wide buffer — only first 5 chars should appear.
-        var buffer = new ScreenBuffer(5, 1);
-        var row    = CellRow.FromText("hello world", Color.Default, Color.Default);
-        buffer.WriteRow(0, row);
+        // The top input-area rule (━) should appear at y = height - InputAreaRows.
+        // This verifies the coordinate convention: GetCell uses (x=col, y=row).
+        var viewport = new Viewport(new EventList());
+        viewport.BuildFrame(10, 10);
 
-        Assert.Equal('h', buffer[0, 0].Rune);
-        Assert.Equal('o', buffer[0, 4].Rune);
-        // Width is 5, so col 5 doesn't exist — just verify no exception was thrown.
+        // Top rule row: 10 - 5 = 5.
+        const char topRuleChar = '━';
+        Assert.Equal(topRuleChar, viewport._buffer.GetCell(0, 5).Rune);
+        Assert.Equal(topRuleChar, viewport._buffer.GetCell(9, 5).Rune);
     }
 
     [Fact]
-    public void WriteRow_PadsRowsShorterThanBuffer()
+    public void BuildFrame_SidebarSeparator_AppearsWhenSidebarVisible()
     {
-        // A 3-character row into a 5-wide buffer — remaining cells should be Cell.Empty.
-        var buffer = new ScreenBuffer(5, 1);
-        var row    = CellRow.FromText("hi!", Color.Red, Color.Default);
-        buffer.WriteRow(0, row);
+        // When a sidebar is attached and visible, a │ separator should appear
+        // at the column just after the left-column width, in every row.
+        // Use a TodoSection with items so HasContent is driven by real data,
+        // not by an always-true override.
+        var store   = new Ur.Todo.TodoStore();
+        store.Update([new Ur.Todo.TodoItem("Task", Ur.Todo.TodoStatus.Pending)]);
+        var section = new TodoSection(store);
+        var sidebar = new Sidebar();
+        sidebar.AddSection(section);
 
-        Assert.Equal('!', buffer[0, 2].Rune);
-        // Columns 3 and 4 must be padded with empty cells.
-        Assert.Equal(Cell.Empty, buffer[0, 3]);
-        Assert.Equal(Cell.Empty, buffer[0, 4]);
+        var viewport = new Viewport(new EventList(), sidebar);
+        viewport.BuildFrame(40, 10);
+
+        // Sidebar gets up to width/3 ≤ MaxSidebarWidth columns.
+        // With width=40: sidebarWidth = min(36, 40/3) = 13, leftWidth = 40 - 13 - 1 = 26.
+        // Separator column = 26.
+        const char separatorChar = '│';
+        Assert.Equal(separatorChar, viewport._buffer.GetCell(26, 0).Rune);
+        Assert.Equal(separatorChar, viewport._buffer.GetCell(26, 9).Rune);
     }
 
     [Fact]
-    public void WriteRow_OutOfBoundsRowIsIgnored()
+    public void BuildFrame_RebuildWithNewPrompt_BufferReflectsNewState()
     {
-        var buffer = new ScreenBuffer(5, 2);
-        var row    = CellRow.FromText("oops", Color.Default, Color.Default);
+        // Each BuildFrame call must clear the back buffer before writing so that
+        // stale cells from the previous frame do not bleed through. Verify this
+        // by rebuilding after changing the input prompt and asserting the new
+        // prompt content appears at the expected cell.
+        var viewport = new Viewport(new EventList());
 
-        // Neither of these should throw.
-        buffer.WriteRow(-1, row);
-        buffer.WriteRow(2,  row);
+        // First build with default "❯ " prompt. For height=24 the text row is
+        // at y = (24 - 5) + 1 = 20 (viewportHeight + top-rule row + text row).
+        viewport.BuildFrame(80, 24);
+        var textRow = 24 - 5 + 1; // 20
+        Assert.Equal('❯', viewport._buffer.GetCell(0, textRow).Rune);
 
-        // Buffer remains untouched.
-        Assert.Equal(Cell.Empty, buffer[0, 0]);
-        Assert.Equal(Cell.Empty, buffer[1, 0]);
-    }
-
-    [Fact]
-    public void Clear_ResetsAllCellsToEmpty()
-    {
-        var buffer = new ScreenBuffer(3, 2);
-        buffer.WriteRow(0, CellRow.FromText("abc", Color.Red, Color.Blue));
-        buffer.Clear();
-
-        for (var r = 0; r < 2; r++)
-        for (var c = 0; c < 3; c++)
-            Assert.Equal(Cell.Empty, buffer[r, c]);
-    }
-
-    [Fact]
-    public void Constructor_ClampsDimensionsToMinimumOne()
-    {
-        var buffer = new ScreenBuffer(0, -5);
-        Assert.Equal(1, buffer.Width);
-        Assert.Equal(1, buffer.Height);
+        // Change the input prompt and rebuild — the buffer must clear first,
+        // otherwise the old '❯' at x=0 would survive.
+        viewport.SetInputPrompt("test> ");
+        viewport.BuildFrame(80, 24);
+        Assert.Equal('t', viewport._buffer.GetCell(0, textRow).Rune);
     }
 }
 
@@ -198,14 +213,14 @@ public sealed class TextRenderableTests
     [Fact]
     public void Render_StyleAppliedToAllCells()
     {
-        var r = new TextRenderable(foreground: Color.Red, background: Color.Blue, style: CellStyle.Dim);
+        var r = new TextRenderable(foreground: Color.Red, background: Color.Blue, decorations: TextDecoration.Dim);
         r.SetText("hi");
         var rows = r.Render(80);
         foreach (var cell in rows[0].Cells)
         {
-            Assert.Equal(Color.Red,    cell.Foreground);
-            Assert.Equal(Color.Blue,   cell.Background);
-            Assert.Equal(CellStyle.Dim, cell.Style);
+            Assert.Equal(Color.Red,             cell.Foreground);
+            Assert.Equal(Color.Blue,            cell.Background);
+            Assert.Equal(TextDecoration.Dim,    cell.Decorations);
         }
     }
 

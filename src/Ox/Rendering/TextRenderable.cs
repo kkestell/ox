@@ -1,4 +1,5 @@
 using System.Text;
+using Te.Rendering;
 
 namespace Ox.Rendering;
 
@@ -11,7 +12,7 @@ namespace Ox.Rendering;
 /// Word-wrapping is applied in <see cref="Render"/> so the caller only needs
 /// to supply the available width; the renderable handles layout.
 ///
-/// Foreground, background, and style are typed <see cref="Color"/>/<see cref="CellStyle"/>
+/// Foreground, background, and decorations are typed <see cref="Color"/>/<see cref="TextDecoration"/>
 /// values rather than raw ANSI strings — the terminal layer is the only place
 /// that knows about escape sequences.
 /// </summary>
@@ -19,9 +20,9 @@ internal sealed class TextRenderable : IRenderable
 {
     private readonly StringBuilder _text = new();
 
-    private readonly Color     _foreground;
-    private readonly Color     _background;
-    private readonly CellStyle _style;
+    private readonly Color           _foreground;
+    private readonly Color           _background;
+    private readonly TextDecoration  _decorations;
 
     // Cache invalidation: only recompute wrapped rows when text or width changes.
     private string? _lastText;
@@ -32,15 +33,15 @@ internal sealed class TextRenderable : IRenderable
 
     /// <param name="foreground">Foreground color applied to every cell in every rendered row.</param>
     /// <param name="background">Background color applied to every cell in every rendered row.</param>
-    /// <param name="style">Style flags (bold, dim, etc.) applied uniformly across all cells.</param>
+    /// <param name="decorations">Decoration flags (bold, dim, etc.) applied uniformly across all cells.</param>
     public TextRenderable(
-        Color     foreground = default,
-        Color     background = default,
-        CellStyle style      = CellStyle.None)
+        Color           foreground   = default,
+        Color           background   = default,
+        TextDecoration  decorations  = TextDecoration.None)
     {
-        _foreground = foreground;
-        _background = background;
-        _style      = style;
+        _foreground  = foreground;
+        _background  = background;
+        _decorations = decorations;
     }
 
     /// <summary>
@@ -78,9 +79,9 @@ internal sealed class TextRenderable : IRenderable
         if (_cachedRows != null && current == _lastText && availableWidth == _lastWidth)
             return _cachedRows;
 
-        _lastText   = current;
-        _lastWidth  = availableWidth;
-        _cachedRows = WrapText(current, availableWidth, _foreground, _background, _style);
+        _lastText    = current;
+        _lastWidth   = availableWidth;
+        _cachedRows  = WrapText(current, availableWidth, _foreground, _background, _decorations);
         return _cachedRows;
     }
 
@@ -92,17 +93,17 @@ internal sealed class TextRenderable : IRenderable
     /// Newlines in the source text are treated as hard breaks so that markdown-style
     /// paragraph structure is preserved.
     ///
-    /// Every character in every row gets the same fg/bg/style — the text block is
+    /// Every character in every row gets the same fg/bg/decorations — the text block is
     /// uniformly styled. Per-character styling is not needed by any current consumer.
     /// </summary>
     private static List<CellRow> WrapText(
-        string text, int width, Color fg, Color bg, CellStyle style)
+        string text, int width, Color fg, Color bg, TextDecoration decorations)
     {
         var rows = new List<CellRow>();
 
         if (string.IsNullOrEmpty(text))
         {
-            rows.Add(CellRow.FromText("", fg, bg, style));
+            rows.Add(CellRow.FromText("", fg, bg, decorations));
             return rows;
         }
 
@@ -124,7 +125,7 @@ internal sealed class TextRenderable : IRenderable
             // If the paragraph fits, emit it directly.
             if (para.Length <= width)
             {
-                rows.Add(CellRow.FromText(para, fg, bg, style));
+                rows.Add(CellRow.FromText(para, fg, bg, decorations));
                 continue;
             }
 
@@ -134,7 +135,7 @@ internal sealed class TextRenderable : IRenderable
             {
                 if (remaining.Length <= width)
                 {
-                    rows.Add(CellRow.FromText(remaining.ToString(), fg, bg, style));
+                    rows.Add(CellRow.FromText(remaining.ToString(), fg, bg, decorations));
                     break;
                 }
 
@@ -143,7 +144,7 @@ internal sealed class TextRenderable : IRenderable
                 // e.g. "hello world" at width=5 → ["hello", "world"], not ["hello", " worl", "d"].
                 if (remaining[width] == ' ')
                 {
-                    rows.Add(CellRow.FromText(remaining[..width].ToString(), fg, bg, style));
+                    rows.Add(CellRow.FromText(remaining[..width].ToString(), fg, bg, decorations));
                     remaining = remaining[(width + 1)..];
                     continue;
                 }
@@ -153,7 +154,7 @@ internal sealed class TextRenderable : IRenderable
                 if (breakAt <= 0)
                     breakAt = width; // no space found — hard break
 
-                rows.Add(CellRow.FromText(remaining[..breakAt].ToString(), fg, bg, style));
+                rows.Add(CellRow.FromText(remaining[..breakAt].ToString(), fg, bg, decorations));
                 // Skip the space that caused the break; if we hard-broke (breakAt==width),
                 // there is no space to skip so we continue from that position directly.
                 remaining = breakAt < remaining.Length

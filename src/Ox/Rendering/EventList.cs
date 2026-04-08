@@ -1,3 +1,5 @@
+using Te.Rendering;
+
 namespace Ox.Rendering;
 
 /// <summary>

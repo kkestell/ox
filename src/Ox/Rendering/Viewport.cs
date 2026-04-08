@@ -1,3 +1,5 @@
+using Te.Rendering;
+
 namespace Ox.Rendering;
 
 /// <summary>
@@ -18,8 +20,10 @@ namespace Ox.Rendering;
 /// dirty. This prevents per-character redraws during fast streaming — the screen
 /// updates at a readable rate regardless of how quickly chunks arrive.
 ///
-/// The viewport owns the ScreenBuffer → Terminal.Flush pipeline. No other code
-/// writes to the terminal during a frame; all ANSI encoding happens in Terminal.Flush.
+/// The viewport owns a persistent <see cref="ConsoleBuffer"/> (_buffer) that
+/// dirty-tracks cells between frames. BuildFrame writes into _buffer on every
+/// call; Render() then emits only the changed cells — much cheaper than a
+/// full repaint. The buffer persists across frames so dirty-tracking works.
 ///
 /// The viewport must be stopped on every exit path (normal, Ctrl+C, unhandled
 /// exception) to restore the primary screen buffer and cursor visibility. The
@@ -29,6 +33,15 @@ internal sealed class Viewport : IDisposable
 {
     private readonly EventList _root;
     private readonly Sidebar? _sidebar;
+
+    // Persistent double-buffer that dirty-tracks cells between frames.
+    // Initialized in the constructor; resized when terminal dimensions change.
+    // exposed as internal so tests can inspect rendered cells directly.
+    internal readonly ConsoleBuffer _buffer;
+
+    // Last known terminal dimensions, used to detect resize.
+    private int _lastWidth;
+    private int _lastHeight;
 
     // True when the event list has changed and the next timer tick should redraw.
     private volatile bool _dirty;
@@ -103,8 +116,16 @@ internal sealed class Viewport : IDisposable
 
     public Viewport(EventList root, Sidebar? sidebar = null)
     {
-        _root = root;
+        _root    = root;
         _sidebar = sidebar;
+
+        // Bootstrap the buffer at the current terminal size. Resize() is called
+        // at the start of each BuildFrame when dimensions change, so this initial
+        // size only needs to be a reasonable default, not exact.
+        var (initialWidth, initialHeight) = Terminal.GetSize();
+        _buffer      = new ConsoleBuffer(initialWidth, initialHeight);
+        _lastWidth   = initialWidth;
+        _lastHeight  = initialHeight;
 
         // Subscribe to the root's Changed event so any descendant mutation marks
         // us dirty. The timer then picks it up within ~33ms.
@@ -218,8 +239,9 @@ internal sealed class Viewport : IDisposable
     }
 
     /// <summary>
-    /// Redraws the full viewport into a <see cref="ScreenBuffer"/> then flushes it
-    /// to the terminal in one shot via <see cref="Terminal.Flush(ScreenBuffer)"/>.
+    /// Builds a complete frame into <see cref="_buffer"/> then calls
+    /// <see cref="ConsoleBuffer.Render"/> to emit only the cells that changed
+    /// since the previous frame.
     ///
     /// Auto-scroll: we always show the tail (most recent rows). There is no
     /// manual scrollback — the alternate buffer owns the display, and the
@@ -235,30 +257,45 @@ internal sealed class Viewport : IDisposable
             _dirty = false;
 
             var (width, height) = Terminal.GetSize();
-            var buffer = BuildFrame(width, height);
-            Terminal.Flush(buffer);
+            BuildFrame(width, height);
+            _buffer.Render(Console.Out);
         }
     }
 
     /// <summary>
-    /// Core layout engine: builds a frame buffer for the given terminal size.
-    /// Called by <see cref="Redraw"/>, which then flushes to the terminal.
+    /// Core layout engine: writes a frame for the given terminal size into
+    /// <see cref="_buffer"/>. Called by <see cref="Redraw"/>, which then calls
+    /// <see cref="ConsoleBuffer.Render"/> to flush changed cells to the terminal.
     ///
     /// When the sidebar is visible, the terminal is split into two full-height
     /// columns: left (conversation + input + status) and right (sidebar).
     /// A thin │ separator in BrightBlack divides them. When the sidebar is hidden,
     /// the left column uses the full terminal width.
     ///
+    /// If the terminal dimensions changed since the last frame, the buffer is
+    /// resized first (which resets the front buffer, causing a full repaint).
+    ///
     /// Each region is rendered by a dedicated private method so the overall
-    /// layout sequence is immediately visible here. The methods are kept as
-    /// private helpers in Viewport (no new classes) — appropriate for the
-    /// current layout.
+    /// layout sequence is immediately visible here.
     /// </summary>
     // internal for testability — Ur.Tests has InternalsVisibleTo access.
-    internal ScreenBuffer BuildFrame(int width, int height)
+    internal void BuildFrame(int width, int height)
     {
+        // Resize the buffer when terminal dimensions change. Resize also resets
+        // both front and back buffers, which forces a full repaint — correct
+        // behaviour after a resize since the layout has shifted.
+        if (width != _lastWidth || height != _lastHeight)
+        {
+            _buffer.Resize(width, height);
+            _lastWidth  = width;
+            _lastHeight = height;
+        }
+
+        // Clear the back buffer for this frame so stale content from the
+        // previous frame does not bleed through on rows we do not write.
+        _buffer.Clear();
+
         var viewportHeight = height - InputAreaRows - HeaderRows;
-        var buffer = new ScreenBuffer(width, height);
 
         // Compute sidebar allocation. The sidebar gets up to 1/3 of the terminal
         // width (capped at MaxSidebarWidth), plus one column for the separator.
@@ -272,18 +309,31 @@ internal sealed class Viewport : IDisposable
         }
         else
         {
-            leftWidth = width;
+            leftWidth    = width;
             sidebarWidth = 0;
         }
 
-        RenderConversation(buffer, leftWidth, viewportHeight);
-        RenderInputArea(buffer, leftWidth, viewportHeight);
-        RenderStatusBar(buffer, leftWidth, viewportHeight);
+        RenderConversation(leftWidth, viewportHeight);
+        RenderInputArea(leftWidth, viewportHeight);
+        RenderStatusBar(leftWidth, viewportHeight);
 
         if (sidebarWidth > 0)
-            RenderSidebar(buffer, width, height, leftWidth, sidebarWidth);
+            RenderSidebar(width, height, leftWidth, sidebarWidth);
+    }
 
-        return buffer;
+    // --- Private helpers ---
+
+    /// <summary>
+    /// Writes a CellRow into the buffer at the given 0-based row index.
+    /// ConsoleBuffer uses (x=col, y=row) — the opposite of the old ScreenBuffer's
+    /// (row, col) order. Cells beyond the buffer width are truncated; columns not
+    /// covered by the row are left as Cell.Empty (already set by Clear() above).
+    /// </summary>
+    private void WriteRow(int row, CellRow cellRow)
+    {
+        var cells = cellRow.Cells;
+        for (var col = 0; col < cells.Count; col++)
+            _buffer.SetCell(col, row, cells[col]);
     }
 
     /// <summary>
@@ -291,13 +341,13 @@ internal sealed class Viewport : IDisposable
     /// between the header and input area. When the conversation is empty (before
     /// the first user message), renders the splash art centered instead.
     /// </summary>
-    private void RenderConversation(ScreenBuffer buffer, int width, int viewportHeight)
+    private void RenderConversation(int width, int viewportHeight)
     {
         var allRows = _root.Render(width);
 
         if (allRows.Count == 0)
         {
-            RenderSplash(buffer, width, viewportHeight);
+            RenderSplash(width, viewportHeight);
             return;
         }
 
@@ -307,7 +357,7 @@ internal sealed class Viewport : IDisposable
         {
             var rowIndex = startIndex + bufRow;
             if (rowIndex < allRows.Count)
-                buffer.WriteRow(HeaderRows + bufRow, allRows[rowIndex]);
+                WriteRow(HeaderRows + bufRow, allRows[rowIndex]);
             // Rows beyond the content stay Cell.Empty (blank / default colors).
         }
     }
@@ -316,11 +366,11 @@ internal sealed class Viewport : IDisposable
     /// Renders the splash art horizontally and vertically centered within the
     /// conversation region. Shown only when the EventList is empty.
     /// </summary>
-    private static void RenderSplash(ScreenBuffer buffer, int width, int viewportHeight)
+    private void RenderSplash(int width, int viewportHeight)
     {
-        var artWidth = SplashLines.Max(l => l.Length);
-        var startRow = HeaderRows + Math.Max(0, (viewportHeight - SplashLines.Length) / 2);
-        var startCol = Math.Max(0, (width - artWidth) / 2);
+        var artWidth  = SplashLines.Max(l => l.Length);
+        var startRow  = HeaderRows + Math.Max(0, (viewportHeight - SplashLines.Length) / 2);
+        var startCol  = Math.Max(0, (width - artWidth) / 2);
 
         for (var i = 0; i < SplashLines.Length; i++)
         {
@@ -328,22 +378,22 @@ internal sealed class Viewport : IDisposable
             for (var p = 0; p < startCol; p++)
                 row.Append(' ', Color.Default, Color.Default);
             row.Append(SplashLines[i], Color.BrightBlack, Color.Default);
-            buffer.WriteRow(startRow + i, row);
+            WriteRow(startRow + i, row);
         }
     }
 
     /// <summary>
     /// Renders the input area: top rule, text row (prompt + cursor), and bottom rule.
     /// </summary>
-    private void RenderInputArea(ScreenBuffer buffer, int width, int viewportHeight)
+    private void RenderInputArea(int width, int viewportHeight)
     {
         // Top rule: heavy horizontal line spanning the full width.
         var topRule = CellRow.FromText(new string(TopRuleChar, width), Color.BrightBlack, Color.Default);
-        buffer.WriteRow(viewportHeight + HeaderRows, topRule);
+        WriteRow(viewportHeight + HeaderRows, topRule);
 
         // Text row: chevron in bright black, typed text in white, no background.
         // The system cursor is hidden; we paint our own block cursor using
-        // CellStyle.Reverse so it's visible against the default background.
+        // TextDecoration.Reverse so it's visible against the default background.
         var textRow = new CellRow();
         if (_inputPrompt.StartsWith('❯'))
         {
@@ -357,8 +407,8 @@ internal sealed class Viewport : IDisposable
 
         // Ghost-text rendering: when a completion suffix is active and the
         // input is accepting keystrokes, show the suggestion in gray. The first
-        // ghost character is rendered with CellStyle.Reverse so the block cursor
-        // appears to "sit on" it — this makes the suggestion feel interactive.
+        // ghost character is rendered with TextDecoration.Reverse so the block
+        // cursor appears to "sit on" it — this makes the suggestion feel interactive.
         // Remaining ghost characters are plain BrightBlack (dim gray).
         // When no ghost text is active, fall back to the standard blank
         // reverse-video cursor cell.
@@ -366,28 +416,28 @@ internal sealed class Viewport : IDisposable
         {
             if (!string.IsNullOrEmpty(_completionSuffix))
             {
-                textRow.Append(_completionSuffix[0], Color.BrightBlack, Color.Default, CellStyle.Reverse);
+                textRow.Append(_completionSuffix[0], Color.BrightBlack, Color.Default, TextDecoration.Reverse);
                 if (_completionSuffix.Length > 1)
                     textRow.Append(_completionSuffix[1..], Color.BrightBlack, Color.Default);
             }
             else
             {
-                textRow.Append(' ', Color.Default, Color.Default, CellStyle.Reverse);
+                textRow.Append(' ', Color.Default, Color.Default, TextDecoration.Reverse);
             }
         }
 
-        buffer.WriteRow(viewportHeight + HeaderRows + 1, textRow);
+        WriteRow(viewportHeight + HeaderRows + 1, textRow);
 
         // Bottom rule: light horizontal line spanning the full width.
         var bottomRule = CellRow.FromText(new string(BottomRuleChar, width), Color.BrightBlack, Color.Default);
-        buffer.WriteRow(viewportHeight + HeaderRows + 2, bottomRule);
+        WriteRow(viewportHeight + HeaderRows + 2, bottomRule);
     }
 
     /// <summary>
     /// Renders the status bar: animated throbber on the left (only while a turn
     /// is running) and model ID right-aligned.
     /// </summary>
-    private void RenderStatusBar(ScreenBuffer buffer, int width, int viewportHeight)
+    private void RenderStatusBar(int width, int viewportHeight)
     {
         var statusRow = new CellRow();
 
@@ -414,7 +464,7 @@ internal sealed class Viewport : IDisposable
             statusRow.Append(_modelId, Color.BrightBlack, Color.Default);
         }
 
-        buffer.WriteRow(viewportHeight + HeaderRows + 3, statusRow);
+        WriteRow(viewportHeight + HeaderRows + 3, statusRow);
     }
 
     /// <summary>
@@ -422,17 +472,16 @@ internal sealed class Viewport : IDisposable
     /// vertical separator (│ in BrightBlack) in the separator column for every row,
     /// then renders the sidebar's content top-aligned.
     /// </summary>
-    private void RenderSidebar(ScreenBuffer buffer, int totalWidth, int height,
-        int leftWidth, int sidebarWidth)
+    private void RenderSidebar(int totalWidth, int height, int leftWidth, int sidebarWidth)
     {
-        var separatorCol = leftWidth;
+        var separatorCol   = leftWidth;
         // One column for the separator, one for padding — content starts 2 cols in.
         var sidebarStartCol = leftWidth + 2;
-        var contentWidth = sidebarWidth - 1; // account for the padding column
+        var contentWidth   = sidebarWidth - 1; // account for the padding column
 
         // Draw the vertical separator for every row of the terminal.
         for (var row = 0; row < height; row++)
-            buffer.WriteCell(row, separatorCol, new Cell(SeparatorChar, Color.BrightBlack, Color.Default));
+            _buffer.SetCell(separatorCol, row, new Cell(SeparatorChar, Color.BrightBlack, Color.Default));
 
         // Render sidebar content top-aligned with a 1-column pad after the separator.
         var sidebarRows = _sidebar!.Render(contentWidth);
@@ -440,7 +489,7 @@ internal sealed class Viewport : IDisposable
         {
             var cells = sidebarRows[ri].Cells;
             for (var ci = 0; ci < cells.Count && sidebarStartCol + ci < totalWidth; ci++)
-                buffer.WriteCell(ri, sidebarStartCol + ci, cells[ci]);
+                _buffer.SetCell(sidebarStartCol + ci, ri, cells[ci]);
         }
     }
 

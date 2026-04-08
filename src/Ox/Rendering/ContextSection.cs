@@ -1,3 +1,5 @@
+using Te.Rendering;
+
 namespace Ox.Rendering;
 
 /// <summary>
@@ -37,7 +39,7 @@ internal sealed class ContextSection : ISidebarSection
         var rows = new List<CellRow>();
 
         // Header: bold bright white to stand out as a section title.
-        rows.Add(CellRow.FromText("Context", Color.White, Color.Default, CellStyle.Bold));
+        rows.Add(CellRow.FromText("Context", Color.White, Color.Default, TextDecoration.Bold));
 
         // Usage text directly below the header, or a placeholder dash before
         // the first turn reports token counts.

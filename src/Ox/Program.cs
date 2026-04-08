@@ -3,6 +3,8 @@ using dotenv.net;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Te.Input;
+using Te.Rendering;
 using Ur;
 using Ur.AgentLoop;
 using Ur.Configuration;
@@ -50,6 +52,14 @@ internal sealed class TuiService(
         var eventList = new EventList();
         Viewport? viewport = null;
 
+        // TerminalInputSource starts reading raw keyboard input immediately on
+        // construction (enabling raw mode on Unix). InputCoordinator serializes
+        // events into a queue; InputReader drains the queue in a polling loop.
+        // Both are created here so they are available to InputReader for both
+        // the pre-viewport configuration phase and the main REPL.
+        var inputSource  = new TerminalInputSource();
+        var coordinator  = new InputCoordinator(inputSource);
+
         // Restore the terminal on both Ctrl+C and normal process exit.
         // We register both because Ctrl+C triggers CancelKeyPress AND ProcessExit
         // on macOS/Unix, while unhandled exceptions trigger only ProcessExit.
@@ -60,7 +70,12 @@ internal sealed class TuiService(
             viewport?.Stop();
             lifetime.StopApplication();
         };
-        AppDomain.CurrentDomain.ProcessExit += (_, _) => viewport?.Stop();
+        AppDomain.CurrentDomain.ProcessExit += (_, _) =>
+        {
+            viewport?.Stop();
+            inputSource.Dispose();
+            coordinator.Dispose();
+        };
 
         // Log any unhandled exception that escapes to the CLR before the process dies.
         // ProcessExit fires after this, which cleans up the viewport. Without this hook
@@ -72,138 +87,161 @@ internal sealed class TuiService(
             logger.LogError(ex, "Unhandled exception (process terminating)");
         };
 
-        // --- Configuration check (pre-viewport, plain console I/O) ---
-        // AutocompleteEngine is created here so it's available to InputReader
-        // for the REPL phase. EnsureReadyAsync uses ReadLine (not viewport-mode),
-        // so autocomplete doesn't apply there — it activates in the REPL below.
-        var autocomplete = new AutocompleteEngine(commands);
-        var inputReader = new InputReader(autocomplete);
-        if (!await EnsureReadyAsync(host, inputReader, stoppingToken))
-        {
-            lifetime.StopApplication();
-            return;
-        }
-
-        // --- REPL ---
-        // Wiring order: the sidebar needs the session's TodoStore, the viewport
-        // needs the sidebar, and the permission callbacks need the viewport.
-        // We create a no-callbacks session first to get the TodoStore, build the
-        // full rendering stack, then create the real session with callbacks.
-        var router = new EventRouter(eventList);
-        var todoStore = new Ur.Todo.TodoStore();
-
-        // Build the sidebar. The context section sits at the top so the user
-        // always sees how much context window remains. The todo section follows.
-        var contextSection = new ContextSection();
-        var todoSection = new TodoSection(todoStore);
-        var sidebar = new Sidebar();
-        sidebar.AddSection(contextSection);
-        sidebar.AddSection(todoSection);
-
-        // Construct the viewport now that we have the sidebar.
-        viewport = new Viewport(eventList, sidebar);
-
-        var callbacks = PermissionHandler.Build(router, inputReader, viewport, host.WorkspacePath);
-        var session = host.CreateSession(callbacks, todoStore);
-
-        viewport.SetModelId(session.ActiveModelId);
-
-        // If resuming a session, show context fill immediately from persisted usage.
-        UpdateContextUsage(contextSection, host, session);
-
-        viewport.Start();
-
         try
         {
-            while (!stoppingToken.IsCancellationRequested)
+            // --- Configuration check (pre-viewport, plain console I/O) ---
+            // AutocompleteEngine is created here so it's available to InputReader
+            // for the REPL phase. EnsureReadyAsync uses ReadLine (not viewport-mode),
+            // so autocomplete doesn't apply there — it activates in the REPL below.
+            var autocomplete = new AutocompleteEngine(commands);
+            var inputReader  = new InputReader(coordinator, autocomplete);
+            if (!await EnsureReadyAsync(host, inputReader, stoppingToken))
             {
-                var input = inputReader.ReadLineInViewport(
-                    "❯ ", viewport.SetInputPrompt, viewport.SetCompletion, stoppingToken);
+                lifetime.StopApplication();
+                return;
+            }
 
-                // null = EOF (Ctrl+D) or cancellation.
-                if (input is null)
-                    break;
+            // --- REPL ---
+            // Wiring order: the sidebar needs the session's TodoStore, the viewport
+            // needs the sidebar, and the permission callbacks need the viewport.
+            // We create a no-callbacks session first to get the TodoStore, build the
+            // full rendering stack, then create the real session with callbacks.
+            var router   = new EventRouter(eventList);
+            var todoStore = new Ur.Todo.TodoStore();
 
-                if (string.IsNullOrWhiteSpace(input))
-                    continue;
+            // Build the sidebar. The context section sits at the top so the user
+            // always sees how much context window remains. The todo section follows.
+            var contextSection = new ContextSection();
+            var todoSection    = new TodoSection(todoStore);
+            var sidebar        = new Sidebar();
+            sidebar.AddSection(contextSection);
+            sidebar.AddSection(todoSection);
 
-                // Show the user's message in the conversation with white text so it
-                // stands out clearly against the black bubble background.
-                var userMsg = new TextRenderable(foreground: Color.White);
-                userMsg.SetText(input);
-                eventList.Add(userMsg);
+            // Construct the viewport now that we have the sidebar.
+            viewport = new Viewport(eventList, sidebar);
 
-                // Switch input row to a running indicator and start the throbber.
-                viewport.SetInputPrompt("");
-                viewport.SetTurnRunning(true);
+            var callbacks = PermissionHandler.Build(router, inputReader, viewport, host.WorkspacePath);
+            var session   = host.CreateSession(callbacks, todoStore);
 
-                // Per-turn CTS linked to stopping token so Ctrl+C also cancels mid-turn.
-                // ReSharper disable once AccessToDisposedClosure — monitor awaited before disposal.
-                var turnCts = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
-                var keyMonitor = inputReader.MonitorEscapeKeyAsync(turnCts);
+            viewport.SetModelId(session.ActiveModelId);
 
-                try
+            // If resuming a session, show context fill immediately from persisted usage.
+            UpdateContextUsage(contextSection, host, session);
+
+            viewport.Start();
+
+            try
+            {
+                while (!stoppingToken.IsCancellationRequested)
                 {
+                    var input = inputReader.ReadLineInViewport(
+                        "❯ ", viewport.SetInputPrompt, viewport.SetCompletion, stoppingToken);
+
+                    // null = EOF (Ctrl+D) or cancellation.
+                    if (input is null)
+                        break;
+
+                    if (string.IsNullOrWhiteSpace(input))
+                        continue;
+
+                    // Show the user's message in the conversation with white text so it
+                    // stands out clearly against the black bubble background.
+                    var userMsg = new TextRenderable(foreground: Color.White);
+                    userMsg.SetText(input);
+                    eventList.Add(userMsg);
+
+                    // Switch input row to a running indicator and start the throbber.
+                    viewport.SetInputPrompt("");
+                    viewport.SetTurnRunning(true);
+
+                    // Per-turn CTS linked to stopping token so Ctrl+C also cancels mid-turn.
+                    var turnCts = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+
+                    // Monitor Escape key during the turn by subscribing directly to the
+                    // input source's KeyPressed event. The handler fires on the background
+                    // reader thread, but CancellationTokenSource.CancelAsync is thread-safe.
+                    // This replaces the old polling-based MonitorEscapeKeyAsync — no separate
+                    // task or _readingLine flag needed because the input source owns the stream.
+                    EventHandler<KeyEventArgs> escapeHandler = (_, e) =>
+                    {
+                        if (e.KeyCode.WithoutModifiers() == KeyCode.Esc)
+                            _ = turnCts.CancelAsync();
+                    };
+                    inputSource.KeyPressed += escapeHandler;
+
                     try
                     {
-                        await foreach (var evt in session.RunTurnAsync(input, turnCts.Token))
+                        try
                         {
-                            router.RouteMainEvent(evt);
+                            await foreach (var evt in session.RunTurnAsync(input, turnCts.Token))
+                            {
+                                router.RouteMainEvent(evt);
 
-                            // Update context fill display when a turn completes with usage data.
-                            if (evt is TurnCompleted)
-                                UpdateContextUsage(contextSection, host, session);
+                                // Update context fill display when a turn completes with usage data.
+                                if (evt is TurnCompleted)
+                                    UpdateContextUsage(contextSection, host, session);
 
-                            // Fatal errors are unrecoverable — log and exit the process.
-                            if (evt is not TurnError { IsFatal: true } fatal)
-                                continue;
+                                // Fatal errors are unrecoverable — log and exit the process.
+                                if (evt is not TurnError { IsFatal: true } fatal)
+                                    continue;
 
-                            logger.LogError("Fatal agent error (exiting): {Message}", fatal.Message);
-                            lifetime.StopApplication();
-                            return;
+                                logger.LogError("Fatal agent error (exiting): {Message}", fatal.Message);
+                                lifetime.StopApplication();
+                                return;
+                            }
                         }
-                    }
-                    catch (OperationCanceledException) when (!stoppingToken.IsCancellationRequested)
-                    {
-                        // Escape cancelled this turn; add a visual marker and reset state.
-                        // Circle child (not a User root) — belongs to the current turn's tree group.
-                        var cancelled = new TextRenderable();
-                        cancelled.SetText("[cancelled]");
-                        eventList.Add(cancelled, BubbleStyle.Circle, () => Color.BrightBlack);
-                        router.ResetTurnState();
-                    }
-                    catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
-                    {
-                        // Ctrl+C during a turn — fall through; outer loop exits.
-                    }
-                    catch (Exception ex)
-                    {
-                        // Any other exception escaping the turn is unexpected. Log it with
-                        // the full stack trace so we can diagnose crashes, then surface a
-                        // brief message in the viewport rather than letting the process die.
-                        logger.LogError(ex, "Unexpected exception during turn");
+                        catch (OperationCanceledException) when (!stoppingToken.IsCancellationRequested)
+                        {
+                            // Escape cancelled this turn; add a visual marker and reset state.
+                            // Circle child (not a User root) — belongs to the current turn's tree group.
+                            var cancelled = new TextRenderable();
+                            cancelled.SetText("[cancelled]");
+                            eventList.Add(cancelled, BubbleStyle.Circle, () => Color.BrightBlack);
+                            router.ResetTurnState();
+                        }
+                        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+                        {
+                            // Ctrl+C during a turn — fall through; outer loop exits.
+                        }
+                        catch (Exception ex)
+                        {
+                            // Any other exception escaping the turn is unexpected. Log it with
+                            // the full stack trace so we can diagnose crashes, then surface a
+                            // brief message in the viewport rather than letting the process die.
+                            logger.LogError(ex, "Unexpected exception during turn");
 
-                        var crashText = new TextRenderable(foreground: Color.Red);
-                        crashText.SetText($"[error] {ex.Message} — see ~/.ur/logs/ for details");
-                        eventList.Add(crashText, BubbleStyle.Circle, () => Color.Red);
-                        router.ResetTurnState();
+                            var crashText = new TextRenderable(foreground: Color.Red);
+                            crashText.SetText($"[error] {ex.Message} — see ~/.ur/logs/ for details");
+                            eventList.Add(crashText, BubbleStyle.Circle, () => Color.Red);
+                            router.ResetTurnState();
+                        }
+
+                        await turnCts.CancelAsync();
+                    }
+                    finally
+                    {
+                        // Always unsubscribe the escape handler before disposing the CTS so
+                        // a concurrent escape press doesn't try to cancel an already-disposed token.
+                        inputSource.KeyPressed -= escapeHandler;
+                        turnCts.Dispose();
                     }
 
-                    await turnCts.CancelAsync();
-                    await keyMonitor;
+                    viewport.SetTurnRunning(false);
+                    viewport.SetInputPrompt("❯ ");
                 }
-                finally
-                {
-                    turnCts.Dispose();
-                }
-
-                viewport.SetTurnRunning(false);
-                viewport.SetInputPrompt("❯ ");
+            }
+            finally
+            {
+                viewport.Stop();
             }
         }
         finally
         {
-            viewport.Stop();
+            // Dispose in reverse construction order. TerminalInputSource restores raw
+            // mode and disables mouse support (if enabled). InputCoordinator detaches
+            // from the input source.
+            coordinator.Dispose();
+            inputSource.Dispose();
         }
     }
 

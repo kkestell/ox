@@ -5,14 +5,14 @@ namespace Ox.Rendering;
 ///
 /// Renderables are "live" objects — their content can change between redraws.
 /// The viewport calls <see cref="Render"/> each frame and writes the returned
-/// rows to a <see cref="ScreenBuffer"/>. When a renderable's content changes
-/// (e.g. a streaming chunk arrives), it raises <see cref="Changed"/> to tell
-/// the viewport a redraw is needed.
+/// rows into its persistent <c>Te.Rendering.ConsoleBuffer</c>. When a
+/// renderable's content changes (e.g. a streaming chunk arrives), it raises
+/// <see cref="Changed"/> to tell the viewport a redraw is needed.
 ///
 /// Renderables do not know about the viewport or the terminal. They produce
 /// typed <see cref="CellRow"/> values — no ANSI escape codes, no string
 /// concatenation, no width-measurement hacks. All ANSI encoding happens in
-/// <see cref="Terminal.Flush(ScreenBuffer)"/>, which is the sole point of
+/// <c>ConsoleBuffer.Render(Console.Out)</c>, which is the sole point of
 /// contact with raw escape sequences.
 /// </summary>
 internal interface IRenderable

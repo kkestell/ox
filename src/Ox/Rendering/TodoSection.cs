@@ -1,3 +1,4 @@
+using Te.Rendering;
 using Ur.Todo;
 
 namespace Ox.Rendering;
@@ -44,7 +45,7 @@ internal sealed class TodoSection : ISidebarSection
         var rows = new List<CellRow>();
 
         // Header: bold bright white to stand out as a section title.
-        rows.Add(CellRow.FromText("Plan", Color.White, Color.Default, CellStyle.Bold));
+        rows.Add(CellRow.FromText("Plan", Color.White, Color.Default, TextDecoration.Bold));
 
         // Each item with a status indicator. Content is word-wrapped to the
         // available width minus the prefix length.
