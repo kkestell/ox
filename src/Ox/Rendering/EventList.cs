@@ -213,14 +213,18 @@ internal sealed class EventList : IRenderable
                 // First row: ├─ ● or └─ ● with a blue circle.
                 target.Add(TreeChrome.MakeChildRow(childRows[ri], isLastTopLevel, Color.Blue));
             }
+            else if (isLastTopLevel && hasNestedChildren)
+            {
+                // Last top-level user with nested children: place │ at column 3
+                // (aligned with the nested children's ├/└) instead of column 0.
+                // Column 0 would falsely suggest more top-level siblings below.
+                target.Add(TreeChrome.MakeLastParentContinuationRow(childRows[ri]));
+            }
             else
             {
-                // Continuation rows need a │ trunk when something follows below:
-                // either nested children under this user, or sibling items after
-                // it in the top-level tree. Only the last top-level user with no
-                // nested children gets blank continuation (5 spaces).
-                var showVertical = !isLastTopLevel || hasNestedChildren;
-                target.Add(TreeChrome.MakeChildContinuationRow(childRows[ri], isLast: !showVertical));
+                // Non-last top-level: │ at column 0 (trunk continues to siblings).
+                // Last top-level with no children: 5 spaces (nothing below).
+                target.Add(TreeChrome.MakeChildContinuationRow(childRows[ri], isLast: isLastTopLevel));
             }
         }
     }

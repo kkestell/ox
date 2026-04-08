@@ -19,7 +19,11 @@ internal static class PermissionHandler
     /// Creates <see cref="TurnCallbacks"/> that wire subagent event routing and
     /// interactive permission prompts through the TUI rendering stack.
     /// </summary>
-    public static TurnCallbacks Build(EventRouter router, InputReader inputReader, Viewport viewport)
+    /// <param name="workspaceRoot">
+    /// Absolute path to the workspace root, used to display file targets as
+    /// workspace-relative paths in permission prompts.
+    /// </param>
+    public static TurnCallbacks Build(EventRouter router, InputReader inputReader, Viewport viewport, string workspaceRoot)
     {
         return new TurnCallbacks
         {
@@ -42,8 +46,14 @@ internal static class PermissionHandler
                     ? $" [{string.Join(", ", req.AllowedScopes.Select(s => s.ToString().ToLowerInvariant()))}]"
                     : "";
 
+                // Show file paths relative to the workspace root when possible,
+                // so prompts stay short and meaningful (e.g. 'bar.txt' instead of
+                // '/Users/kyle/src/ox/bar.txt'). Paths outside the workspace keep
+                // their absolute form so the user can see exactly where the write goes.
+                var displayTarget = FormatTarget(req.Target, workspaceRoot);
+
                 var promptText =
-                    $"Allow {req.OperationType} on '{req.Target}' by '{req.RequestingExtension}'?"
+                    $"Allow '{req.RequestingExtension}' to {req.OperationType} '{displayTarget}'?"
                     + $" (y/n{scopeHints}): ";
 
                 // InputReader internally pauses the escape monitor while reading,
@@ -75,5 +85,24 @@ internal static class PermissionHandler
                 return ValueTask.FromResult(response);
             }
         };
+    }
+
+    /// <summary>
+    /// Strips the workspace root prefix from a target path so the user sees a
+    /// short, workspace-relative path (e.g. "bar.txt") instead of the full
+    /// absolute path. Targets outside the workspace (or non-path targets like
+    /// shell commands) pass through unchanged.
+    /// </summary>
+    private static string FormatTarget(string target, string workspaceRoot)
+    {
+        // Normalize: ensure the prefix ends with a separator so "/foo" doesn't
+        // match "/foobar".
+        var prefix = workspaceRoot.EndsWith(Path.DirectorySeparatorChar)
+            ? workspaceRoot
+            : workspaceRoot + Path.DirectorySeparatorChar;
+
+        return target.StartsWith(prefix, StringComparison.Ordinal)
+            ? target[prefix.Length..]
+            : target;
     }
 }

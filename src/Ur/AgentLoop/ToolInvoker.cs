@@ -258,7 +258,12 @@ internal sealed class ToolInvoker(ToolRegistry tools, Workspace workspace, ILogg
         // to the user via RequestPermissionAsync at the appropriate time.
         var extensionId = meta?.ExtensionId ?? call.Name;
         var allowedScopes = PermissionPolicy.AllowedScopes(operationType, isInWorkspace);
-        var resolvedTarget = ToolArgHelpers.ResolvePath(workspace.RootPath, target);
+
+        // Execute targets are command strings, not file paths — don't resolve them.
+        // File-based targets are resolved to absolute paths for grant prefix-matching.
+        var resolvedTarget = operationType == OperationType.Execute
+            ? target
+            : ToolArgHelpers.ResolvePath(workspace.RootPath, target);
         var request = new PermissionRequest(operationType, resolvedTarget, extensionId, allowedScopes);
 
         return PermissionCheckResult.NeedsApproval(request);

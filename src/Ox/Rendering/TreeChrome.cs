@@ -80,6 +80,34 @@ internal static class TreeChrome
     }
 
     /// <summary>
+    /// Continuation row for a last-top-level User that has nested children.
+    /// Produces `   │ ` (3 spaces + │ + space = 5 columns) so the vertical bar
+    /// at column 3 aligns with the nested children's ├/└ connectors, rather than
+    /// sitting at column 0 (which would falsely imply more top-level siblings).
+    ///
+    /// Compare with <see cref="MakeChildContinuationRow"/>: that method places │
+    /// at column 0 for non-last top-level items whose trunk continues to siblings.
+    /// This method is the last-parent counterpart where the trunk is the nesting
+    /// trunk, not the top-level trunk.
+    /// </summary>
+    public static CellRow MakeLastParentContinuationRow(CellRow childRow)
+    {
+        var row = new CellRow();
+
+        // 3-space indent (matches PrependNestPrefix for isLastParent = true)
+        row.Append("   ", Color.Default, Color.Default);
+        // Vertical bar at column 3: signals nested children follow below
+        row.Append(VerticalChar, Color.BrightBlack, Color.Default);
+        // Single space to align content at column 5 (same as ChildChrome)
+        row.Append(' ', Color.Default, Color.Default);
+
+        foreach (var cell in childRow.Cells)
+            row.Append(cell.Rune, cell.Foreground, cell.Background, cell.Style);
+
+        return row;
+    }
+
+    /// <summary>
     /// Prepends a 3-column nesting prefix to an existing row. Used to indent nested
     /// children (level 2) under their parent User item. Non-last parents get `│  `
     /// (vertical bar + 2 spaces); last parents get `   ` (3 spaces). The vertical

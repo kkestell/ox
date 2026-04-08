@@ -5,9 +5,7 @@ namespace Ox.Rendering;
 /// screen buffer.
 ///
 /// Layout (1-based terminal rows, 0-based buffer rows):
-///   Row 1                 — header: session ID left-aligned (BrightBlack)
-///   Row 2                 — header rule (━ heavy horizontal line)
-///   Rows 3 .. (height-5) — conversation viewport (shows the tail of all rows)
+///   Rows 1 .. (height-5) — conversation viewport (shows the tail of all rows)
 ///   Row height-4          — top rule (━ heavy horizontal line)
 ///   Row height-3          — input text row (❯ prompt, typed text in white)
 ///   Row height-2          — bottom rule (─ light horizontal line)
@@ -54,11 +52,6 @@ internal sealed class Viewport : IDisposable
     // True between Start() and Stop() — prevents stray redraws after shutdown.
     private bool _running;
 
-    // Header state: session ID displayed left-aligned in the header row,
-    // context usage displayed right-aligned (e.g. "125,000 / 250,000 - 50%").
-    private string? _sessionId;
-    private string? _contextUsageText;
-
     // Status line state: the throbber animates while a turn is running, and the
     // model ID is displayed right-aligned. Both live below the bottom rule.
     private volatile bool _turnRunning;
@@ -80,6 +73,15 @@ internal sealed class Viewport : IDisposable
     ];
     private const int ThrobberFrameMs = 200;
 
+    // ASCII art displayed centered in the conversation area before the user
+    // sends their first message. Each line is 12 columns wide.
+    private static readonly string[] SplashLines =
+    [
+        "▒█▀▀▀█ ▀▄▒▄▀",
+        "▒█░░▒█ ░▒█░░",
+        "▒█▄▄▄█ ▄▀▒▀▄"
+    ];
+
     // Box-drawing characters for the input area rules.
     private const char TopRuleChar    = '━'; // U+2501 BOX DRAWINGS HEAVY HORIZONTAL
     private const char BottomRuleChar = '─'; // U+2500 BOX DRAWINGS LIGHT HORIZONTAL
@@ -88,9 +90,8 @@ internal sealed class Viewport : IDisposable
     // top rule + text row + bottom rule + status line + blank line.
     private const int InputAreaRows = 5;
 
-    // Number of terminal rows reserved for the header area:
-    // header content row + heavy rule.
-    private const int HeaderRows = 2;
+    // No header rows — session ID and context usage have been moved to the sidebar.
+    private const int HeaderRows = 0;
 
     // Maximum sidebar width in columns. Capped to prevent the sidebar from
     // dominating narrow terminals.
@@ -179,29 +180,6 @@ internal sealed class Viewport : IDisposable
         _dirty = true;
     }
 
-    // --- Header ---
-
-    /// <summary>
-    /// Sets the session ID displayed left-aligned in the header row.
-    /// Call once before <see cref="Start()"/> so the header is visible on the
-    /// first frame.
-    /// </summary>
-    public void SetSessionId(string id)
-    {
-        _sessionId = id;
-        _dirty = true;
-    }
-
-    /// <summary>
-    /// Sets the pre-formatted context usage text displayed right-aligned in
-    /// the header row (e.g. "125,000 / 250,000 - 50%"). Pass null to clear.
-    /// </summary>
-    public void SetContextUsage(string? text)
-    {
-        _contextUsageText = text;
-        _dirty = true;
-    }
-
     // --- Status line ---
 
     /// <summary>
@@ -267,7 +245,7 @@ internal sealed class Viewport : IDisposable
     /// Called by <see cref="Redraw"/>, which then flushes to the terminal.
     ///
     /// When the sidebar is visible, the terminal is split into two full-height
-    /// columns: left (header + conversation + input + status) and right (sidebar).
+    /// columns: left (conversation + input + status) and right (sidebar).
     /// A thin │ separator in BrightBlack divides them. When the sidebar is hidden,
     /// the left column uses the full terminal width.
     ///
@@ -298,7 +276,6 @@ internal sealed class Viewport : IDisposable
             sidebarWidth = 0;
         }
 
-        RenderHeader(buffer, leftWidth);
         RenderConversation(buffer, leftWidth, viewportHeight);
         RenderInputArea(buffer, leftWidth, viewportHeight);
         RenderStatusBar(buffer, leftWidth, viewportHeight);
@@ -310,41 +287,20 @@ internal sealed class Viewport : IDisposable
     }
 
     /// <summary>
-    /// Renders the header region: session ID left-aligned, context usage right-aligned
-    /// (row 0), and a heavy horizontal rule (row 1).
-    /// </summary>
-    private void RenderHeader(ScreenBuffer buffer, int width)
-    {
-        var headerRow = new CellRow();
-
-        // Session ID left-aligned in BrightBlack so it is visually subordinate
-        // to the conversation content below.
-        if (_sessionId is not null)
-            headerRow.Append(_sessionId, Color.BrightBlack, Color.Default);
-
-        // Context usage right-aligned on the same row (e.g. "125,000 / 250,000 - 50%").
-        if (_contextUsageText is not null)
-        {
-            var padNeeded = width - headerRow.Cells.Count - _contextUsageText.Length;
-            for (var i = 0; i < padNeeded; i++)
-                headerRow.Append(' ', Color.Default, Color.Default);
-            headerRow.Append(_contextUsageText, Color.BrightBlack, Color.Default);
-        }
-
-        buffer.WriteRow(0, headerRow);
-
-        // Heavy horizontal line mirroring the input area top rule.
-        var headerRule = CellRow.FromText(new string(TopRuleChar, width), Color.BrightBlack, Color.Default);
-        buffer.WriteRow(1, headerRule);
-    }
-
-    /// <summary>
     /// Renders the conversation region: tail-clips the EventList rows to fit
-    /// between the header and input area.
+    /// between the header and input area. When the conversation is empty (before
+    /// the first user message), renders the splash art centered instead.
     /// </summary>
     private void RenderConversation(ScreenBuffer buffer, int width, int viewportHeight)
     {
-        var allRows   = _root.Render(width);
+        var allRows = _root.Render(width);
+
+        if (allRows.Count == 0)
+        {
+            RenderSplash(buffer, width, viewportHeight);
+            return;
+        }
+
         var startIndex = Math.Max(0, allRows.Count - viewportHeight);
 
         for (var bufRow = 0; bufRow < viewportHeight; bufRow++)
@@ -353,6 +309,26 @@ internal sealed class Viewport : IDisposable
             if (rowIndex < allRows.Count)
                 buffer.WriteRow(HeaderRows + bufRow, allRows[rowIndex]);
             // Rows beyond the content stay Cell.Empty (blank / default colors).
+        }
+    }
+
+    /// <summary>
+    /// Renders the splash art horizontally and vertically centered within the
+    /// conversation region. Shown only when the EventList is empty.
+    /// </summary>
+    private static void RenderSplash(ScreenBuffer buffer, int width, int viewportHeight)
+    {
+        var artWidth = SplashLines.Max(l => l.Length);
+        var startRow = HeaderRows + Math.Max(0, (viewportHeight - SplashLines.Length) / 2);
+        var startCol = Math.Max(0, (width - artWidth) / 2);
+
+        for (var i = 0; i < SplashLines.Length; i++)
+        {
+            var row = new CellRow();
+            for (var p = 0; p < startCol; p++)
+                row.Append(' ', Color.Default, Color.Default);
+            row.Append(SplashLines[i], Color.BrightBlack, Color.Default);
+            buffer.WriteRow(startRow + i, row);
         }
     }
 
@@ -450,14 +426,16 @@ internal sealed class Viewport : IDisposable
         int leftWidth, int sidebarWidth)
     {
         var separatorCol = leftWidth;
-        var sidebarStartCol = leftWidth + 1; // one column after the separator
+        // One column for the separator, one for padding — content starts 2 cols in.
+        var sidebarStartCol = leftWidth + 2;
+        var contentWidth = sidebarWidth - 1; // account for the padding column
 
         // Draw the vertical separator for every row of the terminal.
         for (var row = 0; row < height; row++)
             buffer.WriteCell(row, separatorCol, new Cell(SeparatorChar, Color.BrightBlack, Color.Default));
 
-        // Render sidebar content top-aligned.
-        var sidebarRows = _sidebar!.Render(sidebarWidth);
+        // Render sidebar content top-aligned with a 1-column pad after the separator.
+        var sidebarRows = _sidebar!.Render(contentWidth);
         for (var ri = 0; ri < sidebarRows.Count && ri < height; ri++)
         {
             var cells = sidebarRows[ri].Cells;

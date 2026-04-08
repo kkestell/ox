@@ -16,10 +16,10 @@ internal sealed class Sidebar : IRenderable
     public event Action? Changed;
 
     /// <summary>
-    /// True when at least one section has content to display. The viewport
-    /// checks this to decide whether to allocate sidebar width.
+    /// Always true — the sidebar is permanently visible so the layout remains
+    /// stable even when no section has content yet.
     /// </summary>
-    public bool IsVisible => _sections.Any(s => s.HasContent);
+    public bool IsVisible => true;
 
     /// <summary>
     /// Registers a section and subscribes to its <see cref="IRenderable.Changed"/>

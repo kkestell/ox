@@ -92,23 +92,24 @@ internal sealed class TuiService(
         var router = new EventRouter(eventList);
         var todoStore = new Ur.Todo.TodoStore();
 
-        // Build the sidebar bound to the standalone TodoStore. The session's
-        // TodoWriteTool writes to this same store instance.
+        // Build the sidebar. The context section sits at the top so the user
+        // always sees how much context window remains. The todo section follows.
+        var contextSection = new ContextSection();
         var todoSection = new TodoSection(todoStore);
         var sidebar = new Sidebar();
+        sidebar.AddSection(contextSection);
         sidebar.AddSection(todoSection);
 
         // Construct the viewport now that we have the sidebar.
         viewport = new Viewport(eventList, sidebar);
 
-        var callbacks = PermissionHandler.Build(router, inputReader, viewport);
+        var callbacks = PermissionHandler.Build(router, inputReader, viewport, host.WorkspacePath);
         var session = host.CreateSession(callbacks, todoStore);
 
-        viewport.SetSessionId(session.Id);
         viewport.SetModelId(session.ActiveModelId);
 
         // If resuming a session, show context fill immediately from persisted usage.
-        UpdateContextUsage(viewport, host, session);
+        UpdateContextUsage(contextSection, host, session);
 
         viewport.Start();
 
@@ -151,7 +152,7 @@ internal sealed class TuiService(
 
                             // Update context fill display when a turn completes with usage data.
                             if (evt is TurnCompleted)
-                                UpdateContextUsage(viewport, host, session);
+                                UpdateContextUsage(contextSection, host, session);
 
                             // Fatal errors are unrecoverable — log and exit the process.
                             if (evt is not TurnError { IsFatal: true } fatal)
@@ -268,10 +269,10 @@ internal sealed class TuiService(
 
     /// <summary>
     /// Computes the context fill display string from the session's last input token
-    /// count and the model's context length, then pushes it to the viewport header.
-    /// Format: "125,000 / 250,000 - 50%". No-op if usage data is unavailable.
+    /// count and the model's context length, then pushes it to the sidebar's context
+    /// section. Format: "125,000 / 250,000 - 50%". No-op if usage data is unavailable.
     /// </summary>
-    private static void UpdateContextUsage(Viewport viewport, UrHost host, UrSession session)
+    private static void UpdateContextUsage(ContextSection section, UrHost host, UrSession session)
     {
         if (session.LastInputTokens is not { } inputTokens)
             return;
@@ -283,6 +284,6 @@ internal sealed class TuiService(
             return;
 
         var pct = (int)Math.Round(inputTokens / (double)contextLength * 100);
-        viewport.SetContextUsage($"{inputTokens:N0} / {contextLength:N0} - {pct}%");
+        section.SetUsage($"{inputTokens:N0} / {contextLength:N0} - {pct}%");
     }
 }

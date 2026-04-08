@@ -134,8 +134,11 @@ internal static class ChatCommand
                             ? $" [{string.Join(", ", req.AllowedScopes.Select(s => s.ToString().ToLowerInvariant()))}]"
                             : "";
 
+                        // Strip workspace root prefix so file targets display as relative paths.
+                        var displayTarget = FormatTarget(req.Target, host.WorkspacePath);
+
                         Console.Error.Write(
-                            $"Allow {req.OperationType} on '{req.Target}' by '{req.RequestingExtension}'?"
+                            $"Allow '{req.RequestingExtension}' to {req.OperationType} '{displayTarget}'?"
                             + $" (y/n{scopeHints}): ");
 
                         var input = Console.ReadLine()?.Trim().ToLowerInvariant();
@@ -241,5 +244,21 @@ internal static class ChatCommand
             }, cancellationToken));
 
         return cmd;
+    }
+
+    /// <summary>
+    /// Strips the workspace root prefix so file targets display as short,
+    /// workspace-relative paths. Non-path targets (e.g. shell commands) and
+    /// paths outside the workspace pass through unchanged.
+    /// </summary>
+    private static string FormatTarget(string target, string workspaceRoot)
+    {
+        var prefix = workspaceRoot.EndsWith(Path.DirectorySeparatorChar)
+            ? workspaceRoot
+            : workspaceRoot + Path.DirectorySeparatorChar;
+
+        return target.StartsWith(prefix, StringComparison.Ordinal)
+            ? target[prefix.Length..]
+            : target;
     }
 }

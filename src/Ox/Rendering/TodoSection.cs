@@ -8,21 +8,20 @@ namespace Ox.Rendering;
 /// updates the list via <c>todo_write</c>.
 ///
 /// Layout:
-///   Plan
-///     ✓ Read config         (green — completed)
-///     ● Implement feature   (yellow — in progress)
-///     ○ Write tests         (BrightBlack — pending)
-///
-///   2/3 completed           (BrightBlack — summary)
+///   Plan                    (bold white — section header)
+///   ✓ Read config           (green — completed)
+///   ● Implement feature     (yellow — in progress)
+///   ○ Write tests           (BrightBlack — pending)
 /// </summary>
 internal sealed class TodoSection : ISidebarSection
 {
     private readonly TodoStore _store;
 
-    // Status indicator glyphs and their colors.
-    private const string CompletedPrefix  = "  \u2713 "; // ✓
-    private const string InProgressPrefix = "  \u25cf "; // ●
-    private const string PendingPrefix    = "  \u25cb "; // ○
+    // Status indicator glyphs and their colors. Compact prefixes — no leading
+    // indent since the viewport already pads the sidebar content by one column.
+    private const string CompletedPrefix  = "\u2713 "; // ✓
+    private const string InProgressPrefix = "\u25cf "; // ●
+    private const string PendingPrefix    = "\u25cb "; // ○
 
     public TodoSection(TodoStore store)
     {
@@ -44,9 +43,8 @@ internal sealed class TodoSection : ISidebarSection
 
         var rows = new List<CellRow>();
 
-        // Header: "Plan" in BrightBlack.
-        rows.Add(CellRow.FromText("Plan", Color.BrightBlack, Color.Default));
-        rows.Add(CellRow.Empty);
+        // Header: bold bright white to stand out as a section title.
+        rows.Add(CellRow.FromText("Plan", Color.White, Color.Default, CellStyle.Bold));
 
         // Each item with a status indicator. Content is word-wrapped to the
         // available width minus the prefix length.
@@ -79,11 +77,6 @@ internal sealed class TodoSection : ISidebarSection
                 rows.Add(row);
             }
         }
-
-        // Summary line: "2/5 completed" in BrightBlack, separated by a blank row.
-        var completed = items.Count(i => i.Status == TodoStatus.Completed);
-        rows.Add(CellRow.Empty);
-        rows.Add(CellRow.FromText($"  {completed}/{items.Count} completed", Color.BrightBlack, Color.Default));
 
         return rows;
     }

@@ -20,7 +20,7 @@ internal sealed class ToolRenderable(string formattedCall) : IRenderable
 
     /// <summary>
     /// Called when the user is being asked to approve or deny this tool call.
-    /// Appends an "[awaiting approval]" segment so the user knows what they're deciding.
+    /// Transitions the circle color state so it stays yellow until resolved.
     /// </summary>
     public void SetAwaitingApproval()
     {
@@ -60,16 +60,10 @@ internal sealed class ToolRenderable(string formattedCall) : IRenderable
         var row = new CellRow();
 
         // Tool signature in dark gray — always present in every state.
+        // The circle color (yellow → green/red) conveys lifecycle state;
+        // no text suffix is needed. The permission prompt itself is shown
+        // in the input area by InputReader, not inline here.
         row.Append(formattedCall, Color.BrightBlack, Color.Default);
-
-        // Only AwaitingApproval adds a text suffix — the yellow circle alone doesn't
-        // distinguish "awaiting" from "running". Completed states rely on circle color
-        // (green/red) to convey success/failure, so no → ok / → error suffixes.
-        if (_state != ToolState.AwaitingApproval)
-            return [row];
-
-        row.Append(" ", Color.BrightBlack, Color.Default);
-        row.Append("[awaiting approval]", Color.Yellow, Color.Default);
 
         return [row];
     }

@@ -247,8 +247,8 @@ public sealed class TodoSectionTests
 
         var rows = section.Render(30);
 
-        // Header row: "Plan"
-        Assert.True(rows.Count >= 3, $"Expected at least 3 rows, got {rows.Count}");
+        // Header row + item = at least 2 rows.
+        Assert.True(rows.Count >= 2, $"Expected at least 2 rows, got {rows.Count}");
         Assert.Contains("Plan", RowToString(rows[0]));
     }
 
@@ -270,9 +270,6 @@ public sealed class TodoSectionTests
         Assert.Contains("Done task", text);
         Assert.Contains("Active task", text);
         Assert.Contains("Waiting task", text);
-
-        // Check the summary line.
-        Assert.Contains("1/3 completed", text);
     }
 
     [Fact]
@@ -303,23 +300,6 @@ public sealed class TodoSectionTests
     }
 
     [Fact]
-    public void Render_ProgressSummary_AtBottom()
-    {
-        var store = new TodoStore();
-        store.Update([
-            new TodoItem("A", TodoStatus.Completed),
-            new TodoItem("B", TodoStatus.Completed),
-            new TodoItem("C", TodoStatus.Pending)
-        ]);
-        var section = new TodoSection(store);
-
-        var rows = section.Render(30);
-        var lastRow = RowToString(rows[^1]);
-
-        Assert.Contains("2/3 completed", lastRow);
-    }
-
-    [Fact]
     public void Changed_FiresWhenStoreUpdates()
     {
         var store = new TodoStore();
@@ -336,7 +316,7 @@ public sealed class TodoSectionTests
     public void Render_LongItem_WordWrapsAtSpace()
     {
         var store = new TodoStore();
-        // "  ○ " prefix is 4 chars. With width=20, content gets 16 chars.
+        // "○ " prefix is 2 chars. With width=20, content gets 18 chars.
         // "Short words wrap nicely here" is 28 chars, should wrap.
         store.Update([new TodoItem("Short words wrap nicely here", TodoStatus.Pending)]);
         var section = new TodoSection(store);
@@ -358,7 +338,7 @@ public sealed class TodoSectionTests
         store.Update([new TodoItem(longWord, TodoStatus.Pending)]);
         var section = new TodoSection(store);
 
-        // Width 20, prefix 4 → content width 16. Should produce 2 lines.
+        // Width 20, prefix 2 → content width 18. Should produce 2 lines.
         var rows = section.Render(20);
         var text = string.Join("", rows.Select(RowToString));
 
@@ -371,15 +351,15 @@ public sealed class TodoSectionTests
     public void Render_ItemExactlyFitsWidth_NoWrap()
     {
         var store = new TodoStore();
-        // Prefix "  ○ " is 4 chars. With width=20, content gets 16 chars.
-        // An item exactly 16 chars should fit in one line.
-        store.Update([new TodoItem("Exactly16chars!!", TodoStatus.Pending)]);
+        // Prefix "○ " is 2 chars. With width=20, content gets 18 chars.
+        // An item exactly 18 chars should fit in one line.
+        store.Update([new TodoItem("Exactly18charsss!!", TodoStatus.Pending)]);
         var section = new TodoSection(store);
 
         var rows = section.Render(20);
-        // Header "Plan" + blank + item + blank + summary = 5 rows minimum.
+        // Header "Plan" + item = 2 rows.
         // Only one row should contain the item text (no continuation).
-        var itemRows = rows.Where(r => RowToString(r).Contains("Exactly16")).ToList();
+        var itemRows = rows.Where(r => RowToString(r).Contains("Exactly18")).ToList();
         Assert.Single(itemRows);
     }
 
@@ -406,29 +386,9 @@ public sealed class SidebarTests
     }
 
     [Fact]
-    public void IsVisible_FalseWhenNoSections()
+    public void IsVisible_AlwaysTrue()
     {
         var sidebar = new Sidebar();
-        Assert.False(sidebar.IsVisible);
-    }
-
-    [Fact]
-    public void IsVisible_FalseWhenAllSectionsEmpty()
-    {
-        var sidebar = new Sidebar();
-        sidebar.AddSection(new FakeSection(false));
-        sidebar.AddSection(new FakeSection(false));
-
-        Assert.False(sidebar.IsVisible);
-    }
-
-    [Fact]
-    public void IsVisible_TrueWhenAnySectionHasContent()
-    {
-        var sidebar = new Sidebar();
-        sidebar.AddSection(new FakeSection(false));
-        sidebar.AddSection(new FakeSection(true));
-
         Assert.True(sidebar.IsVisible);
     }
 
@@ -504,34 +464,10 @@ public sealed class ViewportSidebarTests
     {
         var eventList = new EventList();
         var viewport = new Viewport(eventList);
-        viewport.SetSessionId("test-session");
 
         var buffer = viewport.BuildFrame(80, 24);
-        var headerText = RowText(buffer, 0, 80).TrimEnd('\0').TrimEnd();
 
-        Assert.StartsWith("test-session", headerText);
         // No separator should appear anywhere when there's no sidebar.
-        AssertNoSeparator(buffer, 80, 24);
-    }
-
-    [Fact]
-    public void BuildFrame_HiddenSidebar_UsesFullWidth()
-    {
-        // Sidebar with no content should not affect layout.
-        var store = new TodoStore();
-        var section = new TodoSection(store);
-        var sidebar = new Sidebar();
-        sidebar.AddSection(section);
-
-        var eventList = new EventList();
-        var viewport = new Viewport(eventList, sidebar);
-        viewport.SetSessionId("test-session");
-
-        var buffer = viewport.BuildFrame(80, 24);
-        var headerText = RowText(buffer, 0, 80).TrimEnd('\0').TrimEnd();
-
-        Assert.StartsWith("test-session", headerText);
-        // No separator should appear when the sidebar is hidden.
         AssertNoSeparator(buffer, 80, 24);
     }
 
@@ -572,10 +508,10 @@ public sealed class ViewportSidebarTests
         var buffer = viewport.BuildFrame(90, 24);
 
         // Find "Plan" in the sidebar area. The sidebar content starts at
-        // leftWidth + 1 (after the separator).
-        var sidebarStart = 90 - 30;
+        // leftWidth + 2 (separator + 1-col pad).
+        var sidebarContentStart = 90 - 30 + 1;
         var row0Text = RowText(buffer, 0, 90);
-        var sidebarText = row0Text[sidebarStart..].TrimEnd('\0').TrimEnd();
+        var sidebarText = row0Text[sidebarContentStart..].TrimEnd('\0').TrimEnd();
 
         Assert.Equal("Plan", sidebarText);
     }
@@ -597,5 +533,115 @@ public sealed class ViewportSidebarTests
         var buffer = viewport.BuildFrame(60, 24);
         var separatorCol = 39;
         Assert.Equal('│', buffer[0, separatorCol].Rune);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Viewport splash screen
+// ---------------------------------------------------------------------------
+
+public sealed class ViewportSplashTests
+{
+    private static string RowText(ScreenBuffer buffer, int row, int width)
+    {
+        var chars = new char[width];
+        for (var col = 0; col < width; col++)
+            chars[col] = buffer[row, col].Rune;
+        return new string(chars);
+    }
+
+    [Fact]
+    public void BuildFrame_EmptyConversation_ShowsSplashArt()
+    {
+        var eventList = new EventList();
+        var viewport = new Viewport(eventList);
+
+        var buffer = viewport.BuildFrame(80, 24);
+
+        // Collect all non-empty text from the conversation area (rows 0 .. height-6).
+        var viewportHeight = 24 - 5; // 19 rows
+        var allText = string.Concat(
+            Enumerable.Range(0, viewportHeight)
+                .Select(r => RowText(buffer, r, 80).TrimEnd('\0')));
+
+        Assert.Contains("▒█▀▀▀█", allText);
+        Assert.Contains("▒█▄▄▄█", allText);
+    }
+
+    [Fact]
+    public void BuildFrame_EmptyConversation_SplashIsCenteredVertically()
+    {
+        var eventList = new EventList();
+        var viewport = new Viewport(eventList);
+
+        var buffer = viewport.BuildFrame(80, 24);
+
+        // The splash is 3 lines tall. Viewport height = 24 - 5 = 19.
+        // Centered: startRow = (19 - 3) / 2 = 8.
+        var expectedStartRow = (24 - 5 - 3) / 2;
+
+        // The row before the splash should be empty.
+        var rowBefore = RowText(buffer, expectedStartRow - 1, 80).TrimEnd('\0').Trim();
+        Assert.Empty(rowBefore);
+
+        // The first splash row should contain the first line of the art.
+        var splashRow = RowText(buffer, expectedStartRow, 80).TrimEnd('\0').Trim();
+        Assert.Contains("▒█▀▀▀█", splashRow);
+    }
+
+    [Fact]
+    public void BuildFrame_EmptyConversation_SplashIsCenteredHorizontally()
+    {
+        var eventList = new EventList();
+        var viewport = new Viewport(eventList);
+
+        var buffer = viewport.BuildFrame(80, 24);
+
+        // The splash art is 12 chars wide. Centered in 80 cols: startCol = (80 - 12) / 2 = 34.
+        var expectedStartRow = (24 - 5 - 3) / 2;
+        var expectedStartCol = (80 - 12) / 2;
+
+        // The cell just before the art should be empty/space.
+        Assert.True(
+            buffer[expectedStartRow, expectedStartCol - 1].Rune is '\0' or ' ',
+            "Cell before splash art should be blank");
+
+        // The first character of the art should be '▒'.
+        Assert.Equal('▒', buffer[expectedStartRow, expectedStartCol].Rune);
+    }
+
+    [Fact]
+    public void BuildFrame_EmptyConversation_SplashIsBrightBlack()
+    {
+        var eventList = new EventList();
+        var viewport = new Viewport(eventList);
+
+        var buffer = viewport.BuildFrame(80, 24);
+
+        // Find the first '▒' in the buffer and verify its color.
+        var expectedStartRow = (24 - 5 - 3) / 2;
+        var expectedStartCol = (80 - 12) / 2;
+
+        Assert.Equal(Color.BrightBlack, buffer[expectedStartRow, expectedStartCol].Foreground);
+    }
+
+    [Fact]
+    public void BuildFrame_NonEmptyConversation_NoSplash()
+    {
+        var eventList = new EventList();
+        var renderable = new TextRenderable();
+        renderable.SetText("Hello");
+        eventList.Add(renderable);
+
+        var viewport = new Viewport(eventList);
+        var buffer = viewport.BuildFrame(80, 24);
+
+        // The splash characters should not appear anywhere.
+        var viewportHeight = 24 - 5;
+        var allText = string.Concat(
+            Enumerable.Range(0, viewportHeight)
+                .Select(r => RowText(buffer, r, 80).TrimEnd('\0')));
+
+        Assert.DoesNotContain("▒█▀▀▀█", allText);
     }
 }

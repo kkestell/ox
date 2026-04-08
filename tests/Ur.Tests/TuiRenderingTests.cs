@@ -291,16 +291,16 @@ public sealed class ToolRenderableTests
     }
 
     [Fact]
-    public void Render_AwaitingApproval_StillShowsApprovalText()
+    public void Render_AwaitingApproval_NoTextSuffix()
     {
-        // Yellow circle alone doesn't distinguish "awaiting" from "running",
-        // so the text label is retained.
+        // The permission prompt is shown in the input area, not inline.
+        // AwaitingApproval only affects circle color — no text suffix.
         var tool = new ToolRenderable(MakeStarted().FormatCall());
         tool.SetAwaitingApproval();
         var rows = tool.Render(80);
         var text = RowText(rows[0]);
         Assert.Contains("read_file", text);
-        Assert.Contains("[awaiting approval]", text);
+        Assert.DoesNotContain("[awaiting approval]", text);
     }
 }
 
@@ -519,10 +519,22 @@ public sealed class EventListTests
     }
 
     [Fact]
-    public void Render_UserContinuationWithChildren_VerticalBar()
+    public void Render_UserContinuationWithChildren_VerticalBarAlignedWithNestedChildren()
     {
-        // When a User message wraps and has nested children, continuation rows
-        // use │ + 4 spaces to signal the trunk continues to nested children below.
+        // When the last top-level User message wraps and has nested children,
+        // continuation rows place │ at column 3 — aligned with the nested
+        // children's ├/└ — not at column 0 (which would falsely imply more
+        // top-level siblings below).
+        //
+        // Correct:
+        //   └─ ● hello
+        //      │ world
+        //      └─ ● ok
+        //
+        // Wrong (│ at col 0):
+        //   └─ ● hello
+        //   │    world
+        //      └─ ● ok
         var list = new EventList();
         var user = new TextRenderable();
         user.SetText("hello world"); // will wrap at narrow width
@@ -539,14 +551,13 @@ public sealed class EventListTests
         // Row 0: └─ ● hello (last top-level, blue circle)
         Assert.Equal('└', RuneAt(rows[0], 0));
         Assert.Equal('●', RuneAt(rows[0], 3));
-        // Row 1: continuation — │ + 4 spaces (has nested children, so show trunk)
-        // Wait — the user is last top-level, but has nested children. showVertical = true,
-        // so isLast = false → MakeChildContinuationRow emits │ + 4 spaces.
-        Assert.Equal('│', RuneAt(rows[1], 0));
+        // Row 1: continuation — `   │ world` (│ at col 3, aligned with nested children)
+        Assert.Equal(' ', RuneAt(rows[1], 0));
         Assert.Equal(' ', RuneAt(rows[1], 1));
         Assert.Equal(' ', RuneAt(rows[1], 2));
-        Assert.Equal(' ', RuneAt(rows[1], 3));
+        Assert.Equal('│', RuneAt(rows[1], 3));
         Assert.Equal(' ', RuneAt(rows[1], 4));
+        Assert.Equal('w', RuneAt(rows[1], 5)); // "world" content starts at col 5
         // Row 2: nested child — `   └─ ● ok` (3-space nest for last parent + last nested)
         Assert.Equal(' ', RuneAt(rows[2], 0));
         Assert.Equal('└', RuneAt(rows[2], 3));
@@ -1081,99 +1092,67 @@ public sealed class EventListTests
 }
 
 // ---------------------------------------------------------------------------
-// Viewport header — context usage display
+// ContextSection
 // ---------------------------------------------------------------------------
 
-public sealed class ViewportHeaderTests
+public sealed class ContextSectionTests
 {
-    /// <summary>
-    /// Helper: extracts a string from a ScreenBuffer row by reading runes.
-    /// </summary>
-    private static string RowText(ScreenBuffer buffer, int row, int width)
+    /// <summary>Converts a CellRow to a plain string for assertions.</summary>
+    private static string RowToString(CellRow row) =>
+        new(row.Cells.Select(c => c.Rune).ToArray());
+
+    [Fact]
+    public void HasContent_AlwaysTrue()
     {
-        var chars = new char[width];
-        for (var col = 0; col < width; col++)
-            chars[col] = buffer[row, col].Rune;
-        return new string(chars);
+        var section = new ContextSection();
+        Assert.True(section.HasContent);
     }
 
     [Fact]
-    public void Header_ShowsSessionIdLeftAligned()
+    public void Render_NoUsage_ShowsPlaceholder()
     {
-        var eventList = new EventList();
-        var viewport = new Viewport(eventList);
-        viewport.SetSessionId("20260406-204144-842");
+        var section = new ContextSection();
+        var rows = section.Render(30);
+        var text = string.Join("\n", rows.Select(RowToString));
 
-        var buffer = viewport.BuildFrame(55, 24);
-        var headerText = RowText(buffer, 0, 55).TrimEnd('\0').TrimEnd();
-
-        Assert.StartsWith("20260406-204144-842", headerText);
+        Assert.Contains("Context", text);
+        Assert.Contains("—", text);
     }
 
     [Fact]
-    public void Header_ShowsContextUsageRightAligned()
+    public void Render_WithUsage_ShowsText()
     {
-        var eventList = new EventList();
-        var viewport = new Viewport(eventList);
-        viewport.SetSessionId("20260406-204144-842");
-        viewport.SetContextUsage("125,000 / 250,000 - 50%");
+        var section = new ContextSection();
+        section.SetUsage("125,000 / 250,000 - 50%");
+        var rows = section.Render(40);
+        var text = string.Join("\n", rows.Select(RowToString));
 
-        var buffer = viewport.BuildFrame(55, 24);
-        var headerText = RowText(buffer, 0, 55).TrimEnd('\0').TrimEnd();
-
-        // Session ID left, usage text right.
-        Assert.StartsWith("20260406-204144-842", headerText);
-        Assert.EndsWith("125,000 / 250,000 - 50%", headerText);
+        Assert.Contains("Context", text);
+        Assert.Contains("125,000 / 250,000 - 50%", text);
     }
 
     [Fact]
-    public void Header_UsageTextIsBrightBlack()
+    public void Changed_FiresOnSetUsage()
     {
-        var eventList = new EventList();
-        var viewport = new Viewport(eventList);
-        viewport.SetContextUsage("1,000 / 10,000 - 10%");
+        var section = new ContextSection();
+        var fired = false;
+        section.Changed += () => fired = true;
 
-        var buffer = viewport.BuildFrame(40, 24);
+        section.SetUsage("1,000 / 10,000 - 10%");
 
-        // The usage text should be rendered in BrightBlack. Find the last non-empty
-        // cell on row 0 and verify its foreground color.
-        var lastNonEmpty = -1;
-        for (var col = 39; col >= 0; col--)
-        {
-            if (buffer[0, col].Rune != '\0' && buffer[0, col] != Cell.Empty)
-            {
-                lastNonEmpty = col;
-                break;
-            }
-        }
-
-        Assert.True(lastNonEmpty >= 0, "Header row should have non-empty cells for usage text");
-        Assert.Equal(Color.BrightBlack, buffer[0, lastNonEmpty].Foreground);
+        Assert.True(fired);
     }
 
     [Fact]
-    public void Header_NoUsage_ShowsOnlySessionId()
+    public void Render_UsageTextIsBrightBlack()
     {
-        var eventList = new EventList();
-        var viewport = new Viewport(eventList);
-        viewport.SetSessionId("test-session");
+        var section = new ContextSection();
+        section.SetUsage("1,000 / 10,000 - 10%");
 
-        var buffer = viewport.BuildFrame(40, 24);
-        var headerText = RowText(buffer, 0, 40).TrimEnd('\0').TrimEnd();
-
-        Assert.Equal("test-session", headerText);
-    }
-
-    [Fact]
-    public void Header_Rule_IsHeavyHorizontalLine()
-    {
-        var eventList = new EventList();
-        var viewport = new Viewport(eventList);
-
-        var buffer = viewport.BuildFrame(10, 24);
-
-        // Row 1 should be all '━' (heavy horizontal rule).
-        for (var col = 0; col < 10; col++)
-            Assert.Equal('━', buffer[1, col].Rune);
+        var rows = section.Render(40);
+        // Find the row with the usage text and verify its color.
+        var usageRow = rows.First(r => RowToString(r).Contains("1,000"));
+        var firstDigitCell = usageRow.Cells.First(c => c.Rune == '1');
+        Assert.Equal(Color.BrightBlack, firstDigitCell.Foreground);
     }
 }
