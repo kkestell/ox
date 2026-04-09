@@ -125,7 +125,7 @@ internal sealed class EventRouter(EventList eventList)
             case ToolCallCompleted completed:
                 if (_toolCallMap.TryGetValue(completed.CallId, out var completedTool))
                 {
-                    completedTool.SetCompleted(completed.IsError);
+                    completedTool.SetCompleted(completed.IsError, completed.Result);
                     _toolCallMap.Remove(completed.CallId);
                 }
                 break;
@@ -209,7 +209,7 @@ internal sealed class EventRouter(EventList eventList)
             case ToolCallCompleted subCompleted:
                 if (_subagentToolCalls[subId].TryGetValue(subCompleted.CallId, out var subCompletedTool))
                 {
-                    subCompletedTool.SetCompleted(subCompleted.IsError);
+                    subCompletedTool.SetCompleted(subCompleted.IsError, subCompleted.Result);
                     _subagentToolCalls[subId].Remove(subCompleted.CallId);
                 }
                 break;

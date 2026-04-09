@@ -50,12 +50,17 @@ public sealed class ToolCallStarted : AgentLoopEvent
         return $"{ToolName}({string.Join(", ", parts)})";
     }
 
-    private static string FormatValue(object? value) => value switch
+    // Collapse newlines so tool args render on a single line in the TUI.
+    private static string FormatValue(object? value)
     {
-        null => "null",
-        JsonElement { ValueKind: JsonValueKind.String } je => je.GetString() ?? "",
-        _ => value.ToString() ?? ""
-    };
+        var raw = value switch
+        {
+            null => "null",
+            JsonElement { ValueKind: JsonValueKind.String } je => je.GetString() ?? "",
+            _ => value.ToString() ?? ""
+        };
+        return raw.ReplaceLineEndings(" ");
+    }
 }
 
 /// <summary>

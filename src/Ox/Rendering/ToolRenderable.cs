@@ -15,8 +15,14 @@ namespace Ox.Rendering;
 /// </summary>
 internal sealed class ToolRenderable(string formattedCall) : IRenderable
 {
+    // Cap how many result lines we show beneath the tool signature.
+    // Keeps large outputs (file reads, verbose glob results) from flooding
+    // the viewport. Lines beyond this limit are summarized as "(N more lines)".
+    private const int MaxResultLines = 5;
+
     private ToolState _state = ToolState.Started;
     private bool _isError;
+    private string? _result;
 
     public event Action? Changed;
 
@@ -32,12 +38,15 @@ internal sealed class ToolRenderable(string formattedCall) : IRenderable
 
     /// <summary>
     /// Called when the tool call completes (successfully or with an error).
-    /// Updates the circle color to green (success) or red (error).
+    /// Updates the circle color to green (success) or red (error) and stores
+    /// the result text for rendering beneath the signature row.
     /// </summary>
-    public void SetCompleted(bool isError)
+    public void SetCompleted(bool isError, string? result)
     {
         _state = ToolState.Completed;
         _isError = isError;
+        // Treat whitespace-only results as empty — no result lines to show.
+        _result = string.IsNullOrWhiteSpace(result) ? null : result;
         Changed?.Invoke();
     }
 
@@ -59,15 +68,45 @@ internal sealed class ToolRenderable(string formattedCall) : IRenderable
 
     public IReadOnlyList<CellRow> Render(int availableWidth)
     {
-        var row = new CellRow();
+        var rows = new List<CellRow>();
 
-        // Tool signature in dark gray — always present in every state.
+        // Row 0: tool signature in dark gray — always present in every state.
         // The circle color (yellow → green/red) conveys lifecycle state;
         // no text suffix is needed. The permission prompt itself is shown
         // in the input area by InputReader, not inline here.
-        row.Append(formattedCall, Color.BrightBlack, Color.Default);
+        var sigRow = new CellRow();
+        sigRow.Append(formattedCall, Color.BrightBlack, Color.Default);
+        rows.Add(sigRow);
 
-        return [row];
+        // Result rows: shown only after completion when the tool returned
+        // non-empty output. Uses └─ on the first line and indentation on
+        // continuations — visually subordinates the output to the tool call
+        // without implying a separate tree node.
+        if (_result is not null)
+        {
+            var lines = _result.Split('\n');
+            var visibleCount = Math.Min(lines.Length, MaxResultLines);
+
+            for (var i = 0; i < visibleCount; i++)
+            {
+                var resultRow = new CellRow();
+                // First result line gets └─ prefix; continuations get 3-space indent.
+                var prefix = i == 0 ? "└─ " : "   ";
+                resultRow.Append(prefix, Color.BrightBlack, Color.Default);
+                resultRow.Append(lines[i], Color.BrightBlack, Color.Default);
+                rows.Add(resultRow);
+            }
+
+            // Truncation indicator when the result exceeds MaxResultLines.
+            if (lines.Length > MaxResultLines)
+            {
+                var truncRow = new CellRow();
+                truncRow.Append($"   ({lines.Length - MaxResultLines} more lines)", Color.BrightBlack, Color.Default);
+                rows.Add(truncRow);
+            }
+        }
+
+        return rows;
     }
 
     private enum ToolState { Started, AwaitingApproval, Completed }

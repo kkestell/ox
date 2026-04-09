@@ -446,7 +446,7 @@ public sealed class ToolRenderableTests
     {
         // Circle color (green) conveys success — no text suffix needed.
         var tool = new ToolRenderable(MakeStarted().FormatCall());
-        tool.SetCompleted(isError: false);
+        tool.SetCompleted(isError: false, result: null);
         var rows = tool.Render(80);
         var text = RowText(rows[0]);
         Assert.Contains("read_file", text);
@@ -459,7 +459,7 @@ public sealed class ToolRenderableTests
     {
         // Circle color (red) conveys failure — no text suffix needed.
         var tool = new ToolRenderable(MakeStarted().FormatCall());
-        tool.SetCompleted(isError: true);
+        tool.SetCompleted(isError: true, result: null);
         var rows = tool.Render(80);
         var text = RowText(rows[0]);
         Assert.Contains("read_file", text);
@@ -478,6 +478,93 @@ public sealed class ToolRenderableTests
         var text = RowText(rows[0]);
         Assert.Contains("read_file", text);
         Assert.DoesNotContain("[awaiting approval]", text);
+    }
+
+    [Fact]
+    public void Render_CompletedWithResult_ShowsResultLines()
+    {
+        // Result lines appear beneath the signature with └─ on the first line
+        // and indentation on continuations.
+        var tool = new ToolRenderable(MakeStarted().FormatCall());
+        tool.SetCompleted(isError: false, result: "line1\nline2\nline3");
+        var rows = tool.Render(80);
+
+        Assert.Equal(4, rows.Count); // signature + 3 result lines
+        Assert.Contains("└─", RowText(rows[1]));
+        Assert.Contains("line1", RowText(rows[1]));
+        // Continuation lines use space-indent, not └─.
+        Assert.DoesNotContain("└─", RowText(rows[2]));
+        Assert.Contains("line2", RowText(rows[2]));
+        Assert.DoesNotContain("└─", RowText(rows[3]));
+        Assert.Contains("line3", RowText(rows[3]));
+    }
+
+    [Fact]
+    public void Render_CompletedWithResult_ExactlyMaxLines_NoTruncation()
+    {
+        // Boundary: exactly MaxResultLines (5) should show all lines with no truncation indicator.
+        var lines = string.Join("\n", Enumerable.Range(1, 5).Select(i => $"line{i}"));
+        var tool = new ToolRenderable(MakeStarted().FormatCall());
+        tool.SetCompleted(isError: false, result: lines);
+        var rows = tool.Render(80);
+
+        Assert.Equal(6, rows.Count); // signature + 5 result lines, no truncation
+        for (var i = 0; i < rows.Count; i++)
+            Assert.DoesNotContain("more lines", RowText(rows[i]));
+    }
+
+    [Fact]
+    public void Render_CompletedWithResult_TruncatesLongOutput()
+    {
+        // Results exceeding MaxResultLines (5) are truncated with a "(N more lines)" indicator.
+        var lines = string.Join("\n", Enumerable.Range(1, 10).Select(i => $"line{i}"));
+        var tool = new ToolRenderable(MakeStarted().FormatCall());
+        tool.SetCompleted(isError: false, result: lines);
+        var rows = tool.Render(80);
+
+        // signature + 5 visible lines + 1 truncation indicator
+        Assert.Equal(7, rows.Count);
+        Assert.Contains("(5 more lines)", RowText(rows[6]));
+    }
+
+    [Fact]
+    public void Render_CompletedWithEmptyResult_ShowsSignatureOnly()
+    {
+        // Empty or whitespace-only results produce no result rows.
+        var tool = new ToolRenderable(MakeStarted().FormatCall());
+        tool.SetCompleted(isError: false, result: "");
+        var rows = tool.Render(80);
+        Assert.Single(rows);
+
+        var tool2 = new ToolRenderable(MakeStarted().FormatCall());
+        tool2.SetCompleted(isError: false, result: "   \n  \n ");
+        rows = tool2.Render(80);
+        Assert.Single(rows);
+    }
+
+    [Fact]
+    public void Render_CompletedWithNullResult_ShowsSignatureOnly()
+    {
+        // Null result is the same as no output — signature row only.
+        var tool = new ToolRenderable(MakeStarted().FormatCall());
+        tool.SetCompleted(isError: false, result: null);
+        var rows = tool.Render(80);
+        Assert.Single(rows);
+    }
+
+    [Fact]
+    public void Render_CompletedError_ShowsResultLines()
+    {
+        // Error results are rendered the same way — the circle color (red)
+        // distinguishes errors, not the result text formatting.
+        var tool = new ToolRenderable(MakeStarted().FormatCall());
+        tool.SetCompleted(isError: true, result: "Permission denied");
+        var rows = tool.Render(80);
+
+        Assert.Equal(2, rows.Count);
+        Assert.Contains("└─", RowText(rows[1]));
+        Assert.Contains("Permission denied", RowText(rows[1]));
+        Assert.Equal(Color.Red, tool.CircleColor);
     }
 }
 
