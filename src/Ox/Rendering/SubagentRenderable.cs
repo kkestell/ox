@@ -3,26 +3,21 @@ using Te.Rendering;
 namespace Ox.Rendering;
 
 /// <summary>
-/// Groups all rendering output from a single subagent run into a tree-renderable
-/// block. The outer EventList treats this as a regular <see cref="BubbleStyle.Circle"/>
-/// child — it adds tree connectors (├─ ● or └─ ●) to the first row and continuation
-/// chrome (│ or spaces) to subsequent rows.
+/// Groups all rendering output from a single subagent run into a renderable block.
+/// The outer EventList treats this as a regular <see cref="BubbleStyle.Circle"/>
+/// child — it prepends a <c>● </c> prefix and continuation indent.
 ///
-/// Structure as seen after outer EventList applies tree chrome:
+/// Structure as seen after outer EventList applies circle chrome:
 ///
-///   ├─ ● run_subagent(prompt: "...")      ← row 0: tool call signature
-///   │    ├─ ● read_file(path: "foo.txt")  ← rows 1+: inner EventList tree output
-///   │    └─ ● write_file(path: "bar.txt")
+///   ● Subagent("do something")        ← row 0: tool call signature
+///     ● Read("foo.txt")               ← rows 1+: inner EventList flat output
+///     ● Write("bar.txt")
 ///
 /// Row 0 is the tool call signature (dark gray, same convention as ToolRenderable).
 /// Rows 1+ come from the inner EventList, which renders the subagent's children
-/// with its own tree connectors. The inner list is tail-clipped to
-/// <see cref="MaxInnerRows"/>; when clipping occurs, a ├─ ● ... ellipsis row
+/// with its own flat circle prefixes. The inner list is tail-clipped to
+/// <see cref="MaxInnerRows"/>; when clipping occurs, a <c>● ...</c> ellipsis row
 /// is prepended to signal that older events were dropped.
-///
-/// This mirrors the Viewport → EventList relationship one level deeper:
-/// Viewport tail-clips the outer EventList; SubagentRenderable tail-clips
-/// its inner EventList. Same pattern, one nesting level lower.
 /// </summary>
 internal sealed class SubagentRenderable : IRenderable
 {
@@ -119,17 +114,12 @@ internal sealed class SubagentRenderable : IRenderable
     }
 
     /// <summary>
-    /// Builds a static ellipsis row in the same tree-child format as a regular
-    /// Circle child: ├─ ● ... in dim BrightBlack to indicate truncation.
-    /// Uses <see cref="TreeChrome"/> constants so the characters stay in sync
-    /// with the rest of the tree rendering.
+    /// Builds a static ellipsis row in the flat circle style: ● ... in dim
+    /// BrightBlack to indicate that older events were truncated.
     /// </summary>
     private static CellRow MakeEllipsisRow()
     {
         var row = new CellRow();
-        row.Append(TreeChrome.BranchChar, Color.BrightBlack, Color.Default);
-        row.Append(TreeChrome.HorizontalChar, Color.BrightBlack, Color.Default);
-        row.Append(' ', Color.BrightBlack, Color.Default);
         row.Append(TreeChrome.CircleChar, Color.BrightBlack, Color.Default);
         row.Append(" ...", Color.BrightBlack, Color.Default);
         return row;

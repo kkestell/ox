@@ -29,25 +29,59 @@ public sealed class ToolCallStarted : AgentLoopEvent
     // without needing to intercept or re-parse the raw LLM message.
     public required IDictionary<string, object?> Arguments { get; init; }
 
+    // Friendly display names for built-in tools. Snake_case API names are mapped
+    // to concise PascalCase names that read better in the TUI. Unknown tools
+    // (extensions, MCP tools, etc.) fall back to auto-PascalCase conversion.
+    private static readonly Dictionary<string, string> DisplayNames = new()
+    {
+        ["bash"]          = "Bash",
+        ["read_file"]     = "Read",
+        ["write_file"]    = "Write",
+        ["update_file"]   = "Edit",
+        ["glob"]          = "Glob",
+        ["grep"]          = "Grep",
+        ["run_subagent"]  = "Subagent",
+        ["todo_write"]    = "Todo",
+    };
+
     /// <summary>
-    /// Formats the call as <c>tool_name(key: "val", ...)</c> for display.
-    /// Each argument value is truncated to 40 characters to avoid flooding narrow terminals.
+    /// Maps a snake_case tool name to a friendly display name. Known tools use
+    /// the <see cref="DisplayNames"/> dictionary; unknown tools are converted
+    /// to PascalCase by capitalizing each underscore-separated segment.
+    /// </summary>
+    private static string GetDisplayName(string toolName)
+    {
+        if (DisplayNames.TryGetValue(toolName, out var display))
+            return display;
+
+        // Fallback: capitalize first letter of each _-separated word.
+        return string.Concat(
+            toolName.Split('_')
+                .Where(s => s.Length > 0)
+                .Select(s => char.ToUpperInvariant(s[0]) + s[1..]));
+    }
+
+    /// <summary>
+    /// Formats the call as <c>DisplayName("val1", "val2")</c> for display.
+    /// Argument key names are omitted — only values are shown. Each value is
+    /// truncated to 40 characters to avoid flooding narrow terminals.
     /// </summary>
     public string FormatCall()
     {
         const int maxLen = 40;
+        var name = GetDisplayName(ToolName);
 
         if (Arguments.Count == 0)
-            return ToolName;
+            return name;
 
         var parts = Arguments.Select(kvp =>
         {
             var val = FormatValue(kvp.Value);
             var display = val.Length > maxLen ? val[..maxLen] + "..." : val;
-            return $"{kvp.Key}: \"{display}\"";
+            return $"\"{display}\"";
         });
 
-        return $"{ToolName}({string.Join(", ", parts)})";
+        return $"{name}({string.Join(", ", parts)})";
     }
 
     // Collapse newlines so tool args render on a single line in the TUI.

@@ -7,19 +7,21 @@ namespace Ox.Rendering;
 /// screen buffer.
 ///
 /// Layout (1-based terminal rows, 0-based buffer rows):
-///   Rows 1 .. (height-5) — conversation viewport (shows the tail of all rows)
-///   Row height-4          — top rule (▇ lower 7/8 block on a darker backing row)
-///   Row height-3          — input text row (typed text in white on gray)
-///   Row height-2          — empty spacer row below the input
+///   Rows 1 .. (height-6) — conversation viewport (shows the tail of all rows)
+///   Row height-5          — blank spacer between the transcript and composer
+///   Row height-4          — top border of the composer panel
+///   Row height-3          — input text row
+///   Row height-2          — spacer row between input and status
 ///   Row height-1          — status line (throbber left, model ID right)
-///   Row height            — blank footer row
+///   Row height            — bottom border of the composer panel
 ///
 /// Rendering is decoupled from event arrival via a dirty flag. When any renderable
 /// fires <see cref="IRenderable.Changed"/>, we set a flag rather than redrawing
 /// immediately. The main loop calls <see cref="RedrawIfDirty"/> at explicit points
 /// (after processing each input key, after each streamed event). During turns a
 /// per-turn Timer calls <see cref="ThrobberTick"/> at 1-second intervals to
-/// advance the status-line animation. No background polling timer runs.
+/// advance the status-line animation, while a lightweight resize timer handles
+/// terminal-size changes that arrive while input is blocked.
 ///
 /// The viewport owns a persistent <see cref="ConsoleBuffer"/> (_buffer) that
 /// dirty-tracks cells between frames. BuildFrame writes into _buffer on every
@@ -63,11 +65,18 @@ internal sealed class Viewport : IDisposable
     // caller (e.g. after SetInputPrompt is called mid-turn).
     private readonly object _redrawLock = new();
 
+    // Background timer that polls terminal dimensions every 250ms and sets the
+    // dirty flag when a resize is detected. This is the only way to notice a
+    // resize while the main loop is blocked waiting for input (SIGWINCH is not
+    // exposed by .NET's Console API on all platforms).
+    private Timer? _resizeTimer;
+
     // True between Start() and Stop() — prevents stray redraws after shutdown.
     private bool _running;
 
     // Status line state: the throbber animates while a turn is running, and the
-    // model ID is displayed right-aligned. Both live below the bottom rule.
+    // model ID is displayed right-aligned on the second content row of the
+    // composer panel.
     private volatile bool _turnRunning;
     private string? _modelId;
     private long _turnStartedAtTickMs = -1;
@@ -92,22 +101,29 @@ internal sealed class Viewport : IDisposable
         "▒█▄▄▄█ ▄▀▒▀▄"
     ];
 
-    // Footer colors come from the xterm 256-color grayscale ramp so the chat
-    // chrome reads as a single intentional band instead of mixing default
-    // terminal colors with app-owned rows.
-    private static readonly Color FooterBackground = Color.FromIndex(235); // Grey15
-    private static readonly Color TopRuleForeground = Color.FromIndex(235); // Grey15
-    private static readonly Color TopRuleBackground = Color.FromIndex(237); // Grey23
     private static readonly Color ModelForeground = Color.FromIndex(244); // Grey50
-    private const int FooterHorizontalMargin = 2;
+    private static readonly Color FooterBorderForeground = Color.FromIndex(244); // Grey50
+    // xterm grayscale index 238 reads darker than BrightBlack in most themes,
+    // which keeps the divider subdued relative to the white border.
+    private static readonly Color FooterDividerForeground = Color.FromIndex(238);
 
-    // The top rule uses a block glyph instead of box drawing so the input area
-    // feels like a surfaced panel rather than a boxed-off subwindow.
-    private const char TopRuleChar = '▇'; // U+2587 LOWER SEVEN EIGHTHS BLOCK
+    // Rounded box-drawing characters make the footer read as a single
+    // lightweight panel instead of a band of filled rows, which is closer to
+    // the chat-composer look the UI is moving toward.
+    private const char TopLeftCornerChar = '╭';
+    private const char TopRightCornerChar = '╮';
+    private const char BottomLeftCornerChar = '╰';
+    private const char BottomRightCornerChar = '╯';
+    private const char HorizontalBorderChar = '─';
+    private const char VerticalBorderChar = '│';
 
     // Number of terminal rows reserved for the input area:
-    // top rule + text row + bottom rule + status line + blank line.
+    // top border + text row + spacer row + status row + bottom border.
     private const int InputAreaRows = 5;
+
+    // Reserve one blank row above the composer so the transcript and footer do
+    // not visually collide when the event list reaches the bottom of the screen.
+    private const int ComposerGapRows = 1;
 
     // No header rows — session ID and context usage have been moved to the sidebar.
     private const int HeaderRows = 0;
@@ -164,6 +180,10 @@ internal sealed class Viewport : IDisposable
         Terminal.HideCursor();
         Terminal.ClearScreen();
         Redraw();
+
+        // Start polling for terminal resize. The callback runs on a ThreadPool
+        // thread, so it acquires _redrawLock inside Redraw() to stay safe.
+        _resizeTimer = new Timer(_ => CheckForResize(), null, 250, 250);
     }
 
     /// <summary>
@@ -175,6 +195,9 @@ internal sealed class Viewport : IDisposable
     /// </summary>
     public void Stop()
     {
+        _resizeTimer?.Dispose();
+        _resizeTimer = null;
+
         lock (_redrawLock)
         {
             if (!_running)
@@ -247,9 +270,24 @@ internal sealed class Viewport : IDisposable
     // --- Redraw ---
 
     /// <summary>
+    /// Polls the terminal dimensions and sets the dirty flag if they changed.
+    /// Called by <see cref="_resizeTimer"/> on a ThreadPool thread every 250ms.
+    /// This is how we detect SIGWINCH-style resize events — .NET doesn't
+    /// expose the signal directly on all platforms, so we poll instead.
+    /// </summary>
+    private void CheckForResize()
+    {
+        var (w, h) = Terminal.GetSize();
+        if (w != _lastWidth || h != _lastHeight)
+        {
+            _dirty = true;
+            Redraw();
+        }
+    }
+
+    /// <summary>
     /// Checks the dirty flag and redraws if needed. Called by the main loop
     /// after processing input keys and after routing each streamed event.
-    /// No background timer — the caller drives redraws at explicit points.
     /// </summary>
     public void RedrawIfDirty()
     {
@@ -320,8 +358,12 @@ internal sealed class Viewport : IDisposable
         // Resize the buffer when terminal dimensions change. Resize also resets
         // both front and back buffers, which forces a full repaint — correct
         // behaviour after a resize since the layout has shifted.
+        // We clear the screen first so that old content outside the new
+        // dimensions doesn't linger (the diff-based renderer only writes cells
+        // within the new buffer bounds).
         if (width != _lastWidth || height != _lastHeight)
         {
+            Terminal.ClearScreen();
             _buffer.Resize(width, height);
             _lastWidth  = width;
             _lastHeight = height;
@@ -331,7 +373,7 @@ internal sealed class Viewport : IDisposable
         // previous frame does not bleed through on rows we do not write.
         _buffer.Clear();
 
-        var viewportHeight = height - InputAreaRows - HeaderRows;
+        var viewportHeight = height - InputAreaRows - ComposerGapRows - HeaderRows;
 
         // Compute sidebar allocation. The sidebar gets up to 1/3 of the terminal
         // width (capped at MaxSidebarWidth), plus one column for the separator.
@@ -351,7 +393,6 @@ internal sealed class Viewport : IDisposable
 
         RenderConversation(leftWidth, viewportHeight);
         RenderInputArea(leftWidth, viewportHeight);
-        RenderStatusBar(leftWidth, viewportHeight);
 
         if (sidebarWidth > 0)
             RenderSidebar(width, height, leftWidth, sidebarWidth);
@@ -367,9 +408,19 @@ internal sealed class Viewport : IDisposable
     /// </summary>
     private void WriteRow(int row, CellRow cellRow)
     {
+        WriteRow(row, 0, cellRow);
+    }
+
+    /// <summary>
+    /// Writes a CellRow into the buffer at the given 0-based row index and
+    /// starting column. The composer panel uses this to center itself without
+    /// leaking offset logic into unrelated renderers.
+    /// </summary>
+    private void WriteRow(int row, int startCol, CellRow cellRow)
+    {
         var cells = cellRow.Cells;
         for (var col = 0; col < cells.Count; col++)
-            _buffer.SetCell(col, row, cells[col]);
+            _buffer.SetCell(startCol + col, row, cells[col]);
     }
 
     /// <summary>
@@ -419,81 +470,81 @@ internal sealed class Viewport : IDisposable
     }
 
     /// <summary>
-    /// Renders the input area as a footer band: a high-contrast top rule, the
-    /// editable input row, and an empty spacer row that keeps the status line
-    /// visually detached without reintroducing a second border.
+    /// Renders the chat composer shell: a rounded white border with the prompt
+    /// and status rows separated by a thin divider.
     /// </summary>
     private void RenderInputArea(int width, int viewportHeight)
     {
-        var topRule = CellRow.FromText(new string(TopRuleChar, width), TopRuleForeground, TopRuleBackground);
-        WriteRow(viewportHeight + HeaderRows, topRule);
+        var panelWidth = width;
+        var panelStartColumn = 0;
+        var panelTopRowIndex = viewportHeight + HeaderRows + ComposerGapRows;
+        var textRowIndex = panelTopRowIndex + 1;
+        var spacerRowIndex = panelTopRowIndex + 2;
+        var statusRowIndex = panelTopRowIndex + 3;
+        var panelBottomRowIndex = panelTopRowIndex + 4;
 
-        var textRowIndex = viewportHeight + HeaderRows + 1;
-        var spacerRowIndex = viewportHeight + HeaderRows + 2;
+        WritePanelBorderRow(panelTopRowIndex, panelStartColumn, panelWidth, TopLeftCornerChar, TopRightCornerChar);
 
-        FillRowBackground(textRowIndex, width, FooterBackground);
-        FillRowBackground(spacerRowIndex, width, FooterBackground);
-
-        // Text row: white input text on the footer background.
-        // The system cursor is hidden; we paint our own block cursor using
-        // TextDecoration.Reverse so it's visible against the footer fill rather
-        // than relying on the terminal's default colors.
-        var textRow = new CellRow();
-        for (var i = 0; i < FooterHorizontalMargin; i++)
-            textRow.Append(' ', Color.Default, FooterBackground);
-        textRow.Append(_inputPrompt, Color.White, FooterBackground);
-
-        // Ghost-text rendering: show the suggestion in gray whenever one is
-        // active. We intentionally keep the cursor path identical while a turn
-        // is running so the footer never flips into a separate "disabled"
-        // state; the input row remains a composer, not a status indicator.
-        if (!string.IsNullOrEmpty(_completionSuffix))
+        // Text row: white input text on the terminal's default background.
+        // The system cursor is hidden; we still paint our own cursor so the
+        // composer remains editable-looking even while the model is running.
+        WritePanelInteriorRow(textRowIndex, panelStartColumn, panelWidth, (row, contentWidth) =>
         {
-            textRow.Append(_completionSuffix[0], Color.BrightBlack, FooterBackground, TextDecoration.Reverse);
-            if (_completionSuffix.Length > 1)
-                textRow.Append(_completionSuffix[1..], Color.BrightBlack, FooterBackground);
-        }
-        else
+            AppendClipped(row, _inputPrompt, Color.White, Color.Default, contentWidth);
+            var remainingWidth = Math.Max(0, contentWidth - _inputPrompt.Length);
+
+            // Ghost-text rendering: show the suggestion in gray whenever one is
+            // active. We intentionally keep the cursor path identical while a
+            // turn is running so the footer never flips into a separate
+            // "disabled" state; the input row remains a composer, not a status
+            // indicator.
+            if (!string.IsNullOrEmpty(_completionSuffix) && remainingWidth > 0)
+            {
+                row.Append(_completionSuffix[0], Color.BrightBlack, Color.Default, TextDecoration.Reverse);
+                if (_completionSuffix.Length > 1 && remainingWidth > 1)
+                    AppendClipped(row, _completionSuffix[1..], Color.BrightBlack, Color.Default, remainingWidth - 1);
+            }
+            else if (remainingWidth > 0)
+            {
+                row.Append(' ', Color.White, Color.Default, TextDecoration.Reverse);
+            }
+        });
+
+        WritePanelDividerRow(spacerRowIndex, panelStartColumn, panelWidth);
+
+        WritePanelInteriorRow(statusRowIndex, panelStartColumn, panelWidth, (row, contentWidth) =>
         {
-            textRow.Append(' ', Color.Default, FooterBackground, TextDecoration.Reverse);
-        }
+            if (contentWidth <= 0)
+                return;
 
-        WriteRow(textRowIndex, textRow);
-    }
+            var usedWidth = 0;
 
-    /// <summary>
-    /// Renders the status bar: animated throbber on the left (only while a turn
-    /// is running) and model ID right-aligned.
-    /// </summary>
-    private void RenderStatusBar(int width, int viewportHeight)
-    {
-        var statusRowIndex = viewportHeight + HeaderRows + 3;
-        var blankFooterRowIndex = viewportHeight + HeaderRows + 4;
+            if (_turnRunning)
+            {
+                foreach (var cell in BuildThrobberCells(GetCurrentThrobberCounter()))
+                {
+                    if (usedWidth >= contentWidth)
+                        break;
 
-        FillRowBackground(statusRowIndex, width, FooterBackground);
-        FillRowBackground(blankFooterRowIndex, width, FooterBackground);
+                    row.Append(cell.Rune, cell.Foreground, Color.Default, cell.Decorations);
+                    usedWidth++;
+                }
+            }
 
-        var statusRow = new CellRow();
-        for (var i = 0; i < FooterHorizontalMargin; i++)
-            statusRow.Append(' ', Color.Default, FooterBackground);
+            if (_modelId is not null)
+            {
+                var modelTextWidth = Math.Min(_modelId.Length, contentWidth);
+                var modelStartColumn = Math.Max(usedWidth, contentWidth - modelTextWidth);
+                var spacingWidth = modelStartColumn - usedWidth;
 
-        if (_turnRunning)
-        {
-            foreach (var cell in BuildThrobberCells(GetCurrentThrobberCounter()))
-                statusRow.Append(cell.Rune, cell.Foreground, FooterBackground, cell.Decorations);
-        }
+                for (var i = 0; i < spacingWidth; i++)
+                    row.Append(' ', Color.Default, Color.Default);
 
-        if (_modelId is not null)
-        {
-            // Reserve a matching trailing gutter so the footer content stays
-            // optically centered within the band instead of touching the edge.
-            var padNeeded = width - statusRow.Cells.Count - _modelId.Length - FooterHorizontalMargin;
-            for (var i = 0; i < padNeeded; i++)
-                statusRow.Append(' ', Color.Default, FooterBackground);
-            statusRow.Append(_modelId, ModelForeground, FooterBackground);
-        }
+                AppendClipped(row, _modelId, ModelForeground, Color.Default, modelTextWidth);
+            }
+        });
 
-        WriteRow(statusRowIndex, statusRow);
+        WritePanelBorderRow(panelBottomRowIndex, panelStartColumn, panelWidth, BottomLeftCornerChar, BottomRightCornerChar);
     }
 
     /// <summary>
@@ -575,11 +626,106 @@ internal sealed class Viewport : IDisposable
     }
 
     /// <summary>
-    /// Fills a whole row before overlaying content so footer styling applies to
-    /// trailing whitespace as well as the visible text.
+    /// Appends text while respecting the row's remaining content budget. The
+    /// footer panel uses this to keep long prompts and model IDs inside the
+    /// rounded border instead of letting them bleed into it.
     /// </summary>
-    private void FillRowBackground(int row, int width, Color background) =>
-        _buffer.FillCells(0, row, width, ' ', Color.Default, background);
+    private static void AppendClipped(CellRow row, string text, Color foreground, Color background, int width)
+    {
+        if (width <= 0 || string.IsNullOrEmpty(text))
+            return;
+
+        var clippedLength = Math.Min(width, text.Length);
+        row.Append(text[..clippedLength], foreground, background);
+    }
+
+    /// <summary>
+    /// Writes the top or bottom border of the composer panel. The border is
+    /// deliberately white and uses rounded corners so it stands apart from the
+    /// conversation without reintroducing filled background bands.
+    /// </summary>
+    private void WritePanelBorderRow(int rowIndex, int startCol, int width, char leftCorner, char rightCorner)
+    {
+        if (width <= 0)
+            return;
+
+        var row = new CellRow();
+        if (width == 1)
+        {
+            row.Append(leftCorner, FooterBorderForeground, Color.Default);
+            WriteRow(rowIndex, startCol, row);
+            return;
+        }
+
+        row.Append(leftCorner, FooterBorderForeground, Color.Default);
+        for (var i = 0; i < width - 2; i++)
+            row.Append(HorizontalBorderChar, FooterBorderForeground, Color.Default);
+        row.Append(rightCorner, FooterBorderForeground, Color.Default);
+        WriteRow(rowIndex, startCol, row);
+    }
+
+    /// <summary>
+    /// Writes the internal divider between the prompt row and the status row.
+    /// The ends remain plain border rails while the run of dashes is darker
+    /// gray so the separator reads as structure, not chrome.
+    /// </summary>
+    private void WritePanelDividerRow(int rowIndex, int startCol, int width)
+    {
+        if (width <= 0)
+            return;
+
+        var row = new CellRow();
+        if (width == 1)
+        {
+            row.Append(VerticalBorderChar, FooterBorderForeground, Color.Default);
+            WriteRow(rowIndex, startCol, row);
+            return;
+        }
+
+        row.Append(VerticalBorderChar, FooterBorderForeground, Color.Default);
+        for (var i = 0; i < width - 2; i++)
+            row.Append(HorizontalBorderChar, FooterDividerForeground, Color.Default);
+        row.Append(VerticalBorderChar, FooterBorderForeground, Color.Default);
+        WriteRow(rowIndex, startCol, row);
+    }
+
+    /// <summary>
+    /// Writes one row inside the composer panel, including the vertical border
+    /// and the fixed one-cell inner padding on both sides.
+    /// </summary>
+    private void WritePanelInteriorRow(int rowIndex, int startCol, int width, Action<CellRow, int> writeContent)
+    {
+        if (width <= 0)
+            return;
+
+        var row = new CellRow();
+        if (width == 1)
+        {
+            row.Append(VerticalBorderChar, FooterBorderForeground, Color.Default);
+            WriteRow(rowIndex, startCol, row);
+            return;
+        }
+
+        if (width == 2)
+        {
+            row.Append(VerticalBorderChar, FooterBorderForeground, Color.Default);
+            row.Append(VerticalBorderChar, FooterBorderForeground, Color.Default);
+            WriteRow(rowIndex, startCol, row);
+            return;
+        }
+
+        row.Append(VerticalBorderChar, FooterBorderForeground, Color.Default);
+        row.Append(' ', Color.Default, Color.Default);
+
+        var contentWidth = Math.Max(0, width - 4);
+        writeContent(row, contentWidth);
+
+        while (row.Cells.Count < width - 1)
+            row.Append(' ', Color.Default, Color.Default);
+
+        row.Append(VerticalBorderChar, FooterBorderForeground, Color.Default);
+        WriteRow(rowIndex, startCol, row);
+    }
 
     public void Dispose() => Stop();
 }
