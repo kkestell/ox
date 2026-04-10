@@ -1,0 +1,30 @@
+ ● Please create some todo items for testing                                        │ Context                           
+                                                                                    │ 11,216 / 1,048,576 - 1%           
+ ● Todo("[{"content": "Test item 1: Initial setup...")                              │                                   
+   └─ Todo list updated (4 items).                                                  │ Plan                              
+                                                                                    │ ✓ Test item 1: Initial setup      
+ ● I've created four todo items for testing: one completed, one in progress, and    │ ● Test item 2: Feature development
+                                                                                    │ ○ Test item 3: Integration testing
+                                                                                    │ ○ Test item 4: Deployment         
+                                                                                    │   preparation                     
+                                                                                    │                                   
+                                                                                    │                                   
+                                                                                    │                                   
+                                                                                    │                                   
+                                                                                    │                                   
+                                                                                    │                                   
+                                                                                    │                                   
+                                                                                    │                                   
+                                                                                    │                                   
+                                                                                    │                                   
+                                                                                    │                                   
+                                                                                    │                                   
+                                                                                    │                                   
+                                                                                    │                                   
+                                                                                    │                                   
+                                                                                    │                                   
+╭──────────────────────────────────────────────────────────────────────────────────╮│                                   
+│                                                                                  ││                                   
+│──────────────────────────────────────────────────────────────────────────────────││                                   
+│                                                    google/gemini-3-flash-preview ││                                   
+╰──────────────────────────────────────────────────────────────────────────────────╯│                                   

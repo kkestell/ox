@@ -51,7 +51,7 @@ internal sealed class TodoWriteTool(TodoStore? store) : AIFunction
 
     public override string Description =>
         """
-        Update the task list displayed in the sidebar. Use this for multi-step tasks
+        Update the task list displayed in the conversation. Use this for multi-step tasks
         (3+ steps) to track progress. Each call replaces the entire list — always send
         all items, not just changed ones. Mark items "in_progress" before starting and
         "completed" when done. Keep at most one item "in_progress" at a time.

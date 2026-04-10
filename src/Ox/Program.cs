@@ -1,10 +1,9 @@
-using System.Text;
+using System.Threading.Channels;
 using dotenv.net;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Terminal.Gui.App;
-using Terminal.Gui.Drawing;
 using Terminal.Gui.Drivers;
 using Terminal.Gui.Input;
 using Ur;
@@ -39,7 +38,7 @@ await builder.Build().RunAsync();
 ///
 /// Two-phase lifecycle:
 ///   1. Configuration phase: plain Console I/O for API key/model setup (no Terminal.Gui).
-///   2. TUI phase: Terminal.Gui runs the full UI with conversation, input, sidebar.
+///   2. TUI phase: Terminal.Gui runs the full UI with conversation and input.
 /// </summary>
 internal sealed class TuiService(
     UrHost host,
@@ -71,7 +70,6 @@ internal sealed class TuiService(
 
             // --- TUI phase ---
             var autocomplete = new AutocompleteEngine(commands);
-            var todoStore = new Ur.Todo.TodoStore();
 
             // Initialize Terminal.Gui. This takes over the terminal (alternate buffer,
             // raw mode, etc.) — everything before this point uses plain console I/O.
@@ -80,30 +78,29 @@ internal sealed class TuiService(
 
             try
             {
-                var oxApp = new OxApp(app, todoStore, host.WorkspacePath);
+                var oxApp = new OxApp(app, host.WorkspacePath);
                 oxApp.InputAreaView.SetAutocomplete(autocomplete);
 
                 var conversationView = oxApp.ConversationView;
                 var inputAreaView = oxApp.InputAreaView;
-                var sidebarView = oxApp.SidebarView;
 
                 var router = new EventRouter(conversationView);
                 var callbacks = PermissionHandler.Build(router, oxApp, host.WorkspacePath);
-                var session = host.CreateSession(callbacks, todoStore);
+                var session = host.CreateSession(callbacks);
 
                 inputAreaView.SetModelId(session.ActiveModelId);
 
-                // If resuming a session, show context fill immediately from persisted usage.
-                UpdateContextUsage(sidebarView, host, session);
+                // If the session already knows its last usage, surface the percentage immediately.
+                UpdateContextUsage(inputAreaView, host, session);
 
-                // The REPL loop runs as a background task, marshalling UI updates via
-                // Application.Invoke(). Application.Run() blocks the main thread and
-                // drives the Terminal.Gui event loop.
+                // The REPL loop runs as a background task, consuming chat submissions
+                // directly from the ComposerController's channel. App.Invoke is used
+                // only for synchronous UI mutations; no async work runs inside Invoke.
                 _ = Task.Run(async () =>
                 {
                     try
                     {
-                        await RunReplLoop(oxApp, router, session, host, sidebarView, stoppingToken);
+                        await RunReplLoop(oxApp, router, session, host, stoppingToken);
                     }
                     catch (OperationCanceledException) { }
                     catch (Exception ex)
@@ -137,49 +134,41 @@ internal sealed class TuiService(
 
     /// <summary>
     /// The main REPL loop. Runs on a background task while app.Run drives
-    /// the UI event loop on the main thread. All UI mutations go through
-    /// app.Invoke() for thread safety.
+    /// the UI event loop on the main thread.
+    ///
+    /// Input is consumed from the ComposerController's chat channel, which the
+    /// view feeds on every Enter press. This replaces the former TCS + App.Invoke
+    /// arm/disarm pattern: the channel buffers typed-ahead input naturally, and
+    /// App.Invoke is used only for synchronous UI mutations (never for async work).
     /// </summary>
     private async Task RunReplLoop(
         OxApp oxApp,
         EventRouter router,
         UrSession session,
         UrHost urHost,
-        SidebarView sidebarView,
         CancellationToken stoppingToken)
     {
+        var controller = oxApp.ComposerController;
+
         while (!stoppingToken.IsCancellationRequested)
         {
-            // Read user input. This awaits a TCS that's completed on the UI thread
-            // when the user presses Enter, Ctrl+C, or Ctrl+D.
-            string? input = null;
-            var inputTcs = new TaskCompletionSource<string?>();
-            oxApp.App.Invoke(async () =>
-            {
-                try
-                {
-                    // SetTurnRunning and ReadLineAsync must happen in the same
-                    // UI-thread callback. If they were separate App.Invoke calls,
-                    // there would be a gap where _inputTcs is already completed
-                    // (from the previous Enter) but the new one hasn't been
-                    // created yet — causing OnTextFieldKeyDown to silently drop
-                    // Enter presses (race condition).
-                    oxApp.InputAreaView.SetTurnRunning(false);
-                    var result = await oxApp.InputAreaView.ReadLineAsync("",
-                        suffix => oxApp.InputAreaView.SetCompletion(suffix),
-                        stoppingToken);
-                    inputTcs.TrySetResult(result);
-                }
-                catch (Exception)
-                {
-                    inputTcs.TrySetResult(null); // Treat errors as EOF
-                }
-            });
-            input = await inputTcs.Task;
+            // Signal that no turn is running. Fire-and-forget on the UI thread;
+            // the throbber clears asynchronously, which is fine since the visual
+            // update has no ordering dependency with the channel read below.
+            oxApp.App.Invoke(() => oxApp.InputAreaView.SetTurnRunning(false));
 
-            // null = EOF (Ctrl+C, Ctrl+D) or cancellation.
-            if (input is null)
+            // Wait for the next user submission from the chat channel.
+            // - OperationCanceledException: host stopping token fired (Ctrl+C via host).
+            // - ChannelClosedException: user signalled EOF via in-app Ctrl+C/Ctrl+D.
+            string input;
+            try
+            {
+                input = await controller.ChatSubmissions.ReadAsync(stoppingToken);
+            }
+            catch (ChannelClosedException)
+            {
                 break;
+            }
 
             if (string.IsNullOrWhiteSpace(input))
                 continue;
@@ -223,7 +212,7 @@ internal sealed class TuiService(
                             router.RouteMainEvent(capturedEvt);
 
                             if (capturedEvt is TurnCompleted)
-                                UpdateContextUsage(sidebarView, urHost, session);
+                                UpdateContextUsage(oxApp.InputAreaView, urHost, session);
 
                             if (capturedEvt is TurnError { IsFatal: true } fatal)
                             {
@@ -333,9 +322,9 @@ internal sealed class TuiService(
     }
 
     /// <summary>
-    /// Computes the context fill display string and pushes it to the sidebar.
+    /// Computes the context fill percentage and pushes it to the composer status line.
     /// </summary>
-    private static void UpdateContextUsage(SidebarView sidebar, UrHost host, UrSession session)
+    private static void UpdateContextUsage(InputAreaView inputArea, UrHost host, UrSession session)
     {
         if (session.LastInputTokens is not { } inputTokens)
             return;
@@ -347,6 +336,6 @@ internal sealed class TuiService(
             return;
 
         var pct = (int)Math.Round(inputTokens / (double)contextLength * 100);
-        sidebar.SetContextUsage($"{inputTokens:N0} / {contextLength:N0} - {pct}%");
+        inputArea.SetContextUsagePercent(Math.Max(0, pct));
     }
 }

@@ -41,7 +41,7 @@ public sealed class ToolCallStarted : AgentLoopEvent
         ["glob"]          = "Glob",
         ["grep"]          = "Grep",
         ["run_subagent"]  = "Subagent",
-        ["todo_write"]    = "Todo",
+        ["todo_write"]    = "Plan",
     };
 
     /// <summary>
@@ -62,12 +62,15 @@ public sealed class ToolCallStarted : AgentLoopEvent
     }
 
     /// <summary>
-    /// Formats the call as <c>DisplayName("val1", "val2")</c> for display.
-    /// Argument key names are omitted — only values are shown. Each value is
-    /// truncated to 40 characters to avoid flooding narrow terminals.
+    /// Formats the call for display. Most tools render as
+    /// <c>DisplayName("val1", "val2")</c>; <c>todo_write</c> renders as a
+    /// multi-line plan block so the user sees task state instead of raw JSON.
     /// </summary>
     public string FormatCall()
     {
+        if (ToolName == "todo_write")
+            return FormatTodoWriteCall();
+
         const int maxLen = 40;
         var name = GetDisplayName(ToolName);
 
@@ -84,6 +87,25 @@ public sealed class ToolCallStarted : AgentLoopEvent
         return $"{name}({string.Join(", ", parts)})";
     }
 
+    /// <summary>
+    /// Renders the todo tool as a compact plan block so the conversation stream
+    /// can replace the old sidebar without forcing the user to read raw JSON.
+    /// </summary>
+    private string FormatTodoWriteCall()
+    {
+        const string header = "Plan";
+        if (!Arguments.TryGetValue("todos", out var todosArg) || todosArg is null)
+            return header;
+
+        if (!TryReadTodoLines(todosArg, out var lines))
+            return header;
+
+        if (lines.Count == 0)
+            return $"{header}\n(cleared)";
+
+        return string.Join("\n", new[] { header }.Concat(lines));
+    }
+
     // Collapse newlines so tool args render on a single line in the TUI.
     private static string FormatValue(object? value)
     {
@@ -94,6 +116,40 @@ public sealed class ToolCallStarted : AgentLoopEvent
             _ => value.ToString() ?? ""
         };
         return raw.ReplaceLineEndings(" ");
+    }
+
+    private static bool TryReadTodoLines(object todosArg, out List<string> lines)
+    {
+        lines = [];
+
+        if (todosArg is not JsonElement { ValueKind: JsonValueKind.Array } array)
+            return false;
+
+        foreach (var element in array.EnumerateArray())
+        {
+            if (!element.TryGetProperty("content", out var contentProp)
+                || !element.TryGetProperty("status", out var statusProp))
+            {
+                return false;
+            }
+
+            var content = contentProp.GetString();
+            var status = statusProp.GetString();
+            if (string.IsNullOrWhiteSpace(content) || string.IsNullOrWhiteSpace(status))
+                return false;
+
+            var marker = status switch
+            {
+                "completed" => "\u2713",
+                "in_progress" => "\u25cf",
+                "pending" => "\u25cb",
+                _ => "?"
+            };
+
+            lines.Add($"{marker} {content.ReplaceLineEndings(" ")}");
+        }
+
+        return true;
     }
 }
 
@@ -145,9 +201,9 @@ public sealed class TurnError : AgentLoopEvent
 /// <summary>
 /// The todo list was updated by the LLM via the <c>todo_write</c> tool.
 ///
-/// This event bridges the Ur and Ox layers — the EventRouter or sidebar can
-/// use it to trigger a redraw. Currently not emitted by the agent loop; the
-/// sidebar subscribes to <see cref="TodoStore.Changed"/> directly. Defined
+/// This event bridges the Ur and Ox layers. Currently not emitted by the agent
+/// loop; the conversation UI renders <c>todo_write</c> directly from the tool
+/// call arguments instead. Defined
 /// here as a forward-looking extension point for future event-driven wiring.
 /// </summary>
 public sealed class TodoUpdated : AgentLoopEvent

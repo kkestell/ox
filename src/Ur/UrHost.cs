@@ -188,9 +188,8 @@ public sealed class UrHost
     /// Pass null to auto-deny all sensitive operations (headless/test use).
     ///
     /// <paramref name="todos"/> optionally injects a pre-existing <see cref="TodoStore"/>
-    /// so the TUI can bind its sidebar before the session is created (breaking the
-    /// sidebar → session → callbacks → viewport circularity). When null, the session
-    /// creates its own store.
+    /// for callers that want to observe plan state outside the session. When null,
+    /// the session creates its own store.
     /// </summary>
     public UrSession CreateSession(TurnCallbacks? callbacks = null, TodoStore? todos = null) =>
         new(this, _sessions.Create(), [], isPersisted: false, activeModelId: null,

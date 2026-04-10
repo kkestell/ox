@@ -21,6 +21,7 @@ internal sealed class EventRouter(ConversationView conversationView)
     // Tool name for the run_subagent tool. Used to differentiate subagent
     // tool calls (which get nested entries) from regular tool calls.
     private const string SubagentToolName = "run_subagent";
+    private const string TodoToolName = "todo_write";
 
     // Cap how many result lines we show beneath a tool signature.
     private const int MaxResultLines = 5;
@@ -80,7 +81,10 @@ internal sealed class EventRouter(ConversationView conversationView)
                 // Create the tool state first so the dynamic circle color closure
                 // can capture it. The entry is constructed directly with the color
                 // supplier — no intermediate copy needed.
-                var toolState = new ToolEntryState();
+                var toolState = new ToolEntryState
+                {
+                    SuppressCompletionResult = started.ToolName == TodoToolName
+                };
                 _toolCallMap[started.CallId] = toolState;
 
                 var capturedState = toolState;
@@ -163,7 +167,10 @@ internal sealed class EventRouter(ConversationView conversationView)
                 break;
 
             case ToolCallStarted subStarted:
-                subState.AddToolCall(subStarted.CallId, subStarted.FormatCall());
+                subState.AddToolCall(
+                    subStarted.CallId,
+                    subStarted.FormatCall(),
+                    suppressCompletionResult: subStarted.ToolName == TodoToolName);
                 break;
 
             case ToolAwaitingApproval { CallId: var subAwaitingId }:
@@ -225,6 +232,7 @@ internal sealed class EventRouter(ConversationView conversationView)
 
         /// <summary>The entry added to the ConversationView for this tool call.</summary>
         public ConversationEntry? DisplayEntry { get; set; }
+        public bool SuppressCompletionResult { get; init; }
 
         public Color CircleColor => State switch
         {
@@ -242,6 +250,12 @@ internal sealed class EventRouter(ConversationView conversationView)
             _isError = isError;
 
             if (DisplayEntry is null) return;
+
+            if (SuppressCompletionResult && !isError)
+            {
+                DisplayEntry.NotifyChanged();
+                return;
+            }
 
             // Add result lines below the signature.
             if (!string.IsNullOrWhiteSpace(result))
@@ -308,9 +322,12 @@ internal sealed class EventRouter(ConversationView conversationView)
             AppendToLastSegment(_currentText, text, new Color(ColorName16.White));
         }
 
-        public void AddToolCall(string callId, string formattedCall)
+        public void AddToolCall(string callId, string formattedCall, bool suppressCompletionResult = false)
         {
-            var toolState = new ToolEntryState();
+            var toolState = new ToolEntryState
+            {
+                SuppressCompletionResult = suppressCompletionResult
+            };
             _toolCalls[callId] = toolState;
 
             var capturedState = toolState;

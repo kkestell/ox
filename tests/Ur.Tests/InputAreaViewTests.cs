@@ -20,4 +20,28 @@ public sealed class InputAreaViewTests
         Assert.Equal(OxThemeColor.White, palette.EditableForeground);
         Assert.Equal(OxThemeColor.Black, palette.EditableBackground);
     }
+
+    [Fact]
+    public void ComposeStatusText_WhenPercentAndModelPresent_FormatsCombinedSummary()
+    {
+        var text = InputStatusFormatter.Compose(47, "google/gemini-3-flash-preview");
+
+        Assert.Equal("47%  google/gemini-3-flash-preview", text);
+    }
+
+    [Fact]
+    public void ComposeStatusText_WhenOnlyModelPresent_ReturnsModel()
+    {
+        var text = InputStatusFormatter.Compose(null, "openai/gpt-5-nano");
+
+        Assert.Equal("openai/gpt-5-nano", text);
+    }
+
+    [Fact]
+    public void ComposeStatusText_WhenNothingPresent_ReturnsNull()
+    {
+        var text = InputStatusFormatter.Compose(null, null);
+
+        Assert.Null(text);
+    }
 }

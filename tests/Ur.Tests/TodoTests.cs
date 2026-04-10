@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Microsoft.Extensions.AI;
+using Ur.AgentLoop;
 using Ur.Todo;
 using Ur.Tools;
 
@@ -199,11 +200,48 @@ public sealed class TodoWriteToolTests
         var tool = new TodoWriteTool(null);
         Assert.Equal("todo_write", tool.Name);
     }
+
+    [Fact]
+    public void ToolCallStarted_FormatCall_RendersPlanItemsInsteadOfRawJson()
+    {
+        var evt = new ToolCallStarted
+        {
+            CallId = "call-1",
+            ToolName = "todo_write",
+            Arguments = new Dictionary<string, object?>
+            {
+                ["todos"] = MakeTodosJson(
+                    ("Initial setup", "completed"),
+                    ("Feature development", "in_progress"),
+                    ("Integration testing", "pending"))
+            }
+        };
+
+        Assert.Equal(
+            "Plan\n✓ Initial setup\n● Feature development\n○ Integration testing",
+            evt.FormatCall());
+    }
+
+    [Fact]
+    public void ToolCallStarted_FormatCall_EmptyTodos_RendersClearedState()
+    {
+        var evt = new ToolCallStarted
+        {
+            CallId = "call-2",
+            ToolName = "todo_write",
+            Arguments = new Dictionary<string, object?>
+            {
+                ["todos"] = MakeTodosJson()
+            }
+        };
+
+        Assert.Equal("Plan\n(cleared)", evt.FormatCall());
+    }
 }
 
 // --- Word wrap tests (ported from old TUI rendering tests) ---
 // Tests the ConversationView.WrapText helper which is the shared word-wrap
-// algorithm used by conversation entries and the sidebar todo section.
+// algorithm used by conversation entries and plan rendering.
 
 public sealed class WordWrapTests
 {

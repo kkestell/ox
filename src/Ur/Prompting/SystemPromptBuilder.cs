@@ -75,7 +75,7 @@ internal static class SystemPromptBuilder
         - Mark items "in_progress" before starting work, "completed" when done.
         - Keep at most one item "in_progress" at a time.
         - Don't use for trivial single-step tasks.
-        - When all work is complete, send an empty list to clear the sidebar.
+        - When all work is complete, send an empty list to clear the task list.
         # Output efficiency
 
         IMPORTANT: Go straight to the point. Try the simplest approach first without going in circles. Do not overdo it. Be extra concise.

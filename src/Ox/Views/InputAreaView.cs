@@ -10,14 +10,17 @@ namespace Ox.Views;
 
 /// <summary>
 /// The chat composer panel at the bottom of the screen. Draws a rounded border
-/// containing a real TextField for input, a divider, and a status line (throbber + model ID).
+/// containing a real TextField for input, a divider, and a status line
+/// (throbber + context/model summary).
 ///
-/// The TextField handles all standard text editing (backspace, cursor movement,
-/// word navigation, clipboard, etc.) natively. Special keys (Enter to submit,
-/// Ctrl+C/Ctrl+D for EOF, Tab for autocomplete) are intercepted via KeyDown.
+/// The view is a pure widget: it stays alive all the time, emits user intents
+/// upward through the ComposerController, and never owns async read lifecycles.
 ///
-/// ReadLineAsync bridges the event-driven TextField to async callers (REPL loop,
-/// permission prompts).
+/// Enter is handled via the Terminal.Gui accept path (Accepting event, triggered
+/// by the framework's Enter → Command.Accept key binding). All other special keys
+/// (Tab, Ctrl+C, Ctrl+D, Escape) are intercepted in KeyDown and are mode-aware:
+/// Tab and autocomplete are disabled in Permission mode so chat-only affordances
+/// cannot leak into permission prompts.
 /// </summary>
 internal sealed class InputAreaView : View
 {
@@ -49,14 +52,14 @@ internal sealed class InputAreaView : View
     // Autocomplete engine for slash-command ghost text.
     private AutocompleteEngine? _autocomplete;
 
-    // The TCS that ReadLineAsync awaits. Completed when the user presses Enter or EOF.
-    private TaskCompletionSource<string?>? _inputTcs;
-
-    // Callback for autocomplete ghost text updates.
-    private Action<string?>? _onCompletionChanged;
+    // The controller is bound after construction so OxApp can wire everything
+    // together before the event loop starts. Null-safe throughout: the view
+    // silently no-ops on submission if no controller is bound yet.
+    private ComposerController? _controller;
 
     private bool _turnRunning;
     private string? _modelId;
+    private int? _contextUsagePercent;
     private long _turnStartedAtTickMs = -1;
     private int _lastAnimatedCounter = -1;
     private object? _throbberToken;
@@ -81,22 +84,32 @@ internal sealed class InputAreaView : View
             CanFocus = true,
         };
 
+        // Enter submission is handled via the framework's accept path: View binds
+        // Enter → Command.Accept by default, and TextField does not override it.
+        // Accepting fires after the keystroke is fully processed, which keeps the
+        // submission logic decoupled from TextField's internal editing state.
+        _textField.Accepting += OnTextFieldAccepting;
 
-        // Intercept special keys before the TextField processes them.
+        // Intercept mode-aware shortcuts (Tab, Ctrl+C, Ctrl+D, Escape).
         _textField.KeyDown += OnTextFieldKeyDown;
 
-        // Track text changes for autocomplete ghost text.
-        _textField.ValueChanged += (_, _) =>
-        {
-            var suffix = _autocomplete?.GetCompletion(_textField.Text ?? "");
-            _onCompletionChanged?.Invoke(suffix);
-            SetNeedsDraw();
-        };
+        // Redraw when text changes so the status line stays in sync.
+        _textField.ValueChanged += (_, _) => SetNeedsDraw();
 
         Add(_textField);
     }
 
     // --- Public API ---
+
+    /// <summary>
+    /// Wires the view to its controller. Must be called on the UI thread before
+    /// the event loop starts. Binds the controller so Enter and EOF signals are
+    /// routed to the correct destination based on the current composer mode.
+    /// </summary>
+    public void BindController(ComposerController controller)
+    {
+        _controller = controller;
+    }
 
     /// <summary>
     /// Sets the autocomplete engine for slash-command ghost text.
@@ -114,49 +127,6 @@ internal sealed class InputAreaView : View
     {
         _promptPrefix = prompt;
         SetNeedsDraw();
-    }
-
-    /// <summary>
-    /// Sets the ghost-text completion suffix shown after the cursor.
-    /// Pass null to clear.
-    /// </summary>
-    public void SetCompletion(string? suffix)
-    {
-        // Ghost text rendering is no longer done here — the autocomplete suffix
-        // is tracked for tab-completion but visual ghost text has been removed.
-        SetNeedsDraw();
-    }
-
-    /// <summary>
-    /// Reads a line of user input. Returns the submitted text on Enter,
-    /// or null on EOF (Ctrl+C/Ctrl+D) or cancellation.
-    ///
-    /// The promptPrefix is displayed before the text field (used for permission
-    /// prompts). The onCompletionChanged callback is invoked when autocomplete
-    /// ghost text changes.
-    /// </summary>
-    public async Task<string?> ReadLineAsync(
-        string promptPrefix,
-        Action<string?>? onCompletionChanged = null,
-        CancellationToken ct = default)
-    {
-        _promptPrefix = promptPrefix;
-        _onCompletionChanged = onCompletionChanged;
-        _inputTcs = new TaskCompletionSource<string?>();
-
-        // Clear the text field for new input.
-        _textField.Text = "";
-        _textField.SetFocus();
-        onCompletionChanged?.Invoke(null);
-        SetNeedsDraw();
-
-        // Register cancellation.
-        await using var reg = ct.Register(() =>
-        {
-            _app.Invoke(() => _inputTcs?.TrySetResult(null));
-        });
-
-        return await _inputTcs.Task;
     }
 
     /// <summary>
@@ -204,63 +174,83 @@ internal sealed class InputAreaView : View
         SetNeedsDraw();
     }
 
-    // --- Key handling ---
+    /// <summary>
+    /// Sets the approximate context-window fill percentage shown to the left of
+    /// the model identifier on the status line.
+    /// </summary>
+    public void SetContextUsagePercent(int? percent)
+    {
+        _contextUsagePercent = percent;
+        SetNeedsDraw();
+    }
+
+    // --- Event handlers ---
 
     /// <summary>
-    /// Intercepts Enter, Tab, Ctrl+C, Ctrl+D, and Escape before the TextField
-    /// processes them. All other keys (backspace, arrows, etc.) pass through
-    /// to the TextField's native handling.
+    /// Called when Terminal.Gui invokes Command.Accept on the TextField (Enter key).
+    ///
+    /// Captures the current text, clears the field, and forwards the submission
+    /// to the controller. The controller routes it to the chat channel in Chat mode
+    /// or to the pending permission TCS in Permission mode.
+    ///
+    /// Setting e.Handled prevents the Accept event from bubbling further, which
+    /// avoids double-firing if the InputAreaView itself also has an Accept binding.
+    /// </summary>
+    private void OnTextFieldAccepting(object? sender, CommandEventArgs e)
+    {
+        var text = _textField.Text ?? "";
+        _textField.Text = "";
+        _controller?.OnViewSubmit(text);
+        e.Handled = true;
+    }
+
+    /// <summary>
+    /// Intercepts Tab, Ctrl+C, Ctrl+D, and Escape. Enter is no longer handled
+    /// here — it flows through the framework's accept path instead.
+    ///
+    /// Tab and autocomplete are chat-only: they are disabled in Permission mode
+    /// so suggestion state cannot leak into permission prompts.
+    /// Ctrl+C and Ctrl+D signal EOF; their semantics differ by mode (see controller).
+    /// Escape is left to the REPL loop's turn-cancellation handler.
     /// </summary>
     private void OnTextFieldKeyDown(object? sender, Key key)
     {
-        // If no input TCS is active, we're not reading input.
-        if (_inputTcs is null || _inputTcs.Task.IsCompleted)
-            return;
-
         var keyCode = key.KeyCode;
 
-        // Enter: submit the current text.
-        if (keyCode == KeyCode.Enter)
-        {
-            _onCompletionChanged?.Invoke(null);
-            var result = _textField.Text ?? "";
-            _inputTcs.TrySetResult(result);
-            key.Handled = true;
-            return;
-        }
-
-        // Tab: accept autocomplete suggestion.
+        // Tab: accept autocomplete suggestion (chat mode only).
         if (keyCode == KeyCode.Tab)
         {
-            var suffix = _autocomplete?.GetCompletion(_textField.Text ?? "");
-            if (suffix is not null)
+            if (_controller?.Mode == ComposerMode.Chat)
             {
-                _textField.Text = (_textField.Text ?? "") + suffix;
-                _textField.MoveEnd();
-                _onCompletionChanged?.Invoke(null);
+                var suffix = _autocomplete?.GetCompletion(_textField.Text ?? "");
+                if (suffix is not null)
+                {
+                    _textField.Text = (_textField.Text ?? "") + suffix;
+                    _textField.MoveEnd();
+                }
             }
             key.Handled = true;
             return;
         }
 
-        // Ctrl+C: EOF signal.
+        // Ctrl+C: EOF signal. In chat mode this closes the session; in permission
+        // mode it denies the request without closing the channel.
         if (keyCode == (KeyCode.C | KeyCode.CtrlMask))
         {
-            _onCompletionChanged?.Invoke(null);
-            _inputTcs.TrySetResult(null);
+            _controller?.OnViewEof();
             key.Handled = true;
             return;
         }
 
-        // Ctrl+D on empty buffer: EOF.
+        // Ctrl+D on empty buffer: EOF (same semantics as Ctrl+C).
         if (keyCode == (KeyCode.D | KeyCode.CtrlMask) && string.IsNullOrEmpty(_textField.Text))
         {
-            _inputTcs.TrySetResult(null);
+            _controller?.OnViewEof();
             key.Handled = true;
             return;
         }
 
-        // Escape: no-op during input (escape cancellation is turn-level).
+        // Escape: handled at the REPL level for turn cancellation, not here.
         if (keyCode == KeyCode.Esc)
         {
             key.Handled = true;
@@ -346,7 +336,7 @@ internal sealed class InputAreaView : View
     }
 
     /// <summary>
-    /// Draws the status line: throbber on the left, model ID on the right.
+    /// Draws the status line: throbber on the left, context/model summary on the right.
     /// </summary>
     private void DrawStatusRow(int row, int width)
     {
@@ -386,11 +376,14 @@ internal sealed class InputAreaView : View
             }
         }
 
-        // Model ID right-aligned
-        if (_modelId is not null)
+        // Context percentage and model identifier share a single right-aligned block so
+        // the model remains visually anchored while the percentage appears immediately
+        // to its left when usage data is available.
+        var statusText = InputStatusFormatter.Compose(_contextUsagePercent, _modelId);
+        if (statusText is not null)
         {
-            var modelLen = Math.Min(_modelId.Length, contentWidth);
-            var modelStart = Math.Max(usedWidth, contentWidth - modelLen);
+            var statusLen = Math.Min(statusText.Length, contentWidth);
+            var modelStart = Math.Max(usedWidth, contentWidth - statusLen);
             var spacing = modelStart - usedWidth;
 
             SetAttribute(new Attribute(Color.None, Bg));
@@ -398,8 +391,8 @@ internal sealed class InputAreaView : View
                 AddRune(' ');
 
             SetAttribute(new Attribute(ModelColor, Bg));
-            AddStr(_modelId[..modelLen]);
-            usedWidth = modelStart + modelLen;
+            AddStr(statusText[^statusLen..]);
+            usedWidth = modelStart + statusLen;
         }
 
         // Fill remaining space

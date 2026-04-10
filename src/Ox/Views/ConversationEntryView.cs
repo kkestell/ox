@@ -17,6 +17,11 @@ namespace Ox.Views;
 /// for wrapped lines, and styled spans via the text layout engine. Children
 /// (subagent nested entries) become nested ConversationEntryView SubViews
 /// indented under the parent.
+///
+/// Height is controlled via Dim.Auto(DimAutoStyle.Content): for entries without
+/// child SubViews (the common case) we call SetContentSize so DimAuto reads
+/// our row count directly. For subagent entries that DO have child SubViews,
+/// DimAuto sums up the child frames — no manual height bookkeeping needed.
 /// </summary>
 internal sealed class ConversationEntryView : View
 {
@@ -44,13 +49,6 @@ internal sealed class ConversationEntryView : View
     /// </summary>
     public EntryStyle Style => _entry.Style;
 
-    /// <summary>
-    /// Raised when this view's computed height changes, so the parent
-    /// <see cref="ConversationView"/> can update its content size and
-    /// auto-scroll.
-    /// </summary>
-    public event Action? EntryHeightChanged;
-
     public ConversationEntryView(ConversationEntry entry, bool isChild = false)
     {
         _entry = entry;
@@ -63,36 +61,38 @@ internal sealed class ConversationEntryView : View
     }
 
     /// <summary>
-    /// Recalculates the view's height based on the current content width
-    /// and updates the Height dimension. Called after the entry's content
-    /// changes and during initial layout.
+    /// Computes the number of rows this entry needs and reports it via
+    /// SetContentSize so that Dim.Auto(DimAutoStyle.Content) on our Height
+    /// picks it up in the same layout pass — no two-pass lag.
+    ///
+    /// For entries with child SubViews (subagent blocks) we skip this: DimAuto
+    /// computes height from the child frames directly, which is more accurate.
     /// </summary>
-    internal void RecalculateHeight()
+    private void UpdateContentSize()
     {
-        var width = Frame.Width;
+        // Without a positive width the row calculation would be meaningless;
+        // the viewport callback will fire again once layout assigns a real width.
+        int width = Viewport.Width;
         if (width <= 0)
             return;
 
-        var contentWidth = GetContentWidth(width);
-        var totalRows = ComputeTotalRows(contentWidth);
+        // Subagent entries have child SubViews — let Dim.Auto sum their frames.
+        if (_childViews.Count > 0)
+            return;
 
-        // Only update if the height actually changed — avoids infinite
-        // layout loops from setting Height triggering OnViewportChanged.
-        if (Frame.Height != totalRows)
-        {
-            Height = Dim.Absolute(totalRows);
-            EntryHeightChanged?.Invoke();
-        }
+        int contentWidth = GetContentWidth(width);
+        int rows = GetOwnRenderedLines(contentWidth).Count;
+        SetContentSize(new Size(width, rows));
     }
 
     /// <summary>
-    /// After layout assigns this view its Frame, compute the correct height
+    /// After layout assigns this view its Frame, recompute the content size
     /// from the actual width. This handles the initial sizing and any resize.
     /// </summary>
     protected override void OnViewportChanged(DrawEventArgs args)
     {
         base.OnViewportChanged(args);
-        RecalculateHeight();
+        UpdateContentSize();
         SyncChildViews();
     }
 
@@ -120,7 +120,7 @@ internal sealed class ConversationEntryView : View
     private void OnEntryChanged()
     {
         SyncChildViews();
-        RecalculateHeight();
+        UpdateContentSize();
         SetNeedsDraw();
     }
 
@@ -144,27 +144,6 @@ internal sealed class ConversationEntryView : View
         return _entry.Style == EntryStyle.Plain
             ? Math.Max(1, paddedWidth)
             : Math.Max(1, paddedWidth - CircleChrome);
-    }
-
-    /// <summary>
-    /// Computes the total row count: this entry's own wrapped lines plus
-    /// all child view heights.
-    /// </summary>
-    private int ComputeTotalRows(int contentWidth)
-    {
-        var ownLines = GetOwnRenderedLines(contentWidth).Count;
-        if (_entry.Children.Count == 0)
-            return ownLines;
-
-        var childRows = 0;
-        foreach (var childView in _childViews)
-        {
-            childRows += childView.Frame.Height > 0
-                ? childView.Frame.Height
-                : 1; // Minimum 1 row per child before layout
-        }
-
-        return ownLines + childRows;
     }
 
     /// <summary>
@@ -287,13 +266,10 @@ internal sealed class ConversationEntryView : View
                 childView.Y = Pos.Bottom(_childViews[^1]);
             }
 
-            childView.Height = Dim.Absolute(1); // Initial; recalculated on layout
-
-            // When a child's height changes, our total height changes too.
-            childView.EntryHeightChanged += () =>
-            {
-                RecalculateHeight();
-            };
+            // Dim.Auto(Content): when the child has no SubViews of its own, DimAuto
+            // reads the child's content size (set by UpdateContentSize), so height
+            // adjusts correctly as streaming text accumulates.
+            childView.Height = Dim.Auto(DimAutoStyle.Content);
 
             _childViews.Add(childView);
             Add(childView);

@@ -4,12 +4,12 @@ namespace Ur.Todo;
 /// Session-scoped, in-memory store for the current todo list.
 ///
 /// The LLM writes to this via <c>TodoWriteTool</c> from the agent loop's async
-/// pipeline, and the TUI sidebar reads it on a ThreadPool thread for rendering.
+/// pipeline, and callers can observe it if they need structured plan state.
 /// Thread safety is achieved via a lock around the item list — the write path
 /// (full replacement) and read path (snapshot copy) are both fast enough that
 /// contention is negligible.
 ///
-/// Observable: the <see cref="Changed"/> event lets the sidebar react to updates
+/// Observable: the <see cref="Changed"/> event lets observers react to updates
 /// without polling. Subscribers must be safe to call from any thread.
 /// </summary>
 public sealed class TodoStore

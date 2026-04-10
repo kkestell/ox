@@ -1,7 +1,7 @@
 namespace Ox.Views;
 
 /// <summary>
-/// Pure text layout helpers shared by ConversationView and SidebarView.
+/// Pure text layout helpers shared by the conversation renderers.
 /// No Terminal.Gui dependency — safe to test in isolation.
 /// </summary>
 internal static class TextLayout

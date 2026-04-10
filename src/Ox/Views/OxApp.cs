@@ -4,43 +4,45 @@ using Terminal.Gui.Drawing;
 using Terminal.Gui.Input;
 using Terminal.Gui.ViewBase;
 using Terminal.Gui.Views;
-using Ur.Todo;
 
 namespace Ox.Views;
 
 /// <summary>
-/// The root window for the Ox TUI application. Manages the three-panel layout:
+/// The root window for the Ox TUI application. Manages the two-region layout:
 ///   - ConversationView (top, fills available space)
 ///   - InputAreaView (bottom, fixed 5 rows)
-///   - SidebarView (right, optional, max 36 cols or 1/3 width)
 ///
-/// Input handling is delegated to InputAreaView, which uses a real TextField
-/// for text editing. The REPL loop reads submitted lines via
-/// <see cref="InputAreaView.ReadLineAsync"/>.
+/// Owns the ComposerController and wires it to InputAreaView so that all
+/// composer workflow coordination flows through a single well-defined seam:
+/// the view emits raw user intents, the controller interprets them, and the
+/// REPL loop and PermissionHandler consume the results.
 /// </summary>
 internal sealed class OxApp : Window
 {
     // Fixed height for the input area: top border + text + divider + status + bottom border.
     private const int InputAreaHeight = 5;
 
-    // Maximum sidebar width, and the fraction of terminal width it can occupy.
-    private const int MaxSidebarWidth = 36;
-
     private readonly IApplication _app;
     private readonly string _workspacePath;
     private readonly SplashView _splashView;
     private readonly ConversationView _conversationView;
     private readonly InputAreaView _inputAreaView;
-    private readonly SidebarView _sidebarView;
+    private readonly ComposerController _composerController;
 
     /// <summary>The Terminal.Gui application instance for thread marshalling.</summary>
     public IApplication App => _app;
 
     public ConversationView ConversationView => _conversationView;
     public InputAreaView InputAreaView => _inputAreaView;
-    public SidebarView SidebarView => _sidebarView;
 
-    public OxApp(IApplication app, TodoStore todoStore, string workspacePath)
+    /// <summary>
+    /// The composer workflow coordinator. Exposes the chat submission channel
+    /// consumed by the REPL loop and the permission session API used by
+    /// PermissionHandler.
+    /// </summary>
+    public ComposerController ComposerController => _composerController;
+
+    public OxApp(IApplication app, string workspacePath)
     {
         _app = app;
         _workspacePath = workspacePath;
@@ -72,73 +74,37 @@ internal sealed class OxApp : Window
         CanFocus = true;
 
         _splashView = new SplashView();
-        _conversationView = new ConversationView(app);
+        _conversationView = new ConversationView();
         _inputAreaView = new InputAreaView(app);
-        _sidebarView = new SidebarView(app, todoStore);
 
-        // Sidebar starts hidden (no content yet).
-        _sidebarView.Visible = false;
-
-        // Build the layout. The sidebar sits on the right edge; conversation and
-        // input fill the remaining left space. Dim.Func computes widths dynamically
-        // so toggling sidebar visibility triggers automatic relayout.
-        _sidebarView.Width = Dim.Func(ComputeSidebarWidth, this);
-        _sidebarView.X = Pos.Func(v => v.Frame.Width - ComputeSidebarWidth(v), this);
-        _sidebarView.Y = 0;
-        _sidebarView.Height = Dim.Fill();
+        // Create the controller and bind it to the view so Enter and EOF
+        // signals are routed before the event loop starts processing input.
+        _composerController = new ComposerController();
+        _inputAreaView.BindController(_composerController);
 
         // Splash occupies the same space as the conversation view. It's shown
         // when the conversation is empty and hidden once the first entry arrives.
         _splashView.X = 0;
         _splashView.Y = 0;
-        _splashView.Width = Dim.Func(ComputeMainWidth, this);
+        _splashView.Width = Dim.Fill();
         _splashView.Height = Dim.Fill(Dim.Absolute(InputAreaHeight));
 
         _conversationView.X = 0;
         _conversationView.Y = 0;
-        _conversationView.Width = Dim.Func(ComputeMainWidth, this);
+        _conversationView.Width = Dim.Fill();
         _conversationView.Height = Dim.Fill(Dim.Absolute(InputAreaHeight));
         _conversationView.Visible = false; // Hidden until first entry
 
         _inputAreaView.X = 0;
         _inputAreaView.Y = Pos.AnchorEnd(InputAreaHeight);
-        _inputAreaView.Width = Dim.Func(ComputeMainWidth, this);
+        _inputAreaView.Width = Dim.Fill();
         _inputAreaView.Height = Dim.Absolute(InputAreaHeight);
 
-        Add(_splashView, _conversationView, _inputAreaView, _sidebarView);
+        Add(_splashView, _conversationView, _inputAreaView);
 
         // Toggle splash/conversation visibility when content arrives.
         _conversationView.ContentChanged += OnConversationContentChanged;
-
-        // When sidebar visibility changes, force the layout to recalculate.
-        _sidebarView.VisibleChanged += (_, _) => SetNeedsLayout();
         KeyDown += OnKeyDown;
-    }
-
-    /// <summary>
-    /// Computes the width of the main area (conversation + input), accounting
-    /// for the sidebar when it's visible.
-    /// </summary>
-    private int ComputeMainWidth(View? container)
-    {
-        if (container is null) return 80;
-        if (_sidebarView.Visible)
-        {
-            var sidebarW = ComputeSidebarWidth(container);
-            return Math.Max(1, container.Frame.Width - sidebarW);
-        }
-        return container.Frame.Width;
-    }
-
-    /// <summary>
-    /// Computes the sidebar width: up to 1/3 of terminal width, capped at MaxSidebarWidth.
-    /// Returns 0 when the sidebar is hidden.
-    /// </summary>
-    private int ComputeSidebarWidth(View? container)
-    {
-        if (container is null || !_sidebarView.Visible)
-            return 0;
-        return Math.Min(MaxSidebarWidth, container.Frame.Width / 3);
     }
 
     private void OnKeyDown(object? sender, Key key)

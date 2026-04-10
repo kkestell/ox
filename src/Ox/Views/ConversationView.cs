@@ -1,5 +1,4 @@
 using System.Drawing;
-using Terminal.Gui.App;
 using Terminal.Gui.ViewBase;
 
 namespace Ox.Views;
@@ -12,15 +11,16 @@ namespace Ox.Views;
 /// This view manages the entry-to-SubView lifecycle and auto-scroll
 /// pin-to-bottom behavior (keeping the user at the tail during streaming).
 ///
-/// The conversation data model (<see cref="ConversationEntry"/>) is unchanged.
-/// The <see cref="EventRouter"/> creates entries and calls <see cref="AddEntry"/>
-/// exactly as before — the internal change from canvas to composite is invisible
-/// to callers.
+/// Height management follows the idiomatic Terminal.Gui v2 pattern:
+///   - Each entry uses Dim.Auto(DimAutoStyle.Content) on its Height.
+///   - We subscribe to SubViewsLaidOut (fires after all frames are set) and
+///     call SetContentSize there so GetHeightRequiredForSubViews() is accurate.
+/// This means the content size is always updated with real Frame values, not
+/// speculative pre-layout values, eliminating the one-pass-behind rendering bug.
 /// </summary>
 internal sealed class ConversationView : View
 {
     private readonly List<ConversationEntryView> _entryViews = [];
-    private readonly IApplication _app;
     private bool _autoScrollPinnedToBottom = true;
 
     // Tracks whether a non-Plain entry has been emitted, so we know to
@@ -30,9 +30,8 @@ internal sealed class ConversationView : View
     /// <summary>Raised when content changes (entries added/mutated).</summary>
     public event Action? ContentChanged;
 
-    public ConversationView(IApplication app)
+    public ConversationView()
     {
-        _app = app;
         CanFocus = false;
 
         // Enable the built-in vertical scrollbar. Terminal.Gui shows it
@@ -55,7 +54,10 @@ internal sealed class ConversationView : View
     {
         var entryView = new ConversationEntryView(entry);
         entryView.Width = Dim.Fill();
-        entryView.Height = Dim.Absolute(1); // Initial; recalculated on layout
+
+        // Dim.Auto(Content): when the entry has no SubViews, DimAuto reads the
+        // entry's SetContentSize value as the height — no manual height tracking.
+        entryView.Height = Dim.Auto(DimAutoStyle.Content);
 
         // Insert a blank-line gap between consecutive non-Plain entries
         // (User messages, assistant text, tool calls) for visual separation.
@@ -79,14 +81,9 @@ internal sealed class ConversationView : View
                 : Pos.Bottom(_entryViews[^1]);
         }
 
-        // When any entry's height changes (streaming text, tool results),
-        // recalculate total content size and auto-scroll if pinned.
-        entryView.EntryHeightChanged += OnEntryHeightChanged;
-
         _entryViews.Add(entryView);
         Add(entryView);
 
-        UpdateContentSizeAndScroll();
         ContentChanged?.Invoke();
     }
 
@@ -102,16 +99,27 @@ internal sealed class ConversationView : View
         if (_entryViews.Count == 0)
             return;
 
-        var contentHeight = GetTotalContentHeight();
-        var viewportHeight = Viewport.Height;
-
+        // GetContentSize() returns the explicitly-set size from UpdateContentSizeAndScroll,
+        // which is accurate after any prior SubViewsLaidOut cycle.
         _autoScrollPinnedToBottom = ConversationViewportBehavior.IsPinnedToBottom(
-            Viewport.Y, contentHeight, viewportHeight);
+            Viewport.Y, GetContentSize().Height, Viewport.Height);
     }
 
     /// <summary>
-    /// Recomputes the total content height from all entry views and updates
-    /// the scroll position if auto-scroll is pinned to bottom.
+    /// Called by Terminal.Gui after all SubViews have been laid out and their
+    /// Frames are up-to-date. This is the correct hook to update the scrollable
+    /// content size — unlike calling SetContentSize mid-layout, the values here
+    /// reflect the actual computed heights, not speculative estimates.
+    /// </summary>
+    protected override void OnSubViewsLaidOut(LayoutEventArgs args)
+    {
+        base.OnSubViewsLaidOut(args);
+        UpdateContentSizeAndScroll();
+    }
+
+    /// <summary>
+    /// Recomputes the total content height and updates the scroll position
+    /// if auto-scroll is pinned to bottom.
     /// </summary>
     private void UpdateContentSizeAndScroll()
     {
@@ -119,10 +127,10 @@ internal sealed class ConversationView : View
         if (viewportHeight <= 0)
             return;
 
-        var totalHeight = GetTotalContentHeight();
-
-        // Ensure content size is at least the viewport height so Terminal.Gui
-        // doesn't produce negative scroll offsets.
+        // GetHeightRequiredForSubViews() uses the same DimAuto calculation
+        // that Terminal.Gui's layout uses, so it agrees with the actual frame
+        // heights after layout — no stale values.
+        var totalHeight = GetHeightRequiredForSubViews();
         var effectiveHeight = Math.Max(totalHeight, viewportHeight);
         SetContentSize(new Size(Viewport.Width, effectiveHeight));
 
@@ -133,33 +141,11 @@ internal sealed class ConversationView : View
             {
                 Viewport = Viewport with { Y = bottomY };
             }
+
             _autoScrollPinnedToBottom = true;
         }
 
         SetNeedsDraw();
-    }
-
-    private void OnEntryHeightChanged()
-    {
-        _app.Invoke(() =>
-        {
-            UpdateContentSizeAndScroll();
-            ContentChanged?.Invoke();
-        });
-    }
-
-    /// <summary>
-    /// Computes total scrollable content height by examining Frame.Y + Frame.Height
-    /// of the last entry view. This accounts for both entry heights and the spacing
-    /// gaps inserted via Pos.Bottom + 1.
-    /// </summary>
-    private int GetTotalContentHeight()
-    {
-        if (_entryViews.Count == 0)
-            return 0;
-
-        var lastView = _entryViews[^1];
-        return lastView.Frame.Y + (lastView.Frame.Height > 0 ? lastView.Frame.Height : 1);
     }
 }
 

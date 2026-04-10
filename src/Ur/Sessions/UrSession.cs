@@ -89,9 +89,9 @@ public sealed class UrSession
     /// </summary>
     /// <summary>
     /// Session-scoped todo store. The LLM writes to it via <c>todo_write</c>;
-    /// the TUI reads it to populate the sidebar. Either injected externally
-    /// (when the TUI needs to bind the sidebar before the session is created)
-    /// or constructed fresh in the constructor.
+    /// callers can observe it if they need structured task state outside the
+    /// raw tool-call stream. It can be injected externally or constructed
+    /// fresh in the constructor.
     /// </summary>
     public TodoStore Todos { get; }
 
