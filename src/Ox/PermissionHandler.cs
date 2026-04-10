@@ -54,7 +54,7 @@ internal static class PermissionHandler
                 {
                     try
                     {
-                        var result = await oxApp.ReadLineAsync(promptText, null, ct);
+                        var result = await oxApp.InputAreaView.ReadLineAsync(promptText, null, ct);
                         tcs.TrySetResult(result);
                     }
                     catch (Exception)

@@ -80,8 +80,8 @@ internal sealed class TuiService(
 
             try
             {
-                var oxApp = new OxApp(app, todoStore);
-                oxApp.SetAutocomplete(autocomplete);
+                var oxApp = new OxApp(app, todoStore, host.WorkspacePath);
+                oxApp.InputAreaView.SetAutocomplete(autocomplete);
 
                 var conversationView = oxApp.ConversationView;
                 var inputAreaView = oxApp.InputAreaView;
@@ -158,7 +158,14 @@ internal sealed class TuiService(
             {
                 try
                 {
-                    var result = await oxApp.ReadLineAsync("",
+                    // SetTurnRunning and ReadLineAsync must happen in the same
+                    // UI-thread callback. If they were separate App.Invoke calls,
+                    // there would be a gap where _inputTcs is already completed
+                    // (from the previous Enter) but the new one hasn't been
+                    // created yet — causing OnTextFieldKeyDown to silently drop
+                    // Enter presses (race condition).
+                    oxApp.InputAreaView.SetTurnRunning(false);
+                    var result = await oxApp.InputAreaView.ReadLineAsync("",
                         suffix => oxApp.InputAreaView.SetCompletion(suffix),
                         stoppingToken);
                     inputTcs.TrySetResult(result);
@@ -266,7 +273,6 @@ internal sealed class TuiService(
                 turnCts.Dispose();
             }
 
-            oxApp.App.Invoke(() => oxApp.InputAreaView.SetTurnRunning(false));
         }
     }
 

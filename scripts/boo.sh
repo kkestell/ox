@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Builds Ox and Boo, sets up an isolated temp workspace with a sample
-# skill and extension, then launches a visible Boo session pointing at
-# Ox. Tear down with: cd boo && uv run boo stop && rm -rf /tmp/ur-tui-test
+# skill, then launches a headless Boo session pointing at Ox. Tear down
+# with: cd boo && uv run boo stop && rm -rf /tmp/ur-tui-test
 
 set -euo pipefail
 
@@ -52,45 +52,6 @@ Greet the user by name. Their name is: $ARGUMENTS
 
 Say "Hello, <name>! Boo says hi." and nothing else.
 SKILL_EOF
-
-# Sample extension: roll_dice
-mkdir -p "$WORKSPACE/.ur/extensions/dice"
-
-cat > "$WORKSPACE/.ur/extensions/dice/manifest.lua" << 'MANIFEST_EOF'
-return {
-  name = "dice",
-  version = "1.0.0",
-  description = "A dice-rolling extension for testing."
-}
-MANIFEST_EOF
-
-cat > "$WORKSPACE/.ur/extensions/dice/main.lua" << 'MAIN_EOF'
-ur.tool.register({
-  name = "roll_dice",
-  description = "Roll a six-sided die and return the result.",
-  parameters = {
-    type = "object",
-    properties = {}
-  },
-  handler = function(args)
-    return "You rolled a 6!"
-  end
-})
-MAIN_EOF
-
-# Enable the workspace extension via the per-workspace state file.
-HASH=$(printf '%s' "$WORKSPACE" | sha256sum | cut -d' ' -f1)
-mkdir -p "$HOME/.ur/workspaces/$HASH"
-
-cat > "$HOME/.ur/workspaces/$HASH/extensions-state.json" << EXT_EOF
-{
-  "version": 1,
-  "workspacePath": "$WORKSPACE",
-  "extensions": {
-    "workspace:dice": true
-  }
-}
-EXT_EOF
 
 # --- Launch ------------------------------------------------------------------
 

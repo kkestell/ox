@@ -1,6 +1,7 @@
 using System.Drawing;
 using Terminal.Gui.App;
 using Terminal.Gui.Drawing;
+using Terminal.Gui.Input;
 using Terminal.Gui.ViewBase;
 using Attribute = Terminal.Gui.Drawing.Attribute;
 using Color = Terminal.Gui.Drawing.Color;
@@ -43,6 +44,7 @@ internal sealed class ConversationView : View
     private int _cachedWidth = -1;
 
     private readonly IApplication _app;
+    private bool _autoScrollPinnedToBottom = true;
 
     /// <summary>Raised when content changes (entries added/mutated).</summary>
     public event Action? ContentChanged;
@@ -76,10 +78,12 @@ internal sealed class ConversationView : View
     private void InvalidateCache()
     {
         _cachedLines = null;
-        // Auto-scroll: tell Terminal.Gui the content size changed, then move viewport to bottom.
+        // New events should only yank the viewport to the tail when the user is
+        // still pinned to the bottom. Manual wheel scrolling disables that pin
+        // until the user scrolls back down.
         _app.Invoke(() =>
         {
-            UpdateContentSize();
+            UpdateContentSize(scrollToBottom: _autoScrollPinnedToBottom);
             SetNeedsDraw();
             ContentChanged?.Invoke();
         });
@@ -87,20 +91,34 @@ internal sealed class ConversationView : View
 
     /// <summary>
     /// Recalculates the total content height and updates Terminal.Gui's content size
-    /// so scrolling works correctly. Also scrolls to the bottom.
+    /// so scrolling works correctly.
     /// </summary>
-    private void UpdateContentSize()
+    private void UpdateContentSize(bool scrollToBottom)
     {
-        var width = Frame.Width;
-        if (width <= 0) return;
+        if (!TryGetViewportMetrics(out var viewportWidth, out var height))
+            return;
 
-        var lines = GetRenderedLines(width);
-        var totalHeight = lines.Count > 0 ? lines.Count : Frame.Height;
-        SetContentSize(new Size(width, totalHeight));
+        var totalHeight = GetContentHeight(viewportWidth, height);
+        SetContentSize(new Size(viewportWidth, totalHeight));
 
-        // Auto-scroll to bottom: set viewport to show the last screenful.
-        var viewportY = Math.Max(0, totalHeight - Frame.Height);
-        Viewport = Viewport with { Y = viewportY };
+        if (scrollToBottom)
+        {
+            ScrollToBottom(totalHeight, height);
+            _autoScrollPinnedToBottom = true;
+            return;
+        }
+
+        ClampViewport(totalHeight, height);
+    }
+
+    /// <summary>
+    /// Resizes the virtual content when the viewport changes without forcing a
+    /// manual scroll position back to the bottom.
+    /// </summary>
+    protected override void OnViewportChanged(DrawEventArgs args)
+    {
+        base.OnViewportChanged(args);
+        UpdateContentSize(scrollToBottom: _autoScrollPinnedToBottom);
     }
 
     /// <inheritdoc/>
@@ -118,7 +136,8 @@ internal sealed class ConversationView : View
             return true;
         }
 
-        var lines = GetRenderedLines(Frame.Width);
+        var contentWidth = ConversationViewportBehavior.GetContentWidth(width);
+        var lines = GetRenderedLines(contentWidth);
 
         // Terminal.Gui handles viewport offset — we draw relative to Viewport.Y.
         var startLine = Viewport.Y;
@@ -134,14 +153,39 @@ internal sealed class ConversationView : View
         return true;
     }
 
+    /// <inheritdoc/>
+    protected override bool OnMouseEvent(Mouse mouse)
+    {
+        var isVerticalWheel = ConversationViewportBehavior.IsVerticalWheel(
+            mouse.Flags.HasFlag(MouseFlags.WheeledUp),
+            mouse.Flags.HasFlag(MouseFlags.WheeledDown));
+
+        // Intercept wheel events before the base View can translate them into its
+        // generic mouse-command pipeline. Ox owns scrolling for this custom-drawn
+        // surface, so the event should never be delegated first.
+        if (isVerticalWheel)
+        {
+            _ = HandleMouseWheel(mouse.Flags);
+            mouse.Handled = true;
+            return true;
+        }
+
+        return base.OnMouseEvent(mouse);
+    }
+
     /// <summary>
     /// Draws the splash art centered in the viewport when no entries exist.
     /// </summary>
     private void DrawSplash(int width, int height)
     {
+        var leftInset = width > ConversationViewportBehavior.HorizontalPaddingColumns
+            ? ConversationViewportBehavior.HorizontalPaddingColumns
+            : 0;
+        var contentWidth = ConversationViewportBehavior.GetContentWidth(width);
         var artWidth = SplashLines.Max(l => l.Length);
         var startRow = Math.Max(0, (height - SplashLines.Length) / 2);
-        var startCol = Math.Max(0, (width - artWidth) / 2);
+        var startCol = leftInset
+            + Math.Max(0, (contentWidth - artWidth) / 2);
 
         for (var i = 0; i < SplashLines.Length; i++)
         {
@@ -162,19 +206,56 @@ internal sealed class ConversationView : View
         for (var col = 0; col < width; col++)
             AddRune(' ');
 
-        // Now draw the actual content
-        var col2 = 0;
+        // Render inside an explicit one-column gutter on both sides. Terminal.Gui's
+        // Padding does not offset this custom content surface, so the view owns the
+        // visual gutter directly.
+        var leftInset = width > ConversationViewportBehavior.HorizontalPaddingColumns
+            ? ConversationViewportBehavior.HorizontalPaddingColumns
+            : 0;
+        var col2 = leftInset;
+        var contentWidth = ConversationViewportBehavior.GetContentWidth(width);
+        var contentEnd = Math.Min(width, leftInset + contentWidth);
         foreach (var span in line.Spans)
         {
-            if (col2 >= width) break;
+            if (col2 >= contentEnd) break;
             Move(col2, row);
             SetAttribute(new Attribute(span.Foreground, span.Background, span.Bold ? TextStyle.Bold : TextStyle.None));
             var text = span.Text;
-            if (col2 + text.Length > width)
-                text = text[..(width - col2)];
+            if (col2 + text.Length > contentEnd)
+                text = text[..(contentEnd - col2)];
             AddStr(text);
             col2 += text.Length;
         }
+    }
+
+    /// <summary>
+    /// Separated from <see cref="OnMouseEvent"/> so tests can verify wheel scrolling
+    /// without a live terminal driver.
+    /// </summary>
+    internal bool HandleMouseWheel(MouseFlags flags)
+    {
+        var deltaRows = GetWheelDelta(flags);
+        if (deltaRows == 0 || !TryGetViewportMetrics(out var viewportWidth, out var height))
+            return false;
+
+        SetContentSize(new Size(viewportWidth, GetContentHeight(viewportWidth, height)));
+
+        var originalY = Viewport.Y;
+        ScrollVertical(deltaRows);
+        _autoScrollPinnedToBottom = ConversationViewportBehavior.IsPinnedToBottom(
+            Viewport.Y,
+            GetContentHeight(viewportWidth, height),
+            height);
+
+        if (Viewport.Y != originalY)
+        {
+            // Terminal.Gui's ScrollVertical does not set the NeedsDraw flag, so
+            // the view must explicitly request a repaint after the viewport moves.
+            SetNeedsDraw();
+            return true;
+        }
+
+        return false;
     }
 
     /// <summary>
@@ -209,6 +290,45 @@ internal sealed class ConversationView : View
         return _cachedLines;
     }
 
+    private static int GetWheelDelta(MouseFlags flags)
+    {
+        return ConversationViewportBehavior.GetWheelDelta(
+            flags.HasFlag(MouseFlags.WheeledUp),
+            flags.HasFlag(MouseFlags.WheeledDown));
+    }
+
+    private bool TryGetViewportMetrics(out int width, out int height)
+    {
+        width = Viewport.Width;
+        height = Viewport.Height;
+        return width > 0 && height > 0;
+    }
+
+    private int GetContentHeight(int viewportWidth, int viewportHeight)
+    {
+        var contentWidth = ConversationViewportBehavior.GetContentWidth(viewportWidth);
+        return ConversationViewportBehavior.GetContentHeight(GetRenderedLines(contentWidth).Count, viewportHeight);
+    }
+
+    private void ScrollToBottom(int totalHeight, int viewportHeight)
+    {
+        var bottom = ConversationViewportBehavior.GetBottomViewportY(totalHeight, viewportHeight);
+        if (Viewport.Y != bottom)
+            Viewport = Viewport with { Y = bottom };
+    }
+
+    private void ClampViewport(int totalHeight, int viewportHeight)
+    {
+        var clampedY = ConversationViewportBehavior.ClampViewportY(Viewport.Y, totalHeight, viewportHeight);
+        if (Viewport.Y != clampedY)
+            Viewport = Viewport with { Y = clampedY };
+
+        _autoScrollPinnedToBottom = ConversationViewportBehavior.IsPinnedToBottom(
+            Viewport.Y,
+            totalHeight,
+            viewportHeight);
+    }
+
     /// <summary>
     /// Renders a Plain-style entry at full width with no prefix.
     /// </summary>
@@ -235,13 +355,7 @@ internal sealed class ConversationView : View
         var contentWidth = Math.Max(1, totalWidth - CircleChrome);
 
         // Render the entry's own segments with word-wrapping.
-        var entryLines = new List<RenderedLine>();
-        foreach (var segment in entry.Segments)
-        {
-            var wrapped = TextLayout.WrapText(segment.Text, contentWidth);
-            foreach (var line in wrapped)
-                entryLines.Add(new RenderedLine([new RenderSpan(line, segment.Foreground, segment.Background, segment.Bold)]));
-        }
+        var entryLines = ConversationEntryLayout.LayoutSegments(entry.Segments, contentWidth);
 
         // Apply circle/continuation chrome to the wrapped lines.
         for (var i = 0; i < entryLines.Count; i++)

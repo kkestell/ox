@@ -1,22 +1,23 @@
 using Terminal.Gui.App;
 using Terminal.Gui.Drawing;
+using Terminal.Gui.Drivers;
+using Terminal.Gui.Input;
 using Terminal.Gui.ViewBase;
+using Terminal.Gui.Views;
 using Attribute = Terminal.Gui.Drawing.Attribute;
 
 namespace Ox.Views;
 
 /// <summary>
 /// The chat composer panel at the bottom of the screen. Draws a rounded border
-/// containing the input text row, a divider, and a status line (throbber + model ID).
+/// containing a real TextField for input, a divider, and a status line (throbber + model ID).
 ///
-/// This is a custom-drawn View rather than a TextField wrapper because we need:
-///   - Ghost text rendering (grayed-out autocomplete suffix)
-///   - A synthetic block cursor (reverse-video space)
-///   - Custom border/divider chrome matching the original design
-///   - Status line with animated throbber
+/// The TextField handles all standard text editing (backspace, cursor movement,
+/// word navigation, clipboard, etc.) natively. Special keys (Enter to submit,
+/// Ctrl+C/Ctrl+D for EOF, Tab for autocomplete) are intercepted via KeyDown.
 ///
-/// Input handling is done externally by OxApp, which processes keys and updates
-/// the prompt text via <see cref="SetPrompt"/>. This view is purely presentational.
+/// ReadLineAsync bridges the event-driven TextField to async callers (REPL loop,
+/// permission prompts).
 /// </summary>
 internal sealed class InputAreaView : View
 {
@@ -40,8 +41,20 @@ internal sealed class InputAreaView : View
     private const char ThrobberRune = '●';
 
     private readonly IApplication _app;
-    private string _prompt = "";
-    private string? _completionSuffix;
+    private readonly TextField _textField;
+
+    // Prompt prefix displayed before the text field (e.g. for permission prompts).
+    private string _promptPrefix = "";
+
+    // Autocomplete engine for slash-command ghost text.
+    private AutocompleteEngine? _autocomplete;
+
+    // The TCS that ReadLineAsync awaits. Completed when the user presses Enter or EOF.
+    private TaskCompletionSource<string?>? _inputTcs;
+
+    // Callback for autocomplete ghost text updates.
+    private Action<string?>? _onCompletionChanged;
+
     private bool _turnRunning;
     private string? _modelId;
     private long _turnStartedAtTickMs = -1;
@@ -51,18 +64,55 @@ internal sealed class InputAreaView : View
     public InputAreaView(IApplication app)
     {
         _app = app;
-        CanFocus = false;
+
+        // The InputAreaView itself is focusable so the TextField inside can receive focus.
+        CanFocus = true;
+
+        // Create the text field, positioned inside our custom border chrome.
+        // Row 0 = top border, row 1 = text field row. Left border + padding = 2 cols.
+        _textField = new TextField
+        {
+            X = 2,
+            Y = 1,
+            // Width fills the content area: total width minus border+padding on each side (4 cols).
+            Width = Dim.Fill(Dim.Absolute(2)),
+            Height = 1,
+            BorderStyle = LineStyle.None,
+            CanFocus = true,
+        };
+
+
+        // Intercept special keys before the TextField processes them.
+        _textField.KeyDown += OnTextFieldKeyDown;
+
+        // Track text changes for autocomplete ghost text.
+        _textField.ValueChanged += (_, _) =>
+        {
+            var suffix = _autocomplete?.GetCompletion(_textField.Text ?? "");
+            _onCompletionChanged?.Invoke(suffix);
+            SetNeedsDraw();
+        };
+
+        Add(_textField);
     }
 
     // --- Public API ---
 
     /// <summary>
-    /// Updates the prompt text displayed in the input row.
-    /// Called by the input processing loop after each keystroke.
+    /// Sets the autocomplete engine for slash-command ghost text.
+    /// </summary>
+    public void SetAutocomplete(AutocompleteEngine engine)
+    {
+        _autocomplete = engine;
+    }
+
+    /// <summary>
+    /// Updates the prompt prefix text displayed before the text field.
+    /// Used for permission prompts like "Allow 'bash' to run 'ls'? (y/n): ".
     /// </summary>
     public void SetPrompt(string prompt)
     {
-        _prompt = prompt;
+        _promptPrefix = prompt;
         SetNeedsDraw();
     }
 
@@ -72,8 +122,41 @@ internal sealed class InputAreaView : View
     /// </summary>
     public void SetCompletion(string? suffix)
     {
-        _completionSuffix = suffix;
+        // Ghost text rendering is no longer done here — the autocomplete suffix
+        // is tracked for tab-completion but visual ghost text has been removed.
         SetNeedsDraw();
+    }
+
+    /// <summary>
+    /// Reads a line of user input. Returns the submitted text on Enter,
+    /// or null on EOF (Ctrl+C/Ctrl+D) or cancellation.
+    ///
+    /// The promptPrefix is displayed before the text field (used for permission
+    /// prompts). The onCompletionChanged callback is invoked when autocomplete
+    /// ghost text changes.
+    /// </summary>
+    public async Task<string?> ReadLineAsync(
+        string promptPrefix,
+        Action<string?>? onCompletionChanged = null,
+        CancellationToken ct = default)
+    {
+        _promptPrefix = promptPrefix;
+        _onCompletionChanged = onCompletionChanged;
+        _inputTcs = new TaskCompletionSource<string?>();
+
+        // Clear the text field for new input.
+        _textField.Text = "";
+        _textField.SetFocus();
+        onCompletionChanged?.Invoke(null);
+        SetNeedsDraw();
+
+        // Register cancellation.
+        await using var reg = ct.Register(() =>
+        {
+            _app.Invoke(() => _inputTcs?.TrySetResult(null));
+        });
+
+        return await _inputTcs.Task;
     }
 
     /// <summary>
@@ -121,6 +204,70 @@ internal sealed class InputAreaView : View
         SetNeedsDraw();
     }
 
+    // --- Key handling ---
+
+    /// <summary>
+    /// Intercepts Enter, Tab, Ctrl+C, Ctrl+D, and Escape before the TextField
+    /// processes them. All other keys (backspace, arrows, etc.) pass through
+    /// to the TextField's native handling.
+    /// </summary>
+    private void OnTextFieldKeyDown(object? sender, Key key)
+    {
+        // If no input TCS is active, we're not reading input.
+        if (_inputTcs is null || _inputTcs.Task.IsCompleted)
+            return;
+
+        var keyCode = key.KeyCode;
+
+        // Enter: submit the current text.
+        if (keyCode == KeyCode.Enter)
+        {
+            _onCompletionChanged?.Invoke(null);
+            var result = _textField.Text ?? "";
+            _inputTcs.TrySetResult(result);
+            key.Handled = true;
+            return;
+        }
+
+        // Tab: accept autocomplete suggestion.
+        if (keyCode == KeyCode.Tab)
+        {
+            var suffix = _autocomplete?.GetCompletion(_textField.Text ?? "");
+            if (suffix is not null)
+            {
+                _textField.Text = (_textField.Text ?? "") + suffix;
+                _textField.MoveEnd();
+                _onCompletionChanged?.Invoke(null);
+            }
+            key.Handled = true;
+            return;
+        }
+
+        // Ctrl+C: EOF signal.
+        if (keyCode == (KeyCode.C | KeyCode.CtrlMask))
+        {
+            _onCompletionChanged?.Invoke(null);
+            _inputTcs.TrySetResult(null);
+            key.Handled = true;
+            return;
+        }
+
+        // Ctrl+D on empty buffer: EOF.
+        if (keyCode == (KeyCode.D | KeyCode.CtrlMask) && string.IsNullOrEmpty(_textField.Text))
+        {
+            _inputTcs.TrySetResult(null);
+            key.Handled = true;
+            return;
+        }
+
+        // Escape: no-op during input (escape cancellation is turn-level).
+        if (keyCode == KeyCode.Esc)
+        {
+            key.Handled = true;
+            return;
+        }
+    }
+
     // --- Drawing ---
 
     /// <inheritdoc/>
@@ -134,8 +281,8 @@ internal sealed class InputAreaView : View
         // Row 0: top border
         DrawBorderRow(0, width, TopLeftCorner, TopRightCorner, BorderColor);
 
-        // Row 1: input text with cursor
-        DrawInputRow(1, width);
+        // Row 1: the TextField draws itself — we just draw the border edges.
+        DrawTextFieldBorderEdges(1, width);
 
         // Row 2: divider
         DrawDividerRow(2, width);
@@ -164,61 +311,19 @@ internal sealed class InputAreaView : View
     }
 
     /// <summary>
-    /// Draws the input text row with border, padding, prompt text, ghost text,
-    /// and synthetic cursor.
+    /// Draws just the left and right border edges for the text field row.
+    /// The TextField itself handles the content area.
     /// </summary>
-    private void DrawInputRow(int row, int width)
+    private void DrawTextFieldBorderEdges(int row, int width)
     {
-        if (width <= 4) return;
-
         // Left border + padding
         Move(0, row);
         SetAttribute(new Attribute(BorderColor, Bg));
         AddRune(VerticalBorder);
         AddRune(' ');
 
-        var contentWidth = Math.Max(0, width - 4); // border + pad on each side
-
-        // Prompt text in white
-        var promptLength = Math.Min(_prompt.Length, contentWidth);
-        SetAttribute(new Attribute(new Color(ColorName16.White), Bg));
-        if (promptLength > 0)
-            AddStr(_prompt[..promptLength]);
-
-        var remaining = contentWidth - promptLength;
-
-        // Ghost text or cursor
-        if (!string.IsNullOrEmpty(_completionSuffix) && remaining > 0)
-        {
-            // First char of ghost text rendered as cursor (reverse video)
-            SetAttribute(new Attribute(new Color(ColorName16.DarkGray), Bg, TextStyle.Reverse));
-            AddRune(_completionSuffix[0]);
-            remaining--;
-
-            // Rest of ghost text in plain gray
-            if (_completionSuffix.Length > 1 && remaining > 0)
-            {
-                SetAttribute(new Attribute(new Color(ColorName16.DarkGray), Bg));
-                var ghostText = _completionSuffix[1..];
-                var ghostLen = Math.Min(ghostText.Length, remaining);
-                AddStr(ghostText[..ghostLen]);
-                remaining -= ghostLen;
-            }
-        }
-        else if (remaining > 0)
-        {
-            // Block cursor: reverse-video space
-            SetAttribute(new Attribute(new Color(ColorName16.White), Bg, TextStyle.Reverse));
-            AddRune(' ');
-            remaining--;
-        }
-
-        // Fill remaining space
-        SetAttribute(new Attribute(Color.None, Bg));
-        for (var i = 0; i < remaining; i++)
-            AddRune(' ');
-
-        // Right padding + border
+        // Right padding + border (drawn after the TextField's content area)
+        Move(width - 2, row);
         AddRune(' ');
         SetAttribute(new Attribute(BorderColor, Bg));
         AddRune(VerticalBorder);

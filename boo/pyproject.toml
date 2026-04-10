@@ -1,7 +1,7 @@
 [project]
 name = "boo"
 version = "0.1.0"
-description = "Terminal automation library backed by a native shared library"
+description = "Headless CLI for driving terminal sessions through a native PTY engine"
 requires-python = ">=3.10"
 dependencies = []
 

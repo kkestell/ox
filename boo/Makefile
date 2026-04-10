@@ -1,7 +1,7 @@
 CMAKE ?= cmake
 BUILD_DIR ?= build
 
-.PHONY: configure build test run shell curses-app daemon clean distclean
+.PHONY: configure build test daemon clean distclean
 
 configure:
 	$(CMAKE) -S . -B $(BUILD_DIR)
@@ -11,15 +11,6 @@ build: configure
 
 test: build
 	ctest --test-dir $(BUILD_DIR) --output-on-failure
-
-run: build
-	./$(BUILD_DIR)/boo
-
-shell: build
-	uv run python examples/shell.py
-
-curses-app: build
-	uv run python examples/curses_app.py
 
 daemon: build
 	uv run boo start $(or $(CMD),bash)

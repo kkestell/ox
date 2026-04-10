@@ -11,7 +11,7 @@ import json
 import os
 import socket
 
-from boo import BooError
+from ._errors import BooError
 
 # Default socket path — uses $USER so multiple users on the same machine
 # don't collide.

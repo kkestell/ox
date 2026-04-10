@@ -126,8 +126,8 @@ def _cmd_start(args: argparse.Namespace) -> None:
     # Wait for the daemon to signal readiness (it writes "ready\n" to
     # stdout once the socket is listening and the session is launched).
     # We use select() to avoid blocking on readline() — the daemon may
-    # emit unexpected output (SDL logs, Python warnings) before "ready",
-    # and a blocking read would prevent us from detecting a dead process.
+    # emit unexpected startup output before "ready", and a blocking read
+    # would prevent us from detecting a dead process.
     deadline = time.monotonic() + 10.0
     while time.monotonic() < deadline:
         # Check if the daemon died during startup.
@@ -148,8 +148,8 @@ def _cmd_start(args: argparse.Namespace) -> None:
                 if line.strip() == b"ready":
                     print(f"Session started (PID {proc.pid}, socket {args.socket})")
                     return
-                # Otherwise it's an unexpected line (e.g. SDL log) — keep
-                # looping to wait for the actual "ready" signal.
+                # Otherwise it's an unexpected line — keep looping to wait
+                # for the actual "ready" signal.
         else:
             time.sleep(0.05)
 

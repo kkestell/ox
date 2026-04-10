@@ -1,9 +1,9 @@
 """Boo session daemon — keeps a Session alive across CLI invocations.
 
-Runs a single-threaded event loop that interleaves SDL/PTY pumping (via
-``session.step()``) with ``select()`` on a Unix domain socket.  Each
-client connection delivers one JSON command and receives one JSON response,
-then disconnects.
+Runs a single-threaded event loop that interleaves PTY pumping
+(``session.step()``) with ``select()`` on a Unix domain socket. Each client
+connection delivers one JSON command and receives one JSON response, then
+disconnects.
 
 The daemon owns the Session instance.  Clients never touch it directly —
 they send commands over the socket and get JSON back.  This is the only
@@ -21,8 +21,9 @@ import socket
 import sys
 import traceback
 
-import boo
-from boo.client import DEFAULT_SOCKET_PATH
+from ._errors import BooError
+from ._session import Session
+from .client import DEFAULT_SOCKET_PATH
 
 
 def run_daemon(
@@ -32,7 +33,7 @@ def run_daemon(
     cols: int = 80,
     rows: int = 24,
 ) -> None:
-    """Launch a boo Session and serve commands over a Unix domain socket.
+    """Launch a Boo session and serve commands over a Unix domain socket.
 
     This function blocks forever (or until a ``stop`` command arrives).
     It is designed to be called from a forked/backgrounded process so the
@@ -42,13 +43,13 @@ def run_daemon(
       1. ``select()`` on the listening socket + any active client fd (~16ms timeout)
       2. Accept new connections
       3. Read/dispatch/respond to client commands (one per connection)
-      4. ``step(0)`` to pump SDL events and PTY I/O
+      4. ``step(0)`` to pump PTY I/O
       5. Repeat
     """
     # Clean up any stale socket from a previous run.
     _remove_stale_socket(socket_path)
 
-    session = boo.launch(
+    session = Session.launch(
         command,
         cols=cols,
         rows=rows,
@@ -79,7 +80,7 @@ def run_daemon(
 
 
 def _run_loop(
-    session: boo.Session,
+    session: Session,
     server_sock: socket.socket,
     socket_path: str,
     pid_path: str,
@@ -101,11 +102,11 @@ def _run_loop(
             else:
                 _handle_client(client_sock, session, server_sock, socket_path, pid_path)
 
-        # Pump SDL events and PTY I/O with zero timeout — don't block,
-        # just process whatever is pending.
+        # Pump PTY I/O with zero timeout so the screen state stays fresh
+        # between CLI requests without adding another background thread.
         try:
             session.step(0)
-        except boo.BooError:
+        except BooError:
             # Session step can fail if the process has exited and the
             # native layer is unhappy.  Keep the daemon alive so clients
             # can still query the final screen state.
@@ -114,7 +115,7 @@ def _run_loop(
 
 def _handle_client(
     client_sock: socket.socket,
-    session: boo.Session,
+    session: Session,
     server_sock: socket.socket,
     socket_path: str,
     pid_path: str,
@@ -160,7 +161,7 @@ def _handle_client(
         client_sock.close()
 
 
-def _dispatch(cmd: dict, session: boo.Session) -> dict:
+def _dispatch(cmd: dict, session: Session) -> dict:
     """Route a command dict to the appropriate Session method."""
     action = cmd.get("cmd")
 
@@ -194,7 +195,7 @@ def _dispatch(cmd: dict, session: boo.Session) -> dict:
         # (_handle_client) will do the actual shutdown.
         try:
             session.terminate()
-        except boo.BooError:
+        except BooError:
             pass  # Already dead — that's fine.
         return {"ok": True}
 
@@ -225,7 +226,7 @@ def _remove_stale_socket(socket_path: str) -> None:
             # Check whether that PID is still alive.
             os.kill(old_pid, 0)
             # If we get here, a daemon is already running.
-            raise boo.BooError(
+            raise BooError(
                 f"A daemon is already running (PID {old_pid}).  "
                 f"Stop it with 'boo stop' or remove {socket_path} manually."
             )
@@ -233,7 +234,7 @@ def _remove_stale_socket(socket_path: str) -> None:
             pass  # Old process is gone — safe to clean up.
         except PermissionError:
             # Process exists but we can't signal it — assume it's alive.
-            raise boo.BooError(
+            raise BooError(
                 f"A daemon may already be running (PID file {pid_path} exists "
                 f"and the process is not ours).  Remove it manually if stale."
             )
@@ -253,7 +254,7 @@ def _write_pid_file(pid_path: str) -> None:
 
 
 def _cleanup(
-    session: boo.Session,
+    session: Session,
     server_sock: socket.socket,
     socket_path: str,
     pid_path: str,

@@ -21,8 +21,6 @@ static char *wait_for_text(BooSession *session, const char *needle)
 
 int main(void)
 {
-    setenv("SDL_VIDEODRIVER", "dummy", 1);
-
     BooSession *session = boo_session_new();
     assert(session);
 

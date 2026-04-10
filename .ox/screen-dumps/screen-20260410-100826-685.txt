@@ -1,0 +1,47 @@
+ ● What's in the Makefile?                                                                                                                     │ Context                           
+                                                                                                                                               │ 22,988 / 1,048,576 - 2%           
+ ● Glob("Makefile")                                                                                                                            │                                   
+                                                                                                                                               │                                   
+   └─ Makefile                                                                                                                                 │                                   
+                                                                                                                                               │                                   
+      boo/Makefile                                                                                                                             │                                   
+                                                                                                                                               │                                   
+ ● Read("Makefile")                                                                                                                            │                                   
+                                                                                                                                               │                                   
+   └─ .PHONY: format-docs inspect install                                                                                                      │                                   
+                                                                                                                                               │                                   
+                                                                                                                                               │                                   
+                                                                                                                                               │                                   
+      install:                                                                                                                                 │                                   
+                                                                                                                                               │                                   
+      ␉@./scripts/install.sh                                                                                                                   │                                   
+                                                                                                                                               │                                   
+                                                                                                                                               │                                   
+                                                                                                                                               │                                   
+      (8 more lines)                                                                                                                           │                                   
+                                                                                                                                               │                                   
+ ● The `Makefile` in the root directory contains the following targets:                                                                        │                                   
+                                                                                                                                               │                                   
+   - `install`: Runs `./scripts/install.sh`.                                                                                                   │                                   
+   - `inspect`: Runs ReSharper code inspections on `Ox.slnx`, formats the results into `inspection-results.txt` using                          │                                   
+   `./scripts/format-inspection-results.sh`, and cleans up the intermediate XML file.                                                          │                                   
+                                                                                                                                               │                                   
+   There is also a `boo/Makefile`, would you like me to read that as well?                                                                     │                                   
+                                                                                                                                               │                                   
+                                                                                                                                               │                                   
+                                                                                                                                               │                                   
+                                                                                                                                               │                                   
+                                                                                                                                               │                                   
+                                                                                                                                               │                                   
+                                                                                                                                               │                                   
+                                                                                                                                               │                                   
+                                                                                                                                               │                                   
+                                                                                                                                               │                                   
+                                                                                                                                               │                                   
+                                                                                                                                               │                                   
+                                                                                                                                               │                                   
+╭─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮│                                   
+│                                                                                                                                             ││                                   
+│─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────││                                   
+│                                                                                                               google/gemini-3-flash-preview ││                                   
+╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯│                                   
