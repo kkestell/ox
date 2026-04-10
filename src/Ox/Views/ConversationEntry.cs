@@ -18,11 +18,12 @@ internal enum EntryStyle
 
 /// <summary>
 /// One logical item in the conversation stream. This is a data model, not a View —
-/// the <see cref="ConversationView"/> draws all entries in its OnDrawingContent override.
+/// each entry is rendered by a <see cref="ConversationEntryView"/> SubView managed
+/// by <see cref="ConversationView"/>.
 ///
 /// Entries can be streaming (text appended incrementally), static (tool signatures),
 /// or compound (subagent blocks with nested entries). The Changed event notifies
-/// the ConversationView that a redraw is needed.
+/// the owning ConversationEntryView that a relayout and redraw are needed.
 /// </summary>
 internal sealed class ConversationEntry
 {

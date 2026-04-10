@@ -1,50 +1,31 @@
 using System.Drawing;
 using Terminal.Gui.App;
-using Terminal.Gui.Drawing;
-using Terminal.Gui.Input;
 using Terminal.Gui.ViewBase;
-using Attribute = Terminal.Gui.Drawing.Attribute;
-using Color = Terminal.Gui.Drawing.Color;
 
 namespace Ox.Views;
 
 /// <summary>
-/// Custom View that renders the entire conversation stream. All messages, tool calls,
-/// and subagent blocks are drawn in a single <see cref="OnDrawingContent"/> override.
+/// Scrollable container that holds one <see cref="ConversationEntryView"/> per
+/// conversation entry, stacked vertically with Pos.Bottom chains.
 ///
-/// This is Option A from the migration plan: one View managing its own content layout
-/// and drawing, with Terminal.Gui handling position/size within the window and providing
-/// scrollbar infrastructure via SetContentSize/Viewport.
+/// Terminal.Gui handles layout, clipping, and the built-in scrollbar.
+/// This view manages the entry-to-SubView lifecycle and auto-scroll
+/// pin-to-bottom behavior (keeping the user at the tail during streaming).
 ///
-/// The conversation is a flat list of <see cref="ConversationEntry"/> data models.
-/// Each entry gets a circle prefix (● for User/Circle style) or renders verbatim (Plain).
-/// Word-wrapping, tree chrome, and auto-scroll are computed here.
+/// The conversation data model (<see cref="ConversationEntry"/>) is unchanged.
+/// The <see cref="EventRouter"/> creates entries and calls <see cref="AddEntry"/>
+/// exactly as before — the internal change from canvas to composite is invisible
+/// to callers.
 /// </summary>
 internal sealed class ConversationView : View
 {
-    // ● U+25CF BLACK CIRCLE — status indicator prefix.
-    private static readonly Color Bg = new(ColorName16.Black);
-    private const char CircleChar = '●';
-
-    // Chrome width: "● " = 2 columns (circle + space).
-    private const int CircleChrome = 2;
-
-    // ASCII art displayed centered when the conversation is empty.
-    private static readonly string[] SplashLines =
-    [
-        "▒█▀▀▀█ ▀▄▒▄▀",
-        "▒█░░▒█ ░▒█░░",
-        "▒█▄▄▄█ ▄▀▒▀▄"
-    ];
-
-    private readonly List<ConversationEntry> _entries = [];
-
-    // Pre-rendered lines cache. Invalidated when entries change or width changes.
-    private List<RenderedLine>? _cachedLines;
-    private int _cachedWidth = -1;
-
+    private readonly List<ConversationEntryView> _entryViews = [];
     private readonly IApplication _app;
     private bool _autoScrollPinnedToBottom = true;
+
+    // Tracks whether a non-Plain entry has been emitted, so we know to
+    // insert a blank-line gap before the next non-Plain entry.
+    private bool _emittedNonPlainEntry;
 
     /// <summary>Raised when content changes (entries added/mutated).</summary>
     public event Action? ContentChanged;
@@ -53,397 +34,138 @@ internal sealed class ConversationView : View
     {
         _app = app;
         CanFocus = false;
+
+        // Enable the built-in vertical scrollbar. Terminal.Gui shows it
+        // automatically when content height exceeds viewport height.
+        ViewportSettings |= ViewportSettingsFlags.HasVerticalScrollBar;
     }
 
     /// <summary>
-    /// Adds a top-level entry to the conversation and wires its Changed event.
+    /// Returns the number of top-level entries. Used to detect empty state
+    /// for splash screen toggling.
+    /// </summary>
+    public int EntryCount => _entryViews.Count;
+
+    /// <summary>
+    /// Adds a top-level entry to the conversation. Creates a
+    /// <see cref="ConversationEntryView"/> SubView, positions it after the
+    /// last entry, and wires change notifications for auto-scroll.
     /// </summary>
     public void AddEntry(ConversationEntry entry)
     {
-        _entries.Add(entry);
-        entry.Changed += OnEntryChanged;
-        InvalidateCache();
+        var entryView = new ConversationEntryView(entry);
+        entryView.Width = Dim.Fill();
+        entryView.Height = Dim.Absolute(1); // Initial; recalculated on layout
+
+        // Insert a blank-line gap between consecutive non-Plain entries
+        // (User messages, assistant text, tool calls) for visual separation.
+        // Plain entries (continuation content) get no spacing.
+        var needsSpacing = ConversationViewportBehavior.NeedsSpacingBefore(
+            entry.Style, _emittedNonPlainEntry);
+
+        if (entry.Style != EntryStyle.Plain)
+            _emittedNonPlainEntry = true;
+
+        // Stack vertically: first entry at top, subsequent entries chain
+        // below the previous one. Add 1-row margin for spacing when needed.
+        if (_entryViews.Count == 0)
+        {
+            entryView.Y = Pos.Absolute(0);
+        }
+        else
+        {
+            entryView.Y = needsSpacing
+                ? Pos.Bottom(_entryViews[^1]) + 1
+                : Pos.Bottom(_entryViews[^1]);
+        }
+
+        // When any entry's height changes (streaming text, tool results),
+        // recalculate total content size and auto-scroll if pinned.
+        entryView.EntryHeightChanged += OnEntryHeightChanged;
+
+        _entryViews.Add(entryView);
+        Add(entryView);
+
+        UpdateContentSizeAndScroll();
+        ContentChanged?.Invoke();
     }
 
     /// <summary>
-    /// Returns the number of top-level entries. Used to detect empty state for splash.
+    /// Detects manual scrolling by the user. If the user scrolls away from
+    /// the bottom, auto-scroll is disabled. If they scroll back to the
+    /// bottom, auto-scroll is re-enabled.
     /// </summary>
-    public int EntryCount => _entries.Count;
-
-    private void OnEntryChanged()
+    protected override void OnViewportChanged(DrawEventArgs args)
     {
-        InvalidateCache();
+        base.OnViewportChanged(args);
+
+        if (_entryViews.Count == 0)
+            return;
+
+        var contentHeight = GetTotalContentHeight();
+        var viewportHeight = Viewport.Height;
+
+        _autoScrollPinnedToBottom = ConversationViewportBehavior.IsPinnedToBottom(
+            Viewport.Y, contentHeight, viewportHeight);
     }
 
-    private void InvalidateCache()
+    /// <summary>
+    /// Recomputes the total content height from all entry views and updates
+    /// the scroll position if auto-scroll is pinned to bottom.
+    /// </summary>
+    private void UpdateContentSizeAndScroll()
     {
-        _cachedLines = null;
-        // New events should only yank the viewport to the tail when the user is
-        // still pinned to the bottom. Manual wheel scrolling disables that pin
-        // until the user scrolls back down.
+        var viewportHeight = Viewport.Height;
+        if (viewportHeight <= 0)
+            return;
+
+        var totalHeight = GetTotalContentHeight();
+
+        // Ensure content size is at least the viewport height so Terminal.Gui
+        // doesn't produce negative scroll offsets.
+        var effectiveHeight = Math.Max(totalHeight, viewportHeight);
+        SetContentSize(new Size(Viewport.Width, effectiveHeight));
+
+        if (_autoScrollPinnedToBottom)
+        {
+            var bottomY = Math.Max(0, effectiveHeight - viewportHeight);
+            if (Viewport.Y != bottomY)
+            {
+                Viewport = Viewport with { Y = bottomY };
+            }
+            _autoScrollPinnedToBottom = true;
+        }
+
+        SetNeedsDraw();
+    }
+
+    private void OnEntryHeightChanged()
+    {
         _app.Invoke(() =>
         {
-            UpdateContentSize(scrollToBottom: _autoScrollPinnedToBottom);
-            SetNeedsDraw();
+            UpdateContentSizeAndScroll();
             ContentChanged?.Invoke();
         });
     }
 
     /// <summary>
-    /// Recalculates the total content height and updates Terminal.Gui's content size
-    /// so scrolling works correctly.
+    /// Computes total scrollable content height by examining Frame.Y + Frame.Height
+    /// of the last entry view. This accounts for both entry heights and the spacing
+    /// gaps inserted via Pos.Bottom + 1.
     /// </summary>
-    private void UpdateContentSize(bool scrollToBottom)
+    private int GetTotalContentHeight()
     {
-        if (!TryGetViewportMetrics(out var viewportWidth, out var height))
-            return;
+        if (_entryViews.Count == 0)
+            return 0;
 
-        var totalHeight = GetContentHeight(viewportWidth, height);
-        SetContentSize(new Size(viewportWidth, totalHeight));
-
-        if (scrollToBottom)
-        {
-            ScrollToBottom(totalHeight, height);
-            _autoScrollPinnedToBottom = true;
-            return;
-        }
-
-        ClampViewport(totalHeight, height);
+        var lastView = _entryViews[^1];
+        return lastView.Frame.Y + (lastView.Frame.Height > 0 ? lastView.Frame.Height : 1);
     }
-
-    /// <summary>
-    /// Resizes the virtual content when the viewport changes without forcing a
-    /// manual scroll position back to the bottom.
-    /// </summary>
-    protected override void OnViewportChanged(DrawEventArgs args)
-    {
-        base.OnViewportChanged(args);
-        UpdateContentSize(scrollToBottom: _autoScrollPinnedToBottom);
-    }
-
-    /// <inheritdoc/>
-    protected override bool OnDrawingContent(DrawContext? context)
-    {
-        var width = Viewport.Width;
-        var height = Viewport.Height;
-        if (width <= 0 || height <= 0)
-            return true;
-
-        // If no entries, draw the splash art centered.
-        if (_entries.Count == 0)
-        {
-            DrawSplash(width, height);
-            return true;
-        }
-
-        var contentWidth = ConversationViewportBehavior.GetContentWidth(width);
-        var lines = GetRenderedLines(contentWidth);
-
-        // Terminal.Gui handles viewport offset — we draw relative to Viewport.Y.
-        var startLine = Viewport.Y;
-        for (var row = 0; row < height; row++)
-        {
-            var lineIndex = startLine + row;
-            if (lineIndex >= 0 && lineIndex < lines.Count)
-            {
-                DrawRenderedLine(row, lines[lineIndex], width);
-            }
-        }
-
-        return true;
-    }
-
-    /// <inheritdoc/>
-    protected override bool OnMouseEvent(Mouse mouse)
-    {
-        var isVerticalWheel = ConversationViewportBehavior.IsVerticalWheel(
-            mouse.Flags.HasFlag(MouseFlags.WheeledUp),
-            mouse.Flags.HasFlag(MouseFlags.WheeledDown));
-
-        // Intercept wheel events before the base View can translate them into its
-        // generic mouse-command pipeline. Ox owns scrolling for this custom-drawn
-        // surface, so the event should never be delegated first.
-        if (isVerticalWheel)
-        {
-            _ = HandleMouseWheel(mouse.Flags);
-            mouse.Handled = true;
-            return true;
-        }
-
-        return base.OnMouseEvent(mouse);
-    }
-
-    /// <summary>
-    /// Draws the splash art centered in the viewport when no entries exist.
-    /// </summary>
-    private void DrawSplash(int width, int height)
-    {
-        var leftInset = width > ConversationViewportBehavior.HorizontalPaddingColumns
-            ? ConversationViewportBehavior.HorizontalPaddingColumns
-            : 0;
-        var contentWidth = ConversationViewportBehavior.GetContentWidth(width);
-        var artWidth = SplashLines.Max(l => l.Length);
-        var startRow = Math.Max(0, (height - SplashLines.Length) / 2);
-        var startCol = leftInset
-            + Math.Max(0, (contentWidth - artWidth) / 2);
-
-        for (var i = 0; i < SplashLines.Length; i++)
-        {
-            Move(startCol, startRow + i);
-            SetAttribute(new Attribute(new Color(ColorName16.DarkGray), Bg));
-            AddStr(SplashLines[i]);
-        }
-    }
-
-    /// <summary>
-    /// Renders a single pre-computed line at the given row in the viewport.
-    /// </summary>
-    private void DrawRenderedLine(int row, RenderedLine line, int width)
-    {
-        // Clear the row first by writing spaces
-        Move(0, row);
-        SetAttribute(new Attribute(Color.None, Bg));
-        for (var col = 0; col < width; col++)
-            AddRune(' ');
-
-        // Render inside an explicit one-column gutter on both sides. Terminal.Gui's
-        // Padding does not offset this custom content surface, so the view owns the
-        // visual gutter directly.
-        var leftInset = width > ConversationViewportBehavior.HorizontalPaddingColumns
-            ? ConversationViewportBehavior.HorizontalPaddingColumns
-            : 0;
-        var col2 = leftInset;
-        var contentWidth = ConversationViewportBehavior.GetContentWidth(width);
-        var contentEnd = Math.Min(width, leftInset + contentWidth);
-        foreach (var span in line.Spans)
-        {
-            if (col2 >= contentEnd) break;
-            Move(col2, row);
-            SetAttribute(new Attribute(span.Foreground, span.Background, span.Bold ? TextStyle.Bold : TextStyle.None));
-            var text = span.Text;
-            if (col2 + text.Length > contentEnd)
-                text = text[..(contentEnd - col2)];
-            AddStr(text);
-            col2 += text.Length;
-        }
-    }
-
-    /// <summary>
-    /// Separated from <see cref="OnMouseEvent"/> so tests can verify wheel scrolling
-    /// without a live terminal driver.
-    /// </summary>
-    internal bool HandleMouseWheel(MouseFlags flags)
-    {
-        var deltaRows = GetWheelDelta(flags);
-        if (deltaRows == 0 || !TryGetViewportMetrics(out var viewportWidth, out var height))
-            return false;
-
-        SetContentSize(new Size(viewportWidth, GetContentHeight(viewportWidth, height)));
-
-        var originalY = Viewport.Y;
-        ScrollVertical(deltaRows);
-        _autoScrollPinnedToBottom = ConversationViewportBehavior.IsPinnedToBottom(
-            Viewport.Y,
-            GetContentHeight(viewportWidth, height),
-            height);
-
-        if (Viewport.Y != originalY)
-        {
-            // Terminal.Gui's ScrollVertical does not set the NeedsDraw flag, so
-            // the view must explicitly request a repaint after the viewport moves.
-            SetNeedsDraw();
-            return true;
-        }
-
-        return false;
-    }
-
-    /// <summary>
-    /// Gets or rebuilds the cached list of rendered lines for the given width.
-    /// Each ConversationEntry is laid out with word-wrapping and circle chrome.
-    /// </summary>
-    private List<RenderedLine> GetRenderedLines(int width)
-    {
-        if (_cachedLines is not null && _cachedWidth == width)
-            return _cachedLines;
-
-        _cachedLines = [];
-        _cachedWidth = width;
-        var emittedItem = false;
-
-        foreach (var entry in _entries)
-        {
-            if (entry.Style == EntryStyle.Plain)
-            {
-                RenderEntryPlain(entry, width, _cachedLines);
-                continue;
-            }
-
-            // Blank line between top-level items for visual separation.
-            if (emittedItem)
-                _cachedLines.Add(RenderedLine.Empty);
-
-            RenderEntryWithChrome(entry, width, _cachedLines);
-            emittedItem = true;
-        }
-
-        return _cachedLines;
-    }
-
-    private static int GetWheelDelta(MouseFlags flags)
-    {
-        return ConversationViewportBehavior.GetWheelDelta(
-            flags.HasFlag(MouseFlags.WheeledUp),
-            flags.HasFlag(MouseFlags.WheeledDown));
-    }
-
-    private bool TryGetViewportMetrics(out int width, out int height)
-    {
-        width = Viewport.Width;
-        height = Viewport.Height;
-        return width > 0 && height > 0;
-    }
-
-    private int GetContentHeight(int viewportWidth, int viewportHeight)
-    {
-        var contentWidth = ConversationViewportBehavior.GetContentWidth(viewportWidth);
-        return ConversationViewportBehavior.GetContentHeight(GetRenderedLines(contentWidth).Count, viewportHeight);
-    }
-
-    private void ScrollToBottom(int totalHeight, int viewportHeight)
-    {
-        var bottom = ConversationViewportBehavior.GetBottomViewportY(totalHeight, viewportHeight);
-        if (Viewport.Y != bottom)
-            Viewport = Viewport with { Y = bottom };
-    }
-
-    private void ClampViewport(int totalHeight, int viewportHeight)
-    {
-        var clampedY = ConversationViewportBehavior.ClampViewportY(Viewport.Y, totalHeight, viewportHeight);
-        if (Viewport.Y != clampedY)
-            Viewport = Viewport with { Y = clampedY };
-
-        _autoScrollPinnedToBottom = ConversationViewportBehavior.IsPinnedToBottom(
-            Viewport.Y,
-            totalHeight,
-            viewportHeight);
-    }
-
-    /// <summary>
-    /// Renders a Plain-style entry at full width with no prefix.
-    /// </summary>
-    private static void RenderEntryPlain(ConversationEntry entry, int width, List<RenderedLine> lines)
-    {
-        foreach (var segment in entry.Segments)
-        {
-            var wrapped = TextLayout.WrapText(segment.Text, width);
-            foreach (var line in wrapped)
-                lines.Add(new RenderedLine([new RenderSpan(line, segment.Foreground, segment.Background, segment.Bold)]));
-        }
-    }
-
-    /// <summary>
-    /// Renders a User or Circle entry with the ● prefix and continuation indent.
-    /// Also handles nested children (subagent blocks).
-    /// </summary>
-    private static void RenderEntryWithChrome(ConversationEntry entry, int totalWidth, List<RenderedLine> lines)
-    {
-        var circleColor = entry.Style == EntryStyle.User
-            ? new Color(ColorName16.Blue)
-            : entry.GetCircleColor?.Invoke() ?? new Color(ColorName16.White);
-
-        var contentWidth = Math.Max(1, totalWidth - CircleChrome);
-
-        // Render the entry's own segments with word-wrapping.
-        var entryLines = ConversationEntryLayout.LayoutSegments(entry.Segments, contentWidth);
-
-        // Apply circle/continuation chrome to the wrapped lines.
-        for (var i = 0; i < entryLines.Count; i++)
-        {
-            var prefixSpans = i == 0
-                ? MakeCirclePrefix(circleColor)
-                : MakeContinuationPrefix();
-
-            var combined = new List<RenderSpan>(prefixSpans);
-            combined.AddRange(entryLines[i].Spans);
-            lines.Add(new RenderedLine(combined));
-        }
-
-        // Render children (subagent inner events) with their own circle chrome.
-        if (entry.Children.Count > 0)
-        {
-            var childLines = new List<RenderedLine>();
-            var childEmitted = false;
-
-            foreach (var child in entry.Children)
-            {
-                if (child.Style == EntryStyle.Plain)
-                {
-                    RenderEntryPlain(child, contentWidth, childLines);
-                    continue;
-                }
-
-                if (childEmitted)
-                    childLines.Add(RenderedLine.Empty);
-
-                RenderEntryWithChrome(child, contentWidth, childLines);
-                childEmitted = true;
-            }
-
-            // Tail-clip to MaxChildRows if needed.
-            var maxRows = entry.MaxChildRows;
-            if (childLines.Count > maxRows)
-            {
-                var startIndex = childLines.Count - maxRows;
-                // Prepend ellipsis row.
-                var ellipsis = new RenderedLine([
-                    new RenderSpan("  ", Bg, Bg),
-                    new RenderSpan($"{CircleChar} ...", new Color(ColorName16.DarkGray), Bg)
-                ]);
-                lines.Add(ellipsis);
-
-                for (var i = startIndex; i < childLines.Count; i++)
-                {
-                    // Indent child lines under the parent's continuation.
-                    var indented = IndentLine(childLines[i]);
-                    lines.Add(indented);
-                }
-            }
-            else
-            {
-                foreach (var childLine in childLines)
-                    lines.Add(IndentLine(childLine));
-            }
-        }
-    }
-
-    /// <summary>
-    /// Indents a line by the circle chrome width (2 spaces) for subagent children.
-    /// </summary>
-    private static RenderedLine IndentLine(RenderedLine line)
-    {
-        var spans = new List<RenderSpan> { new("  ", Bg, Bg) };
-        spans.AddRange(line.Spans);
-        return new RenderedLine(spans);
-    }
-
-    /// <summary>Creates the "● " prefix spans with the given circle color.</summary>
-    private static List<RenderSpan> MakeCirclePrefix(Color circleColor) =>
-    [
-        new(CircleChar.ToString(), circleColor, Bg),
-        new(" ", Bg, Bg)
-    ];
-
-    /// <summary>Creates the "  " continuation prefix (same width as circle chrome).</summary>
-    private static List<RenderSpan> MakeContinuationPrefix() =>
-    [
-        new("  ", Bg, Bg)
-    ];
-
 }
 
 /// <summary>
 /// A single pre-rendered line of the conversation, composed of styled spans.
+/// Used by <see cref="ConversationEntryView"/> for its own drawing.
 /// </summary>
 internal sealed class RenderedLine
 {
@@ -456,4 +178,4 @@ internal sealed class RenderedLine
 /// <summary>
 /// A contiguous run of text with uniform styling within a rendered line.
 /// </summary>
-internal readonly record struct RenderSpan(string Text, Color Foreground, Color Background, bool Bold = false);
+internal readonly record struct RenderSpan(string Text, Terminal.Gui.Drawing.Color Foreground, Terminal.Gui.Drawing.Color Background, bool Bold = false);

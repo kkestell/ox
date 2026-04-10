@@ -28,6 +28,7 @@ internal sealed class OxApp : Window
 
     private readonly IApplication _app;
     private readonly string _workspacePath;
+    private readonly SplashView _splashView;
     private readonly ConversationView _conversationView;
     private readonly InputAreaView _inputAreaView;
     private readonly SidebarView _sidebarView;
@@ -70,6 +71,7 @@ internal sealed class OxApp : Window
 
         CanFocus = true;
 
+        _splashView = new SplashView();
         _conversationView = new ConversationView(app);
         _inputAreaView = new InputAreaView(app);
         _sidebarView = new SidebarView(app, todoStore);
@@ -85,17 +87,28 @@ internal sealed class OxApp : Window
         _sidebarView.Y = 0;
         _sidebarView.Height = Dim.Fill();
 
+        // Splash occupies the same space as the conversation view. It's shown
+        // when the conversation is empty and hidden once the first entry arrives.
+        _splashView.X = 0;
+        _splashView.Y = 0;
+        _splashView.Width = Dim.Func(ComputeMainWidth, this);
+        _splashView.Height = Dim.Fill(Dim.Absolute(InputAreaHeight));
+
         _conversationView.X = 0;
         _conversationView.Y = 0;
         _conversationView.Width = Dim.Func(ComputeMainWidth, this);
         _conversationView.Height = Dim.Fill(Dim.Absolute(InputAreaHeight));
+        _conversationView.Visible = false; // Hidden until first entry
 
         _inputAreaView.X = 0;
         _inputAreaView.Y = Pos.AnchorEnd(InputAreaHeight);
         _inputAreaView.Width = Dim.Func(ComputeMainWidth, this);
         _inputAreaView.Height = Dim.Absolute(InputAreaHeight);
 
-        Add(_conversationView, _inputAreaView, _sidebarView);
+        Add(_splashView, _conversationView, _inputAreaView, _sidebarView);
+
+        // Toggle splash/conversation visibility when content arrives.
+        _conversationView.ContentChanged += OnConversationContentChanged;
 
         // When sidebar visibility changes, force the layout to recalculate.
         _sidebarView.VisibleChanged += (_, _) => SetNeedsLayout();
@@ -137,6 +150,18 @@ internal sealed class OxApp : Window
         // reflects the exact terminal state the user is reporting.
         _ = ScreenDumpWriter.Write(_workspacePath, _app.ToString(), DateTimeOffset.Now);
         key.Handled = true;
+    }
+
+    /// <summary>
+    /// Switches from splash to conversation view when the first entry is added.
+    /// </summary>
+    private void OnConversationContentChanged()
+    {
+        if (_conversationView.EntryCount > 0 && !_conversationView.Visible)
+        {
+            _splashView.Visible = false;
+            _conversationView.Visible = true;
+        }
     }
 
     private static Color ToTerminalColor(OxThemeColor color) =>

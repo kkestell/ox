@@ -35,7 +35,7 @@ The text layout engine (`ConversationTextLayout`, `ConversationEntryLayout`) is 
 
 ### Phase 1: Create ConversationEntryView
 
-- [ ] **Create `src/Ox/Views/ConversationEntryView.cs`** — A `View` subclass that draws one `ConversationEntry`.
+- [x] **Create `src/Ox/Views/ConversationEntryView.cs`** — A `View` subclass that draws one `ConversationEntry`.
   - Constructor takes a `ConversationEntry` and subscribes to its `Changed` event.
   - `Width = Dim.Fill()` (fills parent's content width).
   - Height is computed from the number of wrapped lines (call `ConversationEntryLayout.LayoutSegments` with `Viewport.Width` minus circle chrome width).
@@ -43,7 +43,7 @@ The text layout engine (`ConversationTextLayout`, `ConversationEntryLayout`) is 
   - On `Changed`, recalculate height via `RecalculateHeight()` which calls `SetContentSize` or updates `Height` if the wrapped line count changed, then `SetNeedsDraw()`.
   - The horizontal padding (1 column per side) is applied by this view, not the parent. Each entry view draws its own gutter.
 
-- [ ] **Handle children (subagent nesting) inside ConversationEntryView.**
+- [x] **Handle children (subagent nesting) inside ConversationEntryView.**
   - Children of a `ConversationEntry` become nested `ConversationEntryView` SubViews inside the parent entry view.
   - These are stacked with `Y = Pos.Bottom(prev)` within the entry view.
   - The parent entry view's height accounts for its own text lines plus all children.
@@ -52,7 +52,7 @@ The text layout engine (`ConversationTextLayout`, `ConversationEntryLayout`) is 
 
 ### Phase 2: Rewrite ConversationView as a scrollable container
 
-- [ ] **Rewrite `ConversationView` as a container of `ConversationEntryView` SubViews.**
+- [x] **Rewrite `ConversationView` as a container of `ConversationEntryView` SubViews.**
   - Remove: `_cachedLines`, `_cachedWidth`, `GetRenderedLines()`, `DrawRenderedLine()`, `RenderEntryPlain()`, `RenderEntryWithChrome()`, `IndentLine()`, `MakeCirclePrefix()`, `MakeContinuationPrefix()`.
   - Remove: the `OnDrawingContent` override entirely. Terminal.Gui draws SubViews automatically.
   - Remove: `OnMouseEvent` override for wheel interception. Use built-in scroll behavior instead.
@@ -62,46 +62,46 @@ The text layout engine (`ConversationTextLayout`, `ConversationEntryLayout`) is 
   - Keep: `EntryCount` property.
   - Add: track the last added `ConversationEntryView` so the next one can chain `Y = Pos.Bottom(lastView)`.
 
-- [ ] **Enable built-in scrollbar.**
+- [x] **Enable built-in scrollbar.**
   - Set `ViewportSettings |= ViewportSettingsFlags.HasVerticalScrollBar` in the constructor.
   - When entries change height (via `ConversationEntryView.HeightChanged` event or similar), update `SetContentSize()` to the total height of all stacked entries.
   - Alternatively, if `Dim.Auto(DimAutoStyle.Content)` reliably computes the total from the Pos.Bottom chain, rely on that and skip manual `SetContentSize`.
 
-- [ ] **Implement auto-scroll pin-to-bottom.**
+- [x] **Implement auto-scroll pin-to-bottom.**
   - Subscribe to `OnViewportChanged` to detect when the user scrolls manually.
   - If the user scrolls up (viewport Y moves away from bottom), disable auto-scroll.
   - If the user scrolls back to bottom, re-enable auto-scroll.
   - When new content arrives (entry added or existing entry height changes) and auto-scroll is enabled, scroll to bottom.
   - Use `ConversationViewportBehavior.IsPinnedToBottom` (keep this helper) to detect pin state.
 
-- [ ] **Remove `RenderedLine` and `RenderSpan` from `ConversationView.cs`.**
+- [x] **Remove `RenderedLine` and `RenderSpan` from `ConversationView.cs`.**
   - These types move into `ConversationEntryView.cs` (they're only used for per-entry drawing now).
   - Or, if the entry view draws directly from `ConversationEntryLayout` output without an intermediate type, they can be removed entirely.
 
 ### Phase 3: Splash view
 
-- [ ] **Extract splash art into a `SplashView : View`.**
+- [x] **Extract splash art into a `SplashView : View`.**
   - Draws the "OX" ASCII art centered in its bounds.
   - `ConversationView` (or `OxApp`) shows `SplashView` when `EntryCount == 0`, hides it when the first entry arrives.
   - Simple approach: `SplashView` is a sibling of `ConversationView` in `OxApp`, toggled via `Visible`. Or it's a SubView of `ConversationView` that gets removed on first entry.
 
 ### Phase 4: Simplify ConversationViewportBehavior
 
-- [ ] **Delete helpers that Terminal.Gui now handles:**
+- [x] **Delete helpers that Terminal.Gui now handles:**
   - `GetWheelDelta` — no longer intercepting mouse wheel manually
   - `IsVerticalWheel` — same
   - `GetContentHeight` — Terminal.Gui computes this from SubView layout
   - `GetBottomViewportY` — use Terminal.Gui's content size minus viewport height
   - `ClampViewportY` — Terminal.Gui clamps viewport automatically
-- [ ] **Keep:**
+- [x] **Keep:**
   - `GetContentWidth` — the 1-column horizontal padding is still Ox-specific
   - `HorizontalPaddingColumns` constant
   - `IsPinnedToBottom` — still needed for auto-scroll behavior
-- [ ] **Update tests in `ConversationViewportBehaviorTests.cs`** — remove tests for deleted methods, keep tests for surviving methods.
+- [x] **Update tests in `ConversationViewportBehaviorTests.cs`** — remove tests for deleted methods, keep tests for surviving methods.
 
 ### Phase 5: Blank-line separators
 
-- [ ] **Handle inter-entry spacing.**
+- [x] **Handle inter-entry spacing.**
   - Currently, `GetRenderedLines` inserts a blank `RenderedLine` between top-level Circle/User entries.
   - In the composite approach, use Terminal.Gui's Margin or a simple spacer. Options:
     - Set `Margin.Top = 1` on each `ConversationEntryView` (except the first) for Circle/User entries.
@@ -110,19 +110,19 @@ The text layout engine (`ConversationTextLayout`, `ConversationEntryLayout`) is 
 
 ### Phase 6: Verify and test
 
-- [ ] **Verify existing tests still pass** (`ConversationViewLayoutTests` should be unaffected since they test the pure layout core).
-- [ ] **Write new tests for `ConversationEntryView`:**
+- [x] **Verify existing tests still pass** (`ConversationViewLayoutTests` should be unaffected since they test the pure layout core).
+- [x] **Write new tests for `ConversationEntryView`:**
   - Height calculation matches expected wrapped line count for given width.
   - Height updates when content changes (AppendSegment triggers recalculation).
   - Circle chrome is applied for User/Circle styles, absent for Plain.
   - Children are nested and indented correctly.
   - Tail-clipping works when children exceed MaxChildRows.
-- [ ] **Write new tests for the rewritten `ConversationView`:**
+- [x] **Write new tests for the rewritten `ConversationView`:**
   - Adding entries creates SubViews with correct Pos.Bottom chain.
   - Auto-scroll to bottom when pinned and new entry is added.
   - Auto-scroll disabled when user scrolls up.
   - Auto-scroll re-enabled when user scrolls back to bottom.
-- [ ] **Manual verification:**
+- [x] **Manual verification:**
   - Streaming text renders correctly and scrolls to bottom.
   - Mouse wheel scrolling works (up disables auto-scroll, back to bottom re-enables).
   - Tool call lifecycle (yellow -> green/red) circle color transitions work.
