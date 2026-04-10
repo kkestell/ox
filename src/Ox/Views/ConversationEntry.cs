@@ -62,7 +62,7 @@ internal sealed class ConversationEntry
     /// <summary>Appends a styled text segment and signals a redraw.</summary>
     public void AppendSegment(string text, Color foreground, Color? background = null, bool bold = false)
     {
-        Segments.Add(new StyledSegment(text, foreground, background ?? Color.None, bold));
+        Segments.Add(new StyledSegment(text, foreground, background ?? new Color(ColorName16.Black), bold));
         Changed?.Invoke();
     }
 
@@ -70,7 +70,7 @@ internal sealed class ConversationEntry
     public void SetSegment(string text, Color foreground, Color? background = null, bool bold = false)
     {
         Segments.Clear();
-        Segments.Add(new StyledSegment(text, foreground, background ?? Color.None, bold));
+        Segments.Add(new StyledSegment(text, foreground, background ?? new Color(ColorName16.Black), bold));
         Changed?.Invoke();
     }
 

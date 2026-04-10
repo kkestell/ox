@@ -22,6 +22,7 @@ namespace Ox.Views;
 internal sealed class ConversationView : View
 {
     // ● U+25CF BLACK CIRCLE — status indicator prefix.
+    private static readonly Color Bg = new(ColorName16.Black);
     private const char CircleChar = '●';
 
     // Chrome width: "● " = 2 columns (circle + space).
@@ -145,7 +146,7 @@ internal sealed class ConversationView : View
         for (var i = 0; i < SplashLines.Length; i++)
         {
             Move(startCol, startRow + i);
-            SetAttribute(new Attribute(new Color(ColorName16.DarkGray), Color.None));
+            SetAttribute(new Attribute(new Color(ColorName16.DarkGray), Bg));
             AddStr(SplashLines[i]);
         }
     }
@@ -157,7 +158,7 @@ internal sealed class ConversationView : View
     {
         // Clear the row first by writing spaces
         Move(0, row);
-        SetAttribute(Attribute.Default);
+        SetAttribute(new Attribute(Color.None, Bg));
         for (var col = 0; col < width; col++)
             AddRune(' ');
 
@@ -282,8 +283,8 @@ internal sealed class ConversationView : View
                 var startIndex = childLines.Count - maxRows;
                 // Prepend ellipsis row.
                 var ellipsis = new RenderedLine([
-                    new RenderSpan("  ", Color.None, Color.None),
-                    new RenderSpan($"{CircleChar} ...", new Color(ColorName16.DarkGray), Color.None)
+                    new RenderSpan("  ", Bg, Bg),
+                    new RenderSpan($"{CircleChar} ...", new Color(ColorName16.DarkGray), Bg)
                 ]);
                 lines.Add(ellipsis);
 
@@ -307,7 +308,7 @@ internal sealed class ConversationView : View
     /// </summary>
     private static RenderedLine IndentLine(RenderedLine line)
     {
-        var spans = new List<RenderSpan> { new("  ", Color.None, Color.None) };
+        var spans = new List<RenderSpan> { new("  ", Bg, Bg) };
         spans.AddRange(line.Spans);
         return new RenderedLine(spans);
     }
@@ -315,14 +316,14 @@ internal sealed class ConversationView : View
     /// <summary>Creates the "● " prefix spans with the given circle color.</summary>
     private static List<RenderSpan> MakeCirclePrefix(Color circleColor) =>
     [
-        new(CircleChar.ToString(), circleColor, Color.None),
-        new(" ", Color.None, Color.None)
+        new(CircleChar.ToString(), circleColor, Bg),
+        new(" ", Bg, Bg)
     ];
 
     /// <summary>Creates the "  " continuation prefix (same width as circle chrome).</summary>
     private static List<RenderSpan> MakeContinuationPrefix() =>
     [
-        new("  ", Color.None, Color.None)
+        new("  ", Bg, Bg)
     ];
 
 }

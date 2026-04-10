@@ -29,6 +29,7 @@ internal sealed class InputAreaView : View
     private const char VerticalBorder = '│';
 
     // Colors matching the original Viewport design.
+    private static readonly Color Bg = new(ColorName16.Black);
     private static readonly Color BorderColor = new(244, 244, 244);     // Grey50-ish
     private static readonly Color DividerColor = new(68, 68, 68);       // Darker gray
     private static readonly Color ModelColor = new(178, 178, 178);      // Grey50
@@ -152,7 +153,7 @@ internal sealed class InputAreaView : View
     private void DrawBorderRow(int row, int width, char leftCorner, char rightCorner, Color color)
     {
         Move(0, row);
-        var attr = new Attribute(color, Color.None);
+        var attr = new Attribute(color, Bg);
         SetAttribute(attr);
 
         AddRune(leftCorner);
@@ -172,7 +173,7 @@ internal sealed class InputAreaView : View
 
         // Left border + padding
         Move(0, row);
-        SetAttribute(new Attribute(BorderColor, Color.None));
+        SetAttribute(new Attribute(BorderColor, Bg));
         AddRune(VerticalBorder);
         AddRune(' ');
 
@@ -180,7 +181,7 @@ internal sealed class InputAreaView : View
 
         // Prompt text in white
         var promptLength = Math.Min(_prompt.Length, contentWidth);
-        SetAttribute(new Attribute(new Color(ColorName16.White), Color.None));
+        SetAttribute(new Attribute(new Color(ColorName16.White), Bg));
         if (promptLength > 0)
             AddStr(_prompt[..promptLength]);
 
@@ -190,14 +191,14 @@ internal sealed class InputAreaView : View
         if (!string.IsNullOrEmpty(_completionSuffix) && remaining > 0)
         {
             // First char of ghost text rendered as cursor (reverse video)
-            SetAttribute(new Attribute(new Color(ColorName16.DarkGray), Color.None, TextStyle.Reverse));
+            SetAttribute(new Attribute(new Color(ColorName16.DarkGray), Bg, TextStyle.Reverse));
             AddRune(_completionSuffix[0]);
             remaining--;
 
             // Rest of ghost text in plain gray
             if (_completionSuffix.Length > 1 && remaining > 0)
             {
-                SetAttribute(new Attribute(new Color(ColorName16.DarkGray), Color.None));
+                SetAttribute(new Attribute(new Color(ColorName16.DarkGray), Bg));
                 var ghostText = _completionSuffix[1..];
                 var ghostLen = Math.Min(ghostText.Length, remaining);
                 AddStr(ghostText[..ghostLen]);
@@ -207,19 +208,19 @@ internal sealed class InputAreaView : View
         else if (remaining > 0)
         {
             // Block cursor: reverse-video space
-            SetAttribute(new Attribute(new Color(ColorName16.White), Color.None, TextStyle.Reverse));
+            SetAttribute(new Attribute(new Color(ColorName16.White), Bg, TextStyle.Reverse));
             AddRune(' ');
             remaining--;
         }
 
         // Fill remaining space
-        SetAttribute(Attribute.Default);
+        SetAttribute(new Attribute(Color.None, Bg));
         for (var i = 0; i < remaining; i++)
             AddRune(' ');
 
         // Right padding + border
         AddRune(' ');
-        SetAttribute(new Attribute(BorderColor, Color.None));
+        SetAttribute(new Attribute(BorderColor, Bg));
         AddRune(VerticalBorder);
     }
 
@@ -227,14 +228,14 @@ internal sealed class InputAreaView : View
     private void DrawDividerRow(int row, int width)
     {
         Move(0, row);
-        SetAttribute(new Attribute(BorderColor, Color.None));
+        SetAttribute(new Attribute(BorderColor, Bg));
         AddRune(VerticalBorder);
 
-        SetAttribute(new Attribute(DividerColor, Color.None));
+        SetAttribute(new Attribute(DividerColor, Bg));
         for (var i = 1; i < width - 1; i++)
             AddRune(HorizontalBorder);
 
-        SetAttribute(new Attribute(BorderColor, Color.None));
+        SetAttribute(new Attribute(BorderColor, Bg));
         if (width > 1)
             AddRune(VerticalBorder);
     }
@@ -248,7 +249,7 @@ internal sealed class InputAreaView : View
 
         // Left border + padding
         Move(0, row);
-        SetAttribute(new Attribute(BorderColor, Color.None));
+        SetAttribute(new Attribute(BorderColor, Bg));
         AddRune(VerticalBorder);
         AddRune(' ');
 
@@ -266,14 +267,14 @@ internal sealed class InputAreaView : View
                 var throbberColor = isOn
                     ? new Color(ColorName16.White)
                     : new Color(ColorName16.DarkGray);
-                SetAttribute(new Attribute(throbberColor, Color.None));
+                SetAttribute(new Attribute(throbberColor, Bg));
                 AddRune(ThrobberRune);
                 usedWidth++;
 
                 // Space between bits (except after the last one)
                 if (i < ThrobberCount - 1 && usedWidth < contentWidth)
                 {
-                    SetAttribute(Attribute.Default);
+                    SetAttribute(new Attribute(Color.None, Bg));
                     AddRune(' ');
                     usedWidth++;
                 }
@@ -287,17 +288,17 @@ internal sealed class InputAreaView : View
             var modelStart = Math.Max(usedWidth, contentWidth - modelLen);
             var spacing = modelStart - usedWidth;
 
-            SetAttribute(Attribute.Default);
+            SetAttribute(new Attribute(Color.None, Bg));
             for (var i = 0; i < spacing; i++)
                 AddRune(' ');
 
-            SetAttribute(new Attribute(ModelColor, Color.None));
+            SetAttribute(new Attribute(ModelColor, Bg));
             AddStr(_modelId[..modelLen]);
             usedWidth = modelStart + modelLen;
         }
 
         // Fill remaining space
-        SetAttribute(Attribute.Default);
+        SetAttribute(new Attribute(Color.None, Bg));
         while (usedWidth < contentWidth)
         {
             AddRune(' ');
@@ -306,7 +307,7 @@ internal sealed class InputAreaView : View
 
         // Right padding + border
         AddRune(' ');
-        SetAttribute(new Attribute(BorderColor, Color.None));
+        SetAttribute(new Attribute(BorderColor, Bg));
         AddRune(VerticalBorder);
     }
 

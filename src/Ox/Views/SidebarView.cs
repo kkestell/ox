@@ -19,6 +19,7 @@ internal sealed class SidebarView : View
 {
     // Box-drawing character for the vertical separator on the left edge.
     private const char SeparatorChar = '│';
+    private static readonly Color Bg = new(ColorName16.Black);
 
     private readonly IApplication _app;
     private string? _contextUsage;
@@ -77,13 +78,13 @@ internal sealed class SidebarView : View
         for (var row = 0; row < height; row++)
         {
             Move(0, row);
-            SetAttribute(Attribute.Default);
+            SetAttribute(new Attribute(Color.None, Bg));
             for (var col = 0; col < width; col++)
                 AddRune(' ');
         }
 
         // Draw the vertical separator on the left edge.
-        var sepAttr = new Attribute(new Color(ColorName16.DarkGray), Color.None);
+        var sepAttr = new Attribute(new Color(ColorName16.DarkGray), Bg);
         for (var row = 0; row < height; row++)
         {
             Move(0, row);
@@ -101,7 +102,7 @@ internal sealed class SidebarView : View
         {
             // Header
             Move(contentStart, currentRow);
-            SetAttribute(new Attribute(new Color(ColorName16.White), Color.None, TextStyle.Bold));
+            SetAttribute(new Attribute(new Color(ColorName16.White), Bg, TextStyle.Bold));
             AddStr(Clip("Context", contentWidth));
             currentRow++;
 
@@ -109,7 +110,7 @@ internal sealed class SidebarView : View
             if (currentRow < height)
             {
                 Move(contentStart, currentRow);
-                SetAttribute(new Attribute(new Color(ColorName16.DarkGray), Color.None));
+                SetAttribute(new Attribute(new Color(ColorName16.DarkGray), Bg));
                 AddStr(Clip(_contextUsage, contentWidth));
                 currentRow++;
             }
@@ -124,7 +125,7 @@ internal sealed class SidebarView : View
         {
             // Header
             Move(contentStart, currentRow);
-            SetAttribute(new Attribute(new Color(ColorName16.White), Color.None, TextStyle.Bold));
+            SetAttribute(new Attribute(new Color(ColorName16.White), Bg, TextStyle.Bold));
             AddStr(Clip("Plan", contentWidth));
             currentRow++;
 
@@ -147,15 +148,15 @@ internal sealed class SidebarView : View
                     Move(contentStart, currentRow);
                     if (li == 0)
                     {
-                        SetAttribute(new Attribute(color, Color.None));
+                        SetAttribute(new Attribute(color, Bg));
                         AddStr(prefix);
                     }
                     else
                     {
-                        SetAttribute(Attribute.Default);
+                        SetAttribute(new Attribute(Color.None, Bg));
                         AddStr(new string(' ', prefix.Length));
                     }
-                    SetAttribute(new Attribute(color, Color.None));
+                    SetAttribute(new Attribute(color, Bg));
                     AddStr(Clip(lines[li], itemContentWidth));
                     currentRow++;
                 }

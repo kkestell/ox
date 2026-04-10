@@ -1,5 +1,6 @@
 using System.Text;
 using Terminal.Gui.App;
+using Terminal.Gui.Configuration;
 using Terminal.Gui.Drawing;
 using Terminal.Gui.Drivers;
 using Terminal.Gui.Input;
@@ -57,6 +58,15 @@ internal sealed class OxApp : Window
         // Remove the default Window border — we draw our own chrome.
         BorderStyle = LineStyle.None;
         Title = "";
+
+        // Force a solid black background across the entire app. All child views
+        // inherit this scheme, so Color.None and Attribute.Default resolve to
+        // black instead of the terminal's default background.
+        var black = new Color(ColorName16.Black);
+        var white = new Color(ColorName16.White);
+        var oxScheme = new Scheme(new Terminal.Gui.Drawing.Attribute(white, black));
+        SchemeManager.AddScheme("Ox", oxScheme);
+        SchemeName = "Ox";
 
         // OxApp must be focusable so it receives keyboard events.
         // All child views are non-focusable (CanFocus=false) — keyboard
