@@ -24,7 +24,16 @@ rm -rf "$WORKSPACE"
 mkdir -p "$WORKSPACE"
 
 # Copy the .env so the API key is available inside the sandbox.
-cp "$REPO_ROOT/.env" "$WORKSPACE/.env"
+# Search upward from the repo root (matching dotenv.net's probeForEnv behavior).
+ENV_DIR="$REPO_ROOT"
+while [ ! -f "$ENV_DIR/.env" ] && [ "$ENV_DIR" != "/" ]; do
+    ENV_DIR="$(dirname "$ENV_DIR")"
+done
+if [ -f "$ENV_DIR/.env" ]; then
+    cp "$ENV_DIR/.env" "$WORKSPACE/.env"
+else
+    echo "Warning: no .env found — API key may be missing" >&2
+fi
 
 # A plain file for read_file tests.
 echo "test-sentinel" > "$WORKSPACE/hello.txt"

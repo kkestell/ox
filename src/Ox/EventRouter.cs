@@ -1,131 +1,121 @@
-using Te.Rendering;
+using Terminal.Gui.App;
+using Terminal.Gui.Drawing;
 using Ur.AgentLoop;
-using Ox.Rendering;
+using Ox.Views;
 
 namespace Ox;
 
 /// <summary>
-/// Routes <see cref="AgentLoopEvent"/>s to the appropriate renderables,
-/// maintaining all the state needed to correlate started/completed pairs
-/// and to lazily create renderables as events arrive.
+/// Routes <see cref="AgentLoopEvent"/>s to <see cref="ConversationEntry"/> data models
+/// that the <see cref="ConversationView"/> draws.
 ///
 /// The router is the only layer that knows about tool call IDs and subagent
-/// IDs — everything above (the REPL loop) and below (the renderables) is
-/// ignorant of these identifiers.
+/// IDs — everything above (the REPL loop) and below (the view) is ignorant
+/// of these identifiers.
+///
+/// All mutations to entries must happen on the UI thread via Application.Invoke
+/// since agent events arrive on background threads.
 /// </summary>
-internal sealed class EventRouter(EventList eventList)
+internal sealed class EventRouter(ConversationView conversationView)
 {
     // Tool name for the run_subagent tool. Used to differentiate subagent
-    // tool calls (which get a SubagentRenderable) from regular tool calls
-    // (which get a ToolRenderable). Defined here to avoid a project reference
-    // to Ur.Tools from within the routing logic.
+    // tool calls (which get nested entries) from regular tool calls.
     private const string SubagentToolName = "run_subagent";
+
+    // Cap how many result lines we show beneath a tool signature.
+    private const int MaxResultLines = 5;
+
+    // Maximum inner rows for subagent blocks before tail-clipping.
+    private const int MaxSubagentInnerRows = 20;
 
     // ---- Main-stream state ----
 
-    // Active streaming text block for the main agent. Null between turns.
-    // Reset when a ToolCallStarted or TurnCompleted arrives so the next
-    // ResponseChunk creates a fresh renderable.
-    private TextRenderable? _currentText;
+    // Active streaming text entry for the main agent. Null between turns.
+    private ConversationEntry? _currentText;
 
-    // Maps CallId to ToolRenderable for in-flight main-stream tool calls.
-    private readonly Dictionary<string, ToolRenderable> _toolCallMap = new();
+    // Maps CallId to (entry, state) for in-flight main-stream tool calls.
+    private readonly Dictionary<string, ToolEntryState> _toolCallMap = new();
 
-    // CallIds of run_subagent invocations — these map to SubagentRenderables,
-    // not ToolRenderables, so ToolCallCompleted must treat them differently.
+    // CallIds of run_subagent invocations.
     private readonly HashSet<string> _subagentCallIds = [];
 
-    // Queues run_subagent calls with their formatted signatures. The SubagentId
-    // is not known at ToolCallStarted time — it arrives later via SubagentEvent.
-    // When RouteSubagentEvent creates a SubagentRenderable, it dequeues the oldest
-    // pending call to get the formatted signature and to pair CallId → SubagentId
-    // for defensive finalization in ToolCallCompleted.
+    // Queues run_subagent calls with their formatted signatures.
     private readonly Queue<(string CallId, string FormattedCall)> _pendingSubagentCalls = new();
     private readonly Dictionary<string, string> _callIdToSubagentId = new();
 
-    // ---- Subagent state (keyed by SubagentId, the 8-char hex from SubagentRunner) ----
+    // ---- Subagent state (keyed by SubagentId) ----
 
-    // Maps SubagentId to SubagentRenderable. Created lazily on first SubagentEvent.
-    private readonly Dictionary<string, SubagentRenderable> _subagentById = new();
-
-    // Per-subagent current streaming text block.
-    private readonly Dictionary<string, TextRenderable?> _subagentCurrentText = new();
-
-    // Per-subagent tool call maps for SetCompleted lookups.
-    private readonly Dictionary<string, Dictionary<string, ToolRenderable>> _subagentToolCalls = new();
-
-    // ---- Permission callback support (removed) ----
-    // The old _lastStartedTool field assumed sequential execution. It has been
-    // replaced by the ToolAwaitingApproval event, which carries the CallId of the
-    // specific tool awaiting approval — no ambient "last started" tracking needed.
+    private readonly Dictionary<string, SubagentState> _subagentById = new();
 
     /// <summary>
     /// Routes a main-stream event. Called for every event yielded by
-    /// <c>session.RunTurnAsync</c>.
+    /// <c>session.RunTurnAsync</c>. Must be called via Application.Invoke
+    /// when on a background thread.
     /// </summary>
     public void RouteMainEvent(AgentLoopEvent evt)
     {
         switch (evt)
         {
             case ResponseChunk { Text: var text } when !string.IsNullOrEmpty(text):
-                // Lazy creation: a new TextRenderable begins each run of response
-                // text (after startup, after each tool call completes).
-                // Guard on non-empty text so that empty chunks (which the model
-                // sometimes emits before a tool call) don't produce empty bubbles.
+                // Lazy creation: a new entry begins each run of response text.
                 if (_currentText is null)
                 {
-                    _currentText = new TextRenderable();
-                    eventList.Add(_currentText, BubbleStyle.Circle, () => Color.White);
+                    _currentText = new ConversationEntry(EntryStyle.Circle,
+                        () => new Color(ColorName16.White));
+                    _currentText.AppendSegment("", new Color(ColorName16.White));
+                    conversationView.AddEntry(_currentText);
                 }
-                _currentText.Append(text);
+                // Append to the last segment's text.
+                AppendToLastSegment(_currentText, text, new Color(ColorName16.White));
                 break;
 
             case ToolCallStarted { ToolName: SubagentToolName } started:
-                // run_subagent: mark this CallId as a subagent call so that
-                // ToolCallCompleted knows not to look for a ToolRenderable.
-                // The SubagentRenderable is created lazily in RouteSubagentEvent
-                // when the first SubagentEvent with the subagent's ID arrives,
-                // because SubagentId is not known until that first event.
-                // Store the formatted call string now so it's available for the
-                // SubagentRenderable's tool signature row when it's created.
+                // run_subagent: mark this CallId and queue the formatted call.
                 _subagentCallIds.Add(started.CallId);
                 _pendingSubagentCalls.Enqueue((started.CallId, started.FormatCall()));
                 _currentText = null;
                 break;
 
             case ToolCallStarted started:
-                var tool = new ToolRenderable(started.FormatCall());
-                _toolCallMap[started.CallId] = tool;
-                eventList.Add(tool, BubbleStyle.Circle, () => tool.CircleColor);
+                // Create the tool state first so the dynamic circle color closure
+                // can capture it. The entry is constructed directly with the color
+                // supplier — no intermediate copy needed.
+                var toolState = new ToolEntryState();
+                _toolCallMap[started.CallId] = toolState;
+
+                var capturedState = toolState;
+                var toolEntry = new ConversationEntry(EntryStyle.Circle,
+                    () => capturedState.CircleColor);
+                toolEntry.AppendSegment(started.FormatCall(), new Color(ColorName16.DarkGray));
+                toolState.DisplayEntry = toolEntry;
+
+                conversationView.AddEntry(toolEntry);
                 _currentText = null;
                 break;
 
-            // Parallel dispatch emits this right before prompting the user for
-            // permission. We look up the specific tool by CallId instead of relying
-            // on "the last started tool" — correct even when multiple tools are in flight.
             case ToolAwaitingApproval { CallId: var awaitingCallId }:
-                if (_toolCallMap.TryGetValue(awaitingCallId, out var awaitingTool))
-                    awaitingTool.SetAwaitingApproval();
+                if (_toolCallMap.TryGetValue(awaitingCallId, out var awaitingState))
+                {
+                    awaitingState.State = ToolLifecycle.AwaitingApproval;
+                    awaitingState.DisplayEntry?.NotifyChanged();
+                }
                 break;
 
             case ToolCallCompleted completed when _subagentCallIds.Contains(completed.CallId):
-                // Primary finalization happens via SubagentEvent { Inner: TurnCompleted }
-                // (which arrives before ToolCallCompleted in the normal flow). This is a
-                // defensive fallback: if event ordering changes or the subagent errors
-                // before emitting TurnCompleted, we ensure the block is closed.
-                if (_callIdToSubagentId.TryGetValue(completed.CallId, out var subagentId)
-                    && _subagentById.TryGetValue(subagentId, out var subRendForCallId))
+                // Defensive finalization for subagent calls.
+                if (_callIdToSubagentId.TryGetValue(completed.CallId, out var subId)
+                    && _subagentById.TryGetValue(subId, out var subState))
                 {
-                    subRendForCallId.SetCompleted(); // idempotent — no-op if already finalized
+                    subState.SetCompleted();
                     _callIdToSubagentId.Remove(completed.CallId);
                 }
                 _subagentCallIds.Remove(completed.CallId);
                 break;
 
             case ToolCallCompleted completed:
-                if (_toolCallMap.TryGetValue(completed.CallId, out var completedTool))
+                if (_toolCallMap.TryGetValue(completed.CallId, out var completedState))
                 {
-                    completedTool.SetCompleted(completed.IsError, completed.Result);
+                    completedState.SetCompleted(completed.IsError, completed.Result);
                     _toolCallMap.Remove(completed.CallId);
                 }
                 break;
@@ -135,108 +125,237 @@ internal sealed class EventRouter(EventList eventList)
                 break;
 
             case TurnError { Message: var msg }:
-                var errorText = new TextRenderable(foreground: Color.Red);
-                errorText.SetText($"[error] {msg}");
-                eventList.Add(errorText, BubbleStyle.Circle, () => Color.Red);
+                var errorEntry = new ConversationEntry(EntryStyle.Circle,
+                    () => new Color(ColorName16.Red));
+                errorEntry.AppendSegment($"[error] {msg}", new Color(ColorName16.Red));
+                conversationView.AddEntry(errorEntry);
                 _currentText = null;
                 break;
         }
     }
 
     /// <summary>
-    /// Routes a <see cref="SubagentEvent"/> received via
-    /// <c>TurnCallbacks.SubagentEventEmitted</c>. Creates a
-    /// <see cref="SubagentRenderable"/> the first time a new SubagentId is seen.
+    /// Routes a <see cref="SubagentEvent"/> received via TurnCallbacks.
+    /// Creates a subagent entry on first event for a new SubagentId.
     /// </summary>
     public void RouteSubagentEvent(SubagentEvent evt)
     {
-        var subId = evt.SubagentId;
+        var subIdValue = evt.SubagentId;
 
-        // Lazily create the SubagentRenderable the first time an event arrives
-        // for this subagent run. All subsequent events use the same renderable.
-        // The SubagentId (from SubagentRunner) is not known at ToolCallStarted time,
-        // so we defer creation until here. Dequeue the oldest pending call to get
-        // the formatted signature and pair CallId → SubagentId for finalization.
-        if (!_subagentById.TryGetValue(subId, out var subRenderable))
+        // Lazily create the subagent entry on first event.
+        if (!_subagentById.TryGetValue(subIdValue, out var subState))
         {
-            // Dequeue to get the formatted call string stored at ToolCallStarted time.
             var formattedCall = "";
             if (_pendingSubagentCalls.TryDequeue(out var pending))
             {
-                _callIdToSubagentId[pending.CallId] = subId;
+                _callIdToSubagentId[pending.CallId] = subIdValue;
                 formattedCall = pending.FormattedCall;
             }
 
-            subRenderable = new SubagentRenderable(subId, formattedCall);
-            _subagentById[subId] = subRenderable;
-            _subagentCurrentText[subId] = null;
-            _subagentToolCalls[subId] = new Dictionary<string, ToolRenderable>();
-
-            // Circle child in the outer tree. The circle color tracks the subagent's
-            // lifecycle: yellow while running, green on completion.
-            var capturedSub = subRenderable;
-            eventList.Add(subRenderable, BubbleStyle.Circle, () => capturedSub.CircleColor);
+            subState = new SubagentState(subIdValue, formattedCall, conversationView);
+            _subagentById[subIdValue] = subState;
         }
 
         switch (evt.Inner)
         {
             case ResponseChunk { Text: var text } when !string.IsNullOrEmpty(text):
-                // Same empty-chunk guard as RouteMainEvent — skip creation until
-                // there is actual text to display.
-                if (!_subagentCurrentText.TryGetValue(subId, out var subText) || subText is null)
-                {
-                    subText = new TextRenderable();
-                    _subagentCurrentText[subId] = subText;
-                    subRenderable.AddChild(subText, BubbleStyle.Circle, () => Color.White);
-                }
-                subText.Append(text);
+                subState.AppendText(text);
                 break;
 
             case ToolCallStarted subStarted:
-                var subTool = new ToolRenderable(subStarted.FormatCall());
-                _subagentToolCalls[subId][subStarted.CallId] = subTool;
-                subRenderable.AddChild(subTool, BubbleStyle.Circle, () => subTool.CircleColor);
-                _subagentCurrentText[subId] = null;
+                subState.AddToolCall(subStarted.CallId, subStarted.FormatCall());
                 break;
 
-            // Subagent tools can also require approval (they share the parent's
-            // callbacks). Look up by CallId within this subagent's tool map.
             case ToolAwaitingApproval { CallId: var subAwaitingId }:
-                if (_subagentToolCalls[subId].TryGetValue(subAwaitingId, out var subAwaitingTool))
-                    subAwaitingTool.SetAwaitingApproval();
+                subState.SetToolAwaitingApproval(subAwaitingId);
                 break;
 
             case ToolCallCompleted subCompleted:
-                if (_subagentToolCalls[subId].TryGetValue(subCompleted.CallId, out var subCompletedTool))
-                {
-                    subCompletedTool.SetCompleted(subCompleted.IsError, subCompleted.Result);
-                    _subagentToolCalls[subId].Remove(subCompleted.CallId);
-                }
+                subState.SetToolCompleted(subCompleted.CallId, subCompleted.IsError, subCompleted.Result);
                 break;
 
             case TurnCompleted:
-                subRenderable.SetCompleted();
-                _subagentCurrentText[subId] = null;
+                subState.SetCompleted();
                 break;
 
             case TurnError { Message: var subErrMsg }:
-                var subErrText = new TextRenderable(foreground: Color.Red);
-                subErrText.SetText($"[error] {subErrMsg}");
-                subRenderable.AddChild(subErrText, BubbleStyle.Circle, () => Color.Red);
-                subRenderable.SetCompleted();
-                _subagentCurrentText[subId] = null;
+                subState.AddError(subErrMsg);
+                subState.SetCompleted();
                 break;
         }
     }
 
     /// <summary>
-    /// Clears turn-local state after a cancelled or interrupted turn so the
-    /// next turn starts fresh. Existing renderables remain in the EventList
-    /// (they stay visible as history), but new events will not be appended to
-    /// stale text blocks.
+    /// Clears turn-local state after a cancelled or interrupted turn.
     /// </summary>
     public void ResetTurnState()
     {
         _currentText = null;
+    }
+
+    /// <summary>
+    /// Appends text to the last segment of an entry, or creates one if needed.
+    /// </summary>
+    private static void AppendToLastSegment(ConversationEntry entry, string text, Color fg)
+    {
+        if (entry.Segments.Count == 0)
+        {
+            entry.AppendSegment(text, fg);
+            return;
+        }
+
+        var last = entry.Segments[^1];
+        entry.Segments[^1] = last with { Text = last.Text + text };
+        entry.NotifyChanged();
+    }
+
+    // ---- Tool call state tracking ----
+
+    private enum ToolLifecycle { Started, AwaitingApproval, Completed }
+
+    /// <summary>
+    /// Tracks the lifecycle state of a single tool call and its display entry.
+    /// The CircleColor property is evaluated on every render pass so the circle
+    /// updates in-place as the tool transitions through its lifecycle.
+    /// </summary>
+    private sealed class ToolEntryState
+    {
+        public ToolLifecycle State { get; set; } = ToolLifecycle.Started;
+        private bool _isError;
+
+        /// <summary>The entry added to the ConversationView for this tool call.</summary>
+        public ConversationEntry? DisplayEntry { get; set; }
+
+        public Color CircleColor => State switch
+        {
+            ToolLifecycle.Started => new Color(ColorName16.Yellow),
+            ToolLifecycle.AwaitingApproval => new Color(ColorName16.Yellow),
+            ToolLifecycle.Completed => _isError
+                ? new Color(ColorName16.Red)
+                : new Color(ColorName16.Green),
+            _ => new Color(ColorName16.DarkGray)
+        };
+
+        public void SetCompleted(bool isError, string? result)
+        {
+            State = ToolLifecycle.Completed;
+            _isError = isError;
+
+            if (DisplayEntry is null) return;
+
+            // Add result lines below the signature.
+            if (!string.IsNullOrWhiteSpace(result))
+            {
+                var lines = result.Split('\n');
+                var visibleCount = Math.Min(lines.Length, MaxResultLines);
+
+                for (var i = 0; i < visibleCount; i++)
+                {
+                    var prefix = i == 0 ? "└─ " : "   ";
+                    DisplayEntry.AppendSegment(
+                        $"\n{prefix}{lines[i]}",
+                        new Color(ColorName16.DarkGray));
+                }
+
+                if (lines.Length > MaxResultLines)
+                {
+                    DisplayEntry.AppendSegment(
+                        $"\n   ({lines.Length - MaxResultLines} more lines)",
+                        new Color(ColorName16.DarkGray));
+                }
+            }
+
+            DisplayEntry.NotifyChanged();
+        }
+    }
+
+    // ---- Subagent state tracking ----
+
+    /// <summary>
+    /// Tracks all state for a single subagent run: its display entry, inner text
+    /// streaming, and nested tool calls.
+    /// </summary>
+    private sealed class SubagentState
+    {
+        private readonly ConversationEntry _entry;
+        private ConversationEntry? _currentText;
+        private readonly Dictionary<string, ToolEntryState> _toolCalls = new();
+        private bool _completed;
+
+        public SubagentState(string subagentId, string formattedCall, ConversationView view)
+        {
+            _ = subagentId; // Kept for diagnostics
+
+            _entry = new ConversationEntry(EntryStyle.Circle, () => CircleColor);
+            _entry.MaxChildRows = MaxSubagentInnerRows;
+            _entry.AppendSegment(formattedCall, new Color(ColorName16.DarkGray));
+            view.AddEntry(_entry);
+        }
+
+        private Color CircleColor => _completed
+            ? new Color(ColorName16.Green)
+            : new Color(ColorName16.Yellow);
+
+        public void AppendText(string text)
+        {
+            if (_currentText is null)
+            {
+                _currentText = new ConversationEntry(EntryStyle.Circle,
+                    () => new Color(ColorName16.White));
+                _currentText.AppendSegment("", new Color(ColorName16.White));
+                _entry.AddChild(_currentText);
+            }
+            AppendToLastSegment(_currentText, text, new Color(ColorName16.White));
+        }
+
+        public void AddToolCall(string callId, string formattedCall)
+        {
+            var toolState = new ToolEntryState();
+            _toolCalls[callId] = toolState;
+
+            var capturedState = toolState;
+            var toolEntry = new ConversationEntry(EntryStyle.Circle,
+                () => capturedState.CircleColor);
+            toolEntry.AppendSegment(formattedCall, new Color(ColorName16.DarkGray));
+            toolState.DisplayEntry = toolEntry;
+
+            _entry.AddChild(toolEntry);
+            _currentText = null;
+        }
+
+        public void SetToolAwaitingApproval(string callId)
+        {
+            if (_toolCalls.TryGetValue(callId, out var state))
+            {
+                state.State = ToolLifecycle.AwaitingApproval;
+                state.DisplayEntry?.NotifyChanged();
+            }
+        }
+
+        public void SetToolCompleted(string callId, bool isError, string? result)
+        {
+            if (_toolCalls.TryGetValue(callId, out var state))
+            {
+                state.SetCompleted(isError, result);
+                _toolCalls.Remove(callId);
+            }
+        }
+
+        public void AddError(string message)
+        {
+            var errEntry = new ConversationEntry(EntryStyle.Circle,
+                () => new Color(ColorName16.Red));
+            errEntry.AppendSegment($"[error] {message}", new Color(ColorName16.Red));
+            _entry.AddChild(errEntry);
+            _currentText = null;
+        }
+
+        public void SetCompleted()
+        {
+            if (_completed) return;
+            _completed = true;
+            _currentText = null;
+            _entry.NotifyChanged();
+        }
     }
 }

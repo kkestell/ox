@@ -1,10 +1,12 @@
-using System.Diagnostics;
+using System.Text;
 using dotenv.net;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
-using Te.Input;
-using Te.Rendering;
+using Terminal.Gui.App;
+using Terminal.Gui.Drawing;
+using Terminal.Gui.Drivers;
+using Terminal.Gui.Input;
 using Ur;
 using Ur.AgentLoop;
 using Ur.Configuration;
@@ -12,7 +14,7 @@ using Ur.Hosting;
 using Ur.Sessions;
 using Ur.Skills;
 using Ox;
-using Ox.Rendering;
+using Ox.Views;
 
 // --- Boot ---
 DotEnv.Load(options: new DotEnvOptions(
@@ -34,7 +36,10 @@ await builder.Build().RunAsync();
 /// The host's console lifetime wires Ctrl+C to the stopping token via
 /// <see cref="IHostApplicationLifetime.StopApplication"/>. Per-turn CTS links to
 /// <see cref="BackgroundService.ExecuteAsync"/>'s <c>stoppingToken</c>.
-/// Viewport cleanup runs in the <c>finally</c> block and in the <c>ProcessExit</c> handler.
+///
+/// Two-phase lifecycle:
+///   1. Configuration phase: plain Console I/O for API key/model setup (no Terminal.Gui).
+///   2. TUI phase: Terminal.Gui runs the full UI with conversation, input, sidebar.
 /// </summary>
 internal sealed class TuiService(
     UrHost host,
@@ -46,40 +51,7 @@ internal sealed class TuiService(
     {
         logger.LogInformation("Application starting");
 
-        // Declare the rendering stack early so signal handlers can reference it.
-        // The viewport is constructed after the session (which provides the sidebar)
-        // but declared here so cleanup handlers always have a reference.
-        var eventList = new EventList();
-        Viewport? viewport = null;
-
-        // TerminalInputSource starts reading raw keyboard input immediately on
-        // construction (enabling raw mode on Unix). InputCoordinator serializes
-        // events into a queue; InputReader drains the queue in a polling loop.
-        // Both are created here so they are available to InputReader for both
-        // the pre-viewport configuration phase and the main REPL.
-        var inputSource  = new TerminalInputSource();
-        var coordinator  = new InputCoordinator(inputSource);
-
-        // Restore the terminal on both Ctrl+C and normal process exit.
-        // We register both because Ctrl+C triggers CancelKeyPress AND ProcessExit
-        // on macOS/Unix, while unhandled exceptions trigger only ProcessExit.
-        // viewport.Stop() is idempotent, so double-calling is safe.
-        Console.CancelKeyPress += (_, e) =>
-        {
-            e.Cancel = true; // Prevent immediate termination; let the host shut down gracefully.
-            viewport?.Stop();
-            lifetime.StopApplication();
-        };
-        AppDomain.CurrentDomain.ProcessExit += (_, _) =>
-        {
-            viewport?.Stop();
-            inputSource.Dispose();
-            coordinator.Dispose();
-        };
-
         // Log any unhandled exception that escapes to the CLR before the process dies.
-        // ProcessExit fires after this, which cleans up the viewport. Without this hook
-        // the terminal is restored but the crash reason is silently discarded.
         AppDomain.CurrentDomain.UnhandledException += (_, e) =>
         {
             var ex = e.ExceptionObject as Exception
@@ -89,194 +61,220 @@ internal sealed class TuiService(
 
         try
         {
-            // --- Configuration check (pre-viewport, plain console I/O) ---
-            // AutocompleteEngine is created here so it's available to InputReader
-            // for the REPL phase. EnsureReadyAsync uses ReadLine (not viewport-mode),
-            // so autocomplete doesn't apply there — it activates in the REPL below.
-            var autocomplete = new AutocompleteEngine(commands);
-            var inputReader  = new InputReader(coordinator, autocomplete);
-            if (!await EnsureReadyAsync(host, inputReader, stoppingToken))
+            // --- Configuration check (pre-TUI, plain console I/O) ---
+            // Terminal.Gui is not initialized yet so we use plain Console.ReadLine/Write.
+            if (!await EnsureReadyAsync(host, stoppingToken))
             {
                 lifetime.StopApplication();
                 return;
             }
 
-            // --- REPL ---
-            // Wiring order: the sidebar needs the session's TodoStore, the viewport
-            // needs the sidebar, and the permission callbacks need the viewport.
-            // We create a no-callbacks session first to get the TodoStore, build the
-            // full rendering stack, then create the real session with callbacks.
-            var router   = new EventRouter(eventList);
+            // --- TUI phase ---
+            var autocomplete = new AutocompleteEngine(commands);
             var todoStore = new Ur.Todo.TodoStore();
 
-            // Build the sidebar. The context section sits at the top so the user
-            // always sees how much context window remains. The todo section follows.
-            var contextSection = new ContextSection();
-            var todoSection    = new TodoSection(todoStore);
-            var sidebar        = new Sidebar();
-            sidebar.AddSection(contextSection);
-            sidebar.AddSection(todoSection);
-
-            // Construct the viewport now that we have the sidebar.
-            viewport = new Viewport(eventList, sidebar);
-
-            var callbacks = PermissionHandler.Build(router, inputReader, viewport, host.WorkspacePath);
-            var session   = host.CreateSession(callbacks, todoStore);
-
-            viewport.SetModelId(session.ActiveModelId);
-
-            // If resuming a session, show context fill immediately from persisted usage.
-            UpdateContextUsage(contextSection, host, session);
-
-            viewport.Start();
+            // Initialize Terminal.Gui. This takes over the terminal (alternate buffer,
+            // raw mode, etc.) — everything before this point uses plain console I/O.
+            var app = Application.Create();
+            app.Init();
 
             try
             {
-                while (!stoppingToken.IsCancellationRequested)
+                var oxApp = new OxApp(app, todoStore);
+                oxApp.SetAutocomplete(autocomplete);
+
+                var conversationView = oxApp.ConversationView;
+                var inputAreaView = oxApp.InputAreaView;
+                var sidebarView = oxApp.SidebarView;
+
+                var router = new EventRouter(conversationView);
+                var callbacks = PermissionHandler.Build(router, oxApp, host.WorkspacePath);
+                var session = host.CreateSession(callbacks, todoStore);
+
+                inputAreaView.SetModelId(session.ActiveModelId);
+
+                // If resuming a session, show context fill immediately from persisted usage.
+                UpdateContextUsage(sidebarView, host, session);
+
+                // The REPL loop runs as a background task, marshalling UI updates via
+                // Application.Invoke(). Application.Run() blocks the main thread and
+                // drives the Terminal.Gui event loop.
+                _ = Task.Run(async () =>
                 {
-                    var input = await inputReader.ReadLineInViewportAsync(
-                        "", viewport.SetInputPrompt, viewport.SetCompletion,
-                        viewport.RedrawIfDirty, stoppingToken);
-
-                    // null = EOF (Ctrl+C, Ctrl+D) or cancellation.
-                    if (input is null)
-                    {
-                        lifetime.StopApplication();
-                        break;
-                    }
-
-                    if (string.IsNullOrWhiteSpace(input))
-                        continue;
-
-                    // /quit is a pure lifecycle command: stop the host and exit the REPL
-                    // immediately without sending anything to the session or the LLM.
-                    if (input.Equals("/quit", StringComparison.OrdinalIgnoreCase))
-                    {
-                        lifetime.StopApplication();
-                        break;
-                    }
-
-                    // Show the user's message in the conversation with white text so it
-                    // stands out clearly against the black bubble background.
-                    var userMsg = new TextRenderable(foreground: Color.White);
-                    userMsg.SetText(input);
-                    eventList.Add(userMsg);
-
-                    // Clear the submitted text and start the throbber immediately.
-                    // Both calls set _dirty; the explicit RedrawIfDirty flushes the
-                    // frame now rather than waiting for the first streamed event.
-                    viewport.SetInputPrompt("");
-                    viewport.SetTurnRunning(true);
-                    viewport.RedrawIfDirty();
-
-                    // Per-turn CTS linked to stopping token so Ctrl+C also cancels mid-turn.
-                    var turnCts = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
-
-                    // Monitor Escape key during the turn via the coordinator's eager
-                    // KeyReceived event. The handler fires on the background stdin reader
-                    // thread, but CancellationTokenSource.CancelAsync is thread-safe.
-                    // Using the coordinator (not the raw input source) is the single
-                    // input path — all keys flow through InputCoordinator.
-                    EventHandler<KeyEventArgs> escapeHandler = (_, e) =>
-                    {
-                        if (e.KeyCode.WithoutModifiers() == KeyCode.Esc)
-                            _ = turnCts.CancelAsync();
-                    };
-                    coordinator.KeyReceived += escapeHandler;
-
-                    // Per-turn throbber timer: advances the status-line animation at
-                    // 1-second intervals. Disposed in the finally block so it only
-                    // lives for the duration of this turn.
-                    using var throbberTimer = new Timer(
-                        _ => viewport.ThrobberTick(), null, 1000, 1000);
-
                     try
                     {
-                        try
-                        {
-                            await foreach (var evt in session.RunTurnAsync(input, turnCts.Token))
-                            {
-                                router.RouteMainEvent(evt);
-
-                                // Flush any dirty state after each event so streaming text
-                                // appears incrementally without a background polling timer.
-                                viewport.RedrawIfDirty();
-
-                                // Update context fill display when a turn completes with usage data.
-                                if (evt is TurnCompleted)
-                                    UpdateContextUsage(contextSection, host, session);
-
-                                // Fatal errors are unrecoverable — log and exit the process.
-                                if (evt is not TurnError { IsFatal: true } fatal)
-                                    continue;
-
-                                logger.LogError("Fatal agent error (exiting): {Message}", fatal.Message);
-                                lifetime.StopApplication();
-                                return;
-                            }
-                        }
-                        catch (OperationCanceledException) when (!stoppingToken.IsCancellationRequested)
-                        {
-                            // Escape cancelled this turn; add a visual marker and reset state.
-                            // Circle child (not a User root) — belongs to the current turn's tree group.
-                            var cancelled = new TextRenderable();
-                            cancelled.SetText("[cancelled]");
-                            eventList.Add(cancelled, BubbleStyle.Circle, () => Color.BrightBlack);
-                            router.ResetTurnState();
-                        }
-                        catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
-                        {
-                            // Ctrl+C during a turn — fall through; outer loop exits.
-                        }
-                        catch (Exception ex)
-                        {
-                            // Any other exception escaping the turn is unexpected. Log it with
-                            // the full stack trace so we can diagnose crashes, then surface a
-                            // brief message in the viewport rather than letting the process die.
-                            logger.LogError(ex, "Unexpected exception during turn");
-
-                            var crashText = new TextRenderable(foreground: Color.Red);
-                            crashText.SetText($"[error] {ex.Message} — see ~/.ur/logs/ for details");
-                            eventList.Add(crashText, BubbleStyle.Circle, () => Color.Red);
-                            router.ResetTurnState();
-                        }
-
-                        await turnCts.CancelAsync();
+                        await RunReplLoop(oxApp, router, session, host, sidebarView, stoppingToken);
+                    }
+                    catch (OperationCanceledException) { }
+                    catch (Exception ex)
+                    {
+                        logger.LogError(ex, "REPL loop crashed");
                     }
                     finally
                     {
-                        // Always unsubscribe the escape handler before disposing the CTS so
-                        // a concurrent escape press doesn't try to cancel an already-disposed token.
-                        coordinator.KeyReceived -= escapeHandler;
-                        turnCts.Dispose();
+                        app.Invoke(() => app.RequestStop());
                     }
+                }, stoppingToken);
 
-                    viewport.SetTurnRunning(false);
-                    // Ensure the throbber clears from the status line after the turn ends.
-                    viewport.RedrawIfDirty();
-                }
+                // Application.Run blocks until RequestStop is called.
+                app.Run(oxApp);
             }
             finally
             {
-                viewport.Stop();
+                app.Dispose();
             }
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            logger.LogError(ex, "TuiService crashed");
         }
         finally
         {
-            // Dispose in reverse construction order. TerminalInputSource restores raw
-            // mode and disables mouse support (if enabled). InputCoordinator detaches
-            // from the input source.
-            coordinator.Dispose();
-            inputSource.Dispose();
+            lifetime.StopApplication();
         }
     }
 
     /// <summary>
-    /// Checks <see cref="UrConfiguration.Readiness"/> and prompts the user to
-    /// supply any missing values. Runs before the viewport starts, so it uses
-    /// direct console I/O rather than the viewport's input area.
+    /// The main REPL loop. Runs on a background task while app.Run drives
+    /// the UI event loop on the main thread. All UI mutations go through
+    /// app.Invoke() for thread safety.
     /// </summary>
-    private static async Task<bool> EnsureReadyAsync(UrHost host, InputReader inputReader, CancellationToken ct)
+    private async Task RunReplLoop(
+        OxApp oxApp,
+        EventRouter router,
+        UrSession session,
+        UrHost urHost,
+        SidebarView sidebarView,
+        CancellationToken stoppingToken)
+    {
+        while (!stoppingToken.IsCancellationRequested)
+        {
+            // Read user input. This awaits a TCS that's completed on the UI thread
+            // when the user presses Enter, Ctrl+C, or Ctrl+D.
+            string? input = null;
+            var inputTcs = new TaskCompletionSource<string?>();
+            oxApp.App.Invoke(async () =>
+            {
+                try
+                {
+                    var result = await oxApp.ReadLineAsync("",
+                        suffix => oxApp.InputAreaView.SetCompletion(suffix),
+                        stoppingToken);
+                    inputTcs.TrySetResult(result);
+                }
+                catch (Exception)
+                {
+                    inputTcs.TrySetResult(null); // Treat errors as EOF
+                }
+            });
+            input = await inputTcs.Task;
+
+            // null = EOF (Ctrl+C, Ctrl+D) or cancellation.
+            if (input is null)
+                break;
+
+            if (string.IsNullOrWhiteSpace(input))
+                continue;
+
+            // /quit: exit immediately without sending to session.
+            if (input.Equals("/quit", StringComparison.OrdinalIgnoreCase))
+                break;
+
+            // Show the user's message in the conversation.
+            oxApp.App.Invoke(() =>
+            {
+                var userEntry = new ConversationEntry(EntryStyle.User);
+                userEntry.SetSegment(input, new Terminal.Gui.Drawing.Color(Terminal.Gui.Drawing.ColorName16.White));
+                oxApp.ConversationView.AddEntry(userEntry);
+
+                oxApp.InputAreaView.SetPrompt("");
+                oxApp.InputAreaView.SetTurnRunning(true);
+            });
+
+            // Per-turn CTS linked to stopping token.
+            var turnCts = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+
+            // Monitor Escape key during the turn for cancellation.
+            EventHandler<Key> escapeHandler = (_, key) =>
+            {
+                if (key.KeyCode == KeyCode.Esc)
+                    _ = turnCts.CancelAsync();
+            };
+            oxApp.App.Invoke(() => oxApp.KeyDown += escapeHandler);
+
+            try
+            {
+                try
+                {
+                    await foreach (var evt in session.RunTurnAsync(input, turnCts.Token))
+                    {
+                        // Marshal event routing to the UI thread.
+                        var capturedEvt = evt;
+                        oxApp.App.Invoke(() =>
+                        {
+                            router.RouteMainEvent(capturedEvt);
+
+                            if (capturedEvt is TurnCompleted)
+                                UpdateContextUsage(sidebarView, urHost, session);
+
+                            if (capturedEvt is TurnError { IsFatal: true } fatal)
+                            {
+                                logger.LogError("Fatal agent error: {Message}", fatal.Message);
+                                oxApp.App.RequestStop();
+                            }
+                        });
+                    }
+                }
+                catch (OperationCanceledException) when (!stoppingToken.IsCancellationRequested)
+                {
+                    // Escape cancelled this turn.
+                    oxApp.App.Invoke(() =>
+                    {
+                        var cancelled = new ConversationEntry(EntryStyle.Circle,
+                            () => new Terminal.Gui.Drawing.Color(Terminal.Gui.Drawing.ColorName16.DarkGray));
+                        cancelled.SetSegment("[cancelled]",
+                            new Terminal.Gui.Drawing.Color(Terminal.Gui.Drawing.ColorName16.DarkGray));
+                        oxApp.ConversationView.AddEntry(cancelled);
+                        router.ResetTurnState();
+                    });
+                }
+                catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
+                {
+                    // Ctrl+C — fall through; outer loop exits.
+                }
+                catch (Exception ex)
+                {
+                    logger.LogError(ex, "Unexpected exception during turn");
+                    oxApp.App.Invoke(() =>
+                    {
+                        var crashEntry = new ConversationEntry(EntryStyle.Circle,
+                            () => new Terminal.Gui.Drawing.Color(Terminal.Gui.Drawing.ColorName16.Red));
+                        crashEntry.SetSegment(
+                            $"[error] {ex.Message} — see ~/.ur/logs/ for details",
+                            new Terminal.Gui.Drawing.Color(Terminal.Gui.Drawing.ColorName16.Red));
+                        oxApp.ConversationView.AddEntry(crashEntry);
+                        router.ResetTurnState();
+                    });
+                }
+
+                await turnCts.CancelAsync();
+            }
+            finally
+            {
+                oxApp.App.Invoke(() => oxApp.KeyDown -= escapeHandler);
+                turnCts.Dispose();
+            }
+
+            oxApp.App.Invoke(() => oxApp.InputAreaView.SetTurnRunning(false));
+        }
+    }
+
+    /// <summary>
+    /// Checks configuration readiness and prompts for any missing values.
+    /// Runs before Terminal.Gui starts, using plain console I/O.
+    /// </summary>
+    private static async Task<bool> EnsureReadyAsync(UrHost host, CancellationToken ct)
     {
         while (true)
         {
@@ -292,24 +290,20 @@ internal sealed class TuiService(
                     {
                         var message = host.Configuration.GetProviderBlockingMessage();
 
-                        // If the provider is unknown (typo, old format), prompting for an API key
-                        // won't help — the user needs to fix the model ID. Without this check, the
-                        // loop would store a key under the unknown provider name and repeat forever.
                         if (!host.Configuration.IsSelectedProviderKnown())
                         {
                             Console.WriteLine(message);
                             Console.Write("Enter a model ID in provider/model format, e.g. openai/gpt-5-nano (or blank to exit): ");
-                            var newModel = (await inputReader.ReadLineAsync(ct))?.Trim();
+                            var newModel = Console.ReadLine()?.Trim();
                             if (string.IsNullOrEmpty(newModel))
                                 return false;
                             await host.Configuration.SetSelectedModelAsync(newModel, ct: ct);
                             break;
                         }
 
-                        // Known provider that needs an API key — prompt for it.
                         var providerName = host.Configuration.GetSelectedProviderName()!;
                         Console.Write($"{message} Enter the API key (or blank to exit): ");
-                        var key = (await inputReader.ReadLineAsync(ct))?.Trim();
+                        var key = Console.ReadLine()?.Trim();
                         if (string.IsNullOrEmpty(key))
                             return false;
                         await host.Configuration.SetApiKeyAsync(key, providerName, ct);
@@ -318,25 +312,24 @@ internal sealed class TuiService(
 
                     case ChatBlockingIssue.MissingModelSelection:
                         Console.Write("No model selected. Enter a model ID, e.g. openai/gpt-5-nano (or blank to exit): ");
-                        var model = (await inputReader.ReadLineAsync(ct))?.Trim();
+                        var model = Console.ReadLine()?.Trim();
                         if (string.IsNullOrEmpty(model))
                             return false;
                         await host.Configuration.SetSelectedModelAsync(model, ct: ct);
                         break;
 
                     default:
-                        throw new UnreachableException($"Unexpected {nameof(ChatBlockingIssue)}: {issue}");
+                        throw new System.Diagnostics.UnreachableException(
+                            $"Unexpected {nameof(ChatBlockingIssue)}: {issue}");
                 }
             }
         }
     }
 
     /// <summary>
-    /// Computes the context fill display string from the session's last input token
-    /// count and the model's context length, then pushes it to the sidebar's context
-    /// section. Format: "125,000 / 250,000 - 50%". No-op if usage data is unavailable.
+    /// Computes the context fill display string and pushes it to the sidebar.
     /// </summary>
-    private static void UpdateContextUsage(ContextSection section, UrHost host, UrSession session)
+    private static void UpdateContextUsage(SidebarView sidebar, UrHost host, UrSession session)
     {
         if (session.LastInputTokens is not { } inputTokens)
             return;
@@ -348,6 +341,6 @@ internal sealed class TuiService(
             return;
 
         var pct = (int)Math.Round(inputTokens / (double)contextLength * 100);
-        section.SetUsage($"{inputTokens:N0} / {contextLength:N0} - {pct}%");
+        sidebar.SetContextUsage($"{inputTokens:N0} / {contextLength:N0} - {pct}%");
     }
 }
