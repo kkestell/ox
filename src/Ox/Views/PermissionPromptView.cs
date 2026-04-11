@@ -12,25 +12,25 @@ namespace Ox.Views;
 /// sitting directly above the InputAreaView. When a tool needs user approval, this
 /// view becomes visible with the prompt text and a dedicated TextField for input.
 ///
-/// The view is self-contained: it owns its own Label, TextField, and TCS lifecycle.
+/// The view is self-contained: it owns its own TextField and TCS lifecycle.
 /// PermissionHandler calls <see cref="ShowAsync"/> to display the prompt and awaits
 /// the user's response; it calls <see cref="Hide"/> to dismiss the view afterward.
 /// No mode concept leaks into other components — InputAreaView stays in chat mode
 /// permanently.
 ///
-/// Layout (4 rows):
+/// Layout (3 rows):
 ///   Row 0: top border (rounded)
-///   Row 1: prompt label
-///   Row 2: input field with "> " prefix
-///   Row 3: bottom border (rounded)
+///   Row 1: prompt text + text field on a single row
+///   Row 2: bottom border (rounded)
 ///
-/// Drawing follows the same custom rounded-border pattern as InputAreaView: manual
-/// Move/AddRune/SetAttribute calls with the same box-drawing characters and colors.
+/// The prompt text is drawn manually in OnDrawingContent (same pattern as
+/// InputAreaView's border chrome). The TextField is repositioned in ShowAsync
+/// to sit immediately after the prompt text.
 /// </summary>
 internal sealed class PermissionPromptView : View
 {
-    /// <summary>Total height of the permission prompt: top border + label + input + bottom border.</summary>
-    internal const int ViewHeight = 4;
+    /// <summary>Total height: top border + content row + bottom border.</summary>
+    internal const int ViewHeight = 3;
 
     // Rounded box-drawing characters — identical to InputAreaView.
     private const char TopLeftCorner = '╭';
@@ -40,13 +40,14 @@ internal sealed class PermissionPromptView : View
     private const char HorizontalBorder = '─';
     private const char VerticalBorder = '│';
 
-    // Colors — amber border distinguishes the permission prompt from the
-    // chat input area so the user immediately notices the approval request.
+    // Colors — same as InputAreaView.
     private static readonly Color Bg = new(ColorName16.Black);
-    private static readonly Color BorderColor = new(255, 200, 50);  // Amber
+    private static readonly Color BorderColor = new(244, 244, 244);
 
-    private readonly Label _label;
     private readonly TextField _textField;
+
+    // The prompt text drawn manually in OnDrawingContent, left of the TextField.
+    private string _promptText = "";
 
     // Non-null only while a prompt is active (between ShowAsync and Hide).
     private TaskCompletionSource<string?>? _tcs;
@@ -61,20 +62,11 @@ internal sealed class PermissionPromptView : View
         Visible = false;
         CanFocus = true;
 
-        // Row 0 is the top border (drawn manually). Label sits at row 1.
-        _label = new Label
-        {
-            X = 2,
-            Y = 1,
-            Width = Dim.Fill(Dim.Absolute(2)),
-            Height = 1,
-        };
-
-        // TextField sits at row 2, inside the border chrome.
+        // TextField sits on row 1, repositioned in ShowAsync to follow the prompt text.
         _textField = new TextField
         {
             X = 2,
-            Y = 2,
+            Y = 1,
             Width = Dim.Fill(Dim.Absolute(2)),
             Height = 1,
             BorderStyle = LineStyle.None,
@@ -87,7 +79,7 @@ internal sealed class PermissionPromptView : View
         // Escape and Ctrl+C deny the permission request.
         _textField.KeyDown += OnTextFieldKeyDown;
 
-        Add(_label, _textField);
+        Add(_textField);
     }
 
     // --- Public API ---
@@ -102,8 +94,14 @@ internal sealed class PermissionPromptView : View
     /// </summary>
     public Task<string?> ShowAsync(string prompt, CancellationToken ct)
     {
-        _label.Text = prompt;
+        _promptText = prompt;
         _textField.Text = "";
+
+        // Position the TextField immediately after the prompt text.
+        // Left border (1) + space (1) + prompt text length = starting column.
+        var textFieldX = 2 + _promptText.Length;
+        _textField.X = textFieldX;
+        _textField.Width = Dim.Fill(Dim.Absolute(2));
 
         _tcs = new TaskCompletionSource<string?>(
             TaskCreationOptions.RunContinuationsAsynchronously);
@@ -129,7 +127,7 @@ internal sealed class PermissionPromptView : View
         _ctRegistration.Dispose();
         _ctRegistration = default;
         _tcs = null;
-        _label.Text = "";
+        _promptText = "";
         _textField.Text = "";
     }
 
@@ -171,14 +169,12 @@ internal sealed class PermissionPromptView : View
         // Row 0: top border
         DrawBorderRow(0, width, TopLeftCorner, TopRightCorner);
 
-        // Row 1: label row — draw border edges (the Label draws its own content)
-        DrawContentRowBorderEdges(1, width);
+        // Row 1: prompt text + TextField. Draw the border edges and prompt text
+        // manually; the TextField handles its own content area.
+        DrawContentRow(1, width);
 
-        // Row 2: input row — draw border edges (the TextField draws its own content)
-        DrawContentRowBorderEdges(2, width);
-
-        // Row 3: bottom border
-        DrawBorderRow(3, width, BottomLeftCorner, BottomRightCorner);
+        // Row 2: bottom border
+        DrawBorderRow(2, width, BottomLeftCorner, BottomRightCorner);
 
         return true;
     }
@@ -197,16 +193,22 @@ internal sealed class PermissionPromptView : View
     }
 
     /// <summary>
-    /// Draws the left and right border edges for a content row. The child view
-    /// (Label or TextField) handles the content area between the edges.
+    /// Draws the content row: left border, prompt text, then the TextField fills
+    /// the remainder. Right border is drawn at the end.
     /// </summary>
-    private void DrawContentRowBorderEdges(int row, int width)
+    private void DrawContentRow(int row, int width)
     {
         // Left border + padding
         Move(0, row);
         SetAttribute(new Attribute(BorderColor, Bg));
         AddRune(VerticalBorder);
         AddRune(' ');
+
+        // Prompt text (drawn manually so the TextField can sit right after it)
+        SetAttribute(new Attribute(new Color(ColorName16.White), Bg));
+        var maxPromptLen = Math.Max(0, width - 4); // border+pad on each side
+        var drawLen = Math.Min(_promptText.Length, maxPromptLen);
+        AddStr(_promptText[..drawLen]);
 
         // Right padding + border
         Move(width - 2, row);
