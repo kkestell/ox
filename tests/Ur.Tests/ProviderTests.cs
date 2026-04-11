@@ -129,6 +129,51 @@ public sealed class ProviderTests
         Assert.False(provider.RequiresApiKey);
     }
 
+    // ─── ZaiCodingProvider ────────────────────────────────────────────
+
+    [Fact]
+    public void ZaiCoding_WithoutApiKey_ReportsBlockingIssue()
+    {
+        var keyring = new TestKeyring();
+        var provider = new ZaiCodingProvider(keyring);
+
+        var issue = provider.GetBlockingIssue();
+
+        Assert.NotNull(issue);
+        Assert.Contains("zai-coding", issue);
+    }
+
+    [Fact]
+    public void ZaiCoding_WithApiKey_ReportsNoBlockingIssue()
+    {
+        var keyring = new TestKeyring();
+        keyring.SetSecret("ur", "zai-coding", "sk-test-key");
+        var provider = new ZaiCodingProvider(keyring);
+
+        Assert.Null(provider.GetBlockingIssue());
+    }
+
+    [Fact]
+    public void ZaiCoding_RequiresApiKey()
+    {
+        var provider = new ZaiCodingProvider(new TestKeyring());
+        Assert.True(provider.RequiresApiKey);
+    }
+
+    [Fact]
+    public void ZaiCoding_CreateChatClient_ReturnsNonNull()
+    {
+        // The OpenAI SDK constructor doesn't validate connectivity, so this
+        // verifies that the custom endpoint URI is well-formed and the client
+        // is properly constructed.
+        var keyring = new TestKeyring();
+        keyring.SetSecret("ur", "zai-coding", "sk-test-key");
+        var provider = new ZaiCodingProvider(keyring);
+
+        var client = provider.CreateChatClient("glm-4.7");
+        Assert.NotNull(client);
+    }
+
     // ─── Whitespace-only API key ────────────────────────────────────
 
     [Fact]
@@ -215,6 +260,16 @@ public sealed class ProviderTests
         Assert.NotNull(client);
     }
 
+    [Fact]
+    public void ZaiCoding_WhitespaceOnlyKey_ReportsBlockingIssue()
+    {
+        var keyring = new TestKeyring();
+        keyring.SetSecret("ur", "zai-coding", "   ");
+        var provider = new ZaiCodingProvider(keyring);
+
+        Assert.NotNull(provider.GetBlockingIssue());
+    }
+
     // ─── Provider names ──────────────────────────────────────────────
 
     [Fact]
@@ -224,5 +279,6 @@ public sealed class ProviderTests
         Assert.Equal("openrouter", new OpenRouterProvider(keyring, TestCatalog.CreateEmpty()).Name);
         Assert.Equal("openai", new OpenAiProvider(keyring).Name);
         Assert.Equal("google", new GoogleProvider(keyring).Name);
+        Assert.Equal("zai-coding", new ZaiCodingProvider(keyring).Name);
     }
 }

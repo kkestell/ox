@@ -152,6 +152,8 @@ public static class ServiceCollectionExtensions
                 sp.GetRequiredService<ILoggerFactory>().CreateLogger<GoogleProvider>()));
         services.AddSingleton<IProvider>(sp =>
             new OllamaProvider(sp.GetRequiredService<SettingsWriter>()));
+        services.AddSingleton<IProvider>(sp =>
+            new ZaiCodingProvider(sp.GetRequiredService<IKeyring>()));
 
         // If startup options request a fake provider, register it as an additional
         // IProvider service. The registry will pick it up alongside the real providers.

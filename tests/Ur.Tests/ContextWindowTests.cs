@@ -57,6 +57,38 @@ public sealed class ContextWindowTests
         Assert.Equal(128_000, result);
     }
 
+    // ─── ZaiCodingProvider ──────────────────────────────────────────
+
+    [Fact]
+    public async Task ZaiCoding_KnownModel_ReturnsContextWindow()
+    {
+        var provider = new ZaiCodingProvider(new TestKeyring());
+
+        var result = await provider.GetContextWindowAsync("glm-4.7");
+
+        Assert.Equal(200_000, result);
+    }
+
+    [Fact]
+    public async Task ZaiCoding_UnknownModel_ReturnsNull()
+    {
+        var provider = new ZaiCodingProvider(new TestKeyring());
+
+        var result = await provider.GetContextWindowAsync("glm-99-turbo");
+
+        Assert.Null(result);
+    }
+
+    [Fact]
+    public async Task ZaiCoding_LookupIsCaseInsensitive()
+    {
+        var provider = new ZaiCodingProvider(new TestKeyring());
+
+        var result = await provider.GetContextWindowAsync("GLM-4.7");
+
+        Assert.Equal(200_000, result);
+    }
+
     // ─── OpenRouterProvider ─────────────────────────────────────────
 
     [Fact]
