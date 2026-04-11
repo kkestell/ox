@@ -43,9 +43,9 @@ public sealed class OxApp : IDisposable
     private readonly UrHost _host;
 
     // Context window cache — keyed on model ID so we only resolve once per model.
-    // Populated lazily on the first TurnCompleted for each model. Uses ConcurrentDictionary
-    // because the main thread reads it while Task.Run writes resolved values from a background thread.
-    private readonly ConcurrentDictionary<string, int?> _contextWindowCache = new(StringComparer.OrdinalIgnoreCase);
+    // Populated lazily on the first TurnCompleted for each model. All access is on
+    // the main thread (resolved synchronously during event drain).
+    private readonly Dictionary<string, int?> _contextWindowCache = new(StringComparer.OrdinalIgnoreCase);
 
     // Turn state.
     private Ur.Sessions.UrSession? _session;
@@ -463,15 +463,21 @@ public sealed class OxApp : IDisposable
                         {
                             if (!_contextWindowCache.TryGetValue(modelId, out var contextWindow))
                             {
-                                // First time seeing this model — fire-and-forget the async resolution.
-                                // The result won't be available for this turn's display, but will be
-                                // cached for the next turn. This avoids blocking the main loop.
-                                _ = Task.Run(async () =>
+                                // First time seeing this model — resolve synchronously and cache.
+                                // This blocks briefly on first use per model, but provider resolutions
+                                // are fast: local dictionary lookups for OpenAI/OpenRouter/Fake, one
+                                // cached-after-first API call for Google/Ollama. The turn itself took
+                                // seconds, so a sub-second resolution delay is imperceptible.
+                                try
                                 {
-                                    var resolved = await _host.ResolveContextWindowAsync(modelId);
-                                    _contextWindowCache[modelId] = resolved;
-                                });
-                                contextWindow = null;
+                                    contextWindow = _host.ResolveContextWindowAsync(modelId)
+                                        .GetAwaiter().GetResult();
+                                }
+                                catch
+                                {
+                                    contextWindow = null;
+                                }
+                                _contextWindowCache[modelId] = contextWindow;
                             }
 
                             _contextPercent = contextWindow is > 0
