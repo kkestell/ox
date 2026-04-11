@@ -37,4 +37,11 @@ internal sealed class FakeProvider : IProvider
     /// </summary>
     public Task<int?> GetContextWindowAsync(string model, CancellationToken ct = default) =>
         Task.FromResult<int?>(200_000);
+
+    /// <summary>
+    /// Returns the built-in scenario names as the available "model" IDs.
+    /// The fake provider's model IDs are scenario names (e.g. "hello", "tool-call").
+    /// </summary>
+    public Task<IReadOnlyList<string>?> ListModelIdsAsync(CancellationToken ct = default) =>
+        Task.FromResult<IReadOnlyList<string>?>(BuiltInScenarios.Names);
 }

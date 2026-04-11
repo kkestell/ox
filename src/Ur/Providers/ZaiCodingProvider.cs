@@ -78,4 +78,11 @@ internal sealed class ZaiCodingProvider : IProvider
         int? result = KnownContextWindows.TryGetValue(model, out var size) ? size : null;
         return Task.FromResult(result);
     }
+
+    /// <summary>
+    /// Returns the static set of known GLM Coding Plan model IDs. These are the
+    /// same models tracked in <see cref="KnownContextWindows"/>.
+    /// </summary>
+    public Task<IReadOnlyList<string>?> ListModelIdsAsync(CancellationToken ct = default) =>
+        Task.FromResult<IReadOnlyList<string>?>(KnownContextWindows.Keys.ToList());
 }

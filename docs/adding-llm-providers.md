@@ -101,6 +101,13 @@ internal sealed class AnthropicProvider : IProvider
         // See "Context Window Resolution" below for options.
         return Task.FromResult<int?>(null);
     }
+
+    public Task<IReadOnlyList<string>?> ListModelIdsAsync(CancellationToken ct = default)
+    {
+        // See "Model Discovery" below for options.
+        // Return null if listing is not supported.
+        return Task.FromResult<IReadOnlyList<string>?>(null);
+    }
 }
 ```
 
@@ -153,6 +160,7 @@ integration package.
 | `IChatClient CreateChatClient(string model)`                           | Creates a chat client for the given model. The `model` parameter is everything after the provider prefix in the model ID.                                     |
 | `string? GetBlockingIssue()`                                           | Returns `null` if the provider is ready, or a human-readable issue string (e.g., "No API key for 'openai'"). Called by the readiness system before each turn. |
 | `Task<int?> GetContextWindowAsync(string model, CancellationToken ct)` | Returns the context window size in tokens for the given model, or `null` if unknown. Used to display context usage percentage in the UI.                      |
+| `Task<IReadOnlyList<string>?> ListModelIdsAsync(CancellationToken ct)` | Returns available model IDs (the portion after the provider prefix), or `null` if listing is not supported. Used by `UrConfiguration.ListAllModelIdsAsync()` for model discovery. |
 
 ## Common Patterns
 
@@ -216,6 +224,24 @@ upstream API exposes:
 Returning `null` is always safe — the UI will simply omit the context usage
 percentage rather than display incorrect data.
 
+## Model Discovery
+
+Providers can report which models they offer via `ListModelIdsAsync()`. This
+powers the `?` prompt in the pre-TUI configuration phase and
+`UrConfiguration.ListAllModelIdsAsync()`, which aggregates models across all
+providers with provider-prefixed IDs.
+
+| Strategy                | Used by              | Description                                                                                    |
+| ----------------------- | -------------------- | ---------------------------------------------------------------------------------------------- |
+| **Local daemon call**   | `OllamaProvider`     | Queries the local Ollama `/api/tags` endpoint. Caches results for the session.                 |
+| **Local model catalog** | `OpenRouterProvider`  | Reads model IDs from the cached `ModelCatalog`.                                                |
+| **Static table**        | `OpenAiProvider`, `ZaiCodingProvider` | Returns the keys from their `KnownContextWindows` dictionary.                  |
+| **Built-in list**       | `FakeProvider`       | Returns built-in scenario names.                                                               |
+| **Not supported**       | `GoogleProvider`     | Returns `null`. Google's listing API exists but isn't integrated yet.                          |
+
+Returning `null` is always safe — providers that don't support listing are
+simply skipped during aggregation.
+
 ## Testing
 
 ### Unit Tests
@@ -268,6 +294,8 @@ When adding a new provider, verify:
       uses settings-based configuration
 - [ ] Add NuGet package(s) to `src/Ur/Ur.csproj` if needed
 - [ ] Implement `GetContextWindowAsync()` with an appropriate strategy
+- [ ] Implement `ListModelIdsAsync()` — return model IDs if the provider
+      supports listing, or `null` if not
 - [ ] Add unit tests to `tests/Ur.Tests/`
 - [ ] Verify the provider appears in `ProviderRegistry.ProviderNames` at startup
 - [ ] Test with a model ID in `"provider/model"` format (e.g., `"anthropic/claude-sonnet-4-20250514"`)

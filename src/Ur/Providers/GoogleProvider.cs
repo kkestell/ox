@@ -105,6 +105,14 @@ internal sealed class GoogleProvider : IProvider
     }
 
     /// <summary>
+    /// Google's model listing API exists but requires additional integration
+    /// (pagination, filtering) that isn't worth the complexity for this round.
+    /// Returns null to indicate listing is not supported.
+    /// </summary>
+    public Task<IReadOnlyList<string>?> ListModelIdsAsync(CancellationToken ct = default) =>
+        Task.FromResult<IReadOnlyList<string>?>(null);
+
+    /// <summary>
     /// Minimal projection of the Gemini models.get response. We only need
     /// <c>inputTokenLimit</c>, so this avoids GeminiDotnet's <c>Model</c> type
     /// which fails to deserialize base models (see <see cref="GetContextWindowAsync"/>).

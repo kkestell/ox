@@ -32,6 +32,10 @@ internal sealed class OllamaProvider : IProvider
     // no reason to repeat it for the same model within one session.
     private readonly Dictionary<string, int?> _contextWindowCache = new(StringComparer.OrdinalIgnoreCase);
 
+    // Cache the model list for the session — avoids repeated /api/tags calls.
+    private IReadOnlyList<string>? _modelListCache;
+    private bool _modelListCached;
+
     public OllamaProvider(SettingsWriter settingsWriter)
     {
         _settingsWriter = settingsWriter;
@@ -88,6 +92,35 @@ internal sealed class OllamaProvider : IProvider
             _contextWindowCache[model] = null;
             return null;
         }
+    }
+
+    /// <summary>
+    /// Queries the local Ollama instance via OllamaSharp's ListLocalModelsAsync
+    /// (hitting /api/tags) and returns installed model names. Returns null if
+    /// Ollama is unreachable. Results are cached for the session to avoid
+    /// repeated local calls — same pattern as <see cref="_contextWindowCache"/>.
+    /// </summary>
+    public async Task<IReadOnlyList<string>?> ListModelIdsAsync(CancellationToken ct = default)
+    {
+        if (_modelListCached)
+            return _modelListCache;
+
+        try
+        {
+            var uri = ResolveUri();
+            var client = new OllamaApiClient(uri);
+            var models = await client.ListLocalModelsAsync(ct);
+            _modelListCache = models.Select(m => m.Name).ToList();
+        }
+        catch
+        {
+            // Ollama unreachable — return null, same graceful degradation as
+            // GetContextWindowAsync.
+            _modelListCache = null;
+        }
+
+        _modelListCached = true;
+        return _modelListCache;
     }
 
     private Uri ResolveUri()

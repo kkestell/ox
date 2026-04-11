@@ -50,6 +50,21 @@ public sealed class FakeProviderTests
         Assert.Throws<ArgumentException>(() => provider.CreateChatClient("nonexistent-scenario"));
     }
 
+    [Fact]
+    public async Task FakeProvider_ListModelIds_ReturnsBuiltInScenarioNames()
+    {
+        var provider = new FakeProvider();
+
+        var models = await provider.ListModelIdsAsync();
+
+        Assert.NotNull(models);
+        Assert.Contains("hello", models);
+        Assert.Contains("tool-call", models);
+        Assert.Contains("error", models);
+        Assert.Contains("multi-turn", models);
+        Assert.Equal(BuiltInScenarios.Names.Count, models.Count);
+    }
+
     // ── FakeChatClient text streaming ────────────────────────────────
 
     [Fact]

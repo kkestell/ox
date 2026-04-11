@@ -130,14 +130,14 @@ appropriate).
 
 ### Interface change
 
-- [ ] Add `Task<IReadOnlyList<string>?> ListModelIdsAsync(CancellationToken ct = default)`
+- [x] Add `Task<IReadOnlyList<string>?> ListModelIdsAsync(CancellationToken ct = default)`
       to `IProvider` in `src/Ur/Providers/IProvider.cs`. Document that it returns
       model ID strings (the portion after the provider prefix), or null if listing
       is not supported/available.
 
 ### Provider implementations
 
-- [ ] **OllamaProvider**: Implement `ListModelIdsAsync` using
+- [x] **OllamaProvider**: Implement `ListModelIdsAsync` using
       `OllamaApiClient.ListLocalModelsAsync()`. Create a client using
       `ResolveUri()` (same pattern as `GetContextWindowAsync`). Return
       `model.Name` for each result. Catch exceptions and return null if Ollama
@@ -145,25 +145,25 @@ appropriate).
       pattern as `_contextWindowCache`) to avoid repeated local calls, with an
       explicit refresh path if needed later.
 
-- [ ] **OpenRouterProvider**: Implement `ListModelIdsAsync` by returning
+- [x] **OpenRouterProvider**: Implement `ListModelIdsAsync` by returning
       `_modelCatalog.Models.Select(m => m.Id).ToList()`. Returns null/empty if
       catalog is empty.
 
-- [ ] **OpenAiProvider**: Implement `ListModelIdsAsync` returning the keys
+- [x] **OpenAiProvider**: Implement `ListModelIdsAsync` returning the keys
       from the existing `KnownContextWindows` dictionary as a static list.
 
-- [ ] **ZaiCodingProvider**: Same pattern — return keys from its known models
+- [x] **ZaiCodingProvider**: Same pattern — return keys from its known models
       dictionary.
 
-- [ ] **GoogleProvider**: Return null. Google's model listing API exists but
+- [x] **GoogleProvider**: Return null. Google's model listing API exists but
       isn't worth integrating for this round.
 
-- [ ] **FakeProvider**: Return `BuiltInScenarios.Names` (or equivalent).
+- [x] **FakeProvider**: Return `BuiltInScenarios.Names` (or equivalent).
       Add a static `Names` property to `BuiltInScenarios` if one doesn't exist.
 
 ### Aggregation in UrConfiguration
 
-- [ ] Add a method to `UrConfiguration` that aggregates models across all
+- [x] Add a method to `UrConfiguration` that aggregates models across all
       providers. Something like:
       ```csharp
       public async Task<IReadOnlyList<string>> ListAllModelIdsAsync(CancellationToken ct = default)
@@ -174,33 +174,33 @@ appropriate).
 
 ### Pre-TUI integration
 
-- [ ] In `Program.RunConfigurationPhaseAsync`, when the user is prompted for a
+- [x] In `Program.RunConfigurationPhaseAsync`, when the user is prompted for a
       model, show available models if they enter `?` or press Enter with no
       input. Call `UrConfiguration.ListAllModelIdsAsync()` and display the
       results grouped by provider.
 
 ### Tests
 
-- [ ] Add unit tests for `OllamaProvider.ListModelIdsAsync` — test the null
+- [x] Add unit tests for `OllamaProvider.ListModelIdsAsync` — test the null
       return case (Ollama unreachable) by verifying the method doesn't throw.
       Testing the success path requires a live Ollama instance, so that belongs
       in integration tests.
 
-- [ ] Add unit tests for the static providers (`OpenAiProvider`,
+- [x] Add unit tests for the static providers (`OpenAiProvider`,
       `ZaiCodingProvider`) — verify they return their known model lists.
 
-- [ ] Add unit tests for `OpenRouterProvider.ListModelIdsAsync` using
+- [x] Add unit tests for `OpenRouterProvider.ListModelIdsAsync` using
       `TestCatalog.CreateWithModels` — verify it delegates to the catalog.
 
-- [ ] Add a unit test for `FakeProvider.ListModelIdsAsync` — verify it returns
+- [x] Add a unit test for `FakeProvider.ListModelIdsAsync` — verify it returns
       built-in scenario names.
 
-- [ ] Verify `UrConfiguration.ListAllModelIdsAsync` aggregates and prefixes
+- [x] Verify `UrConfiguration.ListAllModelIdsAsync` aggregates and prefixes
       correctly (use FakeProvider + a test provider or mock).
 
 ### Documentation
 
-- [ ] Update `docs/adding-llm-providers.md`:
+- [x] Update `docs/adding-llm-providers.md`:
   - Add `ListModelIdsAsync` to the IProvider Interface Reference table.
   - Add a "Model Discovery" section to Common Patterns describing the three
     strategies: API call (Ollama), catalog delegation (OpenRouter), static list
@@ -211,8 +211,8 @@ appropriate).
 
 ### Validation
 
-- [ ] Run `dotnet build` — verify clean compilation.
-- [ ] Run `dotnet test` — verify all new and existing tests pass.
+- [x] Run `dotnet build` — verify clean compilation.
+- [x] Run `dotnet test` — verify all new and existing tests pass.
 - [ ] Manual test: start the app with Ollama running, enter `?` at the model
       prompt, verify Ollama models appear in the list.
 - [ ] Manual test: start the app without Ollama running, verify graceful

@@ -100,6 +100,31 @@ public sealed class UrConfiguration
         .OrderBy(m => m.Id, StringComparer.OrdinalIgnoreCase)
         .ToList();
 
+    /// <summary>
+    /// Aggregates model IDs across all registered providers. Each provider is queried
+    /// via <see cref="IProvider.ListModelIdsAsync"/> and results are prefixed with the
+    /// provider name (e.g. "ollama/llama3", "openai/gpt-4o"). Providers that return
+    /// null (listing not supported or unavailable) are skipped. The combined list is
+    /// sorted alphabetically for stable display order.
+    /// </summary>
+    public async Task<IReadOnlyList<string>> ListAllModelIdsAsync(CancellationToken ct = default)
+    {
+        var all = new List<string>();
+
+        foreach (var provider in _providerRegistry.Providers)
+        {
+            var models = await provider.ListModelIdsAsync(ct);
+            if (models is null)
+                continue;
+
+            foreach (var id in models)
+                all.Add($"{provider.Name}/{id}");
+        }
+
+        all.Sort(StringComparer.OrdinalIgnoreCase);
+        return all;
+    }
+
     public ModelInfo? GetModel(string modelId) => _modelCatalog.GetModel(modelId);
 
     public Task RefreshModelsAsync(CancellationToken ct = default) =>

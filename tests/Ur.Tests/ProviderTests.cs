@@ -281,4 +281,83 @@ public sealed class ProviderTests
         Assert.Equal("google", new GoogleProvider(keyring).Name);
         Assert.Equal("zai-coding", new ZaiCodingProvider(keyring).Name);
     }
+
+    // ─── ListModelIdsAsync ──────────────────────────────────────────
+
+    [Fact]
+    public async Task OpenAi_ListModelIds_ReturnsKnownModels()
+    {
+        var provider = new OpenAiProvider(new TestKeyring());
+
+        var models = await provider.ListModelIdsAsync();
+
+        Assert.NotNull(models);
+        Assert.Contains("gpt-4o", models);
+        Assert.Contains("o4-mini", models);
+    }
+
+    [Fact]
+    public async Task ZaiCoding_ListModelIds_ReturnsKnownModels()
+    {
+        var provider = new ZaiCodingProvider(new TestKeyring());
+
+        var models = await provider.ListModelIdsAsync();
+
+        Assert.NotNull(models);
+        Assert.Contains("glm-5.1", models);
+        Assert.Contains("glm-4.5-air", models);
+    }
+
+    [Fact]
+    public async Task Google_ListModelIds_ReturnsNull()
+    {
+        // Google doesn't support listing — should return null, not throw.
+        var provider = new GoogleProvider(new TestKeyring());
+
+        var models = await provider.ListModelIdsAsync();
+
+        Assert.Null(models);
+    }
+
+    [Fact]
+    public async Task OpenRouter_ListModelIds_DelegatesToCatalog()
+    {
+        var catalog = TestCatalog.CreateWithModels(
+            ("anthropic/claude-3.5-sonnet", 200_000),
+            ("openai/gpt-4o", 128_000));
+        var provider = new OpenRouterProvider(new TestKeyring(), catalog);
+
+        var models = await provider.ListModelIdsAsync();
+
+        Assert.NotNull(models);
+        Assert.Equal(2, models.Count);
+        Assert.Contains("anthropic/claude-3.5-sonnet", models);
+        Assert.Contains("openai/gpt-4o", models);
+    }
+
+    [Fact]
+    public async Task OpenRouter_ListModelIds_EmptyCatalog_ReturnsNull()
+    {
+        var provider = new OpenRouterProvider(new TestKeyring(), TestCatalog.CreateEmpty());
+
+        var models = await provider.ListModelIdsAsync();
+
+        Assert.Null(models);
+    }
+
+    [Fact]
+    public async Task Ollama_ListModelIds_DoesNotThrow()
+    {
+        // Ollama is likely not running in test environments. The method should
+        // return null gracefully rather than throwing. No assertion beyond
+        // "doesn't throw" — verifying the success path requires a live Ollama
+        // instance and belongs in integration tests.
+        using var workspace = new TempWorkspace();
+        var host = await TestHostBuilder.CreateHostAsync(workspace);
+
+        var provider = host.Configuration.ProviderRegistry.Get("ollama");
+        Assert.NotNull(provider);
+
+        _ = await provider.ListModelIdsAsync();
+    }
 }

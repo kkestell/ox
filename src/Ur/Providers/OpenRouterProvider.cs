@@ -11,8 +11,8 @@ namespace Ur.Providers;
 /// (e.g. "anthropic/claude-3.5-sonnet"), so the full model ID from our side is
 /// "openrouter/anthropic/claude-3.5-sonnet".
 ///
-/// Also owns the <see cref="ModelCatalog"/>, since OpenRouter is the only provider
-/// with a browsable remote model catalog.
+/// Also owns the <see cref="ModelCatalog"/> for browsing OpenRouter's remote
+/// model catalog with pricing and capability metadata.
 /// </summary>
 internal sealed class OpenRouterProvider : IProvider
 {
@@ -60,6 +60,19 @@ internal sealed class OpenRouterProvider : IProvider
     {
         var info = _modelCatalog.GetModel(model);
         int? result = info is { ContextLength: > 0 } ? info.ContextLength : null;
+        return Task.FromResult(result);
+    }
+
+    /// <summary>
+    /// Delegates to the <see cref="ModelCatalog"/> for the list of known model IDs.
+    /// Returns null if the catalog is empty (not yet loaded or refresh failed).
+    /// </summary>
+    public Task<IReadOnlyList<string>?> ListModelIdsAsync(CancellationToken ct = default)
+    {
+        var models = _modelCatalog.Models;
+        IReadOnlyList<string>? result = models.Count > 0
+            ? models.Select(m => m.Id).ToList()
+            : null;
         return Task.FromResult(result);
     }
 }

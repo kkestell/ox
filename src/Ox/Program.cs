@@ -100,10 +100,17 @@ public static class Program
                 switch (issue)
                 {
                     case ChatBlockingIssue.MissingModelSelection:
-                        Console.Write("Enter model (provider/model): ");
+                        Console.Write("Enter model (provider/model, or ? to list): ");
                         var modelInput = Console.ReadLine()?.Trim();
                         if (string.IsNullOrEmpty(modelInput))
                             return false;
+
+                        // Show available models when the user asks for discovery.
+                        if (modelInput == "?")
+                        {
+                            await ShowAvailableModelsAsync(config);
+                            break;
+                        }
 
                         await config.SetSelectedModelAsync(modelInput);
 
@@ -129,6 +136,39 @@ public static class Program
         }
 
         return true;
+    }
+
+    /// <summary>
+    /// Lists available models grouped by provider. Called when the user enters "?"
+    /// at the model selection prompt, giving them discovery without requiring prior
+    /// knowledge of provider/model naming.
+    /// </summary>
+    private static async Task ShowAvailableModelsAsync(UrConfiguration config)
+    {
+        var models = await config.ListAllModelIdsAsync();
+        if (models.Count == 0)
+        {
+            Console.WriteLine("No models available from any provider.");
+            return;
+        }
+
+        // Group by provider prefix for readable output.
+        var grouped = models
+            .GroupBy(m => m.Split('/')[0])
+            .OrderBy(g => g.Key, StringComparer.OrdinalIgnoreCase);
+
+        Console.WriteLine();
+        foreach (var group in grouped)
+        {
+            Console.WriteLine($"  {group.Key}/");
+            foreach (var model in group)
+            {
+                // Strip the provider prefix for indented display — the full ID
+                // is what the user would type.
+                Console.WriteLine($"    {model}");
+            }
+        }
+        Console.WriteLine();
     }
 
     private static (int Width, int Height) GetTerminalSize()
