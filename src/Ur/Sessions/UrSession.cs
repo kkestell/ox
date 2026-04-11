@@ -16,8 +16,8 @@ namespace Ur.Sessions;
 ///
 /// Sessions are the primary unit of interaction: they hold the message history,
 /// manage persistence to JSONL files, and drive the agent loop when a user sends
-/// a message. A session is created via <see cref="Ur.UrHost.CreateSession"/> (new)
-/// or <see cref="Ur.UrHost.OpenSessionAsync"/> (resume from disk).
+/// a message. A session is created via <see cref="Hosting.UrHost.CreateSession"/> (new)
+/// or <see cref="Hosting.UrHost.OpenSessionAsync"/> (resume from disk).
 ///
 /// Architecture: The message list is mutable and shared with the agent loop.
 /// As the loop produces assistant messages and tool results, they are appended

@@ -2,6 +2,7 @@ using System.Runtime.CompilerServices;
 using Microsoft.Extensions.AI;
 using Ur.AgentLoop;
 using Ur.Configuration;
+using Ur.Hosting;
 using Ur.Permissions;
 using Ur.Settings;
 using Ur.Tests.TestSupport;

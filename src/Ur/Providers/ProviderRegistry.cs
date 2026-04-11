@@ -4,7 +4,7 @@ namespace Ur.Providers;
 /// Maps provider name prefixes to <see cref="IProvider"/> implementations.
 ///
 /// Populated at startup by DI registration — each provider is registered once.
-/// At runtime, <see cref="UrHost.CreateChatClient"/> parses a <see cref="ModelId"/>
+/// At runtime, <see cref="Hosting.UrHost.CreateChatClient"/> parses a <see cref="ModelId"/>
 /// and looks up the provider here to delegate client construction.
 /// </summary>
 internal sealed class ProviderRegistry

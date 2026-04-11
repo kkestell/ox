@@ -9,12 +9,12 @@ using Ur.Skills;
 using Ur.Todo;
 using Ur.Tools;
 
-namespace Ur;
+namespace Ur.Hosting;
 
 /// <summary>
 /// Top-level entry point for the Ur library.
 ///
-/// Constructed by the DI container via <see cref="Hosting.ServiceCollectionExtensions.AddUr"/>.
+/// Constructed by the DI container via <see cref="ServiceCollectionExtensions.AddUr"/>.
 /// All dependencies are injected as constructor parameters — there is no static
 /// factory method. The container resolves services in dependency order.
 ///
@@ -61,9 +61,7 @@ public sealed class UrHost
 
     /// <summary>
     /// DI-injectable constructor. All parameters are resolved from the container
-    /// registered by <see cref="Hosting.ServiceCollectionExtensions.AddUr"/>.
-    /// The <paramref name="userDataDirectory"/> is pre-resolved by the caller
-    /// so that UrHost (root namespace) doesn't depend on Ur.Hosting.
+    /// registered by <see cref="ServiceCollectionExtensions.AddUr"/>.
     /// </summary>
     internal UrHost(
         Workspace workspace,
@@ -74,7 +72,7 @@ public sealed class UrHost
         UrConfiguration configuration,
         ProviderRegistry providerRegistry,
         ILoggerFactory loggerFactory,
-        Hosting.UrStartupOptions options,
+        UrStartupOptions options,
         string userDataDirectory)
     {
         _workspace = workspace;

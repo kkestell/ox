@@ -1,6 +1,7 @@
 using System.Runtime.CompilerServices;
 using Microsoft.Extensions.AI;
 using Ur.AgentLoop;
+using Ur.Hosting;
 using Ur.Tests.TestSupport;
 
 namespace Ur.Tests.Skills;

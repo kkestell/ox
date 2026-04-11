@@ -71,16 +71,16 @@ Option A -- Move UrHost to Ur.Hosting.
 
 ## Implementation plan
 
-- [ ] Move `src/Ur/UrHost.cs` to `src/Ur/Hosting/UrHost.cs` (physical file relocation).
-- [ ] Change the namespace declaration from `namespace Ur;` to `namespace Ur.Hosting;`.
-- [ ] Remove the `Hosting.` prefix from `UrStartupOptions` in the UrHost constructor signature (line 77). It's now in the same namespace.
-- [ ] Remove `using` directives in UrHost.cs that are now unnecessary (e.g., if any referenced `Ur.Hosting` explicitly). Add `using Ur;` since UrHost still needs `Workspace`.
-- [ ] In `src/Ox/OxApp.cs`: add `using Ur.Hosting;`. Remove `using Ur;` if no other root-namespace types are referenced.
-- [ ] In `src/Ox/Program.cs`: add `using Ur.Hosting;`. Remove `using Ur;` if no other root-namespace types are referenced.
-- [ ] In `ServiceCollectionExtensions.cs`: remove the `Ur` using if it was only needed for `UrHost` (check -- it may still need it for `Workspace`). The UrHost type is now in-namespace.
-- [ ] Run `dotnet build` from the repo root -- verify green.
-- [ ] Run `dotnet test` from the repo root -- verify green.
-- [ ] Verify the cycle is broken: `grep -rn "^namespace Ur;" src/Ur/` should show only `Workspace.cs` and `ToolContext.cs`.
+- [x] Move `src/Ur/UrHost.cs` to `src/Ur/Hosting/UrHost.cs` (physical file relocation).
+- [x] Change the namespace declaration from `namespace Ur;` to `namespace Ur.Hosting;`.
+- [x] Remove the `Hosting.` prefix from `UrStartupOptions` in the UrHost constructor signature (line 77). It's now in the same namespace.
+- [x] Remove `using` directives in UrHost.cs that are now unnecessary (e.g., if any referenced `Ur.Hosting` explicitly). Add `using Ur;` since UrHost still needs `Workspace`.
+- [x] In `src/Ox/OxApp.cs`: add `using Ur.Hosting;`. Remove `using Ur;` if no other root-namespace types are referenced.
+- [x] In `src/Ox/Program.cs`: add `using Ur.Hosting;`. Remove `using Ur;` if no other root-namespace types are referenced.
+- [x] In `ServiceCollectionExtensions.cs`: remove the `Ur` using if it was only needed for `UrHost` (check -- it may still need it for `Workspace`). The UrHost type is now in-namespace.
+- [x] Run `dotnet build` from the repo root -- verify green.
+- [x] Run `dotnet test` from the repo root -- verify green.
+- [x] Verify the cycle is broken: `grep -rn "^namespace Ur;" src/Ur/` should show only `Workspace.cs` and `ToolContext.cs`.
 
 ## Validation
 
