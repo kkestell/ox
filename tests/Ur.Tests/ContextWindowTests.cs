@@ -118,13 +118,21 @@ public sealed class ContextWindowTests
     // ─── GoogleProvider ───────────────────────────────────────────────
 
     [Fact]
-    public async Task Google_NoApiKey_ReturnsNull()
+    public async Task Google_KnownModel_ReturnsContextWindow()
     {
-        // Without an API key, the provider should short-circuit and return null
-        // rather than attempting a network call.
         var provider = new GoogleProvider(new TestKeyring());
 
-        var result = await provider.GetContextWindowAsync("gemini-2.0-flash");
+        var result = await provider.GetContextWindowAsync("gemini-3.1-pro-preview");
+
+        Assert.Equal(1_048_576, result);
+    }
+
+    [Fact]
+    public async Task Google_UnknownModel_ReturnsNull()
+    {
+        var provider = new GoogleProvider(new TestKeyring());
+
+        var result = await provider.GetContextWindowAsync("gemini-unknown");
 
         Assert.Null(result);
     }

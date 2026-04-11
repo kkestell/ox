@@ -309,14 +309,16 @@ public sealed class ProviderTests
     }
 
     [Fact]
-    public async Task Google_ListModelIds_ReturnsNull()
+    public async Task Google_ListModelIds_ReturnsKnownModels()
     {
-        // Google doesn't support listing — should return null, not throw.
         var provider = new GoogleProvider(new TestKeyring());
 
         var models = await provider.ListModelIdsAsync();
 
-        Assert.Null(models);
+        Assert.NotNull(models);
+        Assert.Contains("gemini-3.1-pro-preview", models);
+        Assert.Contains("gemini-3-flash-preview", models);
+        Assert.Contains("gemini-3.1-flash-lite-preview", models);
     }
 
     [Fact]

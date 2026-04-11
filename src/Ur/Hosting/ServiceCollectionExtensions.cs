@@ -147,9 +147,7 @@ public static class ServiceCollectionExtensions
         services.AddSingleton<IProvider>(sp =>
             new OpenAiProvider(sp.GetRequiredService<IKeyring>()));
         services.AddSingleton<IProvider>(sp =>
-            new GoogleProvider(
-                sp.GetRequiredService<IKeyring>(),
-                sp.GetRequiredService<ILoggerFactory>().CreateLogger<GoogleProvider>()));
+            new GoogleProvider(sp.GetRequiredService<IKeyring>()));
         services.AddSingleton<IProvider>(sp =>
             new OllamaProvider(sp.GetRequiredService<SettingsWriter>()));
         services.AddSingleton<IProvider>(sp =>

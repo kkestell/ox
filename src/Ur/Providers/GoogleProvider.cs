@@ -1,10 +1,6 @@
-using System.Net.Http.Json;
-using System.Text.Json;
-using System.Text.Json.Serialization;
 using GeminiDotnet;
 using GeminiDotnet.Extensions.AI;
 using Microsoft.Extensions.AI;
-using Microsoft.Extensions.Logging;
 using Ur.Configuration.Keyring;
 
 namespace Ur.Providers;
@@ -21,18 +17,24 @@ internal sealed class GoogleProvider : IProvider
     private const string SecretService = "ur";
     private const string KeyringAccount = "google";
 
+    /// <summary>
+    /// Static context window sizes for known Gemini models. All three current preview
+    /// models share the same 1 M-token input limit (verified via the models.get API).
+    /// Unknown models return null — the UI omits the percentage rather than displaying
+    /// a wrong one.
+    /// </summary>
+    private static readonly Dictionary<string, int> KnownContextWindows = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["gemini-3.1-pro-preview"] = 1_048_576,
+        ["gemini-3-flash-preview"] = 1_048_576,
+        ["gemini-3.1-flash-lite-preview"] = 1_048_576,
+    };
+
     private readonly IKeyring _keyring;
-    private readonly ILogger? _logger;
 
-    // Cache context window sizes to avoid repeated API calls for the same model.
-    // The Gemini models.get endpoint is lightweight, but there's no reason to hit
-    // it more than once per model per session.
-    private readonly Dictionary<string, int?> _contextWindowCache = new(StringComparer.OrdinalIgnoreCase);
-
-    public GoogleProvider(IKeyring keyring, ILogger? logger = null)
+    public GoogleProvider(IKeyring keyring)
     {
         _keyring = keyring;
-        _logger = logger;
     }
 
     public string Name => "google";
@@ -59,73 +61,20 @@ internal sealed class GoogleProvider : IProvider
             : null;
     }
 
-    // Shared HttpClient for model metadata calls — avoids socket exhaustion.
-    private static readonly HttpClient MetadataHttpClient = new()
-    {
-        BaseAddress = new Uri("https://generativelanguage.googleapis.com")
-    };
-
     /// <summary>
-    /// Queries the Gemini models.get API for the model's input token limit.
-    ///
-    /// Uses a direct HTTP call instead of GeminiDotnet's <c>ModelsClient</c> because
-    /// GeminiDotnet (as of 0.23.0) marks <c>baseModelId</c> as <c>required</c> on its
-    /// <c>Model</c> type. The Gemini API only returns <c>baseModelId</c> for tuned
-    /// models — base models (all the ones we use) never include it, so
-    /// <c>GetModelAsync</c> always throws a <see cref="System.Text.Json.JsonException"/>.
-    /// A minimal JSON projection that only reads <c>inputTokenLimit</c> sidesteps the
-    /// issue without forking the library.
+    /// Returns context window from a static table of known models. Unknown models
+    /// return null so the UI can omit the percentage.
     /// </summary>
-    public async Task<int?> GetContextWindowAsync(string model, CancellationToken ct = default)
+    public Task<int?> GetContextWindowAsync(string model, CancellationToken ct = default)
     {
-        if (_contextWindowCache.TryGetValue(model, out var cached))
-            return cached;
-
-        var apiKey = _keyring.GetSecret(SecretService, KeyringAccount);
-        if (string.IsNullOrWhiteSpace(apiKey))
-            return null;
-
-        try
-        {
-            var url = $"/v1beta/models/{model}?key={apiKey}";
-            var response = await MetadataHttpClient.GetFromJsonAsync(
-                url, GoogleProviderJsonContext.Default.GeminiModelMetadata, ct);
-            var result = response?.InputTokenLimit;
-            _contextWindowCache[model] = result;
-            return result;
-        }
-        catch (Exception ex)
-        {
-            // API failure (network error, invalid model name, etc.) — return null
-            // so the caller can omit the percentage rather than crash.
-            _logger?.LogWarning(ex, "Failed to resolve context window for model '{Model}'", model);
-            _contextWindowCache[model] = null;
-            return null;
-        }
+        int? result = KnownContextWindows.TryGetValue(model, out var size) ? size : null;
+        return Task.FromResult(result);
     }
 
     /// <summary>
-    /// Google's model listing API exists but requires additional integration
-    /// (pagination, filtering) that isn't worth the complexity for this round.
-    /// Returns null to indicate listing is not supported.
+    /// Returns the static set of known Gemini model IDs. These are the same models
+    /// tracked in <see cref="KnownContextWindows"/>.
     /// </summary>
     public Task<IReadOnlyList<string>?> ListModelIdsAsync(CancellationToken ct = default) =>
-        Task.FromResult<IReadOnlyList<string>?>(null);
-
-    /// <summary>
-    /// Minimal projection of the Gemini models.get response. We only need
-    /// <c>inputTokenLimit</c>, so this avoids GeminiDotnet's <c>Model</c> type
-    /// which fails to deserialize base models (see <see cref="GetContextWindowAsync"/>).
-    /// </summary>
-    internal sealed class GeminiModelMetadata
-    {
-        [JsonPropertyName("inputTokenLimit")]
-        public int? InputTokenLimit { get; set; }
-    }
+        Task.FromResult<IReadOnlyList<string>?>(KnownContextWindows.Keys.ToList());
 }
-
-/// <summary>
-/// Source-generated JSON context for the lightweight Gemini model metadata shape.
-/// </summary>
-[JsonSerializable(typeof(GoogleProvider.GeminiModelMetadata))]
-internal partial class GoogleProviderJsonContext : JsonSerializerContext;

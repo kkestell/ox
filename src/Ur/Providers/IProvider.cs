@@ -48,13 +48,13 @@ internal interface IProvider
 
     /// <summary>
     /// Returns the model IDs available from this provider, or null if the provider
-    /// does not support listing (e.g. Google has no readily available listing API).
+    /// does not support listing.
     /// Each ID is the model-local portion (everything after the provider prefix),
     /// matching the format accepted by <see cref="CreateChatClient"/>.
     ///
     /// Strategies vary by provider: Ollama queries the local instance via /api/tags,
     /// OpenRouter delegates to its <see cref="ModelCatalog"/>, and static providers
-    /// (OpenAI, ZaiCoding) return their known model tables.
+    /// (OpenAI, ZaiCoding, Google) return their known model tables.
     /// </summary>
     Task<IReadOnlyList<string>?> ListModelIdsAsync(CancellationToken ct = default);
 }
