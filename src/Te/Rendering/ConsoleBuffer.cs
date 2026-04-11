@@ -25,6 +25,17 @@ public sealed class ConsoleBuffer
     /// </summary>
     public bool LockRendering { get; set; }
 
+    /// <summary>
+    /// Optional override for <see cref="ColorKind.Default"/> backgrounds.
+    /// When set, any cell whose background is <c>Color.Default</c> will be
+    /// rendered using this color instead. This lets application code guarantee
+    /// a specific background color (e.g. black) without requiring every view
+    /// to hard-code it — <c>Color.Default</c> normally emits SGR 49, which
+    /// means "use the terminal's configured default," and that can be any
+    /// color the user has set in their terminal preferences.
+    /// </summary>
+    public Color? DefaultBackgroundOverride { get; set; }
+
     public ConsoleBuffer(int width, int height)
     {
         Width = Math.Max(1, width);
@@ -133,13 +144,14 @@ public sealed class ConsoleBuffer
                 while (column < Width && _backBuffer[row, column] != _frontBuffer[row, column])
                 {
                     var cell = _backBuffer[row, column];
+                    var effectiveBg = ResolveBackground(cell.Background);
                     if (cell.Foreground != currentForeground ||
-                        cell.Background != currentBackground ||
+                        effectiveBg != currentBackground ||
                         cell.Decorations != currentDecorations)
                     {
-                        writer.Write(BuildSgr(cell.Foreground, cell.Background, cell.Decorations));
+                        writer.Write(BuildSgr(cell.Foreground, effectiveBg, cell.Decorations));
                         currentForeground = cell.Foreground;
-                        currentBackground = cell.Background;
+                        currentBackground = effectiveBg;
                         currentDecorations = cell.Decorations;
                     }
 
@@ -159,13 +171,23 @@ public sealed class ConsoleBuffer
 
     private void InitializeBuffers()
     {
+        // Only initialize the back buffer to Cell.Empty. The front buffer
+        // stays as the C# default struct (char '\0'), which differs from
+        // Cell.Empty (char ' '). This ensures the first Render() pass sees
+        // every cell as dirty and writes the full frame — critical for
+        // painting the screen on startup and after a terminal resize.
         for (var y = 0; y < Height; y++)
         for (var x = 0; x < Width; x++)
-        {
             _backBuffer[y, x] = Cell.Empty;
-            _frontBuffer[y, x] = Cell.Empty;
-        }
     }
+
+    /// <summary>
+    /// Substitute <see cref="DefaultBackgroundOverride"/> for any
+    /// <c>Color.Default</c> background so the terminal never falls back to
+    /// its own configured background color.
+    /// </summary>
+    private Color ResolveBackground(Color bg) =>
+        bg.Kind == ColorKind.Default && DefaultBackgroundOverride is { } over ? over : bg;
 
     private bool IsValidPosition(int x, int y) => x >= 0 && x < Width && y >= 0 && y < Height;
 

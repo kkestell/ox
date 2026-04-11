@@ -78,7 +78,7 @@ internal static class BuiltInScenarios
                 ToolCall = new FakeToolCall
                 {
                     Name = "read_file",
-                    ArgumentsJson = """{"path": "hello.txt"}"""
+                    ArgumentsJson = """{"file_path": "hello.txt"}"""
                 },
                 InputTokens = 20,
                 OutputTokens = 30,
@@ -107,7 +107,7 @@ internal static class BuiltInScenarios
                 ToolCall = new FakeToolCall
                 {
                     Name = "write_file",
-                    ArgumentsJson = """{"path": "output.txt", "content": "hello from fake provider"}"""
+                    ArgumentsJson = """{"file_path": "output.txt", "content": "hello from fake provider"}"""
                 },
                 InputTokens = 20,
                 OutputTokens = 40,
