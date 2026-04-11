@@ -33,7 +33,6 @@ public sealed class InputAreaView
     /// <param name="width">Available width in columns.</param>
     /// <param name="editor">Text editor state for the input field.</param>
     /// <param name="ghostText">Autocomplete ghost text to show after the cursor, or null.</param>
-    /// <param name="statusLeft">Left-aligned status text (throbber renders separately).</param>
     /// <param name="statusRight">Right-aligned status text (model + context %).</param>
     /// <param name="throbber">Throbber to render on the status line, or null if inactive.</param>
     /// <param name="isFocused">Whether the input field has focus (shows cursor).</param>

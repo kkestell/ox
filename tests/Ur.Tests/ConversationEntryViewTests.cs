@@ -6,7 +6,7 @@ namespace Ur.Tests;
 /// Tests for the layout logic used by <see cref="ConversationEntryView"/>.
 ///
 /// These tests exercise the pure text layout paths through
-/// <see cref="ConversationEntryLayout"/> and <see cref="ConversationTextLayout"/>
+/// <see cref="ConversationEntryView"/> and <see cref="ConversationTextLayout"/>
 /// without requiring Terminal.Gui types (which need an application context).
 /// The layout engine is the same one ConversationEntryView calls internally —
 /// it just uses generic LayoutFragment{string} instead of StyledSegment.

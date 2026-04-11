@@ -107,7 +107,8 @@ internal sealed class AnsiInputParser
             return;
         }
 
-        if (nextByte >= 0x01 && nextByte <= 0x1A)
+        // 0x00 was already handled above, so nextByte >= 0x01 is guaranteed here.
+        if (nextByte <= 0x1A)
         {
             switch (nextByte)
             {

@@ -1,4 +1,3 @@
-using System.IO;
 using System.Reflection;
 using Te.Demo;
 using Te.Rendering;
@@ -117,21 +116,21 @@ public sealed class ConsoleBufferTests
     public void DemoFrame_DoesNotLetRecentEventsOverwriteStatusRows()
     {
         var buffer = new ConsoleBuffer(40, 16);
-        var stateType = typeof(Te.Demo.Program).GetNestedType("DemoState", BindingFlags.NonPublic);
+        var stateType = typeof(Program).GetNestedType("DemoState", BindingFlags.NonPublic);
         Assert.NotNull(stateType);
 
-        var state = Activator.CreateInstance(stateType!, nonPublic: true);
+        var state = Activator.CreateInstance(stateType, nonPublic: true);
         Assert.NotNull(state);
 
-        var recordEvent = stateType!.GetMethod("RecordEvent", BindingFlags.Instance | BindingFlags.Public);
+        var recordEvent = stateType.GetMethod("RecordEvent", BindingFlags.Instance | BindingFlags.Public);
         Assert.NotNull(recordEvent);
 
         foreach (var value in new[] { "A", "S", "D", "F", "A", "S" })
-            recordEvent!.Invoke(state, [value]);
+            recordEvent.Invoke(state, [value]);
 
-        var drawFrame = typeof(Te.Demo.Program).GetMethod("DrawFrame", BindingFlags.Static | BindingFlags.NonPublic);
+        var drawFrame = typeof(Program).GetMethod("DrawFrame", BindingFlags.Static | BindingFlags.NonPublic);
         Assert.NotNull(drawFrame);
-        drawFrame!.Invoke(null, [buffer, state!]);
+        drawFrame.Invoke(null, [buffer, state]);
 
         Assert.Equal('s', buffer.GetCell(4, 13).Rune);
         Assert.Equal('c', buffer.GetCell(4, 14).Rune);

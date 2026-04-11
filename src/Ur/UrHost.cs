@@ -14,7 +14,7 @@ namespace Ur;
 /// <summary>
 /// Top-level entry point for the Ur library.
 ///
-/// Constructed by the DI container via <see cref="ServiceCollectionExtensions.AddUr"/>.
+/// Constructed by the DI container via <see cref="Hosting.ServiceCollectionExtensions.AddUr"/>.
 /// All dependencies are injected as constructor parameters — there is no static
 /// factory method. The container resolves services in dependency order.
 ///

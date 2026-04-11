@@ -12,7 +12,7 @@ namespace Ur.Providers;
 /// <see cref="OllamaApiClient"/> directly implements <see cref="IChatClient"/>,
 /// so no adapter is needed.
 ///
-/// Takes a <see cref="SettingsWriter"/> rather than <see cref="UrConfiguration"/>
+/// Takes a <see cref="SettingsWriter"/> rather than <see cref="Configuration.UrConfiguration"/>
 /// to avoid a circular dependency: UrConfiguration depends on the ProviderRegistry,
 /// and the registry contains this provider.
 /// </summary>

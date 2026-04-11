@@ -26,7 +26,6 @@ namespace Ox;
 /// </summary>
 public sealed class OxApp : IDisposable
 {
-    private readonly UrHost _host;
     private readonly InputCoordinator _coordinator;
     private readonly ConsoleBuffer _buffer;
     private readonly ConversationView _conversationView = new();
@@ -34,7 +33,6 @@ public sealed class OxApp : IDisposable
     private readonly PermissionPromptView _permissionPromptView = new();
     private readonly TextEditor _editor = new();
     private readonly Throbber _throbber = new();
-    private readonly AutocompleteEngine _autocompleteEngine;
     private readonly Autocomplete _autocomplete;
 
     // Ur event queue — background turn task enqueues, main loop drains.
@@ -44,7 +42,6 @@ public sealed class OxApp : IDisposable
     // Turn state.
     private Ur.Sessions.UrSession? _session;
     private CancellationTokenSource? _turnCts;
-    private Task? _turnTask;
     private bool _turnActive;
     private string? _queuedInput;
     private AssistantTextEntry? _currentAssistantEntry;
@@ -59,7 +56,6 @@ public sealed class OxApp : IDisposable
 
     public OxApp(UrHost host, InputCoordinator coordinator, int width, int height, string workspacePath)
     {
-        _host = host;
         _coordinator = coordinator;
         _buffer = new ConsoleBuffer(width, height);
         _workspacePath = workspacePath;
@@ -72,8 +68,8 @@ public sealed class OxApp : IDisposable
 
         // Build autocomplete from the host's command registry.
         var commandRegistry = new Ur.Skills.CommandRegistry(host.BuiltInCommands, host.Skills);
-        _autocompleteEngine = new AutocompleteEngine(commandRegistry);
-        _autocomplete = new Autocomplete(_autocompleteEngine);
+        var autocompleteEngine = new AutocompleteEngine(commandRegistry);
+        _autocomplete = new Autocomplete(autocompleteEngine);
 
         // Create session with permission callback.
         var callbacks = new TurnCallbacks
@@ -341,7 +337,8 @@ public sealed class OxApp : IDisposable
         _turnCts = new CancellationTokenSource();
         var ct = _turnCts.Token;
 
-        _turnTask = Task.Run(async () =>
+        // Fire-and-forget: the background task enqueues events; we don't await it.
+        _ = Task.Run(async () =>
         {
             try
             {

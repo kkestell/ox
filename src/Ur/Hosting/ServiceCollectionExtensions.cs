@@ -154,7 +154,7 @@ public static class ServiceCollectionExtensions
         // If startup options request a fake provider, register it as an additional
         // IProvider service. The registry will pick it up alongside the real providers.
         if (options.FakeProvider is { } fakeProvider)
-            services.AddSingleton<IProvider>(fakeProvider);
+            services.AddSingleton(fakeProvider);
 
         services.AddSingleton(sp =>
         {

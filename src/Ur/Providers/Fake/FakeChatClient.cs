@@ -13,7 +13,7 @@ namespace Ur.Providers.Fake;
 /// harness — if the scenario runs out of turns, the client throws with a
 /// clear error instead of silently returning empty results.
 ///
-/// Thread-safety: the turn index is advanced with <see cref="Interlocked.Increment"/>
+/// Thread-safety: the turn index is advanced with <see cref="Interlocked.Increment(ref int)"/>
 /// so concurrent calls from the agent loop (e.g. parent + subagent) get
 /// distinct turns in order.
 /// </summary>

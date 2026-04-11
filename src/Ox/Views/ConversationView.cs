@@ -311,7 +311,6 @@ public sealed class ConversationView
                     {
                         PlanItemStatus.Completed => "✓",
                         PlanItemStatus.InProgress => "●",
-                        PlanItemStatus.Pending => "○",
                         _ => "○",
                     };
                     var markerColor = item.Status switch
