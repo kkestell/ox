@@ -42,6 +42,14 @@ public sealed class OxApp : IDisposable
     // Host reference — used for resolving context window sizes from the active provider.
     private readonly UrHost _host;
 
+    // Command registry — retained here so SubmitInput can check whether an unknown
+    // built-in is a user-invocable skill and fall through to StartTurn accordingly.
+    private readonly Ur.Skills.CommandRegistry _commandRegistry;
+
+    // Valid model IDs from providers.json — cached once at construction for both
+    // argument completion and input-time validation of the /model command.
+    private readonly IReadOnlyList<string> _validModelIds;
+
     // Context window cache — keyed on model ID so we only resolve once per model.
     // Populated lazily on the first TurnCompleted for each model. All access is on
     // the main thread (resolved synchronously during event drain).
@@ -76,8 +84,16 @@ public sealed class OxApp : IDisposable
         _buffer.DefaultBackgroundOverride = OxThemePalette.Ox.Background;
 
         // Build autocomplete from the host's command registry.
-        var commandRegistry = new Ur.Skills.CommandRegistry(host.BuiltInCommands, host.Skills);
-        var autocompleteEngine = new AutocompleteEngine(commandRegistry);
+        // The argument-completion dictionary maps command names (lowercase) to their
+        // completable argument lists. The engine prefix-matches against these lists
+        // when the input already contains a space (argument phase).
+        _commandRegistry = new Ur.Skills.CommandRegistry(host.BuiltInCommands, host.Skills);
+        _validModelIds = host.Configuration.ListAllModelIds();
+        var argumentCompletions = new Dictionary<string, IReadOnlyList<string>>
+        {
+            ["model"] = _validModelIds,
+        };
+        var autocompleteEngine = new AutocompleteEngine(_commandRegistry, argumentCompletions);
         _autocomplete = new Autocomplete(autocompleteEngine);
 
         // Create session with permission callback.
@@ -198,9 +214,21 @@ public sealed class OxApp : IDisposable
             return;
         }
 
-        // Enter → submit.
+        // Enter → submit (with input-level validation for /model).
         if (bare == KeyCode.Enter)
         {
+            // Block submission of /model unless the argument is a recognized
+            // model ID. This ensures ExecuteBuiltInCommand is never called with
+            // an invalid or missing argument — validation belongs at the boundary.
+            var pendingText = _editor.Text.Trim();
+            if (pendingText.StartsWith("/model", StringComparison.OrdinalIgnoreCase))
+            {
+                var parts = pendingText[1..].Split(' ', 2);
+                var arg = parts.Length > 1 ? parts[1].Trim() : "";
+                if (arg.Length == 0 || !_validModelIds.Contains(arg, StringComparer.OrdinalIgnoreCase))
+                    return; // no-op: Enter is blocked until a valid model ID is typed
+            }
+
             SubmitInput();
             return;
         }
@@ -303,23 +331,48 @@ public sealed class OxApp : IDisposable
         {
             var parts = text[1..].Split(' ', 2);
             var command = parts[0].ToLowerInvariant();
+            var args = parts.Length > 1 ? parts[1] : null;
 
+            // /quit is a TUI exit concern — handled here rather than delegating
+            // to Ur, because only the TUI layer knows how to tear itself down.
             if (command == "quit")
             {
                 _exit = true;
                 return;
             }
 
-            // Check for built-in commands that are stubs.
-            if (command is "clear" or "model" or "set")
+            // Delegate built-in commands to the session layer, which owns the
+            // configuration and knows what each command does. OxApp just
+            // dispatches and displays the result.
+            var result = _session?.ExecuteBuiltInCommand(command, args);
+            if (result is not null)
             {
-                _conversationView.AddEntry(new ErrorEntry($"Command /{command} is not yet implemented."));
+                if (result.IsError)
+                    _conversationView.AddEntry(new ErrorEntry(result.Message));
+                else if (command == "model")
+                {
+                    // The status line already shows the updated model name — no
+                    // need for a conversation-bubble confirmation. Just invalidate
+                    // the context-window cache so the status line picks up the new
+                    // model's window size on the next render cycle.
+                    _contextWindowCache.Clear();
+                }
                 return;
             }
 
-            // Unknown command.
-            _conversationView.AddEntry(new ErrorEntry($"Unknown command: {command}"));
-            return;
+            // Not a built-in — check if it's a user-invocable skill. Skills fall
+            // through to the normal turn path: StartTurn calls RunTurnAsync, which
+            // calls TryExpandSlashCommand to expand the skill template before
+            // sending it to the LLM.
+            if (_commandRegistry.UserInvocableNames.Contains(command, StringComparer.OrdinalIgnoreCase))
+            {
+                // Fall through to the StartTurn path below.
+            }
+            else
+            {
+                _conversationView.AddEntry(new ErrorEntry($"Unknown command: /{command}"));
+                return;
+            }
         }
 
         // Add user message to the conversation.

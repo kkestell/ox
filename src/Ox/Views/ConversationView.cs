@@ -236,6 +236,8 @@ public sealed class ConversationView
     private static EntryStyle GetEntryStyle(ConversationEntry entry) => entry switch
     {
         UserMessageEntry => EntryStyle.User,
+        // CancellationEntry is plain text — no circle chrome.
+        // Plain entries use the full text width without reserving space for a circle.
         CancellationEntry => EntryStyle.Plain,
         _ => EntryStyle.Circle,
     };

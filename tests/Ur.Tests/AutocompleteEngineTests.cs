@@ -134,3 +134,129 @@ public sealed class AutocompleteEngineTests
         Assert.Null(engine.GetCompletion("/model"));
     }
 }
+
+/// <summary>
+/// Tests for the argument-completion phase of <see cref="AutocompleteEngine.GetCompletion"/>.
+///
+/// The argument phase triggers when input contains a space (e.g. "/model open").
+/// The engine prefix-matches the typed argument against the per-command argument
+/// list and returns the suffix needed to reach the first match.
+/// </summary>
+public sealed class AutocompleteEngineArgumentTests
+{
+    // Representative set: sorted alphabetically so prefix queries are predictable.
+    private static readonly IReadOnlyList<string> ModelIds =
+    [
+        "anthropic/claude-3",
+        "openai/gpt-4o",
+        "openai/gpt-5",
+    ];
+
+    private static AutocompleteEngine BuildEngineWithArgs(
+        IReadOnlyDictionary<string, IReadOnlyList<string>>? args = null)
+    {
+        var builtIns = new BuiltInCommandRegistry();
+        var skills = new SkillRegistry([]);
+        var registry = new CommandRegistry(builtIns, skills);
+        var completions = args ?? new Dictionary<string, IReadOnlyList<string>>
+        {
+            ["model"] = ModelIds,
+        };
+        return new AutocompleteEngine(registry, completions);
+    }
+
+    [Fact]
+    public void GetCompletion_ArgumentPhase_PrefixMatch_ReturnsSuffix()
+    {
+        // "/model openai/gpt" should suggest "-5" (first alphabetical match for "openai/gpt").
+        // Both "openai/gpt-4o" and "openai/gpt-5" start with "openai/gpt"; the first
+        // alphabetical entry ("openai/gpt-4o") wins.
+        var engine = BuildEngineWithArgs();
+
+        Assert.Equal("-4o", engine.GetCompletion("/model openai/gpt"));
+    }
+
+    [Fact]
+    public void GetCompletion_ArgumentPhase_ExactMatch_ReturnsNull()
+    {
+        // "/model openai/gpt-4o" is a full, exact argument — nothing left to suggest.
+        var engine = BuildEngineWithArgs();
+
+        Assert.Null(engine.GetCompletion("/model openai/gpt-4o"));
+    }
+
+    [Fact]
+    public void GetCompletion_ArgumentPhase_NoMatch_ReturnsNull()
+    {
+        // "/model nonexistent" doesn't prefix-match any known model ID.
+        var engine = BuildEngineWithArgs();
+
+        Assert.Null(engine.GetCompletion("/model nonexistent"));
+    }
+
+    [Fact]
+    public void GetCompletion_ArgumentPhase_EmptyArg_ReturnsNull()
+    {
+        // "/model " (trailing space, zero characters typed after it) should not
+        // suggest anything — at least one character after the space is required.
+        var engine = BuildEngineWithArgs();
+
+        Assert.Null(engine.GetCompletion("/model "));
+    }
+
+    [Fact]
+    public void GetCompletion_ArgumentPhase_CaseInsensitiveCommandName_Matches()
+    {
+        // "/Model open" has a mixed-case command name; the engine normalizes to
+        // lowercase before dictionary lookup, so it matches the "model" entry.
+        var engine = BuildEngineWithArgs();
+
+        Assert.Equal("ai/gpt-4o", engine.GetCompletion("/Model open"));
+    }
+
+    [Fact]
+    public void GetCompletion_ArgumentPhase_UnregisteredCommand_ReturnsNull()
+    {
+        // "/set something" has no argument completion dictionary entry — null.
+        var engine = BuildEngineWithArgs();
+
+        Assert.Null(engine.GetCompletion("/set something"));
+    }
+
+    [Fact]
+    public void GetCompletion_ArgumentPhase_OtherRegisteredCommand_Matches()
+    {
+        // The argument-completion dictionary can hold entries for other commands too,
+        // not just "model". Verify that "/deploy prod" works for a "deploy" entry.
+        var args = new Dictionary<string, IReadOnlyList<string>>
+        {
+            ["deploy"] = ["prod", "staging", "dev"],
+        };
+        var engine = BuildEngineWithArgs(args);
+
+        Assert.Equal("aging", engine.GetCompletion("/deploy st"));
+    }
+
+    [Fact]
+    public void GetCompletion_ArgumentPhase_NoArgumentCompletionsDictionary_ReturnsNull()
+    {
+        // When the engine is constructed without an argument-completion dictionary,
+        // any input with a space returns null rather than throwing.
+        var builtIns = new BuiltInCommandRegistry();
+        var skills = new SkillRegistry([]);
+        var registry = new CommandRegistry(builtIns, skills);
+        var engine = new AutocompleteEngine(registry); // no dictionary
+
+        Assert.Null(engine.GetCompletion("/model open"));
+    }
+
+    [Fact]
+    public void GetCompletion_ArgumentPhase_CommandNamePhaseUnchanged()
+    {
+        // Argument completions should not affect command-name completion (no space).
+        // "/mo" should still return "del" even when argument completions are registered.
+        var engine = BuildEngineWithArgs();
+
+        Assert.Equal("del", engine.GetCompletion("/mo"));
+    }
+}

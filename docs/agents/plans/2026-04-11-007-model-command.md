@@ -82,46 +82,46 @@ The original plan put model validation and persistence in `OxApp.SubmitInput()` 
 
 ### Refactoring (before feature work)
 
-- [ ] **Add `CommandResult` record to Ur.** File: `src/Ur/Skills/CommandResult.cs`. Simple record: `public sealed record CommandResult(string Message, bool IsError = false)`. Lives alongside `BuiltInCommandRegistry` since it's the return type of built-in command execution.
+- [x] **Add `CommandResult` record to Ur.** File: `src/Ur/Skills/CommandResult.cs`. Simple record: `public sealed record CommandResult(string Message, bool IsError = false)`. Lives alongside `BuiltInCommandRegistry` since it's the return type of built-in command execution.
 
-- [ ] **Add `ExecuteBuiltInCommand` to `UrSession`.** Public method: `CommandResult? ExecuteBuiltInCommand(string commandName, string? args)`. Returns null if the command name is not a recognized built-in (caller handles unknown commands). For now, `/clear` and `/set` return `new CommandResult("/{name} is not yet implemented.", IsError: true)` — same behavior as today, but from the right layer. `/model` gets full implementation (see below).
+- [x] **Add `ExecuteBuiltInCommand` to `UrSession`.** Public method: `CommandResult? ExecuteBuiltInCommand(string commandName, string? args)`. Returns null if the command name is not a recognized built-in (caller handles unknown commands). For now, `/clear` and `/set` return `new CommandResult("/{name} is not yet implemented.", IsError: true)` — same behavior as today, but from the right layer. `/model` gets full implementation (see below).
 
-- [ ] **Restructure `OxApp.SubmitInput()` command dispatch.** Replace the hardcoded stub block (lines 313-318) and unknown-command block (lines 320-322) with a three-way dispatch:
+- [x] **Restructure `OxApp.SubmitInput()` command dispatch.** Replace the hardcoded stub block (lines 313-318) and unknown-command block (lines 320-322) with a three-way dispatch:
   1. `/quit` stays in OxApp (TUI exit concern).
   2. For built-in commands: call `_session!.ExecuteBuiltInCommand(command, args)`. If it returns a result, display it and return.
   3. If `ExecuteBuiltInCommand` returns null (not a built-in): check whether the command is a user-invocable skill via `_commandRegistry.UserInvocableNames`. If it is a skill, fall through to the normal turn path (do **not** return early — let `StartTurn` call `RunTurnAsync`, which calls `TryExpandSlashCommand` to expand it). If it is neither a built-in nor a skill, show "Unknown command" error.
 
-- [ ] **Update the guard comment in `UrSession.TryExpandSlashCommand()` (line 314).** Change "actual execution is future work" to reflect that execution now happens via `ExecuteBuiltInCommand`. The guard in `TryExpandSlashCommand` remains as a safety net for the `RunTurnAsync` path.
+- [x] **Update the guard comment in `UrSession.TryExpandSlashCommand()` (line 314).** Change "actual execution is future work" to reflect that execution now happens via `ExecuteBuiltInCommand`. The guard in `TryExpandSlashCommand` remains as a safety net for the `RunTurnAsync` path.
 
 ### Autocomplete extension
 
-- [ ] **Extend `AutocompleteEngine` with per-command argument completions.** Add a second constructor parameter: `IReadOnlyDictionary<string, IReadOnlyList<string>>? argumentCompletions = null`. Extend `GetCompletion()`:
+- [x] **Extend `AutocompleteEngine` with per-command argument completions.** Add a second constructor parameter: `IReadOnlyDictionary<string, IReadOnlyList<string>>? argumentCompletions = null`. Extend `GetCompletion()`:
   - Existing logic (no space): unchanged — prefix-match command names.
   - New logic (has space): parse the command name from input, look up in `argumentCompletions`. If found, prefix-match the argument portion (everything after the first space) against the completion list. Return suffix of first match, or null. Require at least one character after the space before suggesting.
   - The engine remains command-agnostic — it doesn't know what "model" means, just that the command named "model" has a list of completable arguments.
 
-- [ ] **Wire up argument completions in `OxApp` constructor (line ~80).** Build a dictionary: `new Dictionary<string, IReadOnlyList<string>> { ["model"] = host.Configuration.ListAllModelIds() }`. Pass it to `AutocompleteEngine` alongside the existing `CommandRegistry`. Retain the `CommandRegistry` as a field (`_commandRegistry`) so `SubmitInput` can check skill membership during dispatch.
+- [x] **Wire up argument completions in `OxApp` constructor (line ~80).** Build a dictionary: `new Dictionary<string, IReadOnlyList<string>> { ["model"] = host.Configuration.ListAllModelIds() }`. Pass it to `AutocompleteEngine` alongside the existing `CommandRegistry`. Retain the `CommandRegistry` as a field (`_commandRegistry`) so `SubmitInput` can check skill membership during dispatch.
 
 ### Feature work
 
-- [ ] **Add input-level validation for `/model` in `OxApp`.** Before submitting, if the command is `/model`, check the argument against `host.Configuration.ListAllModelIds()`. If the argument is missing or not in the list, suppress submission (return early from the Enter handler without calling `SubmitInput`). This keeps `ExecuteBuiltInCommand` free of error cases that should never reach it.
+- [x] **Add input-level validation for `/model` in `OxApp`.** Before submitting, if the command is `/model`, check the argument against `host.Configuration.ListAllModelIds()`. If the argument is missing or not in the list, suppress submission (return early from the Enter handler without calling `SubmitInput`). This keeps `ExecuteBuiltInCommand` free of error cases that should never reach it.
 
-- [ ] **Implement `/model` handler in `UrSession.ExecuteBuiltInCommand`.** Private method `ExecuteModelCommand(string args)`:
+- [x] **Implement `/model` handler in `UrSession.ExecuteBuiltInCommand`.** Private method `ExecuteModelCommand(string args)`:
   - Argument is guaranteed non-null and valid by the time this is called (validated at input layer).
   - Call `_configuration.SetSelectedModelAsync(args).GetAwaiter().GetResult()` (synchronous — `SubmitInput` is called from the synchronous `HandleKey` path, and the underlying operation is a local file write). Return `CommandResult($"Model set to {args}.")`.
 
-- [ ] **Add `StatusEntry` to `ConversationEntry.cs`.** Informational (non-error) message entry for command confirmations. Same shape as `ErrorEntry` (single `Message` property), different semantic.
+- [x] **Add `StatusEntry` to `ConversationEntry.cs`.** Informational (non-error) message entry for command confirmations. Same shape as `ErrorEntry` (single `Message` property), different semantic.
 
-- [ ] **Add `StatusEntry` rendering in `ConversationView.cs`.** Render with a neutral color (e.g., `_theme.StatusText` or `_theme.Text`) and `[info]` prefix, distinct from `ErrorEntry`'s red `[error]` prefix.
+- [x] **Add `StatusEntry` rendering in `ConversationView.cs`.** Render with a neutral color (e.g., `_theme.StatusText` or `_theme.Text`) and `[info]` prefix, distinct from `ErrorEntry`'s red `[error]` prefix.
 
-- [ ] **Handle context window cache after model switch.** In `OxApp.SubmitInput()`, after a successful `/model` result, clear `_contextWindowCache` so the status line resolves the new model's context window on the next render cycle. The cache is cheap to rebuild (one synchronous lookup per model).
+- [x] **Handle context window cache after model switch.** In `OxApp.SubmitInput()`, after a successful `/model` result, clear `_contextWindowCache` so the status line resolves the new model's context window on the next render cycle. The cache is cheap to rebuild (one synchronous lookup per model).
 
 ## Validation
 
 - Tests:
-  - [ ] Unit test `AutocompleteEngine` argument completion: prefix matching works after `/model `, exact match returns null, no match returns null, no suggestion when argument is empty (just `/model `), case-insensitive command name matching, works for other registered commands too.
-  - [ ] Unit test `AutocompleteEngine` command-name completion is not regressed (existing behavior unchanged).
-  - [ ] Unit test `UrSession.ExecuteBuiltInCommand`: valid model sets selection and returns success, unrecognized command returns null. (Invalid and no-arg cases never reach `ExecuteBuiltInCommand` — validated at input layer.)
+  - [x] Unit test `AutocompleteEngine` argument completion: prefix matching works after `/model `, exact match returns null, no match returns null, no suggestion when argument is empty (just `/model `), case-insensitive command name matching, works for other registered commands too.
+  - [x] Unit test `AutocompleteEngine` command-name completion is not regressed (existing behavior unchanged).
+  - [x] Unit test `UrSession.ExecuteBuiltInCommand`: valid model sets selection and returns success, unrecognized command returns null. (Invalid and no-arg cases never reach `ExecuteBuiltInCommand` — validated at input layer.)
 - Build: `dotnet build` must pass with no warnings.
 - Manual verification:
   - Type `/mo` -> ghost text shows `del`. Tab completes to `/model`.

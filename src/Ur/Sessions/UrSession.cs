@@ -296,6 +296,51 @@ public sealed class UrSession
     }
 
     /// <summary>
+    /// Executes a recognized built-in slash command from outside the agent loop
+    /// (i.e. from the TUI layer, before a turn is started).
+    ///
+    /// Returns a <see cref="Skills.CommandResult"/> when the command is recognized,
+    /// or <c>null</c> when the name is not a registered built-in. The caller
+    /// (OxApp) is responsible for ensuring that only valid arguments reach this
+    /// method — for example, by blocking Enter until the model argument is known.
+    ///
+    /// This is the correct layer for command execution: UrSession holds
+    /// _configuration (for persistence) and _builtInCommands (for dispatch).
+    /// OxApp should dispatch and display only — not decide what constitutes a
+    /// valid model ID or call SetSelectedModelAsync directly.
+    /// </summary>
+    public Skills.CommandResult? ExecuteBuiltInCommand(string commandName, string? args)
+    {
+        if (_builtInCommands.Get(commandName) is null)
+            return null;
+
+        return commandName.ToLowerInvariant() switch
+        {
+            "model" => ExecuteModelCommand(args!),
+            // /clear and /set remain stubs for now — execution moves here
+            // but the actual behavior is deferred, same as before.
+            _ => new Skills.CommandResult($"/{commandName} is not yet implemented.", IsError: true),
+        };
+    }
+
+    /// <summary>
+    /// Switches the active model (persisted to the user settings file).
+    ///
+    /// The argument is guaranteed non-null and valid by the time this is called
+    /// — the TUI validates the model ID against ListAllModelIds() before allowing
+    /// Enter to submit. This method is the happy-path only.
+    ///
+    /// GetAwaiter().GetResult() is intentional: SubmitInput runs on the
+    /// synchronous HandleKey path, and SetSelectedModelAsync performs a local
+    /// file write — the async overhead is noise, and blocking is safe here.
+    /// </summary>
+    private Skills.CommandResult ExecuteModelCommand(string args)
+    {
+        _configuration.SetSelectedModelAsync(args).GetAwaiter().GetResult();
+        return new Skills.CommandResult($"Model set to {args}.");
+    }
+
+    /// <summary>
     /// Attempts to handle a slash command. Returns true if the command was
     /// recognized (either as a built-in or a user-invocable skill), false if
     /// unknown. When true, <paramref name="expansion"/> is:
@@ -311,7 +356,11 @@ public sealed class UrSession
     {
         var commandName = SlashCommandParser.ParseName(input);
 
-        // Built-in interception: log and swallow — actual execution is future work.
+        // Built-in interception: the guard remains as a safety net for the
+        // RunTurnAsync path. ExecuteBuiltInCommand (called before starting a
+        // turn) handles all built-in execution; this branch should never be
+        // reached in normal operation but protects against direct RunTurnAsync
+        // calls with built-in command text.
         if (_builtInCommands.Get(commandName) is not null)
         {
             _logger.LogInformation("Built-in command /{Name} invoked (not yet implemented)", commandName);
