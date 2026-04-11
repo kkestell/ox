@@ -82,7 +82,7 @@ These refactors happen before or alongside the feature work. They remove the bro
 
 ### Phase 1: Create PermissionPromptView
 
-- [ ] Create `src/Ox/Views/PermissionPromptView.cs`. The view:
+- [x] Create `src/Ox/Views/PermissionPromptView.cs`. The view:
   - Extends `View`
   - Sets `ViewArrangement = ViewArrangement.Overlapped` and `Visible = false` in constructor
   - Contains a `Label` (row 1, prompt text) and a `TextField` (row 2, user input with `> ` prefix)
@@ -93,13 +93,13 @@ These refactors happen before or alongside the feature work. They remove the bro
   - Wires `TextField.Accepting` to resolve the internal TCS
   - Wires `KeyDown` for Escape and Ctrl+C to resolve TCS with `null` (deny)
 
-- [ ] Add public API:
+- [x] Add public API:
   - `Task<string?> ShowAsync(string prompt, CancellationToken ct)` — sets label text, creates TCS, registers CT cancellation, sets `Visible = true`, transfers focus to the TextField, returns the TCS task
   - `void Hide()` — sets `Visible = false`, clears state. Focus restoration is handled by the caller (PermissionHandler) via `App.Invoke`.
 
 ### Phase 2: Wire into OxApp
 
-- [ ] In `OxApp` constructor, create the PermissionPromptView and position it:
+- [x] In `OxApp` constructor, create the PermissionPromptView and position it:
   - `Y = Pos.AnchorEnd(InputAreaHeight + PermissionPromptHeight)` (directly above InputAreaView)
   - `Width = Dim.Fill()`
   - `Height = Dim.Absolute(PermissionPromptHeight)` where `PermissionPromptHeight = 4`
@@ -108,7 +108,7 @@ These refactors happen before or alongside the feature work. They remove the bro
 
 ### Phase 3: Update PermissionHandler
 
-- [ ] Rewrite `PermissionHandler.Build` to use `PermissionPromptView` instead of `ComposerController`:
+- [x] Rewrite `PermissionHandler.Build` to use `PermissionPromptView` instead of `ComposerController`:
   - Step 1 (App.Invoke): Call `oxApp.PermissionPromptView.ShowAsync(promptText, ct)`, propagate the task via TCS back to the background thread (same Invoke/TCS bridge pattern as today)
   - Step 2 (background): Await the permission task
   - Step 3 (App.Invoke): Call `oxApp.PermissionPromptView.Hide()`, transfer focus back to `oxApp.InputAreaView`
@@ -116,13 +116,13 @@ These refactors happen before or alongside the feature work. They remove the bro
 
 ### Phase 4: Remove dead permission mode code
 
-- [ ] In `ComposerController.cs`: delete the `ComposerMode` enum, `Mode` property, `_pendingPermission` field, `EnterPermissionMode`, and `ExitPermissionMode`. Simplify `OnViewSubmit` to always write to the chat channel. Simplify `OnViewEof` to always complete the chat channel.
-- [ ] In `InputAreaView.cs`: delete `SetPrompt`. Remove the `_controller?.Mode == ComposerMode.Chat` guard from the Tab handler in `OnTextFieldKeyDown` — Tab/autocomplete always applies now.
+- [x] In `ComposerController.cs`: delete the `ComposerMode` enum, `Mode` property, `_pendingPermission` field, `EnterPermissionMode`, and `ExitPermissionMode`. Simplify `OnViewSubmit` to always write to the chat channel. Simplify `OnViewEof` to always complete the chat channel.
+- [x] In `InputAreaView.cs`: delete `SetPrompt`. Remove the `_controller?.Mode == ComposerMode.Chat` guard from the Tab handler in `OnTextFieldKeyDown` — Tab/autocomplete always applies now.
 
 ### Phase 5: Validate
 
-- [ ] `dotnet build` compiles cleanly with no warnings
-- [ ] Existing tests pass (`dotnet test`)
+- [x] `dotnet build` compiles cleanly with no warnings
+- [x] Existing tests pass (`dotnet test`)
 - [ ] Manual test: start a conversation that triggers a tool call. Verify the permission prompt appears above the input area, accepts input, and disappears after responding. Verify focus returns to the chat input.
 - [ ] Manual test: press Escape or Ctrl+C while the prompt is visible — verify it denies the permission and disappears.
 - [ ] Manual test: verify normal chat input still works correctly after a permission prompt cycle.

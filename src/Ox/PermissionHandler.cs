@@ -8,10 +8,10 @@ namespace Ox;
 /// Builds <see cref="TurnCallbacks"/> that route events and permission requests
 /// through the Terminal.Gui rendering stack.
 ///
-/// Permission prompts switch the composer into Permission mode via the
-/// ComposerController, await the user's response from the background thread
-/// without nesting async work inside App.Invoke, then restore Chat mode before
-/// returning the decision to the caller.
+/// Permission prompts are shown via the self-contained PermissionPromptView
+/// widget. The view owns its own TCS and TextField — the handler only calls
+/// ShowAsync/Hide and parses the result. The ComposerController is no longer
+/// involved in permission flow at all.
 /// </summary>
 internal static class PermissionHandler
 {
@@ -45,34 +45,32 @@ internal static class PermissionHandler
                     $"Allow '{req.ToolName}' to {req.OperationType} '{displayTarget}'?"
                     + $" (y/n{scopeHints}): ";
 
-                // Step 1: Switch to Permission mode on the UI thread.
+                // Step 1: Show the permission prompt on the UI thread.
                 //
-                // EnterPermissionMode must be called on the UI thread so the mode
-                // switch and the prompt update happen atomically — no keystroke can
-                // arrive in between and be misrouted. We use a TCS to propagate the
-                // returned permission Task back to this background thread without
-                // any async work running inside the Invoke callback.
-                var modeSwitchTcs = new TaskCompletionSource<Task<string?>>(
+                // ShowAsync must be called on the UI thread so the view's Visible
+                // flip and focus transfer happen atomically. We use a TCS to
+                // propagate the returned permission Task back to this background
+                // thread without any async work running inside the Invoke callback.
+                var showTcs = new TaskCompletionSource<Task<string?>>(
                     TaskCreationOptions.RunContinuationsAsynchronously);
 
                 oxApp.App.Invoke(() =>
                 {
-                    oxApp.InputAreaView.SetPrompt(promptText);
-                    var permTask = oxApp.ComposerController.EnterPermissionMode(ct);
-                    modeSwitchTcs.SetResult(permTask);
+                    var permTask = oxApp.PermissionPromptView.ShowAsync(promptText, ct);
+                    showTcs.SetResult(permTask);
                 });
 
                 // Step 2: Await the permission response from the background thread.
                 // No async work is running inside App.Invoke; the Invoke above is
                 // synchronous and only sets the result of the TCS.
-                var permissionTask = await modeSwitchTcs.Task;
+                var permissionTask = await showTcs.Task;
                 var input = await permissionTask;
 
-                // Step 3: Restore Chat mode on the UI thread.
+                // Step 3: Hide the prompt and restore focus on the UI thread.
                 oxApp.App.Invoke(() =>
                 {
-                    oxApp.ComposerController.ExitPermissionMode();
-                    oxApp.InputAreaView.SetPrompt("");
+                    oxApp.PermissionPromptView.Hide();
+                    oxApp.InputAreaView.SetFocus();
                 });
 
                 input = input?.Trim().ToLowerInvariant();

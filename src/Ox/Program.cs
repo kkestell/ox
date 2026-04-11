@@ -190,7 +190,6 @@ internal sealed class TuiService(
                 userEntry.SetSegment(input, new Terminal.Gui.Drawing.Color(Terminal.Gui.Drawing.ColorName16.White));
                 oxApp.ConversationView.AddEntry(userEntry);
 
-                oxApp.InputAreaView.SetPrompt("");
                 oxApp.InputAreaView.SetTurnRunning(true);
             });
 

@@ -26,6 +26,7 @@ internal sealed class OxApp : Window
     private readonly string _workspacePath;
     private readonly SplashView _splashView;
     private readonly ConversationView _conversationView;
+    private readonly PermissionPromptView _permissionPromptView;
     private readonly InputAreaView _inputAreaView;
     private readonly ComposerController _composerController;
 
@@ -33,6 +34,7 @@ internal sealed class OxApp : Window
     public new IApplication App => _app;
 
     public ConversationView ConversationView => _conversationView;
+    public PermissionPromptView PermissionPromptView => _permissionPromptView;
     public InputAreaView InputAreaView => _inputAreaView;
 
     /// <summary>
@@ -75,6 +77,7 @@ internal sealed class OxApp : Window
 
         _splashView = new SplashView();
         _conversationView = new ConversationView();
+        _permissionPromptView = new PermissionPromptView();
         _inputAreaView = new InputAreaView(app);
 
         // Create the controller and bind it to the view so Enter and EOF
@@ -100,7 +103,15 @@ internal sealed class OxApp : Window
         _inputAreaView.Width = Dim.Fill();
         _inputAreaView.Height = Dim.Absolute(InputAreaHeight);
 
-        Add(_splashView, _conversationView, _inputAreaView);
+        // Position the permission prompt directly above the input area. It overlaps
+        // the bottom of the conversation view via Z-order (added after ConversationView
+        // in the SubView list). Invisible by default — shown only when a tool needs approval.
+        _permissionPromptView.X = 0;
+        _permissionPromptView.Y = Pos.AnchorEnd(InputAreaHeight + PermissionPromptView.ViewHeight);
+        _permissionPromptView.Width = Dim.Fill();
+        _permissionPromptView.Height = Dim.Absolute(PermissionPromptView.ViewHeight);
+
+        Add(_splashView, _conversationView, _permissionPromptView, _inputAreaView);
 
         // Toggle splash/conversation visibility when content arrives.
         _conversationView.ContentChanged += OnConversationContentChanged;

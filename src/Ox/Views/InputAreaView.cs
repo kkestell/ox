@@ -15,12 +15,12 @@ namespace Ox.Views;
 ///
 /// The view is a pure widget: it stays alive all the time, emits user intents
 /// upward through the ComposerController, and never owns async read lifecycles.
+/// Permission prompts are handled by the separate PermissionPromptView — this
+/// view is always in "chat mode".
 ///
 /// Enter is handled via the Terminal.Gui accept path (Accepting event, triggered
 /// by the framework's Enter → Command.Accept key binding). All other special keys
-/// (Tab, Ctrl+C, Ctrl+D, Escape) are intercepted in KeyDown and are mode-aware:
-/// Tab and autocomplete are disabled in Permission mode so chat-only affordances
-/// cannot leak into permission prompts.
+/// (Tab, Ctrl+C, Ctrl+D, Escape) are intercepted in KeyDown.
 /// </summary>
 internal sealed class InputAreaView : View
 {
@@ -87,7 +87,7 @@ internal sealed class InputAreaView : View
         // submission logic decoupled from TextField's internal editing state.
         _textField.Accepting += OnTextFieldAccepting;
 
-        // Intercept mode-aware shortcuts (Tab, Ctrl+C, Ctrl+D, Escape).
+        // Intercept special shortcuts (Tab, Ctrl+C, Ctrl+D, Escape).
         _textField.KeyDown += OnTextFieldKeyDown;
 
         // Redraw when text changes so the status line stays in sync.
@@ -101,7 +101,7 @@ internal sealed class InputAreaView : View
     /// <summary>
     /// Wires the view to its controller. Must be called on the UI thread before
     /// the event loop starts. Binds the controller so Enter and EOF signals are
-    /// routed to the correct destination based on the current composer mode.
+    /// routed to the chat channel.
     /// </summary>
     public void BindController(ComposerController controller)
     {
@@ -114,15 +114,6 @@ internal sealed class InputAreaView : View
     public void SetAutocomplete(AutocompleteEngine engine)
     {
         _autocomplete = engine;
-    }
-
-    /// <summary>
-    /// Updates the prompt prefix text displayed before the text field.
-    /// Used for permission prompts like "Allow 'bash' to run 'ls'? (y/n): ".
-    /// </summary>
-    public void SetPrompt(string prompt)
-    {
-        SetNeedsDraw();
     }
 
     /// <summary>
@@ -186,8 +177,7 @@ internal sealed class InputAreaView : View
     /// Called when Terminal.Gui invokes Command.Accept on the TextField (Enter key).
     ///
     /// Captures the current text, clears the field, and forwards the submission
-    /// to the controller. The controller routes it to the chat channel in Chat mode
-    /// or to the pending permission TCS in Permission mode.
+    /// to the controller which writes it to the chat channel.
     ///
     /// Setting e.Handled prevents the Accept event from bubbling further, which
     /// avoids double-firing if the InputAreaView itself also has an Accept binding.
@@ -204,33 +194,27 @@ internal sealed class InputAreaView : View
     /// Intercepts Tab, Ctrl+C, Ctrl+D, and Escape. Enter is no longer handled
     /// here — it flows through the framework's accept path instead.
     ///
-    /// Tab and autocomplete are chat-only: they are disabled in Permission mode
-    /// so suggestion state cannot leak into permission prompts.
-    /// Ctrl+C and Ctrl+D signal EOF; their semantics differ by mode (see controller).
+    /// Tab triggers autocomplete. Ctrl+C and Ctrl+D signal EOF (session close).
     /// Escape is left to the REPL loop's turn-cancellation handler.
     /// </summary>
     private void OnTextFieldKeyDown(object? sender, Key key)
     {
         var keyCode = key.KeyCode;
 
-        // Tab: accept autocomplete suggestion (chat mode only).
+        // Tab: accept autocomplete suggestion.
         if (keyCode == KeyCode.Tab)
         {
-            if (_controller?.Mode == ComposerMode.Chat)
+            var suffix = _autocomplete?.GetCompletion(_textField.Text);
+            if (suffix is not null)
             {
-                var suffix = _autocomplete?.GetCompletion(_textField.Text);
-                if (suffix is not null)
-                {
-                    _textField.Text = _textField.Text + suffix;
-                    _textField.MoveEnd();
-                }
+                _textField.Text += suffix;
+                _textField.MoveEnd();
             }
             key.Handled = true;
             return;
         }
 
-        // Ctrl+C: EOF signal. In chat mode this closes the session; in permission
-        // mode it denies the request without closing the channel.
+        // Ctrl+C: EOF signal — closes the session.
         if (keyCode == (KeyCode.C | KeyCode.CtrlMask))
         {
             _controller?.OnViewEof();
