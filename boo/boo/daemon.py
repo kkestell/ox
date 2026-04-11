@@ -71,10 +71,16 @@ def run_daemon(
     signal.signal(signal.SIGTERM, lambda _sig, _frame: sys.exit(0))
     signal.signal(signal.SIGINT, lambda _sig, _frame: sys.exit(0))
 
-    # Signal readiness by writing a newline to stdout — the CLI start
+    # Signal readiness by writing "ready\n" to stdout — the CLI start
     # command watches for this before returning.
     sys.stdout.write("ready\n")
     sys.stdout.flush()
+
+    # Detach stdio after signaling readiness. Without this, the daemon
+    # keeps the caller's stdout/stderr pipes open indefinitely, causing
+    # captured-subprocess launches (e.g. test harnesses) to hang waiting
+    # for EOF on the daemon's inherited file descriptors.
+    _detach_stdio()
 
     _run_loop(session, server_sock, socket_path, pid_path)
 
@@ -276,6 +282,28 @@ def _cleanup(
         os.unlink(pid_path)
     except FileNotFoundError:
         pass
+
+
+def _detach_stdio() -> None:
+    """Redirect stdin/stdout/stderr to /dev/null after startup.
+
+    The daemon inherits the caller's file descriptors. If the caller captured
+    stdout/stderr (e.g. subprocess.PIPE in a test), keeping them open prevents
+    the caller from seeing EOF — the test hangs forever waiting for the pipe
+    to close. Redirecting to /dev/null after the readiness signal is sent
+    breaks that dependency while still allowing the daemon to run normally.
+    """
+    devnull = os.open(os.devnull, os.O_RDWR)
+    os.dup2(devnull, 0)  # stdin
+    os.dup2(devnull, 1)  # stdout
+    os.dup2(devnull, 2)  # stderr
+    os.close(devnull)
+
+    # Replace Python's sys.std* objects so any Python-level writes also go
+    # to /dev/null instead of raising errors on the closed fds.
+    sys.stdin = open(os.devnull, "r")
+    sys.stdout = open(os.devnull, "w")
+    sys.stderr = open(os.devnull, "w")
 
 
 # ---------------------------------------------------------------------------

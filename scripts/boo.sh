@@ -1,13 +1,33 @@
 #!/usr/bin/env bash
 # Builds Ox and Boo, sets up an isolated temp workspace with a sample
-# skill, then launches a headless Boo session pointing at Ox. Tear down
-# with: cd boo && uv run boo stop && rm -rf /tmp/ur-tui-test
+# skill, then launches a headless Boo session pointing at Ox.
+#
+# By default runs with the fake provider for deterministic, credential-free
+# testing. Pass --live to use a real provider (requires .env with API key).
+#
+# Tear down with: cd boo && uv run boo stop && rm -rf /tmp/ox-test
 
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-WORKSPACE="/tmp/ur-tui-test"
+WORKSPACE="/tmp/ox-test"
 OX="$REPO_ROOT/src/Ox/bin/Debug/net10.0/Ox"
+
+# --- Parse arguments ---------------------------------------------------------
+
+SCENARIO="hello"
+LIVE_MODE=false
+
+for arg in "$@"; do
+    case "$arg" in
+        --live)
+            LIVE_MODE=true
+            ;;
+        --scenario=*)
+            SCENARIO="${arg#--scenario=}"
+            ;;
+    esac
+done
 
 # --- Build -------------------------------------------------------------------
 
@@ -23,16 +43,17 @@ echo "==> Setting up workspace at $WORKSPACE..."
 rm -rf "$WORKSPACE"
 mkdir -p "$WORKSPACE"
 
-# Copy the .env so the API key is available inside the sandbox.
-# Search upward from the repo root (matching dotenv.net's probeForEnv behavior).
-ENV_DIR="$REPO_ROOT"
-while [ ! -f "$ENV_DIR/.env" ] && [ "$ENV_DIR" != "/" ]; do
-    ENV_DIR="$(dirname "$ENV_DIR")"
-done
-if [ -f "$ENV_DIR/.env" ]; then
-    cp "$ENV_DIR/.env" "$WORKSPACE/.env"
-else
-    echo "Warning: no .env found — API key may be missing" >&2
+if [ "$LIVE_MODE" = true ]; then
+    # Live mode: copy .env so the API key is available inside the sandbox.
+    ENV_DIR="$REPO_ROOT"
+    while [ ! -f "$ENV_DIR/.env" ] && [ "$ENV_DIR" != "/" ]; do
+        ENV_DIR="$(dirname "$ENV_DIR")"
+    done
+    if [ -f "$ENV_DIR/.env" ]; then
+        cp "$ENV_DIR/.env" "$WORKSPACE/.env"
+    else
+        echo "Warning: no .env found — API key may be missing" >&2
+    fi
 fi
 
 # A plain file for read_file tests.
@@ -55,9 +76,16 @@ SKILL_EOF
 
 # --- Launch ------------------------------------------------------------------
 
-echo "==> Launching Boo session..."
+# Build the Ox command. In fake mode (default), pass --fake-provider so the
+# session is deterministic and doesn't need credentials.
+OX_CMD="cd $WORKSPACE && $OX"
+if [ "$LIVE_MODE" = false ]; then
+    OX_CMD="cd $WORKSPACE && $OX --fake-provider $SCENARIO"
+fi
+
+echo "==> Launching Boo session (${LIVE_MODE:+live}${LIVE_MODE:-fake:$SCENARIO})..."
 cd "$REPO_ROOT/boo"
-uv run boo start "cd $WORKSPACE && $OX" \
+uv run boo start "$OX_CMD" \
     --cols 120 --rows 50
 
 echo ""

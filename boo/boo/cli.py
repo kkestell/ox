@@ -5,11 +5,10 @@ via the Unix domain socket.  Each client subcommand connects, sends one
 JSON command, prints the result, and exits.
 
 Usage:
-    boo start "ur-tui"          # Launch a persistent session
+    boo start "ox"              # Launch a persistent session
     boo screen                  # Print current screen contents
     boo type "hello world"      # Type text into the session
-    boo press enter             # Press a key
-    boo stop                    # Tear down the session
+    boo press enter             # Press a key    boo wait "Ready"            # Wait for text to appear on screen    boo stop                    # Tear down the session
     boo alive                   # Check if the child process is alive
 """
 
@@ -71,6 +70,14 @@ def main(argv: list[str] | None = None) -> None:
     # -- boo alive ---------------------------------------------------------
     subparsers.add_parser("alive", help="Check if the child process is alive")
 
+    # -- boo wait <text> ---------------------------------------------------
+    wait_parser = subparsers.add_parser(
+        "wait", help="Wait for text to appear on screen")
+    wait_parser.add_argument("text", help="Text to wait for on the screen")
+    wait_parser.add_argument(
+        "--timeout", type=float, default=10.0,
+        help="Seconds to wait before giving up (default: 10)")
+
     args = parser.parse_args(argv)
 
     try:
@@ -86,6 +93,8 @@ def main(argv: list[str] | None = None) -> None:
             _cmd_stop(args)
         elif args.command == "alive":
             _cmd_alive(args)
+        elif args.command == "wait":
+            _cmd_wait(args)
     except DaemonNotRunningError as exc:
         print(str(exc), file=sys.stderr)
         sys.exit(1)
@@ -200,6 +209,30 @@ def _cmd_alive(args: argparse.Namespace) -> None:
     print("alive" if alive else "not alive")
     if not alive:
         sys.exit(1)
+
+
+def _cmd_wait(args: argparse.Namespace) -> None:
+    """Poll the screen until the target text appears or timeout expires."""
+    deadline = time.monotonic() + args.timeout
+    while time.monotonic() < deadline:
+        response = send_command(
+            {"cmd": "screen", "trim": True, "unwrap": False},
+            socket_path=args.socket,
+        )
+        if args.text in response.get("text", ""):
+            print(f"Found: {args.text!r}")
+            return
+        time.sleep(0.05)
+
+    # Timed out — print the final screen state to help debugging.
+    response = send_command(
+        {"cmd": "screen", "trim": True, "unwrap": False},
+        socket_path=args.socket,
+    )
+    print(f"Timed out waiting for {args.text!r}", file=sys.stderr)
+    print("Final screen:", file=sys.stderr)
+    print(response.get("text", "(empty)"), file=sys.stderr)
+    sys.exit(1)
 
 
 if __name__ == "__main__":

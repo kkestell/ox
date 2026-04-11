@@ -3,6 +3,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Ur.Configuration.Keyring;
 using Ur.Hosting;
+using Ur.Providers;
 using Ur.Tools;
 
 namespace Ur.Tests.TestSupport;
@@ -19,15 +20,16 @@ internal static class TestHostBuilder
 {
     /// <summary>
     /// Creates a UrHost via the DI container, using the provided workspace for paths
-    /// and optional overrides for keyring, chat client factory, and additional tools.
-    /// The underlying <see cref="IHost"/> is attached to <paramref name="workspace"/>
-    /// and will be disposed when the workspace is disposed.
+    /// and optional overrides for keyring, chat client factory, additional tools,
+    /// fake provider, and ephemeral model override.
     /// </summary>
     public static async Task<UrHost> CreateHostAsync(
         TempWorkspace workspace,
         IKeyring? keyring = null,
         Func<string, IChatClient>? chatClientFactory = null,
-        ToolRegistry? additionalTools = null)
+        ToolRegistry? additionalTools = null,
+        IProvider? fakeProvider = null,
+        string? selectedModelOverride = null)
     {
         var builder = Host.CreateApplicationBuilder();
         builder.Services.AddUr(new UrStartupOptions
@@ -38,6 +40,8 @@ internal static class TestHostBuilder
             KeyringOverride = keyring ?? new TestKeyring(),
             ChatClientFactoryOverride = chatClientFactory,
             AdditionalTools = additionalTools,
+            FakeProvider = fakeProvider,
+            SelectedModelOverride = selectedModelOverride,
         });
 
         var host = builder.Build();

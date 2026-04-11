@@ -80,7 +80,10 @@ def test_cli_basic_flow() -> None:
         run_cli(
             socket_path,
             "start",
-            "printf ready; read x; printf seen:$x",
+            # Use a command that stays alive after printing — the original
+            # `printf ready; read x; printf seen:$x` could exit before the
+            # alive check ran. Adding a second `read` keeps the shell open.
+            "printf ready; read x; printf seen:$x; read _",
         )
 
         wait_for_screen(socket_path, "ready")

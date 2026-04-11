@@ -1,7 +1,16 @@
-.PHONY: format-docs inspect install
+.PHONY: format-docs inspect install test verify
 
 install:
 	@./scripts/install.sh
+
+# Run all tests: dotnet unit tests, boo native + Python tests, and Boo-driven Ox smokes.
+test:
+	dotnet test Ox.slnx --nologo -v quiet
+	$(MAKE) -C boo test
+	cd boo && uv run python tests/test_ox_boo_smoke.py
+
+# Alias for test.
+verify: test
 
 # Run ReSharper code inspections and write formatted results to inspection-results.txt.
 # Requires: dotnet tool install -g JetBrains.ReSharper.GlobalTools

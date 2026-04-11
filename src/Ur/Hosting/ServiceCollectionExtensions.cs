@@ -137,17 +137,29 @@ public static class ServiceCollectionExtensions
             sp.GetRequiredService<SkillRegistry>()));
 
         // Provider registry — maps provider name prefixes to IProvider implementations.
-        // Registered after SettingsWriter and IKeyring (which providers depend on) and
-        // before UrConfiguration (which delegates readiness checks to the selected provider).
+        //
+        // Each provider is registered as an individual IProvider service. The registry
+        // is then built from the resolved list, so fake-provider registration can be
+        // conditional and localized to startup options without touching production code.
+        services.AddSingleton<IProvider>(sp =>
+            new OpenRouterProvider(sp.GetRequiredService<IKeyring>()));
+        services.AddSingleton<IProvider>(sp =>
+            new OpenAiProvider(sp.GetRequiredService<IKeyring>()));
+        services.AddSingleton<IProvider>(sp =>
+            new GoogleProvider(sp.GetRequiredService<IKeyring>()));
+        services.AddSingleton<IProvider>(sp =>
+            new OllamaProvider(sp.GetRequiredService<SettingsWriter>()));
+
+        // If startup options request a fake provider, register it as an additional
+        // IProvider service. The registry will pick it up alongside the real providers.
+        if (options.FakeProvider is { } fakeProvider)
+            services.AddSingleton<IProvider>(fakeProvider);
+
         services.AddSingleton(sp =>
         {
-            var keyring = sp.GetRequiredService<IKeyring>();
-            var settingsWriter = sp.GetRequiredService<SettingsWriter>();
             var registry = new ProviderRegistry();
-            registry.Register(new OpenRouterProvider(keyring));
-            registry.Register(new OpenAiProvider(keyring));
-            registry.Register(new GoogleProvider(keyring));
-            registry.Register(new OllamaProvider(settingsWriter));
+            foreach (var provider in sp.GetServices<IProvider>())
+                registry.Register(provider);
             return registry;
         });
 
@@ -156,7 +168,8 @@ public static class ServiceCollectionExtensions
             sp.GetRequiredService<IOptionsMonitor<UrOptions>>(),
             sp.GetRequiredService<SettingsWriter>(),
             sp.GetRequiredService<IKeyring>(),
-            sp.GetRequiredService<ProviderRegistry>()));
+            sp.GetRequiredService<ProviderRegistry>(),
+            options.SelectedModelOverride));
 
         // UrHost: registered via factory because the constructor is internal
         // (UrHost is a public type but we don't want arbitrary external construction).

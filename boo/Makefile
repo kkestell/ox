@@ -11,6 +11,7 @@ build: configure
 
 test: build
 	ctest --test-dir $(BUILD_DIR) --output-on-failure
+	uv run python tests/test_cli.py
 
 daemon: build
 	uv run boo start $(or $(CMD),bash)

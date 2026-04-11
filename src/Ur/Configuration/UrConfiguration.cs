@@ -39,18 +39,25 @@ public sealed class UrConfiguration
     private readonly IKeyring _keyring;
     private readonly ProviderRegistry _providerRegistry;
 
+    // Ephemeral model override from startup options. When set, takes priority
+    // over persisted settings so test mode (--fake-provider) can select a model
+    // without rewriting settings files or keyring state.
+    private readonly string? _selectedModelOverride;
+
     internal UrConfiguration(
         ModelCatalog modelCatalog,
         IOptionsMonitor<UrOptions> optionsMonitor,
         SettingsWriter settingsWriter,
         IKeyring keyring,
-        ProviderRegistry providerRegistry)
+        ProviderRegistry providerRegistry,
+        string? selectedModelOverride = null)
     {
         _modelCatalog = modelCatalog;
         _optionsMonitor = optionsMonitor;
         _settingsWriter = settingsWriter;
         _keyring = keyring;
         _providerRegistry = providerRegistry;
+        _selectedModelOverride = selectedModelOverride;
     }
 
     /// <summary>
@@ -61,11 +68,13 @@ public sealed class UrConfiguration
     public ChatReadiness Readiness => new(GetBlockingIssues());
 
     /// <summary>
-    /// The currently selected model ID. Reads from IOptionsMonitor which
-    /// tracks the "ur:model" configuration key across both user and workspace
-    /// settings files, with workspace taking priority.
+    /// The currently selected model ID. When a startup override is set (e.g.
+    /// --fake-provider mode), that takes priority. Otherwise reads from
+    /// IOptionsMonitor which tracks the "ur:model" configuration key across
+    /// both user and workspace settings files, with workspace taking priority.
     /// </summary>
-    public string? SelectedModelId => _optionsMonitor.CurrentValue.Model;
+    public string? SelectedModelId =>
+        _selectedModelOverride ?? _optionsMonitor.CurrentValue.Model;
 
     /// <summary>
     /// Models suitable for the chat interface. Filters the full OpenRouter

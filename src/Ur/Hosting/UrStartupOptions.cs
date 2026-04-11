@@ -1,5 +1,6 @@
 using Microsoft.Extensions.AI;
 using Ur.Configuration.Keyring;
+using Ur.Providers;
 using Ur.Tools;
 
 namespace Ur.Hosting;
@@ -49,4 +50,20 @@ public sealed class UrStartupOptions
     /// to inject fake tools without changing the production code path.
     /// </summary>
     public ToolRegistry? AdditionalTools { get; init; }
+
+    /// <summary>
+    /// A fake provider to register alongside the real providers. When set, the
+    /// provider is added to the DI container as an additional <see cref="IProvider"/>
+    /// and becomes available through the normal ProviderRegistry lookup path.
+    /// This keeps fake-provider mode exercising the same composition path as production.
+    /// </summary>
+    internal IProvider? FakeProvider { get; init; }
+
+    /// <summary>
+    /// Ephemeral override for the selected model ID. When set, UrConfiguration
+    /// returns this value instead of reading from persisted settings. This lets
+    /// test mode (e.g. --fake-provider) select a model at startup without
+    /// rewriting user or workspace settings files.
+    /// </summary>
+    public string? SelectedModelOverride { get; init; }
 }
