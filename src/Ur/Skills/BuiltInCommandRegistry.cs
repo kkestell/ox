@@ -6,10 +6,6 @@ namespace Ur.Skills;
 /// Registration order determines autocomplete priority — when two names share a
 /// prefix, the first registered name is suggested. Built-ins are registered
 /// before skills so that first-party commands always win prefix conflicts.
-///
-/// The stubs at the bottom exist purely to exercise the multi-match autocomplete
-/// path during development (e.g. /c matches /clear and /clamp, /m matches /model,
-/// /memo, and /models). Delete them once autocomplete has been manually verified.
 /// </summary>
 public sealed class BuiltInCommandRegistry
 {
@@ -21,20 +17,12 @@ public sealed class BuiltInCommandRegistry
     public BuiltInCommandRegistry()
     {
         // Registration order defines autocomplete priority within built-ins.
-        // Fully-implemented commands first; stubs appended at the end.
         var commands = new List<BuiltInCommand>
         {
-            new("clear",    "Clear conversation history"),
-            new("model",    "Switch the active model"),
-            new("quit",     "Exit the session"),
-            new("set",      "Configure a session setting"),
-
-            // Autocomplete-testing stubs — remove after manual verification.
-            new("clamp",    "stub"),
-            new("memo",     "stub"),
-            new("models",   "stub"),
-            new("quickfix", "stub"),
-            new("query",    "stub"),
+            new("clear"),
+            new("model"),
+            new("quit"),
+            new("set"),
         };
 
         All = commands.AsReadOnly();

@@ -1,4 +1,3 @@
-using Terminal.Gui.App;
 using Terminal.Gui.Drawing;
 using Ur.AgentLoop;
 using Ox.Views;
@@ -25,9 +24,6 @@ internal sealed class EventRouter(ConversationView conversationView)
 
     // Cap how many result lines we show beneath a tool signature.
     private const int MaxResultLines = 5;
-
-    // Maximum inner rows for subagent blocks before tail-clipping.
-    private const int MaxSubagentInnerRows = 20;
 
     // ---- Main-stream state ----
 
@@ -301,7 +297,6 @@ internal sealed class EventRouter(ConversationView conversationView)
             _ = subagentId; // Kept for diagnostics
 
             _entry = new ConversationEntry(EntryStyle.Circle, () => CircleColor);
-            _entry.MaxChildRows = MaxSubagentInnerRows;
             _entry.AppendSegment(formattedCall, new Color(ColorName16.DarkGray));
             view.AddEntry(_entry);
         }

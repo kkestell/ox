@@ -1,5 +1,4 @@
 using Terminal.Gui.Drivers;
-using Terminal.Gui.Input;
 
 namespace Ox;
 

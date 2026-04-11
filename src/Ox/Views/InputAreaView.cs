@@ -46,9 +46,6 @@ internal sealed class InputAreaView : View
     private readonly IApplication _app;
     private readonly TextField _textField;
 
-    // Prompt prefix displayed before the text field (e.g. for permission prompts).
-    private string _promptPrefix = "";
-
     // Autocomplete engine for slash-command ghost text.
     private AutocompleteEngine? _autocomplete;
 
@@ -125,7 +122,6 @@ internal sealed class InputAreaView : View
     /// </summary>
     public void SetPrompt(string prompt)
     {
-        _promptPrefix = prompt;
         SetNeedsDraw();
     }
 
@@ -198,7 +194,7 @@ internal sealed class InputAreaView : View
     /// </summary>
     private void OnTextFieldAccepting(object? sender, CommandEventArgs e)
     {
-        var text = _textField.Text ?? "";
+        var text = _textField.Text;
         _textField.Text = "";
         _controller?.OnViewSubmit(text);
         e.Handled = true;
@@ -222,10 +218,10 @@ internal sealed class InputAreaView : View
         {
             if (_controller?.Mode == ComposerMode.Chat)
             {
-                var suffix = _autocomplete?.GetCompletion(_textField.Text ?? "");
+                var suffix = _autocomplete?.GetCompletion(_textField.Text);
                 if (suffix is not null)
                 {
-                    _textField.Text = (_textField.Text ?? "") + suffix;
+                    _textField.Text = _textField.Text + suffix;
                     _textField.MoveEnd();
                 }
             }
@@ -250,12 +246,11 @@ internal sealed class InputAreaView : View
             return;
         }
 
-        // Escape: handled at the REPL level for turn cancellation, not here.
+        // Escape: let the event bubble up to OxApp where the REPL loop
+        // registers a per-turn handler that cancels the CancellationTokenSource.
+        // Do NOT set key.Handled here — that would suppress propagation.
         if (keyCode == KeyCode.Esc)
-        {
-            key.Handled = true;
             return;
-        }
     }
 
     // --- Drawing ---

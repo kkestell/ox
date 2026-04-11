@@ -8,7 +8,7 @@ namespace Ur.Tests;
 ///
 /// The engine is tested against the real <see cref="BuiltInCommandRegistry"/> so
 /// that priority behavior is exercised with the same data the production code uses.
-/// Registration order is: clear, model, quit, set, clamp, memo, models, quickfix, query.
+/// Registration order is: clear, model, quit, set.
 /// </summary>
 public sealed class AutocompleteEngineTests
 {
@@ -37,8 +37,7 @@ public sealed class AutocompleteEngineTests
     [Fact]
     public void GetCompletion_MultipleMatches_ReturnsFirstMatch()
     {
-        // "/mo" matches "model" (index 1) then "memo" (index 5) then "models" (index 6).
-        // First registered match wins.
+        // "/mo" matches "model" — first registered match wins.
         var engine = BuildEngine();
 
         Assert.Equal("del", engine.GetCompletion("/mo"));
@@ -129,13 +128,9 @@ public sealed class AutocompleteEngineTests
     [Fact]
     public void GetCompletion_ExactMatchShadowsLongerCommand()
     {
-        // "/model" exactly matches "model" even though "models" also exists.
-        // The engine returns null (exact match, nothing to complete) rather than
-        // offering "s" from "models". This is intentional: the user typed a full
-        // valid command name — no suffix to suggest.
+        // "/model" exactly matches "model" — the engine returns null (exact match,
+        // nothing to complete) rather than offering a suffix.
         var engine = BuildEngine();
-
-        // "model" and "models" are both built-ins; exact match on "model" wins.
         Assert.Null(engine.GetCompletion("/model"));
     }
 }

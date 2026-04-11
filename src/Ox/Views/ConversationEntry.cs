@@ -45,12 +45,6 @@ internal sealed class ConversationEntry
     /// </summary>
     public List<ConversationEntry> Children { get; } = [];
 
-    /// <summary>
-    /// Maximum number of visible child rows before tail-clipping kicks in.
-    /// Only applies to subagent entries.
-    /// </summary>
-    public int MaxChildRows { get; set; } = int.MaxValue;
-
     /// <summary>Raised when content changes and the view should redraw.</summary>
     public event Action? Changed;
 

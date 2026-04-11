@@ -1,7 +1,5 @@
-using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Ur.Configuration.Keyring;
-using Ur.Hosting;
 
 namespace Ur.Tests.TestSupport;
 

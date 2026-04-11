@@ -74,7 +74,9 @@ internal sealed class TuiService(
             // Initialize Terminal.Gui. This takes over the terminal (alternate buffer,
             // raw mode, etc.) — everything before this point uses plain console I/O.
             var app = Application.Create();
+#pragma warning disable IL2026, IL3050 // Terminal.Gui requires dynamic code; AOT is not a target for Ox.
             app.Init();
+#pragma warning restore IL2026, IL3050
 
             try
             {
@@ -109,7 +111,11 @@ internal sealed class TuiService(
                     }
                     finally
                     {
+                        // Safe: RequestStop unblocks app.Run, which returns before
+                        // the outer finally disposes app.
+                        // ReSharper disable AccessToDisposedClosure
                         app.Invoke(() => app.RequestStop());
+                        // ReSharper restore AccessToDisposedClosure
                     }
                 }, stoppingToken);
 
@@ -192,7 +198,9 @@ internal sealed class TuiService(
             var turnCts = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
 
             // Monitor Escape key during the turn for cancellation.
-            EventHandler<Key> escapeHandler = (_, key) =>
+            // ReSharper disable once AccessToDisposedClosure — safe: handler is
+            // unregistered before turnCts is disposed in the finally block.
+            EventHandler<Key> escapeHandler = (sender, key) =>
             {
                 if (key.KeyCode == KeyCode.Esc)
                     _ = turnCts.CancelAsync();

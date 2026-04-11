@@ -1,5 +1,3 @@
-using Terminal.Gui.App;
-using Terminal.Gui.Drawing;
 using Ur.AgentLoop;
 using Ur.Permissions;
 using Ox.Views;

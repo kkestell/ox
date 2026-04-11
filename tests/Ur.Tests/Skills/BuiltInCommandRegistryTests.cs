@@ -18,19 +18,6 @@ public sealed class BuiltInCommandRegistryTests
     }
 
     [Fact]
-    public void All_CoreCommandsAppearBeforeStubs()
-    {
-        // Built-in priority: "clear" must precede "clamp" in the list so that
-        // autocomplete suggests /clear (not /clamp) when the user types /c.
-        var names = _registry.All.Select(c => c.Name).ToList();
-        var clearIdx = names.IndexOf("clear");
-        var clampIdx = names.IndexOf("clamp");
-
-        Assert.True(clearIdx < clampIdx,
-            "Expected 'clear' to appear before 'clamp' in registration order");
-    }
-
-    [Fact]
     public void Get_ExistingCommand_ReturnsCommand()
     {
         var cmd = _registry.Get("quit");

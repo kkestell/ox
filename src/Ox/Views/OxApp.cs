@@ -30,7 +30,7 @@ internal sealed class OxApp : Window
     private readonly ComposerController _composerController;
 
     /// <summary>The Terminal.Gui application instance for thread marshalling.</summary>
-    public IApplication App => _app;
+    public new IApplication App => _app;
 
     public ConversationView ConversationView => _conversationView;
     public InputAreaView InputAreaView => _inputAreaView;
