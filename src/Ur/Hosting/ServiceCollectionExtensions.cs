@@ -143,7 +143,7 @@ public static class ServiceCollectionExtensions
         // is then built from the resolved list, so fake-provider registration can be
         // conditional and localized to startup options without touching production code.
         services.AddSingleton<IProvider>(sp =>
-            new OpenRouterProvider(sp.GetRequiredService<IKeyring>()));
+            new OpenRouterProvider(sp.GetRequiredService<IKeyring>(), sp.GetRequiredService<ModelCatalog>()));
         services.AddSingleton<IProvider>(sp =>
             new OpenAiProvider(sp.GetRequiredService<IKeyring>()));
         services.AddSingleton<IProvider>(sp =>

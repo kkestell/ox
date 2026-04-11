@@ -109,6 +109,25 @@ public sealed class UrHost
         return provider.CreateChatClient(parsed.Model);
     }
 
+    /// <summary>
+    /// Resolves the context window size for the given model ID by parsing the provider
+    /// prefix and delegating to the provider's metadata resolution. Follows the same
+    /// "provider/model" parsing pattern as <see cref="CreateChatClient"/>.
+    ///
+    /// Returns null if the provider is unknown or the provider can't determine the
+    /// context window — the caller should treat null as "unknown" and omit the
+    /// context percentage display.
+    /// </summary>
+    public async Task<int?> ResolveContextWindowAsync(string modelId, CancellationToken ct = default)
+    {
+        var parsed = ModelId.Parse(modelId);
+        var provider = _providerRegistry.Get(parsed.Provider);
+        if (provider is null)
+            return null;
+
+        return await provider.GetContextWindowAsync(parsed.Model, ct);
+    }
+
     public IReadOnlyList<SessionInfo> ListSessions() =>
         _sessions.List()
             .Select(session => new SessionInfo(session.Id, session.CreatedAt))

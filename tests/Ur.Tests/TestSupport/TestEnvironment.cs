@@ -59,6 +59,39 @@ internal sealed class TempWorkspace : IDisposable
     }
 }
 
+/// <summary>
+/// Creates <see cref="ModelCatalog"/> instances for tests. The empty variant
+/// is for tests that construct providers but don't need real catalog data.
+/// The populated variant writes a minimal cache file so <see cref="Providers.ModelCatalog.LoadCache"/>
+/// returns real model entries.
+/// </summary>
+internal static class TestCatalog
+{
+    public static Providers.ModelCatalog CreateEmpty() =>
+        new(Path.Combine(Path.GetTempPath(), "ur-tests", Guid.NewGuid().ToString("N")));
+
+    /// <summary>
+    /// Creates a catalog pre-populated with the given model entries.
+    /// Writes a cache file in the OpenRouter API format and calls LoadCache().
+    /// </summary>
+    public static Providers.ModelCatalog CreateWithModels(params (string id, int contextLength)[] models)
+    {
+        var cacheDir = Path.Combine(Path.GetTempPath(), "ur-tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(cacheDir);
+
+        // Build a minimal JSON array matching the OpenRouter API shape.
+        // Architecture must be non-null or LoadCache() rejects the cache as stale.
+        var entries = models.Select(m =>
+            $$$"""{"id":"{{{m.id}}}","name":"{{{m.id}}}","context_length":{{{m.contextLength}}},"architecture":{"modality":"text"}}""");
+        var json = $"[{string.Join(",", entries)}]";
+        File.WriteAllText(Path.Combine(cacheDir, "models.json"), json);
+
+        var catalog = new Providers.ModelCatalog(cacheDir);
+        catalog.LoadCache();
+        return catalog;
+    }
+}
+
 internal sealed class TestKeyring : IKeyring
 {
     private readonly Dictionary<(string Service, string Account), string> _secrets = new();

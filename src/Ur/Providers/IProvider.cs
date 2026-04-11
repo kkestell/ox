@@ -36,4 +36,13 @@ internal interface IProvider
     /// what the user needs to fix (e.g. "No API key for 'openai'").
     /// </summary>
     string? GetBlockingIssue();
+
+    /// <summary>
+    /// Resolves the context window size (max input tokens) for the given model.
+    /// Returns null if the provider cannot determine the context window (e.g. unknown
+    /// model, API unreachable). Each provider uses its own authoritative source —
+    /// Google queries the Gemini API, OpenRouter reads from the model catalog,
+    /// Ollama calls its local /api/show endpoint, etc.
+    /// </summary>
+    Task<int?> GetContextWindowAsync(string model, CancellationToken ct = default);
 }

@@ -22,10 +22,12 @@ internal sealed class OpenRouterProvider : IProvider
     private const string KeyringAccount = "openrouter";
 
     private readonly IKeyring _keyring;
+    private readonly ModelCatalog _modelCatalog;
 
-    public OpenRouterProvider(IKeyring keyring)
+    public OpenRouterProvider(IKeyring keyring, ModelCatalog modelCatalog)
     {
         _keyring = keyring;
+        _modelCatalog = modelCatalog;
     }
 
     public string Name => "openrouter";
@@ -48,5 +50,16 @@ internal sealed class OpenRouterProvider : IProvider
         return string.IsNullOrWhiteSpace(key)
             ? "No API key for 'openrouter'. Run: ur config set-api-key <key> --provider openrouter"
             : null;
+    }
+
+    /// <summary>
+    /// Reads context window from the locally cached OpenRouter model catalog.
+    /// No network call needed — the catalog is populated at startup and periodically refreshed.
+    /// </summary>
+    public Task<int?> GetContextWindowAsync(string model, CancellationToken ct = default)
+    {
+        var info = _modelCatalog.GetModel(model);
+        int? result = info is { ContextLength: > 0 } ? info.ContextLength : null;
+        return Task.FromResult(result);
     }
 }

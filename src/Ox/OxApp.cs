@@ -39,6 +39,14 @@ public sealed class OxApp : IDisposable
     private readonly ConcurrentQueue<AgentLoopEvent> _eventQueue = new();
     private readonly SemaphoreSlim _wakeSignal = new(0);
 
+    // Host reference — used for resolving context window sizes from the active provider.
+    private readonly UrHost _host;
+
+    // Context window cache — keyed on model ID so we only resolve once per model.
+    // Populated lazily on the first TurnCompleted for each model. Uses ConcurrentDictionary
+    // because the main thread reads it while Task.Run writes resolved values from a background thread.
+    private readonly ConcurrentDictionary<string, int?> _contextWindowCache = new(StringComparer.OrdinalIgnoreCase);
+
     // Turn state.
     private Ur.Sessions.UrSession? _session;
     private CancellationTokenSource? _turnCts;
@@ -56,6 +64,7 @@ public sealed class OxApp : IDisposable
 
     public OxApp(UrHost host, InputCoordinator coordinator, int width, int height, string workspacePath)
     {
+        _host = host;
         _coordinator = coordinator;
         _buffer = new ConsoleBuffer(width, height);
         _workspacePath = workspacePath;
@@ -446,9 +455,33 @@ public sealed class OxApp : IDisposable
                     _currentAssistantEntry = null;
                     if (turnCompleted.InputTokens is { } tokens)
                     {
-                        // Approximate context % — assume 200k context window as default.
-                        // A real implementation would read max tokens from the model info.
-                        _contextPercent = (int)Math.Max(1, tokens * 100 / 200_000);
+                        // Compute context fill % using the provider's reported context window.
+                        // The cache avoids re-resolving every turn — each provider caches internally
+                        // too, so this is a cheap dictionary lookup after the first call.
+                        var modelId = _session?.ActiveModelId;
+                        if (modelId is not null)
+                        {
+                            if (!_contextWindowCache.TryGetValue(modelId, out var contextWindow))
+                            {
+                                // First time seeing this model — fire-and-forget the async resolution.
+                                // The result won't be available for this turn's display, but will be
+                                // cached for the next turn. This avoids blocking the main loop.
+                                _ = Task.Run(async () =>
+                                {
+                                    var resolved = await _host.ResolveContextWindowAsync(modelId);
+                                    _contextWindowCache[modelId] = resolved;
+                                });
+                                contextWindow = null;
+                            }
+
+                            _contextPercent = contextWindow is > 0
+                                ? (int)Math.Max(1, tokens * 100 / contextWindow.Value)
+                                : null;
+                        }
+                        else
+                        {
+                            _contextPercent = null;
+                        }
                     }
 
                     // If input was queued during the turn, start a new turn.

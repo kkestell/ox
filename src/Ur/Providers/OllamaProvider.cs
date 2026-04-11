@@ -28,6 +28,10 @@ internal sealed class OllamaProvider : IProvider
 
     private readonly SettingsWriter _settingsWriter;
 
+    // Cache context window sizes — Ollama's /api/show is a local call but there's
+    // no reason to repeat it for the same model within one session.
+    private readonly Dictionary<string, int?> _contextWindowCache = new(StringComparer.OrdinalIgnoreCase);
+
     public OllamaProvider(SettingsWriter settingsWriter)
     {
         _settingsWriter = settingsWriter;
@@ -48,6 +52,43 @@ internal sealed class OllamaProvider : IProvider
     /// latency to every readiness check.
     /// </summary>
     public string? GetBlockingIssue() => null;
+
+    /// <summary>
+    /// Queries the local Ollama instance via OllamaSharp's ShowModelAsync to retrieve
+    /// model metadata. The context length lives in <c>Info.ExtraInfo["general.context_length"]</c>
+    /// in the /api/show response. Returns null if Ollama is unreachable or the model
+    /// doesn't report a context length.
+    /// </summary>
+    public async Task<int?> GetContextWindowAsync(string model, CancellationToken ct = default)
+    {
+        if (_contextWindowCache.TryGetValue(model, out var cached))
+            return cached;
+
+        try
+        {
+            var uri = ResolveUri();
+            var client = new OllamaApiClient(uri, model);
+            var response = await client.ShowModelAsync(model, ct);
+            int? result = null;
+
+            // The Ollama API returns model_info.general.context_length in the /api/show
+            // response. OllamaSharp maps this to ShowModelResponse.Info.ExtraInfo dictionary.
+            if (response?.Info?.ExtraInfo is { } extra
+                && extra.TryGetValue("general.context_length", out var val))
+            {
+                result = Convert.ToInt32(val, System.Globalization.CultureInfo.InvariantCulture);
+            }
+
+            _contextWindowCache[model] = result;
+            return result;
+        }
+        catch
+        {
+            // Ollama unreachable, model not found, or unexpected response shape.
+            _contextWindowCache[model] = null;
+            return null;
+        }
+    }
 
     private Uri ResolveUri()
     {

@@ -13,7 +13,7 @@ public sealed class ProviderRegistryTests
     {
         var registry = new ProviderRegistry();
         var keyring = new TestKeyring();
-        var provider = new OpenRouterProvider(keyring);
+        var provider = new OpenRouterProvider(keyring, TestCatalog.CreateEmpty());
         registry.Register(provider);
 
         var result = registry.Get("openrouter");
@@ -35,7 +35,7 @@ public sealed class ProviderRegistryTests
     {
         var registry = new ProviderRegistry();
         var keyring = new TestKeyring();
-        registry.Register(new OpenRouterProvider(keyring));
+        registry.Register(new OpenRouterProvider(keyring, TestCatalog.CreateEmpty()));
 
         Assert.NotNull(registry.Get("OpenRouter"));
         Assert.NotNull(registry.Get("OPENROUTER"));
@@ -46,10 +46,10 @@ public sealed class ProviderRegistryTests
     {
         var registry = new ProviderRegistry();
         var keyring = new TestKeyring();
-        registry.Register(new OpenRouterProvider(keyring));
+        registry.Register(new OpenRouterProvider(keyring, TestCatalog.CreateEmpty()));
 
         Assert.Throws<InvalidOperationException>(() =>
-            registry.Register(new OpenRouterProvider(keyring)));
+            registry.Register(new OpenRouterProvider(keyring, TestCatalog.CreateEmpty())));
     }
 
     [Fact]
@@ -57,7 +57,7 @@ public sealed class ProviderRegistryTests
     {
         var registry = new ProviderRegistry();
         var keyring = new TestKeyring();
-        registry.Register(new OpenRouterProvider(keyring));
+        registry.Register(new OpenRouterProvider(keyring, TestCatalog.CreateEmpty()));
         registry.Register(new OpenAiProvider(keyring));
 
         Assert.Contains("openrouter", registry.ProviderNames);

@@ -15,7 +15,7 @@ public sealed class ProviderTests
     public void OpenRouter_WithoutApiKey_ReportsBlockingIssue()
     {
         var keyring = new TestKeyring();
-        var provider = new OpenRouterProvider(keyring);
+        var provider = new OpenRouterProvider(keyring, TestCatalog.CreateEmpty());
 
         var issue = provider.GetBlockingIssue();
 
@@ -28,7 +28,7 @@ public sealed class ProviderTests
     {
         var keyring = new TestKeyring();
         keyring.SetSecret("ur", "openrouter", "sk-test-key");
-        var provider = new OpenRouterProvider(keyring);
+        var provider = new OpenRouterProvider(keyring, TestCatalog.CreateEmpty());
 
         Assert.Null(provider.GetBlockingIssue());
     }
@@ -36,7 +36,7 @@ public sealed class ProviderTests
     [Fact]
     public void OpenRouter_RequiresApiKey()
     {
-        var provider = new OpenRouterProvider(new TestKeyring());
+        var provider = new OpenRouterProvider(new TestKeyring(), TestCatalog.CreateEmpty());
         Assert.True(provider.RequiresApiKey);
     }
 
@@ -137,7 +137,7 @@ public sealed class ProviderTests
         // A whitespace-only key should be treated as missing — it would fail at the API.
         var keyring = new TestKeyring();
         keyring.SetSecret("ur", "openrouter", "   ");
-        var provider = new OpenRouterProvider(keyring);
+        var provider = new OpenRouterProvider(keyring, TestCatalog.CreateEmpty());
 
         Assert.NotNull(provider.GetBlockingIssue());
     }
@@ -221,7 +221,7 @@ public sealed class ProviderTests
     public void Provider_NameMatchesExpectedPrefix()
     {
         var keyring = new TestKeyring();
-        Assert.Equal("openrouter", new OpenRouterProvider(keyring).Name);
+        Assert.Equal("openrouter", new OpenRouterProvider(keyring, TestCatalog.CreateEmpty()).Name);
         Assert.Equal("openai", new OpenAiProvider(keyring).Name);
         Assert.Equal("google", new GoogleProvider(keyring).Name);
     }
