@@ -8,8 +8,7 @@ using Ur.Tools;
 namespace Ur.Tests.TestSupport;
 
 /// <summary>
-/// Convenience builder for tests that need a full <see cref="UrHost"/> without going
-/// through <see cref="TempExtensionEnvironment"/> (which adds extension directories).
+/// Convenience builder for tests that need a full <see cref="UrHost"/>.
 ///
 /// Mirrors the same DI registration path used by production code so tests exercise
 /// the real object graph. The <see cref="IHost"/> is attached to the

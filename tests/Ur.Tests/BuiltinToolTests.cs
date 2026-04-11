@@ -252,8 +252,8 @@ public sealed class BuiltinToolTests
     [Fact]
     public async Task BuiltinTools_AppearInSessionToolRegistry()
     {
-        using var env = new TempExtensionEnvironment();
-        var host = await env.StartHostAsync();
+        using var workspace = new TempWorkspace();
+        var host = await TestHostBuilder.CreateHostAsync(workspace);
         var tools = host.BuildSessionToolRegistry("test");
 
         Assert.NotNull(tools.Get("read_file"));
@@ -273,8 +273,8 @@ public sealed class BuiltinToolTests
         //   Write   → prompts once per target with a durable grant option
         //   Execute → prompts every invocation, never auto-granted
         // A miscategorization (e.g. bash as Read) would silently bypass prompting.
-        using var env = new TempExtensionEnvironment();
-        var host = await env.StartHostAsync();
+        using var workspace = new TempWorkspace();
+        var host = await TestHostBuilder.CreateHostAsync(workspace);
         var tools = host.BuildSessionToolRegistry("test");
 
         Assert.Equal(OperationType.Read,    tools.GetPermissionMeta("read_file")!.OperationType);
@@ -292,8 +292,8 @@ public sealed class BuiltinToolTests
         // The "skill" argument names which skill is being invoked — it should be
         // used as the permission target so approval prompts show the skill name
         // (e.g. "commit") rather than the generic tool name "skill".
-        using var env = new TempExtensionEnvironment();
-        var host = await env.StartHostAsync();
+        using var workspace = new TempWorkspace();
+        var host = await TestHostBuilder.CreateHostAsync(workspace);
         var tools = host.BuildSessionToolRegistry("test");
         var meta = tools.GetPermissionMeta("skill")!;
 

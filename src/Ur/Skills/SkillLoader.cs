@@ -7,8 +7,7 @@ namespace Ur.Skills;
 /// of a skills root (either user-scoped ~/.ur/skills/ or workspace-scoped .ur/skills/),
 /// where each subdirectory contains a SKILL.md file.
 ///
-/// Loading follows the same resilience pattern as extension loading: individual
-/// malformed or unreadable skill files are logged to stderr and skipped rather
+/// Individual malformed or unreadable skill files are logged and skipped rather
 /// than failing the entire startup.
 ///
 /// All methods are synchronous — skill loading is local filesystem I/O only,
@@ -73,7 +72,7 @@ internal static class SkillLoader
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                // Same resilience pattern as extension loading — log and skip.
+                // Log and skip — one bad skill file shouldn't block startup.
                 logger?.LogWarning("Skill '{SkillName}' skipped: {Error}",
                     Path.GetFileName(subDir), ex.Message);
             }

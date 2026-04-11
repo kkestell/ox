@@ -11,7 +11,6 @@ namespace Ur.Cli.Commands;
 ///   • Selected model (or "none")
 ///   • Chat readiness and any blocking issues
 ///   • Model catalog count
-///   • Extension summary (N enabled / M total)
 ///
 /// This is the go-to command for confirming the environment is configured before
 /// running chat or integration tasks.
@@ -43,10 +42,6 @@ internal static class StatusCommand
                 }
 
                 Console.WriteLine($"Catalog:    {cfg.AvailableModels.Count} models available");
-
-                var extensions = host.Extensions.List();
-                var enabled = extensions.Count(e => e.DesiredEnabled);
-                Console.WriteLine($"Extensions: {enabled} enabled / {extensions.Count} total");
 
                 return Task.FromResult(0);
             }, cancellationToken));

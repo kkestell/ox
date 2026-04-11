@@ -5,7 +5,6 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Ur.Configuration;
 using Ur.Configuration.Keyring;
-using Ur.Extensions;
 using Ur.Logging;
 using Ur.Providers;
 using Ur.Sessions;
@@ -24,8 +23,7 @@ namespace Ur.Hosting;
 /// Configuration is backed by two <see cref="UrSettingsConfigurationSource"/> instances
 /// (user-level and workspace-level) feeding into <see cref="IConfiguration"/>. The
 /// workspace source is added second so its values take priority ("last source wins").
-/// <see cref="UrOptions"/> is bound to the "ur" section for strongly-typed access;
-/// extension settings use <see cref="IConfiguration"/> directly with string keys.
+/// <see cref="UrOptions"/> is bound to the "ur" section for strongly-typed access.
 /// </summary>
 public static class ServiceCollectionExtensions
 {
@@ -99,25 +97,10 @@ public static class ServiceCollectionExtensions
                 sp.GetRequiredService<Workspace>().SessionsDirectory,
                 sp.GetRequiredService<ILoggerFactory>().CreateLogger<SessionStore>()));
 
-        // Extension discovery produces the raw extension list. Schema registry and
-        // catalog both depend on it, so it's registered as its own singleton.
-        services.AddSingleton(sp =>
-        {
-            var workspace = sp.GetRequiredService<Workspace>();
-            var logger = sp.GetRequiredService<ILoggerFactory>().CreateLogger(nameof(ExtensionLoader));
-            return ExtensionLoader.DiscoverAll(
-                options.SystemExtensionsPath ?? DefaultSystemExtensionsPath(userDataDirectory),
-                options.UserExtensionsPath ?? DefaultUserExtensionsPath(userDataDirectory),
-                workspace.ExtensionsDirectory,
-                logger);
-        });
-
-        services.AddSingleton(sp =>
+        services.AddSingleton(_ =>
         {
             var registry = new SettingsSchemaRegistry();
             RegisterCoreSchemas(registry);
-            var logger = sp.GetRequiredService<ILoggerFactory>().CreateLogger(nameof(ServiceCollectionExtensions));
-            RegisterExtensionSchemas(registry, sp.GetRequiredService<List<Extension>>(), logger);
             return registry;
         });
 
@@ -134,17 +117,6 @@ public static class ServiceCollectionExtensions
                 userSettingsPath,
                 workspace.SettingsPath,
                 logger);
-        });
-
-        services.AddSingleton(sp =>
-        {
-            var workspace = sp.GetRequiredService<Workspace>();
-            var loggerFactory = sp.GetRequiredService<ILoggerFactory>();
-            var overrideLogger = loggerFactory.CreateLogger(nameof(ExtensionOverrideStore));
-            var overrideStore = new ExtensionOverrideStore(userDataDirectory, workspace, overrideLogger);
-            var catalogLogger = loggerFactory.CreateLogger(nameof(ExtensionCatalog));
-            return ExtensionCatalog.Create(
-                sp.GetRequiredService<List<Extension>>(), overrideStore, catalogLogger);
         });
 
         services.AddSingleton(sp =>
@@ -191,7 +163,6 @@ public static class ServiceCollectionExtensions
         services.AddSingleton(sp => new UrHost(
             sp.GetRequiredService<Workspace>(),
             sp.GetRequiredService<SessionStore>(),
-            sp.GetRequiredService<ExtensionCatalog>(),
             sp.GetRequiredService<SkillRegistry>(),
             sp.GetRequiredService<BuiltInCommandRegistry>(),
             sp.GetRequiredService<SettingsSchemaRegistry>(),
@@ -222,49 +193,10 @@ public static class ServiceCollectionExtensions
         registry.Register(OllamaProvider.UriSettingKey, stringSchema);
     }
 
-    /// <summary>
-    /// Registers extension settings schemas, skipping extensions whose schemas
-    /// conflict with already-registered keys.
-    /// </summary>
-    internal static void RegisterExtensionSchemas(
-        SettingsSchemaRegistry registry,
-        IEnumerable<Extension> discoveredExtensions,
-        ILogger? logger = null)
-    {
-        foreach (var extension in discoveredExtensions)
-        {
-            try
-            {
-                var duplicateKey = extension.SettingsSchemas.Keys
-                    .FirstOrDefault(registry.IsKnown);
-                if (duplicateKey is not null)
-                {
-                    throw new InvalidOperationException(
-                        $"Settings key '{duplicateKey}' is already registered.");
-                }
-
-                foreach (var (key, schema) in extension.SettingsSchemas)
-                    registry.Register(key, schema);
-            }
-            catch (InvalidOperationException ex)
-            {
-                logger?.LogWarning(
-                    "Extension '{ExtensionName}' skipped: failed to register settings schemas: {Error}",
-                    extension.Name, ex.Message);
-            }
-        }
-    }
-
     internal static string DefaultUserDataDirectory() =>
         Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
             ".ur");
-
-    internal static string DefaultSystemExtensionsPath(string userDataDirectory) =>
-        Path.Combine(userDataDirectory, "extensions", "system");
-
-    internal static string DefaultUserExtensionsPath(string userDataDirectory) =>
-        Path.Combine(userDataDirectory, "extensions", "user");
 
     internal static string DefaultUserSettingsPath(string userDataDirectory) =>
         Path.Combine(userDataDirectory, "settings.json");

@@ -10,7 +10,7 @@ namespace Ur.Cli;
 /// Shared boot helper used by every CLI command.
 ///
 /// Builds an <see cref="IHost"/> with all Ur services registered via
-/// <see cref="ServiceCollectionExtensions.AddUr"/>. All 6 command files remain
+/// <see cref="ServiceCollectionExtensions.AddUr"/>. All command files remain
 /// unchanged — they still receive <c>(UrHost host, CancellationToken ct)</c>.
 ///
 /// <c>ur --help</c> still skips boot because System.CommandLine handles it

@@ -138,7 +138,7 @@ internal static class ChatCommand
                         var displayTarget = FormatTarget(req.Target, host.WorkspacePath);
 
                         Console.Error.Write(
-                            $"Allow '{req.RequestingExtension}' to {req.OperationType} '{displayTarget}'?"
+                            $"Allow '{req.ToolName}' to {req.OperationType} '{displayTarget}'?"
                             + $" (y/n{scopeHints}): ");
 
                         var input = Console.ReadLine()?.Trim().ToLowerInvariant();

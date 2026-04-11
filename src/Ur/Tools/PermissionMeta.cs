@@ -23,12 +23,10 @@ internal interface IToolMeta
 /// <summary>
 /// Permission metadata attached to a registered tool.
 /// Carried alongside the AIFunction so AgentLoop can build a PermissionRequest
-/// before invoking the tool, without AgentLoop needing to know which extension
-/// owns each tool.
+/// before invoking the tool.
 /// </summary>
 internal sealed record PermissionMeta(
     OperationType OperationType,
-    string? ExtensionId,
     // Extracts a human-readable target string from the tool's typed arguments
     // (e.g. the file path being written). Falls back to the tool name if null.
     ITargetExtractor? TargetExtractor)

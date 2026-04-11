@@ -311,7 +311,7 @@ public sealed class UrSession
                     request.OperationType,
                     request.Target,
                     response.Scope.Value,
-                    request.RequestingExtension);
+                    request.ToolName);
 
                 await _grantStore.StoreAsync(grant, innerCt).ConfigureAwait(false);
 

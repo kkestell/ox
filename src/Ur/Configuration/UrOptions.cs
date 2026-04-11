@@ -3,8 +3,7 @@ namespace Ur.Configuration;
 /// <summary>
 /// Strongly-typed options for core Ur settings, bound to the "ur" section of
 /// <see cref="Microsoft.Extensions.Configuration.IConfiguration"/>. Currently
-/// holds only the selected model ID; extension settings stay on IConfiguration
-/// with string-based access since their schemas are dynamic.
+/// holds only the selected model ID.
 /// </summary>
 public sealed class UrOptions
 {

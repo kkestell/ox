@@ -10,4 +10,4 @@ public sealed record PermissionGrant(
     OperationType OperationType,
     string TargetPrefix,
     PermissionScope Scope,
-    string GrantingExtension);
+    string ToolName);

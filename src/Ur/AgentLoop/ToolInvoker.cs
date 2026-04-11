@@ -256,7 +256,6 @@ internal sealed class ToolInvoker(ToolRegistry tools, Workspace workspace, ILogg
 
         // Build the request for the approval pipeline. The caller will present it
         // to the user via RequestPermissionAsync at the appropriate time.
-        var extensionId = meta?.ExtensionId ?? call.Name;
         var allowedScopes = PermissionPolicy.AllowedScopes(operationType, isInWorkspace);
 
         // Execute targets are command strings, not file paths — don't resolve them.
@@ -264,7 +263,7 @@ internal sealed class ToolInvoker(ToolRegistry tools, Workspace workspace, ILogg
         var resolvedTarget = operationType == OperationType.Execute
             ? target
             : ToolArgHelpers.ResolvePath(workspace.RootPath, target);
-        var request = new PermissionRequest(operationType, resolvedTarget, extensionId, allowedScopes);
+        var request = new PermissionRequest(operationType, resolvedTarget, call.Name, allowedScopes);
 
         return PermissionCheckResult.NeedsApproval(request);
     }

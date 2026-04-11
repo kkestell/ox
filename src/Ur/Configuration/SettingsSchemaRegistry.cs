@@ -3,7 +3,7 @@ using System.Text.Json;
 namespace Ur.Configuration;
 
 /// <summary>
-/// Aggregates JSON schemas from core, extensions, and provider registry.
+/// Aggregates JSON schemas from core and provider settings.
 /// A key can only be registered once.
 /// </summary>
 public sealed class SettingsSchemaRegistry

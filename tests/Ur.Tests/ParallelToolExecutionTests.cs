@@ -317,7 +317,7 @@ public sealed class ParallelToolExecutionTests : IDisposable
                 do { observed = maxConcurrent; }
                 while (current > observed && Interlocked.CompareExchange(ref maxConcurrent, current, observed) != observed);
 
-                lock (promptOrder) { promptOrder.Add(req.RequestingExtension); }
+                lock (promptOrder) { promptOrder.Add(req.ToolName); }
 
                 Interlocked.Decrement(ref inFlight);
                 return ValueTask.FromResult(new PermissionResponse(true, PermissionScope.Once));

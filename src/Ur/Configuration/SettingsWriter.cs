@@ -131,7 +131,7 @@ internal sealed class SettingsWriter
     /// <summary>
     /// Validates a single key-value pair against its registered schema.
     /// Throws <see cref="SettingsValidationException"/> if the type doesn't match.
-    /// Unknown keys are tolerated (they may come from extensions not currently loaded).
+    /// Unknown keys are tolerated for forward compatibility.
     /// </summary>
     private void ValidateSingleKey(string key, JsonElement value)
     {

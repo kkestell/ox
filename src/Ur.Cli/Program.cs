@@ -12,7 +12,6 @@ var root = new RootCommand("ur — AI agent framework")
     ConfigCommands.Build(),     // ur config set-api-key, set-model, get, set, clear
     ModelCommands.Build(),      // ur models list, refresh, show
     SessionCommands.Build(),    // ur sessions list, show
-    ExtensionCommands.Build(),  // ur extensions list, enable, disable, reset
     ChatCommand.Build()         // ur chat <message>
 };
 

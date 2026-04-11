@@ -44,7 +44,7 @@ internal static class PermissionHandler
                 var displayTarget = FormatTarget(req.Target, workspaceRoot);
 
                 var promptText =
-                    $"Allow '{req.RequestingExtension}' to {req.OperationType} '{displayTarget}'?"
+                    $"Allow '{req.ToolName}' to {req.OperationType} '{displayTarget}'?"
                     + $" (y/n{scopeHints}): ";
 
                 // Step 1: Switch to Permission mode on the UI thread.

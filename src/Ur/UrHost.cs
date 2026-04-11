@@ -1,7 +1,6 @@
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using Ur.Configuration;
-using Ur.Extensions;
 using Ur.Hosting;
 using Ur.Permissions;
 using Ur.Providers;
@@ -39,7 +38,6 @@ public sealed class UrHost
 
     public string WorkspacePath => Workspace.RootPath;
     public UrConfiguration Configuration { get; }
-    public ExtensionCatalog Extensions { get; }
 
     /// <summary>
     /// Exposed internally so UrSession can pass the workspace to the AgentLoop,
@@ -78,7 +76,6 @@ public sealed class UrHost
     internal UrHost(
         Workspace workspace,
         SessionStore sessions,
-        ExtensionCatalog extensions,
         SkillRegistry skills,
         BuiltInCommandRegistry builtInCommands,
         SettingsSchemaRegistry settingsSchemas,
@@ -90,7 +87,6 @@ public sealed class UrHost
         Workspace = workspace;
         _sessions = sessions;
         _providerRegistry = providerRegistry;
-        Extensions = extensions;
         Skills = skills;
         BuiltInCommands = builtInCommands;
         SettingsSchemas = settingsSchemas;
@@ -101,12 +97,12 @@ public sealed class UrHost
         _chatClientFactoryOverride = options.ChatClientFactoryOverride;
         _additionalTools = options.AdditionalTools;
 
-        // Log startup summary — extensions and skills are already loaded by the time
+        // Log startup summary — skills are already loaded by the time
         // the host is constructed (DI resolves them as upstream singletons).
         var logger = loggerFactory.CreateLogger<UrHost>();
         logger.LogInformation(
-            "Ur ready: workspace={WorkspacePath}, extensions={ExtensionCount}, skills={SkillCount}",
-            workspace.RootPath, extensions.List().Count, skills.All().Count);
+            "Ur ready: workspace={WorkspacePath}, skills={SkillCount}",
+            workspace.RootPath, skills.All().Count);
     }
 
     internal IChatClient CreateChatClient(string modelId)
@@ -125,10 +121,10 @@ public sealed class UrHost
 
     /// <summary>
     /// Builds a tool registry using the unified factory pattern. Convenience method
-    /// used by tests that need to verify tool registration (e.g. checking that an
-    /// extension's tools appear after activation). Production code should prefer the
-    /// factory loop in <see cref="Sessions.UrSession.RunTurnAsync"/>, which has a full
-    /// <see cref="ToolContext"/> including a live chat client and turn callbacks.
+    /// used by tests that need to verify tool registration. Production code should
+    /// prefer the factory loop in <see cref="Sessions.UrSession.RunTurnAsync"/>,
+    /// which has a full <see cref="ToolContext"/> including a live chat client and
+    /// turn callbacks.
     ///
     /// ChatClient is null here because this is called outside of a turn — no
     /// client is needed to verify that tools are registered. Tools that require
@@ -139,8 +135,8 @@ public sealed class UrHost
     {
         var registry = new ToolRegistry();
         // Build a ToolContext carrying everything tool factories need. The TodoStore
-        // is nullable because host-level callers (tests, extensions) may not have a
-        // session — TodoWriteTool degrades gracefully when it's null.
+        // is nullable because host-level callers (tests) may not have a session —
+        // TodoWriteTool degrades gracefully when it's null.
         var context = new ToolContext(Workspace, sessionId, todos);
 
         // Register builtins via the same factory list used by RunTurnAsync.
@@ -161,14 +157,6 @@ public sealed class UrHost
                 skillTool,
                 ((IToolMeta)skillTool).OperationType,
                 targetExtractor: ((IToolMeta)skillTool).TargetExtractor);
-        }
-
-        // Extension tools from all active extensions.
-        foreach (var (extFactory, extensionId) in Extensions.GetActiveToolFactories())
-        {
-            var tool = extFactory(context);
-            if (registry.Get(tool.Name) is null)
-                registry.Register(tool, extensionId: extensionId);
         }
 
         // Test-injected overrides (last-write-wins).

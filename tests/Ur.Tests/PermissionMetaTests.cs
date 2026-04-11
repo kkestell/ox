@@ -27,7 +27,6 @@ public sealed class PermissionMetaTests
     {
         var meta = new PermissionMeta(
             OperationType.Write,
-            ExtensionId: null,
             TargetExtractor: TargetExtractors.FromKey("file_path"));
 
         var call = new FunctionCallContent(
@@ -42,7 +41,6 @@ public sealed class PermissionMetaTests
     {
         var meta = new PermissionMeta(
             OperationType.Write,
-            ExtensionId: null,
             TargetExtractor: null);
 
         var call = new FunctionCallContent(
@@ -58,7 +56,6 @@ public sealed class PermissionMetaTests
         var extractorCalled = false;
         var meta = new PermissionMeta(
             OperationType.Write,
-            ExtensionId: null,
             TargetExtractor: new LambdaExtractor(args =>
             {
                 extractorCalled = true;
@@ -82,7 +79,6 @@ public sealed class PermissionMetaTests
         // from the arguments dictionary — verifies the default fallback path.
         var meta = new PermissionMeta(
             OperationType.Write,
-            ExtensionId: null,
             TargetExtractor: TargetExtractors.FromKey("file_path"));
 
         var call = new FunctionCallContent(
@@ -97,7 +93,6 @@ public sealed class PermissionMetaTests
     {
         var meta = new PermissionMeta(
             OperationType.Write,
-            ExtensionId: null,
             TargetExtractor: TargetExtractors.FromKey("file_path", fallback: "unnamed file"));
 
         var call = new FunctionCallContent(
@@ -115,7 +110,6 @@ public sealed class PermissionMetaTests
         // by delegating to ToolArgHelpers coercion logic.
         var meta = new PermissionMeta(
             OperationType.Write,
-            ExtensionId: null,
             TargetExtractor: TargetExtractors.FromKey("file_path"));
 
         using var doc = JsonDocument.Parse("""{"file_path": "/data/file.txt"}""");

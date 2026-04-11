@@ -4,8 +4,8 @@ using Ur.Permissions;
 namespace Ur.Tools;
 
 /// <summary>
-/// Maintains available tools. Core provides the registry; extensions register tools into it.
-/// Tools are exposed to the LLM as AITool instances and dispatched by name.
+/// Maintains available tools. Tools are exposed to the LLM as AITool instances
+/// and dispatched by name.
 /// </summary>
 public sealed class ToolRegistry
 {
@@ -25,10 +25,9 @@ public sealed class ToolRegistry
     public void Register(
         AIFunction tool,
         OperationType operationType = OperationType.Write,
-        string? extensionId = null,
         ITargetExtractor? targetExtractor = null)
     {
-        _entries[tool.Name] = (tool, new PermissionMeta(operationType, extensionId, targetExtractor));
+        _entries[tool.Name] = (tool, new PermissionMeta(operationType, targetExtractor));
         _allCache = null;
     }
 
@@ -63,7 +62,7 @@ public sealed class ToolRegistry
             if (excluded.Contains(name))
                 continue;
 
-            copy.Register(tool, meta.OperationType, meta.ExtensionId, meta.TargetExtractor);
+            copy.Register(tool, meta.OperationType, meta.TargetExtractor);
         }
 
         return copy;
@@ -77,7 +76,7 @@ public sealed class ToolRegistry
     internal void MergeInto(ToolRegistry target)
     {
         foreach (var (_, (tool, meta)) in _entries)
-            target.Register(tool, meta.OperationType, meta.ExtensionId, meta.TargetExtractor);
+            target.Register(tool, meta.OperationType, meta.TargetExtractor);
     }
 
     /// <summary>
