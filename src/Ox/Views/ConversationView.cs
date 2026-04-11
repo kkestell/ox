@@ -277,7 +277,7 @@ public sealed class ConversationView
                 break;
 
             case AssistantTextEntry assistant:
-                segments.Add(new(assistant.Text.TrimEnd('\n', '\r'), new ColorFragment(_theme.Text)));
+                segments.Add(new(assistant.Text.Trim('\n', '\r'), new ColorFragment(_theme.Text)));
                 break;
 
             case ToolCallEntry tool:
