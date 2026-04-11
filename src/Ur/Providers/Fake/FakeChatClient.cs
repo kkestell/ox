@@ -20,11 +20,13 @@ namespace Ur.Providers.Fake;
 internal sealed class FakeChatClient : IChatClient
 {
     private readonly FakeScenario _scenario;
+    private readonly SharedTurnCounter? _sharedCounter;
     private int _turnIndex = -1;
 
-    public FakeChatClient(FakeScenario scenario)
+    public FakeChatClient(FakeScenario scenario, SharedTurnCounter? sharedCounter = null)
     {
         _scenario = scenario;
+        _sharedCounter = sharedCounter;
     }
 
     public Task<ChatResponse> GetResponseAsync(
@@ -117,7 +119,12 @@ internal sealed class FakeChatClient : IChatClient
     /// </summary>
     private FakeScenarioTurn NextTurn()
     {
-        var index = Interlocked.Increment(ref _turnIndex);
+        // Use the shared counter when available (scenarios that need turn
+        // coordination across client instances, e.g. compaction). Otherwise
+        // fall back to the per-client index.
+        var index = _sharedCounter is not null
+            ? _sharedCounter.Next()
+            : Interlocked.Increment(ref _turnIndex);
 
         if (index >= _scenario.Turns.Count)
             throw new InvalidOperationException(

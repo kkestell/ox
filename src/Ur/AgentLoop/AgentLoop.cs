@@ -1,6 +1,7 @@
 using System.Runtime.CompilerServices;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
+using Ur.Compaction;
 using Ur.Permissions;
 using Ur.Tools;
 
@@ -33,7 +34,7 @@ internal record UsageHolder
 /// Drives the core conversation cycle: user input → LLM → tool calls → repeat.
 /// Emits events for the UI layer to render.
 /// </summary>
-internal sealed class AgentLoop(IChatClient client, ToolRegistry tools, Workspace workspace, ILogger<AgentLoop> logger, ILoggerFactory loggerFactory)
+internal sealed class AgentLoop(IChatClient client, ToolRegistry tools, Workspace workspace, ILogger<AgentLoop> logger, ILoggerFactory loggerFactory, int turnsToKeepToolResults = 3)
 {
     // Delegate tool dispatch (permission check → lookup → invoke → result) to a
     // dedicated helper so RunTurnAsync stays at a single abstraction level.
@@ -70,7 +71,7 @@ internal sealed class AgentLoop(IChatClient client, ToolRegistry tools, Workspac
         {
             // We prepend the system prompt (if any) to a transient view of the messages —
             // it's never added to the persistent `messages` list so it won't be saved to disk.
-            var llmMessages = BuildLlmMessages(systemPrompt, messages);
+            var llmMessages = BuildLlmMessages(systemPrompt, messages, turnsToKeepToolResults);
 
             List<FunctionCallContent> toolCalls = [];
             ChatMessage assistantMessage = new(ChatRole.Assistant, []);
@@ -147,18 +148,27 @@ internal sealed class AgentLoop(IChatClient client, ToolRegistry tools, Workspac
     /// We don't add the system message to `messages` because that list is persisted
     /// to disk by UrSession — the system prompt is transient and rebuilt each turn.
     ///
-    /// UsageContent items are stripped from message contents before sending — they're
-    /// persisted in the JSONL for session-reload context fill display, but some
-    /// providers (e.g. Gemini) can't map them to native request parts.
+    /// Two projection steps are applied before sending:
+    ///   1. UsageContent items are stripped — they're persisted in the JSONL for
+    ///      session-reload context fill display, but some providers (e.g. Gemini)
+    ///      can't map them to native request parts.
+    ///   2. Tool results older than <paramref name="turnsToKeep"/> assistant turns
+    ///      are replaced with "[Tool result cleared]" via <see cref="ToolResultClearer"/>
+    ///      to reclaim context window space without mutating the persisted history.
     /// </summary>
     private static IEnumerable<ChatMessage> BuildLlmMessages(
         string? systemPrompt,
-        List<ChatMessage> messages)
+        List<ChatMessage> messages,
+        int turnsToKeep)
     {
         if (systemPrompt is not null)
             yield return new ChatMessage(ChatRole.System, systemPrompt);
 
-        foreach (var msg in messages)
+        // Pipeline: clear old tool results first, then strip UsageContent.
+        // ToolResultClearer returns a new sequence — the original list is untouched.
+        var projected = ToolResultClearer.ClearOldToolResults(messages, turnsToKeep);
+
+        foreach (var msg in projected)
         {
             // Fast path: most messages have no UsageContent.
             if (!msg.Contents.Any(c => c is UsageContent))

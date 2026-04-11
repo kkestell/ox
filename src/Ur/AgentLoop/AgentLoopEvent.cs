@@ -199,6 +199,16 @@ public sealed class TurnError : AgentLoopEvent
 }
 
 /// <summary>
+/// The conversation was compacted: older messages were summarized to reclaim
+/// context window space. Yielded by UrSession (not AgentLoop) after a
+/// successful autocompact so the UI can display an informational system message.
+/// </summary>
+public sealed class Compacted : AgentLoopEvent
+{
+    public required string Message { get; init; }
+}
+
+/// <summary>
 /// The todo list was updated by the LLM via the <c>todo_write</c> tool.
 ///
 /// This event bridges the Ur and Ox layers. Currently not emitted by the agent

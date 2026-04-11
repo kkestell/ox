@@ -30,7 +30,13 @@ internal sealed class UrOptionsMonitor(IConfiguration configuration) : IOptionsM
         // AddUr() self-contained and AoT-friendly. If UrOptions gains more properties,
         // add bindings here to match.
         var section = configuration.GetSection("ur");
-        return new UrOptions { Model = section["model"] };
+        var options = new UrOptions { Model = section["model"] };
+
+        // Parse turnsToKeepToolResults — default to 3 if absent or unparseable.
+        if (int.TryParse(section["turnsToKeepToolResults"], out var turnsToKeep))
+            options.TurnsToKeepToolResults = turnsToKeep;
+
+        return options;
     }
 
     public IDisposable? OnChange(Action<UrOptions, string?> listener)

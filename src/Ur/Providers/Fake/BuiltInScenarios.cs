@@ -12,7 +12,7 @@ internal static class BuiltInScenarios
     /// All available built-in scenario names.
     /// </summary>
     public static IReadOnlyList<string> Names =>
-        ["hello", "long-response", "tool-call", "permission-tool-call", "error", "multi-turn"];
+        ["hello", "long-response", "tool-call", "permission-tool-call", "error", "multi-turn", "compaction"];
 
     /// <summary>
     /// Looks up a built-in scenario by name. Returns null if not found.
@@ -25,6 +25,7 @@ internal static class BuiltInScenarios
         "permission-tool-call" => PermissionToolCall(),
         "error" => Error(),
         "multi-turn" => MultiTurn(),
+        "compaction" => Compaction(),
         _ => null
     };
 
@@ -164,6 +165,76 @@ internal static class BuiltInScenarios
                 InputTokens = 50,
                 OutputTokens = 12,
             }
+        ]
+    };
+
+    /// <summary>
+    /// Compaction scenario: exercises the two-stage compaction pipeline. The
+    /// context window is deliberately tiny (1000 tokens) so the 60% threshold
+    /// triggers once the conversation has enough messages.
+    ///
+    /// The autocompactor requires at least MinPreservedContentMessages + 1 = 6
+    /// messages before it will compact. That means we need 4 user turns (8
+    /// messages: 4 user + 4 assistant) before compaction can fire on the 5th
+    /// turn. Turn 3 (the 4th response) reports 700 input tokens to breach the
+    /// 60% threshold. Turn layout:
+    ///
+    ///   Turn 0–2: normal responses with increasing token counts (ramp up)
+    ///   Turn 3:   response with 700 InputTokens — breaches 60% of 1000
+    ///   Turn 4:   consumed by autocompactor's non-streaming GetResponseAsync
+    ///             (the summary). Not shown to the user.
+    ///   Turn 5:   normal response for the 5th user message after compaction.
+    /// </summary>
+    private static FakeScenario Compaction() => new()
+    {
+        Name = "compaction",
+        ContextWindow = 1000,
+        Turns =
+        [
+            // Turn 0: first response — low tokens, just building up message history.
+            new FakeScenarioTurn
+            {
+                TextChunks = ["Response one. ", "Building up context history."],
+                InputTokens = 100,
+                OutputTokens = 20,
+            },
+            // Turn 1: second response.
+            new FakeScenarioTurn
+            {
+                TextChunks = ["Response two. ", "More conversation history."],
+                InputTokens = 200,
+                OutputTokens = 20,
+            },
+            // Turn 2: third response.
+            new FakeScenarioTurn
+            {
+                TextChunks = ["Response three. ", "Context is growing."],
+                InputTokens = 400,
+                OutputTokens = 20,
+            },
+            // Turn 3: fourth response — 700 tokens breaches the 60% threshold.
+            // After this turn, LastInputTokens=700. On the 5th user message,
+            // pre-turn compaction sees 700 > 600 and fires.
+            new FakeScenarioTurn
+            {
+                TextChunks = ["Response four. ", "Context is nearly full now."],
+                InputTokens = 700,
+                OutputTokens = 30,
+            },
+            // Turn 4: consumed by autocompactor as the summary (non-streaming call).
+            new FakeScenarioTurn
+            {
+                TextChunks = ["Summary: user had a multi-turn conversation about building context history."],
+                InputTokens = 100,
+                OutputTokens = 30,
+            },
+            // Turn 5: post-compaction response for the 5th user message.
+            new FakeScenarioTurn
+            {
+                TextChunks = ["After compaction, ", "context was summarized. ", "Continuing normally."],
+                InputTokens = 150,
+                OutputTokens = 25,
+            },
         ]
     };
 

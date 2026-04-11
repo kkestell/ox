@@ -76,6 +76,15 @@ public sealed class UrConfiguration
         _selectedModelOverride ?? _optionsMonitor.CurrentValue.Model;
 
     /// <summary>
+    /// How many recent assistant turns' tool results to keep verbatim during
+    /// the BuildLlmMessages projection. Older results are replaced with a
+    /// placeholder. Re-reads from config on every access so settings changes
+    /// take effect on the next turn without restart.
+    /// </summary>
+    public int TurnsToKeepToolResults =>
+        _optionsMonitor.CurrentValue.TurnsToKeepToolResults;
+
+    /// <summary>
     /// Aggregates model IDs across all providers declared in providers.json.
     /// Each model is prefixed with its provider name (e.g. "openai/gpt-4o").
     /// The combined list is sorted alphabetically for stable display order.

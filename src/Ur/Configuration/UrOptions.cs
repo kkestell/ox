@@ -12,4 +12,13 @@ public sealed class UrOptions
     /// Bound from the "ur:model" configuration key. Null when unset.
     /// </summary>
     public string? Model { get; set; }
+
+    /// <summary>
+    /// How many recent assistant turns' tool results are preserved verbatim
+    /// during the <see cref="BuildLlmMessages"/> projection. Tool results in
+    /// older turns are replaced with "[Tool result cleared]" to reclaim context
+    /// window space without mutating the persisted message history.
+    /// Bound from "ur:turnsToKeepToolResults". Default is 3.
+    /// </summary>
+    public int TurnsToKeepToolResults { get; set; } = 3;
 }

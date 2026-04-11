@@ -37,6 +37,7 @@ public sealed class UrSession
     private readonly SessionStore _sessions;
     private readonly Func<string, IChatClient> _chatClientFactory;
     private readonly ToolRegistry? _additionalTools;
+    private readonly Func<string, int?> _resolveContextWindow;
 
     private readonly Session _session;
     private readonly List<ChatMessage> _messages;
@@ -66,6 +67,7 @@ public sealed class UrSession
         TurnCallbacks? callbacks,
         string workspacePermissionsPath,
         string alwaysPermissionsPath,
+        Func<string, int?>? resolveContextWindow = null,
         ToolRegistry? additionalTools = null,
         TodoStore? todos = null)
     {
@@ -76,6 +78,7 @@ public sealed class UrSession
         _loggerFactory = loggerFactory;
         _sessions = sessions;
         _chatClientFactory = chatClientFactory;
+        _resolveContextWindow = resolveContextWindow ?? (_ => null);
         _additionalTools = additionalTools;
         _session = session;
         _messages = messages;
@@ -181,6 +184,50 @@ public sealed class UrSession
         _activeModelId = _configuration.SelectedModelId;
         _logger.LogInformation("Turn started: session={SessionId}, model={ModelId}", Id, _activeModelId);
 
+        // --- Pre-turn compaction check ---
+        // If the context window is filling up, summarize older messages before
+        // appending the new user message. This runs proactively so we never
+        // hit context-too-long API errors. Requires both a known context window
+        // and prior token usage data (LastInputTokens from the previous turn).
+        var contextWindow = _resolveContextWindow(_activeModelId!);
+        if (contextWindow is null)
+        {
+            _logger.LogDebug(
+                "Compaction skipped: context window unknown for model '{ModelId}'",
+                _activeModelId);
+        }
+
+        if (contextWindow is not null && LastInputTokens is not null)
+        {
+            var chatClientForCompaction = _chatClientFactory(_activeModelId!);
+            var compacted = await Compaction.Autocompactor.TryCompactAsync(
+                _messages, chatClientForCompaction, contextWindow.Value, LastInputTokens.Value,
+                _logger, ct);
+
+            if (compacted)
+            {
+                // Persist the compacted state: write a boundary sentinel, then
+                // append each message in the now-compacted list. The boundary
+                // tells ReadAllAsync to ignore everything before it on reload.
+                await _sessions.AppendCompactBoundaryAsync(_session, ct);
+                foreach (var msg in _messages)
+                    await _sessions.AppendAsync(_session, msg, ct);
+
+                // Critical invariant: persistedCount must always equal the
+                // number of messages written to disk. After compaction, the
+                // entire _messages list has been written post-boundary.
+                // The user message added below will be the next un-persisted message.
+
+                // Reset token count — will be refreshed by the next LLM call.
+                LastInputTokens = null;
+
+                yield return new AgentLoop.Compacted
+                {
+                    Message = "Context compacted — older messages summarized."
+                };
+            }
+        }
+
         // Optimistically add the user message to the in-memory list and persist
         // it. If the write fails, roll back the in-memory state so the list
         // stays consistent with what's on disk.
@@ -239,7 +286,8 @@ public sealed class UrSession
         var agentLoop = new AgentLoop.AgentLoop(
             chatClient, tools, _workspace,
             _loggerFactory.CreateLogger<AgentLoop.AgentLoop>(),
-            _loggerFactory);
+            _loggerFactory,
+            _configuration.TurnsToKeepToolResults);
 
         await foreach (var loopEvent in agentLoop.RunTurnAsync(_messages, wrappedCallbacks, systemPrompt, ct))
         {

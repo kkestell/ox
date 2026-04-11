@@ -20,3 +20,6 @@ inspect:
 	@./scripts/format-inspection-results.sh > inspection-results.txt
 	@rm -f inspection-results.xml
 	@echo "Wrote inspection-results.txt"
+
+run:
+	@dotnet run --project src/Ox --no-build --nologo -- "$$ARGS"

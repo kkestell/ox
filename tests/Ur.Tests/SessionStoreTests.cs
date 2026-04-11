@@ -174,4 +174,73 @@ public sealed class SessionStoreTests : IDisposable
         Assert.True(Directory.Exists(missingDir));
         Assert.True(File.Exists(session.FilePath));
     }
+
+    // ─── Compact boundary ─────────────────────────────────────────────
+
+    [Fact]
+    public async Task ReadAllAsync_WithCompactBoundary_OnlyPostBoundaryMessages()
+    {
+        var store = new SessionStore(SessionsDir);
+        var session = store.Create();
+
+        // Write some pre-compaction messages.
+        await store.AppendAsync(session, new ChatMessage(ChatRole.User, "old message 1"));
+        await store.AppendAsync(session, new ChatMessage(ChatRole.Assistant, "old response 1"));
+
+        // Write the compact boundary.
+        await store.AppendCompactBoundaryAsync(session);
+
+        // Write post-compaction messages.
+        await store.AppendAsync(session, new ChatMessage(ChatRole.User, "summary"));
+        await store.AppendAsync(session, new ChatMessage(ChatRole.User, "new message"));
+        await store.AppendAsync(session, new ChatMessage(ChatRole.Assistant, "new response"));
+
+        var messages = await store.ReadAllAsync(session);
+
+        // Only the 3 post-boundary messages should be returned.
+        Assert.Equal(3, messages.Count);
+        Assert.Equal("summary", messages[0].Text);
+        Assert.Equal("new message", messages[1].Text);
+        Assert.Equal("new response", messages[2].Text);
+    }
+
+    [Fact]
+    public async Task ReadAllAsync_MultipleBoundaries_UsesLastOne()
+    {
+        var store = new SessionStore(SessionsDir);
+        var session = store.Create();
+
+        // First compaction cycle.
+        await store.AppendAsync(session, new ChatMessage(ChatRole.User, "very old"));
+        await store.AppendCompactBoundaryAsync(session);
+        await store.AppendAsync(session, new ChatMessage(ChatRole.User, "first summary"));
+
+        // Second compaction cycle.
+        await store.AppendCompactBoundaryAsync(session);
+        await store.AppendAsync(session, new ChatMessage(ChatRole.User, "second summary"));
+        await store.AppendAsync(session, new ChatMessage(ChatRole.User, "recent message"));
+
+        var messages = await store.ReadAllAsync(session);
+
+        // Only post-second-boundary messages.
+        Assert.Equal(2, messages.Count);
+        Assert.Equal("second summary", messages[0].Text);
+        Assert.Equal("recent message", messages[1].Text);
+    }
+
+    [Fact]
+    public async Task ReadAllAsync_NoBoundary_ReturnsAllMessages()
+    {
+        // Backwards compatibility: sessions without any boundary work as before.
+        var store = new SessionStore(SessionsDir);
+        var session = store.Create();
+
+        await store.AppendAsync(session, new ChatMessage(ChatRole.User, "message 1"));
+        await store.AppendAsync(session, new ChatMessage(ChatRole.Assistant, "response 1"));
+        await store.AppendAsync(session, new ChatMessage(ChatRole.User, "message 2"));
+
+        var messages = await store.ReadAllAsync(session);
+
+        Assert.Equal(3, messages.Count);
+    }
 }

@@ -4,6 +4,7 @@ using Ur.Configuration;
 using Ur.Permissions;
 using Ur.Settings;
 using Ur.Providers;
+using Ur.Providers.Fake;
 using Ur.Sessions;
 using Ur.Skills;
 using Ur.Todo;
@@ -126,17 +127,27 @@ public sealed class UrHost
         try
         {
             var parsed = ModelId.Parse(modelId);
-            return _providerConfig.GetContextWindow(parsed.Provider, parsed.Model);
+
+            // First check the static providers.json config (covers all real providers).
+            // GetContextWindow returns int and throws for unknown providers/models,
+            // so we catch below and fall through to provider-level resolution.
+            try
+            {
+                return _providerConfig.GetContextWindow(parsed.Provider, parsed.Model);
+            }
+            catch (InvalidOperationException) { /* not in static config, fall through */ }
+
+            // Fall back to the provider itself — the fake provider declares context
+            // windows on its scenarios so compaction can be tested without a real
+            // model entry in providers.json.
+            if (_providerRegistry.Get(parsed.Provider) is FakeProvider fp)
+                return fp.GetContextWindow(parsed.Model);
+
+            return null;
         }
         catch (ArgumentException)
         {
             // Model ID didn't parse (e.g. no "provider/" prefix).
-            return null;
-        }
-        catch (InvalidOperationException)
-        {
-            // Provider or model not in config — e.g. FakeProvider models
-            // that exist only for testing and aren't declared in providers.json.
             return null;
         }
     }
@@ -160,7 +171,7 @@ public sealed class UrHost
             _sessions, CreateChatClient, _sessions.Create(), [],
             isPersisted: false, activeModelId: null, callbacks,
             _workspace.PermissionsPath, DefaultUserPermissionsPath(),
-            _additionalTools, todos);
+            ResolveContextWindow, _additionalTools, todos);
 
     /// <summary>
     /// Opens an existing session by ID. See <see cref="CreateSession"/> for callback semantics.
@@ -179,7 +190,7 @@ public sealed class UrHost
             _sessions, CreateChatClient, session, messages,
             isPersisted: true, activeModelId: null, callbacks,
             _workspace.PermissionsPath, DefaultUserPermissionsPath(),
-            _additionalTools);
+            ResolveContextWindow, _additionalTools);
     }
 
     private string DefaultUserPermissionsPath() =>

@@ -27,6 +27,14 @@ internal sealed class FakeScenario
     /// fake provider pops turns in order; it does not try to match on user input.
     /// </summary>
     public required IReadOnlyList<FakeScenarioTurn> Turns { get; init; }
+
+    /// <summary>
+    /// Simulated context window size in tokens. When set, the fake provider
+    /// reports this value through <see cref="FakeProvider.GetContextWindow"/>
+    /// so the compaction pipeline can test threshold behavior without a real
+    /// model entry in providers.json.
+    /// </summary>
+    public int? ContextWindow { get; init; }
 }
 
 /// <summary>
@@ -108,6 +116,9 @@ internal sealed class FakeScenarioFile
 
     [JsonPropertyName("turns")]
     public List<FakeScenarioTurnFile>? Turns { get; set; }
+
+    [JsonPropertyName("context_window")]
+    public int? ContextWindow { get; set; }
 }
 
 internal sealed class FakeScenarioTurnFile
@@ -173,6 +184,7 @@ internal static class FakeScenarioLoader
         return new FakeScenario
         {
             Name = file.Name ?? Path.GetFileNameWithoutExtension(path),
+            ContextWindow = file.ContextWindow,
             Turns = (file.Turns ?? []).Select(t => new FakeScenarioTurn
             {
                 TextChunks = t.TextChunks,
