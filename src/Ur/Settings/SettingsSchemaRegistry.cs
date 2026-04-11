@@ -1,6 +1,6 @@
 using System.Text.Json;
 
-namespace Ur.Configuration;
+namespace Ur.Settings;
 
 /// <summary>
 /// Aggregates JSON schemas from core and provider settings.

@@ -3,6 +3,7 @@ using Microsoft.Extensions.AI;
 using Ur.AgentLoop;
 using Ur.Configuration;
 using Ur.Permissions;
+using Ur.Settings;
 using Ur.Tests.TestSupport;
 using Ur.Tools;
 

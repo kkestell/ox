@@ -254,7 +254,8 @@ public sealed class BuiltinToolTests
     {
         using var workspace = new TempWorkspace();
         var host = await TestHostBuilder.CreateHostAsync(workspace);
-        var tools = host.BuildSessionToolRegistry("test");
+        var session = host.CreateSession();
+        var tools = session.BuildToolRegistry();
 
         Assert.NotNull(tools.Get("read_file"));
         Assert.NotNull(tools.Get("write_file"));
@@ -262,7 +263,12 @@ public sealed class BuiltinToolTests
         Assert.NotNull(tools.Get("glob"));
         Assert.NotNull(tools.Get("grep"));
         Assert.NotNull(tools.Get("bash"));
+        Assert.NotNull(tools.Get("todo_write"));
         Assert.NotNull(tools.Get("skill"));
+
+        // run_subagent is deliberately NOT registered by BuildToolRegistry — it needs
+        // per-turn context (chat client, callbacks) and is wired later in RunTurnAsync.
+        Assert.Null(tools.Get("run_subagent"));
     }
 
     [Fact]
@@ -275,7 +281,8 @@ public sealed class BuiltinToolTests
         // A miscategorization (e.g. bash as Read) would silently bypass prompting.
         using var workspace = new TempWorkspace();
         var host = await TestHostBuilder.CreateHostAsync(workspace);
-        var tools = host.BuildSessionToolRegistry("test");
+        var session = host.CreateSession();
+        var tools = session.BuildToolRegistry();
 
         Assert.Equal(OperationType.Read,    tools.GetPermissionMeta("read_file")!.OperationType);
         Assert.Equal(OperationType.Write,   tools.GetPermissionMeta("write_file")!.OperationType);
@@ -283,6 +290,7 @@ public sealed class BuiltinToolTests
         Assert.Equal(OperationType.Read,    tools.GetPermissionMeta("glob")!.OperationType);
         Assert.Equal(OperationType.Read,    tools.GetPermissionMeta("grep")!.OperationType);
         Assert.Equal(OperationType.Execute, tools.GetPermissionMeta("bash")!.OperationType);
+        Assert.Equal(OperationType.Read,    tools.GetPermissionMeta("todo_write")!.OperationType);
         Assert.Equal(OperationType.Read,    tools.GetPermissionMeta("skill")!.OperationType);
     }
 
@@ -294,7 +302,8 @@ public sealed class BuiltinToolTests
         // (e.g. "commit") rather than the generic tool name "skill".
         using var workspace = new TempWorkspace();
         var host = await TestHostBuilder.CreateHostAsync(workspace);
-        var tools = host.BuildSessionToolRegistry("test");
+        var session = host.CreateSession();
+        var tools = session.BuildToolRegistry();
         var meta = tools.GetPermissionMeta("skill")!;
 
         // Simulate a tool call where the model passes skill = "commit".

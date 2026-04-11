@@ -8,9 +8,9 @@ namespace Ur.AgentLoop;
 /// <summary>
 /// Runs a sub-agent in a fully isolated message history, then returns the
 /// final text response. This is the concrete implementation of
-/// <see cref="ISubagentRunner"/> — the interface lives in the same namespace
-/// to avoid exposing it publicly, while the concrete class can reference
-/// AgentLoop directly.
+/// <see cref="ISubagentRunner"/> — the interface lives in Ur.Tools alongside
+/// its consumer (SubagentTool). SubagentRunner already depends on Ur.Tools
+/// for ToolRegistry, so implementing the interface adds no new dependency.
 ///
 /// Architecture: SubagentRunner mirrors what <see cref="Ur.Sessions.UrSession"/>
 /// does in RunTurnAsync — build a message list, create an AgentLoop, run to

@@ -2,7 +2,7 @@ using System.Text.Json;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 
-namespace Ur.Configuration;
+namespace Ur.Settings;
 
 /// <summary>
 /// Writes settings to the appropriate JSON file (user or workspace scope),

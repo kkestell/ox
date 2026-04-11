@@ -1,4 +1,4 @@
-namespace Ur.Configuration;
+namespace Ur.Settings;
 
 /// <summary>
 /// Thrown when one or more settings values don't match their registered JSON

@@ -1,4 +1,4 @@
-namespace Ur.Configuration;
+namespace Ur.Settings;
 
 /// <summary>
 /// Determines where a setting is persisted. User-level settings live in

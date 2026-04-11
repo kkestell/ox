@@ -81,50 +81,50 @@ Order: simplest and most isolated first, largest last. The build must pass after
 
 ### Step 1 — Break Ur ↔ Ur.Hosting cycle
 
-- [ ] Add `string userDataDirectory` parameter to `UrHost` constructor (after `UrStartupOptions options`).
-- [ ] In `UrHost` constructor, replace `options.UserDataDirectory ?? ServiceCollectionExtensions.DefaultUserDataDirectory()` with the new parameter.
-- [ ] Remove `using Ur.Hosting;` from `UrHost.cs`.
-- [ ] In `ServiceCollectionExtensions.AddUr`, pass the already-resolved `userDataDirectory` local variable as the new constructor argument.
-- [ ] Update comments that reference the old fallback pattern.
-- [ ] Run `dotnet build src/Ur/` and `dotnet test tests/Ur.Tests/` — verify green.
+- [x] Add `string userDataDirectory` parameter to `UrHost` constructor (after `UrStartupOptions options`).
+- [x] In `UrHost` constructor, replace `options.UserDataDirectory ?? ServiceCollectionExtensions.DefaultUserDataDirectory()` with the new parameter.
+- [x] Remove `using Ur.Hosting;` from `UrHost.cs`.
+- [x] In `ServiceCollectionExtensions.AddUr`, pass the already-resolved `userDataDirectory` local variable as the new constructor argument.
+- [x] Update comments that reference the old fallback pattern.
+- [x] Run `dotnet build src/Ur/` and `dotnet test tests/Ur.Tests/` — verify green.
 
 ### Step 2 — Move ISubagentRunner to Ur.Tools
 
-- [ ] Move `src/Ur/AgentLoop/ISubagentRunner.cs` to `src/Ur/Tools/ISubagentRunner.cs`.
-- [ ] Change its namespace from `Ur.AgentLoop` to `Ur.Tools`.
-- [ ] In `SubagentRunner.cs`: it already has `using Ur.Tools;`, so the interface resolves. Remove any now-unnecessary usings.
-- [ ] In `SubagentTool.cs`: remove `using Ur.AgentLoop;`. The interface is now in-namespace.
-- [ ] In `UrSession.cs:197`: verify `new AgentLoop.SubagentRunner(...)` still compiles (SubagentRunner's namespace hasn't changed).
-- [ ] Update XML doc comments in ISubagentRunner.cs and SubagentTool.cs to reflect the new location.
-- [ ] Update test mocks (StubRunner, ThrowingRunner in `SubagentToolTests.cs`) — change `using Ur.AgentLoop;` to `using Ur.Tools;` if they implement ISubagentRunner.
-- [ ] Run `dotnet build src/Ur/` and `dotnet test tests/Ur.Tests/` — verify green.
+- [x] Move `src/Ur/AgentLoop/ISubagentRunner.cs` to `src/Ur/Tools/ISubagentRunner.cs`.
+- [x] Change its namespace from `Ur.AgentLoop` to `Ur.Tools`.
+- [x] In `SubagentRunner.cs`: it already has `using Ur.Tools;`, so the interface resolves. Remove any now-unnecessary usings.
+- [x] In `SubagentTool.cs`: remove `using Ur.AgentLoop;`. The interface is now in-namespace.
+- [x] In `UrSession.cs:197`: verify `new AgentLoop.SubagentRunner(...)` still compiles (SubagentRunner's namespace hasn't changed).
+- [x] Update XML doc comments in ISubagentRunner.cs and SubagentTool.cs to reflect the new location.
+- [x] Update test mocks (StubRunner, ThrowingRunner in `SubagentToolTests.cs`) — change `using Ur.AgentLoop;` to `using Ur.Tools;` if they implement ISubagentRunner.
+- [x] Run `dotnet build src/Ur/` and `dotnet test tests/Ur.Tests/` — verify green.
 
 ### Step 3 — Extract Ur.Settings from Ur.Configuration
 
-- [ ] Create directory `src/Ur/Settings/`.
-- [ ] Move these files from `src/Ur/Configuration/` to `src/Ur/Settings/`, changing namespace to `Ur.Settings`:
+- [x] Create directory `src/Ur/Settings/`.
+- [x] Move these files from `src/Ur/Configuration/` to `src/Ur/Settings/`, changing namespace to `Ur.Settings`:
   - `SettingsWriter.cs`
   - `SettingsSchemaRegistry.cs`
   - `SettingsJsonContext.cs`
   - `SettingsValidationException.cs`
   - `ConfigurationScope.cs`
-- [ ] In each moved file, update the `namespace` declaration from `Ur.Configuration` to `Ur.Settings`.
-- [ ] Add `using Ur.Settings;` to files that reference moved types:
+- [x] In each moved file, update the `namespace` declaration from `Ur.Configuration` to `Ur.Settings`.
+- [x] Add `using Ur.Settings;` to files that reference moved types:
   - `src/Ur/Configuration/UrConfiguration.cs`
   - `src/Ur/Providers/OllamaProvider.cs`
   - `src/Ur/Hosting/ServiceCollectionExtensions.cs`
-- [ ] In `OllamaProvider.cs`: replace `using Ur.Configuration;` with `using Ur.Settings;`. Verify no other Ur.Configuration types are used. **Result: Ur.Providers no longer depends on Ur.Configuration.**
-- [ ] In `UrConfiguration.cs`: add `using Ur.Settings;` alongside existing `using Ur.Providers;`. Verify all references resolve.
-- [ ] In `ServiceCollectionExtensions.cs`: add `using Ur.Settings;`. Verify SettingsWriter, SettingsSchemaRegistry, ConfigurationScope references resolve.
-- [ ] Update `tests/Ur.Tests/SettingsLoaderTests.cs`: change `using Ur.Configuration;` to `using Ur.Settings;` (or add both if UrConfiguration types are also referenced).
-- [ ] Verify internal visibility: SettingsWriter and friends are `internal`. Since they stay in the same assembly (Ur), `internal` access is preserved.
-- [ ] Run `dotnet build src/Ur/` and `dotnet test tests/Ur.Tests/` — verify green.
+- [x] In `OllamaProvider.cs`: replace `using Ur.Configuration;` with `using Ur.Settings;`. Verify no other Ur.Configuration types are used. **Result: Ur.Providers no longer depends on Ur.Configuration.**
+- [x] In `UrConfiguration.cs`: add `using Ur.Settings;` alongside existing `using Ur.Providers;`. Verify all references resolve.
+- [x] In `ServiceCollectionExtensions.cs`: add `using Ur.Settings;`. Verify SettingsWriter, SettingsSchemaRegistry, ConfigurationScope references resolve.
+- [x] Update `tests/Ur.Tests/SettingsLoaderTests.cs`: change `using Ur.Configuration;` to `using Ur.Settings;` (or add both if UrConfiguration types are also referenced).
+- [x] Verify internal visibility: SettingsWriter and friends are `internal`. Since they stay in the same assembly (Ur), `internal` access is preserved.
+- [x] Run `dotnet build src/Ur/` and `dotnet test tests/Ur.Tests/` — verify green.
 
 ### Step 4 — Replace UrHost reference in UrSession with explicit dependencies
 
 This is the largest step. The goal is to replace `private readonly UrHost _host;` with individual fields for each service UrSession actually uses.
 
-- [ ] Add new constructor parameters to `UrSession`:
+- [x] Add new constructor parameters to `UrSession`:
   - `UrConfiguration configuration`
   - `SkillRegistry skills`
   - `BuiltInCommandRegistry builtInCommands`
@@ -133,10 +133,10 @@ This is the largest step. The goal is to replace `private readonly UrHost _host;
   - `SessionStore sessions` (replaces `_host.AppendMessageAsync`)
   - `Func<string, IChatClient> chatClientFactory` (replaces `_host.CreateChatClient`)
   - `ToolRegistry? additionalTools = null` (replaces `_host._additionalTools`)
-- [ ] Remove the `UrHost host` parameter from the constructor.
-- [ ] Replace `private readonly UrHost _host;` with individual private readonly fields for each new parameter.
-- [ ] Move `BuildSessionToolRegistry` logic from `UrHost` into `UrSession` (private method). UrSession already has Skills and session ID. `BuiltinToolFactories.All` is static. The additionalTools parameter handles test injection.
-- [ ] Update every `_host.X` access in UrSession (22 sites):
+- [x] Remove the `UrHost host` parameter from the constructor.
+- [x] Replace `private readonly UrHost _host;` with individual private readonly fields for each new parameter.
+- [x] Move `BuildSessionToolRegistry` logic from `UrHost` into `UrSession` (internal method). UrSession already has Skills and session ID. `BuiltinToolFactories.All` is static. The additionalTools parameter handles test injection.
+- [x] Update every `_host.X` access in UrSession (22 sites):
   - `_host.Configuration` → `_configuration`
   - `_host.Skills` → `_skills`
   - `_host.BuiltInCommands` → `_builtInCommands`
@@ -144,14 +144,14 @@ This is the largest step. The goal is to replace `private readonly UrHost _host;
   - `_host.LoggerFactory` → `_loggerFactory`
   - `_host.AppendMessageAsync(session, msg, ct)` → `_sessions.AppendAsync(session, msg, ct)`
   - `_host.CreateChatClient(modelId)` → `_chatClientFactory(modelId)`
-  - `_host.BuildSessionToolRegistry(id, todos)` → `BuildSessionToolRegistry(id, todos)` (now local)
-- [ ] Update `UrHost.CreateSession()` to pass individual dependencies instead of `this`.
-- [ ] Update `UrHost.OpenSessionAsync()` similarly.
-- [ ] Remove `BuildSessionToolRegistry` from UrHost (or keep it as a convenience that delegates to the same static factory loop, if tests use it independently). Check if tests call `host.BuildSessionToolRegistry` — if so, keep a forwarding method or update the tests.
-- [ ] Remove the `internal` property accessors on UrHost that existed solely for UrSession: `Workspace`, `Skills`, `BuiltInCommands`, `LoggerFactory`. Keep `SettingsSchemas` if tests use it directly.
-- [ ] Remove `using Ur.Sessions;` from `UrHost.cs` if UrSession is no longer referenced (unlikely — UrHost.CreateSession still returns UrSession).
-- [ ] Run `dotnet build src/Ur/` and `dotnet test tests/Ur.Tests/` — verify green.
-- [ ] Run `dotnet test tests/Ur.IntegrationTests/` — verify green.
+  - `_host.BuildSessionToolRegistry(id, todos)` → `BuildToolRegistry()` (now local)
+- [x] Update `UrHost.CreateSession()` to pass individual dependencies instead of `this`.
+- [x] Update `UrHost.OpenSessionAsync()` similarly.
+- [x] Remove `BuildSessionToolRegistry` from UrHost. Tests updated to call `session.BuildToolRegistry()`.
+- [x] Remove `Workspace` and `LoggerFactory` internal accessors from UrHost. Kept `Skills` and `BuiltInCommands` — they serve Ox (autocomplete), not just UrSession.
+- [x] `using Ur.Sessions;` still needed — UrHost.CreateSession returns UrSession.
+- [x] Run `dotnet build src/Ur/` and `dotnet test tests/Ur.Tests/` — verify green.
+- [x] Run `dotnet test tests/Ur.IntegrationTests/` — verify green.
 
 ## Validation
 

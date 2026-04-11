@@ -1,8 +1,8 @@
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using Ur.Configuration;
-using Ur.Hosting;
 using Ur.Permissions;
+using Ur.Settings;
 using Ur.Providers;
 using Ur.Sessions;
 using Ur.Skills;
@@ -36,24 +36,20 @@ public sealed class UrHost
     private readonly string _userDataDirectory;
     private readonly ILoggerFactory _loggerFactory;
 
-    public string WorkspacePath => Workspace.RootPath;
+    public string WorkspacePath => _workspace.RootPath;
     public UrConfiguration Configuration { get; }
 
-    /// <summary>
-    /// Exposed internally so UrSession can pass the workspace to the AgentLoop,
-    /// which uses it to enforce workspace-boundary permission policy at invocation time.
-    /// </summary>
-    internal Workspace Workspace { get; }
+    private readonly Workspace _workspace;
 
     /// <summary>
-    /// The loaded skill registry. Exposed internally so UrSession can access it
-    /// for slash command lookup and skill-specific prompt sections.
+    /// The loaded skill registry. Exposed for UI consumers (e.g. autocomplete)
+    /// that need the full skill list without going through a session.
     /// </summary>
     internal SkillRegistry Skills { get; }
 
     /// <summary>
-    /// The built-in command registry. Exposed internally so UrSession can intercept
-    /// built-in commands before they reach the LLM.
+    /// The built-in command registry. Exposed for UI consumers (e.g. autocomplete)
+    /// that merge built-in commands with skills for prefix matching.
     /// </summary>
     internal BuiltInCommandRegistry BuiltInCommands { get; }
 
@@ -64,14 +60,10 @@ public sealed class UrHost
     internal SettingsSchemaRegistry SettingsSchemas { get; }
 
     /// <summary>
-    /// Logger factory passed to per-turn objects (AgentLoop, SubagentRunner) that
-    /// can't be DI-injected because they're created procedurally with per-call parameters.
-    /// </summary>
-    internal ILoggerFactory LoggerFactory => _loggerFactory;
-
-    /// <summary>
     /// DI-injectable constructor. All parameters are resolved from the container
-    /// registered by <see cref="ServiceCollectionExtensions.AddUr"/>.
+    /// registered by <see cref="Hosting.ServiceCollectionExtensions.AddUr"/>.
+    /// The <paramref name="userDataDirectory"/> is pre-resolved by the caller
+    /// so that UrHost (root namespace) doesn't depend on Ur.Hosting.
     /// </summary>
     internal UrHost(
         Workspace workspace,
@@ -82,9 +74,10 @@ public sealed class UrHost
         UrConfiguration configuration,
         ProviderRegistry providerRegistry,
         ILoggerFactory loggerFactory,
-        UrStartupOptions options)
+        Hosting.UrStartupOptions options,
+        string userDataDirectory)
     {
-        Workspace = workspace;
+        _workspace = workspace;
         _sessions = sessions;
         _providerRegistry = providerRegistry;
         Skills = skills;
@@ -92,8 +85,7 @@ public sealed class UrHost
         SettingsSchemas = settingsSchemas;
         Configuration = configuration;
         _loggerFactory = loggerFactory;
-        _userDataDirectory = options.UserDataDirectory
-            ?? ServiceCollectionExtensions.DefaultUserDataDirectory();
+        _userDataDirectory = userDataDirectory;
         _chatClientFactoryOverride = options.ChatClientFactoryOverride;
         _additionalTools = options.AdditionalTools;
 
@@ -119,52 +111,6 @@ public sealed class UrHost
         return provider.CreateChatClient(parsed.Model);
     }
 
-    /// <summary>
-    /// Builds a tool registry using the unified factory pattern. Convenience method
-    /// used by tests that need to verify tool registration. Production code should
-    /// prefer the factory loop in <see cref="Sessions.UrSession.RunTurnAsync"/>,
-    /// which has a full <see cref="ToolContext"/> including a live chat client and
-    /// turn callbacks.
-    ///
-    /// ChatClient is null here because this is called outside of a turn — no
-    /// client is needed to verify that tools are registered. Tools that require
-    /// a ChatClient at invocation time (e.g. a future SubagentTool) will throw
-    /// at invocation, not at registration.
-    /// </summary>
-    internal ToolRegistry BuildSessionToolRegistry(string sessionId, TodoStore? todos = null)
-    {
-        var registry = new ToolRegistry();
-        // Build a ToolContext carrying everything tool factories need. The TodoStore
-        // is nullable because host-level callers (tests) may not have a session —
-        // TodoWriteTool degrades gracefully when it's null.
-        var context = new ToolContext(Workspace, sessionId, todos);
-
-        // Register builtins via the same factory list used by RunTurnAsync.
-        foreach (var (factory, operationType, targetExtractor) in BuiltinToolFactories.All)
-        {
-            var tool = factory(context);
-            if (registry.Get(tool.Name) is null)
-                registry.Register(tool, operationType, targetExtractor: targetExtractor);
-        }
-
-        // Skill tool, bound to the session ID from the context for variable substitution.
-        // Using context.SessionId (rather than the local parameter) keeps the context object
-        // the single source of truth for per-session state passed to factories.
-        var skillTool = new SkillTool(Skills, context.SessionId);
-        if (registry.Get(skillTool.Name) is null)
-        {
-            registry.Register(
-                skillTool,
-                ((IToolMeta)skillTool).OperationType,
-                targetExtractor: ((IToolMeta)skillTool).TargetExtractor);
-        }
-
-        // Test-injected overrides (last-write-wins).
-        _additionalTools?.MergeInto(registry);
-
-        return registry;
-    }
-
     public IReadOnlyList<SessionInfo> ListSessions() =>
         _sessions.List()
             .Select(session => new SessionInfo(session.Id, session.CreatedAt))
@@ -180,8 +126,11 @@ public sealed class UrHost
     /// the session creates its own store.
     /// </summary>
     public UrSession CreateSession(TurnCallbacks? callbacks = null, TodoStore? todos = null) =>
-        new(this, _sessions.Create(), [], isPersisted: false, activeModelId: null,
-            callbacks, Workspace.PermissionsPath, DefaultUserPermissionsPath(), todos);
+        new(Configuration, Skills, BuiltInCommands, _workspace, _loggerFactory,
+            _sessions, CreateChatClient, _sessions.Create(), [],
+            isPersisted: false, activeModelId: null, callbacks,
+            _workspace.PermissionsPath, DefaultUserPermissionsPath(),
+            _additionalTools, todos);
 
     /// <summary>
     /// Opens an existing session by ID. See <see cref="CreateSession"/> for callback semantics.
@@ -196,12 +145,12 @@ public sealed class UrHost
             return null;
 
         var messages = (await _sessions.ReadAllAsync(session, ct)).ToList();
-        return new UrSession(this, session, messages, isPersisted: true, activeModelId: null,
-            callbacks, Workspace.PermissionsPath, DefaultUserPermissionsPath());
+        return new UrSession(Configuration, Skills, BuiltInCommands, _workspace, _loggerFactory,
+            _sessions, CreateChatClient, session, messages,
+            isPersisted: true, activeModelId: null, callbacks,
+            _workspace.PermissionsPath, DefaultUserPermissionsPath(),
+            _additionalTools);
     }
-
-    internal Task AppendMessageAsync(Session session, ChatMessage message, CancellationToken ct = default) =>
-        _sessions.AppendAsync(session, message, ct);
 
     private string DefaultUserPermissionsPath() =>
         Path.Combine(_userDataDirectory, "permissions.jsonl");

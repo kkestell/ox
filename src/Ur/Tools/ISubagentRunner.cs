@@ -1,13 +1,13 @@
-namespace Ur.AgentLoop;
+namespace Ur.Tools;
 
 /// <summary>
 /// Contract for spawning an isolated sub-agent that runs its own LLM–tool loop
 /// and returns the final text response.
 ///
-/// The interface exists to break the circular dependency that would result from
-/// SubagentTool (in Ur.Tools) directly referencing AgentLoop. The concrete
-/// SubagentRunner lives in Ur.AgentLoop; SubagentTool depends only on this
-/// interface. UrHost (above both layers) wires them together.
+/// Lives in Ur.Tools alongside its sole consumer (SubagentTool) so the Tools
+/// namespace has no dependency on Ur.AgentLoop. The concrete SubagentRunner
+/// lives in Ur.AgentLoop and implements this interface — it already depends on
+/// Ur.Tools for ToolRegistry, so the dependency is one-directional.
 ///
 /// Keeping this thin — one method, one return type — ensures the boundary stays
 /// clean. If we later need depth limits, model override, or token reporting, they

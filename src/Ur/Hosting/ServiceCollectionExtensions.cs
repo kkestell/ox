@@ -8,6 +8,7 @@ using Ur.Configuration.Keyring;
 using Ur.Logging;
 using Ur.Providers;
 using Ur.Sessions;
+using Ur.Settings;
 using Ur.Skills;
 
 namespace Ur.Hosting;
@@ -182,7 +183,8 @@ public static class ServiceCollectionExtensions
             sp.GetRequiredService<UrConfiguration>(),
             sp.GetRequiredService<ProviderRegistry>(),
             sp.GetRequiredService<ILoggerFactory>(),
-            sp.GetRequiredService<UrStartupOptions>()));
+            sp.GetRequiredService<UrStartupOptions>(),
+            userDataDirectory));
 
         return services;
     }

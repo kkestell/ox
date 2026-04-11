@@ -1,6 +1,6 @@
 using Microsoft.Extensions.AI;
 using OllamaSharp;
-using Ur.Configuration;
+using Ur.Settings;
 
 namespace Ur.Providers;
 

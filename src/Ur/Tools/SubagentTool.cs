@@ -1,6 +1,5 @@
 using System.Text.Json;
 using Microsoft.Extensions.AI;
-using Ur.AgentLoop;
 using Ur.Permissions;
 
 namespace Ur.Tools;
@@ -16,8 +15,8 @@ namespace Ur.Tools;
 ///
 /// Architecture: This class depends on <see cref="ISubagentRunner"/> (not on
 /// the concrete SubagentRunner) to keep the Tools layer free of direct AgentLoop
-/// references. The interface breaks the Ur.Tools → Ur.AgentLoop → Ur.Tools cycle.
-/// UrHost (above both layers) wires the concrete runner to this tool.
+/// references. The interface lives in Ur.Tools alongside this consumer; the
+/// concrete SubagentRunner in Ur.AgentLoop implements it.
 ///
 /// Permission classification: Execute (prompts once per call, never remembered).
 /// Spawning a sub-agent is an autonomous action that carries the same blast-radius

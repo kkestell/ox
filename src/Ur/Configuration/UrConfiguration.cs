@@ -2,6 +2,7 @@ using System.Text.Json;
 using Microsoft.Extensions.Options;
 using Ur.Configuration.Keyring;
 using Ur.Providers;
+using Ur.Settings;
 
 namespace Ur.Configuration;
 

@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Microsoft.Extensions.Configuration;
 using Ur.Configuration;
+using Ur.Settings;
 
 namespace Ur.Tests;
 

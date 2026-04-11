@@ -16,8 +16,8 @@ namespace Ur.Sessions;
 ///
 /// Sessions are the primary unit of interaction: they hold the message history,
 /// manage persistence to JSONL files, and drive the agent loop when a user sends
-/// a message. A session is created via <see cref="UrHost.CreateSession"/> (new)
-/// or <see cref="UrHost.OpenSessionAsync"/> (resume from disk).
+/// a message. A session is created via <see cref="Ur.UrHost.CreateSession"/> (new)
+/// or <see cref="Ur.UrHost.OpenSessionAsync"/> (resume from disk).
 ///
 /// Architecture: The message list is mutable and shared with the agent loop.
 /// As the loop produces assistant messages and tool results, they are appended
@@ -29,7 +29,15 @@ namespace Ur.Sessions;
 /// </summary>
 public sealed class UrSession
 {
-    private readonly UrHost _host;
+    private readonly UrConfiguration _configuration;
+    private readonly SkillRegistry _skills;
+    private readonly BuiltInCommandRegistry _builtInCommands;
+    private readonly Workspace _workspace;
+    private readonly ILoggerFactory _loggerFactory;
+    private readonly SessionStore _sessions;
+    private readonly Func<string, IChatClient> _chatClientFactory;
+    private readonly ToolRegistry? _additionalTools;
+
     private readonly Session _session;
     private readonly List<ChatMessage> _messages;
     private readonly ReadOnlyCollection<ChatMessage> _messagesView;
@@ -38,8 +46,19 @@ public sealed class UrSession
     private readonly ILogger _logger;
     private string? _activeModelId;
 
+    /// <summary>
+    /// Creates a session with explicit dependencies instead of a UrHost reference.
+    /// Each parameter represents a specific capability the session needs, keeping
+    /// the dependency surface narrow and testable.
+    /// </summary>
     internal UrSession(
-        UrHost host,
+        UrConfiguration configuration,
+        SkillRegistry skills,
+        BuiltInCommandRegistry builtInCommands,
+        Workspace workspace,
+        ILoggerFactory loggerFactory,
+        SessionStore sessions,
+        Func<string, IChatClient> chatClientFactory,
         Session session,
         List<ChatMessage> messages,
         bool isPersisted,
@@ -47,12 +66,20 @@ public sealed class UrSession
         TurnCallbacks? callbacks,
         string workspacePermissionsPath,
         string alwaysPermissionsPath,
+        ToolRegistry? additionalTools = null,
         TodoStore? todos = null)
     {
-        _host = host;
+        _configuration = configuration;
+        _skills = skills;
+        _builtInCommands = builtInCommands;
+        _workspace = workspace;
+        _loggerFactory = loggerFactory;
+        _sessions = sessions;
+        _chatClientFactory = chatClientFactory;
+        _additionalTools = additionalTools;
         _session = session;
         _messages = messages;
-        _logger = host.LoggerFactory.CreateLogger<UrSession>();
+        _logger = loggerFactory.CreateLogger<UrSession>();
         Todos = todos ?? new TodoStore();
         // Expose a read-only view so callers (TUI, CLI) can render the message
         // list without being able to mutate it — mutation must go through
@@ -63,7 +90,7 @@ public sealed class UrSession
         _hostCallbacks = callbacks;
         _grantStore = new PermissionGrantStore(
             workspacePermissionsPath, alwaysPermissionsPath,
-            host.LoggerFactory.CreateLogger<PermissionGrantStore>());
+            loggerFactory.CreateLogger<PermissionGrantStore>());
 
         // Restore token usage from persisted messages so the UI can display
         // context fill immediately when resuming a session. The last assistant
@@ -83,11 +110,6 @@ public sealed class UrSession
     public IReadOnlyList<ChatMessage> Messages => _messagesView;
 
     /// <summary>
-    /// The model used for the current (or most recent) turn. Falls back to the
-    /// host-level default if no turn has been run yet. The model is captured
-    /// per-turn so that a mid-session model switch takes effect on the next turn.
-    /// </summary>
-    /// <summary>
     /// Session-scoped todo store. The LLM writes to it via <c>todo_write</c>;
     /// callers can observe it if they need structured task state outside the
     /// raw tool-call stream. It can be injected externally or constructed
@@ -95,7 +117,12 @@ public sealed class UrSession
     /// </summary>
     public TodoStore Todos { get; }
 
-    public string? ActiveModelId => _activeModelId ?? _host.Configuration.SelectedModelId;
+    /// <summary>
+    /// The model used for the current (or most recent) turn. Falls back to the
+    /// host-level default if no turn has been run yet. The model is captured
+    /// per-turn so that a mid-session model switch takes effect on the next turn.
+    /// </summary>
+    public string? ActiveModelId => _activeModelId ?? _configuration.SelectedModelId;
 
     /// <summary>
     /// The input token count from the most recent LLM call. Represents how much
@@ -120,7 +147,7 @@ public sealed class UrSession
         // key or model selection). This check is intentionally performed here
         // rather than at session creation so that the caller gets a clear
         // exception with the specific blocking issues.
-        var readiness = _host.Configuration.Readiness;
+        var readiness = _configuration.Readiness;
         if (!readiness.CanRunTurns)
             throw new ChatNotReadyException(readiness);
 
@@ -151,7 +178,7 @@ public sealed class UrSession
 
         // Snapshot the model ID at turn start so that a concurrent config change
         // doesn't swap the model mid-conversation.
-        _activeModelId = _host.Configuration.SelectedModelId;
+        _activeModelId = _configuration.SelectedModelId;
         _logger.LogInformation("Turn started: session={SessionId}, model={ModelId}", Id, _activeModelId);
 
         // Optimistically add the user message to the in-memory list and persist
@@ -162,7 +189,7 @@ public sealed class UrSession
 
         try
         {
-            await _host.AppendMessageAsync(_session, userMessage, ct);
+            await _sessions.AppendAsync(_session, userMessage, ct);
             IsPersisted = true;
         }
         catch (Exception ex)
@@ -181,22 +208,21 @@ public sealed class UrSession
         // agent contract with feature-specific sections such as the current skill
         // listing. Keeping that composition here makes the dependency direction
         // explicit instead of letting the skills module own global prompt policy.
-        var skillPromptSection = SkillPromptSectionBuilder.Build(_host.Skills);
+        var skillPromptSection = SkillPromptSectionBuilder.Build(_skills);
         var systemPrompt = SystemPromptBuilder.Build(skillPromptSection);
 
-        // Build the per-turn tool registry from the shared factory loop in UrHost,
-        // then append SubagentTool — which can only be wired here because it needs
-        // per-turn context (chat client, callbacks, system prompt) not available in
-        // BuildSessionToolRegistry.
-        var chatClient = _host.CreateChatClient(_activeModelId!);
-        var tools = _host.BuildSessionToolRegistry(_session.Id, Todos);
+        // Build the per-turn tool registry, then append SubagentTool — which can
+        // only be wired here because it needs per-turn context (chat client,
+        // callbacks, system prompt) not available at registry build time.
+        var chatClient = _chatClientFactory(_activeModelId!);
+        var tools = BuildToolRegistry();
 
         // SubagentTool is registered after the base registry is built so the runner
         // can close over the fully-populated registry (the sub-agent inherits all
         // parent tools except run_subagent itself, which SubagentRunner excludes).
         var subagentRunner = new AgentLoop.SubagentRunner(
-            chatClient, tools, _host.Workspace, wrappedCallbacks, systemPrompt,
-            _host.LoggerFactory);
+            chatClient, tools, _workspace, wrappedCallbacks, systemPrompt,
+            _loggerFactory);
         var subagentTool = new SubagentTool(subagentRunner);
         if (tools.Get(subagentTool.Name) is null)
         {
@@ -211,9 +237,9 @@ public sealed class UrSession
         // so that tool call results survive a crash.
         var persistedCount = _messages.Count;
         var agentLoop = new AgentLoop.AgentLoop(
-            chatClient, tools, _host.Workspace,
-            _host.LoggerFactory.CreateLogger<AgentLoop.AgentLoop>(),
-            _host.LoggerFactory);
+            chatClient, tools, _workspace,
+            _loggerFactory.CreateLogger<AgentLoop.AgentLoop>(),
+            _loggerFactory);
 
         await foreach (var loopEvent in agentLoop.RunTurnAsync(_messages, wrappedCallbacks, systemPrompt, ct))
         {
@@ -233,6 +259,43 @@ public sealed class UrSession
     }
 
     /// <summary>
+    /// Builds a tool registry using the unified factory pattern. Registers all
+    /// built-in tools, the skill tool, and any test-injected additional tools.
+    ///
+    /// SubagentTool is NOT registered here — it needs per-turn context (chat
+    /// client, callbacks, system prompt) that's only available in RunTurnAsync.
+    /// RunTurnAsync appends it after calling this method.
+    /// </summary>
+    internal ToolRegistry BuildToolRegistry()
+    {
+        var registry = new ToolRegistry();
+        var context = new ToolContext(_workspace, _session.Id, Todos);
+
+        // Register builtins via the shared factory list.
+        foreach (var (factory, operationType, targetExtractor) in BuiltinToolFactories.All)
+        {
+            var tool = factory(context);
+            if (registry.Get(tool.Name) is null)
+                registry.Register(tool, operationType, targetExtractor: targetExtractor);
+        }
+
+        // Skill tool, bound to the session ID for variable substitution.
+        var skillTool = new SkillTool(_skills, context.SessionId);
+        if (registry.Get(skillTool.Name) is null)
+        {
+            registry.Register(
+                skillTool,
+                ((IToolMeta)skillTool).OperationType,
+                targetExtractor: ((IToolMeta)skillTool).TargetExtractor);
+        }
+
+        // Test-injected overrides (last-write-wins).
+        _additionalTools?.MergeInto(registry);
+
+        return registry;
+    }
+
+    /// <summary>
     /// Attempts to handle a slash command. Returns true if the command was
     /// recognized (either as a built-in or a user-invocable skill), false if
     /// unknown. When true, <paramref name="expansion"/> is:
@@ -249,7 +312,7 @@ public sealed class UrSession
         var commandName = SlashCommandParser.ParseName(input);
 
         // Built-in interception: log and swallow — actual execution is future work.
-        if (_host.BuiltInCommands.Get(commandName) is not null)
+        if (_builtInCommands.Get(commandName) is not null)
         {
             _logger.LogInformation("Built-in command /{Name} invoked (not yet implemented)", commandName);
             expansion = null;
@@ -257,7 +320,7 @@ public sealed class UrSession
         }
 
         var args = SlashCommandParser.ParseArgs(input);
-        var skill = _host.Skills.Get(commandName);
+        var skill = _skills.Get(commandName);
         if (skill is null || !skill.UserInvocable)
         {
             expansion = null;
@@ -336,7 +399,7 @@ public sealed class UrSession
         {
             try
             {
-                await _host.AppendMessageAsync(_session, _messages[persistedCount], ct);
+                await _sessions.AppendAsync(_session, _messages[persistedCount], ct);
                 IsPersisted = true;
                 persistedCount++;
             }
