@@ -142,15 +142,14 @@ public static class ServiceCollectionExtensions
         foreach (var name in providerConfig.ProviderNames)
         {
             var entry = providerConfig.GetEntry(name)!;
-            var capturedName = name; // Capture for closure.
 
             switch (entry.Type)
             {
                 case "openai-compatible":
-                    var endpoint = entry.Url is not null ? new Uri(entry.Url) : null;
+                    var endpoint = entry.Endpoint;
                     services.AddSingleton<IProvider>(sp =>
                         new OpenAiCompatibleProvider(
-                            capturedName, endpoint, sp.GetRequiredService<IKeyring>()));
+                            name, endpoint, sp.GetRequiredService<IKeyring>()));
                     break;
 
                 case "google":
@@ -159,11 +158,9 @@ public static class ServiceCollectionExtensions
                     break;
 
                 case "ollama":
-                    var ollamaUri = entry.Url is not null
-                        ? new Uri(entry.Url)
-                        : new Uri("http://localhost:11434");
+                    var ollamaUri = entry.Endpoint ?? new Uri("http://localhost:11434");
                     services.AddSingleton<IProvider>(
-                        new OllamaProvider(capturedName, ollamaUri));
+                        new OllamaProvider(name, ollamaUri));
                     break;
 
                 default:

@@ -18,9 +18,23 @@ internal sealed class ProviderConfig
 {
     private readonly Dictionary<string, ProviderConfigEntry> _entries;
 
+    // Cached sorted list of all "provider/model" IDs. Built once on construction
+    // because the config is immutable — avoids re-allocating and re-sorting on
+    // every call to ListAllModelIds().
+    private readonly IReadOnlyList<string> _allModelIds;
+
     private ProviderConfig(Dictionary<string, ProviderConfigEntry> entries)
     {
         _entries = entries;
+
+        var all = new List<string>();
+        foreach (var (name, entry) in _entries)
+        {
+            foreach (var model in entry.Models)
+                all.Add($"{name}/{model.Id}");
+        }
+        all.Sort(StringComparer.OrdinalIgnoreCase);
+        _allModelIds = all;
     }
 
     /// <summary>
@@ -69,49 +83,52 @@ internal sealed class ProviderConfig
     /// <summary>
     /// Returns all model IDs across all providers, prefixed with the provider name
     /// (e.g. "openai/gpt-4o"), sorted alphabetically for stable display order.
+    /// The list is built once at construction time — no allocation on each call.
     /// </summary>
-    public IReadOnlyList<string> ListAllModelIds()
-    {
-        var all = new List<string>();
-
-        foreach (var (name, entry) in _entries)
-        {
-            foreach (var model in entry.Models)
-                all.Add($"{name}/{model.Id}");
-        }
-
-        all.Sort(StringComparer.OrdinalIgnoreCase);
-        return all;
-    }
+    public IReadOnlyList<string> ListAllModelIds() => _allModelIds;
 
     /// <summary>
     /// Loads and validates providers.json from the given path.
     ///
     /// Throws <see cref="FileNotFoundException"/> if the file doesn't exist.
-    /// Throws <see cref="InvalidOperationException"/> if the JSON is malformed
-    /// or any model entry is missing a valid <c>context_in</c>.
+    /// Throws <see cref="InvalidOperationException"/> if the JSON is malformed,
+    /// any model entry is missing a valid <c>context_in</c>, or a URL is invalid.
     /// </summary>
     public static ProviderConfig Load(string path)
     {
-        if (!File.Exists(path))
+        string json;
+        try
+        {
+            json = File.ReadAllText(path);
+        }
+        catch (FileNotFoundException)
+        {
             throw new FileNotFoundException(
                 $"providers.json not found at '{path}'. " +
                 "Create it to configure your model providers.",
                 path);
+        }
 
-        var json = File.ReadAllText(path);
         var wrapper = JsonSerializer.Deserialize(json, ProviderConfigJsonContext.Default.ProviderConfigRoot);
 
         if (wrapper?.Providers is not { } raw || raw.Count == 0)
             throw new InvalidOperationException(
                 $"Failed to parse providers.json at '{path}' — the file is empty or contains invalid JSON.");
 
-        // Validate every model entry has a positive context_in.
         foreach (var (providerName, entry) in raw)
         {
             if (entry.Models is null || entry.Models.Count == 0)
                 throw new InvalidOperationException(
                     $"Provider '{providerName}' in providers.json has no models defined.");
+
+            // Parse and cache the endpoint URI so consumers don't repeat the work.
+            if (entry.Url is not null)
+            {
+                if (!Uri.TryCreate(entry.Url, UriKind.Absolute, out var uri))
+                    throw new InvalidOperationException(
+                        $"Provider '{providerName}' in providers.json has invalid URL: '{entry.Url}'.");
+                entry.Endpoint = uri;
+            }
 
             foreach (var model in entry.Models)
             {
@@ -149,6 +166,13 @@ internal sealed class ProviderConfigEntry
 
     [JsonPropertyName("models")]
     public List<ProviderModelEntry> Models { get; set; } = [];
+
+    /// <summary>
+    /// Pre-parsed URI from <see cref="Url"/>. Set during <see cref="ProviderConfig.Load"/>
+    /// validation so consumers don't repeat URI parsing. Null when no URL is configured.
+    /// </summary>
+    [JsonIgnore]
+    public Uri? Endpoint { get; internal set; }
 }
 
 /// <summary>

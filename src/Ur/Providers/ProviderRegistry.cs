@@ -32,10 +32,4 @@ internal sealed class ProviderRegistry
     /// All registered provider names, for use in help text and error messages.
     /// </summary>
     public IReadOnlyCollection<string> ProviderNames => _providers.Keys;
-
-    /// <summary>
-    /// All registered providers, for iteration by aggregation code like
-    /// <see cref="Configuration.UrConfiguration.ListAllModelIdsAsync"/>.
-    /// </summary>
-    public IReadOnlyCollection<IProvider> Providers => _providers.Values;
 }

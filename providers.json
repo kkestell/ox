@@ -1,0 +1,102 @@
+{
+  "providers": {
+    "openai": {
+    "type": "openai-compatible",
+    "models": [
+      {
+        "name": "GPT-5.4",
+        "id": "gpt-5.4",
+        "context_in": 1000000
+      },
+      {
+        "name": "GPT-5.4 Mini",
+        "id": "gpt-5.4-mini",
+        "context_in": 400000
+      },
+      {
+        "name": "GPT-5.4 Nano",
+        "id": "gpt-5.4-nano",
+        "context_in": 400000
+      }
+    ]
+  },
+  "google": {
+    "type": "google",
+    "models": [
+      {
+        "name": "Gemini 3.1 Pro Preview",
+        "id": "gemini-3.1-pro-preview",
+        "context_in": 1048576
+      },
+      {
+        "name": "Gemini 3 Flash Preview",
+        "id": "gemini-3-flash-preview",
+        "context_in": 1048576
+      },
+      {
+        "name": "Gemini 3.1 Flash Lite Preview",
+        "id": "gemini-3.1-flash-lite-preview",
+        "context_in": 1048576
+      }
+    ]
+  },
+  "ollama": {
+    "type": "ollama",
+    "url": "http://kyles-mac-mini.local:11434",
+    "models": [
+      {
+        "name": "Qwen3 8B",
+        "id": "qwen3:8b",
+        "context_in": 40960
+      }
+    ]
+  },
+  "openrouter": {
+    "type": "openai-compatible",
+    "url": "https://openrouter.ai/api/v1",
+    "models": [
+      {
+        "name": "Qwen3 Coder Next",
+        "id": "qwen/qwen3-coder-next",
+        "context_in": 262144
+      },
+      {
+        "name": "MiniMax M2.5",
+        "id": "minimax/minimax-m2.5",
+        "context_in": 196608
+      },
+      {
+        "name": "Nemotron 3 Super",
+        "id": "nvidia/nemotron-3-super-120b-a12b",
+        "context_in": 262144
+      }
+    ]
+  },
+  "zai-coding": {
+    "type": "openai-compatible",
+    "url": "https://api.z.ai/api/coding/paas/v4",
+    "models": [
+      {
+        "name": "GLM 5.1",
+        "id": "glm-5.1",
+        "context_in": 200000
+      },
+      {
+        "name": "GLM 5 Turbo",
+        "id": "glm-5-turbo",
+        "context_in": 200000
+      },
+      {
+        "name": "GLM 4.7",
+        "id": "glm-4.7",
+        "context_in": 200000
+      },
+      {
+        "name": "GLM 4.5 Air",
+        "id": "glm-4.5-air",
+        "context_in": 128000
+      }
+    ]
+    }
+  }
+}
