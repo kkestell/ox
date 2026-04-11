@@ -85,15 +85,6 @@ public static class ServiceCollectionExtensions
             new UrOptionsMonitor(sp.GetRequiredService<IConfiguration>()));
 
         services.AddSingleton(sp =>
-        {
-            var cacheDir = Path.Combine(userDataDirectory, "cache");
-            var logger = sp.GetRequiredService<ILoggerFactory>().CreateLogger(nameof(ModelCatalog));
-            var catalog = new ModelCatalog(cacheDir, logger);
-            _ = catalog.LoadCache();
-            return catalog;
-        });
-
-        services.AddSingleton(sp =>
             new SessionStore(
                 sp.GetRequiredService<Workspace>().SessionsDirectory,
                 sp.GetRequiredService<ILoggerFactory>().CreateLogger<SessionStore>()));
@@ -139,19 +130,48 @@ public static class ServiceCollectionExtensions
 
         // Provider registry — maps provider name prefixes to IProvider implementations.
         //
-        // Each provider is registered as an individual IProvider service. The registry
-        // is then built from the resolved list, so fake-provider registration can be
-        // conditional and localized to startup options without touching production code.
-        services.AddSingleton<IProvider>(sp =>
-            new OpenRouterProvider(sp.GetRequiredService<IKeyring>(), sp.GetRequiredService<ModelCatalog>()));
-        services.AddSingleton<IProvider>(sp =>
-            new OpenAiProvider(sp.GetRequiredService<IKeyring>()));
-        services.AddSingleton<IProvider>(sp =>
-            new GoogleProvider(sp.GetRequiredService<IKeyring>()));
-        services.AddSingleton<IProvider>(sp =>
-            new OllamaProvider(sp.GetRequiredService<SettingsWriter>()));
-        services.AddSingleton<IProvider>(sp =>
-            new ZaiCodingProvider(sp.GetRequiredService<IKeyring>()));
+        // Providers are instantiated from providers.json configuration. Each entry
+        // declares the provider type (openai-compatible, google, ollama) and optional
+        // endpoint URL. The config-driven loop replaces the old hardcoded per-provider
+        // DI registrations.
+        var providersJsonPath = options.ProvidersJsonPath
+            ?? Path.Combine(userDataDirectory, "providers.json");
+        var providerConfig = ProviderConfig.Load(providersJsonPath);
+        services.AddSingleton(providerConfig);
+
+        foreach (var name in providerConfig.ProviderNames)
+        {
+            var entry = providerConfig.GetEntry(name)!;
+            var capturedName = name; // Capture for closure.
+
+            switch (entry.Type)
+            {
+                case "openai-compatible":
+                    var endpoint = entry.Url is not null ? new Uri(entry.Url) : null;
+                    services.AddSingleton<IProvider>(sp =>
+                        new OpenAiCompatibleProvider(
+                            capturedName, endpoint, sp.GetRequiredService<IKeyring>()));
+                    break;
+
+                case "google":
+                    services.AddSingleton<IProvider>(sp =>
+                        new GoogleProvider(sp.GetRequiredService<IKeyring>()));
+                    break;
+
+                case "ollama":
+                    var ollamaUri = entry.Url is not null
+                        ? new Uri(entry.Url)
+                        : new Uri("http://localhost:11434");
+                    services.AddSingleton<IProvider>(
+                        new OllamaProvider(capturedName, ollamaUri));
+                    break;
+
+                default:
+                    // Unknown provider type — skip silently. The user may have
+                    // a newer providers.json format than this version of Ur supports.
+                    break;
+            }
+        }
 
         // If startup options request a fake provider, register it as an additional
         // IProvider service. The registry will pick it up alongside the real providers.
@@ -167,11 +187,11 @@ public static class ServiceCollectionExtensions
         });
 
         services.AddSingleton(sp => new UrConfiguration(
-            sp.GetRequiredService<ModelCatalog>(),
             sp.GetRequiredService<IOptionsMonitor<UrOptions>>(),
             sp.GetRequiredService<SettingsWriter>(),
             sp.GetRequiredService<IKeyring>(),
             sp.GetRequiredService<ProviderRegistry>(),
+            sp.GetRequiredService<ProviderConfig>(),
             options.SelectedModelOverride));
 
         // UrHost: registered via factory because the constructor is internal
@@ -184,6 +204,7 @@ public static class ServiceCollectionExtensions
             sp.GetRequiredService<SettingsSchemaRegistry>(),
             sp.GetRequiredService<UrConfiguration>(),
             sp.GetRequiredService<ProviderRegistry>(),
+            sp.GetRequiredService<ProviderConfig>(),
             sp.GetRequiredService<ILoggerFactory>(),
             sp.GetRequiredService<UrStartupOptions>(),
             userDataDirectory));
@@ -207,7 +228,6 @@ public static class ServiceCollectionExtensions
         var stringSchema = System.Text.Json.JsonDocument.Parse("""{"type":"string"}""")
             .RootElement.Clone();
         registry.Register(UrConfiguration.ModelSettingKey, stringSchema);
-        registry.Register(OllamaProvider.UriSettingKey, stringSchema);
     }
 
     internal static string DefaultUserDataDirectory() =>

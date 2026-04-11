@@ -248,40 +248,23 @@ public sealed class ConfigurationTests : IDisposable
     [Fact]
     public async Task ListAllModelIds_AggregatesAndPrefixes()
     {
-        // The FakeProvider always returns built-in scenario names, so its models
-        // will appear prefixed with "fake/". Other providers (OpenAI, ZaiCoding)
-        // contribute their static tables. Google returns null and is skipped.
+        // providers.json declares models for openai, google, ollama, openrouter,
+        // zai-coding. ListAllModelIds reads from the static config.
         using var workspace = new TempWorkspace();
-        var host = await TestHostBuilder.CreateHostAsync(
-            workspace,
-            fakeProvider: new FakeProvider());
+        var host = await CreateHostAsync(workspace);
 
-        var models = await host.Configuration.ListAllModelIdsAsync();
+        var models = host.Configuration.ListAllModelIds();
 
-        // Should contain fake provider models prefixed with "fake/".
-        Assert.Contains("fake/hello", models);
-        Assert.Contains("fake/tool-call", models);
-
-        // Should contain static provider models (OpenAI, ZaiCoding).
+        // Should contain models from the test providers.json.
         Assert.Contains("openai/gpt-4o", models);
-        Assert.Contains("zai-coding/glm-5.1", models);
+        Assert.Contains("google/gemini-3.1-pro-preview", models);
+        Assert.Contains("ollama/qwen3:4b", models);
+        Assert.Contains("openrouter/anthropic/claude-3.5-sonnet", models);
+        Assert.Contains("zai-coding/glm-4.7", models);
 
         // The list should be sorted.
         var sorted = models.OrderBy(m => m, StringComparer.OrdinalIgnoreCase).ToList();
         Assert.Equal(sorted, models);
-    }
-
-    [Fact]
-    public async Task ListAllModelIds_SkipsProvidersReturningNull()
-    {
-        // Google returns null from ListModelIdsAsync — it should be absent
-        // from the aggregated list without causing errors.
-        using var workspace = new TempWorkspace();
-        var host = await CreateHostAsync(workspace);
-
-        var models = await host.Configuration.ListAllModelIdsAsync();
-
-        Assert.DoesNotContain(models, m => m.StartsWith("google/"));
     }
 
     // ─── Helpers ──────────────────────────────────────────────────────

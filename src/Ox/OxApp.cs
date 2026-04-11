@@ -463,20 +463,9 @@ public sealed class OxApp : IDisposable
                         {
                             if (!_contextWindowCache.TryGetValue(modelId, out var contextWindow))
                             {
-                                // First time seeing this model — resolve synchronously and cache.
-                                // This blocks briefly on first use per model, but provider resolutions
-                                // are fast: local dictionary lookups for OpenAI/OpenRouter/Fake, one
-                                // cached-after-first API call for Google/Ollama. The turn itself took
-                                // seconds, so a sub-second resolution delay is imperceptible.
-                                try
-                                {
-                                    contextWindow = _host.ResolveContextWindowAsync(modelId)
-                                        .GetAwaiter().GetResult();
-                                }
-                                catch
-                                {
-                                    contextWindow = null;
-                                }
+                                // First time seeing this model — resolve and cache. ResolveContextWindow
+                                // returns null for models not declared in providers.json (e.g. FakeProvider).
+                                contextWindow = _host.ResolveContextWindow(modelId);
                                 _contextWindowCache[modelId] = contextWindow;
                             }
 

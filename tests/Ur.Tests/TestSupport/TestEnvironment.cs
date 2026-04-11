@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Hosting;
 using Ur.Configuration.Keyring;
+using Ur.Providers;
 
 namespace Ur.Tests.TestSupport;
 
@@ -60,35 +61,76 @@ internal sealed class TempWorkspace : IDisposable
 }
 
 /// <summary>
-/// Creates <see cref="ModelCatalog"/> instances for tests. The empty variant
-/// is for tests that construct providers but don't need real catalog data.
-/// The populated variant writes a minimal cache file so <see cref="Providers.ModelCatalog.LoadCache"/>
-/// returns real model entries.
+/// Writes a providers.json file to the given directory and returns its path.
+/// Default content matches the repo's providers.json shape with a minimal
+/// set of providers and models suitable for tests.
 /// </summary>
-internal static class TestCatalog
+internal static class TestProviderConfig
 {
-    public static Providers.ModelCatalog CreateEmpty() =>
-        new(Path.Combine(Path.GetTempPath(), "ur-tests", Guid.NewGuid().ToString("N")));
+    /// <summary>
+    /// Minimal providers.json with all five provider types for integration-style
+    /// tests that need the full provider registry.
+    /// </summary>
+    internal const string DefaultJson = """
+        {
+          "providers": {
+            "openai": {
+              "type": "openai-compatible",
+              "models": [
+                { "name": "GPT-4o", "id": "gpt-4o", "context_in": 128000 }
+              ]
+            },
+            "google": {
+              "type": "google",
+              "models": [
+                { "name": "Gemini 3.1 Pro", "id": "gemini-3.1-pro-preview", "context_in": 1048576 }
+              ]
+            },
+            "ollama": {
+              "type": "ollama",
+              "url": "http://localhost:11434",
+              "models": [
+                { "name": "Qwen3 4B", "id": "qwen3:4b", "context_in": 40960 }
+              ]
+            },
+            "openrouter": {
+              "type": "openai-compatible",
+              "url": "https://openrouter.ai/api/v1",
+              "models": [
+                { "name": "Claude 3.5 Sonnet", "id": "anthropic/claude-3.5-sonnet", "context_in": 200000 }
+              ]
+            },
+            "zai-coding": {
+              "type": "openai-compatible",
+              "url": "https://open.bigmodel.cn/api/paas/v4",
+              "models": [
+                { "name": "GLM-4.7", "id": "glm-4.7", "context_in": 200000 }
+              ]
+            }
+          }
+        }
+        """;
 
     /// <summary>
-    /// Creates a catalog pre-populated with the given model entries.
-    /// Writes a cache file in the OpenRouter API format and calls LoadCache().
+    /// Writes a providers.json to the given directory and returns the file path.
     /// </summary>
-    public static Providers.ModelCatalog CreateWithModels(params (string id, int contextLength)[] models)
+    public static string Write(string directory, string? json = null)
     {
-        var cacheDir = Path.Combine(Path.GetTempPath(), "ur-tests", Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(cacheDir);
+        var path = Path.Combine(directory, "providers.json");
+        File.WriteAllText(path, json ?? DefaultJson);
+        return path;
+    }
 
-        // Build a minimal JSON array matching the OpenRouter API shape.
-        // Architecture must be non-null or LoadCache() rejects the cache as stale.
-        var entries = models.Select(m =>
-            $$$"""{"id":"{{{m.id}}}","name":"{{{m.id}}}","context_length":{{{m.contextLength}}},"architecture":{"modality":"text"}}""");
-        var json = $"[{string.Join(",", entries)}]";
-        File.WriteAllText(Path.Combine(cacheDir, "models.json"), json);
-
-        var catalog = new Providers.ModelCatalog(cacheDir);
-        catalog.LoadCache();
-        return catalog;
+    /// <summary>
+    /// Creates a <see cref="ProviderConfig"/> from the default test JSON.
+    /// Writes to a temp directory that the caller should clean up.
+    /// </summary>
+    public static ProviderConfig CreateDefault()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "ur-tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        var path = Write(dir);
+        return ProviderConfig.Load(path);
     }
 }
 

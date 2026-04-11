@@ -66,4 +66,11 @@ public sealed class UrStartupOptions
     /// rewriting user or workspace settings files.
     /// </summary>
     public string? SelectedModelOverride { get; init; }
+
+    /// <summary>
+    /// Override path to providers.json. When null, defaults to
+    /// {UserDataDirectory}/providers.json. Tests use this to point at
+    /// a temp-directory providers.json.
+    /// </summary>
+    public string? ProvidersJsonPath { get; init; }
 }

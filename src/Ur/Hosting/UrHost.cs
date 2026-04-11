@@ -26,6 +26,7 @@ public sealed class UrHost
 {
     private readonly SessionStore _sessions;
     private readonly ProviderRegistry _providerRegistry;
+    private readonly ProviderConfig _providerConfig;
     private readonly Func<string, IChatClient>? _chatClientFactoryOverride;
 
     // Test-only: additional tools to merge into every session registry. Allows
@@ -71,6 +72,7 @@ public sealed class UrHost
         SettingsSchemaRegistry settingsSchemas,
         UrConfiguration configuration,
         ProviderRegistry providerRegistry,
+        ProviderConfig providerConfig,
         ILoggerFactory loggerFactory,
         UrStartupOptions options,
         string userDataDirectory)
@@ -78,6 +80,7 @@ public sealed class UrHost
         _workspace = workspace;
         _sessions = sessions;
         _providerRegistry = providerRegistry;
+        _providerConfig = providerConfig;
         Skills = skills;
         BuiltInCommands = builtInCommands;
         SettingsSchemas = settingsSchemas;
@@ -110,22 +113,32 @@ public sealed class UrHost
     }
 
     /// <summary>
-    /// Resolves the context window size for the given model ID by parsing the provider
-    /// prefix and delegating to the provider's metadata resolution. Follows the same
-    /// "provider/model" parsing pattern as <see cref="CreateChatClient"/>.
+    /// Resolves the context window size for the given model ID from the static
+    /// providers.json configuration. Follows the same "provider/model" parsing
+    /// pattern as <see cref="CreateChatClient"/>.
     ///
-    /// Returns null if the provider is unknown or the provider can't determine the
-    /// context window — the caller should treat null as "unknown" and omit the
-    /// context percentage display.
+    /// Returns null if the model ID can't be parsed or the provider/model is not
+    /// declared in providers.json. The caller should treat null as "unknown" and
+    /// omit the context percentage display.
     /// </summary>
-    public async Task<int?> ResolveContextWindowAsync(string modelId, CancellationToken ct = default)
+    public int? ResolveContextWindow(string modelId)
     {
-        var parsed = ModelId.Parse(modelId);
-        var provider = _providerRegistry.Get(parsed.Provider);
-        if (provider is null)
+        try
+        {
+            var parsed = ModelId.Parse(modelId);
+            return _providerConfig.GetContextWindow(parsed.Provider, parsed.Model);
+        }
+        catch (ArgumentException)
+        {
+            // Model ID didn't parse (e.g. no "provider/" prefix).
             return null;
-
-        return await provider.GetContextWindowAsync(parsed.Model, ct);
+        }
+        catch (InvalidOperationException)
+        {
+            // Provider or model not in config — e.g. FakeProvider models
+            // that exist only for testing and aren't declared in providers.json.
+            return null;
+        }
     }
 
     public IReadOnlyList<SessionInfo> ListSessions() =>

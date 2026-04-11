@@ -36,25 +36,4 @@ internal interface IProvider
     /// what the user needs to fix (e.g. "No API key for 'openai'").
     /// </summary>
     string? GetBlockingIssue();
-
-    /// <summary>
-    /// Resolves the context window size (max input tokens) for the given model.
-    /// Returns null if the provider cannot determine the context window (e.g. unknown
-    /// model, API unreachable). Each provider uses its own authoritative source —
-    /// Google queries the Gemini API, OpenRouter reads from the model catalog,
-    /// Ollama calls its local /api/show endpoint, etc.
-    /// </summary>
-    Task<int?> GetContextWindowAsync(string model, CancellationToken ct = default);
-
-    /// <summary>
-    /// Returns the model IDs available from this provider, or null if the provider
-    /// does not support listing.
-    /// Each ID is the model-local portion (everything after the provider prefix),
-    /// matching the format accepted by <see cref="CreateChatClient"/>.
-    ///
-    /// Strategies vary by provider: Ollama queries the local instance via /api/tags,
-    /// OpenRouter delegates to its <see cref="ModelCatalog"/>, and static providers
-    /// (OpenAI, ZaiCoding, Google) return their known model tables.
-    /// </summary>
-    Task<IReadOnlyList<string>?> ListModelIdsAsync(CancellationToken ct = default);
 }

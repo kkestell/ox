@@ -41,7 +41,25 @@ public static class Program
             };
         }
 
-        services.AddUr(startupOptions);
+        // AddUr loads providers.json — if the file is missing or malformed,
+        // we catch the error here and exit with a clear message instead of
+        // dumping a raw exception trace to the terminal.
+        try
+        {
+            services.AddUr(startupOptions);
+        }
+        catch (FileNotFoundException ex) when (ex.Message.Contains("providers.json"))
+        {
+            await Console.Error.WriteLineAsync(
+                $"Error: {ex.Message}\nSee docs/settings.md for the expected format.");
+            return 1;
+        }
+        catch (InvalidOperationException ex) when (ex.Message.Contains("providers.json"))
+        {
+            await Console.Error.WriteLineAsync($"Error: {ex.Message}");
+            return 1;
+        }
+
         using var sp = services.BuildServiceProvider();
         var host = sp.GetRequiredService<UrHost>();
 
@@ -108,7 +126,7 @@ public static class Program
                         // Show available models when the user asks for discovery.
                         if (modelInput == "?")
                         {
-                            await ShowAvailableModelsAsync(config);
+                            ShowAvailableModels(config);
                             break;
                         }
 
@@ -143,9 +161,9 @@ public static class Program
     /// at the model selection prompt, giving them discovery without requiring prior
     /// knowledge of provider/model naming.
     /// </summary>
-    private static async Task ShowAvailableModelsAsync(UrConfiguration config)
+    private static void ShowAvailableModels(UrConfiguration config)
     {
-        var models = await config.ListAllModelIdsAsync();
+        var models = config.ListAllModelIds();
         if (models.Count == 0)
         {
             Console.WriteLine("No models available from any provider.");

@@ -15,6 +15,9 @@ namespace Ur.Tests.TestSupport;
 /// the real object graph. The <see cref="IHost"/> is attached to the
 /// <see cref="TempWorkspace"/> so it is disposed when the workspace is disposed,
 /// preventing leaks of DI-managed singletons.
+///
+/// Writes a default providers.json (via <see cref="TestProviderConfig"/>) into
+/// the workspace's user-data directory unless the caller supplies a custom path.
 /// </summary>
 internal static class TestHostBuilder
 {
@@ -29,8 +32,13 @@ internal static class TestHostBuilder
         Func<string, IChatClient>? chatClientFactory = null,
         ToolRegistry? additionalTools = null,
         IProvider? fakeProvider = null,
-        string? selectedModelOverride = null)
+        string? selectedModelOverride = null,
+        string? providersJsonPath = null)
     {
+        // Write the default test providers.json unless the caller explicitly provides a path.
+        var effectivePath = providersJsonPath
+            ?? TestProviderConfig.Write(workspace.UserDataDirectory);
+
         var builder = Host.CreateApplicationBuilder();
         builder.Services.AddUr(new UrStartupOptions
         {
@@ -42,6 +50,7 @@ internal static class TestHostBuilder
             AdditionalTools = additionalTools,
             FakeProvider = fakeProvider,
             SelectedModelOverride = selectedModelOverride,
+            ProvidersJsonPath = effectivePath,
         });
 
         var host = builder.Build();

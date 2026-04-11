@@ -19,9 +19,7 @@ namespace Ur.Configuration;
 ///     are never written to plain-text JSON files.
 ///
 /// This class also exposes <see cref="Readiness"/>, which the UI layer checks
-/// before attempting to start a chat turn, and <see cref="AvailableModels"/>,
-/// which filters the full model catalog to only those that support text-to-text
-/// with tool use — the subset that the agent loop can actually drive.
+/// before attempting to start a chat turn.
 /// </summary>
 public sealed class UrConfiguration
 {
@@ -34,11 +32,11 @@ public sealed class UrConfiguration
     // "openai", "google"). Ollama needs no key.
     private const string SecretService = "ur";
 
-    private readonly ModelCatalog _modelCatalog;
     private readonly IOptionsMonitor<UrOptions> _optionsMonitor;
     private readonly SettingsWriter _settingsWriter;
     private readonly IKeyring _keyring;
     private readonly ProviderRegistry _providerRegistry;
+    private readonly ProviderConfig _providerConfig;
 
     // Ephemeral model override from startup options. When set, takes priority
     // over persisted settings so test mode (--fake-provider) can select a model
@@ -46,18 +44,18 @@ public sealed class UrConfiguration
     private readonly string? _selectedModelOverride;
 
     internal UrConfiguration(
-        ModelCatalog modelCatalog,
         IOptionsMonitor<UrOptions> optionsMonitor,
         SettingsWriter settingsWriter,
         IKeyring keyring,
         ProviderRegistry providerRegistry,
+        ProviderConfig providerConfig,
         string? selectedModelOverride = null)
     {
-        _modelCatalog = modelCatalog;
         _optionsMonitor = optionsMonitor;
         _settingsWriter = settingsWriter;
         _keyring = keyring;
         _providerRegistry = providerRegistry;
+        _providerConfig = providerConfig;
         _selectedModelOverride = selectedModelOverride;
     }
 
@@ -78,57 +76,14 @@ public sealed class UrConfiguration
         _selectedModelOverride ?? _optionsMonitor.CurrentValue.Model;
 
     /// <summary>
-    /// Models suitable for the chat interface. Filters the full OpenRouter
-    /// catalog to only those that:
-    ///   1. Accept text input and produce text output (parsed from the
-    ///      "input+input->output+output" modality string).
-    ///   2. Support the "tools" parameter (required by the agent loop).
-    /// This avoids presenting models that would fail at runtime.
+    /// Aggregates model IDs across all providers declared in providers.json.
+    /// Each model is prefixed with its provider name (e.g. "openai/gpt-4o").
+    /// The combined list is sorted alphabetically for stable display order.
+    /// Synchronous — all data comes from the static providers.json config, no
+    /// network calls needed.
     /// </summary>
-    public IReadOnlyList<ModelInfo> AvailableModels => _modelCatalog.Models
-        .Where(m => m.Modality is { } mod && mod.Split("->") is [var input, var output] && input.Split('+').Contains("text") && output.Split('+').Contains("text"))
-        .Where(m => m.SupportedParameters.Contains("tools", StringComparer.OrdinalIgnoreCase))
-        .OrderBy(m => m.Id, StringComparer.OrdinalIgnoreCase)
-        .ToList();
-
-    /// <summary>
-    /// All models in the raw catalog, sorted by ID. Unlike <see cref="AvailableModels"/>,
-    /// this includes models that lack tool support or non-text modalities — useful for
-    /// browsing or debugging what OpenRouter offers beyond the chat-capable subset.
-    /// </summary>
-    public IReadOnlyList<ModelInfo> AllModels => _modelCatalog.Models
-        .OrderBy(m => m.Id, StringComparer.OrdinalIgnoreCase)
-        .ToList();
-
-    /// <summary>
-    /// Aggregates model IDs across all registered providers. Each provider is queried
-    /// via <see cref="IProvider.ListModelIdsAsync"/> and results are prefixed with the
-    /// provider name (e.g. "ollama/llama3", "openai/gpt-4o"). Providers that return
-    /// null (listing not supported or unavailable) are skipped. The combined list is
-    /// sorted alphabetically for stable display order.
-    /// </summary>
-    public async Task<IReadOnlyList<string>> ListAllModelIdsAsync(CancellationToken ct = default)
-    {
-        var all = new List<string>();
-
-        foreach (var provider in _providerRegistry.Providers)
-        {
-            var models = await provider.ListModelIdsAsync(ct);
-            if (models is null)
-                continue;
-
-            foreach (var id in models)
-                all.Add($"{provider.Name}/{id}");
-        }
-
-        all.Sort(StringComparer.OrdinalIgnoreCase);
-        return all;
-    }
-
-    public ModelInfo? GetModel(string modelId) => _modelCatalog.GetModel(modelId);
-
-    public Task RefreshModelsAsync(CancellationToken ct = default) =>
-        _modelCatalog.RefreshAsync(ct);
+    public IReadOnlyList<string> ListAllModelIds() =>
+        _providerConfig.ListAllModelIds();
 
     /// <summary>
     /// Stores an API key in the OS keyring for the given provider.

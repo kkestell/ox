@@ -5,176 +5,26 @@ using Ur.Tests.TestSupport;
 namespace Ur.Tests;
 
 /// <summary>
-/// Tests for context window resolution across providers and through UrHost.
+/// Tests for context window resolution through ProviderConfig and UrHost.
 ///
-/// Each provider resolves context window size from its own authoritative source.
-/// These tests verify that the interface method works correctly for each provider,
-/// that caching behaves as expected, and that UrHost dispatches correctly.
+/// With providers.json, context window sizes are declared in the config file
+/// rather than queried from individual providers. These tests verify that
+/// UrHost dispatches correctly via ProviderConfig.
 /// </summary>
 public sealed class ContextWindowTests
 {
-    // ─── FakeProvider ───────────────────────────────────────────────
+    // ─── UrHost.ResolveContextWindow ────────────────────────────────
 
     [Fact]
-    public async Task FakeProvider_ReturnsFixedContextWindow()
+    public async Task UrHost_Resolve_KnownModel_ReturnsContextWindow()
     {
-        var provider = new FakeProvider();
-
-        var result = await provider.GetContextWindowAsync("any-model");
-
-        Assert.Equal(200_000, result);
-    }
-
-    // ─── OpenAiProvider ─────────────────────────────────────────────
-
-    [Fact]
-    public async Task OpenAi_KnownModel_ReturnsContextWindow()
-    {
-        var provider = new OpenAiProvider(new TestKeyring());
-
-        var result = await provider.GetContextWindowAsync("gpt-4o");
-
-        Assert.Equal(128_000, result);
-    }
-
-    [Fact]
-    public async Task OpenAi_UnknownModel_ReturnsNull()
-    {
-        var provider = new OpenAiProvider(new TestKeyring());
-
-        var result = await provider.GetContextWindowAsync("gpt-99-turbo");
-
-        Assert.Null(result);
-    }
-
-    [Fact]
-    public async Task OpenAi_LookupIsCaseInsensitive()
-    {
-        var provider = new OpenAiProvider(new TestKeyring());
-
-        var result = await provider.GetContextWindowAsync("GPT-4O");
-
-        Assert.Equal(128_000, result);
-    }
-
-    // ─── ZaiCodingProvider ──────────────────────────────────────────
-
-    [Fact]
-    public async Task ZaiCoding_KnownModel_ReturnsContextWindow()
-    {
-        var provider = new ZaiCodingProvider(new TestKeyring());
-
-        var result = await provider.GetContextWindowAsync("glm-4.7");
-
-        Assert.Equal(200_000, result);
-    }
-
-    [Fact]
-    public async Task ZaiCoding_UnknownModel_ReturnsNull()
-    {
-        var provider = new ZaiCodingProvider(new TestKeyring());
-
-        var result = await provider.GetContextWindowAsync("glm-99-turbo");
-
-        Assert.Null(result);
-    }
-
-    [Fact]
-    public async Task ZaiCoding_LookupIsCaseInsensitive()
-    {
-        var provider = new ZaiCodingProvider(new TestKeyring());
-
-        var result = await provider.GetContextWindowAsync("GLM-4.7");
-
-        Assert.Equal(200_000, result);
-    }
-
-    // ─── OpenRouterProvider ─────────────────────────────────────────
-
-    [Fact]
-    public async Task OpenRouter_ModelInCatalog_ReturnsContextLength()
-    {
-        // Pre-populate the catalog with a known model and context length.
-        var catalog = TestCatalog.CreateWithModels(
-            ("anthropic/claude-3.5-sonnet", 200_000));
-        var provider = new OpenRouterProvider(new TestKeyring(), catalog);
-
-        var result = await provider.GetContextWindowAsync("anthropic/claude-3.5-sonnet");
-
-        Assert.Equal(200_000, result);
-    }
-
-    [Fact]
-    public async Task OpenRouter_ModelNotInCatalog_ReturnsNull()
-    {
-        var catalog = TestCatalog.CreateEmpty();
-        var provider = new OpenRouterProvider(new TestKeyring(), catalog);
-
-        var result = await provider.GetContextWindowAsync("nonexistent/model");
-
-        Assert.Null(result);
-    }
-
-    // ─── GoogleProvider ───────────────────────────────────────────────
-
-    [Fact]
-    public async Task Google_KnownModel_ReturnsContextWindow()
-    {
-        var provider = new GoogleProvider(new TestKeyring());
-
-        var result = await provider.GetContextWindowAsync("gemini-3.1-pro-preview");
-
-        Assert.Equal(1_048_576, result);
-    }
-
-    [Fact]
-    public async Task Google_UnknownModel_ReturnsNull()
-    {
-        var provider = new GoogleProvider(new TestKeyring());
-
-        var result = await provider.GetContextWindowAsync("gemini-unknown");
-
-        Assert.Null(result);
-    }
-
-    // ─── OllamaProvider ─────────────────────────────────────────────
-
-    [Fact]
-    public async Task Ollama_UnreachableEndpoint_ReturnsNull()
-    {
-        // Point Ollama at a non-existent endpoint so the HTTP call fails.
-        // The provider should catch the exception and return null gracefully.
+        // The test providers.json declares openai/gpt-4o with 128000 context.
         using var workspace = new TempWorkspace();
         var host = await TestHostBuilder.CreateHostAsync(workspace);
 
-        // Set Ollama URI to something that won't resolve.
-        await host.Configuration.SetStringSettingAsync("ollama.uri", "http://192.0.2.1:99999");
+        var result = host.ResolveContextWindow("openai/gpt-4o");
 
-        var provider = host.Configuration.ProviderRegistry.Get("ollama");
-        Assert.NotNull(provider);
-
-        var result = await provider.GetContextWindowAsync("nonexistent-model");
-
-        Assert.Null(result);
-    }
-
-    // ─── UrHost.ResolveContextWindowAsync ───────────────────────────
-
-    [Fact]
-    public async Task UrHost_Resolve_DispatchesToCorrectProvider()
-    {
-        // The fake provider always returns 200,000 — verify UrHost parses the
-        // model ID and delegates to the right provider.
-        using var workspace = new TempWorkspace();
-        var host = await TestHostBuilder.CreateHostAsync(
-            workspace,
-            keyring: new TestKeyring(),
-            fakeProvider: new FakeProvider(),
-            selectedModelOverride: "fake/hello");
-
-        var result = await host.ResolveContextWindowAsync("fake/hello");
-
-        Assert.Equal(200_000, result);
+        Assert.Equal(128_000, result);
     }
 
     [Fact]
@@ -183,19 +33,53 @@ public sealed class ContextWindowTests
         using var workspace = new TempWorkspace();
         var host = await TestHostBuilder.CreateHostAsync(workspace);
 
-        var result = await host.ResolveContextWindowAsync("nonexistent/some-model");
+        var result = host.ResolveContextWindow("nonexistent/some-model");
 
         Assert.Null(result);
     }
 
     [Fact]
-    public async Task UrHost_Resolve_OpenAiKnownModel_ReturnsContextWindow()
+    public async Task UrHost_Resolve_UnknownModel_ReturnsNull()
     {
         using var workspace = new TempWorkspace();
         var host = await TestHostBuilder.CreateHostAsync(workspace);
 
-        var result = await host.ResolveContextWindowAsync("openai/gpt-4o");
+        var result = host.ResolveContextWindow("openai/nonexistent-model");
 
-        Assert.Equal(128_000, result);
+        Assert.Null(result);
+    }
+
+    [Fact]
+    public async Task UrHost_Resolve_OllamaModel_ReturnsContextWindow()
+    {
+        using var workspace = new TempWorkspace();
+        var host = await TestHostBuilder.CreateHostAsync(workspace);
+
+        var result = host.ResolveContextWindow("ollama/qwen3:4b");
+
+        Assert.Equal(40_960, result);
+    }
+
+    [Fact]
+    public async Task UrHost_Resolve_GoogleModel_ReturnsContextWindow()
+    {
+        using var workspace = new TempWorkspace();
+        var host = await TestHostBuilder.CreateHostAsync(workspace);
+
+        var result = host.ResolveContextWindow("google/gemini-3.1-pro-preview");
+
+        Assert.Equal(1_048_576, result);
+    }
+
+    [Fact]
+    public async Task UrHost_Resolve_InvalidModelId_ReturnsNull()
+    {
+        // A model ID without a slash can't be parsed — should return null, not throw.
+        using var workspace = new TempWorkspace();
+        var host = await TestHostBuilder.CreateHostAsync(workspace);
+
+        var result = host.ResolveContextWindow("no-slash-model");
+
+        Assert.Null(result);
     }
 }

@@ -31,17 +31,4 @@ internal sealed class FakeProvider : IProvider
     /// The fake provider is always ready — no API key, no endpoint to check.
     /// </summary>
     public string? GetBlockingIssue() => null;
-
-    /// <summary>
-    /// Returns a fixed 200,000-token context window for test determinism.
-    /// </summary>
-    public Task<int?> GetContextWindowAsync(string model, CancellationToken ct = default) =>
-        Task.FromResult<int?>(200_000);
-
-    /// <summary>
-    /// Returns the built-in scenario names as the available "model" IDs.
-    /// The fake provider's model IDs are scenario names (e.g. "hello", "tool-call").
-    /// </summary>
-    public Task<IReadOnlyList<string>?> ListModelIdsAsync(CancellationToken ct = default) =>
-        Task.FromResult<IReadOnlyList<string>?>(BuiltInScenarios.Names);
 }
