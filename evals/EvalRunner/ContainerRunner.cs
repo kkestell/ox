@@ -18,13 +18,20 @@ public static class ContainerRunner
     /// <summary>
     /// Runs a single scenario × model eval in a Podman container. Returns the eval
     /// result plus the raw session/metrics artifacts for storage.
+    ///
+    /// When <paramref name="streamOutput"/> is true, each line of the container's stderr
+    /// is immediately written to the host's stderr (prefixed with a scenario × model tag)
+    /// so the developer can watch agent events in real time without waiting for the container
+    /// to exit. When false (the default), stderr is buffered silently — the existing behavior.
+    /// Stdout is always buffered; it is not shown to the user.
     /// </summary>
     public static async Task<ContainerRunResult> RunAsync(
         ScenarioDefinition scenario,
         string model,
         string workspacePath,
         string providersJsonPath,
-        CancellationToken ct)
+        CancellationToken ct,
+        bool streamOutput = false)
     {
         var psi = new ProcessStartInfo
         {
@@ -89,12 +96,49 @@ public static class ContainerRunner
         process.Start();
 
         var stdoutTask = process.StandardOutput.ReadToEndAsync(ct);
-        var stderrTask = process.StandardError.ReadToEndAsync(ct);
 
-        await process.WaitForExitAsync(ct);
+        string stderr;
+        if (streamOutput)
+        {
+            // Stream stderr line-by-line to the host terminal in real time so the
+            // developer can watch agent events as they happen. Each line is prefixed
+            // with a "scenario × model" tag so interleaved output from sequential runs
+            // is attributable at a glance. We also collect into a StringBuilder so the
+            // error message path has the full text when the container crashes.
+            var tag = $"[{scenario.Name} × {model}]";
+            var stderrBuilder = new System.Text.StringBuilder();
+
+            // WaitForExitAsync does not guarantee that all ErrorDataReceived events
+            // have fired when it returns (unlike the synchronous WaitForExit which does).
+            // We use a TCS to detect the EOF sentinel (null data) that .NET fires after
+            // the pipe is closed to signal the async read is truly complete.
+            var stderrEof = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+            process.ErrorDataReceived += (_, e) =>
+            {
+                if (e.Data is null)
+                {
+                    stderrEof.TrySetResult();
+                    return;
+                }
+                stderrBuilder.AppendLine(e.Data);
+                Console.Error.WriteLine($"{tag} {e.Data}");
+            };
+
+            process.BeginErrorReadLine();
+            await process.WaitForExitAsync(ct);
+            await stderrEof.Task;
+            stderr = stderrBuilder.ToString();
+        }
+        else
+        {
+            // Buffered path (existing behavior): collect stderr without printing.
+            var stderrTask = process.StandardError.ReadToEndAsync(ct);
+            await process.WaitForExitAsync(ct);
+            stderr = await stderrTask;
+        }
 
         var stdout = await stdoutTask;
-        var stderr = await stderrTask;
 
         // Locate session artifacts in the workspace's .ur/sessions/ directory.
         var sessionsDir = Path.Combine(workspacePath, ".ur", "sessions");

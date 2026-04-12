@@ -19,6 +19,7 @@ namespace EvalRunner;
 ///   --db &lt;path&gt;            SQLite database path (default: evals/results/evals.db)
 ///   --report               Write Markdown report after run (default: true)
 ///   --no-report            Skip Markdown report generation
+///   --stream-output        Print container stderr to host terminal in real time
 /// </summary>
 public static class Program
 {
@@ -111,7 +112,8 @@ var models = options.ModelOverrides is { } overrides
 
                     // Run in container.
                     var containerResult = await ContainerRunner.RunAsync(
-                        scenario, model, workspacePath, options.ProvidersJsonPath, cts.Token);
+                        scenario, model, workspacePath, options.ProvidersJsonPath, cts.Token,
+                        streamOutput: options.StreamOutput);
 
                     // Persist result.
                     await store.SaveRunAsync(
@@ -203,6 +205,9 @@ var models = options.ModelOverrides is { } overrides
                 case "--no-report":
                     options.WriteReport = false;
                     break;
+                case "--stream-output":
+                    options.StreamOutput = true;
+                    break;
             }
         }
 
@@ -218,5 +223,8 @@ var models = options.ModelOverrides is { } overrides
         public string ProvidersJsonPath { get; set; } = "providers.json";
         public string DbPath { get; set; } = "evals/results/evals.db";
         public bool WriteReport { get; set; } = true;
+        // When true, ContainerRunner streams container stderr to the host terminal
+        // in real time so the developer can watch agent events during eval runs.
+        public bool StreamOutput { get; set; } = false;
     }
 }
