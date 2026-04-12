@@ -1,6 +1,7 @@
 {
   "providers": {
     "openai": {
+    "name": "OpenAI",
     "type": "openai-compatible",
     "models": [
       {
@@ -21,6 +22,7 @@
     ]
   },
   "google": {
+    "name": "Google",
     "type": "google",
     "models": [
       {
@@ -41,6 +43,7 @@
     ]
   },
   "ollama": {
+    "name": "Ollama",
     "type": "ollama",
     "url": "http://kyles-mac-mini.local:11434",
     "models": [
@@ -52,6 +55,7 @@
     ]
   },
   "openrouter": {
+    "name": "OpenRouter",
     "type": "openai-compatible",
     "url": "https://openrouter.ai/api/v1",
     "models": [
@@ -73,6 +77,7 @@
     ]
   },
   "zai-coding": {
+    "name": "Z.AI Coding Plan",
     "type": "openai-compatible",
     "url": "https://api.z.ai/api/coding/paas/v4",
     "models": [

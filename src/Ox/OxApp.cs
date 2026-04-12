@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using Ox.Connect;
 using Ox.Conversation;
 using Ox.Input;
 using Ox.Permission;
@@ -31,6 +32,8 @@ public sealed class OxApp : IDisposable
     private readonly ConversationView _conversationView = new();
     private readonly InputAreaView _inputAreaView = new();
     private readonly PermissionPromptView _permissionPromptView = new();
+    private readonly ConnectWizardController _wizard = new();
+    private readonly ConnectWizardView _wizardView = new();
     private readonly TextEditor _editor = new();
     private readonly Throbber _throbber = new();
     private readonly Autocomplete _autocomplete;
@@ -102,6 +105,13 @@ public sealed class OxApp : IDisposable
             RequestPermissionAsync = OnPermissionRequestAsync,
         };
         _session = host.CreateSession(callbacks);
+
+        // On first run (or when the model is not configured), open the connect
+        // wizard immediately so the user can configure a provider without ever
+        // seeing a plain-console prompt. IsRequired=true means Escape exits the
+        // app rather than dismissing back to an un-configured chat screen.
+        if (!host.Configuration.Readiness.CanRunTurns)
+            _wizard.Start(host.Configuration.ListProviders(), required: true);
     }
 
     /// <summary>Run the main application loop until exit is signalled.</summary>
@@ -189,6 +199,14 @@ public sealed class OxApp : IDisposable
         if (_permissionPromptView.IsActive)
         {
             HandlePermissionInput(args);
+            return;
+        }
+
+        // If the connect wizard is active, it intercepts all input — the main
+        // input area is locked out until the wizard is dismissed or completed.
+        if (_wizard.IsActive)
+        {
+            HandleWizardInput(args);
             return;
         }
 
@@ -319,6 +337,117 @@ public sealed class OxApp : IDisposable
             _permissionPromptView.Editor.InsertChar(args.KeyChar);
     }
 
+    private void HandleWizardInput(KeyEventArgs args)
+    {
+        var bare = args.KeyCode.WithoutModifiers();
+
+        // Escape cancels the wizard. When required (first run), cancelling
+        // means there is no config to fall back to, so we exit the app.
+        if (bare == KeyCode.Esc)
+        {
+            _wizard.Cancel();
+            if (_wizard.IsRequired)
+                _exit = true;
+            return;
+        }
+
+        switch (_wizard.CurrentStep)
+        {
+            case WizardStep.SelectProvider:
+            case WizardStep.SelectModel:
+                HandleWizardListInput(bare);
+                break;
+
+            case WizardStep.EnterApiKey:
+                HandleWizardKeyInput(args, bare);
+                break;
+        }
+    }
+
+    private void HandleWizardListInput(KeyCode bare)
+    {
+        switch (bare)
+        {
+            case KeyCode.CursorUp:
+                _wizard.NavigateUp();
+                break;
+
+            case KeyCode.CursorDown:
+                _wizard.NavigateDown();
+                break;
+
+            case KeyCode.Enter:
+                AdvanceWizard();
+                break;
+        }
+    }
+
+    private void HandleWizardKeyInput(KeyEventArgs args, KeyCode bare)
+    {
+        if (bare == KeyCode.Enter)
+        {
+            _wizard.ApiKeyConfirmed();
+            return;
+        }
+
+        if (bare == KeyCode.Backspace)
+        {
+            _wizard.KeyEditor.Backspace();
+            return;
+        }
+
+        if (bare == KeyCode.Delete)
+        {
+            _wizard.KeyEditor.Delete();
+            return;
+        }
+
+        if (bare == KeyCode.CursorLeft) { _wizard.KeyEditor.MoveLeft(); return; }
+        if (bare == KeyCode.CursorRight) { _wizard.KeyEditor.MoveRight(); return; }
+        if (bare == KeyCode.Home) { _wizard.KeyEditor.Home(); return; }
+        if (bare == KeyCode.End) { _wizard.KeyEditor.End(); return; }
+
+        // Printable character.
+        if (args.KeyChar >= ' ' && args.KeyChar != '\0' && !args.KeyCode.HasCtrl() && !args.KeyCode.HasAlt())
+            _wizard.KeyEditor.InsertChar(args.KeyChar);
+    }
+
+    /// <summary>
+    /// Called when the user presses Enter on a list step. Dispatches based on
+    /// the current wizard step and wires UrConfiguration as the data source so
+    /// the controller and view never call into Ur directly.
+    /// </summary>
+    private void AdvanceWizard()
+    {
+        if (_wizard.CurrentStep == WizardStep.SelectProvider)
+        {
+            var providers = _host.Configuration.ListProviders();
+            if (_wizard.SelectedIndex >= providers.Count) return;
+
+            var (key, _) = providers[_wizard.SelectedIndex];
+            var requiresKey = _host.Configuration.ProviderRequiresApiKey(key);
+            var models = _host.Configuration.ListModelsForProvider(key);
+            _wizard.ProviderConfirmed(key, requiresKey, models);
+        }
+        else if (_wizard.CurrentStep == WizardStep.SelectModel)
+        {
+            var result = _wizard.ModelConfirmed();
+            if (result is null) return;
+
+            var (providerId, modelId, apiKey) = result.Value;
+
+            // Persist the selections. SetApiKey is skipped when apiKey is null —
+            // an empty key field means "keep whatever is already in the keyring".
+            _host.Configuration.SetSelectedModel($"{providerId}/{modelId}");
+            if (apiKey is not null)
+                _host.Configuration.SetApiKey(apiKey, providerId);
+
+            // Invalidate the context-window cache so the status line picks up
+            // the new model's window size on the next render.
+            _contextWindowCache.Clear();
+        }
+    }
+
     private void SubmitInput()
     {
         var text = _editor.Text.Trim();
@@ -338,6 +467,14 @@ public sealed class OxApp : IDisposable
             if (command == "quit")
             {
                 _exit = true;
+                return;
+            }
+
+            // /connect opens the provider/key/model wizard. Required=false so
+            // Escape dismisses back to the existing chat session without exiting.
+            if (command == "connect")
+            {
+                _wizard.Start(_host.Configuration.ListProviders(), required: false);
                 return;
             }
 
@@ -660,7 +797,12 @@ public sealed class OxApp : IDisposable
             ghostText,
             statusRight,
             _turnActive ? _throbber : null,
-            !_permissionPromptView.IsActive);
+            !_permissionPromptView.IsActive && !_wizard.IsActive);
+
+        // Connect wizard: floats centred over everything as the final draw pass
+        // so it appears on top of the conversation area and input chrome.
+        if (_wizard.IsActive)
+            _wizardView.Render(_buffer, _wizard);
 
         _buffer.Render(Console.Out);
     }

@@ -158,6 +158,14 @@ internal sealed class ProviderConfigRoot
 /// </summary>
 internal sealed class ProviderConfigEntry
 {
+    /// <summary>
+    /// Human-readable display name for the provider (e.g. "OpenAI", "Z.AI Coding Plan").
+    /// Used by the connect wizard's provider selection step. Falls back to the provider
+    /// key when absent so old providers.json files continue to work.
+    /// </summary>
+    [JsonPropertyName("name")]
+    public string? Name { get; set; }
+
     [JsonPropertyName("type")]
     public string Type { get; set; } = "";
 

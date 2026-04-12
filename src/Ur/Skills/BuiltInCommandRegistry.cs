@@ -20,6 +20,7 @@ public sealed class BuiltInCommandRegistry
         var commands = new List<BuiltInCommand>
         {
             new("clear"),
+            new("connect"),
             new("model"),
             new("quit"),
             new("set"),

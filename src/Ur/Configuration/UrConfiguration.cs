@@ -95,6 +95,46 @@ public sealed class UrConfiguration
         _providerConfig.ListAllModelIds();
 
     /// <summary>
+    /// Returns all configured providers as (key, display name) pairs in the
+    /// order they appear in providers.json. The key (e.g. "openrouter") is
+    /// used for API calls; the display name (e.g. "OpenRouter") is shown in
+    /// the connect wizard's provider selection step. Falls back to the key
+    /// when the entry has no display name.
+    /// </summary>
+    public IReadOnlyList<(string Key, string DisplayName)> ListProviders()
+    {
+        return _providerConfig.ProviderNames
+            .Select(key =>
+            {
+                var entry = _providerConfig.GetEntry(key);
+                var displayName = !string.IsNullOrEmpty(entry?.Name) ? entry.Name : key;
+                return (key, displayName);
+            })
+            .ToList();
+    }
+
+    /// <summary>
+    /// Returns models available from a given provider as (id, display name)
+    /// pairs, in the order they appear in providers.json. Used by the connect
+    /// wizard's model selection step. Returns an empty list when the provider
+    /// key is not found.
+    /// </summary>
+    public IReadOnlyList<(string Id, string Name)> ListModelsForProvider(string providerKey)
+    {
+        var entry = _providerConfig.GetEntry(providerKey);
+        if (entry is null) return [];
+        return entry.Models.Select(m => (m.Id, m.Name)).ToList();
+    }
+
+    /// <summary>
+    /// Returns true when the named provider requires an API key (all providers
+    /// except Ollama). Defaults to true for unknown providers so the wizard
+    /// always prompts rather than silently skipping key setup.
+    /// </summary>
+    public bool ProviderRequiresApiKey(string providerKey) =>
+        _providerRegistry.Get(providerKey)?.RequiresApiKey ?? true;
+
+    /// <summary>
     /// Stores an API key in the OS keyring for the given provider.
     /// The keyring account is the provider name (e.g. "openai", "google", "openrouter").
     /// </summary>

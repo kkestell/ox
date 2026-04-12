@@ -1,6 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
 using Te.Input;
-using Ur.Configuration;
 using Ur.Hosting;
 using Ur.Providers.Fake;
 
@@ -9,10 +8,11 @@ namespace Ox;
 /// <summary>
 /// Entry point for the Ox TUI.
 ///
-/// Handles three phases:
+/// Handles two phases:
 ///   1. CLI argument parsing (--fake-provider, etc.)
-///   2. Configuration phase — plain console I/O to set up model and API key.
-///   3. TUI phase — alternate screen, main loop, clean exit.
+///   2. TUI phase — alternate screen, main loop, clean exit.
+///      First-run configuration (provider / key / model) is handled inside the
+///      TUI by the connect wizard rather than by a pre-TUI plain-console loop.
 /// </summary>
 public static class Program
 {
@@ -63,13 +63,9 @@ public static class Program
         using var sp = services.BuildServiceProvider();
         var host = sp.GetRequiredService<UrHost>();
 
-        // ── Configuration phase ─────────────────────────────────────────
-        // Plain console I/O before the TUI starts. Prompts for model and
-        // API key if not already configured.
-        if (!await RunConfigurationPhaseAsync(host.Configuration))
-            return 0; // User chose to exit during configuration.
-
         // ── TUI phase ───────────────────────────────────────────────────
+        // First-run configuration is now handled inside the TUI by the connect
+        // wizard — OxApp opens it automatically when no model is configured.
         using var inputSource = new TerminalInputSource(new TerminalInputSourceOptions
         {
             EnableMouse = true,
@@ -102,91 +98,6 @@ public static class Program
         }
 
         return 0;
-    }
-
-    /// <summary>
-    /// Run the pre-TUI configuration phase. Returns false if the user chose
-    /// to exit (entered a blank line when prompted).
-    /// </summary>
-    private static async Task<bool> RunConfigurationPhaseAsync(UrConfiguration config)
-    {
-        // Loop until all blocking issues are resolved.
-        while (!config.Readiness.CanRunTurns)
-        {
-            foreach (var issue in config.Readiness.BlockingIssues)
-            {
-                switch (issue)
-                {
-                    case ChatBlockingIssue.MissingModelSelection:
-                        Console.Write("Enter model (provider/model, or ? to list): ");
-                        var modelInput = Console.ReadLine()?.Trim();
-                        if (string.IsNullOrEmpty(modelInput))
-                            return false;
-
-                        // Show available models when the user asks for discovery.
-                        if (modelInput == "?")
-                        {
-                            ShowAvailableModels(config);
-                            break;
-                        }
-
-                        config.SetSelectedModel(modelInput);
-
-                        // Check if the provider is recognized.
-                        if (!config.IsSelectedProviderKnown())
-                        {
-                            Console.WriteLine(config.GetProviderBlockingMessage());
-                            config.ClearSelectedModel();
-                        }
-                        break;
-
-                    case ChatBlockingIssue.ProviderNotReady:
-                        var provider = config.GetSelectedProviderName() ?? "unknown";
-                        Console.Write($"Enter API key for {provider}: ");
-                        var keyInput = Console.ReadLine()?.Trim();
-                        if (string.IsNullOrEmpty(keyInput))
-                            return false;
-
-                        config.SetApiKey(keyInput, provider);
-                        break;
-                }
-            }
-        }
-
-        return true;
-    }
-
-    /// <summary>
-    /// Lists available models grouped by provider. Called when the user enters "?"
-    /// at the model selection prompt, giving them discovery without requiring prior
-    /// knowledge of provider/model naming.
-    /// </summary>
-    private static void ShowAvailableModels(UrConfiguration config)
-    {
-        var models = config.ListAllModelIds();
-        if (models.Count == 0)
-        {
-            Console.WriteLine("No models available from any provider.");
-            return;
-        }
-
-        // Group by provider prefix for readable output.
-        var grouped = models
-            .GroupBy(m => m.Split('/')[0])
-            .OrderBy(g => g.Key, StringComparer.OrdinalIgnoreCase);
-
-        Console.WriteLine();
-        foreach (var group in grouped)
-        {
-            Console.WriteLine($"  {group.Key}/");
-            foreach (var model in group)
-            {
-                // Strip the provider prefix for indented display — the full ID
-                // is what the user would type.
-                Console.WriteLine($"    {model}");
-            }
-        }
-        Console.WriteLine();
     }
 
     private static (int Width, int Height) GetTerminalSize()
