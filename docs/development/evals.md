@@ -122,6 +122,8 @@ This builds the container image (if not already built), sources your `.env`
 file, and runs every scenario against every model listed in the scenario's
 `models` field.
 
+If a run crashes or leaves containers running, stop them with `make evals-stop` (stops and removes any containers started from the `ox-eval` image).
+
 ### Run quick (simple scenarios only)
 
 ```bash

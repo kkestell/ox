@@ -1,4 +1,4 @@
-.PHONY: format-docs inspect install test verify evals-build evals-run evals-run-quick
+.PHONY: format-docs inspect install test verify evals-build evals-run evals-run-quick evals-stop
 
 install:
 	@./scripts/install.sh
@@ -32,6 +32,9 @@ evals-build:
 evals-run: evals-build
 	@set -a && . ./.env && set +a && dotnet run --project evals/EvalRunner -- --scenarios evals/scenarios/ --stream-output
 
-# Run only simple scenarios for fast pre-merge checks.
-evals-run-quick: evals-build
-	@set -a && . ./.env && set +a && dotnet run --project evals/EvalRunner -- --scenarios evals/scenarios/ --complexity simple --stream-output
+# Stop and remove any eval containers left from previous runs.
+evals-stop:
+	@echo "Stopping and removing any running eval containers (image: ox-eval)"
+	@ids=$$(podman ps -q --filter ancestor=ox-eval); if [ -n "$$ids" ]; then podman stop $$ids || true; fi
+	@ids=$$(podman ps -a -q --filter ancestor=ox-eval); if [ -n "$$ids" ]; then podman rm -f $$ids || true; fi
+	@podman ps -a --filter ancestor=ox-eval
