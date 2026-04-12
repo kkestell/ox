@@ -33,21 +33,21 @@ public class HostSessionApiTests
         using var workspace = new TempWorkspace();
         var host = await CreateHostAsync(workspace);
 
-        await host.Configuration.SetSelectedModelAsync("user-model");
+        host.Configuration.SetSelectedModel("user-model");
         Assert.Equal("user-model", host.Configuration.SelectedModelId);
         // Settings are now written in nested JSON format: {"ur": {"model": "..."}}
         Assert.Contains("\"model\": \"user-model\"", await File.ReadAllTextAsync(workspace.UserSettingsPath));
 
-        await host.Configuration.SetSelectedModelAsync("workspace-model", ConfigurationScope.Workspace);
+        host.Configuration.SetSelectedModel("workspace-model", ConfigurationScope.Workspace);
         Assert.Equal("workspace-model", host.Configuration.SelectedModelId);
         Assert.Contains(
             "\"model\": \"workspace-model\"",
             await File.ReadAllTextAsync(Path.Combine(workspace.WorkspacePath, ".ur", "settings.json")));
 
-        await host.Configuration.ClearSelectedModelAsync(ConfigurationScope.Workspace);
+        host.Configuration.ClearSelectedModel(ConfigurationScope.Workspace);
         Assert.Equal("user-model", host.Configuration.SelectedModelId);
 
-        await host.Configuration.ClearSelectedModelAsync();
+        host.Configuration.ClearSelectedModel();
         Assert.Null(host.Configuration.SelectedModelId);
     }
 
@@ -78,8 +78,8 @@ public class HostSessionApiTests
         var keyring = new TestKeyring();
         var host = await CreateHostAsync(workspace, keyring, _ => new FakeChatClient("hello from assistant"));
 
-        await host.Configuration.SetApiKeyAsync("test-key");
-        await host.Configuration.SetSelectedModelAsync("openrouter/test-model");
+        host.Configuration.SetApiKey("test-key");
+        host.Configuration.SetSelectedModel("openrouter/test-model");
 
         var session = host.CreateSession();
         Assert.False(session.IsPersisted);
@@ -132,8 +132,8 @@ public class HostSessionApiTests
         using var workspace = new TempWorkspace();
         var host = await CreateHostAsync(workspace, chatClientFactory: _ => new ThrowingChatClient("API error"));
 
-        await host.Configuration.SetApiKeyAsync("test-key");
-        await host.Configuration.SetSelectedModelAsync("openrouter/test-model");
+        host.Configuration.SetApiKey("test-key");
+        host.Configuration.SetSelectedModel("openrouter/test-model");
 
         var session = host.CreateSession();
         var events = await CollectEventsAsync(session.RunTurnAsync("hello"));
@@ -153,8 +153,8 @@ public class HostSessionApiTests
         using var workspace = new TempWorkspace();
         var host = await CreateHostAsync(workspace, chatClientFactory: _ => new PartiallyThrowingChatClient("mid-stream failure"));
 
-        await host.Configuration.SetApiKeyAsync("test-key");
-        await host.Configuration.SetSelectedModelAsync("openrouter/test-model");
+        host.Configuration.SetApiKey("test-key");
+        host.Configuration.SetSelectedModel("openrouter/test-model");
 
         var session = host.CreateSession();
         var events = await CollectEventsAsync(session.RunTurnAsync("hello"));
@@ -176,8 +176,8 @@ public class HostSessionApiTests
         using var cts = new CancellationTokenSource();
         var host = await CreateHostAsync(workspace, chatClientFactory: _ => new CancellingChatClient(cts));
 
-        await host.Configuration.SetApiKeyAsync("test-key", ct: CancellationToken.None);
-        await host.Configuration.SetSelectedModelAsync("openrouter/test-model", ct: CancellationToken.None);
+        host.Configuration.SetApiKey("test-key");
+        host.Configuration.SetSelectedModel("openrouter/test-model");
 
         var session = host.CreateSession();
         await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
@@ -208,8 +208,8 @@ public class HostSessionApiTests
         );
 
         var host = await CreateHostAsync(workspace, chatClientFactory: _ => client);
-        await host.Configuration.SetApiKeyAsync("test-key");
-        await host.Configuration.SetSelectedModelAsync("openrouter/test-model");
+        host.Configuration.SetApiKey("test-key");
+        host.Configuration.SetSelectedModel("openrouter/test-model");
 
         var relayedEvents = new List<AgentLoopEvent>();
         var callbacks = new TurnCallbacks

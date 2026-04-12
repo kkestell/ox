@@ -92,9 +92,9 @@ abstractions should not lie.
 
 ### Refactoring (prerequisite)
 
-- [ ] In `SettingsWriter`, rename `SetAsync` → `Set` and `ClearAsync` → `Clear`. Change return
+- [x] In `SettingsWriter`, rename `SetAsync` → `Set` and `ClearAsync` → `Clear`. Change return
   types from `Task` to `void`. Remove `return Task.CompletedTask` from both methods.
-- [ ] In `UrConfiguration`, rename all eight `*Async` write methods to their non-async
+- [x] In `UrConfiguration`, rename all eight `*Async` write methods to their non-async
   equivalents and change return types to `void`:
   - `SetSelectedModelAsync` → `SetSelectedModel`
   - `ClearSelectedModelAsync` → `ClearSelectedModel`
@@ -107,7 +107,7 @@ abstractions should not lie.
 
 ### Bug fix
 
-- [ ] In `UrSession.ExecuteModelCommand`, replace:
+- [x] In `UrSession.ExecuteModelCommand`, replace:
   ```csharp
   _configuration.SetSelectedModelAsync(args).GetAwaiter().GetResult();
   ```
@@ -119,17 +119,17 @@ abstractions should not lie.
 
 ### Caller updates
 
-- [ ] In `Program.cs` (`RunConfigurationPhaseAsync`), replace all `await config.*Async(...)`
+- [x] In `Program.cs` (`RunConfigurationPhaseAsync`), replace all `await config.*Async(...)`
   calls with their synchronous equivalents: `config.SetSelectedModel(...)`,
   `config.ClearSelectedModel(...)`, `config.SetApiKey(...)`.
-- [ ] In `tests/Ur.Tests/ConfigurationTests.cs`, remove `await` from all write-method calls
+- [x] In `tests/Ur.Tests/ConfigurationTests.cs`, remove `await` from all write-method calls
   and update method signatures if they are now purely synchronous (drop `async Task` where
   there are no remaining `await` expressions).
-- [ ] In `tests/Ur.Tests/SettingsLoaderTests.cs` (and any other test file that calls
+- [x] In `tests/Ur.Tests/SettingsLoaderTests.cs` (and any other test file that calls
   `SettingsWriter.SetAsync`/`ClearAsync` directly), update to the renamed sync methods.
   The review found these: `SkillSessionTests`, `HostSessionApiTests`,
   `MultiProviderSmokeTests`, `PermissionTests`, `SettingsLoaderTests`.
-- [ ] Search the entire solution for remaining references to the old `*Async` names (Grep for
+- [x] Search the entire solution for remaining references to the old `*Async` names (Grep for
   `SetSelectedModelAsync`, `SetApiKeyAsync`, `ClearSelectedModelAsync`, `ClearApiKeyAsync`,
   `SetSettingAsync`, `SetStringSettingAsync`, `SetBoolSettingAsync`, `ClearSettingAsync`,
   `\.SetAsync\(`, `\.ClearAsync\(`) and update any stragglers.

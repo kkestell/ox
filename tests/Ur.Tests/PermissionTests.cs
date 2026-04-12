@@ -598,8 +598,8 @@ public sealed class UrSessionPermissionTests
             chatClientFactory: _ => client,
             additionalTools: tools);
 
-        await host.Configuration.SetApiKeyAsync("test-key");
-        await host.Configuration.SetSelectedModelAsync("openrouter/test-model");
+        host.Configuration.SetApiKey("test-key");
+        host.Configuration.SetSelectedModel("openrouter/test-model");
 
         var session = host.CreateSession(callbacks);
 
@@ -644,8 +644,8 @@ public sealed class UrSessionPermissionTests
             chatClientFactory: _ => client,
             additionalTools: tools);
 
-        await host.Configuration.SetApiKeyAsync("test-key");
-        await host.Configuration.SetSelectedModelAsync("openrouter/test-model");
+        host.Configuration.SetApiKey("test-key");
+        host.Configuration.SetSelectedModel("openrouter/test-model");
 
         var session = host.CreateSession(callbacks);
         var events = await CollectAsync(session.RunTurnAsync("write something"));

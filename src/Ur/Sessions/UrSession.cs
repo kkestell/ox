@@ -360,7 +360,7 @@ public sealed class UrSession
     /// This is the correct layer for command execution: UrSession holds
     /// _configuration (for persistence) and _builtInCommands (for dispatch).
     /// OxApp should dispatch and display only — not decide what constitutes a
-    /// valid model ID or call SetSelectedModelAsync directly.
+    /// valid model ID or call SetSelectedModel directly.
     /// </summary>
     public Skills.CommandResult? ExecuteBuiltInCommand(string commandName, string? args)
     {
@@ -383,13 +383,12 @@ public sealed class UrSession
     /// — the TUI validates the model ID against ListAllModelIds() before allowing
     /// Enter to submit. This method is the happy-path only.
     ///
-    /// GetAwaiter().GetResult() is intentional: SubmitInput runs on the
-    /// synchronous HandleKey path, and SetSelectedModelAsync performs a local
-    /// file write — the async overhead is noise, and blocking is safe here.
+    /// SetSelectedModel is synchronous (local JSON file write + config reload),
+    /// which matches the synchronous HandleKey path that calls this method.
     /// </summary>
     private Skills.CommandResult ExecuteModelCommand(string args)
     {
-        _configuration.SetSelectedModelAsync(args).GetAwaiter().GetResult();
+        _configuration.SetSelectedModel(args);
         return new Skills.CommandResult($"Model set to {args}.");
     }
 

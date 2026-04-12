@@ -98,33 +98,27 @@ public sealed class UrConfiguration
     /// Stores an API key in the OS keyring for the given provider.
     /// The keyring account is the provider name (e.g. "openai", "google", "openrouter").
     /// </summary>
-    public Task SetApiKeyAsync(string apiKey, string provider = "openrouter", CancellationToken ct = default)
+    public void SetApiKey(string apiKey, string provider = "openrouter")
     {
-        ct.ThrowIfCancellationRequested();
         _keyring.SetSecret(SecretService, provider, apiKey);
-        return Task.CompletedTask;
     }
 
     /// <summary>
     /// Removes the API key from the OS keyring for the given provider.
     /// </summary>
-    public Task ClearApiKeyAsync(string provider = "openrouter", CancellationToken ct = default)
+    public void ClearApiKey(string provider = "openrouter")
     {
-        ct.ThrowIfCancellationRequested();
         _keyring.DeleteSecret(SecretService, provider);
-        return Task.CompletedTask;
     }
 
-    public Task SetSelectedModelAsync(
+    public void SetSelectedModel(
         string modelId,
-        ConfigurationScope scope = ConfigurationScope.User,
-        CancellationToken ct = default) =>
-        _settingsWriter.SetAsync(ModelSettingKey, JsonSerializer.SerializeToElement(modelId, SettingsJsonContext.Default.String), scope, ct);
+        ConfigurationScope scope = ConfigurationScope.User) =>
+        _settingsWriter.Set(ModelSettingKey, JsonSerializer.SerializeToElement(modelId, SettingsJsonContext.Default.String), scope);
 
-    public Task ClearSelectedModelAsync(
-        ConfigurationScope scope = ConfigurationScope.User,
-        CancellationToken ct = default) =>
-        _settingsWriter.ClearAsync(ModelSettingKey, scope, ct);
+    public void ClearSelectedModel(
+        ConfigurationScope scope = ConfigurationScope.User) =>
+        _settingsWriter.Clear(ModelSettingKey, scope);
 
     public JsonElement? GetSetting(string key) => _settingsWriter.Get(key);
 
@@ -154,39 +148,35 @@ public sealed class UrConfiguration
         };
     }
 
-    public Task SetSettingAsync(
+    public void SetSetting(
         string key,
         JsonElement value,
-        ConfigurationScope scope = ConfigurationScope.User,
-        CancellationToken ct = default) =>
-        _settingsWriter.SetAsync(key, value, scope, ct);
+        ConfigurationScope scope = ConfigurationScope.User) =>
+        _settingsWriter.Set(key, value, scope);
 
     /// <summary>
     /// Typed setter for string settings. Serializes the string to a
     /// <see cref="JsonElement"/> internally so callers don't need to handle JSON.
     /// </summary>
-    public Task SetStringSettingAsync(
+    public void SetStringSetting(
         string key,
         string value,
-        ConfigurationScope scope = ConfigurationScope.User,
-        CancellationToken ct = default) =>
-        _settingsWriter.SetAsync(key, JsonSerializer.SerializeToElement(value, SettingsJsonContext.Default.String), scope, ct);
+        ConfigurationScope scope = ConfigurationScope.User) =>
+        _settingsWriter.Set(key, JsonSerializer.SerializeToElement(value, SettingsJsonContext.Default.String), scope);
 
     /// <summary>
     /// Typed setter for boolean settings.
     /// </summary>
-    public Task SetBoolSettingAsync(
+    public void SetBoolSetting(
         string key,
         bool value,
-        ConfigurationScope scope = ConfigurationScope.User,
-        CancellationToken ct = default) =>
-        _settingsWriter.SetAsync(key, JsonSerializer.SerializeToElement(value, SettingsJsonContext.Default.Boolean), scope, ct);
+        ConfigurationScope scope = ConfigurationScope.User) =>
+        _settingsWriter.Set(key, JsonSerializer.SerializeToElement(value, SettingsJsonContext.Default.Boolean), scope);
 
-    public Task ClearSettingAsync(
+    public void ClearSetting(
         string key,
-        ConfigurationScope scope = ConfigurationScope.User,
-        CancellationToken ct = default) =>
-        _settingsWriter.ClearAsync(key, scope, ct);
+        ConfigurationScope scope = ConfigurationScope.User) =>
+        _settingsWriter.Clear(key, scope);
 
     /// <summary>
     /// Retrieves the API key for the given provider from the OS keyring.

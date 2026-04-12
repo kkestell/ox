@@ -38,7 +38,7 @@ public sealed class ConfigurationTests : IDisposable
         using var workspace = new TempWorkspace();
         var host = await CreateHostAsync(workspace);
 
-        await host.Configuration.SetStringSettingAsync("test.name", "alice");
+        host.Configuration.SetStringSetting("test.name", "alice");
 
         Assert.Equal("alice", host.Configuration.GetStringSetting("test.name"));
     }
@@ -60,7 +60,7 @@ public sealed class ConfigurationTests : IDisposable
         using var workspace = new TempWorkspace();
         var host = await CreateHostAsync(workspace);
 
-        await host.Configuration.SetBoolSettingAsync("test.enabled", true);
+        host.Configuration.SetBoolSetting("test.enabled", true);
 
         Assert.True(host.Configuration.GetBoolSetting("test.enabled"));
     }
@@ -71,7 +71,7 @@ public sealed class ConfigurationTests : IDisposable
         using var workspace = new TempWorkspace();
         var host = await CreateHostAsync(workspace);
 
-        await host.Configuration.SetBoolSettingAsync("test.enabled", false);
+        host.Configuration.SetBoolSetting("test.enabled", false);
 
         Assert.False(host.Configuration.GetBoolSetting("test.enabled"));
     }
@@ -93,7 +93,7 @@ public sealed class ConfigurationTests : IDisposable
         using var workspace = new TempWorkspace();
         var host = await CreateHostAsync(workspace);
 
-        await host.Configuration.SetStringSettingAsync("test.value", "not-a-bool");
+        host.Configuration.SetStringSetting("test.value", "not-a-bool");
 
         Assert.Null(host.Configuration.GetBoolSetting("test.value"));
     }
@@ -107,15 +107,15 @@ public sealed class ConfigurationTests : IDisposable
         var host = await CreateHostAsync(workspace);
 
         // Set at user scope, then override at workspace scope.
-        await host.Configuration.SetStringSettingAsync("test.value", "user-value");
-        await host.Configuration.SetStringSettingAsync(
+        host.Configuration.SetStringSetting("test.value", "user-value");
+        host.Configuration.SetStringSetting(
             "test.value", "workspace-value", ConfigurationScope.Workspace);
 
         // Workspace wins in the merged view.
         Assert.Equal("workspace-value", host.Configuration.GetStringSetting("test.value"));
 
         // Clear workspace override — user value surfaces again.
-        await host.Configuration.ClearSettingAsync("test.value", ConfigurationScope.Workspace);
+        host.Configuration.ClearSetting("test.value", ConfigurationScope.Workspace);
         Assert.Equal("user-value", host.Configuration.GetStringSetting("test.value"));
     }
 
@@ -127,10 +127,10 @@ public sealed class ConfigurationTests : IDisposable
         using var workspace = new TempWorkspace();
         var host = await CreateHostAsync(workspace);
 
-        await host.Configuration.SetStringSettingAsync("test.key", "value");
+        host.Configuration.SetStringSetting("test.key", "value");
         Assert.NotNull(host.Configuration.GetStringSetting("test.key"));
 
-        await host.Configuration.ClearSettingAsync("test.key");
+        host.Configuration.ClearSetting("test.key");
         Assert.Null(host.Configuration.GetStringSetting("test.key"));
     }
 
@@ -143,19 +143,19 @@ public sealed class ConfigurationTests : IDisposable
         var host = await CreateHostAsync(workspace);
 
         // Select a model so readiness checks the provider's state.
-        await host.Configuration.SetSelectedModelAsync("openrouter/test-model");
+        host.Configuration.SetSelectedModel("openrouter/test-model");
 
         // No API key for the openrouter provider — should report ProviderNotReady.
         Assert.Contains(ChatBlockingIssue.ProviderNotReady,
             host.Configuration.Readiness.BlockingIssues);
 
         // Set API key for openrouter — ProviderNotReady blocker should clear.
-        await host.Configuration.SetApiKeyAsync("test-key");
+        host.Configuration.SetApiKey("test-key");
         Assert.DoesNotContain(ChatBlockingIssue.ProviderNotReady,
             host.Configuration.Readiness.BlockingIssues);
 
         // Clear API key — blocker returns.
-        await host.Configuration.ClearApiKeyAsync();
+        host.Configuration.ClearApiKey();
         Assert.Contains(ChatBlockingIssue.ProviderNotReady,
             host.Configuration.Readiness.BlockingIssues);
     }
@@ -170,7 +170,7 @@ public sealed class ConfigurationTests : IDisposable
         using var workspace = new TempWorkspace();
         var host = await CreateHostAsync(workspace);
 
-        await host.Configuration.SetSelectedModelAsync("gpt-4o-no-provider-prefix");
+        host.Configuration.SetSelectedModel("gpt-4o-no-provider-prefix");
 
         Assert.Contains(ChatBlockingIssue.ProviderNotReady,
             host.Configuration.Readiness.BlockingIssues);
@@ -184,7 +184,7 @@ public sealed class ConfigurationTests : IDisposable
         using var workspace = new TempWorkspace();
         var host = await CreateHostAsync(workspace);
 
-        await host.Configuration.SetSelectedModelAsync("fakeprovider/some-model");
+        host.Configuration.SetSelectedModel("fakeprovider/some-model");
 
         Assert.Contains(ChatBlockingIssue.ProviderNotReady,
             host.Configuration.Readiness.BlockingIssues);
@@ -198,7 +198,7 @@ public sealed class ConfigurationTests : IDisposable
         using var workspace = new TempWorkspace();
         var host = await CreateHostAsync(workspace);
 
-        await host.Configuration.SetSelectedModelAsync("ollama/qwen3:4b");
+        host.Configuration.SetSelectedModel("ollama/qwen3:4b");
 
         Assert.True(host.Configuration.Readiness.CanRunTurns);
     }
@@ -217,12 +217,12 @@ public sealed class ConfigurationTests : IDisposable
         host.SettingsSchemas.Register("test.flag", schema);
 
         // Set a valid boolean value first.
-        await host.Configuration.SetBoolSettingAsync("test.flag", true);
+        host.Configuration.SetBoolSetting("test.flag", true);
         Assert.True(host.Configuration.GetBoolSetting("test.flag"));
 
         // Try to set a string where boolean is expected — should fail.
-        await Assert.ThrowsAsync<SettingsValidationException>(async () =>
-            await host.Configuration.SetStringSettingAsync("test.flag", "not-a-bool"));
+        Assert.Throws<SettingsValidationException>(() =>
+            host.Configuration.SetStringSetting("test.flag", "not-a-bool"));
 
         // The valid boolean value should still be readable (write was rejected).
         Assert.True(host.Configuration.GetBoolSetting("test.flag"));
@@ -238,7 +238,7 @@ public sealed class ConfigurationTests : IDisposable
 
         Assert.Null(host.Configuration.SelectedModelId);
 
-        await host.Configuration.SetSelectedModelAsync("openai/gpt-4o");
+        host.Configuration.SetSelectedModel("openai/gpt-4o");
 
         Assert.Equal("openai/gpt-4o", host.Configuration.SelectedModelId);
     }

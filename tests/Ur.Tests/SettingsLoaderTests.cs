@@ -81,7 +81,7 @@ public sealed class SettingsConfigurationTests : IDisposable
     // ─── Writer: Validate ────────────────────────────────────────────
 
     [Fact]
-    public async Task Writer_SetAsync_ValidationFailure_ThrowsAndDoesNotPersist()
+    public void Writer_Set_ValidationFailure_ThrowsAndDoesNotPersist()
     {
         var userPath = WriteTempJson("{}");
 
@@ -90,8 +90,8 @@ public sealed class SettingsConfigurationTests : IDisposable
 
         // Write a string where boolean is expected — should throw.
         var stringValue = JsonSerializer.SerializeToElement("not-a-bool", SettingsJsonContext.Default.String);
-        await Assert.ThrowsAsync<SettingsValidationException>(
-            () => writerWithSchema.SetAsync("test.flag", stringValue, ConfigurationScope.User));
+        Assert.Throws<SettingsValidationException>(
+            () => writerWithSchema.Set("test.flag", stringValue, ConfigurationScope.User));
 
         // The failed write should not have modified the file. Verify by checking
         // the value is not present rather than comparing raw strings (avoids
@@ -100,33 +100,33 @@ public sealed class SettingsConfigurationTests : IDisposable
     }
 
     [Fact]
-    public async Task Writer_SetAsync_ValidValue_Persists()
+    public void Writer_Set_ValidValue_Persists()
     {
         var userPath = WriteTempJson("{}");
         var (writer, config) = BuildWriter(userPath, null);
 
         var stringValue = JsonSerializer.SerializeToElement("hello", SettingsJsonContext.Default.String);
-        await writer.SetAsync("test.key", stringValue, ConfigurationScope.User);
+        writer.Set("test.key", stringValue, ConfigurationScope.User);
 
         // Should be readable from IConfiguration after reload.
         Assert.Equal("hello", config["test:key"]);
     }
 
     [Fact]
-    public async Task Writer_ClearAsync_RemovesKeyAndReloads()
+    public void Writer_Clear_RemovesKeyAndReloads()
     {
         var userPath = WriteTempJson("""{"test": {"key": "value"}}""");
         var (writer, config) = BuildWriter(userPath, null);
 
         Assert.Equal("value", config["test:key"]);
 
-        await writer.ClearAsync("test.key", ConfigurationScope.User);
+        writer.Clear("test.key", ConfigurationScope.User);
 
         Assert.Null(config["test:key"]);
     }
 
     [Fact]
-    public async Task Writer_ScopeMerge_WorkspaceOverridesUser()
+    public void Writer_ScopeMerge_WorkspaceOverridesUser()
     {
         var userPath = WriteTempJson("""{"test": {"value": "from-user"}}""");
         var workspacePath = WriteTempJson("{}");
@@ -136,13 +136,13 @@ public sealed class SettingsConfigurationTests : IDisposable
 
         // Write to workspace scope.
         var wsValue = JsonSerializer.SerializeToElement("from-workspace", SettingsJsonContext.Default.String);
-        await writer.SetAsync("test.value", wsValue, ConfigurationScope.Workspace);
+        writer.Set("test.value", wsValue, ConfigurationScope.Workspace);
 
         // Workspace should override user.
         Assert.Equal("from-workspace", config["test:value"]);
 
         // Clear workspace — user value surfaces again.
-        await writer.ClearAsync("test.value", ConfigurationScope.Workspace);
+        writer.Clear("test.value", ConfigurationScope.Workspace);
         Assert.Equal("from-user", config["test:value"]);
     }
 
@@ -172,7 +172,7 @@ public sealed class SettingsConfigurationTests : IDisposable
     }
 
     [Fact]
-    public async Task Writer_Validate_UnknownKey_Tolerated()
+    public void Writer_Validate_UnknownKey_Tolerated()
     {
         // Unknown keys should not cause errors — they may come from
         // extensions that are no longer installed.
@@ -183,22 +183,22 @@ public sealed class SettingsConfigurationTests : IDisposable
         var stringValue = JsonSerializer.SerializeToElement("anything", SettingsJsonContext.Default.String);
 
         // Should not throw.
-        await writer.SetAsync("unknown.key", stringValue, ConfigurationScope.User);
+        writer.Set("unknown.key", stringValue, ConfigurationScope.User);
     }
 
     // ─── Writer: Round-trip type fidelity ───────────────────────────
 
     [Fact]
-    public async Task Writer_SetAsync_BoolValue_RoundTripsWithCorrectType()
+    public void Writer_Set_BoolValue_RoundTripsWithCorrectType()
     {
-        // Verifies that a boolean written via SetAsync is read back as a
+        // Verifies that a boolean written via Set is read back as a
         // boolean JsonElement, not as a string — the writer must preserve
         // JSON types through the file round-trip.
         var userPath = WriteTempJson("{}");
         var (writer, _) = BuildWriter(userPath, null);
 
         var boolValue = JsonSerializer.SerializeToElement(true, SettingsJsonContext.Default.Boolean);
-        await writer.SetAsync("test.flag", boolValue, ConfigurationScope.User);
+        writer.Set("test.flag", boolValue, ConfigurationScope.User);
 
         var result = writer.Get("test.flag");
         Assert.NotNull(result);
@@ -208,14 +208,14 @@ public sealed class SettingsConfigurationTests : IDisposable
     // ─── Writer: Namespace cleanup on clear ──────────────────────────
 
     [Fact]
-    public async Task Writer_ClearAsync_RemovesEmptyNamespaceFromFile()
+    public void Writer_Clear_RemovesEmptyNamespaceFromFile()
     {
         // When the last key in a namespace is cleared, the namespace object
         // itself should be removed from the file for cleanliness.
         var userPath = WriteTempJson("""{"test": {"only-key": "value"}}""");
         var (writer, _) = BuildWriter(userPath, null);
 
-        await writer.ClearAsync("test.only-key", ConfigurationScope.User);
+        writer.Clear("test.only-key", ConfigurationScope.User);
 
         // The file should not contain an empty "test" object.
         var json = File.ReadAllText(userPath);
@@ -247,7 +247,7 @@ public sealed class SettingsConfigurationTests : IDisposable
     }
 
     [Fact]
-    public async Task OptionsMonitor_ReflectsReloadAfterWrite()
+    public void OptionsMonitor_ReflectsReloadAfterWrite()
     {
         // Verifies that UrOptionsMonitor sees the new value after
         // SettingsWriter writes and reloads the IConfigurationRoot.
@@ -259,7 +259,7 @@ public sealed class SettingsConfigurationTests : IDisposable
         Assert.Null(monitor.CurrentValue.Model);
 
         var modelValue = JsonSerializer.SerializeToElement("anthropic/claude-3", SettingsJsonContext.Default.String);
-        await writer.SetAsync("ur.model", modelValue, ConfigurationScope.User);
+        writer.Set("ur.model", modelValue, ConfigurationScope.User);
 
         Assert.Equal("anthropic/claude-3", monitor.CurrentValue.Model);
     }

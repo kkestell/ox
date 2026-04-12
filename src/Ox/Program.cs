@@ -130,13 +130,13 @@ public static class Program
                             break;
                         }
 
-                        await config.SetSelectedModelAsync(modelInput);
+                        config.SetSelectedModel(modelInput);
 
                         // Check if the provider is recognized.
                         if (!config.IsSelectedProviderKnown())
                         {
                             Console.WriteLine(config.GetProviderBlockingMessage());
-                            await config.ClearSelectedModelAsync();
+                            config.ClearSelectedModel();
                         }
                         break;
 
@@ -147,7 +147,7 @@ public static class Program
                         if (string.IsNullOrEmpty(keyInput))
                             return false;
 
-                        await config.SetApiKeyAsync(keyInput, provider);
+                        config.SetApiKey(keyInput, provider);
                         break;
                 }
             }

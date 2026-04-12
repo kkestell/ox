@@ -52,7 +52,7 @@ public class MultiProviderSmokeTests : IDisposable
         if (apiKey is null) { _output.WriteLine("GOOGLE_API_KEY not set. Skipping."); return; }
 
         var host = await CreateHostAsync("google", apiKey);
-        await host.Configuration.SetSelectedModelAsync("google/gemini-3-flash-preview");
+        host.Configuration.SetSelectedModel("google/gemini-3-flash-preview");
 
         await VerifyStreamingResponse(host, _output);
     }
@@ -66,7 +66,7 @@ public class MultiProviderSmokeTests : IDisposable
         if (apiKey is null) { _output.WriteLine("OPENAI_API_KEY not set. Skipping."); return; }
 
         var host = await CreateHostAsync("openai", apiKey);
-        await host.Configuration.SetSelectedModelAsync("openai/gpt-5-nano");
+        host.Configuration.SetSelectedModel("openai/gpt-5-nano");
 
         await VerifyStreamingResponse(host, _output);
     }
@@ -77,7 +77,7 @@ public class MultiProviderSmokeTests : IDisposable
         if (!ShouldRun()) { _output.WriteLine($"Set {RunSmokeEnvVar}=1 to run."); return; }
 
         var host = await CreateHostAsync("ollama", apiKey: null);
-        await host.Configuration.SetSelectedModelAsync("ollama/qwen3:4b");
+        host.Configuration.SetSelectedModel("ollama/qwen3:4b");
 
         await VerifyStreamingResponse(host, _output);
     }

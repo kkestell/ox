@@ -50,14 +50,11 @@ internal sealed class SettingsWriter
     /// then validated against the schema registry, persisted to the JSON file,
     /// and the configuration root is reloaded.
     /// </summary>
-    public Task SetAsync(
+    public void Set(
         string key,
         JsonElement value,
-        ConfigurationScope scope,
-        CancellationToken ct = default)
+        ConfigurationScope scope)
     {
-        ct.ThrowIfCancellationRequested();
-
         // Validate the new value against the schema before persisting.
         ValidateSingleKey(key, value);
 
@@ -65,26 +62,19 @@ internal sealed class SettingsWriter
         var data = ReadNestedJson(path);
         SetNestedValue(data, key, value);
         PersistAndReload(path, data);
-
-        return Task.CompletedTask;
     }
 
     /// <summary>
     /// Removes a key from the specified scope's settings file and reloads.
     /// </summary>
-    public Task ClearAsync(
+    public void Clear(
         string key,
-        ConfigurationScope scope,
-        CancellationToken ct = default)
+        ConfigurationScope scope)
     {
-        ct.ThrowIfCancellationRequested();
-
         var path = GetPath(scope);
         var data = ReadNestedJson(path);
         RemoveNestedValue(data, key);
         PersistAndReload(path, data);
-
-        return Task.CompletedTask;
     }
 
     /// <summary>
