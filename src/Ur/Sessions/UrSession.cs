@@ -184,6 +184,13 @@ public sealed class UrSession
         _activeModelId = _configuration.SelectedModelId;
         _logger.LogInformation("Turn started: session={SessionId}, model={ModelId}", Id, _activeModelId);
 
+        // Create one chat client for the entire turn and share it between
+        // compaction and the agent loop. IChatClient wraps an HttpClient-backed
+        // SDK object that holds network resources, so it must be disposed when
+        // the turn is done. A single instance per turn is sufficient because
+        // compaction runs before the agent loop starts.
+        using var chatClient = _chatClientFactory(_activeModelId!);
+
         // --- Pre-turn compaction check ---
         // If the context window is filling up, summarize older messages before
         // appending the new user message. This runs proactively so we never
@@ -199,9 +206,8 @@ public sealed class UrSession
 
         if (contextWindow is not null && LastInputTokens is not null)
         {
-            var chatClientForCompaction = _chatClientFactory(_activeModelId!);
             var compacted = await Compaction.Autocompactor.TryCompactAsync(
-                _messages, chatClientForCompaction, contextWindow.Value, LastInputTokens.Value,
+                _messages, chatClient, contextWindow.Value, LastInputTokens.Value,
                 _logger, ct);
 
             if (compacted)
@@ -261,7 +267,6 @@ public sealed class UrSession
         // Build the per-turn tool registry, then append SubagentTool — which can
         // only be wired here because it needs per-turn context (chat client,
         // callbacks, system prompt) not available at registry build time.
-        var chatClient = _chatClientFactory(_activeModelId!);
         var tools = BuildToolRegistry();
 
         // SubagentTool is registered after the base registry is built so the runner
