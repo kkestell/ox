@@ -42,21 +42,23 @@ public sealed class Throbber
     /// <summary>
     /// Render the 8-bit counter as circle glyphs into the buffer at position (x, y).
     /// Bits are rendered MSB-first (bit 7 on the left). Circles are separated
-    /// by spaces, consuming 15 columns total (8 circles + 7 spaces).
+    /// by spaces, consuming 15 columns total (8 circles + 7 spaces). The caller
+    /// provides the background so the throbber inherits its host surface instead
+    /// of punching through to the terminal default.
     /// </summary>
-    public void Render(ConsoleBuffer buffer, int x, int y, Color activeColor, Color inactiveColor)
+    public void Render(ConsoleBuffer buffer, int x, int y, Color activeColor, Color inactiveColor, Color backgroundColor)
     {
         for (var bit = BitCount - 1; bit >= 0; bit--)
         {
             var isSet = (_counter & (1 << bit)) != 0;
             var color = isSet ? activeColor : inactiveColor;
-            buffer.SetCell(x, y, Circle, color, Color.Default);
+            buffer.SetCell(x, y, Circle, color, backgroundColor);
             x++;
 
             // Space separator between circles (except after the last one).
             if (bit > 0)
             {
-                buffer.SetCell(x, y, ' ', Color.Default, Color.Default);
+                buffer.SetCell(x, y, ' ', backgroundColor, backgroundColor);
                 x++;
             }
         }

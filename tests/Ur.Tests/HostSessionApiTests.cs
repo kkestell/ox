@@ -111,6 +111,23 @@ public class HostSessionApiTests
         Assert.Equal("openrouter/test-model", reopened.ActiveModelId);
     }
 
+    [Fact]
+    public async Task ActiveModelId_AfterTurnFallsBackToUpdatedConfigurationSelection()
+    {
+        using var workspace = new TempWorkspace();
+        var host = await CreateHostAsync(workspace, keyring: new TestKeyring(), chatClientFactory: _ => new FakeChatClient("hello"));
+
+        host.Configuration.SetApiKey("test-key");
+        host.Configuration.SetSelectedModel("openrouter/test-model");
+
+        var session = host.CreateSession();
+        await CollectEventsAsync(session.RunTurnAsync("hello"));
+
+        host.Configuration.SetSelectedModel("ollama/qwen3:4b");
+
+        Assert.Equal("ollama/qwen3:4b", session.ActiveModelId);
+    }
+
     private static Task<UrHost> CreateHostAsync(
         TempWorkspace workspace,
         TestKeyring? keyring = null,

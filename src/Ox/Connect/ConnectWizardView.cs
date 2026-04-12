@@ -9,29 +9,39 @@ namespace Ox.Connect;
 /// The wizard has two visual modes:
 ///
 ///   List mode (SelectProvider / SelectModel):
-///     ╭──────────────────────╮
+///     ┌──────────────────────┐
 ///     │  Select Provider     │
 ///     ├──────────────────────┤
 ///     │ > Google             │
 ///     │   Ollama             │
 ///     │   OpenAI             │
-///     ╰──────────────────────╯
+///     └──────────────────────┘
 ///
 ///   Input mode (EnterApiKey):
-///     ╭──────────────────────╮
+///     ┌──────────────────────┐
 ///     │  API Key             │
 ///     ├──────────────────────┤
 ///     │  your-key-here█      │
-///     ╰──────────────────────╯
+///     └──────────────────────┘
 ///
 /// Width = max(widest item + 6, 32), centered horizontally.
 /// Height = 2 (borders) + 1 (title) + 1 (divider) + item count for list,
 ///          or 5 (borders + title + divider + 1 input row) for input mode.
 /// Vertical position = center of the buffer.
-/// Box chrome matches the rest of the TUI: ╭─╮ │ ├─┤ ╰─╯.
+/// Box chrome matches the flatter monochrome panels elsewhere in the TUI:
+/// ┌─┐ │ ├─┤ └─┘ on a pure-black fill.
 /// </summary>
 public sealed class ConnectWizardView
 {
+    private const char TopLeftCornerRune = '┌';
+    private const char TopRightCornerRune = '┐';
+    private const char BottomLeftCornerRune = '└';
+    private const char BottomRightCornerRune = '┘';
+    private const char DividerLeftRune = '├';
+    private const char DividerRightRune = '┤';
+    private const char HorizontalBorderRune = '─';
+    private const char VerticalBorderRune = '│';
+
     // Minimum box width — keeps the modal from being comically narrow on wide
     // terminals with short provider names.
     private const int MinWidth = 32;
@@ -76,22 +86,26 @@ public sealed class ConnectWizardView
         boxWidth = Math.Min(boxWidth, buffer.Width);
         boxHeight = Math.Min(boxHeight, buffer.Height);
 
-        var borderColor = _theme.Border;
+        var bgColor = _theme.Background;
+        var borderColor = _theme.ChromeBorder;
         var textColor = _theme.Text;
         var dimColor = _theme.StatusText;
         var innerWidth = boxWidth - 2;
 
-        // ── Row 0: top border ╭───╮ ─────────────────────────────────────
+        // Paint the modal body first so whatever was previously on screen does
+        // not bleed through untouched interior cells.
+        for (var row = startY; row < startY + boxHeight; row++)
+            buffer.FillCells(startX, row, boxWidth, ' ', textColor, bgColor);
 
-        buffer.SetCell(startX, startY, '╭', borderColor, Color.Default);
-        buffer.FillCells(startX + 1, startY, innerWidth, '─', borderColor, Color.Default);
-        buffer.SetCell(startX + boxWidth - 1, startY, '╮', borderColor, Color.Default);
+        buffer.SetCell(startX, startY, TopLeftCornerRune, borderColor, bgColor);
+        buffer.FillCells(startX + 1, startY, boxWidth - 2, HorizontalBorderRune, borderColor, bgColor);
+        buffer.SetCell(startX + boxWidth - 1, startY, TopRightCornerRune, borderColor, bgColor);
 
         // ── Row 1: title ─────────────────────────────────────────────────
 
         var titleRow = startY + 1;
-        buffer.SetCell(startX, titleRow, '│', borderColor, Color.Default);
-        buffer.SetCell(startX + boxWidth - 1, titleRow, '│', borderColor, Color.Default);
+        buffer.SetCell(startX, titleRow, VerticalBorderRune, borderColor, bgColor);
+        buffer.SetCell(startX + boxWidth - 1, titleRow, VerticalBorderRune, borderColor, bgColor);
 
         var titleText = wizard.CurrentStep switch
         {
@@ -103,34 +117,30 @@ public sealed class ConnectWizardView
 
         // Pad the title with a leading space and render left-aligned.
         var titleStr = $"  {titleText}";
-        DrawText(buffer, startX + 1, titleRow, titleStr, innerWidth, textColor);
-
-        // ── Row 2: divider ├───┤ ─────────────────────────────────────────
+        DrawText(buffer, startX + 1, titleRow, titleStr, innerWidth, textColor, bgColor);
 
         var dividerRow = startY + 2;
-        buffer.SetCell(startX, dividerRow, '├', borderColor, Color.Default);
-        buffer.FillCells(startX + 1, dividerRow, innerWidth, '─', borderColor, Color.Default);
-        buffer.SetCell(startX + boxWidth - 1, dividerRow, '┤', borderColor, Color.Default);
+        buffer.SetCell(startX, dividerRow, DividerLeftRune, borderColor, bgColor);
+        buffer.FillCells(startX + 1, dividerRow, boxWidth - 2, HorizontalBorderRune, borderColor, bgColor);
+        buffer.SetCell(startX + boxWidth - 1, dividerRow, DividerRightRune, borderColor, bgColor);
 
-        // ── Rows 3+: content ─────────────────────────────────────────────
+        // ── Rows 2+: content ─────────────────────────────────────────────
 
         var contentStartRow = startY + 3;
 
         if (isInput)
         {
-            RenderInputRow(buffer, startX, contentStartRow, boxWidth, wizard, textColor, borderColor);
+            RenderInputRow(buffer, startX, contentStartRow, boxWidth, wizard, textColor, borderColor, bgColor);
         }
         else
         {
-            RenderListRows(buffer, startX, contentStartRow, boxWidth, wizard, textColor, dimColor, borderColor);
+            RenderListRows(buffer, startX, contentStartRow, boxWidth, wizard, textColor, dimColor, borderColor, bgColor);
         }
 
-        // ── Last row: bottom border ╰───╯ ────────────────────────────────
-
         var bottomRow = startY + boxHeight - 1;
-        buffer.SetCell(startX, bottomRow, '╰', borderColor, Color.Default);
-        buffer.FillCells(startX + 1, bottomRow, innerWidth, '─', borderColor, Color.Default);
-        buffer.SetCell(startX + boxWidth - 1, bottomRow, '╯', borderColor, Color.Default);
+        buffer.SetCell(startX, bottomRow, BottomLeftCornerRune, borderColor, bgColor);
+        buffer.FillCells(startX + 1, bottomRow, boxWidth - 2, HorizontalBorderRune, borderColor, bgColor);
+        buffer.SetCell(startX + boxWidth - 1, bottomRow, BottomRightCornerRune, borderColor, bgColor);
     }
 
     private static void RenderListRows(
@@ -141,7 +151,8 @@ public sealed class ConnectWizardView
         ConnectWizardController wizard,
         Color textColor,
         Color dimColor,
-        Color borderColor)
+        Color borderColor,
+        Color bgColor)
     {
         var items = wizard.DisplayItems;
         for (var i = 0; i < items.Count; i++)
@@ -149,8 +160,8 @@ public sealed class ConnectWizardView
             var row = startRow + i;
             if (row >= buffer.Height) break;
 
-            buffer.SetCell(startX, row, '│', borderColor, Color.Default);
-            buffer.SetCell(startX + boxWidth - 1, row, '│', borderColor, Color.Default);
+            buffer.SetCell(startX, row, VerticalBorderRune, borderColor, bgColor);
+            buffer.SetCell(startX + boxWidth - 1, row, VerticalBorderRune, borderColor, bgColor);
 
             // Prefix: "> " for the selected item, "  " for others.
             var selected = i == wizard.SelectedIndex;
@@ -158,7 +169,7 @@ public sealed class ConnectWizardView
             var color = selected ? textColor : dimColor;
 
             var rowText = prefix + items[i];
-            DrawText(buffer, startX + 1, row, rowText, boxWidth - 2, color);
+            DrawText(buffer, startX + 1, row, rowText, boxWidth - 2, color, bgColor);
         }
     }
 
@@ -169,12 +180,13 @@ public sealed class ConnectWizardView
         int boxWidth,
         ConnectWizardController wizard,
         Color textColor,
-        Color borderColor)
+        Color borderColor,
+        Color bgColor)
     {
         if (row >= buffer.Height) return;
 
-        buffer.SetCell(startX, row, '│', borderColor, Color.Default);
-        buffer.SetCell(startX + boxWidth - 1, row, '│', borderColor, Color.Default);
+        buffer.SetCell(startX, row, VerticalBorderRune, borderColor, bgColor);
+        buffer.SetCell(startX + boxWidth - 1, row, VerticalBorderRune, borderColor, bgColor);
 
         var editor = wizard.KeyEditor;
         var text = editor.Text;
@@ -185,7 +197,7 @@ public sealed class ConnectWizardView
         var fieldWidth = innerWidth - 2;
 
         for (var i = 0; i < text.Length && i < fieldWidth; i++)
-            buffer.SetCell(fieldX + i, row, text[i], textColor, Color.Default);
+            buffer.SetCell(fieldX + i, row, text[i], textColor, bgColor);
 
         // Cursor block — white cell with black text, same style as the main
         // input area.
@@ -198,9 +210,9 @@ public sealed class ConnectWizardView
     }
 
     // Write up to `maxWidth` characters of `text` into the buffer starting at (x, row).
-    private static void DrawText(ConsoleBuffer buffer, int x, int row, string text, int maxWidth, Color fg)
+    private static void DrawText(ConsoleBuffer buffer, int x, int row, string text, int maxWidth, Color fg, Color bg)
     {
         for (var i = 0; i < text.Length && i < maxWidth; i++)
-            buffer.SetCell(x + i, row, text[i], fg, Color.Default);
+            buffer.SetCell(x + i, row, text[i], fg, bg);
     }
 }

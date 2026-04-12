@@ -79,6 +79,7 @@ public sealed class OxApp : IDisposable
         _coordinator = coordinator;
         _buffer = new ConsoleBuffer(width, height);
         _workspacePath = workspacePath;
+        _permissionPromptView.WorkspacePath = workspacePath;
 
         // Force an explicit black background for every cell that uses
         // Color.Default. Without this, empty cells emit SGR 49 ("terminal
@@ -313,13 +314,14 @@ public sealed class OxApp : IDisposable
                 return;
             }
 
-            // Try to parse a scope name from the input.
+            // Accept both the long scope names and the compact aliases shown in
+            // the prompt so the shorter copy is actually actionable.
             PermissionScope? scope = input switch
             {
-                "once" => PermissionScope.Once,
-                "session" => PermissionScope.Session,
-                "workspace" => PermissionScope.Workspace,
-                "always" => PermissionScope.Always,
+                "o" or "once" => PermissionScope.Once,
+                "s" or "session" => PermissionScope.Session,
+                "w" or "ws" or "workspace" => PermissionScope.Workspace,
+                "a" or "always" => PermissionScope.Always,
                 _ => null,
             };
 
@@ -386,19 +388,19 @@ public sealed class OxApp : IDisposable
     {
         if (bare == KeyCode.Enter)
         {
-            _wizard.ApiKeyConfirmed();
+            _wizard.TryConfirmApiKey();
             return;
         }
 
         if (bare == KeyCode.Backspace)
         {
-            _wizard.KeyEditor.Backspace();
+            _wizard.BackspaceApiKey();
             return;
         }
 
         if (bare == KeyCode.Delete)
         {
-            _wizard.KeyEditor.Delete();
+            _wizard.DeleteApiKey();
             return;
         }
 
@@ -409,7 +411,7 @@ public sealed class OxApp : IDisposable
 
         // Printable character.
         if (args.KeyChar >= ' ' && args.KeyChar != '\0' && !args.KeyCode.HasCtrl() && !args.KeyCode.HasAlt())
-            _wizard.KeyEditor.InsertChar(args.KeyChar);
+            _wizard.InsertApiKeyChar(args.KeyChar);
     }
 
     /// <summary>
@@ -427,7 +429,8 @@ public sealed class OxApp : IDisposable
             var (key, _) = providers[_wizard.SelectedIndex];
             var requiresKey = _host.Configuration.ProviderRequiresApiKey(key);
             var models = _host.Configuration.ListModelsForProvider(key);
-            _wizard.ProviderConfirmed(key, requiresKey, models);
+            var hasStoredApiKey = requiresKey && _host.Configuration.HasApiKey(key);
+            _wizard.ProviderConfirmed(key, requiresKey, models, hasStoredApiKey);
         }
         else if (_wizard.CurrentStep == WizardStep.SelectModel)
         {
@@ -774,25 +777,35 @@ public sealed class OxApp : IDisposable
         var width = _buffer.Width;
         var height = _buffer.Height;
 
-        // Conversation area: from row 0 to (height - InputAreaView.Height - 1).
-        var conversationHeight = height - InputAreaView.Height;
+        // Reserve the composer's shadow gutter so the slab can float above the
+        // terminal edge instead of clipping its right and bottom cast.
+        var conversationHeight = Math.Max(0, height - InputAreaView.Height - InputAreaView.ShadowHeight);
         _conversationView.Render(_buffer, 0, 0, width, conversationHeight);
 
         // Permission prompt: floats above the input area when active.
         if (_permissionPromptView.IsActive)
         {
-            var promptY = conversationHeight - PermissionPromptView.Height;
-            _permissionPromptView.Render(_buffer, 0, promptY, width);
+            var promptX = InputAreaView.HorizontalMargin;
+            var promptY = Math.Max(0, conversationHeight - PermissionPromptView.Height - PermissionPromptView.ShadowHeight);
+            var promptWidth = Math.Max(
+                4,
+                width - (InputAreaView.HorizontalMargin * 2) - InputAreaView.ShadowWidth);
+            _permissionPromptView.Render(_buffer, promptX, promptY, promptWidth);
         }
 
         // Input area: fixed at the bottom.
-        var inputY = height - InputAreaView.Height;
+        var inputX = InputAreaView.HorizontalMargin;
+        var inputY = Math.Max(0, height - InputAreaView.Height - InputAreaView.ShadowHeight);
+        var inputWidth = Math.Max(
+            4,
+            width - (InputAreaView.HorizontalMargin * 2) - InputAreaView.ShadowWidth);
         var ghostText = _autocomplete.GetGhostText(_editor.Text);
-        var statusRight = InputStatusFormatter.Compose(_contextPercent, _session?.ActiveModelId);
+        var statusModelId = _turnActive ? _session?.ActiveModelId : _host.Configuration.SelectedModelId;
+        var statusRight = InputStatusFormatter.Compose(_contextPercent, statusModelId);
 
         _inputAreaView.Render(
             _buffer,
-            0, inputY, width,
+            inputX, inputY, inputWidth,
             _editor,
             ghostText,
             statusRight,

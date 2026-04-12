@@ -189,15 +189,15 @@ public sealed class ConnectWizardControllerTests
     // ── Empty API key ─────────────────────────────────────────────────────
 
     [Fact]
-    public void ApiKeyConfirmed_WithEmptyField_ReturnsNullApiKey()
+    public void ApiKeyConfirmed_WithStoredKeyMask_ReturnsNullApiKey()
     {
-        // Pressing Enter with nothing typed means "keep existing key" —
-        // the caller checks for null and skips SetApiKey.
+        // Pressing Enter on the stored-key mask means "keep the existing key"
+        // — the caller checks for null and skips SetApiKey.
         var wizard = new ConnectWizardController();
         wizard.Start(SampleProviders, required: false);
-        wizard.ProviderConfirmed("google", requiresApiKey: true, GoogleModels);
+        wizard.ProviderConfirmed("google", requiresApiKey: true, GoogleModels, hasStoredApiKey: true);
 
-        // Do NOT type anything — just confirm.
+        // Do NOT type anything — just confirm the masked placeholder.
         wizard.ApiKeyConfirmed();
 
         // Step must have advanced; without this assertion a broken
@@ -208,6 +208,61 @@ public sealed class ConnectWizardControllerTests
 
         Assert.NotNull(result);
         Assert.Null(result.Value.ApiKey);
+    }
+
+    [Fact]
+    public void ProviderConfirmed_WithStoredApiKey_ShowsMaskedPlaceholder()
+    {
+        var wizard = new ConnectWizardController();
+        wizard.Start(SampleProviders, required: false);
+
+        wizard.ProviderConfirmed("google", requiresApiKey: true, GoogleModels, hasStoredApiKey: true);
+
+        Assert.Equal(WizardStep.EnterApiKey, wizard.CurrentStep);
+        Assert.Equal("*****************", wizard.KeyEditor.Text);
+        Assert.True(wizard.IsShowingStoredApiKeyMask);
+    }
+
+    [Fact]
+    public void TryConfirmApiKey_WithStoredApiKeyMask_AdvancesWithoutReplacingKey()
+    {
+        var wizard = new ConnectWizardController();
+        wizard.Start(SampleProviders, required: false);
+        wizard.ProviderConfirmed("google", requiresApiKey: true, GoogleModels, hasStoredApiKey: true);
+
+        var advanced = wizard.TryConfirmApiKey();
+
+        Assert.True(advanced);
+        Assert.Equal(WizardStep.SelectModel, wizard.CurrentStep);
+        var result = wizard.ModelConfirmed();
+        Assert.NotNull(result);
+        Assert.Null(result.Value.ApiKey);
+    }
+
+    [Fact]
+    public void TryConfirmApiKey_WithoutStoredApiKeyAndEmptyField_DoesNotAdvance()
+    {
+        var wizard = new ConnectWizardController();
+        wizard.Start(SampleProviders, required: false);
+        wizard.ProviderConfirmed("google", requiresApiKey: true, GoogleModels, hasStoredApiKey: false);
+
+        var advanced = wizard.TryConfirmApiKey();
+
+        Assert.False(advanced);
+        Assert.Equal(WizardStep.EnterApiKey, wizard.CurrentStep);
+    }
+
+    [Fact]
+    public void InsertApiKeyChar_WhenStoredMaskVisible_ReplacesMaskWithTypedKey()
+    {
+        var wizard = new ConnectWizardController();
+        wizard.Start(SampleProviders, required: false);
+        wizard.ProviderConfirmed("google", requiresApiKey: true, GoogleModels, hasStoredApiKey: true);
+
+        wizard.InsertApiKeyChar('x');
+
+        Assert.Equal("x", wizard.KeyEditor.Text);
+        Assert.False(wizard.IsShowingStoredApiKeyMask);
     }
 
     // ── Navigation at SelectModel step ───────────────────────────────────
@@ -325,6 +380,7 @@ public sealed class ConnectWizardControllerTests
         var wizard = new ConnectWizardController();
         wizard.Start(SampleProviders, required: false);
         wizard.ProviderConfirmed("google", requiresApiKey: true, GoogleModels);
+        wizard.InsertApiKeyChar('s');
 
         wizard.ApiKeyConfirmed();
 

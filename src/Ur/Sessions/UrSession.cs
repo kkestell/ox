@@ -146,6 +146,8 @@ public sealed class UrSession
         string userInput,
         [EnumeratorCancellation] CancellationToken ct = default)
     {
+        try
+        {
         // Gate: refuse to run if the system isn't fully configured (missing API
         // key or model selection). This check is intentionally performed here
         // rather than at session creation so that the caller gets a clear
@@ -309,6 +311,13 @@ public sealed class UrSession
         // Final flush for any messages produced after the last yield.
         await PersistPendingMessagesAsync(persistedCount, ct);
         _logger.LogInformation("Turn completed: session={SessionId}", Id);
+        }
+        finally
+        {
+            // Once the turn is finished, callers should see the latest selected
+            // configuration model rather than a stale snapshot from an earlier turn.
+            _activeModelId = null;
+        }
     }
 
     /// <summary>

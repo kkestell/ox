@@ -1,4 +1,5 @@
 using Ox.Views;
+using Te.Rendering;
 
 namespace Ur.Tests;
 
@@ -48,5 +49,42 @@ public sealed class ConversationViewLayoutTests
             .ToList();
 
         Assert.Equal(["A", "", "B"], lines);
+    }
+
+    [Fact]
+    public void Render_WhenScrollbarVisible_UsesLightThumbAndDarkTrack()
+    {
+        var palette = OxThemePalette.Ox;
+        var view = new ConversationView();
+        var buffer = new ConsoleBuffer(20, 8);
+
+        for (var i = 0; i < 12; i++)
+            view.AddEntry(new Ox.Conversation.UserMessageEntry($"message {i}"));
+
+        view.Render(buffer, x: 0, y: 0, width: 20, height: 8);
+
+        Assert.Equal(Cell.Empty, buffer.GetCell(19, 0));
+
+        Assert.Equal('│', buffer.GetCell(19, 1).Rune);
+        Assert.Equal(palette.Border, buffer.GetCell(19, 1).Foreground);
+
+        Assert.Equal('│', buffer.GetCell(19, 6).Rune);
+        Assert.Equal(palette.Divider, buffer.GetCell(19, 6).Foreground);
+
+        Assert.Equal(Cell.Empty, buffer.GetCell(19, 7));
+    }
+
+    [Fact]
+    public void Render_AddsOneRowOfPaddingAboveAndBelowConversationList()
+    {
+        var view = new ConversationView();
+        var buffer = new ConsoleBuffer(20, 8);
+        view.AddEntry(new Ox.Conversation.UserMessageEntry("hello"));
+
+        view.Render(buffer, x: 0, y: 0, width: 20, height: 8);
+
+        Assert.Equal(Cell.Empty, buffer.GetCell(1, 0));
+        Assert.Equal('●', buffer.GetCell(1, 1).Rune);
+        Assert.Equal(Cell.Empty, buffer.GetCell(1, 7));
     }
 }

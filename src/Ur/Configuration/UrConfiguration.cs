@@ -227,6 +227,14 @@ public sealed class UrConfiguration
         _keyring.GetSecret(SecretService, provider);
 
     /// <summary>
+    /// Returns true when a non-empty API key is already stored for the provider.
+    /// The TUI uses this to show a masked placeholder in the connect wizard
+    /// without ever loading the secret value into the visible UI.
+    /// </summary>
+    public bool HasApiKey(string provider = "openrouter") =>
+        !string.IsNullOrWhiteSpace(GetApiKey(provider));
+
+    /// <summary>
     /// Exposes the provider registry so the UI layer can look up a provider
     /// by name for readiness checks and error messages.
     /// </summary>

@@ -77,7 +77,7 @@
     ]
   },
   "zai-coding": {
-    "name": "Z.AI Coding Plan",
+    "name": "Z.AI",
     "type": "openai-compatible",
     "url": "https://api.z.ai/api/coding/paas/v4",
     "models": [

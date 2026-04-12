@@ -7,11 +7,11 @@ namespace Ox.Views;
 /// Renders the 5-row input region at the bottom of the screen.
 ///
 /// Layout (each row spans full terminal width):
-///   Row 0: Top border     ╭────────────────────────────╮
+///   Row 0: Top border     ┌────────────────────────────┐
 ///   Row 1: Text field     │ user input here█            │
 ///   Row 2: Divider        ├────────────────────────────┤
 ///   Row 3: Status line    │ ● ● ● ● ● ● ● ●  1%  model │
-///   Row 4: Bottom border  ╰────────────────────────────╯
+///   Row 4: Bottom border  └────────────────────────────┘
 ///
 /// The view reads from TextEditor for the input field and from external
 /// state for the status line (throbber, model, context %). It does not
@@ -19,8 +19,36 @@ namespace Ox.Views;
 /// </summary>
 public sealed class InputAreaView
 {
+    private const int ContentPadding = 1;
+    private const char TopLeftCornerRune = '┌';
+    private const char TopRightCornerRune = '┐';
+    private const char BottomLeftCornerRune = '└';
+    private const char BottomRightCornerRune = '┘';
+    private const char DividerLeftRune = '├';
+    private const char DividerRightRune = '┤';
+    private const char HorizontalBorderRune = '─';
+    private const char VerticalBorderRune = '│';
+
     /// <summary>Fixed height of the input area in rows.</summary>
     public const int Height = 5;
+
+    /// <summary>
+    /// The composer now uses a flush box frame instead of an offset shadow, so
+    /// layout no longer needs to reserve extra space on the right edge.
+    /// </summary>
+    public const int ShadowWidth = 0;
+
+    /// <summary>
+    /// The composer frame ends on its bottom border, so layout can anchor it
+    /// directly against the terminal floor without a shadow gutter.
+    /// </summary>
+    public const int ShadowHeight = 0;
+
+    /// <summary>
+    /// Empty gutter kept outside the composer body on both sides so the slab
+    /// has breathing room inside the terminal frame.
+    /// </summary>
+    public const int HorizontalMargin = 1;
 
     private readonly OxThemePalette _theme = OxThemePalette.Ox;
 
@@ -47,86 +75,93 @@ public sealed class InputAreaView
     {
         if (width < 4) return; // Too narrow to render anything useful.
 
-        var borderColor = _theme.InputBorder;
-        var dividerColor = _theme.Divider;
-        var innerWidth = width - 2; // Subtract left and right border columns.
+        var bgColor = _theme.Background;
+        var borderColor = _theme.ChromeBorder;
+        // Keep one interior blank cell on both sides so typing and status
+        // content do not visually touch the frame. That shared content box
+        // is reused by the editor text, throbber, and model/context summary.
+        var contentLeft = x + 1 + ContentPadding;
+        var contentRightExclusive = x + width - 1 - ContentPadding;
+        var contentWidth = Math.Max(0, contentRightExclusive - contentLeft);
 
-        // Row 0: Top border ╭───╮
-        buffer.SetCell(x, y, '╭', borderColor, Color.Default);
-        buffer.FillCells(x + 1, y, innerWidth, '─', borderColor, Color.Default);
-        buffer.SetCell(x + width - 1, y, '╮', borderColor, Color.Default);
+        // Paint the composer body first so both editable rows inherit the same
+        // pure-black surface before the border and divider are layered on top.
+        for (var row = y; row < y + Height && row < buffer.Height; row++)
+            buffer.FillCells(x, row, width, ' ', _theme.Text, bgColor);
+
+        buffer.SetCell(x, y, TopLeftCornerRune, borderColor, bgColor);
+        buffer.FillCells(x + 1, y, width - 2, HorizontalBorderRune, borderColor, bgColor);
+        buffer.SetCell(x + width - 1, y, TopRightCornerRune, borderColor, bgColor);
 
         // Row 1: Text field with cursor
         var textRow = y + 1;
-        buffer.SetCell(x, textRow, '│', borderColor, Color.Default);
-        buffer.SetCell(x + width - 1, textRow, '│', borderColor, Color.Default);
+        buffer.SetCell(x, textRow, VerticalBorderRune, borderColor, bgColor);
+        buffer.SetCell(x + width - 1, textRow, VerticalBorderRune, borderColor, bgColor);
 
-        // Render the text field content inside the borders.
-        var fieldX = x + 1;
         var text = editor.Text;
         var cursor = editor.CursorPosition;
 
-        // Draw text content with a 1-char padding inside the border.
-        var textStart = fieldX + 1;
-        for (var i = 0; i < text.Length && i < innerWidth - 2; i++)
+        // Keep the text one column in from the border so the thin-line frame
+        // still leaves a little breathing room around the editable content.
+        var textStart = contentLeft;
+        for (var i = 0; i < text.Length && i < contentWidth; i++)
         {
             var col = textStart + i;
-            buffer.SetCell(col, textRow, text[i], _theme.Text, Color.Default);
+            buffer.SetCell(col, textRow, text[i], _theme.Text, bgColor);
         }
 
         // Draw ghost text (autocomplete suggestion) in dim color after the cursor.
         if (ghostText is not null)
         {
             var ghostStart = textStart + text.Length;
-            for (var i = 0; i < ghostText.Length && ghostStart + i < x + width - 1; i++)
-                buffer.SetCell(ghostStart + i, textRow, ghostText[i], _theme.StatusText, Color.Default);
+            for (var i = 0; i < ghostText.Length && ghostStart + i < contentRightExclusive; i++)
+                buffer.SetCell(ghostStart + i, textRow, ghostText[i], _theme.StatusText, bgColor);
         }
 
         // Show cursor as a white block with black text (visible against the dark background).
         if (isFocused)
         {
             var cursorCol = textStart + cursor;
-            if (cursorCol < x + width - 1)
+            if (cursorCol < contentRightExclusive)
             {
                 var cursorChar = cursor < text.Length ? text[cursor] : ' ';
                 buffer.SetCell(cursorCol, textRow, cursorChar, Color.Black, _theme.Text);
             }
         }
 
-        // Row 2: Horizontal divider — a clean line between the text field and status row.
-        // Uses │ on the sides (same as the border verticals) to avoid T-junction clutter.
+        // Row 2: Divider between typing and status. The split keeps the quiet
+        // status strip legible without reintroducing the heavier shadow slab.
         var dividerRow = y + 2;
-        buffer.SetCell(x, dividerRow, '│', borderColor, Color.Default);
-        buffer.FillCells(x + 1, dividerRow, innerWidth, '─', dividerColor, Color.Default);
-        buffer.SetCell(x + width - 1, dividerRow, '│', borderColor, Color.Default);
+        buffer.SetCell(x, dividerRow, DividerLeftRune, borderColor, bgColor);
+        buffer.FillCells(x + 1, dividerRow, width - 2, HorizontalBorderRune, borderColor, bgColor);
+        buffer.SetCell(x + width - 1, dividerRow, DividerRightRune, borderColor, bgColor);
 
         // Row 3: Status line
         var statusRow = y + 3;
-        buffer.SetCell(x, statusRow, '│', borderColor, Color.Default);
-        buffer.SetCell(x + width - 1, statusRow, '│', borderColor, Color.Default);
+        buffer.SetCell(x, statusRow, VerticalBorderRune, borderColor, bgColor);
+        buffer.SetCell(x + width - 1, statusRow, VerticalBorderRune, borderColor, bgColor);
 
         // Left side: throbber (when active).
         if (throbber is not null && throbber.Counter > 0)
         {
-            throbber.Render(buffer, fieldX + 1, statusRow, _theme.ThrobberActive, _theme.ThrobberInactive);
+            throbber.Render(buffer, contentLeft, statusRow, _theme.ThrobberActive, _theme.ThrobberInactive, bgColor);
         }
 
         // Right side: model + context %.
         if (statusRight is not null)
         {
-            var rightStart = x + width - 2 - statusRight.Length;
+            var rightStart = contentRightExclusive - statusRight.Length;
             for (var i = 0; i < statusRight.Length; i++)
             {
                 var col = rightStart + i;
-                if (col > x && col < x + width - 1)
-                    buffer.SetCell(col, statusRow, statusRight[i], _theme.StatusText, Color.Default);
+                if (col >= contentLeft && col < contentRightExclusive)
+                    buffer.SetCell(col, statusRow, statusRight[i], _theme.StatusText, bgColor);
             }
         }
 
-        // Row 4: Bottom border ╰───╯
         var bottomRow = y + 4;
-        buffer.SetCell(x, bottomRow, '╰', borderColor, Color.Default);
-        buffer.FillCells(x + 1, bottomRow, innerWidth, '─', borderColor, Color.Default);
-        buffer.SetCell(x + width - 1, bottomRow, '╯', borderColor, Color.Default);
+        buffer.SetCell(x, bottomRow, BottomLeftCornerRune, borderColor, bgColor);
+        buffer.FillCells(x + 1, bottomRow, width - 2, HorizontalBorderRune, borderColor, bgColor);
+        buffer.SetCell(x + width - 1, bottomRow, BottomRightCornerRune, borderColor, bgColor);
     }
 }

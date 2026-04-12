@@ -28,6 +28,8 @@ public enum WizardStep
 /// </summary>
 public sealed class ConnectWizardController
 {
+    private const string StoredApiKeyMask = "*****************";
+
     // The full provider list, set when the wizard is started.
     private IReadOnlyList<(string Key, string Name)> _providers = [];
 
@@ -39,6 +41,11 @@ public sealed class ConnectWizardController
 
     // API key entered by the user (null = not yet at that step; empty = user left it blank).
     private string? _selectedApiKey;
+
+    // True when the editor is showing a placeholder for an already-saved key
+    // rather than literal user-entered text. This lets the view reassure the
+    // user that a key exists without ever loading the secret itself into the UI.
+    private bool _isShowingStoredApiKeyMask;
 
     /// <summary>Whether the wizard overlay is currently shown.</summary>
     public bool IsActive { get; private set; }
@@ -69,6 +76,12 @@ public sealed class ConnectWizardController
     /// <summary>Text editor for the API key input field (EnterApiKey step).</summary>
     public TextEditor KeyEditor { get; } = new();
 
+    /// <summary>
+    /// Whether the key editor is currently showing the masked placeholder for
+    /// a previously saved API key.
+    /// </summary>
+    public bool IsShowingStoredApiKeyMask => _isShowingStoredApiKeyMask;
+
     // ── Lifecycle ────────────────────────────────────────────────────────
 
     /// <summary>
@@ -82,6 +95,7 @@ public sealed class ConnectWizardController
         _models = [];
         _selectedProviderKey = null;
         _selectedApiKey = null;
+        _isShowingStoredApiKeyMask = false;
 
         IsActive = true;
         IsRequired = required;
@@ -101,21 +115,28 @@ public sealed class ConnectWizardController
     public void ProviderConfirmed(
         string selectedKey,
         bool requiresApiKey,
-        IReadOnlyList<(string Id, string Name)> models)
+        IReadOnlyList<(string Id, string Name)> models,
+        bool hasStoredApiKey = false)
     {
         _selectedProviderKey = selectedKey;
         _models = models;
 
         if (requiresApiKey)
         {
-            // Stay at EnterApiKey; the user types their key here.
+            // Stay at EnterApiKey. When a key already exists we show a fixed
+            // mask so the user knows Enter will keep the saved credential.
             CurrentStep = WizardStep.EnterApiKey;
-            KeyEditor.Clear();
+            _isShowingStoredApiKeyMask = hasStoredApiKey;
+            if (hasStoredApiKey)
+                KeyEditor.SetText(StoredApiKeyMask);
+            else
+                KeyEditor.Clear();
         }
         else
         {
             // Skip the key step — jump straight to model selection.
             _selectedApiKey = null;
+            _isShowingStoredApiKeyMask = false;
             AdvanceToSelectModel();
         }
     }
@@ -125,12 +146,61 @@ public sealed class ConnectWizardController
     /// Captures whatever is in KeyEditor (may be empty — empty means "keep
     /// existing key") and advances to model selection.
     /// </summary>
-    public void ApiKeyConfirmed()
+    public bool TryConfirmApiKey()
     {
+        if (_isShowingStoredApiKeyMask)
+        {
+            _selectedApiKey = null;
+            _isShowingStoredApiKeyMask = false;
+            AdvanceToSelectModel();
+            return true;
+        }
+
+        if (string.IsNullOrWhiteSpace(KeyEditor.Text))
+            return false;
+
         // Preserve the entered text; OxApp decides whether to call SetApiKey
         // based on whether it is non-empty.
         _selectedApiKey = KeyEditor.Text;
         AdvanceToSelectModel();
+        return true;
+    }
+
+    /// <summary>
+    /// Backward-compatible wrapper for existing callers. Returns whether the
+    /// confirmation advanced; empty input only succeeds when a stored key mask
+    /// is currently displayed.
+    /// </summary>
+    public void ApiKeyConfirmed() => TryConfirmApiKey();
+
+    public void InsertApiKeyChar(char c)
+    {
+        ClearStoredApiKeyMaskIfVisible();
+        KeyEditor.InsertChar(c);
+    }
+
+    public void BackspaceApiKey()
+    {
+        if (_isShowingStoredApiKeyMask)
+        {
+            KeyEditor.Clear();
+            _isShowingStoredApiKeyMask = false;
+            return;
+        }
+
+        KeyEditor.Backspace();
+    }
+
+    public void DeleteApiKey()
+    {
+        if (_isShowingStoredApiKeyMask)
+        {
+            KeyEditor.Clear();
+            _isShowingStoredApiKeyMask = false;
+            return;
+        }
+
+        KeyEditor.Delete();
     }
 
     /// <summary>
@@ -188,5 +258,14 @@ public sealed class ConnectWizardController
         CurrentStep = WizardStep.SelectModel;
         SelectedIndex = 0;
         DisplayItems = _models.Select(m => m.Name).ToList();
+    }
+
+    private void ClearStoredApiKeyMaskIfVisible()
+    {
+        if (!_isShowingStoredApiKeyMask)
+            return;
+
+        KeyEditor.Clear();
+        _isShowingStoredApiKeyMask = false;
     }
 }

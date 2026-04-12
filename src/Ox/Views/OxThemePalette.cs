@@ -35,6 +35,13 @@ public sealed class OxThemePalette
     /// <summary>Black terminal background.</summary>
     public Color Background { get; } = Color.Black;
 
+    /// <summary>
+    /// Shared panel surface color for the composer and modal interiors.
+    /// Keeping this in the palette prevents the different floating surfaces
+    /// from drifting apart as we tune the chrome.
+    /// </summary>
+    public Color Surface { get; } = Color.FromIndex(234);
+
     /// <summary>White foreground for normal text, assistant text, active throbber bits.</summary>
     public Color Text { get; } = Color.White;
 
@@ -56,20 +63,36 @@ public sealed class OxThemePalette
     /// <summary>Dark gray for splash logo.</summary>
     public Color SplashLogo { get; } = Color.BrightBlack;
 
-    /// <summary>Light gray for borders / chrome (Color256 index 250).</summary>
-    public Color Border { get; } = Color.FromIndex(250);
+    /// <summary>
+    /// Border tone for floating chrome. This is lighter than the shadow while
+    /// still dark enough to preserve the low-contrast Ox look.
+    /// </summary>
+    public Color Border { get; } = Color.FromIndex(234);
 
     /// <summary>
-    /// Darker gray for the chat composer border so the input chrome stays more subdued
-    /// than the rest of the frame while still reading as an interactive region.
-    /// </summary>
-    public Color InputBorder { get; } = Color.FromIndex(238);
+    /// The chat composer uses the same block-border tone as the modal so the
+    /// surfaces feel like one visual system.
+     /// </summary>
+    public Color InputBorder { get; } = Color.FromIndex(234);
 
     /// <summary>Darker gray for internal dividers (Color256 index 240).</summary>
     public Color Divider { get; } = Color.FromIndex(240);
 
     /// <summary>Gray for status line text (Color256 index 245).</summary>
     public Color StatusText { get; } = Color.FromIndex(245);
+
+    /// <summary>
+    /// Shared gray border for the monochrome approval and composer chrome.
+    /// Keeping this separate from the modal border lets those surfaces sit on
+    /// a pure-black background without forcing the rest of the UI to match.
+    /// </summary>
+    public Color ChromeBorder { get; } = Color.BrightBlack;
+
+    /// <summary>
+    /// Darker shadow tone that sits just below the chrome in value so the
+    /// offset cast reads without overpowering the panel itself.
+    /// </summary>
+    public Color Shadow { get; } = Color.FromIndex(233);
 
     /// <summary>White for active throbber bits.</summary>
     public Color ThrobberActive { get; } = Color.White;

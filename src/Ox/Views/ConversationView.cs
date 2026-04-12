@@ -88,6 +88,11 @@ public sealed class ConversationView
             return;
         }
 
+        var contentStartY = y + ConversationViewportBehavior.VerticalPaddingRows;
+        var contentViewportHeight = ConversationViewportBehavior.GetContentHeight(height);
+        if (contentViewportHeight <= 0)
+            return;
+
         // Lay out all entries into a flat list of rendered rows.
         var contentWidth = ConversationViewportBehavior.GetContentWidth(width);
         var rows = LayoutAllEntries(contentWidth);
@@ -95,14 +100,14 @@ public sealed class ConversationView
 
         // Cache dimensions for scroll handlers outside the render pass.
         _lastContentHeight = contentHeight;
-        _lastViewportHeight = height;
+        _lastViewportHeight = contentViewportHeight;
 
         // Auto-scroll: pin to the bottom when new content arrives.
         if (_autoScroll)
-            _scrollOffset = Math.Max(0, contentHeight - height);
+            _scrollOffset = Math.Max(0, contentHeight - contentViewportHeight);
 
         // Render visible rows.
-        for (var row = 0; row < height; row++)
+        for (var row = 0; row < contentViewportHeight; row++)
         {
             var contentRow = _scrollOffset + row;
             if (contentRow < 0 || contentRow >= contentHeight) continue;
@@ -116,7 +121,7 @@ public sealed class ConversationView
             // Draw circle prefix if present.
             if (renderedRow.CircleColor is { } circleColor)
             {
-                buffer.SetCell(drawX, y + row, '●', circleColor, Color.Default);
+                buffer.SetCell(drawX, contentStartY + row, '●', circleColor, Color.Default);
                 drawX += ConversationEntryView.CircleChrome;
             }
             else if (renderedRow.IsCircleEntry)
@@ -131,15 +136,15 @@ public sealed class ConversationView
                 for (var i = 0; i < fragment.Text.Length; i++)
                 {
                     if (drawX < x + width - 1) // Reserve right column for scrollbar.
-                        buffer.SetCell(drawX, y + row, fragment.Text[i], fragment.Color, Color.Default);
+                        buffer.SetCell(drawX, contentStartY + row, fragment.Text[i], fragment.Color, Color.Default);
                     drawX++;
                 }
             }
         }
 
         // Render scrollbar on the right edge.
-        if (contentHeight > height)
-            RenderScrollbar(buffer, x + width - 1, y, height, contentHeight);
+        if (contentHeight > contentViewportHeight)
+            RenderScrollbar(buffer, x + width - 1, contentStartY, contentViewportHeight, contentHeight);
     }
 
     /// <summary>Render the splash logo centered in the region.</summary>
@@ -355,7 +360,9 @@ public sealed class ConversationView
         for (var row = 0; row < viewportHeight; row++)
         {
             var isThumb = row >= thumbTop && row < thumbTop + thumbHeight;
-            var color = isThumb ? _theme.Border : _theme.Divider;
+            // The thumb should read as the active affordance, so it uses the
+            // lighter chrome tone while the track recedes into the darker one.
+            var color = isThumb ? _theme.Divider : _theme.Border;
             buffer.SetCell(x, y + row, '│', color, Color.Default);
         }
     }

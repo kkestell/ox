@@ -15,6 +15,12 @@ public sealed class ConversationViewportBehaviorTests
         Assert.Equal(1, ConversationViewportBehavior.HorizontalPaddingColumns);
     }
 
+    [Fact]
+    public void VerticalPadding_UsesSingleRowPerSide()
+    {
+        Assert.Equal(1, ConversationViewportBehavior.VerticalPaddingRows);
+    }
+
     [Theory]
     [InlineData(10, 8)]
     [InlineData(2, 1)]
@@ -24,6 +30,17 @@ public sealed class ConversationViewportBehaviorTests
         var contentWidth = ConversationViewportBehavior.GetContentWidth(viewportWidth);
 
         Assert.Equal(expectedWidth, contentWidth);
+    }
+
+    [Theory]
+    [InlineData(10, 8)]
+    [InlineData(2, 1)]
+    [InlineData(1, 1)]
+    public void GetContentHeight_ReservesOneRowOnTopAndBottom(int viewportHeight, int expectedHeight)
+    {
+        var contentHeight = ConversationViewportBehavior.GetContentHeight(viewportHeight);
+
+        Assert.Equal(expectedHeight, contentHeight);
     }
 
     [Theory]

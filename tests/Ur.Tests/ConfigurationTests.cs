@@ -267,6 +267,19 @@ public sealed class ConfigurationTests : IDisposable
         Assert.Equal(sorted, models);
     }
 
+    [Fact]
+    public async Task ListProviders_UsesConfiguredDisplayNamesIncludingZai()
+    {
+        using var workspace = new TempWorkspace();
+        var host = await CreateHostAsync(workspace);
+
+        var providers = host.Configuration.ListProviders();
+
+        Assert.Equal(
+            ["OpenAI", "Google", "Ollama", "OpenRouter", "Z.AI"],
+            providers.Select(p => p.DisplayName).ToArray());
+    }
+
     // ─── Helpers ──────────────────────────────────────────────────────
 
     private static Task<UrHost> CreateHostAsync(TempWorkspace workspace) =>

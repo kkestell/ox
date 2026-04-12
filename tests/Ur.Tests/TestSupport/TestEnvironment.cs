@@ -75,18 +75,21 @@ internal static class TestProviderConfig
         {
           "providers": {
             "openai": {
+              "name": "OpenAI",
               "type": "openai-compatible",
               "models": [
                 { "name": "GPT-4o", "id": "gpt-4o", "context_in": 128000 }
               ]
             },
             "google": {
+              "name": "Google",
               "type": "google",
               "models": [
                 { "name": "Gemini 3.1 Pro", "id": "gemini-3.1-pro-preview", "context_in": 1048576 }
               ]
             },
             "ollama": {
+              "name": "Ollama",
               "type": "ollama",
               "url": "http://localhost:11434",
               "models": [
@@ -94,6 +97,7 @@ internal static class TestProviderConfig
               ]
             },
             "openrouter": {
+              "name": "OpenRouter",
               "type": "openai-compatible",
               "url": "https://openrouter.ai/api/v1",
               "models": [
@@ -101,6 +105,7 @@ internal static class TestProviderConfig
               ]
             },
             "zai-coding": {
+              "name": "Z.AI",
               "type": "openai-compatible",
               "url": "https://open.bigmodel.cn/api/paas/v4",
               "models": [

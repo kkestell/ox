@@ -16,6 +16,12 @@ public static class ConversationViewportBehavior
     public const int HorizontalPaddingColumns = 1;
 
     /// <summary>
+    /// Number of rows reserved at the top and bottom of the transcript area so
+    /// the conversation list does not press directly against neighboring chrome.
+    /// </summary>
+    public const int VerticalPaddingRows = 1;
+
+    /// <summary>
     /// Compute the usable content width given the total viewport width.
     /// Reserves <see cref="HorizontalPaddingColumns"/> on each side.
     /// </summary>
@@ -23,6 +29,16 @@ public static class ConversationViewportBehavior
     {
         // Ensure at least 1 column of content even in degenerate viewports.
         return Math.Max(1, viewportWidth - (HorizontalPaddingColumns * 2));
+    }
+
+    /// <summary>
+    /// Compute the usable content height given the total viewport height.
+    /// Reserves <see cref="VerticalPaddingRows"/> on the top and bottom.
+    /// </summary>
+    public static int GetContentHeight(int viewportHeight)
+    {
+        // Ensure at least 1 row of content even in degenerate viewports.
+        return Math.Max(1, viewportHeight - (VerticalPaddingRows * 2));
     }
 
     /// <summary>
