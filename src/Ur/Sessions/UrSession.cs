@@ -160,12 +160,20 @@ public sealed class UrSession : IAsyncDisposable
         try
         {
         // Gate: refuse to run if the system isn't fully configured (missing API
-        // key or model selection). This check is intentionally performed here
-        // rather than at session creation so that the caller gets a clear
-        // exception with the specific blocking issues.
+        // key or model selection). Emit a fatal TurnError rather than throwing so
+        // the headless path (which only sees events) gets a clean exit code 1
+        // instead of an unhandled exception crash. The TUI checks Readiness before
+        // submitting a turn so this branch is primarily a safety net for headless mode.
         var readiness = _configuration.Readiness;
         if (!readiness.CanRunTurns)
-            throw new ChatNotReadyException(readiness);
+        {
+            yield return new AgentLoop.TurnError
+            {
+                Message = _configuration.GetProviderBlockingMessage(),
+                IsFatal = true
+            };
+            yield break;
+        }
 
         // Slash command interception: if the input starts with "/", treat it as
         // either a built-in command or a skill invocation. Built-ins are handled

@@ -44,13 +44,21 @@ public static class ContainerRunner
         psi.ArgumentList.Add("--timeout");
         psi.ArgumentList.Add(scenario.TimeoutSeconds.ToString(System.Globalization.CultureInfo.InvariantCulture));
 
+        // Resolve to absolute paths now — podman is invoked with WorkingDirectory set to
+        // the temp workspace, so relative paths would resolve against that directory instead
+        // of the caller's cwd. :Z relabels the volume for SELinux (private label per
+        // container); without it, SELinux denies access even when Unix permissions allow it.
+        var absWorkspace = Path.GetFullPath(workspacePath);
+        var absProviders = Path.GetFullPath(providersJsonPath);
+
         // Mount workspace read-write so Ox can write session files and modify the repo.
         psi.ArgumentList.Add("-v");
-        psi.ArgumentList.Add($"{workspacePath}:{ContainerWorkspace}:rw");
+        psi.ArgumentList.Add($"{absWorkspace}:{ContainerWorkspace}:rw,Z");
 
-        // Mount providers.json read-only so Ox can discover configured providers.
+        // Mount providers.json read-only into the default user data directory so Ox
+        // finds it without any CLI override. The directory is pre-created in the image.
         psi.ArgumentList.Add("-v");
-        psi.ArgumentList.Add($"{providersJsonPath}:/eval/providers.json:ro");
+        psi.ArgumentList.Add($"{absProviders}:/root/.ur/providers.json:ro,Z");
 
         // Pass all UR_API_KEY_* env vars into the container for EnvironmentKeyring.
         foreach (var key in Environment.GetEnvironmentVariables().Keys.Cast<string>())
