@@ -39,6 +39,7 @@ public sealed class UrSession : IAsyncDisposable
     private readonly Func<string, IChatClient> _chatClientFactory;
     private readonly ToolRegistry? _additionalTools;
     private readonly Func<string, int?> _resolveContextWindow;
+    private readonly int? _maxIterations;
 
     private readonly Session _session;
     private readonly List<ChatMessage> _messages;
@@ -80,7 +81,8 @@ public sealed class UrSession : IAsyncDisposable
         string alwaysPermissionsPath,
         Func<string, int?>? resolveContextWindow = null,
         ToolRegistry? additionalTools = null,
-        TodoStore? todos = null)
+        TodoStore? todos = null,
+        int? maxIterations = null)
     {
         _configuration = configuration;
         _skills = skills;
@@ -91,6 +93,7 @@ public sealed class UrSession : IAsyncDisposable
         _chatClientFactory = chatClientFactory;
         _resolveContextWindow = resolveContextWindow ?? (_ => null);
         _additionalTools = additionalTools;
+        _maxIterations = maxIterations;
         _session = session;
         _messages = messages;
         _logger = loggerFactory.CreateLogger<UrSession>();
@@ -313,7 +316,8 @@ public sealed class UrSession : IAsyncDisposable
             chatClient, tools, _workspace,
             _loggerFactory.CreateLogger<AgentLoop.AgentLoop>(),
             _loggerFactory,
-            _configuration.TurnsToKeepToolResults);
+            _configuration.TurnsToKeepToolResults,
+            _maxIterations);
 
         await foreach (var loopEvent in agentLoop.RunTurnAsync(_messages, wrappedCallbacks, systemPrompt, ct))
         {

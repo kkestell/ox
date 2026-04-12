@@ -2,7 +2,7 @@ namespace Ox;
 
 /// <summary>
 /// Parses Ox-specific CLI arguments (like --fake-provider, --headless, --yolo,
-/// --turn, --model) out of the raw argv and passes everything else through to
+/// --prompt, --model) out of the raw argv and passes everything else through to
 /// the host builder. This keeps Ox's custom flags from colliding with ASP.NET /
 /// generic-host conventions.
 /// </summary>
@@ -17,7 +17,7 @@ public sealed class OxBootOptions
 
     /// <summary>
     /// Runs Ox without a TUI — drives the agent loop from the CLI, printing
-    /// responses to stdout. Requires at least one <see cref="Turns"/> entry.
+    /// responses to stdout. Requires <see cref="Prompt"/> to be set.
     /// </summary>
     public bool IsHeadless { get; private init; }
 
@@ -28,11 +28,14 @@ public sealed class OxBootOptions
     public bool IsYolo { get; private init; }
 
     /// <summary>
-    /// Sequence of user messages to send to the LLM in order. Accumulated from
-    /// repeated <c>--turn &lt;msg&gt;</c> args. At least one is required in
-    /// headless mode.
+    /// The single user message to send to the agent in headless mode.
+    /// Set by <c>--prompt &lt;msg&gt;</c>. Required when <see cref="IsHeadless"/> is true.
+    ///
+    /// Headless mode is always one task (one prompt) that the agent works on
+    /// autonomously. Multi-turn dialogue is a TUI concept — headless mode has
+    /// exactly one user turn.
     /// </summary>
-    public IReadOnlyList<string> Turns { get; private init; } = [];
+    public string? Prompt { get; private init; }
 
     /// <summary>
     /// Override the configured model for this run. Passed to
@@ -42,14 +45,16 @@ public sealed class OxBootOptions
     public string? ModelOverride { get; private init; }
 
     /// <summary>
-    /// Maximum number of user turns (--turn args) to process before stopping.
-    /// Only meaningful in headless mode — the TUI does not bound session length.
-    /// Null means no limit: all provided turns are processed.
+    /// Maximum number of AgentLoop iterations (LLM calls) the agent may make
+    /// within the single headless turn before being aborted with a fatal error.
+    /// Only meaningful in headless mode — the TUI does not bound loop iterations.
+    /// Null means no cap: the loop runs until the LLM stops calling tools.
     ///
-    /// Use this as a safety cap in eval scenarios where an agent could otherwise
-    /// run indefinitely if a loop or retry pattern consumes extra turns.
+    /// Use this as a safety rail in eval scenarios to prevent a runaway ReAct
+    /// loop from burning through tokens when the agent gets stuck in a tool-call
+    /// cycle.
     /// </summary>
-    public int? MaxTurns { get; private init; }
+    public int? MaxIterations { get; private init; }
 
     /// <summary>
     /// All arguments not consumed by Ox-specific parsing — forwarded to the
@@ -66,9 +71,9 @@ public sealed class OxBootOptions
         string? fakeProviderScenario = null;
         var isHeadless = false;
         var isYolo = false;
-        var turns = new List<string>();
+        string? prompt = null;
         string? modelOverride = null;
-        int? maxTurns = null;
+        int? maxIterations = null;
         var remaining = new List<string>();
 
         for (var i = 0; i < args.Length; i++)
@@ -84,15 +89,16 @@ public sealed class OxBootOptions
                 case "--yolo":
                     isYolo = true;
                     break;
-                case "--turn" when i + 1 < args.Length:
-                    turns.Add(args[++i]);
+                case "--prompt" when i + 1 < args.Length:
+                    // Last --prompt wins; duplicate args silently overwrite.
+                    prompt = args[++i];
                     break;
                 case "--model" when i + 1 < args.Length:
                     modelOverride = args[++i];
                     break;
-                case "--max-turns" when i + 1 < args.Length:
+                case "--max-iterations" when i + 1 < args.Length:
                     if (int.TryParse(args[++i], out var parsed) && parsed > 0)
-                        maxTurns = parsed;
+                        maxIterations = parsed;
                     break;
                 default:
                     remaining.Add(args[i]);
@@ -105,9 +111,9 @@ public sealed class OxBootOptions
             FakeProviderScenario = fakeProviderScenario,
             IsHeadless = isHeadless,
             IsYolo = isYolo,
-            Turns = turns,
+            Prompt = prompt,
             ModelOverride = modelOverride,
-            MaxTurns = maxTurns,
+            MaxIterations = maxIterations,
             RemainingArgs = remaining,
         };
     }

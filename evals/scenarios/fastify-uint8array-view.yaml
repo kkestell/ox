@@ -1,5 +1,4 @@
 name: fastify-uint8array-view
-complexity: medium
 models:
   - google/gemini-3.1-flash-lite-preview
   - zai-coding/glm-4.5-air
@@ -8,11 +7,10 @@ repository:
   url: https://github.com/fastify/fastify
   commit: 9b8a7825dc033887d293549e40284284bf27c5a5
   fix_commit: bc5df037c51ee0e414654a7285342a16207293e0
-turns:
-  - "reply.send with a Uint8Array view over a larger ArrayBuffer sends the entire
-     buffer's bytes instead of just the view's portion. Fix the send path to respect
-     the view's byte offset and length."
-  - "Run the test suite to confirm."
+prompt: >
+  reply.send with a Uint8Array view over a larger ArrayBuffer sends the entire
+  buffer's bytes instead of just the view's portion. Fix the send path to respect
+  the view's byte offset and length. Then run the test suite to confirm.
 validation_rules:
   - type: command_succeeds
     command: npm test

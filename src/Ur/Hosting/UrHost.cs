@@ -165,13 +165,17 @@ public sealed class UrHost
     /// <paramref name="todos"/> optionally injects a pre-existing <see cref="TodoStore"/>
     /// for callers that want to observe plan state outside the session. When null,
     /// the session creates its own store.
+    ///
+    /// <paramref name="maxIterations"/> caps how many times the AgentLoop's <c>while (true)</c>
+    /// can iterate before aborting with a fatal error. Null means no cap. See
+    /// <see cref="AgentLoop.AgentLoop"/> for the exact semantics.
     /// </summary>
-    public UrSession CreateSession(TurnCallbacks? callbacks = null, TodoStore? todos = null) =>
+    public UrSession CreateSession(TurnCallbacks? callbacks = null, TodoStore? todos = null, int? maxIterations = null) =>
         new(Configuration, Skills, BuiltInCommands, _workspace, _loggerFactory,
             _sessions, CreateChatClient, _sessions.Create(), [],
             isPersisted: false, activeModelId: null, callbacks,
             _workspace.PermissionsPath, DefaultUserPermissionsPath(),
-            ResolveContextWindow, _additionalTools, todos);
+            ResolveContextWindow, _additionalTools, todos, maxIterations);
 
     /// <summary>
     /// Opens an existing session by ID. See <see cref="CreateSession"/> for callback semantics.

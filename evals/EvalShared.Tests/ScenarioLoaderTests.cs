@@ -14,7 +14,6 @@ public sealed class ScenarioLoaderTests
     {
         const string yaml = """
             name: click-semver-default
-            complexity: medium
             models:
               - google/gemini-3.1-flash-lite-preview
               - zai-coding/glm-4.5-air
@@ -22,9 +21,7 @@ public sealed class ScenarioLoaderTests
               url: https://github.com/pallets/click
               commit: 04ef3a6f473deb2499721a8d11f92a7d2c0912f2
               fix_commit: 1458800409ed12076f18451889b0857db36aa522
-            turns:
-              - "Fix the semver.Version crash in help text."
-              - "Run the tests to confirm."
+            prompt: "Fix the semver.Version crash in help text, then run the tests to confirm."
             validation_rules:
               - type: command_succeeds
                 command: pytest tests/test_options.py
@@ -34,10 +31,9 @@ public sealed class ScenarioLoaderTests
         var scenario = ScenarioLoader.Load(yaml);
 
         Assert.Equal("click-semver-default", scenario.Name);
-        Assert.Equal(ScenarioComplexity.Medium, scenario.Complexity);
         Assert.Equal(2, scenario.Models.Count);
         Assert.Equal("google/gemini-3.1-flash-lite-preview", scenario.Models[0]);
-        Assert.Equal(2, scenario.Turns.Count);
+        Assert.Equal("Fix the semver.Version crash in help text, then run the tests to confirm.", scenario.Prompt);
         Assert.NotNull(scenario.Repository);
         Assert.Equal("https://github.com/pallets/click", scenario.Repository.Url);
         Assert.Equal("04ef3a6f473deb2499721a8d11f92a7d2c0912f2", scenario.Repository.Commit);
@@ -54,11 +50,9 @@ public sealed class ScenarioLoaderTests
     {
         const string yaml = """
             name: create-file
-            complexity: simple
             models:
               - fake/hello
-            turns:
-              - "Create a file called output.txt containing 'hello world'."
+            prompt: "Create a file called output.txt containing 'hello world'."
             workspace_files:
               - path: README.md
                 content: "This is a test workspace."
@@ -88,11 +82,9 @@ public sealed class ScenarioLoaderTests
     {
         const string yaml = """
             name: all-rules
-            complexity: simple
             models:
               - fake/hello
-            turns:
-              - "Do the thing."
+            prompt: "Do the thing."
             validation_rules:
               - type: file_exists
                 path: output.txt
@@ -123,38 +115,12 @@ public sealed class ScenarioLoaderTests
     }
 
     [Fact]
-    public void Load_ComplexityVariants_AllParse()
-    {
-        foreach (var (yamlValue, expected) in new[]
-        {
-            ("simple", ScenarioComplexity.Simple),
-            ("medium", ScenarioComplexity.Medium),
-            ("complex", ScenarioComplexity.Complex),
-        })
-        {
-            var yaml = $"""
-                name: test
-                complexity: {yamlValue}
-                models: [fake/hello]
-                turns: ["do it"]
-                validation_rules:
-                  - type: command_succeeds
-                    command: echo ok
-                """;
-
-            var scenario = ScenarioLoader.Load(yaml);
-            Assert.Equal(expected, scenario.Complexity);
-        }
-    }
-
-    [Fact]
     public void Load_MissingRequiredField_Throws()
     {
-        // Missing 'name'
+        // Missing 'prompt' — the required task description.
         const string yaml = """
-            complexity: simple
+            name: missing-prompt
             models: [fake/hello]
-            turns: ["do it"]
             validation_rules:
               - type: command_succeeds
                 command: echo ok
@@ -164,18 +130,14 @@ public sealed class ScenarioLoaderTests
     }
 
     [Fact]
-    public void Load_MaxTurnsField_ParsesValue()
+    public void Load_MaxIterationsField_ParsesValue()
     {
         const string yaml = """
             name: capped-scenario
-            complexity: simple
             models:
               - fake/hello
-            turns:
-              - "First turn."
-              - "Second turn."
-              - "Third turn."
-            max_turns: 2
+            prompt: "Do the thing."
+            max_iterations: 10
             validation_rules:
               - type: command_succeeds
                 command: echo ok
@@ -183,19 +145,17 @@ public sealed class ScenarioLoaderTests
 
         var scenario = ScenarioLoader.Load(yaml);
 
-        Assert.Equal(2, scenario.MaxTurns);
+        Assert.Equal(10, scenario.MaxIterations);
     }
 
     [Fact]
-    public void Load_NoMaxTurnsField_DefaultsToNull()
+    public void Load_NoMaxIterationsField_DefaultsToNull()
     {
         const string yaml = """
             name: uncapped-scenario
-            complexity: simple
             models:
               - fake/hello
-            turns:
-              - "Do the thing."
+            prompt: "Do the thing."
             validation_rules:
               - type: command_succeeds
                 command: echo ok
@@ -203,7 +163,7 @@ public sealed class ScenarioLoaderTests
 
         var scenario = ScenarioLoader.Load(yaml);
 
-        Assert.Null(scenario.MaxTurns);
+        Assert.Null(scenario.MaxIterations);
     }
 
     [Fact]
@@ -211,9 +171,8 @@ public sealed class ScenarioLoaderTests
     {
         const string yaml = """
             name: conflict
-            complexity: simple
             models: [fake/hello]
-            turns: ["do it"]
+            prompt: "Do it."
             repository:
               url: https://github.com/example/repo
               commit: abc123

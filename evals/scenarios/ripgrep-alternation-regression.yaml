@@ -1,5 +1,4 @@
 name: ripgrep-alternation-regression
-complexity: complex
 models:
   - google/gemini-3.1-flash-lite-preview
   - zai-coding/glm-4.5-air
@@ -8,12 +7,12 @@ repository:
   url: https://github.com/BurntSushi/ripgrep
   commit: 6c5108ed17987531644518fac8c1659b0b202611
   fix_commit: 9d738ad0c009e6632d75fa3d36051e5ae7f7cce6
-turns:
-  - "Case-insensitive alternation patterns like 'foo|bar' with -i produce false
-     negatives due to a regression in inner literal extraction. Investigate the regex
-     crate's literal extraction and fix it."
-  - "Run the regex crate tests to confirm the fix."
-  - "Check if there are other pattern types affected by the same literal extraction bug."
+prompt: >
+  Case-insensitive alternation patterns like 'foo|bar' with -i produce false
+  negatives due to a regression in inner literal extraction. Investigate the regex
+  crate's literal extraction and fix it. Check if there are other pattern types
+  affected by the same literal extraction bug and fix them too. Then run the regex
+  crate tests to confirm the fix.
 validation_rules:
   - type: command_succeeds
     command: cargo test -p regex

@@ -12,7 +12,6 @@ namespace EvalRunner;
 ///
 /// Options:
 ///   --scenarios &lt;dir&gt;      Scenario YAML directory (default: evals/scenarios/)
-///   --complexity &lt;tier&gt;    Filter by complexity: simple, medium, complex
 ///   --filter &lt;glob&gt;        Filter by scenario name (substring match)
 ///   --models &lt;m1,m2&gt;       Override model list for all scenarios
 ///   --providers &lt;path&gt;     Path to providers.json (default: providers.json)
@@ -52,10 +51,6 @@ public static class Program
         {
             var yaml = await File.ReadAllTextAsync(file);
             var scenario = ScenarioLoader.Load(yaml);
-
-            // Apply complexity filter.
-            if (options.ComplexityFilter is { } cf && scenario.Complexity != cf)
-                continue;
 
             // Apply name filter (substring match).
             if (options.NameFilter is { } nf && !scenario.Name.Contains(nf, StringComparison.OrdinalIgnoreCase))
@@ -192,9 +187,6 @@ var models = options.ModelOverrides is { } overrides
                 case "--scenarios" when i + 1 < args.Length:
                     options.ScenariosDir = args[++i];
                     break;
-                case "--complexity" when i + 1 < args.Length:
-                    options.ComplexityFilter = Enum.Parse<ScenarioComplexity>(args[++i], ignoreCase: true);
-                    break;
                 case "--filter" when i + 1 < args.Length:
                     options.NameFilter = args[++i];
                     break;
@@ -225,7 +217,6 @@ var models = options.ModelOverrides is { } overrides
     private sealed class RunnerOptions
     {
         public string ScenariosDir { get; set; } = "evals/scenarios/";
-        public ScenarioComplexity? ComplexityFilter { get; set; }
         public string? NameFilter { get; set; }
         public string[]? ModelOverrides { get; set; }
         public string ProvidersJsonPath { get; set; } = "providers.json";

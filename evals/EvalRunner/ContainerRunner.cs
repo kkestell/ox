@@ -85,19 +85,17 @@ public static class ContainerRunner
         psi.ArgumentList.Add("--model");
         psi.ArgumentList.Add(model);
 
-        // Each turn is a separate --turn arg.
-        foreach (var turn in scenario.Turns)
-        {
-            psi.ArgumentList.Add("--turn");
-            psi.ArgumentList.Add(turn);
-        }
+        // Single prompt: headless eval mode has exactly one user message. The
+        // agent works autonomously from this point — no further user messages.
+        psi.ArgumentList.Add("--prompt");
+        psi.ArgumentList.Add(scenario.Prompt);
 
-        // Apply the scenario's turn cap if specified. This passes straight through
-        // to HeadlessRunner, which slices the turns list before processing.
-        if (scenario.MaxTurns.HasValue)
+        // Optional iteration cap: forwarded straight to AgentLoop so the agent
+        // can't spin in a tool-call cycle indefinitely.
+        if (scenario.MaxIterations.HasValue)
         {
-            psi.ArgumentList.Add("--max-turns");
-            psi.ArgumentList.Add(scenario.MaxTurns.Value.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            psi.ArgumentList.Add("--max-iterations");
+            psi.ArgumentList.Add(scenario.MaxIterations.Value.ToString(System.Globalization.CultureInfo.InvariantCulture));
         }
 
         using var process = new Process { StartInfo = psi };

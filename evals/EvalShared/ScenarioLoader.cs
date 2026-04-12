@@ -61,9 +61,8 @@ public static class ScenarioLoader
             Name = raw.Name ?? throw new InvalidOperationException("Scenario 'name' is required"),
             Description = raw.Description,
             Category = raw.Category,
-            Complexity = ParseComplexity(raw.Complexity),
             Models = raw.Models ?? throw new InvalidOperationException("Scenario 'models' is required"),
-            Turns = raw.Turns ?? throw new InvalidOperationException("Scenario 'turns' is required"),
+            Prompt = raw.Prompt ?? throw new InvalidOperationException("Scenario 'prompt' is required"),
             Repository = raw.Repository is not null
                 ? new RepositoryRef
                 {
@@ -80,19 +79,7 @@ public static class ScenarioLoader
             ValidationRules = raw.ValidationRules?.Select(MapRule).ToList()
                 ?? throw new InvalidOperationException("Scenario 'validation_rules' is required"),
             TimeoutSeconds = raw.TimeoutSeconds ?? 120,
-            MaxTurns = raw.MaxTurns,
-        };
-    }
-
-    private static ScenarioComplexity ParseComplexity(string? value)
-    {
-        return value?.ToLowerInvariant() switch
-        {
-            "simple" => ScenarioComplexity.Simple,
-            "medium" => ScenarioComplexity.Medium,
-            "complex" => ScenarioComplexity.Complex,
-            null => throw new InvalidOperationException("Scenario 'complexity' is required"),
-            _ => throw new InvalidOperationException($"Unknown complexity: {value}"),
+            MaxIterations = raw.MaxIterations,
         };
     }
 
@@ -150,14 +137,13 @@ public static class ScenarioLoader
         public string? Name { get; set; }
         public string? Description { get; set; }
         public string? Category { get; set; }
-        public string? Complexity { get; set; }
         public List<string>? Models { get; set; }
-        public List<string>? Turns { get; set; }
+        public string? Prompt { get; set; }
         public RawRepository? Repository { get; set; }
         public List<RawWorkspaceFile>? WorkspaceFiles { get; set; }
         public List<RawValidationRule>? ValidationRules { get; set; }
         public int? TimeoutSeconds { get; set; }
-        public int? MaxTurns { get; set; }
+        public int? MaxIterations { get; set; }
     }
 
     private sealed class RawRepository

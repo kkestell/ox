@@ -1,5 +1,4 @@
 name: clap-bash-completion-double-underscore
-complexity: complex
 models:
   - google/gemini-3.1-flash-lite-preview
   - zai-coding/glm-4.5-air
@@ -8,13 +7,12 @@ repository:
   url: https://github.com/clap-rs/clap
   commit: ddc008bbbc1924fbda5d6f2c66bcf4d165984977
   fix_commit: f88c94e53d40c2427450ed65ec025951906eb1d4
-turns:
-  - "Bash completion panics when a subcommand name contains double underscores (__).
-     The completion generator uses __ as a separator in variable names, which collides
-     with subcommand names containing __. Fix the escaping."
-  - "Run the clap_complete tests."
-  - "Verify that other shells (zsh, fish, powershell) handle __ in subcommand names
-     correctly too."
+prompt: >
+  Bash completion panics when a subcommand name contains double underscores (__).
+  The completion generator uses __ as a separator in variable names, which collides
+  with subcommand names containing __. Fix the escaping, run the clap_complete tests
+  to confirm, and verify that other shells (zsh, fish, powershell) handle __ in
+  subcommand names correctly too.
 validation_rules:
   - type: command_succeeds
     command: cargo test -p clap_complete

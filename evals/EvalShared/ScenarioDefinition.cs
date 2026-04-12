@@ -1,8 +1,8 @@
 namespace EvalShared;
 
 /// <summary>
-/// A declarative eval scenario loaded from YAML. Describes a multi-turn task
-/// for the Ox agent: the repo to clone (or files to create), the turns to send,
+/// A declarative eval scenario loaded from YAML. Describes a single-prompt task
+/// for the Ox agent: the repo to clone (or files to create), the prompt to send,
 /// and the validation rules that determine pass/fail.
 ///
 /// Two workspace modes are supported:
@@ -19,30 +19,21 @@ public sealed class ScenarioDefinition
     public required string Name { get; init; }
     public string? Description { get; init; }
     public string? Category { get; init; }
-    public required ScenarioComplexity Complexity { get; init; }
     public required List<string> Models { get; init; }
-    public required List<string> Turns { get; init; }
+    public required string Prompt { get; init; }
     public RepositoryRef? Repository { get; init; }
     public List<WorkspaceFile>? WorkspaceFiles { get; init; }
     public required List<ValidationRule> ValidationRules { get; init; }
     public int TimeoutSeconds { get; init; } = 120;
 
     /// <summary>
-    /// Optional cap on the number of turns (--turn args) the agent processes.
-    /// Null means no cap — all turns defined in the scenario are sent.
+    /// Optional cap on how many AgentLoop iterations (LLM calls) the agent may make
+    /// within the single headless turn before being aborted. Null means no cap.
     ///
-    /// Use this as a safety rail alongside <see cref="TimeoutSeconds"/>: a time
-    /// limit catches slow runs, while a turn limit catches agents that attempt
-    /// more back-and-forth than the scenario expects.
+    /// Use this alongside <see cref="TimeoutSeconds"/>: the timeout catches slow wall-
+    /// clock runs, while the iteration cap catches agents stuck in a tool-call cycle.
     /// </summary>
-    public int? MaxTurns { get; init; }
-}
-
-public enum ScenarioComplexity
-{
-    Simple,
-    Medium,
-    Complex,
+    public int? MaxIterations { get; init; }
 }
 
 /// <summary>

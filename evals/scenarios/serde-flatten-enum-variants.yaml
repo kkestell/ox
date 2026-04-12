@@ -1,5 +1,4 @@
 name: serde-flatten-enum-variants
-complexity: complex
 models:
   - google/gemini-3.1-flash-lite-preview
   - zai-coding/glm-4.5-air
@@ -8,12 +7,12 @@ repository:
   url: https://github.com/serde-rs/serde
   commit: 9b868ef831c95f50dd4bde51a7eb52e3b9ee265a
   fix_commit: fc55ac70d34221b38672b1583e496011fbae92aa
-turns:
-  - "#[serde(flatten)] in one enum variant incorrectly propagates has_flatten to all
-     other variants in the same enum. This causes unnecessary buffering and can break
-     deserialization. Fix the derive macro so flatten state is scoped per-variant."
-  - "Run the serde_derive tests to verify."
-  - "Check related derive code for similar per-variant vs per-enum state confusion."
+prompt: >
+  #[serde(flatten)] in one enum variant incorrectly propagates has_flatten to all
+  other variants in the same enum. This causes unnecessary buffering and can break
+  deserialization. Fix the derive macro so flatten state is scoped per-variant. Check
+  the related derive code for similar per-variant vs per-enum state confusion and fix
+  any other instances. Then run the serde_derive tests to verify.
 validation_rules:
   - type: command_succeeds
     command: cargo test -p serde_derive

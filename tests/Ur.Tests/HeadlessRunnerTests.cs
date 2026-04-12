@@ -7,13 +7,18 @@ using Ur.Tests.TestSupport;
 namespace Ur.Tests;
 
 /// <summary>
-/// Tests for <see cref="HeadlessRunner"/> behaviour, specifically the
-/// <c>maxTurns</c> cap. Uses the fake provider with the hello scenario
-/// so each user turn completes deterministically without external API calls.
+/// Tests for <see cref="HeadlessRunner"/> behaviour, focusing on the
+/// <c>maxIterations</c> cap. Uses the fake provider so all scenarios
+/// run deterministically without external API calls.
 ///
-/// Behaviour is verified by reading the session metrics file that UrSession
-/// writes on dispose — this avoids Console.SetOut tricks and tests the
-/// observable effect directly.
+/// The <c>tool-call</c> fake scenario is 2 AgentLoop iterations per user turn
+/// (one LLM call that issues a tool call, one that gives the final response),
+/// which makes it the right vehicle for iteration-cap tests. The <c>hello</c>
+/// scenario is 1 iteration (direct text response) and is used to verify the
+/// happy path where no cap is hit.
+///
+/// Behaviour is verified via the metrics JSON that UrSession writes on dispose,
+/// avoiding Console.SetOut tricks and testing the observable effect directly.
 /// </summary>
 public sealed class HeadlessRunnerTests
 {
@@ -41,59 +46,35 @@ public sealed class HeadlessRunnerTests
         return doc.RootElement.GetProperty("turns").GetInt32();
     }
 
-    [Fact]
-    public async Task RunAsync_NoMaxTurns_ProcessesAllProvidedTurns()
+    /// <summary>
+    /// Reads the <c>error</c> field from the metrics JSON. Non-null when the
+    /// session ended with a fatal TurnError.
+    /// </summary>
+    private static string? ReadErrorField(TempWorkspace workspace)
     {
-        // 3 user messages with no cap → all 3 should complete.
-        using var workspace = new TempWorkspace();
-        var host = await CreateFakeHostAsync(workspace, "hello");
+        var sessionsDir = Path.Combine(workspace.WorkspacePath, ".ur", "sessions");
+        var metricsFiles = Directory.GetFiles(sessionsDir, "*.metrics.json");
+        Assert.Single(metricsFiles);
 
-        var runner = new HeadlessRunner(
-            host,
-            turns: ["first", "second", "third"],
-            yolo: true,
-            maxTurns: null);
-
-        // Suppress output — we only care about metrics.
-        Console.SetOut(TextWriter.Null);
-        try { await runner.RunAsync(CancellationToken.None); }
-        finally { Console.SetOut(new StreamWriter(Console.OpenStandardOutput()) { AutoFlush = true }); }
-
-        Assert.Equal(3, ReadTurnCount(workspace));
+        var json = File.ReadAllText(metricsFiles[0]);
+        using var doc = JsonDocument.Parse(json);
+        var errorProp = doc.RootElement.GetProperty("error");
+        return errorProp.ValueKind == JsonValueKind.Null ? null : errorProp.GetString();
     }
 
     [Fact]
-    public async Task RunAsync_MaxTurnsBelowCount_StopsAfterLimit()
+    public async Task RunAsync_NoMaxIterations_SinglePromptCompletes()
     {
-        // Cap at 2 with 3 turns provided — only 2 should run and the metrics
-        // file should record turns = 2.
+        // hello scenario: 1 LLM call (no tool calls), no cap → completes normally.
+        // metrics.Turns == 1 because one RunTurnAsync call fired TurnCompleted.
         using var workspace = new TempWorkspace();
         var host = await CreateFakeHostAsync(workspace, "hello");
 
         var runner = new HeadlessRunner(
             host,
-            turns: ["first", "second", "third"],
+            prompt: "hello",
             yolo: true,
-            maxTurns: 2);
-
-        Console.SetOut(TextWriter.Null);
-        try { await runner.RunAsync(CancellationToken.None); }
-        finally { Console.SetOut(new StreamWriter(Console.OpenStandardOutput()) { AutoFlush = true }); }
-
-        Assert.Equal(2, ReadTurnCount(workspace));
-    }
-
-    [Fact]
-    public async Task RunAsync_MaxTurnsOne_ProcessesExactlyOneTurn()
-    {
-        using var workspace = new TempWorkspace();
-        var host = await CreateFakeHostAsync(workspace, "hello");
-
-        var runner = new HeadlessRunner(
-            host,
-            turns: ["first", "second", "third"],
-            yolo: true,
-            maxTurns: 1);
+            maxIterations: null);
 
         Console.SetOut(TextWriter.Null);
         try { await runner.RunAsync(CancellationToken.None); }
@@ -103,54 +84,78 @@ public sealed class HeadlessRunnerTests
     }
 
     [Fact]
-    public async Task RunAsync_MaxTurnsExceedsCount_ProcessesAll()
+    public async Task RunAsync_MaxIterationsNotReached_Completes()
     {
-        // A generous cap (10) does not artificially stop a 3-turn run.
+        // tool-call scenario: 2 LLM calls per turn. Cap set to 3 → well above the
+        // scenario's actual iteration count. The turn completes normally.
         using var workspace = new TempWorkspace();
-        var host = await CreateFakeHostAsync(workspace, "hello");
+        var host = await CreateFakeHostAsync(workspace, "tool-call");
 
         var runner = new HeadlessRunner(
             host,
-            turns: ["first", "second", "third"],
+            prompt: "do the thing",
             yolo: true,
-            maxTurns: 10);
-
-        Console.SetOut(TextWriter.Null);
-        try { await runner.RunAsync(CancellationToken.None); }
-        finally { Console.SetOut(new StreamWriter(Console.OpenStandardOutput()) { AutoFlush = true }); }
-
-        Assert.Equal(3, ReadTurnCount(workspace));
-    }
-
-    [Fact]
-    public async Task RunAsync_MaxTurnsWithEmptyTurnsList_RunsNothing()
-    {
-        // An empty turns list with a maxTurns cap is safe — Take(n) on an empty
-        // sequence is a no-op. No session is persisted, so no metrics file is written.
-        // In production, Program.cs rejects empty turns before creating HeadlessRunner;
-        // this test documents that HeadlessRunner itself also handles it gracefully.
-        using var workspace = new TempWorkspace();
-        var host = await CreateFakeHostAsync(workspace, "hello");
-
-        var runner = new HeadlessRunner(
-            host,
-            turns: [],
-            yolo: true,
-            maxTurns: 5);
+            maxIterations: 3);
 
         Console.SetOut(TextWriter.Null);
         int exitCode;
         try { exitCode = await runner.RunAsync(CancellationToken.None); }
         finally { Console.SetOut(new StreamWriter(Console.OpenStandardOutput()) { AutoFlush = true }); }
 
-        // Exit 0: no turns means no fatal error.
+        // Exit 0: cap not hit, turn completed without error.
         Assert.Equal(0, exitCode);
+        Assert.Equal(1, ReadTurnCount(workspace));
+    }
 
-        // No session was persisted, so no metrics file should be written.
-        var sessionsDir = Path.Combine(workspace.WorkspacePath, ".ur", "sessions");
-        var metricsFiles = Directory.Exists(sessionsDir)
-            ? Directory.GetFiles(sessionsDir, "*.metrics.json")
-            : [];
-        Assert.Empty(metricsFiles);
+    [Fact]
+    public async Task RunAsync_MaxIterationsAtBoundary_Completes()
+    {
+        // tool-call scenario needs exactly 2 LLM calls. Cap set to 2 — the exact
+        // number needed. This exercises the boundary between "cap not reached" and
+        // "cap exceeded": ++iterationCount (2) > maxIterations (2) is false, so the
+        // second call runs and the turn completes normally.
+        using var workspace = new TempWorkspace();
+        var host = await CreateFakeHostAsync(workspace, "tool-call");
+
+        var runner = new HeadlessRunner(
+            host,
+            prompt: "do the thing",
+            yolo: true,
+            maxIterations: 2);
+
+        Console.SetOut(TextWriter.Null);
+        int exitCode;
+        try { exitCode = await runner.RunAsync(CancellationToken.None); }
+        finally { Console.SetOut(new StreamWriter(Console.OpenStandardOutput()) { AutoFlush = true }); }
+
+        // Exit 0: exactly 2 iterations used, cap of 2 not exceeded.
+        Assert.Equal(0, exitCode);
+        Assert.Equal(1, ReadTurnCount(workspace));
+    }
+
+    [Fact]
+    public async Task RunAsync_MaxIterationsExceeded_ReturnsError()
+    {
+        // tool-call scenario needs 2 LLM calls. Cap at 1 → the cap fires after the
+        // first call (the tool-call response) before the second call can produce the
+        // final text. AgentLoop yields a fatal TurnError and breaks.
+        using var workspace = new TempWorkspace();
+        var host = await CreateFakeHostAsync(workspace, "tool-call");
+
+        var runner = new HeadlessRunner(
+            host,
+            prompt: "do the thing",
+            yolo: true,
+            maxIterations: 1);
+
+        Console.SetOut(TextWriter.Null);
+        int exitCode;
+        try { exitCode = await runner.RunAsync(CancellationToken.None); }
+        finally { Console.SetOut(new StreamWriter(Console.OpenStandardOutput()) { AutoFlush = true }); }
+
+        // Exit 1: fatal TurnError from the iteration cap.
+        Assert.Equal(1, exitCode);
+        // The error message is recorded in metrics so callers can diagnose cap hits.
+        Assert.Contains("iteration limit", ReadErrorField(workspace), StringComparison.OrdinalIgnoreCase);
     }
 }

@@ -1,5 +1,4 @@
 name: requests-proxy-auth-stripped
-complexity: medium
 models:
   - google/gemini-3.1-flash-lite-preview
   - zai-coding/glm-4.5-air
@@ -8,12 +7,11 @@ repository:
   url: https://github.com/psf/requests
   commit: 590350f8d094c216051510ed1dd18fe871b53b72
   fix_commit: 99b3b492418d0751ca960178d274f89805095e4c
-turns:
-  - "Manually setting a Proxy-Authorization header gets stripped by rebuild_proxies()
-     even when it should be preserved. Fix the logic so manually set proxy auth headers
-     are not removed."
-  - "Run the request tests to confirm."
-  - "Check if any other auth-related headers might have the same issue."
+prompt: >
+  Manually setting a Proxy-Authorization header gets stripped by rebuild_proxies()
+  even when it should be preserved. Fix the logic so manually set proxy auth headers
+  are not removed. Check if any other auth-related headers might have the same issue
+  and fix them too. Then run the request tests to confirm.
 validation_rules:
   - type: command_succeeds
     command: pytest tests/test_requests.py

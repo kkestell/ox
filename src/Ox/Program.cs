@@ -25,10 +25,10 @@ public static class Program
         var bootOptions = OxBootOptions.Parse(args);
 
         // Validate headless mode requirements early, before DI setup.
-        if (bootOptions.IsHeadless && bootOptions.Turns.Count == 0)
+        if (bootOptions.IsHeadless && string.IsNullOrWhiteSpace(bootOptions.Prompt))
         {
             await Console.Error.WriteLineAsync(
-                "Error: --headless requires at least one --turn <message> argument.");
+                "Error: --headless requires a --prompt <message> argument.");
             return 1;
         }
 
@@ -98,7 +98,7 @@ public static class Program
                 cts.Cancel();
             };
 
-            var runner = new HeadlessRunner(host, bootOptions.Turns, bootOptions.IsYolo, bootOptions.MaxTurns);
+            var runner = new HeadlessRunner(host, bootOptions.Prompt!, bootOptions.IsYolo, bootOptions.MaxIterations);
             return await runner.RunAsync(cts.Token);
         }
 

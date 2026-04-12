@@ -1,5 +1,4 @@
 name: rack-nil-accept-header
-complexity: simple
 models:
   - google/gemini-3.1-flash-lite-preview
   - zai-coding/glm-4.5-air
@@ -7,10 +6,9 @@ repository:
   url: https://github.com/rack/rack
   commit: 39a53608ed37c8c75479393eef024ca7b208c8f1
   fix_commit: 7222c0a789550540e70c126664f8424923c10808
-turns:
-  - "A blank or nil Accept header raises a NoMethodError. Fix the code so that a
-     blank Accept header is treated as accepting everything."
-  - "Run the specs to confirm."
+prompt: >
+  A blank or nil Accept header raises a NoMethodError. Fix the code so that a blank
+  Accept header is treated as accepting everything. Then run the specs to confirm.
 validation_rules:
   - type: command_succeeds
     command: bundle exec rspec

@@ -1,5 +1,4 @@
 name: effect-match-tag-nullish
-complexity: complex
 models:
   - google/gemini-3.1-flash-lite-preview
   - zai-coding/glm-4.5-air
@@ -8,13 +7,12 @@ repository:
   url: https://github.com/Effect-TS/effect
   commit: 7b8165f45779380fea8ac8e09badef898b63eb41
   fix_commit: e71889f35b081d13b7da2c04d2f81d6933056b49
-turns:
-  - "Match.tag crashes when the discriminated union includes null or undefined. The
-     tag matcher assumes all union members have a _tag property, which nullish values
-     don't. Fix Match.tag to handle nullish union members."
-  - "Run the effect tests to confirm."
-  - "Check if Match.tags and other Match combinators have the same nullish handling bug."
-  - "Run the full test suite one more time."
+prompt: >
+  Match.tag crashes when the discriminated union includes null or undefined. The
+  tag matcher assumes all union members have a _tag property, which nullish values
+  don't. Fix Match.tag to handle nullish union members, check if Match.tags and other
+  Match combinators have the same nullish handling bug and fix them too, then run the
+  full test suite to confirm.
 validation_rules:
   - type: command_succeeds
     command: pnpm test

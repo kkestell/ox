@@ -5,33 +5,32 @@ using Ur.Permissions;
 namespace Ox;
 
 /// <summary>
-/// Drives the Ur agent loop without a TUI — reads turns from the CLI args,
-/// writes LLM responses to stdout, and exits. Sits at the same level as
+/// Drives the Ur agent loop without a TUI — sends a single prompt to the agent,
+/// streams output to stdout/stderr, and exits. Sits at the same level as
 /// <see cref="OxApp"/> in the Ox architecture: it uses <see cref="UrHost"/>
-/// to create a session and run turns, but never touches any TUI code.
+/// to create a session and run the one turn, but never touches any TUI code.
 ///
 /// Metrics are not collected here — <see cref="Ur.Sessions.UrSession"/> accumulates
 /// them during RunTurnAsync and writes the metrics JSON file on DisposeAsync.
-/// HeadlessRunner's only job is to feed turns and stream output.
+/// HeadlessRunner's only job is to deliver the prompt and stream output.
 ///
 /// Every AgentLoopEvent except ResponseChunk and TurnError is printed to stderr
 /// as it arrives, matching the pattern of `ur chat` (tool calls → stderr, response
 /// text → stdout). This lets developers watch agent activity during eval runs without
 /// a TUI. Callers that don't want event output can redirect or discard stderr.
 ///
-/// <paramref name="maxTurns"/> caps how many of the provided turns are processed.
-/// Null means no cap — all turns run. This is a safety limit for eval scenarios:
-/// it prevents runaway sessions while still writing metrics for the turns that did
-/// complete (UrSession.DisposeAsync always writes the metrics file).
+/// <paramref name="maxIterations"/> is forwarded to <see cref="UrHost.CreateSession"/>
+/// and caps how many ReAct loop iterations (LLM calls) the agent loop may make before
+/// aborting with a fatal error. Null means no cap.
 /// </summary>
-internal sealed class HeadlessRunner(UrHost host, IReadOnlyList<string> turns, bool yolo, int? maxTurns = null)
+internal sealed class HeadlessRunner(UrHost host, string prompt, bool yolo, int? maxIterations = null)
 {
     // Truncate tool results at this length when printing to stderr. Long results
     // (e.g. file contents) would flood the console and obscure the event stream.
     private const int MaxResultLen = 120;
 
     /// <summary>
-    /// Runs all turns sequentially against a single session.
+    /// Runs the single prompt against a new session.
     /// Returns 0 on success, 1 on fatal error.
     /// </summary>
     public async Task<int> RunAsync(CancellationToken ct)
@@ -52,52 +51,44 @@ internal sealed class HeadlessRunner(UrHost host, IReadOnlyList<string> turns, b
                 SubagentEventEmitted = PrintSubagentEvent,
             };
 
-        await using var session = host.CreateSession(callbacks);
+        // maxIterations flows from the CLI (--max-iterations) down through CreateSession
+        // to AgentLoop, where the while (true) loop checks it at the top of each
+        // iteration. This is the correct layer: spinning happens in AgentLoop, not here.
+        await using var session = host.CreateSession(callbacks, maxIterations: maxIterations);
 
-        // Apply the max-turns cap: if a limit is set, only take the first maxTurns
-        // entries from the provided list. The remaining turns are simply not sent —
-        // UrSession.DisposeAsync still writes metrics for whatever did complete.
-        var effectiveTurns = maxTurns.HasValue ? turns.Take(maxTurns.Value) : turns;
+        var hadFatalError = false;
 
-        foreach (var turn in effectiveTurns)
+        await foreach (var evt in session.RunTurnAsync(prompt, ct))
         {
-            var hadFatalError = false;
-
-            await foreach (var evt in session.RunTurnAsync(turn, ct))
+            switch (evt)
             {
-                switch (evt)
-                {
-                    case ResponseChunk { Text: var text }:
-                        Console.Write(text);
-                        break;
+                case ResponseChunk { Text: var text }:
+                    Console.Write(text);
+                    break;
 
-                    case TurnError { IsFatal: true, Message: var msg }:
-                        await Console.Error.WriteLineAsync(msg);
-                        hadFatalError = true;
-                        break;
+                case TurnError { IsFatal: true, Message: var msg }:
+                    await Console.Error.WriteLineAsync(msg);
+                    hadFatalError = true;
+                    break;
 
-                    case TurnError { Message: var msg }:
-                        await Console.Error.WriteLineAsync($"Warning: {msg}");
-                        break;
+                case TurnError { Message: var msg }:
+                    await Console.Error.WriteLineAsync($"Warning: {msg}");
+                    break;
 
-                    default:
-                        // All other event types go to stderr via the shared helper so
-                        // main-stream and subagent events use identical formatting.
-                        PrintEvent(evt);
-                        break;
-                }
+                default:
+                    // All other event types go to stderr via the shared helper so
+                    // main-stream and subagent events use identical formatting.
+                    PrintEvent(evt);
+                    break;
             }
-
-            // Ensure each turn's response text ends on a new line on stdout.
-            Console.WriteLine();
-            // Blank line on stderr separates turns visually in the event stream.
-            Console.Error.WriteLine();
-
-            if (hadFatalError)
-                return 1;
         }
 
-        return 0;
+        // Ensure the response text ends on a new line on stdout.
+        Console.WriteLine();
+        // Blank line on stderr visually separates the event stream from any following output.
+        Console.Error.WriteLine();
+
+        return hadFatalError ? 1 : 0;
     }
 
     /// <summary>
