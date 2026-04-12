@@ -52,20 +52,30 @@ public class HostSessionApiTests
     }
 
     [Fact]
-    public async Task RunTurnAsync_WhenNotReady_ThrowsBeforePersisting()
+    public async Task RunTurnAsync_WhenNotReady_EmitsFatalErrorWithoutPersisting()
     {
+        // When the system is not configured (no API key or model), RunTurnAsync
+        // emits a fatal TurnError event rather than throwing. This matches the
+        // headless path contract: HeadlessRunner handles TurnError events and
+        // exits with code 1, so an exception would bypass that clean-exit path.
+        // The TUI guards submission via Configuration.Readiness before calling
+        // RunTurnAsync, so this branch is primarily a headless safety net.
         using var workspace = new TempWorkspace();
         var host = await CreateHostAsync(workspace);
         var session = host.CreateSession();
 
-        var ex = await Assert.ThrowsAsync<ChatNotReadyException>(async () =>
+        AgentLoop.TurnError? observed = null;
+        await foreach (var evt in session.RunTurnAsync("hello"))
         {
-            await foreach (var _ in session.RunTurnAsync("hello"))
-            {
-            }
-        });
+            if (evt is AgentLoop.TurnError err)
+                observed = err;
+        }
 
-        Assert.False(ex.Readiness.CanRunTurns);
+        Assert.NotNull(observed);
+        Assert.True(observed.IsFatal);
+
+        // The session must not be persisted — no user message was written to disk,
+        // so the conversation is clean. ListSessions confirms no file was created.
         Assert.False(session.IsPersisted);
         Assert.Empty(session.Messages);
         Assert.Empty(host.ListSessions());

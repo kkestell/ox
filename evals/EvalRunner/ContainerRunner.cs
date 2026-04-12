@@ -92,6 +92,14 @@ public static class ContainerRunner
             psi.ArgumentList.Add(turn);
         }
 
+        // Apply the scenario's turn cap if specified. This passes straight through
+        // to HeadlessRunner, which slices the turns list before processing.
+        if (scenario.MaxTurns.HasValue)
+        {
+            psi.ArgumentList.Add("--max-turns");
+            psi.ArgumentList.Add(scenario.MaxTurns.Value.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        }
+
         using var process = new Process { StartInfo = psi };
         process.Start();
 

@@ -125,6 +125,61 @@ public sealed class OxBootOptionsTests
         Assert.False(opts.IsYolo);
         Assert.Empty(opts.Turns);
         Assert.Null(opts.ModelOverride);
+        Assert.Null(opts.MaxTurns);
+    }
+
+    [Fact]
+    public void Parse_MaxTurnsFlag_ParsesPositiveInteger()
+    {
+        var opts = OxBootOptions.Parse(["--headless", "--yolo", "--max-turns", "5", "--turn", "go"]);
+
+        Assert.True(opts.IsHeadless);
+        Assert.Equal(5, opts.MaxTurns);
+    }
+
+    [Fact]
+    public void Parse_MaxTurnsOne_IsValid()
+    {
+        // 1 is the minimum meaningful value — cap at one turn.
+        var opts = OxBootOptions.Parse(["--headless", "--max-turns", "1", "--turn", "go"]);
+
+        Assert.Equal(1, opts.MaxTurns);
+    }
+
+    [Fact]
+    public void Parse_MaxTurnsZero_IsIgnored()
+    {
+        // Zero is not a valid cap (processing zero turns is useless).
+        // The parser treats it as absent rather than an error, so MaxTurns stays null.
+        var opts = OxBootOptions.Parse(["--headless", "--max-turns", "0", "--turn", "go"]);
+
+        Assert.Null(opts.MaxTurns);
+    }
+
+    [Fact]
+    public void Parse_MaxTurnsNegative_IsIgnored()
+    {
+        var opts = OxBootOptions.Parse(["--headless", "--max-turns", "-3", "--turn", "go"]);
+
+        Assert.Null(opts.MaxTurns);
+    }
+
+    [Fact]
+    public void Parse_MaxTurnsWithoutValue_TreatedAsRemainingArg()
+    {
+        // --max-turns at end with no following arg stays in remaining args.
+        var opts = OxBootOptions.Parse(["--headless", "--turn", "go", "--max-turns"]);
+
+        Assert.Null(opts.MaxTurns);
+        Assert.Contains("--max-turns", opts.RemainingArgs);
+    }
+
+    [Fact]
+    public void Parse_NoMaxTurnsFlag_DefaultsToNull()
+    {
+        var opts = OxBootOptions.Parse(["--headless", "--yolo", "--turn", "hello"]);
+
+        Assert.Null(opts.MaxTurns);
     }
 
     [Fact]

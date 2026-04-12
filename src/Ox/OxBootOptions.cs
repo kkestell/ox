@@ -42,6 +42,16 @@ public sealed class OxBootOptions
     public string? ModelOverride { get; private init; }
 
     /// <summary>
+    /// Maximum number of user turns (--turn args) to process before stopping.
+    /// Only meaningful in headless mode — the TUI does not bound session length.
+    /// Null means no limit: all provided turns are processed.
+    ///
+    /// Use this as a safety cap in eval scenarios where an agent could otherwise
+    /// run indefinitely if a loop or retry pattern consumes extra turns.
+    /// </summary>
+    public int? MaxTurns { get; private init; }
+
+    /// <summary>
     /// All arguments not consumed by Ox-specific parsing — forwarded to the
     /// host builder so flags like --environment and --urls still work.
     /// </summary>
@@ -58,6 +68,7 @@ public sealed class OxBootOptions
         var isYolo = false;
         var turns = new List<string>();
         string? modelOverride = null;
+        int? maxTurns = null;
         var remaining = new List<string>();
 
         for (var i = 0; i < args.Length; i++)
@@ -79,6 +90,10 @@ public sealed class OxBootOptions
                 case "--model" when i + 1 < args.Length:
                     modelOverride = args[++i];
                     break;
+                case "--max-turns" when i + 1 < args.Length:
+                    if (int.TryParse(args[++i], out var parsed) && parsed > 0)
+                        maxTurns = parsed;
+                    break;
                 default:
                     remaining.Add(args[i]);
                     break;
@@ -92,6 +107,7 @@ public sealed class OxBootOptions
             IsYolo = isYolo,
             Turns = turns,
             ModelOverride = modelOverride,
+            MaxTurns = maxTurns,
             RemainingArgs = remaining,
         };
     }

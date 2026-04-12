@@ -18,8 +18,13 @@ namespace Ox;
 /// as it arrives, matching the pattern of `ur chat` (tool calls → stderr, response
 /// text → stdout). This lets developers watch agent activity during eval runs without
 /// a TUI. Callers that don't want event output can redirect or discard stderr.
+///
+/// <paramref name="maxTurns"/> caps how many of the provided turns are processed.
+/// Null means no cap — all turns run. This is a safety limit for eval scenarios:
+/// it prevents runaway sessions while still writing metrics for the turns that did
+/// complete (UrSession.DisposeAsync always writes the metrics file).
 /// </summary>
-internal sealed class HeadlessRunner(UrHost host, IReadOnlyList<string> turns, bool yolo)
+internal sealed class HeadlessRunner(UrHost host, IReadOnlyList<string> turns, bool yolo, int? maxTurns = null)
 {
     // Truncate tool results at this length when printing to stderr. Long results
     // (e.g. file contents) would flood the console and obscure the event stream.
@@ -49,7 +54,12 @@ internal sealed class HeadlessRunner(UrHost host, IReadOnlyList<string> turns, b
 
         await using var session = host.CreateSession(callbacks);
 
-        foreach (var turn in turns)
+        // Apply the max-turns cap: if a limit is set, only take the first maxTurns
+        // entries from the provided list. The remaining turns are simply not sent —
+        // UrSession.DisposeAsync still writes metrics for whatever did complete.
+        var effectiveTurns = maxTurns.HasValue ? turns.Take(maxTurns.Value) : turns;
+
+        foreach (var turn in effectiveTurns)
         {
             var hadFatalError = false;
 

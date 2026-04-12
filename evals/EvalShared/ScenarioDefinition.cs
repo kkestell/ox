@@ -26,6 +26,16 @@ public sealed class ScenarioDefinition
     public List<WorkspaceFile>? WorkspaceFiles { get; init; }
     public required List<ValidationRule> ValidationRules { get; init; }
     public int TimeoutSeconds { get; init; } = 120;
+
+    /// <summary>
+    /// Optional cap on the number of turns (--turn args) the agent processes.
+    /// Null means no cap — all turns defined in the scenario are sent.
+    ///
+    /// Use this as a safety rail alongside <see cref="TimeoutSeconds"/>: a time
+    /// limit catches slow runs, while a turn limit catches agents that attempt
+    /// more back-and-forth than the scenario expects.
+    /// </summary>
+    public int? MaxTurns { get; init; }
 }
 
 public enum ScenarioComplexity

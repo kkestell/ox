@@ -80,6 +80,7 @@ public static class ScenarioLoader
             ValidationRules = raw.ValidationRules?.Select(MapRule).ToList()
                 ?? throw new InvalidOperationException("Scenario 'validation_rules' is required"),
             TimeoutSeconds = raw.TimeoutSeconds ?? 120,
+            MaxTurns = raw.MaxTurns,
         };
     }
 
@@ -156,6 +157,7 @@ public static class ScenarioLoader
         public List<RawWorkspaceFile>? WorkspaceFiles { get; set; }
         public List<RawValidationRule>? ValidationRules { get; set; }
         public int? TimeoutSeconds { get; set; }
+        public int? MaxTurns { get; set; }
     }
 
     private sealed class RawRepository

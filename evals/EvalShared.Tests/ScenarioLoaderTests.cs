@@ -164,6 +164,49 @@ public sealed class ScenarioLoaderTests
     }
 
     [Fact]
+    public void Load_MaxTurnsField_ParsesValue()
+    {
+        const string yaml = """
+            name: capped-scenario
+            complexity: simple
+            models:
+              - fake/hello
+            turns:
+              - "First turn."
+              - "Second turn."
+              - "Third turn."
+            max_turns: 2
+            validation_rules:
+              - type: command_succeeds
+                command: echo ok
+            """;
+
+        var scenario = ScenarioLoader.Load(yaml);
+
+        Assert.Equal(2, scenario.MaxTurns);
+    }
+
+    [Fact]
+    public void Load_NoMaxTurnsField_DefaultsToNull()
+    {
+        const string yaml = """
+            name: uncapped-scenario
+            complexity: simple
+            models:
+              - fake/hello
+            turns:
+              - "Do the thing."
+            validation_rules:
+              - type: command_succeeds
+                command: echo ok
+            """;
+
+        var scenario = ScenarioLoader.Load(yaml);
+
+        Assert.Null(scenario.MaxTurns);
+    }
+
+    [Fact]
     public void Load_BothRepositoryAndWorkspaceFiles_Throws()
     {
         const string yaml = """

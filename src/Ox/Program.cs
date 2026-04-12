@@ -98,7 +98,7 @@ public static class Program
                 cts.Cancel();
             };
 
-            var runner = new HeadlessRunner(host, bootOptions.Turns, bootOptions.IsYolo);
+            var runner = new HeadlessRunner(host, bootOptions.Turns, bootOptions.IsYolo, bootOptions.MaxTurns);
             return await runner.RunAsync(cts.Token);
         }
 
