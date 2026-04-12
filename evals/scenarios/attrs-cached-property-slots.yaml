@@ -1,9 +1,9 @@
 name: attrs-cached-property-slots
 complexity: medium
 models:
-  - google/gemini-3.1-flash-lite-preview
+  - zai-coding/glm-5.1
+  - google/gemini-3.1-pro-preview
   - zai-coding/glm-4.5-air
-  - zai-coding/glm-5-turbo
 repository:
   url: https://github.com/python-attrs/attrs
   commit: 82a14627fddbd0b2d802fbc574fa3b1ef010a801

@@ -100,12 +100,10 @@ public static class ContainerRunner
         string stderr;
         if (streamOutput)
         {
-            // Stream stderr line-by-line to the host terminal in real time so the
-            // developer can watch agent events as they happen. Each line is prefixed
-            // with a "scenario × model" tag so interleaved output from sequential runs
-            // is attributable at a glance. We also collect into a StringBuilder so the
-            // error message path has the full text when the container crashes.
+            // Print the scenario × model header once, then stream raw lines.
+            // The header gives attribution without repeating it on each event.
             var tag = $"[{scenario.Name} × {model}]";
+            Console.Error.WriteLine(tag);
             var stderrBuilder = new System.Text.StringBuilder();
 
             // WaitForExitAsync does not guarantee that all ErrorDataReceived events
@@ -122,7 +120,9 @@ public static class ContainerRunner
                     return;
                 }
                 stderrBuilder.AppendLine(e.Data);
-                Console.Error.WriteLine($"{tag} {e.Data}");
+                // Skip awaiting-approval lines — they are noise during streaming.
+                if (!e.Data.Contains("[awaiting-approval]"))
+                    Console.Error.WriteLine(e.Data);
             };
 
             process.BeginErrorReadLine();

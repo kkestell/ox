@@ -30,8 +30,8 @@ evals-build:
 
 # Run all eval scenarios against their configured models.
 evals-run: evals-build
-	@set -a && . ./.env && set +a && dotnet run --project evals/EvalRunner -- --scenarios evals/scenarios/
+	@set -a && . ./.env && set +a && dotnet run --project evals/EvalRunner -- --scenarios evals/scenarios/ --stream-output
 
 # Run only simple scenarios for fast pre-merge checks.
 evals-run-quick: evals-build
-	@set -a && . ./.env && set +a && dotnet run --project evals/EvalRunner -- --scenarios evals/scenarios/ --complexity simple
+	@set -a && . ./.env && set +a && dotnet run --project evals/EvalRunner -- --scenarios evals/scenarios/ --complexity simple --stream-output

@@ -129,8 +129,16 @@ var models = options.ModelOverrides is { } overrides
                     else
                     {
                         totalFailed++;
-                        var reason = containerResult.Result.Error ?? "validation failed";
-                        Console.WriteLine($"  FAIL: {reason}");
+                        if (containerResult.Result.Error is not null)
+                        {
+                            Console.WriteLine($"  FAIL: {containerResult.Result.Error}");
+                        }
+                        else
+                        {
+                            Console.WriteLine($"  FAIL: {containerResult.Result.ValidationFailures.Count} validation failure(s)");
+                            foreach (var f in containerResult.Result.ValidationFailures)
+                                Console.WriteLine($"    [{f.RuleType}] {f.Message}");
+                        }
                     }
                 }
                 catch (OperationCanceledException)
