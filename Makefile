@@ -12,13 +12,15 @@ test:
 # Alias for test.
 verify: test
 
-# Run ReSharper code inspections and write formatted results to inspection-results.txt.
+# Run ReSharper code inspections and Roslyn analyzer checks; write formatted results to inspection-results.txt.
 # Requires: dotnet tool install -g JetBrains.ReSharper.GlobalTools
 # Requires: jq
 inspect:
 	@jb inspectcode Ox.slnx -o=inspection-results.xml --severity=WARNING --build > /dev/null 2>&1
 	@./scripts/format-inspection-results.sh > inspection-results.txt
 	@rm -f inspection-results.xml
+	@dotnet build Ox.slnx --no-incremental --nologo -v quiet 2>&1 | ./scripts/format-roslyn-results.sh >> inspection-results.txt
+	@sort -o inspection-results.txt inspection-results.txt
 	@echo "Wrote inspection-results.txt"
 
 run:

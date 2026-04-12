@@ -11,7 +11,7 @@ namespace EvalShared;
 ///   - <see cref="WorkspaceFiles"/> — writes synthetic files directly. Used for
 ///     simple/unit eval scenarios that don't need a full repo.
 ///
-/// These are mutually exclusive. <see cref="FixCommit"/> is reference-only metadata
+/// These are mutually exclusive. <see cref="RepositoryRef.FixCommit"/> is reference-only metadata
 /// recording the ground-truth fix for human review — it's never used at runtime.
 /// </summary>
 public sealed class ScenarioDefinition

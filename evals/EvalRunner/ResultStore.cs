@@ -92,7 +92,7 @@ public sealed class ResultStore : IDisposable
                 SessionJsonl = sessionJsonl,
                 MetricsJson = metricsJson,
             },
-            (IDbTransaction)transaction);
+            transaction);
 
         foreach (var failure in result.ValidationFailures)
         {
@@ -101,7 +101,7 @@ public sealed class ResultStore : IDisposable
                 VALUES (@RunId, @RuleType, @Message);
                 """,
                 new { RunId = runId, failure.RuleType, failure.Message },
-                (IDbTransaction)transaction);
+                transaction);
         }
 
         await transaction.CommitAsync();

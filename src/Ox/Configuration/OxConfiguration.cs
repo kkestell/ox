@@ -95,8 +95,8 @@ public sealed class OxConfiguration
             // Fall back to the provider itself — the fake provider declares context
             // windows on its scenarios so compaction can be tested without a real
             // model entry in providers.json.
-            if (_providers.GetValueOrDefault(parsed.Provider) is FakeProvider fp)
-                return fp.GetContextWindow(parsed.Model);
+            if (_providers.GetValueOrDefault(parsed.Provider) is FakeProvider)
+                return FakeProvider.GetContextWindow(parsed.Model);
 
             return null;
         }

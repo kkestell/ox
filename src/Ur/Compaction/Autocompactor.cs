@@ -201,9 +201,7 @@ internal sealed class Autocompactor(ILogger<Autocompactor> logger) : ICompaction
                     case FunctionResultContent frc:
                         sb.Append("Tool result: ").AppendLine(frc.Result?.ToString() ?? "(null)");
                         break;
-                    default:
-                        // Skip UsageContent and other non-displayable types.
-                        break;
+                    // UsageContent and other non-displayable types are skipped.
                 }
             }
         }

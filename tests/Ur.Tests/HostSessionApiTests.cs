@@ -64,10 +64,10 @@ public class HostSessionApiTests
         var host = await CreateHostAsync(workspace);
         var session = host.CreateSession();
 
-        AgentLoop.TurnError? observed = null;
+        TurnError? observed = null;
         await foreach (var evt in session.RunTurnAsync("hello"))
         {
-            if (evt is AgentLoop.TurnError err)
+            if (evt is TurnError err)
                 observed = err;
         }
 

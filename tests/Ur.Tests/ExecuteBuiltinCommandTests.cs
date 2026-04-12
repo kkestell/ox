@@ -1,4 +1,3 @@
-using Ur.Configuration;
 using Ur.Hosting;
 using Ur.Tests.TestSupport;
 

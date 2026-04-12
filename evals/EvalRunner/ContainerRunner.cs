@@ -98,7 +98,8 @@ public static class ContainerRunner
             psi.ArgumentList.Add(scenario.MaxIterations.Value.ToString(System.Globalization.CultureInfo.InvariantCulture));
         }
 
-        using var process = new Process { StartInfo = psi };
+        using var process = new Process();
+        process.StartInfo = psi;
         process.Start();
 
         var stdoutTask = process.StandardOutput.ReadToEndAsync(ct);

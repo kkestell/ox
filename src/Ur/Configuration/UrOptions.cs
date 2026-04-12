@@ -17,7 +17,7 @@ public sealed class UrOptions
 
     /// <summary>
     /// How many recent assistant turns' tool results are preserved verbatim
-    /// during the <see cref="BuildLlmMessages"/> projection. Tool results in
+    /// during the <c>BuildLlmMessages</c> projection. Tool results in
     /// older turns are replaced with "[Tool result cleared]" to reclaim context
     /// window space without mutating the persisted message history.
     /// Bound from "ur:turnsToKeepToolResults". Default is 3.

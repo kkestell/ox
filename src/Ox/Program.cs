@@ -127,7 +127,7 @@ public static class Program
         // source, no OxApp. HeadlessRunner drives the agent loop from CLI args.
         if (bootOptions.IsHeadless)
         {
-            using var cts = new CancellationTokenSource();
+            var cts = new CancellationTokenSource();
             Console.CancelKeyPress += (_, e) =>
             {
                 e.Cancel = true;

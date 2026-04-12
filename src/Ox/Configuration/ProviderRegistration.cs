@@ -34,10 +34,11 @@ public static class ProviderRegistration
             switch (entry.Type)
             {
                 case "openai-compatible":
+                    var capturedName = name;
                     var endpoint = entry.Endpoint;
                     services.AddSingleton<IProvider>(sp =>
                         new OpenAiCompatibleProvider(
-                            name, endpoint, sp.GetRequiredService<IKeyring>()));
+                            capturedName, endpoint, sp.GetRequiredService<IKeyring>()));
                     break;
 
                 case "google":
@@ -51,10 +52,8 @@ public static class ProviderRegistration
                         new OllamaProvider(name, ollamaUri));
                     break;
 
-                default:
-                    // Unknown provider type — skip silently. The user may have
-                    // a newer providers.json format than this version supports.
-                    break;
+                // Unknown provider type — skip silently. The user may have
+                // a newer providers.json format than this version supports.
             }
         }
 

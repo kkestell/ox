@@ -34,9 +34,9 @@ public sealed class AutocompactorTests
         Assert.True(compacted);
 
         // The first message should be the summary, wrapped in context-summary tags.
-        Assert.StartsWith(Autocompactor.SummaryOpenTag, messages[0].Text!);
-        Assert.Contains("This is the summary.", messages[0].Text!);
-        Assert.EndsWith(Autocompactor.SummaryCloseTag, messages[0].Text!);
+        Assert.StartsWith(Autocompactor.SummaryOpenTag, messages[0].Text);
+        Assert.Contains("This is the summary.", messages[0].Text);
+        Assert.EndsWith(Autocompactor.SummaryCloseTag, messages[0].Text);
 
         // Stored role stays User — the System projection happens in BuildLlmMessages,
         // not in the compactor. BuildLlmMessages is private; that projection is validated

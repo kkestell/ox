@@ -60,7 +60,8 @@ public static class WorkspaceBuilder
         foreach (var arg in args.Split(' ', StringSplitOptions.RemoveEmptyEntries))
             psi.ArgumentList.Add(arg);
 
-        using var process = new Process { StartInfo = psi };
+        using var process = new Process();
+        process.StartInfo = psi;
         process.Start();
 
         var stderr = await process.StandardError.ReadToEndAsync(ct);

@@ -63,7 +63,7 @@ internal static class TestHostBuilder
             sp.GetRequiredService<OxConfiguration>().ResolveContextWindow);
 
         // Pre-register test overrides before AddUr — TryAddSingleton lets them win.
-        builder.Services.AddSingleton<IKeyring>(keyring ?? new TestKeyring());
+        builder.Services.AddSingleton(keyring ?? new TestKeyring());
 
         if (chatClientFactory is not null)
             builder.Services.AddSingleton(chatClientFactory);
@@ -72,7 +72,7 @@ internal static class TestHostBuilder
             builder.Services.AddSingleton(additionalTools);
 
         if (fakeProvider is not null)
-            builder.Services.AddSingleton<IProvider>(fakeProvider);
+            builder.Services.AddSingleton(fakeProvider);
 
         builder.Services.AddUr(builder.Configuration, o =>
         {

@@ -47,10 +47,11 @@ public sealed class FakeProvider : IProvider
 
     /// <summary>
     /// Returns the simulated context window for a scenario, or null if the
-    /// scenario doesn't declare one. Called by <see cref="Hosting.UrHost.ResolveContextWindow"/>
+    /// scenario doesn't declare one. Called by the context window resolver registered via
+    /// <c>OxConfiguration.ResolveContextWindow</c>
     /// as a fallback when the static providers.json has no entry for fake models.
     /// </summary>
-    public int? GetContextWindow(string model)
+    public static int? GetContextWindow(string model)
     {
         try
         {

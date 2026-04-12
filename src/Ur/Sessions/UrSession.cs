@@ -413,7 +413,7 @@ public sealed class UrSession : IAsyncDisposable
     /// OxApp should dispatch and display only — not decide what constitutes a
     /// valid model ID or call SetSelectedModel directly.
     /// </summary>
-    public Skills.CommandResult? ExecuteBuiltInCommand(string commandName, string? args)
+    public CommandResult? ExecuteBuiltInCommand(string commandName, string? args)
     {
         if (_builtInCommands.Get(commandName) is null)
             return null;
@@ -423,7 +423,7 @@ public sealed class UrSession : IAsyncDisposable
             "model" => ExecuteModelCommand(args!),
             // /clear and /set remain stubs for now — execution moves here
             // but the actual behavior is deferred, same as before.
-            _ => new Skills.CommandResult($"/{commandName} is not yet implemented.", IsError: true),
+            _ => new CommandResult($"/{commandName} is not yet implemented.", IsError: true),
         };
     }
 
@@ -437,10 +437,10 @@ public sealed class UrSession : IAsyncDisposable
     /// SetSelectedModel is synchronous (local JSON file write + config reload),
     /// which matches the synchronous HandleKey path that calls this method.
     /// </summary>
-    private Skills.CommandResult ExecuteModelCommand(string args)
+    private CommandResult ExecuteModelCommand(string args)
     {
         _configuration.SetSelectedModel(args);
-        return new Skills.CommandResult($"Model set to {args}.");
+        return new CommandResult($"Model set to {args}.");
     }
 
     /// <summary>

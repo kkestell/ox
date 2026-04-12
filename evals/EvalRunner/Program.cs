@@ -71,7 +71,7 @@ public static class Program
             Directory.CreateDirectory(dbDir);
 
         using var store = new ResultStore(options.DbPath);
-        using var cts = new CancellationTokenSource();
+        var cts = new CancellationTokenSource();
 
         Console.CancelKeyPress += (_, e) =>
         {
@@ -224,6 +224,6 @@ var models = options.ModelOverrides is { } overrides
         public bool WriteReport { get; set; } = true;
         // When true, ContainerRunner streams container stderr to the host terminal
         // in real time so the developer can watch agent events during eval runs.
-        public bool StreamOutput { get; set; } = false;
+        public bool StreamOutput { get; set; }
     }
 }

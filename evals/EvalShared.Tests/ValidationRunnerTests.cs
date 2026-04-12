@@ -1,5 +1,3 @@
-using EvalShared;
-
 namespace EvalShared.Tests;
 
 /// <summary>

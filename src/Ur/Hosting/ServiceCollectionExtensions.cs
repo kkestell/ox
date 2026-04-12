@@ -35,7 +35,7 @@ public static class ServiceCollectionExtensions
     /// <summary>
     /// Registers the user-level and workspace-level settings files as configuration
     /// sources. Call this on the host's <see cref="IConfigurationBuilder"/> before
-    /// <see cref="AddUr"/> so that <see cref="SettingsWriter.Reload"/> propagates
+    /// <see cref="AddUr"/> so that <see cref="IConfigurationRoot.Reload"/> propagates
     /// changes through the standard options pipeline.
     ///
     /// Two <see cref="UrSettingsConfigurationSource"/> instances are added: user file
