@@ -39,7 +39,7 @@ public sealed class OxBootOptions
 
     /// <summary>
     /// Override the configured model for this run. Passed to
-    /// <c>UrStartupOptions.SelectedModelOverride</c> so headless/eval runs can
+    /// <c>UrOptions.SelectedModelOverride</c> so headless/eval runs can
     /// select a model without rewriting settings files.
     /// </summary>
     public string? ModelOverride { get; private init; }

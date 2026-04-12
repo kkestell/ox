@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using Ox.Configuration;
 using Ox.Connect;
 using Ox.Conversation;
 using Ox.Input;
@@ -42,8 +43,11 @@ public sealed class OxApp : IDisposable
     private readonly ConcurrentQueue<AgentLoopEvent> _eventQueue = new();
     private readonly SemaphoreSlim _wakeSignal = new(0);
 
-    // Host reference — used for resolving context window sizes from the active provider.
+    // Host reference — used for creating sessions and accessing library-level config.
     private readonly UrHost _host;
+
+    // Application-level configuration — model catalog, context windows, provider metadata.
+    private readonly OxConfiguration _oxConfig;
 
     // Command registry — retained here so SubmitInput can check whether an unknown
     // built-in is a user-invocable skill and fall through to StartTurn accordingly.
@@ -73,9 +77,10 @@ public sealed class OxApp : IDisposable
     // Exit flag.
     private bool _exit;
 
-    public OxApp(UrHost host, InputCoordinator coordinator, int width, int height, string workspacePath)
+    public OxApp(UrHost host, OxConfiguration oxConfig, InputCoordinator coordinator, int width, int height, string workspacePath)
     {
         _host = host;
+        _oxConfig = oxConfig;
         _coordinator = coordinator;
         _buffer = new ConsoleBuffer(width, height);
         _workspacePath = workspacePath;
@@ -92,7 +97,7 @@ public sealed class OxApp : IDisposable
         // completable argument lists. The engine prefix-matches against these lists
         // when the input already contains a space (argument phase).
         _commandRegistry = new Ur.Skills.CommandRegistry(host.BuiltInCommands, host.Skills);
-        _validModelIds = host.Configuration.ListAllModelIds();
+        _validModelIds = oxConfig.ListAllModelIds();
         var argumentCompletions = new Dictionary<string, IReadOnlyList<string>>
         {
             ["model"] = _validModelIds,
@@ -112,7 +117,7 @@ public sealed class OxApp : IDisposable
         // seeing a plain-console prompt. IsRequired=true means Escape exits the
         // app rather than dismissing back to an un-configured chat screen.
         if (!host.Configuration.Readiness.CanRunTurns)
-            _wizard.Start(host.Configuration.ListProviders(), required: true);
+            _wizard.Start(oxConfig.ListProviders(), required: true);
     }
 
     /// <summary>Run the main application loop until exit is signalled.</summary>
@@ -423,12 +428,12 @@ public sealed class OxApp : IDisposable
     {
         if (_wizard.CurrentStep == WizardStep.SelectProvider)
         {
-            var providers = _host.Configuration.ListProviders();
+            var providers = _oxConfig.ListProviders();
             if (_wizard.SelectedIndex >= providers.Count) return;
 
             var (key, _) = providers[_wizard.SelectedIndex];
-            var requiresKey = _host.Configuration.ProviderRequiresApiKey(key);
-            var models = _host.Configuration.ListModelsForProvider(key);
+            var requiresKey = _oxConfig.ProviderRequiresApiKey(key);
+            var models = _oxConfig.ListModelsForProvider(key);
             var hasStoredApiKey = requiresKey && _host.Configuration.HasApiKey(key);
             _wizard.ProviderConfirmed(key, requiresKey, models, hasStoredApiKey);
         }
@@ -477,7 +482,7 @@ public sealed class OxApp : IDisposable
             // Escape dismisses back to the existing chat session without exiting.
             if (command == "connect")
             {
-                _wizard.Start(_host.Configuration.ListProviders(), required: false);
+                _wizard.Start(_oxConfig.ListProviders(), required: false);
                 return;
             }
 
@@ -658,7 +663,7 @@ public sealed class OxApp : IDisposable
                             {
                                 // First time seeing this model — resolve and cache. ResolveContextWindow
                                 // returns null for models not declared in providers.json (e.g. FakeProvider).
-                                contextWindow = _host.ResolveContextWindow(modelId);
+                                contextWindow = _oxConfig.ResolveContextWindow(modelId);
                                 _contextWindowCache[modelId] = contextWindow;
                             }
 

@@ -9,8 +9,12 @@ namespace Ur.Sessions;
 /// <summary>
 /// Manages session lifecycle and persistence as JSONL files.
 /// Each line is a JSON-serialized ChatMessage using M.E.AI's polymorphic serialization.
+///
+/// Implements <see cref="ISessionStore"/> — the JSONL format and compact boundary
+/// sentinels are implementation details hidden behind the interface. External
+/// consumers see only message-level operations.
 /// </summary>
-internal sealed class SessionStore(string sessionsDirectory, ILogger<SessionStore>? logger = null)
+internal sealed class JsonlSessionStore(string sessionsDirectory, ILogger<JsonlSessionStore>? logger = null) : ISessionStore
 {
     private static readonly JsonSerializerOptions JsonOptions = new(AIJsonUtilities.DefaultOptions)
     {
@@ -60,7 +64,7 @@ internal sealed class SessionStore(string sessionsDirectory, ILogger<SessionStor
             ? parsed
             : null;
 
-    public Session? Get(string id)
+    public Session? GetById(string id)
     {
         var filePath = Path.Combine(sessionsDirectory, $"{id}.jsonl");
         if (!File.Exists(filePath))
@@ -92,11 +96,25 @@ internal sealed class SessionStore(string sessionsDirectory, ILogger<SessionStor
     /// line, the caller appends the compacted messages (summary + preserved tail).
     /// On next <see cref="ReadAllAsync"/>, only post-boundary messages are loaded.
     /// </summary>
-    public async Task AppendCompactBoundaryAsync(Session session, CancellationToken ct = default)
+    private async Task AppendCompactBoundaryAsync(Session session, CancellationToken ct = default)
     {
         Directory.CreateDirectory(sessionsDirectory);
         await File.AppendAllTextAsync(session.FilePath, CompactBoundarySentinel + "\n", ct);
         logger?.LogDebug("Wrote compact boundary to session '{SessionId}'", session.Id);
+    }
+
+    /// <summary>
+    /// Replaces the entire persisted message history with the given list. The JSONL
+    /// implementation writes a compact boundary sentinel followed by the new messages.
+    /// Old messages stay on disk but are invisible to <see cref="ReadAllAsync"/>
+    /// (append-only — no file truncation, so a crash mid-write doesn't lose the
+    /// pre-compaction state).
+    /// </summary>
+    public async Task ReplaceAllAsync(Session session, IReadOnlyList<ChatMessage> messages, CancellationToken ct = default)
+    {
+        await AppendCompactBoundaryAsync(session, ct);
+        foreach (var msg in messages)
+            await AppendAsync(session, msg, ct);
     }
 
     public async Task<IReadOnlyList<ChatMessage>> ReadAllAsync(Session session, CancellationToken ct = default)

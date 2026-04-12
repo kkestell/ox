@@ -1,5 +1,5 @@
 using System.Text.Json;
-using Ur.Providers;
+using Ox.Configuration;
 
 namespace Ur.Tests;
 

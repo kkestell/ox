@@ -1,6 +1,7 @@
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Ox.Configuration;
 using Ur.Configuration.Keyring;
 using Ur.Hosting;
 using Ur.Providers;
@@ -40,17 +41,45 @@ internal static class TestHostBuilder
             ?? TestProviderConfig.Write(workspace.UserDataDirectory);
 
         var builder = Host.CreateApplicationBuilder();
-        builder.Services.AddUr(new UrStartupOptions
+
+        // Register Ur settings sources on the host's configuration root so
+        // SettingsWriter.Reload() propagates to the same IConfigurationRoot
+        // that the standard options pipeline reads from.
+        builder.Configuration.AddUrSettings(
+            workspace.UserSettingsPath,
+            Path.Combine(workspace.WorkspacePath, ".ur", "settings.json"));
+
+        // Load providers.json and register providers — same as Ox's Program.cs
+        // does in production. Tests get real provider registrations so the
+        // ProviderRegistry is populated correctly.
+        var providerConfig = ProviderConfig.Load(effectivePath);
+        builder.Services.AddSingleton(providerConfig);
+        builder.Services.AddProvidersFromConfig(providerConfig);
+
+        // OxConfiguration wraps model catalog queries (model listing, context windows).
+        // Tests that exercise catalog or context window features get real behavior.
+        builder.Services.AddSingleton<OxConfiguration>();
+        builder.Services.AddSingleton<Func<string, int?>>(sp =>
+            sp.GetRequiredService<OxConfiguration>().ResolveContextWindow);
+
+        // Pre-register test overrides before AddUr — TryAddSingleton lets them win.
+        builder.Services.AddSingleton<IKeyring>(keyring ?? new TestKeyring());
+
+        if (chatClientFactory is not null)
+            builder.Services.AddSingleton(chatClientFactory);
+
+        if (additionalTools is not null)
+            builder.Services.AddSingleton(additionalTools);
+
+        if (fakeProvider is not null)
+            builder.Services.AddSingleton<IProvider>(fakeProvider);
+
+        builder.Services.AddUr(builder.Configuration, o =>
         {
-            WorkspacePath = workspace.WorkspacePath,
-            UserDataDirectory = workspace.UserDataDirectory,
-            UserSettingsPath = workspace.UserSettingsPath,
-            KeyringOverride = keyring ?? new TestKeyring(),
-            ChatClientFactoryOverride = chatClientFactory,
-            AdditionalTools = additionalTools,
-            FakeProvider = fakeProvider,
-            SelectedModelOverride = selectedModelOverride,
-            ProvidersJsonPath = effectivePath,
+            o.WorkspacePath = workspace.WorkspacePath;
+            o.UserDataDirectory = workspace.UserDataDirectory;
+            o.UserSettingsPath = workspace.UserSettingsPath;
+            o.SelectedModelOverride = selectedModelOverride;
         });
 
         var host = builder.Build();

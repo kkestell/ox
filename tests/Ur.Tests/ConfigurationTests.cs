@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Ox.Configuration;
 using Ur.Configuration;
 using Ur.Hosting;
 using Ur.Providers.Fake;
@@ -243,17 +244,17 @@ public sealed class ConfigurationTests : IDisposable
         Assert.Equal("openai/gpt-4o", host.Configuration.SelectedModelId);
     }
 
-    // ─── Model discovery aggregation ────────────────────────────────
+    // ─── Model discovery aggregation (via OxConfiguration) ────────
 
     [Fact]
-    public async Task ListAllModelIds_AggregatesAndPrefixes()
+    public void ListAllModelIds_AggregatesAndPrefixes()
     {
         // providers.json declares models for openai, google, ollama, openrouter,
         // zai-coding. ListAllModelIds reads from the static config.
-        using var workspace = new TempWorkspace();
-        var host = await CreateHostAsync(workspace);
+        var config = TestProviderConfig.CreateDefault();
+        var oxConfig = new OxConfiguration(config, []);
 
-        var models = host.Configuration.ListAllModelIds();
+        var models = oxConfig.ListAllModelIds();
 
         // Should contain models from the test providers.json.
         Assert.Contains("openai/gpt-4o", models);
@@ -268,12 +269,12 @@ public sealed class ConfigurationTests : IDisposable
     }
 
     [Fact]
-    public async Task ListProviders_UsesConfiguredDisplayNamesIncludingZai()
+    public void ListProviders_UsesConfiguredDisplayNamesIncludingZai()
     {
-        using var workspace = new TempWorkspace();
-        var host = await CreateHostAsync(workspace);
+        var config = TestProviderConfig.CreateDefault();
+        var oxConfig = new OxConfiguration(config, []);
 
-        var providers = host.Configuration.ListProviders();
+        var providers = oxConfig.ListProviders();
 
         Assert.Equal(
             ["OpenAI", "Google", "Ollama", "OpenRouter", "Z.AI"],

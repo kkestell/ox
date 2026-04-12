@@ -1,5 +1,9 @@
 # Review: .NET Generic Host & DI Usage in Ur/Ox
 
+> **Status (post-refactor):** All issues below have been resolved by the
+> implementation in `docs/agents/plans/2026-04-12-004-idiomatic-generic-host-di.md`.
+> This document is retained as historical context for why the refactoring was done.
+
 ## 🔴 Critical: Extensibility is Blocked for External Consumers
 
 The task requirement — *"someone can reference the Ur library and then use ConfigureServices to use custom providers, compaction strategies, session storage backends"* — is **not achievable today**. These are the blockers:

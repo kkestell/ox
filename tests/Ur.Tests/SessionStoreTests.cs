@@ -4,7 +4,7 @@ using Ur.Sessions;
 namespace Ur.Tests;
 
 /// <summary>
-/// Tests for <see cref="SessionStore"/>. These verify the persistence contract:
+/// Tests for <see cref="JsonlSessionStore"/>. These verify the persistence contract:
 /// JSONL append, round-trip fidelity, and resilience to malformed data.
 /// The session store is the foundation of conversation persistence — if it
 /// silently loses or corrupts messages, the user loses work.
@@ -34,7 +34,7 @@ public sealed class SessionStoreTests : IDisposable
     [Fact]
     public async Task AppendAndReadAll_RoundTripsMessages()
     {
-        var store = new SessionStore(SessionsDir);
+        var store = new JsonlSessionStore(SessionsDir);
         var session = store.Create();
 
         var userMsg = new ChatMessage(ChatRole.User, "hello");
@@ -59,7 +59,7 @@ public sealed class SessionStoreTests : IDisposable
     {
         // Simulates a crash during write — the last line is truncated JSON.
         // The store should recover all valid messages and skip the bad line.
-        var store = new SessionStore(SessionsDir);
+        var store = new JsonlSessionStore(SessionsDir);
         var session = store.Create();
 
         await store.AppendAsync(session, new ChatMessage(ChatRole.User, "saved"));
@@ -76,7 +76,7 @@ public sealed class SessionStoreTests : IDisposable
     [Fact]
     public async Task ReadAllAsync_EmptyFile_ReturnsEmpty()
     {
-        var store = new SessionStore(SessionsDir);
+        var store = new JsonlSessionStore(SessionsDir);
         var session = store.Create();
 
         // Create the file but leave it empty.
@@ -91,7 +91,7 @@ public sealed class SessionStoreTests : IDisposable
     [Fact]
     public async Task ReadAllAsync_MissingFile_ReturnsEmpty()
     {
-        var store = new SessionStore(SessionsDir);
+        var store = new JsonlSessionStore(SessionsDir);
         var session = store.Create();
         // Don't write any file — it shouldn't exist.
 
@@ -105,7 +105,7 @@ public sealed class SessionStoreTests : IDisposable
     [Fact]
     public void List_NoSessionsDirectory_ReturnsEmpty()
     {
-        var store = new SessionStore(Path.Combine(_root, "nonexistent"));
+        var store = new JsonlSessionStore(Path.Combine(_root, "nonexistent"));
 
         var sessions = store.List();
 
@@ -115,14 +115,14 @@ public sealed class SessionStoreTests : IDisposable
     [Fact]
     public async Task List_MultipleSessions_ReturnsAllSessions()
     {
-        var store = new SessionStore(SessionsDir);
+        var store = new JsonlSessionStore(SessionsDir);
 
         // Create first session and write to disk.
         var session1 = store.Create();
         await store.AppendAsync(session1, new ChatMessage(ChatRole.User, "first"));
 
         // Ensure a distinct timestamp by waiting past the millisecond boundary;
-        // SessionStore encodes creation time in the filename with ms precision.
+        // JsonlSessionStore encodes creation time in the filename with ms precision.
         await Task.Delay(10);
 
         var session2 = store.Create();
@@ -142,11 +142,11 @@ public sealed class SessionStoreTests : IDisposable
     [Fact]
     public async Task Get_ExistingSession_ReturnsSession()
     {
-        var store = new SessionStore(SessionsDir);
+        var store = new JsonlSessionStore(SessionsDir);
         var created = store.Create();
         await store.AppendAsync(created, new ChatMessage(ChatRole.User, "test"));
 
-        var retrieved = store.Get(created.Id);
+        var retrieved = store.GetById(created.Id);
 
         Assert.NotNull(retrieved);
         Assert.Equal(created.Id, retrieved.Id);
@@ -155,9 +155,9 @@ public sealed class SessionStoreTests : IDisposable
     [Fact]
     public void Get_NonexistentSession_ReturnsNull()
     {
-        var store = new SessionStore(SessionsDir);
+        var store = new JsonlSessionStore(SessionsDir);
 
-        Assert.Null(store.Get("nonexistent-session-id"));
+        Assert.Null(store.GetById("nonexistent-session-id"));
     }
 
     // ─── Append creates directory ─────────────────────────────────────
@@ -166,7 +166,7 @@ public sealed class SessionStoreTests : IDisposable
     public async Task AppendAsync_CreatesSessionsDirectoryIfMissing()
     {
         var missingDir = Path.Combine(_root, "new-sessions-dir");
-        var store = new SessionStore(missingDir);
+        var store = new JsonlSessionStore(missingDir);
         var session = store.Create();
 
         await store.AppendAsync(session, new ChatMessage(ChatRole.User, "hello"));
@@ -178,26 +178,27 @@ public sealed class SessionStoreTests : IDisposable
     // ─── Compact boundary ─────────────────────────────────────────────
 
     [Fact]
-    public async Task ReadAllAsync_WithCompactBoundary_OnlyPostBoundaryMessages()
+    public async Task ReplaceAllAsync_OnlyReplacedMessagesVisibleAfterReplace()
     {
-        var store = new SessionStore(SessionsDir);
+        var store = new JsonlSessionStore(SessionsDir);
         var session = store.Create();
 
         // Write some pre-compaction messages.
         await store.AppendAsync(session, new ChatMessage(ChatRole.User, "old message 1"));
         await store.AppendAsync(session, new ChatMessage(ChatRole.Assistant, "old response 1"));
 
-        // Write the compact boundary.
-        await store.AppendCompactBoundaryAsync(session);
-
-        // Write post-compaction messages.
-        await store.AppendAsync(session, new ChatMessage(ChatRole.User, "summary"));
-        await store.AppendAsync(session, new ChatMessage(ChatRole.User, "new message"));
-        await store.AppendAsync(session, new ChatMessage(ChatRole.Assistant, "new response"));
+        // Replace with post-compaction messages via ReplaceAllAsync.
+        var replacementMessages = new List<ChatMessage>
+        {
+            new(ChatRole.User, "summary"),
+            new(ChatRole.User, "new message"),
+            new(ChatRole.Assistant, "new response"),
+        };
+        await store.ReplaceAllAsync(session, replacementMessages);
 
         var messages = await store.ReadAllAsync(session);
 
-        // Only the 3 post-boundary messages should be returned.
+        // Only the 3 replacement messages should be returned.
         Assert.Equal(3, messages.Count);
         Assert.Equal("summary", messages[0].Text);
         Assert.Equal("new message", messages[1].Text);
@@ -205,24 +206,26 @@ public sealed class SessionStoreTests : IDisposable
     }
 
     [Fact]
-    public async Task ReadAllAsync_MultipleBoundaries_UsesLastOne()
+    public async Task ReplaceAllAsync_MultipleReplacements_UsesLatest()
     {
-        var store = new SessionStore(SessionsDir);
+        var store = new JsonlSessionStore(SessionsDir);
         var session = store.Create();
 
         // First compaction cycle.
         await store.AppendAsync(session, new ChatMessage(ChatRole.User, "very old"));
-        await store.AppendCompactBoundaryAsync(session);
-        await store.AppendAsync(session, new ChatMessage(ChatRole.User, "first summary"));
+        await store.ReplaceAllAsync(session, [new ChatMessage(ChatRole.User, "first summary")]);
 
         // Second compaction cycle.
-        await store.AppendCompactBoundaryAsync(session);
-        await store.AppendAsync(session, new ChatMessage(ChatRole.User, "second summary"));
-        await store.AppendAsync(session, new ChatMessage(ChatRole.User, "recent message"));
+        var secondReplacement = new List<ChatMessage>
+        {
+            new(ChatRole.User, "second summary"),
+            new(ChatRole.User, "recent message"),
+        };
+        await store.ReplaceAllAsync(session, secondReplacement);
 
         var messages = await store.ReadAllAsync(session);
 
-        // Only post-second-boundary messages.
+        // Only post-second-replacement messages.
         Assert.Equal(2, messages.Count);
         Assert.Equal("second summary", messages[0].Text);
         Assert.Equal("recent message", messages[1].Text);
@@ -232,7 +235,7 @@ public sealed class SessionStoreTests : IDisposable
     public async Task ReadAllAsync_NoBoundary_ReturnsAllMessages()
     {
         // Backwards compatibility: sessions without any boundary work as before.
-        var store = new SessionStore(SessionsDir);
+        var store = new JsonlSessionStore(SessionsDir);
         var session = store.Create();
 
         await store.AppendAsync(session, new ChatMessage(ChatRole.User, "message 1"));
@@ -249,7 +252,7 @@ public sealed class SessionStoreTests : IDisposable
     [Fact]
     public async Task WriteMetricsAsync_CreatesJsonFile_AlongsideSessionJsonl()
     {
-        var store = new SessionStore(SessionsDir);
+        var store = new JsonlSessionStore(SessionsDir);
         var session = store.Create();
 
         // Write a user message first so the session file exists.
@@ -284,7 +287,7 @@ public sealed class SessionStoreTests : IDisposable
     [Fact]
     public async Task WriteMetricsAsync_WithError_IncludesErrorString()
     {
-        var store = new SessionStore(SessionsDir);
+        var store = new JsonlSessionStore(SessionsDir);
         var session = store.Create();
         await store.AppendAsync(session, new ChatMessage(ChatRole.User, "test"));
 

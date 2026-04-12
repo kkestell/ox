@@ -13,7 +13,7 @@ namespace Ur.Sessions;
 /// <c>ToolCallsErrored / (double)ToolCallsTotal</c> to avoid dividing by zero
 /// when no tools were called.
 /// </summary>
-internal sealed record SessionMetrics
+public sealed record SessionMetrics
 {
     [JsonPropertyName("turns")]
     public required int Turns { get; init; }

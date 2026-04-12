@@ -14,11 +14,10 @@ namespace Ur.Compaction;
 /// The 60% threshold is deliberately conservative — it leaves ample headroom so
 /// we never need reactive error recovery for context-too-long API errors.
 ///
-/// Autocompactor is stateless: it receives its inputs as parameters and mutates
-/// the provided message list in-place. UrSession owns the persistence step after
-/// compaction returns true.
+/// Autocompactor is a DI singleton: the logger is constructor-injected, while
+/// the chat client and message list are per-call parameters (they vary per session/turn).
 /// </summary>
-internal static class Autocompactor
+internal sealed class Autocompactor(ILogger<Autocompactor> logger) : ICompactionStrategy
 {
     /// <summary>
     /// The fraction of the context window that triggers compaction. When
@@ -66,14 +65,12 @@ internal static class Autocompactor
     /// <param name="client">Chat client for the summarization call (same model, same provider).</param>
     /// <param name="contextWindow">The model's total context window size in tokens.</param>
     /// <param name="lastInputTokens">Input tokens reported by the most recent LLM call.</param>
-    /// <param name="logger">Logger for diagnostic output.</param>
     /// <param name="ct">Cancellation token.</param>
-    public static async Task<bool> TryCompactAsync(
+    public async Task<bool> TryCompactAsync(
         List<ChatMessage> messages,
         IChatClient client,
         int contextWindow,
         long lastInputTokens,
-        ILogger logger,
         CancellationToken ct)
     {
         // Threshold check: only compact when context fill exceeds the conservative limit.

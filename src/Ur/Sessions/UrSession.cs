@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
+using Ur.Compaction;
 using Ur.Configuration;
 using Ur.Permissions;
 using Ur.Prompting;
@@ -35,7 +36,8 @@ public sealed class UrSession : IAsyncDisposable
     private readonly BuiltInCommandRegistry _builtInCommands;
     private readonly Workspace _workspace;
     private readonly ILoggerFactory _loggerFactory;
-    private readonly SessionStore _sessions;
+    private readonly ISessionStore _sessions;
+    private readonly ICompactionStrategy _compactionStrategy;
     private readonly Func<string, IChatClient> _chatClientFactory;
     private readonly ToolRegistry? _additionalTools;
     private readonly Func<string, int?> _resolveContextWindow;
@@ -70,7 +72,8 @@ public sealed class UrSession : IAsyncDisposable
         BuiltInCommandRegistry builtInCommands,
         Workspace workspace,
         ILoggerFactory loggerFactory,
-        SessionStore sessions,
+        ISessionStore sessions,
+        ICompactionStrategy compactionStrategy,
         Func<string, IChatClient> chatClientFactory,
         Session session,
         List<ChatMessage> messages,
@@ -90,6 +93,7 @@ public sealed class UrSession : IAsyncDisposable
         _workspace = workspace;
         _loggerFactory = loggerFactory;
         _sessions = sessions;
+        _compactionStrategy = compactionStrategy;
         _chatClientFactory = chatClientFactory;
         _resolveContextWindow = resolveContextWindow ?? (_ => null);
         _additionalTools = additionalTools;
@@ -230,18 +234,15 @@ public sealed class UrSession : IAsyncDisposable
 
         if (contextWindow is not null && LastInputTokens is not null)
         {
-            var compacted = await Compaction.Autocompactor.TryCompactAsync(
-                _messages, chatClient, contextWindow.Value, LastInputTokens.Value,
-                _logger, ct);
+            var compacted = await _compactionStrategy.TryCompactAsync(
+                _messages, chatClient, contextWindow.Value, LastInputTokens.Value, ct);
 
             if (compacted)
             {
-                // Persist the compacted state: write a boundary sentinel, then
-                // append each message in the now-compacted list. The boundary
-                // tells ReadAllAsync to ignore everything before it on reload.
-                await _sessions.AppendCompactBoundaryAsync(_session, ct);
-                foreach (var msg in _messages)
-                    await _sessions.AppendAsync(_session, msg, ct);
+                // Persist the compacted state: ReplaceAllAsync writes the new message
+                // list atomically (the JSONL backend uses a boundary sentinel + append,
+                // but that's an implementation detail behind the ISessionStore interface).
+                await _sessions.ReplaceAllAsync(_session, _messages, ct);
 
                 // Critical invariant: persistedCount must always equal the
                 // number of messages written to disk. After compaction, the

@@ -224,44 +224,48 @@ public sealed class SettingsConfigurationTests : IDisposable
             "Expected the 'test' namespace to be removed after its last key was cleared");
     }
 
-    // ─── UrOptionsMonitor direct tests ───────────────────────────────
+    // ─── Standard options pipeline tests ────────────────────────────
 
     [Fact]
-    public void OptionsMonitor_ReadsModelFromUrSection()
+    public void Options_ReadsModelFromUrSection()
     {
         var userPath = WriteTempJson("""{"ur": {"model": "openai/gpt-4o"}}""");
         var config = BuildConfig(userPath, null);
-        var monitor = new UrOptionsMonitor(config);
+        var options = config.GetSection("ur").Get<UrOptions>();
 
-        Assert.Equal("openai/gpt-4o", monitor.CurrentValue.Model);
+        Assert.NotNull(options);
+        Assert.Equal("openai/gpt-4o", options.Model);
     }
 
     [Fact]
-    public void OptionsMonitor_NullWhenModelNotSet()
+    public void Options_NullWhenModelNotSet()
     {
         var userPath = WriteTempJson("{}");
         var config = BuildConfig(userPath, null);
-        var monitor = new UrOptionsMonitor(config);
+        var options = config.GetSection("ur").Get<UrOptions>();
 
-        Assert.Null(monitor.CurrentValue.Model);
+        // Get<T> returns null when the section is entirely absent.
+        Assert.True(options is null || options.Model is null);
     }
 
     [Fact]
-    public void OptionsMonitor_ReflectsReloadAfterWrite()
+    public void Options_ReflectsReloadAfterWrite()
     {
-        // Verifies that UrOptionsMonitor sees the new value after
-        // SettingsWriter writes and reloads the IConfigurationRoot.
+        // Verifies that binding UrOptions from the "ur" section sees the new
+        // value after SettingsWriter writes and reloads the IConfigurationRoot.
         var userPath = WriteTempJson("{}");
         var config = BuildConfig(userPath, null);
-        var monitor = new UrOptionsMonitor(config);
         var writer = new SettingsWriter(new SettingsSchemaRegistry(), config, userPath, null);
 
-        Assert.Null(monitor.CurrentValue.Model);
+        var before = config.GetSection("ur").Get<UrOptions>();
+        Assert.True(before is null || before.Model is null);
 
         var modelValue = JsonSerializer.SerializeToElement("anthropic/claude-3", SettingsJsonContext.Default.String);
         writer.Set("ur.model", modelValue, ConfigurationScope.User);
 
-        Assert.Equal("anthropic/claude-3", monitor.CurrentValue.Model);
+        var after = config.GetSection("ur").Get<UrOptions>();
+        Assert.NotNull(after);
+        Assert.Equal("anthropic/claude-3", after.Model);
     }
 
     // ─── Helpers ──────────────────────────────────────────────────────

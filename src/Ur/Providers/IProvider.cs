@@ -9,8 +9,14 @@ namespace Ur.Providers;
 /// and settings. The rest of the system only sees IProvider → IChatClient —
 /// provider-specific details (endpoint URIs, SDK types, key resolution) stay
 /// inside the implementation.
+///
+/// Public so that host applications (Ox) and external consumers can implement
+/// custom providers and register them via standard DI. Concrete implementations
+/// (OpenAiCompatibleProvider, GoogleProvider, OllamaProvider) stay internal —
+/// Ox constructs them via InternalsVisibleTo. External consumers implement this
+/// interface from scratch.
 /// </summary>
-internal interface IProvider
+public interface IProvider
 {
     /// <summary>
     /// The provider prefix used in model IDs (e.g. "openrouter", "ollama", "openai", "google").

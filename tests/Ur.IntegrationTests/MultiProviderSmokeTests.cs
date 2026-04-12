@@ -1,6 +1,7 @@
 using dotenv.net;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Ox.Configuration;
 using Ur.Configuration.Keyring;
 using Ur.Hosting;
 using Xunit.Abstractions;
@@ -91,12 +92,30 @@ public class MultiProviderSmokeTests : IDisposable
             keyring.SetSecret("ur", providerName, apiKey);
 
         var builder = Host.CreateApplicationBuilder();
-        builder.Services.AddUr(new UrStartupOptions
+
+        var userSettingsPath = Path.Combine(_userDataDir, "settings.json");
+        builder.Configuration.AddUrSettings(
+            userSettingsPath,
+            Path.Combine(_workspacePath, ".ur", "settings.json"));
+
+        // Load providers.json from the default location (~/.ur/providers.json)
+        // and register providers — same as Ox's production Program.cs.
+        var defaultUserDataDir = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".ur");
+        var providersJsonPath = Path.Combine(defaultUserDataDir, "providers.json");
+        var providerConfig = ProviderConfig.Load(providersJsonPath);
+        builder.Services.AddSingleton(providerConfig);
+        builder.Services.AddProvidersFromConfig(providerConfig);
+        builder.Services.AddSingleton<OxConfiguration>();
+        builder.Services.AddSingleton<Func<string, int?>>(sp =>
+            sp.GetRequiredService<OxConfiguration>().ResolveContextWindow);
+
+        builder.Services.AddSingleton<IKeyring>(keyring);
+        builder.Services.AddUr(builder.Configuration, o =>
         {
-            WorkspacePath = _workspacePath,
-            UserDataDirectory = _userDataDir,
-            UserSettingsPath = Path.Combine(_userDataDir, "settings.json"),
-            KeyringOverride = keyring,
+            o.WorkspacePath = _workspacePath;
+            o.UserDataDirectory = _userDataDir;
+            o.UserSettingsPath = userSettingsPath;
         });
 
         var app = builder.Build();

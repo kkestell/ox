@@ -10,7 +10,7 @@ namespace Ur.Logging;
 /// <see cref="ILogger"/> / <see cref="ILoggerProvider"/> abstractions so the DI
 /// container can wire logging without a static dependency.
 /// </summary>
-internal sealed class UrFileLoggerProvider : ILoggerProvider
+public sealed class UrFileLoggerProvider : ILoggerProvider
 {
     private readonly string _logDir = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),

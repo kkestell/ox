@@ -15,7 +15,7 @@ namespace Ur.Providers.Fake;
 /// The provider does not require an API key and is always ready, so it bypasses
 /// the readiness prompts in the configuration phase.
 /// </summary>
-internal sealed class FakeProvider : IProvider
+public sealed class FakeProvider : IProvider
 {
     /// <summary>
     /// Shared turn counters keyed by model/scenario name. When a scenario declares

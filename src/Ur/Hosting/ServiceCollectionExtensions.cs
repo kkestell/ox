@@ -1,15 +1,18 @@
 using System.Runtime.InteropServices;
+using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Ur.Compaction;
 using Ur.Configuration;
 using Ur.Configuration.Keyring;
-using Ur.Logging;
 using Ur.Providers;
 using Ur.Sessions;
 using Ur.Settings;
 using Ur.Skills;
+using Ur.Tools;
 
 namespace Ur.Hosting;
 
@@ -21,73 +24,100 @@ namespace Ur.Hosting;
 /// AgentLoop, ToolRegistry, SubagentRunner) stay as procedural construction because
 /// they need per-call parameters (session ID, chat client, callbacks, etc.).
 ///
-/// Configuration is backed by two <see cref="UrSettingsConfigurationSource"/> instances
-/// (user-level and workspace-level) feeding into <see cref="IConfiguration"/>. The
-/// workspace source is added second so its values take priority ("last source wins").
-/// <see cref="UrOptions"/> is bound to the "ur" section for strongly-typed access.
+/// The host is responsible for logging, configuration sources, and application lifecycle.
+/// Call <see cref="AddUrSettings"/> on the <see cref="IConfigurationBuilder"/> before
+/// calling <see cref="AddUr"/> so that user and workspace settings files are part of
+/// the host's configuration root. <see cref="UrOptions"/> is bound to the "ur" section
+/// via the standard <c>Configure&lt;T&gt;</c> pipeline.
 /// </summary>
 public static class ServiceCollectionExtensions
 {
+    /// <summary>
+    /// Registers the user-level and workspace-level settings files as configuration
+    /// sources. Call this on the host's <see cref="IConfigurationBuilder"/> before
+    /// <see cref="AddUr"/> so that <see cref="SettingsWriter.Reload"/> propagates
+    /// changes through the standard options pipeline.
+    ///
+    /// Two <see cref="UrSettingsConfigurationSource"/> instances are added: user file
+    /// first, workspace file second. IConfiguration's "last source wins" rule means
+    /// workspace values override user values for the same key.
+    /// </summary>
+    public static IConfigurationBuilder AddUrSettings(
+        this IConfigurationBuilder builder,
+        string userSettingsPath,
+        string workspaceSettingsPath)
+    {
+        builder.Add(new UrSettingsConfigurationSource(userSettingsPath));
+        builder.Add(new UrSettingsConfigurationSource(workspaceSettingsPath));
+        return builder;
+    }
+
+    /// <summary>
+    /// Registers Ur services into the DI container. The host must provide
+    /// <paramref name="configuration"/> (which should already include Ur settings
+    /// sources via <see cref="AddUrSettings"/>). Logging is the host's responsibility
+    /// — this method does not configure logging providers.
+    ///
+    /// The optional <paramref name="configure"/> callback sets runtime values
+    /// (WorkspacePath, SelectedModelOverride, etc.) after file-based settings
+    /// are bound from IConfiguration. Code overrides win over file values.
+    ///
+    /// To override the keyring, register <c>IKeyring</c> before calling this method —
+    /// <c>AddUr</c> uses <c>TryAddSingleton</c> so pre-registered keyrings win.
+    /// Similarly, register <c>IProvider</c> instances (e.g. <see cref="Ur.Providers.Fake.FakeProvider"/>)
+    /// before calling AddUr for test/dev scenarios.
+    /// </summary>
     public static IServiceCollection AddUr(
         this IServiceCollection services,
-        UrStartupOptions options)
+        IConfiguration configuration,
+        Action<UrOptions>? configure = null)
     {
-        // Custom file logger writes to ~/.ur/logs/ur-{date}.log.
-        // ClearProviders() removes the console and debug loggers that
-        // Host.CreateApplicationBuilder registers by default — without this,
-        // those providers write directly to stdout and corrupt the TUI.
-        services.AddLogging(builder =>
-        {
-            builder.ClearProviders();
-            builder.AddProvider(new UrFileLoggerProvider());
-        });
+        // Bind the "ur" section to UrOptions via the standard options pipeline.
+        // ConfigurationBinder.Bind matches property names case-insensitively:
+        //   Model ← "ur:model", TurnsToKeepToolResults ← "ur:turnsToKeepToolResults".
+        // Defaults (e.g. TurnsToKeepToolResults = 3) are preserved when keys are absent.
+        services.Configure<UrOptions>(configuration.GetSection("ur"));
 
-        // Store options so other registrations and UrHost can access overrides.
-        services.AddSingleton(options);
+        // The configure callback runs after config-file binding, so code overrides
+        // (WorkspacePath, SelectedModelOverride, etc.) win over file values.
+        if (configure is not null)
+            services.PostConfigure(configure);
+
+        // Ensure IConfigurationRoot is available in DI for SettingsWriter.Reload().
+        // Host.CreateApplicationBuilder registers IConfiguration but not IConfigurationRoot
+        // separately. The host's ConfigurationManager implements both interfaces.
+        if (configuration is IConfigurationRoot configRoot)
+            services.AddSingleton(configRoot);
+
+        // Snapshot the options for values needed at registration time (paths).
+        // PostConfigure callbacks haven't run yet, so we apply them manually.
+        var snapshot = new UrOptions();
+        configuration.GetSection("ur").Bind(snapshot);
+        configure?.Invoke(snapshot);
+
+        var userDataDirectory = snapshot.UserDataDirectory ?? DefaultUserDataDirectory();
+        var userSettingsPath = snapshot.UserSettingsPath ?? DefaultUserSettingsPath(userDataDirectory);
 
         services.AddSingleton(_ =>
         {
-            var w = new Workspace(options.WorkspacePath);
+            var w = new Workspace(snapshot.WorkspacePath);
             w.EnsureDirectories();
             return w;
         });
 
-        services.AddSingleton<IKeyring>(_ =>
-            options.KeyringOverride ?? CreatePlatformKeyring());
+        // TryAddSingleton lets callers pre-register a custom IKeyring (e.g. test
+        // keyrings, EnvironmentKeyring for headless) before calling AddUr.
+        services.TryAddSingleton<IKeyring>(_ => CreatePlatformKeyring());
 
-        var userDataDirectory = options.UserDataDirectory ?? DefaultUserDataDirectory();
-        var userSettingsPath = options.UserSettingsPath ?? DefaultUserSettingsPath(userDataDirectory);
-
-        // ── IConfiguration pipeline ──────────────────────────────────────
-        //
-        // Two UrSettingsConfigurationSource instances: user file first, workspace
-        // file second. IConfiguration's "last source wins" rule means workspace
-        // values override user values for the same key — matching the old merge
-        // semantics from Settings/SettingsLoader.
-        services.AddSingleton<IConfigurationRoot>(sp =>
-        {
-            var workspace = sp.GetRequiredService<Workspace>();
-            var builder = new ConfigurationBuilder();
-            builder.Add(new UrSettingsConfigurationSource(userSettingsPath));
-            builder.Add(new UrSettingsConfigurationSource(workspace.SettingsPath));
-            return builder.Build();
-        });
-
-        // IConfiguration delegates to the root — consumers that only need reads
-        // can depend on this interface instead of the concrete root.
-        services.AddSingleton<IConfiguration>(sp =>
-            sp.GetRequiredService<IConfigurationRoot>());
-
-        // Bind the "ur" section to UrOptions for strongly-typed access to core
-        // settings. UrOptionsMonitor reads from IConfiguration on every access,
-        // so it always reflects the latest state after SettingsWriter triggers a reload.
-        services.AddSingleton<IOptionsMonitor<UrOptions>>(sp =>
-            new UrOptionsMonitor(sp.GetRequiredService<IConfiguration>()));
-
-        services.AddSingleton(sp =>
-            new SessionStore(
+        services.AddSingleton<ISessionStore>(sp =>
+            new JsonlSessionStore(
                 sp.GetRequiredService<Workspace>().SessionsDirectory,
-                sp.GetRequiredService<ILoggerFactory>().CreateLogger<SessionStore>()));
+                sp.GetRequiredService<ILoggerFactory>().CreateLogger<JsonlSessionStore>()));
+
+        // Compaction strategy — the default Autocompactor summarizes older messages
+        // when context fill exceeds 60%. Registered as a singleton because the strategy
+        // is stateless (the chat client and messages vary per call, not per registration).
+        services.AddSingleton<ICompactionStrategy, Autocompactor>();
 
         services.AddSingleton(_ =>
         {
@@ -96,9 +126,10 @@ public static class ServiceCollectionExtensions
             return registry;
         });
 
-        // SettingsWriter replaces the old Settings class for read/write operations.
-        // It validates against the schema registry, writes nested JSON, and triggers
-        // an IConfigurationRoot.Reload() so IOptionsMonitor picks up changes.
+        // SettingsWriter validates against the schema registry, writes nested JSON,
+        // and triggers IConfigurationRoot.Reload() so IOptionsMonitor picks up changes.
+        // It resolves IConfigurationRoot from DI — this is the host's configuration root
+        // which includes the UrSettingsConfigurationSource instances added by AddUrSettings.
         services.AddSingleton(sp =>
         {
             var workspace = sp.GetRequiredService<Workspace>();
@@ -128,53 +159,9 @@ public static class ServiceCollectionExtensions
             sp.GetRequiredService<BuiltInCommandRegistry>(),
             sp.GetRequiredService<SkillRegistry>()));
 
-        // Provider registry — maps provider name prefixes to IProvider implementations.
-        //
-        // Providers are instantiated from providers.json configuration. Each entry
-        // declares the provider type (openai-compatible, google, ollama) and optional
-        // endpoint URL. The config-driven loop replaces the old hardcoded per-provider
-        // DI registrations.
-        var providersJsonPath = options.ProvidersJsonPath
-            ?? Path.Combine(userDataDirectory, "providers.json");
-        var providerConfig = ProviderConfig.Load(providersJsonPath);
-        services.AddSingleton(providerConfig);
-
-        foreach (var name in providerConfig.ProviderNames)
-        {
-            var entry = providerConfig.GetEntry(name)!;
-
-            switch (entry.Type)
-            {
-                case "openai-compatible":
-                    var endpoint = entry.Endpoint;
-                    services.AddSingleton<IProvider>(sp =>
-                        new OpenAiCompatibleProvider(
-                            name, endpoint, sp.GetRequiredService<IKeyring>()));
-                    break;
-
-                case "google":
-                    services.AddSingleton<IProvider>(sp =>
-                        new GoogleProvider(sp.GetRequiredService<IKeyring>()));
-                    break;
-
-                case "ollama":
-                    var ollamaUri = entry.Endpoint ?? new Uri("http://localhost:11434");
-                    services.AddSingleton<IProvider>(
-                        new OllamaProvider(name, ollamaUri));
-                    break;
-
-                default:
-                    // Unknown provider type — skip silently. The user may have
-                    // a newer providers.json format than this version of Ur supports.
-                    break;
-            }
-        }
-
-        // If startup options request a fake provider, register it as an additional
-        // IProvider service. The registry will pick it up alongside the real providers.
-        if (options.FakeProvider is { } fakeProvider)
-            services.AddSingleton(fakeProvider);
-
+        // Provider registry — collects all IProvider instances from DI and maps them
+        // by name prefix. The host (Ox) registers providers before calling AddUr —
+        // either from ProviderConfig (providers.json) or directly (FakeProvider).
         services.AddSingleton(sp =>
         {
             var registry = new ProviderRegistry();
@@ -187,24 +174,27 @@ public static class ServiceCollectionExtensions
             sp.GetRequiredService<IOptionsMonitor<UrOptions>>(),
             sp.GetRequiredService<SettingsWriter>(),
             sp.GetRequiredService<IKeyring>(),
-            sp.GetRequiredService<ProviderRegistry>(),
-            sp.GetRequiredService<ProviderConfig>(),
-            options.SelectedModelOverride));
+            sp.GetRequiredService<ProviderRegistry>()));
 
         // UrHost: registered via factory because the constructor is internal
         // (UrHost is a public type but we don't want arbitrary external construction).
+        // The Func<string, int?> is an optional context window resolver provided by
+        // the host (Ox registers it from OxConfiguration.ResolveContextWindow).
         services.AddSingleton(sp => new UrHost(
             sp.GetRequiredService<Workspace>(),
-            sp.GetRequiredService<SessionStore>(),
+            sp.GetRequiredService<ISessionStore>(),
+            sp.GetRequiredService<ICompactionStrategy>(),
             sp.GetRequiredService<SkillRegistry>(),
             sp.GetRequiredService<BuiltInCommandRegistry>(),
             sp.GetRequiredService<SettingsSchemaRegistry>(),
             sp.GetRequiredService<UrConfiguration>(),
             sp.GetRequiredService<ProviderRegistry>(),
-            sp.GetRequiredService<ProviderConfig>(),
             sp.GetRequiredService<ILoggerFactory>(),
-            sp.GetRequiredService<UrStartupOptions>(),
-            userDataDirectory));
+            sp.GetRequiredService<IOptionsMonitor<UrOptions>>(),
+            userDataDirectory,
+            sp.GetService<Func<string, IChatClient>>(),
+            sp.GetService<ToolRegistry>(),
+            sp.GetService<Func<string, int?>>()));
 
         return services;
     }

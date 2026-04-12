@@ -1,10 +1,11 @@
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using Ur.Configuration;
+using Ur.Compaction;
 using Ur.Permissions;
 using Ur.Settings;
 using Ur.Providers;
-using Ur.Providers.Fake;
 using Ur.Sessions;
 using Ur.Skills;
 using Ur.Todo;
@@ -25,10 +26,15 @@ namespace Ur.Hosting;
 /// </summary>
 public sealed class UrHost
 {
-    private readonly SessionStore _sessions;
+    private readonly ISessionStore _sessions;
+    private readonly ICompactionStrategy _compactionStrategy;
     private readonly ProviderRegistry _providerRegistry;
-    private readonly ProviderConfig _providerConfig;
     private readonly Func<string, IChatClient>? _chatClientFactoryOverride;
+
+    // Optional context window resolver provided by the host via DI. Ox registers
+    // OxConfiguration.ResolveContextWindow as a Func<string, int?> so compaction
+    // can check context fill percentage. Null in tests that don't need it.
+    private readonly Func<string, int?>? _contextWindowResolver;
 
     // Test-only: additional tools to merge into every session registry. Allows
     // tests to inject fake tools (e.g. a mock write_file) without changing the
@@ -64,32 +70,40 @@ public sealed class UrHost
     /// <summary>
     /// DI-injectable constructor. All parameters are resolved from the container
     /// registered by <see cref="ServiceCollectionExtensions.AddUr"/>.
+    ///
+    /// <paramref name="chatClientFactoryOverride"/>, <paramref name="additionalTools"/>,
+    /// and <paramref name="contextWindowResolver"/> are optional DI services — null
+    /// in production (except contextWindowResolver which Ox registers from OxConfiguration).
     /// </summary>
     internal UrHost(
         Workspace workspace,
-        SessionStore sessions,
+        ISessionStore sessions,
+        ICompactionStrategy compactionStrategy,
         SkillRegistry skills,
         BuiltInCommandRegistry builtInCommands,
         SettingsSchemaRegistry settingsSchemas,
         UrConfiguration configuration,
         ProviderRegistry providerRegistry,
-        ProviderConfig providerConfig,
         ILoggerFactory loggerFactory,
-        UrStartupOptions options,
-        string userDataDirectory)
+        IOptionsMonitor<UrOptions> optionsMonitor,
+        string userDataDirectory,
+        Func<string, IChatClient>? chatClientFactoryOverride = null,
+        ToolRegistry? additionalTools = null,
+        Func<string, int?>? contextWindowResolver = null)
     {
         _workspace = workspace;
         _sessions = sessions;
+        _compactionStrategy = compactionStrategy;
         _providerRegistry = providerRegistry;
-        _providerConfig = providerConfig;
         Skills = skills;
         BuiltInCommands = builtInCommands;
         SettingsSchemas = settingsSchemas;
         Configuration = configuration;
         _loggerFactory = loggerFactory;
         _userDataDirectory = userDataDirectory;
-        _chatClientFactoryOverride = options.ChatClientFactoryOverride;
-        _additionalTools = options.AdditionalTools;
+        _chatClientFactoryOverride = chatClientFactoryOverride;
+        _additionalTools = additionalTools;
+        _contextWindowResolver = contextWindowResolver;
 
         // Log startup summary — skills are already loaded by the time
         // the host is constructed (DI resolves them as upstream singletons).
@@ -113,45 +127,6 @@ public sealed class UrHost
         return provider.CreateChatClient(parsed.Model);
     }
 
-    /// <summary>
-    /// Resolves the context window size for the given model ID from the static
-    /// providers.json configuration. Follows the same "provider/model" parsing
-    /// pattern as <see cref="CreateChatClient"/>.
-    ///
-    /// Returns null if the model ID can't be parsed or the provider/model is not
-    /// declared in providers.json. The caller should treat null as "unknown" and
-    /// omit the context percentage display.
-    /// </summary>
-    public int? ResolveContextWindow(string modelId)
-    {
-        try
-        {
-            var parsed = ModelId.Parse(modelId);
-
-            // First check the static providers.json config (covers all real providers).
-            // GetContextWindow returns int and throws for unknown providers/models,
-            // so we catch below and fall through to provider-level resolution.
-            try
-            {
-                return _providerConfig.GetContextWindow(parsed.Provider, parsed.Model);
-            }
-            catch (InvalidOperationException) { /* not in static config, fall through */ }
-
-            // Fall back to the provider itself — the fake provider declares context
-            // windows on its scenarios so compaction can be tested without a real
-            // model entry in providers.json.
-            if (_providerRegistry.Get(parsed.Provider) is FakeProvider fp)
-                return fp.GetContextWindow(parsed.Model);
-
-            return null;
-        }
-        catch (ArgumentException)
-        {
-            // Model ID didn't parse (e.g. no "provider/" prefix).
-            return null;
-        }
-    }
-
     public IReadOnlyList<SessionInfo> ListSessions() =>
         _sessions.List()
             .Select(session => new SessionInfo(session.Id, session.CreatedAt))
@@ -172,10 +147,10 @@ public sealed class UrHost
     /// </summary>
     public UrSession CreateSession(TurnCallbacks? callbacks = null, TodoStore? todos = null, int? maxIterations = null) =>
         new(Configuration, Skills, BuiltInCommands, _workspace, _loggerFactory,
-            _sessions, CreateChatClient, _sessions.Create(), [],
+            _sessions, _compactionStrategy, CreateChatClient, _sessions.Create(), [],
             isPersisted: false, activeModelId: null, callbacks,
             _workspace.PermissionsPath, DefaultUserPermissionsPath(),
-            ResolveContextWindow, _additionalTools, todos, maxIterations);
+            _contextWindowResolver, _additionalTools, todos, maxIterations);
 
     /// <summary>
     /// Opens an existing session by ID. See <see cref="CreateSession"/> for callback semantics.
@@ -185,16 +160,16 @@ public sealed class UrHost
         TurnCallbacks? callbacks = null,
         CancellationToken ct = default)
     {
-        var session = _sessions.Get(sessionId);
+        var session = _sessions.GetById(sessionId);
         if (session is null)
             return null;
 
         var messages = (await _sessions.ReadAllAsync(session, ct)).ToList();
         return new UrSession(Configuration, Skills, BuiltInCommands, _workspace, _loggerFactory,
-            _sessions, CreateChatClient, session, messages,
+            _sessions, _compactionStrategy, CreateChatClient, session, messages,
             isPersisted: true, activeModelId: null, callbacks,
             _workspace.PermissionsPath, DefaultUserPermissionsPath(),
-            ResolveContextWindow, _additionalTools);
+            _contextWindowResolver, _additionalTools);
     }
 
     private string DefaultUserPermissionsPath() =>

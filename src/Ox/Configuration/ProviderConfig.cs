@@ -1,7 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
-namespace Ur.Providers;
+namespace Ox.Configuration;
 
 /// <summary>
 /// Loads, deserializes, and queries the providers.json configuration file.
@@ -10,11 +10,11 @@ namespace Ur.Providers;
 /// they offer, and what their context windows are. The application never writes
 /// this file — it is purely user-authored configuration.
 ///
-/// <see cref="ProviderConfig"/> sits alongside <see cref="ProviderRegistry"/> as
-/// an infrastructure singleton. ProviderRegistry maps names to live IProvider
-/// instances; ProviderConfig maps names to static metadata (type, URL, models).
+/// Lives in the Ox (application) layer because providers.json is an application
+/// concern — Ur (library) doesn't know about model catalogs. Ox loads the config,
+/// constructs providers, and registers them via standard DI.
 /// </summary>
-internal sealed class ProviderConfig
+public sealed class ProviderConfig
 {
     private readonly Dictionary<string, ProviderConfigEntry> _entries;
 
@@ -156,7 +156,7 @@ internal sealed class ProviderConfigRoot
 /// A single provider entry from providers.json. Declares the provider type,
 /// optional custom endpoint URL, and the list of available models.
 /// </summary>
-internal sealed class ProviderConfigEntry
+public sealed class ProviderConfigEntry
 {
     /// <summary>
     /// Human-readable display name for the provider (e.g. "OpenAI", "Z.AI Coding Plan").
@@ -187,7 +187,7 @@ internal sealed class ProviderConfigEntry
 /// A single model entry within a provider. The <see cref="ContextIn"/> field
 /// is mandatory — there are no fallback paths for unknown context windows.
 /// </summary>
-internal sealed class ProviderModelEntry
+public sealed class ProviderModelEntry
 {
     [JsonPropertyName("name")]
     public string Name { get; set; } = "";

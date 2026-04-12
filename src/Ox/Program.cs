@@ -1,7 +1,12 @@
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
+using Ox.Configuration;
 using Te.Input;
 using Ur.Configuration.Keyring;
 using Ur.Hosting;
+using Ur.Logging;
+using Ur.Providers;
 using Ur.Providers.Fake;
 
 namespace Ox;
@@ -11,7 +16,7 @@ namespace Ox;
 ///
 /// Handles three phases:
 ///   1. CLI argument parsing (--fake-provider, --headless, --yolo, --turn, --model).
-///   2. DI container setup with Ur services.
+///   2. Generic Host setup with Ur services.
 ///   3. Execution path: headless mode (HeadlessRunner) or TUI mode (OxApp).
 ///      Headless mode branches before any TUI initialization — no alternate screen,
 ///      no TerminalInputSource, no OxApp.
@@ -32,49 +37,59 @@ public static class Program
             return 1;
         }
 
-        // Build the DI container with Ur services.
-        var services = new ServiceCollection();
-        var startupOptions = new UrStartupOptions
-        {
-            WorkspacePath = Directory.GetCurrentDirectory(),
-        };
+        var workspacePath = Directory.GetCurrentDirectory();
+        var userDataDir = ServiceCollectionExtensions.DefaultUserDataDirectory();
+        var userSettingsPath = ServiceCollectionExtensions.DefaultUserSettingsPath(userDataDir);
+        var workspaceSettingsPath = Path.Combine(workspacePath, ".ur", "settings.json");
+
+        // ── Build the Generic Host ──────────────────────────────────────
+        //
+        // Host.CreateApplicationBuilder registers IConfigurationRoot, IConfiguration,
+        // and the options pipeline. We add Ur settings sources, configure logging
+        // (file-only — no console/debug loggers that would corrupt the TUI), and
+        // register the Ur service graph.
+        var builder = Host.CreateApplicationBuilder(args);
+
+        // ClearProviders removes the console and debug loggers that
+        // CreateApplicationBuilder registers by default — without this,
+        // those providers write directly to stdout and corrupt the TUI.
+        builder.Logging.ClearProviders();
+        builder.Logging.AddProvider(new UrFileLoggerProvider());
+
+        builder.Configuration.AddUrSettings(userSettingsPath, workspaceSettingsPath);
 
         // If --fake-provider was specified, register the fake provider and
         // select the fake model so the configuration phase is skipped.
+        string? selectedModelOverride = null;
         if (bootOptions.FakeProviderScenario is { } scenario)
         {
-            startupOptions = new UrStartupOptions
-            {
-                WorkspacePath = startupOptions.WorkspacePath,
-                FakeProvider = new FakeProvider(),
-                SelectedModelOverride = $"fake/{scenario}",
-            };
+            builder.Services.AddSingleton<IProvider>(new FakeProvider());
+            selectedModelOverride = $"fake/{scenario}";
         }
 
         // Headless mode uses EnvironmentKeyring (no OS keyring in containers)
         // and may override the model from the CLI.
         if (bootOptions.IsHeadless)
         {
-            startupOptions = new UrStartupOptions
-            {
-                WorkspacePath = startupOptions.WorkspacePath,
-                FakeProvider = startupOptions.FakeProvider,
-                KeyringOverride = new EnvironmentKeyring(),
-                SelectedModelOverride = bootOptions.ModelOverride ?? startupOptions.SelectedModelOverride,
-            };
+            builder.Services.AddSingleton<IKeyring>(new EnvironmentKeyring());
+            selectedModelOverride = bootOptions.ModelOverride ?? selectedModelOverride;
         }
 
-        // AddUr loads providers.json — if the file is missing or malformed,
-        // we catch the error here and exit with a clear message instead of
-        // dumping a raw exception trace to the terminal.
+        // ── Load providers.json and register providers ────────────────
+        //
+        // ProviderConfig is Ox's application-level concern — Ur doesn't know about
+        // model catalogs. Load the config eagerly so we can report errors with a
+        // clear message before the DI container is built.
+        var providersJsonPath = Path.Combine(userDataDir, "providers.json");
+        ProviderConfig providerConfig;
         try
         {
-            services.AddUr(startupOptions);
+            providerConfig = ProviderConfig.Load(providersJsonPath);
         }
-        catch (FileNotFoundException ex) when (ex.Message.Contains("providers.json"))
+        catch (FileNotFoundException ex)
         {
             await Console.Error.WriteLineAsync(
-                $"Error: {ex.Message}\nSee docs/settings.md for the expected format.");
+                $"Error: {ex.Message}\nSee docs/providers.md for the expected format.");
             return 1;
         }
         catch (InvalidOperationException ex) when (ex.Message.Contains("providers.json"))
@@ -83,8 +98,29 @@ public static class Program
             return 1;
         }
 
-        using var sp = services.BuildServiceProvider();
-        var host = sp.GetRequiredService<UrHost>();
+        builder.Services.AddSingleton(providerConfig);
+        builder.Services.AddProvidersFromConfig(providerConfig);
+
+        // OxConfiguration wraps model catalog queries (model listing, context windows,
+        // provider metadata) for the TUI and headless runner.
+        builder.Services.AddSingleton<OxConfiguration>();
+
+        // Register a context window resolver for Ur's use — UrHost passes this delegate
+        // to UrSession so compaction can check context fill percentage.
+        builder.Services.AddSingleton<Func<string, int?>>(sp =>
+            sp.GetRequiredService<OxConfiguration>().ResolveContextWindow);
+
+        // ── Register Ur services ────────────────────────────────────────
+        builder.Services.AddUr(builder.Configuration, o =>
+        {
+            o.WorkspacePath = workspacePath;
+            o.SelectedModelOverride = selectedModelOverride;
+        });
+
+        using var app = builder.Build();
+        await app.StartAsync();
+        var host = app.Services.GetRequiredService<UrHost>();
+        var oxConfig = app.Services.GetRequiredService<OxConfiguration>();
 
         // ── Headless path ───────────────────────────────────────────────
         // Branch before any TUI initialization — no alternate screen, no input
@@ -99,7 +135,9 @@ public static class Program
             };
 
             var runner = new HeadlessRunner(host, bootOptions.Prompt!, bootOptions.IsYolo, bootOptions.MaxIterations);
-            return await runner.RunAsync(cts.Token);
+            var result = await runner.RunAsync(cts.Token);
+            await app.StopAsync();
+            return result;
         }
 
         // ── TUI phase ───────────────────────────────────────────────────
@@ -126,14 +164,15 @@ public static class Program
             HideCursor();
 
             var (width, height) = GetTerminalSize();
-            using var app = new OxApp(host, coordinator, width, height, startupOptions.WorkspacePath);
-            await app.RunAsync();
+            using var oxApp = new OxApp(host, oxConfig, coordinator, width, height, workspacePath);
+            await oxApp.RunAsync();
         }
         finally
         {
             ShowCursor();
             ExitAlternateScreen();
             Console.CancelKeyPress -= cancelHandler;
+            await app.StopAsync();
         }
 
         return 0;

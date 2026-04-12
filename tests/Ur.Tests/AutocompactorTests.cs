@@ -14,6 +14,10 @@ public sealed class AutocompactorTests
     private static readonly IReadOnlyList<ChatMessage> EmptyChatResponse =
         [new ChatMessage(ChatRole.Assistant, "Summary of the conversation.")];
 
+    // Shared instance — Autocompactor is stateless aside from the logger, and
+    // NullLogger discards everything, so a single instance works for all tests.
+    private readonly Autocompactor _compactor = new(NullLogger<Autocompactor>.Instance);
+
     // ─── Threshold behavior ───────────────────────────────────────────
 
     [Fact]
@@ -22,11 +26,10 @@ public sealed class AutocompactorTests
         // 85% fill > 60% threshold → compaction should fire.
         var messages = BuildLongConversation(10);
         var client = new FakeSummarizingClient("This is the summary.");
-        var logger = NullLogger.Instance;
 
-        var compacted = await Autocompactor.TryCompactAsync(
+        var compacted = await _compactor.TryCompactAsync(
             messages, client, contextWindow: 100_000, lastInputTokens: 85_000,
-            logger, CancellationToken.None);
+            CancellationToken.None);
 
         Assert.True(compacted);
 
@@ -51,11 +54,10 @@ public sealed class AutocompactorTests
         var messages = BuildLongConversation(10);
         var originalCount = messages.Count;
         var client = new FakeSummarizingClient("Should not be called.");
-        var logger = NullLogger.Instance;
 
-        var compacted = await Autocompactor.TryCompactAsync(
+        var compacted = await _compactor.TryCompactAsync(
             messages, client, contextWindow: 100_000, lastInputTokens: 50_000,
-            logger, CancellationToken.None);
+            CancellationToken.None);
 
         Assert.False(compacted);
         Assert.Equal(originalCount, messages.Count);
@@ -68,11 +70,10 @@ public sealed class AutocompactorTests
         var messages = BuildLongConversation(10);
         var originalCount = messages.Count;
         var client = new FakeSummarizingClient("Should not be called.");
-        var logger = NullLogger.Instance;
 
-        var compacted = await Autocompactor.TryCompactAsync(
+        var compacted = await _compactor.TryCompactAsync(
             messages, client, contextWindow: 100_000, lastInputTokens: 60_000,
-            logger, CancellationToken.None);
+            CancellationToken.None);
 
         Assert.False(compacted);
         Assert.Equal(originalCount, messages.Count);
@@ -88,11 +89,10 @@ public sealed class AutocompactorTests
             new(ChatRole.Assistant, "hi")
         };
         var client = new FakeSummarizingClient("Should not be called.");
-        var logger = NullLogger.Instance;
 
-        var compacted = await Autocompactor.TryCompactAsync(
+        var compacted = await _compactor.TryCompactAsync(
             messages, client, contextWindow: 1_000, lastInputTokens: 900,
-            logger, CancellationToken.None);
+            CancellationToken.None);
 
         Assert.False(compacted);
         Assert.Equal(2, messages.Count);
@@ -105,11 +105,10 @@ public sealed class AutocompactorTests
         var messages = BuildLongConversation(10);
         var originalCount = messages.Count;
         var client = new FakeSummarizingClient("   "); // whitespace only
-        var logger = NullLogger.Instance;
 
-        var compacted = await Autocompactor.TryCompactAsync(
+        var compacted = await _compactor.TryCompactAsync(
             messages, client, contextWindow: 100_000, lastInputTokens: 85_000,
-            logger, CancellationToken.None);
+            CancellationToken.None);
 
         Assert.False(compacted);
         Assert.Equal(originalCount, messages.Count);
@@ -123,11 +122,10 @@ public sealed class AutocompactorTests
         var lastUserMsg = messages.Last(m => m.Role == ChatRole.User);
         var lastAssistantMsg = messages.Last(m => m.Role == ChatRole.Assistant);
         var client = new FakeSummarizingClient("Conversation summary.");
-        var logger = NullLogger.Instance;
 
-        await Autocompactor.TryCompactAsync(
+        await _compactor.TryCompactAsync(
             messages, client, contextWindow: 100_000, lastInputTokens: 85_000,
-            logger, CancellationToken.None);
+            CancellationToken.None);
 
         // The last user and assistant messages should still be present.
         Assert.Contains(messages, m => m.Text == lastUserMsg.Text);

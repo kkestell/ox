@@ -36,27 +36,17 @@ public sealed class UrConfiguration
     private readonly SettingsWriter _settingsWriter;
     private readonly IKeyring _keyring;
     private readonly ProviderRegistry _providerRegistry;
-    private readonly ProviderConfig _providerConfig;
-
-    // Ephemeral model override from startup options. When set, takes priority
-    // over persisted settings so test mode (--fake-provider) can select a model
-    // without rewriting settings files or keyring state.
-    private readonly string? _selectedModelOverride;
 
     internal UrConfiguration(
         IOptionsMonitor<UrOptions> optionsMonitor,
         SettingsWriter settingsWriter,
         IKeyring keyring,
-        ProviderRegistry providerRegistry,
-        ProviderConfig providerConfig,
-        string? selectedModelOverride = null)
+        ProviderRegistry providerRegistry)
     {
         _optionsMonitor = optionsMonitor;
         _settingsWriter = settingsWriter;
         _keyring = keyring;
         _providerRegistry = providerRegistry;
-        _providerConfig = providerConfig;
-        _selectedModelOverride = selectedModelOverride;
     }
 
     /// <summary>
@@ -67,13 +57,13 @@ public sealed class UrConfiguration
     public ChatReadiness Readiness => new(GetBlockingIssues());
 
     /// <summary>
-    /// The currently selected model ID. When a startup override is set (e.g.
-    /// --fake-provider mode), that takes priority. Otherwise reads from
-    /// IOptionsMonitor which tracks the "ur:model" configuration key across
-    /// both user and workspace settings files, with workspace taking priority.
+    /// The currently selected model ID. When SelectedModelOverride is set on
+    /// UrOptions (e.g. --fake-provider mode), that takes priority. Otherwise
+    /// reads the "ur:model" configuration key across both user and workspace
+    /// settings files, with workspace taking priority.
     /// </summary>
     public string? SelectedModelId =>
-        _selectedModelOverride ?? _optionsMonitor.CurrentValue.Model;
+        _optionsMonitor.CurrentValue.SelectedModelOverride ?? _optionsMonitor.CurrentValue.Model;
 
     /// <summary>
     /// How many recent assistant turns' tool results to keep verbatim during
@@ -83,56 +73,6 @@ public sealed class UrConfiguration
     /// </summary>
     public int TurnsToKeepToolResults =>
         _optionsMonitor.CurrentValue.TurnsToKeepToolResults;
-
-    /// <summary>
-    /// Aggregates model IDs across all providers declared in providers.json.
-    /// Each model is prefixed with its provider name (e.g. "openai/gpt-4o").
-    /// The combined list is sorted alphabetically for stable display order.
-    /// Synchronous — all data comes from the static providers.json config, no
-    /// network calls needed.
-    /// </summary>
-    public IReadOnlyList<string> ListAllModelIds() =>
-        _providerConfig.ListAllModelIds();
-
-    /// <summary>
-    /// Returns all configured providers as (key, display name) pairs in the
-    /// order they appear in providers.json. The key (e.g. "openrouter") is
-    /// used for API calls; the display name (e.g. "OpenRouter") is shown in
-    /// the connect wizard's provider selection step. Falls back to the key
-    /// when the entry has no display name.
-    /// </summary>
-    public IReadOnlyList<(string Key, string DisplayName)> ListProviders()
-    {
-        return _providerConfig.ProviderNames
-            .Select(key =>
-            {
-                var entry = _providerConfig.GetEntry(key);
-                var displayName = !string.IsNullOrEmpty(entry?.Name) ? entry.Name : key;
-                return (key, displayName);
-            })
-            .ToList();
-    }
-
-    /// <summary>
-    /// Returns models available from a given provider as (id, display name)
-    /// pairs, in the order they appear in providers.json. Used by the connect
-    /// wizard's model selection step. Returns an empty list when the provider
-    /// key is not found.
-    /// </summary>
-    public IReadOnlyList<(string Id, string Name)> ListModelsForProvider(string providerKey)
-    {
-        var entry = _providerConfig.GetEntry(providerKey);
-        if (entry is null) return [];
-        return entry.Models.Select(m => (m.Id, m.Name)).ToList();
-    }
-
-    /// <summary>
-    /// Returns true when the named provider requires an API key (all providers
-    /// except Ollama). Defaults to true for unknown providers so the wizard
-    /// always prompts rather than silently skipping key setup.
-    /// </summary>
-    public bool ProviderRequiresApiKey(string providerKey) =>
-        _providerRegistry.Get(providerKey)?.RequiresApiKey ?? true;
 
     /// <summary>
     /// Stores an API key in the OS keyring for the given provider.
