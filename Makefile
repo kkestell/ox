@@ -1,4 +1,4 @@
-.PHONY: format-docs inspect install test verify
+.PHONY: format-docs inspect install test verify evals-build evals-run evals-run-quick
 
 install:
 	@./scripts/install.sh
@@ -23,3 +23,15 @@ inspect:
 
 run:
 	@dotnet run --project src/Ox --no-build --nologo -- "$$ARGS"
+
+# Build the eval container image. Contains the Ox binary + language toolchains.
+evals-build:
+	podman build -f evals/Containerfile -t ox-eval .
+
+# Run all eval scenarios against their configured models.
+evals-run: evals-build
+	dotnet run --project evals/EvalRunner -- --scenarios evals/scenarios/
+
+# Run only simple scenarios for fast pre-merge checks.
+evals-run-quick: evals-build
+	dotnet run --project evals/EvalRunner -- --scenarios evals/scenarios/ --complexity simple

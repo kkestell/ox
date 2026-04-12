@@ -181,12 +181,14 @@ public sealed class ToolAwaitingApproval : AgentLoopEvent
 
 /// <summary>
 /// The turn completed (LLM returned a final response with no further tool calls).
-/// Carries the last LLM call's input token count so the UI can display context fill.
-/// Nullable because some providers don't report usage data.
+/// Carries the last LLM call's token counts so the UI can display context fill
+/// and sessions can accumulate usage metrics. Nullable because some providers
+/// don't report usage data.
 /// </summary>
 public sealed class TurnCompleted : AgentLoopEvent
 {
     public long? InputTokens { get; init; }
+    public long? OutputTokens { get; init; }
 }
 
 /// <summary>

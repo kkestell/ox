@@ -148,4 +148,25 @@ internal sealed class SessionStore(string sessionsDirectory, ILogger<SessionStor
         logger?.LogDebug("Loaded session '{SessionId}': {MessageCount} messages", session.Id, messages.Count);
         return messages;
     }
+
+    /// <summary>
+    /// Writes a metrics JSON file alongside the session JSONL. The file is named
+    /// <c>{sessionId}.metrics.json</c> and lives in the same directory. Both TUI
+    /// and headless sessions call this on close so eval infrastructure can read
+    /// it without parsing the JSONL.
+    /// </summary>
+    public async Task WriteMetricsAsync(Session session, SessionMetrics metrics, CancellationToken ct = default)
+    {
+        Directory.CreateDirectory(sessionsDirectory);
+        var metricsPath = Path.Combine(sessionsDirectory, $"{session.Id}.metrics.json");
+        var json = JsonSerializer.Serialize(metrics, MetricsJsonOptions);
+        await File.WriteAllTextAsync(metricsPath, json + "\n", ct);
+        logger?.LogDebug("Wrote metrics for session '{SessionId}'", session.Id);
+    }
+
+    private static readonly JsonSerializerOptions MetricsJsonOptions = new()
+    {
+        WriteIndented = true,
+        DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.Never,
+    };
 }

@@ -1,0 +1,17 @@
+name: nodatime-localtime-seconds
+complexity: simple
+models:
+  - google/gemini-3.1-flash-lite-preview
+  - zai-coding/glm-4.5-air
+repository:
+  url: https://github.com/nodatime/nodatime
+  commit: c323a3b2f92d937c4fe81f6d33a43562b4c6d49b
+  fix_commit: 2d48b2998434d8c4fc478a923f7f5281a6d5bfe2
+turns:
+  - "The LocalTime constructor silently wraps seconds >= 60 instead of throwing an
+     ArgumentOutOfRangeException. Fix this so invalid second values are rejected."
+  - "Run the NodaTime tests to confirm the fix."
+validation_rules:
+  - type: command_succeeds
+    command: dotnet test src/NodaTime.Test
+timeout_seconds: 300

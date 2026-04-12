@@ -1,0 +1,17 @@
+name: gh-release-limit-zero
+complexity: simple
+models:
+  - google/gemini-3.1-flash-lite-preview
+  - zai-coding/glm-4.5-air
+repository:
+  url: https://github.com/cli/cli
+  commit: 5d3c2ba5691f4cb8388710c578eeeadf216eec96
+  fix_commit: d0558fcbaad794c343bdfd3efd75d13777c2d42a
+turns:
+  - "Running 'gh release list --limit 0' enters an infinite loop. Fix it so that
+     a limit of zero returns an empty result instead of looping forever."
+  - "Run the release list tests to confirm."
+validation_rules:
+  - type: command_succeeds
+    command: go test ./pkg/cmd/release/list/...
+timeout_seconds: 300

@@ -127,7 +127,11 @@ internal sealed class AgentLoop(IChatClient client, ToolRegistry tools, Workspac
             {
                 // The last LLM call's InputTokenCount reflects the full conversation
                 // size — this is the context fill level the UI displays.
-                yield return new TurnCompleted { InputTokens = usageHolder.Usage?.InputTokenCount };
+                yield return new TurnCompleted
+                {
+                    InputTokens = usageHolder.Usage?.InputTokenCount,
+                    OutputTokens = usageHolder.Usage?.OutputTokenCount,
+                };
                 yield break;
             }
 

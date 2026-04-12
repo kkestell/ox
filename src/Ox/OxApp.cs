@@ -838,6 +838,10 @@ public sealed class OxApp : IDisposable
 
     public void Dispose()
     {
+        // Write session metrics before shutting down. DisposeAsync is cheap (one
+        // file write) so blocking here is acceptable — the TUI is already exiting.
+        if (_session is not null)
+            _session.DisposeAsync().AsTask().GetAwaiter().GetResult();
         _turnCts?.Dispose();
         _wakeSignal.Dispose();
     }

@@ -1,0 +1,50 @@
+# Stage 1 — Build the Ox binary from source.
+FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
+
+WORKDIR /src
+COPY . .
+RUN dotnet publish src/Ox/Ox.csproj -c Release -r linux-x64 --self-contained -o /app
+
+# Stage 2 — Runtime image with language toolchains.
+# Uses runtime-deps (not runtime) because Ox is published self-contained.
+FROM mcr.microsoft.com/dotnet/runtime-deps:10.0 AS runtime
+
+# Install language toolchains needed by the scenario library. This is a fat image
+# by design — scenarios span multiple languages and the image is built once and reused.
+# Layer ordering: system packages first, then language-specific installers.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    bash \
+    ca-certificates \
+    curl \
+    # Python
+    python3 \
+    python3-pip \
+    python3-venv \
+    # Ruby
+    ruby \
+    ruby-bundler \
+    # Node.js
+    nodejs \
+    npm \
+    # Go
+    golang \
+    # Build essentials for native extensions
+    build-essential \
+    pkg-config \
+    libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Rust via rustup (not packaged in Debian, and scenarios need cargo + rustc).
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+# Install pytest globally for Python scenarios.
+RUN pip3 install --break-system-packages pytest
+
+# Copy the published Ox binary.
+COPY --from=build /app /app
+ENV PATH="/app:${PATH}"
+
+WORKDIR /workspace
+ENTRYPOINT ["Ox"]

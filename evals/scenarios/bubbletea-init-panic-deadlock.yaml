@@ -1,0 +1,17 @@
+name: bubbletea-init-panic-deadlock
+complexity: simple
+models:
+  - google/gemini-3.1-flash-lite-preview
+  - zai-coding/glm-4.5-air
+repository:
+  url: https://github.com/charmbracelet/bubbletea
+  commit: 6b98c9ced38bd1f5dbd59bffea58ae0c53c4dbee
+  fix_commit: 1c6e74daab28ebb6985f8ff480d61117d6da3fba
+turns:
+  - "When Init() panics, the program deadlocks instead of shutting down cleanly. Fix
+     the panic recovery so the program exits properly."
+  - "Run the full test suite to confirm."
+validation_rules:
+  - type: command_succeeds
+    command: go test ./...
+timeout_seconds: 300

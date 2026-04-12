@@ -128,6 +128,57 @@ public class HostSessionApiTests
         Assert.Equal("ollama/qwen3:4b", session.ActiveModelId);
     }
 
+    // ── Session metrics ─────────────────────────────────────────────
+
+    [Fact]
+    public async Task SessionDispose_WritesMetricsJson_WithCorrectTokenCounts()
+    {
+        using var workspace = new TempWorkspace();
+        var host = await CreateHostAsync(workspace, keyring: new TestKeyring(),
+            chatClientFactory: _ => new UsageReportingChatClient("hello", inputTokens: 1500, outputTokens: 200));
+
+        host.Configuration.SetApiKey("test-key");
+        host.Configuration.SetSelectedModel("openrouter/test-model");
+
+        var session = host.CreateSession();
+        await CollectEventsAsync(session.RunTurnAsync("hello"));
+
+        // Dispose writes the metrics file.
+        await session.DisposeAsync();
+
+        var sessionsDir = Path.Combine(workspace.WorkspacePath, ".ur", "sessions");
+        var metricsFiles = Directory.GetFiles(sessionsDir, "*.metrics.json");
+        var metricsFile = Assert.Single(metricsFiles);
+
+        var json = await File.ReadAllTextAsync(metricsFile);
+        Assert.Contains("\"turns\": 1", json);
+        Assert.Contains("\"input_tokens\": 1500", json);
+        Assert.Contains("\"output_tokens\": 200", json);
+        Assert.Contains("\"tool_calls_total\": 0", json);
+        Assert.Contains("\"tool_calls_errored\": 0", json);
+        Assert.Contains("\"error\": null", json);
+    }
+
+    [Fact]
+    public async Task TurnCompleted_CarriesBothInputAndOutputTokens()
+    {
+        using var workspace = new TempWorkspace();
+        var host = await CreateHostAsync(workspace, keyring: new TestKeyring(),
+            chatClientFactory: _ => new UsageReportingChatClient("hello", inputTokens: 3000, outputTokens: 500));
+
+        host.Configuration.SetApiKey("test-key");
+        host.Configuration.SetSelectedModel("openrouter/test-model");
+
+        var session = host.CreateSession();
+        var events = await CollectEventsAsync(session.RunTurnAsync("hello"));
+
+        var completed = events.OfType<TurnCompleted>().Single();
+        Assert.Equal(3000, completed.InputTokens);
+        Assert.Equal(500, completed.OutputTokens);
+    }
+
+    // ── Helpers ──────────────────────────────────────────────────────
+
     private static Task<UrHost> CreateHostAsync(
         TempWorkspace workspace,
         TestKeyring? keyring = null,
@@ -392,6 +443,59 @@ public class HostSessionApiTests
 #pragma warning disable CS0162 // unreachable — required to make this an iterator method
             yield break;
 #pragma warning restore CS0162
+        }
+
+        public object? GetService(Type serviceType, object? serviceKey = null) => null;
+
+        public void Dispose()
+        {
+        }
+    }
+
+    /// <summary>
+    /// Chat client that reports token usage via UsageContent, allowing tests to verify
+    /// that TurnCompleted carries both InputTokens and OutputTokens, and that session
+    /// metrics accumulate correctly.
+    /// </summary>
+    private sealed class UsageReportingChatClient(
+        string responseText,
+        long inputTokens,
+        long outputTokens) : IChatClient
+    {
+        public Task<ChatResponse> GetResponseAsync(
+            IEnumerable<ChatMessage> messages,
+            ChatOptions? options = null,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromResult(new ChatResponse(new ChatMessage(ChatRole.Assistant, responseText))
+            {
+                Usage = new UsageDetails { InputTokenCount = inputTokens, OutputTokenCount = outputTokens }
+            });
+        }
+
+        public async IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
+            IEnumerable<ChatMessage> messages,
+            ChatOptions? options = null,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            // Emit text content and usage in the same update, mirroring how real
+            // providers report usage in the final streaming chunk.
+            yield return new ChatResponseUpdate
+            {
+                Role = ChatRole.Assistant,
+                Contents =
+                [
+                    new TextContent(responseText),
+                    new UsageContent(new UsageDetails
+                    {
+                        InputTokenCount = inputTokens,
+                        OutputTokenCount = outputTokens,
+                    }),
+                ],
+            };
+            await Task.CompletedTask;
         }
 
         public object? GetService(Type serviceType, object? serviceKey = null) => null;

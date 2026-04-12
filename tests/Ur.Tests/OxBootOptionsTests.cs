@@ -62,4 +62,86 @@ public sealed class OxBootOptionsTests
         Assert.Null(opts.FakeProviderScenario);
         Assert.Equal(["--verbose", "--port", "8080"], opts.RemainingArgs);
     }
+
+    // ── Headless mode flags ──────────────────────────────────────────
+
+    [Fact]
+    public void Parse_HeadlessWithYoloAndTurn_SetsAllFields()
+    {
+        var opts = OxBootOptions.Parse(["--headless", "--yolo", "--turn", "hello"]);
+
+        Assert.True(opts.IsHeadless);
+        Assert.True(opts.IsYolo);
+        Assert.Equal(["hello"], opts.Turns);
+        Assert.Null(opts.FakeProviderScenario);
+        Assert.Empty(opts.RemainingArgs);
+    }
+
+    [Fact]
+    public void Parse_MultipleTurns_AccumulatesInOrder()
+    {
+        var opts = OxBootOptions.Parse([
+            "--headless", "--yolo",
+            "--turn", "first message",
+            "--turn", "second message",
+            "--turn", "third message"
+        ]);
+
+        Assert.True(opts.IsHeadless);
+        Assert.Equal(["first message", "second message", "third message"], opts.Turns);
+    }
+
+    [Fact]
+    public void Parse_ModelOverride_CapturesModelId()
+    {
+        var opts = OxBootOptions.Parse(["--headless", "--model", "openrouter/some-model", "--turn", "go"]);
+
+        Assert.True(opts.IsHeadless);
+        Assert.Equal("openrouter/some-model", opts.ModelOverride);
+        Assert.Equal(["go"], opts.Turns);
+    }
+
+    [Fact]
+    public void Parse_HeadlessWithFakeProvider_BothCoexist()
+    {
+        var opts = OxBootOptions.Parse([
+            "--headless", "--yolo",
+            "--fake-provider", "hello",
+            "--turn", "test"
+        ]);
+
+        Assert.True(opts.IsHeadless);
+        Assert.True(opts.IsYolo);
+        Assert.Equal("hello", opts.FakeProviderScenario);
+        Assert.Equal(["test"], opts.Turns);
+    }
+
+    [Fact]
+    public void Parse_NoHeadlessFlag_DefaultsToFalse()
+    {
+        var opts = OxBootOptions.Parse([]);
+
+        Assert.False(opts.IsHeadless);
+        Assert.False(opts.IsYolo);
+        Assert.Empty(opts.Turns);
+        Assert.Null(opts.ModelOverride);
+    }
+
+    [Fact]
+    public void Parse_HeadlessFlagsWithOtherArgs_SeparatesCorrectly()
+    {
+        var opts = OxBootOptions.Parse([
+            "--environment", "Development",
+            "--headless", "--yolo",
+            "--turn", "hello",
+            "--model", "google/gemini-3.1-flash",
+            "--urls", "http://localhost:5000"
+        ]);
+
+        Assert.True(opts.IsHeadless);
+        Assert.True(opts.IsYolo);
+        Assert.Equal(["hello"], opts.Turns);
+        Assert.Equal("google/gemini-3.1-flash", opts.ModelOverride);
+        Assert.Equal(["--environment", "Development", "--urls", "http://localhost:5000"], opts.RemainingArgs);
+    }
 }

@@ -174,26 +174,26 @@ to `src/Ox/` — `OxApp` and all TUI code are untouched.
 
 ### Phase 1 — Ur additions
 
-- [ ] Add `long? OutputTokens { get; init; }` to `TurnCompleted` in
+- [x] Add `long? OutputTokens { get; init; }` to `TurnCompleted` in
   `src/Ur/AgentLoop/AgentLoopEvent.cs`.
-- [ ] Populate it from `UsageContent.OutputTokenCount` alongside `InputTokens` in
+- [x] Populate it from `UsageContent.OutputTokenCount` alongside `InputTokens` in
   the agent loop. (Find the `UsageContent` reading site in `AgentLoop.cs`.)
-- [ ] Add `SessionMetrics.cs` in `src/Ur/Sessions/` — flat record with the fields
+- [x] Add `SessionMetrics.cs` in `src/Ur/Sessions/` — flat record with the fields
   above. JSON-serializable via `System.Text.Json`.
-- [ ] Extend `UrSession` to accumulate metrics: track session start time on
+- [x] Extend `UrSession` to accumulate metrics: track session start time on
   construction; subscribe to events from `RunTurnAsync` to accumulate `InputTokens`,
   `OutputTokens`, `ToolCallsTotal`, `ToolCallsErrored`, and turn count.
-- [ ] Extend `SessionStore` with `WriteMetricsAsync(Session, SessionMetrics)` — writes
+- [x] Extend `SessionStore` with `WriteMetricsAsync(Session, SessionMetrics)` — writes
   `{sessionId}.metrics.json` in the same directory as the session JSONL.
-- [ ] Call `WriteMetricsAsync` from `UrSession.DisposeAsync` (or equivalent close
+- [x] Call `WriteMetricsAsync` from `UrSession.DisposeAsync` (or equivalent close
   path), computing `DurationSeconds` as elapsed time since session start.
-- [ ] Unit test: fake provider reports usage + tool calls → `SessionMetrics` written
+- [x] Unit test: fake provider reports usage + tool calls → `SessionMetrics` written
   with correct counts and tokens.
-- [ ] Unit test: `TurnCompleted` carries both `InputTokens` and `OutputTokens`.
+- [x] Unit test: `TurnCompleted` carries both `InputTokens` and `OutputTokens`.
 
 ### Phase 2 — Headless/YOLO mode in Ox
 
-- [ ] Extend `OxBootOptions.cs`:
+- [x] Extend `OxBootOptions.cs`:
   - `bool IsHeadless { get; private init; }` — set by `--headless` flag.
   - `bool IsYolo { get; private init; }` — set by `--yolo` flag. Auto-grants all
     tool permissions without prompting. Meaningless outside headless mode.
@@ -202,13 +202,13 @@ to `src/Ox/` — `OxApp` and all TUI code are untouched.
   - `string? ModelOverride { get; private init; }` — from `--model <provider/model>`.
     Passed to `UrStartupOptions.SelectedModelOverride` so headless runs select the
     eval model without rewriting settings files.
-- [ ] Add `EnvironmentKeyring.cs` in `src/Ur/Configuration/Keyring/` — implements
+- [x] Add `EnvironmentKeyring.cs` in `src/Ur/Configuration/Keyring/` — implements
   `IKeyring`. Reads `UR_API_KEY_{ACCOUNT_UPPER}` env vars (uppercase, hyphens and
   dots replaced with underscores); `SetSecret`/`DeleteSecret` are no-ops. Comment
   explains why: containers are ephemeral, keys come in via env, writes would be lost.
   Registered via `KeyringOverride` in `UrStartupOptions` only when `IsHeadless` is
   true — no effect on the TUI path.
-- [ ] Add `HeadlessRunner.cs` in `src/Ox/`:
+- [x] Add `HeadlessRunner.cs` in `src/Ox/`:
   - Constructor: `UrHost host, IReadOnlyList<string> turns, bool yolo`.
   - `RunAsync(CancellationToken ct)`:
     - Build `TurnCallbacks`: if `yolo`, `RequestPermissionAsync` returns
@@ -222,23 +222,23 @@ to `src/Ox/` — `OxApp` and all TUI code are untouched.
     - Metrics are written automatically by `UrSession.DisposeAsync` — `HeadlessRunner`
       does not collect or write them.
     - Exit 0 on success; 1 on fatal error.
-- [ ] Extend `Program.cs`: after resolving `UrHost`, check
+- [x] Extend `Program.cs`: after resolving `UrHost`, check
   `bootOptions.IsHeadless`. If true, construct and run `HeadlessRunner` and return
   its exit code — skip all TUI initialization (alternate screen, `TerminalInputSource`,
   `OxApp`).
-- [ ] When `IsHeadless`, inject `new EnvironmentKeyring()` via
+- [x] When `IsHeadless`, inject `new EnvironmentKeyring()` via
   `startupOptions.KeyringOverride` and set `SelectedModelOverride` from
   `bootOptions.ModelOverride` in the DI setup block.
-- [ ] Validate in headless mode: if `turns` is empty, print usage to stderr and exit 1.
-- [ ] Unit test: `OxBootOptions.Parse(["--headless", "--yolo", "--turn", "hello"])` →
+- [x] Validate in headless mode: if `turns` is empty, print usage to stderr and exit 1.
+- [x] Unit test: `OxBootOptions.Parse(["--headless", "--yolo", "--turn", "hello"])` →
   all fields set correctly.
-- [ ] Integration test: headless mode with `--fake-provider` scenario → runs to
+- [x] Integration test: headless mode with `--fake-provider` scenario → runs to
   completion, metrics file written alongside session JSONL, contains expected token counts.
 
 ### Phase 3 — EvalShared project
 
-- [ ] Create `evals/EvalShared/EvalShared.csproj`. Target `net10.0`. Add `YamlDotNet`.
-- [ ] `ScenarioDefinition.cs` — record: `Name`, `Description`, `Category`,
+- [x] Create `evals/EvalShared/EvalShared.csproj`. Target `net10.0`. Add `YamlDotNet`.
+- [x] `ScenarioDefinition.cs` — record: `Name`, `Description`, `Category`,
   `Complexity` (enum: `Simple` / `Medium` / `Complex`), `Models` (list of
   `"provider/model"`), `Turns` (list of strings — the sequence of user messages;
   single-turn scenarios use a one-element list), `Repository` (optional
@@ -251,33 +251,33 @@ to `src/Ox/` — `OxApp` and all TUI code are untouched.
   workspace is exactly the repo at that state, failing tests and all. Synthetic
   scenarios specify `workspace_files` — `WorkspaceBuilder` writes those files
   directly. The pinned commit is what makes real-repo scenarios reproducible.
-- [ ] `ValidationRule.cs` — abstract base record. Concrete subtypes:
+- [x] `ValidationRule.cs` — abstract base record. Concrete subtypes:
   - `FileExistsRule { string Path }`
   - `FileNotExistsRule { string Path }`
   - `FileContainsRule { string Path, string Content }`
   - `FileMatchesRule { string Path, string Pattern }` (regex)
   - `CommandSucceedsRule { string Command }` — runs in workspace, asserts exit 0.
   - `CommandOutputContainsRule { string Command, string Output }` — checks stdout.
-- [ ] `ValidationRunner.cs` — lives in `EvalShared` (no Ur dependency). `RunAsync`
+- [x] `ValidationRunner.cs` — lives in `EvalShared` (no Ur dependency). `RunAsync`
   evaluates each rule against the workspace directory. File rules use `System.IO`.
   Command rules spawn `bash -c "{command}"` with CWD = workspace, 15s per-command
   timeout, capture stdout + stderr. Returns `List<ValidationFailure>`.
-- [ ] `EvalResult.cs` — record combining `SessionMetrics` data + validation results:
+- [x] `EvalResult.cs` — record combining `SessionMetrics` data + validation results:
   `ScenarioName`, `Model`, `Passed` (bool), `Turns` (int), `InputTokens` (long),
   `OutputTokens` (long), `ToolCallsTotal` (int), `ToolCallsErrored` (int),
   `DurationSeconds` (double), `ValidationFailures` (list of `{ RuleType, Message }`),
   `Error` (string?). This is EvalRunner's view of a completed run.
-- [ ] `ScenarioLoader.cs` — deserializes YAML to `ScenarioDefinition` using YamlDotNet
+- [x] `ScenarioLoader.cs` — deserializes YAML to `ScenarioDefinition` using YamlDotNet
   with `UnderscoredNamingConvention`. The `type` field on each validation rule entry
   discriminates the concrete subtype.
-- [ ] Unit tests: `ScenarioLoader` round-trips YAML; `ValidationRunner` evaluates each
+- [x] Unit tests: `ScenarioLoader` round-trips YAML; `ValidationRunner` evaluates each
   rule type against a temp directory.
 
 ### Phase 4 — EvalRunner project
 
-- [ ] Create `evals/EvalRunner/EvalRunner.csproj` referencing `EvalShared`. Target
+- [x] Create `evals/EvalRunner/EvalRunner.csproj` referencing `EvalShared`. Target
   `net10.0`. Add `Microsoft.Data.Sqlite` and `Dapper`.
-- [ ] `ResultStore.cs` — creates SQLite DB on first open:
+- [x] `ResultStore.cs` — creates SQLite DB on first open:
   ```sql
   CREATE TABLE IF NOT EXISTS eval_runs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -305,12 +305,12 @@ to `src/Ox/` — `OxApp` and all TUI code are untouched.
   ```
   Methods: `SaveRunAsync(EvalResult, string sessionJsonl, string metricsJson)`,
   `LoadRecentAsync(int days)`.
-- [ ] `WorkspaceBuilder.cs` — creates a temp dir under `/tmp/ox-eval-XXXX`. If
+- [x] `WorkspaceBuilder.cs` — creates a temp dir under `/tmp/ox-eval-XXXX`. If
   `scenario.Repository` is set, runs `git clone --no-checkout {url} . && git checkout
   {commit}` to populate the workspace at the exact pinned state. If `Repository` is
   absent, writes `WorkspaceFiles` directly. EvalRunner deletes the temp dir after
   the container exits.
-- [ ] `ContainerRunner.cs` — builds and runs a `podman run` command:
+- [x] `ContainerRunner.cs` — builds and runs a `podman run` command:
   - Mounts: workspace → `/workspace` (rw), `providers.json` → `/eval/providers.json`
     (ro), scenario YAML → `/eval/scenario.yaml` (ro).
   - Env vars: all `UR_API_KEY_*` vars from the host process environment.
@@ -323,10 +323,10 @@ to `src/Ox/` — `OxApp` and all TUI code are untouched.
     metrics file indicates a crash (`Error` is non-null), skip `ValidationRunner` and
     mark the run failed — the workspace state may be partial and running validation
     against it would produce misleading failures.
-- [ ] `ReportGenerator.cs` — reads recent runs from `ResultStore`, generates a Markdown
+- [x] `ReportGenerator.cs` — reads recent runs from `ResultStore`, generates a Markdown
   table grouped by scenario × model: pass rate, avg turns, avg tokens (in/out), avg
   tool error rate, avg duration. Writes to `evals/results/report-{date}.md`.
-- [ ] `Program.cs` — CLI flags:
+- [x] `Program.cs` — CLI flags:
   - `--scenarios <dir>` (default `evals/scenarios/`)
   - `--complexity <simple|medium|complex>` (filter by complexity tier)
   - `--filter <glob>` (filter by scenario name)
@@ -341,7 +341,7 @@ to `src/Ox/` — `OxApp` and all TUI code are untouched.
 
 ### Phase 5 — Container infrastructure
 
-- [ ] `evals/Containerfile` — multi-stage build:
+- [x] `evals/Containerfile` — multi-stage build:
   - Stage 1 (`mcr.microsoft.com/dotnet/sdk:10.0`): `dotnet publish src/Ox` as
     linux-x64 self-contained binary.
   - Stage 2 (`mcr.microsoft.com/dotnet/runtime-deps:10.0`): copy published binary.
@@ -353,7 +353,7 @@ to `src/Ox/` — `OxApp` and all TUI code are untouched.
     `WORKDIR /workspace`. `ENTRYPOINT ["ox"]`.
   - Building this way means `make evals-build` does not need a pre-published binary.
     Layer caching means rebuilds are fast when only non-Ox files change.
-- [ ] `Makefile` additions:
+- [x] `Makefile` additions:
   ```makefile
   evals-build:
   	podman build -f evals/Containerfile -t ox-eval .
@@ -364,7 +364,7 @@ to `src/Ox/` — `OxApp` and all TUI code are untouched.
   evals-run-quick: evals-build
   	dotnet run --project evals/EvalRunner -- --scenarios evals/scenarios/ --complexity simple
   ```
-- [ ] Add `evals/results/` to `.gitignore`. Add `evals/results/.gitkeep` so the
+- [x] Add `evals/results/` to `.gitignore`. Add `evals/results/.gitkeep` so the
   directory exists on checkout.
 
 ### Phase 6 — Initial scenario library
@@ -404,22 +404,22 @@ timeout_seconds: 300
 
 **Simple** — contained fix, 2 turns, one module:
 
-- [ ] `nodatime-localtime-seconds.yaml` — nodatime/nodatime #807. C#. `LocalTime`
+- [x] `nodatime-localtime-seconds.yaml` — nodatime/nodatime #807. C#. `LocalTime`
   constructor silently wraps seconds ≥ 60 instead of throwing. Before:
   `c323a3b2f92d937c4fe81f6d33a43562b4c6d49b`. Fix: `2d48b2998434d8c4fc478a923f7f5281a6d5bfe2`.
   Validate: `dotnet test src/NodaTime.Test`.
-- [ ] `sinatra-content-type-integer.yaml` — sinatra/sinatra #2077. Ruby.
+- [x] `sinatra-content-type-integer.yaml` — sinatra/sinatra #2077. Ruby.
   `content_type` crashes when a param value is an integer. Before:
   `7b50a1bbb5324838908dfaa00ec53ad322673a29`. Fix: `c4b7c04e6d23ef8e17404d64cc731bece268acea`.
   Validate: `bundle exec rake test`.
-- [ ] `rack-nil-accept-header.yaml` — rack/rack #2225. Ruby. Blank `Accept` header
+- [x] `rack-nil-accept-header.yaml` — rack/rack #2225. Ruby. Blank `Accept` header
   raises `NoMethodError`. Before: `39a53608ed37c8c75479393eef024ca7b208c8f1`. Fix:
   `7222c0a789550540e70c126664f8424923c10808`. Validate: `bundle exec rspec`.
-- [ ] `gh-release-limit-zero.yaml` — cli/cli #13078. Go. `gh release list --limit 0`
+- [x] `gh-release-limit-zero.yaml` — cli/cli #13078. Go. `gh release list --limit 0`
   loops infinitely. Before: `5d3c2ba5691f4cb8388710c578eeeadf216eec96`. Fix:
   `d0558fcbaad794c343bdfd3efd75d13777c2d42a`. Validate:
   `go test ./pkg/cmd/release/list/...`.
-- [ ] `bubbletea-init-panic-deadlock.yaml` — charmbracelet/bubbletea #924. Go. Panic
+- [x] `bubbletea-init-panic-deadlock.yaml` — charmbracelet/bubbletea #924. Go. Panic
   in `Init()` deadlocks instead of shutting down cleanly. Before:
   `6b98c9ced38bd1f5dbd59bffea58ae0c53c4dbee`. Fix:
   `1c6e74daab28ebb6985f8ff480d61117d6da3fba`. Validate: `go test ./...`.
@@ -427,23 +427,23 @@ timeout_seconds: 300
 **Medium** — requires navigating multiple files or understanding a subtle interaction,
 2–3 turns, 3 models (add `zai-coding/glm-5-turbo`):
 
-- [ ] `click-semver-default.yaml` — pallets/click #3298. Python. `semver.Version`
+- [x] `click-semver-default.yaml` — pallets/click #3298. Python. `semver.Version`
   as option default crashes help text generation. Before:
   `04ef3a6f473deb2499721a8d11f92a7d2c0912f2`. Fix:
   `1458800409ed12076f18451889b0857db36aa522`. Validate: `pytest tests/test_options.py`.
-- [ ] `requests-proxy-auth-stripped.yaml` — psf/requests #5888. Python. Manually set
+- [x] `requests-proxy-auth-stripped.yaml` — psf/requests #5888. Python. Manually set
   `Proxy-Authorization` header stripped by `rebuild_proxies()`. Before:
   `590350f8d094c216051510ed1dd18fe871b53b72`. Fix:
   `99b3b492418d0751ca960178d274f89805095e4c`. Validate: `pytest tests/test_requests.py`.
-- [ ] `attrs-cached-property-slots.yaml` — python-attrs/attrs #1230. Python.
+- [x] `attrs-cached-property-slots.yaml` — python-attrs/attrs #1230. Python.
   `AttributeError` inside `cached_property` swallowed on `slots=True` class. Before:
   `82a14627fddbd0b2d802fbc574fa3b1ef010a801`. Fix:
   `88e2896ca9351cd48711bd320571a832ae122cd5`. Validate: `pytest tests/test_slots.py`.
-- [ ] `attrs-optional-pipe.yaml` — python-attrs/attrs #1348. Python.
+- [x] `attrs-optional-pipe.yaml` — python-attrs/attrs #1348. Python.
   `converters.optional(converters.pipe(...))` raises because `optional` doesn't accept
   `Converter` instances. Before: `ee0f19b696c60064c58cdc08b3265aef56d49ff8`. Fix:
   `e21793e90a25c7ea47a9c0369150067cc8322de0`. Validate: `pytest tests/test_converters.py`.
-- [ ] `fastify-uint8array-view.yaml` — fastify/fastify #5118. JavaScript. `reply.send`
+- [x] `fastify-uint8array-view.yaml` — fastify/fastify #5118. JavaScript. `reply.send`
   with a `Uint8Array` view sends the whole `ArrayBuffer` instead of just the view's
   bytes. Before: `9b8a7825dc033887d293549e40284284bf27c5a5`. Fix:
   `bc5df037c51ee0e414654a7285342a16207293e0`. Validate: `npm test`.
@@ -451,25 +451,25 @@ timeout_seconds: 300
 **Complex** — cross-module, algorithmic, or macro internals; 3–4 turns; 3 models.
 `TimeoutSeconds: 600`.
 
-- [ ] `ripgrep-alternation-regression.yaml` — BurntSushi/ripgrep #2884. Rust.
+- [x] `ripgrep-alternation-regression.yaml` — BurntSushi/ripgrep #2884. Rust.
   Case-insensitive alternation patterns produce false negatives due to a regression in
   inner literal extraction. Before: `6c5108ed17987531644518fac8c1659b0b202611`. Fix:
   `9d738ad0c009e6632d75fa3d36051e5ae7f7cce6`. Validate:
   `cargo test -p regex`.
-- [ ] `serde-flatten-enum-variants.yaml` — serde-rs/serde #2565. Rust.
+- [x] `serde-flatten-enum-variants.yaml` — serde-rs/serde #2565. Rust.
   `#[serde(flatten)]` in one enum variant propagates `has_flatten` to all variants.
   Before: `9b868ef831c95f50dd4bde51a7eb52e3b9ee265a`. Fix:
   `fc55ac70d34221b38672b1583e496011fbae92aa`. Validate: `cargo test -p serde_derive`.
-- [ ] `clap-bash-completion-double-underscore.yaml` — clap-rs/clap #6339. Rust. Bash
+- [x] `clap-bash-completion-double-underscore.yaml` — clap-rs/clap #6339. Rust. Bash
   completion panics when a subcommand name contains `__`. Before:
   `ddc008bbbc1924fbda5d6f2c66bcf4d165984977`. Fix:
   `f88c94e53d40c2427450ed65ec025951906eb1d4`. Validate: `cargo test -p clap_complete`.
-- [ ] `effect-stream-decode-text.yaml` — Effect-TS/effect #6039. TypeScript.
+- [x] `effect-stream-decode-text.yaml` — Effect-TS/effect #6039. TypeScript.
   `Stream.decodeText` corrupts multi-byte characters split across chunks. Before:
   `904e055143ad74b1e4cd25429f44e7a3e86db5dc`. Fix:
   `a8c436f7004cc2a8ce2daec589ea7256b91c324f`. Validate: `pnpm test` in
   `packages/effect`.
-- [ ] `effect-match-tag-nullish.yaml` — Effect-TS/effect #6017. TypeScript.
+- [x] `effect-match-tag-nullish.yaml` — Effect-TS/effect #6017. TypeScript.
   `Match.tag` crashes when the union includes `null` or `undefined`. Before:
   `7b8165f45779380fea8ac8e09badef898b63eb41`. Fix:
   `e71889f35b081d13b7da2c04d2f81d6933056b49`. Validate: `pnpm test`.

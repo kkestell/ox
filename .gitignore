@@ -30,3 +30,7 @@ inspection-results.txt
 # Published binaries
 publish/
 docs/destination-void.txt
+
+# Eval results (SQLite DB, reports, temp artifacts)
+evals/results/
+!evals/results/.gitkeep

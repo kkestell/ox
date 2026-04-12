@@ -243,4 +243,66 @@ public sealed class SessionStoreTests : IDisposable
 
         Assert.Equal(3, messages.Count);
     }
+
+    // ─── Metrics persistence ──────────────────────────────────────────
+
+    [Fact]
+    public async Task WriteMetricsAsync_CreatesJsonFile_AlongsideSessionJsonl()
+    {
+        var store = new SessionStore(SessionsDir);
+        var session = store.Create();
+
+        // Write a user message first so the session file exists.
+        await store.AppendAsync(session, new ChatMessage(ChatRole.User, "test"));
+
+        var metrics = new SessionMetrics
+        {
+            Turns = 3,
+            InputTokens = 12400,
+            OutputTokens = 980,
+            ToolCallsTotal = 7,
+            ToolCallsErrored = 1,
+            DurationSeconds = 34.2,
+            Error = null,
+        };
+
+        await store.WriteMetricsAsync(session, metrics);
+
+        var metricsPath = Path.Combine(SessionsDir, $"{session.Id}.metrics.json");
+        Assert.True(File.Exists(metricsPath));
+
+        var json = await File.ReadAllTextAsync(metricsPath);
+        Assert.Contains("\"turns\": 3", json);
+        Assert.Contains("\"input_tokens\": 12400", json);
+        Assert.Contains("\"output_tokens\": 980", json);
+        Assert.Contains("\"tool_calls_total\": 7", json);
+        Assert.Contains("\"tool_calls_errored\": 1", json);
+        Assert.Contains("\"duration_seconds\": 34.2", json);
+        Assert.Contains("\"error\": null", json);
+    }
+
+    [Fact]
+    public async Task WriteMetricsAsync_WithError_IncludesErrorString()
+    {
+        var store = new SessionStore(SessionsDir);
+        var session = store.Create();
+        await store.AppendAsync(session, new ChatMessage(ChatRole.User, "test"));
+
+        var metrics = new SessionMetrics
+        {
+            Turns = 1,
+            InputTokens = 500,
+            OutputTokens = 50,
+            ToolCallsTotal = 0,
+            ToolCallsErrored = 0,
+            DurationSeconds = 2.5,
+            Error = "API error: rate limit exceeded",
+        };
+
+        await store.WriteMetricsAsync(session, metrics);
+
+        var metricsPath = Path.Combine(SessionsDir, $"{session.Id}.metrics.json");
+        var json = await File.ReadAllTextAsync(metricsPath);
+        Assert.Contains("\"error\": \"API error: rate limit exceeded\"", json);
+    }
 }

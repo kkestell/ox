@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
@@ -27,7 +28,7 @@ namespace Ur.Sessions;
 /// are written, and a crash loses at most the messages produced after the last
 /// flush point.
 /// </summary>
-public sealed class UrSession
+public sealed class UrSession : IAsyncDisposable
 {
     private readonly UrConfiguration _configuration;
     private readonly SkillRegistry _skills;
@@ -46,6 +47,16 @@ public sealed class UrSession
     private readonly PermissionGrantStore _grantStore;
     private readonly ILogger _logger;
     private string? _activeModelId;
+
+    // Metrics accumulation — tracked across all turns in this session.
+    // Written to {sessionId}.metrics.json alongside the session JSONL on dispose.
+    private readonly Stopwatch _sessionTimer = Stopwatch.StartNew();
+    private int _turnCount;
+    private long _totalInputTokens;
+    private long _totalOutputTokens;
+    private int _toolCallsTotal;
+    private int _toolCallsErrored;
+    private string? _fatalError;
 
     /// <summary>
     /// Creates a session with explicit dependencies instead of a UrHost reference.
@@ -300,10 +311,28 @@ public sealed class UrSession
         {
             persistedCount = await PersistPendingMessagesAsync(persistedCount, ct);
 
-            // Update the cached context fill level so callers (e.g. session resume)
-            // can read it without re-scanning messages.
-            if (loopEvent is AgentLoop.TurnCompleted { InputTokens: { } tokens })
-                LastInputTokens = tokens;
+            // Accumulate session-level metrics from events produced by the agent loop.
+            // These counters feed the metrics JSON written on session close.
+            switch (loopEvent)
+            {
+                case AgentLoop.ToolCallStarted:
+                    _toolCallsTotal++;
+                    break;
+                case AgentLoop.ToolCallCompleted { IsError: true }:
+                    _toolCallsErrored++;
+                    break;
+                case AgentLoop.TurnCompleted tc:
+                    _turnCount++;
+                    _totalInputTokens += tc.InputTokens ?? 0;
+                    _totalOutputTokens += tc.OutputTokens ?? 0;
+                    // Update the cached context fill level so callers (e.g. session resume)
+                    // can read it without re-scanning messages.
+                    LastInputTokens = tc.InputTokens;
+                    break;
+                case AgentLoop.TurnError { IsFatal: true } err:
+                    _fatalError ??= err.Message;
+                    break;
+            }
 
             yield return loopEvent;
         }
@@ -546,5 +575,41 @@ public sealed class UrSession
         }
 
         return null;
+    }
+
+    /// <summary>
+    /// Writes accumulated session metrics to a JSON file alongside the session JSONL.
+    /// Called on session close — both TUI (when the app exits) and headless (after
+    /// all turns finish) paths should dispose the session to trigger this.
+    ///
+    /// Metrics are only written if the session was persisted (at least one turn ran).
+    /// If the write fails, the error is logged but not re-thrown — the session is
+    /// already ending and losing metrics is acceptable.
+    /// </summary>
+    public async ValueTask DisposeAsync()
+    {
+        if (!IsPersisted)
+            return;
+
+        _sessionTimer.Stop();
+        var metrics = new SessionMetrics
+        {
+            Turns = _turnCount,
+            InputTokens = _totalInputTokens,
+            OutputTokens = _totalOutputTokens,
+            ToolCallsTotal = _toolCallsTotal,
+            ToolCallsErrored = _toolCallsErrored,
+            DurationSeconds = Math.Round(_sessionTimer.Elapsed.TotalSeconds, 1),
+            Error = _fatalError,
+        };
+
+        try
+        {
+            await _sessions.WriteMetricsAsync(_session, metrics);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to write metrics for session '{SessionId}'", Id);
+        }
     }
 }

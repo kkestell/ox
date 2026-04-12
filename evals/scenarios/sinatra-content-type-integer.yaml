@@ -1,0 +1,17 @@
+name: sinatra-content-type-integer
+complexity: simple
+models:
+  - google/gemini-3.1-flash-lite-preview
+  - zai-coding/glm-4.5-air
+repository:
+  url: https://github.com/sinatra/sinatra
+  commit: 7b50a1bbb5324838908dfaa00ec53ad322673a29
+  fix_commit: c4b7c04e6d23ef8e17404d64cc731bece268acea
+turns:
+  - "The content_type helper crashes when a parameter value is an integer instead of
+     a string. Fix it so integer values are handled gracefully."
+  - "Run the Sinatra test suite to confirm."
+validation_rules:
+  - type: command_succeeds
+    command: bundle exec rake test
+timeout_seconds: 300

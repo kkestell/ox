@@ -1,0 +1,20 @@
+name: effect-stream-decode-text
+complexity: complex
+models:
+  - google/gemini-3.1-flash-lite-preview
+  - zai-coding/glm-4.5-air
+  - zai-coding/glm-5-turbo
+repository:
+  url: https://github.com/Effect-TS/effect
+  commit: 904e055143ad74b1e4cd25429f44e7a3e86db5dc
+  fix_commit: a8c436f7004cc2a8ce2daec589ea7256b91c324f
+turns:
+  - "Stream.decodeText corrupts multi-byte characters that are split across chunks.
+     The TextDecoder isn't preserving state between chunks. Fix the decodeText
+     implementation to handle multi-byte character boundaries correctly."
+  - "Run the effect package tests to confirm."
+  - "Check if other stream encoding/decoding functions have similar chunk boundary issues."
+validation_rules:
+  - type: command_succeeds
+    command: pnpm test
+timeout_seconds: 600

@@ -1,18 +1,20 @@
 using Microsoft.Extensions.DependencyInjection;
 using Te.Input;
+using Ur.Configuration.Keyring;
 using Ur.Hosting;
 using Ur.Providers.Fake;
 
 namespace Ox;
 
 /// <summary>
-/// Entry point for the Ox TUI.
+/// Entry point for the Ox application.
 ///
-/// Handles two phases:
-///   1. CLI argument parsing (--fake-provider, etc.)
-///   2. TUI phase — alternate screen, main loop, clean exit.
-///      First-run configuration (provider / key / model) is handled inside the
-///      TUI by the connect wizard rather than by a pre-TUI plain-console loop.
+/// Handles three phases:
+///   1. CLI argument parsing (--fake-provider, --headless, --yolo, --turn, --model).
+///   2. DI container setup with Ur services.
+///   3. Execution path: headless mode (HeadlessRunner) or TUI mode (OxApp).
+///      Headless mode branches before any TUI initialization — no alternate screen,
+///      no TerminalInputSource, no OxApp.
 /// </summary>
 public static class Program
 {
@@ -21,6 +23,14 @@ public static class Program
     public static async Task<int> Main(string[] args)
     {
         var bootOptions = OxBootOptions.Parse(args);
+
+        // Validate headless mode requirements early, before DI setup.
+        if (bootOptions.IsHeadless && bootOptions.Turns.Count == 0)
+        {
+            await Console.Error.WriteLineAsync(
+                "Error: --headless requires at least one --turn <message> argument.");
+            return 1;
+        }
 
         // Build the DI container with Ur services.
         var services = new ServiceCollection();
@@ -38,6 +48,19 @@ public static class Program
                 WorkspacePath = startupOptions.WorkspacePath,
                 FakeProvider = new FakeProvider(),
                 SelectedModelOverride = $"fake/{scenario}",
+            };
+        }
+
+        // Headless mode uses EnvironmentKeyring (no OS keyring in containers)
+        // and may override the model from the CLI.
+        if (bootOptions.IsHeadless)
+        {
+            startupOptions = new UrStartupOptions
+            {
+                WorkspacePath = startupOptions.WorkspacePath,
+                FakeProvider = startupOptions.FakeProvider,
+                KeyringOverride = new EnvironmentKeyring(),
+                SelectedModelOverride = bootOptions.ModelOverride ?? startupOptions.SelectedModelOverride,
             };
         }
 
@@ -63,6 +86,22 @@ public static class Program
         using var sp = services.BuildServiceProvider();
         var host = sp.GetRequiredService<UrHost>();
 
+        // ── Headless path ───────────────────────────────────────────────
+        // Branch before any TUI initialization — no alternate screen, no input
+        // source, no OxApp. HeadlessRunner drives the agent loop from CLI args.
+        if (bootOptions.IsHeadless)
+        {
+            using var cts = new CancellationTokenSource();
+            Console.CancelKeyPress += (_, e) =>
+            {
+                e.Cancel = true;
+                cts.Cancel();
+            };
+
+            var runner = new HeadlessRunner(host, bootOptions.Turns, bootOptions.IsYolo);
+            return await runner.RunAsync(cts.Token);
+        }
+
         // ── TUI phase ───────────────────────────────────────────────────
         // First-run configuration is now handled inside the TUI by the connect
         // wizard — OxApp opens it automatically when no model is configured.
@@ -87,7 +126,7 @@ public static class Program
             HideCursor();
 
             var (width, height) = GetTerminalSize();
-            var app = new OxApp(host, coordinator, width, height, startupOptions.WorkspacePath);
+            using var app = new OxApp(host, coordinator, width, height, startupOptions.WorkspacePath);
             await app.RunAsync();
         }
         finally
