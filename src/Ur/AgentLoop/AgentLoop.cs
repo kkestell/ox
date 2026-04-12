@@ -148,13 +148,16 @@ internal sealed class AgentLoop(IChatClient client, ToolRegistry tools, Workspac
     /// We don't add the system message to `messages` because that list is persisted
     /// to disk by UrSession — the system prompt is transient and rebuilt each turn.
     ///
-    /// Two projection steps are applied before sending:
-    ///   1. UsageContent items are stripped — they're persisted in the JSONL for
-    ///      session-reload context fill display, but some providers (e.g. Gemini)
-    ///      can't map them to native request parts.
-    ///   2. Tool results older than <paramref name="turnsToKeep"/> assistant turns
+    /// Three projection steps are applied before sending:
+    ///   1. Tool results older than <paramref name="turnsToKeep"/> assistant turns
     ///      are replaced with "[Tool result cleared]" via <see cref="ToolResultClearer"/>
     ///      to reclaim context window space without mutating the persisted history.
+    ///   2. Compaction summaries (detected by <see cref="Autocompactor.IsCompactionSummary"/>)
+    ///      are re-roled from their stored <c>ChatRole.User</c> to <c>ChatRole.System</c>.
+    ///      The summary is structured system context, not something the user said.
+    ///   3. UsageContent items are stripped — they're persisted in the JSONL for
+    ///      session-reload context fill display, but some providers (e.g. Gemini)
+    ///      can't map them to native request parts.
     /// </summary>
     private static IEnumerable<ChatMessage> BuildLlmMessages(
         string? systemPrompt,
@@ -164,12 +167,24 @@ internal sealed class AgentLoop(IChatClient client, ToolRegistry tools, Workspac
         if (systemPrompt is not null)
             yield return new ChatMessage(ChatRole.System, systemPrompt);
 
-        // Pipeline: clear old tool results first, then strip UsageContent.
+        // Pipeline: clear old tool results first, then apply role projection and strip UsageContent.
         // ToolResultClearer returns a new sequence — the original list is untouched.
         var projected = ToolResultClearer.ClearOldToolResults(messages, turnsToKeep);
 
         foreach (var msg in projected)
         {
+            // Compaction summaries are stored as User messages but should reach the
+            // LLM as System — the summary is structured context, not user speech.
+            // We project the role here rather than changing the stored role so the
+            // persisted conversation format stays consistent (BuildLlmMessages is the
+            // designated projection layer between storage and the LLM).
+            if (Autocompactor.IsCompactionSummary(msg))
+            {
+                var contents = msg.Contents.Where(c => c is not UsageContent).ToList();
+                yield return new ChatMessage(ChatRole.System, contents);
+                continue;
+            }
+
             // Fast path: most messages have no UsageContent.
             if (!msg.Contents.Any(c => c is UsageContent))
             {

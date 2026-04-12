@@ -34,6 +34,10 @@ public sealed class AutocompactorTests
         Assert.StartsWith(Autocompactor.SummaryOpenTag, messages[0].Text!);
         Assert.Contains("This is the summary.", messages[0].Text!);
         Assert.EndsWith(Autocompactor.SummaryCloseTag, messages[0].Text!);
+
+        // Stored role stays User — the System projection happens in BuildLlmMessages,
+        // not in the compactor. BuildLlmMessages is private; that projection is validated
+        // manually via boo (see plan validation section).
         Assert.Equal(ChatRole.User, messages[0].Role);
 
         // Total message count should be smaller than before (summary + preserved tail).
@@ -128,6 +132,45 @@ public sealed class AutocompactorTests
         // The last user and assistant messages should still be present.
         Assert.Contains(messages, m => m.Text == lastUserMsg.Text);
         Assert.Contains(messages, m => m.Text == lastAssistantMsg.Text);
+    }
+
+    // ─── IsCompactionSummary detection ──────────────────────────────
+
+    [Fact]
+    public void IsCompactionSummary_TaggedMessage_ReturnsTrue()
+    {
+        var msg = new ChatMessage(ChatRole.User,
+            $"{Autocompactor.SummaryOpenTag}\nSome summary.\n{Autocompactor.SummaryCloseTag}");
+
+        Assert.True(Autocompactor.IsCompactionSummary(msg));
+    }
+
+    [Fact]
+    public void IsCompactionSummary_PlainUserMessage_ReturnsFalse()
+    {
+        var msg = new ChatMessage(ChatRole.User, "Hello, how are you?");
+
+        Assert.False(Autocompactor.IsCompactionSummary(msg));
+    }
+
+    [Fact]
+    public void IsCompactionSummary_NoTextContent_ReturnsFalse()
+    {
+        // A tool result message has no TextContent at all.
+        var msg = new ChatMessage(ChatRole.Tool,
+            [new FunctionResultContent("call-1", "some result")]);
+
+        Assert.False(Autocompactor.IsCompactionSummary(msg));
+    }
+
+    [Fact]
+    public void IsCompactionSummary_TagInLaterTextContent_ReturnsTrue()
+    {
+        // If the tag appears in any TextContent item (not just the first), detect it.
+        var msg = new ChatMessage(ChatRole.User,
+            [new TextContent("preamble"), new TextContent($"{Autocompactor.SummaryOpenTag}\nstuff\n{Autocompactor.SummaryCloseTag}")]);
+
+        Assert.True(Autocompactor.IsCompactionSummary(msg));
     }
 
     // ─── Helpers ──────────────────────────────────────────────────────

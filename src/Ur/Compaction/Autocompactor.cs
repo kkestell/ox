@@ -42,6 +42,17 @@ internal static class Autocompactor
     internal const string SummaryCloseTag = "</context-summary>";
 
     /// <summary>
+    /// Returns true if <paramref name="message"/> is a compaction summary produced
+    /// by a previous <see cref="TryCompactAsync"/> call. Detection is based on the
+    /// <see cref="SummaryOpenTag"/> prefix — the same tag the compactor wraps around
+    /// its output. Used by <c>BuildLlmMessages</c> to project the summary as a
+    /// System message at the LLM-call boundary.
+    /// </summary>
+    internal static bool IsCompactionSummary(ChatMessage message) =>
+        message.Contents.OfType<TextContent>()
+            .Any(tc => tc.Text.StartsWith(SummaryOpenTag, StringComparison.Ordinal));
+
+    /// <summary>
     /// Attempts to compact the conversation if the context window fill level
     /// exceeds the threshold. When compaction occurs, older messages in
     /// <paramref name="messages"/> are replaced with a single summary message
@@ -114,12 +125,11 @@ internal static class Autocompactor
         // from the end, counting messages that have substantive content.
         var cutPoint = FindCutPoint(messages);
 
-        // Build the summary message. User role is chosen deliberately:
-        //   (a) System role would conflict with the transient system prompt
-        //       that BuildLlmMessages already prepends each turn.
-        //   (b) M.E.AI's ChatRole has no custom/summary variant.
-        //   (c) The <context-summary> tag makes it machine-recognizable for
-        //       future compaction passes and session replay tools.
+        // Build the summary message. Stored as User role, but BuildLlmMessages
+        // projects it as System at send time via IsCompactionSummary detection.
+        // The persisted role is cosmetic — it doesn't reach the LLM. The
+        // <context-summary> tag makes it machine-recognizable for future
+        // compaction passes, session replay tools, and the role projection.
         var summaryMessage = new ChatMessage(ChatRole.User,
             $"{SummaryOpenTag}\n{summaryText}\n{SummaryCloseTag}");
 
