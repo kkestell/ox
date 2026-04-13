@@ -65,4 +65,32 @@ public sealed class ProviderRegistryTests
         Assert.Contains("openrouter", registry.ProviderNames);
         Assert.Contains("openai", registry.ProviderNames);
     }
+
+    [Fact]
+    public void CreateChatClient_UnknownProvider_ThrowsWithKnownProviderList()
+    {
+        var registry = new ProviderRegistry();
+        registry.Register(new OpenRouterProvider(new TestKeyring()));
+
+        var ex = Assert.Throws<InvalidOperationException>(() =>
+            registry.CreateChatClient("bogus/model-x"));
+
+        // The error surface must name the missing provider and list the known
+        // ones so a typo is immediately actionable for the user.
+        Assert.Contains("bogus", ex.Message);
+        Assert.Contains("openrouter", ex.Message);
+    }
+
+    [Fact]
+    public void ConfigureChatOptions_UnknownProvider_ThrowsWithKnownProviderList()
+    {
+        var registry = new ProviderRegistry();
+        registry.Register(new OpenRouterProvider(new TestKeyring()));
+
+        var ex = Assert.Throws<InvalidOperationException>(() =>
+            registry.ConfigureChatOptions("bogus/model-x", new Microsoft.Extensions.AI.ChatOptions()));
+
+        Assert.Contains("bogus", ex.Message);
+        Assert.Contains("openrouter", ex.Message);
+    }
 }

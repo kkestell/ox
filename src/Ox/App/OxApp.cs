@@ -1,4 +1,8 @@
-using System.Collections.Concurrent;
+using Ox.Agent.Hosting;
+using Ox.Agent.Permissions;
+using Ox.Agent.Sessions;
+using Ox.Agent.Skills;
+using Ox.App.Commands;
 using Ox.App.Configuration;
 using Ox.App.Connect;
 using Ox.App.Conversation;
@@ -6,79 +10,63 @@ using Ox.App.Input;
 using Ox.App.Permission;
 using Ox.App.Views;
 using Ox.Terminal.Input;
-using Ox.Agent.Hosting;
-using Ox.Terminal.Rendering;
-using Ox.Agent.AgentLoop;
-using Ox.Agent.Permissions;
 
 namespace Ox.App;
 
 /// <summary>
 /// Main application loop for the Ox TUI.
 ///
+/// The coordinator. After the Wave-3 refactor, OxApp runs the frame loop and
+/// wires together focused collaborators — <see cref="InputRouter"/>,
+/// <see cref="TurnController"/>, <see cref="AgentEventApplier"/>,
+/// <see cref="PermissionPromptBridge"/>, <see cref="CommandDispatcher"/>, and
+/// <see cref="RenderCompositor"/> — so input handling, turn lifecycle, event
+/// application, permission prompting, slash-command dispatch, and frame
+/// composition each live in their own class.
+///
 /// Runs a single-threaded render loop that wakes on three signals: stdin
 /// input (via Te's InputCoordinator), Ur agent events (via ConcurrentQueue),
 /// and a periodic tick (for the throbber animation). All state mutation
 /// happens on the main thread when queues are drained — background threads
 /// only enqueue.
-///
-/// The permission prompt bridge uses a TaskCompletionSource to block the Ur
-/// turn task until the user responds, then completes the TCS from the main
-/// thread.
 /// </summary>
 public sealed class OxApp : IDisposable
 {
+    // External inputs / hosts.
     private readonly InputCoordinator _coordinator;
-    private readonly ConsoleBuffer _buffer;
+    private readonly OxHost _host;
+    private readonly ModelCatalog _oxConfig;
+
+    // Views the coordinator mutates directly (adds error/user-message/cancel
+    // entries after submit). Kept on OxApp rather than a collaborator because
+    // the applier already owns the reference and both need to agree on it.
     private readonly ConversationView _conversationView = new();
-    private readonly InputAreaView _inputAreaView = new();
-    private readonly PermissionPromptView _permissionPromptView = new();
-    private readonly ConnectWizardController _wizard = new();
-    private readonly ConnectWizardView _wizardView = new();
+
+    // Composer chrome — mutated from input-mode callbacks and surfaced to the
+    // render compositor on each frame.
     private readonly TextEditor _editor = new();
     private readonly Throbber _throbber = new();
     private readonly Autocomplete _autocomplete;
+    private readonly ConnectWizardController _wizard = new();
 
-    // Ur event queue — background turn task enqueues, main loop drains.
-    private readonly ConcurrentQueue<AgentLoopEvent> _eventQueue = new();
+    // Collaborators — each owns a slice of what used to be OxApp's god-class state.
+    private readonly RenderCompositor _renderCompositor;
+    private readonly InputRouter _inputRouter;
+    private readonly TurnController _turnController;
+    private readonly AgentEventApplier _agentEventApplier;
+    private readonly PermissionPromptBridge _permissionBridge;
+    private readonly CommandDispatcher _commandDispatcher;
+
+    // Wake signal for the main loop. Shared with TurnController and the
+    // permission bridge via a wake-action callback so those collaborators
+    // don't have to reference SemaphoreSlim themselves.
     private readonly SemaphoreSlim _wakeSignal = new(0);
 
-    // Host reference — used for creating sessions and accessing library-level config.
-    private readonly OxHost _host;
+    // Turn state owned by the applier. Held here so Render() can read the
+    // currently active model and context-fill percentage for the status line.
+    private readonly TurnState _turnState = new();
 
-    // Application-level configuration — model catalog, context windows, provider metadata.
-    private readonly ModelCatalog _oxConfig;
-
-    // Command registry — retained here so SubmitInput can check whether an unknown
-    // built-in is a user-invocable skill and fall through to StartTurn accordingly.
-    private readonly Ox.Agent.Skills.CommandRegistry _commandRegistry;
-
-    // Valid model IDs from providers.json — cached once at construction for both
-    // argument completion and input-time validation of the /model command.
-    private readonly IReadOnlyList<string> _validModelIds;
-
-    // Context window cache — keyed on model ID so we only resolve once per model.
-    // Populated lazily on the first TurnCompleted for each model. All access is on
-    // the main thread (resolved synchronously during event drain).
-    private readonly Dictionary<string, int?> _contextWindowCache = new(StringComparer.OrdinalIgnoreCase);
-
-    // Turn state.
-    private Ox.Agent.Sessions.OxSession? _session;
-    private CancellationTokenSource? _turnCts;
-    private bool _turnActive;
-    private string? _queuedInput;
-    private AssistantTextEntry? _currentAssistantEntry;
-    // Tracks the active ThinkingEntry for the current turn. Nulled at every boundary
-    // where _currentAssistantEntry is also nulled so thinking from one turn never
-    // bleeds into the next.
-    private ThinkingEntry? _currentThinkingEntry;
-    private int? _contextPercent;
-    private string _workspacePath;
-
-    // Permission prompt bridge.
-    private TaskCompletionSource<PermissionResponse>? _permissionTcs;
-
-    // Exit flag.
+    private OxSession? _session;
     private bool _exit;
 
     public OxApp(OxHost host, ModelCatalog oxConfig, InputCoordinator coordinator, int width, int height, string workspacePath)
@@ -86,40 +74,59 @@ public sealed class OxApp : IDisposable
         _host = host;
         _oxConfig = oxConfig;
         _coordinator = coordinator;
-        _buffer = new ConsoleBuffer(width, height);
-        _workspacePath = workspacePath;
-        _permissionPromptView.WorkspacePath = workspacePath;
+        _renderCompositor = new RenderCompositor(width, height, workspacePath, OxThemePalette.Ox.Background);
 
-        // Force an explicit black background for every cell that uses
-        // Color.Default. Without this, empty cells emit SGR 49 ("terminal
-        // default"), which is whatever color the user configured in their
-        // terminal — usually not black.
-        _buffer.DefaultBackgroundOverride = OxThemePalette.Ox.Background;
-
-        // Build autocomplete from the host's command registry.
-        // The argument-completion dictionary maps command names (lowercase) to their
-        // completable argument lists. The engine prefix-matches against these lists
-        // when the input already contains a space (argument phase).
-        _commandRegistry = new Ox.Agent.Skills.CommandRegistry(host.BuiltInCommands, host.Skills);
-        _validModelIds = oxConfig.ListAllModelIds();
+        // Build autocomplete from the host's command registry. The
+        // argument-completion dictionary maps command names (lowercase) to
+        // their completable argument lists. The engine prefix-matches against
+        // these lists when the input already contains a space (argument phase).
+        var commandRegistry = new CommandRegistry(host.BuiltInCommands, host.Skills);
         var argumentCompletions = new Dictionary<string, IReadOnlyList<string>>
         {
-            ["model"] = _validModelIds,
+            ["model"] = oxConfig.ListAllModelIds(),
         };
-        var autocompleteEngine = new AutocompleteEngine(_commandRegistry, argumentCompletions);
-        _autocomplete = new Autocomplete(autocompleteEngine);
+        _autocomplete = new Autocomplete(new AutocompleteEngine(commandRegistry, argumentCompletions));
 
-        // Create session with permission callback.
+        // Wire the collaborators. WakeMainLoop is threaded into both the
+        // turn controller and the permission bridge so each can signal the
+        // UI without depending on the semaphore's concrete type.
+        void WakeMainLoop() => _wakeSignal.Release();
+
+        _permissionBridge = new PermissionPromptBridge(WakeMainLoop) { View = { WorkspacePath = workspacePath } };
+        _turnController = new TurnController(WakeMainLoop);
+        _agentEventApplier = new AgentEventApplier(_conversationView, oxConfig, () => _session?.ActiveModelId);
+        _commandDispatcher = new CommandDispatcher(() => _session, commandRegistry, oxConfig);
+
+        _inputRouter = new InputRouter(new IInputMode[]
+        {
+            // Permission prompt wins over everything else — it's modal.
+            new PermissionInputMode(_permissionBridge),
+            // Connect wizard intercepts input whenever visible.
+            new WizardInputMode(_wizard, AdvanceWizard, () => _exit = true),
+            // Default composer surface.
+            new ChatInputMode(
+                _editor,
+                turnActive: () => _turnController.IsActive,
+                requestExit: () => _exit = true,
+                cancelTurn: CancelTurn,
+                onScreenDumpShortcut: _ => _renderCompositor.CaptureScreenDump(),
+                tryApplyAutocomplete: () => _autocomplete.TryApply(_editor),
+                validateAndTake: TryTakeAndSubmit),
+        });
+
+        // Create session with permission callback. The bridge implements
+        // RequestPermissionAsync so the background turn task blocks on the TCS
+        // until the main loop resolves it from a keystroke.
         var callbacks = new TurnCallbacks
         {
-            RequestPermissionAsync = OnPermissionRequestAsync,
+            RequestPermissionAsync = _permissionBridge.RequestAsync,
         };
         _session = host.CreateSession(callbacks);
 
         // On first run (or when the model is not configured), open the connect
         // wizard immediately so the user can configure a provider without ever
-        // seeing a plain-console prompt. IsRequired=true means Escape exits the
-        // app rather than dismissing back to an un-configured chat screen.
+        // seeing a plain-console prompt. IsRequired=true means Escape exits
+        // the app rather than dismissing back to an un-configured chat screen.
         if (!host.Configuration.Readiness.CanRunTurns)
             _wizard.Start(oxConfig.ListProviders(), required: true);
     }
@@ -129,21 +136,22 @@ public sealed class OxApp : IDisposable
     {
         while (!_exit)
         {
-            // Check for terminal resize.
-            CheckResize();
-
-            // Drain input events from Te's channel.
+            _renderCompositor.CheckResize();
             DrainInput();
-
-            // Drain the Agent layer agent events from the background turn task.
             DrainAgentEvents();
+            _renderCompositor.Render(
+                _conversationView, _permissionBridge, _editor, _autocomplete,
+                _throbber, _wizard,
+                turnActive: _turnController.IsActive,
+                contextPercent: _turnState.ContextPercent,
+                statusModelId: _turnController.IsActive
+                    ? _session?.ActiveModelId
+                    : _host.Configuration.SelectedModelId);
 
-            // Render the frame.
-            Render();
-
-            // Break before blocking if exit was requested during this iteration
-            // (e.g. by Ctrl+C or /quit). Without this check the loop would
-            // hang on the await below, requiring an extra keypress to unblock.
+            // Break before blocking if exit was requested during this
+            // iteration (e.g. by Ctrl+C or /quit). Without this check the
+            // loop would hang on the await below, requiring an extra keypress
+            // to unblock.
             if (_exit) break;
 
             // Wait for the next signal: input, Ur event, or tick.
@@ -151,25 +159,30 @@ public sealed class OxApp : IDisposable
             var wakeReady = _wakeSignal.WaitAsync();
 
             // 1-second tick when turn is active (for throbber animation).
-            var tick = _turnActive
+            var tick = _turnController.IsActive
                 ? Task.Delay(TimeSpan.FromSeconds(1))
                 : Task.Delay(Timeout.Infinite);
 
             await Task.WhenAny(inputReady, wakeReady, tick);
 
-            // Tick the throbber if a turn is active.
-            if (_turnActive)
+            if (_turnController.IsActive)
                 _throbber.Tick();
         }
     }
 
-    private void CheckResize()
+    public void Dispose()
     {
-        var (width, height) = GetTerminalSize();
-        if (width != _buffer.Width || height != _buffer.Height)
-            _buffer.Resize(width, height);
+        // Write session metrics before shutting down. DisposeAsync is cheap
+        // (one file write) so blocking here is acceptable — the TUI is
+        // already exiting.
+        _session?.DisposeAsync().AsTask().GetAwaiter().GetResult();
+        _turnController.Dispose();
+        _wakeSignal.Dispose();
     }
 
+    // Drains stdin events and routes them to either the input router (keys)
+    // or a direct mouse handler (no modal floating panel currently cares
+    // about mouse input, so the router is bypassed).
     private void DrainInput()
     {
         while (_coordinator.Reader.TryRead(out var inputEvent))
@@ -177,256 +190,117 @@ public sealed class OxApp : IDisposable
             switch (inputEvent)
             {
                 case KeyInputEvent keyEvent:
-                    HandleKey(keyEvent.Key);
+                    _inputRouter.HandleKey(keyEvent.Key);
                     break;
                 case MouseInputEvent mouseEvent:
-                    HandleMouse(mouseEvent.Mouse);
+                    // Scroll wheel → manual scroll.
+                    if (mouseEvent.Mouse.HasFlag(MouseFlags.WheeledUp))
+                        _conversationView.ScrollUp(3);
+                    else if (mouseEvent.Mouse.HasFlag(MouseFlags.WheeledDown))
+                        _conversationView.ScrollDown(3);
                     break;
             }
         }
     }
 
-    private void HandleKey(KeyEventArgs args)
+    private void DrainAgentEvents()
     {
-        var keyCode = args.KeyCode;
-        var bare = keyCode.WithoutModifiers();
-
-        // Global shortcuts — always active.
-        if (bare == KeyCode.C && keyCode.HasCtrl())
+        while (_turnController.Events.TryDequeue(out var evt))
         {
-            _exit = true;
-            return;
+            var outcome = _agentEventApplier.Apply(evt, _turnState);
+            if (outcome is DrainOutcome.TurnEnded or DrainOutcome.TurnEndedFatal)
+                OnTurnEnded();
         }
+    }
 
-        // Screen dump shortcuts.
-        if (ScreenDumpWriter.IsDumpShortcut((int)keyCode))
+    // Central place for "a turn just finished" cleanup: stop the throbber,
+    // clear streaming entries, and kick off any input queued while the turn
+    // was running. Also used by CancelTurn after adding the cancellation
+    // entry so the post-turn state is consistent either way.
+    private void OnTurnEnded()
+    {
+        _turnController.MarkEnded();
+        _throbber.Reset();
+        _turnState.ResetStreamingEntries();
+
+        var queued = _turnController.TakeQueuedInput();
+        if (queued is not null)
         {
-            CaptureScreenDump();
-            return;
+            _conversationView.AddEntry(new UserMessageEntry(queued));
+            StartTurn(queued);
         }
+    }
 
-        // If the permission prompt is active, route input there.
-        if (_permissionPromptView.IsActive)
-        {
-            HandlePermissionInput(args);
-            return;
-        }
+    private void CancelTurn()
+    {
+        _turnController.Cancel();
+        _throbber.Reset();
+        _turnState.ResetStreamingEntries();
+        _conversationView.AddEntry(new CancellationEntry());
+    }
 
-        // If the connect wizard is active, it intercepts all input — the main
-        // input area is locked out until the wizard is dismissed or completed.
-        if (_wizard.IsActive)
-        {
-            HandleWizardInput(args);
-            return;
-        }
+    // Validates the current editor text via the command dispatcher, then —
+    // if valid — clears the editor and runs the dispatcher. Called by
+    // ChatInputMode on Enter. Returns the submitted text (or empty string
+    // when validation rejected the line) for future callback uses.
+    private string TryTakeAndSubmit()
+    {
+        var pending = _editor.Text.Trim();
+        if (pending.Length == 0 || !_commandDispatcher.TryValidateForSubmission(pending))
+            return string.Empty;
 
-        // Escape during active turn → cancel.
-        if (bare == KeyCode.Esc && _turnActive)
-        {
-            CancelTurn();
-            return;
-        }
+        _editor.Clear();
 
-        // Ctrl+D with empty buffer → exit.
-        if (bare == KeyCode.D && keyCode.HasCtrl())
+        switch (_commandDispatcher.Dispatch(pending))
         {
-            if (_editor.Text.Length == 0)
+            case CommandOutcome.Exit:
                 _exit = true;
-            return;
-        }
-
-        // Tab → autocomplete.
-        if (bare == KeyCode.Tab)
-        {
-            _autocomplete.TryApply(_editor);
-            return;
-        }
-
-        // Enter → submit (with input-level validation for /model).
-        if (bare == KeyCode.Enter)
-        {
-            // Block submission of /model unless the argument is a recognized
-            // model ID. This ensures ExecuteBuiltInCommand is never called with
-            // an invalid or missing argument — validation belongs at the boundary.
-            var pendingText = _editor.Text.Trim();
-            if (pendingText.StartsWith("/model", StringComparison.OrdinalIgnoreCase))
-            {
-                var parts = pendingText[1..].Split(' ', 2);
-                var arg = parts.Length > 1 ? parts[1].Trim() : "";
-                if (arg.Length == 0 || !_validModelIds.Contains(arg, StringComparer.OrdinalIgnoreCase))
-                    return; // no-op: Enter is blocked until a valid model ID is typed
-            }
-
-            SubmitInput();
-            return;
-        }
-
-        // Text editing keys.
-        switch (bare)
-        {
-            case KeyCode.Backspace:
-                _editor.Backspace();
-                return;
-            case KeyCode.Delete:
-                _editor.Delete();
-                return;
-            case KeyCode.CursorLeft:
-                _editor.MoveLeft();
-                return;
-            case KeyCode.CursorRight:
-                _editor.MoveRight();
-                return;
-            case KeyCode.Home:
-                _editor.Home();
-                return;
-            case KeyCode.End:
-                _editor.End();
-                return;
-        }
-
-        // Printable character insertion.
-        if (args.KeyChar >= ' ' && args.KeyChar != '\0' && !keyCode.HasCtrl() && !keyCode.HasAlt())
-        {
-            _editor.InsertChar(args.KeyChar);
-        }
-    }
-
-    private void HandleMouse(MouseEventArgs args)
-    {
-        // Scroll wheel → manual scroll.
-        if (args.HasFlag(MouseFlags.WheeledUp))
-            _conversationView.ScrollUp(3);
-        else if (args.HasFlag(MouseFlags.WheeledDown))
-            _conversationView.ScrollDown(3);
-    }
-
-    private void HandlePermissionInput(KeyEventArgs args)
-    {
-        var bare = args.KeyCode.WithoutModifiers();
-
-        // Escape, Ctrl+C, or 'n' → deny.
-        if (bare == KeyCode.Esc || (bare == KeyCode.C && args.KeyCode.HasCtrl()) || bare == KeyCode.N)
-        {
-            ResolvePermission(new PermissionResponse(Granted: false, Scope: null));
-            return;
-        }
-
-        // Enter → approve (or submit typed scope).
-        if (bare == KeyCode.Enter)
-        {
-            var input = _permissionPromptView.Editor.Text.Trim().ToLowerInvariant();
-            var request = _permissionPromptView.ActiveRequest!;
-
-            if (input is "n" or "no")
-            {
-                ResolvePermission(new PermissionResponse(Granted: false, Scope: null));
-                return;
-            }
-
-            // Accept both the long scope names and the compact aliases shown in
-            // the prompt so the shorter copy is actually actionable.
-            PermissionScope? scope = input switch
-            {
-                "o" or "once" => PermissionScope.Once,
-                "s" or "session" => PermissionScope.Session,
-                "w" or "ws" or "workspace" => PermissionScope.Workspace,
-                "a" or "always" => PermissionScope.Always,
-                _ => null,
-            };
-
-            // Default: approve with the first available scope.
-            scope ??= request.AllowedScopes.Count > 0 ? request.AllowedScopes[0] : PermissionScope.Once;
-
-            ResolvePermission(new PermissionResponse(Granted: true, Scope: scope));
-            return;
-        }
-
-        // Text editing in the permission prompt.
-        if (bare == KeyCode.Backspace)
-            _permissionPromptView.Editor.Backspace();
-        else if (args.KeyChar >= ' ' && args.KeyChar != '\0' && !args.KeyCode.HasCtrl())
-            _permissionPromptView.Editor.InsertChar(args.KeyChar);
-    }
-
-    private void HandleWizardInput(KeyEventArgs args)
-    {
-        var bare = args.KeyCode.WithoutModifiers();
-
-        // Escape cancels the wizard. When required (first run), cancelling
-        // means there is no config to fall back to, so we exit the app.
-        if (bare == KeyCode.Esc)
-        {
-            _wizard.Cancel();
-            if (_wizard.IsRequired)
-                _exit = true;
-            return;
-        }
-
-        switch (_wizard.CurrentStep)
-        {
-            case WizardStep.SelectProvider:
-            case WizardStep.SelectModel:
-                HandleWizardListInput(bare);
                 break;
 
-            case WizardStep.EnterApiKey:
-                HandleWizardKeyInput(args, bare);
+            case CommandOutcome.OpenWizard:
+                // Required=false: Escape dismisses back to the existing chat
+                // session without exiting the app.
+                _wizard.Start(_oxConfig.ListProviders(), required: false);
+                break;
+
+            case CommandOutcome.Handled handled:
+                if (handled.InvalidatedContextWindow)
+                    _agentEventApplier.InvalidateContextWindowCache();
+                break;
+
+            case CommandOutcome.Unknown unknown:
+                _conversationView.AddEntry(new ErrorEntry($"Unknown command: {unknown.Name}"));
+                break;
+
+            case CommandOutcome.StartTurn st:
+                _conversationView.AddEntry(new UserMessageEntry(st.Text));
+                if (_turnController.IsActive)
+                    _turnController.QueueWhileActive(st.Text);
+                else
+                    StartTurn(st.Text);
                 break;
         }
+
+        return pending;
     }
 
-    private void HandleWizardListInput(KeyCode bare)
+    private void StartTurn(string input)
     {
-        switch (bare)
-        {
-            case KeyCode.CursorUp:
-                _wizard.NavigateUp();
-                break;
+        if (_session is null) return;
 
-            case KeyCode.CursorDown:
-                _wizard.NavigateDown();
-                break;
-
-            case KeyCode.Enter:
-                AdvanceWizard();
-                break;
-        }
-    }
-
-    private void HandleWizardKeyInput(KeyEventArgs args, KeyCode bare)
-    {
-        if (bare == KeyCode.Enter)
-        {
-            _wizard.TryConfirmApiKey();
-            return;
-        }
-
-        if (bare == KeyCode.Backspace)
-        {
-            _wizard.BackspaceApiKey();
-            return;
-        }
-
-        if (bare == KeyCode.Delete)
-        {
-            _wizard.DeleteApiKey();
-            return;
-        }
-
-        if (bare == KeyCode.CursorLeft) { _wizard.KeyEditor.MoveLeft(); return; }
-        if (bare == KeyCode.CursorRight) { _wizard.KeyEditor.MoveRight(); return; }
-        if (bare == KeyCode.Home) { _wizard.KeyEditor.Home(); return; }
-        if (bare == KeyCode.End) { _wizard.KeyEditor.End(); return; }
-
-        // Printable character.
-        if (args.KeyChar >= ' ' && args.KeyChar != '\0' && !args.KeyCode.HasCtrl() && !args.KeyCode.HasAlt())
-            _wizard.InsertApiKeyChar(args.KeyChar);
+        _turnState.ResetStreamingEntries();
+        _throbber.Start();
+        _turnController.Start(_session, input);
     }
 
     /// <summary>
-    /// Called when the user presses Enter on a list step. Dispatches based on
-    /// the current wizard step and wires OxConfiguration as the data source so
-    /// the controller and view never call into the Agent layer directly.
+    /// Advances the wizard state machine one step. Called by
+    /// <see cref="WizardInputMode"/> on Enter during list steps.
+    ///
+    /// Lives here (rather than inside the mode) because advancing requires
+    /// reading from <see cref="ModelCatalog"/> and writing to
+    /// <see cref="Ox.Agent.Configuration.OxConfiguration"/> — coordinator-level
+    /// concerns the mode has no business owning.
     /// </summary>
     private void AdvanceWizard()
     {
@@ -448,440 +322,16 @@ public sealed class OxApp : IDisposable
 
             var (providerId, modelId, apiKey) = result.Value;
 
-            // Persist the selections. SetApiKey is skipped when apiKey is null —
-            // an empty key field means "keep whatever is already in the keyring".
+            // Persist the selections. SetApiKey is skipped when apiKey is
+            // null — an empty key field means "keep whatever is already in
+            // the keyring".
             _host.Configuration.SetSelectedModel($"{providerId}/{modelId}");
             if (apiKey is not null)
                 _host.Configuration.SetApiKey(apiKey, providerId);
 
-            // Invalidate the context-window cache so the status line picks up
-            // the new model's window size on the next render.
-            _contextWindowCache.Clear();
+            // Invalidate the context-window cache so the status line picks
+            // up the new model's window size on the next render.
+            _agentEventApplier.InvalidateContextWindowCache();
         }
-    }
-
-    private void SubmitInput()
-    {
-        var text = _editor.Text.Trim();
-        if (text.Length == 0) return;
-
-        _editor.Clear();
-
-        // Check for slash commands.
-        if (text.StartsWith('/'))
-        {
-            var parts = text[1..].Split(' ', 2);
-            var command = parts[0].ToLowerInvariant();
-            var args = parts.Length > 1 ? parts[1] : null;
-
-            // /quit is a TUI exit concern — handled here rather than delegating
-            // to the Agent layer, because only the TUI layer knows how to tear itself down.
-            if (command == "quit")
-            {
-                _exit = true;
-                return;
-            }
-
-            // /connect opens the provider/key/model wizard. Required=false so
-            // Escape dismisses back to the existing chat session without exiting.
-            if (command == "connect")
-            {
-                _wizard.Start(_oxConfig.ListProviders(), required: false);
-                return;
-            }
-
-            // Delegate built-in commands to the session layer, which owns the
-            // configuration and knows what each command does. OxApp just
-            // dispatches and displays the result.
-            var result = _session?.ExecuteBuiltInCommand(command, args);
-            if (result is not null)
-            {
-                if (result.IsError)
-                    _conversationView.AddEntry(new ErrorEntry(result.Message));
-                else if (command == "model")
-                {
-                    // The status line already shows the updated model name — no
-                    // need for a conversation-bubble confirmation. Just invalidate
-                    // the context-window cache so the status line picks up the new
-                    // model's window size on the next render cycle.
-                    _contextWindowCache.Clear();
-                }
-                return;
-            }
-
-            // Not a built-in — check if it's a user-invocable skill. Skills fall
-            // through to the normal turn path: StartTurn calls RunTurnAsync, which
-            // calls TryExpandSlashCommand to expand the skill template before
-            // sending it to the LLM.
-            if (_commandRegistry.UserInvocableNames.Contains(command, StringComparer.OrdinalIgnoreCase))
-            {
-                // Fall through to the StartTurn path below.
-            }
-            else
-            {
-                _conversationView.AddEntry(new ErrorEntry($"Unknown command: /{command}"));
-                return;
-            }
-        }
-
-        // Add user message to the conversation.
-        _conversationView.AddEntry(new UserMessageEntry(text));
-
-        // If a turn is already active, queue the input.
-        if (_turnActive)
-        {
-            _queuedInput = text;
-            return;
-        }
-
-        StartTurn(text);
-    }
-
-    private void StartTurn(string input)
-    {
-        if (_session is null) return;
-
-        _turnActive = true;
-        _currentAssistantEntry = null;
-        _currentThinkingEntry = null;
-        _throbber.Start();
-
-        _turnCts = new CancellationTokenSource();
-        var ct = _turnCts.Token;
-
-        // Fire-and-forget: the background task enqueues events; we don't await it.
-        _ = Task.Run(async () =>
-        {
-            try
-            {
-                await foreach (var evt in _session.RunTurnAsync(input, ct))
-                {
-                    _eventQueue.Enqueue(evt);
-                    _wakeSignal.Release();
-                }
-            }
-            catch (OperationCanceledException)
-            {
-                // Cancellation is expected — the main loop handles the UI state.
-            }
-            catch (Exception ex)
-            {
-                _eventQueue.Enqueue(new TurnError
-                {
-                    Message = ex.Message,
-                    IsFatal = true,
-                });
-                _wakeSignal.Release();
-            }
-        });
-    }
-
-    private void CancelTurn()
-    {
-        _turnCts?.Cancel();
-        _turnActive = false;
-        _throbber.Reset();
-        _currentAssistantEntry = null;
-        _currentThinkingEntry = null;
-        _conversationView.AddEntry(new CancellationEntry());
-    }
-
-    private void DrainAgentEvents()
-    {
-        while (_eventQueue.TryDequeue(out var evt))
-        {
-            switch (evt)
-            {
-                case ThinkingChunk thinkingChunk:
-                    // Skip empty chunks to avoid creating blank thinking entries.
-                    if (thinkingChunk.Text.Length == 0)
-                        break;
-
-                    if (_currentThinkingEntry is null)
-                    {
-                        _currentThinkingEntry = new ThinkingEntry();
-                        _conversationView.AddEntry(_currentThinkingEntry);
-                    }
-                    _currentThinkingEntry.Append(thinkingChunk.Text);
-                    break;
-
-                case ResponseChunk chunk:
-                    // Skip empty chunks — they'd create blank conversation bubbles.
-                    if (chunk.Text.Length == 0)
-                        break;
-
-                    // Normal response text starts after thinking — a new ThinkingEntry
-                    // must not accumulate text from a subsequent turn's thinking phase.
-                    _currentThinkingEntry = null;
-
-                    if (_currentAssistantEntry is null)
-                    {
-                        _currentAssistantEntry = new AssistantTextEntry();
-                        _conversationView.AddEntry(_currentAssistantEntry);
-                    }
-                    _currentAssistantEntry.Append(chunk.Text);
-                    break;
-
-                case ToolCallStarted toolStart:
-                    _currentAssistantEntry = null; // New tool call breaks assistant/thinking text.
-                    _currentThinkingEntry = null;
-                    _conversationView.AddEntry(new ToolCallEntry
-                    {
-                        CallId = toolStart.CallId,
-                        ToolName = toolStart.ToolName,
-                        FormattedSignature = toolStart.FormatCall(),
-                        Status = ToolCallStatus.Started,
-                    });
-                    break;
-
-                case ToolAwaitingApproval awaiting:
-                    var awaitingEntry = _conversationView.FindToolCall(awaiting.CallId);
-                    if (awaitingEntry is not null)
-                        awaitingEntry.Status = ToolCallStatus.AwaitingApproval;
-                    break;
-
-                case ToolCallCompleted completed:
-                    var completedEntry = _conversationView.FindToolCall(completed.CallId);
-                    if (completedEntry is not null)
-                    {
-                        completedEntry.Status = completed.IsError
-                            ? ToolCallStatus.Failed
-                            : ToolCallStatus.Succeeded;
-                        completedEntry.Result = completed.Result;
-                        completedEntry.IsError = completed.IsError;
-                    }
-                    break;
-
-                case TodoUpdated todoUpdated:
-                    _currentAssistantEntry = null;
-                    _currentThinkingEntry = null;
-                    _conversationView.AddEntry(new PlanEntry
-                    {
-                        Items = todoUpdated.Items.Select(i => new PlanItem(
-                            i.Content,
-                            i.Status switch
-                            {
-                                Ox.Agent.Todo.TodoStatus.Completed => PlanItemStatus.Completed,
-                                Ox.Agent.Todo.TodoStatus.InProgress => PlanItemStatus.InProgress,
-                                _ => PlanItemStatus.Pending,
-                            })).ToList(),
-                    });
-                    break;
-
-                case SubagentEvent subEvt:
-                    HandleSubagentEvent(subEvt);
-                    break;
-
-                case TurnCompleted turnCompleted:
-                    _turnActive = false;
-                    _throbber.Reset();
-                    _currentAssistantEntry = null;
-                    _currentThinkingEntry = null;
-                    if (turnCompleted.InputTokens is { } tokens)
-                    {
-                        // Compute context fill % using the provider's reported context window.
-                        // The cache avoids re-resolving every turn — each provider caches internally
-                        // too, so this is a cheap dictionary lookup after the first call.
-                        var modelId = _session?.ActiveModelId;
-                        if (modelId is not null)
-                        {
-                            if (!_contextWindowCache.TryGetValue(modelId, out var contextWindow))
-                            {
-                                // First time seeing this model — resolve and cache. ResolveContextWindow
-                                // returns null for models not declared in providers.json (e.g. FakeProvider).
-                                contextWindow = _oxConfig.ResolveContextWindow(modelId);
-                                _contextWindowCache[modelId] = contextWindow;
-                            }
-
-                            _contextPercent = contextWindow is > 0
-                                ? (int)Math.Max(1, tokens * 100 / contextWindow.Value)
-                                : null;
-                        }
-                        else
-                        {
-                            _contextPercent = null;
-                        }
-                    }
-
-                    // If input was queued during the turn, start a new turn.
-                    if (_queuedInput is not null)
-                    {
-                        var queued = _queuedInput;
-                        _queuedInput = null;
-                        _conversationView.AddEntry(new UserMessageEntry(queued));
-                        StartTurn(queued);
-                    }
-                    break;
-
-                case TurnError error:
-                    if (error.IsFatal)
-                    {
-                        _turnActive = false;
-                        _throbber.Reset();
-                        _currentAssistantEntry = null;
-                        _currentThinkingEntry = null;
-                    }
-                    _conversationView.AddEntry(new ErrorEntry(error.Message));
-                    break;
-            }
-        }
-    }
-
-    private void HandleSubagentEvent(SubagentEvent subEvt)
-    {
-        // Find or create a container for this sub-agent.
-        var container = _conversationView.FindSubagentContainer(subEvt.SubagentId);
-        if (container is null)
-        {
-            container = new SubagentContainerEntry
-            {
-                CallId = subEvt.SubagentId,
-                FormattedSignature = $"Subagent({subEvt.SubagentId})",
-            };
-            _conversationView.AddEntry(container);
-        }
-
-        // Add the inner event as a child entry.
-        switch (subEvt.Inner)
-        {
-            case ResponseChunk chunk:
-                var lastChild = container.Children.LastOrDefault();
-                if (lastChild is AssistantTextEntry childAssistant)
-                {
-                    childAssistant.Append(chunk.Text);
-                }
-                else
-                {
-                    var newEntry = new AssistantTextEntry();
-                    newEntry.Append(chunk.Text);
-                    container.Children.Add(newEntry);
-                }
-                break;
-
-            case ToolCallStarted toolStart:
-                container.Children.Add(new ToolCallEntry
-                {
-                    CallId = toolStart.CallId,
-                    ToolName = toolStart.ToolName,
-                    FormattedSignature = toolStart.FormatCall(),
-                });
-                break;
-
-            case TurnCompleted:
-                container.Status = ToolCallStatus.Succeeded;
-                break;
-
-            case TurnError error:
-                container.Children.Add(new ErrorEntry(error.Message));
-                break;
-        }
-    }
-
-    private async ValueTask<PermissionResponse> OnPermissionRequestAsync(
-        PermissionRequest request,
-        CancellationToken ct)
-    {
-        // Create a TCS that the main loop will complete when the user responds.
-        _permissionTcs = new TaskCompletionSource<PermissionResponse>();
-        _permissionPromptView.ActiveRequest = request;
-        _permissionPromptView.Editor.Clear();
-        _wakeSignal.Release(); // Wake the main loop to show the prompt.
-
-        // Block the Ur turn task until the user responds.
-        using var reg = ct.Register(() =>
-            _permissionTcs.TrySetResult(new PermissionResponse(Granted: false, Scope: null)));
-
-        return await _permissionTcs.Task;
-    }
-
-    private void ResolvePermission(PermissionResponse response)
-    {
-        _permissionPromptView.ActiveRequest = null;
-        _permissionPromptView.Editor.Clear();
-        _permissionTcs?.TrySetResult(response);
-        _permissionTcs = null;
-    }
-
-    private void Render()
-    {
-        _buffer.Clear();
-
-        var width = _buffer.Width;
-        var height = _buffer.Height;
-
-        // Reserve the composer's shadow gutter so the slab can float above the
-        // terminal edge instead of clipping its right and bottom cast.
-        var conversationHeight = Math.Max(0, height - InputAreaView.Height - InputAreaView.ShadowHeight);
-        _conversationView.Render(_buffer, 0, 0, width, conversationHeight);
-
-        // Permission prompt: floats above the input area when active.
-        if (_permissionPromptView.IsActive)
-        {
-            var promptX = InputAreaView.HorizontalMargin;
-            var promptY = Math.Max(0, conversationHeight - PermissionPromptView.Height - PermissionPromptView.ShadowHeight);
-            var promptWidth = Math.Max(
-                4,
-                width - (InputAreaView.HorizontalMargin * 2) - InputAreaView.ShadowWidth);
-            _permissionPromptView.Render(_buffer, promptX, promptY, promptWidth);
-        }
-
-        // Input area: fixed at the bottom.
-        var inputX = InputAreaView.HorizontalMargin;
-        var inputY = Math.Max(0, height - InputAreaView.Height - InputAreaView.ShadowHeight);
-        var inputWidth = Math.Max(
-            4,
-            width - (InputAreaView.HorizontalMargin * 2) - InputAreaView.ShadowWidth);
-        var ghostText = _autocomplete.GetGhostText(_editor.Text);
-        var statusModelId = _turnActive ? _session?.ActiveModelId : _host.Configuration.SelectedModelId;
-        var statusRight = InputStatusFormatter.Compose(_contextPercent, statusModelId);
-
-        _inputAreaView.Render(
-            _buffer,
-            inputX, inputY, inputWidth,
-            _editor,
-            ghostText,
-            statusRight,
-            _turnActive ? _throbber : null,
-            !_permissionPromptView.IsActive && !_wizard.IsActive);
-
-        // Connect wizard: floats centred over everything as the final draw pass
-        // so it appears on top of the conversation area and input chrome.
-        if (_wizard.IsActive)
-            _wizardView.Render(_buffer, _wizard);
-
-        _buffer.Render(Console.Out);
-    }
-
-    private void CaptureScreenDump()
-    {
-        // Build plain text from the buffer.
-        var lines = new string[_buffer.Height];
-        for (var row = 0; row < _buffer.Height; row++)
-        {
-            var chars = new char[_buffer.Width];
-            for (var col = 0; col < _buffer.Width; col++)
-                chars[col] = _buffer.GetRenderedCell(col, row).Rune;
-            lines[row] = new string(chars).TrimEnd();
-        }
-
-        var screenText = string.Join('\n', lines);
-        ScreenDumpWriter.Write(_workspacePath, screenText, DateTimeOffset.UtcNow);
-    }
-
-    public void Dispose()
-    {
-        // Write session metrics before shutting down. DisposeAsync is cheap (one
-        // file write) so blocking here is acceptable — the TUI is already exiting.
-        if (_session is not null)
-            _session.DisposeAsync().AsTask().GetAwaiter().GetResult();
-        _turnCts?.Dispose();
-        _wakeSignal.Dispose();
-    }
-
-    private static (int Width, int Height) GetTerminalSize()
-    {
-        var width = Console.WindowWidth;
-        var height = Console.WindowHeight;
-        return (Math.Max(20, width), Math.Max(10, height));
     }
 }

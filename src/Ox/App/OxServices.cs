@@ -10,6 +10,7 @@ using Ox.Agent.Compaction;
 using Ox.Agent.Configuration;
 using Ox.Agent.Configuration.Keyring;
 using Ox.Agent.Hosting;
+using Ox.Agent.Permissions;
 using Ox.Agent.Providers;
 using Ox.Agent.Sessions;
 using Ox.Agent.Settings;
@@ -162,21 +163,49 @@ internal static class OxServices
             sp.GetRequiredService<IKeyring>(),
             sp.GetRequiredService<ProviderRegistry>()));
 
+        // SessionDependencies bundles everything an OxSession needs. Building
+        // it once in DI means OxHost's constructor can shrink to the handful of
+        // values it actually owns (workspace, user-data paths, schema registry).
+        services.AddSingleton(sp =>
+        {
+            var providerRegistry = sp.GetRequiredService<ProviderRegistry>();
+            var workspace = sp.GetRequiredService<Workspace>();
+            var loggerFactory = sp.GetRequiredService<ILoggerFactory>();
+
+            // Permission grants are shared across every session in this host —
+            // the store persists workspace + always grants to disk, so it
+            // deliberately lives at host scope, not session scope.
+            var grantStore = new PermissionGrantStore(
+                workspace.PermissionsPath,
+                OxHost.DefaultUserPermissionsPath(userDataDirectory),
+                loggerFactory.CreateLogger<PermissionGrantStore>());
+
+            // Fold the optional Func<string, IChatClient> override into the
+            // factory here (S5). OxHost never sees the override as a separate
+            // thing — it just gets a single chat-client factory.
+            var chatClientFactory = sp.GetService<Func<string, IChatClient>>()
+                ?? providerRegistry.CreateChatClient;
+
+            return new SessionDependencies(
+                Configuration: sp.GetRequiredService<OxConfiguration>(),
+                Skills: sp.GetRequiredService<SkillRegistry>(),
+                BuiltInCommands: sp.GetRequiredService<BuiltInCommandRegistry>(),
+                Workspace: workspace,
+                LoggerFactory: loggerFactory,
+                Sessions: sp.GetRequiredService<ISessionStore>(),
+                CompactionStrategy: sp.GetRequiredService<ICompactionStrategy>(),
+                ChatClientFactory: chatClientFactory,
+                ConfigureChatOptions: providerRegistry.ConfigureChatOptions,
+                ResolveContextWindow: sp.GetService<Func<string, int?>>() ?? (_ => null),
+                AdditionalTools: sp.GetService<ToolRegistry>(),
+                GrantStore: grantStore);
+        });
+
         services.AddSingleton(sp => new OxHost(
+            sp.GetRequiredService<SessionDependencies>(),
             sp.GetRequiredService<Workspace>(),
-            sp.GetRequiredService<ISessionStore>(),
-            sp.GetRequiredService<ICompactionStrategy>(),
-            sp.GetRequiredService<SkillRegistry>(),
-            sp.GetRequiredService<BuiltInCommandRegistry>(),
-            sp.GetRequiredService<SettingsSchemaRegistry>(),
-            sp.GetRequiredService<OxConfiguration>(),
-            sp.GetRequiredService<ProviderRegistry>(),
             sp.GetRequiredService<ILoggerFactory>(),
-            sp.GetRequiredService<IOptionsMonitor<OxOptions>>(),
-            userDataDirectory,
-            sp.GetService<Func<string, IChatClient>>(),
-            sp.GetService<ToolRegistry>(),
-            sp.GetService<Func<string, int?>>()));
+            sp.GetRequiredService<SettingsSchemaRegistry>()));
 
         // ── App-layer services ──────────────────────────────────────────
 

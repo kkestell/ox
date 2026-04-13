@@ -1,148 +1,85 @@
-using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
-using Microsoft.Extensions.Options;
 using Ox.Agent.Configuration;
-using Ox.Agent.Compaction;
 using Ox.Agent.Permissions;
 using Ox.Agent.Settings;
-using Ox.Agent.Providers;
 using Ox.Agent.Sessions;
 using Ox.Agent.Skills;
 using Ox.Agent.Todo;
-using Ox.Agent.Tools;
 
 namespace Ox.Agent.Hosting;
 
 /// <summary>
 /// Top-level entry point for the Ox agent layer.
 ///
-/// Constructed by the DI container via <c>OxServices.Register</c>.
-/// All dependencies are injected as constructor parameters — there is no static
-/// factory method. The container resolves services in dependency order.
+/// OxHost is a facade: it owns the workspace-scoped state needed to open
+/// sessions (session store, user-data directory, permission-grant store) and
+/// a single <see cref="SessionDependencies"/> bundle that carries every shared
+/// service every session needs. Per-session or per-turn objects (OxSession,
+/// AgentLoop, ToolRegistry) are still constructed procedurally — they need
+/// per-call parameters (session ID, chat client, callbacks, etc.).
 ///
-/// Per-session and per-turn objects (OxSession, AgentLoop, ToolRegistry) are still
-/// constructed procedurally because they need per-call parameters (session ID,
-/// chat client, callbacks, etc.).
+/// The constructor shrank from 14 parameters to the five it actually owns:
+/// everything else flows through the session-dependencies record, populated by
+/// <c>OxServices.Register</c>.
 /// </summary>
 public sealed class OxHost
 {
-    private readonly ISessionStore _sessions;
-    private readonly ICompactionStrategy _compactionStrategy;
-    private readonly ProviderRegistry _providerRegistry;
-    private readonly Func<string, IChatClient>? _chatClientFactoryOverride;
-
-    // Optional context window resolver provided by the host via DI. Ox registers
-    // ModelCatalog.ResolveContextWindow as a Func<string, int?> so compaction
-    // can check context fill percentage. Null in tests that don't need it.
-    private readonly Func<string, int?>? _contextWindowResolver;
-
-    // Test-only: additional tools to merge into every session registry. Allows
-    // tests to inject fake tools (e.g. a mock write_file) without changing the
-    // production code path. Last-write-wins in ToolRegistry means these override builtins.
-    private readonly ToolRegistry? _additionalTools;
-
-    private readonly string _userDataDirectory;
-    private readonly ILoggerFactory _loggerFactory;
+    private readonly SessionDependencies _deps;
+    private readonly Workspace _workspace;
 
     public string WorkspacePath => _workspace.RootPath;
-    public OxConfiguration Configuration { get; }
 
-    private readonly Workspace _workspace;
+    /// <summary>
+    /// Application-level configuration (model selection, readiness, keyring
+    /// access). Exposed because the TUI and headless runner need it to decide
+    /// whether a turn can run and what the current model is.
+    /// </summary>
+    public OxConfiguration Configuration => _deps.Configuration;
 
     /// <summary>
     /// The loaded skill registry. Exposed for UI consumers (e.g. autocomplete)
     /// that need the full skill list without going through a session.
     /// </summary>
-    internal SkillRegistry Skills { get; }
+    internal SkillRegistry Skills => _deps.Skills;
 
     /// <summary>
     /// The built-in command registry. Exposed for UI consumers (e.g. autocomplete)
     /// that merge built-in commands with skills for prefix matching.
     /// </summary>
-    internal BuiltInCommandRegistry BuiltInCommands { get; }
+    internal BuiltInCommandRegistry BuiltInCommands => _deps.BuiltInCommands;
 
     /// <summary>
     /// The settings schema registry. Exposed internally so tests can register
-    /// additional schemas for validation tests without reflection.
+    /// additional schemas for validation tests without reflection. It is the
+    /// one piece of host state that doesn't belong to any session, so it stays
+    /// as a direct constructor parameter rather than riding in the bundle.
     /// </summary>
     internal SettingsSchemaRegistry SettingsSchemas { get; }
 
     /// <summary>
     /// DI-injectable constructor. All parameters are resolved from the container
     /// registered by <c>OxServices.Register</c>.
-    ///
-    /// <paramref name="chatClientFactoryOverride"/>, <paramref name="additionalTools"/>,
-    /// and <paramref name="contextWindowResolver"/> are optional DI services — null
-    /// in production (except contextWindowResolver which Ox registers from ModelCatalog).
     /// </summary>
     internal OxHost(
+        SessionDependencies deps,
         Workspace workspace,
-        ISessionStore sessions,
-        ICompactionStrategy compactionStrategy,
-        SkillRegistry skills,
-        BuiltInCommandRegistry builtInCommands,
-        SettingsSchemaRegistry settingsSchemas,
-        OxConfiguration configuration,
-        ProviderRegistry providerRegistry,
         ILoggerFactory loggerFactory,
-        IOptionsMonitor<OxOptions> optionsMonitor,
-        string userDataDirectory,
-        Func<string, IChatClient>? chatClientFactoryOverride = null,
-        ToolRegistry? additionalTools = null,
-        Func<string, int?>? contextWindowResolver = null)
+        SettingsSchemaRegistry settingsSchemas)
     {
+        _deps = deps;
         _workspace = workspace;
-        _sessions = sessions;
-        _compactionStrategy = compactionStrategy;
-        _providerRegistry = providerRegistry;
-        Skills = skills;
-        BuiltInCommands = builtInCommands;
         SettingsSchemas = settingsSchemas;
-        Configuration = configuration;
-        _loggerFactory = loggerFactory;
-        _userDataDirectory = userDataDirectory;
-        _chatClientFactoryOverride = chatClientFactoryOverride;
-        _additionalTools = additionalTools;
-        _contextWindowResolver = contextWindowResolver;
 
         // Log startup summary — skills are already loaded by the time
         // the host is constructed (DI resolves them as upstream singletons).
         var logger = loggerFactory.CreateLogger<OxHost>();
         logger.LogInformation(
             "Ox ready: workspace={WorkspacePath}, skills={SkillCount}",
-            workspace.RootPath, skills.All().Count);
-    }
-
-    internal IChatClient CreateChatClient(string modelId)
-    {
-        if (_chatClientFactoryOverride is not null)
-            return _chatClientFactoryOverride(modelId);
-
-        // Parse the "provider/model" format and dispatch to the registered provider.
-        var parsed = ModelId.Parse(modelId);
-        var provider = _providerRegistry.Get(parsed.Provider)
-            ?? throw new InvalidOperationException(
-                $"Unknown provider '{parsed.Provider}'. Known providers: {string.Join(", ", _providerRegistry.ProviderNames)}");
-
-        return provider.CreateChatClient(parsed.Model);
-    }
-
-    internal void ConfigureChatOptions(string modelId, ChatOptions options)
-    {
-        // Chat-client construction and request-shape defaults both belong to the
-        // provider layer. Keeping them side by side here means sessions can use
-        // test chat-client overrides without losing the real provider's runtime
-        // option policy for the selected model ID.
-        var parsed = ModelId.Parse(modelId);
-        var provider = _providerRegistry.Get(parsed.Provider)
-            ?? throw new InvalidOperationException(
-                $"Unknown provider '{parsed.Provider}'. Known providers: {string.Join(", ", _providerRegistry.ProviderNames)}");
-
-        provider.ConfigureChatOptions(parsed.Model, options);
+            workspace.RootPath, deps.Skills.All().Count);
     }
 
     public IReadOnlyList<SessionInfo> ListSessions() =>
-        _sessions.List()
+        _deps.Sessions.List()
             .Select(session => new SessionInfo(session.Id, session.CreatedAt))
             .ToList();
 
@@ -160,11 +97,9 @@ public sealed class OxHost
     /// <see cref="AgentLoop.AgentLoop"/> for the exact semantics.
     /// </summary>
     public OxSession CreateSession(TurnCallbacks? callbacks = null, TodoStore? todos = null, int? maxIterations = null) =>
-        new(Configuration, Skills, BuiltInCommands, _workspace, _loggerFactory,
-            _sessions, _compactionStrategy, CreateChatClient, ConfigureChatOptions, _sessions.Create(), [],
+        new(_deps, _deps.Sessions.Create(), [],
             isPersisted: false, activeModelId: null, callbacks,
-            _workspace.PermissionsPath, DefaultUserPermissionsPath(),
-            _contextWindowResolver, _additionalTools, todos, maxIterations);
+            todos, maxIterations);
 
     /// <summary>
     /// Opens an existing session by ID. See <see cref="CreateSession"/> for callback semantics.
@@ -174,18 +109,20 @@ public sealed class OxHost
         TurnCallbacks? callbacks = null,
         CancellationToken ct = default)
     {
-        var session = _sessions.GetById(sessionId);
+        var session = _deps.Sessions.GetById(sessionId);
         if (session is null)
             return null;
 
-        var messages = (await _sessions.ReadAllAsync(session, ct)).ToList();
-        return new OxSession(Configuration, Skills, BuiltInCommands, _workspace, _loggerFactory,
-            _sessions, _compactionStrategy, CreateChatClient, ConfigureChatOptions, session, messages,
-            isPersisted: true, activeModelId: null, callbacks,
-            _workspace.PermissionsPath, DefaultUserPermissionsPath(),
-            _contextWindowResolver, _additionalTools);
+        var messages = (await _deps.Sessions.ReadAllAsync(session, ct)).ToList();
+        return new OxSession(_deps, session, messages,
+            isPersisted: true, activeModelId: null, callbacks);
     }
 
-    private string DefaultUserPermissionsPath() =>
-        Path.Combine(_userDataDirectory, "permissions.jsonl");
+    /// <summary>
+    /// Default location for the per-user permission grants file. Kept here so
+    /// the path is computed once per host rather than recomputed for each
+    /// session that creates a grant store.
+    /// </summary>
+    internal static string DefaultUserPermissionsPath(string userDataDirectory) =>
+        Path.Combine(userDataDirectory, "permissions.jsonl");
 }

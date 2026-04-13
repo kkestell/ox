@@ -71,45 +71,9 @@ internal sealed class TodoWriteTool(TodoStore? store) : AIFunction
         if (!arguments.TryGetValue("todos", out var todosArg) || todosArg is null)
             return new ValueTask<object?>("Missing required parameter: todos");
 
-        var items = ParseTodos(todosArg);
+        var items = TodoJson.Parse(todosArg);
         store.Update(items);
 
         return new ValueTask<object?>($"Todo list updated ({items.Count} items).");
-    }
-
-    /// <summary>
-    /// Parses the "todos" argument into a list of <see cref="TodoItem"/>.
-    /// Handles both <see cref="JsonElement"/> (from real LLM calls) and
-    /// pre-deserialized lists (from tests).
-    /// </summary>
-    private static List<TodoItem> ParseTodos(object todosArg)
-    {
-        var items = new List<TodoItem>();
-
-        var array = todosArg switch
-        {
-            JsonElement { ValueKind: JsonValueKind.Array } je => je.EnumerateArray(),
-            _ => throw new ArgumentException("Expected a JSON array for 'todos'.")
-        };
-
-        foreach (var element in array)
-        {
-            var content = element.GetProperty("content").GetString()
-                ?? throw new ArgumentException("Todo item missing 'content'.");
-            var statusStr = element.GetProperty("status").GetString()
-                ?? throw new ArgumentException("Todo item missing 'status'.");
-
-            var status = statusStr switch
-            {
-                "pending" => TodoStatus.Pending,
-                "in_progress" => TodoStatus.InProgress,
-                "completed" => TodoStatus.Completed,
-                _ => throw new ArgumentException($"Unknown todo status: '{statusStr}'.")
-            };
-
-            items.Add(new TodoItem(content, status));
-        }
-
-        return items;
     }
 }

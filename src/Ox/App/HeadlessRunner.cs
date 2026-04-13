@@ -25,10 +25,6 @@ namespace Ox.App;
 /// </summary>
 internal sealed class HeadlessRunner(OxHost host, string prompt, bool yolo, int? maxIterations = null)
 {
-    // Truncate tool results at this length when printing to stderr. Long results
-    // (e.g. file contents) would flood the console and obscure the event stream.
-    private const int MaxResultLen = 120;
-
     // Thinking chunks arrive from the provider one token at a time. Printing each
     // chunk on its own line (as we did originally) turned the model's internal
     // reasoning into a vertical column of single words — unreadable. Instead, we
@@ -149,46 +145,18 @@ internal sealed class HeadlessRunner(OxHost host, string prompt, bool yolo, int?
         // Any other event ends the current thinking line before its own output.
         FlushThinkingLine();
 
-        var line = evt switch
-        {
-            ToolCallStarted started =>
-                $"{prefix}[tool] {started.FormatCall()}",
-
-            ToolCallCompleted { IsError: true } completed =>
-                $"{prefix}[tool-err] {completed.ToolName}: {Truncate(completed.Result)}",
-
-            ToolCallCompleted completed =>
-                $"{prefix}[tool-ok] {completed.ToolName}: {Truncate(completed.Result)}",
-
-            ToolAwaitingApproval { CallId: var callId } =>
-                $"{prefix}[awaiting-approval] {callId}",
-
-            TurnCompleted { InputTokens: { } tokens } =>
-                $"{prefix}[done] {tokens} input tokens",
-
-            TurnCompleted =>
-                $"{prefix}[done]",
-
-            Compacted { Message: var msg } =>
-                $"{prefix}[compacted] {msg}",
-
-            // SubagentEvent is a relay envelope. Recurse with the inner event so the
-            // same switch handles all event types; the [sub] prefix is threaded through.
-            SubagentEvent { Inner: var inner } =>
-                null, // handled below via recursion
-
-            // Ignore ResponseChunk (stdout), TurnError (main loop), TodoUpdated
-            // (TUI only), and any future event types we don't know about yet.
-            _ => null,
-        };
-
-        if (line is not null)
+        // Delegate pure formatting to the shared formatter. Events whose
+        // handling depends on control flow or stream routing (SubagentEvent
+        // recursion, ResponseChunk going to stdout, TurnError driving exit)
+        // fall through to the bespoke branches below.
+        if (AgentLoopEventFormatter.TryFormatForStream(evt, prefix, out var line))
         {
             Console.Error.WriteLine(line);
             return;
         }
 
-        // Recurse for SubagentEvent so the inner event flows through the same switch.
+        // Recurse for SubagentEvent so the inner event flows through the same
+        // pipeline with a "  [sub] " prefix that visually indents nested activity.
         if (evt is SubagentEvent { Inner: var subInner })
             PrintEvent(subInner, "  [sub] ");
     }
@@ -218,14 +186,4 @@ internal sealed class HeadlessRunner(OxHost host, string prompt, bool yolo, int?
         return default;
     }
 
-    /// <summary>
-    /// Truncates a tool result string to <see cref="MaxResultLen"/> so that long
-    /// outputs (file contents, command output) don't flood the event stream.
-    /// </summary>
-    private static string Truncate(string result)
-    {
-        // Strip newlines to keep each tool result on one line in the terminal.
-        var flat = result.ReplaceLineEndings(" ");
-        return flat.Length <= MaxResultLen ? flat : flat[..MaxResultLen] + "…";
-    }
 }

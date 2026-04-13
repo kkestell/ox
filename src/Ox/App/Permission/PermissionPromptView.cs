@@ -118,7 +118,7 @@ public sealed class PermissionPromptView
         var verb = FormatVerb(request);
         var target = FormatTarget(request.Target);
         var scopeLegend = request.AllowedScopes.Count > 0
-            ? $"/{string.Join('/', request.AllowedScopes.Select(FormatScope))}"
+            ? $"/{string.Join('/', request.AllowedScopes.Select(s => s.ToDisplayShort()))}"
             : string.Empty;
         var prefix = $" Allow {verb}";
         var suffix = $"? [y/n{scopeLegend}]: ";
@@ -179,15 +179,6 @@ public sealed class PermissionPromptView
             return false;
         }
     }
-
-    private static string FormatScope(PermissionScope scope) => scope switch
-    {
-        PermissionScope.Once => "o",
-        PermissionScope.Session => "s",
-        PermissionScope.Workspace => "ws",
-        PermissionScope.Always => "a",
-        _ => scope.ToString().ToLowerInvariant(),
-    };
 
     private static string ShortenTarget(string target, int maxLength)
     {

@@ -3,8 +3,6 @@ using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
-using Ox.Agent.Compaction;
-using Ox.Agent.Configuration;
 using Ox.Agent.Permissions;
 using Ox.Agent.Prompting;
 using Ox.Agent.Skills;
@@ -31,24 +29,16 @@ namespace Ox.Agent.Sessions;
 /// </summary>
 public sealed class OxSession : IAsyncDisposable
 {
-    private readonly OxConfiguration _configuration;
-    private readonly SkillRegistry _skills;
-    private readonly BuiltInCommandRegistry _builtInCommands;
-    private readonly Workspace _workspace;
-    private readonly ILoggerFactory _loggerFactory;
-    private readonly ISessionStore _sessions;
-    private readonly ICompactionStrategy _compactionStrategy;
-    private readonly Func<string, IChatClient> _chatClientFactory;
-    private readonly Action<string, ChatOptions> _configureChatOptions;
-    private readonly ToolRegistry? _additionalTools;
-    private readonly Func<string, int?> _resolveContextWindow;
+    // Shared, host-wide dependencies. Bundled into a single record so the
+    // session constructor only has to name per-session parameters (session,
+    // messages, callbacks, ...) — see SessionDependencies for the rationale.
+    private readonly SessionDependencies _deps;
     private readonly int? _maxIterations;
 
     private readonly Session _session;
     private readonly List<ChatMessage> _messages;
     private readonly ReadOnlyCollection<ChatMessage> _messagesView;
     private readonly TurnCallbacks? _hostCallbacks;
-    private readonly PermissionGrantStore _grantStore;
     private readonly ILogger _logger;
     private string? _activeModelId;
 
@@ -63,47 +53,26 @@ public sealed class OxSession : IAsyncDisposable
     private string? _fatalError;
 
     /// <summary>
-    /// Creates a session with explicit dependencies instead of a OxHost reference.
-    /// Each parameter represents a specific capability the session needs, keeping
-    /// the dependency surface narrow and testable.
+    /// Creates a session bound to a shared <see cref="SessionDependencies"/>
+    /// bundle. Per-session arguments (session record, loaded messages, host
+    /// callbacks, …) stay as explicit parameters so each call site is obvious
+    /// about which parts vary per session.
     /// </summary>
     internal OxSession(
-        OxConfiguration configuration,
-        SkillRegistry skills,
-        BuiltInCommandRegistry builtInCommands,
-        Workspace workspace,
-        ILoggerFactory loggerFactory,
-        ISessionStore sessions,
-        ICompactionStrategy compactionStrategy,
-        Func<string, IChatClient> chatClientFactory,
-        Action<string, ChatOptions> configureChatOptions,
+        SessionDependencies deps,
         Session session,
         List<ChatMessage> messages,
         bool isPersisted,
         string? activeModelId,
         TurnCallbacks? callbacks,
-        string workspacePermissionsPath,
-        string alwaysPermissionsPath,
-        Func<string, int?>? resolveContextWindow = null,
-        ToolRegistry? additionalTools = null,
         TodoStore? todos = null,
         int? maxIterations = null)
     {
-        _configuration = configuration;
-        _skills = skills;
-        _builtInCommands = builtInCommands;
-        _workspace = workspace;
-        _loggerFactory = loggerFactory;
-        _sessions = sessions;
-        _compactionStrategy = compactionStrategy;
-        _chatClientFactory = chatClientFactory;
-        _configureChatOptions = configureChatOptions;
-        _resolveContextWindow = resolveContextWindow ?? (_ => null);
-        _additionalTools = additionalTools;
+        _deps = deps;
         _maxIterations = maxIterations;
         _session = session;
         _messages = messages;
-        _logger = loggerFactory.CreateLogger<OxSession>();
+        _logger = deps.LoggerFactory.CreateLogger<OxSession>();
         Todos = todos ?? new TodoStore();
         // Expose a read-only view so callers (TUI, CLI) can render the message
         // list without being able to mutate it — mutation must go through
@@ -112,9 +81,6 @@ public sealed class OxSession : IAsyncDisposable
         IsPersisted = isPersisted;
         _activeModelId = activeModelId;
         _hostCallbacks = callbacks;
-        _grantStore = new PermissionGrantStore(
-            workspacePermissionsPath, alwaysPermissionsPath,
-            loggerFactory.CreateLogger<PermissionGrantStore>());
 
         // Restore token usage from persisted messages so the UI can display
         // context fill immediately when resuming a session. The last assistant
@@ -146,7 +112,7 @@ public sealed class OxSession : IAsyncDisposable
     /// host-level default if no turn has been run yet. The model is captured
     /// per-turn so that a mid-session model switch takes effect on the next turn.
     /// </summary>
-    public string? ActiveModelId => _activeModelId ?? _configuration.SelectedModelId;
+    public string? ActiveModelId => _activeModelId ?? _deps.Configuration.SelectedModelId;
 
     /// <summary>
     /// The input token count from the most recent LLM call. Represents how much
@@ -174,12 +140,12 @@ public sealed class OxSession : IAsyncDisposable
         // the headless path (which only sees events) gets a clean exit code 1
         // instead of an unhandled exception crash. The TUI checks Readiness before
         // submitting a turn so this branch is primarily a safety net for headless mode.
-        var readiness = _configuration.Readiness;
+        var readiness = _deps.Configuration.Readiness;
         if (!readiness.CanRunTurns)
         {
             yield return new AgentLoop.TurnError
             {
-                Message = _configuration.GetProviderBlockingMessage(),
+                Message = _deps.Configuration.GetProviderBlockingMessage(),
                 IsFatal = true
             };
             yield break;
@@ -212,27 +178,27 @@ public sealed class OxSession : IAsyncDisposable
 
         // Snapshot the model ID at turn start so that a concurrent config change
         // doesn't swap the model mid-conversation.
-        _activeModelId = _configuration.SelectedModelId;
+        _activeModelId = _deps.Configuration.SelectedModelId;
         _logger.LogInformation("Turn started: session={SessionId}, model={ModelId}", Id, _activeModelId);
 
         // Resolve the provider-owned request defaults once per turn, then reuse
         // the same configurator for the main loop and any sub-agents spawned in
         // that turn. This keeps every request in the turn on the same thinking policy.
-        void ConfigureTurnOptions(ChatOptions options) => _configureChatOptions(_activeModelId!, options);
+        void ConfigureTurnOptions(ChatOptions options) => _deps.ConfigureChatOptions(_activeModelId!, options);
 
         // Create one chat client for the entire turn and share it between
         // compaction and the agent loop. IChatClient wraps an HttpClient-backed
         // SDK object that holds network resources, so it must be disposed when
         // the turn is done. A single instance per turn is sufficient because
         // compaction runs before the agent loop starts.
-        using var chatClient = _chatClientFactory(_activeModelId!);
+        using var chatClient = _deps.ChatClientFactory(_activeModelId!);
 
         // --- Pre-turn compaction check ---
         // If the context window is filling up, summarize older messages before
         // appending the new user message. This runs proactively so we never
         // hit context-too-long API errors. Requires both a known context window
         // and prior token usage data (LastInputTokens from the previous turn).
-        var contextWindow = _resolveContextWindow(_activeModelId!);
+        var contextWindow = _deps.ResolveContextWindow(_activeModelId!);
         if (contextWindow is null)
         {
             _logger.LogDebug(
@@ -242,7 +208,7 @@ public sealed class OxSession : IAsyncDisposable
 
         if (contextWindow is not null && LastInputTokens is not null)
         {
-            var compacted = await _compactionStrategy.TryCompactAsync(
+            var compacted = await _deps.CompactionStrategy.TryCompactAsync(
                 _messages, chatClient, contextWindow.Value, LastInputTokens.Value, ct);
 
             if (compacted)
@@ -250,7 +216,7 @@ public sealed class OxSession : IAsyncDisposable
                 // Persist the compacted state: ReplaceAllAsync writes the new message
                 // list atomically (the JSONL backend uses a boundary sentinel + append,
                 // but that's an implementation detail behind the ISessionStore interface).
-                await _sessions.ReplaceAllAsync(_session, _messages, ct);
+                await _deps.Sessions.ReplaceAllAsync(_session, _messages, ct);
 
                 // Critical invariant: persistedCount must always equal the
                 // number of messages written to disk. After compaction, the
@@ -275,7 +241,7 @@ public sealed class OxSession : IAsyncDisposable
 
         try
         {
-            await _sessions.AppendAsync(_session, userMessage, ct);
+            await _deps.Sessions.AppendAsync(_session, userMessage, ct);
             IsPersisted = true;
         }
         catch (Exception ex)
@@ -285,16 +251,16 @@ public sealed class OxSession : IAsyncDisposable
             throw;
         }
 
-        // Build a wrapped TurnCallbacks that layers grant-store checking in front
-        // of the host-provided callback. This keeps grant persistence in the session
-        // layer where it belongs — AgentLoop only sees a simple approve/deny callback.
-        var wrappedCallbacks = BuildWrappedCallbacks();
+        // Layer grant-store checking in front of the host-provided callback so
+        // AgentLoop only sees a simple approve/deny surface. The combined callback
+        // is always non-null; see PermissionAwareCallbacks for the decision flow.
+        var wrappedCallbacks = PermissionAwareCallbacks.Build(_hostCallbacks, _deps.GrantStore);
 
         // Build the transient per-turn system prompt by composing the baseline
         // agent contract with feature-specific sections such as the current skill
         // listing. Keeping that composition here makes the dependency direction
         // explicit instead of letting the skills module own global prompt policy.
-        var skillPromptSection = SkillPromptSectionBuilder.Build(_skills);
+        var skillPromptSection = SkillPromptSectionBuilder.Build(_deps.Skills);
         var systemPrompt = SystemPromptBuilder.Build(skillPromptSection);
 
         // Build the per-turn tool registry, then append SubagentTool — which can
@@ -306,8 +272,8 @@ public sealed class OxSession : IAsyncDisposable
         // can close over the fully-populated registry (the sub-agent inherits all
         // parent tools except run_subagent itself, which SubagentRunner excludes).
         var subagentRunner = new AgentLoop.SubagentRunner(
-            chatClient, tools, _workspace, wrappedCallbacks, systemPrompt,
-            _loggerFactory, ConfigureTurnOptions);
+            chatClient, tools, _deps.Workspace, wrappedCallbacks, systemPrompt,
+            _deps.LoggerFactory, ConfigureTurnOptions);
         var subagentTool = new SubagentTool(subagentRunner);
         if (tools.Get(subagentTool.Name) is null)
         {
@@ -322,10 +288,10 @@ public sealed class OxSession : IAsyncDisposable
         // so that tool call results survive a crash.
         var persistedCount = _messages.Count;
         var agentLoop = new AgentLoop.AgentLoop(
-            chatClient, tools, _workspace,
-            _loggerFactory.CreateLogger<AgentLoop.AgentLoop>(),
-            _loggerFactory,
-            _configuration.TurnsToKeepToolResults,
+            chatClient, tools, _deps.Workspace,
+            _deps.LoggerFactory.CreateLogger<AgentLoop.AgentLoop>(),
+            _deps.LoggerFactory,
+            _deps.Configuration.TurnsToKeepToolResults,
             _maxIterations,
             ConfigureTurnOptions);
 
@@ -382,7 +348,7 @@ public sealed class OxSession : IAsyncDisposable
     internal ToolRegistry BuildToolRegistry()
     {
         var registry = new ToolRegistry();
-        var context = new ToolContext(_workspace, _session.Id, Todos);
+        var context = new ToolContext(_deps.Workspace, _session.Id, Todos);
 
         // Register builtins via the shared factory list.
         foreach (var (factory, operationType, targetExtractor) in BuiltinToolFactories.All)
@@ -393,7 +359,7 @@ public sealed class OxSession : IAsyncDisposable
         }
 
         // Skill tool, bound to the session ID for variable substitution.
-        var skillTool = new SkillTool(_skills, context.SessionId);
+        var skillTool = new SkillTool(_deps.Skills, context.SessionId);
         if (registry.Get(skillTool.Name) is null)
         {
             registry.Register(
@@ -403,7 +369,7 @@ public sealed class OxSession : IAsyncDisposable
         }
 
         // Test-injected overrides (last-write-wins).
-        _additionalTools?.MergeInto(registry);
+        _deps.AdditionalTools?.MergeInto(registry);
 
         return registry;
     }
@@ -424,7 +390,7 @@ public sealed class OxSession : IAsyncDisposable
     /// </summary>
     public CommandResult? ExecuteBuiltInCommand(string commandName, string? args)
     {
-        if (_builtInCommands.Get(commandName) is null)
+        if (_deps.BuiltInCommands.Get(commandName) is null)
             return null;
 
         return commandName.ToLowerInvariant() switch
@@ -448,7 +414,7 @@ public sealed class OxSession : IAsyncDisposable
     /// </summary>
     private CommandResult ExecuteModelCommand(string args)
     {
-        _configuration.SetSelectedModel(args);
+        _deps.Configuration.SetSelectedModel(args);
         return new CommandResult($"Model set to {args}.");
     }
 
@@ -473,7 +439,7 @@ public sealed class OxSession : IAsyncDisposable
         // turn) handles all built-in execution; this branch should never be
         // reached in normal operation but protects against direct RunTurnAsync
         // calls with built-in command text.
-        if (_builtInCommands.Get(commandName) is not null)
+        if (_deps.BuiltInCommands.Get(commandName) is not null)
         {
             _logger.LogInformation("Built-in command /{Name} invoked (not yet implemented)", commandName);
             expansion = null;
@@ -481,7 +447,7 @@ public sealed class OxSession : IAsyncDisposable
         }
 
         var args = SlashCommandParser.ParseArgs(input);
-        var skill = _skills.Get(commandName);
+        var skill = _deps.Skills.Get(commandName);
         if (skill is null || !skill.UserInvocable)
         {
             expansion = null;
@@ -491,57 +457,6 @@ public sealed class OxSession : IAsyncDisposable
         var expanded = SkillExpander.Expand(skill, args, _session.Id);
         expansion = SlashCommandParser.FormatExpansion(commandName, args, expanded);
         return true;
-    }
-
-    /// <summary>
-    /// Builds a TurnCallbacks that wraps the host-provided callback with grant-store
-    /// checking. The wrapped callback is always non-null so that:
-    ///   1. The grant store is consulted on every request (regardless of host callback).
-    ///   2. Auto-deny happens here (not in AgentLoop) so grant checking always runs first.
-    ///
-    /// Decision flow:
-    ///   1. Grant store already covers the request → approve immediately, no prompt.
-    ///   2. No host callback configured → deny without prompting.
-    ///   3. Host callback present → delegate; on durable grant, persist to grant store.
-    /// </summary>
-    private TurnCallbacks BuildWrappedCallbacks()
-    {
-        return new TurnCallbacks
-        {
-            // Pass SubagentEventEmitted through unchanged — the session layer has no
-            // reason to intercept these; they belong entirely to the UI layer.
-            SubagentEventEmitted = _hostCallbacks?.SubagentEventEmitted,
-
-            RequestPermissionAsync = async (request, innerCt) =>
-            {
-                // Grant store covers it — no need to bother the user.
-                if (_grantStore.IsCovered(request))
-                    return new PermissionResponse(true, Scope: null);
-
-                // No host callback: auto-deny.
-                if (_hostCallbacks?.RequestPermissionAsync is null)
-                    return new PermissionResponse(false, Scope: null);
-
-                // Ask the host (CLI prompt, GUI dialog, etc).
-                var response = await _hostCallbacks.RequestPermissionAsync(request, innerCt)
-                    .ConfigureAwait(false);
-
-                // Persist durable grants so the user isn't re-asked next turn (or next session).
-                // Use innerCt here — this I/O is part of the callback's own async operation.
-                if (response is not { Granted: true, Scope: not null and not PermissionScope.Once })
-                    return response;
-
-                var grant = new PermissionGrant(
-                    request.OperationType,
-                    request.Target,
-                    response.Scope.Value,
-                    request.ToolName);
-
-                await _grantStore.StoreAsync(grant, innerCt).ConfigureAwait(false);
-
-                return response;
-            }
-        };
     }
 
     /// <summary>
@@ -560,7 +475,7 @@ public sealed class OxSession : IAsyncDisposable
         {
             try
             {
-                await _sessions.AppendAsync(_session, _messages[persistedCount], ct);
+                await _deps.Sessions.AppendAsync(_session, _messages[persistedCount], ct);
                 IsPersisted = true;
                 persistedCount++;
             }
@@ -627,7 +542,7 @@ public sealed class OxSession : IAsyncDisposable
 
         try
         {
-            await _sessions.WriteMetricsAsync(_session, metrics);
+            await _deps.Sessions.WriteMetricsAsync(_session, metrics);
         }
         catch (Exception ex)
         {

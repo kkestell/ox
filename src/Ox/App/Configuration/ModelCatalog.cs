@@ -18,7 +18,7 @@ namespace Ox.App.Configuration;
 public sealed class ModelCatalog
 {
     private readonly ProviderConfig _providerConfig;
-    private readonly IReadOnlyDictionary<string, IProvider> _providers;
+    private readonly Dictionary<string, IProvider> _providers;
 
     public ModelCatalog(ProviderConfig providerConfig, IEnumerable<IProvider> providers)
     {

@@ -1,3 +1,4 @@
+using Ox.Agent.AgentLoop;
 using Ox.App.Conversation;
 using Ox.Terminal.Rendering;
 
@@ -47,6 +48,68 @@ public sealed class ConversationView
     /// <summary>Find a subagent container entry by its call ID, or null if not found.</summary>
     public SubagentContainerEntry? FindSubagentContainer(string callId) =>
         _entries.OfType<SubagentContainerEntry>().FirstOrDefault(e => e.CallId == callId);
+
+    /// <summary>
+    /// Applies a sub-agent event to the conversation: finds or creates the
+    /// container entry, then appends the inner event as a child so the UI
+    /// surfaces nested activity under its parent.
+    ///
+    /// This lives on the view (rather than on OxApp) because every mutation is
+    /// over the view's own <c>_entries</c> list — it's conversation-shape logic,
+    /// not turn orchestration. Keeping it here matches the existing
+    /// <see cref="FindSubagentContainer"/> helper.
+    /// </summary>
+    public void HandleSubagentEvent(SubagentEvent evt)
+    {
+        // Find or create the container that groups all events from this sub-agent.
+        var container = FindSubagentContainer(evt.SubagentId);
+        if (container is null)
+        {
+            container = new SubagentContainerEntry
+            {
+                CallId = evt.SubagentId,
+                FormattedSignature = $"Subagent({evt.SubagentId})",
+            };
+            AddEntry(container);
+        }
+
+        switch (evt.Inner)
+        {
+            case ResponseChunk chunk:
+                // Coalesce consecutive response chunks into the last assistant
+                // text child so a streamed answer doesn't become a pile of
+                // single-token entries.
+                var lastChild = container.Children.LastOrDefault();
+                if (lastChild is AssistantTextEntry childAssistant)
+                {
+                    childAssistant.Append(chunk.Text);
+                }
+                else
+                {
+                    var newEntry = new AssistantTextEntry();
+                    newEntry.Append(chunk.Text);
+                    container.Children.Add(newEntry);
+                }
+                break;
+
+            case ToolCallStarted toolStart:
+                container.Children.Add(new ToolCallEntry
+                {
+                    CallId = toolStart.CallId,
+                    ToolName = toolStart.ToolName,
+                    FormattedSignature = toolStart.FormatCall(),
+                });
+                break;
+
+            case TurnCompleted:
+                container.Status = ToolCallStatus.Succeeded;
+                break;
+
+            case TurnError error:
+                container.Children.Add(new ErrorEntry(error.Message));
+                break;
+        }
+    }
 
     /// <summary>
     /// Scroll up by the specified number of rows. Disables auto-scroll.
