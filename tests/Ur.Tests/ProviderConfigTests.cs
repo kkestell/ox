@@ -38,7 +38,6 @@ public sealed class ProviderConfigTests : IDisposable
         {
             "providers": {
                 "openai": {
-                    "type": "openai-compatible",
                     "models": [
                         { "name": "GPT-4o", "id": "gpt-4o", "context_in": 128000 }
                     ]
@@ -59,13 +58,11 @@ public sealed class ProviderConfigTests : IDisposable
         {
             "providers": {
                 "openai": {
-                    "type": "openai-compatible",
                     "models": [
                         { "name": "GPT-4o", "id": "gpt-4o", "context_in": 128000 }
                     ]
                 },
                 "google": {
-                    "type": "google",
                     "models": [
                         { "name": "Gemini", "id": "gemini-3.1-pro", "context_in": 1048576 }
                     ]
@@ -108,7 +105,6 @@ public sealed class ProviderConfigTests : IDisposable
         {
             "providers": {
                 "openai": {
-                    "type": "openai-compatible",
                     "models": [
                         { "name": "GPT-4o", "id": "gpt-4o" }
                     ]
@@ -129,7 +125,6 @@ public sealed class ProviderConfigTests : IDisposable
         {
             "providers": {
                 "bad": {
-                    "type": "openai-compatible",
                     "models": [
                         { "name": "Bad Model", "id": "bad-model", "context_in": 0 }
                     ]
@@ -149,7 +144,6 @@ public sealed class ProviderConfigTests : IDisposable
         {
             "providers": {
                 "bad": {
-                    "type": "openai-compatible",
                     "models": [
                         { "name": "Bad", "id": "bad", "context_in": -1 }
                     ]
@@ -169,7 +163,6 @@ public sealed class ProviderConfigTests : IDisposable
         {
             "providers": {
                 "empty": {
-                    "type": "openai-compatible",
                     "models": []
                 }
             }
@@ -190,7 +183,6 @@ public sealed class ProviderConfigTests : IDisposable
         {
             "providers": {
                 "openai": {
-                    "type": "openai-compatible",
                     "url": "https://api.openai.com/v1",
                     "models": [
                         { "name": "GPT-4o", "id": "gpt-4o", "context_in": 128000 }
@@ -204,7 +196,6 @@ public sealed class ProviderConfigTests : IDisposable
         var entry = config.GetEntry("openai");
 
         Assert.NotNull(entry);
-        Assert.Equal("openai-compatible", entry.Type);
         Assert.Equal("https://api.openai.com/v1", entry.Url);
         Assert.Single(entry.Models);
     }
@@ -216,7 +207,6 @@ public sealed class ProviderConfigTests : IDisposable
         {
             "providers": {
                 "openai": {
-                    "type": "openai-compatible",
                     "models": [
                         { "name": "GPT-4o", "id": "gpt-4o", "context_in": 128000 }
                     ]
@@ -239,7 +229,6 @@ public sealed class ProviderConfigTests : IDisposable
         {
             "providers": {
                 "openai": {
-                    "type": "openai-compatible",
                     "models": [
                         { "name": "GPT-4o", "id": "gpt-4o", "context_in": 128000 }
                     ]
@@ -260,7 +249,6 @@ public sealed class ProviderConfigTests : IDisposable
         {
             "providers": {
                 "openai": {
-                    "type": "openai-compatible",
                     "models": [
                         { "name": "GPT-4o", "id": "gpt-4o", "context_in": 128000 }
                     ]
@@ -281,7 +269,6 @@ public sealed class ProviderConfigTests : IDisposable
         {
             "providers": {
                 "openai": {
-                    "type": "openai-compatible",
                     "models": [
                         { "name": "GPT-4o", "id": "gpt-4o", "context_in": 128000 }
                     ]
@@ -303,7 +290,6 @@ public sealed class ProviderConfigTests : IDisposable
         {
             "providers": {
                 "openai": {
-                    "type": "openai-compatible",
                     "models": [
                         { "name": "GPT-4o", "id": "gpt-4o", "context_in": 128000 }
                     ]
@@ -327,7 +313,6 @@ public sealed class ProviderConfigTests : IDisposable
         {
             "providers": {
                 "openai": {
-                    "type": "openai-compatible",
                     "models": [
                         { "name": "GPT-4o", "id": "gpt-4o", "context_in": 128000 },
                         { "name": "GPT-4.1", "id": "gpt-4.1", "context_in": 1047576 }
@@ -353,7 +338,6 @@ public sealed class ProviderConfigTests : IDisposable
         {
             "providers": {
                 "openai": {
-                    "type": "openai-compatible",
                     "models": [
                         { "name": "GPT-4o", "id": "gpt-4o", "context_in": 128000 }
                     ]
@@ -376,13 +360,11 @@ public sealed class ProviderConfigTests : IDisposable
         {
             "providers": {
                 "openai": {
-                    "type": "openai-compatible",
                     "models": [
                         { "name": "GPT-4o", "id": "gpt-4o", "context_in": 128000 }
                     ]
                 },
                 "google": {
-                    "type": "google",
                     "models": [
                         { "name": "Gemini", "id": "gemini-3.1-pro", "context_in": 1048576 }
                     ]
@@ -410,7 +392,6 @@ public sealed class ProviderConfigTests : IDisposable
         {
             "providers": {
                 "openai": {
-                    "type": "openai-compatible",
                     "models": [
                         { "name": "A", "id": "model-a", "context_in": 100 },
                         { "name": "B", "id": "model-b", "context_in": 200 }
@@ -437,7 +418,6 @@ public sealed class ProviderConfigTests : IDisposable
         {
             "providers": {
                 "openrouter": {
-                    "type": "openai-compatible",
                     "url": "https://openrouter.ai/api/v1",
                     "models": [
                         { "name": "Claude", "id": "anthropic/claude-4", "context_in": 200000 }
@@ -461,7 +441,6 @@ public sealed class ProviderConfigTests : IDisposable
         {
             "providers": {
                 "openai": {
-                    "type": "openai-compatible",
                     "models": [
                         { "name": "GPT-4o", "id": "gpt-4o", "context_in": 128000 }
                     ]

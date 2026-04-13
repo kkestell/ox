@@ -28,6 +28,12 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\Ur\Ur.csproj" />
     <ProjectReference Include="..\..\src\Ox\Ox.csproj" />
+    <ProjectReference Include="..\..\src\Ur.Providers.Google\Ur.Providers.Google.csproj" />
+    <ProjectReference Include="..\..\src\Ur.Providers.OpenAI\Ur.Providers.OpenAI.csproj" />
+    <ProjectReference Include="..\..\src\Ur.Providers.OpenRouter\Ur.Providers.OpenRouter.csproj" />
+    <ProjectReference Include="..\..\src\Ur.Providers.Ollama\Ur.Providers.Ollama.csproj" />
+    <ProjectReference Include="..\..\src\Ur.Providers.ZaiCoding\Ur.Providers.ZaiCoding.csproj" />
+    <ProjectReference Include="..\..\src\Ur.Providers.OpenAiCompatible\Ur.Providers.OpenAiCompatible.csproj" />
   </ItemGroup>
 
 </Project>

@@ -2,8 +2,9 @@ using GeminiDotnet;
 using GeminiDotnet.Extensions.AI;
 using Microsoft.Extensions.AI;
 using Ur.Configuration.Keyring;
+using Ur.Providers;
 
-namespace Ur.Providers;
+namespace Ur.Providers.Google;
 
 /// <summary>
 /// Provider for Google's Generative AI (Gemini) models. Uses the AoT-compatible
@@ -12,7 +13,7 @@ namespace Ur.Providers;
 ///
 /// API key is stored in the OS keyring under account "google".
 /// </summary>
-internal sealed class GoogleProvider : IProvider
+public sealed class GoogleProvider : IProvider
 {
     private const string SecretService = "ur";
     private const string KeyringAccount = "google";
@@ -25,6 +26,7 @@ internal sealed class GoogleProvider : IProvider
     }
 
     public string Name => "google";
+    public string DisplayName => "Google";
     public bool RequiresApiKey => true;
 
     public IChatClient CreateChatClient(string model)

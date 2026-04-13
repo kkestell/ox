@@ -28,6 +28,7 @@ public sealed class FakeProvider : IProvider
     private readonly ConcurrentDictionary<string, SharedTurnCounter> _sharedCounters = new();
 
     public string Name => "fake";
+    public string DisplayName => "Fake";
 
     public bool RequiresApiKey => false;
 

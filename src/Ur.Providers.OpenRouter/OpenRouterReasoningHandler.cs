@@ -1,6 +1,6 @@
 using System.Text;
 
-namespace Ur.Providers;
+namespace Ur.Providers.OpenRouter;
 
 /// <summary>
 /// An HTTP <see cref="DelegatingHandler"/> that patches OpenRouter's reasoning-field
@@ -20,8 +20,8 @@ namespace Ur.Providers;
 /// <see cref="Microsoft.Extensions.AI.TextReasoningContent"/> items normally.
 ///
 /// This handler is attached only to the <see cref="HttpClient"/> used by the
-/// OpenRouter <see cref="OpenAiCompatibleProvider"/>, so it never fires for other
-/// providers. Two code paths cover the two response modes:
+/// <see cref="OpenRouterProvider"/>, so it never fires for other providers. Two
+/// code paths cover the two response modes:
 ///   - Non-streaming JSON: the body is buffered, the field name is substituted,
 ///     and the response content is replaced.
 ///   - Streaming SSE (Content-Type: text/event-stream): the response stream is

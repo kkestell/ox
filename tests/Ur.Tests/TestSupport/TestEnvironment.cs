@@ -74,39 +74,27 @@ internal static class TestProviderConfig
         {
           "providers": {
             "openai": {
-              "name": "OpenAI",
-              "type": "openai-compatible",
               "models": [
                 { "name": "GPT-4o", "id": "gpt-4o", "context_in": 128000 }
               ]
             },
             "google": {
-              "name": "Google",
-              "type": "google",
               "models": [
                 { "name": "Gemini 3.1 Pro", "id": "gemini-3.1-pro-preview", "context_in": 1048576 }
               ]
             },
             "ollama": {
-              "name": "Ollama",
-              "type": "ollama",
               "url": "http://localhost:11434",
               "models": [
                 { "name": "Qwen3 4B", "id": "qwen3:4b", "context_in": 40960 }
               ]
             },
             "openrouter": {
-              "name": "OpenRouter",
-              "type": "openai-compatible",
-              "url": "https://openrouter.ai/api/v1",
               "models": [
                 { "name": "Claude 3.5 Sonnet", "id": "anthropic/claude-3.5-sonnet", "context_in": 200000 }
               ]
             },
             "zai-coding": {
-              "name": "Z.AI",
-              "type": "openai-compatible",
-              "url": "https://open.bigmodel.cn/api/paas/v4",
               "models": [
                 { "name": "GLM-4.7", "id": "glm-4.7", "context_in": 200000 }
               ]

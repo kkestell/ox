@@ -10,11 +10,10 @@ namespace Ur.Providers;
 /// provider-specific details (endpoint URIs, SDK types, key resolution) stay
 /// inside the implementation.
 ///
-/// Public so that host applications (Ox) and external consumers can implement
-/// custom providers and register them via standard DI. Concrete implementations
-/// (OpenAiCompatibleProvider, GoogleProvider, OllamaProvider) stay internal —
-/// Ox constructs them via InternalsVisibleTo. External consumers implement this
-/// interface from scratch.
+/// Each built-in provider lives in its own project (e.g. Ur.Providers.Google,
+/// Ur.Providers.OpenAI) so provider-specific NuGet dependencies are isolated.
+/// Ox references all provider projects and registers them via key-based
+/// dispatch from providers.json.
 /// </summary>
 public interface IProvider
 {
@@ -22,6 +21,13 @@ public interface IProvider
     /// The provider prefix used in model IDs (e.g. "openrouter", "ollama", "openai", "google").
     /// </summary>
     string Name { get; }
+
+    /// <summary>
+    /// Human-readable display name shown in the connect wizard and provider list
+    /// (e.g. "OpenAI", "Z.AI Coding Plan"). Providers own their display name so
+    /// it doesn't need to live in providers.json.
+    /// </summary>
+    string DisplayName { get; }
 
     /// <summary>
     /// Creates an <see cref="IChatClient"/> for the given model portion of the ID.

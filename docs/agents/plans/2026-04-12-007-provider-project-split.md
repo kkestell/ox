@@ -95,49 +95,49 @@ Drop the `Name` and `Type` properties from the deserialization model. `name` bec
 
 ### Pre-split refactoring (in Ur, before creating new projects)
 
-- [ ] Remove `Thinking` property from `ProviderModelEntry` in `ProviderConfig.cs`
-- [ ] Remove `DeepSeekThinkingChatClient.cs` from `src/Ur/Providers/`
-- [ ] Remove the `thinkingModelIds` parameter and DeepSeek wrapping logic from `OpenAiCompatibleProvider`
-- [ ] Add `string DisplayName { get; }` to `IProvider`
-- [ ] Implement `DisplayName` on `GoogleProvider` ("Google"), `OllamaProvider` ("Ollama"), `OpenAiCompatibleProvider` (from constructor), `FakeProvider` ("Fake")
-- [ ] Update `OxConfiguration.ListProviders()` to use `IProvider.DisplayName` instead of `ProviderConfigEntry.Name`
-- [ ] Remove `Type` property from `ProviderConfigEntry`; remove `type` from JSON
-- [ ] Make `Name` optional on `ProviderConfigEntry` (only meaningful for custom providers)
-- [ ] Update `ProviderRegistration.cs` to switch on the JSON key instead of `entry.Type`
+- [x] Remove `Thinking` property from `ProviderModelEntry` in `ProviderConfig.cs`
+- [x] Remove `DeepSeekThinkingChatClient.cs` from `src/Ur/Providers/`
+- [x] Remove the `thinkingModelIds` parameter and DeepSeek wrapping logic from `OpenAiCompatibleProvider`
+- [x] Add `string DisplayName { get; }` to `IProvider`
+- [x] Implement `DisplayName` on `GoogleProvider` ("Google"), `OllamaProvider` ("Ollama"), `OpenAiCompatibleProvider` (from constructor), `FakeProvider` ("Fake")
+- [x] Update `OxConfiguration.ListProviders()` to use `IProvider.DisplayName` instead of `ProviderConfigEntry.Name`
+- [x] Remove `Type` property from `ProviderConfigEntry`; remove `type` from JSON
+- [x] Make `Name` optional on `ProviderConfigEntry` (only meaningful for custom providers)
+- [x] Update `ProviderRegistration.cs` to switch on the JSON key instead of `entry.Type`
 
 ### Create provider projects
 
-- [ ] Create `src/Ur.Providers.Google/Ur.Providers.Google.csproj` — references Ur, GeminiDotnet.Extensions.AI
-- [ ] Create `src/Ur.Providers.Google/GoogleProvider.cs` — move from `src/Ur/Providers/GoogleProvider.cs`, make `public`, hardcode `DisplayName` = "Google"
-- [ ] Create `src/Ur.Providers.OpenAI/Ur.Providers.OpenAI.csproj` — references Ur, Microsoft.Extensions.AI.OpenAI
-- [ ] Create `src/Ur.Providers.OpenAI/OpenAiProvider.cs` — new class; default endpoint = null (standard OpenAI), `DisplayName` = "OpenAI", keyring account = "openai". Accepts optional `Uri? endpoint` from JSON for override.
-- [ ] Create `src/Ur.Providers.OpenRouter/Ur.Providers.OpenRouter.csproj` — references Ur, Microsoft.Extensions.AI.OpenAI
-- [ ] Create `src/Ur.Providers.OpenRouter/OpenRouterProvider.cs` — default endpoint = `https://openrouter.ai/api/v1`, `DisplayName` = "OpenRouter", keyring account = "openrouter". Accepts optional `Uri? endpoint` from JSON for override.
-- [ ] Create `src/Ur.Providers.Ollama/Ur.Providers.Ollama.csproj` — references Ur, OllamaSharp
-- [ ] Create `src/Ur.Providers.Ollama/OllamaProvider.cs` — move from `src/Ur/Providers/OllamaProvider.cs`, make `public`, hardcode `DisplayName` = "Ollama", default endpoint = `http://localhost:11434`
-- [ ] Create `src/Ur.Providers.ZaiCoding/Ur.Providers.ZaiCoding.csproj` — references Ur, Microsoft.Extensions.AI.OpenAI
-- [ ] Create `src/Ur.Providers.ZaiCoding/ZaiCodingProvider.cs` — default endpoint = `https://api.z.ai/api/coding/paas/v4`, `DisplayName` = "Z.AI Coding Plan", keyring account = "zai-coding"
-- [ ] Create `src/Ur.Providers.OpenAiCompatible/Ur.Providers.OpenAiCompatible.csproj` — references Ur, Microsoft.Extensions.AI.OpenAI
-- [ ] Create `src/Ur.Providers.OpenAiCompatible/OpenAiCompatibleProvider.cs` — generic fallback for custom providers. Constructor takes name, displayName, endpoint (required), keyring. `DisplayName` from JSON `name` field or key.
+- [x] Create `src/Ur.Providers.Google/Ur.Providers.Google.csproj` — references Ur, GeminiDotnet.Extensions.AI
+- [x] Create `src/Ur.Providers.Google/GoogleProvider.cs` — move from `src/Ur/Providers/GoogleProvider.cs`, make `public`, hardcode `DisplayName` = "Google"
+- [x] Create `src/Ur.Providers.OpenAI/Ur.Providers.OpenAI.csproj` — references Ur, Microsoft.Extensions.AI.OpenAI
+- [x] Create `src/Ur.Providers.OpenAI/OpenAiProvider.cs` — new class; default endpoint = null (standard OpenAI), `DisplayName` = "OpenAI", keyring account = "openai". Accepts optional `Uri? endpoint` from JSON for override.
+- [x] Create `src/Ur.Providers.OpenRouter/Ur.Providers.OpenRouter.csproj` — references Ur, Microsoft.Extensions.AI.OpenAI
+- [x] Create `src/Ur.Providers.OpenRouter/OpenRouterProvider.cs` — default endpoint = `https://openrouter.ai/api/v1`, `DisplayName` = "OpenRouter", keyring account = "openrouter". Accepts optional `Uri? endpoint` from JSON for override.
+- [x] Create `src/Ur.Providers.Ollama/Ur.Providers.Ollama.csproj` — references Ur, OllamaSharp
+- [x] Create `src/Ur.Providers.Ollama/OllamaProvider.cs` — move from `src/Ur/Providers/OllamaProvider.cs`, make `public`, hardcode `DisplayName` = "Ollama", default endpoint = `http://localhost:11434`
+- [x] Create `src/Ur.Providers.ZaiCoding/Ur.Providers.ZaiCoding.csproj` — references Ur, Microsoft.Extensions.AI.OpenAI
+- [x] Create `src/Ur.Providers.ZaiCoding/ZaiCodingProvider.cs` — default endpoint = `https://api.z.ai/api/coding/paas/v4`, `DisplayName` = "Z.AI Coding Plan", keyring account = "zai-coding"
+- [x] Create `src/Ur.Providers.OpenAiCompatible/Ur.Providers.OpenAiCompatible.csproj` — references Ur, Microsoft.Extensions.AI.OpenAI
+- [x] Create `src/Ur.Providers.OpenAiCompatible/OpenAiCompatibleProvider.cs` — generic fallback for custom providers. Constructor takes name, displayName, endpoint (required), keyring. `DisplayName` from JSON `name` field or key.
 
 ### Wire up and clean up
 
-- [ ] Add all six provider projects to `Ox.slnx`
-- [ ] Add `ProjectReference` entries to `src/Ox/Ox.csproj` for all six provider projects
-- [ ] Update `ProviderRegistration.cs` — key-based switch: `"openai"` → `OpenAiProvider`, `"google"` → `GoogleProvider`, `"openrouter"` → `OpenRouterProvider`, `"ollama"` → `OllamaProvider`, `"zai-coding"` → `ZaiCodingProvider`, default → `OpenAiCompatibleProvider`. Pass optional `entry.Endpoint` to built-in providers that accept URL overrides.
-- [ ] Remove old provider files from `src/Ur/Providers/`: `GoogleProvider.cs`, `OllamaProvider.cs`, `OpenAiCompatibleProvider.cs`
-- [ ] Remove provider-specific NuGet packages from `src/Ur/Ur.csproj`: `GeminiDotnet.Extensions.AI`, `Microsoft.Extensions.AI.OpenAI`, `OllamaSharp`
-- [ ] Ur.csproj keeps `Microsoft.Extensions.AI` (the abstraction, not the OpenAI binding)
-- [ ] Remove `InternalsVisibleTo("Ox")` from Ur if it was only needed for provider construction
-- [ ] Update `providers.json` to remove `name` and `type` fields from all entries. Add `name` to the custom-provider example.
-- [ ] Update `docs/development/adding-llm-providers.md` for the new architecture
+- [x] Add all six provider projects to `Ox.slnx`
+- [x] Add `ProjectReference` entries to `src/Ox/Ox.csproj` for all six provider projects
+- [x] Update `ProviderRegistration.cs` — key-based switch: `"openai"` → `OpenAiProvider`, `"google"` → `GoogleProvider`, `"openrouter"` → `OpenRouterProvider`, `"ollama"` → `OllamaProvider`, `"zai-coding"` → `ZaiCodingProvider`, default → `OpenAiCompatibleProvider`. Pass optional `entry.Endpoint` to built-in providers that accept URL overrides.
+- [x] Remove old provider files from `src/Ur/Providers/`: `GoogleProvider.cs`, `OllamaProvider.cs`, `OpenAiCompatibleProvider.cs`
+- [x] Remove provider-specific NuGet packages from `src/Ur/Ur.csproj`: `GeminiDotnet.Extensions.AI`, `Microsoft.Extensions.AI.OpenAI`, `OllamaSharp`
+- [x] Ur.csproj keeps `Microsoft.Extensions.AI` (the abstraction, not the OpenAI binding)
+- [x] Remove `InternalsVisibleTo("Ox")` from Ur if it was only needed for provider construction
+- [x] Update `providers.json` to remove `name` and `type` fields from all entries. Add `name` to the custom-provider example.
+- [x] Update `docs/development/adding-llm-providers.md` for the new architecture
 
 ### Test updates
 
-- [ ] Update any Ur.Tests that reference moved provider classes to use the new namespaces/projects
-- [ ] Add test project references if Ur.Tests needs to test individual provider projects
-- [ ] Verify `dotnet build` succeeds for the full solution
-- [ ] Verify boo smoke tests pass
+- [x] Update any Ur.Tests that reference moved provider classes to use the new namespaces/projects
+- [x] Add test project references if Ur.Tests needs to test individual provider projects
+- [x] Verify `dotnet build` succeeds for the full solution
+- [x] Verify boo smoke tests pass
 
 ## Impact assessment
 

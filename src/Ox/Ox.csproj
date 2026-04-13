@@ -14,6 +14,12 @@
     <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.5" />
     <ProjectReference Include="..\Te\Te.csproj" />
     <ProjectReference Include="..\Ur\Ur.csproj" />
+    <ProjectReference Include="..\Ur.Providers.Google\Ur.Providers.Google.csproj" />
+    <ProjectReference Include="..\Ur.Providers.OpenAI\Ur.Providers.OpenAI.csproj" />
+    <ProjectReference Include="..\Ur.Providers.OpenRouter\Ur.Providers.OpenRouter.csproj" />
+    <ProjectReference Include="..\Ur.Providers.Ollama\Ur.Providers.Ollama.csproj" />
+    <ProjectReference Include="..\Ur.Providers.ZaiCoding\Ur.Providers.ZaiCoding.csproj" />
+    <ProjectReference Include="..\Ur.Providers.OpenAiCompatible\Ur.Providers.OpenAiCompatible.csproj" />
   </ItemGroup>
 
 </Project>

@@ -5,15 +5,18 @@ direct, Azure OpenAI, Mistral, etc.) to Ox.
 
 ## Architecture Overview
 
-The provider system spans two layers:
+The provider system spans three layers:
 
 - **Ur (library)** — owns `IProvider`, `ProviderRegistry`, `ModelId`, and
   `UrHost.CreateChatClient()`. Ur doesn't know which providers exist or what
   models they offer — it dispatches by provider name prefix.
+- **Provider projects** (`src/Ur.Providers.*`) — each provider lives in its
+  own project. References Ur for `IProvider` and `IKeyring`. Contains the
+  SDK package dependency and `IChatClient` construction logic.
 - **Ox (application)** — owns `providers.json`, `ProviderConfig`,
-  `OxConfiguration`, and the type-switch that constructs concrete providers.
-  Ox decides which providers to register and provides model catalog queries
-  (listing, context windows) to the TUI.
+  `OxConfiguration`, and the key-based dispatch in `ProviderRegistration`
+  that constructs concrete providers. Ox references all provider projects
+  and decides which providers to register.
 
 ```
 User selects model: "anthropic/claude-sonnet-4-20250514"
@@ -40,17 +43,17 @@ construct and configure the right `IChatClient` — the rest of the system
 
 ## Two Ways to Add a Provider
 
-### Option A: Built-in provider type (via providers.json)
+### Option A: Custom endpoint using an existing protocol
 
 If the new provider uses a supported protocol (OpenAI-compatible, Google AI,
-or Ollama), you can add it to `providers.json` without writing any code:
+or Ollama), you can add it to `providers.json` as a new key. Providers whose
+key doesn't match a built-in name fall through to `OpenAiCompatibleProvider`,
+which works with any OpenAI-protocol API:
 
 ```json
 {
   "providers": {
     "anthropic": {
-      "name": "Anthropic",
-      "type": "openai-compatible",
       "url": "https://api.anthropic.com/v1",
       "models": [
         { "name": "Claude Sonnet 4", "id": "claude-sonnet-4-20250514", "context_in": 200000 }
@@ -60,29 +63,50 @@ or Ollama), you can add it to `providers.json` without writing any code:
 }
 ```
 
-Ox's `ProviderRegistration.AddProvidersFromConfig()` reads these entries and
-constructs the appropriate concrete provider class. The type-switch supports:
-- `"openai-compatible"` → `OpenAiCompatibleProvider` (works with any OpenAI-compatible API)
-- `"google"` → `GoogleProvider` (Google AI / Gemini)
+Built-in provider keys with dedicated implementations:
+- `"openai"` → `OpenAiProvider` (OpenAI with defaults)
+- `"google"` → `GoogleProvider` (Google AI / Gemini via GeminiDotnet)
 - `"ollama"` → `OllamaProvider` (local Ollama daemon)
+- `"openrouter"` → `OpenRouterProvider` (OpenRouter with reasoning field handler)
+- `"zai-coding"` → `ZaiCodingProvider` (Z.AI Coding Plan API)
+
+Any other key → `OpenAiCompatibleProvider` (requires `"url"` in the entry).
 
 ### Option B: Custom `IProvider` implementation
 
-For providers that need custom SDK integration, implement `IProvider` in Ur
-and register it in Ox's DI.
+For providers that need a custom SDK or special behavior (like OpenRouter's
+reasoning field renaming), create a dedicated provider project.
 
-#### 1. Create the Provider Class
+#### 1. Create the Provider Project
 
-Add a new file in `src/Ur/Providers/` (e.g., `AnthropicProvider.cs`).
-Implement `IProvider`:
+Create a new project `src/Ur.Providers.Anthropic/`:
 
+**`Ur.Providers.Anthropic.csproj`:**
+```xml
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../Ur/Ur.csproj" />
+    <PackageReference Include="Anthropic.SDK" Version="..." />
+  </ItemGroup>
+</Project>
+```
+
+**`AnthropicProvider.cs`:**
 ```csharp
 using Microsoft.Extensions.AI;
 using Ur.Configuration.Keyring;
+using Ur.Providers;
 
-namespace Ur.Providers;
+namespace Ur.Providers.Anthropic;
 
-internal sealed class AnthropicProvider : IProvider
+/// <summary>
+/// Anthropic direct API provider. Uses the Anthropic SDK to construct
+/// IChatClient instances for Claude models.
+/// </summary>
+public sealed class AnthropicProvider : IProvider
 {
     private const string SecretService = "ur";
     private const string KeyringAccount = "anthropic";
@@ -92,6 +116,7 @@ internal sealed class AnthropicProvider : IProvider
     public AnthropicProvider(IKeyring keyring) => _keyring = keyring;
 
     public string Name => "anthropic";
+    public string DisplayName => "Anthropic";
     public bool RequiresApiKey => true;
 
     public IChatClient CreateChatClient(string model)
@@ -114,13 +139,10 @@ internal sealed class AnthropicProvider : IProvider
 }
 ```
 
-Concrete provider classes stay `internal` to Ur — Ox constructs them via
-`InternalsVisibleTo("Ox")`. External consumers who want a truly custom
-provider implement the public `IProvider` interface from scratch.
+#### 2. Wire Up in Ox
 
-#### 2. Register in Ox
-
-Add a case to the type-switch in `src/Ox/Configuration/ProviderRegistration.cs`:
+1. Add the project to `Ox.slnx` and add a `<ProjectReference>` in `src/Ox/Ox.csproj`.
+2. Add a case to the key-based dispatch in `src/Ox/Configuration/ProviderRegistration.cs`:
 
 ```csharp
 case "anthropic":
@@ -129,22 +151,19 @@ case "anthropic":
     break;
 ```
 
-Then add the provider to `providers.json` with `"type": "anthropic"` and
-its model list.
+3. Add the provider entry to `providers.json` with its model list.
 
-#### 3. Add the NuGet Package
+#### 3. Add Test References
 
-If your provider depends on an SDK package, add it to `src/Ur/Ur.csproj`:
-
-```bash
-dotnet add src/Ur/Ur.csproj package Anthropic.SDK
-```
+Add a `<ProjectReference>` to `tests/Ur.Tests/Ur.Tests.csproj` and write
+unit tests against the provider.
 
 ## IProvider Interface Reference
 
 | Member | Purpose |
 | --- | --- |
-| `string Name` | Provider prefix used in model IDs (e.g., `"anthropic"`). Must be unique. |
+| `string Name` | Provider prefix used in model IDs (e.g., `"anthropic"`). Must match the key in providers.json. |
+| `string DisplayName` | Human-readable name (e.g., `"Anthropic"`). Shown in the TUI wizard. |
 | `bool RequiresApiKey` | Whether the provider needs an API key. Affects readiness checks and wizard. |
 | `IChatClient CreateChatClient(string model)` | Creates a chat client for the given model portion of the ID. |
 | `string? GetBlockingIssue()` | Returns `null` if ready, or a human-readable issue string. |
@@ -195,8 +214,8 @@ public string? GetBlockingIssue() => null;
 
 ### Unit Tests
 
-Add tests to `tests/Ur.Tests/`. Providers are testable in isolation by
-mocking `IKeyring`:
+Add tests to `tests/Ur.Tests/` and a `<ProjectReference>` to the provider
+project. Providers are testable in isolation by mocking `IKeyring`:
 
 ```csharp
 [Fact]
@@ -229,11 +248,13 @@ See `src/Ur/Providers/Fake/` for the fake provider and scenario system.
 
 When adding a new provider, verify:
 
-- [ ] Add provider entry to `providers.json` with type, models, and context windows
-- [ ] If custom SDK integration needed: implement `IProvider` in `src/Ur/Providers/`
-- [ ] If custom type: add case to `ProviderRegistration.AddProvidersFromConfig()`
-- [ ] Choose a unique, lowercase `Name` (used as the provider prefix in model IDs)
-- [ ] Add NuGet package(s) to `src/Ur/Ur.csproj` if needed
+- [ ] Create project `src/Ur.Providers.YourProvider/` with `.csproj` referencing Ur
+- [ ] Implement `IProvider` with `Name`, `DisplayName`, `RequiresApiKey`, `CreateChatClient()`, `GetBlockingIssue()`
+- [ ] Add the project to `Ox.slnx`
+- [ ] Add `<ProjectReference>` in `src/Ox/Ox.csproj`
+- [ ] Add dispatch case in `ProviderRegistration.AddProvidersFromConfig()`
+- [ ] Add provider entry to `providers.json` with models and context windows
+- [ ] Add `<ProjectReference>` in `tests/Ur.Tests/Ur.Tests.csproj`
 - [ ] Add unit tests to `tests/Ur.Tests/`
 - [ ] Verify the provider appears in `ProviderRegistry.ProviderNames` at startup
 - [ ] Test with a model ID in `"provider/model"` format

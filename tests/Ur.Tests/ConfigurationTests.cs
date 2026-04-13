@@ -2,6 +2,12 @@ using System.Text.Json;
 using Ox.Configuration;
 using Ur.Configuration;
 using Ur.Hosting;
+using Ur.Providers;
+using Ur.Providers.Google;
+using Ur.Providers.Ollama;
+using Ur.Providers.OpenAI;
+using Ur.Providers.OpenRouter;
+using Ur.Providers.ZaiCoding;
 using Ur.Settings;
 using Ur.Tests.TestSupport;
 
@@ -270,14 +276,23 @@ public sealed class ConfigurationTests : IDisposable
     [Fact]
     public void ListProviders_UsesConfiguredDisplayNamesIncludingZai()
     {
+        var keyring = new TestKeyring();
         var config = TestProviderConfig.CreateDefault();
-        var oxConfig = new OxConfiguration(config, []);
+        IProvider[] providers =
+        [
+            new OpenAiProvider(keyring),
+            new GoogleProvider(keyring),
+            new OllamaProvider(),
+            new OpenRouterProvider(keyring),
+            new ZaiCodingProvider(keyring),
+        ];
+        var oxConfig = new OxConfiguration(config, providers);
 
-        var providers = oxConfig.ListProviders();
+        var providerList = oxConfig.ListProviders();
 
         Assert.Equal(
-            ["OpenAI", "Google", "Ollama", "OpenRouter", "Z.AI"],
-            providers.Select(p => p.DisplayName).ToArray());
+            ["OpenAI", "Google", "Ollama", "OpenRouter", "Z.AI Coding Plan"],
+            providerList.Select(p => p.DisplayName).ToArray());
     }
 
     // ─── Helpers ──────────────────────────────────────────────────────

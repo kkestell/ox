@@ -1,4 +1,6 @@
 using Ur.Providers;
+using Ur.Providers.OpenAI;
+using Ur.Providers.OpenRouter;
 using Ur.Tests.TestSupport;
 
 namespace Ur.Tests;
@@ -13,7 +15,7 @@ public sealed class ProviderRegistryTests
     {
         var registry = new ProviderRegistry();
         var keyring = new TestKeyring();
-        var provider = new OpenAiCompatibleProvider("openrouter", new Uri("https://openrouter.ai/api/v1"), keyring);
+        var provider = new OpenRouterProvider(keyring);
         registry.Register(provider);
 
         var result = registry.Get("openrouter");
@@ -35,7 +37,7 @@ public sealed class ProviderRegistryTests
     {
         var registry = new ProviderRegistry();
         var keyring = new TestKeyring();
-        registry.Register(new OpenAiCompatibleProvider("openrouter", new Uri("https://openrouter.ai/api/v1"), keyring));
+        registry.Register(new OpenRouterProvider(keyring));
 
         Assert.NotNull(registry.Get("OpenRouter"));
         Assert.NotNull(registry.Get("OPENROUTER"));
@@ -46,10 +48,10 @@ public sealed class ProviderRegistryTests
     {
         var registry = new ProviderRegistry();
         var keyring = new TestKeyring();
-        registry.Register(new OpenAiCompatibleProvider("openrouter", null, keyring));
+        registry.Register(new OpenAiProvider(keyring));
 
         Assert.Throws<InvalidOperationException>(() =>
-            registry.Register(new OpenAiCompatibleProvider("openrouter", null, keyring)));
+            registry.Register(new OpenAiProvider(keyring)));
     }
 
     [Fact]
@@ -57,8 +59,8 @@ public sealed class ProviderRegistryTests
     {
         var registry = new ProviderRegistry();
         var keyring = new TestKeyring();
-        registry.Register(new OpenAiCompatibleProvider("openrouter", null, keyring));
-        registry.Register(new OpenAiCompatibleProvider("openai", null, keyring));
+        registry.Register(new OpenRouterProvider(keyring));
+        registry.Register(new OpenAiProvider(keyring));
 
         Assert.Contains("openrouter", registry.ProviderNames);
         Assert.Contains("openai", registry.ProviderNames);

@@ -153,21 +153,20 @@ internal sealed class ProviderConfigRoot
 }
 
 /// <summary>
-/// A single provider entry from providers.json. Declares the provider type,
-/// optional custom endpoint URL, and the list of available models.
+/// A single provider entry from providers.json. Declares an optional custom
+/// endpoint URL, optional display name, and the list of available models.
+/// The provider type is determined by the JSON key (key-based dispatch in
+/// <see cref="ProviderRegistration"/>), not by a type field.
 /// </summary>
 public sealed class ProviderConfigEntry
 {
     /// <summary>
-    /// Human-readable display name for the provider (e.g. "OpenAI", "Z.AI Coding Plan").
-    /// Used by the connect wizard's provider selection step. Falls back to the provider
-    /// key when absent so old providers.json files continue to work.
+    /// Optional human-readable display name for custom providers (e.g. "My Custom LLM").
+    /// Built-in providers ignore this — they get their display name from
+    /// <see cref="IProvider.DisplayName"/>. Falls back to the provider key when absent.
     /// </summary>
     [JsonPropertyName("name")]
     public string? Name { get; set; }
-
-    [JsonPropertyName("type")]
-    public string Type { get; set; } = "";
 
     [JsonPropertyName("url")]
     public string? Url { get; set; }

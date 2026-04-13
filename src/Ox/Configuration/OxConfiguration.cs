@@ -36,14 +36,17 @@ public sealed class OxConfiguration
     /// <summary>
     /// Returns all configured providers as (key, display name) pairs in the order
     /// they appear in providers.json. Used by the connect wizard's provider step.
+    /// Display names come from the live <see cref="IProvider.DisplayName"/> property
+    /// so providers own their human-readable name instead of duplicating it in JSON.
     /// </summary>
     public IReadOnlyList<(string Key, string DisplayName)> ListProviders()
     {
         return _providerConfig.ProviderNames
             .Select(key =>
             {
-                var entry = _providerConfig.GetEntry(key);
-                var displayName = !string.IsNullOrEmpty(entry?.Name) ? entry.Name : key;
+                // Prefer the live provider's DisplayName; fall back to the config key
+                // for providers that aren't registered (shouldn't normally happen).
+                var displayName = _providers.TryGetValue(key, out var p) ? p.DisplayName : key;
                 return (key, displayName);
             })
             .ToList();

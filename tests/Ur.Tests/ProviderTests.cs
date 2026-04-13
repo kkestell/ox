@@ -1,4 +1,10 @@
 using Ur.Providers;
+using Ur.Providers.Google;
+using Ur.Providers.Ollama;
+using Ur.Providers.OpenAI;
+using Ur.Providers.OpenAiCompatible;
+using Ur.Providers.OpenRouter;
+using Ur.Providers.ZaiCoding;
 using Ur.Tests.TestSupport;
 
 namespace Ur.Tests;
@@ -7,19 +13,19 @@ namespace Ur.Tests;
 /// Tests for individual <see cref="IProvider"/> implementations — focusing on
 /// <see cref="IProvider.GetBlockingIssue"/> behavior with and without API keys/settings.
 ///
-/// After the providers.json migration, OpenAI, OpenRouter, and ZaiCoding are all
-/// backed by <see cref="OpenAiCompatibleProvider"/>. Google and Ollama keep their
-/// dedicated implementations.
+/// Each built-in provider (OpenAI, OpenRouter, Google, Ollama, ZaiCoding) lives in
+/// its own project. The generic <see cref="OpenAiCompatibleProvider"/> serves as
+/// a fallback for custom OpenAI-protocol providers.
 /// </summary>
 public sealed class ProviderTests
 {
-    // ─── OpenAiCompatibleProvider (generic) ──────────────────────────
+    // ─── OpenAiProvider ─────────────────────────────────────────────
 
     [Fact]
-    public void OpenAiCompatible_WithoutApiKey_ReportsBlockingIssue()
+    public void OpenAi_WithoutApiKey_ReportsBlockingIssue()
     {
         var keyring = new TestKeyring();
-        var provider = new OpenAiCompatibleProvider("openai", null, keyring);
+        var provider = new OpenAiProvider(keyring);
 
         var issue = provider.GetBlockingIssue();
 
@@ -28,29 +34,36 @@ public sealed class ProviderTests
     }
 
     [Fact]
-    public void OpenAiCompatible_WithApiKey_ReportsNoBlockingIssue()
+    public void OpenAi_WithApiKey_ReportsNoBlockingIssue()
     {
         var keyring = new TestKeyring();
         keyring.SetSecret("ur", "openai", "sk-test-key");
-        var provider = new OpenAiCompatibleProvider("openai", null, keyring);
+        var provider = new OpenAiProvider(keyring);
 
         Assert.Null(provider.GetBlockingIssue());
     }
 
     [Fact]
-    public void OpenAiCompatible_RequiresApiKey()
+    public void OpenAi_RequiresApiKey()
     {
-        var provider = new OpenAiCompatibleProvider("openai", null, new TestKeyring());
+        var provider = new OpenAiProvider(new TestKeyring());
         Assert.True(provider.RequiresApiKey);
     }
 
     [Fact]
-    public void OpenAiCompatible_CustomEndpoint_ReportsBlockingIssue()
+    public void OpenAi_HasCorrectDisplayName()
     {
-        // OpenRouter-style provider with custom endpoint but no key.
+        var provider = new OpenAiProvider(new TestKeyring());
+        Assert.Equal("OpenAI", provider.DisplayName);
+    }
+
+    // ─── OpenRouterProvider ─────────────────────────────────────────
+
+    [Fact]
+    public void OpenRouter_WithoutApiKey_ReportsBlockingIssue()
+    {
         var keyring = new TestKeyring();
-        var provider = new OpenAiCompatibleProvider(
-            "openrouter", new Uri("https://openrouter.ai/api/v1"), keyring);
+        var provider = new OpenRouterProvider(keyring);
 
         var issue = provider.GetBlockingIssue();
 
@@ -59,12 +72,61 @@ public sealed class ProviderTests
     }
 
     [Fact]
-    public void OpenAiCompatible_CustomEndpoint_WithApiKey_ReportsNoBlockingIssue()
+    public void OpenRouter_WithApiKey_ReportsNoBlockingIssue()
     {
         var keyring = new TestKeyring();
         keyring.SetSecret("ur", "openrouter", "sk-test-key");
+        var provider = new OpenRouterProvider(keyring);
+
+        Assert.Null(provider.GetBlockingIssue());
+    }
+
+    // ─── ZaiCodingProvider ──────────────────────────────────────────
+
+    [Fact]
+    public void ZaiCoding_WithoutApiKey_ReportsBlockingIssue()
+    {
+        var keyring = new TestKeyring();
+        var provider = new ZaiCodingProvider(keyring);
+
+        var issue = provider.GetBlockingIssue();
+
+        Assert.NotNull(issue);
+        Assert.Contains("zai-coding", issue);
+    }
+
+    [Fact]
+    public void ZaiCoding_WithApiKey_ReportsNoBlockingIssue()
+    {
+        var keyring = new TestKeyring();
+        keyring.SetSecret("ur", "zai-coding", "sk-test-key");
+        var provider = new ZaiCodingProvider(keyring);
+
+        Assert.Null(provider.GetBlockingIssue());
+    }
+
+    // ─── OpenAiCompatibleProvider (custom fallback) ─────────────────
+
+    [Fact]
+    public void OpenAiCompatible_CustomEndpoint_WithoutApiKey_ReportsBlockingIssue()
+    {
+        var keyring = new TestKeyring();
         var provider = new OpenAiCompatibleProvider(
-            "openrouter", new Uri("https://openrouter.ai/api/v1"), keyring);
+            "custom-provider", "Custom Provider", new Uri("https://custom.example.com/v1"), keyring);
+
+        var issue = provider.GetBlockingIssue();
+
+        Assert.NotNull(issue);
+        Assert.Contains("custom-provider", issue);
+    }
+
+    [Fact]
+    public void OpenAiCompatible_CustomEndpoint_WithApiKey_ReportsNoBlockingIssue()
+    {
+        var keyring = new TestKeyring();
+        keyring.SetSecret("ur", "custom-provider", "sk-test-key");
+        var provider = new OpenAiCompatibleProvider(
+            "custom-provider", "Custom Provider", new Uri("https://custom.example.com/v1"), keyring);
 
         Assert.Null(provider.GetBlockingIssue());
     }
@@ -72,23 +134,23 @@ public sealed class ProviderTests
     [Fact]
     public void OpenAiCompatible_CreateChatClient_WithCustomEndpoint_ReturnsNonNull()
     {
-        // Verifies that the OpenAI SDK constructor accepts the custom endpoint.
         var keyring = new TestKeyring();
-        keyring.SetSecret("ur", "zai-coding", "sk-test-key");
+        keyring.SetSecret("ur", "custom-provider", "sk-test-key");
         var provider = new OpenAiCompatibleProvider(
-            "zai-coding", new Uri("https://open.bigmodel.cn/api/paas/v4"), keyring);
+            "custom-provider", "Custom Provider", new Uri("https://custom.example.com/v1"), keyring);
 
-        var client = provider.CreateChatClient("glm-4.7");
+        var client = provider.CreateChatClient("test-model");
         Assert.NotNull(client);
     }
 
     [Fact]
-    public void OpenAiCompatible_NameMatchesConstructorArg()
+    public void OpenAiCompatible_NameAndDisplayNameFromConstructor()
     {
         var keyring = new TestKeyring();
-        Assert.Equal("openai", new OpenAiCompatibleProvider("openai", null, keyring).Name);
-        Assert.Equal("openrouter", new OpenAiCompatibleProvider("openrouter", new Uri("https://openrouter.ai/api/v1"), keyring).Name);
-        Assert.Equal("zai-coding", new OpenAiCompatibleProvider("zai-coding", new Uri("https://open.bigmodel.cn/api/paas/v4"), keyring).Name);
+        var provider = new OpenAiCompatibleProvider(
+            "my-provider", "My Custom LLM", new Uri("https://example.com/v1"), keyring);
+        Assert.Equal("my-provider", provider.Name);
+        Assert.Equal("My Custom LLM", provider.DisplayName);
     }
 
     // ─── GoogleProvider ─────────────────────────────────────────────
@@ -149,8 +211,7 @@ public sealed class ProviderTests
     [Fact]
     public void Ollama_CreateChatClient_ReturnsNonNull()
     {
-        // OllamaProvider now takes name + endpoint directly.
-        var provider = new OllamaProvider("ollama", new Uri("http://localhost:11434"));
+        var provider = new OllamaProvider(new Uri("http://localhost:11434"));
         var client = provider.CreateChatClient("test-model");
         Assert.NotNull(client);
     }
@@ -158,11 +219,11 @@ public sealed class ProviderTests
     // ─── Whitespace-only API key ────────────────────────────────────
 
     [Fact]
-    public void OpenAiCompatible_WhitespaceOnlyKey_ReportsBlockingIssue()
+    public void OpenAi_WhitespaceOnlyKey_ReportsBlockingIssue()
     {
         var keyring = new TestKeyring();
         keyring.SetSecret("ur", "openai", "   ");
-        var provider = new OpenAiCompatibleProvider("openai", null, keyring);
+        var provider = new OpenAiProvider(keyring);
 
         Assert.NotNull(provider.GetBlockingIssue());
     }
@@ -196,14 +257,14 @@ public sealed class ProviderTests
     }
 
     [Fact]
-    public async Task DI_OpenAiCompatible_ProvidersHaveCorrectType()
+    public async Task DI_ProvidersHaveCorrectRequiresApiKey()
     {
         using var workspace = new TempWorkspace();
         var host = await TestHostBuilder.CreateHostAsync(workspace);
 
         var registry = host.Configuration.ProviderRegistry;
 
-        // openai, openrouter, zai-coding should all be OpenAiCompatibleProvider.
+        // openai, openrouter, zai-coding all require API keys.
         Assert.True(registry.Get("openai")!.RequiresApiKey);
         Assert.True(registry.Get("openrouter")!.RequiresApiKey);
         Assert.True(registry.Get("zai-coding")!.RequiresApiKey);

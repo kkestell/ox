@@ -1,7 +1,7 @@
 using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
-using Ur.Providers;
+using Ur.Providers.OpenRouter;
 
 namespace Ur.Tests;
 

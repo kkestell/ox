@@ -1,5 +1,11 @@
 <Solution>
   <Project Path="src/Ur/Ur.csproj" />
+  <Project Path="src/Ur.Providers.Google/Ur.Providers.Google.csproj" />
+  <Project Path="src/Ur.Providers.OpenAI/Ur.Providers.OpenAI.csproj" />
+  <Project Path="src/Ur.Providers.OpenRouter/Ur.Providers.OpenRouter.csproj" />
+  <Project Path="src/Ur.Providers.Ollama/Ur.Providers.Ollama.csproj" />
+  <Project Path="src/Ur.Providers.ZaiCoding/Ur.Providers.ZaiCoding.csproj" />
+  <Project Path="src/Ur.Providers.OpenAiCompatible/Ur.Providers.OpenAiCompatible.csproj" />
   <Project Path="src/Ox/Ox.csproj" />
   <Project Path="tests/Ur.Tests/Ur.Tests.csproj" />
   <Project Path="src/Te/Te.csproj" />
