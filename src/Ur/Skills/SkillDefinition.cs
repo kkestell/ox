@@ -54,9 +54,9 @@ public sealed class SkillDefinition
     /// <summary>The raw markdown body below the frontmatter — the actual prompt template.</summary>
     public required string Content { get; init; }
 
-    /// <summary>Absolute path to the skill's directory on disk (used for ${UR_SKILL_DIR} expansion).</summary>
+    /// <summary>Absolute path to the skill's directory on disk (used for ${OX_SKILL_DIR} expansion).</summary>
     public required string SkillDirectory { get; init; }
 
-    /// <summary>Where this skill was loaded from: "user" (~/.ur/skills/) or "workspace" (.ur/skills/).</summary>
+    /// <summary>Where this skill was loaded from: "user" (~/.ox/skills/) or "workspace" (.ox/skills/).</summary>
     public required string Source { get; init; }
 }

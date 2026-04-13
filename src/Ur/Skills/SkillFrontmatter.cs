@@ -28,7 +28,7 @@ internal static class SkillFrontmatter
     {
         var (frontmatter, body) = SplitFrontmatter(fileContent);
 
-        // Derive a fallback name from the directory (e.g. "/home/user/.ur/skills/commit" → "commit").
+        // Derive a fallback name from the directory (e.g. "/home/user/.ox/skills/commit" → "commit").
         var fileName = Path.GetFileName(skillDirectory);
         var directoryName = string.IsNullOrEmpty(fileName) ? "unknown" : fileName;
 

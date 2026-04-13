@@ -53,6 +53,13 @@ public sealed class OpenRouterProvider : IProvider
             .AsIChatClient();
     }
 
+    public void ConfigureChatOptions(string model, ChatOptions options)
+    {
+        // OpenRouter forwards reasoning_effort to reasoning-capable models. The
+        // response-side handler below already makes returned reasoning traces visible.
+        options.Reasoning ??= new ReasoningOptions { Effort = ReasoningEffort.Low };
+    }
+
     public string? GetBlockingIssue()
     {
         var key = _keyring.GetSecret(SecretService, KeyringAccount);

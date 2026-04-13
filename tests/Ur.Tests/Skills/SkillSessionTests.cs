@@ -21,7 +21,7 @@ public sealed class SkillSessionTests : IDisposable
     private string WorkspacePath => Path.Combine(_root, "workspace");
     private string UserDataDirectory => Path.Combine(_root, "user-data");
     private string UserSettingsPath => Path.Combine(UserDataDirectory, "settings.json");
-    private string WorkspaceSkillsDir => Path.Combine(WorkspacePath, ".ur", "skills");
+    private string WorkspaceSkillsDir => Path.Combine(WorkspacePath, ".ox", "skills");
 
     // Holds the DI host so it's disposed when the test class is disposed.
     private TempWorkspace? _hostWorkspace;

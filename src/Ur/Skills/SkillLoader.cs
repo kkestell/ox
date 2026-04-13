@@ -4,7 +4,7 @@ namespace Ur.Skills;
 
 /// <summary>
 /// Discovers and loads skills from the filesystem. Skills live in subdirectories
-/// of a skills root (either user-scoped ~/.ur/skills/ or workspace-scoped .ur/skills/),
+/// of a skills root (either user-scoped ~/.ox/skills/ or workspace-scoped .ox/skills/),
 /// where each subdirectory contains a SKILL.md file.
 ///
 /// Individual malformed or unreadable skill files are logged and skipped rather

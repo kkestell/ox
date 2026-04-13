@@ -72,7 +72,7 @@ public static class ContainerRunner
         // Mount providers.json read-only into the default user data directory so Ox
         // finds it without any CLI override. The directory is pre-created in the image.
         psi.ArgumentList.Add("-v");
-        psi.ArgumentList.Add($"{absProviders}:/root/.ur/providers.json:ro,Z");
+        psi.ArgumentList.Add($"{absProviders}:/root/.ox/providers.json:ro,Z");
 
         // Pass all UR_API_KEY_* env vars into the container for EnvironmentKeyring.
         foreach (var key in Environment.GetEnvironmentVariables().Keys.Cast<string>())
@@ -143,8 +143,8 @@ public static class ContainerRunner
 
         var stdout = await stdoutTask;
 
-        // Locate session artifacts in the workspace's .ur/sessions/ directory.
-        var sessionsDir = Path.Combine(workspacePath, ".ur", "sessions");
+        // Locate session artifacts in the workspace's .ox/sessions/ directory.
+        var sessionsDir = Path.Combine(workspacePath, ".ox", "sessions");
         var (sessionJsonl, metricsJson) = FindSessionArtifacts(sessionsDir);
 
         // If the container crashed before writing metrics, produce a synthetic failure.

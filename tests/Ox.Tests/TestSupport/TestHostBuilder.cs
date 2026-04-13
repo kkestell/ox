@@ -47,7 +47,7 @@ internal static class TestHostBuilder
         // that the standard options pipeline reads from.
         builder.Configuration.AddUrSettings(
             workspace.UserSettingsPath,
-            Path.Combine(workspace.WorkspacePath, ".ur", "settings.json"));
+            Path.Combine(workspace.WorkspacePath, ".ox", "settings.json"));
 
         // Load providers.json and register providers — same as Ox's Program.cs
         // does in production. Tests get real provider registrations so the

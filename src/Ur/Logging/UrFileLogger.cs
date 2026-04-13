@@ -5,7 +5,7 @@ using Microsoft.Extensions.Logging;
 namespace Ur.Logging;
 
 /// <summary>
-/// Writes log entries to <c>~/.ur/logs/ur-{date}.log</c>. Daily-rolling, thread-safe,
+/// Writes log entries to <c>~/.ox/logs/ox-{date}.log</c>. Daily-rolling, thread-safe,
 /// fire-and-forget file logger.
 ///
 /// A single static lock guards all file writes across all logger instances — the
@@ -76,7 +76,7 @@ internal sealed class UrFileLogger(string categoryName, string logDir) : ILogger
             lock (WriteLock)
             {
                 Directory.CreateDirectory(logDir);
-                var path = Path.Combine(logDir, $"ur-{DateTime.Now:yyyy-MM-dd}.log");
+                var path = Path.Combine(logDir, $"ox-{DateTime.Now:yyyy-MM-dd}.log");
                 File.AppendAllText(path, text);
             }
         }

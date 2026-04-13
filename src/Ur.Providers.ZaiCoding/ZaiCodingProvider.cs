@@ -47,6 +47,13 @@ public sealed class ZaiCodingProvider : IProvider
             .AsIChatClient();
     }
 
+    public void ConfigureChatOptions(string model, ChatOptions options)
+    {
+        // Z.AI speaks the OpenAI protocol, so the standard reasoning_effort field
+        // is the least-coupled way to request extra model thinking.
+        options.Reasoning ??= new ReasoningOptions { Effort = ReasoningEffort.Low };
+    }
+
     public string? GetBlockingIssue()
     {
         var key = _keyring.GetSecret(SecretService, KeyringAccount);

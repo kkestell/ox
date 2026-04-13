@@ -96,7 +96,7 @@ public class MultiProviderSmokeTests : IDisposable
         var userSettingsPath = Path.Combine(_userDataDir, "settings.json");
         builder.Configuration.AddUrSettings(
             userSettingsPath,
-            Path.Combine(_workspacePath, ".ur", "settings.json"));
+            Path.Combine(_workspacePath, ".ox", "settings.json"));
 
         // Load providers.json from the default location (~/.ur/providers.json)
         // and register providers — same as Ox's production Program.cs.

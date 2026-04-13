@@ -39,6 +39,7 @@ public sealed class UrSession : IAsyncDisposable
     private readonly ISessionStore _sessions;
     private readonly ICompactionStrategy _compactionStrategy;
     private readonly Func<string, IChatClient> _chatClientFactory;
+    private readonly Action<string, ChatOptions> _configureChatOptions;
     private readonly ToolRegistry? _additionalTools;
     private readonly Func<string, int?> _resolveContextWindow;
     private readonly int? _maxIterations;
@@ -75,6 +76,7 @@ public sealed class UrSession : IAsyncDisposable
         ISessionStore sessions,
         ICompactionStrategy compactionStrategy,
         Func<string, IChatClient> chatClientFactory,
+        Action<string, ChatOptions> configureChatOptions,
         Session session,
         List<ChatMessage> messages,
         bool isPersisted,
@@ -95,6 +97,7 @@ public sealed class UrSession : IAsyncDisposable
         _sessions = sessions;
         _compactionStrategy = compactionStrategy;
         _chatClientFactory = chatClientFactory;
+        _configureChatOptions = configureChatOptions;
         _resolveContextWindow = resolveContextWindow ?? (_ => null);
         _additionalTools = additionalTools;
         _maxIterations = maxIterations;
@@ -212,6 +215,11 @@ public sealed class UrSession : IAsyncDisposable
         _activeModelId = _configuration.SelectedModelId;
         _logger.LogInformation("Turn started: session={SessionId}, model={ModelId}", Id, _activeModelId);
 
+        // Resolve the provider-owned request defaults once per turn, then reuse
+        // the same configurator for the main loop and any sub-agents spawned in
+        // that turn. This keeps every request in the turn on the same thinking policy.
+        void ConfigureTurnOptions(ChatOptions options) => _configureChatOptions(_activeModelId!, options);
+
         // Create one chat client for the entire turn and share it between
         // compaction and the agent loop. IChatClient wraps an HttpClient-backed
         // SDK object that holds network resources, so it must be disposed when
@@ -299,7 +307,7 @@ public sealed class UrSession : IAsyncDisposable
         // parent tools except run_subagent itself, which SubagentRunner excludes).
         var subagentRunner = new AgentLoop.SubagentRunner(
             chatClient, tools, _workspace, wrappedCallbacks, systemPrompt,
-            _loggerFactory);
+            _loggerFactory, ConfigureTurnOptions);
         var subagentTool = new SubagentTool(subagentRunner);
         if (tools.Get(subagentTool.Name) is null)
         {
@@ -318,7 +326,8 @@ public sealed class UrSession : IAsyncDisposable
             _loggerFactory.CreateLogger<AgentLoop.AgentLoop>(),
             _loggerFactory,
             _configuration.TurnsToKeepToolResults,
-            _maxIterations);
+            _maxIterations,
+            ConfigureTurnOptions);
 
         await foreach (var loopEvent in agentLoop.RunTurnAsync(_messages, wrappedCallbacks, systemPrompt, ct))
         {

@@ -109,6 +109,7 @@ public sealed class SubagentRunnerTests
     {
         public IList<AITool>? CapturedTools { get; private set; }
         public List<ChatMessage>? CapturedMessages { get; private set; }
+        public ChatOptions? CapturedOptions { get; private set; }
 
         public Task<ChatResponse> GetResponseAsync(
             IEnumerable<ChatMessage> messages,
@@ -126,6 +127,7 @@ public sealed class SubagentRunnerTests
             {
                 CapturedTools = options?.Tools;
                 CapturedMessages = messages.ToList();
+                CapturedOptions = options;
             }
 
             yield return new ChatResponseUpdate(ChatRole.Assistant, "done");
@@ -267,6 +269,39 @@ public sealed class SubagentRunnerTests
         Assert.NotNull(capturingClient.CapturedTools);
         Assert.Contains(capturingClient.CapturedTools, t => t.Name == "bash");
         Assert.DoesNotContain(capturingClient.CapturedTools, t => t.Name == SubagentTool.ToolName);
+    }
+
+    [Fact]
+    public async Task RunAsync_AppliesConfiguredThinkingOptions_ToChildAgentLoop()
+    {
+        var workspace = MakeTempWorkspace();
+        var capturingClient = new CapturingClient();
+        var runner = new SubagentRunner(
+            capturingClient,
+            new ToolRegistry(),
+            workspace,
+            callbacks: null,
+            systemPrompt: null,
+            NullLoggerFactory.Instance,
+            options =>
+            {
+                options.Reasoning = new ReasoningOptions
+                {
+                    Effort = ReasoningEffort.Low,
+                    Output = ReasoningOutput.Full
+                };
+                options.AdditionalProperties ??= new AdditionalPropertiesDictionary();
+                options.AdditionalProperties["think"] = true;
+            });
+
+        await runner.RunAsync("inspect this", CancellationToken.None);
+
+        Assert.NotNull(capturingClient.CapturedOptions);
+        Assert.NotNull(capturingClient.CapturedOptions!.Reasoning);
+        Assert.Equal(ReasoningEffort.Low, capturingClient.CapturedOptions.Reasoning!.Effort);
+        Assert.Equal(ReasoningOutput.Full, capturingClient.CapturedOptions.Reasoning.Output);
+        Assert.NotNull(capturingClient.CapturedOptions.AdditionalProperties);
+        Assert.Equal(true, capturingClient.CapturedOptions.AdditionalProperties!["think"]);
     }
 
     // ─── Stub runner (needed to construct SubagentTool in registry tests) ─

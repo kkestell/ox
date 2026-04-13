@@ -37,7 +37,7 @@ public sealed class HeadlessRunnerTests
     /// </summary>
     private static int ReadTurnCount(TempWorkspace workspace)
     {
-        var sessionsDir = Path.Combine(workspace.WorkspacePath, ".ur", "sessions");
+        var sessionsDir = Path.Combine(workspace.WorkspacePath, ".ox", "sessions");
         var metricsFiles = Directory.GetFiles(sessionsDir, "*.metrics.json");
         Assert.Single(metricsFiles); // exactly one run per test
 
@@ -52,7 +52,7 @@ public sealed class HeadlessRunnerTests
     /// </summary>
     private static string? ReadErrorField(TempWorkspace workspace)
     {
-        var sessionsDir = Path.Combine(workspace.WorkspacePath, ".ur", "sessions");
+        var sessionsDir = Path.Combine(workspace.WorkspacePath, ".ox", "sessions");
         var metricsFiles = Directory.GetFiles(sessionsDir, "*.metrics.json");
         Assert.Single(metricsFiles);
 

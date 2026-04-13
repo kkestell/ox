@@ -127,6 +127,20 @@ public sealed class UrHost
         return provider.CreateChatClient(parsed.Model);
     }
 
+    internal void ConfigureChatOptions(string modelId, ChatOptions options)
+    {
+        // Chat-client construction and request-shape defaults both belong to the
+        // provider layer. Keeping them side by side here means sessions can use
+        // test chat-client overrides without losing the real provider's runtime
+        // option policy for the selected model ID.
+        var parsed = ModelId.Parse(modelId);
+        var provider = _providerRegistry.Get(parsed.Provider)
+            ?? throw new InvalidOperationException(
+                $"Unknown provider '{parsed.Provider}'. Known providers: {string.Join(", ", _providerRegistry.ProviderNames)}");
+
+        provider.ConfigureChatOptions(parsed.Model, options);
+    }
+
     public IReadOnlyList<SessionInfo> ListSessions() =>
         _sessions.List()
             .Select(session => new SessionInfo(session.Id, session.CreatedAt))
@@ -147,7 +161,7 @@ public sealed class UrHost
     /// </summary>
     public UrSession CreateSession(TurnCallbacks? callbacks = null, TodoStore? todos = null, int? maxIterations = null) =>
         new(Configuration, Skills, BuiltInCommands, _workspace, _loggerFactory,
-            _sessions, _compactionStrategy, CreateChatClient, _sessions.Create(), [],
+            _sessions, _compactionStrategy, CreateChatClient, ConfigureChatOptions, _sessions.Create(), [],
             isPersisted: false, activeModelId: null, callbacks,
             _workspace.PermissionsPath, DefaultUserPermissionsPath(),
             _contextWindowResolver, _additionalTools, todos, maxIterations);
@@ -166,7 +180,7 @@ public sealed class UrHost
 
         var messages = (await _sessions.ReadAllAsync(session, ct)).ToList();
         return new UrSession(Configuration, Skills, BuiltInCommands, _workspace, _loggerFactory,
-            _sessions, _compactionStrategy, CreateChatClient, session, messages,
+            _sessions, _compactionStrategy, CreateChatClient, ConfigureChatOptions, session, messages,
             isPersisted: true, activeModelId: null, callbacks,
             _workspace.PermissionsPath, DefaultUserPermissionsPath(),
             _contextWindowResolver, _additionalTools);

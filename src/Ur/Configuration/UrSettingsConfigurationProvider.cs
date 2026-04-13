@@ -10,10 +10,10 @@ namespace Ur.Configuration;
 /// key model.
 ///
 /// For example, the file:
-///   {"ur": {"model": "gpt-4"}, "my-extension": {"debug": "true"}}
+///   {"ox": {"model": "gpt-4"}, "my-extension": {"debug": "true"}}
 ///
 /// produces these configuration keys:
-///   ur:model = gpt-4
+///   ox:model = gpt-4
 ///   my-extension:debug = true
 /// </summary>
 internal sealed class UrSettingsConfigurationProvider : ConfigurationProvider

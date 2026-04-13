@@ -1,7 +1,6 @@
 .env
 .DS_Store
-.ur/
-.ox/screen-dumps/
+.ox/
 test-output/
 .ignored/
 

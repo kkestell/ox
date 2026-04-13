@@ -40,7 +40,7 @@ public static class Program
         var workspacePath = Directory.GetCurrentDirectory();
         var userDataDir = ServiceCollectionExtensions.DefaultUserDataDirectory();
         var userSettingsPath = ServiceCollectionExtensions.DefaultUserSettingsPath(userDataDir);
-        var workspaceSettingsPath = Path.Combine(workspacePath, ".ur", "settings.json");
+        var workspaceSettingsPath = Path.Combine(workspacePath, ".ox", "settings.json");
 
         // ── Build the Generic Host ──────────────────────────────────────
         //

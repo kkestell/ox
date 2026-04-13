@@ -1,0 +1,9 @@
+{
+  "turns": 2,
+  "input_tokens": 47850,
+  "output_tokens": 535,
+  "tool_calls_total": 30,
+  "tool_calls_errored": 2,
+  "duration_seconds": 7902.5,
+  "error": null
+}

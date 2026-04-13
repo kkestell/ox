@@ -44,7 +44,7 @@ internal record UsageHolder
 /// layer (session, CLI) would stop sending user messages, not prevent a single runaway
 /// ReAct loop from burning through tokens.
 /// </summary>
-internal sealed class AgentLoop(IChatClient client, ToolRegistry tools, Workspace workspace, ILogger<AgentLoop> logger, ILoggerFactory loggerFactory, int turnsToKeepToolResults = 3, int? maxIterations = null)
+internal sealed class AgentLoop(IChatClient client, ToolRegistry tools, Workspace workspace, ILogger<AgentLoop> logger, ILoggerFactory loggerFactory, int turnsToKeepToolResults = 3, int? maxIterations = null, Action<ChatOptions>? configureChatOptions = null)
 {
     // Delegate tool dispatch (permission check → lookup → invoke → result) to a
     // dedicated helper so RunTurnAsync stays at a single abstraction level.
@@ -76,6 +76,12 @@ internal sealed class AgentLoop(IChatClient client, ToolRegistry tools, Workspac
             Tools = (IList<AITool>)tools.All(),
             ToolMode = ChatToolMode.Auto
         };
+
+        // The loop owns generic per-turn options, while the provider supplies any
+        // protocol-specific defaults (reasoning effort, native thinking flags, etc.).
+        // Applying them here keeps the request shape consistent for every LLM call
+        // inside the turn, including follow-up calls after tool execution.
+        configureChatOptions?.Invoke(options);
 
         // Local counter: incremented at the top of each iteration. AgentLoop is
         // constructed once per user turn, so a local is equivalent to a field here —

@@ -42,6 +42,17 @@ public sealed class GoogleProvider : IProvider
         });
     }
 
+    public void ConfigureChatOptions(string model, ChatOptions options)
+    {
+        // Gemini only returns thought parts when reasoning is enabled and full
+        // thought output is requested, so both knobs are part of the provider default.
+        options.Reasoning ??= new ReasoningOptions
+        {
+            Effort = ReasoningEffort.Low,
+            Output = ReasoningOutput.Full
+        };
+    }
+
     public string? GetBlockingIssue()
     {
         var key = _keyring.GetSecret(SecretService, KeyringAccount);

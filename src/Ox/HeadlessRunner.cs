@@ -117,6 +117,12 @@ internal sealed class HeadlessRunner(UrHost host, string prompt, bool yolo, int?
             ToolAwaitingApproval { CallId: var callId } =>
                 $"{prefix}[awaiting-approval] {callId}",
 
+            // Headless needs to surface internal reasoning too; otherwise the
+            // "thinking enabled" work is invisible outside the TUI. We keep it
+            // on stderr so stdout stays reserved for the model's final answer.
+            ThinkingChunk { Text: var text } =>
+                $"{prefix}[thinking] {text.ReplaceLineEndings(" ")}",
+
             TurnCompleted { InputTokens: { } tokens } =>
                 $"{prefix}[done] {tokens} input tokens",
 

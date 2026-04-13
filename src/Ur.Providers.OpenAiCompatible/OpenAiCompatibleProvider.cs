@@ -56,6 +56,13 @@ public sealed class OpenAiCompatibleProvider : IProvider
             .AsIChatClient();
     }
 
+    public void ConfigureChatOptions(string model, ChatOptions options)
+    {
+        // Custom OpenAI-compatible endpoints are part of the same "enable thinking
+        // everywhere" contract, so we send the standard reasoning_effort knob by default.
+        options.Reasoning ??= new ReasoningOptions { Effort = ReasoningEffort.Low };
+    }
+
     public string? GetBlockingIssue()
     {
         var key = _keyring.GetSecret(SecretService, _name);

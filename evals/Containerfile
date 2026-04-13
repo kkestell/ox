@@ -47,7 +47,7 @@ COPY --from=build /app /app
 ENV PATH="/app:${PATH}"
 
 # Create the user data directory so providers.json can be bind-mounted into it.
-RUN mkdir -p /root/.ur
+RUN mkdir -p /root/.ox
 
 WORKDIR /workspace
 ENTRYPOINT ["Ox"]

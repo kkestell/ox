@@ -60,8 +60,8 @@ fi
 echo "test-sentinel" > "$WORKSPACE/hello.txt"
 
 # Sample skill: /greet <name>
-mkdir -p "$WORKSPACE/.ur/skills/greet"
-cat > "$WORKSPACE/.ur/skills/greet/SKILL.md" << 'SKILL_EOF'
+mkdir -p "$WORKSPACE/.ox/skills/greet"
+cat > "$WORKSPACE/.ox/skills/greet/SKILL.md" << 'SKILL_EOF'
 ---
 name: greet
 description: Greet the user warmly

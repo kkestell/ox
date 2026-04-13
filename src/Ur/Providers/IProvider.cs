@@ -37,6 +37,18 @@ public interface IProvider
     IChatClient CreateChatClient(string model);
 
     /// <summary>
+    /// Applies this provider's default per-turn request options to a freshly-built
+    /// <see cref="ChatOptions"/> instance.
+    ///
+    /// Architecture: AgentLoop owns generic turn concerns (tools, tool mode), while
+    /// the provider owns protocol-specific defaults such as reasoning effort and
+    /// provider-native thinking flags. Keeping that split here prevents the loop
+    /// from hard-coding provider quirks and gives every provider one place to
+    /// define how "thinking enabled" should look on the wire.
+    /// </summary>
+    void ConfigureChatOptions(string model, ChatOptions options);
+
+    /// <summary>
     /// Whether this provider requires an API key to function. Ollama does not;
     /// OpenRouter, OpenAI, and Google do.
     /// </summary>

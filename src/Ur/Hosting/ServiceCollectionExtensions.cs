@@ -27,7 +27,7 @@ namespace Ur.Hosting;
 /// The host is responsible for logging, configuration sources, and application lifecycle.
 /// Call <see cref="AddUrSettings"/> on the <see cref="IConfigurationBuilder"/> before
 /// calling <see cref="AddUr"/> so that user and workspace settings files are part of
-/// the host's configuration root. <see cref="UrOptions"/> is bound to the "ur" section
+/// the host's configuration root. <see cref="UrOptions"/> is bound to the "ox" section
 /// via the standard <c>Configure&lt;T&gt;</c> pipeline.
 /// </summary>
 public static class ServiceCollectionExtensions
@@ -72,11 +72,11 @@ public static class ServiceCollectionExtensions
         IConfiguration configuration,
         Action<UrOptions>? configure = null)
     {
-        // Bind the "ur" section to UrOptions via the standard options pipeline.
+        // Bind the "ox" section to UrOptions via the standard options pipeline.
         // ConfigurationBinder.Bind matches property names case-insensitively:
-        //   Model ← "ur:model", TurnsToKeepToolResults ← "ur:turnsToKeepToolResults".
+        //   Model ← "ox:model", TurnsToKeepToolResults ← "ox:turnsToKeepToolResults".
         // Defaults (e.g. TurnsToKeepToolResults = 3) are preserved when keys are absent.
-        services.Configure<UrOptions>(configuration.GetSection("ur"));
+        services.Configure<UrOptions>(configuration.GetSection("ox"));
 
         // The configure callback runs after config-file binding, so code overrides
         // (WorkspacePath, SelectedModelOverride, etc.) win over file values.
@@ -92,7 +92,7 @@ public static class ServiceCollectionExtensions
         // Snapshot the options for values needed at registration time (paths).
         // PostConfigure callbacks haven't run yet, so we apply them manually.
         var snapshot = new UrOptions();
-        configuration.GetSection("ur").Bind(snapshot);
+        configuration.GetSection("ox").Bind(snapshot);
         configure?.Invoke(snapshot);
 
         var userDataDirectory = snapshot.UserDataDirectory ?? DefaultUserDataDirectory();
@@ -220,7 +220,7 @@ public static class ServiceCollectionExtensions
     internal static string DefaultUserDataDirectory() =>
         Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-            ".ur");
+            ".ox");
 
     internal static string DefaultUserSettingsPath(string userDataDirectory) =>
         Path.Combine(userDataDirectory, "settings.json");

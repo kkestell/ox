@@ -7,8 +7,8 @@ namespace Ur.Skills;
 /// 1. <c>$ARGUMENTS</c> — replaced with the raw args string from the invocation.
 /// 2. Named arguments — if the skill declares argument names, each <c>$arg_name</c>
 ///    placeholder is replaced with the corresponding positional argument.
-/// 3. <c>${UR_SKILL_DIR}</c> — replaced with the skill's directory path on disk.
-/// 4. <c>${UR_SESSION_ID}</c> — replaced with the current session's ID.
+/// 3. <c>${OX_SKILL_DIR}</c> — replaced with the skill's directory path on disk.
+/// 4. <c>${OX_SESSION_ID}</c> — replaced with the current session's ID.
 ///
 /// TODO: Shell execution (!`command`) in skill content — requires subprocess
 /// execution during expansion plus security considerations.
@@ -20,7 +20,7 @@ internal static class SkillExpander
     /// </summary>
     /// <param name="skill">The skill whose content to expand.</param>
     /// <param name="args">Raw argument string from the user or model invocation.</param>
-    /// <param name="sessionId">The current session's ID for ${UR_SESSION_ID} substitution.</param>
+    /// <param name="sessionId">The current session's ID for ${OX_SESSION_ID} substitution.</param>
     /// <returns>The fully expanded prompt string ready to send to the model.</returns>
     public static string Expand(SkillDefinition skill, string args, string sessionId)
     {
@@ -51,8 +51,8 @@ internal static class SkillExpander
     }
 
     /// <summary>
-    /// Replaces built-in variable placeholders ($ARGUMENTS, ${UR_SKILL_DIR},
-    /// ${UR_SESSION_ID}) in the content template. Separated from <see cref="Expand"/>
+    /// Replaces built-in variable placeholders ($ARGUMENTS, ${OX_SKILL_DIR},
+    /// ${OX_SESSION_ID}) in the content template. Separated from <see cref="Expand"/>
     /// so the main method only handles named-argument logic while this method handles
     /// the fixed set of built-in substitutions.
     /// </summary>
@@ -60,8 +60,8 @@ internal static class SkillExpander
         string content, string remainingArgs, string skillDirectory, string sessionId)
     {
         content = content.Replace("$ARGUMENTS", remainingArgs, StringComparison.Ordinal);
-        content = content.Replace("${UR_SKILL_DIR}", skillDirectory, StringComparison.Ordinal);
-        content = content.Replace("${UR_SESSION_ID}", sessionId, StringComparison.Ordinal);
+        content = content.Replace("${OX_SKILL_DIR}", skillDirectory, StringComparison.Ordinal);
+        content = content.Replace("${OX_SESSION_ID}", sessionId, StringComparison.Ordinal);
         return content;
     }
 

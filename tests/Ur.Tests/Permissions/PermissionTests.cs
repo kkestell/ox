@@ -246,7 +246,7 @@ public sealed class PermissionGrantStoreTests
         private readonly string _root = Path.Combine(
             Path.GetTempPath(), "ur-permission-tests", Guid.NewGuid().ToString("N"));
 
-        public string WorkspacePermissionsPath => Path.Combine(_root, "workspace", ".ur", "permissions.jsonl");
+        public string WorkspacePermissionsPath => Path.Combine(_root, "workspace", ".ox", "permissions.jsonl");
         public string AlwaysPermissionsPath    => Path.Combine(_root, "always", "permissions.jsonl");
 
         public PermissionGrantStore CreateStore() =>
@@ -656,7 +656,7 @@ public sealed class UrSessionPermissionTests
         Assert.Equal("ok", completed.Result);
 
         // Grant persisted to disk with correct operation type.
-        var permissionsFile = Path.Combine(workspace.WorkspacePath, ".ur", "permissions.jsonl");
+        var permissionsFile = Path.Combine(workspace.WorkspacePath, ".ox", "permissions.jsonl");
         Assert.True(File.Exists(permissionsFile));
         var content = await File.ReadAllTextAsync(permissionsFile);
         Assert.Contains("\"write\"", content);

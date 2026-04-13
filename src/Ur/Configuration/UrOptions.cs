@@ -2,7 +2,7 @@ namespace Ur.Configuration;
 
 /// <summary>
 /// Strongly-typed options for core Ur settings. File-based settings (Model,
-/// TurnsToKeepToolResults) are bound from the "ur" section of IConfiguration
+/// TurnsToKeepToolResults) are bound from the "ox" section of IConfiguration
 /// via <c>Configure&lt;UrOptions&gt;</c>. Runtime values (WorkspacePath,
 /// UserDataDirectory, etc.) are set by the host via the <c>Action&lt;UrOptions&gt;</c>
 /// callback in <c>AddUr()</c>.
@@ -11,7 +11,7 @@ public sealed class UrOptions
 {
     /// <summary>
     /// The user's selected model identifier (e.g. "openai/gpt-4o").
-    /// Bound from the "ur:model" configuration key. Null when unset.
+    /// Bound from the "ox:model" configuration key. Null when unset.
     /// </summary>
     public string? Model { get; set; }
 
@@ -20,18 +20,18 @@ public sealed class UrOptions
     /// during the <c>BuildLlmMessages</c> projection. Tool results in
     /// older turns are replaced with "[Tool result cleared]" to reclaim context
     /// window space without mutating the persisted message history.
-    /// Bound from "ur:turnsToKeepToolResults". Default is 3.
+    /// Bound from "ox:turnsToKeepToolResults". Default is 3.
     /// </summary>
     public int TurnsToKeepToolResults { get; set; } = 3;
 
     /// <summary>
-    /// Root of the workspace directory. Determines where .ur/ state, sessions,
+    /// Root of the workspace directory. Determines where .ox/ state, sessions,
     /// and skills are stored. Set by the host at startup.
     /// </summary>
     public string WorkspacePath { get; set; } = "";
 
     /// <summary>
-    /// User data directory (~/.ur/ by default). Contains skills, user settings,
+    /// User data directory (~/.ox/ by default). Contains skills, user settings,
     /// and permissions. Null means use platform default.
     /// </summary>
     public string? UserDataDirectory { get; set; }

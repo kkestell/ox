@@ -46,6 +46,13 @@ public sealed class FakeProvider : IProvider
         return new FakeChatClient(scenario, sharedCounter);
     }
 
+    public void ConfigureChatOptions(string model, ChatOptions options)
+    {
+        // Fake scenarios should behave exactly as authored by the test. Injecting
+        // synthetic reasoning defaults here would make the fake provider less
+        // deterministic and would couple tests to production provider policy.
+    }
+
     /// <summary>
     /// Returns the simulated context window for a scenario, or null if the
     /// scenario doesn't declare one. Called by the context window resolver registered via

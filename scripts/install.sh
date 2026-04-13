@@ -4,7 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 INSTALL_DIR="$HOME/.local/bin"
-UR_CONFIG_DIR="$HOME/.ur"
+OX_CONFIG_DIR="$HOME/.ox"
 
 # Publish the Ox project as a native AoT binary.
 dotnet publish "$REPO_ROOT/src/Ox/Ox.csproj" \
@@ -19,6 +19,6 @@ cp "$REPO_ROOT/publish/Ox" "$INSTALL_DIR/ur"
 chmod +x "$INSTALL_DIR/ur"
 
 # Create the config directory if it doesn't exist yet.
-mkdir -p "$UR_CONFIG_DIR"
+mkdir -p "$OX_CONFIG_DIR"
 
 echo "Installed ur to $INSTALL_DIR/ur"

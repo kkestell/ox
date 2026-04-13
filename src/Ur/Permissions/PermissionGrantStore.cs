@@ -8,7 +8,7 @@ namespace Ur.Permissions;
 /// Stores and checks permission grants across three lifetimes:
 ///
 ///   Session   — in-memory only; lost when the process exits.
-///   Workspace — persisted to {workspace}/.ur/permissions.jsonl.
+///   Workspace — persisted to {workspace}/.ox/permissions.jsonl.
 ///   Always    — persisted to {userDataDir}/permissions.jsonl.
 ///
 /// The store is loaded lazily: workspace and always grants are read from disk on

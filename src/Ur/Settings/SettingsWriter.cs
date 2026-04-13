@@ -13,9 +13,9 @@ namespace Ur.Settings;
 /// persisting. If validation fails, a <see cref="SettingsValidationException"/>
 /// is thrown and the file is not modified.
 ///
-/// The file format is nested JSON: top-level keys are namespaces (e.g. "ur"),
+/// The file format is nested JSON: top-level keys are namespaces (e.g. "ox"),
 /// and their values are objects containing the actual settings. This aligns
-/// with IConfiguration's native section model (e.g. <c>{"ur": {"model": "value"}}</c>).
+/// with IConfiguration's native section model (e.g. <c>{"ox": {"model": "value"}}</c>).
 /// </summary>
 internal sealed class SettingsWriter
 {

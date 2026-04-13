@@ -52,6 +52,18 @@ public sealed class OpenAiProvider : IProvider
             .AsIChatClient();
     }
 
+    public void ConfigureChatOptions(string model, ChatOptions options)
+    {
+        // The current OpenAI path uses Chat Completions via MEAI's OpenAI adapter.
+        // In live headless/TUI runs we always attach the tool schema, and OpenAI
+        // rejects reasoning_effort + tools on this endpoint with HTTP 400 for GPT-5.x.
+        //
+        // Until this provider moves to the Responses API (or a tool-free request path),
+        // enabling ReasoningOptions here would break normal turns outright. Leave the
+        // provider as a no-op so OpenAI remains usable while the providers that do
+        // expose visible thinking continue to opt in.
+    }
+
     public string? GetBlockingIssue()
     {
         var key = _keyring.GetSecret(SecretService, KeyringAccount);

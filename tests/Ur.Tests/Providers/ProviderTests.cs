@@ -1,3 +1,4 @@
+using Microsoft.Extensions.AI;
 using Ur.Providers;
 using Ur.Providers.Google;
 using Ur.Providers.Ollama;
@@ -57,6 +58,18 @@ public sealed class ProviderTests
         Assert.Equal("OpenAI", provider.DisplayName);
     }
 
+    [Fact]
+    public void OpenAi_ConfigureChatOptions_EnablesLowReasoning()
+    {
+        var provider = new OpenAiProvider(new TestKeyring());
+        var options = new ChatOptions();
+
+        provider.ConfigureChatOptions("gpt-5.4-mini", options);
+
+        Assert.NotNull(options.Reasoning);
+        Assert.Equal(ReasoningEffort.Low, options.Reasoning!.Effort);
+    }
+
     // ─── OpenRouterProvider ─────────────────────────────────────────
 
     [Fact]
@@ -81,6 +94,18 @@ public sealed class ProviderTests
         Assert.Null(provider.GetBlockingIssue());
     }
 
+    [Fact]
+    public void OpenRouter_ConfigureChatOptions_EnablesLowReasoning()
+    {
+        var provider = new OpenRouterProvider(new TestKeyring());
+        var options = new ChatOptions();
+
+        provider.ConfigureChatOptions("deepseek/deepseek-r1", options);
+
+        Assert.NotNull(options.Reasoning);
+        Assert.Equal(ReasoningEffort.Low, options.Reasoning!.Effort);
+    }
+
     // ─── ZaiCodingProvider ──────────────────────────────────────────
 
     [Fact]
@@ -103,6 +128,18 @@ public sealed class ProviderTests
         var provider = new ZaiCodingProvider(keyring);
 
         Assert.Null(provider.GetBlockingIssue());
+    }
+
+    [Fact]
+    public void ZaiCoding_ConfigureChatOptions_EnablesLowReasoning()
+    {
+        var provider = new ZaiCodingProvider(new TestKeyring());
+        var options = new ChatOptions();
+
+        provider.ConfigureChatOptions("glm-5.1", options);
+
+        Assert.NotNull(options.Reasoning);
+        Assert.Equal(ReasoningEffort.Low, options.Reasoning!.Effort);
     }
 
     // ─── OpenAiCompatibleProvider (custom fallback) ─────────────────
@@ -153,6 +190,19 @@ public sealed class ProviderTests
         Assert.Equal("My Custom LLM", provider.DisplayName);
     }
 
+    [Fact]
+    public void OpenAiCompatible_ConfigureChatOptions_EnablesLowReasoning()
+    {
+        var provider = new OpenAiCompatibleProvider(
+            "my-provider", "My Custom LLM", new Uri("https://example.com/v1"), new TestKeyring());
+        var options = new ChatOptions();
+
+        provider.ConfigureChatOptions("model", options);
+
+        Assert.NotNull(options.Reasoning);
+        Assert.Equal(ReasoningEffort.Low, options.Reasoning!.Effort);
+    }
+
     // ─── GoogleProvider ─────────────────────────────────────────────
 
     [Fact]
@@ -182,6 +232,19 @@ public sealed class ProviderTests
     {
         var provider = new GoogleProvider(new TestKeyring());
         Assert.True(provider.RequiresApiKey);
+    }
+
+    [Fact]
+    public void Google_ConfigureChatOptions_RequestsFullReasoningOutput()
+    {
+        var provider = new GoogleProvider(new TestKeyring());
+        var options = new ChatOptions();
+
+        provider.ConfigureChatOptions("gemini-3-flash-preview", options);
+
+        Assert.NotNull(options.Reasoning);
+        Assert.Equal(ReasoningEffort.Low, options.Reasoning!.Effort);
+        Assert.Equal(ReasoningOutput.Full, options.Reasoning.Output);
     }
 
     // ─── OllamaProvider ─────────────────────────────────────────────
@@ -214,6 +277,20 @@ public sealed class ProviderTests
         var provider = new OllamaProvider(new Uri("http://localhost:11434"));
         var client = provider.CreateChatClient("test-model");
         Assert.NotNull(client);
+    }
+
+    [Fact]
+    public void Ollama_ConfigureChatOptions_AddsThinkFlagAndLowReasoning()
+    {
+        var provider = new OllamaProvider(new Uri("http://localhost:11434"));
+        var options = new ChatOptions();
+
+        provider.ConfigureChatOptions("qwen3:8b", options);
+
+        Assert.NotNull(options.Reasoning);
+        Assert.Equal(ReasoningEffort.Low, options.Reasoning!.Effort);
+        Assert.NotNull(options.AdditionalProperties);
+        Assert.Equal(true, options.AdditionalProperties!["think"]);
     }
 
     // ─── Whitespace-only API key ────────────────────────────────────

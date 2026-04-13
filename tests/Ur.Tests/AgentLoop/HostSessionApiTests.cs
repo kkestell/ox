@@ -42,7 +42,7 @@ public class HostSessionApiTests
         Assert.Equal("workspace-model", host.Configuration.SelectedModelId);
         Assert.Contains(
             "\"model\": \"workspace-model\"",
-            await File.ReadAllTextAsync(Path.Combine(workspace.WorkspacePath, ".ur", "settings.json")));
+            await File.ReadAllTextAsync(Path.Combine(workspace.WorkspacePath, ".ox", "settings.json")));
 
         host.Configuration.ClearSelectedModel(ConfigurationScope.Workspace);
         Assert.Equal("user-model", host.Configuration.SelectedModelId);
@@ -110,7 +110,7 @@ public class HostSessionApiTests
         var listedSession = Assert.Single(host.ListSessions());
         Assert.Equal(session.Id, listedSession.Id);
 
-        var sessionPath = Path.Combine(workspace.WorkspacePath, ".ur", "sessions", $"{session.Id}.jsonl");
+        var sessionPath = Path.Combine(workspace.WorkspacePath, ".ox", "sessions", $"{session.Id}.jsonl");
         Assert.True(File.Exists(sessionPath));
         Assert.Equal(2, (await File.ReadAllLinesAsync(sessionPath)).Length);
 
@@ -138,6 +138,25 @@ public class HostSessionApiTests
         Assert.Equal("ollama/qwen3:4b", session.ActiveModelId);
     }
 
+    [Fact]
+    public async Task RunTurnAsync_AppliesProviderThinkingDefaults_ToMainAgentLoop()
+    {
+        using var workspace = new TempWorkspace();
+        var client = new OptionsCapturingChatClient("hello");
+        var host = await CreateHostAsync(workspace, keyring: new TestKeyring(), chatClientFactory: _ => client);
+
+        host.Configuration.SetApiKey("test-key", "google");
+        host.Configuration.SetSelectedModel("google/gemini-3-flash-preview");
+
+        var session = host.CreateSession();
+        await CollectEventsAsync(session.RunTurnAsync("hello"));
+
+        Assert.NotNull(client.LastOptions);
+        Assert.NotNull(client.LastOptions!.Reasoning);
+        Assert.Equal(ReasoningEffort.Low, client.LastOptions.Reasoning!.Effort);
+        Assert.Equal(ReasoningOutput.Full, client.LastOptions.Reasoning.Output);
+    }
+
     // ── Session metrics ─────────────────────────────────────────────
 
     [Fact]
@@ -156,7 +175,7 @@ public class HostSessionApiTests
         // Dispose writes the metrics file.
         await session.DisposeAsync();
 
-        var sessionsDir = Path.Combine(workspace.WorkspacePath, ".ur", "sessions");
+        var sessionsDir = Path.Combine(workspace.WorkspacePath, ".ox", "sessions");
         var metricsFiles = Directory.GetFiles(sessionsDir, "*.metrics.json");
         var metricsFile = Assert.Single(metricsFiles);
 
@@ -363,6 +382,37 @@ public class HostSessionApiTests
             [EnumeratorCancellation] CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            yield return new ChatResponseUpdate(ChatRole.Assistant, responseText);
+            await Task.CompletedTask;
+        }
+
+        public object? GetService(Type serviceType, object? serviceKey = null) => null;
+
+        public void Dispose()
+        {
+        }
+    }
+
+    /// <summary>
+    /// Captures the exact <see cref="ChatOptions"/> used for the streaming call so
+    /// session tests can verify provider defaults survive the full host/session path.
+    /// </summary>
+    private sealed class OptionsCapturingChatClient(string responseText) : IChatClient
+    {
+        public ChatOptions? LastOptions { get; private set; }
+
+        public Task<ChatResponse> GetResponseAsync(
+            IEnumerable<ChatMessage> messages,
+            ChatOptions? options = null,
+            CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException("Uses streaming only");
+
+        public async IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
+            IEnumerable<ChatMessage> messages,
+            ChatOptions? options = null,
+            [EnumeratorCancellation] CancellationToken cancellationToken = default)
+        {
+            LastOptions = options;
             yield return new ChatResponseUpdate(ChatRole.Assistant, responseText);
             await Task.CompletedTask;
         }

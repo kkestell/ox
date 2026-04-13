@@ -33,6 +33,16 @@ public sealed class OllamaProvider : IProvider
     public IChatClient CreateChatClient(string model) =>
         new OllamaApiClient(_endpoint, model);
 
+    public void ConfigureChatOptions(string model, ChatOptions options)
+    {
+        // Ollama reasoning-capable models (for example Qwen3) expose thinking
+        // through the provider-native "think" flag. We also set the standard
+        // reasoning options so adapters that understand them can participate too.
+        options.Reasoning ??= new ReasoningOptions { Effort = ReasoningEffort.High };
+        options.AdditionalProperties ??= new AdditionalPropertiesDictionary();
+        options.AdditionalProperties["think"] = true;
+    }
+
     /// <summary>
     /// Ollama needs no API key, so it's always ready. A future enhancement could
     /// ping the Ollama endpoint to verify it's reachable, but that would add

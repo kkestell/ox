@@ -99,18 +99,18 @@ public sealed class SkillExpanderTests
     public void Expand_ReplacesSkillDir()
     {
         var skill = MakeSkill(
-            "Read from ${UR_SKILL_DIR}/assets/template.md",
-            skillDir: "/home/user/.ur/skills/commit");
+            "Read from ${OX_SKILL_DIR}/assets/template.md",
+            skillDir: "/home/user/.ox/skills/commit");
 
         var result = SkillExpander.Expand(skill, "", "session-1");
 
-        Assert.Equal("Read from /home/user/.ur/skills/commit/assets/template.md", result);
+        Assert.Equal("Read from /home/user/.ox/skills/commit/assets/template.md", result);
     }
 
     [Fact]
     public void Expand_ReplacesSessionId()
     {
-        var skill = MakeSkill("Session: ${UR_SESSION_ID}");
+        var skill = MakeSkill("Session: ${OX_SESSION_ID}");
 
         var result = SkillExpander.Expand(skill, "", "abc-123");
 
@@ -123,7 +123,7 @@ public sealed class SkillExpanderTests
     public void Expand_AllSubstitutionsWorkTogether()
     {
         var skill = MakeSkill(
-            "Skill dir: ${UR_SKILL_DIR}\nSession: ${UR_SESSION_ID}\nTarget: $target\nArgs: $ARGUMENTS",
+            "Skill dir: ${OX_SKILL_DIR}\nSession: ${OX_SESSION_ID}\nTarget: $target\nArgs: $ARGUMENTS",
             argumentNames: ["target"],
             skillDir: "/skills/multi");
 

@@ -110,7 +110,7 @@ public sealed class SkillToolTests
     public async Task Invoke_SessionIdSubstituted()
     {
         var registry = BuildRegistry(
-            MakeSkill("track", "Session ${UR_SESSION_ID} action"));
+            MakeSkill("track", "Session ${OX_SESSION_ID} action"));
         var tool = new SkillTool(registry, "my-session-42");
 
         var result = await InvokeAsync(tool, ("skill", "track"));

@@ -28,7 +28,8 @@ internal sealed class SubagentRunner(
     Workspace workspace,
     TurnCallbacks? callbacks,
     string? systemPrompt,
-    ILoggerFactory loggerFactory) : ISubagentRunner
+    ILoggerFactory loggerFactory,
+    Action<ChatOptions>? configureChatOptions = null) : ISubagentRunner
 {
     /// <summary>
     /// Runs the given task string as the sole user message in a fresh agent loop.
@@ -67,7 +68,8 @@ internal sealed class SubagentRunner(
         var agentLoop = new AgentLoop(
             client, subAgentTools, workspace,
             loggerFactory.CreateLogger<AgentLoop>(),
-            loggerFactory);
+            loggerFactory,
+            configureChatOptions: configureChatOptions);
 
         // Accumulate all response text across the loop iterations. The loop may
         // call tools and loop back multiple times before producing a final text.

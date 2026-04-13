@@ -24,12 +24,14 @@ namespace Ur.Configuration;
 public sealed class UrConfiguration
 {
     // The dot-namespaced key used by the CLI/TUI and SettingsWriter for model selection.
-    // Maps to IConfiguration path "ur:model" via the nested JSON format.
-    internal const string ModelSettingKey = "ur.model";
+    // Maps to IConfiguration path "ox:model" via the nested JSON format.
+    internal const string ModelSettingKey = "ox.model";
 
     // Keyring service name shared by all providers. Each provider stores its
     // API key under service="ur", account=<provider-name> (e.g. "openrouter",
     // "openai", "google"). Ollama needs no key.
+    // NOTE: The keyring service name "ur" is intentionally unchanged — renaming
+    // it would silently break access to existing stored API keys on user machines.
     private const string SecretService = "ur";
 
     private readonly IOptionsMonitor<UrOptions> _optionsMonitor;

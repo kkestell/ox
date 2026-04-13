@@ -4,7 +4,7 @@ using Microsoft.Extensions.Logging;
 namespace Ur.Logging;
 
 /// <summary>
-/// Custom <see cref="ILoggerProvider"/> that writes to <c>~/.ur/logs/ur-{date}.log</c>.
+/// Custom <see cref="ILoggerProvider"/> that writes to <c>~/.ox/logs/ox-{date}.log</c>.
 ///
 /// Daily-rolling, thread-safe, fire-and-forget file logging wrapped in the standard
 /// <see cref="ILogger"/> / <see cref="ILoggerProvider"/> abstractions so the DI
@@ -14,7 +14,7 @@ public sealed class UrFileLoggerProvider : ILoggerProvider
 {
     private readonly string _logDir = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-        ".ur", "logs");
+        ".ox", "logs");
 
     private readonly ConcurrentDictionary<string, UrFileLogger> _loggers = new(StringComparer.Ordinal);
 
