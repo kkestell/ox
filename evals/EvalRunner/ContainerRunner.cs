@@ -14,6 +14,7 @@ public static class ContainerRunner
 {
     private const string ImageName = "ox-eval";
     private const string ContainerWorkspace = "/workspace";
+    private const string ContainerArtifactsDirectory = "/workspace/.ox-eval";
 
     /// <summary>
     /// Runs a single scenario × model eval in a Podman container. Returns the eval
@@ -33,6 +34,12 @@ public static class ContainerRunner
         CancellationToken ct,
         bool streamOutput = false)
     {
+        var hostArtifactsDirectory = Path.Combine(workspacePath, ContainerEvalScriptBuilder.ArtifactsDirectoryName);
+        Directory.CreateDirectory(hostArtifactsDirectory);
+
+        var hostScriptPath = Path.Combine(hostArtifactsDirectory, ContainerEvalScriptBuilder.ScriptFileName);
+        await File.WriteAllTextAsync(hostScriptPath, ContainerEvalScriptBuilder.Build(scenario), ct);
+
         var psi = new ProcessStartInfo
         {
             FileName = "podman",
@@ -77,26 +84,15 @@ public static class ContainerRunner
             }
         }
 
+        // Override the image entrypoint so the harness can run Ox and the
+        // command-based validation rules inside the same disposable environment.
+        psi.ArgumentList.Add("--entrypoint");
+        psi.ArgumentList.Add("/bin/bash");
+
         psi.ArgumentList.Add(ImageName);
-
-        // Ox CLI args: headless mode with YOLO permissions and specific model.
-        psi.ArgumentList.Add("--headless");
-        psi.ArgumentList.Add("--yolo");
-        psi.ArgumentList.Add("--model");
-        psi.ArgumentList.Add(model);
-
-        // Single prompt: headless eval mode has exactly one user message. The
-        // agent works autonomously from this point — no further user messages.
-        psi.ArgumentList.Add("--prompt");
-        psi.ArgumentList.Add(scenario.Prompt);
-
-        // Optional iteration cap: forwarded straight to AgentLoop so the agent
-        // can't spin in a tool-call cycle indefinitely.
-        if (scenario.MaxIterations.HasValue)
-        {
-            psi.ArgumentList.Add("--max-iterations");
-            psi.ArgumentList.Add(scenario.MaxIterations.Value.ToString(System.Globalization.CultureInfo.InvariantCulture));
-        }
+        psi.ArgumentList.Add($"{ContainerArtifactsDirectory}/{ContainerEvalScriptBuilder.ScriptFileName}");
+        foreach (var arg in OxHeadlessArgsBuilder.Build(model, scenario))
+            psi.ArgumentList.Add(arg);
 
         using var process = new Process();
         process.StartInfo = psi;
@@ -208,7 +204,41 @@ public static class ContainerRunner
 
         // Run validation rules against the workspace. Only reached when the agent
         // completed without a fatal error.
-        var failures = await ValidationRunner.RunAsync(scenario.ValidationRules, workspacePath, ct);
+        var fileRules = scenario.ValidationRules
+            .Where(rule => !ContainerEvalScriptBuilder.RunsInsideContainer(rule))
+            .ToList();
+        var fileFailures = await ValidationRunner.RunAsync(fileRules, workspacePath, ct);
+        var containerFailures = ContainerValidationReport.LoadFailures(workspacePath);
+        var failures = fileFailures
+            .Concat(containerFailures)
+            .ToList();
+
+        // A non-zero exit code with metrics but no decoded validation failures
+        // means the harness script itself failed, not the scenario. Surface that
+        // explicitly instead of silently treating the run as a clean validation miss.
+        if (process.ExitCode != 0 && failures.Count == 0)
+        {
+            return new ContainerRunResult
+            {
+                Result = new EvalResult
+                {
+                    ScenarioName = scenario.Name,
+                    Model = model,
+                    Passed = false,
+                    Turns = metrics.Turns,
+                    InputTokens = metrics.InputTokens,
+                    OutputTokens = metrics.OutputTokens,
+                    ToolCallsTotal = metrics.ToolCallsTotal,
+                    ToolCallsErrored = metrics.ToolCallsErrored,
+                    DurationSeconds = metrics.DurationSeconds,
+                    ValidationFailures = [],
+                    Error = $"Container exited {process.ExitCode} after Ox completed. Stderr: {stderr}",
+                },
+                SessionJsonl = sessionJsonl,
+                MetricsJson = metricsJson,
+                ContainerExitCode = process.ExitCode,
+            };
+        }
 
         return new ContainerRunResult
         {

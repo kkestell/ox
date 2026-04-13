@@ -1,0 +1,16 @@
+name: smoke-fake-hello
+models:
+  - fake/hello
+workspace_files:
+  - path: README.md
+    content: |
+      This is a deterministic eval smoke workspace.
+prompt: >
+  Say hello and do not modify the workspace.
+validation_rules:
+  - type: file_exists
+    path: README.md
+  - type: command_succeeds
+    command: pytest --version
+timeout_seconds: 60
+max_iterations: 2

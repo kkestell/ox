@@ -147,6 +147,32 @@ public sealed class ScenarioLoaderTests
     }
 
     [Fact]
+    public void Load_SetupCommands_ParsesList()
+    {
+        const string yaml = """
+            name: bootstrapped-scenario
+            models:
+              - fake/hello
+            prompt: "Do the thing."
+            setup_commands:
+              - python3 -m pip install --break-system-packages -e . pytest
+              - pytest --version
+            validation_rules:
+              - type: command_succeeds
+                command: pytest tests/test_slots.py
+            """;
+
+        var scenario = ScenarioLoader.Load(yaml);
+
+        Assert.Equal(
+            [
+                "python3 -m pip install --break-system-packages -e . pytest",
+                "pytest --version"
+            ],
+            scenario.SetupCommands);
+    }
+
+    [Fact]
     public void Load_NoMaxIterationsField_DefaultsToNull()
     {
         const string yaml = """

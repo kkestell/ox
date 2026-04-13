@@ -23,6 +23,7 @@ public sealed class ScenarioDefinition
     public required string Prompt { get; init; }
     public RepositoryRef? Repository { get; init; }
     public List<WorkspaceFile>? WorkspaceFiles { get; init; }
+    public List<string>? SetupCommands { get; init; }
     public required List<ValidationRule> ValidationRules { get; init; }
     public int TimeoutSeconds { get; init; } = 120;
 

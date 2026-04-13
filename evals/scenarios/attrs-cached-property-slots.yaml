@@ -7,6 +7,8 @@ repository:
   url: https://github.com/python-attrs/attrs
   commit: 82a14627fddbd0b2d802fbc574fa3b1ef010a801
   fix_commit: 88e2896ca9351cd48711bd320571a832ae122cd5
+setup_commands:
+  - python3 -m pip install --break-system-packages -e . pytest hypothesis
 prompt: >
   An AttributeError inside a cached_property is silently swallowed when the class
   uses slots=True. The error is misinterpreted as the attribute not being set yet.

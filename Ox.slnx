@@ -9,4 +9,5 @@
   <Project Path="evals/EvalShared/EvalShared.csproj" />
   <Project Path="evals/EvalShared.Tests/EvalShared.Tests.csproj" />
   <Project Path="evals/EvalRunner/EvalRunner.csproj" />
+  <Project Path="evals/EvalRunner.Tests/EvalRunner.Tests.csproj" />
 </Solution>

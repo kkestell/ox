@@ -7,6 +7,8 @@ repository:
   url: https://github.com/psf/requests
   commit: 590350f8d094c216051510ed1dd18fe871b53b72
   fix_commit: 99b3b492418d0751ca960178d274f89805095e4c
+setup_commands:
+  - python3 -m pip install --break-system-packages -e . pytest
 prompt: >
   Manually setting a Proxy-Authorization header gets stripped by rebuild_proxies()
   even when it should be preserved. Fix the logic so manually set proxy auth headers

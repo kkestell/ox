@@ -76,6 +76,7 @@ public static class ScenarioLoader
                 Path = wf.Path ?? throw new InvalidOperationException("WorkspaceFile 'path' is required"),
                 Content = wf.Content ?? throw new InvalidOperationException("WorkspaceFile 'content' is required"),
             }).ToList(),
+            SetupCommands = raw.SetupCommands,
             ValidationRules = raw.ValidationRules?.Select(MapRule).ToList()
                 ?? throw new InvalidOperationException("Scenario 'validation_rules' is required"),
             TimeoutSeconds = raw.TimeoutSeconds ?? 120,
@@ -141,6 +142,7 @@ public static class ScenarioLoader
         public string? Prompt { get; set; }
         public RawRepository? Repository { get; set; }
         public List<RawWorkspaceFile>? WorkspaceFiles { get; set; }
+        public List<string>? SetupCommands { get; set; }
         public List<RawValidationRule>? ValidationRules { get; set; }
         public int? TimeoutSeconds { get; set; }
         public int? MaxIterations { get; set; }

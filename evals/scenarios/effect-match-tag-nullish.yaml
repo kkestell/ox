@@ -7,6 +7,9 @@ repository:
   url: https://github.com/Effect-TS/effect
   commit: 7b8165f45779380fea8ac8e09badef898b63eb41
   fix_commit: e71889f35b081d13b7da2c04d2f81d6933056b49
+setup_commands:
+  - npm install -g pnpm
+  - pnpm install
 prompt: >
   Match.tag crashes when the discriminated union includes null or undefined. The
   tag matcher assumes all union members have a _tag property, which nullish values

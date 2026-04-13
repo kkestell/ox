@@ -160,8 +160,7 @@ public static class ValidationRunner
         psi.ArgumentList.Add("-c");
         psi.ArgumentList.Add(command);
 
-        using var process = new Process();
-        process.StartInfo = psi;
+        using var process = new Process { StartInfo = psi };
         process.Start();
 
         // Read stdout and stderr concurrently to avoid deadlocks when both
