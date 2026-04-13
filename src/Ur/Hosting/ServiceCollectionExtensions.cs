@@ -179,7 +179,7 @@ public static class ServiceCollectionExtensions
         // UrHost: registered via factory because the constructor is internal
         // (UrHost is a public type but we don't want arbitrary external construction).
         // The Func<string, int?> is an optional context window resolver provided by
-        // the host (Ox registers it from OxConfiguration.ResolveContextWindow).
+        // the host (Ox registers it from ModelCatalog.ResolveContextWindow).
         services.AddSingleton(sp => new UrHost(
             sp.GetRequiredService<Workspace>(),
             sp.GetRequiredService<ISessionStore>(),

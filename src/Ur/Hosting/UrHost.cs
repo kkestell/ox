@@ -32,7 +32,7 @@ public sealed class UrHost
     private readonly Func<string, IChatClient>? _chatClientFactoryOverride;
 
     // Optional context window resolver provided by the host via DI. Ox registers
-    // OxConfiguration.ResolveContextWindow as a Func<string, int?> so compaction
+    // ModelCatalog.ResolveContextWindow as a Func<string, int?> so compaction
     // can check context fill percentage. Null in tests that don't need it.
     private readonly Func<string, int?>? _contextWindowResolver;
 
@@ -73,7 +73,7 @@ public sealed class UrHost
     ///
     /// <paramref name="chatClientFactoryOverride"/>, <paramref name="additionalTools"/>,
     /// and <paramref name="contextWindowResolver"/> are optional DI services — null
-    /// in production (except contextWindowResolver which Ox registers from OxConfiguration).
+    /// in production (except contextWindowResolver which Ox registers from ModelCatalog).
     /// </summary>
     internal UrHost(
         Workspace workspace,

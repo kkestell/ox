@@ -47,7 +47,7 @@ public sealed class OxApp : IDisposable
     private readonly UrHost _host;
 
     // Application-level configuration — model catalog, context windows, provider metadata.
-    private readonly OxConfiguration _oxConfig;
+    private readonly ModelCatalog _oxConfig;
 
     // Command registry — retained here so SubmitInput can check whether an unknown
     // built-in is a user-invocable skill and fall through to StartTurn accordingly.
@@ -81,7 +81,7 @@ public sealed class OxApp : IDisposable
     // Exit flag.
     private bool _exit;
 
-    public OxApp(UrHost host, OxConfiguration oxConfig, InputCoordinator coordinator, int width, int height, string workspacePath)
+    public OxApp(UrHost host, ModelCatalog oxConfig, InputCoordinator coordinator, int width, int height, string workspacePath)
     {
         _host = host;
         _oxConfig = oxConfig;

@@ -14,7 +14,7 @@ The provider system spans three layers:
   own project. References Ur for `IProvider` and `IKeyring`. Contains the
   SDK package dependency and `IChatClient` construction logic.
 - **Ox (application)** — owns `providers.json`, `ProviderConfig`,
-  `OxConfiguration`, and the key-based dispatch in `ProviderRegistration`
+  `ModelCatalog`, and the key-based dispatch in `ProviderRegistration`
   that constructs concrete providers. Ox references all provider projects
   and decides which providers to register.
 
@@ -172,7 +172,7 @@ unit tests against the provider.
 
 Context windows are declared in `providers.json` under each model's
 `context_in` field — there are no provider-level context window methods.
-`OxConfiguration.ResolveContextWindow(modelId)` looks up the value from
+`ModelCatalog.ResolveContextWindow(modelId)` looks up the value from
 `ProviderConfig` (loaded from providers.json). The only fallback is
 `FakeProvider`, which declares context windows on its test scenarios.
 
@@ -182,7 +182,7 @@ Models not in `providers.json` show no percentage.
 ## Model Discovery
 
 Model lists are declared in `providers.json` under each provider's `models`
-array. `OxConfiguration.ListAllModelIds()` aggregates these into a sorted
+array. `ModelCatalog.ListAllModelIds()` aggregates these into a sorted
 list of `"provider/model"` strings for autocomplete. There is no runtime
 model discovery — all models must be declared statically.
 

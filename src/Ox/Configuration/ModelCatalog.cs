@@ -15,12 +15,12 @@ namespace Ox.Configuration;
 /// models exist. OxApp and HeadlessRunner use this for autocomplete, wizard flows,
 /// and context window display.
 /// </summary>
-public sealed class OxConfiguration
+public sealed class ModelCatalog
 {
     private readonly ProviderConfig _providerConfig;
     private readonly IReadOnlyDictionary<string, IProvider> _providers;
 
-    public OxConfiguration(ProviderConfig providerConfig, IEnumerable<IProvider> providers)
+    public ModelCatalog(ProviderConfig providerConfig, IEnumerable<IProvider> providers)
     {
         _providerConfig = providerConfig;
         _providers = providers.ToDictionary(p => p.Name, StringComparer.OrdinalIgnoreCase);

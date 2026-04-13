@@ -56,11 +56,11 @@ internal static class TestHostBuilder
         builder.Services.AddSingleton(providerConfig);
         builder.Services.AddProvidersFromConfig(providerConfig);
 
-        // OxConfiguration wraps model catalog queries (model listing, context windows).
+        // ModelCatalog wraps model catalog queries (model listing, context windows).
         // Tests that exercise catalog or context window features get real behavior.
-        builder.Services.AddSingleton<OxConfiguration>();
+        builder.Services.AddSingleton<ModelCatalog>();
         builder.Services.AddSingleton<Func<string, int?>>(sp =>
-            sp.GetRequiredService<OxConfiguration>().ResolveContextWindow);
+            sp.GetRequiredService<ModelCatalog>().ResolveContextWindow);
 
         // Pre-register test overrides before AddUr — TryAddSingleton lets them win.
         builder.Services.AddSingleton(keyring ?? new TestKeyring());

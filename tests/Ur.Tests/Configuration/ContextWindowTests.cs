@@ -4,22 +4,22 @@ using Ur.Tests.TestSupport;
 namespace Ur.Tests.Configuration;
 
 /// <summary>
-/// Tests for context window resolution through OxConfiguration.
+/// Tests for context window resolution through ModelCatalog.
 ///
 /// With providers.json, context window sizes are declared in the config file.
-/// OxConfiguration.ResolveContextWindow first checks ProviderConfig, then falls
+/// ModelCatalog.ResolveContextWindow first checks ProviderConfig, then falls
 /// back to the IProvider instance (for FakeProvider scenarios).
 /// </summary>
 public sealed class ContextWindowTests
 {
-    // ─── OxConfiguration.ResolveContextWindow ───────────────────────
+    // ─── ModelCatalog.ResolveContextWindow ───────────────────────
 
     [Fact]
     public void Resolve_KnownModel_ReturnsContextWindow()
     {
         // The test providers.json declares openai/gpt-4o with 128000 context.
         var config = TestProviderConfig.CreateDefault();
-        var oxConfig = new OxConfiguration(config, []);
+        var oxConfig = new ModelCatalog(config, []);
 
         var result = oxConfig.ResolveContextWindow("openai/gpt-4o");
 
@@ -30,7 +30,7 @@ public sealed class ContextWindowTests
     public void Resolve_UnknownProvider_ReturnsNull()
     {
         var config = TestProviderConfig.CreateDefault();
-        var oxConfig = new OxConfiguration(config, []);
+        var oxConfig = new ModelCatalog(config, []);
 
         var result = oxConfig.ResolveContextWindow("nonexistent/some-model");
 
@@ -41,7 +41,7 @@ public sealed class ContextWindowTests
     public void Resolve_UnknownModel_ReturnsNull()
     {
         var config = TestProviderConfig.CreateDefault();
-        var oxConfig = new OxConfiguration(config, []);
+        var oxConfig = new ModelCatalog(config, []);
 
         var result = oxConfig.ResolveContextWindow("openai/nonexistent-model");
 
@@ -52,7 +52,7 @@ public sealed class ContextWindowTests
     public void Resolve_OllamaModel_ReturnsContextWindow()
     {
         var config = TestProviderConfig.CreateDefault();
-        var oxConfig = new OxConfiguration(config, []);
+        var oxConfig = new ModelCatalog(config, []);
 
         var result = oxConfig.ResolveContextWindow("ollama/qwen3:4b");
 
@@ -63,7 +63,7 @@ public sealed class ContextWindowTests
     public void Resolve_GoogleModel_ReturnsContextWindow()
     {
         var config = TestProviderConfig.CreateDefault();
-        var oxConfig = new OxConfiguration(config, []);
+        var oxConfig = new ModelCatalog(config, []);
 
         var result = oxConfig.ResolveContextWindow("google/gemini-3.1-pro-preview");
 
@@ -75,7 +75,7 @@ public sealed class ContextWindowTests
     {
         // A model ID without a slash can't be parsed — should return null, not throw.
         var config = TestProviderConfig.CreateDefault();
-        var oxConfig = new OxConfiguration(config, []);
+        var oxConfig = new ModelCatalog(config, []);
 
         var result = oxConfig.ResolveContextWindow("no-slash-model");
 

@@ -56,7 +56,7 @@ public sealed class FakeProvider : IProvider
     /// <summary>
     /// Returns the simulated context window for a scenario, or null if the
     /// scenario doesn't declare one. Called by the context window resolver registered via
-    /// <c>OxConfiguration.ResolveContextWindow</c>
+    /// <c>ModelCatalog.ResolveContextWindow</c>
     /// as a fallback when the static providers.json has no entry for fake models.
     /// </summary>
     public static int? GetContextWindow(string model)

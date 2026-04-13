@@ -249,7 +249,7 @@ public sealed class ConfigurationTests : IDisposable
         Assert.Equal("openai/gpt-4o", host.Configuration.SelectedModelId);
     }
 
-    // ─── Model discovery aggregation (via OxConfiguration) ────────
+    // ─── Model discovery aggregation (via ModelCatalog) ────────
 
     [Fact]
     public void ListAllModelIds_AggregatesAndPrefixes()
@@ -257,7 +257,7 @@ public sealed class ConfigurationTests : IDisposable
         // providers.json declares models for openai, google, ollama, openrouter,
         // zai-coding. ListAllModelIds reads from the static config.
         var config = TestProviderConfig.CreateDefault();
-        var oxConfig = new OxConfiguration(config, []);
+        var oxConfig = new ModelCatalog(config, []);
 
         var models = oxConfig.ListAllModelIds();
 
@@ -286,7 +286,7 @@ public sealed class ConfigurationTests : IDisposable
             new OpenRouterProvider(keyring),
             new ZaiCodingProvider(keyring),
         ];
-        var oxConfig = new OxConfiguration(config, providers);
+        var oxConfig = new ModelCatalog(config, providers);
 
         var providerList = oxConfig.ListProviders();
 

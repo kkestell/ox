@@ -106,9 +106,9 @@ public class MultiProviderSmokeTests : IDisposable
         var providerConfig = ProviderConfig.Load(providersJsonPath);
         builder.Services.AddSingleton(providerConfig);
         builder.Services.AddProvidersFromConfig(providerConfig);
-        builder.Services.AddSingleton<OxConfiguration>();
+        builder.Services.AddSingleton<ModelCatalog>();
         builder.Services.AddSingleton<Func<string, int?>>(sp =>
-            sp.GetRequiredService<OxConfiguration>().ResolveContextWindow);
+            sp.GetRequiredService<ModelCatalog>().ResolveContextWindow);
 
         builder.Services.AddSingleton<IKeyring>(keyring);
         builder.Services.AddUr(builder.Configuration, o =>

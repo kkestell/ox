@@ -101,14 +101,14 @@ public static class Program
         builder.Services.AddSingleton(providerConfig);
         builder.Services.AddProvidersFromConfig(providerConfig);
 
-        // OxConfiguration wraps model catalog queries (model listing, context windows,
+        // ModelCatalog wraps model catalog queries (model listing, context windows,
         // provider metadata) for the TUI and headless runner.
-        builder.Services.AddSingleton<OxConfiguration>();
+        builder.Services.AddSingleton<ModelCatalog>();
 
         // Register a context window resolver for Ur's use — UrHost passes this delegate
         // to UrSession so compaction can check context fill percentage.
         builder.Services.AddSingleton<Func<string, int?>>(sp =>
-            sp.GetRequiredService<OxConfiguration>().ResolveContextWindow);
+            sp.GetRequiredService<ModelCatalog>().ResolveContextWindow);
 
         // ── Register Ur services ────────────────────────────────────────
         builder.Services.AddUr(builder.Configuration, o =>
@@ -120,7 +120,7 @@ public static class Program
         using var app = builder.Build();
         await app.StartAsync();
         var host = app.Services.GetRequiredService<UrHost>();
-        var oxConfig = app.Services.GetRequiredService<OxConfiguration>();
+        var oxConfig = app.Services.GetRequiredService<ModelCatalog>();
 
         // ── Headless path ───────────────────────────────────────────────
         // Branch before any TUI initialization — no alternate screen, no input
