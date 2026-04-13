@@ -1,0 +1,675 @@
+using Microsoft.Extensions.AI;
+using Ur.Permissions;
+using Ur.Tools;
+using Ur.Tests.TestSupport;
+
+namespace Ur.Tests.Tools;
+
+public sealed class BuiltinToolTests
+{
+    // ─── Helpers ───────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Creates a temp workspace directory with a disposable lifetime,
+    /// plus a Workspace instance scoped to that directory.
+    /// </summary>
+    private sealed class ToolTestEnvironment : IDisposable
+    {
+        private readonly string _root = Path.Combine(
+            Path.GetTempPath(),
+            "ur-tool-tests",
+            Guid.NewGuid().ToString("N"));
+
+        public string WorkspacePath => Path.Combine(_root, "workspace");
+        public Workspace Workspace { get; }
+
+        public ToolTestEnvironment()
+        {
+            Directory.CreateDirectory(WorkspacePath);
+            Workspace = new Workspace(WorkspacePath);
+        }
+
+        /// <summary>
+        /// Writes a file inside the workspace and returns its full path.
+        /// </summary>
+        public string WriteFile(string relativePath, string content)
+        {
+            var fullPath = Path.Combine(WorkspacePath, relativePath);
+            var dir = Path.GetDirectoryName(fullPath);
+            if (dir is not null) Directory.CreateDirectory(dir);
+            File.WriteAllText(fullPath, content);
+            return fullPath;
+        }
+
+        public void Dispose()
+        {
+            if (Directory.Exists(_root))
+                Directory.Delete(_root, recursive: true);
+        }
+    }
+
+    /// <summary>
+    /// Invokes an AIFunction with the given named arguments.
+    /// </summary>
+    private static async Task<object?> InvokeAsync(
+        AIFunction tool,
+        params (string Key, object? Value)[] args)
+    {
+        var dict = new Dictionary<string, object?>();
+        foreach (var (key, value) in args)
+            dict[key] = value;
+        return await tool.InvokeAsync(new AIFunctionArguments(dict));
+    }
+
+    // ─── read_file ─────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task ReadFile_ReturnsFileContents()
+    {
+        using var env = new ToolTestEnvironment();
+        var path = env.WriteFile("hello.txt", "line1\nline2\nline3");
+
+        var tool = new ReadFileTool(env.Workspace);
+        var result = (string?)await InvokeAsync(tool, ("file_path", path));
+
+        Assert.Contains("line1", result);
+        Assert.Contains("line2", result);
+        Assert.Contains("line3", result);
+    }
+
+    [Fact]
+    public async Task ReadFile_TruncatesLongFiles()
+    {
+        using var env = new ToolTestEnvironment();
+        // Write a file with more lines than the default limit (2000).
+        var lines = Enumerable.Range(1, 2500).Select(i => $"line {i}");
+        var path = env.WriteFile("big.txt", string.Join('\n', lines));
+
+        var tool = new ReadFileTool(env.Workspace);
+        var result = (string?)await InvokeAsync(tool, ("file_path", path));
+
+        Assert.Contains("[truncated: showing lines 1-2000 of 2500 lines]", result);
+        Assert.StartsWith("line 1\n", result);
+        Assert.DoesNotContain("\nline 2001\n", result);
+    }
+
+    [Fact]
+    public async Task ReadFile_RespectsOffsetAndLimit()
+    {
+        using var env = new ToolTestEnvironment();
+        var lines = Enumerable.Range(1, 100).Select(i => $"line {i}");
+        var path = env.WriteFile("offset.txt", string.Join('\n', lines));
+
+        var tool = new ReadFileTool(env.Workspace);
+        var result = (string?)await InvokeAsync(tool,
+            ("file_path", path),
+            ("offset", 10),
+            ("limit", 5));
+
+        // Offset 10 means we start at the 11th line ("line 11").
+        Assert.Contains("line 11", result);
+        Assert.Contains("line 15", result);
+        Assert.DoesNotContain("line 10\n", result);
+        Assert.DoesNotContain("line 16", result);
+        Assert.Contains("[truncated: showing lines 11-15 of 100 lines]", result);
+    }
+
+    [Fact]
+    public async Task ReadFile_ErrorsOnMissingFile()
+    {
+        using var env = new ToolTestEnvironment();
+        var tool = new ReadFileTool(env.Workspace);
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => InvokeAsync(tool,
+                ("file_path", Path.Combine(env.WorkspacePath, "nope.txt"))));
+
+        Assert.Contains("File not found", ex.Message);
+    }
+
+    [Fact]
+    public async Task ReadFile_ResolvesRelativePaths()
+    {
+        using var env = new ToolTestEnvironment();
+        env.WriteFile("sub/rel.txt", "relative content");
+
+        var tool = new ReadFileTool(env.Workspace);
+        var result = (string?)await InvokeAsync(tool, ("file_path", "sub/rel.txt"));
+
+        Assert.Contains("relative content", result);
+    }
+
+    // ─── write_file ────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task WriteFile_CreatesFileWithContent()
+    {
+        using var env = new ToolTestEnvironment();
+        var filePath = Path.Combine(env.WorkspacePath, "new.txt");
+
+        var tool = new WriteFileTool(env.Workspace);
+        var result = (string?)await InvokeAsync(tool,
+            ("file_path", filePath),
+            ("content", "hello world"));
+
+        Assert.True(File.Exists(filePath));
+        Assert.Equal("hello world", await File.ReadAllTextAsync(filePath));
+        Assert.Contains("Wrote", result);
+    }
+
+    [Fact]
+    public async Task WriteFile_CreatesParentDirectories()
+    {
+        using var env = new ToolTestEnvironment();
+        var filePath = Path.Combine(env.WorkspacePath, "a", "b", "c", "deep.txt");
+
+        var tool = new WriteFileTool(env.Workspace);
+        await InvokeAsync(tool, ("file_path", filePath), ("content", "deep"));
+
+        Assert.True(File.Exists(filePath));
+        Assert.Equal("deep", await File.ReadAllTextAsync(filePath));
+    }
+
+    [Fact]
+    public async Task WriteFile_OverwritesExistingFile()
+    {
+        using var env = new ToolTestEnvironment();
+        var path = env.WriteFile("overwrite.txt", "old content");
+
+        var tool = new WriteFileTool(env.Workspace);
+        await InvokeAsync(tool, ("file_path", path), ("content", "new content"));
+
+        Assert.Equal("new content", await File.ReadAllTextAsync(path));
+    }
+
+    // ─── update_file ───────────────────────────────────────────────────
+
+    [Fact]
+    public async Task UpdateFile_ReplacesUniqueMatch()
+    {
+        using var env = new ToolTestEnvironment();
+        var path = env.WriteFile("update.txt", "foo bar baz");
+
+        var tool = new UpdateFileTool(env.Workspace);
+        var result = (string?)await InvokeAsync(tool,
+            ("file_path", path),
+            ("old_string", "bar"),
+            ("new_string", "qux"));
+
+        Assert.Equal("foo qux baz", await File.ReadAllTextAsync(path));
+        Assert.Contains("Updated", result);
+    }
+
+    [Fact]
+    public async Task UpdateFile_ErrorsOnZeroMatches()
+    {
+        using var env = new ToolTestEnvironment();
+        var path = env.WriteFile("nope.txt", "foo bar baz");
+
+        var tool = new UpdateFileTool(env.Workspace);
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => InvokeAsync(tool,
+                ("file_path", path),
+                ("old_string", "missing"),
+                ("new_string", "x")));
+
+        Assert.Contains("not found", ex.Message);
+    }
+
+    [Fact]
+    public async Task UpdateFile_ErrorsOnMultipleMatches()
+    {
+        using var env = new ToolTestEnvironment();
+        var path = env.WriteFile("multi.txt", "aaa bbb aaa");
+
+        var tool = new UpdateFileTool(env.Workspace);
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => InvokeAsync(tool,
+                ("file_path", path),
+                ("old_string", "aaa"),
+                ("new_string", "x")));
+
+        Assert.Contains("appears 2 times", ex.Message);
+    }
+
+    [Fact]
+    public async Task UpdateFile_ErrorsOnMissingFile()
+    {
+        using var env = new ToolTestEnvironment();
+        var tool = new UpdateFileTool(env.Workspace);
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => InvokeAsync(tool,
+                ("file_path", Path.Combine(env.WorkspacePath, "gone.txt")),
+                ("old_string", "a"),
+                ("new_string", "b")));
+
+        Assert.Contains("File not found", ex.Message);
+    }
+
+    // ─── Registration ──────────────────────────────────────────────────
+
+    [Fact]
+    public async Task BuiltinTools_AppearInSessionToolRegistry()
+    {
+        using var workspace = new TempWorkspace();
+        var host = await TestHostBuilder.CreateHostAsync(workspace);
+        var session = host.CreateSession();
+        var tools = session.BuildToolRegistry();
+
+        Assert.NotNull(tools.Get("read_file"));
+        Assert.NotNull(tools.Get("write_file"));
+        Assert.NotNull(tools.Get("update_file"));
+        Assert.NotNull(tools.Get("glob"));
+        Assert.NotNull(tools.Get("grep"));
+        Assert.NotNull(tools.Get("bash"));
+        Assert.NotNull(tools.Get("todo_write"));
+        Assert.NotNull(tools.Get("skill"));
+
+        // run_subagent is deliberately NOT registered by BuildToolRegistry — it needs
+        // per-turn context (chat client, callbacks) and is wired later in RunTurnAsync.
+        Assert.Null(tools.Get("run_subagent"));
+    }
+
+    [Fact]
+    public async Task BuiltinTools_HaveCorrectPermissionMetadata()
+    {
+        // The security model depends entirely on each tool having the right OperationType:
+        //   Read    → auto-allowed, no user prompt
+        //   Write   → prompts once per target with a durable grant option
+        //   Execute → prompts every invocation, never auto-granted
+        // A miscategorization (e.g. bash as Read) would silently bypass prompting.
+        using var workspace = new TempWorkspace();
+        var host = await TestHostBuilder.CreateHostAsync(workspace);
+        var session = host.CreateSession();
+        var tools = session.BuildToolRegistry();
+
+        Assert.Equal(OperationType.Read,    tools.GetPermissionMeta("read_file")!.OperationType);
+        Assert.Equal(OperationType.Write,   tools.GetPermissionMeta("write_file")!.OperationType);
+        Assert.Equal(OperationType.Write,   tools.GetPermissionMeta("update_file")!.OperationType);
+        Assert.Equal(OperationType.Read,    tools.GetPermissionMeta("glob")!.OperationType);
+        Assert.Equal(OperationType.Read,    tools.GetPermissionMeta("grep")!.OperationType);
+        Assert.Equal(OperationType.Execute, tools.GetPermissionMeta("bash")!.OperationType);
+        Assert.Equal(OperationType.Read,    tools.GetPermissionMeta("todo_write")!.OperationType);
+        Assert.Equal(OperationType.Read,    tools.GetPermissionMeta("skill")!.OperationType);
+    }
+
+    [Fact]
+    public async Task SkillTool_TargetExtractorUsesSkillArgument()
+    {
+        // The "skill" argument names which skill is being invoked — it should be
+        // used as the permission target so approval prompts show the skill name
+        // (e.g. "commit") rather than the generic tool name "skill".
+        using var workspace = new TempWorkspace();
+        var host = await TestHostBuilder.CreateHostAsync(workspace);
+        var session = host.CreateSession();
+        var tools = session.BuildToolRegistry();
+        var meta = tools.GetPermissionMeta("skill")!;
+
+        // Simulate a tool call where the model passes skill = "commit".
+        var call = new FunctionCallContent("call-1", "skill",
+            new Dictionary<string, object?> { ["skill"] = "commit" });
+        Assert.Equal("commit", meta.ResolveTarget(call));
+    }
+
+    [Fact]
+    public void RegisterBuiltins_SkipsAlreadyRegisteredTools()
+    {
+        using var env = new ToolTestEnvironment();
+        var registry = new ToolRegistry();
+
+        // Pre-register a fake tool with the same name as a built-in.
+        var fake = AIFunctionFactory.Create(() => "fake", "read_file", "a fake");
+        registry.Register(fake);
+
+        // Run the factory loop — the guard in each factory call prevents overwriting.
+        RegisterBuiltins(registry, env.Workspace);
+
+        // The registry should still hold the original fake, not the real ReadFileTool.
+        var retrieved = registry.Get("read_file");
+        Assert.Same(fake, retrieved);
+
+        // The other tools should still be registered normally.
+        Assert.NotNull(registry.Get("write_file"));
+        Assert.NotNull(registry.Get("update_file"));
+    }
+
+    // ─── Path traversal ────────────────────────────────────────────────
+
+    // Note: path traversal for individual tools is no longer tested here.
+    // Workspace boundary enforcement has moved to ToolInvoker, which checks
+    // containment at invocation time before the tool is called.
+    // See AgentLoopPermissionTests for sandbox-level boundary tests.
+
+    // ─── glob ──────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task Glob_MatchesFilesByPattern()
+    {
+        using var env = new ToolTestEnvironment();
+        env.WriteFile("a.cs", "");
+        env.WriteFile("b.cs", "");
+        env.WriteFile("readme.md", "");
+
+        var tool = new GlobTool(env.Workspace);
+        var result = (string?)await InvokeAsync(tool, ("pattern", "*.cs"));
+
+        Assert.Contains("a.cs", result);
+        Assert.Contains("b.cs", result);
+        Assert.DoesNotContain("readme.md", result);
+    }
+
+    [Fact]
+    public async Task Glob_RespectsSubdirectoryScoping()
+    {
+        using var env = new ToolTestEnvironment();
+        env.WriteFile("root.cs", "");
+        env.WriteFile("src/nested.cs", "");
+
+        var tool = new GlobTool(env.Workspace);
+        var result = (string?)await InvokeAsync(tool,
+            ("pattern", "*.cs"),
+            ("path", "src"));
+
+        Assert.Contains("nested.cs", result);
+        Assert.DoesNotContain("root.cs", result);
+    }
+
+    [Fact]
+    public async Task Glob_ReturnsPathsRelativeToWorkspaceRoot()
+    {
+        using var env = new ToolTestEnvironment();
+        env.WriteFile("src/deep/file.cs", "");
+
+        var tool = new GlobTool(env.Workspace);
+        var result = (string?)await InvokeAsync(tool, ("pattern", "**/*.cs"));
+
+        // Should be workspace-relative, not absolute.
+        Assert.Contains(Path.Combine("src", "deep", "file.cs"), result);
+        Assert.DoesNotContain(env.WorkspacePath, result);
+    }
+
+    [Fact]
+    public async Task Glob_ReturnsEmptyForNoMatches()
+    {
+        using var env = new ToolTestEnvironment();
+        env.WriteFile("test.txt", "");
+
+        var tool = new GlobTool(env.Workspace);
+        var result = (string?)await InvokeAsync(tool, ("pattern", "*.cs"));
+
+        Assert.Equal("", result);
+    }
+
+    [Fact]
+    public async Task Glob_TruncatesLargeResultSets()
+    {
+        using var env = new ToolTestEnvironment();
+        // Create more files than the truncation limit (1000).
+        for (var i = 0; i < 1100; i++)
+            env.WriteFile($"file{i:D4}.txt", "");
+
+        var tool = new GlobTool(env.Workspace);
+        var result = (string?)await InvokeAsync(tool, ("pattern", "*.txt"));
+
+        Assert.Contains("[truncated: showing 1000 of 1100 matches]", result);
+    }
+
+    // ─── grep ──────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task Grep_FindsMatchingLinesInFiles()
+    {
+        using var env = new ToolTestEnvironment();
+        env.WriteFile("code.cs", "int x = 42;\nstring y = \"hello\";\nint z = 99;");
+
+        // Force .NET fallback so the test doesn't depend on rg being installed.
+        ToolArgHelpers.SetRipgrepAvailable(false);
+        try
+        {
+            var tool = new GrepTool(env.Workspace);
+            var result = (string?)await InvokeAsync(tool, ("pattern", "int"));
+
+            Assert.Contains("code.cs", result);
+            Assert.Contains("int x = 42", result);
+            Assert.Contains("int z = 99", result);
+            Assert.DoesNotContain("hello", result);
+        }
+        finally
+        {
+            ToolArgHelpers.SetRipgrepAvailable(null); // Reset for other tests.
+        }
+    }
+
+    [Fact]
+    public async Task Grep_RespectsIncludeFilter()
+    {
+        using var env = new ToolTestEnvironment();
+        env.WriteFile("code.cs", "needle");
+        env.WriteFile("readme.md", "needle");
+
+        ToolArgHelpers.SetRipgrepAvailable(false);
+        try
+        {
+            var tool = new GrepTool(env.Workspace);
+            var result = (string?)await InvokeAsync(tool,
+                ("pattern", "needle"),
+                ("include", "*.cs"));
+
+            Assert.Contains("code.cs", result);
+            Assert.DoesNotContain("readme.md", result);
+        }
+        finally
+        {
+            ToolArgHelpers.SetRipgrepAvailable(null);
+        }
+    }
+
+    [Fact]
+    public async Task Grep_ReturnsLineNumbers()
+    {
+        using var env = new ToolTestEnvironment();
+        env.WriteFile("lines.txt", "aaa\nbbb\nccc\nbbb\neee");
+
+        ToolArgHelpers.SetRipgrepAvailable(false);
+        try
+        {
+            var tool = new GrepTool(env.Workspace);
+            var result = (string?)await InvokeAsync(tool, ("pattern", "bbb"));
+
+            // Should contain line numbers (1-based) in file:line:content format.
+            Assert.Contains("lines.txt:2:", result);
+            Assert.Contains("lines.txt:4:", result);
+        }
+        finally
+        {
+            ToolArgHelpers.SetRipgrepAvailable(null);
+        }
+    }
+
+    [Fact]
+    public async Task Grep_ReturnsEmptyForNoMatches()
+    {
+        using var env = new ToolTestEnvironment();
+        env.WriteFile("code.cs", "nothing here");
+
+        ToolArgHelpers.SetRipgrepAvailable(false);
+        try
+        {
+            var tool = new GrepTool(env.Workspace);
+            var result = (string?)await InvokeAsync(tool, ("pattern", "zzz_not_found"));
+
+            Assert.Equal("", result);
+        }
+        finally
+        {
+            ToolArgHelpers.SetRipgrepAvailable(null);
+        }
+    }
+
+    [Fact]
+    public async Task Grep_HandlesContextLines()
+    {
+        using var env = new ToolTestEnvironment();
+        env.WriteFile("ctx.txt", "line1\nline2\nMATCH\nline4\nline5");
+
+        ToolArgHelpers.SetRipgrepAvailable(false);
+        try
+        {
+            var tool = new GrepTool(env.Workspace);
+            var result = (string?)await InvokeAsync(tool,
+                ("pattern", "MATCH"),
+                ("context_lines", 1));
+
+            // Should include the line before and after the match, but not
+            // lines outside the 1-line context window.
+            Assert.Contains("line2", result);
+            Assert.Contains("MATCH", result);
+            Assert.Contains("line4", result);
+            Assert.DoesNotContain("line1", result);
+            Assert.DoesNotContain("line5", result);
+        }
+        finally
+        {
+            ToolArgHelpers.SetRipgrepAvailable(null);
+        }
+    }
+
+    [Fact]
+    public async Task Grep_UsesRipgrepWhenAvailable()
+    {
+        // This test exercises the ripgrep backend. If rg is not installed,
+        // it verifies the .NET fallback produces the same output contract.
+        using var env = new ToolTestEnvironment();
+        env.WriteFile("rg_test.txt", "alpha\nbeta\ngamma");
+
+        // Reset to auto-detect so we exercise whichever backend is available.
+        ToolArgHelpers.SetRipgrepAvailable(null);
+        try
+        {
+            var tool = new GrepTool(env.Workspace);
+            var result = (string?)await InvokeAsync(tool, ("pattern", "beta"));
+
+            // Both backends should produce file:line:content format.
+            Assert.Contains("rg_test.txt", result);
+            Assert.Contains("beta", result);
+            Assert.DoesNotContain("alpha", result);
+            Assert.DoesNotContain("gamma", result);
+        }
+        finally
+        {
+            ToolArgHelpers.SetRipgrepAvailable(null);
+        }
+    }
+
+    // ─── bash ──────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task Bash_ExecutesCommandAndReturnsOutput()
+    {
+        using var env = new ToolTestEnvironment();
+        var tool = new BashTool(env.Workspace);
+        var result = (string?)await InvokeAsync(tool, ("command", "echo hello"));
+
+        Assert.Contains("Exit code: 0", result);
+        Assert.Contains("hello", result);
+    }
+
+    [Fact]
+    public async Task Bash_ReturnsExitCode()
+    {
+        using var env = new ToolTestEnvironment();
+        var tool = new BashTool(env.Workspace);
+        var result = (string?)await InvokeAsync(tool, ("command", "exit 42"));
+
+        Assert.Contains("Exit code: 42", result);
+    }
+
+    [Fact]
+    public async Task Bash_CapturesStderr()
+    {
+        using var env = new ToolTestEnvironment();
+        var tool = new BashTool(env.Workspace);
+        var result = (string?)await InvokeAsync(tool,
+            ("command", "echo error_msg >&2"));
+
+        Assert.Contains("stderr", result);
+        Assert.Contains("error_msg", result);
+    }
+
+    [Fact]
+    public async Task Bash_TimesOutLongRunningCommands()
+    {
+        using var env = new ToolTestEnvironment();
+        var tool = new BashTool(env.Workspace);
+
+        // Use a very short timeout to trigger the timeout path.
+        var result = (string?)await InvokeAsync(tool,
+            ("command", "sleep 60"),
+            ("timeout_ms", 500));
+
+        Assert.Contains("timed out", result);
+    }
+
+    [Fact]
+    public async Task Bash_TruncatesLargeOutput()
+    {
+        using var env = new ToolTestEnvironment();
+        var tool = new BashTool(env.Workspace);
+
+        // Generate more than 2000 lines of output.
+        var result = (string?)await InvokeAsync(tool,
+            ("command", "seq 1 3000"));
+
+        Assert.Contains("[truncated]", result);
+    }
+
+    [Fact]
+    public async Task Bash_SetsWorkingDirectoryToWorkspaceRoot()
+    {
+        using var env = new ToolTestEnvironment();
+        // Write a marker file so we can verify pwd matches exactly, not a parent.
+        env.WriteFile("marker.txt", "");
+
+        var tool = new BashTool(env.Workspace);
+        var result = (string?)await InvokeAsync(tool,
+            ("command", "pwd && test -f marker.txt && echo MARKER_FOUND"));
+
+        Assert.Contains(env.WorkspacePath, result);
+        Assert.Contains("MARKER_FOUND", result);
+    }
+
+    // ─── Registration ──────────────────────────────────────────────────
+
+    [Fact]
+    public void RegisterBuiltins_AddsAllBuiltinTools()
+    {
+        using var env = new ToolTestEnvironment();
+        var registry = new ToolRegistry();
+
+        RegisterBuiltins(registry, env.Workspace);
+
+        Assert.NotNull(registry.Get("read_file"));
+        Assert.NotNull(registry.Get("write_file"));
+        Assert.NotNull(registry.Get("update_file"));
+        Assert.NotNull(registry.Get("glob"));
+        Assert.NotNull(registry.Get("grep"));
+        Assert.NotNull(registry.Get("bash"));
+    }
+
+    /// <summary>
+    /// Registers all builtin tools into the given registry using the factory loop.
+    /// Mirrors the production path in UrSession.RunTurnAsync but without a real
+    /// chat client or turn context (neither is needed for registration-only tests).
+    /// </summary>
+    private static void RegisterBuiltins(ToolRegistry registry, Workspace workspace)
+    {
+        var context = new ToolContext(workspace, "test");
+        foreach (var (factory, operationType, targetExtractor) in BuiltinToolFactories.All)
+        {
+            var tool = factory(context);
+            if (registry.Get(tool.Name) is null)
+                registry.Register(tool, operationType, targetExtractor: targetExtractor);
+        }
+    }
+}

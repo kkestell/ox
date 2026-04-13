@@ -12,6 +12,7 @@
   <Project Path="src/Te.Demo/Te.Demo.csproj" />
   <Project Path="tests/Ur.IntegrationTests/Ur.IntegrationTests.csproj" />
   <Project Path="tests/Te.Tests/Te.Tests.csproj" />
+  <Project Path="tests/Ox.Tests/Ox.Tests.csproj" />
   <Project Path="evals/EvalShared/EvalShared.csproj" />
   <Project Path="evals/EvalShared.Tests/EvalShared.Tests.csproj" />
   <Project Path="evals/EvalRunner/EvalRunner.csproj" />
