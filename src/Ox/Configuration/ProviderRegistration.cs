@@ -36,14 +36,9 @@ public static class ProviderRegistration
                 case "openai-compatible":
                     var capturedName = name;
                     var endpoint = entry.Endpoint;
-                    // Build the set of model IDs that need the <think>-extraction wrapper.
-                    // Constructed once here so CreateChatClient can do a fast set lookup.
-                    var thinkingModels = new HashSet<string>(
-                        entry.Models.Where(m => m.Thinking).Select(m => m.Id),
-                        StringComparer.OrdinalIgnoreCase);
                     services.AddSingleton<IProvider>(sp =>
                         new OpenAiCompatibleProvider(
-                            capturedName, endpoint, sp.GetRequiredService<IKeyring>(), thinkingModels));
+                            capturedName, endpoint, sp.GetRequiredService<IKeyring>()));
                     break;
 
                 case "google":

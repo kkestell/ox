@@ -546,60 +546,6 @@ public class ThinkingExperimentTests
         }
     }
 
-    // Standard reasoning options used for all OpenRouter probes.
-    private static ChatOptions ReasoningOptions() => new()
-    {
-        Reasoning = new ReasoningOptions { Effort = ReasoningEffort.Low }
-    };
-
-    /// <summary>
-    /// Makes a raw non-streaming HTTP request to OpenRouter with reasoning_effort
-    /// and logs the exact reasoning-related fields present in the response JSON.
-    ///
-    /// This bypasses MEAI entirely so we can see what OpenRouter actually returns
-    /// (e.g. "reasoning" vs "reasoning_content") independent of what the adapter
-    /// knows how to parse.
-    /// </summary>
-    private async Task ProbeRawAsync(string model)
-    {
-        var apiKey = Environment.GetEnvironmentVariable("OPENROUTER_API_KEY")!;
-        using var http = new System.Net.Http.HttpClient { Timeout = TimeSpan.FromSeconds(60) };
-        http.DefaultRequestHeaders.Authorization =
-            new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", apiKey);
-
-        var body = System.Text.Json.JsonSerializer.Serialize(new
-        {
-            model,
-            stream = false,
-            reasoning_effort = "low",
-            messages = new[] { new { role = "user", content = "17th prime?" } }
-        });
-
-        var resp = await http.PostAsync(
-            "https://openrouter.ai/api/v1/chat/completions",
-            new System.Net.Http.StringContent(body, System.Text.Encoding.UTF8, "application/json"));
-
-        var json = await resp.Content.ReadAsStringAsync();
-        using var doc = System.Text.Json.JsonDocument.Parse(json);
-
-        // Report every reasoning-related key present anywhere in the message object.
-        var message = doc.RootElement
-            .GetProperty("choices")[0]
-            .GetProperty("message");
-
-        _output.WriteLine($"  [raw] message fields: {string.Join(", ", message.EnumerateObject().Select(p => p.Name))}");
-
-        foreach (var prop in message.EnumerateObject())
-        {
-            if (prop.Name.Contains("reason", StringComparison.OrdinalIgnoreCase))
-            {
-                var preview = prop.Value.ToString();
-                if (preview.Length > 120) preview = preview[..120] + "...";
-                _output.WriteLine($"  [raw] {prop.Name}: {preview}");
-            }
-        }
-    }
-
     private static bool ShouldRun() =>
         string.Equals(
             Environment.GetEnvironmentVariable(RunExperimentsEnvVar),

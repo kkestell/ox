@@ -51,6 +51,13 @@ internal sealed class FakeScenarioTurn
     public IReadOnlyList<string>? TextChunks { get; init; }
 
     /// <summary>
+    /// Reasoning chunks to stream as <c>ChatResponseUpdate</c> items containing
+    /// <see cref="Microsoft.Extensions.AI.TextReasoningContent"/>. Emitted before
+    /// text chunks to mirror real provider behaviour (reasoning precedes response).
+    /// </summary>
+    public IReadOnlyList<string>? ReasoningChunks { get; init; }
+
+    /// <summary>
     /// An optional tool call to emit. When set, the response includes a
     /// <c>FunctionCallContent</c> alongside or instead of text. The agent loop
     /// will attempt to execute this tool, and the next turn in the scenario

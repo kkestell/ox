@@ -654,6 +654,7 @@ public sealed class OxApp : IDisposable
 
                 case TodoUpdated todoUpdated:
                     _currentAssistantEntry = null;
+                    _currentThinkingEntry = null;
                     _conversationView.AddEntry(new PlanEntry
                     {
                         Items = todoUpdated.Items.Select(i => new PlanItem(

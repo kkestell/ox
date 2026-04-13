@@ -205,7 +205,7 @@ Phase 1 results narrow the scope significantly:
   - One handler fixes streaming and non-streaming in a single place.
   - No model-specific logic — all OpenRouter models go through the same rewrite.
 
-- [ ] Add `OpenRouterReasoningHandler : DelegatingHandler` in `src/Ur/Providers/` (or in the future
+- [x] Add `OpenRouterReasoningHandler : DelegatingHandler` in `src/Ur/Providers/` (or in the future
   `Ur.Providers.OpenRouter` project per Plan 007). The handler:
   1. For non-streaming responses: reads the response body, replaces `"reasoning":` with
      `"reasoning_content":`, and sets the rewritten body as the response content.
@@ -213,21 +213,21 @@ Phase 1 results narrow the scope significantly:
      response stream in a `ReasoningFieldRenamingStream` that does the same replacement on the fly.
   3. Operates only on responses from `openrouter.ai` (or is attached only to the OpenRouter client,
      making the host check redundant but still a good safety measure).
-- [ ] Wire the handler into the `HttpClient` used by `OpenAiCompatibleProvider` when the endpoint is
+- [x] Wire the handler into the `HttpClient` used by `OpenAiCompatibleProvider` when the endpoint is
   `https://openrouter.ai/api/v1` (or into the future `OpenRouterProvider` per Plan 007).
-- [ ] ~~Write `DeepSeekThinkingChatClient : IChatClient` decorator~~  — **CANCELLED.** The `<think>`
+- [x] ~~Write `DeepSeekThinkingChatClient : IChatClient` decorator~~  — **CANCELLED.** The `<think>`
   block extraction approach was based on a flawed initial experiment. DeepSeek-R1 via OpenRouter
   uses the same `reasoning` field as all other OpenRouter models; no model-specific wrapper is needed.
 
 ### Phase 3 — AgentLoop: route TextReasoningContent
 
-- [ ] In `AgentLoop.RunTurnAsync()`, add a `TextReasoningContent` case to the content-type switch:
+- [x] In `AgentLoop.RunTurnAsync()`, add a `TextReasoningContent` case to the content-type switch:
   ```csharp
   case TextReasoningContent trc:
       yield return new ThinkingChunk { Text = trc.Text };
       break;
   ```
-- [ ] In `BuildLlmMessages()`, extend the `UsageContent` filter to also strip `TextReasoningContent`:
+- [x] In `BuildLlmMessages()`, extend the `UsageContent` filter to also strip `TextReasoningContent`:
   ```csharp
   msg.Contents.Where(c => c is not UsageContent and not TextReasoningContent)
   ```
@@ -235,7 +235,7 @@ Phase 1 results narrow the scope significantly:
 
 ### Phase 4 — New event type
 
-- [ ] Add `ThinkingChunk` to `AgentLoopEvent.cs`:
+- [x] Add `ThinkingChunk` to `AgentLoopEvent.cs`:
   ```csharp
   public sealed class ThinkingChunk : AgentLoopEvent
   {
@@ -245,30 +245,30 @@ Phase 1 results narrow the scope significantly:
 
 ### Phase 5 — Conversation entries and UI
 
-- [ ] Add `ThinkingEntry` to `ConversationEntry.cs` — mirrors `AssistantTextEntry` with a `StringBuilder`
+- [x] Add `ThinkingEntry` to `ConversationEntry.cs` — mirrors `AssistantTextEntry` with a `StringBuilder`
   and `Append()` method. Kept separate because thinking has distinct rendering and different lifecycle
   semantics from assistant response text.
-- [ ] Handle `ThinkingChunk` in `OxApp.DrainAgentEvents()`:
+- [x] Handle `ThinkingChunk` in `OxApp.DrainAgentEvents()`:
   - If `_currentThinkingEntry` is null, create one and add to conversation view.
   - Append the chunk text to it.
-  - `_currentThinkingEntry` must be nulled in all five places `_currentAssistantEntry` is already nulled,
-    to prevent a turn-boundary bug where thinking text from the next turn would append to a stale entry:
-    - When `ResponseChunk` arrives (text after thinking starts a new turn within the response)
+  - `_currentThinkingEntry` nulled in all relevant places alongside `_currentAssistantEntry`:
+    - When `ResponseChunk` arrives
     - When `ToolCallStarted` arrives
-    - When `TurnCompleted` arrives (line ~653 alongside `_currentAssistantEntry = null`)
-    - When `TurnError` with `IsFatal = true` arrives (line ~695)
-    - In `CancelTurn()` (line ~579)
-- [ ] Render `ThinkingEntry` in `ConversationView` / `ConversationEntryView` with a visually distinct style:
+    - When `TodoUpdated` arrives
+    - When `TurnCompleted` arrives
+    - When `TurnError` with `IsFatal = true` arrives
+    - In `CancelTurn()`
+- [x] Render `ThinkingEntry` in `ConversationView` with a visually distinct style:
   - Hollow circle prefix (`○`) instead of the filled `●` used for assistant text
-  - Muted/dimmed color to signal this is internal reasoning, not the model's response
+  - Muted/dimmed color (ToolSignature theme color) to signal internal reasoning
   - No markdown rendering (thinking traces are unstructured prose)
 
 ### Phase 6 — Validation
 
-- [ ] Run `UR_RUN_THINKING_EXPERIMENTS=1 dotnet test tests/Ur.IntegrationTests` — all experiment tests pass,
+- [x] Run `UR_RUN_THINKING_EXPERIMENTS=1 dotnet test tests/Ur.IntegrationTests` — all experiment tests pass,
   output shows `TextReasoningContent` items for each provider.
-- [ ] Run `dotnet test tests/Ur.Tests` — all existing unit tests pass.
-- [ ] Run `dotnet build` — no warnings.
+- [x] Run `dotnet test tests/Ur.Tests` — all 527 unit tests pass.
+- [x] Run `dotnet build` — no warnings.
 - [ ] Manual: start ox with a reasoning-capable model, submit a prompt that requires thinking. Verify
   thinking block appears in the TUI with hollow-circle style before or alongside the response text.
 - [ ] Manual: submit a prompt that causes the model to narrate before calling a tool. Verify narration

@@ -62,8 +62,7 @@
       {
         "name": "DeepSeek R1",
         "id": "deepseek/deepseek-r1",
-        "context_in": 163840,
-        "thinking": true
+        "context_in": 163840
       },
       {
         "name": "Qwen3 Coder Next",

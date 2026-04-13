@@ -64,6 +64,21 @@ internal sealed class FakeChatClient : IChatClient
             throw new InvalidOperationException(
                 turn.ErrorMessage ?? "Simulated fake provider error");
 
+        // Emit reasoning chunks before text to mirror real provider ordering
+        // (reasoning traces precede the response in models that support thinking).
+        if (turn.ReasoningChunks is { Count: > 0 })
+        {
+            foreach (var chunk in turn.ReasoningChunks)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                yield return new ChatResponseUpdate
+                {
+                    Role = ChatRole.Assistant,
+                    Contents = [new TextReasoningContent(chunk)]
+                };
+            }
+        }
+
         // Emit text chunks as individual streaming updates, simulating
         // token-by-token streaming from a real provider.
         if (turn.TextChunks is { Count: > 0 })
