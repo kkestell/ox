@@ -7,16 +7,16 @@ direct, Azure OpenAI, Mistral, etc.) to Ox.
 
 The provider system spans three layers:
 
-- **Ur (library)** — owns `IProvider`, `ProviderRegistry`, `ModelId`, and
-  `UrHost.CreateChatClient()`. Ur doesn't know which providers exist or what
+- **Agent layer** (`src/Ox/Agent/`) — owns `IProvider`, `ProviderRegistry`, `ModelId`, and
+  `OxHost.CreateChatClient()`. The Agent layer doesn't know which providers exist or what
   models they offer — it dispatches by provider name prefix.
-- **Provider projects** (`src/Ur.Providers.*`) — each provider lives in its
-  own project. References Ur for `IProvider` and `IKeyring`. Contains the
+- **Providers** (`src/Ox/Agent/Providers/`) — each provider lives in its
+  own subdirectory. Uses `IProvider` and `IKeyring` from the Agent layer. Contains the
   SDK package dependency and `IChatClient` construction logic.
-- **Ox (application)** — owns `providers.json`, `ProviderConfig`,
+- **App layer** (`src/Ox/App/`) — owns `providers.json`, `ProviderConfig`,
   `ModelCatalog`, and the key-based dispatch in `ProviderRegistration`
-  that constructs concrete providers. Ox references all provider projects
-  and decides which providers to register.
+  that constructs concrete providers. The App layer wires all providers
+  and decides which to register.
 
 ```
 User selects model: "anthropic/claude-sonnet-4-20250514"
@@ -37,7 +37,7 @@ User selects model: "anthropic/claude-sonnet-4-20250514"
 ```
 
 All providers return `Microsoft.Extensions.AI.IChatClient`, which is the
-AI abstraction layer used throughout Ur. The provider's job is solely to
+AI abstraction layer used throughout the Agent layer. The provider's job is solely to
 construct and configure the right `IChatClient` — the rest of the system
 (agent loop, tool invocation, streaming) is provider-agnostic.
 
@@ -79,16 +79,16 @@ reasoning field renaming), create a dedicated provider project.
 
 #### 1. Create the Provider Project
 
-Create a new project `src/Ur.Providers.Anthropic/`:
+Create a new directory `src/Ox/Agent/Providers/Anthropic/`:
 
-**`Ur.Providers.Anthropic.csproj`:**
+**`No separate csproj needed — files go directly in the Ox project.`:**
 ```xml
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
   </PropertyGroup>
   <ItemGroup>
-    <ProjectReference Include="../Ur/Ur.csproj" />
+    <!-- No project reference needed — same assembly -->
     <PackageReference Include="Anthropic.SDK" Version="..." />
   </ItemGroup>
 </Project>
@@ -97,10 +97,10 @@ Create a new project `src/Ur.Providers.Anthropic/`:
 **`AnthropicProvider.cs`:**
 ```csharp
 using Microsoft.Extensions.AI;
-using Ur.Configuration.Keyring;
-using Ur.Providers;
+using Ox.Agent.Configuration.Keyring;
+using Ox.Agent.Providers;
 
-namespace Ur.Providers.Anthropic;
+namespace Ox.Agent.Providers.Anthropic;
 
 /// <summary>
 /// Anthropic direct API provider. Uses the Anthropic SDK to construct
@@ -108,7 +108,7 @@ namespace Ur.Providers.Anthropic;
 /// </summary>
 public sealed class AnthropicProvider : IProvider
 {
-    private const string SecretService = "ur";
+    private const string SecretService = "ox";
     private const string KeyringAccount = "anthropic";
 
     private readonly IKeyring _keyring;
@@ -141,8 +141,8 @@ public sealed class AnthropicProvider : IProvider
 
 #### 2. Wire Up in Ox
 
-1. Add the project to `Ox.slnx` and add a `<ProjectReference>` in `src/Ox/Ox.csproj`.
-2. Add a case to the key-based dispatch in `src/Ox/Configuration/ProviderRegistration.cs`:
+1. Add the provider file to `src/Ox/Agent/Providers/YourProvider/`.
+2. Add a case to the key-based dispatch in `src/Ox/App/Configuration/ProviderRegistration.cs`:
 
 ```csharp
 case "anthropic":
@@ -155,8 +155,8 @@ case "anthropic":
 
 #### 3. Add Test References
 
-Add a `<ProjectReference>` to `tests/Ur.Tests/Ur.Tests.csproj` and write
-unit tests against the provider.
+Write
+unit tests in `tests/Ox.Tests/Agent/Providers/`.
 
 ## IProvider Interface Reference
 
@@ -193,13 +193,13 @@ model discovery — all models must be declared statically.
 Used by: `OpenAiCompatibleProvider`, `GoogleProvider`
 
 ```csharp
-private const string SecretService = "ur";
+private const string SecretService = "ox";
 private const string KeyringAccount = "your-provider";
 var apiKey = _keyring.GetSecret(SecretService, KeyringAccount);
 ```
 
 Users set the key via the connect wizard or `set-api-key` command. The
-convention is service = `"ur"`, account = provider name.
+convention is service = `"ox"`, account = provider name.
 
 ### No API Key Required
 
@@ -214,8 +214,8 @@ public string? GetBlockingIssue() => null;
 
 ### Unit Tests
 
-Add tests to `tests/Ur.Tests/` and a `<ProjectReference>` to the provider
-project. Providers are testable in isolation by mocking `IKeyring`:
+Add tests to `tests/Ox.Tests/Agent/Providers/`. No separate
+project reference needed. Providers are testable in isolation by mocking `IKeyring`:
 
 ```csharp
 [Fact]
@@ -230,7 +230,7 @@ public void GetBlockingIssue_ReturnsIssue_WhenNoApiKey()
 
 ### Integration Tests
 
-Integration tests in `tests/Ur.IntegrationTests/` exercise the full DI
+Integration tests in `tests/Ox.IntegrationTests/` exercise the full DI
 pipeline with live API keys (gated by environment variables).
 
 ### Using the Fake Provider
@@ -242,19 +242,19 @@ directly in DI: `services.AddSingleton<IProvider>(new FakeProvider())`.
 - Always ready (no API key needed)
 - Fixed 200,000-token context window
 
-See `src/Ur/Providers/Fake/` for the fake provider and scenario system.
+See `src/Ox/Agent/Providers/Fake/` for the fake provider and scenario system.
 
 ## Checklist
 
 When adding a new provider, verify:
 
-- [ ] Create project `src/Ur.Providers.YourProvider/` with `.csproj` referencing Ur
+- [ ] Create provider class in `src/Ox/Agent/Providers/YourProvider/`
 - [ ] Implement `IProvider` with `Name`, `DisplayName`, `RequiresApiKey`, `CreateChatClient()`, `GetBlockingIssue()`
-- [ ] Add the project to `Ox.slnx`
-- [ ] Add `<ProjectReference>` in `src/Ox/Ox.csproj`
+- [ ] Files are part of Ox.csproj automatically
+- [ ] No separate project reference needed
 - [ ] Add dispatch case in `ProviderRegistration.AddProvidersFromConfig()`
 - [ ] Add provider entry to `providers.json` with models and context windows
-- [ ] Add `<ProjectReference>` in `tests/Ur.Tests/Ur.Tests.csproj`
-- [ ] Add unit tests to `tests/Ur.Tests/`
+- [ ] Add unit tests to `tests/Ox.Tests/Agent/Providers/`
+- [ ] Verify tests pass with `dotnet test tests/Ox.Tests/`
 - [ ] Verify the provider appears in `ProviderRegistry.ProviderNames` at startup
 - [ ] Test with a model ID in `"provider/model"` format

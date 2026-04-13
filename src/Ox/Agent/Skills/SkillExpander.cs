@@ -1,0 +1,77 @@
+namespace Ox.Agent.Skills;
+
+/// <summary>
+/// Expands a skill's content template by substituting variables and arguments.
+///
+/// Expansion handles four substitution types:
+/// 1. <c>$ARGUMENTS</c> — replaced with the raw args string from the invocation.
+/// 2. Named arguments — if the skill declares argument names, each <c>$arg_name</c>
+///    placeholder is replaced with the corresponding positional argument.
+/// 3. <c>${OX_SKILL_DIR}</c> — replaced with the skill's directory path on disk.
+/// 4. <c>${OX_SESSION_ID}</c> — replaced with the current session's ID.
+///
+/// TODO: Shell execution (!`command`) in skill content — requires subprocess
+/// execution during expansion plus security considerations.
+/// </summary>
+internal static class SkillExpander
+{
+    /// <summary>
+    /// Expands a skill's content template with the provided arguments and session context.
+    /// </summary>
+    /// <param name="skill">The skill whose content to expand.</param>
+    /// <param name="args">Raw argument string from the user or model invocation.</param>
+    /// <param name="sessionId">The current session's ID for ${OX_SESSION_ID} substitution.</param>
+    /// <returns>The fully expanded prompt string ready to send to the model.</returns>
+    public static string Expand(SkillDefinition skill, string args, string sessionId)
+    {
+        var content = skill.Content;
+
+        // Named argument substitution: if the skill declares argument names,
+        // split the args string by whitespace and replace each $arg_name placeholder.
+        // Any leftover arguments (beyond the named ones) become the new $ARGUMENTS value.
+        var remainingArgs = args;
+
+        if (skill.ArgumentNames is not { Length: > 0 })
+            return ApplyBuiltins(content, remainingArgs, skill.SkillDirectory, sessionId);
+
+        var parts = SplitArgs(args, skill.ArgumentNames.Length);
+
+        for (var i = 0; i < skill.ArgumentNames.Length; i++)
+        {
+            var value = i < parts.Length ? parts[i] : "";
+            content = content.Replace($"${skill.ArgumentNames[i]}", value, StringComparison.Ordinal);
+        }
+
+        // Leftover args: everything after the named arguments.
+        remainingArgs = parts.Length > skill.ArgumentNames.Length
+            ? parts[^1]
+            : "";
+
+        return ApplyBuiltins(content, remainingArgs, skill.SkillDirectory, sessionId);
+    }
+
+    /// <summary>
+    /// Replaces built-in variable placeholders ($ARGUMENTS, ${OX_SKILL_DIR},
+    /// ${OX_SESSION_ID}) in the content template. Separated from <see cref="Expand"/>
+    /// so the main method only handles named-argument logic while this method handles
+    /// the fixed set of built-in substitutions.
+    /// </summary>
+    private static string ApplyBuiltins(
+        string content, string remainingArgs, string skillDirectory, string sessionId)
+    {
+        content = content.Replace("$ARGUMENTS", remainingArgs, StringComparison.Ordinal);
+        content = content.Replace("${OX_SKILL_DIR}", skillDirectory, StringComparison.Ordinal);
+        content = content.Replace("${OX_SESSION_ID}", sessionId, StringComparison.Ordinal);
+        return content;
+    }
+
+    /// <summary>
+    /// Splits an argument string into at most <paramref name="maxParts"/> pieces.
+    /// The last piece captures everything remaining (so named args get individual
+    /// tokens while the rest is preserved as a single string for $ARGUMENTS).
+    /// </summary>
+    private static string[] SplitArgs(string args, int maxParts) =>
+        string.IsNullOrWhiteSpace(args)
+            ? []
+            : args.Split((char[]?)null, maxParts + 1, StringSplitOptions.RemoveEmptyEntries);
+}

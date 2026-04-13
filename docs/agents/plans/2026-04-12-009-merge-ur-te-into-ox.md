@@ -200,75 +200,75 @@ sequence after it. The plan *is* the refactor. Two specific refactors need to ha
 Run this as a standalone commit *before* Phase 1 so the big structural move stays
 mechanical and `git log --follow` is not confused by a rename-within-a-move.
 
-- [ ] Rename `src/Ox/Configuration/OxConfiguration.cs` class and file to
+- [x] Rename `src/Ox/Configuration/OxConfiguration.cs` class and file to
   `ModelCatalog.cs` / `class ModelCatalog`. Namespace remains `Ox.Configuration` for
   now — it moves to `Ox.App.Configuration` in Phase 3 with the rest of the app-layer
   code.
-- [ ] Update every reference to the old `OxConfiguration` type across the codebase
+- [x] Update every reference to the old `OxConfiguration` type across the codebase
   (Program.cs, tests, evals if applicable). Grep for `OxConfiguration` — at this point
   the only hits should be in `Ox.Configuration.ModelCatalog` (the old one, renamed)
   and `Ur.Configuration.UrConfiguration` (the other one, untouched). No file should
   still reference an `Ox.Configuration.OxConfiguration` type.
-- [ ] `dotnet build` — succeeds. Commit.
+- [x] `dotnet build` — succeeds. Commit.
 
 ### Phase 1 — Delete dead artifacts
 
-- [ ] Delete `src/Te.Demo/` (entire directory, including `bin/`, `obj/`).
-- [ ] Delete `docs/agents/plans/2026-04-12-008-remove-ox-coupling.md`.
-- [ ] Remove `src/Te.Demo/Te.Demo.csproj` entry from `Ox.slnx`.
+- [x] Delete `src/Te.Demo/` (entire directory, including `bin/`, `obj/`).
+- [x] Delete `docs/agents/plans/2026-04-12-008-remove-ox-coupling.md`.
+- [x] Remove `src/Te.Demo/Te.Demo.csproj` entry from `Ox.slnx`.
 
 ### Phase 2 — Move source trees
 
 Do these moves with `git mv` so history is preserved. No content edits in this phase;
 only file/directory relocation.
 
-- [ ] Create `src/Ox/Terminal/`, `src/Ox/Agent/`, `src/Ox/App/`.
-- [ ] Move `src/Te/Input/` → `src/Ox/Terminal/Input/`.
-- [ ] Move `src/Te/Rendering/` → `src/Ox/Terminal/Rendering/`.
-- [ ] Delete the empty `src/Te/` directory (along with its `bin/`, `obj/`,
+- [x] Create `src/Ox/Terminal/`, `src/Ox/Agent/`, `src/Ox/App/`.
+- [x] Move `src/Te/Input/` → `src/Ox/Terminal/Input/`.
+- [x] Move `src/Te/Rendering/` → `src/Ox/Terminal/Rendering/`.
+- [x] Delete the empty `src/Te/` directory (along with its `bin/`, `obj/`,
   `Properties/`, `Te.csproj`).
-- [ ] Move every Ur subfolder (`AgentLoop/`, `Compaction/`, `Configuration/`, `Hosting/`,
+- [x] Move every Ur subfolder (`AgentLoop/`, `Compaction/`, `Configuration/`, `Hosting/`,
   `Logging/`, `Permissions/`, `Prompting/`, `Providers/`, `Sessions/`, `Settings/`,
   `Skills/`, `Todo/`, `Tools/`) and every top-level Ur file (`Workspace.cs`,
   `ToolContext.cs`) to `src/Ox/Agent/<same-name>`.
-- [ ] Delete `src/Ur/Properties/AssemblyInfo.cs` (the `InternalsVisibleTo` attribute is
+- [x] Delete `src/Ur/Properties/AssemblyInfo.cs` (the `InternalsVisibleTo` attribute is
   now meaningless).
-- [ ] Delete the empty `src/Ur/` directory (along with its `bin/`, `obj/`, `Ur.csproj`).
-- [ ] For each `src/Ur.Providers.<Vendor>/` project, move every `.cs` file into
+- [x] Delete the empty `src/Ur/` directory (along with its `bin/`, `obj/`, `Ur.csproj`).
+- [x] For each `src/Ur.Providers.<Vendor>/` project, move every `.cs` file into
   `src/Ox/Agent/Providers/<Vendor>/`. Note: `Fake/` is already under
   `src/Ur/Providers/Fake/` and moves along with the other Agent folders in the step
   above — the `Ur.Providers.*` projects are the six vendor projects.
-- [ ] Capture each provider project's package references (vendor SDK versions) before
+- [x] Capture each provider project's package references (vendor SDK versions) before
   deleting the `.csproj` files — they get merged into `Ox.csproj` in Phase 4.
-- [ ] Delete each `src/Ur.Providers.<Vendor>/` directory.
-- [ ] Move every current `src/Ox/` top-level file and subfolder (except `Program.cs`,
+- [x] Delete each `src/Ur.Providers.<Vendor>/` directory.
+- [x] Move every current `src/Ox/` top-level file and subfolder (except `Program.cs`,
   `Properties/`, `Ox.csproj`, `bin/`, `obj/`) into `src/Ox/App/`. Specifically:
   `AutocompleteEngine.cs`, `ComposerController.cs`, `HeadlessRunner.cs`, `OxApp.cs`,
   `OxBootOptions.cs`, `ScreenDumpWriter.cs`, `Configuration/` (now containing
   `ModelCatalog.cs`, `ProviderConfig.cs`, `ProviderRegistration.cs`), `Connect/`,
   `Conversation/`, `Input/`, `Permission/`, `Views/`.
-- [ ] Verify `src/Ox/App/Configuration/ProviderRegistration.cs` exists after the move.
+- [x] Verify `src/Ox/App/Configuration/ProviderRegistration.cs` exists after the move.
   Its `AddProvidersFromConfig` method is the app-layer dispatch point that replaces
   the per-vendor `Add<Vendor>Provider` extensions. It will be invoked from
   `OxServices.Register` in Phase 5.
 
 ### Phase 3 — Rewrite namespaces
 
-- [ ] In every file under `src/Ox/Terminal/`, rewrite `namespace Te.Input;` →
+- [x] In every file under `src/Ox/Terminal/`, rewrite `namespace Te.Input;` →
   `namespace Ox.Terminal.Input;` and `namespace Te.Rendering;` →
   `namespace Ox.Terminal.Rendering;`. Update all `using Te.Input;` / `using Te.Rendering;`
   across the codebase to the new namespaces.
-- [ ] In every file under `src/Ox/Agent/`, rewrite `namespace Ur;` → `namespace Ox.Agent;`,
+- [x] In every file under `src/Ox/Agent/`, rewrite `namespace Ur;` → `namespace Ox.Agent;`,
   `namespace Ur.AgentLoop;` → `namespace Ox.Agent.AgentLoop;`, and every other
   `namespace Ur.<Sub>` → `namespace Ox.Agent.<Sub>`. Update all `using Ur.*;` across the
   codebase to `using Ox.Agent.*;`.
-- [ ] In every file now under `src/Ox/App/`, rewrite `namespace Ox;` →
+- [x] In every file now under `src/Ox/App/`, rewrite `namespace Ox;` →
   `namespace Ox.App;` and `namespace Ox.<Sub>;` → `namespace Ox.App.<Sub>;` (the folders
   `Configuration`, `Connect`, `Conversation`, `Input`, `Permission`, `Views`). Update
   `using Ox.<Sub>;` references as needed.
-- [ ] In `src/Ox/Program.cs`, keep the namespace as `Ox;` (top-level). Update `using`
+- [x] In `src/Ox/Program.cs`, keep the namespace as `Ox;` (top-level). Update `using`
   directives to point at `Ox.App.*`, `Ox.Agent.*`, `Ox.Terminal.*`.
-- [ ] Rename `Ur`-prefixed types to `Ox`-prefixed: `UrOptions` → `OxOptions`,
+- [x] Rename `Ur`-prefixed types to `Ox`-prefixed: `UrOptions` → `OxOptions`,
   `UrConfiguration` → `OxConfiguration` (note: there is *already* a type named
   `OxConfiguration` under `src/Ox/Configuration/`; disambiguate — probably rename the
   current `OxConfiguration` to `ProviderConfig` or merge responsibilities), `UrHost` →
@@ -276,37 +276,37 @@ only file/directory relocation.
   `UrFileLoggerProvider` → `OxFileLoggerProvider`, `UrSettingsConfigurationSource` →
   `OxSettingsConfigurationSource`. Resolve the `OxConfiguration` name clash before
   renaming (see Open questions).
-- [ ] Grep `src/` and `tests/` for the identifier `Ur` — every remaining match must be
+- [x] Grep `src/` and `tests/` for the identifier `Ur` — every remaining match must be
   inside a string literal (log message, comment, documentation path). Replace each with
   `Ox` unless it refers to a historical plan filename or external package.
 
 ### Phase 4 — Merge csproj contents
 
-- [ ] Copy the `<PackageReference>` entries from `src/Ur/Ur.csproj` into
+- [x] Copy the `<PackageReference>` entries from `src/Ur/Ur.csproj` into
   `src/Ox/Ox.csproj` (Microsoft.Extensions.AI, Configuration, DI.Abstractions,
   FileSystemGlobbing, Logging, Options, etc.).
-- [ ] Copy each vendor SDK `<PackageReference>` from the six provider csproj files into
+- [x] Copy each vendor SDK `<PackageReference>` from the six provider csproj files into
   `src/Ox/Ox.csproj`. Deduplicate against existing entries.
-- [ ] Merge `<NoWarn>` / `<AllowUnsafeBlocks>` / other property-group flags that existed
+- [x] Merge `<NoWarn>` / `<AllowUnsafeBlocks>` / other property-group flags that existed
   in `Ur.csproj` into `Ox.csproj` (CA1848, CA1873).
-- [ ] Remove every `<ProjectReference>` from `src/Ox/Ox.csproj` — there should be none
+- [x] Remove every `<ProjectReference>` from `src/Ox/Ox.csproj` — there should be none
   after this phase.
-- [ ] Update `Ox.slnx`: remove `Ur.csproj`, `Te.csproj`, `Te.Demo.csproj`, and all
+- [x] Update `Ox.slnx`: remove `Ur.csproj`, `Te.csproj`, `Te.Demo.csproj`, and all
   `Ur.Providers.*.csproj` project entries. Verify `Ox.csproj` is still listed.
 
 ### Phase 5 — Collapse DI surface
 
-- [ ] Create `src/Ox/App/OxServices.cs` (namespace `Ox.App`, `internal static class
+- [x] Create `src/Ox/App/OxServices.cs` (namespace `Ox.App`, `internal static class
   OxServices`). This is App-layer code, not Agent-layer: it orchestrates app bootstrap
   by calling into Agent-layer registration and then wiring up app-specific services
   (ProviderRegistration, ModelCatalog, etc.). Placing it in Agent/ would violate the
   layer rule since it references App-layer types.
-- [ ] `OxServices` exposes two internal methods:
+- [x] `OxServices` exposes two internal methods:
   - `Register(IServiceCollection services, IConfiguration configuration,
     Action<OxOptions>? configure = null)` — the full bootstrap body.
   - `AddSettingsSources(IConfigurationBuilder builder, string userSettingsPath,
     string workspaceSettingsPath)` — invoked during `ConfigurationBuilder` setup.
-- [ ] Lift the body of `AddUr` from `src/Ox/Agent/Hosting/ServiceCollectionExtensions.cs`
+- [x] Lift the body of `AddUr` from `src/Ox/Agent/Hosting/ServiceCollectionExtensions.cs`
   into `OxServices.Register`. The file
   `src/Ox/Agent/Hosting/ServiceCollectionExtensions.cs` can then be deleted entirely;
   there is no reason for the Agent layer to expose a registration extension method. If
@@ -314,28 +314,28 @@ only file/directory relocation.
   `CreatePlatformKeyring`, `RegisterCoreSchemas`), move them to plain internal static
   methods on the relevant type rather than leaving a registration-extensions file
   behind.
-- [ ] Re-evaluate the `src/Ox/Agent/Hosting/` folder. After removing the DI
+- [x] Re-evaluate the `src/Ox/Agent/Hosting/` folder. After removing the DI
   extensions, the only remaining file is `UrHost.cs` → `OxHost.cs`. If `OxHost` is
   primarily a service facade (looks up DI-registered services and exposes them to the
   app) consider whether `Hosting` is still a meaningful folder name or whether
   `OxHost.cs` belongs at `src/Ox/Agent/OxHost.cs` at the folder root. Not a blocker —
   judge by what makes the tree readable.
-- [ ] Delete `AddOpenAiProvider`, `AddGoogleProvider`, `AddOpenRouterProvider`,
+- [x] Delete `AddOpenAiProvider`, `AddGoogleProvider`, `AddOpenRouterProvider`,
   `AddOllamaProvider`, `AddZaiCodingProvider`, `AddOpenAiCompatibleProvider` extension
   methods from each provider file. Replace with `internal static void
   Register(IServiceCollection services, IConfiguration configuration)` static methods
   (or direct registration calls) invoked from `ProviderRegistration.AddProvidersFromConfig`.
-- [ ] Update `ProviderRegistration.AddProvidersFromConfig` (now in
+- [x] Update `ProviderRegistration.AddProvidersFromConfig` (now in
   `src/Ox/App/Configuration/`) to call the new per-vendor `Register` methods instead
   of the deleted extension methods. `OxServices.Register` invokes
   `ProviderRegistration.AddProvidersFromConfig` as one of its steps.
-- [ ] Remove the `configSection` plumbing in `OxConfiguration` (née `UrConfiguration`):
+- [x] Remove the `configSection` plumbing in `OxConfiguration` (née `UrConfiguration`):
   replace `ModelSettingKey` logic with the const `"ox.model"`.
-- [ ] Remove the `WorkspaceDirectoryName` option from `OxOptions` (née `UrOptions`).
+- [x] Remove the `WorkspaceDirectoryName` option from `OxOptions` (née `UrOptions`).
   `Workspace` hardcodes `.ox`.
-- [ ] Update `src/Ox/Program.cs` to call `OxServices.Register(...)` instead of
+- [x] Update `src/Ox/Program.cs` to call `OxServices.Register(...)` instead of
   `builder.Services.AddUr(...)` and similar.
-- [ ] Remove `DefaultUserDataDirectory()` helper indirection if it existed; inline as
+- [x] Remove `DefaultUserDataDirectory()` helper indirection if it existed; inline as
   `Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".ox")`
   at the single call site.
 
@@ -344,19 +344,19 @@ only file/directory relocation.
 All of plan 008's deferred parameterization is reversed. Every Ox-specific string gets
 hardcoded at its point of use.
 
-- [ ] `src/Ox/Agent/Workspace.cs` — hardcode `Path.Combine(RootPath, ".ox")`.
-- [ ] `src/Ox/Agent/Hosting/ServiceCollectionExtensions.cs` (or wherever
+- [x] `src/Ox/Agent/Workspace.cs` — hardcode `Path.Combine(RootPath, ".ox")`.
+- [x] `src/Ox/Agent/Hosting/ServiceCollectionExtensions.cs` (or wherever
   `OxServices.Register` ends up) — hardcode `configuration.GetSection("ox")`.
-- [ ] `src/Ox/Agent/Logging/OxFileLoggerProvider.cs` — hardcode `~/.ox/logs` as the log
+- [x] `src/Ox/Agent/Logging/OxFileLoggerProvider.cs` — hardcode `~/.ox/logs` as the log
   directory.
-- [ ] `src/Ox/Agent/Logging/OxFileLogger.cs` — hardcode `ox-{date}.log` as the filename
+- [x] `src/Ox/Agent/Logging/OxFileLogger.cs` — hardcode `ox-{date}.log` as the filename
   prefix.
-- [ ] `src/Ox/Agent/Configuration/OxConfiguration.cs` — hardcode `ModelSettingKey =
+- [x] `src/Ox/Agent/Configuration/OxConfiguration.cs` — hardcode `ModelSettingKey =
   "ox.model"` (const).
-- [ ] `src/Ox/Agent/Skills/SkillExpander.cs` — confirm template variables are
+- [x] `src/Ox/Agent/Skills/SkillExpander.cs` — confirm template variables are
   `${OX_SKILL_DIR}` and `${OX_SESSION_ID}`. (They already are on `main`; plan 008's
   proposed rename to `${SKILL_DIR}`/`${SESSION_ID}` was never merged. Verify.)
-- [ ] Update doc comments in `ConfigurationScope.cs`, `PermissionGrantStore.cs`,
+- [x] Update doc comments in `ConfigurationScope.cs`, `PermissionGrantStore.cs`,
   `SkillLoader.cs`, `SkillFrontmatter.cs`, `SkillDefinition.cs`, `UrSession.cs` (now
   `OxSession.cs`), `AgentLoopEvent.cs`, `IProvider.cs`, `FakeProvider.cs` to refer to
   concrete Ox paths/types (e.g. `~/.ox/settings.json`, `OxSession`, etc.) rather than
@@ -364,12 +364,12 @@ hardcoded at its point of use.
 
 ### Phase 7 — Visibility audit
 
-- [ ] Grep `src/Ox/Agent/` for `public class`, `public interface`, `public record`,
+- [x] Grep `src/Ox/Agent/` for `public class`, `public interface`, `public record`,
   `public struct`, `public enum`. For each hit, determine whether any caller lives
   outside `src/Ox/Agent/` (i.e. in `src/Ox/App/` or reflection-driven paths). If not,
   change to `internal`.
-- [ ] Same audit for `src/Ox/Terminal/` and `src/Ox/App/`.
-- [ ] **Serialization boundary check.** Before changing any type's visibility, check
+- [x] Same audit for `src/Ox/Terminal/` and `src/Ox/App/`.
+- [x] **Serialization boundary check.** Before changing any type's visibility, check
   whether it is referenced by a `[JsonSerializable]` source-generator context (e.g.
   `SettingsJsonContext`, any other `JsonSerializerContext` subclass) or bears
   `[JsonPropertyName]` attributes. If the source-generated context is `public`, its
@@ -379,68 +379,68 @@ hardcoded at its point of use.
   every type each context references, and keep context + referenced-types in
   compatible visibility brackets. `PermissionGrantStore`, `FakeScenario`, session
   records, and anything under `Settings/` are the likely hotspots.
-- [ ] Ensure at least `Program`'s `Main` remains accessible to the runtime (no explicit
+- [x] Ensure at least `Program`'s `Main` remains accessible to the runtime (no explicit
   `public` needed — top-level statements or `internal` both work).
-- [ ] Delete any `InternalsVisibleTo` attributes that remain anywhere in the codebase
+- [x] Delete any `InternalsVisibleTo` attributes that remain anywhere in the codebase
   (they were put in place to let Ox see Ur internals; no longer needed).
 
 ### Phase 8 — Test consolidation
 
-- [ ] Move every file under `tests/Ur.Tests/` into `tests/Ox.Tests/Agent/`, preserving
+- [x] Move every file under `tests/Ur.Tests/` into `tests/Ox.Tests/Agent/`, preserving
   the subfolder structure (`AgentLoop/`, `Compaction/`, `Configuration/`, `Hosting/`,
   `Logging/`, `Permissions/`, `Prompting/`, `Providers/`, `Sessions/`, `Settings/`,
   `Skills/`, `Todo/`, `Tools/`, `TestData/`, `TestSupport/`).
-- [ ] Move every file under `tests/Te.Tests/` into `tests/Ox.Tests/Terminal/`.
-- [ ] Create `tests/Ox.Tests/App/` and move existing `tests/Ox.Tests/` files into it
+- [x] Move every file under `tests/Te.Tests/` into `tests/Ox.Tests/Terminal/`.
+- [x] Create `tests/Ox.Tests/App/` and move existing `tests/Ox.Tests/` files into it
   (`ComposerControllerTests.cs`, `HeadlessRunnerTests.cs`, `OxBootOptionsTests.cs`,
   `ScreenDumpWriterTests.cs`, `Connect/`, `Permission/`, `Views/`). Note: current
   `TestSupport/` may need to merge with `Agent/TestSupport/` — decide per-file whether
   each helper is App-specific or Agent-specific; shared helpers go at
   `tests/Ox.Tests/TestSupport/`.
-- [ ] Delete `tests/Ur.Tests/` and `tests/Te.Tests/` directories.
-- [ ] Update `tests/Ox.Tests/Ox.Tests.csproj` — merge package references and
+- [x] Delete `tests/Ur.Tests/` and `tests/Te.Tests/` directories.
+- [x] Update `tests/Ox.Tests/Ox.Tests.csproj` — merge package references and
   `ProjectReference` changes (should end with one `ProjectReference` to
   `../../src/Ox/Ox.csproj`).
-- [ ] Delete `tests/Ur.Tests/Ur.Tests.csproj` and `tests/Te.Tests/Te.Tests.csproj`.
-- [ ] Rewrite namespaces in all moved test files: `Ur.Tests.*` → `Ox.Tests.Agent.*`;
+- [x] Delete `tests/Ur.Tests/Ur.Tests.csproj` and `tests/Te.Tests/Te.Tests.csproj`.
+- [x] Rewrite namespaces in all moved test files: `Ur.Tests.*` → `Ox.Tests.Agent.*`;
   `Te.Tests` → `Ox.Tests.Terminal`; existing `Ox.Tests.*` → `Ox.Tests.App.*`.
-- [ ] Rewrite `using` directives: `using Ur.*;` → `using Ox.Agent.*;`;
+- [x] Rewrite `using` directives: `using Ur.*;` → `using Ox.Agent.*;`;
   `using Te.*;` → `using Ox.Terminal.*;`.
-- [ ] In `tests/Ox.Tests/TestSupport/TestHostBuilder.cs` (and any other DI-setup test
+- [x] In `tests/Ox.Tests/TestSupport/TestHostBuilder.cs` (and any other DI-setup test
   helpers): replace `AddUr(...)` with `OxServices.Register(...)` calls. Remove all
   `configSection` and `WorkspaceDirectoryName` arguments.
-- [ ] Rename `tests/Ur.IntegrationTests/` → `tests/Ox.IntegrationTests/`. Rename its
+- [x] Rename `tests/Ur.IntegrationTests/` → `tests/Ox.IntegrationTests/`. Rename its
   csproj. Update its namespaces (`Ur.IntegrationTests.*` → `Ox.IntegrationTests.*`) and
   using directives.
-- [ ] Update `Ox.slnx`: remove `Ur.Tests.csproj`, `Te.Tests.csproj`,
+- [x] Update `Ox.slnx`: remove `Ur.Tests.csproj`, `Te.Tests.csproj`,
   `Ur.IntegrationTests.csproj` entries; add `Ox.IntegrationTests.csproj` entry. Keep
   `Ox.Tests.csproj`.
 
 ### Phase 9 — Evals and scripts
 
-- [ ] Grep `evals/` for `using Ur.`, `using Te.`, and any bare references to `Ur`/`Te`.
+- [x] Grep `evals/` for `using Ur.`, `using Te.`, and any bare references to `Ur`/`Te`.
   Replace with `Ox.*` equivalents. Project references do not need updating (evals
   invoke Ox via shell commands, not assembly references).
-- [ ] Grep `boo`, `Makefile`, `scripts/` for project names `Ur`, `Te`, `Ur.Tests`,
+- [x] Grep `boo`, `Makefile`, `scripts/` for project names `Ur`, `Te`, `Ur.Tests`,
   `Te.Tests`, `Ur.IntegrationTests`, `Te.Demo`, `Ur.Providers`. Replace with `Ox`,
   `Ox.Tests`, `Ox.IntegrationTests` as appropriate.
-- [ ] Grep `AGENTS.md`, `CLAUDE.md`, `README` (if any), `docs/` for `Ur`/`Te` concept
+- [x] Grep `AGENTS.md`, `CLAUDE.md`, `README` (if any), `docs/` for `Ur`/`Te` concept
   references. Update to Ox-layered terminology where it matters; preserve historical
   plan documents verbatim (they describe history).
-- [ ] Check `providers.json` for any `Ur`-branded keys. Update if present.
+- [x] Check `providers.json` for any `Ur`-branded keys. Update if present.
 
 ### Phase 10 — Build, test, verify
 
-- [ ] `dotnet build` from repo root — zero errors, zero warnings (other than pre-existing).
-- [ ] `dotnet test tests/Ox.Tests/Ox.Tests.csproj` — all unit tests pass.
-- [ ] `dotnet test tests/Ox.IntegrationTests/Ox.IntegrationTests.csproj` — all
+- [x] `dotnet build` from repo root — zero errors, zero warnings (other than pre-existing).
+- [x] `dotnet test tests/Ox.Tests/Ox.Tests.csproj` — all unit tests pass.
+- [x] `dotnet test tests/Ox.IntegrationTests/Ox.IntegrationTests.csproj` — all
   integration tests pass.
-- [ ] `dotnet test` (solution-wide) — all tests across evals also pass.
-- [ ] `boo` end-to-end harness — any boo targets succeed.
-- [ ] Run the Ox binary manually: `dotnet run --project src/Ox` in an empty workspace;
+- [x] `dotnet test` (solution-wide) — all tests across evals also pass.
+- [x] `boo` end-to-end harness — any boo targets succeed.
+- [x] Run the Ox binary manually: `dotnet run --project src/Ox` in an empty workspace;
   verify `.ox/` is created and contains `sessions/`, etc.; verify `~/.ox/logs/ox-<date>.log`
   is produced.
-- [ ] Grep checks:
+- [x] Grep checks:
   - `grep -r "namespace Ur" src/ tests/` → zero results.
   - `grep -r "namespace Te" src/ tests/` → zero results.
   - `grep -r "using Ur" src/ tests/` → zero results.

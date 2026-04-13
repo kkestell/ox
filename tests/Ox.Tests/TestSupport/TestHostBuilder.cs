@@ -1,16 +1,17 @@
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
-using Ox.Configuration;
-using Ur.Configuration.Keyring;
-using Ur.Hosting;
-using Ur.Providers;
-using Ur.Tools;
+using Ox.App;
+using Ox.App.Configuration;
+using Ox.Agent.Configuration.Keyring;
+using Ox.Agent.Hosting;
+using Ox.Agent.Providers;
+using Ox.Agent.Tools;
 
 namespace Ox.Tests.TestSupport;
 
 /// <summary>
-/// Convenience builder for tests that need a full <see cref="UrHost"/>.
+/// Convenience builder for tests that need a full <see cref="OxHost"/>.
 ///
 /// Mirrors the same DI registration path used by production code so tests exercise
 /// the real object graph. The <see cref="IHost"/> is attached to the
@@ -23,11 +24,11 @@ namespace Ox.Tests.TestSupport;
 internal static class TestHostBuilder
 {
     /// <summary>
-    /// Creates a UrHost via the DI container, using the provided workspace for paths
+    /// Creates an OxHost via the DI container, using the provided workspace for paths
     /// and optional overrides for keyring, chat client factory, additional tools,
     /// fake provider, and ephemeral model override.
     /// </summary>
-    public static async Task<UrHost> CreateHostAsync(
+    public static async Task<OxHost> CreateHostAsync(
         TempWorkspace workspace,
         IKeyring? keyring = null,
         Func<string, IChatClient>? chatClientFactory = null,
@@ -42,14 +43,15 @@ internal static class TestHostBuilder
 
         var builder = Host.CreateApplicationBuilder();
 
-        // Register Ur settings sources on the host's configuration root so
+        // Register settings sources on the host's configuration root so
         // SettingsWriter.Reload() propagates to the same IConfigurationRoot
         // that the standard options pipeline reads from.
-        builder.Configuration.AddUrSettings(
+        OxServices.AddSettingsSources(
+            builder.Configuration,
             workspace.UserSettingsPath,
             Path.Combine(workspace.WorkspacePath, ".ox", "settings.json"));
 
-        // Load providers.json and register providers — same as Ox's Program.cs
+        // Load providers.json and register providers — same as Program.cs
         // does in production. Tests get real provider registrations so the
         // ProviderRegistry is populated correctly.
         var providerConfig = ProviderConfig.Load(effectivePath);
@@ -62,7 +64,7 @@ internal static class TestHostBuilder
         builder.Services.AddSingleton<Func<string, int?>>(sp =>
             sp.GetRequiredService<ModelCatalog>().ResolveContextWindow);
 
-        // Pre-register test overrides before AddUr — TryAddSingleton lets them win.
+        // Pre-register test overrides before OxServices.Register — TryAddSingleton lets them win.
         builder.Services.AddSingleton(keyring ?? new TestKeyring());
 
         if (chatClientFactory is not null)
@@ -74,7 +76,7 @@ internal static class TestHostBuilder
         if (fakeProvider is not null)
             builder.Services.AddSingleton(fakeProvider);
 
-        builder.Services.AddUr(builder.Configuration, o =>
+        OxServices.Register(builder.Services, builder.Configuration, o =>
         {
             o.WorkspacePath = workspace.WorkspacePath;
             o.UserDataDirectory = workspace.UserDataDirectory;
@@ -88,6 +90,6 @@ internal static class TestHostBuilder
         // Attach to workspace so the host is disposed when the workspace is disposed.
         workspace.AttachHost(host);
 
-        return host.Services.GetRequiredService<UrHost>();
+        return host.Services.GetRequiredService<OxHost>();
     }
 }

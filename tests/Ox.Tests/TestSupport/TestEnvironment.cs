@@ -1,6 +1,6 @@
 using Microsoft.Extensions.Hosting;
-using Ox.Configuration;
-using Ur.Configuration.Keyring;
+using Ox.App.Configuration;
+using Ox.Agent.Configuration.Keyring;
 namespace Ox.Tests.TestSupport;
 
 internal sealed class TempWorkspace : IDisposable

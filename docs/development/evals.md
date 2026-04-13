@@ -36,7 +36,7 @@ evals/
 │   ├── WorkspaceBuilder.cs  # Git clone or synthetic file creation
 │   ├── ResultStore.cs       # SQLite persistence via Dapper
 │   └── ReportGenerator.cs   # Markdown report writer
-├── EvalShared/              # Shared types (no Ur dependency)
+├── EvalShared/              # Shared types (no Ox runtime dependency)
 │   ├── ScenarioDefinition.cs
 │   ├── ValidationRule.cs
 │   ├── ScenarioLoader.cs    # YAML → typed scenario deserialization

@@ -1,13 +1,14 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
-using Ox.Configuration;
-using Te.Input;
-using Ur.Configuration.Keyring;
-using Ur.Hosting;
-using Ur.Logging;
-using Ur.Providers;
-using Ur.Providers.Fake;
+using Ox.App;
+using Ox.App.Configuration;
+using Ox.Terminal.Input;
+using Ox.Agent.Configuration.Keyring;
+using Ox.Agent.Hosting;
+using Ox.Agent.Logging;
+using Ox.Agent.Providers;
+using Ox.Agent.Providers.Fake;
 
 namespace Ox;
 
@@ -16,7 +17,7 @@ namespace Ox;
 ///
 /// Handles three phases:
 ///   1. CLI argument parsing (--fake-provider, --headless, --yolo, --turn, --model).
-///   2. Generic Host setup with Ur services.
+///   2. Generic Host setup with Ox services.
 ///   3. Execution path: headless mode (HeadlessRunner) or TUI mode (OxApp).
 ///      Headless mode branches before any TUI initialization — no alternate screen,
 ///      no TerminalInputSource, no OxApp.
@@ -38,25 +39,25 @@ public static class Program
         }
 
         var workspacePath = Directory.GetCurrentDirectory();
-        var userDataDir = ServiceCollectionExtensions.DefaultUserDataDirectory();
-        var userSettingsPath = ServiceCollectionExtensions.DefaultUserSettingsPath(userDataDir);
+        var userDataDir = OxServices.DefaultUserDataDirectory();
+        var userSettingsPath = OxServices.DefaultUserSettingsPath(userDataDir);
         var workspaceSettingsPath = Path.Combine(workspacePath, ".ox", "settings.json");
 
         // ── Build the Generic Host ──────────────────────────────────────
         //
         // Host.CreateApplicationBuilder registers IConfigurationRoot, IConfiguration,
-        // and the options pipeline. We add Ur settings sources, configure logging
+        // and the options pipeline. We add settings sources, configure logging
         // (file-only — no console/debug loggers that would corrupt the TUI), and
-        // register the Ur service graph.
+        // register the full Ox service graph.
         var builder = Host.CreateApplicationBuilder(args);
 
         // ClearProviders removes the console and debug loggers that
         // CreateApplicationBuilder registers by default — without this,
         // those providers write directly to stdout and corrupt the TUI.
         builder.Logging.ClearProviders();
-        builder.Logging.AddProvider(new UrFileLoggerProvider());
+        builder.Logging.AddProvider(new OxFileLoggerProvider());
 
-        builder.Configuration.AddUrSettings(userSettingsPath, workspaceSettingsPath);
+        OxServices.AddSettingsSources(builder.Configuration, userSettingsPath, workspaceSettingsPath);
 
         // If --fake-provider was specified, register the fake provider and
         // select the fake model so the configuration phase is skipped.
@@ -77,9 +78,8 @@ public static class Program
 
         // ── Load providers.json and register providers ────────────────
         //
-        // ProviderConfig is Ox's application-level concern — Ur doesn't know about
-        // model catalogs. Load the config eagerly so we can report errors with a
-        // clear message before the DI container is built.
+        // ProviderConfig is Ox's application-level concern. Load eagerly so we
+        // can report errors with a clear message before the DI container is built.
         var providersJsonPath = Path.Combine(userDataDir, "providers.json");
         ProviderConfig providerConfig;
         try
@@ -101,17 +101,8 @@ public static class Program
         builder.Services.AddSingleton(providerConfig);
         builder.Services.AddProvidersFromConfig(providerConfig);
 
-        // ModelCatalog wraps model catalog queries (model listing, context windows,
-        // provider metadata) for the TUI and headless runner.
-        builder.Services.AddSingleton<ModelCatalog>();
-
-        // Register a context window resolver for Ur's use — UrHost passes this delegate
-        // to UrSession so compaction can check context fill percentage.
-        builder.Services.AddSingleton<Func<string, int?>>(sp =>
-            sp.GetRequiredService<ModelCatalog>().ResolveContextWindow);
-
-        // ── Register Ur services ────────────────────────────────────────
-        builder.Services.AddUr(builder.Configuration, o =>
+        // ── Register the full Ox service graph ──────────────────────────
+        OxServices.Register(builder.Services, builder.Configuration, o =>
         {
             o.WorkspacePath = workspacePath;
             o.SelectedModelOverride = selectedModelOverride;
@@ -119,7 +110,7 @@ public static class Program
 
         using var app = builder.Build();
         await app.StartAsync();
-        var host = app.Services.GetRequiredService<UrHost>();
+        var host = app.Services.GetRequiredService<OxHost>();
         var oxConfig = app.Services.GetRequiredService<ModelCatalog>();
 
         // ── Headless path ───────────────────────────────────────────────
