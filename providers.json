@@ -60,6 +60,12 @@
     "url": "https://openrouter.ai/api/v1",
     "models": [
       {
+        "name": "DeepSeek R1",
+        "id": "deepseek/deepseek-r1",
+        "context_in": 163840,
+        "thinking": true
+      },
+      {
         "name": "Qwen3 Coder Next",
         "id": "qwen/qwen3-coder-next",
         "context_in": 262144

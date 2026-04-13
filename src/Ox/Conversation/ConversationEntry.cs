@@ -53,6 +53,26 @@ public sealed class AssistantTextEntry : ConversationEntry
 }
 
 /// <summary>
+/// Streaming reasoning/thinking text from a model that supports extended thinking
+/// (DeepSeek-R1, Gemini thinking mode, Ollama Qwen3, etc.).
+///
+/// Kept separate from <see cref="AssistantTextEntry"/> because thinking has distinct
+/// rendering semantics (hollow circle prefix, muted color) and different lifecycle
+/// behaviour — a thinking block can precede or accompany the response text but is
+/// not the response itself. Merging it into AssistantTextEntry would conflate two
+/// different concerns and complicate the null-boundary tracking in OxApp.
+/// </summary>
+public sealed class ThinkingEntry : ConversationEntry
+{
+    private readonly StringBuilder _text = new();
+
+    public string Text => _text.ToString();
+
+    /// <summary>Append a chunk of streamed reasoning text.</summary>
+    public void Append(string chunk) => _text.Append(chunk);
+}
+
+/// <summary>
 /// A tool invocation with lifecycle state. Status and Result are mutated
 /// by the main loop as tool events arrive.
 /// </summary>

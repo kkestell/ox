@@ -197,6 +197,16 @@ public sealed class ProviderModelEntry
 
     [JsonPropertyName("context_in")]
     public int ContextIn { get; set; }
+
+    /// <summary>
+    /// When true, the model emits <c>&lt;think&gt;…&lt;/think&gt;</c> blocks in its
+    /// normal text output (e.g. DeepSeek-R1 via OpenAI-compatible endpoints).
+    /// The <see cref="Ur.Providers.OpenAiCompatibleProvider"/> wraps these models
+    /// with <see cref="Ur.Providers.DeepSeekThinkingChatClient"/> to extract the
+    /// blocks and re-emit them as <see cref="Microsoft.Extensions.AI.TextReasoningContent"/>.
+    /// </summary>
+    [JsonPropertyName("thinking")]
+    public bool Thinking { get; set; }
 }
 
 /// <summary>

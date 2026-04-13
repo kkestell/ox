@@ -18,6 +18,20 @@ public sealed class ResponseChunk : AgentLoopEvent
 }
 
 /// <summary>
+/// A chunk of streaming reasoning/thinking text from a model that supports
+/// extended thinking (e.g. DeepSeek-R1, Gemini thinking mode, Ollama Qwen3).
+///
+/// Mirrors <see cref="ResponseChunk"/> in shape but carries
+/// <see cref="Microsoft.Extensions.AI.TextReasoningContent"/> rather than normal
+/// <see cref="Microsoft.Extensions.AI.TextContent"/>. Rendered with a hollow-circle
+/// prefix and muted color to distinguish internal reasoning from the final response.
+/// </summary>
+public sealed class ThinkingChunk : AgentLoopEvent
+{
+    public required string Text { get; init; }
+}
+
+/// <summary>
 /// A tool call has been requested by the LLM and is about to execute.
 /// </summary>
 public sealed class ToolCallStarted : AgentLoopEvent

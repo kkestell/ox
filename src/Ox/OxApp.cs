@@ -68,6 +68,10 @@ public sealed class OxApp : IDisposable
     private bool _turnActive;
     private string? _queuedInput;
     private AssistantTextEntry? _currentAssistantEntry;
+    // Tracks the active ThinkingEntry for the current turn. Nulled at every boundary
+    // where _currentAssistantEntry is also nulled so thinking from one turn never
+    // bleeds into the next.
+    private ThinkingEntry? _currentThinkingEntry;
     private int? _contextPercent;
     private string _workspacePath;
 
@@ -539,6 +543,7 @@ public sealed class OxApp : IDisposable
 
         _turnActive = true;
         _currentAssistantEntry = null;
+        _currentThinkingEntry = null;
         _throbber.Start();
 
         _turnCts = new CancellationTokenSource();
@@ -577,6 +582,7 @@ public sealed class OxApp : IDisposable
         _turnActive = false;
         _throbber.Reset();
         _currentAssistantEntry = null;
+        _currentThinkingEntry = null;
         _conversationView.AddEntry(new CancellationEntry());
     }
 
@@ -586,10 +592,27 @@ public sealed class OxApp : IDisposable
         {
             switch (evt)
             {
+                case ThinkingChunk thinkingChunk:
+                    // Skip empty chunks to avoid creating blank thinking entries.
+                    if (thinkingChunk.Text.Length == 0)
+                        break;
+
+                    if (_currentThinkingEntry is null)
+                    {
+                        _currentThinkingEntry = new ThinkingEntry();
+                        _conversationView.AddEntry(_currentThinkingEntry);
+                    }
+                    _currentThinkingEntry.Append(thinkingChunk.Text);
+                    break;
+
                 case ResponseChunk chunk:
                     // Skip empty chunks — they'd create blank conversation bubbles.
                     if (chunk.Text.Length == 0)
                         break;
+
+                    // Normal response text starts after thinking — a new ThinkingEntry
+                    // must not accumulate text from a subsequent turn's thinking phase.
+                    _currentThinkingEntry = null;
 
                     if (_currentAssistantEntry is null)
                     {
@@ -600,7 +623,8 @@ public sealed class OxApp : IDisposable
                     break;
 
                 case ToolCallStarted toolStart:
-                    _currentAssistantEntry = null; // New tool call breaks assistant text.
+                    _currentAssistantEntry = null; // New tool call breaks assistant/thinking text.
+                    _currentThinkingEntry = null;
                     _conversationView.AddEntry(new ToolCallEntry
                     {
                         CallId = toolStart.CallId,
@@ -651,6 +675,7 @@ public sealed class OxApp : IDisposable
                     _turnActive = false;
                     _throbber.Reset();
                     _currentAssistantEntry = null;
+                    _currentThinkingEntry = null;
                     if (turnCompleted.InputTokens is { } tokens)
                     {
                         // Compute context fill % using the provider's reported context window.
@@ -693,6 +718,7 @@ public sealed class OxApp : IDisposable
                         _turnActive = false;
                         _throbber.Reset();
                         _currentAssistantEntry = null;
+                        _currentThinkingEntry = null;
                     }
                     _conversationView.AddEntry(new ErrorEntry(error.Message));
                     break;

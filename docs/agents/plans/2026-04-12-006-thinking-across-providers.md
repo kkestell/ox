@@ -138,33 +138,86 @@ a different kind of content. Merging it into `AssistantTextEntry` would conflate
 
 ### Phase 1 — Experiments (gates all provider-specific work)
 
-- [ ] Add `ThinkingExperimentTests.cs` to `tests/Ur.IntegrationTests/`, gated by `UR_RUN_THINKING_EXPERIMENTS=1`.
+- [x] Add `ThinkingExperimentTests.cs` to `tests/Ur.IntegrationTests/`, gated by `UR_RUN_THINKING_EXPERIMENTS=1`.
   Write one test per provider that calls a reasoning-capable model and logs every content type in the
   streaming response. Specifically check for `TextReasoningContent` items.
-  - OpenAI o3 or o4-mini (via `OPENAI_API_KEY`) — with `reasoningEffort` set
+  - OpenAI gpt-5.4-mini (via `OPENAI_API_KEY`) — with `ReasoningEffort.Low`
   - DeepSeek-R1 via OpenRouter (via `OPENROUTER_API_KEY`) — no special config needed
-  - Gemini 3.x Flash or Pro (via `GOOGLE_API_KEY`) — with `ThinkingConfig.IncludeThoughts = true`
-  - Ollama with a reasoning model (DeepSeek-R1-local or QwQ) if available
-  - Interleaved narration probe: prompt any provider to narrate then call a tool; verify text arrives
-    before `FunctionCallContent` in the stream
-- [ ] Run experiments, record results per provider: "native TextReasoningContent ✓", "no thinking output",
-  or "thinking in AdditionalProperties only"
+  - Gemini 3 Flash (via `GOOGLE_API_KEY`) — with `ReasoningOptions { Effort = Low, Output = Full }`
+  - Ollama qwen3:8b — with `ReasoningOptions` + `AdditionalProperties["think"] = true`
+  - Interleaved narration probe: Gemini narrates before tool call; verifies text arrives before
+    `FunctionCallContent` in the stream
+- [x] Run experiments, record results per provider:
+
+  | Provider | `TextReasoningContent` native? | Detail |
+  |---|---|---|
+  | OpenAI gpt-5.4-mini | ✗ | Reasoning is internal; `reasoning_effort` controls compute but the trace is never returned to the caller. MEAI adapter emits only `TextContent` + `UsageContent`. No wrapper can fix this — OpenAI simply does not expose reasoning traces. |
+  | DeepSeek-R1 via OpenRouter | ✗ | **CORRECTED (see note below).** |
+  | All 8 OpenRouter reasoning models | ✗ | See corrected analysis below. All models return `reasoning` field (not `reasoning_content`) in the raw HTTP response. MEAI adapter never finds it. |
+  | Gemini 3 Flash | ✓ | GeminiDotnet 0.23.0 maps `Part.Thought == true` to `TextReasoningContent` natively. Enable via `ChatOptions.Reasoning`. No wrapper needed. |
+  | Ollama qwen3:8b | ✓ | OllamaSharp natively maps Qwen3 thinking tokens to `TextReasoningContent` (3,188 updates, 7,348 reasoning chars). No wrapper needed. |
+  | Interleaved narration | ✓ confirmed | Gemini emits `TextContent` ("I will check the current weather in Tokyo for you.") before `FunctionCallContent` in the same streaming turn. The existing AgentLoop path already handles this correctly. |
+
+  **CORRECTED FINDING for OpenRouter (all models):**
+
+  The initial Phase 1 run was flawed — the DeepSeek-R1 test passed `options: null` (no reasoning
+  requested). Re-running with `reasoning_effort = "low"` on 8 models (GPT-5 Mini, GPT-5.1 Codex Mini,
+  Qwen 3.5 122B, Qwen 3.6 Plus, DeepSeek V3.2 Speciale, MiniMax M2.7, Seed 1.6, Seed 2.0 Lite) and
+  cross-checking their raw HTTP responses via direct `HttpClient` calls reveals:
+
+  - **OpenRouter normalizes ALL model reasoning to a unified format**: `choices[0].message.reasoning`
+    (non-streaming) and `choices[0].delta.reasoning` (streaming SSE).
+  - **The `reasoning_content` field is absent from all OpenRouter responses.** That field is used by
+    direct DeepSeek API, vLLM, and similar self-hosted deployments — not by OpenRouter.
+  - **The MEAI OpenAI adapter (`OpenAIChatClient.cs`) probes `$.choices[0].message.reasoning_content`
+    and `$.choices[0].delta.reasoning_content`** (lines 857–862 of `OpenAIChatClient.cs`). It never
+    probes `reasoning`. This is the root cause — not a DeepSeek-specific `<think>` block issue at all.
+  - `reasoning_details` is also always present, containing a typed array with one of:
+    - `{"type":"reasoning.text","text":"..."}` (most models, verbose reasoning)
+    - `{"type":"reasoning.summary","summary":"..."}` (OpenAI GPT-5 Mini — summary only)
+    - `{"type":"reasoning.encrypted","data":"..."}` (OpenAI GPT-5.1 Codex Mini — reasoning hidden)
+  - The old plan was completely wrong: DeepSeek-R1 via OpenRouter does NOT emit `<think>…</think>` blocks
+    in `TextContent`. It uses the same OpenRouter-normalized `reasoning` field as every other model.
+
+  **Root cause summary:** OpenRouter uses `reasoning` field; MEAI probes `reasoning_content`. A single
+  fix at the HTTP layer (applicable to all OpenRouter models at once) is the right approach.
 
 ### Phase 2 — Provider wrappers (only for providers that need them per Phase 1)
 
-For each provider where `TextReasoningContent` does not flow through natively:
+Phase 1 results narrow the scope significantly:
 
-- [ ] Write `ThinkingChatClient : IChatClient` decorator in `src/Ur/Providers/`.
-  The decorator wraps an inner `IChatClient` and:
-  1. On every streaming call, injects provider-specific thinking options into `ChatOptions`
-     (e.g., `ThinkingConfig` for Gemini, `ReasoningOptions` for OpenAI). These options are baked in at
-     construction time so AgentLoop never needs to know about them.
-  2. Iterates the inner stream and translates provider-specific reasoning data (e.g.,
-     `AdditionalProperties["reasoning_content"]`, Gemini thought parts) into `TextReasoningContent` items
-     before yielding the update upstream.
-- [ ] Wire each decorator into the corresponding `IProvider.CreateChatClient()` return value.
-- [ ] Add thinking-level configuration to `providers.json` model entries (e.g., `"thinking": "high"`)
-  and read it in the provider to parameterize the decorator (budget, effort level).
+- **Gemini and Ollama**: no wrapper needed. Enable thinking by setting `ChatOptions.Reasoning` in
+  `AgentLoop` (or in the model-entry config) — the adapters handle the rest natively.
+- **OpenAI**: no wrapper possible. Reasoning is server-side only; the trace is never returned.
+  `ChatOptions.Reasoning` still usefully controls `reasoning_effort` for models that support it.
+- **OpenRouter (all models)**: a single infrastructure fix is needed. **The issue is not model-specific
+  — it is a field-name mismatch between OpenRouter's API and what the MEAI adapter probes.**
+
+  The fix is a `DelegatingHandler` attached to the `HttpClient` used by the OpenRouter `ChatClient`.
+  This handler intercepts the HTTP response body (both streaming SSE and non-streaming JSON) and
+  rewrites `"reasoning":` → `"reasoning_content":` before the OpenAI SDK parses it. After this
+  rename, the MEAI adapter's existing `TryGetReasoningDelta` and `TryGetReasoningMessage` probes will
+  find the field and emit `TextReasoningContent` items normally.
+
+  Why an HTTP handler over an `IChatClient` decorator:
+  - MEAI's `IChatClient` interface does not expose `AdditionalProperties` from raw JSON deltas in a
+    way that reliably carries the `reasoning` field; the handler acts before MEAI parses anything.
+  - One handler fixes streaming and non-streaming in a single place.
+  - No model-specific logic — all OpenRouter models go through the same rewrite.
+
+- [ ] Add `OpenRouterReasoningHandler : DelegatingHandler` in `src/Ur/Providers/` (or in the future
+  `Ur.Providers.OpenRouter` project per Plan 007). The handler:
+  1. For non-streaming responses: reads the response body, replaces `"reasoning":` with
+     `"reasoning_content":`, and sets the rewritten body as the response content.
+  2. For streaming SSE responses (detected via `Content-Type: text/event-stream`): wraps the
+     response stream in a `ReasoningFieldRenamingStream` that does the same replacement on the fly.
+  3. Operates only on responses from `openrouter.ai` (or is attached only to the OpenRouter client,
+     making the host check redundant but still a good safety measure).
+- [ ] Wire the handler into the `HttpClient` used by `OpenAiCompatibleProvider` when the endpoint is
+  `https://openrouter.ai/api/v1` (or into the future `OpenRouterProvider` per Plan 007).
+- [ ] ~~Write `DeepSeekThinkingChatClient : IChatClient` decorator~~  — **CANCELLED.** The `<think>`
+  block extraction approach was based on a flawed initial experiment. DeepSeek-R1 via OpenRouter
+  uses the same `reasoning` field as all other OpenRouter models; no model-specific wrapper is needed.
 
 ### Phase 3 — AgentLoop: route TextReasoningContent
 
@@ -232,7 +285,10 @@ For each provider where `TextReasoningContent` does not flow through natively:
 
 ## Open questions
 
-- Does `GeminiDotnet.Extensions.AI` 0.23.0 require any special `ChatOptions` extension to pass `ThinkingConfig`,
-  or does it accept it via `AdditionalProperties`? The experiment will answer this.
+- ~~Does `GeminiDotnet.Extensions.AI` 0.23.0 require any special `ChatOptions` extension to pass
+  `ThinkingConfig`, or does it accept it via `AdditionalProperties`?~~
+  **Answered by Phase 1**: Use `ChatOptions.Reasoning = new ReasoningOptions { Effort = ..., Output = Full }`.
+  GeminiDotnet 0.23.0 maps this to `ThinkingConfiguration` internally; the obsolete
+  `GeminiAdditionalProperties.ThinkingConfiguration` key is no longer needed.
 - What thinking levels / budgets should be the defaults in `providers.json`? Defer to user after
-  experiments validate that thinking works end-to-end.
+  Phases 3–5 validate the end-to-end experience.

@@ -118,10 +118,10 @@ public sealed class ConversationView
             // Draw indentation (for sub-agent entries).
             drawX += renderedRow.Indent;
 
-            // Draw circle prefix if present.
+            // Draw circle prefix if present. ThinkingEntry rows use '○' instead of '●'.
             if (renderedRow.CircleColor is { } circleColor)
             {
-                buffer.SetCell(drawX, contentStartY + row, '●', circleColor, Color.Default);
+                buffer.SetCell(drawX, contentStartY + row, renderedRow.CircleChar, circleColor, Color.Default);
                 drawX += ConversationEntryView.CircleChrome;
             }
             else if (renderedRow.IsCircleEntry)
@@ -191,8 +191,13 @@ public sealed class ConversationView
         List<RenderedRow> rows,
         ref bool hasEmittedNonPlain)
     {
-        // Skip assistant entries that have no visible text (empty streaming chunks).
-        if (entry is AssistantTextEntry { Text.Length: 0 })
+        // Skip entries that have no visible text yet. We check the trimmed length
+        // rather than the raw length because LLMs often emit "\n" between tool calls —
+        // those chunks pass the raw-length check but BuildSegments trims them to "",
+        // producing a lone ● with no text. The trim here matches BuildSegments exactly.
+        if (entry is AssistantTextEntry ae && ae.Text.Trim('\n', '\r').Length == 0)
+            return;
+        if (entry is ThinkingEntry te && te.Text.Trim('\n', '\r').Length == 0)
             return;
 
         var style = GetEntryStyle(entry);
@@ -214,6 +219,8 @@ public sealed class ConversationView
         var segments = BuildSegments(entry);
         var lines = ConversationTextLayout.LayoutSegments(segments, textWidth);
         var isCircleEntry = style != EntryStyle.Plain;
+        // ThinkingEntry uses a hollow circle to distinguish internal reasoning from response text.
+        var circleChar = entry is ThinkingEntry ? '○' : '●';
 
         for (var i = 0; i < lines.Count; i++)
         {
@@ -222,6 +229,7 @@ public sealed class ConversationView
             rows.Add(new RenderedRow
             {
                 CircleColor = i == 0 ? circleColor : null,
+                CircleChar = circleChar,
                 IsCircleEntry = isCircleEntry,
                 Fragments = fragments,
                 Indent = indent,
@@ -252,6 +260,9 @@ public sealed class ConversationView
     {
         UserMessageEntry => _theme.UserCircle,
         AssistantTextEntry => _theme.Text,
+        // Thinking uses the muted tool-signature color to signal it is internal reasoning,
+        // not the model's final response. The hollow glyph (○) reinforces this distinction.
+        ThinkingEntry => _theme.ToolSignature,
         ToolCallEntry tc => tc.Status switch
         {
             ToolCallStatus.Started or ToolCallStatus.AwaitingApproval => _theme.ToolCircleStarted,
@@ -285,6 +296,12 @@ public sealed class ConversationView
 
             case AssistantTextEntry assistant:
                 segments.Add(new(assistant.Text.Trim('\n', '\r'), new ColorFragment(_theme.Text)));
+                break;
+
+            // Thinking traces are unstructured prose — no markdown rendering.
+            // Uses the muted ToolSignature color to match the hollow-circle prefix.
+            case ThinkingEntry thinking:
+                segments.Add(new(thinking.Text.Trim('\n', '\r'), new ColorFragment(_theme.ToolSignature)));
                 break;
 
             case ToolCallEntry tool:
@@ -377,6 +394,12 @@ internal sealed class RenderedRow
 
     /// <summary>Circle color for the first line of an entry, or null.</summary>
     public Color? CircleColor { get; init; }
+
+    /// <summary>
+    /// The circle glyph to draw. Defaults to the filled circle ● used by most entries.
+    /// ThinkingEntry overrides this with the hollow circle ○ to signal internal reasoning.
+    /// </summary>
+    public char CircleChar { get; init; } = '●';
 
     /// <summary>Whether this row belongs to a circle-prefixed entry (for continuation indent).</summary>
     public bool IsCircleEntry { get; init; }

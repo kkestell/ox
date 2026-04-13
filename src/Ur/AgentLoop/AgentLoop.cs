@@ -105,6 +105,9 @@ internal sealed class AgentLoop(IChatClient client, ToolRegistry tools, Workspac
             List<FunctionCallContent> toolCalls = [];
             ChatMessage assistantMessage = new(ChatRole.Assistant, []);
             string? text = null;
+            // Accumulated reasoning text — persisted in the assistant message so session
+            // reload can display it, but stripped from LLM replay in BuildLlmMessages().
+            string? reasoning = null;
 
             // C# prohibits yield inside try/catch, so we route LLM errors through
             // a side-channel: StreamLlmAsync catches API exceptions, stores them in
@@ -120,6 +123,15 @@ internal sealed class AgentLoop(IChatClient client, ToolRegistry tools, Workspac
                 {
                     switch (content)
                     {
+                        // Reasoning traces arrive before (or interleaved with) the normal
+                        // response text. Accumulated and persisted in the assistant message
+                        // for session replay, but stripped before sending to the LLM again —
+                        // providers do not want prior reasoning fed back as input.
+                        case TextReasoningContent trc:
+                            reasoning = (reasoning ?? "") + (trc.Text ?? "");
+                            yield return new ThinkingChunk { Text = trc.Text ?? "" };
+                            break;
+
                         case TextContent tc:
                             text = (text ?? "") + tc.Text;
                             yield return new ResponseChunk { Text = tc.Text };
@@ -138,6 +150,10 @@ internal sealed class AgentLoop(IChatClient client, ToolRegistry tools, Workspac
                 yield break;
             }
 
+            // Reasoning comes before the response text in the persistent message so
+            // the session file preserves the original order of model output.
+            if (reasoning is not null)
+                assistantMessage.Contents.Add(new TextReasoningContent(reasoning));
             if (text is not null)
                 assistantMessage.Contents.Add(new TextContent(text));
 
@@ -188,9 +204,9 @@ internal sealed class AgentLoop(IChatClient client, ToolRegistry tools, Workspac
     ///   2. Compaction summaries (detected by <see cref="Autocompactor.IsCompactionSummary"/>)
     ///      are re-roled from their stored <c>ChatRole.User</c> to <c>ChatRole.System</c>.
     ///      The summary is structured system context, not something the user said.
-    ///   3. UsageContent items are stripped — they're persisted in the JSONL for
-    ///      session-reload context fill display, but some providers (e.g. Gemini)
-    ///      can't map them to native request parts.
+    ///   3. UsageContent and TextReasoningContent items are stripped — both are persisted
+    ///      in the JSONL for display on session reload, but providers neither want prior
+    ///      reasoning traces fed back as input nor can they map UsageContent to request parts.
     /// </summary>
     private static IEnumerable<ChatMessage> BuildLlmMessages(
         string? systemPrompt,
@@ -213,21 +229,21 @@ internal sealed class AgentLoop(IChatClient client, ToolRegistry tools, Workspac
             // designated projection layer between storage and the LLM).
             if (Autocompactor.IsCompactionSummary(msg))
             {
-                var contents = msg.Contents.Where(c => c is not UsageContent).ToList();
+                var contents = msg.Contents.Where(c => c is not UsageContent and not TextReasoningContent).ToList();
                 yield return new ChatMessage(ChatRole.System, contents);
                 continue;
             }
 
-            // Fast path: most messages have no UsageContent.
-            if (!msg.Contents.Any(c => c is UsageContent))
+            // Fast path: most messages have neither UsageContent nor TextReasoningContent.
+            if (!msg.Contents.Any(c => c is UsageContent or TextReasoningContent))
             {
                 yield return msg;
                 continue;
             }
 
-            // Clone with UsageContent filtered out so providers never see it.
+            // Clone with both content types filtered out so providers never see them.
             var filtered = new ChatMessage(msg.Role,
-                msg.Contents.Where(c => c is not UsageContent).ToList());
+                msg.Contents.Where(c => c is not UsageContent and not TextReasoningContent).ToList());
             yield return filtered;
         }
     }

@@ -87,4 +87,29 @@ public sealed class ConversationViewLayoutTests
         Assert.Equal('●', buffer.GetCell(1, 1).Rune);
         Assert.Equal(Cell.Empty, buffer.GetCell(1, 7));
     }
+
+    [Fact]
+    public void Render_NewlineOnlyAssistantEntry_DoesNotRenderEmptyBubble()
+    {
+        // Regression: when an LLM streams a newline-only chunk between tool calls,
+        // OxApp creates an AssistantTextEntry with text "\n". The old guard only
+        // checked Text.Length == 0, so "\n" (length 1) slipped through and rendered
+        // as a lone ● with no text.
+        var view = new ConversationView();
+        var buffer = new ConsoleBuffer(30, 8);
+
+        view.AddEntry(new Ox.Conversation.UserMessageEntry("hello"));
+
+        var newlineOnly = new Ox.Conversation.AssistantTextEntry();
+        newlineOnly.Append("\n");
+        view.AddEntry(newlineOnly);
+
+        view.Render(buffer, x: 0, y: 0, width: 30, height: 8);
+
+        // Row 1 (y=1): the user message circle.
+        Assert.Equal('●', buffer.GetCell(1, 1).Rune);
+        // Row 2 (y=2) onward should be empty — no second circle for the newline-only entry.
+        Assert.Equal(Cell.Empty, buffer.GetCell(1, 2));
+        Assert.Equal(Cell.Empty, buffer.GetCell(1, 3));
+    }
 }
