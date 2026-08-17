@@ -1,4 +1,4 @@
-# YYYY-MM-DD-NN. Plan Title
+# Plan Title
 
 Use this template as a scaffold, not a cage. Drop sections that do not apply,
 expand the ones that matter, and add sections when the work needs more

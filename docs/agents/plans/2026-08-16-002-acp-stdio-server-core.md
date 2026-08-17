@@ -1,4 +1,4 @@
-# 2026-08-16-02. ACP stdio server core
+# ACP stdio server core
 
 ## Goal
 
