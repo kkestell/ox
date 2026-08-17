@@ -92,6 +92,8 @@ editor runtime supervision, GitHub inbox, terminal UI.
 - Plans go in `docs/agents/plans/YYYY-MM-DD-NNN-slug.md`.
 - Plans should follow the plan template: `docs/agents/plans/TEMPLATE.md`.
 - Only roadmap items get plans.
+- A plan is committed with the work it plans, in the same commit. A plan for a
+  roadmap item that has not been implemented yet stays uncommitted.
 - Before planning, research. Explore the relevant Ox code and then identify
   which of my previous projects are strong candidates for cribbing ideas and/or
   code. Consult the feature matrix in `~/src/references/index.md`. The
