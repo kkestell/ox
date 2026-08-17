@@ -5,11 +5,6 @@ expand the ones that matter, and add sections when the work needs more
 structure. A plan is a settled work order, not a record of the conversation that
 produced it: resolve material decisions before writing it.
 
-## Research
-
-- `docs/agents/research/topic.md` - Prior art this decision used. Cite without
-  restating it. Omit this section when no research applied.
-
 ## Goal
 
 State the problem this plan solves.

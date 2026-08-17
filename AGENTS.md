@@ -90,25 +90,16 @@ editor runtime supervision, GitHub inbox, terminal UI.
 
 ## Workflow
 
-- Research goes in `docs/agents/research/slug.md`.
-- Research documents should follow the research template:
-  `docs/agents/research/TEMPLATE.md`.
 - Plans go in `docs/agents/plans/YYYY-MM-DD-NNN-slug.md`.
 - Plans should follow the plan template: `docs/agents/plans/TEMPLATE.md`.
 - Only roadmap items get plans.
-- Before planning, ensure we've done the necessary research. Consult the
-  research directory and identify gaps. If additional research is needed,
-  dispatch subagents to write the missing research docs and/or update the
-  existing docs. Example research topics: `durable-sessions.md`,
-  `tool-approval.md`, `settings-files.md`, etc. One plan may reference multiple
-  research documents.
-- First, identify which of my previous projects are strong candidates for
-  researching. Consult the feature matrix in `references/index.md`. The
-  repositories are in `references/repos`. If possible, try to find multiple
-  previous projects that solve the problem in different ways, but focus on
-  robust, advanced solutions. Adopting large chunks of code from my previous
-  projects is welcome and encouraged. If no strong candidates emerge, consult
-  the third-party references in `references/repos/third-party`.
+- Before planning, research. Explore the relevant Ox code and then identify
+  which of my previous projects are strong candidates for cribbing ideas and/or
+  code. Consult the feature matrix in `references/index.md`. The repositories
+  are in `references/repos` (they are gitignored). Find the most robust,
+  advanced solutions. Adopting large chunks of code from my previous projects is
+  welcome and encouraged. If no strong candidates emerge, consult the
+  third-party references in `references/repos/third-party`.
 - After research and planning, stop. Implementation will happen in a fresh
   session.
 - After implementation, stop. Code review will happen in a fresh session.
@@ -151,7 +142,54 @@ Requests and notifications Ox sends to an ACP client:
 - [ ] `terminal/kill`
 - [ ] `terminal/release`
 
-## Testing
+## Code Style
+
+### “Just Enough” Go
+
+The value of this code is how fast it can be rewritten tomorrow, so minimize
+committed surface area. When in doubt, do less.
+
+Note the split of concerns: the domain — the rules, the semantics, the thing
+being modeled — deserves care and fidelity to its source of truth. The Go
+implementing it should stay as thin and boring as possible.
+
+### Keep correctness; skip speculative robustness
+
+Use Go’s cheap safety: static types, useful zero values, `go vet`,
+`staticcheck`, and `go test -race`.
+
+Do not build retries, fallbacks, error taxonomies, configuration layers,
+concurrency, or abstraction for cases that do not exist yet. Prefer a `TODO`,
+panic, or unsupported case over machinery built on guesses.
+
+### Boundaries vs. invariants
+
+Bad external input is ordinary input. Validate it at the boundary and report
+clear human-readable problems with a nonzero exit.
+
+Past that boundary, missing values and impossible states are bugs. **Panic
+rather than silently recovering or substituting zero values.**
+
+### Keep the implementation concrete
+
+Prefer:
+
+- values over pointers until mutation or sharing requires them
+- concrete types until multiple real implementations justify an interface
+- plain functions and `switch` over visitors, registries, or generic frameworks
+
+Abstractions should be discovered through repetition, not imposed up front.
+
+### Errors
+
+User-facing validation problems are data: location/source plus a human-readable
+message.
+
+Everything else is plumbing: return `error` and wrap it when adding useful
+context. Do not define custom error types or sentinels unless code actually
+branches on them.
+
+### Tests
 
 Testing is part of the design. Add the smallest useful test at the lowest
 appropriate level and use real Ox boundaries wherever practical. Before
@@ -161,6 +199,17 @@ the development and testing references.
 End to end tests with a mocked LLM are the gold standard.
 
 There is an `OPENROUTER_API_KEY` in `.env` for you to use for testing.
+
+Add focused tests for stable, tricky rules and regression cases for fixed bugs.
+
+Always run:
+
+```sh
+gofmt
+go vet ./...
+staticcheck ./...
+go test -race ./...
+```
 
 ### Design and collaboration
 
