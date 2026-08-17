@@ -143,7 +143,7 @@ func TestStdinEOFExitsCleanly(t *testing.T) {
 			name = "empty"
 		}
 		t.Run(name, func(t *testing.T) {
-			child := start(t, withLogLevel(level))
+			child := start(t, withEnvironment("OX_LOG_LEVEL", level))
 			child.stop()
 			if !strings.Contains(child.stderr.String(), `level=INFO msg="ox starting"`) {
 				t.Errorf("stderr = %q, want startup log", child.stderr.String())

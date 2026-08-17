@@ -73,6 +73,86 @@ func TestInitializeResponseShape(t *testing.T) {
 	}`))
 }
 
+func TestContentBlockMarshalsEachVariantsRequiredFields(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		block acp.ContentBlock
+		want  string
+	}{
+		{
+			name:  "text",
+			block: acp.ContentBlock{Type: "text", Text: "hello"},
+			want:  `{"type":"text","text":"hello"}`,
+		},
+		{
+			name:  "empty text",
+			block: acp.ContentBlock{Type: "text"},
+			want:  `{"type":"text","text":""}`,
+		},
+		{
+			name:  "resource link",
+			block: acp.ContentBlock{Type: "resource_link", Name: "main.go", URI: "file:///main.go"},
+			want:  `{"type":"resource_link","name":"main.go","uri":"file:///main.go"}`,
+		},
+		{
+			name:  "unsupported",
+			block: acp.ContentBlock{Type: "image"},
+			want:  `{"type":"image"}`,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			encoded, err := json.Marshal(test.block)
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertJSONEqual(t, encoded, []byte(test.want))
+		})
+	}
+}
+
+func TestSessionNotificationShape(t *testing.T) {
+	notification := acp.SessionNotification{
+		SessionID: "session",
+		Update: acp.ContentChunk{
+			SessionUpdate: acp.SessionUpdateAgentMessageChunk,
+			Content:       acp.ContentBlock{Type: "text", Text: "hello"},
+			MessageID:     "message",
+		},
+	}
+	encoded, err := json.Marshal(notification)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertJSONEqual(t, encoded, []byte(`{
+		"sessionId": "session",
+		"update": {
+			"sessionUpdate": "agent_message_chunk",
+			"content": {"type": "text", "text": "hello"},
+			"messageId": "message"
+		}
+	}`))
+}
+
+func TestPromptRequestRoundTrip(t *testing.T) {
+	literal := []byte(`{
+		"sessionId": "session",
+		"prompt": [
+			{"type": "text", "text": "hello"},
+			{"type": "resource_link", "name": "main.go", "uri": "file:///main.go"}
+		]
+	}`)
+
+	var request acp.PromptRequest
+	if err := json.Unmarshal(literal, &request); err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertJSONEqual(t, encoded, literal)
+}
+
 func assertJSONEqual(t *testing.T, got, want []byte) {
 	t.Helper()
 	var gotValue, wantValue any

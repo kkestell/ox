@@ -4,27 +4,48 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"sync"
 
 	"github.com/creachadair/jrpc2"
 	"github.com/creachadair/jrpc2/handler"
 
 	"github.com/kkestell/ox/internal/acp"
+	"github.com/kkestell/ox/internal/openrouter"
 )
 
 type Agent struct {
 	name               string
 	version            string
+	model              string
+	client             *openrouter.Client
 	logger             *slog.Logger
 	clientCapabilities *acp.ClientCapabilities
+
+	sessionsMu sync.Mutex
+	sessions   map[string]*session
 }
 
-func New(name, version string, logger *slog.Logger) *Agent {
-	return &Agent{name: name, version: version, logger: logger}
+func New(
+	name, version, model string,
+	client *openrouter.Client,
+	logger *slog.Logger,
+) *Agent {
+	return &Agent{
+		name:     name,
+		version:  version,
+		model:    model,
+		client:   client,
+		logger:   logger,
+		sessions: make(map[string]*session),
+	}
 }
 
 func (a *Agent) Methods() handler.Map {
 	return handler.Map{
 		"initialize":       handler.New(a.Initialize),
+		"session/new":      handler.New(a.NewSession),
+		"session/prompt":   handler.New(a.Prompt),
+		"session/cancel":   handler.New(a.Cancel),
 		"$/cancel_request": handler.New(a.CancelRequest),
 	}
 }

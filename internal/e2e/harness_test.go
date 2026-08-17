@@ -44,9 +44,9 @@ type startConfig struct {
 
 type startOption func(*startConfig)
 
-func withLogLevel(level string) startOption {
+func withEnvironment(name, value string) startOption {
 	return func(config *startConfig) {
-		config.environment["OX_LOG_LEVEL"] = level
+		config.environment[name] = value
 	}
 }
 
@@ -57,12 +57,19 @@ type process struct {
 	stdout  *os.File
 	reader  *bufio.Reader
 	stderr  bytes.Buffer
+	cwd     string
 
 	pending      []message
 	nextID       int
 	stopped      bool
 	stopErr      error
 	stopReported bool
+}
+
+// call is a request that has been sent but not yet answered.
+type call struct {
+	id     int
+	method string
 }
 
 func start(t *testing.T, options ...startOption) *process {
@@ -73,6 +80,7 @@ func start(t *testing.T, options ...startOption) *process {
 		"HOME":               scratch,
 		"XDG_CONFIG_HOME":    filepath.Join(scratch, "config"),
 		"OX_LOG_LEVEL":       "debug",
+		"OX_MODEL":           "test/model",
 		"OPENROUTER_API_KEY": "test-key",
 		"GORACE":             "halt_on_error=1",
 	}}
@@ -103,6 +111,7 @@ func start(t *testing.T, options ...startOption) *process {
 		stdin:   stdin,
 		stdout:  stdout,
 		reader:  bufio.NewReader(stdout),
+		cwd:     scratch,
 		nextID:  1,
 	}
 	command.Stderr = &child.stderr
@@ -140,29 +149,17 @@ func environment(overrides map[string]string) []string {
 
 func (p *process) request(method string, params any) json.RawMessage {
 	p.t.Helper()
-
-	response := p.roundTrip(method, params)
-	if response.Error != nil {
-		p.t.Fatalf("%s returned JSON-RPC error %d (%s): %s", method,
-			response.Error.Code, response.Error.Message, response.raw)
-	}
-	if response.Result == nil {
-		p.t.Fatalf("%s response has no result: %s", method, response.raw)
-	}
-	return response.Result
+	return p.result(p.await(p.begin(method, params)))
 }
 
 func (p *process) requestError(method string, params any) rpcError {
 	p.t.Helper()
-
-	response := p.roundTrip(method, params)
-	if response.Error == nil {
-		p.t.Fatalf("%s succeeded unexpectedly: %s", method, response.raw)
-	}
-	return *response.Error
+	return p.failure(p.await(p.begin(method, params)))
 }
 
-func (p *process) roundTrip(method string, params any) message {
+// begin sends a request without waiting for its response, so a test can act
+// while the handler runs.
+func (p *process) begin(method string, params any) call {
 	p.t.Helper()
 
 	id := p.nextID
@@ -173,11 +170,36 @@ func (p *process) roundTrip(method string, params any) message {
 		Method  string `json:"method"`
 		Params  any    `json:"params,omitempty"`
 	}{JSONRPC: "2.0", ID: id, Method: method, Params: params})
+	return call{id: id, method: method}
+}
 
-	wantID := strconv.Itoa(id)
-	return p.readUntil("response to "+method, func(candidate message) bool {
+func (p *process) await(sent call) message {
+	p.t.Helper()
+
+	wantID := strconv.Itoa(sent.id)
+	return p.readUntil("response to "+sent.method, func(candidate message) bool {
 		return string(candidate.ID) == wantID && candidate.Method == ""
 	})
+}
+
+func (p *process) result(response message) json.RawMessage {
+	p.t.Helper()
+	if response.Error != nil {
+		p.t.Fatalf("request returned JSON-RPC error %d (%s): %s",
+			response.Error.Code, response.Error.Message, response.raw)
+	}
+	if response.Result == nil {
+		p.t.Fatalf("response has no result: %s", response.raw)
+	}
+	return response.Result
+}
+
+func (p *process) failure(response message) rpcError {
+	p.t.Helper()
+	if response.Error == nil {
+		p.t.Fatalf("request succeeded unexpectedly: %s", response.raw)
+	}
+	return *response.Error
 }
 
 func (p *process) notify(method string, params any) {
@@ -189,12 +211,30 @@ func (p *process) notify(method string, params any) {
 	}{JSONRPC: "2.0", Method: method, Params: params})
 }
 
-//lint:ignore U1000 This harness operation is reserved for methods that emit notifications.
 func (p *process) notification(method string) message {
 	p.t.Helper()
 	return p.readUntil("notification "+method, func(candidate message) bool {
 		return candidate.Method == method && len(candidate.ID) == 0
 	})
+}
+
+// notifications removes and returns the buffered notifications for method, in
+// arrival order. Reading a response buffers everything that preceded it, so a
+// caller that already has the response has every notification the agent sent
+// before it.
+func (p *process) notifications(method string) []message {
+	p.t.Helper()
+	var found []message
+	remaining := p.pending[:0]
+	for _, candidate := range p.pending {
+		if candidate.Method == method && len(candidate.ID) == 0 {
+			found = append(found, candidate)
+			continue
+		}
+		remaining = append(remaining, candidate)
+	}
+	p.pending = remaining
+	return found
 }
 
 //lint:ignore U1000 This harness operation is reserved for methods that call client methods.

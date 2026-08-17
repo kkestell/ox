@@ -45,3 +45,83 @@ type InitializeResponse struct {
 type CancelRequestNotification struct {
 	RequestID json.RawMessage `json:"requestId"`
 }
+
+type NewSessionRequest struct {
+	CWD                   string            `json:"cwd"`
+	MCPServers            []json.RawMessage `json:"mcpServers"`
+	AdditionalDirectories []string          `json:"additionalDirectories,omitempty"`
+}
+
+type NewSessionResponse struct {
+	SessionID string `json:"sessionId"`
+}
+
+type PromptRequest struct {
+	SessionID string         `json:"sessionId"`
+	Prompt    []ContentBlock `json:"prompt"`
+}
+
+type PromptResponse struct {
+	StopReason StopReason `json:"stopReason"`
+}
+
+type CancelNotification struct {
+	SessionID string `json:"sessionId"`
+}
+
+type StopReason string
+
+const (
+	StopReasonEndTurn   StopReason = "end_turn"
+	StopReasonMaxTokens StopReason = "max_tokens"
+	StopReasonRefusal   StopReason = "refusal"
+	StopReasonCancelled StopReason = "cancelled"
+)
+
+// ContentBlock is one piece of a message. Ox handles the two variants every
+// agent must support without advertising a capability.
+type ContentBlock struct {
+	Type string `json:"type"`
+	Text string `json:"text,omitempty"`
+	Name string `json:"name,omitempty"`
+	URI  string `json:"uri,omitempty"`
+}
+
+// MarshalJSON emits the fields the block's variant requires, which differ
+// between variants and are required even when empty.
+func (c ContentBlock) MarshalJSON() ([]byte, error) {
+	switch c.Type {
+	case "text":
+		return json.Marshal(struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		}{Type: c.Type, Text: c.Text})
+	case "resource_link":
+		return json.Marshal(struct {
+			Type string `json:"type"`
+			Name string `json:"name"`
+			URI  string `json:"uri"`
+		}{Type: c.Type, Name: c.Name, URI: c.URI})
+	default:
+		type raw ContentBlock
+		return json.Marshal(raw(c))
+	}
+}
+
+const (
+	SessionUpdateAgentMessageChunk = "agent_message_chunk"
+	SessionUpdateAgentThoughtChunk = "agent_thought_chunk"
+)
+
+// ContentChunk is a streamed piece of a message. Chunks sharing a message ID
+// belong to the same message.
+type ContentChunk struct {
+	SessionUpdate string       `json:"sessionUpdate"`
+	Content       ContentBlock `json:"content"`
+	MessageID     string       `json:"messageId,omitempty"`
+}
+
+type SessionNotification struct {
+	SessionID string       `json:"sessionId"`
+	Update    ContentChunk `json:"update"`
+}

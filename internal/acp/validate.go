@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"path/filepath"
 	"strconv"
 )
 
@@ -41,4 +43,51 @@ func (n CancelRequestNotification) Validate() error {
 	}
 
 	return errors.New("requestId must be a string, integer, or null")
+}
+
+func (r NewSessionRequest) Validate() error {
+	if r.CWD == "" {
+		return errors.New("cwd is required")
+	}
+	if !filepath.IsAbs(r.CWD) {
+		return errors.New("cwd must be an absolute path")
+	}
+	if r.MCPServers == nil {
+		return errors.New("mcpServers is required")
+	}
+	if len(r.MCPServers) != 0 {
+		return errors.New("MCP servers are not supported")
+	}
+	if len(r.AdditionalDirectories) != 0 {
+		return errors.New("additional directories are not supported")
+	}
+	return nil
+}
+
+func (r PromptRequest) Validate() error {
+	if r.SessionID == "" {
+		return errors.New("sessionId is required")
+	}
+	if len(r.Prompt) == 0 {
+		return errors.New("prompt requires at least one content block")
+	}
+	for _, block := range r.Prompt {
+		switch block.Type {
+		case "text":
+		case "resource_link":
+			if block.Name == "" || block.URI == "" {
+				return errors.New("resource link content requires name and uri")
+			}
+		default:
+			return fmt.Errorf("unsupported prompt content type %q", block.Type)
+		}
+	}
+	return nil
+}
+
+func (n CancelNotification) Validate() error {
+	if n.SessionID == "" {
+		return errors.New("sessionId is required")
+	}
+	return nil
 }

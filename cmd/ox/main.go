@@ -10,6 +10,7 @@ import (
 	"github.com/creachadair/jrpc2/channel"
 
 	"github.com/kkestell/ox/internal/agent"
+	"github.com/kkestell/ox/internal/openrouter"
 )
 
 var (
@@ -21,8 +22,22 @@ func main() {
 	logger := newLogger(os.Stderr, os.Getenv("OX_LOG_LEVEL"))
 	logger.Info("ox starting", "version", version)
 
-	server := jrpc2.NewServer(agent.New(name, version, logger).Methods(), &jrpc2.ServerOptions{
+	client := &openrouter.Client{
+		APIKey:  os.Getenv("OPENROUTER_API_KEY"),
+		BaseURL: os.Getenv("OX_OPENROUTER_BASE_URL"),
+		Logger:  logger,
+	}
+	methods := agent.New(name, version, os.Getenv("OX_MODEL"), client, logger).Methods()
+
+	server := jrpc2.NewServer(methods, &jrpc2.ServerOptions{
 		AllowPush: true,
+		// A prompt handler holds its slot for the whole turn, and jrpc2 bounds
+		// handlers with a semaphore that defaults to the CPU count. On a
+		// single-CPU machine session/cancel would then wait behind the very turn
+		// it exists to stop. These handlers block on the network and on the
+		// client rather than on the CPU, so the bound just has to stay well above
+		// the number of live sessions.
+		Concurrency: 16,
 	})
 	server.Start(channel.Line(os.Stdin, os.Stdout))
 	if err := server.Wait(); err != nil {

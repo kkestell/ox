@@ -13,10 +13,16 @@ import (
 	"github.com/creachadair/jrpc2/server"
 
 	"github.com/kkestell/ox/internal/acp"
+	"github.com/kkestell/ox/internal/openrouter"
 )
 
+func testAgent() *Agent {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	return New("ox", "0.0.1", "test/model", &openrouter.Client{Logger: logger}, logger)
+}
+
 func TestInitializeRetainsClientCapabilities(t *testing.T) {
-	agent := New("ox", "0.0.1", slog.New(slog.NewTextHandler(io.Discard, nil)))
+	agent := testAgent()
 	capabilities := &acp.ClientCapabilities{Terminal: true}
 
 	response, err := agent.Initialize(t.Context(), acp.InitializeRequest{
@@ -35,7 +41,7 @@ func TestInitializeRetainsClientCapabilities(t *testing.T) {
 }
 
 func TestCancelRequestCancelsInFlightContext(t *testing.T) {
-	agent := New("ox", "0.0.1", slog.New(slog.NewTextHandler(io.Discard, nil)))
+	agent := testAgent()
 	started := make(chan struct{})
 	methods := agent.Methods()
 	methods["stall"] = handler.New(func(ctx context.Context) error {

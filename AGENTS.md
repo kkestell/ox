@@ -27,7 +27,7 @@ Comes before the prompt loop so every later item lands with end-to-end coverage.
 
 ### M2 — Core prompt loop
 
-- [ ] Streaming prompt turn: `session/new`, `session/prompt`, `session/cancel`
+- [x] Streaming prompt turn: `session/new`, `session/prompt`, `session/cancel`
 - [ ] Prompt content handling
 - [ ] Concurrent sessions
 - [ ] Configuration precedence
@@ -115,10 +115,10 @@ editor runtime supervision, GitHub inbox, terminal UI.
 Requests and notifications Ox accepts from an ACP client:
 
 - [x] `initialize`
-- [ ] `session/new`
+- [x] `session/new`
 - [ ] `session/load`
-- [ ] `session/prompt`
-- [ ] `session/cancel`
+- [x] `session/prompt`
+- [x] `session/cancel`
 - [ ] `authenticate`
 - [ ] `session/list`
 - [ ] `session/delete`
@@ -199,11 +199,18 @@ drives it the way a client does: stdin, stdout, stderr, the environment, the
 working directory, and a queued HTTP model endpoint. Every file in the package
 is a test file, so the harness adds nothing to the shipped binary. Compose
 scripted model responses from the `sse` and `ev*` builders rather than
-hand-writing SSE framing.
+hand-writing SSE framing. A mid-turn cancellation is scripted with a held-open
+response: `hold` queues a body that writes its opening frames, signals the test
+that it has started, then blocks until the test releases the rest or the request
+context ends.
 
-There is an `OPENROUTER_API_KEY` in `.env` for you to use for testing.
+There is an `OPENROUTER_API_KEY` in `.env` for you to use for testing. Checks
+against the real endpoint use `gpt-5.6-luna` and no other model.
 
 Add focused tests for stable, tricky rules and regression cases for fixed bugs.
+
+The end to end harness builds the `ox` binary in a subprocess, which Go's test
+cache cannot see, so run the tests with `-count=1`.
 
 Always run:
 
@@ -211,7 +218,7 @@ Always run:
 gofmt
 go vet ./...
 staticcheck ./...
-go test -race ./...
+go test -race -count=1 ./...
 ```
 
 ### Design and collaboration
