@@ -95,11 +95,11 @@ editor runtime supervision, GitHub inbox, terminal UI.
 - Only roadmap items get plans.
 - Before planning, research. Explore the relevant Ox code and then identify
   which of my previous projects are strong candidates for cribbing ideas and/or
-  code. Consult the feature matrix in `references/index.md`. The repositories
-  are in `~/src/references/repos`. Find the most robust, advanced solutions.
-  Adopting large chunks of code from my previous projects is welcome and
-  encouraged. If no strong candidates emerge, consult the third-party references
-  in `~/src/references/repos/third-party`.
+  code. Consult the feature matrix in `~/src/references/index.md`. The
+  repositories are in `~/src/references/repos`. Find the most robust, advanced
+  solutions. Adopting large chunks of code from my previous projects is welcome
+  and encouraged. If no strong candidates emerge, consult the third-party
+  references in `~/src/references/repos/third-party`.
 - After research and planning, stop. Implementation will happen in a fresh
   session.
 - After implementation, stop. Code review will happen in a fresh session.
