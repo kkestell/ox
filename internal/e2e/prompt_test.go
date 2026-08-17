@@ -20,6 +20,19 @@ func e2ePointer(value string) *string {
 	return &value
 }
 
+// prompt runs one turn to completion, which is all a test needs when what it
+// asserts is what ox sent the model rather than what it streamed back.
+func prompt(t *testing.T, child *process, session, text string) {
+	t.Helper()
+	result := child.request("session/prompt", acp.PromptRequest{
+		SessionID: session,
+		Prompt:    textPrompt(text),
+	})
+	if response := promptResponse(t, result); response.StopReason != acp.StopReasonEndTurn {
+		t.Fatalf("stopReason = %q, want %q", response.StopReason, acp.StopReasonEndTurn)
+	}
+}
+
 func promptResponse(t *testing.T, result json.RawMessage) acp.PromptResponse {
 	t.Helper()
 	var response acp.PromptResponse
@@ -721,7 +734,7 @@ func TestConcurrentSessionsStreamIndependently(t *testing.T) {
 	firstHeld := model.holdFor("first prompt", frames(evText("first ")))
 	secondHeld := model.holdFor("second prompt", frames(evText("second ")))
 	child, firstSession := startSession(t, withModel(model))
-	secondSession := newSession(t, child)
+	secondSession := newSession(t, child, child.cwd)
 
 	firstPrompt := child.begin("session/prompt", acp.PromptRequest{
 		SessionID: firstSession,
@@ -769,7 +782,7 @@ func TestCancellingOneConcurrentSessionLeavesTheOtherRunning(t *testing.T) {
 	model.queueFor("first again", sse(evText("first next"), evFinishReason("stop")))
 	model.queueFor("second again", sse(evText("second next"), evFinishReason("stop")))
 	child, firstSession := startSession(t, withModel(model))
-	secondSession := newSession(t, child)
+	secondSession := newSession(t, child, child.cwd)
 
 	firstPrompt := child.begin("session/prompt", acp.PromptRequest{
 		SessionID: firstSession,
@@ -842,7 +855,7 @@ func TestCancellingASessionBeforeItsFirstDeltaLeavesAnotherStreaming(t *testing.
 	silent := model.holdFor("silent prompt", "")
 	streaming := model.holdFor("streaming prompt", frames(evText("streaming ")))
 	child, silentSession := startSession(t, withModel(model))
-	streamingSession := newSession(t, child)
+	streamingSession := newSession(t, child, child.cwd)
 
 	silentPrompt := child.begin("session/prompt", acp.PromptRequest{
 		SessionID: silentSession,
@@ -885,7 +898,7 @@ func TestARefusedPromptLeavesAnotherSessionsTurnRunning(t *testing.T) {
 	model := startModel(t)
 	held := model.holdFor("running prompt", frames(evText("running ")))
 	child, runningSession := startSession(t, withModel(model))
-	refusedSession := newSession(t, child)
+	refusedSession := newSession(t, child, child.cwd)
 
 	runningPrompt := child.begin("session/prompt", acp.PromptRequest{
 		SessionID: runningSession,
@@ -927,7 +940,7 @@ func TestConcurrentSessionHistoriesStaySeparate(t *testing.T) {
 	model.queueFor("first two", sse(evText("first done"), evFinishReason("stop")))
 	model.queueFor("second two", sse(evText("second done"), evFinishReason("stop")))
 	child, firstSession := startSession(t, withModel(model))
-	secondSession := newSession(t, child)
+	secondSession := newSession(t, child, child.cwd)
 
 	firstPrompt := child.begin("session/prompt", acp.PromptRequest{
 		SessionID: firstSession,
@@ -978,7 +991,7 @@ func TestServerStaysResponsiveWithManyConcurrentTurns(t *testing.T) {
 	prompts := make([]call, turnCount)
 	for index := range turnCount {
 		if index != 0 {
-			sessions[index] = newSession(t, child)
+			sessions[index] = newSession(t, child, child.cwd)
 		}
 		text := "held " + strconv.Itoa(index)
 		held[index] = model.holdFor(text, "")
@@ -991,7 +1004,7 @@ func TestServerStaysResponsiveWithManyConcurrentTurns(t *testing.T) {
 		response.await(t)
 	}
 
-	freshSession := newSession(t, child)
+	freshSession := newSession(t, child, child.cwd)
 	model.queueFor("fresh prompt", sse(evText("fresh answer"), evFinishReason("stop")))
 	freshResponse := promptResponse(t, child.request("session/prompt", acp.PromptRequest{
 		SessionID: freshSession,

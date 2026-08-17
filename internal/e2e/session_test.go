@@ -15,16 +15,22 @@ import (
 func startSession(t *testing.T, options ...startOption) (*process, string) {
 	t.Helper()
 	child := start(t, options...)
-	child.request("initialize", acp.InitializeRequest{ProtocolVersion: acp.ProtocolVersion})
-	return child, newSession(t, child)
+	initialize(t, child)
+	return child, newSession(t, child, child.cwd)
 }
 
-func newSession(t *testing.T, child *process) string {
+func initialize(t *testing.T, child *process) {
 	t.Helper()
-	result := child.request("session/new", acp.NewSessionRequest{
-		CWD:        child.cwd,
-		MCPServers: []json.RawMessage{},
-	})
+	child.request("initialize", acp.InitializeRequest{ProtocolVersion: acp.ProtocolVersion})
+}
+
+func newSessionRequest(cwd string) acp.NewSessionRequest {
+	return acp.NewSessionRequest{CWD: cwd, MCPServers: []json.RawMessage{}}
+}
+
+func newSession(t *testing.T, child *process, cwd string) string {
+	t.Helper()
+	result := child.request("session/new", newSessionRequest(cwd))
 	var response acp.NewSessionResponse
 	if err := json.Unmarshal(result, &response); err != nil {
 		t.Fatalf("decode session/new result: %v", err)
@@ -37,7 +43,7 @@ func newSession(t *testing.T, child *process) string {
 
 func TestNewSessionMintsDistinctSessions(t *testing.T) {
 	child, first := startSession(t)
-	if second := newSession(t, child); second == first {
+	if second := newSession(t, child, child.cwd); second == first {
 		t.Fatalf("session/new returned %s twice", first)
 	}
 }
@@ -102,20 +108,25 @@ func TestNewSessionRequiresAModelAndAnAPIKey(t *testing.T) {
 	for _, variable := range []string{"OX_MODEL", "OPENROUTER_API_KEY"} {
 		t.Run(variable, func(t *testing.T) {
 			child := start(t, withEnvironment(variable, ""))
-			child.request("initialize", acp.InitializeRequest{
-				ProtocolVersion: acp.ProtocolVersion,
-			})
+			initialize(t, child)
 
-			responseError := child.requestError("session/new", acp.NewSessionRequest{
-				CWD:        child.cwd,
-				MCPServers: []json.RawMessage{},
-			})
+			responseError := child.requestError("session/new", newSessionRequest(child.cwd))
 			if responseError.Code != -32603 {
 				t.Errorf("error code = %d, want -32603", responseError.Code)
 			}
 			if !strings.Contains(responseError.Message, variable) {
 				t.Errorf("error message = %q, want it to name %s",
 					responseError.Message, variable)
+			}
+			if variable == "OX_MODEL" {
+				for _, path := range []string{
+					filepath.Join(child.cwd, "config", "ox", "config.json"),
+					filepath.Join(child.cwd, ".ox", "config.json"),
+				} {
+					if !strings.Contains(responseError.Message, path) {
+						t.Errorf("error message = %q, want it to name %s", responseError.Message, path)
+					}
+				}
 			}
 		})
 	}
@@ -129,7 +140,7 @@ func TestCancelWithoutARunningTurnIsANoOp(t *testing.T) {
 
 	// A round trip after the notifications proves they were handled and that ox
 	// is still answering.
-	if next := newSession(t, child); next == session {
+	if next := newSession(t, child, child.cwd); next == session {
 		t.Fatalf("session/new returned %s twice", session)
 	}
 }

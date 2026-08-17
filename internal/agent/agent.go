@@ -11,13 +11,14 @@ import (
 	"github.com/creachadair/jrpc2/handler"
 
 	"github.com/kkestell/ox/internal/acp"
+	"github.com/kkestell/ox/internal/config"
 	"github.com/kkestell/ox/internal/openrouter"
 )
 
 type Agent struct {
 	name               string
 	version            string
-	model              string
+	environment        config.Environment
 	client             *openrouter.Client
 	logger             *slog.Logger
 	clientCapabilities atomic.Pointer[acp.ClientCapabilities]
@@ -27,17 +28,18 @@ type Agent struct {
 }
 
 func New(
-	name, version, model string,
+	name, version string,
+	environment config.Environment,
 	client *openrouter.Client,
 	logger *slog.Logger,
 ) *Agent {
 	return &Agent{
-		name:     name,
-		version:  version,
-		model:    model,
-		client:   client,
-		logger:   logger,
-		sessions: make(map[string]*session),
+		name:        name,
+		version:     version,
+		environment: environment,
+		client:      client,
+		logger:      logger,
+		sessions:    make(map[string]*session),
 	}
 }
 

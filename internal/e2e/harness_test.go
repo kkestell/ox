@@ -40,6 +40,7 @@ type message struct {
 
 type startConfig struct {
 	environment map[string]string
+	files       map[string]string
 }
 
 type startOption func(*startConfig)
@@ -48,6 +49,20 @@ func withEnvironment(name, value string) startOption {
 	return func(config *startConfig) {
 		config.environment[name] = value
 	}
+}
+
+func withFile(path, content string) startOption {
+	return func(config *startConfig) {
+		config.files[path] = content
+	}
+}
+
+func withGlobalConfig(content string) startOption {
+	return withFile(filepath.Join("config", "ox", "config.json"), content)
+}
+
+func withWorkspaceConfig(content string) startOption {
+	return withFile(filepath.Join(".ox", "config.json"), content)
 }
 
 type process struct {
@@ -76,16 +91,28 @@ func start(t *testing.T, options ...startOption) *process {
 	t.Helper()
 
 	scratch := t.TempDir()
-	config := startConfig{environment: map[string]string{
-		"HOME":               scratch,
-		"XDG_CONFIG_HOME":    filepath.Join(scratch, "config"),
-		"OX_LOG_LEVEL":       "debug",
-		"OX_MODEL":           "test/model",
-		"OPENROUTER_API_KEY": "test-key",
-		"GORACE":             "halt_on_error=1",
-	}}
+	config := startConfig{
+		environment: map[string]string{
+			"HOME":               scratch,
+			"XDG_CONFIG_HOME":    filepath.Join(scratch, "config"),
+			"OX_LOG_LEVEL":       "debug",
+			"OX_MODEL":           "test/model",
+			"OPENROUTER_API_KEY": "test-key",
+			"GORACE":             "halt_on_error=1",
+		},
+		files: make(map[string]string),
+	}
 	for _, option := range options {
 		option(&config)
+	}
+	for relative, content := range config.files {
+		path := filepath.Join(scratch, relative)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatalf("create seed file directory: %v", err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatalf("write seed file: %v", err)
+		}
 	}
 
 	stdout, stdoutWriter, err := os.Pipe()

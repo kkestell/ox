@@ -14,12 +14,19 @@ import (
 	"github.com/creachadair/jrpc2/server"
 
 	"github.com/kkestell/ox/internal/acp"
+	"github.com/kkestell/ox/internal/config"
 	"github.com/kkestell/ox/internal/openrouter"
 )
 
 func testAgent() *Agent {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return New("ox", "0.0.1", "test/model", &openrouter.Client{Logger: logger}, logger)
+	return New(
+		"ox",
+		"0.0.1",
+		config.Environment{ModelOverride: "test/model"},
+		&openrouter.Client{Logger: logger},
+		logger,
+	)
 }
 
 func TestInitializeRetainsClientCapabilities(t *testing.T) {

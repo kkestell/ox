@@ -61,9 +61,9 @@ func (a *Agent) Prompt(
 		})
 	}
 
-	a.logger.Info("prompt started", "session_id", value.id, "model", a.model)
+	a.logger.Info("prompt started", "session_id", value.id, "model", value.configuration.Model)
 	completion, streamErr := a.client.Stream(runCtx, openrouter.Request{
-		Model:    a.model,
+		Model:    value.configuration.Model,
 		Messages: value.messages(),
 	}, func(delta openrouter.Delta) {
 		switch delta.Kind {

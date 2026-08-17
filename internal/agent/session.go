@@ -13,6 +13,7 @@ import (
 	"github.com/creachadair/jrpc2"
 
 	"github.com/kkestell/ox/internal/acp"
+	"github.com/kkestell/ox/internal/config"
 	"github.com/kkestell/ox/internal/openrouter"
 )
 
@@ -20,8 +21,9 @@ import (
 // it are reachable only through the methods below, which keep the locking
 // honest.
 type session struct {
-	id  string
-	cwd string
+	id            string
+	cwd           string
+	configuration config.Resolved
 
 	mu      sync.Mutex
 	history []openrouter.Message
@@ -46,11 +48,9 @@ func (a *Agent) NewSession(
 	if err != nil {
 		return acp.NewSessionResponse{}, jrpc2.Errorf(jrpc2.InvalidParams, "%v", err)
 	}
-	if a.model == "" {
-		return acp.NewSessionResponse{}, jrpc2.Errorf(
-			jrpc2.InternalError,
-			"no model is configured: set OX_MODEL",
-		)
+	configuration, err := config.Resolve(a.environment, cwd)
+	if err != nil {
+		return acp.NewSessionResponse{}, jrpc2.Errorf(jrpc2.InternalError, "%v", err)
 	}
 	if a.client.APIKey == "" {
 		return acp.NewSessionResponse{}, jrpc2.Errorf(
@@ -59,12 +59,18 @@ func (a *Agent) NewSession(
 		)
 	}
 
-	value := &session{id: randomID(), cwd: cwd}
+	value := &session{id: randomID(), cwd: cwd, configuration: configuration}
 	a.sessionsMu.Lock()
 	a.sessions[value.id] = value
 	a.sessionsMu.Unlock()
 
-	a.logger.Info("session created", "session_id", value.id, "cwd", value.cwd)
+	a.logger.Info(
+		"session created",
+		"session_id", value.id,
+		"cwd", value.cwd,
+		"model", value.configuration.Model,
+		"model_source", value.configuration.ModelSource,
+	)
 	return acp.NewSessionResponse{SessionID: value.id}, nil
 }
 

@@ -30,7 +30,7 @@ Comes before the prompt loop so every later item lands with end-to-end coverage.
 - [x] Streaming prompt turn: `session/new`, `session/prompt`, `session/cancel`
 - [x] Prompt content handling
 - [x] Concurrent sessions
-- [ ] Configuration precedence
+- [x] Configuration precedence
 - [ ] Credential storage and lookup
 - [ ] `authenticate`
 
@@ -111,6 +111,8 @@ editor runtime supervision, GitHub inbox, terminal UI.
   compatibility concerns. Refactor ruthlessly.
 - Do not mention the roadmap, milestones, or M numbers ANYWHERE except for in
   the roadmap.
+- When reviewing code, focus on issues that are reasonably likely to occur in
+  real world usage, not theoretical issues and extreme edge cases.
 
 ## ACP method coverage
 
@@ -142,6 +144,19 @@ Requests and notifications Ox sends to an ACP client:
 - [ ] `terminal/wait_for_exit`
 - [ ] `terminal/kill`
 - [ ] `terminal/release`
+
+## Configuration
+
+Ox reads the model for each session from `OX_MODEL`, from
+`<cwd>/.ox/config.json`, or from the global configuration file at
+`$XDG_CONFIG_HOME/ox/config.json` (falling back to
+`$HOME/.config/ox/config.json`). That order is the precedence order: the
+environment overrides the workspace file, which overrides the global file. The
+resolved configuration is frozen when the session is created.
+
+`model` is the only configuration-file key. Unknown keys and blank model values
+are errors. `OX_LOG_LEVEL` and `OX_OPENROUTER_BASE_URL` remain environment-only;
+in particular, a configuration file cannot redirect prompts to another host.
 
 ## Code Style
 
@@ -201,11 +216,13 @@ drives it the way a client does: stdin, stdout, stderr, the environment, the
 working directory, and a queued HTTP model endpoint. Every file in the package
 is a test file, so the harness adds nothing to the shipped binary. Compose
 scripted model responses from the `sse` and `ev*` builders rather than
-hand-writing SSE framing. A queued response may name the prompt it answers, so
-tests with more than one turn in flight do not depend on request arrival order.
-A mid-turn cancellation is scripted with a held-open response: `hold` queues a
-body that writes its opening frames, signals the test that it has started, then
-blocks until the test releases the rest or the request context ends.
+hand-writing SSE framing. Seed configuration and other files into the scratch
+directory with the harness file options before Ox starts. A queued response may
+name the prompt it answers, so tests with more than one turn in flight do not
+depend on request arrival order. A mid-turn cancellation is scripted with a
+held-open response: `hold` queues a body that writes its opening frames, signals
+the test that it has started, then blocks until the test releases the rest or
+the request context ends.
 
 There is an `OPENROUTER_API_KEY` in `.env` for you to use for testing. Checks
 against the real endpoint use `gpt-5.6-luna` and no other model.

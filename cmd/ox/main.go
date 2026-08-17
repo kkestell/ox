@@ -10,6 +10,7 @@ import (
 	"github.com/creachadair/jrpc2/channel"
 
 	"github.com/kkestell/ox/internal/agent"
+	"github.com/kkestell/ox/internal/config"
 	"github.com/kkestell/ox/internal/openrouter"
 )
 
@@ -27,14 +28,25 @@ const handlerConcurrency = 1 << 30
 
 func main() {
 	logger := newLogger(os.Stderr, os.Getenv("OX_LOG_LEVEL"))
-	logger.Info("ox starting", "version", version)
+	environment := config.Environment{
+		GlobalPath: config.GlobalPath(
+			os.Getenv("XDG_CONFIG_HOME"),
+			os.Getenv("HOME"),
+		),
+		ModelOverride: os.Getenv("OX_MODEL"),
+	}
+	logger.Info(
+		"ox starting",
+		"version", version,
+		"global_config_path", environment.GlobalPath,
+	)
 
 	client := &openrouter.Client{
 		APIKey:  os.Getenv("OPENROUTER_API_KEY"),
 		BaseURL: os.Getenv("OX_OPENROUTER_BASE_URL"),
 		Logger:  logger,
 	}
-	methods := agent.New(name, version, os.Getenv("OX_MODEL"), client, logger).Methods()
+	methods := agent.New(name, version, environment, client, logger).Methods()
 
 	server := jrpc2.NewServer(methods, &jrpc2.ServerOptions{
 		AllowPush:   true,
