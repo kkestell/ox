@@ -32,8 +32,14 @@ func TestInitialize(t *testing.T) {
 	if response.AgentCapabilities.LoadSession {
 		t.Error("loadSession = true, want false")
 	}
-	if response.AgentCapabilities.PromptCapabilities != (acp.PromptCapabilities{}) {
-		t.Errorf("promptCapabilities = %#v, want empty", response.AgentCapabilities.PromptCapabilities)
+	wantPromptCapabilities := acp.PromptCapabilities{
+		Image:           true,
+		Audio:           true,
+		EmbeddedContext: true,
+	}
+	if response.AgentCapabilities.PromptCapabilities != wantPromptCapabilities {
+		t.Errorf("promptCapabilities = %#v, want %#v",
+			response.AgentCapabilities.PromptCapabilities, wantPromptCapabilities)
 	}
 	if response.AgentInfo != (acp.Implementation{Name: "ox", Version: "0.0.1"}) {
 		t.Errorf("agentInfo = %#v", response.AgentInfo)

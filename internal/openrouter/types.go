@@ -1,6 +1,8 @@
 // Package openrouter implements Ox's OpenRouter chat completion client.
 package openrouter
 
+import "encoding/json"
+
 type Role string
 
 const (
@@ -22,8 +24,45 @@ type Message struct {
 }
 
 type ContentBlock struct {
-	Type string `json:"type"`
-	Text string `json:"text"`
+	Type        string `json:"type"`
+	Text        string `json:"text,omitempty"`
+	ImageURL    string `json:"image_url,omitempty"`
+	AudioData   string `json:"audio_data,omitempty"`
+	AudioFormat string `json:"audio_format,omitempty"`
+}
+
+// MarshalJSON emits OpenRouter's nested shape for each content-part variant.
+func (c ContentBlock) MarshalJSON() ([]byte, error) {
+	switch c.Type {
+	case "text":
+		return json.Marshal(struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		}{Type: c.Type, Text: c.Text})
+	case "image_url":
+		return json.Marshal(struct {
+			Type     string `json:"type"`
+			ImageURL struct {
+				URL string `json:"url"`
+			} `json:"image_url"`
+		}{Type: c.Type, ImageURL: struct {
+			URL string `json:"url"`
+		}{URL: c.ImageURL}})
+	case "input_audio":
+		return json.Marshal(struct {
+			Type       string `json:"type"`
+			InputAudio struct {
+				Data   string `json:"data"`
+				Format string `json:"format"`
+			} `json:"input_audio"`
+		}{Type: c.Type, InputAudio: struct {
+			Data   string `json:"data"`
+			Format string `json:"format"`
+		}{Data: c.AudioData, Format: c.AudioFormat}})
+	default:
+		type raw ContentBlock
+		return json.Marshal(raw(c))
+	}
 }
 
 type Usage struct {

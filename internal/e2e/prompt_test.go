@@ -3,6 +3,7 @@ package e2e
 import (
 	"encoding/json"
 	"net/http"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -12,6 +13,10 @@ import (
 
 func textPrompt(text string) []acp.ContentBlock {
 	return []acp.ContentBlock{{Type: "text", Text: text}}
+}
+
+func e2ePointer(value string) *string {
+	return &value
 }
 
 func promptResponse(t *testing.T, result json.RawMessage) acp.PromptResponse {
@@ -91,6 +96,18 @@ func assertConversation(t *testing.T, messages []modelMessage, want []exchange) 
 			t.Fatalf("message %d = %s %q, want %s %q",
 				index, message.Role, message.text(), want[index].role, want[index].text)
 		}
+	}
+}
+
+func assertContent(t *testing.T, got []modelContentPart, want string) {
+	t.Helper()
+	var decoded []modelContentPart
+	if err := json.Unmarshal([]byte(want), &decoded); err != nil {
+		t.Fatalf("decode expected model content: %v", err)
+	}
+	if !reflect.DeepEqual(got, decoded) {
+		gotJSON, _ := json.Marshal(got)
+		t.Fatalf("model content mismatch\ngot:  %s\nwant: %s", gotJSON, want)
 	}
 }
 
@@ -204,6 +221,113 @@ func TestPromptRendersResourceLinksAsMarkdown(t *testing.T) {
 	})
 }
 
+func TestPromptSendsEveryContentVariantInClientOrder(t *testing.T) {
+	model := startModel(t, sse(evText("done"), evFinishReason("stop")))
+	child, session := startSession(t, withModel(model))
+
+	child.request("session/prompt", acp.PromptRequest{
+		SessionID: session,
+		Prompt: []acp.ContentBlock{
+			{Type: "text", Text: "inspect these"},
+			{Type: "image", MIMEType: "image/png", Data: "cGljdHVyZQ=="},
+			{Type: "audio", MIMEType: "audio/x-wav", Data: "c291bmQ="},
+			{Type: "resource_link", Name: `a [file]`, URI: "file:///tmp/a(b).go"},
+			{Type: "resource", Resource: &acp.EmbeddedResource{
+				URI:  "file:///tmp/context%20file.txt#L12-L14",
+				Text: e2ePointer("inside ``` a fence"),
+			}},
+			{Type: "resource", Resource: &acp.EmbeddedResource{
+				URI: "file:///tmp/embedded.png", MIMEType: "image/png", Blob: e2ePointer("aW1hZ2U="),
+			}},
+			{Type: "resource", Resource: &acp.EmbeddedResource{
+				URI: "file:///tmp/embedded.flac", MIMEType: "audio/flac", Blob: e2ePointer("YXVkaW8="),
+			}},
+		},
+	})
+	updates(t, child)
+
+	requests := model.requests()
+	if len(requests) != 1 || len(requests[0].Messages) != 1 {
+		t.Fatalf("model requests = %#v, want one request with one message", requests)
+	}
+	want := `[
+		{"type":"text","text":"inspect these"},
+		{"type":"image_url","image_url":{"url":"data:image/png;base64,cGljdHVyZQ=="}},
+		{"type":"input_audio","input_audio":{"data":"c291bmQ=","format":"wav"}},
+		{"type":"text","text":"[a \\[file\\]](file:///tmp/a(b\\).go)"},
+		{"type":"text","text":"[/tmp/context file.txt:12-14]\n` + "````" + `\ninside ` + "```" + ` a fence\n` + "````" + `"},
+		{"type":"image_url","image_url":{"url":"data:image/png;base64,aW1hZ2U="}},
+		{"type":"input_audio","input_audio":{"data":"YXVkaW8=","format":"flac"}}
+	]`
+	assertContent(t, requests[0].Messages[0].Content, want)
+}
+
+func TestPromptKeepsMultimodalPartsInHistory(t *testing.T) {
+	model := startModel(t,
+		sse(evText("first answer"), evFinishReason("stop")),
+		sse(evText("second answer"), evFinishReason("stop")),
+	)
+	child, session := startSession(t, withModel(model))
+
+	child.request("session/prompt", acp.PromptRequest{
+		SessionID: session,
+		Prompt: []acp.ContentBlock{
+			{Type: "text", Text: "describe"},
+			{Type: "image", MIMEType: "image/png", Data: "cGljdHVyZQ=="},
+		},
+	})
+	updates(t, child)
+	child.request("session/prompt", acp.PromptRequest{
+		SessionID: session,
+		Prompt:    textPrompt("again"),
+	})
+	updates(t, child)
+
+	requests := model.requests()
+	if len(requests) != 2 || len(requests[1].Messages) != 3 {
+		t.Fatalf("second model request = %#v, want three messages", requests)
+	}
+	assertContent(t, requests[1].Messages[0].Content, `[
+		{"type":"text","text":"describe"},
+		{"type":"image_url","image_url":{"url":"data:image/png;base64,cGljdHVyZQ=="}}
+	]`)
+}
+
+func TestPromptRejectsUnroutableResourcesWithoutOccupyingTheSession(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		mimeType string
+		want     string
+	}{
+		{name: "missing mime type", want: "no MIME type"},
+		{name: "unsupported mime type", mimeType: "application/pdf", want: "application/pdf"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			model := startModel(t, sse(evText("accepted"), evFinishReason("stop")))
+			child, session := startSession(t, withModel(model))
+
+			responseError := child.requestError("session/prompt", acp.PromptRequest{
+				SessionID: session,
+				Prompt: []acp.ContentBlock{{Type: "resource", Resource: &acp.EmbeddedResource{
+					URI: "file:///tmp/blob", MIMEType: test.mimeType, Blob: e2ePointer("YmxvYg=="),
+				}}},
+			})
+			if responseError.Code != -32602 || !strings.Contains(responseError.Message, test.want) {
+				t.Fatalf("error = %#v, want -32602 mentioning %q", responseError, test.want)
+			}
+
+			child.request("session/prompt", acp.PromptRequest{
+				SessionID: session,
+				Prompt:    textPrompt("still free"),
+			})
+			updates(t, child)
+			if requests := model.requests(); len(requests) != 1 {
+				t.Fatalf("model received %d requests, want 1", len(requests))
+			}
+		})
+	}
+}
+
 func TestPromptMapsFinishReasons(t *testing.T) {
 	for _, test := range []struct {
 		finishReason string
@@ -285,25 +409,70 @@ func TestPromptRejectsInvalidRequests(t *testing.T) {
 	for _, test := range []struct {
 		name    string
 		request acp.PromptRequest
+		want    string
 	}{
 		{
 			name:    "unknown session",
 			request: acp.PromptRequest{SessionID: "missing", Prompt: textPrompt("hi")},
+			want:    "unknown session",
 		},
 		{
 			name:    "missing session",
 			request: acp.PromptRequest{Prompt: textPrompt("hi")},
+			want:    "sessionId",
 		},
 		{
 			name:    "empty prompt",
 			request: acp.PromptRequest{SessionID: session},
+			want:    "at least one",
 		},
 		{
-			name: "unsupported content",
+			name: "image without mime type",
 			request: acp.PromptRequest{
 				SessionID: session,
-				Prompt:    []acp.ContentBlock{{Type: "image"}},
+				Prompt:    []acp.ContentBlock{{Type: "image", Data: "aW1hZ2U="}},
 			},
+			want: "block 1 image requires mimeType",
+		},
+		{
+			name: "image without data",
+			request: acp.PromptRequest{
+				SessionID: session,
+				Prompt:    []acp.ContentBlock{{Type: "image", MIMEType: "image/png"}},
+			},
+			want: "image requires data",
+		},
+		{
+			name: "image with invalid base64",
+			request: acp.PromptRequest{
+				SessionID: session,
+				Prompt:    []acp.ContentBlock{{Type: "image", MIMEType: "image/png", Data: "%%%"}},
+			},
+			want: "image data must be standard base64",
+		},
+		{
+			name: "audio without mime type",
+			request: acp.PromptRequest{
+				SessionID: session,
+				Prompt:    []acp.ContentBlock{{Type: "audio", Data: "YXVkaW8="}},
+			},
+			want: "audio requires mimeType",
+		},
+		{
+			name: "audio without data",
+			request: acp.PromptRequest{
+				SessionID: session,
+				Prompt:    []acp.ContentBlock{{Type: "audio", MIMEType: "audio/wav"}},
+			},
+			want: "audio requires data",
+		},
+		{
+			name: "audio with invalid base64",
+			request: acp.PromptRequest{
+				SessionID: session,
+				Prompt:    []acp.ContentBlock{{Type: "audio", MIMEType: "audio/wav", Data: "%%%"}},
+			},
+			want: "audio data must be standard base64",
 		},
 		{
 			name: "resource link without a uri",
@@ -311,6 +480,55 @@ func TestPromptRejectsInvalidRequests(t *testing.T) {
 				SessionID: session,
 				Prompt:    []acp.ContentBlock{{Type: "resource_link", Name: "main.go"}},
 			},
+			want: "resource link requires uri",
+		},
+		{
+			name: "resource without uri",
+			request: acp.PromptRequest{
+				SessionID: session,
+				Prompt: []acp.ContentBlock{{Type: "resource", Resource: &acp.EmbeddedResource{
+					Text: e2ePointer("text"),
+				}}},
+			},
+			want: "resource requires uri",
+		},
+		{
+			name: "resource without payload",
+			request: acp.PromptRequest{
+				SessionID: session,
+				Prompt: []acp.ContentBlock{{Type: "resource", Resource: &acp.EmbeddedResource{
+					URI: "file:///tmp/empty",
+				}}},
+			},
+			want: "exactly one of text or blob",
+		},
+		{
+			name: "resource with text and blob",
+			request: acp.PromptRequest{
+				SessionID: session,
+				Prompt: []acp.ContentBlock{{Type: "resource", Resource: &acp.EmbeddedResource{
+					URI: "file:///tmp/both", Text: e2ePointer("text"), Blob: e2ePointer("YmxvYg=="),
+				}}},
+			},
+			want: "exactly one of text or blob",
+		},
+		{
+			name: "resource with invalid blob base64",
+			request: acp.PromptRequest{
+				SessionID: session,
+				Prompt: []acp.ContentBlock{{Type: "resource", Resource: &acp.EmbeddedResource{
+					URI: "file:///tmp/blob", Blob: e2ePointer("%%%"),
+				}}},
+			},
+			want: "resource blob must be standard base64",
+		},
+		{
+			name: "unknown content type is positioned",
+			request: acp.PromptRequest{
+				SessionID: session,
+				Prompt:    []acp.ContentBlock{{Type: "text"}, {Type: "future"}},
+			},
+			want: `block 2 has unsupported type "future"`,
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -318,6 +536,10 @@ func TestPromptRejectsInvalidRequests(t *testing.T) {
 			if responseError.Code != -32602 {
 				t.Fatalf("error code = %d (%s), want -32602",
 					responseError.Code, responseError.Message)
+			}
+			if !strings.Contains(responseError.Message, test.want) {
+				t.Fatalf("error message = %q, want it to contain %q",
+					responseError.Message, test.want)
 			}
 		})
 	}

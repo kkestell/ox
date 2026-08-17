@@ -22,7 +22,11 @@ type ClientCapabilities struct {
 	Terminal bool                    `json:"terminal,omitempty"`
 }
 
-type PromptCapabilities struct{}
+type PromptCapabilities struct {
+	Image           bool `json:"image,omitempty"`
+	Audio           bool `json:"audio,omitempty"`
+	EmbeddedContext bool `json:"embeddedContext,omitempty"`
+}
 
 type AgentCapabilities struct {
 	LoadSession        bool               `json:"loadSession"`
@@ -78,13 +82,24 @@ const (
 	StopReasonCancelled StopReason = "cancelled"
 )
 
-// ContentBlock is one piece of a message. Ox handles the two variants every
-// agent must support without advertising a capability.
+// ContentBlock is one piece of a message.
 type ContentBlock struct {
-	Type string `json:"type"`
-	Text string `json:"text,omitempty"`
-	Name string `json:"name,omitempty"`
-	URI  string `json:"uri,omitempty"`
+	Type     string            `json:"type"`
+	Text     string            `json:"text,omitempty"`
+	Name     string            `json:"name,omitempty"`
+	URI      string            `json:"uri,omitempty"`
+	MIMEType string            `json:"mimeType,omitempty"`
+	Data     string            `json:"data,omitempty"`
+	Resource *EmbeddedResource `json:"resource,omitempty"`
+}
+
+// EmbeddedResource carries either text or a base64-encoded blob. Pointers
+// distinguish an empty value from a missing variant.
+type EmbeddedResource struct {
+	URI      string  `json:"uri"`
+	MIMEType string  `json:"mimeType,omitempty"`
+	Text     *string `json:"text,omitempty"`
+	Blob     *string `json:"blob,omitempty"`
 }
 
 // MarshalJSON emits the fields the block's variant requires, which differ
@@ -102,6 +117,17 @@ func (c ContentBlock) MarshalJSON() ([]byte, error) {
 			Name string `json:"name"`
 			URI  string `json:"uri"`
 		}{Type: c.Type, Name: c.Name, URI: c.URI})
+	case "image", "audio":
+		return json.Marshal(struct {
+			Type     string `json:"type"`
+			MIMEType string `json:"mimeType"`
+			Data     string `json:"data"`
+		}{Type: c.Type, MIMEType: c.MIMEType, Data: c.Data})
+	case "resource":
+		return json.Marshal(struct {
+			Type     string            `json:"type"`
+			Resource *EmbeddedResource `json:"resource"`
+		}{Type: c.Type, Resource: c.Resource})
 	default:
 		type raw ContentBlock
 		return json.Marshal(raw(c))

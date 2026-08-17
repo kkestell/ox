@@ -26,8 +26,15 @@ type modelMessage struct {
 }
 
 type modelContentPart struct {
-	Type string `json:"type"`
-	Text string `json:"text"`
+	Type     string `json:"type"`
+	Text     string `json:"text"`
+	ImageURL *struct {
+		URL string `json:"url"`
+	} `json:"image_url,omitempty"`
+	InputAudio *struct {
+		Data   string `json:"data"`
+		Format string `json:"format"`
+	} `json:"input_audio,omitempty"`
 }
 
 func (m modelMessage) text() string {

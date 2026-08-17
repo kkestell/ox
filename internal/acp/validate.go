@@ -2,11 +2,13 @@ package acp
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
 	"strconv"
+	"strings"
 )
 
 func (r InitializeRequest) Validate() error {
@@ -71,15 +73,63 @@ func (r PromptRequest) Validate() error {
 	if len(r.Prompt) == 0 {
 		return errors.New("prompt requires at least one content block")
 	}
-	for _, block := range r.Prompt {
+	for index, block := range r.Prompt {
+		position := index + 1
 		switch block.Type {
 		case "text":
 		case "resource_link":
-			if block.Name == "" || block.URI == "" {
-				return errors.New("resource link content requires name and uri")
+			if block.Name == "" {
+				return fmt.Errorf("prompt content block %d resource link requires name", position)
+			}
+			if block.URI == "" {
+				return fmt.Errorf("prompt content block %d resource link requires uri", position)
+			}
+		case "image", "audio":
+			if block.MIMEType == "" {
+				return fmt.Errorf("prompt content block %d %s requires mimeType", position, block.Type)
+			}
+			if !strings.Contains(block.MIMEType, "/") {
+				return fmt.Errorf(
+					"prompt content block %d %s mimeType %q must contain /",
+					position, block.Type, block.MIMEType,
+				)
+			}
+			if block.Data == "" {
+				return fmt.Errorf("prompt content block %d %s requires data", position, block.Type)
+			}
+			if _, err := base64.StdEncoding.DecodeString(block.Data); err != nil {
+				return fmt.Errorf(
+					"prompt content block %d %s data must be standard base64: %v",
+					position, block.Type, err,
+				)
+			}
+		case "resource":
+			if block.Resource == nil {
+				return fmt.Errorf("prompt content block %d resource is required", position)
+			}
+			resource := block.Resource
+			if resource.URI == "" {
+				return fmt.Errorf("prompt content block %d resource requires uri", position)
+			}
+			if (resource.Text == nil) == (resource.Blob == nil) {
+				return fmt.Errorf(
+					"prompt content block %d resource requires exactly one of text or blob",
+					position,
+				)
+			}
+			if resource.Blob != nil {
+				if _, err := base64.StdEncoding.DecodeString(*resource.Blob); err != nil {
+					return fmt.Errorf(
+						"prompt content block %d resource blob must be standard base64: %v",
+						position, err,
+					)
+				}
 			}
 		default:
-			return fmt.Errorf("unsupported prompt content type %q", block.Type)
+			return fmt.Errorf(
+				"prompt content block %d has unsupported type %q",
+				position, block.Type,
+			)
 		}
 	}
 	return nil

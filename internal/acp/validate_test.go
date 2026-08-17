@@ -2,6 +2,7 @@ package acp_test
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/kkestell/ox/internal/acp"
@@ -85,15 +86,13 @@ func TestPromptRequestValidate(t *testing.T) {
 	for _, test := range []struct {
 		name    string
 		request acp.PromptRequest
-		valid   bool
+		wantErr string
 	}{
 		{
-			name: "text",
+			name: "empty text",
 			request: acp.PromptRequest{
-				SessionID: "session",
-				Prompt:    []acp.ContentBlock{{Type: "text", Text: "hello"}},
+				SessionID: "session", Prompt: []acp.ContentBlock{{Type: "text"}},
 			},
-			valid: true,
 		},
 		{
 			name: "resource link",
@@ -103,52 +102,149 @@ func TestPromptRequestValidate(t *testing.T) {
 					{Type: "resource_link", Name: "main.go", URI: "file:///main.go"},
 				},
 			},
-			valid: true,
+		},
+		{
+			name: "image",
+			request: acp.PromptRequest{SessionID: "session", Prompt: []acp.ContentBlock{
+				{Type: "image", MIMEType: "image/png", Data: "cGljdHVyZQ=="},
+			}},
+		},
+		{
+			name: "audio",
+			request: acp.PromptRequest{SessionID: "session", Prompt: []acp.ContentBlock{
+				{Type: "audio", MIMEType: "audio/wav", Data: "c291bmQ="},
+			}},
+		},
+		{
+			name: "empty embedded text",
+			request: acp.PromptRequest{SessionID: "session", Prompt: []acp.ContentBlock{
+				{Type: "resource", Resource: &acp.EmbeddedResource{
+					URI: "file:///empty.txt", Text: stringPointer(""),
+				}},
+			}},
+		},
+		{
+			name: "embedded blob without mime type",
+			request: acp.PromptRequest{SessionID: "session", Prompt: []acp.ContentBlock{
+				{Type: "resource", Resource: &acp.EmbeddedResource{
+					URI: "file:///blob", Blob: stringPointer("YmxvYg=="),
+				}},
+			}},
 		},
 		{
 			name:    "missing session",
 			request: acp.PromptRequest{Prompt: []acp.ContentBlock{{Type: "text"}}},
+			wantErr: "sessionId is required",
 		},
 		{
 			name:    "empty prompt",
 			request: acp.PromptRequest{SessionID: "session"},
+			wantErr: "at least one",
 		},
 		{
-			name: "unsupported content",
-			request: acp.PromptRequest{
-				SessionID: "session",
-				Prompt:    []acp.ContentBlock{{Type: "image"}},
-			},
+			name:    "image without mime type",
+			request: promptWith(acp.ContentBlock{Type: "image", Data: "cGljdHVyZQ=="}),
+			wantErr: "block 1 image requires mimeType",
 		},
 		{
-			name: "resource link without uri",
-			request: acp.PromptRequest{
-				SessionID: "session",
-				Prompt:    []acp.ContentBlock{{Type: "resource_link", Name: "main.go"}},
-			},
+			name:    "image with malformed mime type",
+			request: promptWith(acp.ContentBlock{Type: "image", MIMEType: "png", Data: "cGljdHVyZQ=="}),
+			wantErr: "mimeType \"png\" must contain /",
 		},
 		{
-			name: "resource link without name",
-			request: acp.PromptRequest{
-				SessionID: "session",
-				Prompt:    []acp.ContentBlock{{Type: "resource_link", URI: "file:///main.go"}},
-			},
+			name:    "image without data",
+			request: promptWith(acp.ContentBlock{Type: "image", MIMEType: "image/png"}),
+			wantErr: "image requires data",
+		},
+		{
+			name:    "image with invalid base64",
+			request: promptWith(acp.ContentBlock{Type: "image", MIMEType: "image/png", Data: "not base64"}),
+			wantErr: "image data must be standard base64",
+		},
+		{
+			name:    "audio without mime type",
+			request: promptWith(acp.ContentBlock{Type: "audio", Data: "c291bmQ="}),
+			wantErr: "audio requires mimeType",
+		},
+		{
+			name:    "audio without data",
+			request: promptWith(acp.ContentBlock{Type: "audio", MIMEType: "audio/wav"}),
+			wantErr: "audio requires data",
+		},
+		{
+			name:    "audio with invalid base64",
+			request: promptWith(acp.ContentBlock{Type: "audio", MIMEType: "audio/wav", Data: "%%%"}),
+			wantErr: "audio data must be standard base64",
+		},
+		{
+			name:    "resource link without uri",
+			request: promptWith(acp.ContentBlock{Type: "resource_link", Name: "main.go"}),
+			wantErr: "resource link requires uri",
+		},
+		{
+			name:    "resource link without name",
+			request: promptWith(acp.ContentBlock{Type: "resource_link", URI: "file:///main.go"}),
+			wantErr: "resource link requires name",
+		},
+		{
+			name:    "resource without object",
+			request: promptWith(acp.ContentBlock{Type: "resource"}),
+			wantErr: "resource is required",
+		},
+		{
+			name: "resource without uri",
+			request: promptWith(acp.ContentBlock{Type: "resource", Resource: &acp.EmbeddedResource{
+				Text: stringPointer("text"),
+			}}),
+			wantErr: "resource requires uri",
+		},
+		{
+			name: "resource without payload",
+			request: promptWith(acp.ContentBlock{Type: "resource", Resource: &acp.EmbeddedResource{
+				URI: "file:///empty",
+			}}),
+			wantErr: "exactly one of text or blob",
+		},
+		{
+			name: "resource with text and blob",
+			request: promptWith(acp.ContentBlock{Type: "resource", Resource: &acp.EmbeddedResource{
+				URI: "file:///both", Text: stringPointer("text"), Blob: stringPointer("YmxvYg=="),
+			}}),
+			wantErr: "exactly one of text or blob",
+		},
+		{
+			name: "resource with invalid blob base64",
+			request: promptWith(acp.ContentBlock{Type: "resource", Resource: &acp.EmbeddedResource{
+				URI: "file:///blob", Blob: stringPointer("not base64"),
+			}}),
+			wantErr: "resource blob must be standard base64",
 		},
 		{
 			name: "unsupported block after a supported one",
 			request: acp.PromptRequest{
 				SessionID: "session",
-				Prompt:    []acp.ContentBlock{{Type: "text"}, {Type: "audio"}},
+				Prompt:    []acp.ContentBlock{{Type: "text"}, {Type: "future"}},
 			},
+			wantErr: `block 2 has unsupported type "future"`,
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			err := test.request.Validate()
-			if (err == nil) != test.valid {
-				t.Fatalf("Validate() error = %v, valid = %v", err, test.valid)
+			if test.wantErr == "" {
+				if err != nil {
+					t.Fatalf("Validate() error = %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+				t.Fatalf("Validate() error = %v, want it to contain %q", err, test.wantErr)
 			}
 		})
 	}
+}
+
+func promptWith(block acp.ContentBlock) acp.PromptRequest {
+	return acp.PromptRequest{SessionID: "session", Prompt: []acp.ContentBlock{block}}
 }
 
 func TestCancelNotificationValidate(t *testing.T) {

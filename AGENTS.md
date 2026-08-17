@@ -28,7 +28,7 @@ Comes before the prompt loop so every later item lands with end-to-end coverage.
 ### M2 — Core prompt loop
 
 - [x] Streaming prompt turn: `session/new`, `session/prompt`, `session/cancel`
-- [ ] Prompt content handling
+- [x] Prompt content handling
 - [ ] Concurrent sessions
 - [ ] Configuration precedence
 - [ ] Credential storage and lookup

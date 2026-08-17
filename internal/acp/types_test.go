@@ -50,7 +50,11 @@ func TestInitializeResponseShape(t *testing.T) {
 	response := acp.InitializeResponse{
 		ProtocolVersion: acp.ProtocolVersion,
 		AgentCapabilities: acp.AgentCapabilities{
-			PromptCapabilities: acp.PromptCapabilities{},
+			PromptCapabilities: acp.PromptCapabilities{
+				Image:           true,
+				Audio:           true,
+				EmbeddedContext: true,
+			},
 		},
 		AgentInfo:   acp.Implementation{Name: "ox", Version: "0.0.1"},
 		AuthMethods: []json.RawMessage{},
@@ -63,7 +67,11 @@ func TestInitializeResponseShape(t *testing.T) {
 		"protocolVersion": 1,
 		"agentCapabilities": {
 			"loadSession": false,
-			"promptCapabilities": {}
+			"promptCapabilities": {
+				"image": true,
+				"audio": true,
+				"embeddedContext": true
+			}
 		},
 		"agentInfo": {
 			"name": "ox",
@@ -95,9 +103,48 @@ func TestContentBlockMarshalsEachVariantsRequiredFields(t *testing.T) {
 			want:  `{"type":"resource_link","name":"main.go","uri":"file:///main.go"}`,
 		},
 		{
+			name: "image",
+			block: acp.ContentBlock{
+				Type: "image", MIMEType: "image/png", Data: "cGljdHVyZQ==",
+			},
+			want: `{"type":"image","mimeType":"image/png","data":"cGljdHVyZQ=="}`,
+		},
+		{
+			name: "audio",
+			block: acp.ContentBlock{
+				Type: "audio", MIMEType: "audio/wav", Data: "c291bmQ=",
+			},
+			want: `{"type":"audio","mimeType":"audio/wav","data":"c291bmQ="}`,
+		},
+		{
+			name: "embedded text resource",
+			block: acp.ContentBlock{
+				Type: "resource",
+				Resource: &acp.EmbeddedResource{
+					URI: "file:///main.go", MIMEType: "text/plain", Text: stringPointer("package main"),
+				},
+			},
+			want: `{"type":"resource","resource":{"uri":"file:///main.go","mimeType":"text/plain","text":"package main"}}`,
+		},
+		{
+			name: "embedded blob resource",
+			block: acp.ContentBlock{
+				Type: "resource",
+				Resource: &acp.EmbeddedResource{
+					URI: "file:///sound.wav", MIMEType: "audio/wav", Blob: stringPointer("c291bmQ="),
+				},
+			},
+			want: `{"type":"resource","resource":{"uri":"file:///sound.wav","mimeType":"audio/wav","blob":"c291bmQ="}}`,
+		},
+		{
+			name:  "missing embedded resource",
+			block: acp.ContentBlock{Type: "resource"},
+			want:  `{"type":"resource","resource":null}`,
+		},
+		{
 			name:  "unsupported",
-			block: acp.ContentBlock{Type: "image"},
-			want:  `{"type":"image"}`,
+			block: acp.ContentBlock{Type: "future"},
+			want:  `{"type":"future"}`,
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -138,7 +185,12 @@ func TestPromptRequestRoundTrip(t *testing.T) {
 		"sessionId": "session",
 		"prompt": [
 			{"type": "text", "text": "hello"},
-			{"type": "resource_link", "name": "main.go", "uri": "file:///main.go"}
+			{"type": "image", "mimeType": "image/png", "data": "aW1hZ2U="},
+			{"type": "audio", "mimeType": "audio/wav", "data": "YXVkaW8="},
+			{"type": "resource_link", "name": "main.go", "uri": "file:///main.go"},
+			{"type": "resource", "resource": {
+				"uri": "file:///context.txt", "mimeType": "text/plain", "text": "context"
+			}}
 		]
 	}`)
 
@@ -165,4 +217,8 @@ func assertJSONEqual(t *testing.T, got, want []byte) {
 	if !reflect.DeepEqual(gotValue, wantValue) {
 		t.Fatalf("JSON mismatch\ngot:  %s\nwant: %s", got, want)
 	}
+}
+
+func stringPointer(value string) *string {
+	return &value
 }

@@ -64,8 +64,12 @@ func (a *Agent) Initialize(
 	return acp.InitializeResponse{
 		ProtocolVersion: acp.ProtocolVersion,
 		AgentCapabilities: acp.AgentCapabilities{
-			LoadSession:        false,
-			PromptCapabilities: acp.PromptCapabilities{},
+			LoadSession: false,
+			PromptCapabilities: acp.PromptCapabilities{
+				Image:           true,
+				Audio:           true,
+				EmbeddedContext: true,
+			},
 		},
 		AgentInfo: acp.Implementation{
 			Name:    a.name,
