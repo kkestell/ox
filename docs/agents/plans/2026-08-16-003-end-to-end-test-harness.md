@@ -197,10 +197,10 @@ under test rather than skipped.
 
 ## Documentation updates
 
-- Add `docs/agents/testing.md` covering the test levels, when to reach for the
-  harness rather than a unit test, and how to queue model responses. The Tests
-  section of `AGENTS.md` already directs the reader to a testing reference that
-  does not exist yet.
+- Describe the harness in the Tests section of `AGENTS.md`: what it observes,
+  that every file in the package is a test file, and that scripted model
+  responses are composed from the frame builders. Drop that section's pointer at
+  a separate testing reference; the section itself is the reference.
 - Correct the trailing fragment on the harness line in the roadmap.
 - Roadmap item completed: the end-to-end test harness.
 

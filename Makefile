@@ -11,6 +11,7 @@ format-docs:
 	dprint fmt
 
 check-go:
+	test -z "$$(gofmt -l . | tee /dev/stderr)"
 	go vet ./...
 	staticcheck ./...
 

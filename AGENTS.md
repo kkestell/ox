@@ -23,8 +23,7 @@ worked in parallel. Each checkbox is one plannable roadmap item.
 
 Comes before the prompt loop so every later item lands with end-to-end coverage.
 
-- [ ] End-to-end test harness driving the Ox binary over stdio with a mock LLM
-      using
+- [x] End-to-end test harness driving the Ox binary over stdio with a mock LLM
 
 ### M2 — Core prompt loop
 
@@ -192,11 +191,15 @@ branches on them.
 ### Tests
 
 Testing is part of the design. Add the smallest useful test at the lowest
-appropriate level and use real Ox boundaries wherever practical. Before
-implementing or committing, read the project workflow and the relevant parts of
-the development and testing references.
+appropriate level and use real Ox boundaries wherever practical.
 
-End to end tests with a mocked LLM are the gold standard.
+End to end tests with a mocked LLM are the gold standard. The harness in
+`internal/e2e` builds the `ox` binary, starts a fresh process per test, and
+drives it the way a client does: stdin, stdout, stderr, the environment, the
+working directory, and a queued HTTP model endpoint. Every file in the package
+is a test file, so the harness adds nothing to the shipped binary. Compose
+scripted model responses from the `sse` and `ev*` builders rather than
+hand-writing SSE framing.
 
 There is an `OPENROUTER_API_KEY` in `.env` for you to use for testing.
 
