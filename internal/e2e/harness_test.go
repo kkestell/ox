@@ -93,12 +93,14 @@ func start(t *testing.T, options ...startOption) *process {
 	scratch := t.TempDir()
 	config := startConfig{
 		environment: map[string]string{
-			"HOME":               scratch,
-			"XDG_CONFIG_HOME":    filepath.Join(scratch, "config"),
-			"OX_LOG_LEVEL":       "debug",
-			"OX_MODEL":           "test/model",
-			"OPENROUTER_API_KEY": "test-key",
-			"GORACE":             "halt_on_error=1",
+			"HOME":            scratch,
+			"XDG_CONFIG_HOME": filepath.Join(scratch, "config"),
+			// The test binary must never access the developer's real keyring.
+			"OX_KEYRING_DISABLED": "1",
+			"OX_LOG_LEVEL":        "debug",
+			"OX_MODEL":            "test/model",
+			"OPENROUTER_API_KEY":  "test-key",
+			"GORACE":              "halt_on_error=1",
 		},
 		files: make(map[string]string),
 	}

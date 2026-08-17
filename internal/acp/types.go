@@ -4,7 +4,10 @@ import "encoding/json"
 
 const ProtocolVersion = 1
 
-const ErrCodeRequestCancelled = -32800
+const (
+	ErrCodeAuthRequired     = -32000
+	ErrCodeRequestCancelled = -32800
+)
 
 type Implementation struct {
 	Name    string `json:"name"`

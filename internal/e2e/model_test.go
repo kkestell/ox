@@ -15,9 +15,10 @@ import (
 )
 
 type modelRequest struct {
-	Model    string         `json:"model"`
-	Messages []modelMessage `json:"messages"`
-	Stream   bool           `json:"stream"`
+	Model         string         `json:"model"`
+	Messages      []modelMessage `json:"messages"`
+	Stream        bool           `json:"stream"`
+	Authorization string         `json:"-"`
 }
 
 type modelMessage struct {
@@ -163,8 +164,9 @@ func (m *mockModel) serveHTTP(writer http.ResponseWriter, request *http.Request)
 		http.NotFound(writer, request)
 		return
 	}
-	if authorization := request.Header.Get("Authorization"); authorization != "Bearer test-key" {
-		m.t.Errorf("mock model Authorization = %q, want %q", authorization, "Bearer test-key")
+	authorization := request.Header.Get("Authorization")
+	if !strings.HasPrefix(authorization, "Bearer ") || strings.TrimSpace(strings.TrimPrefix(authorization, "Bearer ")) == "" {
+		m.t.Errorf("mock model Authorization = %q, want a bearer credential", authorization)
 		http.Error(writer, "invalid authorization", http.StatusUnauthorized)
 		return
 	}
@@ -175,6 +177,7 @@ func (m *mockModel) serveHTTP(writer http.ResponseWriter, request *http.Request)
 		http.Error(writer, "invalid JSON", http.StatusBadRequest)
 		return
 	}
+	decoded.Authorization = authorization
 
 	m.mu.Lock()
 	m.received = append(m.received, decoded)

@@ -15,6 +15,7 @@ import (
 
 	"github.com/kkestell/ox/internal/acp"
 	"github.com/kkestell/ox/internal/config"
+	"github.com/kkestell/ox/internal/credentials"
 	"github.com/kkestell/ox/internal/openrouter"
 )
 
@@ -24,6 +25,7 @@ func testAgent() *Agent {
 		"ox",
 		"0.0.1",
 		config.Environment{ModelOverride: "test/model"},
+		credentials.NewStore("", true, logger),
 		&openrouter.Client{Logger: logger},
 		logger,
 	)

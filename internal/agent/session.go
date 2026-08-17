@@ -14,6 +14,7 @@ import (
 
 	"github.com/kkestell/ox/internal/acp"
 	"github.com/kkestell/ox/internal/config"
+	"github.com/kkestell/ox/internal/credentials"
 	"github.com/kkestell/ox/internal/openrouter"
 )
 
@@ -52,10 +53,11 @@ func (a *Agent) NewSession(
 	if err != nil {
 		return acp.NewSessionResponse{}, jrpc2.Errorf(jrpc2.InternalError, "%v", err)
 	}
-	if a.client.APIKey == "" {
+	if a.credentials.Key() == "" {
 		return acp.NewSessionResponse{}, jrpc2.Errorf(
-			jrpc2.InternalError,
-			"no API key is configured: set OPENROUTER_API_KEY",
+			jrpc2.Code(acp.ErrCodeAuthRequired),
+			"%s",
+			credentials.NoCredentialMessage,
 		)
 	}
 

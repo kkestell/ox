@@ -11,6 +11,7 @@ import (
 
 	"github.com/kkestell/ox/internal/agent"
 	"github.com/kkestell/ox/internal/config"
+	"github.com/kkestell/ox/internal/credentials"
 	"github.com/kkestell/ox/internal/openrouter"
 )
 
@@ -35,18 +36,24 @@ func main() {
 		),
 		ModelOverride: os.Getenv("OX_MODEL"),
 	}
+	credentialStore := credentials.NewStore(
+		os.Getenv("OPENROUTER_API_KEY"),
+		os.Getenv("OX_KEYRING_DISABLED") == "1",
+		logger,
+	)
 	logger.Info(
 		"ox starting",
 		"version", version,
 		"global_config_path", environment.GlobalPath,
+		"credential_source", credentialStore.Source(),
 	)
 
 	client := &openrouter.Client{
-		APIKey:  os.Getenv("OPENROUTER_API_KEY"),
+		APIKey:  credentialStore.Key,
 		BaseURL: os.Getenv("OX_OPENROUTER_BASE_URL"),
 		Logger:  logger,
 	}
-	methods := agent.New(name, version, environment, client, logger).Methods()
+	methods := agent.New(name, version, environment, credentialStore, client, logger).Methods()
 
 	server := jrpc2.NewServer(methods, &jrpc2.ServerOptions{
 		AllowPush:   true,

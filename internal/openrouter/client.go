@@ -19,7 +19,7 @@ const (
 )
 
 type Client struct {
-	APIKey  string
+	APIKey  func() string
 	BaseURL string
 	HTTP    *http.Client
 	Logger  *slog.Logger
@@ -54,7 +54,7 @@ func (c *Client) Stream(
 	if err != nil {
 		return Completion{}, fmt.Errorf("build OpenRouter request: %w", err)
 	}
-	httpRequest.Header.Set("Authorization", "Bearer "+c.APIKey)
+	httpRequest.Header.Set("Authorization", "Bearer "+c.apiKey())
 	httpRequest.Header.Set("Content-Type", "application/json")
 	httpRequest.Header.Set("Accept", "text/event-stream")
 
@@ -98,6 +98,13 @@ func (c *Client) Stream(
 
 	c.logCompletion(completion)
 	return completion, nil
+}
+
+func (c *Client) apiKey() string {
+	if c.APIKey == nil {
+		panic("openrouter.Client.APIKey is nil")
+	}
+	return c.APIKey()
 }
 
 func (c *Client) baseURL() string {

@@ -12,6 +12,7 @@ import (
 
 	"github.com/kkestell/ox/internal/acp"
 	"github.com/kkestell/ox/internal/config"
+	"github.com/kkestell/ox/internal/credentials"
 	"github.com/kkestell/ox/internal/openrouter"
 )
 
@@ -19,6 +20,7 @@ type Agent struct {
 	name               string
 	version            string
 	environment        config.Environment
+	credentials        *credentials.Store
 	client             *openrouter.Client
 	logger             *slog.Logger
 	clientCapabilities atomic.Pointer[acp.ClientCapabilities]
@@ -30,6 +32,7 @@ type Agent struct {
 func New(
 	name, version string,
 	environment config.Environment,
+	credentialStore *credentials.Store,
 	client *openrouter.Client,
 	logger *slog.Logger,
 ) *Agent {
@@ -37,6 +40,7 @@ func New(
 		name:        name,
 		version:     version,
 		environment: environment,
+		credentials: credentialStore,
 		client:      client,
 		logger:      logger,
 		sessions:    make(map[string]*session),

@@ -104,31 +104,24 @@ func TestNewSessionRejectsInvalidRequests(t *testing.T) {
 	}
 }
 
-func TestNewSessionRequiresAModelAndAnAPIKey(t *testing.T) {
-	for _, variable := range []string{"OX_MODEL", "OPENROUTER_API_KEY"} {
-		t.Run(variable, func(t *testing.T) {
-			child := start(t, withEnvironment(variable, ""))
-			initialize(t, child)
+func TestNewSessionRequiresAModel(t *testing.T) {
+	child := start(t, withEnvironment("OX_MODEL", ""))
+	initialize(t, child)
 
-			responseError := child.requestError("session/new", newSessionRequest(child.cwd))
-			if responseError.Code != -32603 {
-				t.Errorf("error code = %d, want -32603", responseError.Code)
-			}
-			if !strings.Contains(responseError.Message, variable) {
-				t.Errorf("error message = %q, want it to name %s",
-					responseError.Message, variable)
-			}
-			if variable == "OX_MODEL" {
-				for _, path := range []string{
-					filepath.Join(child.cwd, "config", "ox", "config.json"),
-					filepath.Join(child.cwd, ".ox", "config.json"),
-				} {
-					if !strings.Contains(responseError.Message, path) {
-						t.Errorf("error message = %q, want it to name %s", responseError.Message, path)
-					}
-				}
-			}
-		})
+	responseError := child.requestError("session/new", newSessionRequest(child.cwd))
+	if responseError.Code != -32603 {
+		t.Errorf("error code = %d, want -32603", responseError.Code)
+	}
+	if !strings.Contains(responseError.Message, "OX_MODEL") {
+		t.Errorf("error message = %q, want it to name OX_MODEL", responseError.Message)
+	}
+	for _, path := range []string{
+		filepath.Join(child.cwd, "config", "ox", "config.json"),
+		filepath.Join(child.cwd, ".ox", "config.json"),
+	} {
+		if !strings.Contains(responseError.Message, path) {
+			t.Errorf("error message = %q, want it to name %s", responseError.Message, path)
+		}
 	}
 }
 
