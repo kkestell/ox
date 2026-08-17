@@ -29,10 +29,10 @@ the four commands the code style requires: `gofmt`, `go vet`, `staticcheck`, and
 
 ## Related code
 
-- `references/repos/personal/alpha/runtime/cmd/amber-runtime/main.go` - The
+- `~/src/references/repos/personal/alpha/runtime/cmd/amber-runtime/main.go` - The
   entry-point shape to follow: read environment, construct subsystems, attach
   the transport, block. Roughly 50 lines with no logic of its own.
-- `references/repos/personal/alpha/runtime/internal/` - Eight subsystem
+- `~/src/references/repos/personal/alpha/runtime/internal/` - Eight subsystem
   packages, each owning one concern. The boundary granularity to grow toward.
 - `Makefile`, `dprint.json` - Existing docs tooling to extend rather than
   replace.
@@ -45,7 +45,7 @@ the four commands the code style requires: `gofmt`, `go vet`, `staticcheck`, and
   `format` into per-concern subtargets (`check-docs`, `format-docs`). Go targets
   follow that naming.
 - Constraints from the current implementation: `.gitignore` ignores
-  `/references/repos` and `/.env`; both stay ignored.
+  `/~/src/references/repos` and `/.env`; both stay ignored.
 
 ## Structural considerations
 

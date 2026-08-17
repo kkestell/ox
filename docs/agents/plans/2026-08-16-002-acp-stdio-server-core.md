@@ -38,21 +38,21 @@ the client to do.
 
 ## Related code
 
-- `references/repos/personal/alpha/runtime/internal/acp/types.go` - Hand-written
+- `~/src/references/repos/personal/alpha/runtime/internal/acp/types.go` - Hand-written
   ACP v1 types over `jrpc2`, ~400 lines for the subset it needs. The model for
   this package, including `ProtocolVersion = 1` and capability structs as
   empty-struct pointers so presence encodes support.
-- `references/repos/personal/alpha/runtime/internal/agent/agent.go:143-193` -
+- `~/src/references/repos/personal/alpha/runtime/internal/agent/agent.go:143-193` -
   `Methods()` and the `Initialize` handler, including the version-negotiation
   branch.
-- `references/repos/personal/alpha/runtime/integration/runtime_test.go:42` -
+- `~/src/references/repos/personal/alpha/runtime/integration/runtime_test.go:42` -
   `TestInitializeAndStdoutPurity`, which runs the real binary at debug level and
   unmarshals every stdout line. The pattern that turns the stdout rule into an
   enforced contract.
-- `references/repos/personal/gamma/protocol/validate.go` - A hand-written Go
+- `~/src/references/repos/personal/gamma/protocol/validate.go` - A hand-written Go
   validation layer with per-request `Validate` functions and a test file beside
   it.
-- `references/repos/third-party/protocol/agent-client-protocol/schema/v1/schema.json` -
+- `~/src/references/repos/third-party/protocol/agent-client-protocol/schema/v1/schema.json` -
   The authoritative v1 schema. `docs/protocol/v1/initialization.mdx`,
   `transports.mdx`, and `cancellation.mdx` are the prose contracts.
 
