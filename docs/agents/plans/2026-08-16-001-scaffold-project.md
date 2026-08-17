@@ -29,9 +29,9 @@ the four commands the code style requires: `gofmt`, `go vet`, `staticcheck`, and
 
 ## Related code
 
-- `~/src/references/repos/personal/alpha/runtime/cmd/amber-runtime/main.go` - The
-  entry-point shape to follow: read environment, construct subsystems, attach
-  the transport, block. Roughly 50 lines with no logic of its own.
+- `~/src/references/repos/personal/alpha/runtime/cmd/amber-runtime/main.go` -
+  The entry-point shape to follow: read environment, construct subsystems,
+  attach the transport, block. Roughly 50 lines with no logic of its own.
 - `~/src/references/repos/personal/alpha/runtime/internal/` - Eight subsystem
   packages, each owning one concern. The boundary granularity to grow toward.
 - `Makefile`, `dprint.json` - Existing docs tooling to extend rather than

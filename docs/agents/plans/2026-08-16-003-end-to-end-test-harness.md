@@ -50,38 +50,38 @@ assembly are all under test rather than skipped.
 
 ## Related code
 
-- `~/src/references/repos/personal/alpha/runtime/integration/runtime_test.go` — the
-  closest existing model: `TestMain` builds the binary once, a small process
+- `~/src/references/repos/personal/alpha/runtime/integration/runtime_test.go` —
+  the closest existing model: `TestMain` builds the binary once, a small process
   type owns stdin/stdout/stderr, and separate tests cover the handshake, stdout
   purity at debug level, malformed input, and clean exit on stdin EOF. Its
   stderr buffer is written by `exec` and read by the test without a lock; the
   harness here guards it.
-- `~/src/references/repos/personal/gamma/cmd/client/main.go` — a real client driving
-  the real server binary over `channel.Line`: a channel wrapper that traces both
-  directions, a `jrpc2.Client` with a callback dispatcher, notifications
-  restored to wire order before anything stateful consumes them, and wait
-  helpers that all carry deadlines. The structure to follow.
-- `~/src/references/repos/personal/beta/tests/e2e.rs` — spawns the real agent binary
-  against a mock OpenRouter server selected by an env var, with `HOME`, the XDG
-  directories, and the working directory all moved to a scratch dir so no real
-  config, dotenv, cache, or session store is reachable. The isolation rules to
-  copy.
+- `~/src/references/repos/personal/gamma/cmd/client/main.go` — a real client
+  driving the real server binary over `channel.Line`: a channel wrapper that
+  traces both directions, a `jrpc2.Client` with a callback dispatcher,
+  notifications restored to wire order before anything stateful consumes them,
+  and wait helpers that all carry deadlines. The structure to follow.
+- `~/src/references/repos/personal/beta/tests/e2e.rs` — spawns the real agent
+  binary against a mock OpenRouter server selected by an env var, with `HOME`,
+  the XDG directories, and the working directory all moved to a scratch dir so
+  no real config, dotenv, cache, or session store is reachable. The isolation
+  rules to copy.
 - `~/src/references/repos/personal/alpha/runtime/internal/openrouter/sse.go`,
   `stream.go`, and `client_test.go` — the exact wire shapes the mock must emit:
   `data:` frames terminated by `[DONE]`, `choices[].delta.content`,
   `delta.reasoning`, indexed `delta.tool_calls` fragments whose `arguments`
   concatenate across chunks, a trailing usage-only chunk, and a chunk carrying
   `error`.
-- `~/src/references/repos/personal/gamma/internal/checker/checker.go` — a client-side
-  conformance checker that validates a notification stream against lifecycle
-  rules without consulting server state. There are no session updates to check
-  yet; this is the shape to grow the harness into once there are.
-- `~/src/references/repos/personal/gamma/internal/llm/fake.go` — a fake model that is
-  a pure function of the conversation, so a restarted agent replaying the same
-  history behaves identically. The shape to adopt when replay tests need a
-  script that survives a restart.
-- `~/src/references/repos/personal/alpha/runtime/integration/agent_loop_test.go` — the
-  assertions worth porting once a prompt loop exists. It drives the agent
+- `~/src/references/repos/personal/gamma/internal/checker/checker.go` — a
+  client-side conformance checker that validates a notification stream against
+  lifecycle rules without consulting server state. There are no session updates
+  to check yet; this is the shape to grow the harness into once there are.
+- `~/src/references/repos/personal/gamma/internal/llm/fake.go` — a fake model
+  that is a pure function of the conversation, so a restarted agent replaying
+  the same history behaves identically. The shape to adopt when replay tests
+  need a script that survives a restart.
+- `~/src/references/repos/personal/alpha/runtime/integration/agent_loop_test.go`
+  — the assertions worth porting once a prompt loop exists. It drives the agent
   in-process through `server.NewLocal`, which is exactly what this harness does
   not do.
 - `.env` — holds a real `OPENROUTER_API_KEY`. It is the concrete reason the
