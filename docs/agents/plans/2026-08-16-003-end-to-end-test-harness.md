@@ -6,20 +6,18 @@ Almost everything that makes Ox correct is only observable from outside the
 process: the framing of each stdout line, the fact that logs never reach stdout,
 the JSON-RPC error codes bad input produces, the order notifications arrive in,
 and the exit behavior when a client hangs up. Ox has one ad-hoc subprocess test
-that rebuilds this scaffolding inline. Replace it with a single harness that
-drives the real `ox` binary the way a client does, and give that harness a
-scripted model endpoint so later prompt-loop work is testable without a network
-or a key.
+that rebuilds this scaffolding inline. Replace it with a harness that drives the
+real `ox` binary the way a client does, and give that harness a scripted model
+endpoint so later prompt-loop work is testable without a network or a key.
 
 ## Desired outcome
 
 `go test -race ./internal/e2e` builds `ox` once, then runs each test against a
-fresh subprocess in an environment that contains nothing from the developer's
-machine. A test sends real JSON-RPC over a pipe and asserts on the exact lines
-the process wrote back, in wire order. A test can script what the model streams
-and read back the requests Ox sent. When a test fails it prints the full
-bidirectional wire log and the process's stderr. `cmd/ox/main_test.go` no longer
-exists; everything it covered is covered here.
+fresh subprocess. A test sends real JSON-RPC over a pipe and asserts on the
+lines the process wrote back. A test can queue what the model streams and read
+back the requests Ox sent it. Every read carries a deadline, and a failing test
+prints the child's stderr. `cmd/ox/main_test.go` no longer exists; everything it
+covered is covered here.
 
 ## Summary of approach
 
@@ -27,80 +25,70 @@ A new package `internal/e2e` holds the harness and the tests that use it. Every
 file in it is a `_test.go` file, so the harness adds no surface to the shipped
 binary while still being checked by `go vet` and `staticcheck`.
 
-`TestMain` builds `./cmd/ox` once into a temporary directory and removes it
-afterward. Each test calls `start`, which launches that binary, attaches a
-`jrpc2.Client` to its pipes over `channel.Line`, and registers cleanup that
-closes stdin and waits for exit.
+The harness is a synchronous client, not a JSON-RPC library. It owns the child's
+pipes directly: writing a request is `json.Marshal` plus a newline, and reading
+is one line plus `json.Unmarshal` into a `message` struct that covers all four
+JSON-RPC shapes. There is no `jrpc2.Client`, no dispatcher, and no background
+goroutine, so nothing can reorder what the child wrote.
 
-The client's channel is wrapped. `channel.Channel` guarantees that records are
-received in the order they were sent, and jrpc2's read loop calls `Recv`
-serially, so the wrapper is the one place that sees exact wire order. It records
-every line in both directions, checks that each inbound line is valid JSON, and
-appends `session/update` notifications to an ordered log that tests wait on.
-Notification capture deliberately does not go through jrpc2's `OnNotify` hook:
-jrpc2 delivers each received batch from its own goroutine, so hook order is not
-the order the lines arrived in.
+Ordering is a pending queue. One function,
+`readUntil(what string, pred func(message) bool)`, reads lines in wire order,
+returns the first that matches, and buffers the rest for later reads. Reading a
+response by id, a notification by method, or the next agent-to-client request
+are all one-line callers of it. Agent-to-client requests are answered inline by
+the test that expects them: read the request, write a response with the same id.
 
-The model is mocked at the HTTP boundary rather than behind a Go interface. An
-`httptest.Server` serves `POST /api/v1/chat/completions` as `text/event-stream`,
-and the child is pointed at it with `OX_OPENROUTER_BASE_URL`. A test supplies a
-function from the decoded request to the raw SSE data payloads to stream back.
-Mocking at the wire means the provider client, its SSE reader, and its chunk
-assembly are all under test rather than skipped.
+Deadlines come from the pipe rather than from goroutines. The child's stdout is
+an `os.Pipe` the harness creates, so it can call `SetReadDeadline` before each
+line. A timeout is a test failure, never something to recover from, so the read
+path goes straight to `t.Fatalf` naming what it was waiting for.
+
+The model is mocked at the HTTP boundary. An `httptest.Server` serves
+`POST /api/v1/chat/completions` as `text/event-stream` from a queue of canned
+bodies, records every request it received, and asserts on close that the queue
+was drained. Tests that need no model do not start one. Mocking at the wire
+means the provider client, its SSE reader, and its chunk assembly will all be
+under test rather than skipped.
 
 ## Related code
 
-- `~/src/references/repos/personal/alpha/runtime/integration/runtime_test.go` —
-  the closest existing model: `TestMain` builds the binary once, a small process
-  type owns stdin/stdout/stderr, and separate tests cover the handshake, stdout
-  purity at debug level, malformed input, and clean exit on stdin EOF. Its
-  stderr buffer is written by `exec` and read by the test without a lock; the
-  harness here guards it.
-- `~/src/references/repos/personal/gamma/cmd/client/main.go` — a real client
-  driving the real server binary over `channel.Line`: a channel wrapper that
-  traces both directions, a `jrpc2.Client` with a callback dispatcher,
-  notifications restored to wire order before anything stateful consumes them,
-  and wait helpers that all carry deadlines. The structure to follow.
-- `~/src/references/repos/personal/beta/tests/e2e.rs` — spawns the real agent
-  binary against a mock OpenRouter server selected by an env var, with `HOME`,
-  the XDG directories, and the working directory all moved to a scratch dir so
-  no real config, dotenv, cache, or session store is reachable. The isolation
-  rules to copy.
+- `~/src/references/repos/third-party/coding-agents/codex/codex-rs/app-server/tests/common/test_app_server.rs`
+  — the model for this harness. `send_jsonrpc_message` and
+  `read_jsonrpc_message` are the whole transport; `read_stream_until_message`
+  plus a `VecDeque` of pending messages is the whole synchronization design;
+  `Drop` does a bounded graceful shutdown before killing.
+- `~/src/references/repos/third-party/coding-agents/codex/codex-rs/app-server/tests/common/mock_model_server.rs`
+  and `.../tests/common/responses.rs` — a queue of canned SSE bodies with an
+  exact expected call count, and the two-layer frame vocabulary: tiny `ev_*`
+  constructors composed by `sse(...)`, with task-level composites like
+  `create_shell_command_sse_response` above them.
+- `~/src/references/repos/third-party/coding-agents/codex/codex-rs/core/tests/common/responses.rs:39-81`
+  — `ResponseMock`, which records requests and exposes them for assertions after
+  the turn completes.
 - `~/src/references/repos/personal/alpha/runtime/internal/openrouter/sse.go`,
   `stream.go`, and `client_test.go` — the exact wire shapes the mock must emit:
   `data:` frames terminated by `[DONE]`, `choices[].delta.content`,
   `delta.reasoning`, indexed `delta.tool_calls` fragments whose `arguments`
   concatenate across chunks, a trailing usage-only chunk, and a chunk carrying
-  `error`.
-- `~/src/references/repos/personal/gamma/internal/checker/checker.go` — a
-  client-side conformance checker that validates a notification stream against
-  lifecycle rules without consulting server state. There are no session updates
-  to check yet; this is the shape to grow the harness into once there are.
-- `~/src/references/repos/personal/gamma/internal/llm/fake.go` — a fake model
-  that is a pure function of the conversation, so a restarted agent replaying
-  the same history behaves identically. The shape to adopt when replay tests
-  need a script that survives a restart.
-- `~/src/references/repos/personal/alpha/runtime/integration/agent_loop_test.go`
-  — the assertions worth porting once a prompt loop exists. It drives the agent
-  in-process through `server.NewLocal`, which is exactly what this harness does
-  not do.
-- `.env` — holds a real `OPENROUTER_API_KEY`. It is the concrete reason the
-  child process gets a scratch working directory rather than inheriting the
-  repository root.
+  `error`. `client.go:18-21` fixes the path as `/api/v1/chat/completions`.
+- `~/src/references/repos/personal/beta/tests/e2e.rs` — the reason the child
+  gets a scratch working directory: it moves `HOME` and the working directory so
+  no real dotenv, cache, or session store is reachable.
 
 ## Current state
 
-- Relevant existing behavior: `cmd/ox/main_test.go` builds the binary with
-  `exec.Command("go", "build")` inside the test, runs it with a hand-built
-  environment, and asserts stdout is empty and stderr carries the startup line.
-  The protocol boundary lands before this work, so `internal/acp` request and
-  response types are available for encoding and decoding.
+- Relevant existing behavior: `cmd/ox/main_test.go` holds
+  `TestInitializeAndStdoutPurity`, which builds the binary with
+  `exec.Command("go", "build")`, drives `initialize` over pipes with
+  hand-written JSON, and checks stdout purity after stdin close. `internal/acp`
+  and `internal/agent` supply the wire types and the two handlers it exercises.
 - Existing patterns to follow: the binary is configured entirely through the
   environment, and logging goes to stderr by construction.
-- Constraints from the current implementation: `format-go` in the `Makefile`
-  only formats `cmd`, so a new `internal` package would go unformatted.
-  `go test -race ./...` is the standard command, and the harness must be
-  race-clean under it.
+  `internal/acp/types_test.go` already round-trips the wire types against
+  literal JSON, so e2e tests assert behavior rather than field names.
+- Constraints from the current implementation: the `Makefile` targets name `cmd`
+  and `./cmd/...` explicitly, so `internal` is currently unformatted and
+  unchecked.
 
 ## Structural considerations
 
@@ -112,14 +100,13 @@ assembly are all under test rather than skipped.
   endpoint. It reaches for no internal type beyond the wire vocabulary, so it
   cannot drift into testing implementation.
 - **Modularization:** one package with three concerns kept in separate files —
-  process control and the ACP client, the mock model endpoint, and the tests
-  themselves. Splitting further would produce packages that only exist to be
-  imported once.
+  the process and its client, the mock model endpoint, and the tests themselves.
+  Splitting further would produce packages that only exist to be imported once.
 - **Encapsulation:** because every file is a test file, the harness is
   unreachable from production code by construction rather than by convention.
 - **Testability:** the harness is the testability work. Its own correctness is
-  checked by the tests that use it, plus one test that exercises the mock
-  endpoint directly with an `http.Client`.
+  checked by the tests that use it, plus one test over the pure SSE frame
+  builders.
 
 ## Test plan
 
@@ -133,78 +120,85 @@ assembly are all under test rather than skipped.
   - Malformed JSON produces `-32700` and the process answers the next
     well-formed request.
   - `$/cancel_request` naming an id that is not in flight produces no response
-    and leaves the process able to answer the next request.
+    and leaves the process able to answer the next request, for a string id, a
+    numeric id, and null.
   - At debug log level every line the process writes to stdout parses as
     JSON-RPC, and the startup logging appears on stderr.
   - Closing stdin exits the process zero.
-  - The mock model endpoint serves the scripted SSE frames and records the
-    request body it received.
-- **Test levels:** all of these run against the built binary through the
-  harness. The mock endpoint is additionally exercised directly by an
-  `http.Client` in the same package, because nothing in Ox calls it yet.
+  - `sse` and the `ev*` builders produce the exact frame bytes the OpenRouter
+    reader expects.
+- **Test levels:** everything except the frame builders runs against the built
+  binary through the harness. The frame builders are pure functions and get a
+  table test.
 - **Edge cases and failure modes:** a test that never receives an expected line
-  must fail on a deadline rather than hang, and its failure output must include
-  the wire log and stderr. A test that receives an unexpected agent-to-client
-  request must fail rather than silently return an error to the agent. A test
-  that triggers no model call must fail if one arrives.
-- **What not to test:** jrpc2's framing, dispatch, and standard error codes;
-  `httptest`'s serving; `go build`.
+  fails on a deadline rather than hanging, and its failure output names what it
+  was waiting for and includes the child's stderr. A test that receives an
+  unexpected agent-to-client request fails rather than leaving the agent
+  blocked. A queued model response that no test consumed fails the test at
+  cleanup.
+- **What not to test:** `jrpc2`'s framing, dispatch, and standard error codes;
+  `httptest`'s serving; `go build`; the JSON field names already covered by
+  `internal/acp/types_test.go`.
 
 ## Implementation plan
 
 1. Create `internal/e2e` with a `TestMain` that builds `./cmd/ox` into a
    temporary directory and removes it after `m.Run`. Build the child with
-   `-race` when the test binary itself was built with the race detector,
-   selected by a two-line pair of files constrained on the `race` build tag, and
-   set `GORACE=halt_on_error=1` on the child so a detected race becomes a
-   nonzero exit the harness already asserts against.
-2. Write the process half of the harness. `start` takes options, launches the
-   binary, and returns a handle. The child's environment is built from empty
-   rather than inherited: `PATH` and `TMPDIR` carried over, `HOME` and the XDG
-   config, data, and cache directories pointed at a per-test scratch directory,
-   `OX_LOG_LEVEL=debug`, `OPENROUTER_API_KEY=test-key`, and
-   `OX_OPENROUTER_BASE_URL` naming the mock endpoint. The child's working
-   directory is the scratch directory, so the repository's `.env` is out of
-   reach. Stderr is captured through a mutex-guarded writer.
-3. Write the channel wrapper. It delegates to
-   `channel.Line(childStdout, childStdin)`, records each outbound and inbound
-   line into an ordered log, fails the test if an inbound line is not valid
-   JSON, and appends `session/update` notification params to a separate ordered
-   slice, waking waiters.
-4. Attach a `jrpc2.Client` over the wrapper. `OnCallback` dispatches
-   agent-to-client requests to handlers the test registered by method name, and
-   any method with no handler fails the test and returns `-32601`. Leave
-   `OnNotify` unset; the wrapper owns notification capture.
-5. Add the wait helpers: a call helper that encodes params and decodes results
-   with a deadline, and an update helper that blocks until a recorded update
-   satisfies a predicate or the deadline passes. Every timeout message names
-   what was being waited for.
-6. Add failure diagnostics with `t.Cleanup`: when the test failed, dump the
-   recorded wire log and the captured stderr. Do this from cleanup rather than
-   logging as lines arrive, so no goroutine logs after the test has finished.
-7. Write the mock model endpoint. An `httptest.Server` handles
-   `POST /api/v1/chat/completions`, verifies the method, path, and
+   `-race` when the test binary itself was raced, selected by a pair of two-line
+   files constrained on the `race` build tag, and set `GORACE=halt_on_error=1`
+   on the child so a detected race becomes the nonzero exit the harness already
+   asserts against.
+2. Write the process half. `start(t, options...)` creates the child's stdout as
+   an `os.Pipe` so reads can carry deadlines, takes stdin from `StdinPipe`, and
+   gives stderr a plain `bytes.Buffer`. Close the parent's copy of the stdout
+   write end right after `Start`, or the read end never sees EOF. The child
+   inherits the environment with four overrides: a scratch working directory so
+   the repository's `.env` is out of reach, `HOME` and `XDG_CONFIG_HOME` pointed
+   at that scratch directory, `OX_LOG_LEVEL=debug`, and
+   `OPENROUTER_API_KEY=test-key`.
+3. Write the teardown as a `t.Cleanup`: close stdin, arm a `time.AfterFunc` that
+   kills the process, `Wait`, then stop the timer. Reading the stderr buffer is
+   only safe after `Wait` returns, because that is when `exec` has finished its
+   copying; log it with `t.Logf` when the test failed.
+4. Write the client half. A `message` struct with `ID`, `Method`, `Params`,
+   `Result`, and `Error` as raw JSON covers requests, responses, errors, and
+   notifications, and keeps the raw line for failure messages. `readUntil` sets
+   a read deadline, reads a line, returns it if the predicate matches, and
+   otherwise pushes it onto a pending slice that later reads consult first.
+5. Add the callers built on `readUntil`: `request` sends with a fresh id and
+   returns the result or fails on an error response, `requestError` expects the
+   error, `notify` sends a notification, `notification` waits for one by method,
+   `serverRequest` waits for the next agent-to-client request, and `respond`
+   answers it with the same id. Add `send` for raw lines so the malformed-JSON
+   test can write bytes that are not valid JSON.
+6. Write the mock model endpoint in its own file. `startModel(t, bodies...)`
+   serves `POST /api/v1/chat/completions`, checks the method, path, and
    `Authorization` header, decodes the body into a small request struct local to
-   the harness, records it, and calls the test's script function. The script
-   returns raw SSE data payloads, which the handler writes as `data:` frames
-   followed by `data: [DONE]`, flushing after each. The default script fails the
-   test, so an unexpected model call is caught. Add small helpers that build the
-   common chunks: assistant text, reasoning text, an indexed tool-call fragment,
-   a finish reason, and a usage-only trailer.
-8. Rewrite the existing coverage on top of the harness and delete
+   the harness, records it under a mutex, and writes the next queued body as
+   `data:` frames with a flush after each. An exhausted queue is a `t.Errorf`
+   and a 500, because `t.Fatal` is not safe off the test goroutine. Cleanup
+   closes the server and fails if any queued body went unused. `requests()`
+   returns a copy for assertions after the turn.
+7. Add the frame vocabulary beside it: `sse(chunks...)` joining `data:` frames
+   and terminating with `data: [DONE]`, and the `ev*` chunk builders for
+   assistant text, reasoning text, an indexed tool-call fragment, a finish
+   reason, a usage-only trailer, and an error. Add the table test over `sse` and
+   the builders.
+8. Add the `withModel` option that sets `OX_OPENROUTER_BASE_URL` on the child,
+   and record in the plan for the provider client that this is the seam it must
+   read. Nothing reads it yet, and no default model server starts.
+9. Rewrite the existing coverage on top of the harness and delete
    `cmd/ox/main_test.go`: the handshake, version negotiation, invalid
    parameters, unknown method, malformed JSON followed by recovery,
-   `$/cancel_request` for an unknown id, stdout purity, and clean exit on stdin
-   close.
-9. Add the direct test of the mock endpoint that drives it with an `http.Client`
-   and asserts the frames and the recorded request.
-10. Change `format-go` in the `Makefile` to format the whole module rather than
-    `cmd`.
+   `$/cancel_request` for an unknown id in all three id shapes, stdout purity,
+   and clean exit on stdin close.
+10. Change the `Makefile` to cover the whole module: `gofmt -l -w .`,
+    `go vet ./...`, `staticcheck ./...`, and `go test -race ./...`.
 
 ## Documentation updates
 
-- Add `docs/agents/testing.md` describing the test levels, when to reach for the
-  harness rather than a unit test, and how to script the model. The Tests
+- Add `docs/agents/testing.md` covering the test levels, when to reach for the
+  harness rather than a unit test, and how to queue model responses. The Tests
   section of `AGENTS.md` already directs the reader to a testing reference that
   does not exist yet.
 - Correct the trailing fragment on the harness line in the roadmap.
@@ -212,19 +206,18 @@ assembly are all under test rather than skipped.
 
 ## Impact assessment
 
-- Code paths affected: adds `internal/e2e`; deletes `cmd/ox/main_test.go`; edits
-  one `Makefile` target. No production code changes.
+- Code paths affected: adds `internal/e2e`; deletes `cmd/ox/main_test.go`;
+  widens four `Makefile` targets. No production code changes.
 - Data, protocol, or schema impact: none to the protocol. Introduces one
   environment variable, `OX_OPENROUTER_BASE_URL`, as the seam that points Ox at
-  a model endpoint other than the real one. Nothing reads it until the provider
-  client exists; the harness sets it now so that work needs no harness change.
-- Dependency or API impact: none. `jrpc2` is already a direct dependency and
-  everything else is standard library.
+  a model endpoint other than the real one.
+- Dependency or API impact: none. Everything the harness uses is standard
+  library.
 
 ## Validation
 
 - Tests to write and run: `go test -race ./...`.
 - Static checks: `gofmt`, `go vet ./...`, `staticcheck ./...`, `dprint check`.
-- Manual verification: run `go test -race ./internal/e2e -v` and confirm the
-  wire log appears for a deliberately broken assertion; confirm a run with the
+- Manual verification: break an assertion and confirm the failure names what it
+  was waiting for and prints the child's stderr; confirm a run with the
   repository's `.env` present never reaches the real OpenRouter API.

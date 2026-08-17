@@ -5,14 +5,28 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+
+	"github.com/creachadair/jrpc2"
+	"github.com/creachadair/jrpc2/channel"
+
+	"github.com/kkestell/ox/internal/agent"
+)
+
+var (
+	name    = "ox"
+	version = "0.0.1"
 )
 
 func main() {
 	logger := newLogger(os.Stderr, os.Getenv("OX_LOG_LEVEL"))
-	logger.Info("ox starting")
+	logger.Info("ox starting", "version", version)
 
-	if _, err := io.Copy(io.Discard, os.Stdin); err != nil {
-		logger.Error("reading stdin", "error", err)
+	server := jrpc2.NewServer(agent.New(name, version, logger).Methods(), &jrpc2.ServerOptions{
+		AllowPush: true,
+	})
+	server.Start(channel.Line(os.Stdin, os.Stdout))
+	if err := server.Wait(); err != nil {
+		logger.Error("ox stopped with error", "error", err)
 		os.Exit(1)
 	}
 

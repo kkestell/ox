@@ -16,7 +16,7 @@ worked in parallel. Each checkbox is one plannable roadmap item.
 ### M0 — Skeleton and protocol boundary
 
 - [x] Scaffold project
-- [ ] ACP stdio server core: `initialize`, protocol input validation,
+- [x] ACP stdio server core: `initialize`, protocol input validation,
       `$/cancel_request`
 
 ### M1 — End-to-end testing
@@ -115,7 +115,7 @@ editor runtime supervision, GitHub inbox, terminal UI.
 
 Requests and notifications Ox accepts from an ACP client:
 
-- [ ] `initialize`
+- [x] `initialize`
 - [ ] `session/new`
 - [ ] `session/load`
 - [ ] `session/prompt`
@@ -128,7 +128,7 @@ Requests and notifications Ox accepts from an ACP client:
 - [ ] `session/resume`
 - [ ] `session/set_mode`
 - [ ] `session/set_config_option`
-- [ ] `$/cancel_request`
+- [x] `$/cancel_request`
 
 Requests and notifications Ox sends to an ACP client:
 

@@ -5,17 +5,17 @@ check: check-docs check-go test
 format: format-docs format-go
 
 format-go:
-	gofmt -l -w cmd
+	gofmt -l -w .
 
 format-docs:
 	dprint fmt
 
 check-go:
-	go vet ./cmd/...
-	staticcheck ./cmd/...
+	go vet ./...
+	staticcheck ./...
 
 check-docs:
 	dprint check
 
 test:
-	go test -race ./cmd/...
+	go test -race ./...
