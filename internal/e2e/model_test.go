@@ -50,10 +50,12 @@ func (m modelMessage) text() string {
 // of the body or for the request context to end, which is how a mid-turn
 // cancellation is scripted.
 type modelResponse struct {
-	status  int
-	body    string
-	started chan struct{}
-	rest    chan string
+	prompt   string
+	status   int
+	body     string
+	started  chan struct{}
+	rest     chan string
+	consumed bool
 }
 
 type mockModel struct {
@@ -62,7 +64,6 @@ type mockModel struct {
 
 	mu        sync.Mutex
 	responses []*modelResponse
-	next      int
 	received  []modelRequest
 }
 
@@ -77,8 +78,14 @@ func startModel(t *testing.T, bodies ...string) *mockModel {
 		model.server.Close()
 		model.mu.Lock()
 		defer model.mu.Unlock()
-		if remaining := len(model.responses) - model.next; remaining != 0 {
-			t.Errorf("mock model has %d unused response bodies", remaining)
+		remaining := 0
+		for _, response := range model.responses {
+			if !response.consumed {
+				remaining++
+			}
+		}
+		if remaining != 0 {
+			t.Errorf("mock model has %d unmatched responses", remaining)
 		}
 	})
 	return model
@@ -91,9 +98,14 @@ func withModel(model *mockModel) startOption {
 }
 
 func (m *mockModel) queue(body string) {
+	m.queueFor("", body)
+}
+
+// queueFor queues a response for the request whose final message has prompt.
+func (m *mockModel) queueFor(prompt, body string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.responses = append(m.responses, &modelResponse{body: body})
+	m.responses = append(m.responses, &modelResponse{prompt: prompt, body: body})
 }
 
 // fail queues a non-2xx response, which is how a provider outage is scripted.
@@ -106,9 +118,16 @@ func (m *mockModel) fail(status int, body string) {
 // hold queues a response that writes opening and then blocks until finish or
 // the request context ends.
 func (m *mockModel) hold(opening string) *modelResponse {
+	return m.holdFor("", opening)
+}
+
+// holdFor queues a held response for the request whose final message has
+// prompt.
+func (m *mockModel) holdFor(prompt, opening string) *modelResponse {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	held := &modelResponse{
+		prompt:  prompt,
 		body:    opening,
 		started: make(chan struct{}),
 		rest:    make(chan string, 1),
@@ -159,14 +178,25 @@ func (m *mockModel) serveHTTP(writer http.ResponseWriter, request *http.Request)
 
 	m.mu.Lock()
 	m.received = append(m.received, decoded)
-	if m.next >= len(m.responses) {
+	prompt := ""
+	if len(decoded.Messages) != 0 {
+		prompt = decoded.Messages[len(decoded.Messages)-1].text()
+	}
+	var response *modelResponse
+	for _, candidate := range m.responses {
+		if candidate.consumed || candidate.prompt != "" && candidate.prompt != prompt {
+			continue
+		}
+		candidate.consumed = true
+		response = candidate
+		break
+	}
+	if response == nil {
 		m.mu.Unlock()
-		m.t.Errorf("mock model received more requests than queued responses")
+		m.t.Errorf("mock model has no unmatched response for prompt %q", prompt)
 		http.Error(writer, "no response queued", http.StatusInternalServerError)
 		return
 	}
-	response := m.responses[m.next]
-	m.next++
 	m.mu.Unlock()
 
 	if response.status != 0 {
@@ -204,6 +234,20 @@ func (m *mockModel) requests() []modelRequest {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return append([]modelRequest(nil), m.received...)
+}
+
+// requestFor returns the recorded request whose final message has prompt.
+func (m *mockModel) requestFor(prompt string) modelRequest {
+	m.t.Helper()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, request := range m.received {
+		if len(request.Messages) != 0 && request.Messages[len(request.Messages)-1].text() == prompt {
+			return request
+		}
+	}
+	m.t.Fatalf("mock model received no request for prompt %q", prompt)
+	return modelRequest{}
 }
 
 // frames renders chunks as server-sent events without terminating the stream.
@@ -359,6 +403,90 @@ func TestMockModelQueuesResponsesAndRecordsRequests(t *testing.T) {
 		requests[0].Messages[0].Role != "user" ||
 		requests[0].Messages[0].text() != "hi" {
 		t.Fatalf("messages = %#v", requests[0].Messages)
+	}
+}
+
+func TestMockModelRoutesConcurrentRequestsByFinalMessage(t *testing.T) {
+	model := startModel(t)
+	model.queueFor("alpha", sse(evText("alpha answer")))
+	model.queueFor("beta", sse(evText("beta answer")))
+	config := startConfig{environment: make(map[string]string)}
+	withModel(model)(&config)
+
+	type result struct {
+		prompt string
+		body   string
+		status int
+		err    error
+	}
+	results := make(chan result, 2)
+	start := make(chan struct{})
+	for _, prompt := range []string{"alpha", "beta"} {
+		go func() {
+			<-start
+			body, err := json.Marshal(modelRequest{
+				Model: "test/model",
+				Messages: []modelMessage{{
+					Role: "user",
+					Content: []modelContentPart{{
+						Type: "text",
+						Text: prompt,
+					}},
+				}},
+				Stream: true,
+			})
+			if err != nil {
+				results <- result{prompt: prompt, err: err}
+				return
+			}
+			request, err := http.NewRequest(
+				http.MethodPost,
+				config.environment["OX_OPENROUTER_BASE_URL"]+"/chat/completions",
+				bytes.NewReader(body),
+			)
+			if err != nil {
+				results <- result{prompt: prompt, err: err}
+				return
+			}
+			request.Header.Set("Authorization", "Bearer test-key")
+			response, err := http.DefaultClient.Do(request)
+			if err != nil {
+				results <- result{prompt: prompt, err: err}
+				return
+			}
+			responseBody, readErr := io.ReadAll(response.Body)
+			results <- result{
+				prompt: prompt,
+				body:   string(responseBody),
+				status: response.StatusCode,
+				err:    errors.Join(readErr, response.Body.Close()),
+			}
+		}()
+	}
+	close(start)
+
+	want := map[string]string{
+		"alpha": sse(evText("alpha answer")),
+		"beta":  sse(evText("beta answer")),
+	}
+	for range 2 {
+		got := <-results
+		if got.err != nil {
+			t.Fatal(got.err)
+		}
+		if got.status != http.StatusOK {
+			t.Fatalf("%s status = %d, want %d", got.prompt, got.status, http.StatusOK)
+		}
+		if got.body != want[got.prompt] {
+			t.Fatalf("%s body = %q, want %q", got.prompt, got.body, want[got.prompt])
+		}
+	}
+
+	for _, prompt := range []string{"alpha", "beta"} {
+		request := model.requestFor(prompt)
+		if got := request.Messages[len(request.Messages)-1].text(); got != prompt {
+			t.Fatalf("requestFor(%q) final message = %q", prompt, got)
+		}
 	}
 }
 

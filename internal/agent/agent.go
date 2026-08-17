@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 
 	"github.com/creachadair/jrpc2"
 	"github.com/creachadair/jrpc2/handler"
@@ -19,7 +20,7 @@ type Agent struct {
 	model              string
 	client             *openrouter.Client
 	logger             *slog.Logger
-	clientCapabilities *acp.ClientCapabilities
+	clientCapabilities atomic.Pointer[acp.ClientCapabilities]
 
 	sessionsMu sync.Mutex
 	sessions   map[string]*session
@@ -59,7 +60,7 @@ func (a *Agent) Initialize(
 	}
 
 	a.logger.Info("initializing client", "requested_protocol_version", request.ProtocolVersion)
-	a.clientCapabilities = request.ClientCapabilities
+	a.clientCapabilities.Store(request.ClientCapabilities)
 
 	return acp.InitializeResponse{
 		ProtocolVersion: acp.ProtocolVersion,
@@ -79,6 +80,9 @@ func (a *Agent) Initialize(
 	}, nil
 }
 
+// CancelRequest must never wait for the request it cancels: jrpc2 does not
+// dispatch the next input batch until every previously issued notification
+// handler returns.
 func (a *Agent) CancelRequest(ctx context.Context, notification acp.CancelRequestNotification) error {
 	if err := notification.Validate(); err != nil {
 		return jrpc2.Errorf(jrpc2.InvalidParams, "%v", err)

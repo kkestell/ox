@@ -218,25 +218,6 @@ func (p *process) notification(method string) message {
 	})
 }
 
-// notifications removes and returns the buffered notifications for method, in
-// arrival order. Reading a response buffers everything that preceded it, so a
-// caller that already has the response has every notification the agent sent
-// before it.
-func (p *process) notifications(method string) []message {
-	p.t.Helper()
-	var found []message
-	remaining := p.pending[:0]
-	for _, candidate := range p.pending {
-		if candidate.Method == method && len(candidate.ID) == 0 {
-			found = append(found, candidate)
-			continue
-		}
-		remaining = append(remaining, candidate)
-	}
-	p.pending = remaining
-	return found
-}
-
 //lint:ignore U1000 This harness operation is reserved for methods that call client methods.
 func (p *process) serverRequest() message {
 	p.t.Helper()

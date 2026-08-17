@@ -18,6 +18,13 @@ var (
 	version = "0.0.1"
 )
 
+// Ox's handlers spend their time waiting on the provider and client, so this
+// effectively removes jrpc2's handler semaphore as a limit. Concurrent turns
+// are bounded by the sessions the client opened. If this bound were reached,
+// the cancellation that could free a prompt handler would itself wait for a
+// slot.
+const handlerConcurrency = 1 << 30
+
 func main() {
 	logger := newLogger(os.Stderr, os.Getenv("OX_LOG_LEVEL"))
 	logger.Info("ox starting", "version", version)
@@ -30,14 +37,8 @@ func main() {
 	methods := agent.New(name, version, os.Getenv("OX_MODEL"), client, logger).Methods()
 
 	server := jrpc2.NewServer(methods, &jrpc2.ServerOptions{
-		AllowPush: true,
-		// A prompt handler holds its slot for the whole turn, and jrpc2 bounds
-		// handlers with a semaphore that defaults to the CPU count. On a
-		// single-CPU machine session/cancel would then wait behind the very turn
-		// it exists to stop. These handlers block on the network and on the
-		// client rather than on the CPU, so the bound just has to stay well above
-		// the number of live sessions.
-		Concurrency: 16,
+		AllowPush:   true,
+		Concurrency: handlerConcurrency,
 	})
 	server.Start(channel.Line(os.Stdin, os.Stdout))
 	if err := server.Wait(); err != nil {

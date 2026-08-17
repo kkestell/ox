@@ -68,6 +68,8 @@ func (a *Agent) NewSession(
 	return acp.NewSessionResponse{SessionID: value.id}, nil
 }
 
+// Cancel must never wait for the turn it cancels: jrpc2 does not dispatch the
+// next input batch until every previously issued notification handler returns.
 func (a *Agent) Cancel(_ context.Context, notification acp.CancelNotification) error {
 	if err := notification.Validate(); err != nil {
 		return jrpc2.Errorf(jrpc2.InvalidParams, "%v", err)

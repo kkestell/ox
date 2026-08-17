@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"sync"
 	"testing"
 	"time"
 
@@ -35,9 +36,47 @@ func TestInitializeRetainsClientCapabilities(t *testing.T) {
 	if response.ProtocolVersion != acp.ProtocolVersion {
 		t.Fatalf("protocolVersion = %d, want %d", response.ProtocolVersion, acp.ProtocolVersion)
 	}
-	if agent.clientCapabilities != capabilities {
-		t.Fatalf("clientCapabilities = %#v, want %#v", agent.clientCapabilities, capabilities)
+	if got := agent.clientCapabilities.Load(); got != capabilities {
+		t.Fatalf("clientCapabilities = %#v, want %#v", got, capabilities)
 	}
+}
+
+func TestInitializeIsSafeConcurrently(t *testing.T) {
+	agent := testAgent()
+	const callers = 32
+
+	capabilities := make([]*acp.ClientCapabilities, callers)
+	errors := make(chan error, callers)
+	var ready sync.WaitGroup
+	ready.Add(callers)
+	start := make(chan struct{})
+	for index := range callers {
+		capabilities[index] = &acp.ClientCapabilities{Terminal: index%2 == 0}
+		go func() {
+			ready.Done()
+			<-start
+			_, err := agent.Initialize(t.Context(), acp.InitializeRequest{
+				ProtocolVersion:    acp.ProtocolVersion,
+				ClientCapabilities: capabilities[index],
+			})
+			errors <- err
+		}()
+	}
+	ready.Wait()
+	close(start)
+
+	for range callers {
+		if err := <-errors; err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := agent.clientCapabilities.Load()
+	for _, candidate := range capabilities {
+		if got == candidate {
+			return
+		}
+	}
+	t.Fatalf("clientCapabilities = %#v, want one of the stored values", got)
 }
 
 func TestCancelRequestCancelsInFlightContext(t *testing.T) {

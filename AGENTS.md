@@ -29,7 +29,7 @@ Comes before the prompt loop so every later item lands with end-to-end coverage.
 
 - [x] Streaming prompt turn: `session/new`, `session/prompt`, `session/cancel`
 - [x] Prompt content handling
-- [ ] Concurrent sessions
+- [x] Concurrent sessions
 - [ ] Configuration precedence
 - [ ] Credential storage and lookup
 - [ ] `authenticate`
@@ -201,10 +201,11 @@ drives it the way a client does: stdin, stdout, stderr, the environment, the
 working directory, and a queued HTTP model endpoint. Every file in the package
 is a test file, so the harness adds nothing to the shipped binary. Compose
 scripted model responses from the `sse` and `ev*` builders rather than
-hand-writing SSE framing. A mid-turn cancellation is scripted with a held-open
-response: `hold` queues a body that writes its opening frames, signals the test
-that it has started, then blocks until the test releases the rest or the request
-context ends.
+hand-writing SSE framing. A queued response may name the prompt it answers, so
+tests with more than one turn in flight do not depend on request arrival order.
+A mid-turn cancellation is scripted with a held-open response: `hold` queues a
+body that writes its opening frames, signals the test that it has started, then
+blocks until the test releases the rest or the request context ends.
 
 There is an `OPENROUTER_API_KEY` in `.env` for you to use for testing. Checks
 against the real endpoint use `gpt-5.6-luna` and no other model.
