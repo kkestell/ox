@@ -5,9 +5,6 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"errors"
-	"fmt"
-	"os"
-	"path/filepath"
 	"sync"
 
 	"github.com/creachadair/jrpc2"
@@ -15,6 +12,7 @@ import (
 	"github.com/kkestell/ox/internal/acp"
 	"github.com/kkestell/ox/internal/config"
 	"github.com/kkestell/ox/internal/openrouter"
+	"github.com/kkestell/ox/internal/workspace"
 )
 
 // session is one conversation. Its history and the state of the turn running in
@@ -22,7 +20,7 @@ import (
 // honest.
 type session struct {
 	id            string
-	cwd           string
+	workspace     workspace.Workspace
 	configuration config.Resolved
 
 	mu      sync.Mutex
@@ -44,11 +42,12 @@ func (a *Agent) NewSession(
 	if err := request.Validate(); err != nil {
 		return acp.NewSessionResponse{}, jrpc2.Errorf(jrpc2.InvalidParams, "%v", err)
 	}
-	cwd, err := canonicalDirectory(request.CWD)
+	root, err := workspace.Canonical(request.CWD)
 	if err != nil {
 		return acp.NewSessionResponse{}, jrpc2.Errorf(jrpc2.InvalidParams, "%v", err)
 	}
-	configuration, err := config.Resolve(a.environment, cwd)
+	sessionWorkspace := workspace.New(root)
+	configuration, err := config.Resolve(a.environment, sessionWorkspace.Root())
 	if err != nil {
 		return acp.NewSessionResponse{}, jrpc2.Errorf(jrpc2.InternalError, "%v", err)
 	}
@@ -56,7 +55,11 @@ func (a *Agent) NewSession(
 		return acp.NewSessionResponse{}, authRequiredError(problem)
 	}
 
-	value := &session{id: randomID(), cwd: cwd, configuration: configuration}
+	value := &session{
+		id:            randomID(),
+		workspace:     sessionWorkspace,
+		configuration: configuration,
+	}
 	a.sessionsMu.Lock()
 	a.sessions[value.id] = value
 	a.sessionsMu.Unlock()
@@ -64,7 +67,7 @@ func (a *Agent) NewSession(
 	a.logger.Info(
 		"session created",
 		"session_id", value.id,
-		"cwd", value.cwd,
+		"cwd", value.workspace.Root(),
 		"model", value.configuration.Model,
 		"model_source", value.configuration.ModelSource,
 	)
@@ -168,21 +171,6 @@ func (s *session) messages() []openrouter.Message {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]openrouter.Message(nil), s.history...)
-}
-
-func canonicalDirectory(dir string) (string, error) {
-	canonical, err := filepath.EvalSymlinks(dir)
-	if err != nil {
-		return "", fmt.Errorf("cannot access the working directory %s: %v", dir, err)
-	}
-	info, err := os.Stat(canonical)
-	if err != nil {
-		return "", fmt.Errorf("cannot access the working directory %s: %v", dir, err)
-	}
-	if !info.IsDir() {
-		return "", fmt.Errorf("working directory is not a directory: %s", dir)
-	}
-	return canonical, nil
 }
 
 func randomID() string {

@@ -36,7 +36,7 @@ Comes before the prompt loop so every later item lands with end-to-end coverage.
 
 ### M3 — Tools and permissions
 
-- [ ] Workspace confinement
+- [x] Workspace confinement
 - [ ] File read, write, and exact edit tools
 - [ ] Glob and grep tools
 - [ ] Shell execution tool
@@ -167,6 +167,15 @@ credential. `logout` deletes the keyring entry and is refused while
 are errors. `OX_LOG_LEVEL` and `OX_OPENROUTER_BASE_URL` remain environment-only;
 in particular, a configuration file cannot redirect prompts to another host or
 carry a credential.
+
+## Workspace
+
+A session has one canonical working directory. Ox resolves its symlinks and
+requires that the directory can be listed before creating the session. Every
+path a tool takes resolves against that directory and is refused if it lands
+outside, whether through an absolute path, a `..` climb, or a symlink that
+leaves the tree. A client path spelled through a symlink still resolves to its
+location inside the canonical workspace. Only regular files can be opened.
 
 ## Code Style
 

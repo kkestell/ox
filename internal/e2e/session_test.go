@@ -104,6 +104,34 @@ func TestNewSessionRejectsInvalidRequests(t *testing.T) {
 	}
 }
 
+func TestNewSessionRejectsAnUnlistableWorkingDirectory(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can list directories regardless of their mode")
+	}
+	child, _ := startSession(t)
+	dir := filepath.Join(child.cwd, "unlistable")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o100); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chmod(dir, 0o700); err != nil {
+			t.Errorf("restore working directory mode: %v", err)
+		}
+	})
+
+	responseError := child.requestError("session/new", newSessionRequest(dir))
+	if responseError.Code != -32602 {
+		t.Fatalf("error code = %d (%s), want -32602",
+			responseError.Code, responseError.Message)
+	}
+	if !strings.Contains(responseError.Message, dir) {
+		t.Errorf("error message = %q, want it to name %s", responseError.Message, dir)
+	}
+}
+
 func TestNewSessionRequiresAModel(t *testing.T) {
 	child := start(t, withEnvironment("OX_MODEL", ""))
 	initialize(t, child)
