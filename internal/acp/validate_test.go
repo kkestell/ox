@@ -28,6 +28,15 @@ func TestInitializeRequestValidate(t *testing.T) {
 	}
 }
 
+func TestAuthenticateRequestValidate(t *testing.T) {
+	if err := (acp.AuthenticateRequest{MethodID: "openrouter"}).Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if err := (acp.AuthenticateRequest{}).Validate(); err == nil || !strings.Contains(err.Error(), "methodId") {
+		t.Fatalf("missing methodId error = %v", err)
+	}
+}
+
 func TestNewSessionRequestValidate(t *testing.T) {
 	empty := []json.RawMessage{}
 	for _, test := range []struct {

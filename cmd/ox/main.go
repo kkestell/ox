@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -29,6 +31,39 @@ const handlerConcurrency = 1 << 30
 
 func main() {
 	logger := newLogger(os.Stderr, os.Getenv("OX_LOG_LEVEL"))
+	switch arguments := os.Args[1:]; {
+	case len(arguments) == 0:
+		if err := serve(os.Stdin, os.Stdout, logger); err != nil {
+			logger.Error("ox stopped with error", "error", err)
+			os.Exit(1)
+		}
+	case len(arguments) == 1 && arguments[0] == "login":
+		credentialStore := credentials.NewStore(
+			os.Getenv("OPENROUTER_API_KEY"),
+			os.Getenv("OX_KEYRING_DISABLED") == "1",
+			logger,
+		)
+		client := &openrouter.Client{
+			BaseURL: os.Getenv("OX_OPENROUTER_BASE_URL"),
+			Logger:  logger,
+		}
+		if err := login(
+			context.Background(),
+			os.Stdin,
+			os.Stderr,
+			credentialStore,
+			client,
+		); err != nil {
+			fmt.Fprintf(os.Stderr, "ox login: %v\n", err)
+			os.Exit(1)
+		}
+	default:
+		fmt.Fprintln(os.Stderr, "usage: ox [login]")
+		os.Exit(2)
+	}
+}
+
+func serve(input io.ReadCloser, output io.WriteCloser, logger *slog.Logger) error {
 	environment := config.Environment{
 		GlobalPath: config.GlobalPath(
 			os.Getenv("XDG_CONFIG_HOME"),
@@ -59,13 +94,13 @@ func main() {
 		AllowPush:   true,
 		Concurrency: handlerConcurrency,
 	})
-	server.Start(channel.Line(os.Stdin, os.Stdout))
+	server.Start(channel.Line(input, output))
 	if err := server.Wait(); err != nil {
-		logger.Error("ox stopped with error", "error", err)
-		os.Exit(1)
+		return err
 	}
 
 	logger.Info("ox stopped")
+	return nil
 }
 
 func newLogger(output io.Writer, configuredLevel string) *slog.Logger {

@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"log/slog"
 	"sync"
 	"sync/atomic"
@@ -27,6 +26,10 @@ type Agent struct {
 
 	sessionsMu sync.Mutex
 	sessions   map[string]*session
+
+	authMu           sync.Mutex
+	rejectedKey      string
+	rejectionMessage string
 }
 
 func New(
@@ -50,6 +53,8 @@ func New(
 func (a *Agent) Methods() handler.Map {
 	return handler.Map{
 		"initialize":       handler.New(a.Initialize),
+		"authenticate":     handler.New(a.Authenticate),
+		"logout":           handler.New(a.Logout),
 		"session/new":      handler.New(a.NewSession),
 		"session/prompt":   handler.New(a.Prompt),
 		"session/cancel":   handler.New(a.Cancel),
@@ -72,6 +77,9 @@ func (a *Agent) Initialize(
 		ProtocolVersion: acp.ProtocolVersion,
 		AgentCapabilities: acp.AgentCapabilities{
 			LoadSession: false,
+			Auth: &acp.AgentAuthCapabilities{
+				Logout: &acp.LogoutCapabilities{},
+			},
 			PromptCapabilities: acp.PromptCapabilities{
 				Image:           true,
 				Audio:           true,
@@ -82,7 +90,7 @@ func (a *Agent) Initialize(
 			Name:    a.name,
 			Version: a.version,
 		},
-		AuthMethods: []json.RawMessage{},
+		AuthMethods: authMethods(request.ClientCapabilities),
 	}, nil
 }
 

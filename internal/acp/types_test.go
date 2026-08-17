@@ -12,6 +12,7 @@ func TestInitializeRequestRoundTrip(t *testing.T) {
 	literal := []byte(`{
 		"protocolVersion": 1,
 		"clientCapabilities": {
+			"auth": {"terminal": true},
 			"fs": {
 				"readTextFile": true,
 				"writeTextFile": true
@@ -50,14 +51,28 @@ func TestInitializeResponseShape(t *testing.T) {
 	response := acp.InitializeResponse{
 		ProtocolVersion: acp.ProtocolVersion,
 		AgentCapabilities: acp.AgentCapabilities{
+			Auth: &acp.AgentAuthCapabilities{Logout: &acp.LogoutCapabilities{}},
 			PromptCapabilities: acp.PromptCapabilities{
 				Image:           true,
 				Audio:           true,
 				EmbeddedContext: true,
 			},
 		},
-		AgentInfo:   acp.Implementation{Name: "ox", Version: "0.0.1"},
-		AuthMethods: []json.RawMessage{},
+		AgentInfo: acp.Implementation{Name: "ox", Version: "0.0.1"},
+		AuthMethods: []acp.AuthMethod{
+			{
+				ID:          "openrouter",
+				Name:        "OpenRouter credential",
+				Description: "Use an OpenRouter API key already available to Ox.",
+			},
+			{
+				ID:          "openrouter-terminal",
+				Type:        "terminal",
+				Name:        "Log in to OpenRouter",
+				Description: "Enter and store an OpenRouter API key in a terminal.",
+				Args:        []string{"login"},
+			},
+		},
 	}
 	encoded, err := json.Marshal(response)
 	if err != nil {
@@ -67,6 +82,7 @@ func TestInitializeResponseShape(t *testing.T) {
 		"protocolVersion": 1,
 		"agentCapabilities": {
 			"loadSession": false,
+			"auth": {"logout": {}},
 			"promptCapabilities": {
 				"image": true,
 				"audio": true,
@@ -77,7 +93,20 @@ func TestInitializeResponseShape(t *testing.T) {
 			"name": "ox",
 			"version": "0.0.1"
 		},
-		"authMethods": []
+		"authMethods": [
+			{
+				"id": "openrouter",
+				"name": "OpenRouter credential",
+				"description": "Use an OpenRouter API key already available to Ox."
+			},
+			{
+				"id": "openrouter-terminal",
+				"type": "terminal",
+				"name": "Log in to OpenRouter",
+				"description": "Enter and store an OpenRouter API key in a terminal.",
+				"args": ["login"]
+			}
+		]
 	}`))
 }
 

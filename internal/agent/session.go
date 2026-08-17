@@ -14,7 +14,6 @@ import (
 
 	"github.com/kkestell/ox/internal/acp"
 	"github.com/kkestell/ox/internal/config"
-	"github.com/kkestell/ox/internal/credentials"
 	"github.com/kkestell/ox/internal/openrouter"
 )
 
@@ -53,12 +52,8 @@ func (a *Agent) NewSession(
 	if err != nil {
 		return acp.NewSessionResponse{}, jrpc2.Errorf(jrpc2.InternalError, "%v", err)
 	}
-	if a.credentials.Key() == "" {
-		return acp.NewSessionResponse{}, jrpc2.Errorf(
-			jrpc2.Code(acp.ErrCodeAuthRequired),
-			"%s",
-			credentials.NoCredentialMessage,
-		)
+	if problem := a.credentialProblem(); problem != "" {
+		return acp.NewSessionResponse{}, authRequiredError(problem)
 	}
 
 	value := &session{id: randomID(), cwd: cwd, configuration: configuration}

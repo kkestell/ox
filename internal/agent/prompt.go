@@ -31,6 +31,9 @@ func (a *Agent) Prompt(
 			request.SessionID,
 		)
 	}
+	if problem := a.credentialProblem(); problem != "" {
+		return acp.PromptResponse{}, authRequiredError(problem)
+	}
 	message, err := promptMessage(request.Prompt)
 	if err != nil {
 		return acp.PromptResponse{}, jrpc2.Errorf(jrpc2.InvalidParams, "%v", err)

@@ -32,7 +32,7 @@ Comes before the prompt loop so every later item lands with end-to-end coverage.
 - [x] Concurrent sessions
 - [x] Configuration precedence
 - [x] Credential storage and lookup
-- [ ] `authenticate`
+- [x] `authenticate` and `logout`
 
 ### M3 — Tools and permissions
 
@@ -123,7 +123,8 @@ Requests and notifications Ox accepts from an ACP client:
 - [ ] `session/load`
 - [x] `session/prompt`
 - [x] `session/cancel`
-- [ ] `authenticate`
+- [x] `authenticate`
+- [x] `logout`
 - [ ] `session/list`
 - [ ] `session/delete`
 - [ ] `session/close`
@@ -157,6 +158,10 @@ resolved configuration is frozen when the session is created.
 Ox reads the OpenRouter credential from `OPENROUTER_API_KEY` or from the OS
 keyring under service `ox` and account `openrouter`. The environment wins when
 both have a credential. `OX_KEYRING_DISABLED=1` turns keyring access off.
+`ox login` verifies a key with OpenRouter and stores it in that keyring entry.
+The ACP `authenticate` method re-reads both sources and verifies the resolved
+credential. `logout` deletes the keyring entry and is refused while
+`OPENROUTER_API_KEY` supplies the credential.
 
 `model` is the only configuration-file key. Unknown keys and blank model values
 are errors. `OX_LOG_LEVEL` and `OX_OPENROUTER_BASE_URL` remain environment-only;
@@ -231,7 +236,8 @@ the request context ends.
 
 The end-to-end harness disables keyring access, so tests of the shipped binary
 supply credentials through the environment. Keyring behavior is covered by unit
-tests against go-keyring's in-memory provider.
+tests against go-keyring's in-memory provider. Unless a test starts the mock
+model, the harness points Ox at a refused local provider address.
 
 There is an `OPENROUTER_API_KEY` in `.env` for you to use for testing. Checks
 against the real endpoint use `gpt-5.6-luna` and no other model.

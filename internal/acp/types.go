@@ -23,6 +23,11 @@ type FileSystemCapabilities struct {
 type ClientCapabilities struct {
 	FS       *FileSystemCapabilities `json:"fs,omitempty"`
 	Terminal bool                    `json:"terminal,omitempty"`
+	Auth     *ClientAuthCapabilities `json:"auth,omitempty"`
+}
+
+type ClientAuthCapabilities struct {
+	Terminal bool `json:"terminal,omitempty"`
 }
 
 type PromptCapabilities struct {
@@ -32,8 +37,23 @@ type PromptCapabilities struct {
 }
 
 type AgentCapabilities struct {
-	LoadSession        bool               `json:"loadSession"`
-	PromptCapabilities PromptCapabilities `json:"promptCapabilities"`
+	LoadSession        bool                   `json:"loadSession"`
+	PromptCapabilities PromptCapabilities     `json:"promptCapabilities"`
+	Auth               *AgentAuthCapabilities `json:"auth,omitempty"`
+}
+
+type AgentAuthCapabilities struct {
+	Logout *LogoutCapabilities `json:"logout,omitempty"`
+}
+
+type LogoutCapabilities struct{}
+
+type AuthMethod struct {
+	ID          string   `json:"id"`
+	Type        string   `json:"type,omitempty"`
+	Name        string   `json:"name"`
+	Description string   `json:"description,omitempty"`
+	Args        []string `json:"args,omitempty"`
 }
 
 type InitializeRequest struct {
@@ -46,8 +66,18 @@ type InitializeResponse struct {
 	ProtocolVersion   int               `json:"protocolVersion"`
 	AgentCapabilities AgentCapabilities `json:"agentCapabilities"`
 	AgentInfo         Implementation    `json:"agentInfo"`
-	AuthMethods       []json.RawMessage `json:"authMethods"`
+	AuthMethods       []AuthMethod      `json:"authMethods"`
 }
+
+type AuthenticateRequest struct {
+	MethodID string `json:"methodId"`
+}
+
+type AuthenticateResponse struct{}
+
+type LogoutRequest struct{}
+
+type LogoutResponse struct{}
 
 type CancelRequestNotification struct {
 	RequestID json.RawMessage `json:"requestId"`

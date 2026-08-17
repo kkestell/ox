@@ -63,9 +63,12 @@ type mockModel struct {
 	t      *testing.T
 	server *httptest.Server
 
-	mu        sync.Mutex
-	responses []*modelResponse
-	received  []modelRequest
+	mu               sync.Mutex
+	responses        []*modelResponse
+	received         []modelRequest
+	credentialStatus int
+	credentialBody   string
+	credentialChecks []string
 }
 
 func startModel(t *testing.T, bodies ...string) *mockModel {
@@ -116,6 +119,20 @@ func (m *mockModel) fail(status int, body string) {
 	m.responses = append(m.responses, &modelResponse{status: status, body: body})
 }
 
+func (m *mockModel) rejectCredential(message string) {
+	m.failCredential(
+		http.StatusUnauthorized,
+		fmt.Sprintf(`{"error":{"code":401,"message":%s}}`, jsonString(message)),
+	)
+}
+
+func (m *mockModel) failCredential(status int, body string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.credentialStatus = status
+	m.credentialBody = body
+}
+
 // hold queues a response that writes opening and then blocks until finish or
 // the request context ends.
 func (m *mockModel) hold(opening string) *modelResponse {
@@ -154,6 +171,16 @@ func (r *modelResponse) finish(rest string) {
 }
 
 func (m *mockModel) serveHTTP(writer http.ResponseWriter, request *http.Request) {
+	authorization := request.Header.Get("Authorization")
+	if !strings.HasPrefix(authorization, "Bearer ") || strings.TrimSpace(strings.TrimPrefix(authorization, "Bearer ")) == "" {
+		m.t.Errorf("mock model Authorization = %q, want a bearer credential", authorization)
+		http.Error(writer, "invalid authorization", http.StatusUnauthorized)
+		return
+	}
+	if request.Method == http.MethodGet && request.URL.Path == "/api/v1/key" {
+		m.serveCredentialCheck(writer, authorization)
+		return
+	}
 	if request.Method != http.MethodPost {
 		m.t.Errorf("mock model method = %s, want POST", request.Method)
 		http.Error(writer, "method must be POST", http.StatusMethodNotAllowed)
@@ -162,12 +189,6 @@ func (m *mockModel) serveHTTP(writer http.ResponseWriter, request *http.Request)
 	if request.URL.Path != "/api/v1/chat/completions" {
 		m.t.Errorf("mock model path = %s, want /api/v1/chat/completions", request.URL.Path)
 		http.NotFound(writer, request)
-		return
-	}
-	authorization := request.Header.Get("Authorization")
-	if !strings.HasPrefix(authorization, "Bearer ") || strings.TrimSpace(strings.TrimPrefix(authorization, "Bearer ")) == "" {
-		m.t.Errorf("mock model Authorization = %q, want a bearer credential", authorization)
-		http.Error(writer, "invalid authorization", http.StatusUnauthorized)
 		return
 	}
 
@@ -220,6 +241,20 @@ func (m *mockModel) serveHTTP(writer http.ResponseWriter, request *http.Request)
 	}
 }
 
+func (m *mockModel) serveCredentialCheck(writer http.ResponseWriter, authorization string) {
+	m.mu.Lock()
+	m.credentialChecks = append(m.credentialChecks, authorization)
+	status, body := m.credentialStatus, m.credentialBody
+	m.mu.Unlock()
+	if status == 0 {
+		status = http.StatusOK
+		body = `{"data":{}}`
+	}
+	writer.Header().Set("Content-Type", "application/json")
+	writer.WriteHeader(status)
+	_, _ = io.WriteString(writer, body)
+}
+
 func writeFrames(writer io.Writer, flusher http.Flusher, body string) bool {
 	for _, frame := range strings.SplitAfter(body, "\n\n") {
 		if frame == "" {
@@ -237,6 +272,12 @@ func (m *mockModel) requests() []modelRequest {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return append([]modelRequest(nil), m.received...)
+}
+
+func (m *mockModel) checks() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]string(nil), m.credentialChecks...)
 }
 
 // requestFor returns the recorded request whose final message has prompt.

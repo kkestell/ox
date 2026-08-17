@@ -3,6 +3,7 @@ package e2e
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -90,32 +91,7 @@ type call struct {
 func start(t *testing.T, options ...startOption) *process {
 	t.Helper()
 
-	scratch := t.TempDir()
-	config := startConfig{
-		environment: map[string]string{
-			"HOME":            scratch,
-			"XDG_CONFIG_HOME": filepath.Join(scratch, "config"),
-			// The test binary must never access the developer's real keyring.
-			"OX_KEYRING_DISABLED": "1",
-			"OX_LOG_LEVEL":        "debug",
-			"OX_MODEL":            "test/model",
-			"OPENROUTER_API_KEY":  "test-key",
-			"GORACE":              "halt_on_error=1",
-		},
-		files: make(map[string]string),
-	}
-	for _, option := range options {
-		option(&config)
-	}
-	for relative, content := range config.files {
-		path := filepath.Join(scratch, relative)
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			t.Fatalf("create seed file directory: %v", err)
-		}
-		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
-			t.Fatalf("write seed file: %v", err)
-		}
-	}
+	scratch, config := prepare(t, options...)
 
 	stdout, stdoutWriter, err := os.Pipe()
 	if err != nil {
@@ -160,6 +136,79 @@ func start(t *testing.T, options ...startOption) *process {
 
 	t.Cleanup(child.cleanup)
 	return child
+}
+
+func prepare(t *testing.T, options ...startOption) (string, startConfig) {
+	t.Helper()
+	scratch := t.TempDir()
+	config := startConfig{
+		environment: map[string]string{
+			"HOME":            scratch,
+			"XDG_CONFIG_HOME": filepath.Join(scratch, "config"),
+			// The test binary must never access the developer's real keyring.
+			"OX_KEYRING_DISABLED": "1",
+			"OX_LOG_LEVEL":        "debug",
+			"OX_MODEL":            "test/model",
+			// A test must explicitly start the mock model before Ox can contact a
+			// provider. This prevents a forgotten option from reaching OpenRouter.
+			"OX_OPENROUTER_BASE_URL": "http://127.0.0.1:1/api/v1",
+			"OPENROUTER_API_KEY":     "test-key",
+			"GORACE":                 "halt_on_error=1",
+		},
+		files: make(map[string]string),
+	}
+	for _, option := range options {
+		option(&config)
+	}
+	for relative, content := range config.files {
+		path := filepath.Join(scratch, relative)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatalf("create seed file directory: %v", err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatalf("write seed file: %v", err)
+		}
+	}
+	return scratch, config
+}
+
+type commandResult struct {
+	ExitCode int
+	Stdout   string
+	Stderr   string
+}
+
+func runCommand(
+	t *testing.T,
+	input string,
+	arguments []string,
+	options ...startOption,
+) commandResult {
+	t.Helper()
+	scratch, config := prepare(t, options...)
+	ctx, cancel := context.WithTimeout(t.Context(), shutdownTimeout)
+	defer cancel()
+	command := exec.CommandContext(ctx, oxBinary, arguments...)
+	command.Dir = scratch
+	command.Env = environment(config.environment)
+	command.Stdin = strings.NewReader(input)
+	var stdout, stderr bytes.Buffer
+	command.Stdout = &stdout
+	command.Stderr = &stderr
+
+	err := command.Run()
+	if ctx.Err() != nil {
+		t.Fatalf("run ox %v: %v", arguments, ctx.Err())
+	}
+	exitCode := 0
+	if err != nil {
+		var exitError *exec.ExitError
+		if !errors.As(err, &exitError) {
+			t.Fatalf("run ox %v: %v", arguments, err)
+		}
+		exitCode = exitError.ExitCode()
+	}
+	return commandResult{ExitCode: exitCode, Stdout: stdout.String(), Stderr: stderr.String()}
 }
 
 func environment(overrides map[string]string) []string {

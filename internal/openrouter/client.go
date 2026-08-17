@@ -15,14 +15,64 @@ import (
 const (
 	defaultBaseURL      = "https://openrouter.ai/api/v1"
 	chatCompletionsPath = "/chat/completions"
+	keyPath             = "/key"
 	maxErrorBodySize    = 1024 * 1024
 )
+
+var ErrCredentialRejected = errors.New("OpenRouter rejected the credential")
 
 type Client struct {
 	APIKey  func() string
 	BaseURL string
 	HTTP    *http.Client
 	Logger  *slog.Logger
+}
+
+// VerifyCredential asks OpenRouter whether key is usable without consulting
+// the client's configured API key accessor.
+func (c *Client) VerifyCredential(ctx context.Context, key string) error {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL()+keyPath, nil)
+	if err != nil {
+		return fmt.Errorf("build OpenRouter credential request: %w", err)
+	}
+	request.Header.Set("Authorization", "Bearer "+key)
+
+	response, err := c.httpClient().Do(request)
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
+		return fmt.Errorf("send OpenRouter credential request: %w", err)
+	}
+	raw, readErr := io.ReadAll(io.LimitReader(response.Body, maxErrorBodySize))
+	if err := errors.Join(readErr, response.Body.Close()); err != nil {
+		return fmt.Errorf("read OpenRouter credential response: %w", err)
+	}
+	if response.StatusCode >= 200 && response.StatusCode < 300 {
+		return nil
+	}
+	if response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden {
+		message := credentialErrorMessage(raw)
+		if message == "" {
+			message = response.Status
+		}
+		return fmt.Errorf("%w: %s", ErrCredentialRejected, message)
+	}
+	return fmt.Errorf(
+		"OpenRouter returned %s while verifying the credential: %s",
+		response.Status,
+		strings.TrimSpace(string(raw)),
+	)
+}
+
+func credentialErrorMessage(raw []byte) string {
+	var envelope struct {
+		Error *apiError `json:"error"`
+	}
+	if json.Unmarshal(raw, &envelope) != nil || envelope.Error == nil {
+		return ""
+	}
+	return strings.TrimSpace(envelope.Error.Message)
 }
 
 // Stream posts a streaming chat completion and calls onDelta once per fragment

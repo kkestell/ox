@@ -18,6 +18,13 @@ func (r InitializeRequest) Validate() error {
 	return nil
 }
 
+func (r AuthenticateRequest) Validate() error {
+	if r.MethodID == "" {
+		return errors.New("methodId is required")
+	}
+	return nil
+}
+
 func (n CancelRequestNotification) Validate() error {
 	id := bytes.TrimSpace(n.RequestID)
 	if len(id) == 0 {

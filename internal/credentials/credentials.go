@@ -20,6 +20,8 @@ const (
 
 	NoCredentialMessage = "no OpenRouter credential is configured: set " + apiKeyVariable +
 		" or store a key in the OS keyring under service " + service + ", account " + account
+	KeyringDisabledMessage = "cannot store an OpenRouter API key: " + keyringDisabledVariable +
+		"=1 turns off keyring access"
 )
 
 // Source names the layer that supplied the resolved credential. Its values also
@@ -67,6 +69,12 @@ func (s *Store) Source() Source {
 	return s.source
 }
 
+// KeyringDisabled reports whether Set and Clear are turned off, so a caller can
+// refuse to collect a key it cannot keep.
+func (s *Store) KeyringDisabled() bool {
+	return s.keyringDisabled
+}
+
 func (s *Store) Refresh() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -79,10 +87,7 @@ func (s *Store) Set(key string) error {
 		return errors.New("OpenRouter API key is empty")
 	}
 	if s.keyringDisabled {
-		return fmt.Errorf(
-			"cannot store an OpenRouter API key: %s=1 turns off keyring access",
-			keyringDisabledVariable,
-		)
+		return errors.New(KeyringDisabledMessage)
 	}
 
 	s.mu.Lock()

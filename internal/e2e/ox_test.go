@@ -32,6 +32,9 @@ func TestInitialize(t *testing.T) {
 	if response.AgentCapabilities.LoadSession {
 		t.Error("loadSession = true, want false")
 	}
+	if response.AgentCapabilities.Auth == nil || response.AgentCapabilities.Auth.Logout == nil {
+		t.Errorf("auth capabilities = %#v, want logout support", response.AgentCapabilities.Auth)
+	}
 	wantPromptCapabilities := acp.PromptCapabilities{
 		Image:           true,
 		Audio:           true,
@@ -44,8 +47,8 @@ func TestInitialize(t *testing.T) {
 	if response.AgentInfo != (acp.Implementation{Name: "ox", Version: "0.0.1"}) {
 		t.Errorf("agentInfo = %#v", response.AgentInfo)
 	}
-	if response.AuthMethods == nil || len(response.AuthMethods) != 0 {
-		t.Errorf("authMethods = %#v, want empty array", response.AuthMethods)
+	if len(response.AuthMethods) != 1 || response.AuthMethods[0].ID != "openrouter" {
+		t.Errorf("authMethods = %#v, want stored OpenRouter method", response.AuthMethods)
 	}
 }
 
