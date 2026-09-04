@@ -17,13 +17,15 @@ import (
 )
 
 const (
-	recordVersion = 1
+	recordVersion     = 1
+	checkpointVersion = 1
 
 	recordSessionCreated = "session_created"
 	recordConfigChanged  = "request_configuration_changed"
 	recordUserMessage    = "user_message"
 	recordModelExchange  = "completed_model_exchange"
 	recordTurnFinished   = "turn_finished"
+	recordCheckpoint     = "checkpoint"
 )
 
 type sessionRecord struct {
@@ -109,6 +111,36 @@ type turnFinishedRecord struct {
 	Message    string         `json:"message,omitempty"`
 }
 
+type checkpointRecord struct {
+	Version int                  `json:"version"`
+	State   checkpointProjection `json:"state"`
+}
+
+type checkpointProjection struct {
+	SessionID     string               `json:"sessionId"`
+	CWD           string               `json:"cwd"`
+	CreatedAt     time.Time            `json:"createdAt"`
+	UpdatedAt     time.Time            `json:"updatedAt"`
+	Sequence      uint64               `json:"sequence"`
+	Configuration requestConfiguration `json:"configuration"`
+	History       []openrouter.Message `json:"history,omitempty"`
+	Usage         checkpointUsage      `json:"usage"`
+	Cost          float64              `json:"cost"`
+	MessageIDs    []string             `json:"messageIds,omitempty"`
+	ToolCallIDs   []string             `json:"toolCallIds,omitempty"`
+	OpenTurn      string               `json:"openTurn,omitempty"`
+	Title         string               `json:"title,omitempty"`
+}
+
+type checkpointUsage struct {
+	Seen        bool   `json:"seen"`
+	Input       uint64 `json:"input"`
+	Output      uint64 `json:"output"`
+	Thought     uint64 `json:"thought"`
+	CachedRead  uint64 `json:"cachedRead"`
+	CachedWrite uint64 `json:"cachedWrite"`
+}
+
 type durableState struct {
 	id              string
 	cwd             string
@@ -142,13 +174,183 @@ func newRecord(sequence uint64, kind string, value any) (sessionRecord, error) {
 }
 
 func foldRecords(records []sessionRecord) (durableState, error) {
-	var state durableState
+	var checkpoint durableState
+	start := 0
 	for index := range records {
+		record := records[index]
+		if err := validateRecordEnvelope(record, uint64(index)); err != nil {
+			return durableState{}, fmt.Errorf("record %d: %w", index+1, err)
+		}
+		if record.Type != recordCheckpoint {
+			continue
+		}
+		if index == 0 || records[index-1].Type != recordTurnFinished {
+			return durableState{}, fmt.Errorf("record %d: checkpoint does not follow a finished turn", index+1)
+		}
+		restored, err := restoreCheckpoint(record, records[index-1])
+		if err != nil {
+			return durableState{}, fmt.Errorf("record %d: %w", index+1, err)
+		}
+		checkpoint = restored
+		start = index + 1
+	}
+
+	state := checkpoint
+	for index := start; index < len(records); index++ {
 		if err := state.apply(records[index]); err != nil {
 			return durableState{}, fmt.Errorf("record %d: %w", index+1, err)
 		}
 	}
+	state.records = append([]sessionRecord(nil), records...)
 	return state, nil
+}
+
+func validateRecordEnvelope(record sessionRecord, previous uint64) error {
+	if record.Version != recordVersion {
+		return fmt.Errorf("unsupported record version %d", record.Version)
+	}
+	if record.Sequence != previous+1 {
+		return fmt.Errorf("sequence %d follows %d", record.Sequence, previous)
+	}
+	if record.At.IsZero() {
+		return errors.New("record timestamp is required")
+	}
+	if len(record.Data) == 0 || !json.Valid(record.Data) {
+		return errors.New("record data must be valid JSON")
+	}
+	if previous == 0 && record.Type != recordSessionCreated {
+		return errors.New("first record must create the session")
+	}
+	switch record.Type {
+	case recordSessionCreated, recordConfigChanged, recordUserMessage,
+		recordModelExchange, recordTurnFinished, recordCheckpoint:
+		return nil
+	default:
+		return fmt.Errorf("unsupported record type %q", record.Type)
+	}
+}
+
+func newCheckpointRecord(state durableState) (sessionRecord, error) {
+	if state.openTurn != "" {
+		return sessionRecord{}, errors.New("checkpoint cannot represent an open turn")
+	}
+	payload := checkpointRecord{
+		Version: checkpointVersion,
+		State: checkpointProjection{
+			SessionID:     state.id,
+			CWD:           state.cwd,
+			CreatedAt:     state.createdAt,
+			UpdatedAt:     state.updatedAt,
+			Sequence:      state.sequence,
+			Configuration: cloneConfiguration(state.configuration),
+			History:       cloneMessages(state.history),
+			Usage: checkpointUsage{
+				Seen:        state.usage.seen,
+				Input:       state.usage.input,
+				Output:      state.usage.output,
+				Thought:     state.usage.thought,
+				CachedRead:  state.usage.cachedRead,
+				CachedWrite: state.usage.cachedWrite,
+			},
+			Cost:        state.cost,
+			MessageIDs:  sortedIdentitySet(state.messageIDs),
+			ToolCallIDs: sortedIdentitySet(state.toolCallIDs),
+			Title:       state.title,
+		},
+	}
+	return newRecord(state.sequence+1, recordCheckpoint, payload)
+}
+
+func restoreCheckpoint(record, previous sessionRecord) (durableState, error) {
+	var value checkpointRecord
+	if err := decodeRecord(record.Data, &value); err != nil {
+		return durableState{}, err
+	}
+	if value.Version != checkpointVersion {
+		return durableState{}, fmt.Errorf("unsupported checkpoint version %d", value.Version)
+	}
+	projection := value.State
+	if projection.OpenTurn != "" {
+		return durableState{}, errors.New("checkpoint represents an open turn")
+	}
+	if projection.Sequence != record.Sequence-1 {
+		return durableState{}, fmt.Errorf(
+			"checkpoint sequence %d does not precede record %d",
+			projection.Sequence,
+			record.Sequence,
+		)
+	}
+	if !projection.UpdatedAt.Equal(previous.At) {
+		return durableState{}, errors.New("checkpoint timestamp does not match the preceding record")
+	}
+	if record.At.Before(projection.UpdatedAt) {
+		return durableState{}, errors.New("checkpoint predates its projection")
+	}
+	if !validSessionID(projection.SessionID) {
+		return durableState{}, errors.New("invalid checkpoint session ID")
+	}
+	if !filepath.IsAbs(projection.CWD) {
+		return durableState{}, errors.New("checkpoint cwd must be absolute")
+	}
+	if projection.CreatedAt.IsZero() || projection.UpdatedAt.IsZero() ||
+		projection.UpdatedAt.Before(projection.CreatedAt) {
+		return durableState{}, errors.New("checkpoint timestamps are invalid")
+	}
+	if err := validateConfiguration(projection.Configuration); err != nil {
+		return durableState{}, err
+	}
+	messageIDs, err := identitySet(projection.MessageIDs)
+	if err != nil {
+		return durableState{}, fmt.Errorf("checkpoint message IDs: %w", err)
+	}
+	toolCallIDs, err := identitySet(projection.ToolCallIDs)
+	if err != nil {
+		return durableState{}, fmt.Errorf("checkpoint tool call IDs: %w", err)
+	}
+	return durableState{
+		id:            projection.SessionID,
+		cwd:           projection.CWD,
+		createdAt:     projection.CreatedAt,
+		updatedAt:     projection.UpdatedAt,
+		sequence:      record.Sequence,
+		configuration: cloneConfiguration(projection.Configuration),
+		history:       cloneMessages(projection.History),
+		usage: turnUsage{
+			seen:        projection.Usage.Seen,
+			input:       projection.Usage.Input,
+			output:      projection.Usage.Output,
+			thought:     projection.Usage.Thought,
+			cachedRead:  projection.Usage.CachedRead,
+			cachedWrite: projection.Usage.CachedWrite,
+		},
+		cost:        projection.Cost,
+		messageIDs:  messageIDs,
+		toolCallIDs: toolCallIDs,
+		title:       projection.Title,
+	}, nil
+}
+
+func sortedIdentitySet(values map[string]struct{}) []string {
+	result := make([]string, 0, len(values))
+	for value := range values {
+		result = append(result, value)
+	}
+	slices.Sort(result)
+	return result
+}
+
+func identitySet(values []string) (map[string]struct{}, error) {
+	result := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		if value == "" {
+			return nil, errors.New("empty identity")
+		}
+		if _, exists := result[value]; exists {
+			return nil, fmt.Errorf("duplicate identity %q", value)
+		}
+		result[value] = struct{}{}
+	}
+	return result, nil
 }
 
 func (s durableState) clone() durableState {
@@ -172,17 +374,8 @@ func (s durableState) clone() durableState {
 }
 
 func (s *durableState) apply(record sessionRecord) error {
-	if record.Version != recordVersion {
-		return fmt.Errorf("unsupported record version %d", record.Version)
-	}
-	if record.Sequence != s.sequence+1 {
-		return fmt.Errorf("sequence %d follows %d", record.Sequence, s.sequence)
-	}
-	if record.At.IsZero() {
-		return errors.New("record timestamp is required")
-	}
-	if s.sequence == 0 && record.Type != recordSessionCreated {
-		return errors.New("first record must create the session")
+	if err := validateRecordEnvelope(record, s.sequence); err != nil {
+		return err
 	}
 
 	switch record.Type {

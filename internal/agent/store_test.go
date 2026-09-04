@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/kkestell/ox/internal/acp"
 	"github.com/kkestell/ox/internal/settings"
 )
 
@@ -66,6 +67,86 @@ func TestFileStorePersistsLocksAndRepairsTornTail(t *testing.T) {
 	}
 	if info.Size() != int64(len(data)) || data[len(data)-1] != '\n' {
 		t.Fatalf("repaired log = %q", data)
+	}
+}
+
+func TestFileStoreRepairsTornCheckpointAndContinuesSequence(t *testing.T) {
+	store, err := newFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := "0123456789abcdef0123456789abcdef"
+	configuration := requestConfiguration{
+		Settings: settings.Resolved{Model: "test/model"},
+	}
+	created := mustRecord(t, 1, recordSessionCreated, sessionCreated{
+		SessionID: id, CWD: t.TempDir(), Configuration: configuration,
+	})
+	log, err := store.create(id, created)
+	if err != nil {
+		t.Fatal(err)
+	}
+	user := mustRecord(t, 2, recordUserMessage, userMessageRecord{
+		TurnID: "turn", MessageID: "user",
+		Content: []acp.ContentBlock{{Type: "text", Text: "hello"}},
+	})
+	finished := mustRecord(t, 3, recordTurnFinished, turnFinishedRecord{
+		TurnID: "turn", Kind: "cancelled",
+	})
+	state := mustFold(t, []sessionRecord{created, user, finished})
+	checkpoint, err := newCheckpointRecord(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := log.append(user, finished, checkpoint); err != nil {
+		t.Fatal(err)
+	}
+	log.close()
+
+	path, err := store.path(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Truncate(path, int64(len(data)-1)); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, records, repaired, err := store.open(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !repaired || len(records) != 3 || records[2].Type != recordTurnFinished {
+		t.Fatalf("repaired = %v, records = %#v", repaired, records)
+	}
+	restored := mustFold(t, records)
+	if restored.openTurn != "" || restored.sequence != 3 {
+		t.Fatalf("restored state = %#v", restored)
+	}
+	changed := cloneConfiguration(configuration)
+	changed.Settings.Model = "test/next"
+	next := mustRecord(t, restored.sequence+1, recordConfigChanged, configurationChanged{
+		Configuration: changed,
+	})
+	if err := reopened.append(next); err != nil {
+		t.Fatal(err)
+	}
+	reopened.close()
+
+	final, records, repaired, err := store.open(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer final.close()
+	if repaired || len(records) != 4 {
+		t.Fatalf("second open repaired = %v, records = %d", repaired, len(records))
+	}
+	continued := mustFold(t, records)
+	if continued.sequence != 4 || continued.configuration.Settings.Model != "test/next" {
+		t.Fatalf("continued state = %#v", continued)
 	}
 }
 

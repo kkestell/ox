@@ -265,7 +265,9 @@ func (n *executorNormalizer) normalize(value any) any {
 				value[key] = n.normalizeIdentity("turn", child)
 			case "messageId", "answerId", "thoughtId":
 				value[key] = n.normalizeIdentity("message", child)
-			case "at":
+			case "messageIds":
+				value[key] = n.normalizeIdentitySet("message", child)
+			case "at", "createdAt", "updatedAt":
 				value[key] = "<timestamp>"
 			default:
 				value[key] = n.normalize(child)
@@ -277,6 +279,20 @@ func (n *executorNormalizer) normalize(value any) any {
 	default:
 		return value
 	}
+}
+
+func (n *executorNormalizer) normalizeIdentitySet(kind string, value any) any {
+	values, ok := value.([]any)
+	if !ok {
+		return value
+	}
+	for index := range values {
+		values[index] = n.normalizeIdentity(kind, values[index])
+	}
+	sort.Slice(values, func(left, right int) bool {
+		return fmt.Sprint(values[left]) < fmt.Sprint(values[right])
+	})
+	return values
 }
 
 func (n *executorNormalizer) normalizeIdentity(kind string, value any) any {
