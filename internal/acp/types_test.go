@@ -184,6 +184,176 @@ func TestFilesystemRequestsValidateOutboundFields(t *testing.T) {
 	}
 }
 
+func TestTerminalPayloadsUsePinnedWireShapes(t *testing.T) {
+	cwd := "/workspace"
+	limit := 10 * 1024 * 1024
+	exitCode := 7
+	signal := "SIGTERM"
+	tests := []struct {
+		name  string
+		value any
+		want  string
+	}{
+		{
+			name: "create request",
+			value: CreateTerminalRequest{
+				SessionID:       "session-1",
+				Command:         "/bin/sh",
+				Args:            []string{"-c", "printf hello"},
+				Env:             []EnvVariable{{Name: "TERM", Value: "dumb"}},
+				CWD:             &cwd,
+				OutputByteLimit: &limit,
+			},
+			want: `{"sessionId":"session-1","command":"/bin/sh","args":["-c","printf hello"],"env":[{"name":"TERM","value":"dumb"}],"cwd":"/workspace","outputByteLimit":10485760}`,
+		},
+		{
+			name:  "create request without optional fields",
+			value: CreateTerminalRequest{SessionID: "session-1", Command: "true"},
+			want:  `{"sessionId":"session-1","command":"true"}`,
+		},
+		{
+			name:  "create response",
+			value: CreateTerminalResponse{TerminalID: "terminal-1"},
+			want:  `{"terminalId":"terminal-1"}`,
+		},
+		{
+			name:  "output request",
+			value: TerminalOutputRequest{SessionID: "session-1", TerminalID: "terminal-1"},
+			want:  `{"sessionId":"session-1","terminalId":"terminal-1"}`,
+		},
+		{
+			name:  "empty output",
+			value: TerminalOutputResponse{},
+			want:  `{"output":"","truncated":false}`,
+		},
+		{
+			name: "completed output",
+			value: TerminalOutputResponse{
+				Output:     "failed\n",
+				Truncated:  true,
+				ExitStatus: &TerminalExitStatus{ExitCode: &exitCode},
+			},
+			want: `{"output":"failed\n","truncated":true,"exitStatus":{"exitCode":7}}`,
+		},
+		{
+			name:  "wait request",
+			value: WaitForTerminalExitRequest{SessionID: "session-1", TerminalID: "terminal-1"},
+			want:  `{"sessionId":"session-1","terminalId":"terminal-1"}`,
+		},
+		{
+			name:  "signalled wait response",
+			value: WaitForTerminalExitResponse{Signal: &signal},
+			want:  `{"signal":"SIGTERM"}`,
+		},
+		{
+			name:  "kill request",
+			value: KillTerminalRequest{SessionID: "session-1", TerminalID: "terminal-1"},
+			want:  `{"sessionId":"session-1","terminalId":"terminal-1"}`,
+		},
+		{name: "empty kill response", value: KillTerminalResponse{}, want: `{}`},
+		{
+			name:  "release request",
+			value: ReleaseTerminalRequest{SessionID: "session-1", TerminalID: "terminal-1"},
+			want:  `{"sessionId":"session-1","terminalId":"terminal-1"}`,
+		},
+		{name: "empty release response", value: ReleaseTerminalResponse{}, want: `{}`},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			data, err := json.Marshal(test.value)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(data) != test.want {
+				t.Fatalf("payload = %s, want %s", data, test.want)
+			}
+		})
+	}
+
+	var nullable TerminalOutputResponse
+	if err := json.Unmarshal(
+		[]byte(`{"output":"","truncated":false,"exitStatus":{"exitCode":null,"signal":null}}`),
+		&nullable,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if nullable.ExitStatus == nil || nullable.ExitStatus.ExitCode != nil ||
+		nullable.ExitStatus.Signal != nil {
+		t.Fatalf("nullable exit status = %#v", nullable.ExitStatus)
+	}
+}
+
+func TestTerminalRequestsValidateOutboundFields(t *testing.T) {
+	cwd := "/workspace"
+	relative := "workspace"
+	positive, zero := 1, 0
+	tests := []struct {
+		name    string
+		request interface{ Validate() error }
+		valid   bool
+	}{
+		{
+			name: "create",
+			request: CreateTerminalRequest{
+				SessionID:       "session-1",
+				Command:         "/bin/sh",
+				CWD:             &cwd,
+				OutputByteLimit: &positive,
+			},
+			valid: true,
+		},
+		{name: "create missing session", request: CreateTerminalRequest{Command: "true"}},
+		{name: "create missing command", request: CreateTerminalRequest{SessionID: "session-1"}},
+		{
+			name:    "create relative cwd",
+			request: CreateTerminalRequest{SessionID: "session-1", Command: "true", CWD: &relative},
+		},
+		{
+			name: "create zero output limit",
+			request: CreateTerminalRequest{
+				SessionID: "session-1", Command: "true", OutputByteLimit: &zero,
+			},
+		},
+		{
+			name:    "create response",
+			request: CreateTerminalResponse{TerminalID: "terminal-1"},
+			valid:   true,
+		},
+		{name: "create response missing terminal", request: CreateTerminalResponse{}},
+		{
+			name:    "output",
+			request: TerminalOutputRequest{SessionID: "session-1", TerminalID: "terminal-1"},
+			valid:   true,
+		},
+		{
+			name:    "wait missing terminal",
+			request: WaitForTerminalExitRequest{SessionID: "session-1"},
+		},
+		{
+			name:    "kill missing session",
+			request: KillTerminalRequest{TerminalID: "terminal-1"},
+		},
+		{
+			name:    "release",
+			request: ReleaseTerminalRequest{SessionID: "session-1", TerminalID: "terminal-1"},
+			valid:   true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := test.request.Validate()
+			if test.valid && err != nil {
+				t.Fatal(err)
+			}
+			if !test.valid && err == nil {
+				t.Fatal("request validated unexpectedly")
+			}
+		})
+	}
+}
+
 func TestSessionUpdatesCarryExactDiscriminators(t *testing.T) {
 	updates := []struct {
 		value any

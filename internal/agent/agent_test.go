@@ -762,6 +762,7 @@ func TestLoopStopsAtMaximumModelRequestsWithReplayableHistory(t *testing.T) {
 		&activeTurn{turnID: "turn-max"},
 		nil,
 		ClientFileSystem{},
+		ClientTerminal{},
 		events,
 	)
 	close(events)
@@ -837,6 +838,7 @@ func TestLoopDoesNotDispatchCallsFromIncompleteCompletions(t *testing.T) {
 				&activeTurn{turnID: "turn-finish"},
 				nil,
 				ClientFileSystem{},
+				ClientTerminal{},
 				events,
 			)
 			close(events)

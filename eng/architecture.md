@@ -196,9 +196,10 @@ parsed command rather than string prefixes. Shell commands run from the session
 root with a sanitized environment, and cancellation kills their process group.
 Read, write, and exact-edit file content uses ACP filesystem callbacks when the
 client advertises the corresponding method and otherwise uses the local
-executor. Client delegation does not change Ox's workspace, read-evidence,
-text-preservation, or permission rules. Terminal execution remains local until
-ACP terminal delegation is implemented.
+executor. Shell commands similarly use ACP terminal callbacks when the client
+advertises terminal support and otherwise use Ox's local process-group runner.
+Client delegation does not change Ox's workspace, read-evidence,
+text-preservation, environment, timeout, or permission rules.
 
 ## Testing boundaries
 

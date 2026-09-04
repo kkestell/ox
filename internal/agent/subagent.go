@@ -17,6 +17,7 @@ func (a *Agent) delegate(
 	prompt string,
 	ask requestPermission,
 	fileSystem ClientFileSystem,
+	terminal ClientTerminal,
 	events chan<- event,
 ) (string, *delegationRecord, error) {
 	record := &delegationRecord{Prompt: prompt}
@@ -107,6 +108,7 @@ func (a *Agent) delegate(
 			publicCalls,
 			ask,
 			fileSystem,
+			terminal,
 			events,
 			parentCallID,
 		)

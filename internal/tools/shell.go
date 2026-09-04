@@ -12,15 +12,17 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/kkestell/ox/internal/acp"
 	"github.com/kkestell/ox/internal/agent"
 	"github.com/kkestell/ox/internal/shellrules"
 	"github.com/kkestell/ox/internal/workspace"
 )
 
 const (
-	shellDefaultTimeout = 120
-	shellMaximumTimeout = 600
-	shellWaitDelay      = 3 * time.Second
+	shellDefaultTimeout         = 120
+	shellMaximumTimeout         = 600
+	shellWaitDelay              = 3 * time.Second
+	shellTerminalCleanupTimeout = 5 * time.Second
 )
 
 const shellDescription = "Run a command through /bin/sh -c from the workspace root. " +
@@ -60,6 +62,9 @@ func executeShell(ctx context.Context, invocation agent.Invocation) (string, err
 	if err != nil {
 		return "", err
 	}
+	if command == "" {
+		return "", errors.New("`command` must not be empty")
+	}
 	timeout := shellDefaultTimeout
 	if arguments.Timeout != nil {
 		timeout = *arguments.Timeout
@@ -73,7 +78,18 @@ func executeShell(ctx context.Context, invocation agent.Invocation) (string, err
 	if invocation.FileReads != nil {
 		invocation.FileReads.Clear()
 	}
+	if invocation.Terminal.Available() {
+		return executeDelegatedShell(ctx, invocation, command, timeout)
+	}
+	return executeLocalShell(ctx, invocation, command, timeout)
+}
 
+func executeLocalShell(
+	ctx context.Context,
+	invocation agent.Invocation,
+	command string,
+	timeout int,
+) (string, error) {
 	callCtx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(callCtx, "/bin/sh", "-c", command)
@@ -139,6 +155,197 @@ func executeShell(ctx context.Context, invocation agent.Invocation) (string, err
 	return result, nil
 }
 
+func executeDelegatedShell(
+	ctx context.Context,
+	invocation agent.Invocation,
+	command string,
+	timeout int,
+) (string, error) {
+	callCtx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
+	defer cancel()
+
+	root := invocation.Root
+	outputLimit := workspace.CollectionLimitBytes
+	created, err := invocation.Terminal.Create(callCtx, acp.CreateTerminalRequest{
+		SessionID:       invocation.SessionID,
+		Command:         "/bin/sh",
+		Args:            []string{"-c", command},
+		Env:             terminalEnvironment(),
+		CWD:             &root,
+		OutputByteLimit: &outputLimit,
+	})
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", acp.MethodTerminalCreate, err)
+	}
+	if err := created.Validate(); err != nil {
+		return "", fmt.Errorf("%s: %w", acp.MethodTerminalCreate, err)
+	}
+	terminalID := created.TerminalID
+
+	exit, waitErr := invocation.Terminal.WaitForExit(
+		callCtx,
+		acp.WaitForTerminalExitRequest{
+			SessionID:  invocation.SessionID,
+			TerminalID: terminalID,
+		},
+	)
+	stoppedByContext := waitErr != nil && callCtx.Err() != nil
+	if waitErr != nil && !stoppedByContext {
+		firstErr := fmt.Errorf("%s: %w", acp.MethodTerminalWaitForExit, waitErr)
+		return "", releaseTerminal(invocation.Terminal, invocation.SessionID, terminalID, firstErr)
+	}
+
+	if stoppedByContext {
+		return finishStoppedTerminal(ctx, invocation, terminalID, timeout)
+	}
+
+	output, outputErr := invocation.Terminal.Output(callCtx, acp.TerminalOutputRequest{
+		SessionID:  invocation.SessionID,
+		TerminalID: terminalID,
+	})
+	var firstErr error
+	if outputErr != nil {
+		firstErr = fmt.Errorf("%s: %w", acp.MethodTerminalOutput, outputErr)
+	}
+	firstErr = releaseTerminal(
+		invocation.Terminal,
+		invocation.SessionID,
+		terminalID,
+		firstErr,
+	)
+	if firstErr != nil {
+		return "", firstErr
+	}
+	return renderDelegatedShellOutput(invocation, output.Output, output.Truncated, exit, 0)
+}
+
+func finishStoppedTerminal(
+	ctx context.Context,
+	invocation agent.Invocation,
+	terminalID string,
+	timeout int,
+) (string, error) {
+	var firstErr error
+	killCtx, cancelKill := terminalCleanupContext()
+	if err := invocation.Terminal.Kill(killCtx, acp.KillTerminalRequest{
+		SessionID:  invocation.SessionID,
+		TerminalID: terminalID,
+	}); err != nil {
+		firstErr = fmt.Errorf("%s: %w", acp.MethodTerminalKill, err)
+	}
+	cancelKill()
+
+	outputCtx, cancelOutput := terminalCleanupContext()
+	output, err := invocation.Terminal.Output(outputCtx, acp.TerminalOutputRequest{
+		SessionID:  invocation.SessionID,
+		TerminalID: terminalID,
+	})
+	cancelOutput()
+	if err != nil && firstErr == nil {
+		firstErr = fmt.Errorf("%s: %w", acp.MethodTerminalOutput, err)
+	}
+	releaseCtx, cancelRelease := terminalCleanupContext()
+	if err := invocation.Terminal.Release(releaseCtx, acp.ReleaseTerminalRequest{
+		SessionID:  invocation.SessionID,
+		TerminalID: terminalID,
+	}); err != nil && firstErr == nil {
+		firstErr = fmt.Errorf("%s: %w", acp.MethodTerminalRelease, err)
+	}
+	cancelRelease()
+	if ctx.Err() != nil {
+		return "", ctx.Err()
+	}
+	if firstErr != nil {
+		return "", firstErr
+	}
+	status := acp.WaitForTerminalExitResponse{}
+	if output.ExitStatus != nil {
+		status.ExitCode = output.ExitStatus.ExitCode
+		status.Signal = output.ExitStatus.Signal
+	}
+	return renderDelegatedShellOutput(
+		invocation,
+		output.Output,
+		output.Truncated,
+		status,
+		timeout,
+	)
+}
+
+func releaseTerminal(
+	terminal agent.ClientTerminal,
+	sessionID string,
+	terminalID string,
+	firstErr error,
+) error {
+	cleanupCtx, cancel := terminalCleanupContext()
+	defer cancel()
+	if err := terminal.Release(cleanupCtx, acp.ReleaseTerminalRequest{
+		SessionID:  sessionID,
+		TerminalID: terminalID,
+	}); err != nil && firstErr == nil {
+		return fmt.Errorf("%s: %w", acp.MethodTerminalRelease, err)
+	}
+	return firstErr
+}
+
+func terminalCleanupContext() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), shellTerminalCleanupTimeout)
+}
+
+func renderDelegatedShellOutput(
+	invocation agent.Invocation,
+	output string,
+	truncated bool,
+	status acp.WaitForTerminalExitResponse,
+	timedOutAfter int,
+) (string, error) {
+	recorder := workspace.NewStreamRecorder(
+		invocation.SpillDir,
+		"shell",
+		invocation.CallID,
+		invocation.Emit,
+	)
+	defer recorder.Close()
+	if _, err := recorder.Write([]byte(output)); err != nil {
+		return "", err
+	}
+	rendered, err := recorder.Finish()
+	if err != nil {
+		return "", err
+	}
+	if rendered.Spilled != "" && invocation.ReportSpill != nil {
+		invocation.ReportSpill(rendered.Spilled)
+	}
+
+	statusText := "exit status: unavailable"
+	if status.ExitCode != nil {
+		statusText = "exit code: " + strconv.Itoa(*status.ExitCode)
+	} else if status.Signal != nil {
+		statusText = "signal: " + *status.Signal
+	}
+	content := rendered.Content
+	if content == "" {
+		content = "(no output)"
+	}
+	if truncated {
+		content = fmt.Sprintf(
+			"[client output truncated to the last %d bytes]\n%s",
+			workspace.CollectionLimitBytes,
+			content,
+		)
+	}
+	result := statusText + "\n" + content
+	if timedOutAfter > 0 {
+		result = fmt.Sprintf(
+			"timed out after %d seconds; retry with a larger timeout if the command needs longer\n%s",
+			timedOutAfter,
+			result,
+		)
+	}
+	return result, nil
+}
+
 func shellExitCode(cmd *exec.Cmd, waitErr error) (*int, error) {
 	if waitErr == nil {
 		zero := 0
@@ -185,6 +392,16 @@ func shellEnvironment() []string {
 		"TERM=dumb",
 		"NO_COLOR=1",
 	)
+}
+
+func terminalEnvironment() []acp.EnvVariable {
+	environment := shellEnvironment()
+	variables := make([]acp.EnvVariable, 0, len(environment))
+	for _, entry := range environment {
+		name, value, _ := strings.Cut(entry, "=")
+		variables = append(variables, acp.EnvVariable{Name: name, Value: value})
+	}
+	return variables
 }
 
 func shellSuggestion(arguments json.RawMessage) string {

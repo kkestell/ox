@@ -6,8 +6,10 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -26,6 +28,7 @@ func testInvocation(t *testing.T, arguments string) agent.Invocation {
 	}
 	return agent.Invocation{
 		Arguments: json.RawMessage(arguments),
+		SessionID: "test-session",
 		Root:      root,
 		SpillDir:  filepath.Join(t.TempDir(), "session.spill"),
 		CallID:    "call-1",
@@ -164,6 +167,7 @@ func TestShellSanitizesEnvironment(t *testing.T) {
 func TestShellValidatesArguments(t *testing.T) {
 	tests := []string{
 		`{}`,
+		`{"command":""}`,
 		`{"command":"true","timeout":0}`,
 		`{"command":"true","timeout":601}`,
 		`{"command":"true","timeout":"slow"}`,
@@ -284,6 +288,304 @@ func TestShellRuleSuggestionAndCoverage(t *testing.T) {
 	}
 	if tool.Covered([]string{"go test"}, json.RawMessage(`{"command":"rm -rf /"}`)) {
 		t.Fatal("go test rule covered an unrelated command")
+	}
+}
+
+type fakeTerminal struct {
+	mu             sync.Mutex
+	calls          []string
+	createRequest  acp.CreateTerminalRequest
+	waitResponse   acp.WaitForTerminalExitResponse
+	outputResponse acp.TerminalOutputResponse
+	fail           map[string]bool
+	blockWait      bool
+	waitStarted    chan struct{}
+	waitOnce       sync.Once
+}
+
+func (f *fakeTerminal) operations() agent.ClientTerminal {
+	return agent.ClientTerminal{
+		Create: func(
+			_ context.Context,
+			request acp.CreateTerminalRequest,
+		) (acp.CreateTerminalResponse, error) {
+			f.record("create")
+			f.createRequest = request
+			if f.failed("create") {
+				return acp.CreateTerminalResponse{}, errors.New("create failed")
+			}
+			return acp.CreateTerminalResponse{TerminalID: "terminal-1"}, nil
+		},
+		WaitForExit: func(
+			ctx context.Context,
+			_ acp.WaitForTerminalExitRequest,
+		) (acp.WaitForTerminalExitResponse, error) {
+			f.record("wait")
+			if f.blockWait {
+				f.waitOnce.Do(func() { close(f.waitStarted) })
+				<-ctx.Done()
+				return acp.WaitForTerminalExitResponse{}, ctx.Err()
+			}
+			if f.failed("wait") {
+				return acp.WaitForTerminalExitResponse{}, errors.New("wait failed")
+			}
+			return f.waitResponse, nil
+		},
+		Output: func(
+			_ context.Context,
+			_ acp.TerminalOutputRequest,
+		) (acp.TerminalOutputResponse, error) {
+			f.record("output")
+			if f.failed("output") {
+				return acp.TerminalOutputResponse{}, errors.New("output failed")
+			}
+			return f.outputResponse, nil
+		},
+		Kill: func(_ context.Context, _ acp.KillTerminalRequest) error {
+			f.record("kill")
+			if f.failed("kill") {
+				return errors.New("kill failed")
+			}
+			return nil
+		},
+		Release: func(_ context.Context, _ acp.ReleaseTerminalRequest) error {
+			f.record("release")
+			if f.failed("release") {
+				return errors.New("release failed")
+			}
+			return nil
+		},
+	}
+}
+
+func (f *fakeTerminal) record(call string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, call)
+}
+
+func (f *fakeTerminal) failed(call string) bool {
+	return f.fail != nil && f.fail[call]
+}
+
+func (f *fakeTerminal) recordedCalls() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.calls...)
+}
+
+func TestShellDelegatesCommandAndReportsExitAndTruncation(t *testing.T) {
+	t.Setenv("OPENROUTER_API_KEY", "secret")
+	t.Setenv("OX_TEST_SECRET", "secret")
+	t.Setenv("TERM", "xterm")
+	exitCode := 7
+	terminal := &fakeTerminal{
+		waitResponse: acp.WaitForTerminalExitResponse{ExitCode: &exitCode},
+		outputResponse: acp.TerminalOutputResponse{
+			Output:    "delegated output\n",
+			Truncated: true,
+		},
+	}
+	invocation := testInvocation(t, `{"command":"printf delegated"}`)
+	invocation.Terminal = terminal.operations()
+
+	result, err := invoke(t, toolNamed(t, "shell"), invocation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result != "exit code: 7\n[client output truncated to the last 10485760 bytes]\ndelegated output\n" {
+		t.Fatalf("result = %q", result)
+	}
+	if !reflect.DeepEqual(terminal.recordedCalls(), []string{"create", "wait", "output", "release"}) {
+		t.Fatalf("terminal calls = %v", terminal.recordedCalls())
+	}
+	request := terminal.createRequest
+	if request.SessionID != invocation.SessionID || request.Command != "/bin/sh" ||
+		!reflect.DeepEqual(request.Args, []string{"-c", "printf delegated"}) ||
+		request.CWD == nil || *request.CWD != invocation.Root ||
+		request.OutputByteLimit == nil || *request.OutputByteLimit != workspace.CollectionLimitBytes {
+		t.Fatalf("create request = %#v", request)
+	}
+	environment := make(map[string]string, len(request.Env))
+	for _, variable := range request.Env {
+		environment[variable.Name] = variable.Value
+	}
+	if _, ok := environment["OPENROUTER_API_KEY"]; ok {
+		t.Fatal("delegated environment exposed OPENROUTER_API_KEY")
+	}
+	if _, ok := environment["OX_TEST_SECRET"]; ok {
+		t.Fatal("delegated environment exposed OX_TEST_SECRET")
+	}
+	if environment["PAGER"] != "cat" || environment["GIT_TERMINAL_PROMPT"] != "0" ||
+		environment["TERM"] != "dumb" || environment["NO_COLOR"] != "1" {
+		t.Fatalf("delegated environment = %#v", environment)
+	}
+}
+
+func TestShellDelegatedSignalAndEmptyOutput(t *testing.T) {
+	signal := "SIGTERM"
+	terminal := &fakeTerminal{
+		waitResponse: acp.WaitForTerminalExitResponse{Signal: &signal},
+	}
+	invocation := testInvocation(t, `{"command":"stop"}`)
+	invocation.Terminal = terminal.operations()
+	result, err := invoke(t, toolNamed(t, "shell"), invocation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result != "signal: SIGTERM\n(no output)" {
+		t.Fatalf("result = %q", result)
+	}
+}
+
+func TestShellUsesLocalFallbackForIncompleteTerminal(t *testing.T) {
+	invocation := testInvocation(t, `{"command":"printf local"}`)
+	invocation.Terminal.Create = func(
+		context.Context,
+		acp.CreateTerminalRequest,
+	) (acp.CreateTerminalResponse, error) {
+		t.Fatal("incomplete terminal was selected")
+		return acp.CreateTerminalResponse{}, nil
+	}
+	result, err := invoke(t, toolNamed(t, "shell"), invocation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result != "exit code: 0\nlocal" {
+		t.Fatalf("result = %q", result)
+	}
+}
+
+func TestShellDelegatedOutputUsesStreamBoundsAndSpill(t *testing.T) {
+	zero := 0
+	output := strings.Repeat("delegated line\n", 10_000)
+	terminal := &fakeTerminal{
+		waitResponse:   acp.WaitForTerminalExitResponse{ExitCode: &zero},
+		outputResponse: acp.TerminalOutputResponse{Output: output},
+	}
+	invocation := testInvocation(t, `{"command":"large"}`)
+	invocation.Terminal = terminal.operations()
+	var spill string
+	invocation.ReportSpill = func(path string) { spill = path }
+	result, err := invoke(t, toolNamed(t, "shell"), invocation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spill == "" || !strings.Contains(result, "full output at "+spill) {
+		t.Fatalf("result = %q, spill = %q", result, spill)
+	}
+	content, err := os.ReadFile(spill)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != output {
+		t.Fatalf("spilled output length = %d, want %d", len(content), len(output))
+	}
+}
+
+func TestShellDelegatedTimeoutKillsBeforeRelease(t *testing.T) {
+	signal := "SIGKILL"
+	terminal := &fakeTerminal{
+		blockWait:   true,
+		waitStarted: make(chan struct{}),
+		outputResponse: acp.TerminalOutputResponse{
+			Output:     "partial\n",
+			ExitStatus: &acp.TerminalExitStatus{Signal: &signal},
+		},
+	}
+	invocation := testInvocation(t, `{"command":"sleep 30","timeout":1}`)
+	invocation.Terminal = terminal.operations()
+	result, err := invoke(t, toolNamed(t, "shell"), invocation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result, "timed out after 1 seconds") ||
+		!strings.Contains(result, "signal: SIGKILL\npartial\n") {
+		t.Fatalf("result = %q", result)
+	}
+	if !reflect.DeepEqual(
+		terminal.recordedCalls(),
+		[]string{"create", "wait", "kill", "output", "release"},
+	) {
+		t.Fatalf("terminal calls = %v", terminal.recordedCalls())
+	}
+}
+
+func TestShellDelegatedCancellationKillsBeforeRelease(t *testing.T) {
+	terminal := &fakeTerminal{blockWait: true, waitStarted: make(chan struct{})}
+	invocation := testInvocation(t, `{"command":"sleep 30"}`)
+	invocation.Terminal = terminal.operations()
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	shell := toolNamed(t, "shell")
+	go func() {
+		_, err := shell.Execute(ctx, invocation)
+		result <- err
+	}()
+	<-terminal.waitStarted
+	cancel()
+	if err := <-result; !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancellation error = %v", err)
+	}
+	if !reflect.DeepEqual(
+		terminal.recordedCalls(),
+		[]string{"create", "wait", "kill", "output", "release"},
+	) {
+		t.Fatalf("terminal calls = %v", terminal.recordedCalls())
+	}
+}
+
+func TestShellDelegatedCallbackErrorsStillRelease(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		fail      string
+		wantCalls []string
+	}{
+		{name: "create", fail: "create", wantCalls: []string{"create"}},
+		{name: "wait", fail: "wait", wantCalls: []string{"create", "wait", "release"}},
+		{name: "output", fail: "output", wantCalls: []string{"create", "wait", "output", "release"}},
+		{name: "release", fail: "release", wantCalls: []string{"create", "wait", "output", "release"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			zero := 0
+			terminal := &fakeTerminal{
+				waitResponse: acp.WaitForTerminalExitResponse{ExitCode: &zero},
+				fail:         map[string]bool{test.fail: true},
+			}
+			invocation := testInvocation(t, `{"command":"true"}`)
+			invocation.Terminal = terminal.operations()
+			_, err := invoke(t, toolNamed(t, "shell"), invocation)
+			if err == nil || !strings.Contains(err.Error(), "terminal/"+test.fail) {
+				t.Fatalf("error = %v", err)
+			}
+			if !reflect.DeepEqual(terminal.recordedCalls(), test.wantCalls) {
+				t.Fatalf("terminal calls = %v, want %v", terminal.recordedCalls(), test.wantCalls)
+			}
+		})
+	}
+}
+
+func TestShellDelegatedCleanupPreservesFirstError(t *testing.T) {
+	terminal := &fakeTerminal{
+		blockWait:   true,
+		waitStarted: make(chan struct{}),
+		fail: map[string]bool{
+			"kill":    true,
+			"output":  true,
+			"release": true,
+		},
+	}
+	invocation := testInvocation(t, `{"command":"sleep 30","timeout":1}`)
+	invocation.Terminal = terminal.operations()
+	_, err := invoke(t, toolNamed(t, "shell"), invocation)
+	if err == nil || !strings.Contains(err.Error(), "terminal/kill") {
+		t.Fatalf("error = %v", err)
+	}
+	if !reflect.DeepEqual(
+		terminal.recordedCalls(),
+		[]string{"create", "wait", "kill", "output", "release"},
+	) {
+		t.Fatalf("terminal calls = %v", terminal.recordedCalls())
 	}
 }
 

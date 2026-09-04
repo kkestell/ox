@@ -765,6 +765,9 @@ func TestParallelToolsFinishOutOfOrderAndReplayInCallOrder(t *testing.T) {
 
 func TestConcurrentTasksNestChildCallsApproveAndReplay(t *testing.T) {
 	var approvals atomic.Int32
+	var terminalMu sync.Mutex
+	var terminalMethods []string
+	var sessionID string
 	model := &routedModel{route: func(
 		_ context.Context,
 		request openrouter.Request,
@@ -842,23 +845,50 @@ func TestConcurrentTasksNestChildCallsApproveAndReplay(t *testing.T) {
 		Client:        model,
 		Tools:         oxtools.All(),
 	}, func(_ context.Context, request *jrpc2.Request) (any, error) {
-		if request.Method() != acp.MethodSessionRequestPermission {
+		terminalMu.Lock()
+		defer terminalMu.Unlock()
+		switch request.Method() {
+		case acp.MethodSessionRequestPermission:
+			var permission acp.RequestPermissionRequest
+			if err := request.UnmarshalParams(&permission); err != nil {
+				return nil, err
+			}
+			if permission.ToolCall.Name != "shell" ||
+				permission.ToolCall.Meta[acp.MetaParentToolCallID] != "task-shell" {
+				return nil, fmt.Errorf("child permission = %#v", permission)
+			}
+			approvals.Add(1)
+			return acp.RequestPermissionResponse{Outcome: acp.RequestPermissionOutcome{
+				Outcome:  "selected",
+				OptionID: "allow_once",
+			}}, nil
+		case acp.MethodTerminalCreate:
+			var create acp.CreateTerminalRequest
+			if err := request.UnmarshalParams(&create); err != nil {
+				return nil, err
+			}
+			if create.SessionID != sessionID || create.Command != "/bin/sh" ||
+				len(create.Args) != 2 || create.Args[0] != "-c" ||
+				create.Args[1] != "printf child-shell" {
+				return nil, fmt.Errorf("child terminal create = %#v", create)
+			}
+			terminalMethods = append(terminalMethods, request.Method())
+			return acp.CreateTerminalResponse{TerminalID: "child-terminal"}, nil
+		case acp.MethodTerminalWaitForExit:
+			terminalMethods = append(terminalMethods, request.Method())
+			zero := 0
+			return acp.WaitForTerminalExitResponse{ExitCode: &zero}, nil
+		case acp.MethodTerminalOutput:
+			terminalMethods = append(terminalMethods, request.Method())
+			return acp.TerminalOutputResponse{Output: "child-shell"}, nil
+		case acp.MethodTerminalRelease:
+			terminalMethods = append(terminalMethods, request.Method())
+			return acp.ReleaseTerminalResponse{}, nil
+		default:
 			return nil, jrpc2.Errorf(jrpc2.MethodNotFound, "unknown callback")
 		}
-		var permission acp.RequestPermissionRequest
-		if err := request.UnmarshalParams(&permission); err != nil {
-			return nil, err
-		}
-		if permission.ToolCall.Name != "shell" ||
-			permission.ToolCall.Meta[acp.MetaParentToolCallID] != "task-shell" {
-			return nil, fmt.Errorf("child permission = %#v", permission)
-		}
-		approvals.Add(1)
-		return acp.RequestPermissionResponse{Outcome: acp.RequestPermissionOutcome{
-			Outcome:  "selected",
-			OptionID: "allow_once",
-		}}, nil
 	})
+	harness.initialize(t, &acp.ClientCapabilities{Terminal: true})
 	workspace := t.TempDir()
 	if err := os.WriteFile(
 		filepath.Join(workspace, "AGENTS.md"),
@@ -867,7 +897,7 @@ func TestConcurrentTasksNestChildCallsApproveAndReplay(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
-	sessionID := harness.newSessionIn(t, workspace, nil)
+	sessionID = harness.newSessionIn(t, workspace, nil)
 	response := harness.prompt(t, sessionID, "delegate both")
 	if response.StopReason != acp.StopReasonEndTurn ||
 		response.Usage == nil ||
@@ -876,6 +906,18 @@ func TestConcurrentTasksNestChildCallsApproveAndReplay(t *testing.T) {
 	}
 	if approvals.Load() != 1 {
 		t.Fatalf("approval requests = %d", approvals.Load())
+	}
+	terminalMu.Lock()
+	gotTerminalMethods := append([]string(nil), terminalMethods...)
+	terminalMu.Unlock()
+	wantTerminalMethods := []string{
+		acp.MethodTerminalCreate,
+		acp.MethodTerminalWaitForExit,
+		acp.MethodTerminalOutput,
+		acp.MethodTerminalRelease,
+	}
+	if fmt.Sprint(gotTerminalMethods) != fmt.Sprint(wantTerminalMethods) {
+		t.Fatalf("child terminal methods = %v, want %v", gotTerminalMethods, wantTerminalMethods)
 	}
 
 	live := harness.updates()

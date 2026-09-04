@@ -41,11 +41,13 @@ const (
 
 type Invocation struct {
 	Arguments   json.RawMessage
+	SessionID   string
 	Root        string
 	SpillDir    string
 	CallID      string
 	FileReads   FileReads
 	FileSystem  ClientFileSystem
+	Terminal    ClientTerminal
 	Delegate    func(context.Context, string) (string, error)
 	Emit        func(string)
 	ReportSpill func(string)
@@ -54,6 +56,19 @@ type Invocation struct {
 type ClientFileSystem struct {
 	ReadTextFile  func(context.Context, string, *int, *int) (string, error)
 	WriteTextFile func(context.Context, string, string) error
+}
+
+type ClientTerminal struct {
+	Create      func(context.Context, acp.CreateTerminalRequest) (acp.CreateTerminalResponse, error)
+	Output      func(context.Context, acp.TerminalOutputRequest) (acp.TerminalOutputResponse, error)
+	WaitForExit func(context.Context, acp.WaitForTerminalExitRequest) (acp.WaitForTerminalExitResponse, error)
+	Kill        func(context.Context, acp.KillTerminalRequest) error
+	Release     func(context.Context, acp.ReleaseTerminalRequest) error
+}
+
+func (t ClientTerminal) Available() bool {
+	return t.Create != nil && t.Output != nil && t.WaitForExit != nil &&
+		t.Kill != nil && t.Release != nil
 }
 
 type FileReads interface {

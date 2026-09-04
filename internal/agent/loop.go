@@ -44,6 +44,7 @@ func (a *Agent) run(
 	active *activeTurn,
 	ask requestPermission,
 	fileSystem ClientFileSystem,
+	terminal ClientTerminal,
 	events chan<- event,
 ) loopOutcome {
 	for requestCount := 1; requestCount <= maxTurnRequests; requestCount++ {
@@ -156,6 +157,7 @@ func (a *Agent) run(
 			completion.ToolCalls,
 			ask,
 			fileSystem,
+			terminal,
 			events,
 			"",
 		)
@@ -598,6 +600,7 @@ func (a *Agent) executeBatch(
 		calls,
 		ask,
 		ClientFileSystem{},
+		ClientTerminal{},
 		events,
 		"",
 	)
@@ -611,6 +614,7 @@ func (a *Agent) executeBatchWith(
 	calls []openrouter.ToolCall,
 	ask requestPermission,
 	fileSystem ClientFileSystem,
+	terminal ClientTerminal,
 	events chan<- event,
 	parent string,
 ) []toolResult {
@@ -786,6 +790,7 @@ approvalLoop:
 					calls[current],
 					ask,
 					fileSystem,
+					terminal,
 					events,
 					parent,
 				)
@@ -842,6 +847,7 @@ func (a *Agent) executeOne(
 	call openrouter.ToolCall,
 	ask requestPermission,
 	fileSystem ClientFileSystem,
+	terminal ClientTerminal,
 	events chan<- event,
 	parent string,
 ) (result toolResult) {
@@ -887,11 +893,13 @@ func (a *Agent) executeOne(
 	var delegation *delegationRecord
 	invocation := Invocation{
 		Arguments:  json.RawMessage(call.Function.Arguments),
+		SessionID:  value.id,
 		Root:       value.state.cwd,
 		SpillDir:   a.store.spillDir(value.id),
 		CallID:     call.ID,
 		FileReads:  reads,
 		FileSystem: fileSystem,
+		Terminal:   terminal,
 		Emit: func(text string) {
 			events <- event{kind: eventToolOutput, call: call, text: text}
 		},
@@ -915,6 +923,7 @@ func (a *Agent) executeOne(
 				prompt,
 				ask,
 				fileSystem,
+				terminal,
 				events,
 			)
 			return answer, err

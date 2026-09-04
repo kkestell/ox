@@ -583,11 +583,11 @@ Requests Ox sends to an ACP client:
 - [x] `session/request_permission`
 - [x] `fs/read_text_file`
 - [x] `fs/write_text_file`
-- [ ] `terminal/create`
-- [ ] `terminal/output`
-- [ ] `terminal/wait_for_exit`
-- [ ] `terminal/kill`
-- [ ] `terminal/release`
+- [x] `terminal/create`
+- [x] `terminal/output`
+- [x] `terminal/wait_for_exit`
+- [x] `terminal/kill`
+- [x] `terminal/release`
 - [ ] `elicitation/create`
 
 Notifications Ox sends to an ACP client:

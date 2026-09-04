@@ -15,6 +15,11 @@ const (
 	MethodFSReadTextFile           = "fs/read_text_file"
 	MethodFSWriteTextFile          = "fs/write_text_file"
 	MethodSessionRequestPermission = "session/request_permission"
+	MethodTerminalCreate           = "terminal/create"
+	MethodTerminalKill             = "terminal/kill"
+	MethodTerminalOutput           = "terminal/output"
+	MethodTerminalRelease          = "terminal/release"
+	MethodTerminalWaitForExit      = "terminal/wait_for_exit"
 )
 
 type Metadata map[string]any
@@ -115,6 +120,78 @@ type WriteTextFileRequest struct {
 }
 
 type WriteTextFileResponse struct {
+	Meta Metadata `json:"_meta,omitempty"`
+}
+
+type CreateTerminalRequest struct {
+	SessionID       string        `json:"sessionId"`
+	Command         string        `json:"command"`
+	Args            []string      `json:"args,omitempty"`
+	Env             []EnvVariable `json:"env,omitempty"`
+	CWD             *string       `json:"cwd,omitempty"`
+	OutputByteLimit *int          `json:"outputByteLimit,omitempty"`
+	Meta            Metadata      `json:"_meta,omitempty"`
+}
+
+type EnvVariable struct {
+	Name  string   `json:"name"`
+	Value string   `json:"value"`
+	Meta  Metadata `json:"_meta,omitempty"`
+}
+
+type CreateTerminalResponse struct {
+	TerminalID string   `json:"terminalId"`
+	Meta       Metadata `json:"_meta,omitempty"`
+}
+
+type TerminalOutputRequest struct {
+	SessionID  string   `json:"sessionId"`
+	TerminalID string   `json:"terminalId"`
+	Meta       Metadata `json:"_meta,omitempty"`
+}
+
+type WaitForTerminalExitRequest struct {
+	SessionID  string   `json:"sessionId"`
+	TerminalID string   `json:"terminalId"`
+	Meta       Metadata `json:"_meta,omitempty"`
+}
+
+type KillTerminalRequest struct {
+	SessionID  string   `json:"sessionId"`
+	TerminalID string   `json:"terminalId"`
+	Meta       Metadata `json:"_meta,omitempty"`
+}
+
+type ReleaseTerminalRequest struct {
+	SessionID  string   `json:"sessionId"`
+	TerminalID string   `json:"terminalId"`
+	Meta       Metadata `json:"_meta,omitempty"`
+}
+
+type TerminalExitStatus struct {
+	ExitCode *int     `json:"exitCode,omitempty"`
+	Signal   *string  `json:"signal,omitempty"`
+	Meta     Metadata `json:"_meta,omitempty"`
+}
+
+type TerminalOutputResponse struct {
+	Output     string              `json:"output"`
+	Truncated  bool                `json:"truncated"`
+	ExitStatus *TerminalExitStatus `json:"exitStatus,omitempty"`
+	Meta       Metadata            `json:"_meta,omitempty"`
+}
+
+type WaitForTerminalExitResponse struct {
+	ExitCode *int     `json:"exitCode,omitempty"`
+	Signal   *string  `json:"signal,omitempty"`
+	Meta     Metadata `json:"_meta,omitempty"`
+}
+
+type KillTerminalResponse struct {
+	Meta Metadata `json:"_meta,omitempty"`
+}
+
+type ReleaseTerminalResponse struct {
 	Meta Metadata `json:"_meta,omitempty"`
 }
 

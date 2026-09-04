@@ -51,23 +51,24 @@ type Config struct {
 }
 
 type Agent struct {
-	name          string
-	version       string
-	logger        *slog.Logger
-	credentials   *credentials.Store
-	modelOverride string
-	settingsPath  string
-	client        Model
-	primaryTools  toolSet
-	subagentTools toolSet
-	store         *fileStore
-	clientFSMu    sync.RWMutex
-	clientFS      acp.FileSystemCapabilities
-	authMu        sync.Mutex
-	rejectedKey   string
-	rejectionText string
-	sessionsMu    sync.RWMutex
-	sessions      map[string]*session
+	name                 string
+	version              string
+	logger               *slog.Logger
+	credentials          *credentials.Store
+	modelOverride        string
+	settingsPath         string
+	client               Model
+	primaryTools         toolSet
+	subagentTools        toolSet
+	store                *fileStore
+	clientCapabilitiesMu sync.RWMutex
+	clientFS             acp.FileSystemCapabilities
+	clientTerminal       bool
+	authMu               sync.Mutex
+	rejectedKey          string
+	rejectionText        string
+	sessionsMu           sync.RWMutex
+	sessions             map[string]*session
 }
 
 func New(config Config) (*Agent, error) {
@@ -171,12 +172,16 @@ func (a *Agent) Initialize(
 	}
 	a.logger.Info("initializing client", "requested_protocol_version", request.ProtocolVersion)
 
-	a.clientFSMu.Lock()
+	a.clientCapabilitiesMu.Lock()
 	a.clientFS = acp.FileSystemCapabilities{}
+	a.clientTerminal = false
 	if request.ClientCapabilities != nil && request.ClientCapabilities.FS != nil {
 		a.clientFS = *request.ClientCapabilities.FS
 	}
-	a.clientFSMu.Unlock()
+	if request.ClientCapabilities != nil {
+		a.clientTerminal = request.ClientCapabilities.Terminal
+	}
+	a.clientCapabilitiesMu.Unlock()
 
 	authMethods := []acp.AuthMethod{{
 		ID:          openRouterAuthMethodID,
@@ -881,6 +886,7 @@ func (a *Agent) Prompt(
 	})
 	server := jrpc2.ServerFromContext(ctx)
 	fileSystem := a.clientFileSystem(server, value.id)
+	terminal := a.clientTerminalOperations(server, value.id)
 	requestPermission := func(
 		requestCtx context.Context,
 		request acp.RequestPermissionRequest,
@@ -917,7 +923,7 @@ func (a *Agent) Prompt(
 	events := make(chan event)
 	outcome := make(chan loopOutcome, 1)
 	go func() {
-		outcome <- a.run(runCtx, value, active, requestPermission, fileSystem, events)
+		outcome <- a.run(runCtx, value, active, requestPermission, fileSystem, terminal, events)
 		close(events)
 	}()
 
@@ -972,9 +978,9 @@ func (a *Agent) Prompt(
 }
 
 func (a *Agent) clientFileSystem(server *jrpc2.Server, sessionID string) ClientFileSystem {
-	a.clientFSMu.RLock()
+	a.clientCapabilitiesMu.RLock()
 	capabilities := a.clientFS
-	a.clientFSMu.RUnlock()
+	a.clientCapabilitiesMu.RUnlock()
 
 	var fileSystem ClientFileSystem
 	if capabilities.ReadTextFile {
@@ -1023,6 +1029,91 @@ func (a *Agent) clientFileSystem(server *jrpc2.Server, sessionID string) ClientF
 		}
 	}
 	return fileSystem
+}
+
+func (a *Agent) clientTerminalOperations(
+	server *jrpc2.Server,
+	sessionID string,
+) ClientTerminal {
+	a.clientCapabilitiesMu.RLock()
+	available := a.clientTerminal
+	a.clientCapabilitiesMu.RUnlock()
+	if !available {
+		return ClientTerminal{}
+	}
+
+	callback := func(ctx context.Context, method string, request any, result any) error {
+		response, err := server.Callback(ctx, method, request)
+		if err != nil {
+			return err
+		}
+		return response.UnmarshalResult(result)
+	}
+	return ClientTerminal{
+		Create: func(
+			ctx context.Context,
+			request acp.CreateTerminalRequest,
+		) (acp.CreateTerminalResponse, error) {
+			request.SessionID = sessionID
+			if err := request.Validate(); err != nil {
+				return acp.CreateTerminalResponse{}, fmt.Errorf(
+					"validate %s request: %w", acp.MethodTerminalCreate, err,
+				)
+			}
+			var result acp.CreateTerminalResponse
+			if err := callback(ctx, acp.MethodTerminalCreate, request, &result); err != nil {
+				return acp.CreateTerminalResponse{}, err
+			}
+			if err := result.Validate(); err != nil {
+				return acp.CreateTerminalResponse{}, fmt.Errorf(
+					"validate %s response: %w", acp.MethodTerminalCreate, err,
+				)
+			}
+			return result, nil
+		},
+		Output: func(
+			ctx context.Context,
+			request acp.TerminalOutputRequest,
+		) (acp.TerminalOutputResponse, error) {
+			request.SessionID = sessionID
+			if err := request.Validate(); err != nil {
+				return acp.TerminalOutputResponse{}, fmt.Errorf(
+					"validate %s request: %w", acp.MethodTerminalOutput, err,
+				)
+			}
+			var result acp.TerminalOutputResponse
+			return result, callback(ctx, acp.MethodTerminalOutput, request, &result)
+		},
+		WaitForExit: func(
+			ctx context.Context,
+			request acp.WaitForTerminalExitRequest,
+		) (acp.WaitForTerminalExitResponse, error) {
+			request.SessionID = sessionID
+			if err := request.Validate(); err != nil {
+				return acp.WaitForTerminalExitResponse{}, fmt.Errorf(
+					"validate %s request: %w", acp.MethodTerminalWaitForExit, err,
+				)
+			}
+			var result acp.WaitForTerminalExitResponse
+			return result, callback(ctx, acp.MethodTerminalWaitForExit, request, &result)
+		},
+		Kill: func(ctx context.Context, request acp.KillTerminalRequest) error {
+			request.SessionID = sessionID
+			if err := request.Validate(); err != nil {
+				return fmt.Errorf("validate %s request: %w", acp.MethodTerminalKill, err)
+			}
+			var result acp.KillTerminalResponse
+			return callback(ctx, acp.MethodTerminalKill, request, &result)
+		},
+		Release: func(ctx context.Context, request acp.ReleaseTerminalRequest) error {
+			request.SessionID = sessionID
+			if err := request.Validate(); err != nil {
+				return fmt.Errorf("validate %s request: %w", acp.MethodTerminalRelease, err)
+			}
+			var result acp.ReleaseTerminalResponse
+			return callback(ctx, acp.MethodTerminalRelease, request, &result)
+		},
+	}
 }
 
 func (a *Agent) adapterFailed(sessionID string, active *activeTurn, err error) error {
