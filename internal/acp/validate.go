@@ -11,6 +11,32 @@ import (
 	"strings"
 )
 
+func (n CancelRequestNotification) Validate() error {
+	id := bytes.TrimSpace(n.RequestID)
+	if len(id) == 0 {
+		return errors.New("requestId is required")
+	}
+	if !json.Valid(id) {
+		return errors.New("requestId must be valid JSON")
+	}
+	switch id[0] {
+	case '"':
+		var value string
+		if json.Unmarshal(id, &value) == nil {
+			return nil
+		}
+	case 'n':
+		if bytes.Equal(id, []byte("null")) {
+			return nil
+		}
+	default:
+		if _, err := strconv.ParseInt(string(id), 10, 64); err == nil {
+			return nil
+		}
+	}
+	return errors.New("requestId must be a string, integer, or null")
+}
+
 func (r InitializeRequest) Validate() error {
 	if r.ProtocolVersion <= 0 {
 		return errors.New("protocolVersion must be positive")
@@ -23,35 +49,6 @@ func (r AuthenticateRequest) Validate() error {
 		return errors.New("methodId is required")
 	}
 	return nil
-}
-
-func (n CancelRequestNotification) Validate() error {
-	id := bytes.TrimSpace(n.RequestID)
-	if len(id) == 0 {
-		return errors.New("requestId is required")
-	}
-	if !json.Valid(id) {
-		return errors.New("requestId must be valid JSON")
-	}
-
-	switch id[0] {
-	case '"':
-		var value string
-		if err := json.Unmarshal(id, &value); err != nil {
-			return errors.New("requestId must be a string, integer, or null")
-		}
-		return nil
-	case 'n':
-		if bytes.Equal(id, []byte("null")) {
-			return nil
-		}
-	default:
-		if _, err := strconv.ParseInt(string(id), 10, 64); err == nil {
-			return nil
-		}
-	}
-
-	return errors.New("requestId must be a string, integer, or null")
 }
 
 func (r NewSessionRequest) Validate() error {
@@ -134,8 +131,7 @@ func (r PromptRequest) Validate() error {
 			}
 		default:
 			return fmt.Errorf(
-				"prompt content block %d has unsupported type %q",
-				position, block.Type,
+				"prompt content block %d has unsupported type %q", position, block.Type,
 			)
 		}
 	}

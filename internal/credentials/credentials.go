@@ -1,11 +1,10 @@
-// Package credentials resolves the OpenRouter credential from the process
-// environment or the OS keyring, in that order.
 package credentials
 
 import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"strings"
 	"sync"
 
@@ -13,19 +12,21 @@ import (
 )
 
 const (
-	service                 = "ox"
-	account                 = "openrouter"
-	apiKeyVariable          = "OPENROUTER_API_KEY"
-	keyringDisabledVariable = "OX_KEYRING_DISABLED"
+	service         = "ox"
+	account         = "openrouter"
+	disabledEnvName = "OX_KEYRING_DISABLED"
 
-	NoCredentialMessage = "no OpenRouter credential is configured: set " + apiKeyVariable +
-		" or store a key in the OS keyring under service " + service + ", account " + account
-	KeyringDisabledMessage = "cannot store an OpenRouter API key: " + keyringDisabledVariable +
+	KeyringDisabledMessage = "cannot store an OpenRouter API key: " + disabledEnvName +
 		"=1 turns off keyring access"
+	NoCredentialMessage = "no OpenRouter credential is configured: set OPENROUTER_API_KEY " +
+		"or store a key in the OS keyring under service ox, account openrouter"
 )
 
-// Source names the layer that supplied the resolved credential. Its values also
-// read naturally in log messages.
+var (
+	ErrEmptyKey              = errors.New("OpenRouter API key is empty")
+	ErrEnvironmentCredential = errors.New("OPENROUTER_API_KEY cannot be cleared by logout")
+)
+
 type Source string
 
 const (
@@ -34,25 +35,19 @@ const (
 	SourceKeyring     Source = "keyring"
 )
 
-// Store caches the resolved credential and its source. Refresh, Set, and Clear
-// are the only operations that consult or change the keyring, which on macOS
-// costs a subprocess, so reads come from the cache.
 type Store struct {
-	logger          *slog.Logger
-	environmentKey  string
-	keyringDisabled bool
+	logger *slog.Logger
 
 	mu     sync.RWMutex
 	key    string
 	source Source
 }
 
-func NewStore(apiKey string, keyringDisabled bool, logger *slog.Logger) *Store {
-	store := &Store{
-		logger:          logger,
-		environmentKey:  strings.TrimSpace(apiKey),
-		keyringDisabled: keyringDisabled,
+func NewStore(logger *slog.Logger) *Store {
+	if logger == nil {
+		logger = slog.Default()
 	}
+	store := &Store{logger: logger}
 	store.Refresh()
 	return store
 }
@@ -69,10 +64,8 @@ func (s *Store) Source() Source {
 	return s.source
 }
 
-// KeyringDisabled reports whether Set and Clear are turned off, so a caller can
-// refuse to collect a key it cannot keep.
 func (s *Store) KeyringDisabled() bool {
-	return s.keyringDisabled
+	return keyringDisabled()
 }
 
 func (s *Store) Refresh() {
@@ -84,67 +77,74 @@ func (s *Store) Refresh() {
 func (s *Store) Set(key string) error {
 	key = strings.TrimSpace(key)
 	if key == "" {
-		return errors.New("OpenRouter API key is empty")
+		return ErrEmptyKey
 	}
-	if s.keyringDisabled {
+	if keyringDisabled() {
+		s.logger.Warn("credential store skipped", "keyring_disabled", true)
 		return errors.New(KeyringDisabledMessage)
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := keyring.Set(service, account, key); err != nil {
+		s.logger.Error("credential store failed", "operation", "set", "error", err)
 		return fmt.Errorf("store OpenRouter API key in keyring: %w", err)
 	}
 	s.resolve()
+	s.logger.Info("credential stored", "source", s.source)
 	return nil
 }
 
-// Clear deletes the keyring entry. It refuses while the environment supplies
-// the credential, because deleting the entry would not change which credential
-// Ox is using.
 func (s *Store) Clear() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.environmentKey != "" {
-		return fmt.Errorf("%s supplies the credential and cannot be cleared", apiKeyVariable)
+	if key := strings.TrimSpace(os.Getenv("OPENROUTER_API_KEY")); key != "" {
+		s.key = key
+		s.source = SourceEnvironment
+		s.logger.Warn("credential clear failed", "source", s.source)
+		return ErrEnvironmentCredential
 	}
-	if !s.keyringDisabled {
+	if !keyringDisabled() {
 		if err := keyring.Delete(service, account); err != nil && !errors.Is(err, keyring.ErrNotFound) {
+			s.logger.Error("credential clear failed", "error", err)
 			return fmt.Errorf("delete OpenRouter API key from keyring: %w", err)
 		}
 	}
 	s.resolve()
+	s.logger.Info("credential cleared", "source", s.source)
 	return nil
 }
 
-// resolve is the single place that defines credential precedence. The caller
-// holds s.mu for writing.
 func (s *Store) resolve() {
-	if s.environmentKey != "" {
-		s.key = s.environmentKey
+	if key := strings.TrimSpace(os.Getenv("OPENROUTER_API_KEY")); key != "" {
+		s.key = key
 		s.source = SourceEnvironment
+		s.logger.Info("credential resolved", "source", s.source)
 		return
 	}
-	if s.keyringDisabled {
+	if keyringDisabled() {
 		s.key = ""
 		s.source = SourceNone
+		s.logger.Info("credential resolved", "source", s.source, "keyring_disabled", true)
 		return
 	}
 
 	key, err := keyring.Get(service, account)
-	key = strings.TrimSpace(key)
 	switch {
-	case err == nil && key != "":
-		s.key = key
+	case err == nil && strings.TrimSpace(key) != "":
+		s.key = strings.TrimSpace(key)
 		s.source = SourceKeyring
 	case err == nil, errors.Is(err, keyring.ErrNotFound):
 		s.key = ""
 		s.source = SourceNone
 	default:
-		// A keyring Ox cannot read is no credential rather than a dead process.
-		// The error names the failure and never the key.
 		s.key = ""
 		s.source = SourceNone
-		s.logger.Warn("reading the OpenRouter credential from the keyring failed", "error", err)
+		s.logger.Warn("credential keyring read failed", "error", err)
 	}
+	s.logger.Info("credential resolved", "source", s.source)
+}
+
+func keyringDisabled() bool {
+	return os.Getenv(disabledEnvName) == "1"
 }

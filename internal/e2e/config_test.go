@@ -62,7 +62,7 @@ func TestGlobalConfigurationFallsBackToHome(t *testing.T) {
 		withModel(model),
 		withEnvironment("OX_MODEL", ""),
 		withEnvironment("XDG_CONFIG_HOME", ""),
-		withFile(filepath.Join(".config", "ox", "config.json"), `{"model":"home/model"}`),
+		withFile(filepath.Join(".config", "ox", "settings.json"), `{"model":"home/model"}`),
 	)
 	prompt(t, child, session, "home fallback")
 	if got := model.requestFor("home fallback").Model; got != "home/model" {
@@ -83,7 +83,7 @@ func TestWorkspaceConfigurationDoesNotWalkToAParent(t *testing.T) {
 	if responseError.Code != -32603 {
 		t.Fatalf("error code = %d, want -32603", responseError.Code)
 	}
-	if !strings.Contains(responseError.Message, filepath.Join(childWorkspace, ".ox", "config.json")) {
+	if !strings.Contains(responseError.Message, filepath.Join(childWorkspace, ".ox", "settings.json")) {
 		t.Errorf("error = %q, want child workspace path", responseError.Message)
 	}
 }
@@ -95,8 +95,8 @@ func TestSessionsResolveConfigurationForTheirOwnWorkspaces(t *testing.T) {
 	child := start(t,
 		withModel(model),
 		withEnvironment("OX_MODEL", ""),
-		withFile(filepath.Join("first", ".ox", "config.json"), `{"model":"first/model"}`),
-		withFile(filepath.Join("second", ".ox", "config.json"), `{"model":"second/model"}`),
+		withFile(filepath.Join("first", ".ox", "settings.json"), `{"model":"first/model"}`),
+		withFile(filepath.Join("second", ".ox", "settings.json"), `{"model":"second/model"}`),
 	)
 	initialize(t, child)
 	first := newSession(t, child, filepath.Join(child.cwd, "first"))
@@ -124,7 +124,7 @@ func TestSessionConfigurationIsFrozen(t *testing.T) {
 	initialize(t, child)
 	older := newSession(t, child, child.cwd)
 
-	path := filepath.Join(child.cwd, ".ox", "config.json")
+	path := filepath.Join(child.cwd, ".ox", "settings.json")
 	if err := os.WriteFile(path, []byte(`{"model":"new/model"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -145,7 +145,7 @@ func TestWorkspaceConfigurationUsesCanonicalDirectory(t *testing.T) {
 	child := start(t,
 		withModel(model),
 		withEnvironment("OX_MODEL", ""),
-		withFile(filepath.Join("real", ".ox", "config.json"), `{"model":"canonical/model"}`),
+		withFile(filepath.Join("real", ".ox", "settings.json"), `{"model":"canonical/model"}`),
 	)
 	link := filepath.Join(child.cwd, "link")
 	if err := os.Symlink(filepath.Join(child.cwd, "real"), link); err != nil {
@@ -166,8 +166,8 @@ func TestInvalidConfigurationFailsOnlyThatSession(t *testing.T) {
 	child := start(t,
 		withModel(model),
 		withEnvironment("OX_MODEL", ""),
-		withFile(filepath.Join("good", ".ox", "config.json"), `{"model":"good/model"}`),
-		withFile(filepath.Join("bad", ".ox", "config.json"), `{"unknown":true}`),
+		withFile(filepath.Join("good", ".ox", "settings.json"), `{"model":"good/model"}`),
+		withFile(filepath.Join("bad", ".ox", "settings.json"), `{"unknown":true}`),
 	)
 	initialize(t, child)
 	good := newSession(t, child, filepath.Join(child.cwd, "good"))
@@ -178,7 +178,7 @@ func TestInvalidConfigurationFailsOnlyThatSession(t *testing.T) {
 	held.await(t)
 
 	responseError := child.requestError("session/new", newSessionRequest(filepath.Join(child.cwd, "bad")))
-	if responseError.Code != -32603 || !strings.Contains(responseError.Message, filepath.Join("bad", ".ox", "config.json")) {
+	if responseError.Code != -32603 || !strings.Contains(responseError.Message, filepath.Join("bad", ".ox", "settings.json")) {
 		t.Fatalf("bad session error = %#v", responseError)
 	}
 	held.finish(sse(evFinishReason("stop")))
@@ -193,10 +193,10 @@ func TestBadConfigurationFilesNameTheirPathAndOxRecovers(t *testing.T) {
 		content  string
 		want     string
 	}{
-		{name: "malformed global", relative: filepath.Join("config", "ox", "config.json"), content: `{"model":`, want: "parse configuration file"},
-		{name: "unknown workspace key", relative: filepath.Join(".ox", "config.json"), content: `{"modle":"test/model"}`, want: `unknown field "modle"`},
-		{name: "wrong model type", relative: filepath.Join(".ox", "config.json"), content: `{"model":1}`, want: "cannot unmarshal number"},
-		{name: "blank model", relative: filepath.Join(".ox", "config.json"), content: `{"model":"   "}`, want: `"model" must not be blank`},
+		{name: "malformed global", relative: filepath.Join("config", "ox", "settings.json"), content: `{"model":`, want: "parse settings file"},
+		{name: "unknown workspace key", relative: filepath.Join(".ox", "settings.json"), content: `{"modle":"test/model"}`, want: `unknown field "modle"`},
+		{name: "wrong model type", relative: filepath.Join(".ox", "settings.json"), content: `{"model":1}`, want: "cannot unmarshal number"},
+		{name: "blank model", relative: filepath.Join(".ox", "settings.json"), content: `{"model":"   "}`, want: `"model" must not be blank`},
 	}
 
 	for _, test := range tests {
@@ -255,13 +255,13 @@ func TestConfigurationReadFailuresNameTheirPath(t *testing.T) {
 				if err := os.WriteFile(path, []byte("not a directory"), 0o600); err != nil {
 					t.Fatal(err)
 				}
-				return filepath.Join(path, "config.json")
+				return filepath.Join(path, "settings.json")
 			},
 		},
 		{
 			name: "config is a directory",
 			setup: func(t *testing.T, child *process) string {
-				path := filepath.Join(child.cwd, ".ox", "config.json")
+				path := filepath.Join(child.cwd, ".ox", "settings.json")
 				if err := os.MkdirAll(path, 0o755); err != nil {
 					t.Fatal(err)
 				}
@@ -276,7 +276,7 @@ func TestConfigurationReadFailuresNameTheirPath(t *testing.T) {
 			path := test.setup(t, child)
 			initialize(t, child)
 			responseError := child.requestError("session/new", newSessionRequest(child.cwd))
-			if responseError.Code != -32603 || !strings.Contains(responseError.Message, path) || !strings.Contains(responseError.Message, "read configuration file") {
+			if responseError.Code != -32603 || !strings.Contains(responseError.Message, path) || !strings.Contains(responseError.Message, "read settings file") {
 				t.Fatalf("configuration error = %#v, want read error naming %s", responseError, path)
 			}
 		})
@@ -291,7 +291,7 @@ func TestNoUsableGlobalBaseNamesOnlyWorkspaceConfiguration(t *testing.T) {
 	)
 	initialize(t, child)
 	responseError := child.requestError("session/new", newSessionRequest(child.cwd))
-	workspacePath := filepath.Join(child.cwd, ".ox", "config.json")
+	workspacePath := filepath.Join(child.cwd, ".ox", "settings.json")
 	if responseError.Code != -32603 || !strings.Contains(responseError.Message, workspacePath) {
 		t.Fatalf("configuration error = %#v, want workspace path", responseError)
 	}

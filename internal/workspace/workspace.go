@@ -1,9 +1,7 @@
-// Package workspace confines filesystem paths to a session's working tree.
-// Paths are opened through os.Root so the kernel applies the same boundary to
-// the check and the operation, even when a symlink changes between them.
 package workspace
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -11,10 +9,30 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 )
 
-// Canonical resolves dir to an absolute directory that Ox can list.
+type Workspace struct {
+	root     string
+	readable []string
+}
+
+type committedError struct {
+	err error
+}
+
+func (e committedError) Error() string {
+	return e.err.Error()
+}
+
+func (e committedError) Unwrap() error {
+	return e.err
+}
+
+func MutationCommitted(err error) bool {
+	var committed committedError
+	return errors.As(err, &committed)
+}
+
 func Canonical(dir string) (string, error) {
 	absolute, err := filepath.Abs(dir)
 	if err != nil {
@@ -31,7 +49,6 @@ func Canonical(dir string) (string, error) {
 	if !info.IsDir() {
 		return "", fmt.Errorf("working directory is not a directory: %s", dir)
 	}
-
 	handle, err := os.Open(canonical)
 	if err != nil {
 		return "", fmt.Errorf("cannot access the working directory %s: %v", dir, err)
@@ -47,166 +64,281 @@ func Canonical(dir string) (string, error) {
 	return canonical, nil
 }
 
-// Workspace is the canonical root owned by one session.
-type Workspace struct {
-	root string
+func NewWorkspace(root string) *Workspace {
+	return &Workspace{root: root}
 }
 
-// New creates a workspace from a canonical absolute root.
-func New(root string) Workspace {
-	if !filepath.IsAbs(root) {
-		panic("workspace root must be absolute")
+func (w *Workspace) WithReadable(dir string) *Workspace {
+	if dir != "" {
+		w.readable = append(w.readable, dir)
 	}
-	return Workspace{root: filepath.Clean(root)}
+	return w
 }
 
-// Root returns the workspace's canonical absolute root.
-func (w Workspace) Root() string {
-	return w.root
-}
-
-// Resolve maps path to its canonical location inside the workspace.
-func (w Workspace) Resolve(path string) (Path, error) {
-	candidate := path
-	if !filepath.IsAbs(candidate) {
-		candidate = filepath.Join(w.root, candidate)
+func (w *Workspace) ReadFile(path string) ([]byte, error) {
+	root, name, err := w.confine(path, w.readRoots())
+	if err != nil {
+		return nil, err
 	}
-	// Confinement is decided from the best resolution available, before any
-	// failure is reported, so a path that leaves the tree is refused as outside
-	// the workspace rather than by whatever the host said about it. Otherwise a
-	// climb into a directory Ox cannot traverse would answer with the host's
-	// permissions and tell the model what lives outside its tree.
-	resolved, failure := resolveExisting(candidate)
-	relative, ok := w.inside(resolved)
+	defer func() {
+		_ = root.Close()
+	}()
+	file, err := openRegularFile(root, name)
+	if err != nil {
+		if errors.Is(err, errNotRegular) {
+			return nil, fmt.Errorf("cannot access `%s`: not a regular file", path)
+		}
+		return nil, accessError(err, path)
+	}
+	defer func() {
+		_ = file.Close()
+	}()
+	data, err := io.ReadAll(file)
+	if err != nil {
+		return nil, accessError(err, path)
+	}
+	return data, nil
+}
+
+func (w *Workspace) WriteFile(path string, data []byte) (bool, error) {
+	key, ok := w.Key(path)
 	if !ok {
-		return Path{}, outsideError(path)
+		return false, fmt.Errorf("`%s` is outside the workspace", path)
 	}
-	if failure != nil {
-		return Path{}, accessError(failure, path)
+	root, name, err := w.confine(filepath.FromSlash(key), []string{w.root})
+	if err != nil {
+		return false, err
 	}
-	return Path{root: w.root, name: relative}, nil
+	defer func() {
+		_ = root.Close()
+	}()
+
+	dir := filepath.Dir(name)
+	if err := root.MkdirAll(dir, 0o755); err != nil {
+		return false, writeError(err, path)
+	}
+	mode := fs.FileMode(0o644)
+	created := false
+	info, err := root.Stat(name)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		created = true
+	case err != nil:
+		return false, writeError(err, path)
+	case !info.Mode().IsRegular():
+		return false, fmt.Errorf("cannot write `%s`: not a regular file", path)
+	default:
+		mode = info.Mode().Perm()
+	}
+	committed, err := atomicReplace(root, name, data, mode)
+	if err != nil {
+		if committed {
+			return created, committedError{writeError(err, path)}
+		}
+		return false, writeError(err, path)
+	}
+	return created, nil
 }
 
-// inside reports where target sits relative to the root, and false if it sits
-// outside.
-func (w Workspace) inside(target string) (string, bool) {
-	relative, err := filepath.Rel(w.root, target)
+func (w *Workspace) Edit(path string, transform func([]byte) ([]byte, error)) error {
+	key, ok := w.Key(path)
+	if !ok {
+		return fmt.Errorf("`%s` is outside the workspace", path)
+	}
+	root, name, err := w.confine(filepath.FromSlash(key), []string{w.root})
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = root.Close()
+	}()
+
+	file, err := openRegularFile(root, name)
+	if err != nil {
+		if errors.Is(err, errNotRegular) {
+			return fmt.Errorf("cannot edit `%s`: not a regular file", path)
+		}
+		return writeError(err, path)
+	}
+	data, readErr := io.ReadAll(file)
+	info, statErr := file.Stat()
+	closeErr := file.Close()
+	if err := errors.Join(readErr, statErr, closeErr); err != nil {
+		return writeError(err, path)
+	}
+	replacement, err := transform(data)
+	if err != nil {
+		return err
+	}
+	committed, err := atomicReplace(root, name, replacement, info.Mode().Perm())
+	if err != nil {
+		if committed {
+			return committedError{writeError(err, path)}
+		}
+		return writeError(err, path)
+	}
+	return nil
+}
+
+func (w *Workspace) Key(path string) (string, bool) {
+	_, name, ok := w.locate(path, []string{w.root})
+	if !ok {
+		return "", false
+	}
+	resolved, err := resolveExisting(filepath.Join(w.root, name))
+	if err != nil {
+		return "", false
+	}
+	for _, readable := range w.readable {
+		resolvedReadable, err := resolveExisting(readable)
+		if err != nil {
+			continue
+		}
+		relative, err := filepath.Rel(resolvedReadable, resolved)
+		if err == nil && !escapes(relative) {
+			return "", false
+		}
+	}
+	relative, err := filepath.Rel(w.root, resolved)
 	if err != nil || escapes(relative) {
 		return "", false
 	}
-	return relative, true
+	return filepath.ToSlash(relative), true
 }
 
-// Path is a workspace-confined path minted by Resolve.
-type Path struct {
-	root string
-	name string
-}
-
-// String returns the workspace-relative spelling shown to people and models.
-func (p Path) String() string {
-	return filepath.ToSlash(p.name)
-}
-
-// Absolute returns the absolute spelling required by ACP filesystem messages.
-func (p Path) Absolute() string {
-	return filepath.Join(p.root, p.name)
-}
-
-// Open opens a regular file through the workspace root that confines it.
-func (p Path) Open() (*os.File, error) {
-	root, err := os.OpenRoot(p.root)
+func (w *Workspace) WalkFiles(
+	ctx context.Context,
+	path string,
+	yield func(WalkedFile) bool,
+) error {
+	root, name, err := w.confine(path, w.readRoots())
 	if err != nil {
-		return nil, accessError(err, p.String())
+		return err
 	}
-	file, openErr := root.OpenFile(p.name, os.O_RDONLY|syscall.O_NONBLOCK, 0)
-	closeErr := root.Close()
-	if openErr != nil {
-		return nil, accessError(openErr, p.String())
-	}
-	if closeErr != nil {
-		_ = file.Close()
-		return nil, accessError(closeErr, p.String())
-	}
+	defer func() {
+		_ = root.Close()
+	}()
+	return walkRoot(ctx, root, name, path, yield)
+}
 
-	info, err := file.Stat()
+func (w *Workspace) readRoots() []string {
+	return append([]string{w.root}, w.readable...)
+}
+
+func (w *Workspace) confine(path string, roots []string) (*os.Root, string, error) {
+	dir, name, ok := w.locate(path, roots)
+	if !ok {
+		return nil, "", fmt.Errorf("`%s` is outside the workspace", path)
+	}
+	root, err := os.OpenRoot(dir)
 	if err != nil {
-		_ = file.Close()
-		return nil, accessError(err, p.String())
+		return nil, "", fmt.Errorf("cannot access `%s`", path)
 	}
-	if !info.Mode().IsRegular() {
-		_ = file.Close()
-		return nil, fmt.Errorf("cannot access `%s`: not a regular file", p.String())
-	}
-	return file, nil
+	return root, name, nil
 }
 
-// resolveExisting resolves the deepest existing part of path through symlinks
-// and reattaches the components below it. A missing tail is ordinary, since a
-// write needs one. Any other failure is returned alongside the best resolution
-// reached anyway, so a caller can place the path before it reports the reason.
-func resolveExisting(path string) (string, error) {
-	var missing []string
-	var failure error
-	current := filepath.Clean(path)
-	for {
-		_, statErr := os.Lstat(current)
-		if statErr == nil {
-			resolved, resolveErr := filepath.EvalSymlinks(current)
-			if resolveErr == nil {
-				for index := len(missing) - 1; index >= 0; index-- {
-					resolved = filepath.Join(resolved, missing[index])
-				}
-				return resolved, failure
-			}
-			// Something is here but does not resolve — a dangling or looping
-			// symlink. That is a failure rather than a missing tail, and climbing
-			// on now serves only to locate it.
-			if failure == nil {
-				failure = resolveErr
-			}
-		} else if failure == nil && !errors.Is(statErr, fs.ErrNotExist) {
-			failure = statErr
+func (w *Workspace) locate(path string, roots []string) (dir, name string, ok bool) {
+	if !filepath.IsAbs(path) {
+		name := filepath.Clean(path)
+		if escapes(name) {
+			return "", "", false
 		}
-		parent := filepath.Dir(current)
-		if parent == current {
-			// Nothing above the filesystem root to climb to. Failing closed here
-			// is the loop's bound: a root that will not resolve cannot be placed
-			// inside any workspace.
-			return current, failure
-		}
-		missing = append(missing, filepath.Base(current))
-		current = parent
+		return w.root, name, true
 	}
+	for _, dir := range roots {
+		if rel, err := filepath.Rel(dir, path); err == nil && !escapes(rel) {
+			return dir, rel, true
+		}
+	}
+	return "", "", false
 }
 
-func escapes(relative string) bool {
-	return relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator))
-}
-
-func outsideError(path string) error {
-	return fmt.Errorf("`%s` is outside the workspace", path)
+func escapes(rel string) bool {
+	return rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 func accessError(err error, path string) error {
 	if isEscape(err) {
-		return outsideError(path)
+		return fmt.Errorf("`%s` is outside the workspace", path)
 	}
-	return fmt.Errorf("cannot access `%s`: %v", path, bareCause(err))
+	return fmt.Errorf("cannot access `%s`", path)
+}
+
+func writeError(err error, path string) error {
+	if isEscape(err) {
+		return fmt.Errorf("`%s` is outside the workspace", path)
+	}
+	return fmt.Errorf("cannot write `%s`: %w", path, err)
 }
 
 func isEscape(err error) bool {
-	var pathError *fs.PathError
-	return errors.As(err, &pathError) &&
-		strings.Contains(pathError.Err.Error(), "escapes from parent")
+	var pathErr *fs.PathError
+	return errors.As(err, &pathErr) &&
+		strings.Contains(pathErr.Err.Error(), "escapes from parent")
 }
 
-func bareCause(err error) error {
-	for {
-		cause := errors.Unwrap(err)
-		if cause == nil {
-			return err
+func atomicReplace(
+	root *os.Root,
+	name string,
+	data []byte,
+	mode fs.FileMode,
+) (bool, error) {
+	temporary := filepath.Join(filepath.Dir(name), filepath.Base(name)+".ox-tmp")
+	file, err := root.OpenFile(temporary, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
+	if err != nil {
+		return false, err
+	}
+	remove := true
+	defer func() {
+		if remove {
+			_ = root.Remove(temporary)
 		}
-		err = cause
+	}()
+	if err := file.Chmod(mode); err != nil {
+		_ = file.Close()
+		return false, err
+	}
+	if _, err := file.Write(data); err != nil {
+		_ = file.Close()
+		return false, err
+	}
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		return false, err
+	}
+	if err := file.Close(); err != nil {
+		return false, err
+	}
+	if err := root.Rename(temporary, name); err != nil {
+		return false, err
+	}
+	remove = false
+	return true, syncDir(filepath.Join(root.Name(), filepath.Dir(name)))
+}
+
+func resolveExisting(path string) (string, error) {
+	var missing []string
+	current := filepath.Clean(path)
+	for {
+		_, err := os.Lstat(current)
+		if err == nil {
+			resolved, err := filepath.EvalSymlinks(current)
+			if err != nil {
+				return "", err
+			}
+			for index := len(missing) - 1; index >= 0; index-- {
+				resolved = filepath.Join(resolved, missing[index])
+			}
+			return resolved, nil
+		}
+		if !errors.Is(err, fs.ErrNotExist) {
+			return "", err
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return "", err
+		}
+		missing = append(missing, filepath.Base(current))
+		current = parent
 	}
 }

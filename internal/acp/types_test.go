@@ -1,253 +1,148 @@
-package acp_test
+package acp
 
 import (
 	"encoding/json"
-	"reflect"
+	"strings"
 	"testing"
-
-	"github.com/kkestell/ox/internal/acp"
 )
 
-func TestInitializeRequestRoundTrip(t *testing.T) {
-	literal := []byte(`{
-		"protocolVersion": 1,
-		"clientCapabilities": {
-			"auth": {"terminal": true},
-			"fs": {
-				"readTextFile": true,
-				"writeTextFile": true
-			},
-			"terminal": true
-		},
-		"clientInfo": {
-			"name": "my-client",
-			"title": "My Client",
-			"version": "1.0.0"
-		}
-	}`)
-
-	var request acp.InitializeRequest
-	if err := json.Unmarshal(literal, &request); err != nil {
-		t.Fatal(err)
-	}
-	encoded, err := json.Marshal(request)
+func TestInitializeResponseOmitsUnsetOptionalFields(t *testing.T) {
+	data, err := json.Marshal(InitializeResponse{ProtocolVersion: ProtocolVersion})
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertJSONEqual(t, encoded, literal)
+
+	got := string(data)
+	if got != `{"protocolVersion":1}` {
+		t.Fatalf("encoded response = %s", got)
+	}
+	if strings.Contains(got, "null") {
+		t.Fatalf("encoded response contains null: %s", got)
+	}
 }
 
-func TestInitializeRequestPreservesOmittedCapabilities(t *testing.T) {
-	var request acp.InitializeRequest
-	if err := json.Unmarshal([]byte(`{"protocolVersion":1}`), &request); err != nil {
+func TestInitializeMetadataRoundTrip(t *testing.T) {
+	input := []byte(`{"protocolVersion":1,"_meta":{"ox.example":{"enabled":true}}}`)
+
+	var request InitializeRequest
+	if err := json.Unmarshal(input, &request); err != nil {
 		t.Fatal(err)
 	}
-	if request.ClientCapabilities != nil {
-		t.Fatalf("clientCapabilities = %#v, want nil", request.ClientCapabilities)
-	}
-}
 
-func TestInitializeResponseShape(t *testing.T) {
-	response := acp.InitializeResponse{
-		ProtocolVersion: acp.ProtocolVersion,
-		AgentCapabilities: acp.AgentCapabilities{
-			Auth: &acp.AgentAuthCapabilities{Logout: &acp.LogoutCapabilities{}},
-			PromptCapabilities: acp.PromptCapabilities{
-				Image:           true,
-				Audio:           true,
-				EmbeddedContext: true,
-			},
-		},
-		AgentInfo: acp.Implementation{Name: "ox", Version: "0.0.1"},
-		AuthMethods: []acp.AuthMethod{
-			{
-				ID:          "openrouter",
-				Name:        "OpenRouter credential",
-				Description: "Use an OpenRouter API key already available to Ox.",
-			},
-			{
-				ID:          "openrouter-terminal",
-				Type:        "terminal",
-				Name:        "Log in to OpenRouter",
-				Description: "Enter and store an OpenRouter API key in a terminal.",
-				Args:        []string{"login"},
-			},
-		},
-	}
-	encoded, err := json.Marshal(response)
+	data, err := json.Marshal(request)
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertJSONEqual(t, encoded, []byte(`{
-		"protocolVersion": 1,
-		"agentCapabilities": {
-			"loadSession": false,
-			"auth": {"logout": {}},
-			"promptCapabilities": {
-				"image": true,
-				"audio": true,
-				"embeddedContext": true
-			}
-		},
-		"agentInfo": {
-			"name": "ox",
-			"version": "0.0.1"
-		},
-		"authMethods": [
-			{
-				"id": "openrouter",
-				"name": "OpenRouter credential",
-				"description": "Use an OpenRouter API key already available to Ox."
-			},
-			{
-				"id": "openrouter-terminal",
-				"type": "terminal",
-				"name": "Log in to OpenRouter",
-				"description": "Enter and store an OpenRouter API key in a terminal.",
-				"args": ["login"]
-			}
-		]
-	}`))
+
+	var got map[string]any
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	meta, ok := got["_meta"].(map[string]any)
+	if !ok {
+		t.Fatalf("_meta missing from %s", data)
+	}
+	ox, ok := meta["ox.example"].(map[string]any)
+	if !ok || ox["enabled"] != true {
+		t.Fatalf("_meta changed during round trip: %#v", meta)
+	}
 }
 
-func TestContentBlockMarshalsEachVariantsRequiredFields(t *testing.T) {
-	for _, test := range []struct {
-		name  string
-		block acp.ContentBlock
+func TestSessionPayloadsUsePinnedWireShapes(t *testing.T) {
+	request := NewSessionRequest{
+		CWD:        "/workspace",
+		MCPServers: []json.RawMessage{},
+	}
+	data, err := json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != `{"cwd":"/workspace","mcpServers":[]}` {
+		t.Fatalf("new session request = %s", data)
+	}
+
+	prompt := PromptRequest{
+		SessionID: "session-1",
+		Prompt: []ContentBlock{
+			{Type: "text", Text: ""},
+			{Type: "resource_link", Name: "guide", URI: "file:///guide.md"},
+		},
+	}
+	data, err = json.Marshal(prompt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"sessionId":"session-1","prompt":[{"type":"text","text":""},{"type":"resource_link","name":"guide","uri":"file:///guide.md"}]}`
+	if string(data) != want {
+		t.Fatalf("prompt request = %s", data)
+	}
+
+	cancel := CancelNotification{SessionID: "session-1"}
+	data, err = json.Marshal(cancel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != `{"sessionId":"session-1"}` {
+		t.Fatalf("cancel notification = %s", data)
+	}
+}
+
+func TestSessionUpdatesCarryExactDiscriminators(t *testing.T) {
+	updates := []struct {
+		value any
 		want  string
 	}{
 		{
-			name:  "text",
-			block: acp.ContentBlock{Type: "text", Text: "hello"},
-			want:  `{"type":"text","text":"hello"}`,
-		},
-		{
-			name:  "empty text",
-			block: acp.ContentBlock{Type: "text"},
-			want:  `{"type":"text","text":""}`,
-		},
-		{
-			name:  "resource link",
-			block: acp.ContentBlock{Type: "resource_link", Name: "main.go", URI: "file:///main.go"},
-			want:  `{"type":"resource_link","name":"main.go","uri":"file:///main.go"}`,
-		},
-		{
-			name: "image",
-			block: acp.ContentBlock{
-				Type: "image", MIMEType: "image/png", Data: "cGljdHVyZQ==",
+			value: UserMessageChunk{
+				SessionUpdate: "user_message_chunk",
+				Content:       ContentBlock{Type: "text", Text: "follow up"},
+				MessageID:     "message-1",
 			},
-			want: `{"type":"image","mimeType":"image/png","data":"cGljdHVyZQ=="}`,
+			want: `{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"follow up"},"messageId":"message-1"}`,
 		},
 		{
-			name: "audio",
-			block: acp.ContentBlock{
-				Type: "audio", MIMEType: "audio/wav", Data: "c291bmQ=",
+			value: AgentMessageChunk{
+				SessionUpdate: "agent_message_chunk",
+				Content:       ContentBlock{Type: "text", Text: "hello"},
+				MessageID:     "message-1",
 			},
-			want: `{"type":"audio","mimeType":"audio/wav","data":"c291bmQ="}`,
+			want: `{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"hello"},"messageId":"message-1"}`,
 		},
 		{
-			name: "embedded text resource",
-			block: acp.ContentBlock{
-				Type: "resource",
-				Resource: &acp.EmbeddedResource{
-					URI: "file:///main.go", MIMEType: "text/plain", Text: stringPointer("package main"),
-				},
+			value: ToolCall{
+				SessionUpdate: "tool_call",
+				ToolCallID:    "call-1",
+				Title:         "lookup",
+				Status:        ToolCallStatusPending,
 			},
-			want: `{"type":"resource","resource":{"uri":"file:///main.go","mimeType":"text/plain","text":"package main"}}`,
+			want: `{"sessionUpdate":"tool_call","toolCallId":"call-1","title":"lookup","status":"pending"}`,
 		},
 		{
-			name: "embedded blob resource",
-			block: acp.ContentBlock{
-				Type: "resource",
-				Resource: &acp.EmbeddedResource{
-					URI: "file:///sound.wav", MIMEType: "audio/wav", Blob: stringPointer("c291bmQ="),
-				},
+			value: ToolCallUpdate{
+				SessionUpdate: "tool_call_update",
+				ToolCallID:    "call-1",
+				Status:        ToolCallStatusCompleted,
 			},
-			want: `{"type":"resource","resource":{"uri":"file:///sound.wav","mimeType":"audio/wav","blob":"c291bmQ="}}`,
+			want: `{"sessionUpdate":"tool_call_update","toolCallId":"call-1","status":"completed"}`,
 		},
 		{
-			name:  "missing embedded resource",
-			block: acp.ContentBlock{Type: "resource"},
-			want:  `{"type":"resource","resource":null}`,
+			value: UsageUpdate{
+				SessionUpdate: "usage_update",
+				Used:          12,
+				Size:          100,
+				Cost:          &Cost{Amount: 0.25, Currency: "USD"},
+			},
+			want: `{"sessionUpdate":"usage_update","used":12,"size":100,"cost":{"amount":0.25,"currency":"USD"}}`,
 		},
-		{
-			name:  "unsupported",
-			block: acp.ContentBlock{Type: "future"},
-			want:  `{"type":"future"}`,
-		},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			encoded, err := json.Marshal(test.block)
-			if err != nil {
-				t.Fatal(err)
-			}
-			assertJSONEqual(t, encoded, []byte(test.want))
-		})
 	}
-}
 
-func TestSessionNotificationShape(t *testing.T) {
-	notification := acp.SessionNotification{
-		SessionID: "session",
-		Update: acp.ContentChunk{
-			SessionUpdate: acp.SessionUpdateAgentMessageChunk,
-			Content:       acp.ContentBlock{Type: "text", Text: "hello"},
-			MessageID:     "message",
-		},
-	}
-	encoded, err := json.Marshal(notification)
-	if err != nil {
-		t.Fatal(err)
-	}
-	assertJSONEqual(t, encoded, []byte(`{
-		"sessionId": "session",
-		"update": {
-			"sessionUpdate": "agent_message_chunk",
-			"content": {"type": "text", "text": "hello"},
-			"messageId": "message"
+	for _, test := range updates {
+		data, err := json.Marshal(test.value)
+		if err != nil {
+			t.Fatal(err)
 		}
-	}`))
-}
-
-func TestPromptRequestRoundTrip(t *testing.T) {
-	literal := []byte(`{
-		"sessionId": "session",
-		"prompt": [
-			{"type": "text", "text": "hello"},
-			{"type": "image", "mimeType": "image/png", "data": "aW1hZ2U="},
-			{"type": "audio", "mimeType": "audio/wav", "data": "YXVkaW8="},
-			{"type": "resource_link", "name": "main.go", "uri": "file:///main.go"},
-			{"type": "resource", "resource": {
-				"uri": "file:///context.txt", "mimeType": "text/plain", "text": "context"
-			}}
-		]
-	}`)
-
-	var request acp.PromptRequest
-	if err := json.Unmarshal(literal, &request); err != nil {
-		t.Fatal(err)
+		if string(data) != test.want {
+			t.Errorf("update = %s, want %s", data, test.want)
+		}
 	}
-	encoded, err := json.Marshal(request)
-	if err != nil {
-		t.Fatal(err)
-	}
-	assertJSONEqual(t, encoded, literal)
-}
-
-func assertJSONEqual(t *testing.T, got, want []byte) {
-	t.Helper()
-	var gotValue, wantValue any
-	if err := json.Unmarshal(got, &gotValue); err != nil {
-		t.Fatalf("decode got JSON: %v", err)
-	}
-	if err := json.Unmarshal(want, &wantValue); err != nil {
-		t.Fatalf("decode want JSON: %v", err)
-	}
-	if !reflect.DeepEqual(gotValue, wantValue) {
-		t.Fatalf("JSON mismatch\ngot:  %s\nwant: %s", got, want)
-	}
-}
-
-func stringPointer(value string) *string {
-	return &value
 }

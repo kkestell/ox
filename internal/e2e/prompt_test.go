@@ -45,16 +45,47 @@ func promptResponse(t *testing.T, result json.RawMessage) acp.PromptResponse {
 // updates decodes one session's session/update notifications ox sent before
 // the response the caller has already read. Other sessions' notifications stay
 // buffered for their own caller.
-func updates(t *testing.T, child *process, session string) []acp.SessionNotification {
+type sessionUpdate struct {
+	SessionUpdate string           `json:"sessionUpdate"`
+	Content       acp.ContentBlock `json:"content"`
+	MessageID     string           `json:"messageId"`
+	Meta          acp.Metadata     `json:"_meta"`
+}
+
+func (u *sessionUpdate) UnmarshalJSON(data []byte) error {
+	var wire struct {
+		SessionUpdate string          `json:"sessionUpdate"`
+		Content       json.RawMessage `json:"content"`
+		MessageID     string          `json:"messageId"`
+		Meta          acp.Metadata    `json:"_meta"`
+	}
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	u.SessionUpdate = wire.SessionUpdate
+	u.MessageID = wire.MessageID
+	u.Meta = wire.Meta
+	if len(wire.Content) > 0 && wire.Content[0] == '{' {
+		return json.Unmarshal(wire.Content, &u.Content)
+	}
+	return nil
+}
+
+type sessionNotification struct {
+	SessionID string        `json:"sessionId"`
+	Update    sessionUpdate `json:"update"`
+}
+
+func updates(t *testing.T, child *process, session string) []sessionNotification {
 	t.Helper()
-	var decoded []acp.SessionNotification
+	var decoded []sessionNotification
 	var remaining []message
 	for _, notification := range child.pending {
 		if notification.Method != "session/update" || len(notification.ID) != 0 {
 			remaining = append(remaining, notification)
 			continue
 		}
-		var update acp.SessionNotification
+		var update sessionNotification
 		if err := json.Unmarshal(notification.Params, &update); err != nil {
 			t.Fatalf("decode session/update params: %v", err)
 		}
@@ -72,7 +103,7 @@ func updates(t *testing.T, child *process, session string) []acp.SessionNotifica
 // message ID they all carry.
 func chunks(
 	t *testing.T,
-	sent []acp.SessionNotification,
+	sent []sessionNotification,
 	kind string,
 ) (string, string) {
 	t.Helper()
@@ -110,6 +141,9 @@ type exchange struct {
 
 func assertConversation(t *testing.T, messages []modelMessage, want []exchange) {
 	t.Helper()
+	if len(messages) > 0 && messages[0].Role == "system" {
+		messages = messages[1:]
+	}
 	if len(messages) != len(want) {
 		t.Fatalf("model received %d messages, want %d: %#v", len(messages), len(want), messages)
 	}
@@ -269,7 +303,7 @@ func TestPromptSendsEveryContentVariantInClientOrder(t *testing.T) {
 	updates(t, child, session)
 
 	requests := model.requests()
-	if len(requests) != 1 || len(requests[0].Messages) != 1 {
+	if len(requests) != 1 || len(requests[0].Messages) != 2 {
 		t.Fatalf("model requests = %#v, want one request with one message", requests)
 	}
 	want := `[
@@ -281,7 +315,7 @@ func TestPromptSendsEveryContentVariantInClientOrder(t *testing.T) {
 		{"type":"image_url","image_url":{"url":"data:image/png;base64,aW1hZ2U="}},
 		{"type":"input_audio","input_audio":{"data":"YXVkaW8=","format":"flac"}}
 	]`
-	assertContent(t, requests[0].Messages[0].Content, want)
+	assertContent(t, requests[0].Messages[1].Content, want)
 }
 
 func TestPromptKeepsMultimodalPartsInHistory(t *testing.T) {
@@ -306,10 +340,10 @@ func TestPromptKeepsMultimodalPartsInHistory(t *testing.T) {
 	updates(t, child, session)
 
 	requests := model.requests()
-	if len(requests) != 2 || len(requests[1].Messages) != 3 {
+	if len(requests) != 2 || len(requests[1].Messages) != 4 {
 		t.Fatalf("second model request = %#v, want three messages", requests)
 	}
-	assertContent(t, requests[1].Messages[0].Content, `[
+	assertContent(t, requests[1].Messages[1].Content, `[
 		{"type":"text","text":"describe"},
 		{"type":"image_url","image_url":{"url":"data:image/png;base64,cGljdHVyZQ=="}}
 	]`)
@@ -574,14 +608,20 @@ func TestPromptReportsProviderFailures(t *testing.T) {
 		want  string
 	}{
 		{
-			name:  "error chunk",
-			queue: func(model *mockModel) { model.queue(sse(evError(502, "provider unavailable"))) },
-			want:  "provider unavailable",
+			name: "error chunk",
+			queue: func(model *mockModel) {
+				for range 5 {
+					model.queue(sse(evError(502, "provider unavailable")))
+				}
+			},
+			want: "provider unavailable",
 		},
 		{
 			name: "non-2xx response",
 			queue: func(model *mockModel) {
-				model.fail(http.StatusInternalServerError, "provider exploded")
+				for range 5 {
+					model.fail(http.StatusInternalServerError, "provider exploded")
+				}
 			},
 			want: "provider exploded",
 		},
@@ -660,7 +700,7 @@ func TestSessionCancelEndsTheTurnMidStream(t *testing.T) {
 	if response.StopReason != acp.StopReasonCancelled {
 		t.Fatalf("stopReason = %q, want %q", response.StopReason, acp.StopReasonCancelled)
 	}
-	var streamed acp.SessionNotification
+	var streamed sessionNotification
 	if err := json.Unmarshal(chunk.Params, &streamed); err != nil {
 		t.Fatal(err)
 	}
@@ -795,10 +835,10 @@ func TestCancellingOneConcurrentSessionLeavesTheOtherRunning(t *testing.T) {
 	firstHeld.await(t)
 	secondHeld.await(t)
 
-	opening := make(map[string][]acp.SessionNotification)
+	opening := make(map[string][]sessionNotification)
 	for range 2 {
 		notification := child.notification("session/update")
-		var update acp.SessionNotification
+		var update sessionNotification
 		if err := json.Unmarshal(notification.Params, &update); err != nil {
 			t.Fatal(err)
 		}

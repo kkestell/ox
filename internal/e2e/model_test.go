@@ -14,6 +14,22 @@ import (
 	"time"
 )
 
+const testModelCatalog = `{"data":[
+{"id":"test/model","context_length":128000},
+{"id":"canonical/model","context_length":128000},
+{"id":"environment/model","context_length":128000},
+{"id":"first/model","context_length":128000},
+{"id":"fixed/model","context_length":128000},
+{"id":"global/model","context_length":128000},
+{"id":"good/model","context_length":128000},
+{"id":"home/model","context_length":128000},
+{"id":"new/model","context_length":128000},
+{"id":"old/model","context_length":128000},
+{"id":"parent/model","context_length":128000},
+{"id":"second/model","context_length":128000},
+{"id":"workspace/model","context_length":128000}
+]}`
+
 type modelRequest struct {
 	Model         string         `json:"model"`
 	Messages      []modelMessage `json:"messages"`
@@ -177,8 +193,13 @@ func (m *mockModel) serveHTTP(writer http.ResponseWriter, request *http.Request)
 		http.Error(writer, "invalid authorization", http.StatusUnauthorized)
 		return
 	}
-	if request.Method == http.MethodGet && request.URL.Path == "/api/v1/key" {
+	if request.Method == http.MethodGet && request.URL.Path == "/api/v1/auth/key" {
 		m.serveCredentialCheck(writer, authorization)
+		return
+	}
+	if request.Method == http.MethodGet && request.URL.Path == "/api/v1/models" {
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(writer, testModelCatalog)
 		return
 	}
 	if request.Method != http.MethodPost {

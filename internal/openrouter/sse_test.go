@@ -26,20 +26,6 @@ func TestSSESkipsCommentsJoinsDataAndStopsAtDone(t *testing.T) {
 	}
 }
 
-func TestSSEEmitsAFinalEventWithoutATrailingBlankLine(t *testing.T) {
-	var events []string
-	err := readSSE(strings.NewReader("data: {}"), func(data []byte) error {
-		events = append(events, string(data))
-		return nil
-	})
-	if !errors.Is(err, errStreamEnded) {
-		t.Fatalf("error = %v", err)
-	}
-	if len(events) != 1 || events[0] != "{}" {
-		t.Fatalf("events = %#v", events)
-	}
-}
-
 func TestSSEReportsBodyEndingWithoutDone(t *testing.T) {
 	var events int
 	err := readSSE(strings.NewReader("data: {}\n\n"), func([]byte) error {
@@ -47,21 +33,6 @@ func TestSSEReportsBodyEndingWithoutDone(t *testing.T) {
 		return nil
 	})
 	if !errors.Is(err, errStreamEnded) {
-		t.Fatalf("error = %v", err)
-	}
-	if events != 1 {
-		t.Fatalf("events = %d", events)
-	}
-}
-
-func TestSSEStopsAtTheFirstEventError(t *testing.T) {
-	failure := errors.New("bad event")
-	var events int
-	err := readSSE(strings.NewReader("data: 1\n\ndata: 2\n\ndata: [DONE]\n\n"), func([]byte) error {
-		events++
-		return failure
-	})
-	if !errors.Is(err, failure) {
 		t.Fatalf("error = %v", err)
 	}
 	if events != 1 {

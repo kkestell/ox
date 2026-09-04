@@ -41,6 +41,144 @@ func newSession(t *testing.T, child *process, cwd string) string {
 	return response.SessionID
 }
 
+func loadSession(t *testing.T, child *process, session, cwd string) {
+	t.Helper()
+	child.request("session/load", acp.LoadSessionRequest{
+		SessionID:  session,
+		CWD:        cwd,
+		MCPServers: []json.RawMessage{},
+	})
+}
+
+func TestSessionCanContinueInANewProcess(t *testing.T) {
+	dataDir := t.TempDir()
+	model := startModel(t,
+		sse(evText("first answer"), evFinishReason("stop")),
+		sse(evText("second answer"), evFinishReason("stop")),
+	)
+	options := []startOption{withModel(model), withEnvironment("XDG_DATA_HOME", dataDir)}
+
+	first := start(t, options...)
+	initialize(t, first)
+	cwd := first.cwd
+	session := newSession(t, first, cwd)
+	prompt(t, first, session, "first prompt")
+	_ = updates(t, first, session)
+	first.request("session/close", acp.CloseSessionRequest{SessionID: session})
+	first.stop()
+
+	second := start(t, options...)
+	initialize(t, second)
+	loadSession(t, second, session, cwd)
+	_ = updates(t, second, session)
+	prompt(t, second, session, "second prompt")
+	_ = updates(t, second, session)
+
+	requests := model.requests()
+	if len(requests) != 2 {
+		t.Fatalf("model received %d requests, want 2", len(requests))
+	}
+	assertConversation(t, requests[1].Messages, []exchange{
+		{role: "user", text: "first prompt"},
+		{role: "assistant", text: "first answer"},
+		{role: "user", text: "second prompt"},
+	})
+}
+
+func TestCancellingPermissionWaitLeavesReplayableSession(t *testing.T) {
+	dataDir := t.TempDir()
+	model := startModel(t, shellToolCallResponse("sleep 30"))
+	options := []startOption{withModel(model), withEnvironment("XDG_DATA_HOME", dataDir)}
+	child, session := startSession(t, options...)
+	cwd := child.cwd
+
+	turn := child.begin("session/prompt", acp.PromptRequest{
+		SessionID: session,
+		Prompt:    textPrompt("run a command"),
+	})
+	permission := child.serverRequest()
+	if permission.Method != acp.MethodSessionRequestPermission {
+		t.Fatalf("callback method = %q", permission.Method)
+	}
+	child.notify("session/cancel", acp.CancelNotification{SessionID: session})
+	response := promptResponse(t, child.result(child.await(turn)))
+	if response.StopReason != acp.StopReasonCancelled {
+		t.Fatalf("stopReason = %q, want %q", response.StopReason, acp.StopReasonCancelled)
+	}
+	_ = updates(t, child, session)
+	child.request("session/close", acp.CloseSessionRequest{SessionID: session})
+	child.stop()
+
+	assertSessionLoadsWithToolHistory(t, options, session, cwd)
+}
+
+func TestCancellingShellLeavesReplayableSession(t *testing.T) {
+	dataDir := t.TempDir()
+	model := startModel(t, shellToolCallResponse("sleep 30"))
+	options := []startOption{withModel(model), withEnvironment("XDG_DATA_HOME", dataDir)}
+	child, session := startSession(t, options...)
+	cwd := child.cwd
+
+	turn := child.begin("session/prompt", acp.PromptRequest{
+		SessionID: session,
+		Prompt:    textPrompt("run a command"),
+	})
+	permission := child.serverRequest()
+	child.respond(permission, acp.RequestPermissionResponse{
+		Outcome: acp.RequestPermissionOutcome{Outcome: "selected", OptionID: "allow_once"},
+	})
+	waitForToolStatus(t, child, acp.ToolCallStatusInProgress)
+	child.notify("session/cancel", acp.CancelNotification{SessionID: session})
+	response := promptResponse(t, child.result(child.await(turn)))
+	if response.StopReason != acp.StopReasonCancelled {
+		t.Fatalf("stopReason = %q, want %q", response.StopReason, acp.StopReasonCancelled)
+	}
+	_ = updates(t, child, session)
+	child.request("session/close", acp.CloseSessionRequest{SessionID: session})
+	child.stop()
+
+	assertSessionLoadsWithToolHistory(t, options, session, cwd)
+}
+
+func shellToolCallResponse(command string) string {
+	arguments, _ := json.Marshal(map[string]string{"command": command})
+	return sse(
+		evToolCall(0, "call-shell", "function", "shell", string(arguments)),
+		evFinishReason("tool_calls"),
+	)
+}
+
+func waitForToolStatus(t *testing.T, child *process, want acp.ToolCallStatus) {
+	t.Helper()
+	for {
+		message := child.notification("session/update")
+		var notification struct {
+			Update acp.ToolCallUpdate `json:"update"`
+		}
+		if err := json.Unmarshal(message.Params, &notification); err != nil {
+			t.Fatal(err)
+		}
+		if notification.Update.Status == want {
+			return
+		}
+	}
+}
+
+func assertSessionLoadsWithToolHistory(
+	t *testing.T,
+	options []startOption,
+	session string,
+	cwd string,
+) {
+	t.Helper()
+	child := start(t, options...)
+	initialize(t, child)
+	loadSession(t, child, session, cwd)
+	if replayed := updates(t, child, session); len(replayed) == 0 {
+		t.Fatal("session/load replayed no tool history")
+	}
+}
+
 func TestNewSessionMintsDistinctSessions(t *testing.T) {
 	child, first := startSession(t)
 	if second := newSession(t, child, child.cwd); second == first {
@@ -144,8 +282,8 @@ func TestNewSessionRequiresAModel(t *testing.T) {
 		t.Errorf("error message = %q, want it to name OX_MODEL", responseError.Message)
 	}
 	for _, path := range []string{
-		filepath.Join(child.cwd, "config", "ox", "config.json"),
-		filepath.Join(child.cwd, ".ox", "config.json"),
+		filepath.Join(child.cwd, "config", "ox", "settings.json"),
+		filepath.Join(child.cwd, ".ox", "settings.json"),
 	} {
 		if !strings.Contains(responseError.Message, path) {
 			t.Errorf("error message = %q, want it to name %s", responseError.Message, path)

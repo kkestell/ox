@@ -12,9 +12,10 @@ import (
 	"github.com/creachadair/jrpc2/channel"
 
 	"github.com/kkestell/ox/internal/agent"
-	"github.com/kkestell/ox/internal/config"
 	"github.com/kkestell/ox/internal/credentials"
 	"github.com/kkestell/ox/internal/openrouter"
+	"github.com/kkestell/ox/internal/settings"
+	"github.com/kkestell/ox/internal/tools"
 )
 
 var (
@@ -38,11 +39,7 @@ func main() {
 			os.Exit(1)
 		}
 	case len(arguments) == 1 && arguments[0] == "login":
-		credentialStore := credentials.NewStore(
-			os.Getenv("OPENROUTER_API_KEY"),
-			os.Getenv("OX_KEYRING_DISABLED") == "1",
-			logger,
-		)
+		credentialStore := credentials.NewStore(logger)
 		client := &openrouter.Client{
 			BaseURL: os.Getenv("OX_OPENROUTER_BASE_URL"),
 			Logger:  logger,
@@ -64,22 +61,14 @@ func main() {
 }
 
 func serve(input io.ReadCloser, output io.WriteCloser, logger *slog.Logger) error {
-	environment := config.Environment{
-		GlobalPath: config.GlobalPath(
-			os.Getenv("XDG_CONFIG_HOME"),
-			os.Getenv("HOME"),
-		),
-		ModelOverride: os.Getenv("OX_MODEL"),
-	}
-	credentialStore := credentials.NewStore(
-		os.Getenv("OPENROUTER_API_KEY"),
-		os.Getenv("OX_KEYRING_DISABLED") == "1",
-		logger,
-	)
+	settingsPath := settings.GlobalPath(os.Getenv("XDG_CONFIG_HOME"), os.Getenv("HOME"))
+	sessionPath := agent.SessionPath(os.Getenv("XDG_DATA_HOME"), os.Getenv("HOME"))
+	credentialStore := credentials.NewStore(logger)
 	logger.Info(
 		"ox starting",
 		"version", version,
-		"global_config_path", environment.GlobalPath,
+		"global_settings_path", settingsPath,
+		"session_store_path", sessionPath,
 		"credential_source", credentialStore.Source(),
 	)
 
@@ -88,9 +77,22 @@ func serve(input io.ReadCloser, output io.WriteCloser, logger *slog.Logger) erro
 		BaseURL: os.Getenv("OX_OPENROUTER_BASE_URL"),
 		Logger:  logger,
 	}
-	methods := agent.New(name, version, environment, credentialStore, client, logger).Methods()
+	instance, err := agent.New(agent.Config{
+		Name:          name,
+		Version:       version,
+		Logger:        logger,
+		Credentials:   credentialStore,
+		ModelOverride: os.Getenv("OX_MODEL"),
+		SettingsPath:  settingsPath,
+		SessionDir:    sessionPath,
+		Client:        client,
+		Tools:         tools.All(),
+	})
+	if err != nil {
+		return fmt.Errorf("configure ox: %w", err)
+	}
 
-	server := jrpc2.NewServer(methods, &jrpc2.ServerOptions{
+	server := jrpc2.NewServer(instance.Methods(), &jrpc2.ServerOptions{
 		AllowPush:   true,
 		Concurrency: handlerConcurrency,
 	})

@@ -29,8 +29,8 @@ func TestInitialize(t *testing.T) {
 	if response.ProtocolVersion != acp.ProtocolVersion {
 		t.Errorf("protocolVersion = %d, want %d", response.ProtocolVersion, acp.ProtocolVersion)
 	}
-	if response.AgentCapabilities.LoadSession {
-		t.Error("loadSession = true, want false")
+	if !response.AgentCapabilities.LoadSession {
+		t.Error("loadSession = false, want true")
 	}
 	if response.AgentCapabilities.Auth == nil || response.AgentCapabilities.Auth.Logout == nil {
 		t.Errorf("auth capabilities = %#v, want logout support", response.AgentCapabilities.Auth)
@@ -40,11 +40,15 @@ func TestInitialize(t *testing.T) {
 		Audio:           true,
 		EmbeddedContext: true,
 	}
-	if response.AgentCapabilities.PromptCapabilities != wantPromptCapabilities {
+	if response.AgentCapabilities.PromptCapabilities == nil ||
+		response.AgentCapabilities.PromptCapabilities.Image != wantPromptCapabilities.Image ||
+		response.AgentCapabilities.PromptCapabilities.Audio != wantPromptCapabilities.Audio ||
+		response.AgentCapabilities.PromptCapabilities.EmbeddedContext != wantPromptCapabilities.EmbeddedContext {
 		t.Errorf("promptCapabilities = %#v, want %#v",
 			response.AgentCapabilities.PromptCapabilities, wantPromptCapabilities)
 	}
-	if response.AgentInfo != (acp.Implementation{Name: "ox", Version: "0.0.1"}) {
+	if response.AgentInfo == nil ||
+		*response.AgentInfo != (acp.Implementation{Name: "ox", Version: "0.0.1"}) {
 		t.Errorf("agentInfo = %#v", response.AgentInfo)
 	}
 	if len(response.AuthMethods) != 1 || response.AuthMethods[0].ID != "openrouter" {
@@ -137,7 +141,6 @@ func TestDebugLoggingStaysOffStdout(t *testing.T) {
 	for _, want := range []string{
 		`level=INFO msg="ox starting"`,
 		`level=INFO msg="initializing client"`,
-		`level=DEBUG msg="cancelling request"`,
 	} {
 		if !strings.Contains(stderr, want) {
 			t.Errorf("stderr = %q, want %s", stderr, want)

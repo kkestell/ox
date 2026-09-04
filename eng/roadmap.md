@@ -46,45 +46,21 @@ Use the checked-in Zed implementation as the client oracle:
 - `third-party/protocol/acp-go-sdk` for typed APIs, cancellation, notification
   ordering, and cross-language JSON test cases.
 
-### Tool core
+### Later tools
 
-Alpha has the strongest safety-critical tool core. Port from:
-
-- `personal/alpha/runtime/internal/tools` for read, write, exact edit, glob,
-  grep, shell, and bounded tool-result behavior;
-- `personal/alpha/runtime/internal/workspace` for `os.Root` confinement,
-  ignore-aware traversal, streaming output, and spill files; and
-- `personal/alpha/runtime/internal/agent/reads.go`, `tool.go`, and `approval.go`
-  for read evidence, execution, permissions, and ACP lifecycle projection.
-
-Keep Alpha's read-before-mutation rule, atomic writes, file-mode and text-format
-preservation, symlink safety, bounded output, and whole-process-group shell
-cancellation. Adapt filesystem and terminal execution to ACP client calls when
-Zed advertises those capabilities.
-
-Eta has the widest useful tool set. Draw later capabilities from
+Eta has the widest useful remaining tool set. Draw later capabilities from
 `personal/eta/internal/agent/tools`, `internal/lsp`, `internal/permissions`,
 `internal/skills`, and `internal/agents`. Its LSP navigation, todo, web, skills,
-and subagent behavior are the preferred starting points. Use
+and agent-instruction behavior are the preferred starting points. Use
 `personal/eta/internal/agent/tool.go` and `loop.go` for per-path locking and
-concurrent tool execution. Alpha remains the authority for the safety-critical
-core.
+concurrent tool execution where the current scheduler needs to grow.
 
 ### Durable sessions
 
-Gamma has the strongest durable-state semantics. Port the state machine and
-failure invariants from `personal/gamma/internal/agent/engine.go`, `state.go`,
-and `store.go`. Adapt the invariant tests in `engine_test.go` and
-`internal/checker` to ACP. Append and sync records before publishing events or
-swapping live state. Recover a torn final record, preserve monotonic event
-sequence numbers, checkpoint without dangling tool calls, and reissue pending
-approvals and elicitation with stable identities.
-
-Alpha has the best production ACP session implementation. Use
-`personal/alpha/runtime/internal/agent/store.go`, `state.go`, and `lock.go` for
-owner-only append logs, file locking, size limits, repair, replay, activation,
-and ACP session lifecycle methods. Gamma is the semantic authority; Alpha is the
-implementation donor.
+Gamma has the strongest checkpoint and recovery semantics. Use
+`personal/gamma/internal/agent/engine.go`, `state.go`, `store.go`, and their
+invariant tests for monotonic event cursors, checkpoint parity, and reissuing
+pending approvals and elicitation with stable identities.
 
 Use `personal/beta/src/session.rs`, `agent.rs`, and `acp.rs` as a second ACP
 implementation for lossless model-history persistence, replay, permission
@@ -93,10 +69,6 @@ snapshot, not Beta's current working tree.
 
 ### Supporting capabilities
 
-- Use `personal/alpha/runtime/internal/openrouter` for streaming, catalog
-  caching, retry, reasoning-detail, and usage behavior. Compare the provider
-  boundary with `personal/nu/crates/ur-core` and `ur-openai-compat`; port
-  behavior, not the Rust abstraction hierarchy.
 - Use `personal/theta/internal/tui/preview.go` for permission-preview data and
   `internal/session/snapshot.go` for atomic snapshot tests. Zed owns the UI.
 - Use `personal/iota/crates/adapter-git`, `crates/bin-web/src/lifecycle`, and
@@ -117,12 +89,11 @@ snapshot, not Beta's current working tree.
 - Do not introduce Nu's provider framework or a multi-provider abstraction
   before Ox has a second provider.
 
-## Most recently completed: protocol and prompt foundation
+## Most recently completed: production runtime core
 
-Ox now has its Go binary, ACP stdio server and validation boundary, black-box
-test harness, streaming prompt loop, complete prompt-content handling,
-concurrent in-memory sessions, layered model configuration, OpenRouter
-credential management, authentication, and confined session workspaces.
+Ox now has a durable ACP session runtime with safe local coding tools,
+permissions, subagents, provider resilience, usage accounting, lifecycle replay,
+and process-level recovery and cancellation coverage.
 
 ## Current milestone: Zed interoperability baseline
 
@@ -139,19 +110,8 @@ credential management, authentication, and confined session workspaces.
 - [ ] Keep the checked-in Zed ACP reference snapshot and ACP schema version
       recorded with each interoperability pass.
 
-## Milestone: ACP-native tools and permissions
+## Milestone: client-delegated tools
 
-- [ ] Port Alpha's model-facing read, write, exact-edit, glob, grep, and shell
-      contracts behind ACP filesystem and terminal adapters.
-- [ ] Require session-scoped read evidence before mutation and serialize
-      conflicting mutations without serializing independent tool calls.
-- [ ] Preserve file mode, BOM, line endings, and trailing-newline behavior; make
-      writes atomic and edit failures diagnostic.
-- [ ] Define ignore, hidden-file, pagination, truncation, spill, and maximum
-      result-size behavior for every discovery or output-producing tool.
-- [ ] Project every tool call and state transition through ACP session updates.
-- [ ] Implement `session/request_permission`, including allow-once, reusable
-      grants, cancellation, mutation previews, and denial feedback to the model.
 - [ ] Use client-delegated `fs/read_text_file` and `fs/write_text_file` when Zed
       advertises those capabilities.
 - [ ] Use the ACP terminal lifecycle for shell commands: `terminal/create`,
@@ -160,56 +120,35 @@ credential management, authentication, and confined session workspaces.
       release the terminal exactly once.
 - [ ] Define explicit behavior for clients without delegated filesystem or
       terminal capabilities.
-- [ ] Run independent model-requested tools concurrently while preserving model
-      result order and preventing same-file races.
-- [ ] Extend the black-box harness with a scripted ACP client that asserts
-      request ordering, permission decisions, read-before-write enforcement,
-      tool updates, output bounds, and cancellation.
 - [ ] Pass the Zed smoke-test checklist with read, edit, and shell workflows.
 
-## Milestone: durable session lifecycle
+## Milestone: durable session completion
 
-- [ ] Port Gamma's append-before-publish transaction boundary and Alpha's
-      owner-only, locked, versioned append log with size limits, sync, and
-      torn-tail repair.
-- [ ] Persist exact model messages and ACP-visible events so `session/load`
-      reproduces both model history and a lossless client transcript.
 - [ ] Assign monotonic event sequence numbers and replay from a stable cursor.
-- [ ] Implement `session/list`, `session/delete`, `session/close`,
-      `session/fork`, and `session/resume` where supported by ACP.
-- [ ] Add single-writer session activation locking, idempotent close and delete,
-      and explicit recovery for interrupted turns and incomplete tool calls.
-- [ ] Freeze the model request prefix, tool declarations, model, and relevant
-      client capabilities when a session is created.
+- [ ] Implement `session/fork`.
+- [ ] Persist the relevant negotiated client capabilities with the request
+      configuration.
 - [ ] Add checkpoints and compaction that preserve tool-call pairing, event
       sequence continuity, pending approvals, and exact replay semantics.
 - [ ] Reissue pending permission or elicitation requests after restart with
       stable identities and generations.
-- [ ] Test restart, replay, resume, and concurrent activation through the real
-      stdio process boundary, including append failure, torn tails, interrupted
-      tools, pending permissions, and checkpoint/load parity.
+- [ ] Test pending-permission recovery and checkpoint/load parity through the
+      real stdio process boundary.
 
-## Milestone: provider robustness and accounting
+## Milestone: context and diagnostics
 
-- [ ] Port Alpha's bounded provider retry behavior. Never retry after the first
-      response delta has been published.
-- [ ] Port Alpha's cached OpenRouter model catalog and validation behavior.
-- [ ] Round-trip raw reasoning details needed for provider cache continuity.
-- [ ] Track usage, cost, context capacity, and changed files.
+- [ ] Track changed files alongside usage, cost, and context capacity.
 - [ ] Compact context without breaking tool-call pairing, replay, or the durable
       record; keep the uncompacted log authoritative.
 - [ ] Emit a sanitized machine-readable trace.
 
 ## Milestone: agent capabilities
 
-- [ ] Port Eta's delegated subagent semantics with nested ACP activity reporting
-      and durable child ownership.
 - [ ] Port Eta's todo tool with state included in replay and compaction.
 - [ ] Load workspace instructions from `AGENTS.md`.
 - [ ] Discover and load Agent Skills on demand.
 - [ ] Implement `session/set_mode` and `session/set_config_option`.
 - [ ] Add MCP servers without weakening the ACP client boundary.
-- [ ] Generate session titles.
 - [ ] Support mid-turn steering and queued follow-up input.
 - [ ] Port Eta's LSP definition, reference, symbol, and diagnostics tools only
       where they complement rather than duplicate Zed client context.
@@ -233,23 +172,23 @@ Requests and notifications Ox accepts from an ACP client:
 
 - [x] `initialize`
 - [x] `session/new`
-- [ ] `session/load`
+- [x] `session/load`
 - [x] `session/prompt`
 - [x] `session/cancel`
 - [x] `authenticate`
 - [x] `logout`
-- [ ] `session/list`
-- [ ] `session/delete`
-- [ ] `session/close`
+- [x] `session/list`
+- [x] `session/delete`
+- [x] `session/close`
 - [ ] `session/fork`
-- [ ] `session/resume`
+- [x] `session/resume`
 - [ ] `session/set_mode`
 - [ ] `session/set_config_option`
 - [x] `$/cancel_request`
 
 Requests Ox sends to an ACP client:
 
-- [ ] `session/request_permission`
+- [x] `session/request_permission`
 - [ ] `fs/read_text_file`
 - [ ] `fs/write_text_file`
 - [ ] `terminal/create`

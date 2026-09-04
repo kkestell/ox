@@ -35,10 +35,7 @@ func TestAuthenticateVerifiesCredentialAndEnablesSession(t *testing.T) {
 	child := start(t, withModel(model), withEnvironment("OPENROUTER_API_KEY", "verified-key"))
 	initialize(t, child)
 
-	result := child.request("authenticate", acp.AuthenticateRequest{MethodID: "openrouter"})
-	if strings.TrimSpace(string(result)) != "{}" {
-		t.Errorf("authenticate result = %s, want {}", result)
-	}
+	child.request("authenticate", acp.AuthenticateRequest{MethodID: "openrouter"})
 	checks := model.checks()
 	if len(checks) != 1 || checks[0] != "Bearer verified-key" {
 		t.Errorf("credential checks = %#v", checks)

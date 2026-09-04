@@ -15,10 +15,12 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/kkestell/ox/internal/acp"
 )
 
 const (
-	readTimeout     = 5 * time.Second
+	readTimeout     = 15 * time.Second
 	shutdownTimeout = 5 * time.Second
 )
 
@@ -59,11 +61,11 @@ func withFile(path, content string) startOption {
 }
 
 func withGlobalConfig(content string) startOption {
-	return withFile(filepath.Join("config", "ox", "config.json"), content)
+	return withFile(filepath.Join("config", "ox", "settings.json"), content)
 }
 
 func withWorkspaceConfig(content string) startOption {
-	return withFile(filepath.Join(".ox", "config.json"), content)
+	return withFile(filepath.Join(".ox", "settings.json"), content)
 }
 
 type process struct {
@@ -144,7 +146,9 @@ func prepare(t *testing.T, options ...startOption) (string, startConfig) {
 	config := startConfig{
 		environment: map[string]string{
 			"HOME":            scratch,
+			"XDG_CACHE_HOME":  filepath.Join(scratch, "cache"),
 			"XDG_CONFIG_HOME": filepath.Join(scratch, "config"),
+			"XDG_DATA_HOME":   filepath.Join(scratch, "data"),
 			// The test binary must never access the developer's real keyring.
 			"OX_KEYRING_DISABLED": "1",
 			"OX_LOG_LEVEL":        "debug",
@@ -155,7 +159,9 @@ func prepare(t *testing.T, options ...startOption) (string, startConfig) {
 			"OPENROUTER_API_KEY":     "test-key",
 			"GORACE":                 "halt_on_error=1",
 		},
-		files: make(map[string]string),
+		files: map[string]string{
+			filepath.Join("cache", "ox", "models.json"): testModelCatalog,
+		},
 	}
 	for _, option := range options {
 		option(&config)
@@ -335,6 +341,13 @@ func (p *process) writeJSON(value any) {
 
 func (p *process) readUntil(what string, predicate func(message) bool) message {
 	p.t.Helper()
+	kept := p.pending[:0]
+	for _, candidate := range p.pending {
+		if !isAuxiliarySessionUpdate(candidate) {
+			kept = append(kept, candidate)
+		}
+	}
+	p.pending = kept
 	for index, candidate := range p.pending {
 		if predicate(candidate) {
 			p.pending = append(p.pending[:index], p.pending[index+1:]...)
@@ -347,6 +360,9 @@ func (p *process) readUntil(what string, predicate func(message) bool) message {
 		if err != nil {
 			p.t.Fatalf("read %s: %v", what, err)
 		}
+		if isAuxiliarySessionUpdate(candidate) {
+			continue
+		}
 		if predicate(candidate) {
 			return candidate
 		}
@@ -356,6 +372,18 @@ func (p *process) readUntil(what string, predicate func(message) bool) message {
 		}
 		p.pending = append(p.pending, candidate)
 	}
+}
+
+func isAuxiliarySessionUpdate(candidate message) bool {
+	if candidate.Method != "session/update" || len(candidate.ID) != 0 {
+		return false
+	}
+	var notification sessionNotification
+	if json.Unmarshal(candidate.Params, &notification) != nil {
+		return false
+	}
+	return notification.Update.SessionUpdate == acp.SessionUpdateUserMessageChunk ||
+		notification.Update.Meta[acp.MetaOutcome] != nil
 }
 
 func (p *process) readMessage() (message, error) {

@@ -10,13 +10,16 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
+	"time"
 )
 
 const (
 	defaultBaseURL      = "https://openrouter.ai/api/v1"
-	chatCompletionsPath = "/chat/completions"
-	keyPath             = "/key"
 	maxErrorBodySize    = 1024 * 1024
+	maxRetryAttempts    = 5
+	chatCompletionsPath = "/chat/completions"
+	keyPath             = "/auth/key"
 )
 
 var ErrCredentialRejected = errors.New("OpenRouter rejected the credential")
@@ -26,6 +29,20 @@ type Client struct {
 	BaseURL string
 	HTTP    *http.Client
 	Logger  *slog.Logger
+
+	retryBudgetOverride time.Duration
+	retryWait           func(context.Context, time.Duration) error
+	cachePathOverride   string
+
+	catalogMu      sync.Mutex
+	catalogLoading bool
+	catalogReady   chan struct{}
+	catalog        *Catalog
+}
+
+type streamRequest struct {
+	Request
+	Stream bool `json:"stream"`
 }
 
 // VerifyCredential asks OpenRouter whether key is usable without consulting
@@ -75,84 +92,166 @@ func credentialErrorMessage(raw []byte) string {
 	return strings.TrimSpace(envelope.Error.Message)
 }
 
-// Stream posts a streaming chat completion and calls onDelta once per fragment
-// as it arrives. It returns the completion assembled so far alongside any
-// error, so a turn cut short still knows what it streamed.
 func (c *Client) Stream(
 	ctx context.Context,
 	request Request,
 	onDelta func(Delta),
-) (Completion, error) {
-	request.Stream = true
-	body, err := json.Marshal(request)
+) (*Completion, error) {
+	request.Provider = request.Provider.resolved(len(request.Tools) > 0)
+	if len(request.Tools) > 0 && request.ToolChoice == "" {
+		request.ToolChoice = "auto"
+	}
+	body, err := json.Marshal(streamRequest{Request: request, Stream: true})
 	if err != nil {
-		return Completion{}, fmt.Errorf("encode OpenRouter request: %w", err)
+		return &Completion{}, fmt.Errorf("encode OpenRouter request: %w", err)
 	}
 
-	c.Logger.Info(
+	c.logger().Info(
 		"starting OpenRouter stream",
 		"model", request.Model,
 		"messages", len(request.Messages),
+		"tools", len(request.Tools),
+		"reasoning", request.Reasoning,
 	)
 
-	httpRequest, err := http.NewRequestWithContext(
+	started := time.Now()
+	lastCompletion := &Completion{}
+	var lastErr error
+	for attempt := 0; attempt < maxRetryAttempts; attempt++ {
+		completion, status, retryAfter, emitted, attemptErr := c.streamAttempt(
+			ctx,
+			body,
+			onDelta,
+		)
+		lastCompletion = completion
+		if attemptErr == nil {
+			c.logCompletion(completion)
+			return completion, nil
+		}
+		lastErr = attemptErr
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return completion, ctxErr
+		}
+		if emitted {
+			return completion, attemptErr
+		}
+
+		classification := classify(status, attemptErr)
+		var streamError *streamAPIError
+		if errors.As(attemptErr, &streamError) {
+			classification = classify(streamError.code, attemptErr)
+		} else if errors.Is(attemptErr, errStreamEnded) ||
+			strings.Contains(attemptErr.Error(), "read OpenRouter stream") {
+			classification = retry
+		}
+		if classification != retry {
+			return completion, attemptErr
+		}
+		if attempt == maxRetryAttempts-1 {
+			break
+		}
+
+		delay := retryDelay(attempt, retryAfter)
+		if time.Since(started)+delay > c.retryBudget() {
+			break
+		}
+		c.logger().Warn(
+			"retrying OpenRouter stream",
+			"attempt", attempt+1,
+			"status", status,
+			"delay", delay,
+			"error", attemptErr,
+		)
+		if err := c.wait(ctx, delay); err != nil {
+			return completion, err
+		}
+	}
+	return lastCompletion, fmt.Errorf(
+		"OpenRouter stream failed after retries: %w",
+		lastErr,
+	)
+}
+
+func (c *Client) streamAttempt(
+	ctx context.Context,
+	body []byte,
+	onDelta func(Delta),
+) (*Completion, int, string, bool, error) {
+	request, err := http.NewRequestWithContext(
 		ctx,
 		http.MethodPost,
 		c.baseURL()+chatCompletionsPath,
 		bytes.NewReader(body),
 	)
 	if err != nil {
-		return Completion{}, fmt.Errorf("build OpenRouter request: %w", err)
+		return &Completion{}, 0, "", false, fmt.Errorf("build OpenRouter request: %w", err)
 	}
-	httpRequest.Header.Set("Authorization", "Bearer "+c.apiKey())
-	httpRequest.Header.Set("Content-Type", "application/json")
-	httpRequest.Header.Set("Accept", "text/event-stream")
+	c.setHeaders(request)
 
-	response, err := c.httpClient().Do(httpRequest)
+	response, err := c.httpClient().Do(request)
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
-			return Completion{}, ctxErr
+			return &Completion{}, 0, "", false, ctxErr
 		}
-		return Completion{}, fmt.Errorf("send OpenRouter request: %w", err)
+		return &Completion{}, 0, "", false, fmt.Errorf("send OpenRouter request: %w", err)
 	}
+
+	retryAfter := response.Header.Get("Retry-After")
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		raw, readErr := io.ReadAll(io.LimitReader(response.Body, maxErrorBodySize))
-		if err := errors.Join(readErr, response.Body.Close()); err != nil {
-			return Completion{}, fmt.Errorf("read OpenRouter error response: %w", err)
+		closeErr := response.Body.Close()
+		if readErr != nil {
+			return &Completion{}, response.StatusCode, retryAfter, false,
+				errors.Join(fmt.Errorf("read OpenRouter error response: %w", readErr), closeErr)
 		}
-		return Completion{}, fmt.Errorf(
-			"OpenRouter returned %s: %s",
-			response.Status,
-			strings.TrimSpace(string(raw)),
-		)
+		if closeErr != nil {
+			return &Completion{}, response.StatusCode, retryAfter, false,
+				fmt.Errorf("close OpenRouter error response: %w", closeErr)
+		}
+		return &Completion{}, response.StatusCode, retryAfter, false,
+			fmt.Errorf("OpenRouter returned %s: %s", response.Status, strings.TrimSpace(string(raw)))
 	}
 
 	var assembler streamAssembler
+	emitted := false
 	streamErr := readSSE(response.Body, func(data []byte) error {
-		return assembler.push(data, onDelta)
+		return assembler.push(data, func(delta Delta) {
+			emitted = true
+			if onDelta != nil {
+				onDelta(delta)
+			}
+		})
 	})
 	closeErr := response.Body.Close()
 	completion := assembler.finish()
 	if streamErr != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
-			return completion, ctxErr
+			return completion, response.StatusCode, retryAfter, emitted, ctxErr
 		}
-		return completion, streamErr
+		return completion, response.StatusCode, retryAfter, emitted, streamErr
 	}
 	if closeErr != nil {
-		return completion, fmt.Errorf("close OpenRouter response: %w", closeErr)
+		return completion, response.StatusCode, retryAfter, emitted,
+			fmt.Errorf("close OpenRouter response: %w", closeErr)
 	}
 	if !assembler.sawChoice {
-		return completion, errors.New("OpenRouter stream contained no completion choices")
+		return completion, response.StatusCode, retryAfter, emitted,
+			errors.New("OpenRouter stream contained no completion choices")
 	}
+	return completion, response.StatusCode, retryAfter, emitted, nil
+}
 
-	c.logCompletion(completion)
-	return completion, nil
+func (c *Client) setHeaders(request *http.Request) {
+	if key := c.apiKey(); key != "" {
+		request.Header.Set("Authorization", "Bearer "+key)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Accept", "text/event-stream")
 }
 
 func (c *Client) apiKey() string {
 	if c.APIKey == nil {
-		panic("openrouter.Client.APIKey is nil")
+		return ""
 	}
 	return c.APIKey()
 }
@@ -171,18 +270,44 @@ func (c *Client) httpClient() *http.Client {
 	return c.HTTP
 }
 
-func (c *Client) logCompletion(completion Completion) {
-	var promptTokens, completionTokens, totalTokens int
+func (c *Client) logger() *slog.Logger {
+	if c.Logger == nil {
+		return slog.Default()
+	}
+	return c.Logger
+}
+
+func (c *Client) retryBudget() time.Duration {
+	if c.retryBudgetOverride > 0 {
+		return c.retryBudgetOverride
+	}
+	return defaultRetryBudget
+}
+
+func (c *Client) wait(ctx context.Context, delay time.Duration) error {
+	if c.retryWait != nil {
+		return c.retryWait(ctx, delay)
+	}
+	return sleepContext(ctx, delay)
+}
+
+func (c *Client) logCompletion(completion *Completion) {
+	var promptTokens, completionTokens, cachedTokens int
+	var cost float64
 	if completion.Usage != nil {
 		promptTokens = completion.Usage.PromptTokens
 		completionTokens = completion.Usage.CompletionTokens
-		totalTokens = completion.Usage.TotalTokens
+		cost = completion.Usage.Cost
+		if completion.Usage.PromptTokensDetails != nil {
+			cachedTokens = completion.Usage.PromptTokensDetails.CachedTokens
+		}
 	}
-	c.Logger.Info(
+	c.logger().Info(
 		"OpenRouter stream completed",
 		"finish_reason", completion.FinishReason,
 		"prompt_tokens", promptTokens,
 		"completion_tokens", completionTokens,
-		"total_tokens", totalTokens,
+		"cached_tokens", cachedTokens,
+		"cost", cost,
 	)
 }

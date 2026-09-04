@@ -12,9 +12,6 @@ const maxSSEEventSize = 16 * 1024 * 1024
 
 var errStreamEnded = errors.New("OpenRouter stream ended before [DONE]")
 
-// readSSE calls onEvent with the payload of each server-sent event in reader.
-// A payload spread over several data lines is joined with newlines, comment
-// lines are skipped, and the stream stops at [DONE].
 func readSSE(reader io.Reader, onEvent func([]byte) error) error {
 	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, 64*1024), maxSSEEventSize)

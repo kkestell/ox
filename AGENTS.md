@@ -19,14 +19,20 @@ coverage live in `eng/roadmap.md`.
 - `cmd/ox/` — The `ox` executable, stdio server, process configuration, and
   `login` command.
 - `internal/acp/` — ACP wire types and protocol-boundary validation.
-- `internal/agent/` — ACP method handling, session state, prompt translation,
-  authentication, and cancellation.
-- `internal/openrouter/` — OpenRouter request types, HTTP client, SSE parsing,
-  and stream assembly.
-- `internal/config/` — Layered model configuration resolved for a session.
+- `internal/agent/` — ACP methods, durable sessions, model/tool orchestration,
+  permissions, subagents, replay, authentication, and cancellation.
+- `internal/openrouter/` — OpenRouter transport, SSE parsing, retry, model
+  catalog, and stream assembly.
+- `internal/settings/` — Layered model and provider settings resolved for a
+  session activation.
 - `internal/credentials/` — Environment and OS-keyring credential storage.
-- `internal/workspace/` — Canonical session roots and confined filesystem paths.
+- `internal/tools/` — Local coding tools exposed to the model.
+- `internal/shellrules/` — Parsed reusable permissions for shell commands.
+- `internal/workspace/` — Confined filesystem access, traversal, and streamed
+  output.
 - `internal/e2e/` — Black-box tests that build and drive the real binary.
+- `integration/` — Runtime integration tests across the agent, tools, and
+  durable state.
 - `docs/` — End-user documentation.
 - `eng/` — Development and agent documentation. `eng/architecture.md` owns the
   design, `eng/roadmap.md` owns build order and status, and `eng/plans/` holds
