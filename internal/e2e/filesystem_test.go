@@ -37,6 +37,14 @@ func TestDelegatedFilesystemRunsThroughClientAndRefusesBeforeDispatch(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
+	unreadPath, err := filepath.EvalSymlinks(filepath.Join(child.cwd, "unread.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rejectPath, err := filepath.EvalSymlinks(filepath.Join(child.cwd, "reject.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	clientContent := "one\r\ntwo"
 	promptCall := child.begin("session/prompt", acp.PromptRequest{
 		SessionID: session,
@@ -47,7 +55,7 @@ func TestDelegatedFilesystemRunsThroughClientAndRefusesBeforeDispatch(t *testing
 	assertReadRequest(t, read, session, notesPath)
 	child.respond(read, acp.ReadTextFileResponse{Content: clientContent})
 
-	allowPermission(t, child, "write", true)
+	allowFilePermission(t, child, "write", notesPath, true)
 	read = child.serverRequest()
 	assertReadRequest(t, read, session, notesPath)
 	child.respond(read, acp.ReadTextFileResponse{Content: clientContent})
@@ -55,7 +63,7 @@ func TestDelegatedFilesystemRunsThroughClientAndRefusesBeforeDispatch(t *testing
 	clientContent = assertWriteRequest(t, write, session, notesPath, "three\r\nfour")
 	child.respond(write, acp.WriteTextFileResponse{})
 
-	allowPermission(t, child, "edit", true)
+	allowFilePermission(t, child, "edit", notesPath, true)
 	read = child.serverRequest()
 	assertReadRequest(t, read, session, notesPath)
 	child.respond(read, acp.ReadTextFileResponse{Content: clientContent})
@@ -69,8 +77,8 @@ func TestDelegatedFilesystemRunsThroughClientAndRefusesBeforeDispatch(t *testing
 	}
 	child.respondError(missing, -32602, "client cannot read missing file")
 
-	allowPermission(t, child, "unread", true)
-	allowPermission(t, child, "rejected", false)
+	allowFilePermission(t, child, "unread", unreadPath, true)
+	allowFilePermission(t, child, "rejected", rejectPath, false)
 	response := child.result(child.await(promptCall))
 	var promptResponse acp.PromptResponse
 	if err := json.Unmarshal(response, &promptResponse); err != nil {
@@ -94,9 +102,22 @@ func TestDelegatedFilesystemRunsThroughClientAndRefusesBeforeDispatch(t *testing
 	}
 
 	failed := map[string]bool{}
+	locations := map[string]string{}
 	for _, notification := range updates(t, child, session) {
+		if notification.Update.SessionUpdate == "tool_call" &&
+			len(notification.Update.Locations) == 1 {
+			locations[notification.Update.ToolCallID] = notification.Update.Locations[0].Path
+		}
 		if notification.Update.Status == acp.ToolCallStatusFailed {
 			failed[notification.Update.ToolCallID] = true
+		}
+	}
+	for callID, want := range map[string]string{
+		"write": notesPath, "edit": notesPath,
+		"unread": unreadPath, "rejected": rejectPath,
+	} {
+		if locations[callID] != want {
+			t.Errorf("tool call %q location = %q, want %q", callID, locations[callID], want)
 		}
 	}
 	for _, callID := range []string{"missing", "escape", "unread", "rejected"} {
@@ -168,5 +189,52 @@ func allowPermission(t *testing.T, child *process, callID string, allow bool) {
 	}
 	child.respond(request, acp.RequestPermissionResponse{
 		Outcome: acp.RequestPermissionOutcome{Outcome: "selected", OptionID: option},
+	})
+}
+
+func allowFilePermission(
+	t *testing.T,
+	child *process,
+	callID string,
+	path string,
+	allow bool,
+) {
+	t.Helper()
+	request := child.serverRequest()
+	if request.Method != acp.MethodSessionRequestPermission {
+		t.Fatalf("callback method = %q, want permission", request.Method)
+	}
+	var params acp.RequestPermissionRequest
+	if err := json.Unmarshal(request.Params, &params); err != nil {
+		t.Fatal(err)
+	}
+	if params.ToolCall.ToolCallID != callID || len(params.ToolCall.Locations) != 1 ||
+		params.ToolCall.Locations[0].Path != path {
+		t.Fatalf("permission tool call = %#v, want %q at %q", params.ToolCall, callID, path)
+	}
+	option := "reject_once"
+	if allow {
+		option = "allow_once"
+	}
+	child.respond(request, acp.RequestPermissionResponse{
+		Outcome: acp.RequestPermissionOutcome{Outcome: "selected", OptionID: option},
+	})
+}
+
+func allowPermissionWithoutLocation(t *testing.T, child *process, callID string) {
+	t.Helper()
+	request := child.serverRequest()
+	if request.Method != acp.MethodSessionRequestPermission {
+		t.Fatalf("callback method = %q, want permission", request.Method)
+	}
+	var params acp.RequestPermissionRequest
+	if err := json.Unmarshal(request.Params, &params); err != nil {
+		t.Fatal(err)
+	}
+	if params.ToolCall.ToolCallID != callID || len(params.ToolCall.Locations) != 0 {
+		t.Fatalf("permission tool call = %#v, want %q without locations", params.ToolCall, callID)
+	}
+	child.respond(request, acp.RequestPermissionResponse{
+		Outcome: acp.RequestPermissionOutcome{Outcome: "selected", OptionID: "allow_once"},
 	})
 }

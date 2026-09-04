@@ -46,22 +46,24 @@ func promptResponse(t *testing.T, result json.RawMessage) acp.PromptResponse {
 // the response the caller has already read. Other sessions' notifications stay
 // buffered for their own caller.
 type sessionUpdate struct {
-	SessionUpdate string             `json:"sessionUpdate"`
-	Content       acp.ContentBlock   `json:"content"`
-	MessageID     string             `json:"messageId"`
-	ToolCallID    string             `json:"toolCallId"`
-	Status        acp.ToolCallStatus `json:"status"`
-	Meta          acp.Metadata       `json:"_meta"`
+	SessionUpdate string                 `json:"sessionUpdate"`
+	Content       acp.ContentBlock       `json:"content"`
+	MessageID     string                 `json:"messageId"`
+	ToolCallID    string                 `json:"toolCallId"`
+	Status        acp.ToolCallStatus     `json:"status"`
+	Locations     []acp.ToolCallLocation `json:"locations"`
+	Meta          acp.Metadata           `json:"_meta"`
 }
 
 func (u *sessionUpdate) UnmarshalJSON(data []byte) error {
 	var wire struct {
-		SessionUpdate string             `json:"sessionUpdate"`
-		Content       json.RawMessage    `json:"content"`
-		MessageID     string             `json:"messageId"`
-		ToolCallID    string             `json:"toolCallId"`
-		Status        acp.ToolCallStatus `json:"status"`
-		Meta          acp.Metadata       `json:"_meta"`
+		SessionUpdate string                 `json:"sessionUpdate"`
+		Content       json.RawMessage        `json:"content"`
+		MessageID     string                 `json:"messageId"`
+		ToolCallID    string                 `json:"toolCallId"`
+		Status        acp.ToolCallStatus     `json:"status"`
+		Locations     []acp.ToolCallLocation `json:"locations"`
+		Meta          acp.Metadata           `json:"_meta"`
 	}
 	if err := json.Unmarshal(data, &wire); err != nil {
 		return err
@@ -70,6 +72,7 @@ func (u *sessionUpdate) UnmarshalJSON(data []byte) error {
 	u.MessageID = wire.MessageID
 	u.ToolCallID = wire.ToolCallID
 	u.Status = wire.Status
+	u.Locations = wire.Locations
 	u.Meta = wire.Meta
 	if len(wire.Content) > 0 && wire.Content[0] == '{' {
 		return json.Unmarshal(wire.Content, &u.Content)

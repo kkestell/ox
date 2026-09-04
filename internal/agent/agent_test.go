@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -580,16 +581,64 @@ func TestValidateToolCallIDsRejectsExistingAndBatchDuplicates(t *testing.T) {
 	}
 }
 
+func TestEditToolTargetsAreCanonicalAndConfined(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	realDir := filepath.Join(root, "real")
+	if err := os.Mkdir(realDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(realDir, filepath.Join(root, "alias")); err != nil {
+		t.Fatal(err)
+	}
+	instance, err := New(Config{Tools: []Tool{
+		{Name: "write_file", Kind: acp.ToolKindEdit},
+		{Name: "read_file", Kind: acp.ToolKindRead},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := []openrouter.ToolCall{
+		toolCallWithArguments("write", "write_file", `{"path":"alias/note.txt"}`),
+		toolCallWithArguments("escape", "write_file", `{"path":"../outside.txt"}`),
+		toolCallWithArguments("missing", "write_file", `{}`),
+		toolCallWithArguments("read", "read_file", `{"path":"real/note.txt"}`),
+	}
+	targets := normalizedToolTargets(root, instance.primaryTools, calls)
+	if !reflect.DeepEqual(targets, map[string]string{"write": "real/note.txt"}) {
+		t.Fatalf("targets = %#v", targets)
+	}
+	request := instance.permissionRequest(
+		"session",
+		root,
+		instance.primaryTools.tools[instance.primaryTools.byName["write_file"]],
+		calls[0],
+		"",
+		"",
+		targets["write"],
+	)
+	if len(request.ToolCall.Locations) != 1 ||
+		request.ToolCall.Locations[0].Path != filepath.Join(realDir, "note.txt") {
+		t.Fatalf("permission locations = %#v", request.ToolCall.Locations)
+	}
+}
+
 func TestAdapterBoundsAndFlushesOutputBeforeTerminal(t *testing.T) {
 	var notifications []acp.SessionNotification
-	adapter := newAdapter("session", func(notification acp.SessionNotification) error {
+	adapter := newAdapter("session", "/workspace", func(notification acp.SessionNotification) error {
 		notifications = append(notifications, notification)
 		return nil
 	})
 	defer adapter.close()
 	call := toolCall("call", "tool")
-	if err := adapter.handle(event{kind: eventToolPending, call: call}); err != nil {
+	if err := adapter.handle(event{kind: eventToolPending, call: call, target: "a.go"}); err != nil {
 		t.Fatal(err)
+	}
+	pending := notifications[0].Update.(acp.ToolCall)
+	if len(pending.Locations) != 1 || pending.Locations[0].Path != "/workspace/a.go" {
+		t.Fatalf("pending locations = %#v", pending.Locations)
 	}
 	notifications = nil
 	output := strings.Repeat("a", maxToolOutputTail) + "newest"

@@ -2116,6 +2116,10 @@ func TestRejectedFileMutationLeavesTheFileUntouched(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	canonicalPath, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		t.Fatal(err)
+	}
 	model := &scriptedModel{scripts: []modelScript{
 		func(
 			_ context.Context,
@@ -2153,13 +2157,43 @@ func TestRejectedFileMutationLeavesTheFileUntouched(t *testing.T) {
 		ModelOverride: "test/model",
 		Client:        model,
 		Tools:         oxtools.All(),
-	}, func(context.Context, *jrpc2.Request) (any, error) {
+	}, func(_ context.Context, request *jrpc2.Request) (any, error) {
+		if request.Method() != acp.MethodSessionRequestPermission {
+			return nil, jrpc2.Errorf(jrpc2.MethodNotFound, "unknown callback")
+		}
+		var permission acp.RequestPermissionRequest
+		if err := request.UnmarshalParams(&permission); err != nil {
+			return nil, err
+		}
+		if len(permission.ToolCall.Locations) != 1 ||
+			permission.ToolCall.Locations[0].Path != canonicalPath {
+			return nil, fmt.Errorf("permission locations = %#v", permission.ToolCall.Locations)
+		}
 		return acp.RequestPermissionResponse{Outcome: acp.RequestPermissionOutcome{
 			Outcome:  "selected",
 			OptionID: "reject_once",
 		}}, nil
 	})
-	harness.prompt(t, harness.newSessionIn(t, workspace, nil), "edit the notes")
+	sessionID := harness.newSessionIn(t, workspace, nil)
+	harness.prompt(t, sessionID, "edit the notes")
+	live := harness.updates()
+	assertToolLocation(t, live, "edit-rejected", canonicalPath)
+	replayStart := len(live)
+	if err := harness.local.Client.CallResult(
+		t.Context(), "session/close", acp.CloseSessionRequest{SessionID: sessionID},
+		&acp.CloseSessionResponse{},
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := harness.local.Client.CallResult(
+		t.Context(), "session/load", acp.LoadSessionRequest{
+			SessionID: sessionID, CWD: workspace, MCPServers: []json.RawMessage{},
+		},
+		&acp.LoadSessionResponse{},
+	); err != nil {
+		t.Fatal(err)
+	}
+	assertToolLocation(t, harness.updates()[replayStart:], "edit-rejected", canonicalPath)
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -2172,6 +2206,25 @@ func TestRejectedFileMutationLeavesTheFileUntouched(t *testing.T) {
 		t.Fatalf("rejected mutation changed file: content=%q mtime=%v -> %v", data, before.ModTime(), after.ModTime())
 	}
 	model.assertConsumed(t)
+}
+
+func assertToolLocation(t *testing.T, updates []capturedUpdate, callID, want string) {
+	t.Helper()
+	for _, update := range updates {
+		if update.discriminator(t) != "tool_call" {
+			continue
+		}
+		var call acp.ToolCall
+		update.decode(t, &call)
+		if call.ToolCallID != callID {
+			continue
+		}
+		if len(call.Locations) != 1 || call.Locations[0].Path != want {
+			t.Fatalf("tool %q locations = %#v", callID, call.Locations)
+		}
+		return
+	}
+	t.Fatalf("tool %q was not published", callID)
 }
 
 func TestRejectedToolBecomesAResultWithoutDispatch(t *testing.T) {
@@ -2611,6 +2664,10 @@ func TestCancellationRetainsCompletedChildMutationInReplay(t *testing.T) {
 	}}
 	sessionDir := t.TempDir()
 	workspace := t.TempDir()
+	canonicalWorkspace, err := filepath.EvalSymlinks(workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
 	harness := newHarnessWithCallback(t, agent.Config{
 		ModelOverride: "test/model",
 		Client:        model,
@@ -2619,6 +2676,15 @@ func TestCancellationRetainsCompletedChildMutationInReplay(t *testing.T) {
 	}, func(_ context.Context, request *jrpc2.Request) (any, error) {
 		if request.Method() != acp.MethodSessionRequestPermission {
 			return nil, jrpc2.Errorf(jrpc2.MethodNotFound, "unknown callback")
+		}
+		var permission acp.RequestPermissionRequest
+		if err := request.UnmarshalParams(&permission); err != nil {
+			return nil, err
+		}
+		want := filepath.Join(canonicalWorkspace, "child.txt")
+		if len(permission.ToolCall.Locations) != 1 ||
+			permission.ToolCall.Locations[0].Path != want {
+			return nil, fmt.Errorf("child permission locations = %#v", permission.ToolCall.Locations)
 		}
 		approval.Add(1)
 		return acp.RequestPermissionResponse{Outcome: acp.RequestPermissionOutcome{
@@ -2653,7 +2719,25 @@ func TestCancellationRetainsCompletedChildMutationInReplay(t *testing.T) {
 		t.Fatalf("child mutation = %q", content)
 	}
 
-	beforeReplay := len(harness.updates())
+	live := harness.updates()
+	wantLocation := filepath.Join(canonicalWorkspace, "child.txt")
+	var childCallID string
+	for _, update := range live {
+		if update.discriminator(t) != "tool_call" {
+			continue
+		}
+		var call acp.ToolCall
+		update.decode(t, &call)
+		if call.Name == "write_file" && call.Meta[acp.MetaParentToolCallID] == "task-write" {
+			childCallID = call.ToolCallID
+			assertToolLocation(t, live, childCallID, wantLocation)
+			break
+		}
+	}
+	if childCallID == "" {
+		t.Fatal("completed child mutation was absent from live updates")
+	}
+	beforeReplay := len(live)
 	if err := harness.local.Client.CallResult(
 		t.Context(),
 		"session/close",
@@ -2674,8 +2758,9 @@ func TestCancellationRetainsCompletedChildMutationInReplay(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
+	replay := harness.updates()[beforeReplay:]
 	var replayedChild bool
-	for _, update := range harness.updates()[beforeReplay:] {
+	for _, update := range replay {
 		if update.discriminator(t) != "tool_call" {
 			continue
 		}
@@ -2688,6 +2773,7 @@ func TestCancellationRetainsCompletedChildMutationInReplay(t *testing.T) {
 	if !replayedChild {
 		t.Fatal("completed child mutation was absent from replay")
 	}
+	assertToolLocation(t, replay, childCallID, wantLocation)
 }
 
 func TestCancellationDiscardsIncompleteAssistantMessage(t *testing.T) {

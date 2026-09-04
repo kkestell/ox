@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -19,7 +20,7 @@ import (
 
 const (
 	recordVersion     = 1
-	checkpointVersion = 1
+	checkpointVersion = 2
 
 	recordSessionCreated  = "session_created"
 	recordConfigChanged   = "request_configuration_changed"
@@ -84,6 +85,7 @@ type storedToolResult struct {
 	Failed           bool              `json:"failed,omitempty"`
 	ApprovalDecision approvalDecision  `json:"approvalDecision,omitempty"`
 	Delegation       *delegationRecord `json:"delegation,omitempty"`
+	Target           string            `json:"target,omitempty"`
 }
 
 type delegationRecord struct {
@@ -100,6 +102,7 @@ type delegatedCall struct {
 	Content          string           `json:"content"`
 	Failed           bool             `json:"failed,omitempty"`
 	ApprovalDecision approvalDecision `json:"approvalDecision,omitempty"`
+	Target           string           `json:"target,omitempty"`
 }
 
 type modelExchangeRecord struct {
@@ -125,6 +128,7 @@ type suspendedModelExchangeRecord struct {
 	FinishReason     string                     `json:"finishReason"`
 	Usage            *openrouter.Usage          `json:"usage,omitempty"`
 	ToolCalls        []openrouter.ToolCall      `json:"toolCalls"`
+	ToolTargets      map[string]string          `json:"toolTargets,omitempty"`
 	RequestCount     int                        `json:"requestCount"`
 	Decisions        []storedPermissionDecision `json:"decisions,omitempty"`
 	Pending          *pendingPermissionRecord   `json:"pending,omitempty"`
@@ -186,6 +190,7 @@ type checkpointProjection struct {
 	Cost          float64              `json:"cost"`
 	MessageIDs    []string             `json:"messageIds,omitempty"`
 	ToolCallIDs   []string             `json:"toolCallIds,omitempty"`
+	ChangedFiles  []string             `json:"changedFiles,omitempty"`
 	OpenTurn      string               `json:"openTurn,omitempty"`
 	Title         string               `json:"title,omitempty"`
 }
@@ -212,6 +217,7 @@ type durableState struct {
 	records         []sessionRecord
 	messageIDs      map[string]struct{}
 	toolCallIDs     map[string]struct{}
+	changedFiles    map[string]struct{}
 	openTurn        string
 	openTurnHistory int
 	suspended       *suspendedModelExchangeRecord
@@ -312,10 +318,11 @@ func newCheckpointRecord(state durableState) (sessionRecord, error) {
 				CachedRead:  state.usage.cachedRead,
 				CachedWrite: state.usage.cachedWrite,
 			},
-			Cost:        state.cost,
-			MessageIDs:  sortedIdentitySet(state.messageIDs),
-			ToolCallIDs: sortedIdentitySet(state.toolCallIDs),
-			Title:       state.title,
+			Cost:         state.cost,
+			MessageIDs:   sortedIdentitySet(state.messageIDs),
+			ToolCallIDs:  sortedIdentitySet(state.toolCallIDs),
+			ChangedFiles: sortedIdentitySet(state.changedFiles),
+			Title:        state.title,
 		},
 	}
 	return newRecord(state.sequence+1, recordCheckpoint, payload)
@@ -367,6 +374,13 @@ func restoreCheckpoint(record, previous sessionRecord) (durableState, error) {
 	if err != nil {
 		return durableState{}, fmt.Errorf("checkpoint tool call IDs: %w", err)
 	}
+	if !slices.IsSorted(projection.ChangedFiles) {
+		return durableState{}, errors.New("checkpoint changed files are not sorted")
+	}
+	changedFiles, err := targetSet(projection.ChangedFiles)
+	if err != nil {
+		return durableState{}, fmt.Errorf("checkpoint changed files: %w", err)
+	}
 	return durableState{
 		id:            projection.SessionID,
 		cwd:           projection.CWD,
@@ -383,10 +397,11 @@ func restoreCheckpoint(record, previous sessionRecord) (durableState, error) {
 			cachedRead:  projection.Usage.CachedRead,
 			cachedWrite: projection.Usage.CachedWrite,
 		},
-		cost:        projection.Cost,
-		messageIDs:  messageIDs,
-		toolCallIDs: toolCallIDs,
-		title:       projection.Title,
+		cost:         projection.Cost,
+		messageIDs:   messageIDs,
+		toolCallIDs:  toolCallIDs,
+		changedFiles: changedFiles,
+		title:        projection.Title,
 	}, nil
 }
 
@@ -413,6 +428,26 @@ func identitySet(values []string) (map[string]struct{}, error) {
 	return result, nil
 }
 
+func targetSet(values []string) (map[string]struct{}, error) {
+	result := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		if !validStoredTarget(value) {
+			return nil, fmt.Errorf("invalid target %q", value)
+		}
+		if _, exists := result[value]; exists {
+			return nil, fmt.Errorf("duplicate target %q", value)
+		}
+		result[value] = struct{}{}
+	}
+	return result, nil
+}
+
+func validStoredTarget(value string) bool {
+	return value != "" && value != "." && !path.IsAbs(value) &&
+		path.Clean(value) == value && value != ".." &&
+		!strings.HasPrefix(value, "../") && !strings.Contains(value, `\`)
+}
+
 func (s durableState) clone() durableState {
 	s.history = cloneMessages(s.history)
 	s.records = append([]sessionRecord(nil), s.records...)
@@ -427,6 +462,11 @@ func (s durableState) clone() durableState {
 	s.toolCallIDs = make(map[string]struct{}, len(toolCallIDs))
 	for id := range toolCallIDs {
 		s.toolCallIDs[id] = struct{}{}
+	}
+	changedFiles := s.changedFiles
+	s.changedFiles = make(map[string]struct{}, len(changedFiles))
+	for path := range changedFiles {
+		s.changedFiles[path] = struct{}{}
 	}
 	return s
 }
@@ -460,6 +500,7 @@ func (s *durableState) apply(record sessionRecord) error {
 		s.configuration = cloneConfiguration(value.Configuration)
 		s.messageIDs = make(map[string]struct{})
 		s.toolCallIDs = make(map[string]struct{})
+		s.changedFiles = make(map[string]struct{})
 	case recordConfigChanged:
 		if s.openTurn != "" {
 			return errors.New("configuration changed during a turn")
@@ -621,10 +662,18 @@ func (s *durableState) apply(record sessionRecord) error {
 				if call.Function.Name == "" || !json.Valid([]byte(call.Function.Arguments)) {
 					return errors.New("tool call name and JSON arguments are required")
 				}
+				if result.Target != "" &&
+					(s.configuration.ToolKinds[call.Function.Name] != acp.ToolKindEdit ||
+						!validStoredTarget(result.Target)) {
+					return fmt.Errorf("tool call %q has invalid target %q", call.ID, result.Target)
+				}
 				if _, exists := s.toolCallIDs[call.ID]; exists {
 					return fmt.Errorf("duplicate tool call ID %q", call.ID)
 				}
 				s.toolCallIDs[call.ID] = struct{}{}
+				if !result.Failed && result.Target != "" {
+					s.changedFiles[result.Target] = struct{}{}
+				}
 				if result.Delegation != nil {
 					for _, child := range result.Delegation.Calls {
 						if child.CallID == "" || child.Name == "" ||
@@ -634,7 +683,19 @@ func (s *durableState) apply(record sessionRecord) error {
 						if _, exists := s.toolCallIDs[child.CallID]; exists {
 							return fmt.Errorf("duplicate tool call ID %q", child.CallID)
 						}
+						if child.Target != "" &&
+							(s.configuration.ToolKinds[child.Name] != acp.ToolKindEdit ||
+								!validStoredTarget(child.Target)) {
+							return fmt.Errorf(
+								"delegated tool call %q has invalid target %q",
+								child.CallID,
+								child.Target,
+							)
+						}
 						s.toolCallIDs[child.CallID] = struct{}{}
+						if !child.Failed && child.Target != "" {
+							s.changedFiles[child.Target] = struct{}{}
+						}
 					}
 					for index := range result.Delegation.Usage {
 						s.addUsage(&result.Delegation.Usage[index])
@@ -742,6 +803,7 @@ func (s *durableState) validateSuspendedExchange(value suspendedModelExchangeRec
 		}
 	}
 	seen := make(map[string]struct{}, len(value.ToolCalls))
+	names := make(map[string]string, len(value.ToolCalls))
 	for _, call := range value.ToolCalls {
 		if call.ID == "" || call.Function.Name == "" ||
 			!json.Valid([]byte(call.Function.Arguments)) {
@@ -754,6 +816,16 @@ func (s *durableState) validateSuspendedExchange(value suspendedModelExchangeRec
 			return fmt.Errorf("duplicate tool call ID %q", call.ID)
 		}
 		seen[call.ID] = struct{}{}
+		names[call.ID] = call.Function.Name
+	}
+	for callID, target := range value.ToolTargets {
+		name, exists := names[callID]
+		if !exists {
+			return fmt.Errorf("tool target names unknown tool call %q", callID)
+		}
+		if s.configuration.ToolKinds[name] != acp.ToolKindEdit || !validStoredTarget(target) {
+			return fmt.Errorf("tool call %q has invalid target %q", callID, target)
+		}
 	}
 	return nil
 }
@@ -780,6 +852,10 @@ func (s *durableState) validatePendingPermission(value pendingPermissionRecord) 
 	if request.SessionID != s.id || request.ToolCall.ToolCallID != call.ID ||
 		request.ToolCall.Name != call.Function.Name ||
 		!sameJSON(request.ToolCall.RawInput, []byte(call.Function.Arguments)) ||
+		!reflect.DeepEqual(
+			request.ToolCall.Locations,
+			toolLocations(s.cwd, s.suspended.ToolTargets[call.ID]),
+		) ||
 		len(request.Options) == 0 {
 		return errors.New("permission request does not match its tool call")
 	}
@@ -845,6 +921,9 @@ func validateCompletedSuspension(
 	suspended suspendedModelExchangeRecord,
 	completed modelExchangeRecord,
 ) error {
+	if len(completed.ToolCalls) != len(completed.ToolResults) {
+		return errors.New("tool calls and results must be one complete group")
+	}
 	if suspended.Pending != nil {
 		return errors.New("model exchange completed with a pending permission request")
 	}
@@ -873,6 +952,11 @@ func validateCompletedSuspension(
 		if index < 0 || index >= len(completed.ToolResults) ||
 			completed.ToolResults[index].ApprovalDecision != decision.Decision {
 			return errors.New("completed tool results do not match recorded permission decisions")
+		}
+	}
+	for index, call := range completed.ToolCalls {
+		if completed.ToolResults[index].Target != suspended.ToolTargets[call.ID] {
+			return errors.New("completed tool targets do not match the suspended exchange")
 		}
 	}
 	return nil
@@ -946,7 +1030,7 @@ func (a *Agent) replay(s durableState) ([]any, error) {
 			if err := decodeRecord(record.Data, &value); err != nil {
 				return nil, err
 			}
-			updates = append(updates, a.replaySuspendedExchange(value, configuration)...)
+			updates = append(updates, a.replaySuspendedExchange(value, configuration, s.cwd)...)
 			suspended = true
 		case recordPermissionOpen, recordPermissionRetry, recordPermissionDone:
 			continue
@@ -969,7 +1053,10 @@ func (a *Agent) replay(s durableState) ([]any, error) {
 					parentMeta = acp.Metadata{acp.MetaSubagent: true}
 				}
 				if !suspended {
-					updates = append(updates, replayToolCall(a, call, configuration, parentMeta))
+					updates = append(
+						updates,
+						replayToolCall(a, call, configuration, parentMeta, s.cwd, result.Target),
+					)
 				}
 				if result.Delegation != nil {
 					for _, child := range result.Delegation.Calls {
@@ -986,6 +1073,7 @@ func (a *Agent) replay(s durableState) ([]any, error) {
 								Name:          child.Name,
 								Kind:          configuration.ToolKinds[child.Name],
 								Status:        acp.ToolCallStatusPending,
+								Locations:     toolLocations(s.cwd, child.Target),
 								RawInput:      append(json.RawMessage(nil), child.Arguments...),
 								Meta:          meta,
 							},
@@ -1058,6 +1146,7 @@ func (a *Agent) replay(s durableState) ([]any, error) {
 func (a *Agent) replaySuspendedExchange(
 	value suspendedModelExchangeRecord,
 	configuration requestConfiguration,
+	root string,
 ) []any {
 	completed := modelExchangeRecord{
 		TurnID: value.TurnID, AnswerID: value.AnswerID, ThoughtID: value.ThoughtID,
@@ -1069,7 +1158,10 @@ func (a *Agent) replaySuspendedExchange(
 		if a.toolDelegates(call.Function.Name) {
 			meta = acp.Metadata{acp.MetaSubagent: true}
 		}
-		updates = append(updates, replayToolCall(a, call, configuration, meta))
+		updates = append(
+			updates,
+			replayToolCall(a, call, configuration, meta, root, value.ToolTargets[call.ID]),
+		)
 	}
 	return updates
 }
@@ -1098,6 +1190,8 @@ func replayToolCall(
 	call openrouter.ToolCall,
 	configuration requestConfiguration,
 	meta acp.Metadata,
+	root string,
+	target string,
 ) acp.ToolCall {
 	return acp.ToolCall{
 		SessionUpdate: "tool_call",
@@ -1106,6 +1200,7 @@ func replayToolCall(
 		Name:          call.Function.Name,
 		Kind:          configuration.ToolKinds[call.Function.Name],
 		Status:        acp.ToolCallStatusPending,
+		Locations:     toolLocations(root, target),
 		RawInput:      json.RawMessage(call.Function.Arguments),
 		Meta:          meta,
 	}

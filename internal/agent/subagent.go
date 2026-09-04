@@ -141,6 +141,7 @@ func (a *Agent) delegate(
 				Content:          result.content,
 				Failed:           result.failed,
 				ApprovalDecision: result.approval,
+				Target:           result.target,
 			})
 			kind := eventToolCompleted
 			if result.failed {
@@ -152,6 +153,7 @@ func (a *Agent) delegate(
 				kind,
 				parentCallID,
 				result.content,
+				result.target,
 			)
 		}
 		if requestCount == maxTurnRequests {

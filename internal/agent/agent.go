@@ -428,7 +428,7 @@ func (a *Agent) recoverSession(ctx context.Context, value *session) error {
 	}()
 
 	server := jrpc2.ServerFromContext(ctx)
-	adapter := newAdapter(value.id, func(notification acp.SessionNotification) error {
+	adapter := newAdapter(value.id, value.state.cwd, func(notification acp.SessionNotification) error {
 		return server.Notify(ctx, "session/update", notification)
 	})
 	defer adapter.close()
@@ -1074,7 +1074,7 @@ func (a *Agent) Prompt(
 		}
 	}()
 
-	adapter := newAdapter(value.id, func(notification acp.SessionNotification) error {
+	adapter := newAdapter(value.id, value.state.cwd, func(notification acp.SessionNotification) error {
 		return jrpc2.ServerFromContext(ctx).Notify(ctx, "session/update", notification)
 	})
 	server := jrpc2.ServerFromContext(ctx)

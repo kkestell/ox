@@ -15,6 +15,7 @@ import (
 
 	"github.com/kkestell/ox/internal/acp"
 	"github.com/kkestell/ox/internal/openrouter"
+	"github.com/kkestell/ox/internal/workspace"
 )
 
 const maxTurnRequests = 16
@@ -195,12 +196,13 @@ func (a *Agent) runFrom(
 				ReasoningDetails: opaqueMessages(completion.ReasoningDetails),
 				FinishReason:     completion.FinishReason, Usage: completion.Usage,
 				ToolCalls:    append([]openrouter.ToolCall(nil), completion.ToolCalls...),
+				ToolTargets:  normalizedToolTargets(value.state.cwd, a.primaryTools, completion.ToolCalls),
 				RequestCount: requestCount,
 			}
 			if err := a.commit(value, recordExchangePaused, *suspended); err != nil {
 				return loopOutcome{err: fmt.Errorf("persist suspended model exchange: %w", err)}
 			}
-			a.publishPendingTools(value, completion.ToolCalls, events)
+			a.publishPendingTools(completion.ToolCalls, suspended.ToolTargets, events)
 		}
 		results, batchCancelled, err := a.executeSuspendedBatch(
 			ctx, value, completion.ToolCalls, ask, fileSystem, terminal, events, reissue,
@@ -216,6 +218,7 @@ func (a *Agent) runFrom(
 				Failed:           result.failed,
 				ApprovalDecision: result.approval,
 				Delegation:       result.delegation,
+				Target:           result.target,
 			}
 		}
 		if err := a.commit(value, recordModelExchange, modelExchangeRecord{
@@ -243,6 +246,7 @@ func (a *Agent) runFrom(
 				kind,
 				"",
 				results[index].content,
+				results[index].target,
 			)
 		}
 		usages := []*openrouter.Usage{completion.Usage}
@@ -292,8 +296,8 @@ func (s *suspendedModelExchangeRecord) completion() *openrouter.Completion {
 }
 
 func (a *Agent) publishPendingTools(
-	value *session,
 	calls []openrouter.ToolCall,
+	targets map[string]string,
 	events chan<- event,
 ) {
 	for _, call := range calls {
@@ -306,6 +310,7 @@ func (a *Agent) publishPendingTools(
 		events <- event{
 			kind: eventToolPending, call: call, toolKind: kind,
 			title:     a.toolTitle(call.Function.Name, json.RawMessage(call.Function.Arguments)),
+			target:    targets[call.ID],
 			delegates: delegates,
 		}
 	}
@@ -661,6 +666,7 @@ type toolResult struct {
 	failed     bool
 	approval   approvalDecision
 	delegation *delegationRecord
+	target     string
 }
 
 func (a *Agent) executeSuspendedBatch(
@@ -682,6 +688,9 @@ func (a *Agent) executeSuspendedBatch(
 	value.stateMu.Unlock()
 	if progress == nil {
 		return nil, false, errors.New("suspended tool batch has no durable state")
+	}
+	for index, call := range calls {
+		results[index].target = progress.ToolTargets[call.ID]
 	}
 	for _, recorded := range progress.Decisions {
 		if recorded.Decision == decisionAllowAlways {
@@ -740,7 +749,9 @@ func (a *Agent) executeSuspendedBatch(
 			ready[index] = true
 			continue
 		}
-		request := a.permissionRequest(value.id, tool, call, rule, "")
+		request := a.permissionRequest(
+			value.id, value.state.cwd, tool, call, rule, "", results[index].target,
+		)
 		value.stateMu.Lock()
 		progress = cloneSuspendedExchange(value.state.suspended)
 		value.stateMu.Unlock()
@@ -838,6 +849,7 @@ func (a *Agent) executeSuspendedBatch(
 				results[index] = toolResult{
 					content: "tool call cancelled before start", failed: true,
 					approval: decisionCancelled,
+					target:   progress.ToolTargets[calls[index].ID],
 				}
 			}
 		}
@@ -859,10 +871,12 @@ func permissionDecisionRule(decision approvalDecision, rule string) string {
 
 func (a *Agent) permissionRequest(
 	sessionID string,
+	root string,
 	tool Tool,
 	call openrouter.ToolCall,
 	rule string,
 	parent string,
+	target string,
 ) acp.RequestPermissionRequest {
 	arguments := json.RawMessage(call.Function.Arguments)
 	return acp.RequestPermissionRequest{
@@ -870,7 +884,8 @@ func (a *Agent) permissionRequest(
 		ToolCall: acp.ToolCallUpdate{
 			ToolCallID: call.ID, Kind: tool.Kind,
 			Title: a.toolTitle(call.Function.Name, arguments), Name: call.Function.Name,
-			RawInput: arguments, Meta: toolEventMetadata(parent, false),
+			Locations: toolLocations(root, target), RawInput: arguments,
+			Meta: toolEventMetadata(parent, false),
 		},
 		Options: permissionOptions(rule, tool.Suggest != nil),
 	}
@@ -910,6 +925,7 @@ func (a *Agent) executeBatchWith(
 	parent string,
 ) []toolResult {
 	a.logger.Info("tool batch started", "session_id", value.id, "calls", len(calls))
+	targets := normalizedToolTargets(value.state.cwd, tools, calls)
 	for _, call := range calls {
 		var kind acp.ToolKind
 		var delegates bool
@@ -923,11 +939,15 @@ func (a *Agent) executeBatchWith(
 			toolKind:  kind,
 			parent:    parent,
 			title:     a.toolTitle(call.Function.Name, json.RawMessage(call.Function.Arguments)),
+			target:    targets[call.ID],
 			delegates: delegates,
 		}
 	}
 
 	results := make([]toolResult, len(calls))
+	for index, call := range calls {
+		results[index].target = targets[call.ID]
+	}
 	ready := make([]bool, len(calls))
 	handled := make([]bool, len(calls))
 	batchCancelled := false
@@ -959,6 +979,7 @@ approvalLoop:
 				content:  "tool call cancelled before start",
 				failed:   true,
 				approval: decisionCancelled,
+				target:   targets[call.ID],
 			}
 			batchCancelled = true
 			break approvalLoop
@@ -968,18 +989,9 @@ approvalLoop:
 			ready[index] = true
 			continue
 		}
-		request := acp.RequestPermissionRequest{
-			SessionID: value.id,
-			ToolCall: acp.ToolCallUpdate{
-				ToolCallID: call.ID,
-				Kind:       tool.Kind,
-				Title:      a.toolTitle(call.Function.Name, arguments),
-				Name:       call.Function.Name,
-				RawInput:   arguments,
-				Meta:       toolEventMetadata(parent, false),
-			},
-			Options: permissionOptions(rule, tool.Suggest != nil),
-		}
+		request := a.permissionRequest(
+			value.id, value.state.cwd, tool, call, rule, parent, results[index].target,
+		)
 		a.logger.Info(
 			"tool approval requested",
 			"session_id", value.id,
@@ -1043,6 +1055,7 @@ approvalLoop:
 				content:  "tool call cancelled before start",
 				failed:   true,
 				approval: decisionCancelled,
+				target:   targets[calls[index].ID],
 			}
 		}
 	}
@@ -1106,6 +1119,7 @@ func (a *Agent) dispatchApprovedBatch(
 					terminal,
 					events,
 					parent,
+					results[current].target,
 				)
 				results[current].approval = decision
 			}()
@@ -1118,6 +1132,7 @@ func (a *Agent) dispatchApprovedBatch(
 				content:  "tool call cancelled before start",
 				failed:   true,
 				approval: results[index].approval,
+				target:   results[index].target,
 			}
 		}
 	}
@@ -1162,18 +1177,23 @@ func (a *Agent) executeOne(
 	terminal ClientTerminal,
 	events chan<- event,
 	parent string,
+	target string,
 ) (result toolResult) {
 	index, ok := tools.byName[call.Function.Name]
 	if ok && !tools.tools[index].ParallelSafe {
 		value.exclusiveMu.Lock()
 		defer value.exclusiveMu.Unlock()
 		if ctx.Err() != nil {
-			return toolResult{content: "tool call cancelled before start", failed: true}
+			return toolResult{
+				content: "tool call cancelled before start", failed: true, target: target,
+			}
 		}
 	} else if ctx.Err() != nil {
-		return toolResult{content: "tool call cancelled before start", failed: true}
+		return toolResult{
+			content: "tool call cancelled before start", failed: true, target: target,
+		}
 	}
-	events <- a.toolEvent(tools, call, eventToolStarted, parent, "")
+	events <- a.toolEvent(tools, call, eventToolStarted, parent, "", target)
 	started := time.Now()
 	path := toolCallPath(call.Function.Arguments)
 	defer func() {
@@ -1181,6 +1201,7 @@ func (a *Agent) executeOne(
 			result = toolResult{
 				content: fmt.Sprintf("tool panicked: %v", recovered),
 				failed:  true,
+				target:  target,
 			}
 		}
 		a.logger.Info(
@@ -1196,11 +1217,12 @@ func (a *Agent) executeOne(
 		return toolResult{
 			content: fmt.Sprintf("unknown tool %q", call.Function.Name),
 			failed:  true,
+			target:  target,
 		}
 	}
 	tool := tools.tools[index]
 	if tool.Execute == nil {
-		return toolResult{content: "tool has no executor", failed: true}
+		return toolResult{content: "tool has no executor", failed: true, target: target}
 	}
 	var delegation *delegationRecord
 	invocation := Invocation{
@@ -1247,6 +1269,7 @@ func (a *Agent) executeOne(
 			result := toolResult{
 				content: "tool call cancelled",
 				failed:  true,
+				target:  target,
 			}
 			if delegationHasActivity(delegation) {
 				result.delegation = delegation
@@ -1263,9 +1286,10 @@ func (a *Agent) executeOne(
 			content:    "tool error: " + err.Error(),
 			failed:     true,
 			delegation: delegation,
+			target:     target,
 		}
 	}
-	return toolResult{content: output, delegation: delegation}
+	return toolResult{content: output, delegation: delegation, target: target}
 }
 
 func delegationHasActivity(value *delegationRecord) bool {
@@ -1279,6 +1303,7 @@ func (a *Agent) toolEvent(
 	kind eventKind,
 	parent string,
 	text string,
+	target string,
 ) event {
 	delegates := false
 	var toolKind acp.ToolKind
@@ -1292,6 +1317,7 @@ func (a *Agent) toolEvent(
 		toolKind:  toolKind,
 		parent:    parent,
 		title:     a.toolTitle(call.Function.Name, json.RawMessage(call.Function.Arguments)),
+		target:    target,
 		delegates: delegates,
 		text:      text,
 	}
@@ -1321,6 +1347,33 @@ func toolCallPath(arguments string) string {
 		return ""
 	}
 	return input.Path
+}
+
+func normalizedToolTargets(
+	root string,
+	tools toolSet,
+	calls []openrouter.ToolCall,
+) map[string]string {
+	targets := make(map[string]string)
+	files := workspace.NewWorkspace(root)
+	for _, call := range calls {
+		index, ok := tools.byName[call.Function.Name]
+		if !ok || tools.tools[index].Kind != acp.ToolKindEdit {
+			continue
+		}
+		path := toolCallPath(call.Function.Arguments)
+		if path == "" {
+			continue
+		}
+		target, ok := files.Key(path)
+		if ok && validStoredTarget(target) {
+			targets[call.ID] = target
+		}
+	}
+	if len(targets) == 0 {
+		return nil
+	}
+	return targets
 }
 
 func (a *Agent) publishUsage(
