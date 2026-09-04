@@ -14,11 +14,13 @@ const timeoutMs = 10_000;
 
 type HarnessOptions = {
   liveAPIKey?: string;
+  logLevel?: string;
 };
 
 type QueuedResponse = {
   prompt: string;
-  opening: string;
+  opening: object[];
+  held: boolean;
   consumed: boolean;
   response?: ServerResponse;
   completed: boolean;
@@ -74,7 +76,8 @@ export class BrowserHarness {
   private readonly responses: QueuedResponse[] = [];
   private readonly providerErrors: string[] = [];
   private readonly authorizedRequests: string[] = [];
-  private bridgeOutput = "";
+  private bridgeStandardOutput = "";
+  private bridgeErrorOutput = "";
   private oxPID: number | undefined;
 
   private constructor(options: {
@@ -138,6 +141,9 @@ export class BrowserHarness {
       XDG_DATA_HOME: join(scratch, "data"),
       OPENROUTER_API_KEY: options.liveAPIKey ?? "browser-test-key",
     };
+    if (options.logLevel !== undefined) {
+      oxEnvironment.OX_LOG_LEVEL = options.logLevel;
+    }
     if (!liveProvider) {
       oxEnvironment.OX_OPENROUTER_BASE_URL = `http://127.0.0.1:${providerPort}/api/v1`;
     } else {
@@ -169,16 +175,24 @@ export class BrowserHarness {
   }
 
   hold(prompt: string, opening: string): HeldResponse {
-    const queued: QueuedResponse = {
-      prompt,
-      opening,
-      consumed: false,
-      completed: false,
-      started: new Deferred<void>(),
-      cancelled: new Deferred<void>(),
-    };
-    this.responses.push(queued);
+    const queued = this.queue(prompt, [textDelta(opening)], true);
     return new HeldResponse(queued);
+  }
+
+  async scriptReadTurn(prompt: string, reasoning: string, answer: string): Promise<void> {
+    const path = "browser-fixture.md";
+    const contents = "Browser fixture contents.";
+    await writeFile(join(this.workspace, path), contents);
+    this.queue(prompt, [
+      reasoningDelta(reasoning),
+      toolCallDelta(0, "browser-read", "read_file", JSON.stringify({ path })),
+      finishDelta("tool_calls"),
+    ]);
+    this.queue(contents, [
+      textDelta(answer),
+      finishDelta(),
+      usageDelta(8, 5, 13, 0.001),
+    ]);
   }
 
   async open(page: Page): Promise<void> {
@@ -205,6 +219,21 @@ export class BrowserHarness {
     );
   }
 
+  async waitForOxLog(fragment: string): Promise<void> {
+    await poll(
+      () => this.bridgeErrorOutput.includes(fragment),
+      `Ox stderr did not contain ${JSON.stringify(fragment)}`,
+    );
+  }
+
+  standardOutput(): string {
+    return this.bridgeStandardOutput;
+  }
+
+  errorOutput(): string {
+    return this.bridgeErrorOutput;
+  }
+
   async rememberOxProcess(): Promise<number> {
     const pid = await pollValue(async () => {
       const children = await childPIDs(this.bridge.pid);
@@ -227,8 +256,12 @@ export class BrowserHarness {
     problems.push(...this.providerErrors);
 
     if (testInfo.status !== testInfo.expectedStatus || problems.length > 0) {
-      await testInfo.attach("bridge-output", {
-        body: this.bridgeOutput || "(no bridge output)",
+      await testInfo.attach("bridge-stdout", {
+        body: this.bridgeStandardOutput || "(no bridge stdout)",
+        contentType: "text/plain",
+      });
+      await testInfo.attach("bridge-stderr", {
+        body: this.bridgeErrorOutput || "(no bridge stderr)",
         contentType: "text/plain",
       });
     }
@@ -245,20 +278,20 @@ export class BrowserHarness {
   }
 
   private captureBridgeOutput(): void {
-    const append = (chunk: Buffer) => {
-      this.bridgeOutput += chunk.toString();
-      if (this.bridgeOutput.length > 64 * 1024) {
-        this.bridgeOutput = this.bridgeOutput.slice(-64 * 1024);
-      }
-    };
-    this.bridge.stdout?.on("data", append);
-    this.bridge.stderr?.on("data", append);
+    this.bridge.stdout?.on("data", (chunk: Buffer) => {
+      this.bridgeStandardOutput = appendBounded(this.bridgeStandardOutput, chunk);
+    });
+    this.bridge.stderr?.on("data", (chunk: Buffer) => {
+      this.bridgeErrorOutput = appendBounded(this.bridgeErrorOutput, chunk);
+    });
   }
 
   private async waitForBridge(): Promise<void> {
     await poll(async () => {
       if (this.bridge.exitCode !== null) {
-        throw new Error(`stdio bridge exited early\n${this.bridgeOutput}`);
+        throw new Error(
+          `stdio bridge exited early\nstdout:\n${this.bridgeStandardOutput}\nstderr:\n${this.bridgeErrorOutput}`,
+        );
       }
       return canConnect(this.websocketURL.replace("ws://", "http://"));
     }, "stdio bridge did not listen");
@@ -302,11 +335,30 @@ export class BrowserHarness {
     queued.consumed = true;
     queued.response = response;
     response.writeHead(200, { "Content-Type": "text/event-stream" });
-    response.write(event(textDelta(queued.opening)));
+    for (const opening of queued.opening) response.write(event(opening));
     queued.started.resolve();
+    if (!queued.held) {
+      queued.completed = true;
+      response.end("data: [DONE]\n\n");
+      return;
+    }
     response.on("close", () => {
       if (!queued.completed) queued.cancelled.resolve();
     });
+  }
+
+  private queue(prompt: string, opening: object[], held = false): QueuedResponse {
+    const queued: QueuedResponse = {
+      prompt,
+      opening,
+      held,
+      consumed: false,
+      completed: false,
+      started: new Deferred<void>(),
+      cancelled: new Deferred<void>(),
+    };
+    this.responses.push(queued);
+    return queued;
   }
 }
 
@@ -314,12 +366,48 @@ function textDelta(text: string): object {
   return { choices: [{ delta: { content: text } }] };
 }
 
-function finishDelta(): object {
-  return { choices: [{ delta: {}, finish_reason: "stop" }] };
+function reasoningDelta(text: string): object {
+  return { choices: [{ delta: { reasoning: text } }] };
+}
+
+function toolCallDelta(index: number, id: string, name: string, argumentsJSON: string): object {
+  return {
+    choices: [{
+      delta: {
+        tool_calls: [{
+          index,
+          id,
+          type: "function",
+          function: { name, arguments: argumentsJSON },
+        }],
+      },
+    }],
+  };
+}
+
+function finishDelta(reason = "stop"): object {
+  return { choices: [{ delta: {}, finish_reason: reason }] };
+}
+
+function usageDelta(promptTokens: number, completionTokens: number, totalTokens: number, cost: number): object {
+  return {
+    choices: [],
+    usage: {
+      prompt_tokens: promptTokens,
+      completion_tokens: completionTokens,
+      total_tokens: totalTokens,
+      cost,
+    },
+  };
 }
 
 function event(value: object): string {
   return `data: ${JSON.stringify(value)}\n\n`;
+}
+
+function appendBounded(current: string, chunk: Buffer): string {
+  const appended = current + chunk.toString();
+  return appended.length <= 64 * 1024 ? appended : appended.slice(-64 * 1024);
 }
 
 function json(response: ServerResponse, value: object): void {

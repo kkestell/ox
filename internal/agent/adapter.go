@@ -131,16 +131,6 @@ func (a *eventAdapter) handle(current event) error {
 				Currency: "USD",
 			},
 		})
-	case eventCommittedUser:
-		for index, content := range current.content {
-			if err := a.send(acp.UserMessageChunk{
-				SessionUpdate: "user_message_chunk",
-				Content:       replayContent(content, index),
-				MessageID:     current.messageID,
-			}); err != nil {
-				return err
-			}
-		}
 	case eventOutcome:
 		return a.send(current.update)
 	}

@@ -897,26 +897,6 @@ func (a *Agent) Prompt(
 	}); err != nil {
 		return acp.PromptResponse{}, fmt.Errorf("persist user message: %w", err)
 	}
-	if err := adapter.handle(event{
-		kind:      eventCommittedUser,
-		messageID: messageID,
-		content:   request.Prompt,
-	}); err != nil {
-		notifyErr := a.adapterFailed(value.id, active, err)
-		outcomeID, idErr := randomID()
-		if idErr != nil {
-			return acp.PromptResponse{}, idErr
-		}
-		if commitErr := a.commit(value, recordTurnFinished, turnFinishedRecord{
-			TurnID:    turnID,
-			Kind:      "failed",
-			MessageID: outcomeID,
-			Message:   notifyErr.Error(),
-		}); commitErr != nil {
-			return acp.PromptResponse{}, errors.Join(notifyErr, commitErr)
-		}
-		return acp.PromptResponse{}, notifyErr
-	}
 
 	a.logger.Info(
 		"prompt started",

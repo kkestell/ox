@@ -17,7 +17,6 @@ const (
 	eventToolCompleted
 	eventToolFailed
 	eventUsage
-	eventCommittedUser
 	eventOutcome
 )
 
@@ -26,7 +25,6 @@ type event struct {
 	text      string
 	messageID string
 	thoughtID string
-	content   []acp.ContentBlock
 	call      openrouter.ToolCall
 	toolKind  acp.ToolKind
 	parent    string

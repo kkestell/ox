@@ -88,31 +88,13 @@ snapshot, not Beta's current working tree.
 - Do not introduce Nu's provider framework or a multi-provider abstraction
   before Ox has a second provider.
 
-## Most recently completed: production runtime core
+## Most recently completed: client interoperability baseline
 
-Ox now has a durable ACP session runtime with safe local coding tools,
-permissions, subagents, provider resilience, usage accounting, lifecycle replay,
-and process-level recovery and cancellation coverage.
+Ox now proves its ACP lifecycle, visible updates, replay, errors, and stdout
+isolation against ACP UI artifact `4482f93a` from source `e6e36d05`,
+`@rebornix/stdio-to-ws@0.2.0`, and ACP v1 schema `8e3eb8f2`.
 
-## Current milestone: client interoperability baseline
-
-- [x] Document the development setup for launching Ox as a local ACP agent.
-- [x] Add an automated browser-client smoke test that drives an independently
-      maintained ACP UI against Ox through an upstream stdio bridge, covering
-      initialization, authentication, session creation, prompt streaming,
-      cancellation, and process shutdown. Pins: ACP UI artifact `4482f93a` from
-      source `e6e36d05`, `@rebornix/stdio-to-ws@0.2.0`, and ACP v1 schema
-      `8e3eb8f2`.
-- [x] Record and test the capabilities the browser client advertises, including
-      behavior when an optional capability is absent.
-- [ ] Verify that every supported prompt content block and session update
-      renders correctly in the browser client.
-- [ ] Verify that protocol errors reach the browser client as useful errors and
-      that logs never contaminate stdout.
-- [ ] Keep the pinned browser client, stdio bridge, and ACP schema version
-      recorded with each interoperability pass.
-
-## Milestone: client-delegated tools
+## Current milestone: client-delegated tools
 
 - [ ] Use client-delegated `fs/read_text_file` and `fs/write_text_file` when the
       ACP client advertises those capabilities.
