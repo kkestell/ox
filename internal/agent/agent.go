@@ -736,7 +736,21 @@ func (a *Agent) commit(value *session, kind string, payload any) error {
 	if err := next.apply(record); err != nil {
 		return fmt.Errorf("validate %s mutation: %w", kind, err)
 	}
-	if err := value.log.append(record); err != nil {
+	records := []sessionRecord{record}
+	if kind == recordTurnFinished {
+		checkpoint, err := newCheckpointRecord(next)
+		if err != nil {
+			return fmt.Errorf("create checkpoint: %w", err)
+		}
+		restored, err := restoreCheckpoint(checkpoint, record)
+		if err != nil {
+			return fmt.Errorf("validate checkpoint: %w", err)
+		}
+		restored.records = append(next.records, checkpoint)
+		next = restored
+		records = append(records, checkpoint)
+	}
+	if err := value.log.append(records...); err != nil {
 		value.poisoned = true
 		return err
 	}
@@ -745,7 +759,7 @@ func (a *Agent) commit(value *session, kind string, payload any) error {
 		"session record committed",
 		"session_id", value.id,
 		"record", kind,
-		"sequence", record.Sequence,
+		"sequence", next.sequence,
 	)
 	return nil
 }

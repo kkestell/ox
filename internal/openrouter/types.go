@@ -73,6 +73,49 @@ func (c ContentBlock) MarshalJSON() ([]byte, error) {
 	}
 }
 
+func (c *ContentBlock) UnmarshalJSON(data []byte) error {
+	var wire struct {
+		Type         string          `json:"type"`
+		Text         string          `json:"text,omitempty"`
+		ImageURL     json.RawMessage `json:"image_url,omitempty"`
+		InputAudio   json.RawMessage `json:"input_audio,omitempty"`
+		AudioData    string          `json:"audio_data,omitempty"`
+		AudioFormat  string          `json:"audio_format,omitempty"`
+		CacheControl *CacheControl   `json:"cache_control,omitempty"`
+	}
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	*c = ContentBlock{
+		Type:         wire.Type,
+		Text:         wire.Text,
+		AudioData:    wire.AudioData,
+		AudioFormat:  wire.AudioFormat,
+		CacheControl: wire.CacheControl,
+	}
+	if len(wire.ImageURL) > 0 {
+		var image struct {
+			URL string `json:"url"`
+		}
+		if err := json.Unmarshal(wire.ImageURL, &image); err != nil {
+			return err
+		}
+		c.ImageURL = image.URL
+	}
+	if len(wire.InputAudio) > 0 {
+		var audio struct {
+			Data   string `json:"data"`
+			Format string `json:"format"`
+		}
+		if err := json.Unmarshal(wire.InputAudio, &audio); err != nil {
+			return err
+		}
+		c.AudioData = audio.Data
+		c.AudioFormat = audio.Format
+	}
+	return nil
+}
+
 type CacheControl struct {
 	Type string `json:"type"`
 	TTL  string `json:"ttl,omitempty"`

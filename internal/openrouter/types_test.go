@@ -97,6 +97,27 @@ func TestRequestEncodingOmitsUnsetFields(t *testing.T) {
 	}
 }
 
+func TestMultimodalContentBlocksRoundTrip(t *testing.T) {
+	blocks := []ContentBlock{
+		{Type: "image_url", ImageURL: "data:image/png;base64,cGljdHVyZQ=="},
+		{Type: "input_audio", AudioData: "c291bmQ=", AudioFormat: "wav"},
+	}
+	raw, err := json.Marshal(blocks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var restored []ContentBlock
+	if err := json.Unmarshal(raw, &restored); err != nil {
+		t.Fatal(err)
+	}
+	if len(restored) != 2 ||
+		restored[0].ImageURL != blocks[0].ImageURL ||
+		restored[1].AudioData != blocks[1].AudioData ||
+		restored[1].AudioFormat != blocks[1].AudioFormat {
+		t.Fatalf("restored blocks = %#v", restored)
+	}
+}
+
 func TestReasoningDetailsRemainRawAndOrderedAcrossReplay(t *testing.T) {
 	details := []json.RawMessage{
 		json.RawMessage(`{"type":"reasoning.summary","summary":"first","index":0}`),

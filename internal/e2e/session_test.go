@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -62,11 +63,35 @@ func loadSession(t *testing.T, child *process, session, cwd string) {
 	})
 }
 
+func receivedSessionUpdates(
+	t *testing.T,
+	child *process,
+	start int,
+	session string,
+) []sessionNotification {
+	t.Helper()
+	var updates []sessionNotification
+	for _, message := range child.received[start:] {
+		if message.Method != "session/update" || len(message.ID) != 0 {
+			continue
+		}
+		var notification sessionNotification
+		if err := json.Unmarshal(message.Params, &notification); err != nil {
+			t.Fatal(err)
+		}
+		if notification.SessionID == session {
+			updates = append(updates, notification)
+		}
+	}
+	return updates
+}
+
 func TestSessionCanContinueInANewProcess(t *testing.T) {
 	dataDir := t.TempDir()
 	model := startModel(t,
 		sse(evText("first answer"), evFinishReason("stop")),
 		sse(evText("second answer"), evFinishReason("stop")),
+		sse(evText("third answer"), evFinishReason("stop")),
 	)
 	options := []startOption{withModel(model), withEnvironment("XDG_DATA_HOME", dataDir)}
 
@@ -76,24 +101,69 @@ func TestSessionCanContinueInANewProcess(t *testing.T) {
 	session := newSession(t, first, cwd)
 	prompt(t, first, session, "first prompt")
 	_ = updates(t, first, session)
+	prompt(t, first, session, "second prompt")
+	_ = updates(t, first, session)
 	first.request("session/close", acp.CloseSessionRequest{SessionID: session})
 	first.stop()
 
 	second := start(t, options...)
 	initialize(t, second)
+	firstReplayStart := len(second.received)
 	loadSession(t, second, session, cwd)
+	firstReplay := receivedSessionUpdates(t, second, firstReplayStart, session)
 	_ = updates(t, second, session)
-	prompt(t, second, session, "second prompt")
-	_ = updates(t, second, session)
+	if len(firstReplay) != 4 {
+		t.Fatalf("session/load replayed %d updates, want 4", len(firstReplay))
+	}
+	wantKinds := []string{
+		"user_message_chunk",
+		"agent_message_chunk",
+		"user_message_chunk",
+		"agent_message_chunk",
+	}
+	identities := make(map[string]struct{}, len(firstReplay))
+	for index, notification := range firstReplay {
+		if notification.Update.SessionUpdate != wantKinds[index] {
+			t.Fatalf(
+				"replay update %d kind = %q, want %q",
+				index,
+				notification.Update.SessionUpdate,
+				wantKinds[index],
+			)
+		}
+		if notification.Update.MessageID == "" {
+			t.Fatalf("replay update %d has no message ID", index)
+		}
+		if _, exists := identities[notification.Update.MessageID]; exists {
+			t.Fatalf("replay reused message ID %q", notification.Update.MessageID)
+		}
+		identities[notification.Update.MessageID] = struct{}{}
+	}
+	second.request("session/close", acp.CloseSessionRequest{SessionID: session})
+	second.stop()
+
+	third := start(t, options...)
+	initialize(t, third)
+	secondReplayStart := len(third.received)
+	loadSession(t, third, session, cwd)
+	secondReplay := receivedSessionUpdates(t, third, secondReplayStart, session)
+	_ = updates(t, third, session)
+	if !reflect.DeepEqual(secondReplay, firstReplay) {
+		t.Fatalf("replay changed across restarts:\nsecond = %#v\nfirst = %#v", secondReplay, firstReplay)
+	}
+	prompt(t, third, session, "third prompt")
+	_ = updates(t, third, session)
 
 	requests := model.requests()
-	if len(requests) != 2 {
-		t.Fatalf("model received %d requests, want 2", len(requests))
+	if len(requests) != 3 {
+		t.Fatalf("model received %d requests, want 3", len(requests))
 	}
-	assertConversation(t, requests[1].Messages, []exchange{
+	assertConversation(t, requests[2].Messages, []exchange{
 		{role: "user", text: "first prompt"},
 		{role: "assistant", text: "first answer"},
 		{role: "user", text: "second prompt"},
+		{role: "assistant", text: "second answer"},
+		{role: "user", text: "third prompt"},
 	})
 }
 

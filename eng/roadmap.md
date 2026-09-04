@@ -143,25 +143,6 @@ It does not implement `session/fork`. The pinned schema still marks that method
 unstable, so it is planned only once the schema stabilizes it. Model-context
 compaction belongs to the context and diagnostics milestone.
 
-### Checkpoints
-
-**Build**
-
-- Append a checkpoint record at a turn boundary that captures the folded durable
-  state, and load from the latest checkpoint plus the records after it.
-- Keep the full append-only log authoritative and the sequence unbroken across a
-  checkpoint.
-
-**Gates**
-
-- A session loaded from its latest checkpoint and tail has the same model
-  history, usage, cost, message and tool-call identities, and replayed ACP
-  transcript as one folded from the complete log.
-- A checkpoint is never written during an open turn, and a torn checkpoint
-  record is repaired like any other torn final record.
-- A session with many turns loads without folding the records its checkpoint
-  covers.
-
 ### Negotiated capabilities in the request configuration
 
 **Build**

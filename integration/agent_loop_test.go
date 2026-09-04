@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -207,6 +208,23 @@ func TestSessionRestartLoadsReplayAndContinuesExactHistory(t *testing.T) {
 			systemPrompt = request.Messages[0].Content[0].Text
 			return completion("persisted answer"), nil
 		},
+		func(
+			_ context.Context,
+			request openrouter.Request,
+			_ func(openrouter.Delta),
+		) (*openrouter.Completion, error) {
+			messages, err := conversation(request)
+			if err != nil {
+				return nil, err
+			}
+			if len(messages) != 3 ||
+				messages[0].Content[0].Text != "persist me" ||
+				messages[1].Content[0].Text != "persisted answer" ||
+				messages[2].Content[0].Text != "remember this" {
+				return nil, errors.New("second turn did not receive checkpointed history")
+			}
+			return completion("second persisted answer"), nil
+		},
 	}}
 	first := newHarness(t, agent.Config{
 		ModelOverride: "test/model",
@@ -215,6 +233,7 @@ func TestSessionRestartLoadsReplayAndContinuesExactHistory(t *testing.T) {
 	})
 	sessionID := first.newSessionIn(t, cwd, nil)
 	first.prompt(t, sessionID, "persist me")
+	first.prompt(t, sessionID, "remember this")
 	firstModel.assertConsumed(t)
 
 	locked := newHarness(t, agent.Config{
@@ -241,6 +260,56 @@ func TestSessionRestartLoadsReplayAndContinuesExactHistory(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
+	logData, err := os.ReadFile(filepath.Join(sessionDir, sessionID+".jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var previousType string
+	checkpointCount := 0
+	for _, line := range bytes.Split(bytes.TrimSpace(logData), []byte{'\n'}) {
+		var envelope struct {
+			Type string `json:"type"`
+		}
+		if err := json.Unmarshal(line, &envelope); err != nil {
+			t.Fatal(err)
+		}
+		if envelope.Type == "checkpoint" {
+			checkpointCount++
+			if previousType != "turn_finished" {
+				t.Fatalf("checkpoint follows %q", previousType)
+			}
+		}
+		previousType = envelope.Type
+	}
+	if checkpointCount != 2 {
+		t.Fatalf("checkpoint records = %d, want 2", checkpointCount)
+	}
+	baseline := newHarness(t, agent.Config{
+		ModelOverride: "test/model",
+		Client:        &scriptedModel{},
+		SessionDir:    sessionDir,
+	})
+	if err := baseline.local.Client.CallResult(
+		t.Context(),
+		"session/load",
+		acp.LoadSessionRequest{
+			SessionID:  sessionID,
+			CWD:        cwd,
+			MCPServers: []json.RawMessage{},
+		},
+		&load,
+	); err != nil {
+		t.Fatal(err)
+	}
+	beforeReplay := baseline.updates()
+	if err := baseline.local.Client.CallResult(
+		t.Context(),
+		"session/close",
+		acp.CloseSessionRequest{SessionID: sessionID},
+		&closed,
+	); err != nil {
+		t.Fatal(err)
+	}
 
 	secondModel := &scriptedModel{scripts: []modelScript{
 		func(
@@ -255,10 +324,12 @@ func TestSessionRestartLoadsReplayAndContinuesExactHistory(t *testing.T) {
 			if request.Messages[0].Content[0].Text != systemPrompt {
 				return nil, errors.New("system prompt changed across the runtime restart")
 			}
-			if len(messages) != 3 ||
+			if len(messages) != 5 ||
 				messages[0].Content[0].Text != "persist me" ||
 				messages[1].Content[0].Text != "persisted answer" ||
-				messages[2].Content[0].Text != "continue" {
+				messages[2].Content[0].Text != "remember this" ||
+				messages[3].Content[0].Text != "second persisted answer" ||
+				messages[4].Content[0].Text != "continue" {
 				return nil, errors.New("fresh process did not reconstruct exact history")
 			}
 			return completion("continued"), nil
@@ -281,8 +352,30 @@ func TestSessionRestartLoadsReplayAndContinuesExactHistory(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
+	afterReplay := second.updates()
+	if len(afterReplay) != len(beforeReplay) {
+		t.Fatalf("replay updates = %d, want %d", len(afterReplay), len(beforeReplay))
+	}
+	beforeUpdates := make([]string, len(beforeReplay))
+	afterUpdates := make([]string, len(afterReplay))
+	for index := range beforeReplay {
+		beforeUpdates[index] = string(beforeReplay[index].Update)
+		afterUpdates[index] = string(afterReplay[index].Update)
+	}
+	sort.Strings(beforeUpdates)
+	sort.Strings(afterUpdates)
+	for index := range beforeUpdates {
+		if afterUpdates[index] != beforeUpdates[index] {
+			t.Fatalf(
+				"replay update %d changed:\nafter = %s\nbefore = %s",
+				index,
+				afterUpdates[index],
+				beforeUpdates[index],
+			)
+		}
+	}
 	var sawUser, sawAnswer bool
-	for _, update := range second.updates() {
+	for _, update := range afterReplay {
 		if strings.Contains(string(update.Update), "<environment>") {
 			t.Fatalf("system prompt entered ACP replay: %s", update.Update)
 		}
@@ -292,7 +385,7 @@ func TestSessionRestartLoadsReplayAndContinuesExactHistory(t *testing.T) {
 		case "agent_message_chunk":
 			var chunk acp.AgentMessageChunk
 			update.decode(t, &chunk)
-			sawAnswer = chunk.Content.Text == "persisted answer"
+			sawAnswer = sawAnswer || chunk.Content.Text == "persisted answer"
 		}
 	}
 	if !sawUser || !sawAnswer {

@@ -217,15 +217,19 @@ func (s *fileStore) path(id string) (string, error) {
 	return filepath.Join(s.root, id+".jsonl"), nil
 }
 
-func (l *sessionLog) append(record sessionRecord) error {
-	data, err := json.Marshal(record)
-	if err != nil {
-		return fmt.Errorf("encode session record: %w", err)
+func (l *sessionLog) append(records ...sessionRecord) error {
+	var data []byte
+	for _, record := range records {
+		encoded, err := json.Marshal(record)
+		if err != nil {
+			return fmt.Errorf("encode session record: %w", err)
+		}
+		if len(encoded) > maxRecordBytes {
+			return fmt.Errorf("session record is %d bytes; limit is %d", len(encoded), maxRecordBytes)
+		}
+		data = append(data, encoded...)
+		data = append(data, '\n')
 	}
-	if len(data) > maxRecordBytes {
-		return fmt.Errorf("session record is %d bytes; limit is %d", len(data), maxRecordBytes)
-	}
-	data = append(data, '\n')
 	for len(data) > 0 {
 		written, err := l.file.Write(data)
 		if err != nil {
