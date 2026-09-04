@@ -152,7 +152,15 @@ and process-level recovery and cancellation coverage.
 - [ ] Port Eta's todo tool with state included in replay and compaction.
 - [ ] Load workspace instructions from `AGENTS.md`.
 - [ ] Discover and load Agent Skills on demand.
-- [ ] Implement `session/set_mode` and `session/set_config_option`.
+- [ ] Implement `session/set_mode` and `session/set_config_option`. Expose model
+      selection through the session configuration.
+- [ ] Remove environment-variable configuration. Put process settings in the
+      global configuration file with explicit CLI flags for overrides, keep
+      credentials in ACP authentication and the keyring, and replace test-only
+      environment switches with explicit test entry points or CLI flags. This
+      removes `OX_MODEL`, `OX_LOG_LEVEL`, `OX_OPENROUTER_BASE_URL`,
+      `OX_KEYRING_DISABLED`, `OPENROUTER_API_KEY`, `OX_LIVE_TESTS`, and
+      `OX_LIVE_MODEL`.
 - [ ] Add MCP servers without weakening the ACP client boundary.
 - [ ] Support mid-turn steering and queued follow-up input.
 - [ ] Port Eta's LSP definition, reference, symbol, and diagnostics tools only

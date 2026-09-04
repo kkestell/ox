@@ -3,7 +3,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "playwright test"
+    "test": "playwright test",
+    "test:live": "playwright test --config playwright.live.config.ts"
   },
   "devDependencies": {
     "@playwright/test": "1.62.1",

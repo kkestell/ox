@@ -46,6 +46,8 @@ coverage live in `eng/roadmap.md`.
 - Check documentation formatting: `make check-docs`
 - Run the race-enabled test suite without the test cache: `make test`
 - Run the automated browser-client smoke test: `make test-client`
+- Run the explicitly requested real-provider browser check:
+  `make test-client-live`
 - Install the binary: `make install`
 
 ## Project Rules
@@ -239,8 +241,8 @@ in-memory provider in unit tests. When a test does not start the mock provider,
 the harness points Ox at a refused local address.
 
 Use the `OPENROUTER_API_KEY` in `.env` only for an explicitly required real
-provider check. Such checks use `gpt-5.6-luna` and no other model. Never expose
-the credential in output or commit it.
+provider check. Such checks use `openai/gpt-5.6-luna` and no other model. Never
+expose the credential in output or commit it.
 
 The end-to-end harness builds outside Go's test cache, so always run tests with
 `-count=1`. Before considering behavior complete, run:

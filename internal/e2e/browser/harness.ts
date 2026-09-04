@@ -1,5 +1,5 @@
 import { execFile, spawn, type ChildProcess } from "node:child_process";
-import { mkdtemp, mkdir, readFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer, type Server, type ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, extname, join, normalize, resolve, sep } from "node:path";
@@ -11,6 +11,10 @@ const repositoryRoot = resolve(browserDir, "../../..");
 const clientRoot = join(browserDir, "acp-ui");
 const bridgeBin = join(browserDir, "node_modules", ".bin", "stdio-to-ws");
 const timeoutMs = 10_000;
+
+type HarnessOptions = {
+  liveAPIKey?: string;
+};
 
 type QueuedResponse = {
   prompt: string;
@@ -91,10 +95,19 @@ export class BrowserHarness {
     this.bridge = options.bridge;
   }
 
-  static async start(): Promise<BrowserHarness> {
+  static async start(options: HarnessOptions = {}): Promise<BrowserHarness> {
+    const liveProvider = options.liveAPIKey !== undefined;
     const scratch = await mkdtemp(join(tmpdir(), "ox-client-e2e-"));
     const workspace = join(scratch, "workspace");
+    const configHome = join(scratch, "config");
+    const globalSettings = join(configHome, "ox");
     await mkdir(workspace, { recursive: true });
+    await mkdir(globalSettings, { recursive: true });
+    await writeFile(
+      join(globalSettings, "settings.json"),
+      JSON.stringify({ model: liveProvider ? "openai/gpt-5.6-luna" : "test/model" }) + "\n",
+      { mode: 0o600 },
+    );
 
     const oxBin = join(scratch, "ox");
     await run("go", ["build", "-o", oxBin, "./cmd/ox"], repositoryRoot);
@@ -117,23 +130,26 @@ export class BrowserHarness {
     const staticPort = await listen(staticServer);
     const bridgePort = await freePort();
 
+    const oxEnvironment: NodeJS.ProcessEnv = {
+      ...process.env,
+      HOME: scratch,
+      XDG_CACHE_HOME: join(scratch, "cache"),
+      XDG_CONFIG_HOME: configHome,
+      XDG_DATA_HOME: join(scratch, "data"),
+      OPENROUTER_API_KEY: options.liveAPIKey ?? "browser-test-key",
+    };
+    if (!liveProvider) {
+      oxEnvironment.OX_OPENROUTER_BASE_URL = `http://127.0.0.1:${providerPort}/api/v1`;
+    } else {
+      delete oxEnvironment.OX_OPENROUTER_BASE_URL;
+    }
+
     const bridge = spawn(
       bridgeBin,
       ["--port", String(bridgePort), JSON.stringify(oxBin)],
       {
         cwd: workspace,
-        env: {
-          ...process.env,
-          HOME: scratch,
-          XDG_CACHE_HOME: join(scratch, "cache"),
-          XDG_CONFIG_HOME: join(scratch, "config"),
-          XDG_DATA_HOME: join(scratch, "data"),
-          OX_KEYRING_DISABLED: "1",
-          OX_LOG_LEVEL: "debug",
-          OX_MODEL: "test/model",
-          OX_OPENROUTER_BASE_URL: `http://127.0.0.1:${providerPort}/api/v1`,
-          OPENROUTER_API_KEY: "browser-test-key",
-        },
+        env: oxEnvironment,
         stdio: ["ignore", "pipe", "pipe"],
       },
     );

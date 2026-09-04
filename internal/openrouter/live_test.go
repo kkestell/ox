@@ -22,12 +22,8 @@ func liveClient(t *testing.T) *Client {
 
 func TestLiveStreamingCompletion(t *testing.T) {
 	client := liveClient(t)
-	model := os.Getenv("OX_LIVE_MODEL")
-	if model == "" {
-		model = "openai/gpt-4.1-mini"
-	}
 	completion, err := client.Stream(t.Context(), Request{
-		Model:        model,
+		Model:        "openai/gpt-5.6-luna",
 		SessionID:    "ox-live-test",
 		CacheControl: &CacheControl{Type: "ephemeral"},
 		Messages: []Message{{
