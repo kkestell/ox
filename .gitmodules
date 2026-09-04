@@ -1,0 +1,3 @@
+[submodule "internal/e2e/browser/acp-ui"]
+	path = internal/e2e/browser/acp-ui
+	url = https://github.com/acp-ui/acp-ui.github.io.git

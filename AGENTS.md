@@ -45,6 +45,7 @@ coverage live in `eng/roadmap.md`.
 - Check Go formatting, vet, and static analysis: `make check-go`
 - Check documentation formatting: `make check-docs`
 - Run the race-enabled test suite without the test cache: `make test`
+- Run the automated browser-client smoke test: `make test-client`
 - Install the binary: `make install`
 
 ## Project Rules

@@ -1,4 +1,4 @@
-.PHONY: check check-docs check-go format format-docs format-go install test
+.PHONY: check check-docs check-go format format-docs format-go install test test-client
 
 check: check-docs check-go test
 
@@ -23,3 +23,9 @@ check-docs:
 
 test:
 	go test -race -count=1 ./...
+
+test-client:
+	git submodule update --init --depth 1 internal/e2e/browser/acp-ui
+	npm ci --no-audit --no-fund --prefix internal/e2e/browser
+	npm exec --prefix internal/e2e/browser playwright install chromium
+	npm test --prefix internal/e2e/browser

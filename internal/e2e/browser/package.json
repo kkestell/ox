@@ -1,0 +1,12 @@
+{
+  "name": "ox-client-e2e",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.62.1",
+    "@rebornix/stdio-to-ws": "0.2.0"
+  }
+}

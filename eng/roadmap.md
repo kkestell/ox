@@ -13,7 +13,8 @@ Every milestone passes the complete local quality suite before it is complete:
 make check
 ```
 
-Changes to ACP-visible behavior must also pass the Zed smoke-test checklist.
+Changes to ACP-visible behavior must also pass the automated browser-client
+smoke test.
 
 ## Porting policy
 
@@ -95,20 +96,23 @@ Ox now has a durable ACP session runtime with safe local coding tools,
 permissions, subagents, provider resilience, usage accounting, lifecycle replay,
 and process-level recovery and cancellation coverage.
 
-## Current milestone: Zed interoperability baseline
+## Current milestone: client interoperability baseline
 
 - [x] Document the development setup for launching Ox as a Zed ACP agent.
-- [ ] Add a repeatable Zed smoke-test checklist covering initialization,
-      authentication, session creation, prompt streaming, cancellation, and
-      clean shutdown.
-- [ ] Record and test the capabilities Zed advertises, including behavior when
-      an optional capability is absent.
+- [x] Add an automated browser-client smoke test that drives an independently
+      maintained ACP UI against Ox through an upstream stdio bridge, covering
+      initialization, authentication, session creation, prompt streaming,
+      cancellation, and process shutdown. Pins: ACP UI artifact `4482f93a` from
+      source `e6e36d05`, `@rebornix/stdio-to-ws@0.2.0`, and ACP v1 schema
+      `8e3eb8f2`.
+- [ ] Record and test the capabilities the browser client advertises, including
+      behavior when an optional capability is absent.
 - [ ] Verify that every supported prompt content block and session update
-      renders correctly in Zed.
-- [ ] Verify that protocol errors reach Zed as useful JSON-RPC errors and that
-      logs never contaminate stdout.
-- [ ] Keep the checked-in Zed ACP reference snapshot and ACP schema version
-      recorded with each interoperability pass.
+      renders correctly in the browser client.
+- [ ] Verify that protocol errors reach the browser client as useful errors and
+      that logs never contaminate stdout.
+- [ ] Keep the pinned browser client, stdio bridge, checked-in Zed ACP reference
+      snapshot, and ACP schema version recorded with each interoperability pass.
 
 ## Milestone: client-delegated tools
 
@@ -120,7 +124,8 @@ and process-level recovery and cancellation coverage.
       release the terminal exactly once.
 - [ ] Define explicit behavior for clients without delegated filesystem or
       terminal capabilities.
-- [ ] Pass the Zed smoke-test checklist with read, edit, and shell workflows.
+- [ ] Pass the automated browser-client smoke test with read, edit, and shell
+      workflows.
 
 ## Milestone: durable session completion
 
