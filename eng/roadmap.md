@@ -97,7 +97,7 @@ and process-level recovery and cancellation coverage.
 
 ## Current milestone: Zed interoperability baseline
 
-- [ ] Document the development setup for launching Ox as a Zed ACP agent.
+- [x] Document the development setup for launching Ox as a Zed ACP agent.
 - [ ] Add a repeatable Zed smoke-test checklist covering initialization,
       authentication, session creation, prompt streaming, cancellation, and
       clean shutdown.
