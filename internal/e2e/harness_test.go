@@ -78,6 +78,7 @@ type process struct {
 	cwd     string
 
 	pending      []message
+	received     []message
 	nextID       int
 	stopped      bool
 	stopErr      error
@@ -421,6 +422,7 @@ func (p *process) readMessage() (message, error) {
 	if decoded.Method == "" && len(decoded.ID) == 0 {
 		return message{}, fmt.Errorf("stdout has invalid JSON-RPC shape: %s", decoded.raw)
 	}
+	p.received = append(p.received, decoded)
 	return decoded, nil
 }
 
