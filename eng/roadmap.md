@@ -133,28 +133,8 @@ permission.
 
 ## Milestone: context and diagnostics
 
-Ox reports what a session has changed and consumed, keeps long sessions within
-the model's context window, and emits a trace that tools can read without
-exposing secrets or workspace content.
-
-### Model-context compaction
-
-**Build**
-
-- When a session's context approaches the model's window, replace older model
-  history with a summary the model produced, and record the compaction durably.
-- Keep the uncompacted log authoritative. Compaction changes what the model sees
-  on the next turn, not what `session/load` replays.
-
-**Gates**
-
-- Compaction never separates a tool call from its result, never drops a pending
-  tool result, and never runs during an open turn.
-- `session/load` replays the full transcript after compaction, and the next turn
-  sends the compacted history.
-- A session restarted after compaction continues from the recorded compaction
-  rather than recomputing it, and `usage_update` reports the compacted size.
-- The system prompt and tool declarations are never summarized away.
+Ox emits a trace that tools can read without exposing secrets or workspace
+content.
 
 ### Sanitized trace
 

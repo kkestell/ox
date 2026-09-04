@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -31,10 +32,11 @@ const testModelCatalog = `{"data":[
 ]}`
 
 type modelRequest struct {
-	Model         string         `json:"model"`
-	Messages      []modelMessage `json:"messages"`
-	Stream        bool           `json:"stream"`
-	Authorization string         `json:"-"`
+	Model         string            `json:"model"`
+	Messages      []modelMessage    `json:"messages"`
+	Tools         []json.RawMessage `json:"tools"`
+	Stream        bool              `json:"stream"`
+	Authorization string            `json:"-"`
 }
 
 type modelMessage struct {
@@ -76,8 +78,9 @@ type modelResponse struct {
 }
 
 type mockModel struct {
-	t      *testing.T
-	server *httptest.Server
+	t       *testing.T
+	server  *httptest.Server
+	catalog string
 
 	mu               sync.Mutex
 	responses        []*modelResponse
@@ -89,7 +92,7 @@ type mockModel struct {
 
 func startModel(t *testing.T, bodies ...string) *mockModel {
 	t.Helper()
-	model := &mockModel{t: t}
+	model := &mockModel{t: t, catalog: testModelCatalog}
 	for _, body := range bodies {
 		model.queue(body)
 	}
@@ -114,6 +117,19 @@ func startModel(t *testing.T, bodies ...string) *mockModel {
 func withModel(model *mockModel) startOption {
 	return func(config *startConfig) {
 		config.environment["OX_OPENROUTER_BASE_URL"] = model.server.URL + "/api/v1"
+	}
+}
+
+func withModelContextWindow(model *mockModel, contextWindow int) startOption {
+	return func(config *startConfig) {
+		catalog := strings.Replace(
+			testModelCatalog,
+			`{"id":"test/model","context_length":128000}`,
+			fmt.Sprintf(`{"id":"test/model","context_length":%d}`, contextWindow),
+			1,
+		)
+		model.catalog = catalog
+		config.files[filepath.Join("cache", "ox", "models.json")] = catalog
 	}
 }
 
@@ -199,7 +215,7 @@ func (m *mockModel) serveHTTP(writer http.ResponseWriter, request *http.Request)
 	}
 	if request.Method == http.MethodGet && request.URL.Path == "/api/v1/models" {
 		writer.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(writer, testModelCatalog)
+		_, _ = io.WriteString(writer, m.catalog)
 		return
 	}
 	if request.Method != http.MethodPost {

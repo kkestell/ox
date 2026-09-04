@@ -13,6 +13,7 @@ const bridgeBin = join(browserDir, "node_modules", ".bin", "stdio-to-ws");
 const timeoutMs = 10_000;
 
 type HarnessOptions = {
+  contextWindow?: number;
   liveAPIKey?: string;
   logLevel?: string;
 };
@@ -73,6 +74,7 @@ export class BrowserHarness {
   private readonly provider: Server;
   private readonly staticServer: Server;
   private readonly bridge: ChildProcess;
+  private readonly contextWindow: number;
   private readonly responses: QueuedResponse[] = [];
   private readonly providerErrors: string[] = [];
   private readonly authorizedRequests: string[] = [];
@@ -88,6 +90,7 @@ export class BrowserHarness {
     provider: Server;
     staticServer: Server;
     bridge: ChildProcess;
+    contextWindow: number;
   }) {
     this.scratch = options.scratch;
     this.workspace = options.workspace;
@@ -96,6 +99,7 @@ export class BrowserHarness {
     this.provider = options.provider;
     this.staticServer = options.staticServer;
     this.bridge = options.bridge;
+    this.contextWindow = options.contextWindow;
   }
 
   static async start(options: HarnessOptions = {}): Promise<BrowserHarness> {
@@ -168,6 +172,7 @@ export class BrowserHarness {
       provider,
       staticServer,
       bridge,
+      contextWindow: options.contextWindow ?? 128_000,
     });
     harness.captureBridgeOutput();
     await harness.waitForBridge();
@@ -192,6 +197,37 @@ export class BrowserHarness {
       textDelta(answer),
       finishDelta(),
       usageDelta(8, 5, 13, 0.001),
+    ]);
+  }
+
+  scriptCompactionTurns(
+    firstPrompt: string,
+    oldAnswer: string,
+    secondPrompt: string,
+    recentAnswer: string,
+    thirdPrompt: string,
+    summary: string,
+    finalAnswer: string,
+  ): void {
+    this.queue(firstPrompt, [
+      textDelta(oldAnswer),
+      finishDelta(),
+      usageDelta(100, 600, 700, 0.001),
+    ]);
+    this.queue(secondPrompt, [
+      textDelta(recentAnswer),
+      finishDelta(),
+      usageDelta(800, 5, 805, 0.002),
+    ]);
+    this.queue(`[assistant] ${oldAnswer}\n\n`, [
+      textDelta(summary),
+      finishDelta(),
+      usageDelta(650, 20, 670, 0.003),
+    ]);
+    this.queue(thirdPrompt, [
+      textDelta(finalAnswer),
+      finishDelta(),
+      usageDelta(100, 5, 105, 0.001),
     ]);
   }
 
@@ -347,7 +383,7 @@ export class BrowserHarness {
       return;
     }
     if (request.method === "GET" && request.url === "/api/v1/models") {
-      json(response, { data: [{ id: "test/model", context_length: 128_000 }] });
+      json(response, { data: [{ id: "test/model", context_length: this.contextWindow }] });
       return;
     }
     if (request.method !== "POST" || request.url !== "/api/v1/chat/completions") {

@@ -5,7 +5,7 @@ import { BrowserHarness } from "./harness";
 let harness: BrowserHarness | undefined;
 
 test.beforeEach(async ({ page }) => {
-  harness = await BrowserHarness.start({ logLevel: "debug" });
+	harness = await BrowserHarness.start({ contextWindow: 1_000, logLevel: "debug" });
   await harness.open(page);
 });
 
@@ -105,8 +105,8 @@ test("renders a complete tool turn live and from session replay", async ({ page 
       sessionId: expect.any(String),
       update: {
         sessionUpdate: "usage_update",
-        used: 13,
-        size: 128_000,
+		used: 8,
+		size: 1_000,
         cost: { amount: 0.001, currency: "USD" },
       },
     },
@@ -139,6 +139,56 @@ test("renders a complete tool turn live and from session replay", async ({ page 
 
   await page.getByRole("button", { name: "Disconnect" }).click();
   await running.waitForOxExit(replayPID);
+});
+
+test("accepts a compacted context usage update", async ({ page }) => {
+  const running = harness;
+  if (!running) throw new Error("browser harness did not start");
+  const firstPrompt = "Start a long browser task";
+  const oldAnswer = "old detail ".repeat(240);
+  const secondPrompt = "Keep going";
+  const recentAnswer = "Recent work is complete.";
+  const thirdPrompt = "Finish the task";
+  const summary = "The old details remain available.";
+  const finalAnswer = "The compacted task is complete.";
+  running.scriptCompactionTurns(
+    firstPrompt,
+    oldAnswer,
+    secondPrompt,
+    recentAnswer,
+    thirdPrompt,
+    summary,
+    finalAnswer,
+  );
+
+  await page.getByTitle("ACP Traffic Monitor").click();
+  await page.getByPlaceholder("/absolute/path/on/agent").fill(running.workspace);
+  await page.getByRole("button", { name: "New Session" }).click();
+  await expect(page.getByPlaceholder(/Type your message/)).toBeEnabled();
+
+  for (const [prompt, answer] of [
+    [firstPrompt, oldAnswer],
+    [secondPrompt, recentAnswer],
+    [thirdPrompt, finalAnswer],
+  ]) {
+    await page.getByPlaceholder(/Type your message/).fill(prompt);
+    await page.getByRole("button", { name: "Send" }).click();
+    await expect(page.getByText(answer, { exact: true })).toBeVisible();
+    await expect(page.getByPlaceholder(/Type your message/)).toBeEnabled();
+  }
+
+  const liveUpdates = await trafficPayloads(page, "in", "session/update");
+  expect(liveUpdates).toContainEqual(expect.objectContaining({
+    params: {
+      sessionId: expect.any(String),
+      update: {
+        sessionUpdate: "usage_update",
+        used: expect.any(Number),
+        size: 1_000,
+        cost: { amount: 0.006, currency: "USD" },
+      },
+    },
+  }));
 });
 
 test("runs file and shell tools locally through visible permissions", async ({ page }) => {

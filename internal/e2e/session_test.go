@@ -167,6 +167,89 @@ func TestSessionCanContinueInANewProcess(t *testing.T) {
 	})
 }
 
+func TestSessionCompactionSurvivesRestartWithoutChangingReplay(t *testing.T) {
+	dataDir := t.TempDir()
+	oldAnswer := strings.Repeat("old detail ", 240)
+	model := startModel(t,
+		sse(evText(oldAnswer), evFinishReason("stop"), evUsage(100, 600, 700)),
+		sse(evText("recent answer"), evFinishReason("stop"), evUsage(800, 5, 805)),
+		sse(evText("preserved old details"), evFinishReason("stop"), evUsage(650, 20, 670)),
+		sse(evText("third answer"), evFinishReason("stop"), evUsage(100, 5, 105)),
+		sse(evText("fourth answer"), evFinishReason("stop"), evUsage(120, 5, 125)),
+	)
+	options := []startOption{
+		withModel(model),
+		withModelContextWindow(model, 1000),
+		withEnvironment("XDG_DATA_HOME", dataDir),
+	}
+
+	first := start(t, options...)
+	initialize(t, first)
+	cwd := first.cwd
+	session := newSession(t, first, cwd)
+	prompt(t, first, session, "first prompt")
+	_ = updates(t, first, session)
+	prompt(t, first, session, "second prompt")
+	_ = updates(t, first, session)
+	prompt(t, first, session, "third prompt")
+	thirdUpdates := updates(t, first, session)
+	var occupancies []uint64
+	for _, notification := range thirdUpdates {
+		if notification.Update.SessionUpdate == "usage_update" {
+			occupancies = append(occupancies, notification.Update.Used)
+		}
+	}
+	if len(occupancies) != 2 || occupancies[0] == 0 || occupancies[1] != 100 {
+		t.Fatalf("third prompt occupancies = %#v", occupancies)
+	}
+	first.request("session/close", acp.CloseSessionRequest{SessionID: session})
+	first.stop()
+
+	second := start(t, options...)
+	initialize(t, second)
+	replayStart := len(second.received)
+	loadSession(t, second, session, cwd)
+	replayed := receivedSessionUpdates(t, second, replayStart, session)
+	_ = updates(t, second, session)
+	var replayedText []string
+	for _, notification := range replayed {
+		switch notification.Update.SessionUpdate {
+		case "user_message_chunk", "agent_message_chunk":
+			replayedText = append(replayedText, notification.Update.Content.Text)
+		}
+	}
+	if !reflect.DeepEqual(replayedText, []string{
+		"first prompt", oldAnswer,
+		"second prompt", "recent answer",
+		"third prompt", "third answer",
+	}) {
+		t.Fatalf("full replay text = %#v", replayedText)
+	}
+	prompt(t, second, session, "fourth prompt")
+	_ = updates(t, second, session)
+
+	requests := model.requests()
+	if len(requests) != 5 {
+		t.Fatalf("model received %d requests, want 5", len(requests))
+	}
+	summaryRequest := requests[2]
+	if len(summaryRequest.Tools) != 0 || len(summaryRequest.Messages) != 2 ||
+		summaryRequest.Messages[0].text() == requests[0].Messages[0].text() ||
+		!strings.Contains(summaryRequest.Messages[1].text(), oldAnswer) {
+		t.Fatalf("summary request = %#v", summaryRequest)
+	}
+	wantCompacted := []exchange{
+		{role: "user", text: "first prompt"},
+		{role: "user", text: "Summary of earlier conversation:\n\npreserved old details"},
+		{role: "user", text: "second prompt"},
+		{role: "assistant", text: "recent answer"},
+		{role: "user", text: "third prompt"},
+		{role: "assistant", text: "third answer"},
+		{role: "user", text: "fourth prompt"},
+	}
+	assertConversation(t, requests[4].Messages, wantCompacted)
+}
+
 func TestChangedFilesAndToolLocationsSurviveProcessRestart(t *testing.T) {
 	dataDir := t.TempDir()
 	model := startModel(t,

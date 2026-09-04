@@ -1077,10 +1077,25 @@ func (a *Agent) Prompt(
 	adapter := newAdapter(value.id, value.state.cwd, func(notification acp.SessionNotification) error {
 		return jrpc2.ServerFromContext(ctx).Notify(ctx, "session/update", notification)
 	})
+	defer adapter.close()
+	compactionUpdate, err := a.maybeCompact(runCtx, value)
+	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			return acp.PromptResponse{}, jrpc2.Errorf(
+				acp.ErrCodeRequestCancelled,
+				"request cancelled",
+			)
+		}
+		return acp.PromptResponse{}, err
+	}
+	if compactionUpdate != nil {
+		if err := adapter.handle(*compactionUpdate); err != nil {
+			return acp.PromptResponse{}, a.adapterFailed(value.id, active, err)
+		}
+	}
 	server := jrpc2.ServerFromContext(ctx)
 	fileSystem, terminal := a.promptExecutors(server, value)
 	requestPermission := permissionCallback(server)
-	defer adapter.close()
 	if err := a.commit(value, recordUserMessage, userMessageRecord{
 		TurnID:    turnID,
 		MessageID: messageID,

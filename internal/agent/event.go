@@ -21,18 +21,18 @@ const (
 )
 
 type event struct {
-	kind      eventKind
-	text      string
-	messageID string
-	thoughtID string
-	call      openrouter.ToolCall
-	toolKind  acp.ToolKind
-	parent    string
-	title     string
-	target    string
-	delegates bool
-	usage     *openrouter.Usage
-	context   int
-	totalCost float64
-	update    any
+	kind             eventKind
+	text             string
+	messageID        string
+	thoughtID        string
+	call             openrouter.ToolCall
+	toolKind         acp.ToolKind
+	parent           string
+	title            string
+	target           string
+	delegates        bool
+	contextOccupancy int
+	contextWindow    int
+	totalCost        float64
+	update           any
 }

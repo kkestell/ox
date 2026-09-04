@@ -106,6 +106,187 @@ func TestFoldBuildsExactModelHistoryAndReplay(t *testing.T) {
 	}
 }
 
+func TestCompactionFoldsIntoProviderHistoryWithoutChangingReplay(t *testing.T) {
+	records, summary := compactionFixture(t)
+	state, err := foldRecords(records)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.occupancy != 222 || state.usage.input != 1750 ||
+		state.usage.output != 40 || state.cost < 0.599 || state.cost > 0.601 {
+		t.Fatalf("usage = %#v, occupancy = %d, cost = %f", state.usage, state.occupancy, state.cost)
+	}
+	if len(state.history) != 4 ||
+		state.history[0].Content[0].Text != "first request" ||
+		state.history[1].Role != summary.Role ||
+		state.history[1].Content[0].Text != summary.Content[0].Text ||
+		state.history[2].Role != openrouter.RoleAssistant ||
+		state.history[3].Role != openrouter.RoleTool {
+		t.Fatalf("compacted history = %#v", state.history)
+	}
+
+	instance, err := New(Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	updates, err := instance.replay(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var userMessages []string
+	for _, update := range updates {
+		if chunk, ok := update.(acp.UserMessageChunk); ok {
+			userMessages = append(userMessages, chunk.Content.Text)
+		}
+	}
+	if !reflect.DeepEqual(userMessages, []string{"first request", "second request"}) {
+		t.Fatalf("replayed user messages = %#v", userMessages)
+	}
+	usage, ok := updates[len(updates)-1].(acp.UsageUpdate)
+	if !ok || usage.Used != 222 || usage.Cost == nil ||
+		usage.Cost.Amount < 0.599 || usage.Cost.Amount > 0.601 {
+		t.Fatalf("final replay update = %#v", updates[len(updates)-1])
+	}
+}
+
+func TestCompactionSurvivesCheckpointWithoutDoubleCountingUsage(t *testing.T) {
+	records, summary := compactionFixture(t)
+	state, err := foldRecords(records)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, record := range []sessionRecord{
+		mustRecord(t, 9, recordUserMessage, userMessageRecord{
+			TurnID: "third", MessageID: "third-user",
+			Content: []acp.ContentBlock{{Type: "text", Text: "continue"}},
+		}),
+		mustRecord(t, 10, recordModelExchange, modelExchangeRecord{
+			TurnID: "third", AnswerID: "third-answer", ThoughtID: "third-thought",
+			Text: "done", FinishReason: "stop",
+		}),
+		mustRecord(t, 11, recordTurnFinished, turnFinishedRecord{
+			TurnID: "third", Kind: "completed", StopReason: acp.StopReasonEndTurn,
+		}),
+	} {
+		if err := state.apply(record); err != nil {
+			t.Fatal(err)
+		}
+	}
+	checkpoint, err := newCheckpointRecord(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored, err := foldRecords(append(append(records, state.records[8:]...), checkpoint))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restored.occupancy != 222 || restored.usage.input != 1750 ||
+		restored.usage.output != 40 || restored.cost < 0.599 || restored.cost > 0.601 {
+		t.Fatalf(
+			"restored usage = %#v, occupancy = %d, cost = %f",
+			restored.usage,
+			restored.occupancy,
+			restored.cost,
+		)
+	}
+	if len(restored.history) != 6 ||
+		restored.history[1].Role != summary.Role ||
+		restored.history[1].Content[0].Text != summary.Content[0].Text {
+		t.Fatalf("restored history = %#v", restored.history)
+	}
+}
+
+func TestCompactionRejectsOpenTurnsAndIncompleteToolGroups(t *testing.T) {
+	records, summary := compactionFixture(t)
+	base, err := foldRecords(records[:7])
+	if err != nil {
+		t.Fatal(err)
+	}
+	invalidBoundary := mustRecord(t, 8, recordCompaction, compactionRecord{
+		HeadEnd: 1, TailStart: 4, Summary: summary, Occupancy: 222,
+	})
+	if err := base.apply(invalidBoundary); err == nil ||
+		!strings.Contains(err.Error(), "separates a tool call") {
+		t.Fatalf("incomplete tool group error = %v", err)
+	}
+
+	open := base.clone()
+	if err := open.apply(mustRecord(t, 8, recordUserMessage, userMessageRecord{
+		TurnID: "open", MessageID: "open-user",
+		Content: []acp.ContentBlock{{Type: "text", Text: "new request"}},
+	})); err != nil {
+		t.Fatal(err)
+	}
+	if err := open.apply(mustRecord(t, 9, recordCompaction, compactionRecord{
+		HeadEnd: 1, TailStart: 3, Summary: summary, Occupancy: 222,
+	})); err == nil || !strings.Contains(err.Error(), "during a turn") {
+		t.Fatalf("open-turn compaction error = %v", err)
+	}
+}
+
+func compactionFixture(t *testing.T) ([]sessionRecord, openrouter.Message) {
+	t.Helper()
+	configuration := requestConfiguration{
+		Settings: settings.Resolved{Model: "test/model"}, ContextWindow: 1000,
+		SystemPrompt: "system prompt",
+		Tools: []openrouter.Tool{{
+			Type: "function",
+			Function: openrouter.ToolFunction{
+				Name: "read", Parameters: json.RawMessage(`{"type":"object"}`),
+			},
+		}},
+		ToolKinds: map[string]acp.ToolKind{"read": acp.ToolKindRead},
+	}
+	summary := newSummaryMessage("preserved facts")
+	return []sessionRecord{
+		mustRecord(t, 1, recordSessionCreated, sessionCreated{
+			SessionID: "0123456789abcdef0123456789abcdef",
+			CWD:       "/workspace", Configuration: configuration,
+		}),
+		mustRecord(t, 2, recordUserMessage, userMessageRecord{
+			TurnID: "first", MessageID: "first-user",
+			Content: []acp.ContentBlock{{Type: "text", Text: "first request"}},
+		}),
+		mustRecord(t, 3, recordModelExchange, modelExchangeRecord{
+			TurnID: "first", AnswerID: "first-answer", ThoughtID: "first-thought",
+			Text: "old answer", FinishReason: "stop",
+			Usage: &openrouter.Usage{
+				PromptTokens: 800, CompletionTokens: 20, TotalTokens: 820, Cost: 0.1,
+			},
+		}),
+		mustRecord(t, 4, recordTurnFinished, turnFinishedRecord{
+			TurnID: "first", Kind: "completed", StopReason: acp.StopReasonEndTurn,
+		}),
+		mustRecord(t, 5, recordUserMessage, userMessageRecord{
+			TurnID: "second", MessageID: "second-user",
+			Content: []acp.ContentBlock{{Type: "text", Text: "second request"}},
+		}),
+		mustRecord(t, 6, recordModelExchange, modelExchangeRecord{
+			TurnID: "second", AnswerID: "second-answer", ThoughtID: "second-thought",
+			FinishReason: "tool_calls",
+			Usage: &openrouter.Usage{
+				PromptTokens: 850, CompletionTokens: 10, TotalTokens: 860, Cost: 0.2,
+			},
+			ToolCalls: []openrouter.ToolCall{{
+				ID: "call", Type: "function",
+				Function: openrouter.ToolCallFunction{Name: "read", Arguments: `{"path":"a.go"}`},
+			}},
+			ToolResults: []storedToolResult{{CallID: "call", Content: "package a"}},
+		}),
+		mustRecord(t, 7, recordTurnFinished, turnFinishedRecord{
+			TurnID: "second", Kind: "request_limit",
+			StopReason: acp.StopReasonMaxTokens,
+		}),
+		mustRecord(t, 8, recordCompaction, compactionRecord{
+			HeadEnd: 1, TailStart: 3, Summary: summary,
+			Usage: &openrouter.Usage{
+				PromptTokens: 100, CompletionTokens: 10, TotalTokens: 110, Cost: 0.3,
+			},
+			Occupancy: 222,
+		}),
+	}, summary
+}
+
 func TestFoldTracksChangedFilesAcrossCheckpointAndReplaysLocations(t *testing.T) {
 	id := "0123456789abcdef0123456789abcdef"
 	tool := func(id, name, target string) openrouter.ToolCall {
@@ -687,7 +868,7 @@ func TestFoldKeepsDelegationOutOfHistoryAndReplaysNestedCalls(t *testing.T) {
 		t.Fatalf("child replay = %#v, %#v", child, childResult)
 	}
 	usage := updates[5].(acp.UsageUpdate)
-	if usage.Used != 16 || usage.Cost == nil ||
+	if usage.Used != 3 || usage.Cost == nil ||
 		usage.Cost.Amount < 0.299 || usage.Cost.Amount > 0.301 {
 		t.Fatalf("replayed usage = %#v", usage)
 	}
