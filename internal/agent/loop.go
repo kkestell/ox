@@ -47,68 +47,107 @@ func (a *Agent) run(
 	terminal ClientTerminal,
 	events chan<- event,
 ) loopOutcome {
-	for requestCount := 1; requestCount <= maxTurnRequests; requestCount++ {
+	return a.runFrom(
+		ctx, value, active, ask, fileSystem, terminal, events, 1, nil, false,
+	)
+}
+
+func (a *Agent) resume(
+	ctx context.Context,
+	value *session,
+	active *activeTurn,
+	ask requestPermission,
+	fileSystem ClientFileSystem,
+	terminal ClientTerminal,
+	events chan<- event,
+) loopOutcome {
+	value.stateMu.Lock()
+	suspended := cloneSuspendedExchange(value.state.suspended)
+	value.stateMu.Unlock()
+	if suspended == nil {
+		panic("resume called without a suspended model exchange")
+	}
+	return a.runFrom(
+		ctx, value, active, ask, fileSystem, terminal, events,
+		suspended.RequestCount, suspended, true,
+	)
+}
+
+func (a *Agent) runFrom(
+	ctx context.Context,
+	value *session,
+	active *activeTurn,
+	ask requestPermission,
+	fileSystem ClientFileSystem,
+	terminal ClientTerminal,
+	events chan<- event,
+	startRequest int,
+	suspended *suspendedModelExchangeRecord,
+	reissue bool,
+) loopOutcome {
+	for requestCount := startRequest; requestCount <= maxTurnRequests; requestCount++ {
 		if ctx.Err() != nil {
 			return a.finishCancelled(value, active, events)
 		}
-		a.logger.Info(
-			"starting model request",
-			"session_id", value.id,
-			"request", requestCount,
-			"prefix_fingerprint", a.prefixFingerprint(value),
-		)
-		answerID, err := randomID()
-		if err != nil {
-			return a.finishFailed(value, active, events, err)
-		}
-		thoughtID, err := randomID()
-		if err != nil {
-			return a.finishFailed(value, active, events, err)
-		}
-		events <- event{
-			kind:      eventResponseStart,
-			messageID: answerID,
-			thoughtID: thoughtID,
-		}
-		request := a.modelRequest(value)
-		completion, err := a.client.Stream(ctx, request, func(delta openrouter.Delta) {
-			switch delta.Kind {
-			case openrouter.DeltaText:
-				events <- event{kind: eventText, text: delta.Text}
-			case openrouter.DeltaReasoning:
-				events <- event{kind: eventReasoning, text: delta.Text}
+		var answerID, thoughtID string
+		var completion *openrouter.Completion
+		if suspended != nil {
+			answerID = suspended.AnswerID
+			thoughtID = suspended.ThoughtID
+			completion = suspended.completion()
+		} else {
+			a.logger.Info(
+				"starting model request",
+				"session_id", value.id,
+				"request", requestCount,
+				"prefix_fingerprint", a.prefixFingerprint(value),
+			)
+			var err error
+			answerID, err = randomID()
+			if err != nil {
+				return a.finishFailed(value, active, events, err)
 			}
-		})
-		if err != nil {
-			if (active.cancelledByClient.Load() || errors.Is(err, context.Canceled)) &&
-				completion != nil && len(completion.ToolCalls) == 0 &&
-				(completion.Text != "" || completion.Reasoning != "" || completion.Usage != nil) {
-				if commitErr := a.commit(value, recordModelExchange, modelExchangeRecord{
-					TurnID:           active.turnID,
-					AnswerID:         answerID,
-					ThoughtID:        thoughtID,
-					Text:             completion.Text,
-					Reasoning:        completion.Reasoning,
-					ReasoningDetails: opaqueMessages(completion.ReasoningDetails),
-					Usage:            completion.Usage,
-				}); commitErr != nil {
-					return loopOutcome{err: fmt.Errorf("persist partial model exchange: %w", commitErr)}
+			thoughtID, err = randomID()
+			if err != nil {
+				return a.finishFailed(value, active, events, err)
+			}
+			events <- event{
+				kind: eventResponseStart, messageID: answerID, thoughtID: thoughtID,
+			}
+			request := a.modelRequest(value)
+			completion, err = a.client.Stream(ctx, request, func(delta openrouter.Delta) {
+				switch delta.Kind {
+				case openrouter.DeltaText:
+					events <- event{kind: eventText, text: delta.Text}
+				case openrouter.DeltaReasoning:
+					events <- event{kind: eventReasoning, text: delta.Text}
 				}
-				a.publishUsage(value, completion.Usage, events)
+			})
+			if err != nil {
+				if (active.cancelledByClient.Load() || errors.Is(err, context.Canceled)) &&
+					completion != nil && len(completion.ToolCalls) == 0 &&
+					(completion.Text != "" || completion.Reasoning != "" || completion.Usage != nil) {
+					if commitErr := a.commit(value, recordModelExchange, modelExchangeRecord{
+						TurnID: active.turnID, AnswerID: answerID, ThoughtID: thoughtID,
+						Text: completion.Text, Reasoning: completion.Reasoning,
+						ReasoningDetails: opaqueMessages(completion.ReasoningDetails),
+						Usage:            completion.Usage,
+					}); commitErr != nil {
+						return loopOutcome{err: fmt.Errorf("persist partial model exchange: %w", commitErr)}
+					}
+					a.publishUsage(value, completion.Usage, events)
+				}
+				if active.cancelledByClient.Load() {
+					a.logger.Info("model request cancelled", "session_id", value.id)
+					return a.finishCancelled(value, active, events)
+				}
+				return a.finishFailed(
+					value, active, events, fmt.Errorf("stream model response: %w", err),
+				)
 			}
 			if active.cancelledByClient.Load() {
-				a.logger.Info("model request cancelled", "session_id", value.id)
 				return a.finishCancelled(value, active, events)
 			}
-			return a.finishFailed(
-				value,
-				active,
-				events,
-				fmt.Errorf("stream model response: %w", err),
-			)
-		}
-		if active.cancelledByClient.Load() {
-			return a.finishCancelled(value, active, events)
 		}
 
 		if completion.FinishReason != "tool_calls" || len(completion.ToolCalls) == 0 {
@@ -146,21 +185,29 @@ func (a *Agent) run(
 			}}
 		}
 
-		if err := validateToolCallIDs(value, completion.ToolCalls); err != nil {
-			return loopOutcome{err: fmt.Errorf("validate tool calls: %w", err)}
+		if suspended == nil {
+			if err := validateToolCallIDs(value, completion.ToolCalls); err != nil {
+				return loopOutcome{err: fmt.Errorf("validate tool calls: %w", err)}
+			}
+			suspended = &suspendedModelExchangeRecord{
+				TurnID: active.turnID, AnswerID: answerID, ThoughtID: thoughtID,
+				Text: completion.Text, Reasoning: completion.Reasoning,
+				ReasoningDetails: opaqueMessages(completion.ReasoningDetails),
+				FinishReason:     completion.FinishReason, Usage: completion.Usage,
+				ToolCalls:    append([]openrouter.ToolCall(nil), completion.ToolCalls...),
+				RequestCount: requestCount,
+			}
+			if err := a.commit(value, recordExchangePaused, *suspended); err != nil {
+				return loopOutcome{err: fmt.Errorf("persist suspended model exchange: %w", err)}
+			}
+			a.publishPendingTools(value, completion.ToolCalls, events)
 		}
-		results := a.executeBatchWith(
-			ctx,
-			value,
-			a.primaryTools,
-			value.primaryFileReads(),
-			completion.ToolCalls,
-			ask,
-			fileSystem,
-			terminal,
-			events,
-			"",
+		results, batchCancelled, err := a.executeSuspendedBatch(
+			ctx, value, completion.ToolCalls, ask, fileSystem, terminal, events, reissue,
 		)
+		if err != nil {
+			return loopOutcome{err: err}
+		}
 		storedResults := make([]storedToolResult, len(results))
 		for index, result := range results {
 			storedResults[index] = storedToolResult{
@@ -207,7 +254,9 @@ func (a *Agent) run(
 			}
 		}
 		a.publishUsage(value, combinedUsage(usages...), events)
-		if active.cancelledByClient.Load() {
+		suspended = nil
+		reissue = false
+		if batchCancelled || active.cancelledByClient.Load() {
 			return a.finishCancelled(value, active, events)
 		}
 		if ctx.Err() != nil {
@@ -231,6 +280,35 @@ func (a *Agent) run(
 		}
 	}
 	panic("unreachable")
+}
+
+func (s *suspendedModelExchangeRecord) completion() *openrouter.Completion {
+	return &openrouter.Completion{
+		Text: s.Text, Reasoning: s.Reasoning,
+		ReasoningDetails: rawMessages(s.ReasoningDetails),
+		FinishReason:     s.FinishReason, Usage: s.Usage,
+		ToolCalls: append([]openrouter.ToolCall(nil), s.ToolCalls...),
+	}
+}
+
+func (a *Agent) publishPendingTools(
+	value *session,
+	calls []openrouter.ToolCall,
+	events chan<- event,
+) {
+	for _, call := range calls {
+		var kind acp.ToolKind
+		var delegates bool
+		if index, ok := a.primaryTools.byName[call.Function.Name]; ok {
+			kind = a.primaryTools.tools[index].Kind
+			delegates = a.primaryTools.tools[index].Delegates
+		}
+		events <- event{
+			kind: eventToolPending, call: call, toolKind: kind,
+			title:     a.toolTitle(call.Function.Name, json.RawMessage(call.Function.Arguments)),
+			delegates: delegates,
+		}
+	}
 }
 
 func validateToolCallIDs(value *session, calls []openrouter.ToolCall) error {
@@ -585,6 +663,219 @@ type toolResult struct {
 	delegation *delegationRecord
 }
 
+func (a *Agent) executeSuspendedBatch(
+	ctx context.Context,
+	value *session,
+	calls []openrouter.ToolCall,
+	ask requestPermission,
+	fileSystem ClientFileSystem,
+	terminal ClientTerminal,
+	events chan<- event,
+	reissue bool,
+) ([]toolResult, bool, error) {
+	a.logger.Info("suspended tool batch started", "session_id", value.id, "calls", len(calls))
+	results := make([]toolResult, len(calls))
+	ready := make([]bool, len(calls))
+
+	value.stateMu.Lock()
+	progress := cloneSuspendedExchange(value.state.suspended)
+	value.stateMu.Unlock()
+	if progress == nil {
+		return nil, false, errors.New("suspended tool batch has no durable state")
+	}
+	for _, recorded := range progress.Decisions {
+		if recorded.Decision == decisionAllowAlways {
+			call := calls[progress.callIndex(recorded.CallID)]
+			value.grant(call.Function.Name, recorded.Rule)
+		}
+	}
+
+	batchCancelled := false
+	for index := 0; index < len(calls); index++ {
+		call := calls[index]
+		value.stateMu.Lock()
+		progress = cloneSuspendedExchange(value.state.suspended)
+		value.stateMu.Unlock()
+		if progress == nil {
+			return nil, false, errors.New("suspended tool batch lost its durable state")
+		}
+		if recorded := progress.decision(call.ID); recorded != nil {
+			results[index].approval = recorded.Decision
+			switch recorded.Decision {
+			case decisionAllowOnce, decisionAllowAlways:
+				ready[index] = true
+			case decisionCancelled:
+				results[index].content = "tool call cancelled before start"
+				results[index].failed = true
+				batchCancelled = true
+			default:
+				results[index].content = "the user rejected this tool call"
+				results[index].failed = true
+			}
+			if batchCancelled {
+				break
+			}
+			continue
+		}
+
+		toolIndex, known := a.primaryTools.byName[call.Function.Name]
+		if !known || a.primaryTools.tools[toolIndex].Approval == ApprovalNone {
+			ready[index] = true
+			continue
+		}
+		tool := a.primaryTools.tools[toolIndex]
+		arguments := json.RawMessage(call.Function.Arguments)
+		if value.granted(tool, arguments) {
+			ready[index] = true
+			continue
+		}
+		rule := ""
+		if tool.Suggest != nil {
+			rule = tool.Suggest(arguments)
+		}
+
+		value.approvalMu.Lock()
+		if value.granted(tool, arguments) {
+			value.approvalMu.Unlock()
+			ready[index] = true
+			continue
+		}
+		request := a.permissionRequest(value.id, tool, call, rule, "")
+		value.stateMu.Lock()
+		progress = cloneSuspendedExchange(value.state.suspended)
+		value.stateMu.Unlock()
+		if progress.Pending == nil {
+			if err := a.commit(value, recordPermissionOpen, permissionRequestedRecord{
+				TurnID: progress.TurnID,
+				Pending: pendingPermissionRecord{
+					CallID: call.ID, Generation: 1, Request: request,
+				},
+			}); err != nil {
+				value.approvalMu.Unlock()
+				return nil, false, fmt.Errorf("persist permission request: %w", err)
+			}
+			progress.Pending = &pendingPermissionRecord{
+				CallID: call.ID, Generation: 1, Request: request,
+			}
+			reissue = false
+		} else if progress.Pending.CallID != call.ID {
+			value.approvalMu.Unlock()
+			return nil, false, errors.New("pending permission is out of tool-call order")
+		}
+		if reissue {
+			generation := progress.Pending.Generation + 1
+			if err := a.commit(value, recordPermissionRetry, permissionReissuedRecord{
+				TurnID: progress.TurnID, CallID: call.ID, Generation: generation,
+			}); err != nil {
+				value.approvalMu.Unlock()
+				return nil, false, fmt.Errorf("persist permission reissue: %w", err)
+			}
+			progress.Pending.Generation = generation
+			reissue = false
+		}
+		generation := progress.Pending.Generation
+		a.logger.Info(
+			"tool approval requested", "session_id", value.id,
+			"tool_call_id", call.ID, "tool", call.Function.Name,
+			"generation", generation, "rule_scoped", tool.Suggest != nil,
+			"rule_derived", rule != "",
+		)
+		response, askErr := ask(ctx, progress.Pending.Request)
+		decision := decideApproval(response, askErr)
+		if ctx.Err() != nil {
+			decision = decisionCancelled
+		}
+		if decision == decisionAllowAlways && tool.Suggest != nil && rule == "" {
+			decision = decisionAllowOnce
+		}
+		recorded, err := a.commitPermissionDecision(value, permissionDecidedRecord{
+			TurnID: progress.TurnID, CallID: call.ID, Generation: generation,
+			Decision: decision, Rule: permissionDecisionRule(decision, rule),
+		})
+		if err != nil {
+			value.approvalMu.Unlock()
+			return nil, false, fmt.Errorf("persist permission decision: %w", err)
+		}
+		if !recorded {
+			value.approvalMu.Unlock()
+			index--
+			continue
+		}
+		if decision == decisionAllowAlways {
+			value.grant(call.Function.Name, rule)
+		}
+		value.approvalMu.Unlock()
+		results[index].approval = decision
+		a.logger.Info(
+			"tool approval decided", "session_id", value.id,
+			"tool_call_id", call.ID, "tool", call.Function.Name,
+			"generation", generation, "decision", decision,
+		)
+		switch decision {
+		case decisionAllowOnce, decisionAllowAlways:
+			ready[index] = true
+		case decisionCancelled:
+			results[index].content = "tool call cancelled before start"
+			results[index].failed = true
+			batchCancelled = true
+		default:
+			results[index].content = "the user rejected this tool call"
+			results[index].failed = true
+		}
+		if batchCancelled {
+			break
+		}
+	}
+
+	if batchCancelled {
+		for index := range calls {
+			if ready[index] {
+				ready[index] = false
+				results[index].content = "tool call cancelled before start"
+				results[index].failed = true
+			}
+			if results[index].content == "" {
+				results[index] = toolResult{
+					content: "tool call cancelled before start", failed: true,
+					approval: decisionCancelled,
+				}
+			}
+		}
+	}
+	results = a.dispatchApprovedBatch(
+		ctx, value, a.primaryTools, value.primaryFileReads(), calls, ask,
+		fileSystem, terminal, events, "", results, ready,
+	)
+	a.logger.Info("suspended tool batch completed", "session_id", value.id, "calls", len(calls))
+	return results, batchCancelled, nil
+}
+
+func permissionDecisionRule(decision approvalDecision, rule string) string {
+	if decision == decisionAllowAlways {
+		return rule
+	}
+	return ""
+}
+
+func (a *Agent) permissionRequest(
+	sessionID string,
+	tool Tool,
+	call openrouter.ToolCall,
+	rule string,
+	parent string,
+) acp.RequestPermissionRequest {
+	arguments := json.RawMessage(call.Function.Arguments)
+	return acp.RequestPermissionRequest{
+		SessionID: sessionID,
+		ToolCall: acp.ToolCallUpdate{
+			ToolCallID: call.ID, Kind: tool.Kind,
+			Title: a.toolTitle(call.Function.Name, arguments), Name: call.Function.Name,
+			RawInput: arguments, Meta: toolEventMetadata(parent, false),
+		},
+		Options: permissionOptions(rule, tool.Suggest != nil),
+	}
+}
+
 func (a *Agent) executeBatch(
 	ctx context.Context,
 	value *session,
@@ -765,6 +1056,28 @@ approvalLoop:
 		}
 	}
 
+	results = a.dispatchApprovedBatch(
+		ctx, value, tools, reads, calls, ask, fileSystem, terminal,
+		events, parent, results, ready,
+	)
+	a.logger.Info("tool batch completed", "session_id", value.id, "calls", len(calls))
+	return results
+}
+
+func (a *Agent) dispatchApprovedBatch(
+	ctx context.Context,
+	value *session,
+	tools toolSet,
+	reads FileReads,
+	calls []openrouter.ToolCall,
+	ask requestPermission,
+	fileSystem ClientFileSystem,
+	terminal ClientTerminal,
+	events chan<- event,
+	parent string,
+	results []toolResult,
+	ready []bool,
+) []toolResult {
 	groups := a.partitionWith(tools, calls)
 	executed := make([]bool, len(calls))
 	for _, group := range groups {
@@ -808,7 +1121,6 @@ approvalLoop:
 			}
 		}
 	}
-	a.logger.Info("tool batch completed", "session_id", value.id, "calls", len(calls))
 	return results
 }
 

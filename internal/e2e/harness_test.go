@@ -434,6 +434,26 @@ func (p *process) stop() {
 	}
 }
 
+// kill stops Ox without closing stdin so tests can exercise recovery from a
+// process that disappeared while a request was still active.
+func (p *process) kill() {
+	p.t.Helper()
+	p.stopReported = true
+	if p.stopped {
+		return
+	}
+	p.stopped = true
+	if err := p.command.Process.Kill(); err != nil {
+		p.t.Fatalf("kill ox: %v", err)
+	}
+	if err := p.command.Wait(); err == nil {
+		p.t.Fatal("killed ox exited successfully")
+	}
+	_ = p.stdin.Close()
+	_ = p.stdout.Close()
+	p.pending = nil
+}
+
 func (p *process) shutdown() error {
 	if p.stopped {
 		return p.stopErr

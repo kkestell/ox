@@ -15,6 +15,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/creachadair/jrpc2"
 	"github.com/creachadair/jrpc2/server"
@@ -3295,9 +3296,20 @@ func (h *agentHarness) callPrompt(sessionID, text string) (acp.PromptResponse, e
 }
 
 func (h *agentHarness) updates() []capturedUpdate {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	return append([]capturedUpdate(nil), h.updatesList...)
+	const quietPeriod = 25 * time.Millisecond
+	for {
+		h.mu.Lock()
+		count := len(h.updatesList)
+		h.mu.Unlock()
+		time.Sleep(quietPeriod)
+		h.mu.Lock()
+		if len(h.updatesList) == count {
+			updates := append([]capturedUpdate(nil), h.updatesList...)
+			h.mu.Unlock()
+			return updates
+		}
+		h.mu.Unlock()
+	}
 }
 
 type promptResult struct {

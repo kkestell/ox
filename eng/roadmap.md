@@ -125,44 +125,11 @@ accounting.
 - Do not introduce Nu's provider framework or a multi-provider abstraction
   before Ox has a second provider.
 
-## Most recently completed: client-delegated tools
+## Most recently completed: durable session completion
 
-Ox now delegates file and shell tools to capable ACP clients, retains local
-fallbacks, and proves both executors have the same model-visible and durable
-behavior.
-
-## Current milestone: durable session completion
-
-Every durable record already carries a monotonic sequence number that loading
-validates, and an unfinished turn is closed as interrupted on load. This
-milestone adds checkpoints for loading long sessions, records the negotiated
-client capabilities that shape a turn, and lets a turn waiting on permission
-survive a restart.
-
-It does not implement `session/fork`. The pinned schema still marks that method
-unstable, so it is planned only once the schema stabilizes it. Model-context
-compaction belongs to the context and diagnostics milestone.
-
-### Pending permission recovery
-
-**Build**
-
-- Settle first: how a turn that resumes after a restart reports its stop reason
-  when the `session/prompt` request that started it died with the old process.
-- Persist an outstanding `session/request_permission` with a stable identity and
-  a generation, reissue it on load, and continue the turn from the decision
-  instead of closing the turn as interrupted.
-
-**Gates**
-
-- Killing Ox while a permission request is outstanding and loading the session
-  in a new process reissues the request with the same tool-call identity and a
-  new generation, and a decision for a stale generation is ignored.
-- Allowing the reissued request runs the tool once and records one tool call,
-  rejecting it records one refusal, and cancelling it leaves the session
-  replayable.
-- The recovery is proved through the real stdio process boundary, not only the
-  in-process runtime tests.
+Ox now loads durable sessions from checkpoints, preserves each activation's
+negotiated executor choices, and recovers turns that were waiting for
+permission.
 
 ## Milestone: context and diagnostics
 
