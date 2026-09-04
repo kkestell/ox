@@ -1,273 +1,255 @@
 # AGENTS.md
 
-KEEP THIS FILE AND ITS LINKED REFERENCES UP TO DATE.
+KEEP THIS FILE AND ITS LINKED REFERENCES UP TO DATE AT ALL TIMES.
 
 Ox is a coding agent written in Go that speaks ACP v1 over standard input and
-output.
+output. It is ACP-first, with Zed as its primary interactive client. The durable
+design lives in `eng/architecture.md`, and the build order and ACP method
+coverage live in `eng/roadmap.md`.
 
-I have written many coding agents. The goal if Ox is to combine the best ideas
-and the most advanced features from all of them.
+## Tech Stack
 
-## Roadmap
+- **Language:** Go 1.26.4
+- **Protocol:** ACP v1 over JSON-RPC 2.0 on stdio
+- **Model provider:** OpenRouter Chat Completions over HTTP and SSE
+- **Build and checks:** Make, gofmt, go vet, staticcheck, and go test
 
-Milestones are ordered and build on each other. Items within a milestone can be
-worked in parallel. Each checkbox is one plannable roadmap item.
+## Codebase Map
 
-### M0 — Skeleton and protocol boundary
+- `cmd/ox/` — The `ox` executable, stdio server, process configuration, and
+  `login` command.
+- `internal/acp/` — ACP wire types and protocol-boundary validation.
+- `internal/agent/` — ACP method handling, session state, prompt translation,
+  authentication, and cancellation.
+- `internal/openrouter/` — OpenRouter request types, HTTP client, SSE parsing,
+  and stream assembly.
+- `internal/config/` — Layered model configuration resolved for a session.
+- `internal/credentials/` — Environment and OS-keyring credential storage.
+- `internal/workspace/` — Canonical session roots and confined filesystem paths.
+- `internal/e2e/` — Black-box tests that build and drive the real binary.
+- `docs/` — End-user documentation.
+- `eng/` — Development and agent documentation. `eng/architecture.md` owns the
+  design, `eng/roadmap.md` owns build order and status, and `eng/plans/` holds
+  plans for individual roadmap slices.
 
-- [x] Scaffold project
-- [x] ACP stdio server core: `initialize`, protocol input validation,
-      `$/cancel_request`
+## Commands
 
-### M1 — End-to-end testing
+- Run every required check: `make check`
+- Format Go and Markdown: `make format`
+- Check Go formatting, vet, and static analysis: `make check-go`
+- Check documentation formatting: `make check-docs`
+- Run the race-enabled test suite without the test cache: `make test`
+- Install the binary: `make install`
 
-Comes before the prompt loop so every later item lands with end-to-end coverage.
+## Project Rules
 
-- [x] End-to-end test harness driving the Ox binary over stdio with a mock LLM
+### Answering
 
-### M2 — Core prompt loop
+Be short. Say the thing and stop.
 
-- [x] Streaming prompt turn: `session/new`, `session/prompt`, `session/cancel`
-- [x] Prompt content handling
-- [x] Concurrent sessions
-- [x] Configuration precedence
-- [x] Credential storage and lookup
-- [x] `authenticate` and `logout`
+A few sentences is the normal length of a reply. Most questions need one or two.
+Never write five paragraphs where one would do. If a reply is running long, cut
+whole points rather than compressing them into denser sentences.
 
-### M3 — Tools and permissions
+Write plainly. Ordinary words, ordinary sentences, one idea each. Say it the way
+you would say it out loud to someone sitting next to you. No throat-clearing
+before the answer, no summary of what you just did after it, no restating the
+question, no listing the options you considered and rejected.
 
-- [x] Workspace confinement
-- [ ] File read, write, and exact edit tools
-- [ ] Glob and grep tools
-- [ ] Shell execution tool
-- [ ] Permission requests and reusable grants
-- [ ] Client-delegated filesystem and terminal: `fs/*`, `terminal/*`
+Do not be clever or cryptic. Do not stack clauses onto a sentence with dashes
+and semicolons; start a new sentence. Do not invent names for things that
+already have names. Prefer the concrete: name the file, function, or value.
 
-### M4 — Durable sessions
+When you need a decision, ask one plain question.
 
-- [ ] Durable session log
-- [ ] `session/load` and lossless replay
-- [ ] `session/list`, `session/delete`, `session/close`, `session/fork`,
-      `session/resume`
-- [ ] Session locking and interrupted-turn recovery
-- [ ] Session-frozen request prefix and tool declarations
+This governs replies. Files follow the documentation rules below.
 
-### M5 — Robustness and accounting
+### Project priorities
 
-- [ ] Provider retry and streaming resilience
-- [ ] Model catalog and cache
-- [ ] Reasoning-detail round-trip
-- [ ] Usage, cost, and context-window accounting
-- [ ] Changed-file accounting
-- [ ] Context compaction
-- [ ] Trace telemetry
+Ox combines the strongest ideas from previous coding agents behind an ACP-first
+boundary. Zed is the primary client. Prefer standard ACP methods and capability
+negotiation over client-specific side channels. When a required client
+capability is absent, fail clearly instead of silently changing semantics.
 
-### M6 — Higher-level capabilities
+The project is private, greenfield, and has no users. There are no backward
+compatibility constraints. Refactor freely when the result is simpler. Do not
+add compatibility paths.
 
-- [ ] Delegated subagents and nested activity reporting
-- [ ] Todo / plan tool
-- [ ] Workspace instructions (`AGENTS.md`)
-- [ ] On-demand skills
-- [ ] `session/set_mode`
-- [ ] `session/set_config_option`
-- [ ] MCP support
-- [ ] LLM-generated session titles
-- [ ] Mid-turn steering / queued user input
-- [ ] Concurrent tool execution
+The value of the Go implementation is how cheaply it can be changed tomorrow.
+Keep the domain rules and protocol semantics precise, and keep the code that
+implements them thin and unsurprising. Treat simplicity as a maintained project
+invariant, not a cleanup activity.
 
-### M7 — Differentiators
+Read `eng/architecture.md` before changing structure and `eng/roadmap.md` before
+planning work. Do not introduce a dependency, abstraction, subsystem, protocol,
+storage format, background process, configuration surface, or significant
+behavior change without consulting the user.
 
-- [ ] Ephemeral Git snapshots and rollback
-- [ ] Persistent semantic workspace memory
-- [ ] Automatic task decomposition with a durable subtask queue
-- [ ] Language-server navigation and diagnostics
-- [ ] Harbor evaluation adapter
+Preserve unrelated working-tree changes. Never commit unless the user asks for a
+commit explicitly.
 
-Out of scope for Ox itself (client responsibilities under ACP): interactive UI,
-Markdown rendering, IDE file/diff navigation, active-editor context attachment,
-editor runtime supervision, GitHub inbox, terminal UI.
+### Planning and milestone review
 
-## Workflow
+Write a plan in `eng/plans/` for every roadmap slice before implementation. Use
+`eng/plans/TEMPLATE.md` as a scaffold, then keep the plan to the smallest useful
+set of source references, implementation tasks, and tests. Do not restate the
+roadmap, architecture, repository rules, or standard validation commands.
 
-- Plans go in `docs/agents/plans/YYYY-MM-DD-NNN-slug.md`.
-- Plans should follow the plan template: `docs/agents/plans/TEMPLATE.md`.
-- Only roadmap items get plans.
-- A plan is committed with the work it plans, in the same commit. A plan for a
-  roadmap item that has not been implemented yet stays uncommitted.
-- Before planning, research. Explore the relevant Ox code and then identify
-  which of my previous projects are strong candidates for cribbing ideas and/or
-  code. Consult the feature matrix in `~/src/references/index.md`. The
-  repositories are in `~/src/references/repos`. Find the most robust, advanced
-  solutions. Adopting large chunks of code from my previous projects is welcome
-  and encouraged. If no strong candidates emerge, consult the third-party
-  references in `~/src/references/repos/third-party`.
-- After research and planning, stop. Implementation will happen in a fresh
-  session.
-- After implementation, stop. Code review will happen in a fresh session.
-- Implementation is not finished until unit tests, end-to-end tests, lint, etc.
-  are have all been run.
-- There are no preexisting issues. If you see something, fix it.
-- This is a private greenfield project with no users. There is no backwards
-  compatibility concerns. Refactor ruthlessly.
-- Do not mention the roadmap, milestones, or M numbers ANYWHERE except for in
-  the roadmap.
-- When reviewing code, focus on issues that are reasonably likely to occur in
-  real world usage, not theoretical issues and extreme edge cases.
+Do not review individual plans or run an independent review after each slice.
+After every slice in a milestone is implemented and its gates pass, run one
+completeness and simplification review over the cumulative milestone before
+marking it complete. Fix its findings and rerun affected gates.
 
-## ACP method coverage
+Use a focused task workflow for small work that does not need a plan or commit.
 
-Requests and notifications Ox accepts from an ACP client:
+### Prior art
 
-- [x] `initialize`
-- [x] `session/new`
-- [ ] `session/load`
-- [x] `session/prompt`
-- [x] `session/cancel`
-- [x] `authenticate`
-- [x] `logout`
-- [ ] `session/list`
-- [ ] `session/delete`
-- [ ] `session/close`
-- [ ] `session/fork`
-- [ ] `session/resume`
-- [ ] `session/set_mode`
-- [ ] `session/set_config_option`
-- [x] `$/cancel_request`
+Before planning a substantial capability, explore the relevant Ox code and
+consult the feature matrix in `~/src/references/index.md`. The referenced
+repositories live in `~/src/references/repos`. Prefer the most robust solution
+from the author's previous projects, and reuse substantial code when it fits.
+Consult `~/src/references/repos/third-party` only when no strong first-party
+candidate emerges.
 
-Requests and notifications Ox sends to an ACP client:
+Treat prior art as input, not as Ox's source of truth. Record the resulting Ox
+design in `eng/architecture.md` when it changes a durable responsibility,
+boundary, or hard-to-reverse decision.
 
-- [x] `session/update`
-- [x] `session/request_permission`
-- [ ] `fs/read_text_file`
-- [ ] `fs/write_text_file`
-- [ ] `terminal/create`
-- [ ] `terminal/output`
-- [ ] `terminal/wait_for_exit`
-- [ ] `terminal/kill`
-- [ ] `terminal/release`
+### Referring to planned work
 
-## Configuration
+`eng/roadmap.md` orders milestones and slices by their position in the file. Do
+not number them. Completed work can then be removed without renumbering what
+remains.
 
-Ox reads the model for each session from `OX_MODEL`, from
-`<cwd>/.ox/config.json`, or from the global configuration file at
-`$XDG_CONFIG_HOME/ox/config.json` (falling back to
-`$HOME/.config/ox/config.json`). That order is the precedence order: the
-environment overrides the workspace file, which overrides the global file. The
-resolved configuration is frozen when the session is created.
+Everywhere else—code comments, commit messages, pull requests, plans, and
+replies—describe the work itself. Write "session replay is not implemented"
+rather than "deferred to a later milestone." Every sentence must make sense to a
+reader who has never opened the roadmap.
 
-Ox reads the OpenRouter credential from `OPENROUTER_API_KEY` or from the OS
-keyring under service `ox` and account `openrouter`. The environment wins when
-both have a credential. `OX_KEYRING_DISABLED=1` turns keyring access off.
-`ox login` verifies a key with OpenRouter and stores it in that keyring entry.
-The ACP `authenticate` method re-reads both sources and verifies the resolved
-credential. `logout` deletes the keyring entry and is refused while
-`OPENROUTER_API_KEY` supplies the credential.
+### Maintaining the roadmap
 
-`model` is the only configuration-file key. Unknown keys and blank model values
-are errors. `OX_LOG_LEVEL` and `OX_OPENROUTER_BASE_URL` remain environment-only;
-in particular, a configuration file cannot redirect prompts to another host or
-carry a credential.
+`eng/roadmap.md` is forward-looking. Keep detailed scope and gates only for work
+that has not been completed. When a milestone is complete, replace its detailed
+section with a concise summary and remove the previous completed summary. The
+roadmap keeps exactly one completed milestone summary.
 
-## Workspace
+The summary identifies the completed outcome without restating protocol rules,
+implementation design, or code behavior owned elsewhere.
 
-A session has one canonical working directory. Ox resolves its symlinks and
-requires that the directory can be listed before creating the session. Every
-path a tool takes resolves against that directory and is refused if it lands
-outside, whether through an absolute path, a `..` climb, or a symlink that
-leaves the tree. A client path spelled through a symlink still resolves to its
-location inside the canonical workspace. Only regular files can be opened.
+Keep ACP method coverage in the roadmap synchronized with the implementation.
 
-## Code Style
+### One home for every fact
 
-### “Just Enough” Go
+Every fact lives in exactly one place. End-user documentation describes how to
+use Ox, `eng/architecture.md` defines the implementation design,
+`eng/roadmap.md` defines what gets built next, plans say how one bounded change
+will be made, and this file defines how to work in the repository. Reference a
+fact that lives elsewhere by naming the file that owns it. Do not keep a
+convenient copy nearby.
 
-The value of this code is how fast it can be rewritten tomorrow, so minimize
-committed surface area. When in doubt, do less.
+### What gets documented
 
-Note the split of concerns: the domain — the rules, the semantics, the thing
-being modeled — deserves care and fidelity to its source of truth. The Go
-implementing it should stay as thin and boring as possible.
+`docs/` holds end-user documentation. It describes behavior that exists without
+previewing roadmap work. Note an omission only when it is an intentional product
+decision a user must understand.
 
-### Keep correctness; skip speculative robustness
+`eng/architecture.md` covers process boundaries, component responsibilities,
+dependency direction, state ownership, and decisions that would be expensive to
+reverse. A reader should finish it able to say where a change belongs without
+opening the source.
 
-Use Go’s cheap safety: static types, useful zero values, `go vet`,
+It does not explain local implementation mechanics. Function signatures, struct
+layouts, algorithms, validation wording, and per-test setup live in code. A
+sentence that would change because a helper was renamed or a loop reorganized
+does not belong in the architecture.
+
+Change `eng/architecture.md` when a responsibility changes, a boundary moves, a
+package is added or split, or a durable decision is reversed. Implementing a
+feature the design already accounts for does not require an architecture edit.
+
+This file has the same limit. It says how to work in the repository. Detail too
+fine for the architecture does not belong here either, or in a new document
+invented to hold it.
+
+### Go design rules
+
+Use Go's cheap safety: static types, useful zero values, `go vet`,
 `staticcheck`, and `go test -race`.
 
-Do not build retries, fallbacks, error taxonomies, configuration layers,
-concurrency, or abstraction for cases that do not exist yet. Prefer a `TODO`,
-panic, or unsupported case over machinery built on guesses.
-
-### Boundaries vs. invariants
-
-Bad external input is ordinary input. Validate it at the boundary and report
-clear human-readable problems with a nonzero exit.
-
-Past that boundary, missing values and impossible states are bugs. **Panic
-rather than silently recovering or substituting zero values.**
-
-### Keep the implementation concrete
+Validate bad external input at the boundary and return clear, human-readable
+problems. Past that boundary, missing values and impossible states are bugs.
+Panic rather than silently recovering or substituting zero values.
 
 Prefer:
 
-- values over pointers until mutation or sharing requires them
-- concrete types until multiple real implementations justify an interface
-- plain functions and `switch` over visitors, registries, or generic frameworks
+- values over pointers until mutation or sharing requires them;
+- concrete types until multiple real implementations justify an interface;
+- plain functions and `switch` statements over visitors, registries, or generic
+  frameworks; and
+- synchronous code until real independent work or cancellation requires
+  concurrency.
 
-Abstractions should be discovered through repetition, not imposed up front.
+Abstractions should be discovered through repetition, not imposed up front. Do
+not build retries, fallbacks, error taxonomies, configuration layers,
+concurrency, or extension points for cases that do not exist yet. Prefer an
+explicit unsupported case or a focused TODO over machinery built on guesses.
 
-### Errors
+User-facing validation problems are data: identify the source and give a clear
+message. Everything else is plumbing: return `error` and wrap it only when
+adding useful context. Do not define custom error types or sentinels unless code
+actually branches on them.
 
-User-facing validation problems are data: location/source plus a human-readable
-message.
+### Simplicity rules
 
-Everything else is plumbing: return `error` and wrap it when adding useful
-context. Do not define custom error types or sentinels unless code actually
-branches on them.
+- Prefer a direct conditional to an indirect dispatch mechanism.
+- A helper should remove or name a concept, not merely move lines elsewhere.
+- Tolerate a little duplication until the repeated concept and its boundary are
+  understood.
+- Do not create catch-all packages such as `util`, `common`, or `base`.
+- Keep interfaces at consumer boundaries and small enough to explain in one
+  sentence.
+- Keep public APIs deliberately small. Do not expose internal state merely to
+  make tests convenient.
+- Explain why in comments. Do not narrate code that is already clear or let chat
+  context leak into comments and documentation.
 
-### Tests
+### Testing
 
-Testing is part of the design. Add the smallest useful test at the lowest
-appropriate level and use real Ox boundaries wherever practical.
+Testing is part of the design. Add the smallest useful test at the lowest stable
+boundary, plus a regression test for every fixed bug. End-to-end tests with a
+mocked model are the preferred proof of ACP-visible behavior.
 
-End to end tests with a mocked LLM are the gold standard. The harness in
-`internal/e2e` builds the `ox` binary, starts a fresh process per test, and
-drives it the way a client does: stdin, stdout, stderr, the environment, the
-working directory, and a queued HTTP model endpoint. Every file in the package
-is a test file, so the harness adds nothing to the shipped binary. Compose
-scripted model responses from the `sse` and `ev*` builders rather than
-hand-writing SSE framing. Seed configuration and other files into the scratch
-directory with the harness file options before Ox starts. A queued response may
-name the prompt it answers, so tests with more than one turn in flight do not
-depend on request arrival order. A mid-turn cancellation is scripted with a
-held-open response: `hold` queues a body that writes its opening frames, signals
-the test that it has started, then blocks until the test releases the rest or
-the request context ends.
+The harness in `internal/e2e` builds the `ox` binary, starts a fresh process per
+test, and drives stdin, stdout, stderr, environment, working directory, and a
+queued HTTP model endpoint. Compose model streams with the `sse` and `ev*`
+builders rather than hand-writing SSE framing. Seed files through harness
+options. Name queued responses when concurrent turns must not depend on arrival
+order. Model mid-turn cancellation with `hold`.
 
-The end-to-end harness disables keyring access, so tests of the shipped binary
-supply credentials through the environment. Keyring behavior is covered by unit
-tests against go-keyring's in-memory provider. Unless a test starts the mock
-model, the harness points Ox at a refused local provider address.
+The end-to-end harness disables keyring access. Shipped-binary tests supply
+credentials through the environment, while keyring behavior uses go-keyring's
+in-memory provider in unit tests. When a test does not start the mock provider,
+the harness points Ox at a refused local address.
 
-There is an `OPENROUTER_API_KEY` in `.env` for you to use for testing. Checks
-against the real endpoint use `gpt-5.6-luna` and no other model.
+Use the `OPENROUTER_API_KEY` in `.env` only for an explicitly required real
+provider check. Such checks use `gpt-5.6-luna` and no other model. Never expose
+the credential in output or commit it.
 
-Add focused tests for stable, tricky rules and regression cases for fixed bugs.
-
-The end to end harness builds the `ox` binary in a subprocess, which Go's test
-cache cannot see, so run the tests with `-count=1`.
-
-Always run:
+The end-to-end harness builds outside Go's test cache, so always run tests with
+`-count=1`. Before considering behavior complete, run:
 
 ```sh
-gofmt
-go vet ./...
-staticcheck ./...
-go test -race -count=1 ./...
+make check
 ```
 
-### Design and collaboration
+For documentation-only and filename-only work, run the focused documentation
+checks and inspect the diff instead of rebuilding or testing the binary.
 
-Do not introduce dependencies, abstractions, subsystems, protocols, storage
-formats, background processes, configuration, or significant behavior changes
-without consulting the user. Resolve routine implementation details directly
-when they follow from an agreed design.
+### Dependencies and tools
+
+Keep production dependencies few. Add one only when it enforces or implements a
+concrete current requirement better than a small local solution. Use the
+standard library when it is clear and sufficient.
+
+Keep the Make targets under [Commands](#commands) aligned with the commands
+developers and CI actually run.
