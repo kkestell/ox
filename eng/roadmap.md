@@ -25,7 +25,7 @@ it surrounds useful code.
 
 Every implementation plan must name the exact source files, behavior, and tests
 being ported. It must also record deliberate omissions or ACP adaptations and
-the Zed-visible acceptance case when the client boundary is involved.
+the browser-client acceptance case when the client boundary is involved.
 
 Prefer the personal repositories. Use third-party repositories for the ACP
 contract, Zed behavior, or a capability with no strong personal implementation.
@@ -105,7 +105,7 @@ and process-level recovery and cancellation coverage.
       cancellation, and process shutdown. Pins: ACP UI artifact `4482f93a` from
       source `e6e36d05`, `@rebornix/stdio-to-ws@0.2.0`, and ACP v1 schema
       `8e3eb8f2`.
-- [ ] Record and test the capabilities the browser client advertises, including
+- [x] Record and test the capabilities the browser client advertises, including
       behavior when an optional capability is absent.
 - [ ] Verify that every supported prompt content block and session update
       renders correctly in the browser client.
