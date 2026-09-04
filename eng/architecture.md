@@ -8,9 +8,9 @@ in what order.
 ## System boundary
 
 Ox is a long-running ACP v1 agent process. Its standard input and output carry a
-line-delimited JSON-RPC connection to one client. Zed is the primary client, but
-the protocol boundary remains client-independent. Standard output is reserved
-for ACP traffic; logs and command diagnostics go to standard error.
+line-delimited JSON-RPC connection to one ACP client. The protocol boundary is
+client-independent. Standard output is reserved for ACP traffic; logs and
+command diagnostics go to standard error.
 
 ```text
 ACP client
@@ -212,9 +212,9 @@ Client interoperability is proved separately through `internal/e2e/browser`.
 Playwright drives a pinned, unmodified ACP UI web release, which connects to the
 real Ox executable through a pinned upstream stdio-to-WebSocket bridge. The
 harness owns browser and process orchestration plus the fake provider; it does
-not implement, translate, or assert ACP messages itself. Zed remains the primary
-interactive client and its checked-in source remains the oracle for Zed-specific
-capabilities that the browser client does not exercise.
+not implement, translate, or assert ACP messages itself. The canonical ACP
+schema remains the oracle for capabilities that the browser client does not
+exercise.
 
 The mock provider is the normal end-to-end boundary. A real OpenRouter check is
 reserved for explicit provider interoperability work and does not replace the

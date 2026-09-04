@@ -28,21 +28,18 @@ being ported. It must also record deliberate omissions or ACP adaptations and
 the browser-client acceptance case when the client boundary is involved.
 
 Prefer the personal repositories. Use third-party repositories for the ACP
-contract, Zed behavior, or a capability with no strong personal implementation.
+contract, ACP client behavior, or a capability with no strong personal
+implementation.
 
 ## Prior-art map
 
 Paths in this section are relative to `~/src/references/repos`.
 
-### ACP and Zed behavior
+### ACP and client behavior
 
-Use the checked-in Zed implementation as the client oracle:
+Use the canonical schema as the protocol oracle and the pinned browser client as
+the interoperability oracle:
 
-- `third-party/protocol/zed-acp/crates/agent_servers/src/acp.rs` for advertised
-  client capabilities, permission cancellation, delegated filesystem calls, and
-  terminal lifecycle handling;
-- `third-party/protocol/zed-acp/crates/acp_thread/src/acp_thread.rs` and
-  `terminal.rs` for session-update rendering and terminal behavior;
 - `third-party/protocol/agent-client-protocol` for the canonical schema; and
 - `third-party/protocol/acp-go-sdk` for typed APIs, cancellation, notification
   ordering, and cross-language JSON test cases.
@@ -71,7 +68,8 @@ snapshot, not Beta's current working tree.
 ### Supporting capabilities
 
 - Use `personal/theta/internal/tui/preview.go` for permission-preview data and
-  `internal/session/snapshot.go` for atomic snapshot tests. Zed owns the UI.
+  `internal/session/snapshot.go` for atomic snapshot tests. The ACP client owns
+  the UI.
 - Use `personal/iota/crates/adapter-git`, `crates/bin-web/src/lifecycle`, and
   `crates/app/src/tools/hashlines.rs` for later worktree isolation,
   merge-or-abandon lifecycle, and anchored edits.
@@ -82,7 +80,7 @@ snapshot, not Beta's current working tree.
 ### Deliberate non-ports
 
 - Do not port Alpha's VS Code extension, Eta or Theta's terminal UI, or Delta
-  and Iota's web UI. Zed owns interactive presentation.
+  and Iota's web UI. The ACP client owns interactive presentation.
 - Do not port Gamma's custom Coral protocol. Translate its state invariants to
   ACP.
 - Do not run a private terminal implementation when the ACP client capability is
@@ -98,7 +96,7 @@ and process-level recovery and cancellation coverage.
 
 ## Current milestone: client interoperability baseline
 
-- [x] Document the development setup for launching Ox as a Zed ACP agent.
+- [x] Document the development setup for launching Ox as a local ACP agent.
 - [x] Add an automated browser-client smoke test that drives an independently
       maintained ACP UI against Ox through an upstream stdio bridge, covering
       initialization, authentication, session creation, prompt streaming,
@@ -111,13 +109,13 @@ and process-level recovery and cancellation coverage.
       renders correctly in the browser client.
 - [ ] Verify that protocol errors reach the browser client as useful errors and
       that logs never contaminate stdout.
-- [ ] Keep the pinned browser client, stdio bridge, checked-in Zed ACP reference
-      snapshot, and ACP schema version recorded with each interoperability pass.
+- [ ] Keep the pinned browser client, stdio bridge, and ACP schema version
+      recorded with each interoperability pass.
 
 ## Milestone: client-delegated tools
 
-- [ ] Use client-delegated `fs/read_text_file` and `fs/write_text_file` when Zed
-      advertises those capabilities.
+- [ ] Use client-delegated `fs/read_text_file` and `fs/write_text_file` when the
+      ACP client advertises those capabilities.
 - [ ] Use the ACP terminal lifecycle for shell commands: `terminal/create`,
       `terminal/output`, `terminal/wait_for_exit`, `terminal/kill`, and
       `terminal/release`. Cancellation must terminate the command tree and
@@ -164,7 +162,7 @@ and process-level recovery and cancellation coverage.
 - [ ] Add MCP servers without weakening the ACP client boundary.
 - [ ] Support mid-turn steering and queued follow-up input.
 - [ ] Port Eta's LSP definition, reference, symbol, and diagnostics tools only
-      where they complement rather than duplicate Zed client context.
+      where they complement rather than duplicate ACP client context.
 - [ ] Add web search and fetch only after their trust, citation, and
       content-size contracts are explicit.
 

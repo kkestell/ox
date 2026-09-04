@@ -79,11 +79,6 @@ item.
   blob is routed by its MIME type. Its tests in
   `packages/opencode/test/acp/content.test.ts` show that a client sends the
   selected line range in the URI fragment, as `file:///tmp/context.txt#L12-L14`.
-- `~/src/references/repos/third-party/protocol/zed-acp/crates/acp_thread/src/acp_thread.rs:1493-1514`
-  — `decode_embedded_resource_image`, which treats a blob resource whose MIME
-  type is an image as an image. This is the client half of the same routing
-  rule, and it is why routing embedded blobs rather than refusing them is worth
-  doing.
 - `~/src/references/repos/personal/beta/src/acp.rs:719-747` — `prompt_to_text`,
   which handles embedded text resources and refuses blobs. `:217` advertises
   `embeddedContext` and nothing else. Its structure is right; this plan extends

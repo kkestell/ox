@@ -81,10 +81,10 @@ is a wiring bug rather than a state, so the client panics on it.
 `Agent` holds the store and `NewSession` gates on it, replacing the
 `a.client.APIKey == ""` check. The gate returns `-32000` rather than the
 `-32603` it returns today, because `auth_required` is what the protocol defines
-for this and Zed maps that code to an authentication prompt carrying the agent's
-message as its description. That is the right behavior even before
-`authenticate` exists: the message is what tells a user to set the variable or
-store a key.
+for this and an ACP client can map that code to an authentication prompt
+carrying the agent's message as its description. That is the right behavior even
+before `authenticate` exists: the message is what tells a user to set the
+variable or store a key.
 
 The credential is deliberately not frozen onto the session the way the model is.
 A session's model is frozen because two workspaces in one process legitimately
@@ -161,10 +161,6 @@ makes the model observable.
   states that `session/new` may fail with it until the client authenticates, and
   `docs/protocol/v1/authentication.mdx:111` states that authentication is what
   stops it.
-- `~/src/references/repos/third-party/protocol/zed-acp/crates/agent_servers/src/acp.rs:2074-2082`
-  — the interoperability oracle: Zed turns `-32000` into an `AuthRequired` error
-  and attaches the agent's message as its description, so a client that has no
-  `authMethods` to offer still shows a user what Ox said.
 
 ## Current state
 

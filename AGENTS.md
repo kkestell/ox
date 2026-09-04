@@ -3,9 +3,9 @@
 KEEP THIS FILE AND ITS LINKED REFERENCES UP TO DATE AT ALL TIMES.
 
 Ox is a coding agent written in Go that speaks ACP v1 over standard input and
-output. It is ACP-first, with Zed as its primary interactive client. The durable
-design lives in `eng/architecture.md`, and the build order and ACP method
-coverage live in `eng/roadmap.md`.
+output. It is ACP-first and works with ACP clients. The durable design lives in
+`eng/architecture.md`, and the build order and ACP method coverage live in
+`eng/roadmap.md`.
 
 ## Tech Stack
 
@@ -76,9 +76,9 @@ This governs replies. Files follow the documentation rules below.
 ### Project priorities
 
 Ox combines the strongest ideas from previous coding agents behind an ACP-first
-boundary. Zed is the primary client. Prefer standard ACP methods and capability
-negotiation over client-specific side channels. When a required client
-capability is absent, fail clearly instead of silently changing semantics.
+boundary. Prefer standard ACP methods and capability negotiation over
+client-specific side channels. When a required ACP client capability is absent,
+fail clearly instead of silently changing semantics.
 
 The project is private, greenfield, and has no users. There are no backward
 compatibility constraints. Refactor freely when the result is simpler. Do not

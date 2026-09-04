@@ -3,8 +3,7 @@
 ## Goal
 
 Replace the small Ox prompt server with Alpha's proven Go runtime while keeping
-Ox as the product, Zed as the primary client, and standard ACP as the public
-boundary.
+Ox as the product and standard ACP as the public client boundary.
 
 ## Desired outcome
 
@@ -72,7 +71,8 @@ the transplant.
   prompt-content variant, `$/cancel_request`, and useful JSON-RPC errors.
 - Wire Alpha's settings, credential, catalog, provider, durable store, agent
   loop, tools, workspace, shell-rule, and subagent implementations into
-  `cmd/ox`. Keep `ox login` and advertise it as Zed terminal authentication.
+  `cmd/ox`. Keep `ox login` and advertise it as ACP client terminal
+  authentication.
 - Remove workspace-trust input, `_amber/session/steer`, Amber turn correlation,
   and all assumptions that a companion extension supervises the process.
 - Merge and rebrand the test suites. Delete superseded Ox implementations only

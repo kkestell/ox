@@ -183,16 +183,6 @@ harness can run the binary as a one-shot command with piped input, which is how
   `logout` request bodies: a `methodId` and nothing else.
 - `~/src/references/repos/third-party/protocol/agent-client-protocol/agent-client-protocol-schema/src/v1/client.rs:2130-2139`
   — `clientCapabilities.auth.terminal` is a bool in v1.
-- `~/src/references/repos/third-party/protocol/zed-acp/crates/agent_servers/src/acp.rs:767-793`
-  — the interoperability oracle. Zed initializes at v1 (`:993`) and advertises
-  `auth.terminal: true`, so the terminal method is offered to it. `:1887-1922`
-  runs a typed terminal method behind a beta feature flag and otherwise falls
-  back to `meta_terminal_auth_task`. `:1555-1585` is that fallback: a
-  `_meta["terminal-auth"]` object of `{label, command, args, env}` on any
-  method, which Zed runs today without the flag. Recorded as the option not
-  taken — it is a pre-stabilization shim keyed to a Zed-internal name, and it
-  requires Ox to hand a client the path to its own binary, which the typed
-  descriptor deliberately forbids.
 - `internal/credentials/credentials.go:76-113` — `Set` and `Clear`, which this
   plan finally gives callers. `Set` rejects a blank key, refuses when the
   keyring is off, and re-resolves; `Clear` refuses when the environment supplies
@@ -445,15 +435,15 @@ harness can run the binary as a one-shot command with piped input, which is how
   `golang.org/x/sys`, which it needs, is already in the module graph.
 - Deliberately deferred or excluded, and none of it half-built here: accepting a
   key inside an ACP message through a private `_meta` extension, which no client
-  of Ox's would send and which would put a secret in a client's logs; Zed's
-  pre-stabilization `_meta["terminal-auth"]` descriptor, which needs Ox to hand
-  a client the path to its own binary; elicitation, which the protocol forbids
-  for API keys in form mode and which would need Ox to host an HTTP endpoint in
-  URL mode; re-resolving the credential inside `session/new`, since
-  `authenticate` is the method for that and a keyring read is a subprocess;
-  verifying the credential per prompt; cancelling running turns on `logout`; and
-  more than one provider or account, which would turn the keyring account into a
-  key rather than a constant.
+  of Ox's would send and which would put a secret in a client's logs; a
+  client-specific `_meta["terminal-auth"]` descriptor, which needs Ox to hand a
+  client the path to its own binary; elicitation, which the protocol forbids for
+  API keys in form mode and which would need Ox to host an HTTP endpoint in URL
+  mode; re-resolving the credential inside `session/new`, since `authenticate`
+  is the method for that and a keyring read is a subprocess; verifying the
+  credential per prompt; cancelling running turns on `logout`; and more than one
+  provider or account, which would turn the keyring account into a key rather
+  than a constant.
 
 ## Validation
 

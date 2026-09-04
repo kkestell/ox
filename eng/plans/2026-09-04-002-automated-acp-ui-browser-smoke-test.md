@@ -2,9 +2,9 @@
 
 ## Goal
 
-Replace the unautomatable Zed checklist with a real client interoperability
-test. The test must exercise Ox through independently maintained client code,
-not an ACP client implemented inside this repository.
+Replace the unautomatable manual ACP client checklist with a real client
+interoperability test. The test must exercise Ox through independently
+maintained client code, not an ACP client implemented inside this repository.
 
 ## Desired outcome
 
