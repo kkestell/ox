@@ -140,6 +140,48 @@ test("renders a complete tool turn live and from session replay", async ({ page 
   await running.waitForOxExit(replayPID);
 });
 
+test("runs file and shell tools locally through visible permissions", async ({ page }) => {
+  const running = harness;
+  if (!running) throw new Error("browser harness did not start");
+  const prompt = "Run the executor workflow";
+  const answer = "Executor workflow complete.";
+  await running.scriptExecutorWorkflow(prompt, answer);
+
+  await page.getByTitle("ACP Traffic Monitor").click();
+  await page.getByPlaceholder("/absolute/path/on/agent").fill(running.workspace);
+  await page.getByRole("button", { name: "New Session" }).click();
+  await expect(page.getByPlaceholder(/Type your message/)).toBeEnabled();
+
+  await page.getByPlaceholder(/Type your message/).fill(prompt);
+  await page.getByRole("button", { name: "Send" }).click();
+
+  const permission = page.locator(".permission-dialog");
+  await expect(permission.getByRole("heading", { name: "Permission Required" })).toBeVisible();
+  await expect(permission.locator(".tool-title")).toHaveText("edit_file");
+  await permission.getByRole("button", { name: "Allow once" }).click();
+  await expect(permission.locator(".tool-title")).toHaveText("shell");
+  await permission.getByRole("button", { name: "Allow once" }).click();
+
+  await expect(page.locator(".tool-call-inline.tool-completed .tool-name")).toHaveText([
+    "read_file",
+    "edit_file",
+    "shell",
+  ]);
+  await expect(page.getByText(answer, { exact: true })).toBeVisible();
+  await expect(page.getByPlaceholder(/Type your message/)).toBeEnabled();
+  expect(await running.readWorkspaceFile("executor-fixture.txt")).toBe("after\n");
+  expect(await running.readWorkspaceFile("executor-marker.txt")).toBe("shell-output");
+
+  const initialize = await trafficPayloads(page, "out", "initialize");
+  expect(initialize[0].params.clientCapabilities).toEqual({
+    fs: { readTextFile: false, writeTextFile: false },
+  });
+  await expect(page.locator(".traffic-monitor .entry.in").filter({
+    hasText: /fs\/(read|write)_text_file|terminal\//,
+  })).toHaveCount(0);
+  expect(await trafficPayloads(page, "in", "session/request_permission")).toHaveLength(2);
+});
+
 test("surfaces protocol errors and confines Ox logs to stderr", async ({ page }) => {
   const running = harness;
   if (!running) throw new Error("browser harness did not start");

@@ -195,6 +195,42 @@ export class BrowserHarness {
     ]);
   }
 
+  async scriptExecutorWorkflow(prompt: string, answer: string): Promise<void> {
+    const path = "executor-fixture.txt";
+    const marker = "executor-marker.txt";
+    const command = `printf shell-output | tee ${marker}`;
+    await writeFile(join(this.workspace, path), "before\n");
+    this.queue(prompt, [
+      reasoningDelta("I will run the requested workflow."),
+      toolCallDelta(0, "browser-executor-read", "read_file", JSON.stringify({ path })),
+      finishDelta("tool_calls"),
+    ]);
+    this.queue("before\n", [
+      toolCallDelta(0, "browser-executor-edit", "edit_file", JSON.stringify({
+        path,
+        old_string: "before",
+        new_string: "after",
+      })),
+      finishDelta("tool_calls"),
+    ]);
+    this.queue(`Edited ${path} (1 replacement(s))`, [
+      toolCallDelta(0, "browser-executor-shell", "shell", JSON.stringify({ command })),
+      finishDelta("tool_calls"),
+    ]);
+    this.queue("exit code: 0\nshell-output", [
+      textDelta(answer),
+      finishDelta(),
+    ]);
+  }
+
+  async readWorkspaceFile(path: string): Promise<string> {
+    const absolute = resolve(this.workspace, path);
+    if (absolute !== this.workspace && !absolute.startsWith(this.workspace + sep)) {
+      throw new Error(`workspace fixture path escapes: ${path}`);
+    }
+    return readFile(absolute, "utf8");
+  }
+
   async open(page: Page): Promise<void> {
     await page.addInitScript((websocketURL) => {
       localStorage.clear();

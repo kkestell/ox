@@ -125,83 +125,13 @@ accounting.
 - Do not introduce Nu's provider framework or a multi-provider abstraction
   before Ox has a second provider.
 
-## Most recently completed: client interoperability baseline
+## Most recently completed: client-delegated tools
 
-Ox now proves its ACP lifecycle, visible updates, replay, errors, and stdout
-isolation against the pinned ACP UI release, stdio bridge, and ACP v1 schema.
+Ox now delegates file and shell tools to capable ACP clients, retains local
+fallbacks, and proves both executors have the same model-visible and durable
+behavior.
 
-## Current milestone: client-delegated tools
-
-Ox runs file and shell tools through the ACP client when the client advertises
-the filesystem or terminal capability, and keeps its local executor when it does
-not. Workspace confinement, read evidence, permission, and the durable record
-stay in Ox whichever executor runs.
-
-The pinned browser client advertises neither capability. The browser suite
-proves the local path, and `internal/e2e` proves delegation with a client that
-advertises it.
-
-### Delegated filesystem
-
-**Build**
-
-- Read model-facing files through `fs/read_text_file` when the client advertises
-  `fs.readTextFile`, and write and edit through `fs/write_text_file` when it
-  advertises `fs.writeTextFile`.
-- Resolve and confine the path, check read evidence, and request permission in
-  Ox before the client call. Keep the local file tools for clients without the
-  capability.
-
-**Gates**
-
-- With the capability advertised, a read, a write, and an exact edit reach the
-  client with absolute paths inside the session root, and Ox opens no local file
-  for that operation.
-- A path that escapes the root, a write without read evidence, and a refused
-  permission each fail before any client call.
-- A client error for a missing or unreadable file becomes a failed tool result
-  the model sees, and the turn continues.
-- Without the capability, the local file tools and their existing tests are
-  unchanged.
-
-### Delegated terminal
-
-**Build**
-
-- Run shell commands through `terminal/create`, `terminal/output`,
-  `terminal/wait_for_exit`, `terminal/kill`, and `terminal/release` when the
-  client advertises `terminal`.
-- Keep shell permission and reusable rule grants in Ox, and keep the local
-  process-group executor for clients without the capability.
-
-**Gates**
-
-- Every shell call creates exactly one terminal and releases it exactly once,
-  whether the command exits, fails to start, or is cancelled.
-- Cancelling the turn kills the terminal before releasing it, records the tool
-  call as cancelled, and leaves the session replayable.
-- The exit code or signal and the truncation state reach the model, and output
-  is bounded through the terminal's byte limit.
-- A client error from any terminal method fails that tool call rather than the
-  turn, and the terminal is still released.
-
-### Executor conformance
-
-**Build**
-
-- Extend the browser suite with read, edit, and shell workflows, including a
-  permission request answered through the client.
-- Extend `internal/e2e` with a client that advertises the filesystem and
-  terminal capabilities.
-
-**Gates**
-
-- The pinned browser client completes read, edit, and shell workflows through
-  the local executor and renders the permission request.
-- The same workflows pass in `internal/e2e` with delegation enabled, and the
-  durable record and `session/load` replay are identical whichever executor ran.
-
-## Milestone: durable session completion
+## Current milestone: durable session completion
 
 Every durable record already carries a monotonic sequence number that loading
 validates, and an unfinished turn is closed as interrupted on load. This
