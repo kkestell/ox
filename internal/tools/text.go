@@ -2,7 +2,10 @@ package tools
 
 import (
 	"bytes"
+	"context"
 	"strings"
+
+	"github.com/kkestell/ox/internal/workspace"
 )
 
 var utf8BOM = []byte{0xef, 0xbb, 0xbf}
@@ -62,4 +65,21 @@ func restoreText(content string, state textState) []byte {
 
 func lineCount(content string) int {
 	return len(splitLines(convertEnding(content, "\n")))
+}
+
+func acquireText(
+	ctx context.Context,
+	files *workspace.Workspace,
+	path string,
+	absolute string,
+	read func(context.Context, string, *int, *int) (string, error),
+) ([]byte, error) {
+	if read == nil {
+		return files.ReadFile(path)
+	}
+	content, err := read(ctx, absolute, nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	return []byte(content), nil
 }

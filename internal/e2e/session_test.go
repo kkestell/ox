@@ -21,7 +21,19 @@ func startSession(t *testing.T, options ...startOption) (*process, string) {
 
 func initialize(t *testing.T, child *process) {
 	t.Helper()
-	child.request("initialize", acp.InitializeRequest{ProtocolVersion: acp.ProtocolVersion})
+	initializeWithCapabilities(t, child, nil)
+}
+
+func initializeWithCapabilities(
+	t *testing.T,
+	child *process,
+	capabilities *acp.ClientCapabilities,
+) {
+	t.Helper()
+	child.request("initialize", acp.InitializeRequest{
+		ProtocolVersion:    acp.ProtocolVersion,
+		ClientCapabilities: capabilities,
+	})
 }
 
 func newSessionRequest(cwd string) acp.NewSessionRequest {

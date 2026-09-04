@@ -68,36 +68,36 @@ func executeEdit(ctx context.Context, invocation agent.Invocation) (string, erro
 	if !ok {
 		return "", fmt.Errorf("`%s` is outside the workspace", path)
 	}
+	if invocation.FileSystem.WriteTextFile != nil {
+		return executeDelegatedEdit(
+			ctx,
+			invocation,
+			files,
+			key,
+			path,
+			oldString,
+			newString,
+			replaceAll,
+		)
+	}
+	return executeLocalEdit(invocation, files, key, path, oldString, newString, replaceAll)
+}
 
+func executeLocalEdit(
+	invocation agent.Invocation,
+	files *workspace.Workspace,
+	key string,
+	path string,
+	oldString string,
+	newString string,
+	replaceAll bool,
+) (string, error) {
 	var written []byte
 	replacements := 0
-	err = files.Edit(path, func(current []byte) ([]byte, error) {
-		if !utf8.Valid(current) {
-			return nil, fmt.Errorf("cannot edit `%s`: file is not valid UTF-8", path)
-		}
-		body, state := inspectText(current)
-		body = convertEnding(body, state.ending)
-		oldText := convertEnding(oldString, state.ending)
-		newText := convertEnding(newString, state.ending)
-		if oldText == newText {
-			return nil, fmt.Errorf("`old_string` and `new_string` must be different")
-		}
-		matches := matchSites(body, oldText)
-		if len(matches) == 0 {
-			return nil, missingMatch(path, body, oldText)
-		}
-		if !replaceAll && len(matches) != 1 {
-			return nil, ambiguousMatch(path, body, matches)
-		}
-		if replaceAll {
-			replacements = strings.Count(body, oldText)
-			body = strings.ReplaceAll(body, oldText, newText)
-		} else {
-			replacements = 1
-			body = strings.Replace(body, oldText, newText, 1)
-		}
-		written = restoreText(body, state)
-		return written, nil
+	err := files.Edit(path, func(current []byte) ([]byte, error) {
+		var err error
+		written, replacements, err = replaceExact(path, current, oldString, newString, replaceAll)
+		return written, err
 	})
 	if err != nil && !workspace.MutationCommitted(err) {
 		return "", err
@@ -110,6 +110,68 @@ func executeEdit(ctx context.Context, invocation agent.Invocation) (string, erro
 		fmt.Sprintf("Edited %s (%d replacement(s))", path, replacements),
 		err,
 	), nil
+}
+
+func executeDelegatedEdit(
+	ctx context.Context,
+	invocation agent.Invocation,
+	files *workspace.Workspace,
+	key string,
+	path string,
+	oldString string,
+	newString string,
+	replaceAll bool,
+) (string, error) {
+	absolute, err := workspace.NewWorkspace(invocation.Root).Resolve(path)
+	if err != nil {
+		return "", err
+	}
+	current, err := acquireText(ctx, files, path, absolute, invocation.FileSystem.ReadTextFile)
+	if err != nil {
+		return "", err
+	}
+	written, replacements, err := replaceExact(path, current, oldString, newString, replaceAll)
+	if err != nil {
+		return "", err
+	}
+	if err := invocation.FileSystem.WriteTextFile(ctx, absolute, string(written)); err != nil {
+		return "", err
+	}
+	if invocation.FileReads != nil {
+		sum := sha256.Sum256(written)
+		invocation.FileReads.Record(key, hex.EncodeToString(sum[:]))
+	}
+	return fmt.Sprintf("Edited %s (%d replacement(s))", path, replacements), nil
+}
+
+func replaceExact(
+	path string,
+	current []byte,
+	oldString string,
+	newString string,
+	replaceAll bool,
+) ([]byte, int, error) {
+	if !utf8.Valid(current) {
+		return nil, 0, fmt.Errorf("cannot edit `%s`: file is not valid UTF-8", path)
+	}
+	body, state := inspectText(current)
+	body = convertEnding(body, state.ending)
+	oldText := convertEnding(oldString, state.ending)
+	newText := convertEnding(newString, state.ending)
+	if oldText == newText {
+		return nil, 0, fmt.Errorf("`old_string` and `new_string` must be different")
+	}
+	matches := matchSites(body, oldText)
+	if len(matches) == 0 {
+		return nil, 0, missingMatch(path, body, oldText)
+	}
+	if !replaceAll && len(matches) != 1 {
+		return nil, 0, ambiguousMatch(path, body, matches)
+	}
+	if replaceAll {
+		return restoreText(strings.ReplaceAll(body, oldText, newText), state), len(matches), nil
+	}
+	return restoreText(strings.Replace(body, oldText, newText, 1), state), 1, nil
 }
 
 func matchSites(content, oldText string) []int {

@@ -44,6 +44,38 @@ func (r InitializeRequest) Validate() error {
 	return nil
 }
 
+func (r ReadTextFileRequest) Validate() error {
+	if r.SessionID == "" {
+		return errors.New("sessionId is required")
+	}
+	if r.Path == "" {
+		return errors.New("path is required")
+	}
+	if !filepath.IsAbs(r.Path) {
+		return errors.New("path must be absolute")
+	}
+	if r.Line != nil && *r.Line < 1 {
+		return errors.New("line must be positive")
+	}
+	if r.Limit != nil && *r.Limit < 1 {
+		return errors.New("limit must be positive")
+	}
+	return nil
+}
+
+func (r WriteTextFileRequest) Validate() error {
+	if r.SessionID == "" {
+		return errors.New("sessionId is required")
+	}
+	if r.Path == "" {
+		return errors.New("path is required")
+	}
+	if !filepath.IsAbs(r.Path) {
+		return errors.New("path must be absolute")
+	}
+	return nil
+}
+
 func (r AuthenticateRequest) Validate() error {
 	if r.MethodID == "" {
 		return errors.New("methodId is required")

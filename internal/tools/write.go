@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"os"
 	"unicode/utf8"
 
 	"github.com/kkestell/ox/internal/agent"
@@ -53,10 +54,22 @@ func executeWrite(ctx context.Context, invocation agent.Invocation) (string, err
 	if !ok {
 		return "", fmt.Errorf("`%s` is outside the workspace", path)
 	}
+	if invocation.FileSystem.WriteTextFile != nil {
+		return executeDelegatedWrite(ctx, invocation, files, key, path, content)
+	}
+	return executeLocalWrite(invocation, files, key, path, content)
+}
 
+func executeLocalWrite(
+	invocation agent.Invocation,
+	files *workspace.Workspace,
+	key string,
+	path string,
+	content string,
+) (string, error) {
 	var written []byte
 	var previousLines int
-	err = files.Edit(path, func(current []byte) ([]byte, error) {
+	err := files.Edit(path, func(current []byte) ([]byte, error) {
 		if !utf8.Valid(current) {
 			return nil, fmt.Errorf("cannot overwrite `%s`: file is not valid UTF-8", path)
 		}
@@ -104,6 +117,73 @@ func executeWrite(ctx context.Context, invocation agent.Invocation) (string, err
 	return mutationResult(fmt.Sprintf(
 		"Wrote %s (%d lines, was %d)", path, lineCount(string(written)), previousLines,
 	), err), nil
+}
+
+func executeDelegatedWrite(
+	ctx context.Context,
+	invocation agent.Invocation,
+	files *workspace.Workspace,
+	key string,
+	path string,
+	content string,
+) (string, error) {
+	absolute, err := workspace.NewWorkspace(invocation.Root).Resolve(path)
+	if err != nil {
+		return "", err
+	}
+	info, statErr := os.Stat(absolute)
+	created := errors.Is(statErr, fs.ErrNotExist)
+	if statErr != nil && !created {
+		return "", fmt.Errorf("cannot access `%s`", path)
+	}
+	if statErr == nil && !info.Mode().IsRegular() {
+		return "", fmt.Errorf("cannot write `%s`: not a regular file", path)
+	}
+
+	written := []byte(content)
+	previousLines := 0
+	if !created {
+		if invocation.FileReads == nil {
+			return "", fmt.Errorf("cannot overwrite `%s`: read_file has not read its current contents", path)
+		}
+		want, read := invocation.FileReads.Hash(key)
+		if !read {
+			return "", fmt.Errorf(
+				"cannot overwrite `%s`: read_file has not read its current contents; read it first",
+				path,
+			)
+		}
+		current, err := acquireText(ctx, files, path, absolute, invocation.FileSystem.ReadTextFile)
+		if err != nil {
+			return "", err
+		}
+		if !utf8.Valid(current) {
+			return "", fmt.Errorf("cannot overwrite `%s`: file is not valid UTF-8", path)
+		}
+		sum := sha256.Sum256(current)
+		if want != hex.EncodeToString(sum[:]) {
+			return "", fmt.Errorf(
+				"cannot overwrite `%s`: the file changed since read_file read it; read it again",
+				path,
+			)
+		}
+		body, state := inspectText(current)
+		previousLines = lineCount(body)
+		written = restoreText(convertEnding(content, state.ending), state)
+	}
+	if err := invocation.FileSystem.WriteTextFile(ctx, absolute, string(written)); err != nil {
+		return "", err
+	}
+	if invocation.FileReads != nil {
+		sum := sha256.Sum256(written)
+		invocation.FileReads.Record(key, hex.EncodeToString(sum[:]))
+	}
+	if created {
+		return fmt.Sprintf("Created %s (%d lines)", path, lineCount(content)), nil
+	}
+	return fmt.Sprintf(
+		"Wrote %s (%d lines, was %d)", path, lineCount(string(written)), previousLines,
+	), nil
 }
 
 func mutationResult(result string, err error) string {

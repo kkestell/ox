@@ -12,6 +12,8 @@ const (
 	MetaOutcome                    = "kkestell.ox/outcome"
 	MetaParentToolCallID           = "kkestell.ox/parentToolCallId"
 	MetaSubagent                   = "kkestell.ox/subagent"
+	MethodFSReadTextFile           = "fs/read_text_file"
+	MethodFSWriteTextFile          = "fs/write_text_file"
 	MethodSessionRequestPermission = "session/request_permission"
 )
 
@@ -90,6 +92,30 @@ type InitializeResponse struct {
 	AuthMethods       []AuthMethod       `json:"authMethods,omitempty"`
 	AgentInfo         *Implementation    `json:"agentInfo,omitempty"`
 	Meta              Metadata           `json:"_meta,omitempty"`
+}
+
+type ReadTextFileRequest struct {
+	SessionID string   `json:"sessionId"`
+	Path      string   `json:"path"`
+	Line      *int     `json:"line,omitempty"`
+	Limit     *int     `json:"limit,omitempty"`
+	Meta      Metadata `json:"_meta,omitempty"`
+}
+
+type ReadTextFileResponse struct {
+	Content string   `json:"content"`
+	Meta    Metadata `json:"_meta,omitempty"`
+}
+
+type WriteTextFileRequest struct {
+	SessionID string   `json:"sessionId"`
+	Path      string   `json:"path"`
+	Content   string   `json:"content"`
+	Meta      Metadata `json:"_meta,omitempty"`
+}
+
+type WriteTextFileResponse struct {
+	Meta Metadata `json:"_meta,omitempty"`
 }
 
 type AuthMethod struct {

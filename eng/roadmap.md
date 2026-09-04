@@ -581,8 +581,8 @@ Requests and notifications Ox accepts from an ACP client:
 Requests Ox sends to an ACP client:
 
 - [x] `session/request_permission`
-- [ ] `fs/read_text_file`
-- [ ] `fs/write_text_file`
+- [x] `fs/read_text_file`
+- [x] `fs/write_text_file`
 - [ ] `terminal/create`
 - [ ] `terminal/output`
 - [ ] `terminal/wait_for_exit`

@@ -61,6 +61,8 @@ type Agent struct {
 	primaryTools  toolSet
 	subagentTools toolSet
 	store         *fileStore
+	clientFSMu    sync.RWMutex
+	clientFS      acp.FileSystemCapabilities
 	authMu        sync.Mutex
 	rejectedKey   string
 	rejectionText string
@@ -168,6 +170,13 @@ func (a *Agent) Initialize(
 		return acp.InitializeResponse{}, jrpc2.Errorf(jrpc2.InvalidParams, "%v", err)
 	}
 	a.logger.Info("initializing client", "requested_protocol_version", request.ProtocolVersion)
+
+	a.clientFSMu.Lock()
+	a.clientFS = acp.FileSystemCapabilities{}
+	if request.ClientCapabilities != nil && request.ClientCapabilities.FS != nil {
+		a.clientFS = *request.ClientCapabilities.FS
+	}
+	a.clientFSMu.Unlock()
 
 	authMethods := []acp.AuthMethod{{
 		ID:          openRouterAuthMethodID,
@@ -871,6 +880,7 @@ func (a *Agent) Prompt(
 		return jrpc2.ServerFromContext(ctx).Notify(ctx, "session/update", notification)
 	})
 	server := jrpc2.ServerFromContext(ctx)
+	fileSystem := a.clientFileSystem(server, value.id)
 	requestPermission := func(
 		requestCtx context.Context,
 		request acp.RequestPermissionRequest,
@@ -907,7 +917,7 @@ func (a *Agent) Prompt(
 	events := make(chan event)
 	outcome := make(chan loopOutcome, 1)
 	go func() {
-		outcome <- a.run(runCtx, value, active, requestPermission, events)
+		outcome <- a.run(runCtx, value, active, requestPermission, fileSystem, events)
 		close(events)
 	}()
 
@@ -959,6 +969,60 @@ func (a *Agent) Prompt(
 		"stop_reason", result.response.StopReason,
 	)
 	return result.response, nil
+}
+
+func (a *Agent) clientFileSystem(server *jrpc2.Server, sessionID string) ClientFileSystem {
+	a.clientFSMu.RLock()
+	capabilities := a.clientFS
+	a.clientFSMu.RUnlock()
+
+	var fileSystem ClientFileSystem
+	if capabilities.ReadTextFile {
+		fileSystem.ReadTextFile = func(
+			ctx context.Context,
+			path string,
+			line *int,
+			limit *int,
+		) (string, error) {
+			request := acp.ReadTextFileRequest{
+				SessionID: sessionID,
+				Path:      path,
+				Line:      line,
+				Limit:     limit,
+			}
+			if err := request.Validate(); err != nil {
+				return "", fmt.Errorf("validate %s request: %w", acp.MethodFSReadTextFile, err)
+			}
+			response, err := server.Callback(ctx, acp.MethodFSReadTextFile, request)
+			if err != nil {
+				return "", err
+			}
+			var result acp.ReadTextFileResponse
+			if err := response.UnmarshalResult(&result); err != nil {
+				return "", err
+			}
+			return result.Content, nil
+		}
+	}
+	if capabilities.WriteTextFile {
+		fileSystem.WriteTextFile = func(ctx context.Context, path, content string) error {
+			request := acp.WriteTextFileRequest{
+				SessionID: sessionID,
+				Path:      path,
+				Content:   content,
+			}
+			if err := request.Validate(); err != nil {
+				return fmt.Errorf("validate %s request: %w", acp.MethodFSWriteTextFile, err)
+			}
+			response, err := server.Callback(ctx, acp.MethodFSWriteTextFile, request)
+			if err != nil {
+				return err
+			}
+			var result acp.WriteTextFileResponse
+			return response.UnmarshalResult(&result)
+		}
+	}
+	return fileSystem
 }
 
 func (a *Agent) adapterFailed(sessionID string, active *activeTurn, err error) error {

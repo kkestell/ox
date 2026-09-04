@@ -45,9 +45,15 @@ type Invocation struct {
 	SpillDir    string
 	CallID      string
 	FileReads   FileReads
+	FileSystem  ClientFileSystem
 	Delegate    func(context.Context, string) (string, error)
 	Emit        func(string)
 	ReportSpill func(string)
+}
+
+type ClientFileSystem struct {
+	ReadTextFile  func(context.Context, string, *int, *int) (string, error)
+	WriteTextFile func(context.Context, string, string) error
 }
 
 type FileReads interface {

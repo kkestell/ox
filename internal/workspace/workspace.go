@@ -100,6 +100,30 @@ func (w *Workspace) ReadFile(path string) ([]byte, error) {
 	return data, nil
 }
 
+// Resolve returns the canonical absolute path selected by the workspace's
+// readable roots without opening the target file.
+func (w *Workspace) Resolve(path string) (string, error) {
+	dir, name, ok := w.locate(path, w.readRoots())
+	if !ok {
+		return "", fmt.Errorf("`%s` is outside the workspace", path)
+	}
+	resolved, err := resolveExisting(filepath.Join(dir, name))
+	if err != nil {
+		return "", accessError(err, path)
+	}
+	for _, allowed := range w.readRoots() {
+		root, err := resolveExisting(allowed)
+		if err != nil {
+			continue
+		}
+		relative, err := filepath.Rel(root, resolved)
+		if err == nil && !escapes(relative) {
+			return resolved, nil
+		}
+	}
+	return "", fmt.Errorf("`%s` is outside the workspace", path)
+}
+
 func (w *Workspace) WriteFile(path string, data []byte) (bool, error) {
 	key, ok := w.Key(path)
 	if !ok {

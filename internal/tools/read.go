@@ -64,9 +64,23 @@ func executeRead(ctx context.Context, invocation agent.Invocation) (string, erro
 	}
 
 	files := workspace.NewWorkspace(invocation.Root).WithReadable(invocation.SpillDir)
-	raw, err := files.ReadFile(path)
-	if err != nil {
-		return "", err
+	var raw []byte
+	if invocation.FileSystem.ReadTextFile != nil {
+		absolute, err := files.Resolve(path)
+		if err != nil {
+			return "", err
+		}
+		content, err := invocation.FileSystem.ReadTextFile(ctx, absolute, nil, nil)
+		if err != nil {
+			return "", err
+		}
+		raw = []byte(content)
+	} else {
+		var err error
+		raw, err = files.ReadFile(path)
+		if err != nil {
+			return "", err
+		}
 	}
 	if err := ctx.Err(); err != nil {
 		return "", err

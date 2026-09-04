@@ -323,6 +323,18 @@ func (p *process) respond(request message, result any) {
 	}{JSONRPC: "2.0", ID: request.ID, Result: result})
 }
 
+func (p *process) respondError(request message, code int, message string) {
+	p.t.Helper()
+	if request.Method == "" || len(request.ID) == 0 {
+		p.t.Fatalf("cannot respond to non-request: %s", request.raw)
+	}
+	p.writeJSON(struct {
+		JSONRPC string          `json:"jsonrpc"`
+		ID      json.RawMessage `json:"id"`
+		Error   rpcError        `json:"error"`
+	}{JSONRPC: "2.0", ID: request.ID, Error: rpcError{Code: code, Message: message}})
+}
+
 func (p *process) send(line string) {
 	p.t.Helper()
 	if _, err := io.WriteString(p.stdin, strings.TrimSuffix(line, "\n")+"\n"); err != nil {

@@ -1693,6 +1693,283 @@ func TestFileMutationToolsRequireApprovalAndFreshReadsPerActivation(t *testing.T
 	model.assertConsumed(t)
 }
 
+func TestDelegatedFilesystemPreservesToolSemanticsAndContinuesAfterClientError(t *testing.T) {
+	root := t.TempDir()
+	localPath := filepath.Join(root, "notes.txt")
+	if err := os.WriteFile(localPath, []byte("local contents\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	absolutePath, err := filepath.EvalSymlinks(localPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	missingPath := filepath.Join(filepath.Dir(absolutePath), "missing.txt")
+	const initial = "\ufeffone\r\ntwo\r\nthree"
+	clientFiles := map[string]string{absolutePath: initial}
+
+	model := &scriptedModel{scripts: []modelScript{
+		func(context.Context, openrouter.Request, func(openrouter.Delta)) (*openrouter.Completion, error) {
+			return &openrouter.Completion{
+				ToolCalls: []openrouter.ToolCall{modelToolCall(
+					"read-delegated",
+					"read_file",
+					`{"path":"notes.txt","offset":2,"limit":1}`,
+				)},
+				FinishReason: "tool_calls",
+			}, nil
+		},
+		func(_ context.Context, request openrouter.Request, _ func(openrouter.Delta)) (*openrouter.Completion, error) {
+			messages, err := conversation(request)
+			if err != nil {
+				return nil, err
+			}
+			want := "two\n[lines 2-2 of 3; pass offset/limit to read more]"
+			if got := messages[len(messages)-1].Content[0].Text; got != want {
+				return nil, fmt.Errorf("delegated read result = %q, want %q", got, want)
+			}
+			return &openrouter.Completion{
+				ToolCalls: []openrouter.ToolCall{modelToolCall(
+					"write-delegated",
+					"write_file",
+					`{"path":"notes.txt","content":"alpha\nbeta\n"}`,
+				)},
+				FinishReason: "tool_calls",
+			}, nil
+		},
+		func(_ context.Context, request openrouter.Request, _ func(openrouter.Delta)) (*openrouter.Completion, error) {
+			messages, err := conversation(request)
+			if err != nil {
+				return nil, err
+			}
+			if got := messages[len(messages)-1].Content[0].Text; !strings.Contains(got, "Wrote notes.txt") {
+				return nil, fmt.Errorf("delegated write result = %q", got)
+			}
+			return &openrouter.Completion{
+				ToolCalls: []openrouter.ToolCall{modelToolCall(
+					"edit-delegated",
+					"edit_file",
+					`{"path":"notes.txt","old_string":"beta","new_string":"BETA"}`,
+				)},
+				FinishReason: "tool_calls",
+			}, nil
+		},
+		func(_ context.Context, request openrouter.Request, _ func(openrouter.Delta)) (*openrouter.Completion, error) {
+			messages, err := conversation(request)
+			if err != nil {
+				return nil, err
+			}
+			if got := messages[len(messages)-1].Content[0].Text; !strings.Contains(got, "Edited notes.txt") {
+				return nil, fmt.Errorf("delegated edit result = %q", got)
+			}
+			return &openrouter.Completion{
+				ToolCalls: []openrouter.ToolCall{modelToolCall(
+					"read-error",
+					"read_file",
+					`{"path":"missing.txt"}`,
+				)},
+				FinishReason: "tool_calls",
+			}, nil
+		},
+		func(_ context.Context, request openrouter.Request, _ func(openrouter.Delta)) (*openrouter.Completion, error) {
+			messages, err := conversation(request)
+			if err != nil {
+				return nil, err
+			}
+			if got := messages[len(messages)-1].Content[0].Text; !strings.Contains(got, "missing delegated file") {
+				return nil, fmt.Errorf("delegated read error result = %q", got)
+			}
+			return completion("continued after delegated error"), nil
+		},
+	}}
+
+	var sessionID string
+	var callbackMu sync.Mutex
+	var filesystemMethods []string
+	harness := newHarnessWithCallback(t, agent.Config{
+		ModelOverride: "test/model",
+		Client:        model,
+		Tools:         oxtools.All(),
+	}, func(_ context.Context, request *jrpc2.Request) (any, error) {
+		switch request.Method() {
+		case acp.MethodSessionRequestPermission:
+			return acp.RequestPermissionResponse{Outcome: acp.RequestPermissionOutcome{
+				Outcome:  "selected",
+				OptionID: "allow_once",
+			}}, nil
+		case acp.MethodFSReadTextFile:
+			var read acp.ReadTextFileRequest
+			if err := request.UnmarshalParams(&read); err != nil {
+				return nil, err
+			}
+			if read.SessionID != sessionID || !filepath.IsAbs(read.Path) ||
+				read.Line != nil || read.Limit != nil {
+				return nil, fmt.Errorf("delegated read request = %#v", read)
+			}
+			callbackMu.Lock()
+			filesystemMethods = append(filesystemMethods, request.Method())
+			content, ok := clientFiles[read.Path]
+			callbackMu.Unlock()
+			if !ok {
+				return nil, jrpc2.Errorf(jrpc2.InvalidParams, "missing delegated file")
+			}
+			return acp.ReadTextFileResponse{Content: content}, nil
+		case acp.MethodFSWriteTextFile:
+			var write acp.WriteTextFileRequest
+			if err := request.UnmarshalParams(&write); err != nil {
+				return nil, err
+			}
+			if write.SessionID != sessionID || write.Path != absolutePath {
+				return nil, fmt.Errorf("delegated write request = %#v", write)
+			}
+			callbackMu.Lock()
+			filesystemMethods = append(filesystemMethods, request.Method())
+			clientFiles[write.Path] = write.Content
+			callbackMu.Unlock()
+			return acp.WriteTextFileResponse{}, nil
+		default:
+			return nil, jrpc2.Errorf(jrpc2.MethodNotFound, "unknown callback")
+		}
+	})
+	harness.initialize(t, &acp.ClientCapabilities{FS: &acp.FileSystemCapabilities{
+		ReadTextFile:  true,
+		WriteTextFile: true,
+	}})
+	sessionID = harness.newSessionIn(t, root, nil)
+	harness.prompt(t, sessionID, "use delegated files")
+
+	if data, err := os.ReadFile(localPath); err != nil || string(data) != "local contents\n" {
+		t.Fatalf("local file = %q, %v", data, err)
+	}
+	callbackMu.Lock()
+	gotClient := clientFiles[absolutePath]
+	gotMethods := append([]string(nil), filesystemMethods...)
+	callbackMu.Unlock()
+	if want := "\ufeffalpha\r\nBETA"; gotClient != want {
+		t.Fatalf("delegated file = %q, want %q", gotClient, want)
+	}
+	wantMethods := []string{
+		acp.MethodFSReadTextFile,
+		acp.MethodFSReadTextFile,
+		acp.MethodFSWriteTextFile,
+		acp.MethodFSReadTextFile,
+		acp.MethodFSWriteTextFile,
+		acp.MethodFSReadTextFile,
+	}
+	if fmt.Sprint(gotMethods) != fmt.Sprint(wantMethods) {
+		t.Fatalf("filesystem methods = %v, want %v", gotMethods, wantMethods)
+	}
+	if missingPath == absolutePath {
+		t.Fatal("invalid test paths")
+	}
+	model.assertConsumed(t)
+}
+
+func TestFilesystemCapabilitiesSelectEachMethodIndependently(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		capability acp.FileSystemCapabilities
+		wantLocal  string
+		wantClient string
+		wantReads  int
+		wantWrites int
+	}{
+		{
+			name:       "delegated read and local write",
+			capability: acp.FileSystemCapabilities{ReadTextFile: true},
+			wantLocal:  "after\n",
+			wantClient: "before\n",
+			wantReads:  1,
+		},
+		{
+			name:       "local read and delegated write",
+			capability: acp.FileSystemCapabilities{WriteTextFile: true},
+			wantLocal:  "before\n",
+			wantClient: "after\n",
+			wantWrites: 1,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			path := filepath.Join(root, "notes.txt")
+			if err := os.WriteFile(path, []byte("before\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			absolute, err := filepath.EvalSymlinks(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			clientContent := "before\n"
+			model := &scriptedModel{scripts: []modelScript{
+				toolCompletionWithArguments("read", "read_file", `{"path":"notes.txt"}`),
+				toolCompletionWithArguments(
+					"write",
+					"write_file",
+					`{"path":"notes.txt","content":"after\n"}`,
+				),
+				func(context.Context, openrouter.Request, func(openrouter.Delta)) (*openrouter.Completion, error) {
+					return completion("done"), nil
+				},
+			}}
+			reads, writes := 0, 0
+			var sessionID string
+			harness := newHarnessWithCallback(t, agent.Config{
+				ModelOverride: "test/model",
+				Client:        model,
+				Tools:         oxtools.All(),
+			}, func(_ context.Context, request *jrpc2.Request) (any, error) {
+				switch request.Method() {
+				case acp.MethodSessionRequestPermission:
+					return acp.RequestPermissionResponse{Outcome: acp.RequestPermissionOutcome{
+						Outcome:  "selected",
+						OptionID: "allow_once",
+					}}, nil
+				case acp.MethodFSReadTextFile:
+					var read acp.ReadTextFileRequest
+					if err := request.UnmarshalParams(&read); err != nil {
+						return nil, err
+					}
+					if read.SessionID != sessionID || read.Path != absolute {
+						return nil, fmt.Errorf("read request = %#v", read)
+					}
+					reads++
+					return acp.ReadTextFileResponse{Content: clientContent}, nil
+				case acp.MethodFSWriteTextFile:
+					var write acp.WriteTextFileRequest
+					if err := request.UnmarshalParams(&write); err != nil {
+						return nil, err
+					}
+					if write.SessionID != sessionID || write.Path != absolute {
+						return nil, fmt.Errorf("write request = %#v", write)
+					}
+					writes++
+					clientContent = write.Content
+					return acp.WriteTextFileResponse{}, nil
+				default:
+					return nil, jrpc2.Errorf(jrpc2.MethodNotFound, "unknown callback")
+				}
+			})
+			harness.initialize(t, &acp.ClientCapabilities{FS: &test.capability})
+			sessionID = harness.newSessionIn(t, root, nil)
+			harness.prompt(t, sessionID, "read then write")
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(data) != test.wantLocal || clientContent != test.wantClient ||
+				reads != test.wantReads || writes != test.wantWrites {
+				t.Fatalf(
+					"local=%q client=%q reads=%d writes=%d",
+					data,
+					clientContent,
+					reads,
+					writes,
+				)
+			}
+			model.assertConsumed(t)
+		})
+	}
+}
+
 func TestRejectedFileMutationLeavesTheFileUntouched(t *testing.T) {
 	workspace := t.TempDir()
 	path := filepath.Join(workspace, "notes.txt")
@@ -2851,6 +3128,17 @@ func (h *agentHarness) callNewSession(cwd string, meta acp.Metadata) (string, er
 		Meta:       meta,
 	}, &response)
 	return response.SessionID, err
+}
+
+func (h *agentHarness) initialize(t *testing.T, capabilities *acp.ClientCapabilities) {
+	t.Helper()
+	var response acp.InitializeResponse
+	if err := h.local.Client.CallResult(t.Context(), "initialize", acp.InitializeRequest{
+		ProtocolVersion:    acp.ProtocolVersion,
+		ClientCapabilities: capabilities,
+	}, &response); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func (h *agentHarness) prompt(t *testing.T, sessionID, text string) acp.PromptResponse {

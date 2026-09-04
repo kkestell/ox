@@ -87,6 +87,103 @@ func TestSessionPayloadsUsePinnedWireShapes(t *testing.T) {
 	}
 }
 
+func TestFilesystemPayloadsUsePinnedWireShapes(t *testing.T) {
+	line, limit := 10, 50
+	tests := []struct {
+		name  string
+		value any
+		want  string
+	}{
+		{
+			name: "read request",
+			value: ReadTextFileRequest{
+				SessionID: "sess_abc123def456",
+				Path:      "/home/user/project/src/main.py",
+				Line:      &line,
+				Limit:     &limit,
+			},
+			want: `{"sessionId":"sess_abc123def456","path":"/home/user/project/src/main.py","line":10,"limit":50}`,
+		},
+		{
+			name: "read request without paging",
+			value: ReadTextFileRequest{
+				SessionID: "session-1",
+				Path:      "/workspace/empty.txt",
+			},
+			want: `{"sessionId":"session-1","path":"/workspace/empty.txt"}`,
+		},
+		{
+			name:  "empty read response",
+			value: ReadTextFileResponse{},
+			want:  `{"content":""}`,
+		},
+		{
+			name: "empty write request",
+			value: WriteTextFileRequest{
+				SessionID: "session-1",
+				Path:      "/workspace/empty.txt",
+				Content:   "",
+			},
+			want: `{"sessionId":"session-1","path":"/workspace/empty.txt","content":""}`,
+		},
+		{
+			name:  "empty write response",
+			value: WriteTextFileResponse{},
+			want:  `{}`,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			data, err := json.Marshal(test.value)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(data) != test.want {
+				t.Fatalf("payload = %s, want %s", data, test.want)
+			}
+		})
+	}
+}
+
+func TestFilesystemRequestsValidateOutboundFields(t *testing.T) {
+	one := 1
+	for _, test := range []struct {
+		name    string
+		request interface{ Validate() error }
+		valid   bool
+	}{
+		{
+			name: "read",
+			request: ReadTextFileRequest{
+				SessionID: "session-1",
+				Path:      "/workspace/file.txt",
+				Line:      &one,
+				Limit:     &one,
+			},
+			valid: true,
+		},
+		{name: "read missing session", request: ReadTextFileRequest{Path: "/workspace/file.txt"}},
+		{name: "read relative path", request: ReadTextFileRequest{SessionID: "session-1", Path: "file.txt"}},
+		{
+			name:    "write empty file",
+			request: WriteTextFileRequest{SessionID: "session-1", Path: "/workspace/file.txt"},
+			valid:   true,
+		},
+		{name: "write missing path", request: WriteTextFileRequest{SessionID: "session-1"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := test.request.Validate()
+			if test.valid && err != nil {
+				t.Fatal(err)
+			}
+			if !test.valid && err == nil {
+				t.Fatal("request validated unexpectedly")
+			}
+		})
+	}
+}
+
 func TestSessionUpdatesCarryExactDiscriminators(t *testing.T) {
 	updates := []struct {
 		value any

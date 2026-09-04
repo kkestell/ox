@@ -57,6 +57,35 @@ func TestCanonicalRequiresAnExistingDirectoryAndResolvesSymlinks(t *testing.T) {
 	}
 }
 
+func TestResolveReturnsCanonicalConfinedAbsolutePaths(t *testing.T) {
+	root := canonicalTempDir(t)
+	if err := os.MkdirAll(filepath.Join(root, "real"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("real", filepath.Join(root, "link")); err != nil {
+		t.Fatal(err)
+	}
+	files := NewWorkspace(root)
+
+	got, err := files.Resolve("link/missing.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(root, "real", "missing.txt")
+	if got != want {
+		t.Fatalf("resolved path = %q, want %q", got, want)
+	}
+
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(root, "escape")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := files.Resolve("escape/file.txt"); err == nil ||
+		!strings.Contains(err.Error(), "outside the workspace") {
+		t.Fatalf("escape error = %v", err)
+	}
+}
+
 func TestReadFileConfinesEveryEscapeRoute(t *testing.T) {
 	root := canonicalTempDir(t)
 	outside := canonicalTempDir(t)
