@@ -418,8 +418,8 @@ client-specific channel.
   entry points and flags, and the live checks take the credential from `.env`
   through a test entry point rather than through the shipped binary's
   environment.
-- `docs/settings.md`, `docs/acp-client.md`, and `eng/architecture.md` describe
-  the file and flags and name no environment variable.
+- `docs/settings.md`, `docs/zed.md`, and `eng/architecture.md` describe the file
+  and flags and name no environment variable.
 
 ### MCP servers
 
