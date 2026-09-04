@@ -222,6 +222,354 @@ func TestCancellingShellLeavesReplayableSession(t *testing.T) {
 	assertSessionLoadsWithToolHistory(t, options, session, cwd)
 }
 
+func TestPendingPermissionRecoversAcrossProcessRestart(t *testing.T) {
+	tests := []struct {
+		name          string
+		outcome       acp.RequestPermissionOutcome
+		wantContent   string
+		wantRequests  int
+		wantToolState acp.ToolCallStatus
+		priorDecision bool
+	}{
+		{
+			name: "allow",
+			outcome: acp.RequestPermissionOutcome{
+				Outcome: "selected", OptionID: "allow_once",
+			},
+			wantContent: "earlier\nrecovered\n", wantRequests: 2,
+			wantToolState: acp.ToolCallStatusCompleted,
+			priorDecision: true,
+		},
+		{
+			name: "reject",
+			outcome: acp.RequestPermissionOutcome{
+				Outcome: "selected", OptionID: "reject_once",
+			},
+			wantRequests: 2, wantToolState: acp.ToolCallStatusFailed,
+		},
+		{
+			name:         "cancel",
+			outcome:      acp.RequestPermissionOutcome{Outcome: "cancelled"},
+			wantRequests: 1, wantToolState: acp.ToolCallStatusFailed,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			dataDir := t.TempDir()
+			response := shellRecoveryResponse()
+			if test.priorDecision {
+				response = shellBatchRecoveryResponse()
+			}
+			responses := []string{response}
+			if test.wantRequests == 2 {
+				responses = append(responses, sse(evText("done"), evFinishReason("stop")))
+			}
+			model := startModel(t, responses...)
+			options := []startOption{
+				withModel(model),
+				withEnvironment("XDG_DATA_HOME", dataDir),
+			}
+
+			first, session := startSession(t, options...)
+			cwd := first.cwd
+			marker := filepath.Join(cwd, "recovered.txt")
+			_ = first.begin("session/prompt", acp.PromptRequest{
+				SessionID: session,
+				Prompt:    textPrompt("recover this permission"),
+			})
+			originalMessage := first.serverRequest()
+			if test.priorDecision {
+				_ = permissionRequest(t, originalMessage, "call-earlier")
+				first.respond(originalMessage, acp.RequestPermissionResponse{
+					Outcome: acp.RequestPermissionOutcome{
+						Outcome: "selected", OptionID: "allow_once",
+					},
+				})
+				originalMessage = first.serverRequest()
+			}
+			original := permissionRequest(t, originalMessage, "call-recovery")
+			first.kill()
+
+			second := start(t, options...)
+			initialize(t, second)
+			load := second.begin("session/load", acp.LoadSessionRequest{
+				SessionID: session, CWD: cwd, MCPServers: []json.RawMessage{},
+			})
+			reissuedMessage := second.serverRequest()
+			reissued := permissionRequest(t, reissuedMessage, "call-recovery")
+			if !reflect.DeepEqual(reissued, original) {
+				t.Fatalf("reissued permission changed:\nreissued = %#v\noriginal = %#v", reissued, original)
+			}
+			second.respond(reissuedMessage, acp.RequestPermissionResponse{
+				Outcome: test.outcome,
+			})
+			_ = second.result(second.await(load))
+			_ = updates(t, second, session)
+
+			content, err := os.ReadFile(marker)
+			if err != nil && !os.IsNotExist(err) {
+				t.Fatal(err)
+			}
+			if string(content) != test.wantContent {
+				t.Fatalf("recovered tool content = %q, want %q", content, test.wantContent)
+			}
+			if requests := model.requests(); len(requests) != test.wantRequests {
+				t.Fatalf("model requests = %d, want %d", len(requests), test.wantRequests)
+			}
+			assertPermissionGenerations(t, dataDir, session)
+
+			second.request("session/close", acp.CloseSessionRequest{SessionID: session})
+			second.stop()
+			third := start(t, options...)
+			initialize(t, third)
+			replayStart := len(third.received)
+			loadSession(t, third, session, cwd)
+			replay := receivedSessionUpdates(t, third, replayStart, session)
+			_ = updates(t, third, session)
+			assertRecoveredReplay(t, replay, test.wantToolState, test.priorDecision)
+		})
+	}
+}
+
+func TestRecoveredTurnKeepsItsFrozenConfiguration(t *testing.T) {
+	dataDir := t.TempDir()
+	model := startModel(t,
+		shellToolCallResponse("true"),
+		sse(evText("recovered"), evFinishReason("stop")),
+		sse(evText("next"), evFinishReason("stop")),
+	)
+	first, session := startSession(t,
+		withModel(model),
+		withEnvironment("XDG_DATA_HOME", dataDir),
+		withEnvironment("OX_MODEL", "old/model"),
+	)
+	cwd := first.cwd
+	_ = first.begin("session/prompt", acp.PromptRequest{
+		SessionID: session, Prompt: textPrompt("recover with old settings"),
+	})
+	_ = permissionRequest(t, first.serverRequest(), "call-shell")
+	first.kill()
+
+	second := start(t,
+		withModel(model),
+		withEnvironment("XDG_DATA_HOME", dataDir),
+		withEnvironment("OX_MODEL", "new/model"),
+	)
+	initialize(t, second)
+	load := second.begin("session/load", acp.LoadSessionRequest{
+		SessionID: session, CWD: cwd, MCPServers: []json.RawMessage{},
+	})
+	permission := second.serverRequest()
+	_ = permissionRequest(t, permission, "call-shell")
+	second.respond(permission, acp.RequestPermissionResponse{
+		Outcome: acp.RequestPermissionOutcome{
+			Outcome: "selected", OptionID: "allow_once",
+		},
+	})
+	_ = second.result(second.await(load))
+	_ = updates(t, second, session)
+	prompt(t, second, session, "use new settings")
+	_ = updates(t, second, session)
+
+	requests := model.requests()
+	if len(requests) != 3 {
+		t.Fatalf("model requests = %d, want 3", len(requests))
+	}
+	models := []string{requests[0].Model, requests[1].Model, requests[2].Model}
+	if !reflect.DeepEqual(models, []string{"old/model", "old/model", "new/model"}) {
+		t.Fatalf("model sequence = %v", models)
+	}
+}
+
+func TestRecoveryRequiresTheFrozenClientExecutor(t *testing.T) {
+	dataDir := t.TempDir()
+	model := startModel(t,
+		shellToolCallResponse("true"),
+		sse(evText("recovered"), evFinishReason("stop")),
+	)
+	options := []startOption{
+		withModel(model), withEnvironment("XDG_DATA_HOME", dataDir),
+	}
+	first := start(t, options...)
+	initializeWithCapabilities(t, first, &acp.ClientCapabilities{Terminal: true})
+	session := newSession(t, first, first.cwd)
+	cwd := first.cwd
+	_ = first.begin("session/prompt", acp.PromptRequest{
+		SessionID: session, Prompt: textPrompt("recover delegated execution"),
+	})
+	_ = permissionRequest(t, first.serverRequest(), "call-shell")
+	first.kill()
+
+	unsupported := start(t, options...)
+	initialize(t, unsupported)
+	failure := unsupported.requestError("session/load", acp.LoadSessionRequest{
+		SessionID: session, CWD: cwd, MCPServers: []json.RawMessage{},
+	})
+	if failure.Code != -32602 || !strings.Contains(failure.Message, "terminal capability") {
+		t.Fatalf("unsupported recovery error = %#v", failure)
+	}
+	unsupported.stop()
+
+	recovered := start(t, options...)
+	initializeWithCapabilities(t, recovered, &acp.ClientCapabilities{Terminal: true})
+	load := recovered.begin("session/load", acp.LoadSessionRequest{
+		SessionID: session, CWD: cwd, MCPServers: []json.RawMessage{},
+	})
+	permission := recovered.serverRequest()
+	_ = permissionRequest(t, permission, "call-shell")
+	recovered.respond(permission, acp.RequestPermissionResponse{
+		Outcome: acp.RequestPermissionOutcome{
+			Outcome: "selected", OptionID: "reject_once",
+		},
+	})
+	_ = recovered.result(recovered.await(load))
+	_ = updates(t, recovered, session)
+	if requests := model.requests(); len(requests) != 2 {
+		t.Fatalf("model requests = %d, want 2", len(requests))
+	}
+}
+
+func assertPermissionGenerations(t *testing.T, dataDir, session string) {
+	t.Helper()
+	content, err := os.ReadFile(filepath.Join(dataDir, "ox", "sessions", session+".jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var generations []uint64
+	for _, line := range strings.Split(strings.TrimSpace(string(content)), "\n") {
+		var record struct {
+			Type string          `json:"type"`
+			Data json.RawMessage `json:"data"`
+		}
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			t.Fatal(err)
+		}
+		switch record.Type {
+		case "permission_requested":
+			var value struct {
+				Pending struct {
+					CallID     string `json:"callId"`
+					Generation uint64 `json:"generation"`
+				} `json:"pending"`
+			}
+			if err := json.Unmarshal(record.Data, &value); err != nil {
+				t.Fatal(err)
+			}
+			if value.Pending.CallID == "call-recovery" {
+				generations = append(generations, value.Pending.Generation)
+			}
+		case "permission_reissued":
+			var value struct {
+				CallID     string `json:"callId"`
+				Generation uint64 `json:"generation"`
+			}
+			if err := json.Unmarshal(record.Data, &value); err != nil {
+				t.Fatal(err)
+			}
+			if value.CallID == "call-recovery" {
+				generations = append(generations, value.Generation)
+			}
+		}
+	}
+	if !reflect.DeepEqual(generations, []uint64{1, 2}) {
+		t.Fatalf("permission generations = %v, want [1 2]", generations)
+	}
+}
+
+func shellRecoveryResponse() string {
+	arguments, _ := json.Marshal(map[string]string{
+		"command": "printf 'recovered\\n' >> recovered.txt",
+	})
+	return sse(
+		evText("working"),
+		evToolCall(0, "call-recovery", "function", "shell", string(arguments)),
+		evFinishReason("tool_calls"),
+	)
+}
+
+func shellBatchRecoveryResponse() string {
+	earlier, _ := json.Marshal(map[string]string{
+		"command": "printf 'earlier\\n' >> recovered.txt",
+	})
+	recovered, _ := json.Marshal(map[string]string{
+		"command": "printf 'recovered\\n' >> recovered.txt",
+	})
+	return sse(
+		evText("working"),
+		evToolCall(0, "call-earlier", "function", "shell", string(earlier)),
+		evToolCall(1, "call-recovery", "function", "shell", string(recovered)),
+		evFinishReason("tool_calls"),
+	)
+}
+
+func permissionRequest(
+	t *testing.T,
+	request message,
+	callID string,
+) acp.RequestPermissionRequest {
+	t.Helper()
+	if request.Method != acp.MethodSessionRequestPermission {
+		t.Fatalf("callback method = %q, want permission", request.Method)
+	}
+	var permission acp.RequestPermissionRequest
+	if err := json.Unmarshal(request.Params, &permission); err != nil {
+		t.Fatal(err)
+	}
+	if permission.ToolCall.ToolCallID != callID {
+		t.Fatalf("permission call = %q, want %q", permission.ToolCall.ToolCallID, callID)
+	}
+	return permission
+}
+
+func assertRecoveredReplay(
+	t *testing.T,
+	updates []sessionNotification,
+	wantStatus acp.ToolCallStatus,
+	wantPrior bool,
+) {
+	t.Helper()
+	var messages, pending, outcomes, priorPending, priorOutcome int
+	for _, notification := range updates {
+		update := notification.Update
+		switch update.SessionUpdate {
+		case acp.SessionUpdateAgentMessageChunk:
+			if update.Content.Text == "working" {
+				messages++
+			}
+		case "tool_call":
+			if update.ToolCallID == "call-recovery" {
+				pending++
+			}
+			if update.ToolCallID == "call-earlier" {
+				priorPending++
+			}
+		case "tool_call_update":
+			if update.ToolCallID == "call-recovery" && update.Status == wantStatus {
+				outcomes++
+			}
+			if update.ToolCallID == "call-earlier" && update.Status == acp.ToolCallStatusCompleted {
+				priorOutcome++
+			}
+		}
+	}
+	if messages != 1 || pending != 1 || outcomes != 1 {
+		t.Fatalf(
+			"recovered replay counts = message %d, pending %d, outcome %d; want 1 each",
+			messages, pending, outcomes,
+		)
+	}
+	wantPriorCount := 0
+	if wantPrior {
+		wantPriorCount = 1
+	}
+	if priorPending != wantPriorCount || priorOutcome != wantPriorCount {
+		t.Fatalf(
+			"prior replay counts = pending %d, outcome %d; want %d each",
+			priorPending, priorOutcome, wantPriorCount,
+		)
+	}
+}
+
 func shellToolCallResponse(command string) string {
 	arguments, _ := json.Marshal(map[string]string{"command": command})
 	return sse(

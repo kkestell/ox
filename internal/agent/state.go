@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"time"
@@ -20,12 +21,16 @@ const (
 	recordVersion     = 1
 	checkpointVersion = 1
 
-	recordSessionCreated = "session_created"
-	recordConfigChanged  = "request_configuration_changed"
-	recordUserMessage    = "user_message"
-	recordModelExchange  = "completed_model_exchange"
-	recordTurnFinished   = "turn_finished"
-	recordCheckpoint     = "checkpoint"
+	recordSessionCreated  = "session_created"
+	recordConfigChanged   = "request_configuration_changed"
+	recordUserMessage     = "user_message"
+	recordExchangePaused  = "suspended_model_exchange"
+	recordPermissionOpen  = "permission_requested"
+	recordPermissionRetry = "permission_reissued"
+	recordPermissionDone  = "permission_decided"
+	recordModelExchange   = "completed_model_exchange"
+	recordTurnFinished    = "turn_finished"
+	recordCheckpoint      = "checkpoint"
 )
 
 type sessionRecord struct {
@@ -110,6 +115,52 @@ type modelExchangeRecord struct {
 	ToolResults      []storedToolResult    `json:"toolResults,omitempty"`
 }
 
+type suspendedModelExchangeRecord struct {
+	TurnID           string                     `json:"turnId"`
+	AnswerID         string                     `json:"answerId"`
+	ThoughtID        string                     `json:"thoughtId"`
+	Text             string                     `json:"text,omitempty"`
+	Reasoning        string                     `json:"reasoning,omitempty"`
+	ReasoningDetails [][]byte                   `json:"reasoningDetails,omitempty"`
+	FinishReason     string                     `json:"finishReason"`
+	Usage            *openrouter.Usage          `json:"usage,omitempty"`
+	ToolCalls        []openrouter.ToolCall      `json:"toolCalls"`
+	RequestCount     int                        `json:"requestCount"`
+	Decisions        []storedPermissionDecision `json:"decisions,omitempty"`
+	Pending          *pendingPermissionRecord   `json:"pending,omitempty"`
+}
+
+type storedPermissionDecision struct {
+	CallID   string           `json:"callId"`
+	Decision approvalDecision `json:"decision"`
+	Rule     string           `json:"rule,omitempty"`
+}
+
+type pendingPermissionRecord struct {
+	CallID     string                       `json:"callId"`
+	Generation uint64                       `json:"generation"`
+	Request    acp.RequestPermissionRequest `json:"request"`
+}
+
+type permissionRequestedRecord struct {
+	TurnID  string                  `json:"turnId"`
+	Pending pendingPermissionRecord `json:"pending"`
+}
+
+type permissionReissuedRecord struct {
+	TurnID     string `json:"turnId"`
+	CallID     string `json:"callId"`
+	Generation uint64 `json:"generation"`
+}
+
+type permissionDecidedRecord struct {
+	TurnID     string           `json:"turnId"`
+	CallID     string           `json:"callId"`
+	Generation uint64           `json:"generation"`
+	Decision   approvalDecision `json:"decision"`
+	Rule       string           `json:"rule,omitempty"`
+}
+
 type turnFinishedRecord struct {
 	TurnID     string         `json:"turnId"`
 	Kind       string         `json:"kind"`
@@ -163,6 +214,7 @@ type durableState struct {
 	toolCallIDs     map[string]struct{}
 	openTurn        string
 	openTurnHistory int
+	suspended       *suspendedModelExchangeRecord
 	title           string
 }
 
@@ -230,7 +282,8 @@ func validateRecordEnvelope(record sessionRecord, previous uint64) error {
 	}
 	switch record.Type {
 	case recordSessionCreated, recordConfigChanged, recordUserMessage,
-		recordModelExchange, recordTurnFinished, recordCheckpoint:
+		recordExchangePaused, recordPermissionOpen, recordPermissionRetry,
+		recordPermissionDone, recordModelExchange, recordTurnFinished, recordCheckpoint:
 		return nil
 	default:
 		return fmt.Errorf("unsupported record type %q", record.Type)
@@ -364,6 +417,7 @@ func (s durableState) clone() durableState {
 	s.history = cloneMessages(s.history)
 	s.records = append([]sessionRecord(nil), s.records...)
 	s.configuration = cloneConfiguration(s.configuration)
+	s.suspended = cloneSuspendedExchange(s.suspended)
 	messageIDs := s.messageIDs
 	s.messageIDs = make(map[string]struct{}, len(messageIDs))
 	for id := range messageIDs {
@@ -419,6 +473,9 @@ func (s *durableState) apply(record sessionRecord) error {
 		}
 		s.configuration = cloneConfiguration(value.Configuration)
 	case recordUserMessage:
+		if s.suspended != nil {
+			return errors.New("user message arrived while a model exchange was suspended")
+		}
 		var value userMessageRecord
 		if err := decodeRecord(record.Data, &value); err != nil {
 			return err
@@ -444,10 +501,86 @@ func (s *durableState) apply(record sessionRecord) error {
 		if s.title == "" {
 			s.title = sessionTitle(value.Content)
 		}
+	case recordExchangePaused:
+		if s.openTurn == "" {
+			return errors.New("suspended model exchange has no open turn")
+		}
+		if s.suspended != nil {
+			return errors.New("model exchange was suspended twice")
+		}
+		var value suspendedModelExchangeRecord
+		if err := decodeRecord(record.Data, &value); err != nil {
+			return err
+		}
+		if err := s.validateSuspendedExchange(value); err != nil {
+			return err
+		}
+		s.suspended = cloneSuspendedExchange(&value)
+	case recordPermissionOpen:
+		var value permissionRequestedRecord
+		if err := decodeRecord(record.Data, &value); err != nil {
+			return err
+		}
+		if s.suspended == nil || value.TurnID != s.openTurn || value.TurnID != s.suspended.TurnID {
+			return errors.New("permission request has no matching suspended exchange")
+		}
+		if s.suspended.Pending != nil {
+			return errors.New("suspended exchange already has a pending permission request")
+		}
+		if err := s.validatePendingPermission(value.Pending); err != nil {
+			return err
+		}
+		pending := value.Pending
+		s.suspended.Pending = &pending
+	case recordPermissionRetry:
+		var value permissionReissuedRecord
+		if err := decodeRecord(record.Data, &value); err != nil {
+			return err
+		}
+		if s.suspended == nil || s.suspended.Pending == nil ||
+			value.TurnID != s.openTurn || value.TurnID != s.suspended.TurnID ||
+			value.CallID != s.suspended.Pending.CallID {
+			return errors.New("reissued permission does not match the pending request")
+		}
+		if value.Generation != s.suspended.Pending.Generation+1 {
+			return errors.New("reissued permission generation is not consecutive")
+		}
+		s.suspended.Pending.Generation = value.Generation
+	case recordPermissionDone:
+		var value permissionDecidedRecord
+		if err := decodeRecord(record.Data, &value); err != nil {
+			return err
+		}
+		if s.suspended == nil || s.suspended.Pending == nil ||
+			value.TurnID != s.openTurn || value.TurnID != s.suspended.TurnID ||
+			value.CallID != s.suspended.Pending.CallID {
+			return errors.New("permission decision does not match the pending request")
+		}
+		if value.Generation != s.suspended.Pending.Generation {
+			return errors.New("permission decision generation is stale")
+		}
+		if !validApprovalDecision(value.Decision) {
+			return fmt.Errorf("invalid permission decision %q", value.Decision)
+		}
+		if value.Decision != decisionAllowAlways && value.Rule != "" {
+			return errors.New("only an allow-always decision may carry a rule")
+		}
+		if s.suspended.decision(value.CallID) != nil {
+			return fmt.Errorf("duplicate permission decision for tool call %q", value.CallID)
+		}
+		s.suspended.Decisions = append(s.suspended.Decisions, storedPermissionDecision{
+			CallID: value.CallID, Decision: value.Decision, Rule: value.Rule,
+		})
+		s.suspended.Pending = nil
 	case recordModelExchange:
 		var value modelExchangeRecord
 		if err := decodeRecord(record.Data, &value); err != nil {
 			return err
+		}
+		if s.suspended != nil {
+			if err := validateCompletedSuspension(*s.suspended, value); err != nil {
+				return err
+			}
 		}
 		if s.openTurn == "" || value.TurnID != s.openTurn {
 			return errors.New("model exchange has no matching open turn")
@@ -522,6 +655,7 @@ func (s *durableState) apply(record sessionRecord) error {
 		s.messageIDs[value.AnswerID] = struct{}{}
 		s.messageIDs[value.ThoughtID] = struct{}{}
 		s.addUsage(value.Usage)
+		s.suspended = nil
 	case recordTurnFinished:
 		var value turnFinishedRecord
 		if err := decodeRecord(record.Data, &value); err != nil {
@@ -546,6 +680,13 @@ func (s *durableState) apply(record sessionRecord) error {
 		}
 		s.openTurn = ""
 		s.openTurnHistory = 0
+		if s.suspended != nil {
+			if value.Kind != "cancelled" &&
+				(value.Kind != "interrupted" || s.suspended.Pending != nil) {
+				return errors.New("only cancellation may finish a suspended exchange with pending permission")
+			}
+			s.suspended = nil
+		}
 	default:
 		return fmt.Errorf("unsupported record type %q", record.Type)
 	}
@@ -571,6 +712,170 @@ func (s *durableState) addUsage(current *openrouter.Usage) {
 		s.usage.thought += uint64(current.CompletionTokensDetails.ReasoningTokens)
 	}
 	s.cost += current.Cost
+}
+
+func (s *durableState) validateSuspendedExchange(value suspendedModelExchangeRecord) error {
+	if value.TurnID != s.openTurn {
+		return errors.New("suspended model exchange belongs to another turn")
+	}
+	if value.AnswerID == "" || value.ThoughtID == "" || value.AnswerID == value.ThoughtID {
+		return errors.New("suspended model exchange identities are invalid")
+	}
+	if _, exists := s.messageIDs[value.AnswerID]; exists {
+		return fmt.Errorf("duplicate message ID %q", value.AnswerID)
+	}
+	if _, exists := s.messageIDs[value.ThoughtID]; exists {
+		return fmt.Errorf("duplicate message ID %q", value.ThoughtID)
+	}
+	if value.FinishReason != "tool_calls" || len(value.ToolCalls) == 0 {
+		return errors.New("suspended model exchange requires tool calls")
+	}
+	if value.RequestCount < 1 || value.RequestCount > maxTurnRequests {
+		return errors.New("suspended model exchange request count is invalid")
+	}
+	if len(value.Decisions) != 0 || value.Pending != nil {
+		return errors.New("new suspended model exchange cannot contain permission progress")
+	}
+	for _, detail := range value.ReasoningDetails {
+		if !json.Valid(detail) {
+			return errors.New("reasoning detail is not valid JSON")
+		}
+	}
+	seen := make(map[string]struct{}, len(value.ToolCalls))
+	for _, call := range value.ToolCalls {
+		if call.ID == "" || call.Function.Name == "" ||
+			!json.Valid([]byte(call.Function.Arguments)) {
+			return errors.New("suspended tool call identity, name, and JSON arguments are required")
+		}
+		if _, exists := s.toolCallIDs[call.ID]; exists {
+			return fmt.Errorf("duplicate tool call ID %q", call.ID)
+		}
+		if _, exists := seen[call.ID]; exists {
+			return fmt.Errorf("duplicate tool call ID %q", call.ID)
+		}
+		seen[call.ID] = struct{}{}
+	}
+	return nil
+}
+
+func (s *durableState) validatePendingPermission(value pendingPermissionRecord) error {
+	if value.Generation != 1 {
+		return errors.New("new permission request must start at generation 1")
+	}
+	index := s.suspended.callIndex(value.CallID)
+	if index < 0 {
+		return errors.New("permission request names an unknown tool call")
+	}
+	if s.suspended.decision(value.CallID) != nil {
+		return errors.New("permission request follows a decision for the same tool call")
+	}
+	if len(s.suspended.Decisions) > 0 {
+		last := s.suspended.callIndex(s.suspended.Decisions[len(s.suspended.Decisions)-1].CallID)
+		if index <= last {
+			return errors.New("permission request is out of tool-call order")
+		}
+	}
+	call := s.suspended.ToolCalls[index]
+	request := value.Request
+	if request.SessionID != s.id || request.ToolCall.ToolCallID != call.ID ||
+		request.ToolCall.Name != call.Function.Name ||
+		!sameJSON(request.ToolCall.RawInput, []byte(call.Function.Arguments)) ||
+		len(request.Options) == 0 {
+		return errors.New("permission request does not match its tool call")
+	}
+	optionIDs := make(map[string]struct{}, len(request.Options))
+	for _, option := range request.Options {
+		if option.OptionID == "" || option.Name == "" || option.Kind == "" {
+			return errors.New("permission request contains an invalid option")
+		}
+		if _, exists := optionIDs[option.OptionID]; exists {
+			return errors.New("permission request contains duplicate options")
+		}
+		optionIDs[option.OptionID] = struct{}{}
+	}
+	return nil
+}
+
+func sameJSON(left, right []byte) bool {
+	if !json.Valid(left) || !json.Valid(right) {
+		return false
+	}
+	decode := func(data []byte) (any, error) {
+		decoder := json.NewDecoder(bytes.NewReader(data))
+		decoder.UseNumber()
+		var value any
+		if err := decoder.Decode(&value); err != nil {
+			return nil, err
+		}
+		return value, nil
+	}
+	leftValue, leftErr := decode(left)
+	rightValue, rightErr := decode(right)
+	return leftErr == nil && rightErr == nil && reflect.DeepEqual(leftValue, rightValue)
+}
+
+func (s *suspendedModelExchangeRecord) callIndex(id string) int {
+	for index := range s.ToolCalls {
+		if s.ToolCalls[index].ID == id {
+			return index
+		}
+	}
+	return -1
+}
+
+func (s *suspendedModelExchangeRecord) decision(id string) *storedPermissionDecision {
+	for index := range s.Decisions {
+		if s.Decisions[index].CallID == id {
+			return &s.Decisions[index]
+		}
+	}
+	return nil
+}
+
+func validApprovalDecision(value approvalDecision) bool {
+	switch value {
+	case decisionAllowOnce, decisionAllowAlways, decisionRefused, decisionCancelled:
+		return true
+	default:
+		return false
+	}
+}
+
+func validateCompletedSuspension(
+	suspended suspendedModelExchangeRecord,
+	completed modelExchangeRecord,
+) error {
+	if suspended.Pending != nil {
+		return errors.New("model exchange completed with a pending permission request")
+	}
+	want := modelExchangeRecord{
+		TurnID: suspended.TurnID, AnswerID: suspended.AnswerID,
+		ThoughtID: suspended.ThoughtID, Text: suspended.Text,
+		Reasoning: suspended.Reasoning, ReasoningDetails: suspended.ReasoningDetails,
+		FinishReason: suspended.FinishReason, Usage: suspended.Usage,
+		ToolCalls: suspended.ToolCalls,
+	}
+	got := completed
+	got.ToolResults = nil
+	wantJSON, err := json.Marshal(want)
+	if err != nil {
+		panic(err)
+	}
+	gotJSON, err := json.Marshal(got)
+	if err != nil {
+		panic(err)
+	}
+	if !bytes.Equal(wantJSON, gotJSON) {
+		return errors.New("completed model exchange does not match its suspension")
+	}
+	for _, decision := range suspended.Decisions {
+		index := suspended.callIndex(decision.CallID)
+		if index < 0 || index >= len(completed.ToolResults) ||
+			completed.ToolResults[index].ApprovalDecision != decision.Decision {
+			return errors.New("completed tool results do not match recorded permission decisions")
+		}
+	}
+	return nil
 }
 
 func combinedUsage(values ...*openrouter.Usage) *openrouter.Usage {
@@ -609,6 +914,7 @@ func (a *Agent) replay(s durableState) ([]any, error) {
 	updates := make([]any, 0, len(s.records))
 	var cost float64
 	var configuration requestConfiguration
+	var suspended bool
 	for _, record := range s.records {
 		switch record.Type {
 		case recordSessionCreated:
@@ -635,24 +941,22 @@ func (a *Agent) replay(s durableState) ([]any, error) {
 					MessageID:     value.MessageID,
 				})
 			}
+		case recordExchangePaused:
+			var value suspendedModelExchangeRecord
+			if err := decodeRecord(record.Data, &value); err != nil {
+				return nil, err
+			}
+			updates = append(updates, a.replaySuspendedExchange(value, configuration)...)
+			suspended = true
+		case recordPermissionOpen, recordPermissionRetry, recordPermissionDone:
+			continue
 		case recordModelExchange:
 			var value modelExchangeRecord
 			if err := decodeRecord(record.Data, &value); err != nil {
 				return nil, err
 			}
-			if value.Reasoning != "" {
-				updates = append(updates, acp.AgentThoughtChunk{
-					SessionUpdate: "agent_thought_chunk",
-					Content:       acp.ContentBlock{Type: "text", Text: value.Reasoning},
-					MessageID:     value.ThoughtID,
-				})
-			}
-			if value.Text != "" {
-				updates = append(updates, acp.AgentMessageChunk{
-					SessionUpdate: "agent_message_chunk",
-					Content:       acp.ContentBlock{Type: "text", Text: value.Text},
-					MessageID:     value.AnswerID,
-				})
+			if !suspended {
+				updates = append(updates, a.replayModelContent(value)...)
 			}
 			for index, call := range value.ToolCalls {
 				result := value.ToolResults[index]
@@ -664,16 +968,9 @@ func (a *Agent) replay(s durableState) ([]any, error) {
 				if result.Delegation != nil || a.toolDelegates(call.Function.Name) {
 					parentMeta = acp.Metadata{acp.MetaSubagent: true}
 				}
-				updates = append(updates, acp.ToolCall{
-					SessionUpdate: "tool_call",
-					ToolCallID:    call.ID,
-					Title:         a.toolTitle(call.Function.Name, json.RawMessage(call.Function.Arguments)),
-					Name:          call.Function.Name,
-					Kind:          configuration.ToolKinds[call.Function.Name],
-					Status:        acp.ToolCallStatusPending,
-					RawInput:      json.RawMessage(call.Function.Arguments),
-					Meta:          parentMeta,
-				})
+				if !suspended {
+					updates = append(updates, replayToolCall(a, call, configuration, parentMeta))
+				}
 				if result.Delegation != nil {
 					for _, child := range result.Delegation.Calls {
 						childStatus := acp.ToolCallStatusCompleted
@@ -743,6 +1040,7 @@ func (a *Agent) replay(s durableState) ([]any, error) {
 					})
 				}
 			}
+			suspended = false
 		case recordTurnFinished:
 			var value turnFinishedRecord
 			if err := decodeRecord(record.Data, &value); err != nil {
@@ -751,9 +1049,66 @@ func (a *Agent) replay(s durableState) ([]any, error) {
 			if update := outcomeUpdate(value); update != nil {
 				updates = append(updates, update)
 			}
+			suspended = false
 		}
 	}
 	return updates, nil
+}
+
+func (a *Agent) replaySuspendedExchange(
+	value suspendedModelExchangeRecord,
+	configuration requestConfiguration,
+) []any {
+	completed := modelExchangeRecord{
+		TurnID: value.TurnID, AnswerID: value.AnswerID, ThoughtID: value.ThoughtID,
+		Text: value.Text, Reasoning: value.Reasoning, ToolCalls: value.ToolCalls,
+	}
+	updates := a.replayModelContent(completed)
+	for _, call := range value.ToolCalls {
+		meta := acp.Metadata(nil)
+		if a.toolDelegates(call.Function.Name) {
+			meta = acp.Metadata{acp.MetaSubagent: true}
+		}
+		updates = append(updates, replayToolCall(a, call, configuration, meta))
+	}
+	return updates
+}
+
+func (a *Agent) replayModelContent(value modelExchangeRecord) []any {
+	updates := make([]any, 0, 2)
+	if value.Reasoning != "" {
+		updates = append(updates, acp.AgentThoughtChunk{
+			SessionUpdate: "agent_thought_chunk",
+			Content:       acp.ContentBlock{Type: "text", Text: value.Reasoning},
+			MessageID:     value.ThoughtID,
+		})
+	}
+	if value.Text != "" {
+		updates = append(updates, acp.AgentMessageChunk{
+			SessionUpdate: "agent_message_chunk",
+			Content:       acp.ContentBlock{Type: "text", Text: value.Text},
+			MessageID:     value.AnswerID,
+		})
+	}
+	return updates
+}
+
+func replayToolCall(
+	a *Agent,
+	call openrouter.ToolCall,
+	configuration requestConfiguration,
+	meta acp.Metadata,
+) acp.ToolCall {
+	return acp.ToolCall{
+		SessionUpdate: "tool_call",
+		ToolCallID:    call.ID,
+		Title:         a.toolTitle(call.Function.Name, json.RawMessage(call.Function.Arguments)),
+		Name:          call.Function.Name,
+		Kind:          configuration.ToolKinds[call.Function.Name],
+		Status:        acp.ToolCallStatusPending,
+		RawInput:      json.RawMessage(call.Function.Arguments),
+		Meta:          meta,
+	}
 }
 
 func outcomeUpdate(value turnFinishedRecord) any {
@@ -795,6 +1150,23 @@ func cloneConfiguration(value requestConfiguration) requestConfiguration {
 	value.Subagent.Tools = cloneTools(value.Subagent.Tools)
 	value.ToolKinds = cloneToolKinds(value.ToolKinds)
 	return value
+}
+
+func cloneSuspendedExchange(
+	value *suspendedModelExchangeRecord,
+) *suspendedModelExchangeRecord {
+	if value == nil {
+		return nil
+	}
+	data, err := json.Marshal(value)
+	if err != nil {
+		panic(err)
+	}
+	var cloned suspendedModelExchangeRecord
+	if err := json.Unmarshal(data, &cloned); err != nil {
+		panic(err)
+	}
+	return &cloned
 }
 
 func cloneToolKinds(values map[string]acp.ToolKind) map[string]acp.ToolKind {

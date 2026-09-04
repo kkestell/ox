@@ -373,6 +373,7 @@ func (a *Agent) LoadSession(
 		request.AdditionalDirectories,
 		request.MCPServers,
 		true,
+		true,
 	)
 	if err != nil {
 		return acp.LoadSessionResponse{}, err
@@ -392,8 +393,111 @@ func (a *Agent) LoadSession(
 			return acp.LoadSessionResponse{}, fmt.Errorf("replay session update: %w", err)
 		}
 	}
+	if value.state.suspended != nil && value.state.suspended.Pending != nil {
+		if err := a.recoverSession(ctx, value); err != nil {
+			_ = a.closeActive(value.id)
+			return acp.LoadSessionResponse{}, err
+		}
+	}
+	if value.activationConfiguration != nil {
+		if err := a.commit(value, recordConfigChanged, configurationChanged{
+			Configuration: *value.activationConfiguration,
+		}); err != nil {
+			_ = a.closeActive(value.id)
+			return acp.LoadSessionResponse{}, fmt.Errorf("persist session configuration: %w", err)
+		}
+		value.activationConfiguration = nil
+	}
 	a.logger.Info("session loaded", "session_id", value.id, "updates", len(updates))
 	return acp.LoadSessionResponse{}, nil
+}
+
+func (a *Agent) recoverSession(ctx context.Context, value *session) error {
+	value.stateMu.Lock()
+	turnID := value.state.openTurn
+	value.stateMu.Unlock()
+	runCtx, active, release, err := value.claimRecovery(ctx, turnID)
+	if err != nil {
+		return fmt.Errorf("claim recovered turn: %w", err)
+	}
+	released := false
+	defer func() {
+		if !released {
+			release()
+		}
+	}()
+
+	server := jrpc2.ServerFromContext(ctx)
+	adapter := newAdapter(value.id, func(notification acp.SessionNotification) error {
+		return server.Notify(ctx, "session/update", notification)
+	})
+	defer adapter.close()
+	fileSystem, terminal := a.promptExecutors(server, value)
+	events := make(chan event)
+	outcome := make(chan loopOutcome, 1)
+	go func() {
+		outcome <- a.resume(
+			runCtx, value, active, permissionCallback(server),
+			fileSystem, terminal, events,
+		)
+		close(events)
+	}()
+
+	var notifyErr error
+	for events != nil {
+		select {
+		case current, ok := <-events:
+			if !ok {
+				events = nil
+				continue
+			}
+			if notifyErr == nil {
+				if err := adapter.handle(current); err != nil {
+					notifyErr = a.adapterFailed(value.id, active, err)
+				}
+			}
+		case <-adapter.tick():
+			if notifyErr == nil {
+				if err := adapter.flushDirty(); err != nil {
+					notifyErr = a.adapterFailed(value.id, active, err)
+				}
+			}
+		}
+	}
+	result := <-outcome
+	release()
+	released = true
+	if notifyErr != nil {
+		return notifyErr
+	}
+	if result.err != nil {
+		if errors.Is(result.err, context.Canceled) {
+			if ctx.Err() == nil {
+				return nil
+			}
+			return jrpc2.Errorf(acp.ErrCodeRequestCancelled, "request cancelled")
+		}
+		return result.err
+	}
+	a.logger.Info("recovered turn stopped", "session_id", value.id, "turn_id", turnID)
+	return nil
+}
+
+func permissionCallback(server *jrpc2.Server) requestPermission {
+	return func(
+		ctx context.Context,
+		request acp.RequestPermissionRequest,
+	) (acp.RequestPermissionResponse, error) {
+		response, err := server.Callback(ctx, acp.MethodSessionRequestPermission, request)
+		if err != nil {
+			return acp.RequestPermissionResponse{}, err
+		}
+		var result acp.RequestPermissionResponse
+		if err := response.UnmarshalResult(&result); err != nil {
+			return acp.RequestPermissionResponse{}, err
+		}
+		return result, nil
+	}
 }
 
 func (a *Agent) ResumeSession(
@@ -406,6 +510,7 @@ func (a *Agent) ResumeSession(
 		request.CWD,
 		request.AdditionalDirectories,
 		request.MCPServers,
+		false,
 		false,
 	)
 	if err != nil {
@@ -422,6 +527,7 @@ func (a *Agent) activateSession(
 	additionalDirectories []string,
 	mcpServers []json.RawMessage,
 	requireMCP bool,
+	recoverSuspended bool,
 ) (*session, error) {
 	if !validSessionID(id) {
 		return nil, jrpc2.Errorf(jrpc2.InvalidParams, "invalid session ID")
@@ -459,7 +565,8 @@ func (a *Agent) activateSession(
 	if value.state.cwd != canonicalCWD {
 		return nil, jrpc2.Errorf(jrpc2.InvalidParams, "session cwd does not match")
 	}
-	if value.state.openTurn != "" {
+	pendingPermission := value.state.suspended != nil && value.state.suspended.Pending != nil
+	if value.state.openTurn != "" && !pendingPermission {
 		outcomeID, idErr := randomID()
 		if idErr != nil {
 			return nil, idErr
@@ -472,15 +579,42 @@ func (a *Agent) activateSession(
 			return nil, fmt.Errorf("recover interrupted session: %w", err)
 		}
 	}
+	if pendingPermission && !recoverSuspended {
+		return nil, jrpc2.Errorf(
+			jrpc2.InvalidParams,
+			"session has a pending permission request; load it before resuming",
+		)
+	}
 	configuration, err := a.resolveConfiguration(ctx, canonicalCWD)
 	if err != nil {
 		return nil, err
 	}
-	if !sameRequestConfiguration(value.state.configuration, configuration) {
+	if pendingPermission {
+		required := value.state.configuration.ExecutorCapabilities
+		available := configuration.ExecutorCapabilities
+		if missing := missingExecutorCapability(required, available); missing != "" {
+			return nil, jrpc2.Errorf(
+				jrpc2.InvalidParams,
+				"session recovery requires client %s capability",
+				missing,
+			)
+		}
+	}
+	if !sameRequestConfiguration(value.state.configuration, configuration) && pendingPermission {
+		pending := cloneConfiguration(configuration)
+		value.activationConfiguration = &pending
+	} else if !sameRequestConfiguration(value.state.configuration, configuration) {
 		if err := a.commit(value, recordConfigChanged, configurationChanged{
 			Configuration: configuration,
 		}); err != nil {
 			return nil, fmt.Errorf("persist session configuration: %w", err)
+		}
+	}
+	if pendingPermission {
+		value.recovering = true
+		value.callIDs = make(map[string]struct{}, len(value.state.suspended.ToolCalls))
+		for _, call := range value.state.suspended.ToolCalls {
+			value.callIDs[call.ID] = struct{}{}
 		}
 	}
 	a.sessionsMu.Lock()
@@ -721,6 +855,19 @@ func (a *Agent) negotiatedExecutorCapabilities() executorCapabilities {
 	}
 }
 
+func missingExecutorCapability(required, available executorCapabilities) string {
+	if required.FileSystemRead && !available.FileSystemRead {
+		return "filesystem read"
+	}
+	if required.FileSystemWrite && !available.FileSystemWrite {
+		return "filesystem write"
+	}
+	if required.Terminal && !available.Terminal {
+		return "terminal"
+	}
+	return ""
+}
+
 func (a *Agent) configuredToolKinds() map[string]acp.ToolKind {
 	kinds := make(map[string]acp.ToolKind)
 	for _, tool := range a.primaryTools.tools {
@@ -737,6 +884,26 @@ func (a *Agent) configuredToolKinds() map[string]acp.ToolKind {
 func (a *Agent) commit(value *session, kind string, payload any) error {
 	value.stateMu.Lock()
 	defer value.stateMu.Unlock()
+	return a.commitLocked(value, kind, payload)
+}
+
+func (a *Agent) commitPermissionDecision(
+	value *session,
+	decision permissionDecidedRecord,
+) (bool, error) {
+	value.stateMu.Lock()
+	defer value.stateMu.Unlock()
+	pending := value.state.suspended
+	if pending == nil || pending.Pending == nil ||
+		pending.TurnID != decision.TurnID ||
+		pending.Pending.CallID != decision.CallID ||
+		pending.Pending.Generation != decision.Generation {
+		return false, nil
+	}
+	return true, a.commitLocked(value, recordPermissionDone, decision)
+}
+
+func (a *Agent) commitLocked(value *session, kind string, payload any) error {
 	if value.poisoned {
 		return errors.New("session activation is poisoned by an earlier persistence failure")
 	}
@@ -912,24 +1079,7 @@ func (a *Agent) Prompt(
 	})
 	server := jrpc2.ServerFromContext(ctx)
 	fileSystem, terminal := a.promptExecutors(server, value)
-	requestPermission := func(
-		requestCtx context.Context,
-		request acp.RequestPermissionRequest,
-	) (acp.RequestPermissionResponse, error) {
-		response, err := server.Callback(
-			requestCtx,
-			acp.MethodSessionRequestPermission,
-			request,
-		)
-		if err != nil {
-			return acp.RequestPermissionResponse{}, err
-		}
-		var result acp.RequestPermissionResponse
-		if err := response.UnmarshalResult(&result); err != nil {
-			return acp.RequestPermissionResponse{}, err
-		}
-		return result, nil
-	}
+	requestPermission := permissionCallback(server)
 	defer adapter.close()
 	if err := a.commit(value, recordUserMessage, userMessageRecord{
 		TurnID:    turnID,
@@ -1210,23 +1360,25 @@ func randomID() (string, error) {
 }
 
 type session struct {
-	id           string
-	state        durableState
-	log          *sessionLog
-	stateMu      sync.Mutex
-	poisoned     bool
-	mu           sync.Mutex
-	nextTurn     uint64
-	active       *activeTurn
-	closing      bool
-	grants       map[string][]string
-	reads        fileReads
-	approvalMu   sync.Mutex
-	exclusiveMu  sync.Mutex
-	callIDsMu    sync.Mutex
-	callIDs      map[string]struct{}
-	readScopesMu sync.Mutex
-	readScopes   map[*fileReads]struct{}
+	id                      string
+	state                   durableState
+	log                     *sessionLog
+	stateMu                 sync.Mutex
+	poisoned                bool
+	activationConfiguration *requestConfiguration
+	mu                      sync.Mutex
+	nextTurn                uint64
+	active                  *activeTurn
+	recovering              bool
+	closing                 bool
+	grants                  map[string][]string
+	reads                   fileReads
+	approvalMu              sync.Mutex
+	exclusiveMu             sync.Mutex
+	callIDsMu               sync.Mutex
+	callIDs                 map[string]struct{}
+	readScopesMu            sync.Mutex
+	readScopes              map[*fileReads]struct{}
 }
 
 func (s *session) granted(tool Tool, arguments json.RawMessage) bool {
@@ -1267,7 +1419,7 @@ func (s *session) claim(
 		s.mu.Unlock()
 		return nil, nil, nil, errors.New("session is closing")
 	}
-	if s.active != nil {
+	if s.active != nil || s.recovering {
 		s.mu.Unlock()
 		return nil, nil, nil, errors.New("session already has an active prompt")
 	}
@@ -1278,6 +1430,44 @@ func (s *session) claim(
 		turnID: turnID,
 		cancel: cancel,
 		done:   make(chan struct{}),
+	}
+	s.active = active
+	s.mu.Unlock()
+	var releaseOnce sync.Once
+	var cancelledByClient bool
+	return ctx, active, func() bool {
+		releaseOnce.Do(func() {
+			cancel()
+			s.mu.Lock()
+			cancelledByClient = active.cancelledByClient.Load()
+			if s.active != nil && s.active.id == active.id {
+				s.active = nil
+			}
+			close(active.done)
+			s.mu.Unlock()
+		})
+		return cancelledByClient
+	}, nil
+}
+
+func (s *session) claimRecovery(
+	parent context.Context,
+	turnID string,
+) (context.Context, *activeTurn, func() bool, error) {
+	s.mu.Lock()
+	if s.closing {
+		s.mu.Unlock()
+		return nil, nil, nil, errors.New("session is closing")
+	}
+	if !s.recovering || s.active != nil {
+		s.mu.Unlock()
+		return nil, nil, nil, errors.New("session is not waiting for recovery")
+	}
+	s.recovering = false
+	ctx, cancel := context.WithCancel(parent)
+	s.nextTurn++
+	active := &activeTurn{
+		id: s.nextTurn, turnID: turnID, cancel: cancel, done: make(chan struct{}),
 	}
 	s.active = active
 	s.mu.Unlock()

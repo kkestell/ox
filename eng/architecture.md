@@ -135,14 +135,21 @@ Records are appended and synced before live state or ACP-visible outcomes
 advance. Activation holds an operating-system file lock, repairs only a torn
 final record, and rejects concurrent ownership. Loading folds the log back into
 model history and replays the recorded ACP transcript. An unfinished turn is
-closed as interrupted before the session accepts more work.
+closed as interrupted unless it has a durable pending permission request.
+`session/load` reissues such a request with the same tool-call identity and a
+new generation, ignores answers for older generations, and stays open while Ox
+continues the turn. The recovered turn's stop reason is persisted but not sent
+to the client because ACP exposes it only through the original, now-lost
+`session/prompt` response. The successful `session/load` response is the
+completion signal.
 
-Prompt execution stays within its JSON-RPC request lifecycle. The model and
-independent tools may run concurrently where their contracts allow it, while
+Turn execution stays within a JSON-RPC request lifecycle: ordinary turns run
+under `session/prompt`, and recovered turns run under `session/load`. The model
+and independent tools may run concurrently where their contracts allow it, while
 session mutation and conflicting tool calls remain serialized. Cancellation
 reaches provider streams, permission callbacks, subagents, and whole shell
-process groups. The resulting terminal state is persisted before the prompt
-returns.
+process groups. The resulting terminal state is persisted before the owning
+request returns.
 
 ## Provider boundary
 

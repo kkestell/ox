@@ -139,6 +139,227 @@ func TestFoldRejectsIncompleteToolGroupAndDuplicateMessage(t *testing.T) {
 	}
 }
 
+func TestFoldResumesSuspendedPermissionGenerationAndReplaysOnce(t *testing.T) {
+	id := "0123456789abcdef0123456789abcdef"
+	call := openrouter.ToolCall{
+		ID: "call", Type: "function",
+		Function: openrouter.ToolCallFunction{Name: "shell", Arguments: `{}`},
+	}
+	configuration := requestConfiguration{
+		Settings:      settings.Resolved{Model: "test/model"},
+		ContextWindow: 1000,
+		Tools: []openrouter.Tool{{
+			Type: "function",
+			Function: openrouter.ToolFunction{
+				Name: "shell", Parameters: json.RawMessage(`{"type":"object"}`),
+			},
+		}},
+		ToolKinds: map[string]acp.ToolKind{"shell": acp.ToolKindExecute},
+	}
+	request := acp.RequestPermissionRequest{
+		SessionID: id,
+		ToolCall: acp.ToolCallUpdate{
+			ToolCallID: call.ID, Name: call.Function.Name,
+			Title: "shell", Kind: acp.ToolKindExecute,
+			RawInput: json.RawMessage(call.Function.Arguments),
+		},
+		Options: permissionOptions("shell", true),
+	}
+	records := []sessionRecord{
+		mustRecord(t, 1, recordSessionCreated, sessionCreated{
+			SessionID: id, CWD: "/workspace", Configuration: configuration,
+		}),
+		mustRecord(t, 2, recordUserMessage, userMessageRecord{
+			TurnID: "turn", MessageID: "user",
+			Content: []acp.ContentBlock{{Type: "text", Text: "run it"}},
+		}),
+		mustRecord(t, 3, recordExchangePaused, suspendedModelExchangeRecord{
+			TurnID: "turn", AnswerID: "answer", ThoughtID: "thought",
+			Text: "working", FinishReason: "tool_calls",
+			ToolCalls: []openrouter.ToolCall{call}, RequestCount: 3,
+		}),
+		mustRecord(t, 4, recordPermissionOpen, permissionRequestedRecord{
+			TurnID: "turn",
+			Pending: pendingPermissionRecord{
+				CallID: call.ID, Generation: 1, Request: request,
+			},
+		}),
+		mustRecord(t, 5, recordPermissionRetry, permissionReissuedRecord{
+			TurnID: "turn", CallID: call.ID, Generation: 2,
+		}),
+	}
+	state := mustFold(t, records)
+	if state.suspended == nil || state.suspended.Pending == nil ||
+		state.suspended.Pending.Generation != 2 || state.suspended.RequestCount != 3 {
+		t.Fatalf("folded suspension = %#v", state.suspended)
+	}
+	value := &session{state: state}
+	recorded, err := (&Agent{}).commitPermissionDecision(value, permissionDecidedRecord{
+		TurnID: "turn", CallID: call.ID, Generation: 1,
+		Decision: decisionAllowOnce,
+	})
+	if err != nil || recorded {
+		t.Fatalf("stale decision = recorded %v, error %v", recorded, err)
+	}
+	if value.state.suspended.Pending.Generation != 2 {
+		t.Fatal("stale decision changed the pending generation")
+	}
+
+	records = append(records,
+		mustRecord(t, 6, recordPermissionDone, permissionDecidedRecord{
+			TurnID: "turn", CallID: call.ID, Generation: 2,
+			Decision: decisionAllowOnce,
+		}),
+		mustRecord(t, 7, recordModelExchange, modelExchangeRecord{
+			TurnID: "turn", AnswerID: "answer", ThoughtID: "thought",
+			Text: "working", FinishReason: "tool_calls",
+			ToolCalls: []openrouter.ToolCall{call},
+			ToolResults: []storedToolResult{{
+				CallID: call.ID, Content: "done",
+				ApprovalDecision: decisionAllowOnce,
+			}},
+		}),
+		mustRecord(t, 8, recordTurnFinished, turnFinishedRecord{
+			TurnID: "turn", Kind: "completed", StopReason: acp.StopReasonEndTurn,
+		}),
+	)
+	state = mustFold(t, records)
+	if state.suspended != nil || state.openTurn != "" || len(state.history) != 3 {
+		t.Fatalf("completed state = %#v", state)
+	}
+	instance, err := New(Config{Tools: []Tool{{Name: "shell", Kind: acp.ToolKindExecute}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	updates, err := instance.replay(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var messages, pending, completed int
+	for _, update := range updates {
+		switch value := update.(type) {
+		case acp.AgentMessageChunk:
+			if value.Content.Text == "working" {
+				messages++
+			}
+		case acp.ToolCall:
+			if value.ToolCallID == call.ID {
+				pending++
+			}
+		case acp.ToolCallUpdate:
+			if value.ToolCallID == call.ID && value.Status == acp.ToolCallStatusCompleted {
+				completed++
+			}
+		}
+	}
+	if messages != 1 || pending != 1 || completed != 1 {
+		t.Fatalf("replay counts = message %d, pending %d, completed %d", messages, pending, completed)
+	}
+}
+
+func TestFoldRejectsInvalidSuspendedPermissionRecords(t *testing.T) {
+	id := "0123456789abcdef0123456789abcdef"
+	call := openrouter.ToolCall{
+		ID: "call", Type: "function",
+		Function: openrouter.ToolCallFunction{Name: "shell", Arguments: `{}`},
+	}
+	base := []sessionRecord{
+		mustRecord(t, 1, recordSessionCreated, sessionCreated{
+			SessionID: id, CWD: "/workspace",
+			Configuration: requestConfiguration{Settings: settings.Resolved{Model: "test/model"}},
+		}),
+		mustRecord(t, 2, recordUserMessage, userMessageRecord{
+			TurnID: "turn", MessageID: "user",
+			Content: []acp.ContentBlock{{Type: "text", Text: "run it"}},
+		}),
+		mustRecord(t, 3, recordExchangePaused, suspendedModelExchangeRecord{
+			TurnID: "turn", AnswerID: "answer", ThoughtID: "thought",
+			FinishReason: "tool_calls", ToolCalls: []openrouter.ToolCall{call},
+			RequestCount: 1,
+		}),
+	}
+	request := acp.RequestPermissionRequest{
+		SessionID: id,
+		ToolCall: acp.ToolCallUpdate{
+			ToolCallID: call.ID, Name: call.Function.Name,
+			RawInput: json.RawMessage(call.Function.Arguments),
+		},
+		Options: permissionOptions("", false),
+	}
+	open := permissionRequestedRecord{
+		TurnID:  "turn",
+		Pending: pendingPermissionRecord{CallID: call.ID, Generation: 1, Request: request},
+	}
+	tests := []struct {
+		name    string
+		records []sessionRecord
+	}{
+		{
+			name: "wrong initial generation",
+			records: append(append([]sessionRecord(nil), base...),
+				mustRecord(t, 4, recordPermissionOpen, func() permissionRequestedRecord {
+					value := open
+					value.Pending.Generation = 2
+					return value
+				}())),
+		},
+		{
+			name: "unknown call",
+			records: append(append([]sessionRecord(nil), base...),
+				mustRecord(t, 4, recordPermissionOpen, func() permissionRequestedRecord {
+					value := open
+					value.Pending.CallID = "other"
+					return value
+				}())),
+		},
+		{
+			name: "stale decision",
+			records: append(append(append([]sessionRecord(nil), base...),
+				mustRecord(t, 4, recordPermissionOpen, open),
+				mustRecord(t, 5, recordPermissionRetry, permissionReissuedRecord{
+					TurnID: "turn", CallID: call.ID, Generation: 2,
+				})), mustRecord(t, 6, recordPermissionDone, permissionDecidedRecord{
+				TurnID: "turn", CallID: call.ID, Generation: 1,
+				Decision: decisionAllowOnce,
+			})),
+		},
+		{
+			name: "completion while pending",
+			records: append(append(append([]sessionRecord(nil), base...),
+				mustRecord(t, 4, recordPermissionOpen, open)),
+				mustRecord(t, 5, recordModelExchange, modelExchangeRecord{
+					TurnID: "turn", AnswerID: "answer", ThoughtID: "thought",
+					FinishReason: "tool_calls", ToolCalls: []openrouter.ToolCall{call},
+					ToolResults: []storedToolResult{{CallID: call.ID}},
+				})),
+		},
+		{
+			name: "interruption while pending",
+			records: append(append(append([]sessionRecord(nil), base...),
+				mustRecord(t, 4, recordPermissionOpen, open)),
+				mustRecord(t, 5, recordTurnFinished, turnFinishedRecord{
+					TurnID: "turn", Kind: "interrupted",
+				})),
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := foldRecords(test.records); err == nil {
+				t.Fatal("invalid suspended permission record was accepted")
+			}
+		})
+	}
+
+	interrupted := append(append([]sessionRecord(nil), base...),
+		mustRecord(t, 4, recordTurnFinished, turnFinishedRecord{
+			TurnID: "turn", Kind: "interrupted",
+		}))
+	state := mustFold(t, interrupted)
+	if state.openTurn != "" || state.suspended != nil {
+		t.Fatalf("interrupted non-pending suspension = %#v", state)
+	}
+}
+
 func TestFoldAcceptsConfigurationWithoutSystemPrompt(t *testing.T) {
 	record := mustRecord(t, 1, recordSessionCreated, sessionCreated{
 		SessionID: "0123456789abcdef0123456789abcdef",
