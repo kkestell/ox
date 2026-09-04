@@ -1,11 +1,11 @@
 package agent
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
-	"reflect"
 	"slices"
 	"strings"
 	"time"
@@ -37,12 +37,19 @@ type sessionRecord struct {
 }
 
 type requestConfiguration struct {
-	Settings      settings.Resolved       `json:"settings"`
-	ContextWindow int                     `json:"contextWindow"`
-	SystemPrompt  string                  `json:"systemPrompt,omitempty"`
-	Tools         []openrouter.Tool       `json:"tools,omitempty"`
-	ToolKinds     map[string]acp.ToolKind `json:"toolKinds,omitempty"`
-	Subagent      subagentConfiguration   `json:"subagent,omitempty"`
+	Settings             settings.Resolved       `json:"settings"`
+	ContextWindow        int                     `json:"contextWindow"`
+	SystemPrompt         string                  `json:"systemPrompt,omitempty"`
+	Tools                []openrouter.Tool       `json:"tools,omitempty"`
+	ToolKinds            map[string]acp.ToolKind `json:"toolKinds,omitempty"`
+	Subagent             subagentConfiguration   `json:"subagent,omitempty"`
+	ExecutorCapabilities executorCapabilities    `json:"executorCapabilities"`
+}
+
+type executorCapabilities struct {
+	FileSystemRead  bool `json:"fileSystemRead"`
+	FileSystemWrite bool `json:"fileSystemWrite"`
+	Terminal        bool `json:"terminal"`
 }
 
 type subagentConfiguration struct {
@@ -356,10 +363,7 @@ func identitySet(values []string) (map[string]struct{}, error) {
 func (s durableState) clone() durableState {
 	s.history = cloneMessages(s.history)
 	s.records = append([]sessionRecord(nil), s.records...)
-	s.configuration.Tools = cloneTools(s.configuration.Tools)
-	s.configuration.Subagent.Tools = cloneTools(s.configuration.Subagent.Tools)
-	s.configuration.ToolKinds = cloneToolKinds(s.configuration.ToolKinds)
-	s.configuration.Settings = cloneResolved(s.configuration.Settings)
+	s.configuration = cloneConfiguration(s.configuration)
 	messageIDs := s.messageIDs
 	s.messageIDs = make(map[string]struct{}, len(messageIDs))
 	for id := range messageIDs {
@@ -817,6 +821,9 @@ func cloneResolved(value settings.Resolved) settings.Resolved {
 }
 
 func cloneTools(values []openrouter.Tool) []openrouter.Tool {
+	if len(values) == 0 {
+		return nil
+	}
 	cloned := slices.Clone(values)
 	for index := range cloned {
 		cloned[index].Function.Parameters = slices.Clone(cloned[index].Function.Parameters)
@@ -843,7 +850,15 @@ func rawMessages(values [][]byte) []json.RawMessage {
 func sameRequestConfiguration(left, right requestConfiguration) bool {
 	left.Settings.ModelSource = ""
 	right.Settings.ModelSource = ""
-	return reflect.DeepEqual(left, right)
+	leftJSON, err := json.Marshal(left)
+	if err != nil {
+		panic(err)
+	}
+	rightJSON, err := json.Marshal(right)
+	if err != nil {
+		panic(err)
+	}
+	return bytes.Equal(leftJSON, rightJSON)
 }
 
 func validateConfiguration(value requestConfiguration) error {

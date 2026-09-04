@@ -143,21 +143,6 @@ It does not implement `session/fork`. The pinned schema still marks that method
 unstable, so it is planned only once the schema stabilizes it. Model-context
 compaction belongs to the context and diagnostics milestone.
 
-### Negotiated capabilities in the request configuration
-
-**Build**
-
-- Record the client filesystem and terminal capabilities that select the tool
-  executor in the request configuration frozen at activation.
-
-**Gates**
-
-- Activating a session under a client with different delegated capabilities
-  appends one configuration change before the next turn and leaves the replayed
-  transcript unchanged.
-- The recorded configuration identifies which executor ran each turn, and it
-  cannot change during a turn.
-
 ### Pending permission recovery
 
 **Build**

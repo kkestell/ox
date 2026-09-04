@@ -673,6 +673,7 @@ func (a *Agent) resolveConfiguration(
 	ctx context.Context,
 	cwd string,
 ) (requestConfiguration, error) {
+	executorCapabilities := a.negotiatedExecutorCapabilities()
 	resolved, err := a.resolveSettings(cwd)
 	if err != nil {
 		return requestConfiguration{}, jrpc2.Errorf(jrpc2.InternalError, "%v", err)
@@ -697,16 +698,27 @@ func (a *Agent) resolveConfiguration(
 	}
 	now := time.Now()
 	return requestConfiguration{
-		Settings:      resolved,
-		ContextWindow: entry.ContextWindow(),
-		SystemPrompt:  composePrompt(cwd, now),
-		Tools:         cloneTools(a.primaryTools.modelTools),
-		ToolKinds:     a.configuredToolKinds(),
+		Settings:             resolved,
+		ContextWindow:        entry.ContextWindow(),
+		SystemPrompt:         composePrompt(cwd, now),
+		Tools:                cloneTools(a.primaryTools.modelTools),
+		ToolKinds:            a.configuredToolKinds(),
+		ExecutorCapabilities: executorCapabilities,
 		Subagent: subagentConfiguration{
 			SystemPrompt: composeSubagentPrompt(cwd, now),
 			Tools:        cloneTools(a.subagentTools.modelTools),
 		},
 	}, nil
+}
+
+func (a *Agent) negotiatedExecutorCapabilities() executorCapabilities {
+	a.clientCapabilitiesMu.RLock()
+	defer a.clientCapabilitiesMu.RUnlock()
+	return executorCapabilities{
+		FileSystemRead:  a.clientFS.ReadTextFile,
+		FileSystemWrite: a.clientFS.WriteTextFile,
+		Terminal:        a.clientTerminal,
+	}
 }
 
 func (a *Agent) configuredToolKinds() map[string]acp.ToolKind {
@@ -899,8 +911,7 @@ func (a *Agent) Prompt(
 		return jrpc2.ServerFromContext(ctx).Notify(ctx, "session/update", notification)
 	})
 	server := jrpc2.ServerFromContext(ctx)
-	fileSystem := a.clientFileSystem(server, value.id)
-	terminal := a.clientTerminalOperations(server, value.id)
+	fileSystem, terminal := a.promptExecutors(server, value)
 	requestPermission := func(
 		requestCtx context.Context,
 		request acp.RequestPermissionRequest,
@@ -991,13 +1002,22 @@ func (a *Agent) Prompt(
 	return result.response, nil
 }
 
-func (a *Agent) clientFileSystem(server *jrpc2.Server, sessionID string) ClientFileSystem {
-	a.clientCapabilitiesMu.RLock()
-	capabilities := a.clientFS
-	a.clientCapabilitiesMu.RUnlock()
+func (a *Agent) promptExecutors(
+	server *jrpc2.Server,
+	value *session,
+) (ClientFileSystem, ClientTerminal) {
+	capabilities := value.state.configuration.ExecutorCapabilities
+	return a.clientFileSystem(server, value.id, capabilities),
+		a.clientTerminalOperations(server, value.id, capabilities)
+}
 
+func (a *Agent) clientFileSystem(
+	server *jrpc2.Server,
+	sessionID string,
+	capabilities executorCapabilities,
+) ClientFileSystem {
 	var fileSystem ClientFileSystem
-	if capabilities.ReadTextFile {
+	if capabilities.FileSystemRead {
 		fileSystem.ReadTextFile = func(
 			ctx context.Context,
 			path string,
@@ -1024,7 +1044,7 @@ func (a *Agent) clientFileSystem(server *jrpc2.Server, sessionID string) ClientF
 			return result.Content, nil
 		}
 	}
-	if capabilities.WriteTextFile {
+	if capabilities.FileSystemWrite {
 		fileSystem.WriteTextFile = func(ctx context.Context, path, content string) error {
 			request := acp.WriteTextFileRequest{
 				SessionID: sessionID,
@@ -1048,11 +1068,9 @@ func (a *Agent) clientFileSystem(server *jrpc2.Server, sessionID string) ClientF
 func (a *Agent) clientTerminalOperations(
 	server *jrpc2.Server,
 	sessionID string,
+	capabilities executorCapabilities,
 ) ClientTerminal {
-	a.clientCapabilitiesMu.RLock()
-	available := a.clientTerminal
-	a.clientCapabilitiesMu.RUnlock()
-	if !available {
+	if !capabilities.Terminal {
 		return ClientTerminal{}
 	}
 
