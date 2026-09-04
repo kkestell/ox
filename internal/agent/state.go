@@ -20,10 +20,11 @@ import (
 
 const (
 	recordVersion     = 1
-	checkpointVersion = 2
+	checkpointVersion = 3
 
 	recordSessionCreated  = "session_created"
 	recordConfigChanged   = "request_configuration_changed"
+	recordCompaction      = "model_context_compacted"
 	recordUserMessage     = "user_message"
 	recordExchangePaused  = "suspended_model_exchange"
 	recordPermissionOpen  = "permission_requested"
@@ -71,6 +72,14 @@ type sessionCreated struct {
 
 type configurationChanged struct {
 	Configuration requestConfiguration `json:"configuration"`
+}
+
+type compactionRecord struct {
+	HeadEnd   int                `json:"headEnd"`
+	TailStart int                `json:"tailStart"`
+	Summary   openrouter.Message `json:"summary"`
+	Usage     *openrouter.Usage  `json:"usage,omitempty"`
+	Occupancy int                `json:"occupancy"`
 }
 
 type userMessageRecord struct {
@@ -187,6 +196,7 @@ type checkpointProjection struct {
 	Configuration requestConfiguration `json:"configuration"`
 	History       []openrouter.Message `json:"history,omitempty"`
 	Usage         checkpointUsage      `json:"usage"`
+	Occupancy     int                  `json:"occupancy"`
 	Cost          float64              `json:"cost"`
 	MessageIDs    []string             `json:"messageIds,omitempty"`
 	ToolCallIDs   []string             `json:"toolCallIds,omitempty"`
@@ -213,6 +223,7 @@ type durableState struct {
 	configuration   requestConfiguration
 	history         []openrouter.Message
 	usage           turnUsage
+	occupancy       int
 	cost            float64
 	records         []sessionRecord
 	messageIDs      map[string]struct{}
@@ -287,7 +298,7 @@ func validateRecordEnvelope(record sessionRecord, previous uint64) error {
 		return errors.New("first record must create the session")
 	}
 	switch record.Type {
-	case recordSessionCreated, recordConfigChanged, recordUserMessage,
+	case recordSessionCreated, recordConfigChanged, recordCompaction, recordUserMessage,
 		recordExchangePaused, recordPermissionOpen, recordPermissionRetry,
 		recordPermissionDone, recordModelExchange, recordTurnFinished, recordCheckpoint:
 		return nil
@@ -318,6 +329,7 @@ func newCheckpointRecord(state durableState) (sessionRecord, error) {
 				CachedRead:  state.usage.cachedRead,
 				CachedWrite: state.usage.cachedWrite,
 			},
+			Occupancy:    state.occupancy,
 			Cost:         state.cost,
 			MessageIDs:   sortedIdentitySet(state.messageIDs),
 			ToolCallIDs:  sortedIdentitySet(state.toolCallIDs),
@@ -366,6 +378,9 @@ func restoreCheckpoint(record, previous sessionRecord) (durableState, error) {
 	if err := validateConfiguration(projection.Configuration); err != nil {
 		return durableState{}, err
 	}
+	if projection.Occupancy < 0 {
+		return durableState{}, errors.New("checkpoint context occupancy is invalid")
+	}
 	messageIDs, err := identitySet(projection.MessageIDs)
 	if err != nil {
 		return durableState{}, fmt.Errorf("checkpoint message IDs: %w", err)
@@ -397,6 +412,7 @@ func restoreCheckpoint(record, previous sessionRecord) (durableState, error) {
 			cachedRead:  projection.Usage.CachedRead,
 			cachedWrite: projection.Usage.CachedWrite,
 		},
+		occupancy:    projection.Occupancy,
 		cost:         projection.Cost,
 		messageIDs:   messageIDs,
 		toolCallIDs:  toolCallIDs,
@@ -513,6 +529,24 @@ func (s *durableState) apply(record sessionRecord) error {
 			return err
 		}
 		s.configuration = cloneConfiguration(value.Configuration)
+	case recordCompaction:
+		if s.openTurn != "" || s.suspended != nil {
+			return errors.New("model context compacted during a turn")
+		}
+		var value compactionRecord
+		if err := decodeRecord(record.Data, &value); err != nil {
+			return err
+		}
+		if err := validateCompaction(*s, value); err != nil {
+			return err
+		}
+		history := make([]openrouter.Message, 0, value.HeadEnd+1+len(s.history)-value.TailStart)
+		history = append(history, cloneMessages(s.history[:value.HeadEnd])...)
+		history = append(history, cloneMessages([]openrouter.Message{value.Summary})...)
+		history = append(history, cloneMessages(s.history[value.TailStart:])...)
+		s.history = history
+		s.addUsage(value.Usage)
+		s.occupancy = value.Occupancy
 	case recordUserMessage:
 		if s.suspended != nil {
 			return errors.New("user message arrived while a model exchange was suspended")
@@ -716,6 +750,9 @@ func (s *durableState) apply(record sessionRecord) error {
 		s.messageIDs[value.AnswerID] = struct{}{}
 		s.messageIDs[value.ThoughtID] = struct{}{}
 		s.addUsage(value.Usage)
+		if value.Usage != nil {
+			s.occupancy = value.Usage.PromptTokens
+		}
 		s.suspended = nil
 	case recordTurnFinished:
 		var value turnFinishedRecord
@@ -773,6 +810,49 @@ func (s *durableState) addUsage(current *openrouter.Usage) {
 		s.usage.thought += uint64(current.CompletionTokensDetails.ReasoningTokens)
 	}
 	s.cost += current.Cost
+}
+
+func validateCompaction(state durableState, value compactionRecord) error {
+	firstUser := -1
+	for index := range state.history {
+		if state.history[index].Role == openrouter.RoleUser {
+			firstUser = index
+			break
+		}
+	}
+	if firstUser < 0 || value.HeadEnd != firstUser+1 {
+		return errors.New("compaction does not preserve the first user message")
+	}
+	if value.TailStart <= value.HeadEnd || value.TailStart >= len(state.history) {
+		return errors.New("compaction splice boundaries are invalid")
+	}
+	if !messageGroupBoundary(state.history, value.HeadEnd) ||
+		!messageGroupBoundary(state.history, value.TailStart) {
+		return errors.New("compaction separates a tool call from its result")
+	}
+	if value.Summary.Role != openrouter.RoleUser || len(value.Summary.Content) != 1 ||
+		value.Summary.Content[0].Type != "text" ||
+		!strings.HasPrefix(value.Summary.Content[0].Text, summaryMessagePrefix) ||
+		strings.TrimSpace(strings.TrimPrefix(value.Summary.Content[0].Text, summaryMessagePrefix)) == "" ||
+		len(value.Summary.ToolCalls) != 0 || value.Summary.ToolCallID != "" ||
+		len(value.Summary.ReasoningDetails) != 0 {
+		return errors.New("compaction summary message is invalid")
+	}
+	if value.Occupancy <= 0 {
+		return errors.New("compaction context occupancy is invalid")
+	}
+	return nil
+}
+
+func messageGroupBoundary(messages []openrouter.Message, index int) bool {
+	if index < 0 || index > len(messages) {
+		return false
+	}
+	if index < len(messages) && messages[index].Role == openrouter.RoleTool {
+		return false
+	}
+	return index == 0 || messages[index-1].Role != openrouter.RoleAssistant ||
+		len(messages[index-1].ToolCalls) == 0
 }
 
 func (s *durableState) validateSuspendedExchange(value suspendedModelExchangeRecord) error {
@@ -1013,6 +1093,22 @@ func (a *Agent) replay(s durableState) ([]any, error) {
 				return nil, err
 			}
 			configuration = value.Configuration
+		case recordCompaction:
+			var value compactionRecord
+			if err := decodeRecord(record.Data, &value); err != nil {
+				return nil, err
+			}
+			if value.Usage != nil {
+				cost += value.Usage.Cost
+			}
+			if configuration.ContextWindow > 0 {
+				updates = append(updates, acp.UsageUpdate{
+					SessionUpdate: "usage_update",
+					Used:          uint64(value.Occupancy),
+					Size:          uint64(configuration.ContextWindow),
+					Cost:          &acp.Cost{Amount: cost, Currency: "USD"},
+				})
+			}
 		case recordUserMessage:
 			var value userMessageRecord
 			if err := decodeRecord(record.Data, &value); err != nil {
@@ -1119,14 +1215,14 @@ func (a *Agent) replay(s durableState) ([]any, error) {
 			}
 			if exchangeUsage != nil {
 				cost += exchangeUsage.Cost
-				if configuration.ContextWindow > 0 {
-					updates = append(updates, acp.UsageUpdate{
-						SessionUpdate: "usage_update",
-						Used:          uint64(exchangeUsage.TotalTokens),
-						Size:          uint64(configuration.ContextWindow),
-						Cost:          &acp.Cost{Amount: cost, Currency: "USD"},
-					})
-				}
+			}
+			if value.Usage != nil && configuration.ContextWindow > 0 {
+				updates = append(updates, acp.UsageUpdate{
+					SessionUpdate: "usage_update",
+					Used:          uint64(value.Usage.PromptTokens),
+					Size:          uint64(configuration.ContextWindow),
+					Cost:          &acp.Cost{Amount: cost, Currency: "USD"},
+				})
 			}
 			suspended = false
 		case recordTurnFinished:

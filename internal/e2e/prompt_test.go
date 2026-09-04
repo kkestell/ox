@@ -52,6 +52,9 @@ type sessionUpdate struct {
 	ToolCallID    string                 `json:"toolCallId"`
 	Status        acp.ToolCallStatus     `json:"status"`
 	Locations     []acp.ToolCallLocation `json:"locations"`
+	Used          uint64                 `json:"used"`
+	Size          uint64                 `json:"size"`
+	Cost          *acp.Cost              `json:"cost"`
 	Meta          acp.Metadata           `json:"_meta"`
 }
 
@@ -63,6 +66,9 @@ func (u *sessionUpdate) UnmarshalJSON(data []byte) error {
 		ToolCallID    string                 `json:"toolCallId"`
 		Status        acp.ToolCallStatus     `json:"status"`
 		Locations     []acp.ToolCallLocation `json:"locations"`
+		Used          uint64                 `json:"used"`
+		Size          uint64                 `json:"size"`
+		Cost          *acp.Cost              `json:"cost"`
 		Meta          acp.Metadata           `json:"_meta"`
 	}
 	if err := json.Unmarshal(data, &wire); err != nil {
@@ -73,6 +79,9 @@ func (u *sessionUpdate) UnmarshalJSON(data []byte) error {
 	u.ToolCallID = wire.ToolCallID
 	u.Status = wire.Status
 	u.Locations = wire.Locations
+	u.Used = wire.Used
+	u.Size = wire.Size
+	u.Cost = wire.Cost
 	u.Meta = wire.Meta
 	if len(wire.Content) > 0 && wire.Content[0] == '{' {
 		return json.Unmarshal(wire.Content, &u.Content)

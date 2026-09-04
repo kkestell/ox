@@ -1400,10 +1400,10 @@ func (a *Agent) publishUsage(
 	)
 	if value.state.configuration.ContextWindow > 0 {
 		events <- event{
-			kind:      eventUsage,
-			usage:     current,
-			context:   value.state.configuration.ContextWindow,
-			totalCost: value.state.cost,
+			kind:             eventUsage,
+			contextOccupancy: current.PromptTokens,
+			contextWindow:    value.state.configuration.ContextWindow,
+			totalCost:        value.state.cost,
 		}
 	}
 }

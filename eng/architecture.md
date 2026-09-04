@@ -134,14 +134,19 @@ Each session is an owner-only, versioned JSONL log in the Ox data directory.
 Records are appended and synced before live state or ACP-visible outcomes
 advance. Activation holds an operating-system file lock, repairs only a torn
 final record, and rejects concurrent ownership. Loading folds the log back into
-model history and replays the recorded ACP transcript. An unfinished turn is
-closed as interrupted unless it has a durable pending permission request.
-`session/load` reissues such a request with the same tool-call identity and a
-new generation, ignores answers for older generations, and stays open while Ox
-continues the turn. The recovered turn's stop reason is persisted but not sent
-to the client because ACP exposes it only through the original, now-lost
-`session/prompt` response. The successful `session/load` response is the
-completion signal.
+model history and replays the recorded ACP transcript. Compaction records
+replace only the provider-facing middle of that history with a model-produced
+summary. The earlier user, assistant, and tool records remain authoritative for
+ACP replay, while checkpoints project the exact compacted provider history for
+restart.
+
+An unfinished turn is closed as interrupted unless it has a durable pending
+permission request. `session/load` reissues such a request with the same
+tool-call identity and a new generation, ignores answers for older generations,
+and stays open while Ox continues the turn. The recovered turn's stop reason is
+persisted but not sent to the client because ACP exposes it only through the
+original, now-lost `session/prompt` response. The successful `session/load`
+response is the completion signal.
 
 Turn execution stays within a JSON-RPC request lifecycle: ordinary turns run
 under `session/prompt`, and recovered turns run under `session/load`. The model
@@ -162,6 +167,14 @@ The provider boundary caches and validates OpenRouter's model catalog. It
 retries transient failures within a bounded budget only before response content
 has been observed. Raw reasoning details and usage survive provider translation
 when they are needed for continued requests or accounting.
+
+Before an idle session starts a new turn, the agent may use the activation's
+frozen model and provider settings to summarize older history. That request has
+its own system prompt and no tools. The ordinary system prompt, tool
+declarations, first user message, and complete recent message groups remain
+outside the summary. Context occupancy is the last measured provider prompt
+size, or the estimated prompt size immediately after a durable compaction; token
+and cost totals remain cumulative.
 
 Provider transport failures remain ordinary Go errors. ACP-visible stop reasons,
 refusal behavior, and durable history are decided by the agent, where the client

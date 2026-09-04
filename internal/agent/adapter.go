@@ -128,8 +128,8 @@ func (a *eventAdapter) handle(current event) error {
 	case eventUsage:
 		return a.send(acp.UsageUpdate{
 			SessionUpdate: "usage_update",
-			Used:          uint64(current.usage.TotalTokens),
-			Size:          uint64(current.context),
+			Used:          uint64(current.contextOccupancy),
+			Size:          uint64(current.contextWindow),
 			Cost: &acp.Cost{
 				Amount:   current.totalCost,
 				Currency: "USD",

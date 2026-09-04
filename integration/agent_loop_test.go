@@ -105,7 +105,7 @@ func TestPromptStreamsAndReplaysCompletedHistory(t *testing.T) {
 		case "usage_update":
 			var usage acp.UsageUpdate
 			update.decode(t, &usage)
-			sawUsage = usage.Used == 12 && usage.Size == 128_000 &&
+			sawUsage = usage.Used == 7 && usage.Size == 128_000 &&
 				usage.Cost != nil && usage.Cost.Currency == "USD"
 		}
 	}
@@ -116,6 +116,267 @@ func TestPromptStreamsAndReplaysCompletedHistory(t *testing.T) {
 		t.Fatal("usage update was not observed")
 	}
 	model.assertConsumed(t)
+}
+
+func TestPromptCompactsModelHistoryBeforeTheNextTurn(t *testing.T) {
+	const oldAnswer = "old detail "
+	var ordinarySystemPrompt string
+	model := &scriptedModel{
+		entry: &openrouter.Model{ID: "test/model", ContextLength: 1000},
+		scripts: []modelScript{
+			func(
+				_ context.Context,
+				request openrouter.Request,
+				_ func(openrouter.Delta),
+			) (*openrouter.Completion, error) {
+				ordinarySystemPrompt = request.Messages[0].Content[0].Text
+				return &openrouter.Completion{
+					Text: strings.Repeat(oldAnswer, 240), FinishReason: "stop",
+					Usage: &openrouter.Usage{
+						PromptTokens: 100, CompletionTokens: 600, TotalTokens: 700, Cost: 0.001,
+					},
+				}, nil
+			},
+			func(
+				_ context.Context,
+				_ openrouter.Request,
+				_ func(openrouter.Delta),
+			) (*openrouter.Completion, error) {
+				return &openrouter.Completion{
+					Text: "recent answer", FinishReason: "stop",
+					Usage: &openrouter.Usage{
+						PromptTokens: 800, CompletionTokens: 5, TotalTokens: 805, Cost: 0.002,
+					},
+				}, nil
+			},
+			func(
+				_ context.Context,
+				request openrouter.Request,
+				_ func(openrouter.Delta),
+			) (*openrouter.Completion, error) {
+				if len(request.Tools) != 0 || len(request.Messages) != 2 {
+					return nil, fmt.Errorf("summary request = %#v", request)
+				}
+				if request.Messages[0].Content[0].Text == ordinarySystemPrompt ||
+					request.Messages[0].Content[0].Text == "" {
+					return nil, errors.New("summary request reused or omitted the ordinary system prompt")
+				}
+				transcript := request.Messages[1].Content[0].Text
+				if !strings.Contains(transcript, strings.Repeat(oldAnswer, 20)) ||
+					strings.Contains(transcript, "recent answer") {
+					return nil, fmt.Errorf("summary transcript = %q", transcript)
+				}
+				return &openrouter.Completion{
+					Text: "the old answer contained the required detail", FinishReason: "stop",
+					Usage: &openrouter.Usage{
+						PromptTokens: 650, CompletionTokens: 20, TotalTokens: 670, Cost: 0.004,
+					},
+				}, nil
+			},
+			func(
+				_ context.Context,
+				request openrouter.Request,
+				_ func(openrouter.Delta),
+			) (*openrouter.Completion, error) {
+				messages, err := conversation(request)
+				if err != nil {
+					return nil, err
+				}
+				if len(request.Tools) != 1 || len(messages) != 5 {
+					return nil, fmt.Errorf("compacted request = %#v", request)
+				}
+				if messages[0].Content[0].Text != "first" ||
+					!strings.Contains(messages[1].Content[0].Text, "required detail") ||
+					messages[2].Content[0].Text != "second" ||
+					messages[3].Content[0].Text != "recent answer" ||
+					messages[4].Content[0].Text != "third" {
+					return nil, fmt.Errorf("compacted history = %#v", messages)
+				}
+				return completion("done"), nil
+			},
+		},
+	}
+	tools := []agent.Tool{{
+		Name: "read", Description: "read a fixture", Kind: acp.ToolKindRead,
+		InputSchema: json.RawMessage(`{"type":"object"}`),
+		Execute: func(context.Context, agent.Invocation) (string, error) {
+			return "", nil
+		},
+	}}
+	harness := newAgentHarness(t, model, tools)
+	sessionID := harness.newSession(t)
+	harness.prompt(t, sessionID, "first")
+	harness.prompt(t, sessionID, "second")
+	beforeThird := len(harness.updates())
+	harness.prompt(t, sessionID, "third")
+
+	var occupancies []uint64
+	for _, update := range harness.updates()[beforeThird:] {
+		if update.discriminator(t) != "usage_update" {
+			continue
+		}
+		var usage acp.UsageUpdate
+		update.decode(t, &usage)
+		occupancies = append(occupancies, usage.Used)
+	}
+	if len(occupancies) != 2 || occupancies[0] == 0 || occupancies[0] >= 800 ||
+		occupancies[1] != 7 {
+		t.Fatalf("third-turn occupancies = %#v", occupancies)
+	}
+	model.assertConsumed(t)
+}
+
+func TestPromptCompactionFailureLeavesHistoryUntouched(t *testing.T) {
+	tests := []struct {
+		name    string
+		summary modelScript
+		problem string
+	}{
+		{
+			name: "provider failure",
+			summary: func(
+				context.Context,
+				openrouter.Request,
+				func(openrouter.Delta),
+			) (*openrouter.Completion, error) {
+				return nil, errors.New("summary failed")
+			},
+			problem: "summary failed",
+		},
+		{
+			name: "empty summary",
+			summary: func(
+				context.Context,
+				openrouter.Request,
+				func(openrouter.Delta),
+			) (*openrouter.Completion, error) {
+				return &openrouter.Completion{Text: "  ", FinishReason: "stop"}, nil
+			},
+			problem: "empty summary",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			model := &scriptedModel{
+				entry:   &openrouter.Model{ID: "test/model", ContextLength: 1000},
+				scripts: compactionAtomicityScripts(test.summary),
+			}
+			harness := newAgentHarness(t, model, nil)
+			sessionID := harness.newSession(t)
+			harness.prompt(t, sessionID, "first")
+			harness.prompt(t, sessionID, "second")
+			if _, err := harness.callPrompt(sessionID, "failed prompt"); err == nil ||
+				!strings.Contains(err.Error(), test.problem) {
+				t.Fatalf("compaction failure = %v", err)
+			}
+			harness.prompt(t, sessionID, "retry")
+			model.assertConsumed(t)
+		})
+	}
+}
+
+func TestPromptCompactionCancellationLeavesHistoryUntouched(t *testing.T) {
+	started := make(chan struct{})
+	model := &scriptedModel{
+		entry: &openrouter.Model{ID: "test/model", ContextLength: 1000},
+		scripts: compactionAtomicityScripts(func(
+			ctx context.Context,
+			_ openrouter.Request,
+			_ func(openrouter.Delta),
+		) (*openrouter.Completion, error) {
+			close(started)
+			<-ctx.Done()
+			return nil, ctx.Err()
+		}),
+	}
+	harness := newAgentHarness(t, model, nil)
+	sessionID := harness.newSession(t)
+	harness.prompt(t, sessionID, "first")
+	harness.prompt(t, sessionID, "second")
+	result := make(chan promptResult, 1)
+	go func() {
+		response, err := harness.callPrompt(sessionID, "cancelled prompt")
+		result <- promptResult{response: response, err: err}
+	}()
+	<-started
+	if err := harness.local.Client.Notify(
+		t.Context(),
+		"session/cancel",
+		acp.CancelNotification{SessionID: sessionID},
+	); err != nil {
+		t.Fatal(err)
+	}
+	got := <-result
+	assertRPCErrorCode(t, got.err, acp.ErrCodeRequestCancelled)
+	harness.prompt(t, sessionID, "retry")
+	model.assertConsumed(t)
+}
+
+func compactionAtomicityScripts(failedSummary modelScript) []modelScript {
+	oldAnswer := strings.Repeat("old detail ", 240)
+	return []modelScript{
+		func(
+			_ context.Context,
+			_ openrouter.Request,
+			_ func(openrouter.Delta),
+		) (*openrouter.Completion, error) {
+			return &openrouter.Completion{
+				Text: oldAnswer, FinishReason: "stop",
+				Usage: &openrouter.Usage{
+					PromptTokens: 100, CompletionTokens: 600, TotalTokens: 700,
+				},
+			}, nil
+		},
+		func(
+			_ context.Context,
+			_ openrouter.Request,
+			_ func(openrouter.Delta),
+		) (*openrouter.Completion, error) {
+			return &openrouter.Completion{
+				Text: "recent answer", FinishReason: "stop",
+				Usage: &openrouter.Usage{
+					PromptTokens: 800, CompletionTokens: 5, TotalTokens: 805,
+				},
+			}, nil
+		},
+		failedSummary,
+		func(
+			_ context.Context,
+			request openrouter.Request,
+			_ func(openrouter.Delta),
+		) (*openrouter.Completion, error) {
+			if len(request.Messages) != 2 ||
+				!strings.Contains(request.Messages[1].Content[0].Text, oldAnswer) {
+				return nil, fmt.Errorf("retry summary request = %#v", request)
+			}
+			return &openrouter.Completion{
+				Text: "preserved detail", FinishReason: "stop",
+				Usage: &openrouter.Usage{
+					PromptTokens: 650, CompletionTokens: 20, TotalTokens: 670,
+				},
+			}, nil
+		},
+		func(
+			_ context.Context,
+			request openrouter.Request,
+			_ func(openrouter.Delta),
+		) (*openrouter.Completion, error) {
+			messages, err := conversation(request)
+			if err != nil {
+				return nil, err
+			}
+			if len(messages) != 5 || messages[4].Content[0].Text != "retry" {
+				return nil, fmt.Errorf("history after failed compaction = %#v", messages)
+			}
+			for _, message := range messages {
+				if len(message.Content) > 0 && message.Content[0].Text == "failed prompt" ||
+					len(message.Content) > 0 && message.Content[0].Text == "cancelled prompt" {
+					return nil, fmt.Errorf("failed prompt entered history: %#v", messages)
+				}
+			}
+			return completion("done"), nil
+		},
+	}
 }
 
 func TestPromptFailureReportsAndReplaysTheModelError(t *testing.T) {
