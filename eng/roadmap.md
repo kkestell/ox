@@ -137,22 +137,6 @@ Ox reports what a session has changed and consumed, keeps long sessions within
 the model's context window, and emits a trace that tools can read without
 exposing secrets or workspace content.
 
-### Changed-file accounting
-
-**Build**
-
-- Track the files each session creates, writes, or edits alongside usage, cost,
-  and context capacity in durable state.
-- Report each mutating tool call's path in the tool call's `locations` so
-  clients see changed files without a private side channel.
-
-**Gates**
-
-- The changed-file set survives restart and replay, counts a file once however
-  many times it changes, and excludes rejected or failed mutations.
-- Every write and edit tool call carries its confined path in `locations`, live
-  and from replay.
-
 ### Model-context compaction
 
 **Build**

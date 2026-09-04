@@ -381,16 +381,18 @@ func TestSessionUpdatesCarryExactDiscriminators(t *testing.T) {
 				ToolCallID:    "call-1",
 				Title:         "lookup",
 				Status:        ToolCallStatusPending,
+				Locations:     []ToolCallLocation{{Path: "/workspace/a.go"}},
 			},
-			want: `{"sessionUpdate":"tool_call","toolCallId":"call-1","title":"lookup","status":"pending"}`,
+			want: `{"sessionUpdate":"tool_call","toolCallId":"call-1","title":"lookup","status":"pending","locations":[{"path":"/workspace/a.go"}]}`,
 		},
 		{
 			value: ToolCallUpdate{
 				SessionUpdate: "tool_call_update",
 				ToolCallID:    "call-1",
 				Status:        ToolCallStatusCompleted,
+				Locations:     []ToolCallLocation{{Path: "/workspace/a.go"}},
 			},
-			want: `{"sessionUpdate":"tool_call_update","toolCallId":"call-1","status":"completed"}`,
+			want: `{"sessionUpdate":"tool_call_update","toolCallId":"call-1","status":"completed","locations":[{"path":"/workspace/a.go"}]}`,
 		},
 		{
 			value: UsageUpdate{

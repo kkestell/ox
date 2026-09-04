@@ -29,6 +29,7 @@ type event struct {
 	toolKind  acp.ToolKind
 	parent    string
 	title     string
+	target    string
 	delegates bool
 	usage     *openrouter.Usage
 	context   int

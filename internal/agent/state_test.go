@@ -3,6 +3,7 @@ package agent
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -105,6 +106,136 @@ func TestFoldBuildsExactModelHistoryAndReplay(t *testing.T) {
 	}
 }
 
+func TestFoldTracksChangedFilesAcrossCheckpointAndReplaysLocations(t *testing.T) {
+	id := "0123456789abcdef0123456789abcdef"
+	tool := func(id, name, target string) openrouter.ToolCall {
+		return openrouter.ToolCall{
+			ID: id, Type: "function",
+			Function: openrouter.ToolCallFunction{
+				Name: name, Arguments: fmt.Sprintf(`{"path":%q}`, target),
+			},
+		}
+	}
+	configuration := requestConfiguration{
+		Settings: settings.Resolved{Model: "test/model"},
+		Tools: []openrouter.Tool{
+			{Type: "function", Function: openrouter.ToolFunction{Name: "write_file"}},
+			{Type: "function", Function: openrouter.ToolFunction{Name: "edit_file"}},
+			{Type: "function", Function: openrouter.ToolFunction{Name: "task"}},
+		},
+		ToolKinds: map[string]acp.ToolKind{
+			"write_file": acp.ToolKindEdit,
+			"edit_file":  acp.ToolKindEdit,
+			"task":       acp.ToolKindOther,
+		},
+	}
+	firstCalls := []openrouter.ToolCall{
+		tool("write", "write_file", "z.txt"),
+		tool("edit", "edit_file", "z.txt"),
+		tool("failed", "edit_file", "failed.txt"),
+		tool("rejected", "edit_file", "rejected.txt"),
+		tool("parent", "task", ""),
+	}
+	records := []sessionRecord{
+		mustRecord(t, 1, recordSessionCreated, sessionCreated{
+			SessionID: id, CWD: "/workspace", Configuration: configuration,
+		}),
+		mustRecord(t, 2, recordUserMessage, userMessageRecord{
+			TurnID: "first", MessageID: "first-user",
+			Content: []acp.ContentBlock{{Type: "text", Text: "change files"}},
+		}),
+		mustRecord(t, 3, recordModelExchange, modelExchangeRecord{
+			TurnID: "first", AnswerID: "first-answer", ThoughtID: "first-thought",
+			FinishReason: "tool_calls", ToolCalls: firstCalls,
+			ToolResults: []storedToolResult{
+				{CallID: "write", Content: "created", Target: "z.txt"},
+				{CallID: "edit", Content: "edited", Target: "z.txt"},
+				{CallID: "failed", Content: "failed", Failed: true, Target: "failed.txt"},
+				{
+					CallID: "rejected", Content: "rejected", Failed: true,
+					ApprovalDecision: decisionRefused, Target: "rejected.txt",
+				},
+				{CallID: "parent", Content: "delegated", Delegation: &delegationRecord{
+					Prompt: "edit", Answer: "done", Calls: []delegatedCall{
+						{
+							CallID: "child-ok", Name: "edit_file",
+							Arguments: json.RawMessage(`{"path":"a.txt"}`),
+							Content:   "edited", Target: "a.txt",
+						},
+						{
+							CallID: "child-failed", Name: "edit_file",
+							Arguments: json.RawMessage(`{"path":"child-failed.txt"}`),
+							Content:   "failed", Failed: true, Target: "child-failed.txt",
+						},
+					},
+				}},
+			},
+		}),
+		mustRecord(t, 4, recordTurnFinished, turnFinishedRecord{
+			TurnID: "first", Kind: "completed", StopReason: acp.StopReasonEndTurn,
+		}),
+	}
+	prefix := mustFold(t, records)
+	checkpoint, err := newCheckpointRecord(prefix)
+	if err != nil {
+		t.Fatal(err)
+	}
+	records = append(records, checkpoint,
+		mustRecord(t, 6, recordUserMessage, userMessageRecord{
+			TurnID: "second", MessageID: "second-user",
+			Content: []acp.ContentBlock{{Type: "text", Text: "change another"}},
+		}),
+		mustRecord(t, 7, recordModelExchange, modelExchangeRecord{
+			TurnID: "second", AnswerID: "second-answer", ThoughtID: "second-thought",
+			FinishReason: "tool_calls",
+			ToolCalls:    []openrouter.ToolCall{tool("tail", "write_file", "b.txt")},
+			ToolResults:  []storedToolResult{{CallID: "tail", Content: "created", Target: "b.txt"}},
+		}),
+		mustRecord(t, 8, recordTurnFinished, turnFinishedRecord{
+			TurnID: "second", Kind: "completed", StopReason: acp.StopReasonEndTurn,
+		}),
+	)
+	state := mustFold(t, records)
+	if got := sortedIdentitySet(state.changedFiles); !reflect.DeepEqual(got, []string{"a.txt", "b.txt", "z.txt"}) {
+		t.Fatalf("changed files = %v", got)
+	}
+
+	instance, err := New(Config{Tools: []Tool{
+		{Name: "write_file", Kind: acp.ToolKindEdit},
+		{Name: "edit_file", Kind: acp.ToolKindEdit},
+		{
+			Name: "task", Kind: acp.ToolKindOther, Delegates: true,
+			Label: func(json.RawMessage) string { return "task" },
+		},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	updates, err := instance.replay(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantLocations := map[string]string{
+		"write": "/workspace/z.txt", "edit": "/workspace/z.txt",
+		"failed": "/workspace/failed.txt", "rejected": "/workspace/rejected.txt",
+		"child-ok": "/workspace/a.txt", "child-failed": "/workspace/child-failed.txt",
+		"tail": "/workspace/b.txt",
+	}
+	for _, update := range updates {
+		call, ok := update.(acp.ToolCall)
+		if !ok || wantLocations[call.ToolCallID] == "" {
+			continue
+		}
+		if len(call.Locations) != 1 || call.Locations[0].Path != wantLocations[call.ToolCallID] {
+			t.Fatalf("tool %q locations = %#v", call.ToolCallID, call.Locations)
+		}
+		delete(wantLocations, call.ToolCallID)
+	}
+	if len(wantLocations) != 0 {
+		t.Fatalf("missing replay locations: %v", wantLocations)
+	}
+}
+
 func TestFoldRejectsIncompleteToolGroupAndDuplicateMessage(t *testing.T) {
 	base := []sessionRecord{
 		mustRecord(t, 1, recordSessionCreated, sessionCreated{
@@ -143,7 +274,7 @@ func TestFoldResumesSuspendedPermissionGenerationAndReplaysOnce(t *testing.T) {
 	id := "0123456789abcdef0123456789abcdef"
 	call := openrouter.ToolCall{
 		ID: "call", Type: "function",
-		Function: openrouter.ToolCallFunction{Name: "shell", Arguments: `{}`},
+		Function: openrouter.ToolCallFunction{Name: "edit", Arguments: `{"path":"a.go"}`},
 	}
 	configuration := requestConfiguration{
 		Settings:      settings.Resolved{Model: "test/model"},
@@ -151,19 +282,20 @@ func TestFoldResumesSuspendedPermissionGenerationAndReplaysOnce(t *testing.T) {
 		Tools: []openrouter.Tool{{
 			Type: "function",
 			Function: openrouter.ToolFunction{
-				Name: "shell", Parameters: json.RawMessage(`{"type":"object"}`),
+				Name: "edit", Parameters: json.RawMessage(`{"type":"object"}`),
 			},
 		}},
-		ToolKinds: map[string]acp.ToolKind{"shell": acp.ToolKindExecute},
+		ToolKinds: map[string]acp.ToolKind{"edit": acp.ToolKindEdit},
 	}
 	request := acp.RequestPermissionRequest{
 		SessionID: id,
 		ToolCall: acp.ToolCallUpdate{
 			ToolCallID: call.ID, Name: call.Function.Name,
-			Title: "shell", Kind: acp.ToolKindExecute,
-			RawInput: json.RawMessage(call.Function.Arguments),
+			Title: "edit", Kind: acp.ToolKindEdit,
+			Locations: []acp.ToolCallLocation{{Path: "/workspace/a.go"}},
+			RawInput:  json.RawMessage(call.Function.Arguments),
 		},
-		Options: permissionOptions("shell", true),
+		Options: permissionOptions("", false),
 	}
 	records := []sessionRecord{
 		mustRecord(t, 1, recordSessionCreated, sessionCreated{
@@ -176,7 +308,8 @@ func TestFoldResumesSuspendedPermissionGenerationAndReplaysOnce(t *testing.T) {
 		mustRecord(t, 3, recordExchangePaused, suspendedModelExchangeRecord{
 			TurnID: "turn", AnswerID: "answer", ThoughtID: "thought",
 			Text: "working", FinishReason: "tool_calls",
-			ToolCalls: []openrouter.ToolCall{call}, RequestCount: 3,
+			ToolCalls: []openrouter.ToolCall{call}, ToolTargets: map[string]string{"call": "a.go"},
+			RequestCount: 3,
 		}),
 		mustRecord(t, 4, recordPermissionOpen, permissionRequestedRecord{
 			TurnID: "turn",
@@ -216,7 +349,7 @@ func TestFoldResumesSuspendedPermissionGenerationAndReplaysOnce(t *testing.T) {
 			ToolCalls: []openrouter.ToolCall{call},
 			ToolResults: []storedToolResult{{
 				CallID: call.ID, Content: "done",
-				ApprovalDecision: decisionAllowOnce,
+				ApprovalDecision: decisionAllowOnce, Target: "a.go",
 			}},
 		}),
 		mustRecord(t, 8, recordTurnFinished, turnFinishedRecord{
@@ -227,7 +360,10 @@ func TestFoldResumesSuspendedPermissionGenerationAndReplaysOnce(t *testing.T) {
 	if state.suspended != nil || state.openTurn != "" || len(state.history) != 3 {
 		t.Fatalf("completed state = %#v", state)
 	}
-	instance, err := New(Config{Tools: []Tool{{Name: "shell", Kind: acp.ToolKindExecute}}})
+	if _, changed := state.changedFiles["a.go"]; !changed {
+		t.Fatal("recovered edit was not recorded as changed")
+	}
+	instance, err := New(Config{Tools: []Tool{{Name: "edit", Kind: acp.ToolKindEdit}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -244,6 +380,9 @@ func TestFoldResumesSuspendedPermissionGenerationAndReplaysOnce(t *testing.T) {
 			}
 		case acp.ToolCall:
 			if value.ToolCallID == call.ID {
+				if len(value.Locations) != 1 || value.Locations[0].Path != "/workspace/a.go" {
+					t.Fatalf("replay locations = %#v", value.Locations)
+				}
 				pending++
 			}
 		case acp.ToolCallUpdate:

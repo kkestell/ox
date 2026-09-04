@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { realpath } from "node:fs/promises";
 import { BrowserHarness } from "./harness";
 
 let harness: BrowserHarness | undefined;
@@ -180,6 +181,18 @@ test("runs file and shell tools locally through visible permissions", async ({ p
     hasText: /fs\/(read|write)_text_file|terminal\//,
   })).toHaveCount(0);
   expect(await trafficPayloads(page, "in", "session/request_permission")).toHaveLength(2);
+  const toolUpdates = await trafficPayloads(page, "in", "session/update");
+  const canonicalWorkspace = await realpath(running.workspace);
+  expect(toolUpdates).toContainEqual(expect.objectContaining({
+    params: {
+      sessionId: expect.any(String),
+      update: expect.objectContaining({
+        sessionUpdate: "tool_call",
+        toolCallId: "browser-executor-edit",
+        locations: [{ path: `${canonicalWorkspace}/executor-fixture.txt` }],
+      }),
+    },
+  }));
 });
 
 test("surfaces protocol errors and confines Ox logs to stderr", async ({ page }) => {

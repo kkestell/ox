@@ -456,26 +456,34 @@ type AgentThoughtChunk struct {
 }
 
 type ToolCall struct {
-	SessionUpdate string          `json:"sessionUpdate"`
-	ToolCallID    string          `json:"toolCallId"`
-	Title         string          `json:"title"`
-	Name          string          `json:"name,omitempty"`
-	Kind          ToolKind        `json:"kind,omitempty"`
-	Status        ToolCallStatus  `json:"status,omitempty"`
-	RawInput      json.RawMessage `json:"rawInput,omitempty"`
-	Meta          Metadata        `json:"_meta,omitempty"`
+	SessionUpdate string             `json:"sessionUpdate"`
+	ToolCallID    string             `json:"toolCallId"`
+	Title         string             `json:"title"`
+	Name          string             `json:"name,omitempty"`
+	Kind          ToolKind           `json:"kind,omitempty"`
+	Status        ToolCallStatus     `json:"status,omitempty"`
+	Locations     []ToolCallLocation `json:"locations,omitempty"`
+	RawInput      json.RawMessage    `json:"rawInput,omitempty"`
+	Meta          Metadata           `json:"_meta,omitempty"`
 }
 
 type ToolCallUpdate struct {
-	SessionUpdate string            `json:"sessionUpdate,omitempty"`
-	ToolCallID    string            `json:"toolCallId"`
-	Kind          ToolKind          `json:"kind,omitempty"`
-	Status        ToolCallStatus    `json:"status,omitempty"`
-	Title         string            `json:"title,omitempty"`
-	Name          string            `json:"name,omitempty"`
-	Content       []ToolCallContent `json:"content,omitempty"`
-	RawInput      json.RawMessage   `json:"rawInput,omitempty"`
-	Meta          Metadata          `json:"_meta,omitempty"`
+	SessionUpdate string             `json:"sessionUpdate,omitempty"`
+	ToolCallID    string             `json:"toolCallId"`
+	Kind          ToolKind           `json:"kind,omitempty"`
+	Status        ToolCallStatus     `json:"status,omitempty"`
+	Title         string             `json:"title,omitempty"`
+	Name          string             `json:"name,omitempty"`
+	Content       []ToolCallContent  `json:"content,omitempty"`
+	Locations     []ToolCallLocation `json:"locations,omitempty"`
+	RawInput      json.RawMessage    `json:"rawInput,omitempty"`
+	Meta          Metadata           `json:"_meta,omitempty"`
+}
+
+type ToolCallLocation struct {
+	Path string   `json:"path"`
+	Line *int     `json:"line,omitempty"`
+	Meta Metadata `json:"_meta,omitempty"`
 }
 
 type ToolKind string

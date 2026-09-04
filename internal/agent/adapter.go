@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"path/filepath"
 	"sort"
 	"time"
 	"unicode/utf8"
@@ -24,6 +25,7 @@ type outputState struct {
 
 type eventAdapter struct {
 	sessionID        string
+	root             string
 	notify           notifyFunc
 	answerMessageID  string
 	thoughtMessageID string
@@ -31,9 +33,10 @@ type eventAdapter struct {
 	ticker           *time.Ticker
 }
 
-func newAdapter(sessionID string, notify notifyFunc) *eventAdapter {
+func newAdapter(sessionID, root string, notify notifyFunc) *eventAdapter {
 	return &eventAdapter{
 		sessionID: sessionID,
+		root:      root,
 		notify:    notify,
 		outputs:   make(map[string]*outputState),
 		ticker:    time.NewTicker(outputFlushPeriod),
@@ -75,6 +78,7 @@ func (a *eventAdapter) handle(current event) error {
 			Name:          current.call.Function.Name,
 			Kind:          current.toolKind,
 			Status:        acp.ToolCallStatusPending,
+			Locations:     toolLocations(a.root, current.target),
 			RawInput:      json.RawMessage(current.call.Function.Arguments),
 			Meta:          meta,
 		})
@@ -135,6 +139,15 @@ func (a *eventAdapter) handle(current event) error {
 		return a.send(current.update)
 	}
 	return nil
+}
+
+func toolLocations(root, target string) []acp.ToolCallLocation {
+	if target == "" {
+		return nil
+	}
+	return []acp.ToolCallLocation{{
+		Path: filepath.Join(root, filepath.FromSlash(target)),
+	}}
 }
 
 func (a *eventAdapter) flushDirty() error {

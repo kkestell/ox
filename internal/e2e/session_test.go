@@ -167,6 +167,115 @@ func TestSessionCanContinueInANewProcess(t *testing.T) {
 	})
 }
 
+func TestChangedFilesAndToolLocationsSurviveProcessRestart(t *testing.T) {
+	dataDir := t.TempDir()
+	model := startModel(t,
+		toolResponse("create-b", "write_file", `{"path":"nested/b.txt","content":"before"}`),
+		toolResponse("edit-b", "edit_file", `{"path":"nested/b.txt","old_string":"before","new_string":"after"}`),
+		toolResponse("create-a", "write_file", `{"path":"a.txt","content":"a"}`),
+		toolResponse("failed", "edit_file", `{"path":"missing.txt","old_string":"x","new_string":"y"}`),
+		toolResponse("escape", "edit_file", `{"path":"../outside.txt","old_string":"x","new_string":"y"}`),
+		sse(evText("done"), evFinishReason("stop")),
+	)
+	options := []startOption{withModel(model), withEnvironment("XDG_DATA_HOME", dataDir)}
+	first := start(t, options...)
+	initialize(t, first)
+	root, err := filepath.EvalSymlinks(first.cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := newSession(t, first, first.cwd)
+	promptCall := first.begin("session/prompt", acp.PromptRequest{
+		SessionID: session, Prompt: textPrompt("change files"),
+	})
+	allowFilePermission(t, first, "create-b", filepath.Join(root, "nested", "b.txt"), true)
+	allowFilePermission(t, first, "edit-b", filepath.Join(root, "nested", "b.txt"), true)
+	allowFilePermission(t, first, "create-a", filepath.Join(root, "a.txt"), true)
+	allowFilePermission(t, first, "failed", filepath.Join(root, "missing.txt"), true)
+	allowPermissionWithoutLocation(t, first, "escape")
+	if response := promptResponse(t, first.result(first.await(promptCall))); response.StopReason != acp.StopReasonEndTurn {
+		t.Fatalf("stop reason = %q", response.StopReason)
+	}
+	live := updates(t, first, session)
+	wantLocations := map[string]string{
+		"create-b": filepath.Join(root, "nested", "b.txt"),
+		"edit-b":   filepath.Join(root, "nested", "b.txt"),
+		"create-a": filepath.Join(root, "a.txt"),
+		"failed":   filepath.Join(root, "missing.txt"),
+	}
+	assertE2EToolLocations(t, live, wantLocations, "escape")
+	first.request("session/close", acp.CloseSessionRequest{SessionID: session})
+	first.stop()
+
+	assertChangedFilesCheckpoint(t, dataDir, session, []string{"a.txt", "nested/b.txt"})
+	second := start(t, options...)
+	initialize(t, second)
+	loadSession(t, second, session, first.cwd)
+	replay := updates(t, second, session)
+	assertE2EToolLocations(t, replay, wantLocations, "escape")
+	second.request("session/close", acp.CloseSessionRequest{SessionID: session})
+	second.stop()
+}
+
+func assertE2EToolLocations(
+	t *testing.T,
+	updates []sessionNotification,
+	want map[string]string,
+	wantOmitted string,
+) {
+	t.Helper()
+	seen := make(map[string]bool)
+	for _, notification := range updates {
+		update := notification.Update
+		if update.SessionUpdate != "tool_call" {
+			continue
+		}
+		if path, exists := want[update.ToolCallID]; exists {
+			if len(update.Locations) != 1 || update.Locations[0].Path != path {
+				t.Fatalf("tool %q locations = %#v", update.ToolCallID, update.Locations)
+			}
+			seen[update.ToolCallID] = true
+		}
+		if update.ToolCallID == wantOmitted {
+			if len(update.Locations) != 0 {
+				t.Fatalf("tool %q locations = %#v, want omitted", wantOmitted, update.Locations)
+			}
+			seen[wantOmitted] = true
+		}
+	}
+	if len(seen) != len(want)+1 {
+		t.Fatalf("tool locations seen = %v", seen)
+	}
+}
+
+func assertChangedFilesCheckpoint(t *testing.T, dataDir, session string, want []string) {
+	t.Helper()
+	content, err := os.ReadFile(filepath.Join(dataDir, "ox", "sessions", session+".jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, line := range strings.Split(strings.TrimSpace(string(content)), "\n") {
+		var record struct {
+			Type string `json:"type"`
+			Data struct {
+				State struct {
+					ChangedFiles []string `json:"changedFiles"`
+				} `json:"state"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			t.Fatal(err)
+		}
+		if record.Type == "checkpoint" {
+			got = record.Data.State.ChangedFiles
+		}
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("checkpoint changed files = %v, want %v", got, want)
+	}
+}
+
 func TestCancellingPermissionWaitLeavesReplayableSession(t *testing.T) {
 	dataDir := t.TempDir()
 	model := startModel(t, shellToolCallResponse("sleep 30"))
