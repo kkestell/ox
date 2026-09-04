@@ -928,6 +928,123 @@ func TestNewSessionResolvesBothSettingsLayers(t *testing.T) {
 	}
 }
 
+func TestSessionActivationFreezesExecutorCapabilities(t *testing.T) {
+	instance := settingsAgent(t, &staticCompletionModel{}, "", "test/model")
+	if _, err := instance.Initialize(context.Background(), acp.InitializeRequest{
+		ProtocolVersion: acp.ProtocolVersion,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	request := validNewSessionRequest(t)
+	created, err := instance.NewSession(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	value := instance.findSession(created.SessionID)
+	if value.state.configuration.ExecutorCapabilities != (executorCapabilities{}) {
+		t.Fatalf("new-session capabilities = %#v", value.state.configuration.ExecutorCapabilities)
+	}
+	if _, err := instance.CloseSession(context.Background(), acp.CloseSessionRequest{
+		SessionID: created.SessionID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	delegated := &acp.ClientCapabilities{
+		FS:       &acp.FileSystemCapabilities{ReadTextFile: true},
+		Terminal: true,
+	}
+	if _, err := instance.Initialize(context.Background(), acp.InitializeRequest{
+		ProtocolVersion:    acp.ProtocolVersion,
+		ClientCapabilities: delegated,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := instance.ResumeSession(context.Background(), acp.ResumeSessionRequest{
+		SessionID: created.SessionID,
+		CWD:       request.CWD,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	value = instance.findSession(created.SessionID)
+	want := executorCapabilities{FileSystemRead: true, Terminal: true}
+	if value.state.configuration.ExecutorCapabilities != want {
+		t.Fatalf("reactivated capabilities = %#v, want %#v",
+			value.state.configuration.ExecutorCapabilities, want)
+	}
+	if countRecords(value.state.records, recordConfigChanged) != 1 {
+		t.Fatalf("configuration changes = %d, want 1",
+			countRecords(value.state.records, recordConfigChanged))
+	}
+	if _, err := instance.CloseSession(context.Background(), acp.CloseSessionRequest{
+		SessionID: created.SessionID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := instance.ResumeSession(context.Background(), acp.ResumeSessionRequest{
+		SessionID: created.SessionID,
+		CWD:       request.CWD,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	value = instance.findSession(created.SessionID)
+	if countRecords(value.state.records, recordConfigChanged) != 1 {
+		t.Fatalf("same-capability configuration changes = %d, want 1",
+			countRecords(value.state.records, recordConfigChanged))
+	}
+}
+
+func TestPromptExecutorsUseFrozenSessionCapabilitiesIndependently(t *testing.T) {
+	instance, err := New(Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	instance.clientFS = acp.FileSystemCapabilities{
+		ReadTextFile:  true,
+		WriteTextFile: true,
+	}
+	instance.clientTerminal = true
+
+	tests := []struct {
+		name         string
+		capabilities executorCapabilities
+		read         bool
+		write        bool
+		terminal     bool
+	}{
+		{name: "local"},
+		{name: "filesystem read", capabilities: executorCapabilities{FileSystemRead: true}, read: true},
+		{name: "filesystem write", capabilities: executorCapabilities{FileSystemWrite: true}, write: true},
+		{name: "terminal", capabilities: executorCapabilities{Terminal: true}, terminal: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			value := &session{id: "session", state: durableState{
+				configuration: requestConfiguration{ExecutorCapabilities: test.capabilities},
+			}}
+			fileSystem, terminal := instance.promptExecutors(nil, value)
+			if (fileSystem.ReadTextFile != nil) != test.read ||
+				(fileSystem.WriteTextFile != nil) != test.write ||
+				terminal.Available() != test.terminal {
+				t.Fatalf("executors = read %t, write %t, terminal %t",
+					fileSystem.ReadTextFile != nil,
+					fileSystem.WriteTextFile != nil,
+					terminal.Available())
+			}
+		})
+	}
+}
+
+func countRecords(records []sessionRecord, kind string) int {
+	var count int
+	for _, record := range records {
+		if record.Type == kind {
+			count++
+		}
+	}
+	return count
+}
+
 func TestNewSessionValidatesSettingsAgainstTheCatalog(t *testing.T) {
 	reasoningModel := func(mandatory bool, efforts ...string) *openrouter.Model {
 		return &openrouter.Model{

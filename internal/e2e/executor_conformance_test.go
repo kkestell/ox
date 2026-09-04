@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -23,9 +24,16 @@ const (
 )
 
 type executorSnapshot struct {
-	toolResults []string
-	records     []any
-	replay      []any
+	toolResults  []string
+	capabilities []executorCapabilitySnapshot
+	records      []any
+	replay       []any
+}
+
+type executorCapabilitySnapshot struct {
+	FileSystemRead  bool `json:"fileSystemRead"`
+	FileSystemWrite bool `json:"fileSystemWrite"`
+	Terminal        bool `json:"terminal"`
 }
 
 type executorNormalizer struct {
@@ -46,6 +54,15 @@ func TestLocalAndDelegatedExecutorsHaveEqualDurableBehavior(t *testing.T) {
 		t.Fatalf("model-visible tool results differ\nlocal:     %#v\ndelegated: %#v",
 			local.toolResults, delegated.toolResults)
 	}
+	assertExecutorCapabilitySnapshots(t, local.capabilities, executorCapabilitySnapshot{})
+	assertExecutorCapabilitySnapshots(t, delegated.capabilities, executorCapabilitySnapshot{
+		FileSystemRead:  true,
+		FileSystemWrite: true,
+		Terminal:        true,
+	})
+	if reflect.DeepEqual(local.capabilities, delegated.capabilities) {
+		t.Fatal("local and delegated logs recorded equal executor capabilities")
+	}
 	if !reflect.DeepEqual(local.records, delegated.records) {
 		localJSON, _ := json.MarshalIndent(local.records, "", "  ")
 		delegatedJSON, _ := json.MarshalIndent(delegated.records, "", "  ")
@@ -56,6 +73,147 @@ func TestLocalAndDelegatedExecutorsHaveEqualDurableBehavior(t *testing.T) {
 		delegatedJSON, _ := json.MarshalIndent(delegated.replay, "", "  ")
 		t.Fatalf("session/load replay differs\nlocal:\n%s\ndelegated:\n%s", localJSON, delegatedJSON)
 	}
+}
+
+func TestExecutorCapabilitiesChangeOnceAcrossReactivation(t *testing.T) {
+	model := startModel(t,
+		sse(evText("baseline answer"), evFinishReason("stop")),
+		toolResponse("reactivated-read", "read_file", `{"path":"`+conformanceFile+`"}`),
+		toolResponse("reactivated-edit", "edit_file", `{"path":"`+conformanceFile+`","old_string":"before","new_string":"after"}`),
+		toolResponse("reactivated-shell", "shell", `{"command":"`+conformanceCommand+`"}`),
+		sse(evText("reactivated workflow complete"), evFinishReason("stop")),
+	)
+	dataDir := t.TempDir()
+	options := []startOption{
+		withModel(model),
+		withEnvironment("XDG_DATA_HOME", dataDir),
+		withFile(conformanceFile, conformanceBefore),
+	}
+
+	first := start(t, options...)
+	initializeWithCapabilities(t, first, nil)
+	session := newSession(t, first, first.cwd)
+	cwd := first.cwd
+	root, err := filepath.EvalSymlinks(cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prompt(t, first, session, "establish the baseline transcript")
+	_ = updates(t, first, session)
+	first.request("session/close", acp.CloseSessionRequest{SessionID: session})
+	first.stop()
+
+	beforeChange := loadExecutorReplay(t, options, nil, session, cwd, root)
+	localRecords, _ := readNormalizedSessionLog(t, dataDir, session, root)
+	if kinds := sessionRecordKinds(t, localRecords); slices.Contains(kinds, "request_configuration_changed") {
+		t.Fatalf("local reactivation changed configuration: %#v", kinds)
+	}
+	delegatedCapabilities := executorCapabilities(true)
+	afterChange := loadExecutorReplay(
+		t, options, delegatedCapabilities, session, cwd, root,
+	)
+	if !reflect.DeepEqual(afterChange, beforeChange) {
+		t.Fatalf("capability change altered replay\nbefore: %#v\nafter:  %#v",
+			beforeChange, afterChange)
+	}
+
+	delegated := start(t, options...)
+	initializeWithCapabilities(t, delegated, delegatedCapabilities)
+	receivedAt := len(delegated.received)
+	loadSession(t, delegated, session, cwd)
+	sameCapabilitiesReplay := normalizedReplay(t, delegated.received[receivedAt:], root)
+	_ = updates(t, delegated, session)
+	if !reflect.DeepEqual(sameCapabilitiesReplay, afterChange) {
+		t.Fatalf("same-capability reactivation altered replay\nfirst:  %#v\nsecond: %#v",
+			afterChange, sameCapabilitiesReplay)
+	}
+
+	fixturePath := filepath.Join(root, conformanceFile)
+	clientFile := conformanceBefore
+	clientMarker := ""
+	turn := delegated.begin("session/prompt", acp.PromptRequest{
+		SessionID: session,
+		Prompt:    textPrompt("run the reactivated executor workflow"),
+	})
+	read := delegated.serverRequest()
+	assertReadRequest(t, read, session, fixturePath)
+	delegated.respond(read, acp.ReadTextFileResponse{Content: clientFile})
+
+	allowPermission(t, delegated, "reactivated-edit", true)
+	read = delegated.serverRequest()
+	assertReadRequest(t, read, session, fixturePath)
+	delegated.respond(read, acp.ReadTextFileResponse{Content: clientFile})
+	write := delegated.serverRequest()
+	clientFile = assertWriteRequest(t, write, session, fixturePath, conformanceAfter)
+	delegated.respond(write, acp.WriteTextFileResponse{})
+
+	allowPermission(t, delegated, "reactivated-shell", true)
+	terminalRoundTripAtCWD(
+		t,
+		delegated,
+		session,
+		cwd,
+		conformanceCommand,
+		acp.WaitForTerminalExitResponse{ExitCode: intPointer(0)},
+		acp.TerminalOutputResponse{Output: "shell-output"},
+	)
+	clientMarker = "shell-output"
+	response := promptResponse(t, delegated.result(delegated.await(turn)))
+	if response.StopReason != acp.StopReasonEndTurn {
+		t.Fatalf("stop reason = %q, want %q", response.StopReason, acp.StopReasonEndTurn)
+	}
+	_ = updates(t, delegated, session)
+	delegated.request("session/close", acp.CloseSessionRequest{SessionID: session})
+	delegated.stop()
+
+	if local := readConformanceFile(t, filepath.Join(cwd, conformanceFile)); local != conformanceBefore {
+		t.Fatalf("delegated reactivation changed local file to %q", local)
+	}
+	if marker, exists := optionalConformanceFile(t, filepath.Join(cwd, conformanceMarker)); exists {
+		t.Fatalf("delegated reactivation created local marker %q", marker)
+	}
+	if clientFile != conformanceAfter || clientMarker != "shell-output" {
+		t.Fatalf("delegated client state = file %q, marker %q", clientFile, clientMarker)
+	}
+
+	records, capabilities := readNormalizedSessionLog(t, dataDir, session, root)
+	wantCapabilities := []executorCapabilitySnapshot{
+		{},
+		{},
+		{FileSystemRead: true, FileSystemWrite: true, Terminal: true},
+		{FileSystemRead: true, FileSystemWrite: true, Terminal: true},
+	}
+	if !reflect.DeepEqual(capabilities, wantCapabilities) {
+		t.Fatalf("executor capability snapshots = %#v, want %#v", capabilities, wantCapabilities)
+	}
+	kinds := sessionRecordKinds(t, records)
+	changeIndex := slices.Index(kinds, "request_configuration_changed")
+	if changeIndex < 0 || slices.Contains(kinds[changeIndex+1:], "request_configuration_changed") {
+		t.Fatalf("record kinds contain more than one configuration change: %#v", kinds)
+	}
+	if changeIndex+1 >= len(kinds) || kinds[changeIndex+1] != "user_message" {
+		t.Fatalf("configuration change does not precede the next turn: %#v", kinds)
+	}
+}
+
+func loadExecutorReplay(
+	t *testing.T,
+	options []startOption,
+	capabilities *acp.ClientCapabilities,
+	session string,
+	cwd string,
+	root string,
+) []any {
+	t.Helper()
+	child := start(t, options...)
+	initializeWithCapabilities(t, child, capabilities)
+	receivedAt := len(child.received)
+	loadSession(t, child, session, cwd)
+	replay := normalizedReplay(t, child.received[receivedAt:], root)
+	_ = updates(t, child, session)
+	child.request("session/close", acp.CloseSessionRequest{SessionID: session})
+	child.stop()
+	return replay
 }
 
 func runExecutorConformance(t *testing.T, delegated bool) executorSnapshot {
@@ -153,7 +311,7 @@ func runExecutorConformance(t *testing.T, delegated bool) executorSnapshot {
 
 	child.request("session/close", acp.CloseSessionRequest{SessionID: session})
 	child.stop()
-	records := readNormalizedSessionLog(t, dataDir, session, root)
+	records, capabilitySnapshots := readNormalizedSessionLog(t, dataDir, session, root)
 
 	restarted := start(t, options...)
 	initializeWithCapabilities(t, restarted, capabilities)
@@ -167,7 +325,12 @@ func runExecutorConformance(t *testing.T, delegated bool) executorSnapshot {
 		t.Fatal("session/load replayed no updates")
 	}
 
-	return executorSnapshot{toolResults: toolResults, records: records, replay: replay}
+	return executorSnapshot{
+		toolResults:  toolResults,
+		capabilities: capabilitySnapshots,
+		records:      records,
+		replay:       replay,
+	}
 }
 
 func executorCapabilities(delegated bool) *acp.ClientCapabilities {
@@ -201,22 +364,99 @@ func optionalConformanceFile(t *testing.T, path string) (string, bool) {
 	return string(content), true
 }
 
-func readNormalizedSessionLog(t *testing.T, dataDir, session, root string) []any {
+func readNormalizedSessionLog(
+	t *testing.T,
+	dataDir string,
+	session string,
+	root string,
+) ([]any, []executorCapabilitySnapshot) {
 	t.Helper()
 	content, err := os.ReadFile(filepath.Join(dataDir, "ox", "sessions", session+".jsonl"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	var records []any
+	var capabilities []executorCapabilitySnapshot
 	normalizer := newExecutorNormalizer(root)
 	for _, line := range bytes.Split(bytes.TrimSpace(content), []byte{'\n'}) {
 		var record any
 		if err := json.Unmarshal(line, &record); err != nil {
 			t.Fatalf("decode session record: %v", err)
 		}
+		capabilities = append(capabilities, removeExecutorCapabilities(t, record)...)
 		records = append(records, normalizer.normalize(record))
 	}
-	return records
+	return records, capabilities
+}
+
+func removeExecutorCapabilities(t *testing.T, record any) []executorCapabilitySnapshot {
+	t.Helper()
+	recordMap, ok := record.(map[string]any)
+	if !ok {
+		t.Fatalf("session record = %T, want object", record)
+	}
+	kind, _ := recordMap["type"].(string)
+	data, _ := recordMap["data"].(map[string]any)
+	var configuration map[string]any
+	switch kind {
+	case "session_created", "request_configuration_changed":
+		configuration, _ = data["configuration"].(map[string]any)
+	case "checkpoint":
+		state, _ := data["state"].(map[string]any)
+		configuration, _ = state["configuration"].(map[string]any)
+	default:
+		return nil
+	}
+	if configuration == nil {
+		t.Fatalf("%s record has no configuration", kind)
+	}
+	raw, exists := configuration["executorCapabilities"]
+	if !exists {
+		t.Fatalf("%s record has no executor capabilities", kind)
+	}
+	encoded, err := json.Marshal(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var capabilities executorCapabilitySnapshot
+	if err := json.Unmarshal(encoded, &capabilities); err != nil {
+		t.Fatalf("decode %s executor capabilities: %v", kind, err)
+	}
+	delete(configuration, "executorCapabilities")
+	return []executorCapabilitySnapshot{capabilities}
+}
+
+func assertExecutorCapabilitySnapshots(
+	t *testing.T,
+	values []executorCapabilitySnapshot,
+	want executorCapabilitySnapshot,
+) {
+	t.Helper()
+	if len(values) == 0 {
+		t.Fatal("session log contains no executor capability snapshots")
+	}
+	for index, value := range values {
+		if value != want {
+			t.Fatalf("executor capability snapshot %d = %#v, want %#v", index, value, want)
+		}
+	}
+}
+
+func sessionRecordKinds(t *testing.T, records []any) []string {
+	t.Helper()
+	kinds := make([]string, len(records))
+	for index, record := range records {
+		recordMap, ok := record.(map[string]any)
+		if !ok {
+			t.Fatalf("session record %d = %T, want object", index, record)
+		}
+		kind, ok := recordMap["type"].(string)
+		if !ok {
+			t.Fatalf("session record %d has no type", index)
+		}
+		kinds[index] = kind
+	}
+	return kinds
 }
 
 func normalizedReplay(t *testing.T, received []message, root string) []any {

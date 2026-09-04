@@ -205,8 +205,21 @@ func terminalRoundTrip(
 	output acp.TerminalOutputResponse,
 ) {
 	t.Helper()
+	terminalRoundTripAtCWD(t, child, session, child.cwd, command, exit, output)
+}
+
+func terminalRoundTripAtCWD(
+	t *testing.T,
+	child *process,
+	session string,
+	cwd string,
+	command string,
+	exit acp.WaitForTerminalExitResponse,
+	output acp.TerminalOutputResponse,
+) {
+	t.Helper()
 	create := child.serverRequest()
-	assertTerminalCreate(t, create, session, child.cwd, command)
+	assertTerminalCreate(t, create, session, cwd, command)
 	child.respond(create, acp.CreateTerminalResponse{TerminalID: "terminal-1"})
 	wait := child.serverRequest()
 	assertTerminalRequest(t, wait, acp.MethodTerminalWaitForExit, session, "terminal-1")

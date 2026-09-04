@@ -174,6 +174,52 @@ func TestFoldAcceptsConfigurationWithoutSystemPrompt(t *testing.T) {
 	}
 }
 
+func TestExecutorCapabilitiesArePartOfDurableConfiguration(t *testing.T) {
+	configuration := requestConfiguration{
+		Settings: settings.Resolved{Model: "test/model"},
+		ExecutorCapabilities: executorCapabilities{
+			FileSystemRead: true,
+			Terminal:       true,
+		},
+	}
+	created := mustRecord(t, 1, recordSessionCreated, sessionCreated{
+		SessionID:     "0123456789abcdef0123456789abcdef",
+		CWD:           "/workspace",
+		Configuration: configuration,
+	})
+	state := mustFold(t, []sessionRecord{created})
+	if state.configuration.ExecutorCapabilities != configuration.ExecutorCapabilities {
+		t.Fatalf("folded capabilities = %#v", state.configuration.ExecutorCapabilities)
+	}
+
+	cloned := state.clone()
+	cloned.configuration.ExecutorCapabilities.FileSystemRead = false
+	if !state.configuration.ExecutorCapabilities.FileSystemRead {
+		t.Fatal("clone changed the original executor capabilities")
+	}
+
+	changed := cloneConfiguration(configuration)
+	changed.ExecutorCapabilities = executorCapabilities{FileSystemWrite: true}
+	if sameRequestConfiguration(configuration, changed) {
+		t.Fatal("configuration equality ignored executor capabilities")
+	}
+	semanticallySame := cloneConfiguration(configuration)
+	semanticallySame.Tools = []openrouter.Tool{}
+	semanticallySame.Subagent.Tools = []openrouter.Tool{}
+	if !sameRequestConfiguration(configuration, semanticallySame) {
+		t.Fatal("configuration equality distinguished omitted empty tool lists")
+	}
+	change := mustRecord(t, 2, recordConfigChanged, configurationChanged{
+		Configuration: changed,
+	})
+	if err := state.apply(change); err != nil {
+		t.Fatal(err)
+	}
+	if state.configuration.ExecutorCapabilities != changed.ExecutorCapabilities {
+		t.Fatalf("changed capabilities = %#v", state.configuration.ExecutorCapabilities)
+	}
+}
+
 func TestFoldKeepsDelegationOutOfHistoryAndReplaysNestedCalls(t *testing.T) {
 	instance, err := New(Config{Tools: []Tool{
 		{
@@ -305,6 +351,9 @@ func TestFoldRestoresLatestCheckpointAndAppliesItsTail(t *testing.T) {
 		Settings:      settings.Resolved{Model: "test/first"},
 		ContextWindow: 1000,
 		SystemPrompt:  "first system prompt",
+		ExecutorCapabilities: executorCapabilities{
+			FileSystemRead: true,
+		},
 		Tools: []openrouter.Tool{{
 			Type: "function",
 			Function: openrouter.ToolFunction{
@@ -356,6 +405,10 @@ func TestFoldRestoresLatestCheckpointAndAppliesItsTail(t *testing.T) {
 	changed := cloneConfiguration(configuration)
 	changed.Settings.Model = "test/second"
 	changed.SystemPrompt = "second system prompt"
+	changed.ExecutorCapabilities = executorCapabilities{
+		FileSystemWrite: true,
+		Terminal:        true,
+	}
 	withCheckpoint := append(append([]sessionRecord(nil), prefix...), checkpoint)
 	withCheckpoint = append(withCheckpoint,
 		timedRecord(t, baseTime.Add(5*time.Second), 6, recordConfigChanged, configurationChanged{
@@ -412,6 +465,7 @@ func TestFoldRestoresLatestCheckpointAndAppliesItsTail(t *testing.T) {
 		t.Fatalf("checkpoint projection differs:\nrestored = %#v\nfull = %#v", restored, full)
 	}
 	if restored.configuration.Settings.Model != "test/second" ||
+		restored.configuration.ExecutorCapabilities != changed.ExecutorCapabilities ||
 		restored.usage.input != 18 || restored.usage.output != 9 ||
 		restored.usage.thought != 3 || restored.usage.cachedRead != 2 ||
 		restored.usage.cachedWrite != 1 || restored.cost != 0.75 ||
