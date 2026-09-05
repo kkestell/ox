@@ -13,6 +13,16 @@ import (
 func All() []agent.Tool {
 	return []agent.Tool{
 		{
+			Name:         "skill",
+			Description:  skillDescription,
+			InputSchema:  json.RawMessage(skillSchema),
+			Kind:         acp.ToolKindRead,
+			Approval:     agent.ApprovalNone,
+			ParallelSafe: true,
+			PlanMode:     true,
+			Execute:      executeSkill,
+		},
+		{
 			Name:         "todo",
 			Description:  todoDescription,
 			InputSchema:  json.RawMessage(todoSchema),

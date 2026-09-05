@@ -17,11 +17,12 @@ import (
 	"github.com/kkestell/ox/internal/acp"
 	"github.com/kkestell/ox/internal/openrouter"
 	"github.com/kkestell/ox/internal/settings"
+	"github.com/kkestell/ox/internal/skills"
 )
 
 const (
 	recordVersion     = 1
-	checkpointVersion = 7
+	checkpointVersion = 8
 
 	recordSessionCreated  = "session_created"
 	recordConfigChanged   = "request_configuration_changed"
@@ -60,6 +61,7 @@ type requestConfiguration struct {
 	Tools                []openrouter.Tool       `json:"tools,omitempty"`
 	ToolKinds            map[string]acp.ToolKind `json:"toolKinds,omitempty"`
 	PlanTools            map[string]bool         `json:"planTools,omitempty"`
+	Skills               []skills.Reference      `json:"skills,omitempty"`
 	Subagent             subagentConfiguration   `json:"subagent,omitempty"`
 	ExecutorCapabilities executorCapabilities    `json:"executorCapabilities"`
 }
@@ -2167,7 +2169,15 @@ func cloneConfiguration(value requestConfiguration) requestConfiguration {
 	value.Subagent.Tools = cloneTools(value.Subagent.Tools)
 	value.ToolKinds = cloneToolKinds(value.ToolKinds)
 	value.PlanTools = cloneBoolMap(value.PlanTools)
+	value.Skills = cloneSkillReferences(value.Skills)
 	return value
+}
+
+func cloneSkillReferences(values []skills.Reference) []skills.Reference {
+	if len(values) == 0 {
+		return nil
+	}
+	return slices.Clone(values)
 }
 
 func optionalConfiguration(value requestConfiguration) *requestConfiguration {
@@ -2408,6 +2418,9 @@ func validateConfiguration(value requestConfiguration) error {
 		if _, exists := names[name]; !exists {
 			return fmt.Errorf("plan tool names unknown tool %q", name)
 		}
+	}
+	if err := skills.ValidateReferences(value.Skills); err != nil {
+		return fmt.Errorf("configuration skills: %w", err)
 	}
 	return nil
 }

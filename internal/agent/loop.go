@@ -15,6 +15,7 @@ import (
 
 	"github.com/kkestell/ox/internal/acp"
 	"github.com/kkestell/ox/internal/openrouter"
+	"github.com/kkestell/ox/internal/skills"
 	diagnostictrace "github.com/kkestell/ox/internal/trace"
 	"github.com/kkestell/ox/internal/workspace"
 )
@@ -1428,6 +1429,7 @@ func (a *Agent) executeOne(
 	}
 	value.stateMu.Lock()
 	root := value.state.cwd
+	configuration := value.state.turnConfiguration()
 	value.stateMu.Unlock()
 	var delegation *delegationRecord
 	invocation := Invocation{
@@ -1439,6 +1441,14 @@ func (a *Agent) executeOne(
 		FileReads:  reads,
 		FileSystem: fileSystem,
 		Terminal:   terminal,
+		LoadSkill: func(name string) (string, error) {
+			for _, reference := range configuration.Skills {
+				if reference.Name == name {
+					return skills.Load(root, reference)
+				}
+			}
+			return "", fmt.Errorf("workspace skill %q is not in the active catalog", name)
+		},
 		Emit: func(text string) {
 			events <- event{kind: eventToolOutput, call: call, text: text}
 		},

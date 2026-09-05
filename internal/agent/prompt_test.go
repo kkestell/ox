@@ -8,11 +8,13 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/kkestell/ox/internal/skills"
 )
 
 func TestComposePromptAppendsEnvironmentAfterBasePrompt(t *testing.T) {
 	now := time.Date(2026, time.July, 27, 23, 59, 0, 0, time.FixedZone("test", -6*60*60))
-	prompt := composePrompt("/workspace/project", now, "")
+	prompt := composePrompt("/workspace/project", now, "", "")
 
 	base := strings.TrimSpace(basePrompt)
 	if base == "" || !strings.HasPrefix(prompt, base+"\n\n<environment>\n") {
@@ -34,8 +36,8 @@ func TestComposePromptsAppendExactWorkspaceInstructions(t *testing.T) {
 	const block = "<workspace-instructions>\n" + instructions + "\n</workspace-instructions>"
 
 	for name, prompt := range map[string]string{
-		"parent": composePrompt("/workspace/project", now, instructions),
-		"child":  composeSubagentPrompt("/workspace/project", now, instructions),
+		"parent": composePrompt("/workspace/project", now, instructions, ""),
+		"child":  composeSubagentPrompt("/workspace/project", now, instructions, ""),
 	} {
 		if strings.Count(prompt, block) != 1 || !strings.HasSuffix(prompt, block) {
 			t.Fatalf("%s prompt does not end with the exact instruction block: %q", name, prompt)
@@ -50,12 +52,50 @@ func TestComposePromptsAppendExactWorkspaceInstructions(t *testing.T) {
 func TestComposePromptsOmitEmptyWorkspaceInstructions(t *testing.T) {
 	now := time.Date(2026, time.July, 27, 23, 59, 0, 0, time.UTC)
 	for name, prompt := range map[string]string{
-		"parent": composePrompt("/workspace/project", now, ""),
-		"child":  composeSubagentPrompt("/workspace/project", now, ""),
+		"parent": composePrompt("/workspace/project", now, "", ""),
+		"child":  composeSubagentPrompt("/workspace/project", now, "", ""),
 	} {
 		if strings.Contains(prompt, "<workspace-instructions>") {
 			t.Fatalf("%s prompt contains an empty instruction block", name)
 		}
+	}
+}
+
+func TestRenderSkillCatalogIsMetadataOnlyAndBounded(t *testing.T) {
+	references := []skills.Reference{{
+		Name: "review", Description: "Review completed work.",
+		Path: ".agents/skills/review/SKILL.md", Digest: strings.Repeat("0", 64),
+	}}
+	block, err := renderSkillCatalog(references)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"<skills>", `"name":"review"`, `"description":"Review completed work."`,
+		`"location":".agents/skills/review/SKILL.md"`, "Use the skill tool",
+	} {
+		if !strings.Contains(block, want) {
+			t.Fatalf("catalog missing %q: %q", want, block)
+		}
+	}
+	if strings.Contains(block, references[0].Digest) {
+		t.Fatalf("catalog exposed file identity: %q", block)
+	}
+
+	parent := composePrompt("/workspace/project", time.Now(), "rules", block)
+	child := composeSubagentPrompt("/workspace/project", time.Now(), "rules", block)
+	for name, prompt := range map[string]string{"parent": parent, "child": child} {
+		if strings.Count(prompt, block) != 1 || !strings.Contains(prompt, "cannot expand") {
+			t.Fatalf("%s prompt catalog = %q", name, prompt)
+		}
+	}
+
+	_, err = renderSkillCatalog([]skills.Reference{{
+		Name: "huge", Description: strings.Repeat("x", skills.MaxCatalogBytes),
+		Path: ".agents/skills/huge/SKILL.md", Digest: strings.Repeat("0", 64),
+	}})
+	if err == nil || !strings.Contains(err.Error(), "maximum") {
+		t.Fatalf("oversized catalog error = %v", err)
 	}
 }
 

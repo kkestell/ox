@@ -12,6 +12,7 @@ import (
 	"github.com/kkestell/ox/internal/acp"
 	"github.com/kkestell/ox/internal/openrouter"
 	"github.com/kkestell/ox/internal/settings"
+	"github.com/kkestell/ox/internal/skills"
 )
 
 func TestFoldBuildsExactModelHistoryAndReplay(t *testing.T) {
@@ -103,6 +104,29 @@ func TestFoldBuildsExactModelHistoryAndReplay(t *testing.T) {
 	}
 	if !bytes.Equal(toolCall.RawInput, []byte(`{"path":"a.go"}`)) {
 		t.Fatalf("tool raw input = %s", toolCall.RawInput)
+	}
+}
+
+func TestSkillReferencesAreValidatedAndClonedWithConfiguration(t *testing.T) {
+	reference := skills.Reference{
+		Name: "review", Description: "Review work.",
+		Path: ".agents/skills/review/SKILL.md", Digest: strings.Repeat("0", 64),
+	}
+	configuration := requestConfiguration{
+		Settings: settings.Resolved{Model: "test/model"}, Skills: []skills.Reference{reference},
+	}
+	if err := validateConfiguration(configuration); err != nil {
+		t.Fatal(err)
+	}
+	cloned := cloneConfiguration(configuration)
+	cloned.Skills[0].Description = "changed"
+	if configuration.Skills[0].Description != reference.Description {
+		t.Fatal("configuration clone shared skill references")
+	}
+	configuration.Skills[0].Digest = "bad"
+	if err := validateConfiguration(configuration); err == nil ||
+		!strings.Contains(err.Error(), "configuration skills") {
+		t.Fatalf("invalid skill reference error = %v", err)
 	}
 }
 
