@@ -794,7 +794,7 @@ func TestLoopStopsAtMaximumModelRequestsWithReplayableHistory(t *testing.T) {
 	}
 	value := durableTestSession(t, instance, requestConfiguration{
 		Settings:      settings.Resolved{Model: "model"},
-		ContextWindow: 100,
+		ContextWindow: 1_000_000,
 		Tools:         instance.primaryTools.modelTools,
 	}, "turn-max")
 	events := make(chan event)
@@ -828,6 +828,155 @@ func TestLoopStopsAtMaximumModelRequestsWithReplayableHistory(t *testing.T) {
 	}
 	if len(value.state.history) != 1+2*maxTurnRequests {
 		t.Fatalf("history length = %d", len(value.state.history))
+	}
+}
+
+func TestDelegateResumesCompactedChildFromOpenTurnCheckpoint(t *testing.T) {
+	model := &capturingCompletionModel{completion: &openrouter.Completion{
+		Text: "child done", FinishReason: "stop",
+		Usage: &openrouter.Usage{PromptTokens: 9, CompletionTokens: 3, TotalTokens: 12},
+	}}
+	instance, err := New(Config{
+		Logger: discardLogger(), Client: model,
+		Tools: []Tool{
+			{Name: "task", Delegates: true, Label: func(json.RawMessage) string { return "Task" }},
+			{Name: "read", Approval: ApprovalNone},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	configuration := requestConfiguration{
+		Settings: settings.Resolved{Model: "model"}, ContextWindow: 2400,
+		SystemPrompt: "parent", Tools: cloneTools(instance.primaryTools.modelTools),
+		ToolKinds: map[string]acp.ToolKind{"task": acp.ToolKindOther, "read": acp.ToolKindRead},
+		Subagent: subagentConfiguration{
+			SystemPrompt: "child", Tools: cloneTools(instance.subagentTools.modelTools),
+		},
+	}
+	value := durableTestSession(t, instance, configuration, "turn")
+	parentCall := openrouter.ToolCall{
+		ID: "parent", Type: "function",
+		Function: openrouter.ToolCallFunction{Name: "task", Arguments: `{"prompt":"inspect"}`},
+	}
+	if err := instance.commit(value, recordExchangePaused, suspendedModelExchangeRecord{
+		TurnID: "turn", AnswerID: "answer", ThoughtID: "thought",
+		FinishReason: "tool_calls", ToolCalls: []openrouter.ToolCall{parentCall}, RequestCount: 1,
+		Usage: &openrouter.Usage{PromptTokens: 3, CompletionTokens: 2, TotalTokens: 5},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	prompt := textMessage(openrouter.RoleUser, "inspect")
+	firstAssistant := openrouter.Message{
+		Role: openrouter.RoleAssistant,
+		ToolCalls: []openrouter.ToolCall{{
+			ID: "provider-old", Type: "function",
+			Function: openrouter.ToolCallFunction{Name: "read", Arguments: `{}`},
+		}},
+	}
+	firstTool := openrouter.Message{
+		Role: openrouter.RoleTool, ToolCallID: "provider-old",
+		Content: []openrouter.ContentBlock{{Type: "text", Text: "old result"}},
+	}
+	recentAssistant := openrouter.Message{
+		Role: openrouter.RoleAssistant,
+		ToolCalls: []openrouter.ToolCall{{
+			ID: "provider-recent", Type: "function",
+			Function: openrouter.ToolCallFunction{Name: "read", Arguments: `{}`},
+		}},
+	}
+	recentTool := openrouter.Message{
+		Role: openrouter.RoleTool, ToolCallID: "provider-recent",
+		Content: []openrouter.ContentBlock{{Type: "text", Text: "recent result"}},
+	}
+	record := delegationRecord{Prompt: "inspect", History: []openrouter.Message{prompt}}
+	if err := instance.persistChildContext(value, "parent", record, nil); err != nil {
+		t.Fatal(err)
+	}
+	firstUsage := openrouter.Usage{PromptTokens: 5, CompletionTokens: 2, TotalTokens: 7}
+	record.History = append(record.History, firstAssistant, firstTool)
+	record.Calls = append(record.Calls, delegatedCall{
+		CallID: "child-public-old", Name: "read", Arguments: json.RawMessage(`{}`), Content: "old result",
+	})
+	record.Usage = append(record.Usage, firstUsage)
+	record.RequestCount = 1
+	record.Occupancy = 5
+	if err := instance.persistChildContext(value, "parent", record, nil); err != nil {
+		t.Fatal(err)
+	}
+	secondUsage := openrouter.Usage{PromptTokens: 7, CompletionTokens: 2, TotalTokens: 9}
+	record.History = append(record.History, recentAssistant, recentTool)
+	record.Calls = append(record.Calls, delegatedCall{
+		CallID: "child-public-recent", Name: "read", Arguments: json.RawMessage(`{}`), Content: "recent result",
+	})
+	record.Usage = append(record.Usage, secondUsage)
+	record.RequestCount = 2
+	record.Occupancy = 7
+	if err := instance.persistChildContext(value, "parent", record, nil); err != nil {
+		t.Fatal(err)
+	}
+	summaryUsage := openrouter.Usage{PromptTokens: 6, CompletionTokens: 2, TotalTokens: 8}
+	summary := newSummaryMessage("old facts")
+	record.History = []openrouter.Message{prompt, summary, recentAssistant, recentTool}
+	record.Usage = append(record.Usage, summaryUsage)
+	record.Occupancy = 11
+	if err := instance.persistChildContext(value, "parent", record, &compactionRecord{
+		TurnID: "turn", ParentCallID: "parent", HeadEnd: 1, TailStart: 3,
+		Summary: summary, Usage: &summaryUsage, Occupancy: 11,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	restored, err := foldRecords(value.state.records)
+	if err != nil {
+		t.Fatal(err)
+	}
+	value.state = restored
+	answer, delegation, err := instance.delegate(
+		context.Background(), value, "parent", "inspect", nil,
+		ClientFileSystem{}, ClientTerminal{}, make(chan event, 8),
+		instance.trace.Turn(value.id, "turn"),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if answer != "child done" || delegation.RequestCount != 3 || len(model.requests) != 1 {
+		t.Fatalf("resumed child = %q, %#v, requests %d", answer, delegation, len(model.requests))
+	}
+	messages := model.requests[0].Messages[1:]
+	if len(messages) != 4 || messages[1].Content[0].Text != summary.Content[0].Text ||
+		messages[3].ToolCallID != "provider-recent" {
+		t.Fatalf("resumed provider history = %#v", messages)
+	}
+	if err := instance.commit(value, recordModelExchange, modelExchangeRecord{
+		TurnID: "turn", AnswerID: "answer", ThoughtID: "thought",
+		FinishReason: "tool_calls", ToolCalls: []openrouter.ToolCall{parentCall},
+		ToolResults: []storedToolResult{{
+			CallID: "parent", Content: answer, Delegation: delegation,
+		}},
+		Usage: &openrouter.Usage{PromptTokens: 3, CompletionTokens: 2, TotalTokens: 5},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := instance.commit(value, recordTurnFinished, turnFinishedRecord{
+		TurnID: "turn", Kind: "completed", StopReason: acp.StopReasonEndTurn,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if value.state.usage.input != 30 || value.state.usage.output != 11 {
+		t.Fatalf("usage after child completion = %#v", value.state.usage)
+	}
+	updates, err := instance.replay(value.state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, update := range updates {
+		chunk, ok := update.(acp.AgentMessageChunk)
+		if ok && (strings.Contains(chunk.Content.Text, "old result") ||
+			strings.Contains(chunk.Content.Text, "recent result") ||
+			strings.Contains(chunk.Content.Text, "old facts")) {
+			t.Fatalf("replay exposed child provider history: %#v", chunk)
+		}
 	}
 }
 
@@ -1416,6 +1565,27 @@ func ephemeralToolSession(t *testing.T) *session {
 
 type repeatingToolModel struct {
 	requests int
+}
+
+type capturingCompletionModel struct {
+	completion *openrouter.Completion
+	requests   []openrouter.Request
+}
+
+func (m *capturingCompletionModel) Stream(
+	_ context.Context,
+	request openrouter.Request,
+	_ func(openrouter.Delta),
+) (*openrouter.Completion, error) {
+	m.requests = append(m.requests, request)
+	return m.completion, nil
+}
+
+func (m *capturingCompletionModel) ModelInfo(
+	_ context.Context,
+	id string,
+) (*openrouter.Model, error) {
+	return &openrouter.Model{ID: id, ContextLength: 2400}, nil
 }
 
 // staticCompletionModel answers every request with one completion. entry and

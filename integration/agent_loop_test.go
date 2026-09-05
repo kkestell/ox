@@ -120,9 +120,10 @@ func TestPromptStreamsAndReplaysCompletedHistory(t *testing.T) {
 
 func TestPromptCompactsModelHistoryBeforeTheNextTurn(t *testing.T) {
 	const oldAnswer = "old detail "
+	recentAnswer := strings.Repeat("recent answer ", 100)
 	var ordinarySystemPrompt string
 	model := &scriptedModel{
-		entry: &openrouter.Model{ID: "test/model", ContextLength: 1000},
+		entry: &openrouter.Model{ID: "test/model", ContextLength: 1900},
 		scripts: []modelScript{
 			func(
 				_ context.Context,
@@ -143,7 +144,7 @@ func TestPromptCompactsModelHistoryBeforeTheNextTurn(t *testing.T) {
 				_ func(openrouter.Delta),
 			) (*openrouter.Completion, error) {
 				return &openrouter.Completion{
-					Text: "recent answer", FinishReason: "stop",
+					Text: recentAnswer, FinishReason: "stop",
 					Usage: &openrouter.Usage{
 						PromptTokens: 800, CompletionTokens: 5, TotalTokens: 805, Cost: 0.002,
 					},
@@ -182,14 +183,13 @@ func TestPromptCompactsModelHistoryBeforeTheNextTurn(t *testing.T) {
 				if err != nil {
 					return nil, err
 				}
-				if len(request.Tools) != 1 || len(messages) != 5 {
+				if len(request.Tools) != 1 || len(messages) != 4 {
 					return nil, fmt.Errorf("compacted request = %#v", request)
 				}
 				if messages[0].Content[0].Text != "first" ||
 					!strings.Contains(messages[1].Content[0].Text, "required detail") ||
-					messages[2].Content[0].Text != "second" ||
-					messages[3].Content[0].Text != "recent answer" ||
-					messages[4].Content[0].Text != "third" {
+					messages[2].Content[0].Text != recentAnswer ||
+					messages[3].Content[0].Text != "third" {
 					return nil, fmt.Errorf("compacted history = %#v", messages)
 				}
 				return completion("done"), nil
@@ -219,11 +219,191 @@ func TestPromptCompactsModelHistoryBeforeTheNextTurn(t *testing.T) {
 		update.decode(t, &usage)
 		occupancies = append(occupancies, usage.Used)
 	}
-	if len(occupancies) != 2 || occupancies[0] == 0 || occupancies[0] >= 800 ||
+	if len(occupancies) != 2 || occupancies[0] == 0 || occupancies[0] >= 1900 ||
 		occupancies[1] != 7 {
 		t.Fatalf("third-turn occupancies = %#v", occupancies)
 	}
 	model.assertConsumed(t)
+}
+
+func TestPromptCompactsWithinASingleToolLoop(t *testing.T) {
+	oldResult := strings.Repeat("old tool result ", 300)
+	recentResult := strings.Repeat("recent tool result ", 40)
+	model := &scriptedModel{
+		entry: &openrouter.Model{ID: "test/model", ContextLength: 2400},
+		scripts: []modelScript{
+			func(context.Context, openrouter.Request, func(openrouter.Delta)) (*openrouter.Completion, error) {
+				result := completion("")
+				result.FinishReason = "tool_calls"
+				result.ToolCalls = []openrouter.ToolCall{modelToolCall("old", "read", `{"which":"old"}`)}
+				return result, nil
+			},
+			func(_ context.Context, request openrouter.Request, _ func(openrouter.Delta)) (*openrouter.Completion, error) {
+				messages, err := conversation(request)
+				if err != nil {
+					return nil, err
+				}
+				if len(messages) != 3 || messages[2].Role != openrouter.RoleTool ||
+					messages[2].Content[0].Text != oldResult {
+					return nil, fmt.Errorf("first continuation = %#v", messages)
+				}
+				result := completion("")
+				result.FinishReason = "tool_calls"
+				result.ToolCalls = []openrouter.ToolCall{modelToolCall("recent", "read", `{"which":"recent"}`)}
+				return result, nil
+			},
+			func(_ context.Context, request openrouter.Request, _ func(openrouter.Delta)) (*openrouter.Completion, error) {
+				if len(request.Tools) != 0 || len(request.Messages) != 2 {
+					return nil, fmt.Errorf("tool-loop summary request = %#v", request)
+				}
+				transcript := request.Messages[1].Content[0].Text
+				if !strings.Contains(transcript, oldResult[:80]) || strings.Contains(transcript, recentResult[:80]) {
+					return nil, fmt.Errorf("tool-loop summary transcript = %q", transcript)
+				}
+				return completion("old tool facts"), nil
+			},
+			func(_ context.Context, request openrouter.Request, _ func(openrouter.Delta)) (*openrouter.Completion, error) {
+				messages, err := conversation(request)
+				if err != nil {
+					return nil, err
+				}
+				if len(messages) != 4 ||
+					!strings.Contains(messages[1].Content[0].Text, "old tool facts") ||
+					messages[2].Role != openrouter.RoleAssistant ||
+					messages[3].Role != openrouter.RoleTool ||
+					messages[3].ToolCallID != "recent" ||
+					messages[3].Content[0].Text != recentResult {
+					return nil, fmt.Errorf("compacted tool continuation = %#v", messages)
+				}
+				return completion("done"), nil
+			},
+		},
+	}
+	tool := agent.Tool{
+		Name: "read", Description: "read a named fixture",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"which":{"type":"string"}},"required":["which"]}`),
+		Kind:        acp.ToolKindRead, Approval: agent.ApprovalNone, ParallelSafe: true,
+		Execute: func(_ context.Context, invocation agent.Invocation) (string, error) {
+			var input struct {
+				Which string `json:"which"`
+			}
+			if err := json.Unmarshal(invocation.Arguments, &input); err != nil {
+				return "", err
+			}
+			if input.Which == "old" {
+				return oldResult, nil
+			}
+			return recentResult, nil
+		},
+	}
+	harness := newAgentHarness(t, model, []agent.Tool{tool})
+	sessionID := harness.newSession(t)
+	harness.prompt(t, sessionID, "work through both fixtures")
+	model.assertConsumed(t)
+}
+
+func TestPromptCompactsWithinAChildToolLoop(t *testing.T) {
+	oldResult := strings.Repeat("old child result ", 360)
+	recentResult := strings.Repeat("recent child result ", 40)
+	model := &routedModel{entry: &openrouter.Model{ID: "test/model", ContextLength: 2400}}
+	childRequests := 0
+	model.route = func(
+		_ context.Context,
+		request openrouter.Request,
+		_ func(openrouter.Delta),
+	) (*openrouter.Completion, error) {
+		if len(request.Tools) == 0 {
+			if len(request.Messages) != 2 {
+				return nil, fmt.Errorf("child summary request = %#v", request)
+			}
+			transcript := request.Messages[1].Content[0].Text
+			if !strings.Contains(transcript, oldResult[:80]) || strings.Contains(transcript, recentResult[:80]) {
+				return nil, fmt.Errorf("child summary transcript = %q", transcript)
+			}
+			return completion("old child facts"), nil
+		}
+		if len(request.Tools) == 1 && request.Tools[0].Function.Name == "read" {
+			childRequests++
+			messages, err := conversation(request)
+			if err != nil {
+				return nil, err
+			}
+			switch childRequests {
+			case 1:
+				result := completion("")
+				result.FinishReason = "tool_calls"
+				result.ToolCalls = []openrouter.ToolCall{modelToolCall("child-old", "read", `{"which":"old"}`)}
+				return result, nil
+			case 2:
+				if messages[len(messages)-1].Content[0].Text != oldResult {
+					return nil, fmt.Errorf("first child continuation = %#v", messages)
+				}
+				result := completion("")
+				result.FinishReason = "tool_calls"
+				result.ToolCalls = []openrouter.ToolCall{modelToolCall("child-recent", "read", `{"which":"recent"}`)}
+				return result, nil
+			case 3:
+				if len(messages) != 4 ||
+					!strings.Contains(messages[1].Content[0].Text, "old child facts") ||
+					messages[3].Role != openrouter.RoleTool ||
+					messages[3].Content[0].Text != recentResult {
+					return nil, fmt.Errorf("compacted child continuation = %#v", messages)
+				}
+				return completion("child done"), nil
+			default:
+				return nil, errors.New("unexpected child request")
+			}
+		}
+		messages, err := conversation(request)
+		if err != nil {
+			return nil, err
+		}
+		if len(messages) == 1 {
+			result := completion("")
+			result.FinishReason = "tool_calls"
+			result.ToolCalls = []openrouter.ToolCall{modelToolCall(
+				"parent-task", "task", `{"description":"Inspect fixtures","prompt":"inspect both fixtures"}`,
+			)}
+			return result, nil
+		}
+		if len(messages) != 3 || messages[2].Role != openrouter.RoleTool ||
+			messages[2].Content[0].Text != "child done" {
+			return nil, fmt.Errorf("parent received child history = %#v", messages)
+		}
+		return completion("parent done"), nil
+	}
+	read := agent.Tool{
+		Name: "read", Description: "read a named fixture",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"which":{"type":"string"}},"required":["which"]}`),
+		Kind:        acp.ToolKindRead, Approval: agent.ApprovalNone, ParallelSafe: true,
+		Execute: func(_ context.Context, invocation agent.Invocation) (string, error) {
+			if strings.Contains(string(invocation.Arguments), `"old"`) {
+				return oldResult, nil
+			}
+			return recentResult, nil
+		},
+	}
+	task := agent.Tool{
+		Name: "task", Description: "delegate a task",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"prompt":{"type":"string"}},"required":["prompt"]}`),
+		Kind:        acp.ToolKindOther, Approval: agent.ApprovalNone, ParallelSafe: true,
+		Delegates: true, Label: func(json.RawMessage) string { return "Task" },
+		Execute: func(ctx context.Context, invocation agent.Invocation) (string, error) {
+			var input struct {
+				Prompt string `json:"prompt"`
+			}
+			if err := json.Unmarshal(invocation.Arguments, &input); err != nil {
+				return "", err
+			}
+			return invocation.Delegate(ctx, input.Prompt)
+		},
+	}
+	harness := newAgentHarness(t, model, []agent.Tool{task, read})
+	sessionID := harness.newSession(t)
+	harness.prompt(t, sessionID, "delegate the fixture inspection")
+	if childRequests != 3 {
+		t.Fatalf("child requests = %d, want 3", childRequests)
+	}
 }
 
 func TestPromptCompactionFailureLeavesHistoryUntouched(t *testing.T) {
@@ -258,8 +438,8 @@ func TestPromptCompactionFailureLeavesHistoryUntouched(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			model := &scriptedModel{
-				entry:   &openrouter.Model{ID: "test/model", ContextLength: 1000},
-				scripts: compactionAtomicityScripts(test.summary),
+				entry:   &openrouter.Model{ID: "test/model", ContextLength: 1900},
+				scripts: compactionAtomicityScripts(test.summary, ""),
 			}
 			harness := newAgentHarness(t, model, nil)
 			sessionID := harness.newSession(t)
@@ -278,7 +458,7 @@ func TestPromptCompactionFailureLeavesHistoryUntouched(t *testing.T) {
 func TestPromptCompactionCancellationLeavesHistoryUntouched(t *testing.T) {
 	started := make(chan struct{})
 	model := &scriptedModel{
-		entry: &openrouter.Model{ID: "test/model", ContextLength: 1000},
+		entry: &openrouter.Model{ID: "test/model", ContextLength: 1900},
 		scripts: compactionAtomicityScripts(func(
 			ctx context.Context,
 			_ openrouter.Request,
@@ -287,7 +467,7 @@ func TestPromptCompactionCancellationLeavesHistoryUntouched(t *testing.T) {
 			close(started)
 			<-ctx.Done()
 			return nil, ctx.Err()
-		}),
+		}, "cancelled prompt"),
 	}
 	harness := newAgentHarness(t, model, nil)
 	sessionID := harness.newSession(t)
@@ -307,13 +487,16 @@ func TestPromptCompactionCancellationLeavesHistoryUntouched(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := <-result
-	assertRPCErrorCode(t, got.err, acp.ErrCodeRequestCancelled)
+	if got.err != nil || got.response.StopReason != acp.StopReasonCancelled {
+		t.Fatalf("cancelled prompt = %#v, %v", got.response, got.err)
+	}
 	harness.prompt(t, sessionID, "retry")
 	model.assertConsumed(t)
 }
 
-func compactionAtomicityScripts(failedSummary modelScript) []modelScript {
+func compactionAtomicityScripts(failedSummary modelScript, retainedPrompt string) []modelScript {
 	oldAnswer := strings.Repeat("old detail ", 240)
+	recentAnswer := strings.Repeat("recent answer ", 100)
 	return []modelScript{
 		func(
 			_ context.Context,
@@ -333,7 +516,7 @@ func compactionAtomicityScripts(failedSummary modelScript) []modelScript {
 			_ func(openrouter.Delta),
 		) (*openrouter.Completion, error) {
 			return &openrouter.Completion{
-				Text: "recent answer", FinishReason: "stop",
+				Text: recentAnswer, FinishReason: "stop",
 				Usage: &openrouter.Usage{
 					PromptTokens: 800, CompletionTokens: 5, TotalTokens: 805,
 				},
@@ -365,14 +548,21 @@ func compactionAtomicityScripts(failedSummary modelScript) []modelScript {
 			if err != nil {
 				return nil, err
 			}
-			if len(messages) != 5 || messages[4].Content[0].Text != "retry" {
+			if len(messages) < 3 || messages[len(messages)-1].Content[0].Text != "retry" {
 				return nil, fmt.Errorf("history after failed compaction = %#v", messages)
 			}
+			var sawRetained bool
 			for _, message := range messages {
-				if len(message.Content) > 0 && message.Content[0].Text == "failed prompt" ||
-					len(message.Content) > 0 && message.Content[0].Text == "cancelled prompt" {
-					return nil, fmt.Errorf("failed prompt entered history: %#v", messages)
+				if len(message.Content) > 0 && message.Content[0].Text == retainedPrompt {
+					sawRetained = true
 				}
+				if retainedPrompt == "" && len(message.Content) > 0 &&
+					(message.Content[0].Text == "failed prompt" || message.Content[0].Text == "cancelled prompt") {
+					return nil, fmt.Errorf("rejected prompt entered history: %#v", messages)
+				}
+			}
+			if retainedPrompt != "" && !sawRetained {
+				return nil, fmt.Errorf("retained prompt missing from history: %#v", messages)
 			}
 			return completion("done"), nil
 		},
@@ -3403,6 +3593,7 @@ type scriptedModel struct {
 
 type routedModel struct {
 	route modelScript
+	entry *openrouter.Model
 }
 
 func (m *routedModel) Stream(
@@ -3417,6 +3608,9 @@ func (m *routedModel) ModelInfo(
 	_ context.Context,
 	id string,
 ) (*openrouter.Model, error) {
+	if m.entry != nil {
+		return m.entry, nil
+	}
 	return &openrouter.Model{ID: id, ContextLength: 128_000}, nil
 }
 

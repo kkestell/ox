@@ -197,16 +197,14 @@ retries transient failures within a bounded budget only before response content
 has been observed. Raw reasoning details and usage survive provider translation
 when they are needed for continued requests or accounting.
 
-The implemented compaction runs before an idle session starts a new turn.
-Context admission is being extended to every provider boundary, including tool
-continuations and children, under the roadmap's context-continuity work. The
-agent owns request budgeting because it owns the complete prompt and tools; the
-provider boundary supplies model limits and measured usage. Summarization uses
-the owning turn's frozen model and provider settings. That request has its own
-system prompt and no tools. The ordinary system prompt, tool declarations, first
-user message, and complete recent message groups remain outside the summary.
-Context occupancy is the last measured provider prompt size, or the estimated
-prompt size immediately after a durable compaction; token and cost totals remain
+The agent admits every parent and child provider request against the selected
+model's context window. It budgets the complete messages and tool declarations
+plus the configured output reserve before sending. Summarization uses the owning
+turn's frozen model and provider settings. That request has its own system
+prompt and no tools. The ordinary system prompt, tool declarations, first user
+message, and complete recent message groups remain outside the summary. Context
+occupancy is the last measured provider prompt size, or the estimated prompt
+size immediately after a durable compaction; token and cost totals remain
 cumulative.
 
 Provider transport failures remain ordinary Go errors. ACP-visible stop reasons,
@@ -245,13 +243,15 @@ Todo, configuration selections, child histories, queue attempts, and compaction
 boundaries belong in that log. Their live state advances through the same commit
 path, rather than through independently saved sidecar files.
 
-Context admission occurs only at complete model/tool boundaries. The original
-transcript and the provider-facing compacted projection have separate purposes;
-ACP replay never substitutes summaries for recorded output. Child context must
-have the same durable boundary as parent context before it can support recovery
-or long-turn compaction. Static instructions and tool catalogs form a stable
-prefix; transient state is explicit context. Prompt caching is an optimization
-and cannot affect history or request correctness.
+Context admission occurs only at complete model/tool boundaries. Parent and
+child provider projections advance through scoped compaction records and
+open-turn checkpoints; a final child result consumes its durable child
+projection instead of counting its calls or usage again. The original transcript
+and the provider-facing compacted projection have separate purposes; ACP replay
+never substitutes summaries or private child history for recorded output. Static
+instructions and tool catalogs form a stable prefix; transient state is explicit
+context. Prompt caching is an optimization and cannot affect history or request
+correctness.
 
 The log cannot commit an external effect atomically. Dispatch intent precedes
 execution, completion follows it, and a missing completion means the outcome may

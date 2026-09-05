@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -20,11 +21,12 @@ import (
 
 const (
 	recordVersion     = 1
-	checkpointVersion = 3
+	checkpointVersion = 4
 
 	recordSessionCreated  = "session_created"
 	recordConfigChanged   = "request_configuration_changed"
 	recordCompaction      = "model_context_compacted"
+	recordChildContext    = "child_context_updated"
 	recordUserMessage     = "user_message"
 	recordExchangePaused  = "suspended_model_exchange"
 	recordPermissionOpen  = "permission_requested"
@@ -75,11 +77,30 @@ type configurationChanged struct {
 }
 
 type compactionRecord struct {
-	HeadEnd   int                `json:"headEnd"`
-	TailStart int                `json:"tailStart"`
-	Summary   openrouter.Message `json:"summary"`
-	Usage     *openrouter.Usage  `json:"usage,omitempty"`
-	Occupancy int                `json:"occupancy"`
+	TurnID       string             `json:"turnId"`
+	ParentCallID string             `json:"parentCallId,omitempty"`
+	HeadEnd      int                `json:"headEnd"`
+	TailStart    int                `json:"tailStart"`
+	Summary      openrouter.Message `json:"summary"`
+	Usage        *openrouter.Usage  `json:"usage,omitempty"`
+	Occupancy    int                `json:"occupancy"`
+}
+
+type childContextRecord struct {
+	TurnID     string            `json:"turnId"`
+	Child      childContext      `json:"child"`
+	Compaction *compactionRecord `json:"compaction,omitempty"`
+}
+
+type childContext struct {
+	ParentCallID string               `json:"parentCallId"`
+	Prompt       string               `json:"prompt"`
+	History      []openrouter.Message `json:"history"`
+	Calls        []delegatedCall      `json:"calls,omitempty"`
+	Usage        []openrouter.Usage   `json:"usage,omitempty"`
+	RequestCount int                  `json:"requestCount,omitempty"`
+	Occupancy    int                  `json:"occupancy,omitempty"`
+	Answer       string               `json:"answer,omitempty"`
 }
 
 type userMessageRecord struct {
@@ -98,10 +119,13 @@ type storedToolResult struct {
 }
 
 type delegationRecord struct {
-	Prompt string             `json:"prompt"`
-	Answer string             `json:"answer,omitempty"`
-	Calls  []delegatedCall    `json:"calls,omitempty"`
-	Usage  []openrouter.Usage `json:"usage,omitempty"`
+	Prompt       string               `json:"prompt"`
+	Answer       string               `json:"answer,omitempty"`
+	Calls        []delegatedCall      `json:"calls,omitempty"`
+	Usage        []openrouter.Usage   `json:"usage,omitempty"`
+	History      []openrouter.Message `json:"history,omitempty"`
+	RequestCount int                  `json:"requestCount,omitempty"`
+	Occupancy    int                  `json:"occupancy,omitempty"`
 }
 
 type delegatedCall struct {
@@ -188,21 +212,24 @@ type checkpointRecord struct {
 }
 
 type checkpointProjection struct {
-	SessionID     string               `json:"sessionId"`
-	CWD           string               `json:"cwd"`
-	CreatedAt     time.Time            `json:"createdAt"`
-	UpdatedAt     time.Time            `json:"updatedAt"`
-	Sequence      uint64               `json:"sequence"`
-	Configuration requestConfiguration `json:"configuration"`
-	History       []openrouter.Message `json:"history,omitempty"`
-	Usage         checkpointUsage      `json:"usage"`
-	Occupancy     int                  `json:"occupancy"`
-	Cost          float64              `json:"cost"`
-	MessageIDs    []string             `json:"messageIds,omitempty"`
-	ToolCallIDs   []string             `json:"toolCallIds,omitempty"`
-	ChangedFiles  []string             `json:"changedFiles,omitempty"`
-	OpenTurn      string               `json:"openTurn,omitempty"`
-	Title         string               `json:"title,omitempty"`
+	SessionID     string                        `json:"sessionId"`
+	CWD           string                        `json:"cwd"`
+	CreatedAt     time.Time                     `json:"createdAt"`
+	UpdatedAt     time.Time                     `json:"updatedAt"`
+	Sequence      uint64                        `json:"sequence"`
+	Configuration requestConfiguration          `json:"configuration"`
+	History       []openrouter.Message          `json:"history,omitempty"`
+	Usage         checkpointUsage               `json:"usage"`
+	Occupancy     int                           `json:"occupancy"`
+	Cost          float64                       `json:"cost"`
+	MessageIDs    []string                      `json:"messageIds,omitempty"`
+	ToolCallIDs   []string                      `json:"toolCallIds,omitempty"`
+	ChangedFiles  []string                      `json:"changedFiles,omitempty"`
+	OpenTurn      string                        `json:"openTurn,omitempty"`
+	OpenTurnBase  []openrouter.Message          `json:"openTurnBase,omitempty"`
+	Suspended     *suspendedModelExchangeRecord `json:"suspended,omitempty"`
+	Children      []childContext                `json:"children,omitempty"`
+	Title         string                        `json:"title,omitempty"`
 }
 
 type checkpointUsage struct {
@@ -231,7 +258,9 @@ type durableState struct {
 	changedFiles    map[string]struct{}
 	openTurn        string
 	openTurnHistory int
+	openTurnBase    []openrouter.Message
 	suspended       *suspendedModelExchangeRecord
+	children        map[string]childContext
 	title           string
 }
 
@@ -260,8 +289,8 @@ func foldRecords(records []sessionRecord) (durableState, error) {
 		if record.Type != recordCheckpoint {
 			continue
 		}
-		if index == 0 || records[index-1].Type != recordTurnFinished {
-			return durableState{}, fmt.Errorf("record %d: checkpoint does not follow a finished turn", index+1)
+		if index == 0 || !checkpointBoundary(records[index-1].Type) {
+			return durableState{}, fmt.Errorf("record %d: checkpoint does not follow a durable provider boundary", index+1)
 		}
 		restored, err := restoreCheckpoint(record, records[index-1])
 		if err != nil {
@@ -298,7 +327,7 @@ func validateRecordEnvelope(record sessionRecord, previous uint64) error {
 		return errors.New("first record must create the session")
 	}
 	switch record.Type {
-	case recordSessionCreated, recordConfigChanged, recordCompaction, recordUserMessage,
+	case recordSessionCreated, recordConfigChanged, recordCompaction, recordChildContext, recordUserMessage,
 		recordExchangePaused, recordPermissionOpen, recordPermissionRetry,
 		recordPermissionDone, recordModelExchange, recordTurnFinished, recordCheckpoint:
 		return nil
@@ -308,8 +337,8 @@ func validateRecordEnvelope(record sessionRecord, previous uint64) error {
 }
 
 func newCheckpointRecord(state durableState) (sessionRecord, error) {
-	if state.openTurn != "" {
-		return sessionRecord{}, errors.New("checkpoint cannot represent an open turn")
+	if len(state.records) == 0 || !checkpointBoundary(state.records[len(state.records)-1].Type) {
+		return sessionRecord{}, errors.New("checkpoint requires a durable provider boundary")
 	}
 	payload := checkpointRecord{
 		Version: checkpointVersion,
@@ -334,10 +363,18 @@ func newCheckpointRecord(state durableState) (sessionRecord, error) {
 			MessageIDs:   sortedIdentitySet(state.messageIDs),
 			ToolCallIDs:  sortedIdentitySet(state.toolCallIDs),
 			ChangedFiles: sortedIdentitySet(state.changedFiles),
+			OpenTurn:     state.openTurn,
+			OpenTurnBase: cloneMessages(state.openTurnBase),
+			Suspended:    cloneSuspendedExchange(state.suspended),
+			Children:     sortedChildContexts(state.children),
 			Title:        state.title,
 		},
 	}
 	return newRecord(state.sequence+1, recordCheckpoint, payload)
+}
+
+func checkpointBoundary(kind string) bool {
+	return kind == recordTurnFinished || kind == recordCompaction || kind == recordChildContext
 }
 
 func restoreCheckpoint(record, previous sessionRecord) (durableState, error) {
@@ -349,8 +386,11 @@ func restoreCheckpoint(record, previous sessionRecord) (durableState, error) {
 		return durableState{}, fmt.Errorf("unsupported checkpoint version %d", value.Version)
 	}
 	projection := value.State
-	if projection.OpenTurn != "" {
-		return durableState{}, errors.New("checkpoint represents an open turn")
+	if previous.Type == recordTurnFinished && projection.OpenTurn != "" {
+		return durableState{}, errors.New("checkpoint after a finished turn is still open")
+	}
+	if previous.Type != recordTurnFinished && projection.OpenTurn == "" {
+		return durableState{}, errors.New("provider-boundary checkpoint has no open turn")
 	}
 	if projection.Sequence != record.Sequence-1 {
 		return durableState{}, fmt.Errorf(
@@ -396,7 +436,11 @@ func restoreCheckpoint(record, previous sessionRecord) (durableState, error) {
 	if err != nil {
 		return durableState{}, fmt.Errorf("checkpoint changed files: %w", err)
 	}
-	return durableState{
+	children, err := childContextMap(projection.Children)
+	if err != nil {
+		return durableState{}, err
+	}
+	state := durableState{
 		id:            projection.SessionID,
 		cwd:           projection.CWD,
 		createdAt:     projection.CreatedAt,
@@ -412,13 +456,105 @@ func restoreCheckpoint(record, previous sessionRecord) (durableState, error) {
 			cachedRead:  projection.Usage.CachedRead,
 			cachedWrite: projection.Usage.CachedWrite,
 		},
-		occupancy:    projection.Occupancy,
-		cost:         projection.Cost,
-		messageIDs:   messageIDs,
-		toolCallIDs:  toolCallIDs,
-		changedFiles: changedFiles,
-		title:        projection.Title,
-	}, nil
+		occupancy:       projection.Occupancy,
+		cost:            projection.Cost,
+		messageIDs:      messageIDs,
+		toolCallIDs:     toolCallIDs,
+		changedFiles:    changedFiles,
+		openTurn:        projection.OpenTurn,
+		openTurnHistory: len(projection.OpenTurnBase),
+		openTurnBase:    cloneMessages(projection.OpenTurnBase),
+		suspended:       cloneSuspendedExchange(projection.Suspended),
+		children:        children,
+		title:           projection.Title,
+	}
+	if err := validateCheckpointTurnState(state); err != nil {
+		return durableState{}, err
+	}
+	return state, nil
+}
+
+func sortedChildContexts(values map[string]childContext) []childContext {
+	result := make([]childContext, 0, len(values))
+	for _, value := range values {
+		result = append(result, cloneChildContext(value))
+	}
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].ParentCallID < result[j].ParentCallID
+	})
+	return result
+}
+
+func childContextMap(values []childContext) (map[string]childContext, error) {
+	if len(values) == 0 {
+		return nil, nil
+	}
+	result := make(map[string]childContext, len(values))
+	for _, value := range values {
+		if value.ParentCallID == "" {
+			return nil, errors.New("checkpoint child context identity is required")
+		}
+		if _, duplicate := result[value.ParentCallID]; duplicate {
+			return nil, fmt.Errorf("checkpoint contains duplicate child context %q", value.ParentCallID)
+		}
+		result[value.ParentCallID] = cloneChildContext(value)
+	}
+	return result, nil
+}
+
+func validateCheckpointTurnState(state durableState) error {
+	if state.openTurn == "" {
+		if len(state.openTurnBase) != 0 || state.suspended != nil || len(state.children) != 0 {
+			return errors.New("checkpoint has turn state without an open turn")
+		}
+		return nil
+	}
+	if state.suspended != nil {
+		progress := cloneSuspendedExchange(state.suspended)
+		decisions := append([]storedPermissionDecision(nil), progress.Decisions...)
+		pending := progress.Pending
+		progress.Decisions = nil
+		progress.Pending = nil
+		if err := state.validateSuspendedExchange(*progress); err != nil {
+			return fmt.Errorf("checkpoint suspended exchange: %w", err)
+		}
+		progress.Decisions = decisions
+		progress.Pending = pending
+		for index, decision := range decisions {
+			if !validApprovalDecision(decision.Decision) || progress.callIndex(decision.CallID) < 0 {
+				return errors.New("checkpoint contains an invalid permission decision")
+			}
+			if index > 0 && progress.callIndex(decisions[index-1].CallID) >= progress.callIndex(decision.CallID) {
+				return errors.New("checkpoint permission decisions are out of order")
+			}
+		}
+		if pending != nil {
+			copy := state
+			copy.suspended = progress
+			if err := copy.validatePendingPermission(*pending); err != nil {
+				return fmt.Errorf("checkpoint pending permission: %w", err)
+			}
+		}
+	} else if len(state.children) != 0 {
+		return errors.New("checkpoint has child context without a suspended exchange")
+	}
+	seen := make(map[string]struct{}, len(state.children))
+	for id, child := range state.children {
+		if id == "" || id != child.ParentCallID {
+			return errors.New("checkpoint child context identity is invalid")
+		}
+		if _, duplicate := seen[id]; duplicate {
+			return fmt.Errorf("checkpoint contains duplicate child context %q", id)
+		}
+		seen[id] = struct{}{}
+		if state.suspended.callIndex(id) < 0 {
+			return fmt.Errorf("checkpoint child context %q has no parent tool call", id)
+		}
+		if err := validateChildHistory(child); err != nil {
+			return fmt.Errorf("checkpoint child context %q: %w", id, err)
+		}
+	}
+	return nil
 }
 
 func sortedIdentitySet(values map[string]struct{}) []string {
@@ -466,9 +602,19 @@ func validStoredTarget(value string) bool {
 
 func (s durableState) clone() durableState {
 	s.history = cloneMessages(s.history)
+	s.openTurnBase = cloneMessages(s.openTurnBase)
 	s.records = append([]sessionRecord(nil), s.records...)
 	s.configuration = cloneConfiguration(s.configuration)
 	s.suspended = cloneSuspendedExchange(s.suspended)
+	children := s.children
+	if len(children) == 0 {
+		s.children = nil
+	} else {
+		s.children = make(map[string]childContext, len(children))
+		for id, child := range children {
+			s.children[id] = cloneChildContext(child)
+		}
+	}
 	messageIDs := s.messageIDs
 	s.messageIDs = make(map[string]struct{}, len(messageIDs))
 	for id := range messageIDs {
@@ -530,8 +676,8 @@ func (s *durableState) apply(record sessionRecord) error {
 		}
 		s.configuration = cloneConfiguration(value.Configuration)
 	case recordCompaction:
-		if s.openTurn != "" || s.suspended != nil {
-			return errors.New("model context compacted during a turn")
+		if s.suspended != nil {
+			return errors.New("model context compacted with an unresolved tool group")
 		}
 		var value compactionRecord
 		if err := decodeRecord(record.Data, &value); err != nil {
@@ -547,6 +693,14 @@ func (s *durableState) apply(record sessionRecord) error {
 		s.history = history
 		s.addUsage(value.Usage)
 		s.occupancy = value.Occupancy
+	case recordChildContext:
+		var value childContextRecord
+		if err := decodeRecord(record.Data, &value); err != nil {
+			return err
+		}
+		if err := s.applyChildContext(value); err != nil {
+			return err
+		}
 	case recordUserMessage:
 		if s.suspended != nil {
 			return errors.New("user message arrived while a model exchange was suspended")
@@ -564,6 +718,7 @@ func (s *durableState) apply(record sessionRecord) error {
 		if s.openTurn == "" {
 			s.openTurn = value.TurnID
 			s.openTurnHistory = len(s.history)
+			s.openTurnBase = cloneMessages(s.history)
 		} else if s.openTurn != value.TurnID {
 			return errors.New("user message belongs to another open turn")
 		}
@@ -709,12 +864,19 @@ func (s *durableState) apply(record sessionRecord) error {
 					s.changedFiles[result.Target] = struct{}{}
 				}
 				if result.Delegation != nil {
+					child, durableChild := s.children[call.ID]
+					if durableChild {
+						if !delegationMatchesChild(*result.Delegation, child) {
+							return fmt.Errorf("delegation result for tool call %q does not match durable child context", call.ID)
+						}
+						delete(s.children, call.ID)
+					}
 					for _, child := range result.Delegation.Calls {
 						if child.CallID == "" || child.Name == "" ||
 							!json.Valid(child.Arguments) {
 							return errors.New("delegated tool call identity, name, and JSON arguments are required")
 						}
-						if _, exists := s.toolCallIDs[child.CallID]; exists {
+						if _, exists := s.toolCallIDs[child.CallID]; exists && !durableChild {
 							return fmt.Errorf("duplicate tool call ID %q", child.CallID)
 						}
 						if child.Target != "" &&
@@ -731,8 +893,10 @@ func (s *durableState) apply(record sessionRecord) error {
 							s.changedFiles[child.Target] = struct{}{}
 						}
 					}
-					for index := range result.Delegation.Usage {
-						s.addUsage(&result.Delegation.Usage[index])
+					if !durableChild {
+						for index := range result.Delegation.Usage {
+							s.addUsage(&result.Delegation.Usage[index])
+						}
 					}
 				}
 				s.history = append(s.history, openrouter.Message{
@@ -753,6 +917,9 @@ func (s *durableState) apply(record sessionRecord) error {
 		if value.Usage != nil {
 			s.occupancy = value.Usage.PromptTokens
 		}
+		if len(s.children) != 0 {
+			return errors.New("completed model exchange has unfinished child context")
+		}
 		s.suspended = nil
 	case recordTurnFinished:
 		var value turnFinishedRecord
@@ -763,7 +930,7 @@ func (s *durableState) apply(record sessionRecord) error {
 			return errors.New("turn outcome has no matching open turn")
 		}
 		if value.Kind == "refusal" {
-			s.history = s.history[:s.openTurnHistory]
+			s.history = cloneMessages(s.openTurnBase)
 		}
 		switch value.Kind {
 		case "completed", "cancelled", "interrupted", "failed", "refusal", "request_limit":
@@ -778,6 +945,8 @@ func (s *durableState) apply(record sessionRecord) error {
 		}
 		s.openTurn = ""
 		s.openTurnHistory = 0
+		s.openTurnBase = nil
+		s.children = nil
 		if s.suspended != nil {
 			if value.Kind != "cancelled" &&
 				(value.Kind != "interrupted" || s.suspended.Pending != nil) {
@@ -813,9 +982,16 @@ func (s *durableState) addUsage(current *openrouter.Usage) {
 }
 
 func validateCompaction(state durableState, value compactionRecord) error {
+	if state.openTurn == "" || value.TurnID != state.openTurn || value.ParentCallID != "" {
+		return errors.New("compaction does not match the open parent turn")
+	}
+	return validateCompactionHistory(state.history, value)
+}
+
+func validateCompactionHistory(history []openrouter.Message, value compactionRecord) error {
 	firstUser := -1
-	for index := range state.history {
-		if state.history[index].Role == openrouter.RoleUser {
+	for index := range history {
+		if history[index].Role == openrouter.RoleUser {
 			firstUser = index
 			break
 		}
@@ -823,11 +999,11 @@ func validateCompaction(state durableState, value compactionRecord) error {
 	if firstUser < 0 || value.HeadEnd != firstUser+1 {
 		return errors.New("compaction does not preserve the first user message")
 	}
-	if value.TailStart <= value.HeadEnd || value.TailStart >= len(state.history) {
+	if value.TailStart <= value.HeadEnd || value.TailStart >= len(history) {
 		return errors.New("compaction splice boundaries are invalid")
 	}
-	if !messageGroupBoundary(state.history, value.HeadEnd) ||
-		!messageGroupBoundary(state.history, value.TailStart) {
+	if !messageGroupBoundary(history, value.HeadEnd) ||
+		!messageGroupBoundary(history, value.TailStart) {
 		return errors.New("compaction separates a tool call from its result")
 	}
 	if value.Summary.Role != openrouter.RoleUser || len(value.Summary.Content) != 1 ||
@@ -842,6 +1018,206 @@ func validateCompaction(state durableState, value compactionRecord) error {
 		return errors.New("compaction context occupancy is invalid")
 	}
 	return nil
+}
+
+func applyCompaction(history []openrouter.Message, value compactionRecord) []openrouter.Message {
+	compacted := make([]openrouter.Message, 0, value.HeadEnd+1+len(history)-value.TailStart)
+	compacted = append(compacted, cloneMessages(history[:value.HeadEnd])...)
+	compacted = append(compacted, cloneMessages([]openrouter.Message{value.Summary})...)
+	compacted = append(compacted, cloneMessages(history[value.TailStart:])...)
+	return compacted
+}
+
+func (s *durableState) applyChildContext(value childContextRecord) error {
+	if s.openTurn == "" || value.TurnID != s.openTurn || s.suspended == nil {
+		return errors.New("child context has no matching suspended exchange")
+	}
+	child := value.Child
+	if child.ParentCallID == "" || strings.TrimSpace(child.Prompt) == "" ||
+		child.RequestCount < 0 || child.RequestCount > maxTurnRequests || child.Occupancy < 0 {
+		return errors.New("child context identity, prompt, and occupancy are invalid")
+	}
+	parentIndex := s.suspended.callIndex(child.ParentCallID)
+	if parentIndex < 0 {
+		return errors.New("child context names an unknown parent tool call")
+	}
+	if !configuredDelegatingTool(s.configuration, s.suspended.ToolCalls[parentIndex].Function.Name) {
+		return errors.New("child context parent is not a delegating tool")
+	}
+	if err := validateChildHistory(child); err != nil {
+		return err
+	}
+	previous, exists := s.children[child.ParentCallID]
+	if !exists {
+		if value.Compaction != nil || len(child.Calls) != 0 || len(child.Usage) != 0 || child.RequestCount != 0 ||
+			child.Answer != "" || len(child.History) != 1 {
+			return errors.New("new child context must contain only its prompt")
+		}
+	} else {
+		if child.Prompt != previous.Prompt || child.RequestCount < previous.RequestCount ||
+			child.RequestCount > previous.RequestCount+1 || !slicePrefix(previous.Calls, child.Calls) ||
+			!slicePrefix(previous.Usage, child.Usage) {
+			return errors.New("child context does not extend its durable progress")
+		}
+		if value.Compaction == nil {
+			if child.RequestCount != previous.RequestCount+1 {
+				return errors.New("child context request count did not advance")
+			}
+			if !jsonSlicePrefix(previous.History, child.History) {
+				return errors.New("child context rewrote history without a compaction")
+			}
+		} else {
+			if child.RequestCount != previous.RequestCount {
+				return errors.New("child context compaction changed its request count")
+			}
+			if value.Compaction.TurnID != value.TurnID ||
+				value.Compaction.ParentCallID != child.ParentCallID {
+				return errors.New("child context compaction scope is invalid")
+			}
+			if err := validateCompactionHistory(previous.History, *value.Compaction); err != nil {
+				return fmt.Errorf("child context compaction: %w", err)
+			}
+			want := applyCompaction(previous.History, *value.Compaction)
+			if len(want) != len(child.History) || !jsonSlicePrefix(want, child.History) ||
+				child.Occupancy != value.Compaction.Occupancy {
+				return errors.New("child context does not match its compaction")
+			}
+			wantUsage := len(previous.Usage)
+			if value.Compaction.Usage != nil {
+				wantUsage++
+			}
+			if len(child.Usage) != wantUsage || value.Compaction.Usage != nil &&
+				!reflect.DeepEqual(child.Usage[len(child.Usage)-1], *value.Compaction.Usage) {
+				return errors.New("child context compaction usage is invalid")
+			}
+		}
+		for _, current := range child.Calls[len(previous.Calls):] {
+			if current.CallID == "" || current.Name == "" || !json.Valid(current.Arguments) {
+				return errors.New("child tool call identity, name, and arguments are required")
+			}
+			if _, duplicate := s.toolCallIDs[current.CallID]; duplicate {
+				return fmt.Errorf("duplicate tool call ID %q", current.CallID)
+			}
+			if current.Target != "" &&
+				(s.configuration.ToolKinds[current.Name] != acp.ToolKindEdit || !validStoredTarget(current.Target)) {
+				return fmt.Errorf("child tool call %q has invalid target %q", current.CallID, current.Target)
+			}
+			s.toolCallIDs[current.CallID] = struct{}{}
+			if !current.Failed && current.Target != "" {
+				s.changedFiles[current.Target] = struct{}{}
+			}
+		}
+		for index := len(previous.Usage); index < len(child.Usage); index++ {
+			s.addUsage(&child.Usage[index])
+		}
+	}
+	if s.children == nil {
+		s.children = make(map[string]childContext)
+	}
+	s.children[child.ParentCallID] = cloneChildContext(child)
+	return nil
+}
+
+func validateChildHistory(child childContext) error {
+	if len(child.History) == 0 || child.History[0].Role != openrouter.RoleUser ||
+		len(child.History[0].Content) != 1 || child.History[0].Content[0].Type != "text" ||
+		child.History[0].Content[0].Text != child.Prompt {
+		return errors.New("child history does not begin with its prompt")
+	}
+	for index := 0; index < len(child.History); index++ {
+		message := child.History[index]
+		if message.Role == openrouter.RoleTool {
+			return errors.New("child history contains an orphaned tool result")
+		}
+		if message.Role != openrouter.RoleAssistant || len(message.ToolCalls) == 0 {
+			continue
+		}
+		if index+len(message.ToolCalls) >= len(child.History)+1 {
+			return errors.New("child history contains an unresolved tool group")
+		}
+		for callIndex, call := range message.ToolCalls {
+			resultIndex := index + callIndex + 1
+			if resultIndex >= len(child.History) || child.History[resultIndex].Role != openrouter.RoleTool ||
+				child.History[resultIndex].ToolCallID != call.ID {
+				return errors.New("child history contains an incomplete tool group")
+			}
+		}
+		index += len(message.ToolCalls)
+	}
+	return nil
+}
+
+func slicePrefix[T any](prefix, values []T) bool {
+	if len(prefix) == 0 {
+		return true
+	}
+	return len(prefix) <= len(values) && reflect.DeepEqual(prefix, values[:len(prefix)])
+}
+
+func jsonSlicePrefix[T any](prefix, values []T) bool {
+	if len(prefix) == 0 {
+		return true
+	}
+	if len(prefix) > len(values) {
+		return false
+	}
+	left, err := json.Marshal(prefix)
+	if err != nil {
+		panic(err)
+	}
+	right, err := json.Marshal(values[:len(prefix)])
+	if err != nil {
+		panic(err)
+	}
+	return bytes.Equal(left, right)
+}
+
+func cloneChildContext(value childContext) childContext {
+	data, err := json.Marshal(value)
+	if err != nil {
+		panic(err)
+	}
+	var cloned childContext
+	if err := json.Unmarshal(data, &cloned); err != nil {
+		panic(err)
+	}
+	return cloned
+}
+
+func delegationMatchesChild(value delegationRecord, child childContext) bool {
+	want := delegationRecord{
+		Prompt: child.Prompt, Answer: child.Answer, Calls: child.Calls,
+		Usage: child.Usage, History: child.History, RequestCount: child.RequestCount,
+		Occupancy: child.Occupancy,
+	}
+	gotJSON, err := json.Marshal(value)
+	if err != nil {
+		panic(err)
+	}
+	wantJSON, err := json.Marshal(want)
+	if err != nil {
+		panic(err)
+	}
+	return bytes.Equal(gotJSON, wantJSON)
+}
+
+func configuredDelegatingTool(configuration requestConfiguration, name string) bool {
+	var primary bool
+	for _, tool := range configuration.Tools {
+		if tool.Function.Name == name {
+			primary = true
+			break
+		}
+	}
+	if !primary {
+		return false
+	}
+	for _, tool := range configuration.Subagent.Tools {
+		if tool.Function.Name == name {
+			return false
+		}
+	}
+	return true
 }
 
 func messageGroupBoundary(messages []openrouter.Message, index int) bool {

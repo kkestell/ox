@@ -29,7 +29,7 @@ tests without importing the surrounding framework or UI.
 | Capability                   | Preferred source                                                                                                                 | Ox decision                                                                                                                                                    |
 | ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Durable context and recovery | `personal/gamma/internal/agent/{engine,state,store}.go`; `personal/beta/src/{session,agent,acp}.rs`                              | Keep the existing JSONL/checkpoint model; prove recovery before adding new durable state.                                                                      |
-| Compaction                   | `personal/beta/src/compaction.rs`; `personal/eta/internal/agent/compact.go`; `personal/delta/cmd/fleur/compaction.go`            | Preserve paired tool groups and transcript replay; extend Ox's idle-only compaction to long turns and children.                                                |
+| Compaction                   | `personal/beta/src/compaction.rs`; `personal/eta/internal/agent/compact.go`; `personal/delta/cmd/fleur/compaction.go`            | Preserve paired tool groups, transcript replay, and scoped parent and child projections.                                                                       |
 | Trace                        | `personal/beta/src/trace.rs`                                                                                                     | Port scoped correlation, excluding Beta's raw content fields. The existing trace plan defines the adaptation.                                                  |
 | Todo and instructions        | `personal/eta/internal/agent/tools/{todo,todo_test}.go`; `personal/eta/internal/agent/{prompt,prompt_test}.go`                   | Eta's todo returns text but does not own durable todo state. Add that state in Ox rather than assuming a direct port supplies it. Keep root-only instructions. |
 | Skills                       | `personal/eta/internal/skills/{skills,skills_test}.go`                                                                           | Port metadata validation and deterministic discovery. Use confined workspace skills, explicit loading, and change detection; omit Eta's user-root access.      |
@@ -57,79 +57,14 @@ Ox's parallel reads plus serialized effectful calls remain the simpler default.
 Worktree lifecycle, semantic retrieval, and anchored edits are not evidence of
 quality merely because a reference has them.
 
-## Most recently completed: durable session completion
+## Most recently completed: evaluation baseline
 
-Ox now loads durable sessions from checkpoints, preserves each activation's
-negotiated executor choices, and recovers turns that were waiting for
-permission.
-
-## Milestone: context and diagnostics
-
-Complete the remaining live diagnostic surface. Changed-file accounting and
-idle-turn compaction already exist; the long-turn gaps are scoped separately
-below and are not claimed complete.
-
-### Sanitized trace
-
-**Build**
-
-- Implement the existing sanitized-trace plan against
-  `docs/spec.md#diagnostic-trace`.
-
-**Gates**
-
-- Turn, provider, tool, permission, cancellation, recovery, and child activity
-  have correlated JSONL events with no content or credential fields.
-- Trace startup/write failures satisfy the spec and stdout remains ACP-only.
-- The cumulative milestone review covers changed-file accounting, existing
-  compaction, and trace together before replacing the completed summary.
-
-## Milestone: evaluation baseline
-
-Establish evidence before changing edit behavior or adding memory machinery.
-
-### ACP evaluation adapter
-
-**Build**
-
-- Port the useful Harbor adapter seam to drive the shipped binary through ACP.
-- Add a versioned local task set covering edits, multi-file work, navigation,
-  long context, permission denial, cancellation, and restart.
-
-**Gates**
-
-- A fake-provider smoke run proves setup, prompt, timeout, artifact capture,
-  teardown, and failure classification without a paid request.
-- Each run records Ox revision, task revision, model/provider settings, budget,
-  repetitions, success criteria, latency, tokens/cost when supplied, retries,
-  and failures. Missing provider usage is unknown, not zero.
-- Task success is checked from expected files or task tests, not a model's
-  declaration. Each task starts in a fresh workspace and all child work counts
-  against its budget.
-- Real-provider evaluations are on demand only under the repository's explicit
-  authorization rule. Evaluation does not run as part of normal project checks.
+Ox now ships an external ACP evaluation runner and a versioned local task corpus
+with fake-provider smoke coverage and artifact-based result verification.
 
 ## Milestone: context continuity
 
-Make long tool loops and recovery as reliable as short turns.
-
-### Provider-request context admission
-
-**Build**
-
-- Apply the specification's context budget to new prompts, tool continuations,
-  and children; compact at complete model/tool boundaries.
-- Extend durable compaction and checkpoints to those boundaries without changing
-  ACP transcript replay.
-
-**Gates**
-
-- A long single turn and a long child both compact before exhausting context;
-  pending input, tool schemas, and reserved output contribute to admission.
-- Oversized input, unsupported multimodal sizing, an irreducible prefix, a
-  failed summary, and cancellation produce bounded, useful outcomes.
-- Crash/reload at compaction boundaries reconstructs identical provider history;
-  complete tool pairs, cumulative usage, and original ACP replay are preserved.
+Close the remaining interrupted-effect recovery gaps.
 
 ### Interrupted-effect recovery
 

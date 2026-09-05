@@ -116,7 +116,26 @@ func (a *Agent) runFrom(
 			events <- event{
 				kind: eventResponseStart, messageID: answerID, thoughtID: thoughtID,
 			}
-			request := a.modelRequest(value)
+			request, compactionUpdate, err := a.admitPrimaryRequest(
+				ctx, value, active.trace, requestCount,
+			)
+			if err != nil {
+				if active.cancelledByClient.Load() || errors.Is(err, context.Canceled) {
+					return a.finishCancelled(value, active, events)
+				}
+				if requestCount == 1 {
+					if finishErr := a.finishTurn(
+						value, active, "refusal", "", err.Error(), events,
+					); finishErr != nil {
+						return loopOutcome{err: finishErr}
+					}
+					return loopOutcome{err: err}
+				}
+				return a.finishFailed(value, active, events, err)
+			}
+			if compactionUpdate != nil {
+				events <- *compactionUpdate
+			}
 			provider := active.trace.Provider(
 				diagnostictrace.ProviderPrimary,
 				requestCount,
@@ -465,8 +484,11 @@ func (a *Agent) finishTurn(
 }
 
 func (a *Agent) modelRequest(value *session) openrouter.Request {
-	configuration := value.state.configuration
-	messages := make([]openrouter.Message, 1, len(value.state.history)+1)
+	value.stateMu.Lock()
+	configuration := cloneConfiguration(value.state.configuration)
+	history := cloneMessages(value.state.history)
+	value.stateMu.Unlock()
+	messages := make([]openrouter.Message, 1, len(history)+1)
 	messages[0] = openrouter.Message{
 		Role: openrouter.RoleSystem,
 		Content: []openrouter.ContentBlock{{
@@ -474,7 +496,7 @@ func (a *Agent) modelRequest(value *session) openrouter.Request {
 			Text: configuration.SystemPrompt,
 		}},
 	}
-	messages = append(messages, cloneMessages(value.state.history)...)
+	messages = append(messages, history...)
 	return openrouter.Request{
 		Model:        configuration.Settings.Model,
 		Messages:     messages,
@@ -1258,11 +1280,14 @@ func (a *Agent) executeOne(
 	if tool.Execute == nil {
 		return toolResult{content: "tool has no executor", failed: true, target: target}
 	}
+	value.stateMu.Lock()
+	root := value.state.cwd
+	value.stateMu.Unlock()
 	var delegation *delegationRecord
 	invocation := Invocation{
 		Arguments:  json.RawMessage(call.Function.Arguments),
 		SessionID:  value.id,
-		Root:       value.state.cwd,
+		Root:       root,
 		SpillDir:   a.store.spillDir(value.id),
 		CallID:     call.ID,
 		FileReads:  reads,
@@ -1404,7 +1429,7 @@ func providerOutcome(
 
 func delegationHasActivity(value *delegationRecord) bool {
 	return value != nil &&
-		(len(value.Calls) > 0 || len(value.Usage) > 0 || value.Answer != "")
+		(value.Prompt != "" || len(value.Calls) > 0 || len(value.Usage) > 0 || value.Answer != "")
 }
 
 func (a *Agent) toolEvent(
