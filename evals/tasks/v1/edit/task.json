@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "id": "edit",
+  "budget": { "timeout_ms": 300000, "provider_requests": 20 },
+  "phases": [
+    {
+      "action": "prompt",
+      "prompt": "Fix greeting.txt so it contains exactly: hello, world (with a trailing newline).",
+      "permission": "allow"
+    }
+  ],
+  "success": { "files": { "greeting.txt": "hello, world\n" } }
+}

@@ -1,4 +1,4 @@
-.PHONY: check check-docs check-go format format-docs format-go install test test-client test-client-live
+.PHONY: check check-docs check-go eval-live format format-docs format-go install test test-client test-client-live test-eval
 
 check: check-docs check-go test
 
@@ -36,4 +36,20 @@ test-client-live:
 	npm exec --prefix internal/e2e/browser playwright install chromium
 	set -a; . ./.env; set +a; \
 		test -n "$${OPENROUTER_API_KEY:-}" || (echo "OPENROUTER_API_KEY is required" >&2; exit 1); \
-		npm run test:live --prefix internal/e2e/browser
+	npm run test:live --prefix internal/e2e/browser
+
+test-eval:
+	go test -tags=evalsmoke -count=1 ./evals/internal/eval
+
+eval-live:
+	test -n "$${TASK:-}" || (echo "TASK is required" >&2; exit 1)
+	set -a; . ./.env; set +a; \
+		eval_build_dir="$$(mktemp -d)"; \
+		trap 'rm -r "$$eval_build_dir"' EXIT; \
+		go build -o "$$eval_build_dir/ox" ./cmd/ox; \
+		go run ./evals/cmd/ox-eval -live \
+			-ox "$$eval_build_dir/ox" \
+			-model openai/gpt-5.6-luna \
+			-task "$$TASK" \
+			-out "$${OUTPUT:-eval-results}" \
+			-repetitions "$${REPETITIONS:-1}"

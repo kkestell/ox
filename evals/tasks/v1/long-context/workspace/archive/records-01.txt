@@ -1,0 +1,13 @@
+This archive contains deliberately repetitive operational notes.
+alpha: ready
+bravo: ready
+charlie: ready
+delta: ready
+echo: ready
+foxtrot: ready
+golf: ready
+hotel: ready
+india: ready
+juliet: ready
+kilo: ready
+lima: ready

@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "id": "cancellation",
+  "budget": { "timeout_ms": 300000, "provider_requests": 20 },
+  "phases": [
+    {
+      "action": "prompt",
+      "prompt": "Inspect the workspace carefully, then explain its contents.",
+      "permission": "allow",
+      "cancel_after_ms": 100,
+      "expected_stop": "cancelled"
+    }
+  ],
+  "success": { "files": { "sentinel.txt": "unchanged\n" } }
+}
