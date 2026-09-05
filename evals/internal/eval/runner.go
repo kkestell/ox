@@ -109,6 +109,10 @@ func Run(ctx context.Context, config Config) (RunIndex, error) {
 	if err != nil {
 		return RunIndex{}, fmt.Errorf("resolve Ox binary: %w", err)
 	}
+	binaryPath, err = filepath.Abs(binaryPath)
+	if err != nil {
+		return RunIndex{}, fmt.Errorf("resolve absolute Ox binary path: %w", err)
+	}
 	config.OxBinary = binaryPath
 	binaryDigest, err := fileDigest(binaryPath)
 	if err != nil {

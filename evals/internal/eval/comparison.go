@@ -200,6 +200,9 @@ func validateRunIndex(index RunIndex, candidate string) error {
 }
 
 func matchEvidence(exact, anchored candidateEvidence) error {
+	if exact.binaryDigest == anchored.binaryDigest {
+		return errors.New("exact and anchored candidates use the same binary digest")
+	}
 	if exact.model != anchored.model {
 		return fmt.Errorf("model mismatch: exact %q, anchored %q", exact.model, anchored.model)
 	}

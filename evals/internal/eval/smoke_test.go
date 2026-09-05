@@ -53,6 +53,14 @@ func TestMain(m *testing.M) {
 }
 
 func TestFakeProviderSmoke(t *testing.T) {
+	workingDirectory, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	relativeOxBinary, err := filepath.Rel(workingDirectory, smokeOxBinary)
+	if err != nil {
+		t.Fatal(err)
+	}
 	taskRoot := t.TempDir()
 	writeTestTask(t, taskRoot, Task{
 		Schema: 1, ID: "smoke", Budget: Budget{TimeoutMS: 5000, ProviderRequests: 3},
@@ -85,7 +93,7 @@ func TestFakeProviderSmoke(t *testing.T) {
 	})
 	output := filepath.Join(t.TempDir(), "artifacts")
 	index, err := Run(context.Background(), Config{
-		OxBinary: smokeOxBinary, OxRevision: "test-revision", Candidate: CandidateExact, TaskPath: taskRoot,
+		OxBinary: relativeOxBinary, OxRevision: "test-revision", Candidate: CandidateExact, TaskPath: taskRoot,
 		OutputDir: output, Model: "test/model", Provider: "fake",
 		Repetitions: 1, Upstream: upstream,
 	})
