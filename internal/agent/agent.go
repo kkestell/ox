@@ -49,9 +49,13 @@ type Config struct {
 	// uses an isolated temporary store, which is useful for embedded clients and
 	// tests. The production runtime always supplies the XDG data path.
 	SessionDir string
-	Client     Model
-	Tools      []Tool
-	Trace      diagnostictrace.Trace
+	// MemoryDir is the private workspace-memory directory. Empty uses an
+	// isolated temporary store. The production runtime supplies the XDG data
+	// path.
+	MemoryDir string
+	Client    Model
+	Tools     []Tool
+	Trace     diagnostictrace.Trace
 }
 
 type Agent struct {
@@ -65,6 +69,7 @@ type Agent struct {
 	primaryTools         toolSet
 	subagentTools        toolSet
 	store                *fileStore
+	memory               *memoryStore
 	trace                diagnostictrace.Trace
 	clientCapabilitiesMu sync.RWMutex
 	clientFS             acp.FileSystemCapabilities
@@ -114,6 +119,10 @@ func New(config Config) (*Agent, error) {
 	if err != nil {
 		return nil, err
 	}
+	memory, err := newMemoryStore(config.MemoryDir)
+	if err != nil {
+		return nil, err
+	}
 	return &Agent{
 		name:          config.Name,
 		version:       config.Version,
@@ -125,6 +134,7 @@ func New(config Config) (*Agent, error) {
 		primaryTools:  primaryTools,
 		subagentTools: subagentTools,
 		store:         store,
+		memory:        memory,
 		trace:         config.Trace,
 		sessions:      make(map[string]*session),
 	}, nil
@@ -839,7 +849,12 @@ func (a *Agent) DeleteSession(
 			"cannot delete an active session",
 		)
 	}
-	if err := a.store.delete(request.SessionID); err != nil {
+	if err := a.store.delete(request.SessionID, func(state durableState) error {
+		if err := a.memory.deleteSource(state.cwd, request.SessionID); err != nil {
+			return fmt.Errorf("delete session memories: %w", err)
+		}
+		return nil
+	}); err != nil {
 		return acp.DeleteSessionResponse{}, err
 	}
 	a.logger.Info("session deleted", "session_id", request.SessionID)

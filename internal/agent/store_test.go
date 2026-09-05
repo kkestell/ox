@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -187,11 +188,11 @@ func TestFileStoreDeletesOnlyInactiveSessions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.delete(id); err != errSessionLocked {
+	if err := store.delete(id, nil); err != errSessionLocked {
 		t.Fatalf("delete active session error = %v", err)
 	}
 	log.close()
-	if err := store.delete(id); err != nil {
+	if err := store.delete(id, nil); err != nil {
 		t.Fatal(err)
 	}
 	path, err := store.path(id)
@@ -216,13 +217,56 @@ func TestFileStoreCanRetryOrphanedSpillDeletion(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(spill, "result.out"), []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.delete(id); err != nil {
+	if err := store.delete(id, nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(spill); !os.IsNotExist(err) {
 		t.Fatalf("orphaned spill remains: %v", err)
 	}
-	if err := store.delete(id); err == nil {
+	if err := store.delete(id, nil); err == nil {
 		t.Fatal("unknown session deletion became unconditionally idempotent")
+	}
+}
+
+func TestFileStoreRunsCleanupBeforeDeletingSession(t *testing.T) {
+	store, err := newFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := "0123456789abcdef0123456789abcdef"
+	workspace := t.TempDir()
+	created, err := newRecord(1, recordSessionCreated, sessionCreated{
+		SessionID: id,
+		CWD:       workspace,
+		Configuration: requestConfiguration{
+			Settings: settings.Resolved{Model: "test/model"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	log, err := store.create(id, created)
+	if err != nil {
+		t.Fatal(err)
+	}
+	log.close()
+	injected := errors.New("cleanup failed")
+	if err := store.delete(id, func(state durableState) error {
+		if state.cwd != workspace {
+			t.Fatalf("cleanup cwd = %q", state.cwd)
+		}
+		return injected
+	}); !errors.Is(err, injected) {
+		t.Fatalf("delete error = %v", err)
+	}
+	path, err := store.path(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("session removed after cleanup failure: %v", err)
+	}
+	if err := store.delete(id, func(state durableState) error { return nil }); err != nil {
+		t.Fatal(err)
 	}
 }

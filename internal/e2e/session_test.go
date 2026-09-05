@@ -403,7 +403,7 @@ func TestOpenParentCompactionCheckpointSurvivesCrash(t *testing.T) {
 	model.queue(sse(evText("continued"), evFinishReason("stop"), evUsageCost(90, 3, 93, 0.4)))
 	options := []startOption{
 		withModel(model),
-		withModelContextWindow(model, 18000),
+		withModelContextWindow(model, 20000),
 		withEnvironment("XDG_DATA_HOME", dataDir),
 	}
 
@@ -437,7 +437,7 @@ func TestOpenParentCompactionCheckpointSurvivesCrash(t *testing.T) {
 	if !reflect.DeepEqual(secondReplay, firstReplay) {
 		t.Fatalf("parent checkpoint replay changed across reloads:\nsecond = %#v\nfirst = %#v", secondReplay, firstReplay)
 	}
-	assertReplayUsage(t, secondReplay, 18000, 0.59)
+	assertReplayUsage(t, secondReplay, 20000, 0.59)
 	prompt(t, third, session, "fourth checkpoint prompt")
 	_ = updates(t, third, session)
 
@@ -477,7 +477,7 @@ func TestOpenChildCompactionCheckpointSurvivesCrash(t *testing.T) {
 	held = model.holdFor("recent child detail\n", "")
 	options := []startOption{
 		withModel(model),
-		withModelContextWindow(model, 12000),
+		withModelContextWindow(model, 14000),
 		withEnvironment("XDG_DATA_HOME", dataDir),
 		withFile("old.txt", oldContents),
 		withFile("recent.txt", "recent child detail\n"),
@@ -509,7 +509,7 @@ func TestOpenChildCompactionCheckpointSurvivesCrash(t *testing.T) {
 	if !reflect.DeepEqual(secondReplay, firstReplay) {
 		t.Fatalf("child checkpoint replay changed across reloads:\nsecond = %#v\nfirst = %#v", secondReplay, firstReplay)
 	}
-	assertReplayUsage(t, secondReplay, 12000, 0.99)
+	assertReplayUsage(t, secondReplay, 14000, 0.99)
 	assertUnknownToolReplay(t, secondReplay, "task-checkpoint")
 
 	requests := model.requests()

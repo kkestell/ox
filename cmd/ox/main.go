@@ -177,11 +177,13 @@ func serve(
 	modelOverride string,
 ) error {
 	sessionPath := agent.SessionPath(os.Getenv("XDG_DATA_HOME"), os.Getenv("HOME"))
+	memoryPath := agent.MemoryPath(os.Getenv("XDG_DATA_HOME"), os.Getenv("HOME"))
 	logger.Info(
 		"ox starting",
 		"version", version,
 		"global_settings_path", settingsPath,
 		"session_store_path", sessionPath,
+		"memory_store_path", memoryPath,
 		"credential_source", credentialStore.Source(),
 	)
 
@@ -194,6 +196,7 @@ func serve(
 		ModelOverride: modelOverride,
 		SettingsPath:  settingsPath,
 		SessionDir:    sessionPath,
+		MemoryDir:     memoryPath,
 		Client:        client,
 		Tools:         tools.All(),
 		Trace:         tracer,

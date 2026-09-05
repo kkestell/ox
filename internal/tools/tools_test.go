@@ -87,7 +87,7 @@ func invoke(t *testing.T, tool agent.Tool, invocation agent.Invocation) (string,
 
 func TestAllDeclaresValidSchemasAndClassifications(t *testing.T) {
 	tools := All()
-	if len(tools) != 11 {
+	if len(tools) != 14 {
 		t.Fatalf("tool count = %d", len(tools))
 	}
 	for _, tool := range tools {
@@ -103,6 +103,8 @@ func TestAllDeclaresValidSchemasAndClassifications(t *testing.T) {
 		todo := tool.Name == "todo"
 		question := tool.Name == "question"
 		webFetch := tool.Name == "web_fetch"
+		memorySearch := tool.Name == "memory_search"
+		memoryMutation := tool.Name == "memory_write" || tool.Name == "memory_delete"
 		if mutating && (tool.Kind != acp.ToolKindEdit ||
 			tool.Approval != agent.ApprovalAsk || tool.ParallelSafe) {
 			t.Errorf("%s mutation classification = %+v", tool.Name, tool)
@@ -131,7 +133,16 @@ func TestAllDeclaresValidSchemasAndClassifications(t *testing.T) {
 			tool.Approval != agent.ApprovalAsk || !tool.ParallelSafe || !tool.PlanMode) {
 			t.Errorf("web_fetch classification = %+v", tool)
 		}
+		if memorySearch && (tool.Kind != acp.ToolKindSearch ||
+			tool.Approval != agent.ApprovalNone || !tool.ParallelSafe || !tool.PlanMode) {
+			t.Errorf("memory_search classification = %+v", tool)
+		}
+		if memoryMutation && (tool.Kind != acp.ToolKindOther ||
+			tool.Approval != agent.ApprovalAsk || tool.ParallelSafe || tool.PlanMode) {
+			t.Errorf("%s classification = %+v", tool.Name, tool)
+		}
 		if !mutating && !shell && !task && !todo && !question && !webFetch &&
+			!memorySearch && !memoryMutation &&
 			(!tool.ParallelSafe || tool.Approval != agent.ApprovalNone) {
 			t.Errorf("%s read-only classification = %+v", tool.Name, tool)
 		}
@@ -332,6 +343,95 @@ func TestTodoClearsAndRejectsInvalidReplacements(t *testing.T) {
 		}
 		if _, err := invoke(t, toolNamed(t, "todo"), invocation); err == nil {
 			t.Fatalf("invalid replacement %s succeeded", arguments)
+		}
+	}
+}
+
+func TestMemoryToolsValidateAndRenderCallbacks(t *testing.T) {
+	fact := agent.MemoryFact{
+		ID: "0123456789abcdef0123456789abcdef", Type: "decision", Content: "Use JSON",
+		SourceSession: "fedcba9876543210fedcba9876543210",
+		CreatedAt:     time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC),
+		ExpiresAt:     time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC),
+	}
+	search := testInvocation(t, `{"query":"json store"}`)
+	search.SearchMemory = func(query string) ([]agent.MemoryFact, error) {
+		if query != "json store" {
+			t.Fatalf("query = %q", query)
+		}
+		return []agent.MemoryFact{fact}, nil
+	}
+	output, err := invoke(t, toolNamed(t, "memory_search"), search)
+	if err != nil || !strings.Contains(output, `"content":"Use JSON"`) {
+		t.Fatalf("search output = %q, error = %v", output, err)
+	}
+
+	write := testInvocation(t, `{"type":" decision ","content":" Use JSON ","supersedes":"0123456789abcdef0123456789abcdef"}`)
+	write.WriteMemory = func(factType, content, supersedes string) (agent.MemoryFact, error) {
+		if factType != "decision" || content != "Use JSON" || supersedes != fact.ID {
+			t.Fatalf("write = %q, %q, %q", factType, content, supersedes)
+		}
+		fact.Supersedes = supersedes
+		return fact, nil
+	}
+	output, err = invoke(t, toolNamed(t, "memory_write"), write)
+	if err != nil || !strings.Contains(output, `"supersedes":"`+fact.ID+`"`) {
+		t.Fatalf("write output = %q, error = %v", output, err)
+	}
+
+	deleted := ""
+	remove := testInvocation(t, `{"id":"0123456789abcdef0123456789abcdef"}`)
+	remove.DeleteMemory = func(id string) error {
+		deleted = id
+		return nil
+	}
+	output, err = invoke(t, toolNamed(t, "memory_delete"), remove)
+	if err != nil || deleted != fact.ID || output != `{"deleted":"`+fact.ID+`"}` {
+		t.Fatalf("delete output = %q, deleted = %q, error = %v", output, deleted, err)
+	}
+}
+
+func TestMemoryToolsRejectInvalidOrUnavailableOperations(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		arguments string
+	}{
+		{name: "memory_search", arguments: `{}`},
+		{name: "memory_search", arguments: `{"query":"x","extra":true}`},
+		{name: "memory_write", arguments: `{}`},
+		{name: "memory_write", arguments: `{"type":"profile","content":"x"}`},
+		{name: "memory_write", arguments: `{"type":"finding","content":" "}`},
+		{name: "memory_write", arguments: `{"type":"finding","content":"x","supersedes":" "}`},
+		{name: "memory_delete", arguments: `{}`},
+		{name: "memory_delete", arguments: `{"id":" "}`},
+	} {
+		invocation := testInvocation(t, test.arguments)
+		invocation.SearchMemory = func(string) ([]agent.MemoryFact, error) {
+			t.Fatal("invalid search executed")
+			return nil, nil
+		}
+		invocation.WriteMemory = func(string, string, string) (agent.MemoryFact, error) {
+			t.Fatal("invalid write executed")
+			return agent.MemoryFact{}, nil
+		}
+		invocation.DeleteMemory = func(string) error {
+			t.Fatal("invalid delete executed")
+			return nil
+		}
+		if _, err := invoke(t, toolNamed(t, test.name), invocation); err == nil {
+			t.Fatalf("%s arguments %s succeeded", test.name, test.arguments)
+		}
+	}
+
+	for _, name := range []string{"memory_search", "memory_write", "memory_delete"} {
+		arguments := `{"query":""}`
+		if name == "memory_write" {
+			arguments = `{"type":"finding","content":"x"}`
+		} else if name == "memory_delete" {
+			arguments = `{"id":"0123456789abcdef0123456789abcdef"}`
+		}
+		if _, err := invoke(t, toolNamed(t, name), testInvocation(t, arguments)); err == nil {
+			t.Fatalf("unavailable %s succeeded", name)
 		}
 	}
 }
