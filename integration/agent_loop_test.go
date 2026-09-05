@@ -118,6 +118,135 @@ func TestPromptStreamsAndReplaysCompletedHistory(t *testing.T) {
 	model.assertConsumed(t)
 }
 
+func TestFormQuestionUsesNegotiatedElicitationAndDurableToolHistory(t *testing.T) {
+	model := &scriptedModel{scripts: []modelScript{
+		func(
+			_ context.Context,
+			request openrouter.Request,
+			_ func(openrouter.Delta),
+		) (*openrouter.Completion, error) {
+			if !requestHasTool(request, "question") {
+				return nil, errors.New("question tool was not declared")
+			}
+			result := completion("")
+			result.FinishReason = "tool_calls"
+			result.ToolCalls = []openrouter.ToolCall{modelToolCall(
+				"provider-question", "question",
+				`{"question":"Choose.","options":[{"label":"Safe","description":"Small changes."},{"label":"Fast"}],"default":"Safe"}`,
+			)}
+			return result, nil
+		},
+		func(
+			_ context.Context,
+			request openrouter.Request,
+			_ func(openrouter.Delta),
+		) (*openrouter.Completion, error) {
+			messages, err := conversation(request)
+			if err != nil {
+				return nil, err
+			}
+			if len(messages) != 3 || messages[2].Role != openrouter.RoleTool ||
+				messages[2].Content[0].Text != `{"outcome":"accepted","answer":"Safe"}` {
+				return nil, fmt.Errorf("question result history = %#v", messages)
+			}
+			return completion("done"), nil
+		},
+	}}
+	var callbackCount atomic.Int32
+	harness := newHarnessWithCallback(t, agent.Config{
+		ModelOverride: "test/model", Client: model, Tools: oxtools.All(),
+	}, func(_ context.Context, request *jrpc2.Request) (any, error) {
+		if request.Method() != acp.MethodElicitationCreate {
+			return nil, fmt.Errorf("unexpected callback %q", request.Method())
+		}
+		callbackCount.Add(1)
+		var form acp.CreateElicitationRequest
+		if err := request.UnmarshalParams(&form); err != nil {
+			return nil, err
+		}
+		if err := form.Validate(); err != nil {
+			return nil, err
+		}
+		property := form.RequestedSchema.Properties["answer"]
+		if form.Message != "Choose." || form.SessionID == "" || form.ToolCallID == "" ||
+			len(property.OneOf) != 2 || property.OneOf[0].Title != "Safe" ||
+			property.OneOf[0].Description != "Small changes." ||
+			property.Default == nil || *property.Default != "Safe" {
+			return nil, fmt.Errorf("elicitation request = %#v", form)
+		}
+		return acp.CreateElicitationResponse{
+			Action:  acp.ElicitationActionAccept,
+			Content: map[string]json.RawMessage{"answer": json.RawMessage(`"Safe"`)},
+		}, nil
+	})
+	harness.initialize(t, &acp.ClientCapabilities{Elicitation: &acp.ElicitationCapabilities{
+		Form: &acp.ElicitationFormCapabilities{},
+	}})
+	sessionID := harness.newSession(t)
+	response := harness.prompt(t, sessionID, "ask")
+	if response.StopReason != acp.StopReasonEndTurn || callbackCount.Load() != 1 {
+		t.Fatalf("response = %#v, callbacks = %d", response, callbackCount.Load())
+	}
+	model.assertConsumed(t)
+}
+
+func TestFormQuestionCancellationDoesNotBlockAnotherSession(t *testing.T) {
+	questionStarted := make(chan struct{})
+	model := &routedModel{route: func(
+		_ context.Context,
+		request openrouter.Request,
+		_ func(openrouter.Delta),
+	) (*openrouter.Completion, error) {
+		messages, err := conversation(request)
+		if err != nil {
+			return nil, err
+		}
+		if messages[0].Content[0].Text == "other" {
+			return completion("other done"), nil
+		}
+		result := completion("")
+		result.FinishReason = "tool_calls"
+		result.ToolCalls = []openrouter.ToolCall{modelToolCall(
+			"held-question", "question", `{"question":"Wait?"}`,
+		)}
+		return result, nil
+	}}
+	harness := newHarnessWithCallback(t, agent.Config{
+		ModelOverride: "test/model", Client: model, Tools: oxtools.All(),
+	}, func(ctx context.Context, request *jrpc2.Request) (any, error) {
+		if request.Method() != acp.MethodElicitationCreate {
+			return nil, fmt.Errorf("unexpected callback %q", request.Method())
+		}
+		close(questionStarted)
+		<-ctx.Done()
+		return nil, ctx.Err()
+	})
+	harness.initialize(t, &acp.ClientCapabilities{Elicitation: &acp.ElicitationCapabilities{
+		Form: &acp.ElicitationFormCapabilities{},
+	}})
+	heldSession := harness.newSession(t)
+	otherSession := harness.newSession(t)
+	heldResult := make(chan promptResult, 1)
+	go func() {
+		response, err := harness.callPrompt(heldSession, "held")
+		heldResult <- promptResult{response: response, err: err}
+	}()
+	<-questionStarted
+	other := harness.prompt(t, otherSession, "other")
+	if other.StopReason != acp.StopReasonEndTurn {
+		t.Fatalf("other response = %#v", other)
+	}
+	if err := harness.local.Client.Notify(t.Context(), "session/cancel", acp.CancelNotification{
+		SessionID: heldSession,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	result := <-heldResult
+	if result.err != nil || result.response.StopReason != acp.StopReasonCancelled {
+		t.Fatalf("held response = %#v, error = %v", result.response, result.err)
+	}
+}
+
 func TestPromptCompactsModelHistoryBeforeTheNextTurn(t *testing.T) {
 	const oldAnswer = "old detail "
 	recentAnswer := strings.Repeat("recent answer ", 100)

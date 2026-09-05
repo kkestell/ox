@@ -68,6 +68,7 @@ type Agent struct {
 	clientCapabilitiesMu sync.RWMutex
 	clientFS             acp.FileSystemCapabilities
 	clientTerminal       bool
+	clientForm           bool
 	authMu               sync.Mutex
 	rejectedKey          string
 	rejectionText        string
@@ -181,11 +182,14 @@ func (a *Agent) Initialize(
 	a.clientCapabilitiesMu.Lock()
 	a.clientFS = acp.FileSystemCapabilities{}
 	a.clientTerminal = false
+	a.clientForm = false
 	if request.ClientCapabilities != nil && request.ClientCapabilities.FS != nil {
 		a.clientFS = *request.ClientCapabilities.FS
 	}
 	if request.ClientCapabilities != nil {
 		a.clientTerminal = request.ClientCapabilities.Terminal
+		a.clientForm = request.ClientCapabilities.Elicitation != nil &&
+			request.ClientCapabilities.Elicitation.Form != nil
 	}
 	a.clientCapabilitiesMu.Unlock()
 
@@ -453,7 +457,7 @@ func (a *Agent) recoverSession(ctx context.Context, value *session) error {
 	go func() {
 		outcome <- a.resume(
 			runCtx, value, active, permissionCallback(server, active.trace),
-			fileSystem, terminal, events,
+			elicitationCallback(server), fileSystem, terminal, events,
 		)
 		close(events)
 	}()
@@ -527,6 +531,23 @@ func permissionCallback(server *jrpc2.Server, turn diagnostictrace.Turn) request
 			request.ToolCall.ToolCallID, request.ToolCall.Name, parent,
 			string(decideApproval(result, nil)),
 		)
+		return result, nil
+	}
+}
+
+func elicitationCallback(server *jrpc2.Server) requestElicitation {
+	return func(
+		ctx context.Context,
+		request acp.CreateElicitationRequest,
+	) (acp.CreateElicitationResponse, error) {
+		response, err := server.Callback(ctx, acp.MethodElicitationCreate, request)
+		if err != nil {
+			return acp.CreateElicitationResponse{}, err
+		}
+		var result acp.CreateElicitationResponse
+		if err := response.UnmarshalResult(&result); err != nil {
+			return acp.CreateElicitationResponse{}, err
+		}
 		return result, nil
 	}
 }
@@ -834,6 +855,7 @@ func (a *Agent) resolveConfiguration(
 	cwd string,
 ) (requestConfiguration, error) {
 	executorCapabilities := a.negotiatedExecutorCapabilities()
+	primaryTools, subagentTools := a.negotiatedToolSets()
 	resolved, err := a.resolveSettings(cwd)
 	if err != nil {
 		return requestConfiguration{}, jrpc2.Errorf(jrpc2.InternalError, "%v", err)
@@ -885,15 +907,15 @@ func (a *Agent) resolveConfiguration(
 		Mode:                 modeCode,
 		Settings:             resolved,
 		ContextWindow:        contextWindow,
-		SystemPrompt:         composePrompt(cwd, now, instructions, skillCatalog),
-		Tools:                cloneTools(a.primaryTools.modelTools),
-		ToolKinds:            a.configuredToolKinds(),
-		PlanTools:            a.configuredPlanTools(),
+		SystemPrompt:         composePrompt(cwd, now, instructions, skillCatalog, a.clientForm),
+		Tools:                cloneTools(primaryTools.modelTools),
+		ToolKinds:            configuredToolKinds(primaryTools),
+		PlanTools:            configuredPlanTools(primaryTools),
 		Skills:               cloneSkillReferences(skillReferences),
 		ExecutorCapabilities: executorCapabilities,
 		Subagent: subagentConfiguration{
-			SystemPrompt: composeSubagentPrompt(cwd, now, instructions, skillCatalog),
-			Tools:        cloneTools(a.subagentTools.modelTools),
+			SystemPrompt: composeSubagentPrompt(cwd, now, instructions, skillCatalog, a.clientForm),
+			Tools:        cloneTools(subagentTools.modelTools),
 		},
 	}, nil
 }
@@ -946,9 +968,9 @@ func missingExecutorCapability(required, available executorCapabilities) string 
 	return ""
 }
 
-func (a *Agent) configuredToolKinds() map[string]acp.ToolKind {
+func configuredToolKinds(tools toolSet) map[string]acp.ToolKind {
 	kinds := make(map[string]acp.ToolKind)
-	for _, tool := range a.primaryTools.tools {
+	for _, tool := range tools.tools {
 		if tool.Kind != "" {
 			kinds[tool.Name] = tool.Kind
 		}
@@ -959,15 +981,37 @@ func (a *Agent) configuredToolKinds() map[string]acp.ToolKind {
 	return kinds
 }
 
-func (a *Agent) configuredPlanTools() map[string]bool {
+func configuredPlanTools(tools toolSet) map[string]bool {
 	result := make(map[string]bool)
-	for _, tool := range a.primaryTools.tools {
+	for _, tool := range tools.tools {
 		if tool.PlanMode || tool.Kind == acp.ToolKindRead || tool.Kind == acp.ToolKindSearch {
 			result[tool.Name] = true
 		}
 	}
 	if len(result) == 0 {
 		return nil
+	}
+	return result
+}
+
+func (a *Agent) negotiatedToolSets() (toolSet, toolSet) {
+	a.clientCapabilitiesMu.RLock()
+	form := a.clientForm
+	a.clientCapabilitiesMu.RUnlock()
+	if form {
+		return a.primaryTools, a.subagentTools
+	}
+	return toolsWithoutForm(a.primaryTools), toolsWithoutForm(a.subagentTools)
+}
+
+func toolsWithoutForm(source toolSet) toolSet {
+	tools := slices.DeleteFunc(
+		append([]Tool(nil), source.tools...),
+		func(tool Tool) bool { return tool.RequiresForm },
+	)
+	result, err := newToolSet(tools)
+	if err != nil {
+		panic(err)
 	}
 	return result
 }
@@ -1046,6 +1090,10 @@ func (a *Agent) closeUnknownExecutions(value *session) error {
 			ApprovalDecision: execution.ApprovalDecision,
 			Target:           execution.Target,
 			Unknown:          true,
+		}
+		if execution.Call.Function.Name == "question" {
+			result.Content = interruptedQuestion
+			result.Unknown = false
 		}
 		if err := a.completeToolExecution(
 			value, execution.TurnID, execution.ParentCallID, execution.Call.ID, result,
@@ -1328,6 +1376,7 @@ func (a *Agent) Prompt(
 	server := jrpc2.ServerFromContext(ctx)
 	fileSystem, terminal := a.promptExecutors(server, value)
 	requestPermission := permissionCallback(server, active.trace)
+	requestElicitation := elicitationCallback(server)
 	value.configMu.Lock()
 	value.stateMu.Lock()
 	turnConfiguration := cloneConfiguration(value.state.configuration)
@@ -1352,7 +1401,10 @@ func (a *Agent) Prompt(
 	events := make(chan event)
 	outcome := make(chan loopOutcome, 1)
 	go func() {
-		outcome <- a.run(runCtx, value, active, requestPermission, fileSystem, terminal, events)
+		outcome <- a.run(
+			runCtx, value, active, requestPermission, requestElicitation,
+			fileSystem, terminal, events,
+		)
 		close(events)
 	}()
 

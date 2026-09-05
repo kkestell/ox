@@ -39,12 +39,19 @@ const sharedToolProse = "File tools resolve relative paths against the workspace
 	"it spills, use read_file on the reported path. A rejected call returns an error, " +
 	"so do not simply retry it."
 
+const questionToolProse = " Never use form questions to request credentials, secrets, " +
+	"authorization, or permission to run a tool."
+
 // composePrompt keeps instruction blocks in their canonical order. The result
 // is frozen for the session activation; later instruction sources append after
 // the environment block rather than interleaving with it.
-func composePrompt(cwd string, now time.Time, instructions, skillCatalog string) string {
+func composePrompt(cwd string, now time.Time, instructions, skillCatalog string, formQuestions bool) string {
+	toolProse := sharedToolProse
+	if formQuestions {
+		toolProse += questionToolProse
+	}
 	prompt := promptPrefix(strings.TrimSpace(basePrompt), cwd, now) + "\n\n" +
-		sharedToolProse + "\n\n" +
+		toolProse + "\n\n" +
 		"Use task to delegate self-contained work when it helps. Give each subagent a " +
 		"complete standalone prompt, do not duplicate its work, and partition file work " +
 		"so concurrent subagents never touch the same file."
@@ -52,15 +59,19 @@ func composePrompt(cwd string, now time.Time, instructions, skillCatalog string)
 	return appendWorkspaceInstructions(prompt, instructions)
 }
 
-func composeSubagentPrompt(cwd string, now time.Time, instructions, skillCatalog string) string {
+func composeSubagentPrompt(cwd string, now time.Time, instructions, skillCatalog string, formQuestions bool) string {
 	const prose = "You are a subagent working on one self-contained task. You cannot see the " +
 		"user or the delegating conversation, so rely only on the prompt you receive. Your " +
 		"final message is the entire answer returned to the caller; make it complete and " +
 		"self-contained. You cannot delegate further. Some calls still require the user's " +
 		"approval; if one is rejected, do not simply retry it. Sibling subagents may be " +
 		"running, so confine file work to the files your prompt names."
+	toolProse := sharedToolProse
+	if formQuestions {
+		toolProse += questionToolProse
+	}
 	return appendWorkspaceInstructions(
-		promptPrefix(prose, cwd, now)+"\n\n"+sharedToolProse+skillCatalog,
+		promptPrefix(prose, cwd, now)+"\n\n"+toolProse+skillCatalog,
 		instructions,
 	)
 }

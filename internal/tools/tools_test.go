@@ -87,7 +87,7 @@ func invoke(t *testing.T, tool agent.Tool, invocation agent.Invocation) (string,
 
 func TestAllDeclaresValidSchemasAndClassifications(t *testing.T) {
 	tools := All()
-	if len(tools) != 9 {
+	if len(tools) != 10 {
 		t.Fatalf("tool count = %d", len(tools))
 	}
 	for _, tool := range tools {
@@ -101,6 +101,7 @@ func TestAllDeclaresValidSchemasAndClassifications(t *testing.T) {
 		shell := tool.Name == "shell"
 		task := tool.Name == "task"
 		todo := tool.Name == "todo"
+		question := tool.Name == "question"
 		if mutating && (tool.Kind != acp.ToolKindEdit ||
 			tool.Approval != agent.ApprovalAsk || tool.ParallelSafe) {
 			t.Errorf("%s mutation classification = %+v", tool.Name, tool)
@@ -120,10 +121,121 @@ func TestAllDeclaresValidSchemasAndClassifications(t *testing.T) {
 			!tool.ParentOnly || !tool.PlanMode) {
 			t.Errorf("todo classification = %+v", tool)
 		}
-		if !mutating && !shell && !task && !todo &&
+		if question && (tool.Kind != acp.ToolKindOther ||
+			tool.Approval != agent.ApprovalNone || tool.ParallelSafe ||
+			!tool.PlanMode || !tool.RequiresForm || tool.ParentOnly) {
+			t.Errorf("question classification = %+v", tool)
+		}
+		if !mutating && !shell && !task && !todo && !question &&
 			(!tool.ParallelSafe || tool.Approval != agent.ApprovalNone) {
 			t.Errorf("%s read-only classification = %+v", tool.Name, tool)
 		}
+	}
+}
+
+func TestQuestionBuildsFormAndReturnsDistinctOutcomes(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		action   acp.ElicitationAction
+		content  map[string]json.RawMessage
+		want     string
+		validate func(*testing.T, acp.CreateElicitationRequest)
+	}{
+		{
+			name: "accepted choice", action: acp.ElicitationActionAccept,
+			content: map[string]json.RawMessage{"answer": json.RawMessage(`"Balanced"`)},
+			want:    `{"outcome":"accepted","answer":"Balanced"}`,
+			validate: func(t *testing.T, request acp.CreateElicitationRequest) {
+				property := request.RequestedSchema.Properties["answer"]
+				if request.SessionID != "test-session" || request.ToolCallID != "call-1" ||
+					request.Mode != acp.ElicitationModeForm || request.Message != "How?" ||
+					property.Default == nil || *property.Default != "Balanced" ||
+					len(property.OneOf) != 2 || property.OneOf[0].Const != "Safe" ||
+					property.OneOf[0].Description != "Small changes" {
+					t.Fatalf("request = %#v", request)
+				}
+			},
+		},
+		{name: "declined", action: acp.ElicitationActionDecline, want: `{"outcome":"declined"}`},
+		{name: "cancelled", action: acp.ElicitationActionCancel, want: `{"outcome":"cancelled"}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			invocation := testInvocation(t, `{"question":" How? ","options":[{"label":" Safe ","description":" Small changes "},{"label":"Balanced"}],"default":" Balanced "}`)
+			invocation.AskQuestion = func(
+				_ context.Context,
+				request acp.CreateElicitationRequest,
+			) (acp.CreateElicitationResponse, error) {
+				if err := request.Validate(); err != nil {
+					t.Fatal(err)
+				}
+				if test.validate != nil {
+					test.validate(t, request)
+				}
+				return acp.CreateElicitationResponse{Action: test.action, Content: test.content}, nil
+			}
+			output, err := invoke(t, toolNamed(t, "question"), invocation)
+			if err != nil || output != test.want {
+				t.Fatalf("output = %q, error = %v", output, err)
+			}
+		})
+	}
+}
+
+func TestQuestionFreeTextDefaultIsNotAnAnswer(t *testing.T) {
+	invocation := testInvocation(t, `{"question":"Name?","default":"Ox"}`)
+	invocation.AskQuestion = func(
+		_ context.Context,
+		request acp.CreateElicitationRequest,
+	) (acp.CreateElicitationResponse, error) {
+		property := request.RequestedSchema.Properties["answer"]
+		if property.MinLength == nil || *property.MinLength != 1 ||
+			property.Default == nil || *property.Default != "Ox" {
+			t.Fatalf("property = %#v", property)
+		}
+		return acp.CreateElicitationResponse{Action: acp.ElicitationActionAccept}, nil
+	}
+	_, err := invoke(t, toolNamed(t, "question"), invocation)
+	if err == nil || !strings.Contains(err.Error(), "content") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestQuestionRejectsInvalidArgumentsAndResponses(t *testing.T) {
+	tests := []struct {
+		arguments string
+		response  acp.CreateElicitationResponse
+	}{
+		{arguments: `{}`},
+		{arguments: `{"question":" "}`},
+		{arguments: `{"question":"Q?","options":null}`},
+		{arguments: `{"question":"Q?","options":[]}`},
+		{arguments: `{"question":"Q?","options":[{"label":" "}]}`},
+		{arguments: `{"question":"Q?","options":[{"label":"A"},{"label":" A "}]}`},
+		{arguments: `{"question":"Q?","options":[{"label":"A","extra":true}]}`},
+		{arguments: `{"question":"Q?","options":[{"label":"A"}],"default":"B"}`},
+		{arguments: `{"question":"Q?","default":" "}`},
+		{arguments: `{"question":"Q?","extra":true}`},
+		{arguments: `{"question":"Q?"}`, response: acp.CreateElicitationResponse{Action: "future"}},
+	}
+	for _, test := range tests {
+		invocation := testInvocation(t, test.arguments)
+		invocation.AskQuestion = func(
+			context.Context,
+			acp.CreateElicitationRequest,
+		) (acp.CreateElicitationResponse, error) {
+			return test.response, nil
+		}
+		if _, err := invoke(t, toolNamed(t, "question"), invocation); err == nil {
+			t.Fatalf("arguments %s succeeded", test.arguments)
+		}
+	}
+
+	invocation := testInvocation(t, `{"question":"Q?"}`)
+	invocation.AskQuestion = func(context.Context, acp.CreateElicitationRequest) (acp.CreateElicitationResponse, error) {
+		return acp.CreateElicitationResponse{}, errors.New("client failed")
+	}
+	if _, err := invoke(t, toolNamed(t, "question"), invocation); err == nil || err.Error() != "client failed" {
+		t.Fatalf("callback error = %v", err)
 	}
 }
 

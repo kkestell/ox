@@ -41,17 +41,23 @@ type requestPermission func(
 	acp.RequestPermissionRequest,
 ) (acp.RequestPermissionResponse, error)
 
+type requestElicitation func(
+	context.Context,
+	acp.CreateElicitationRequest,
+) (acp.CreateElicitationResponse, error)
+
 func (a *Agent) run(
 	ctx context.Context,
 	value *session,
 	active *activeTurn,
 	ask requestPermission,
+	elicit requestElicitation,
 	fileSystem ClientFileSystem,
 	terminal ClientTerminal,
 	events chan<- event,
 ) loopOutcome {
 	return a.runFrom(
-		ctx, value, active, ask, fileSystem, terminal, events, 1, nil, false,
+		ctx, value, active, ask, elicit, fileSystem, terminal, events, 1, nil, false,
 	)
 }
 
@@ -60,6 +66,7 @@ func (a *Agent) resume(
 	value *session,
 	active *activeTurn,
 	ask requestPermission,
+	elicit requestElicitation,
 	fileSystem ClientFileSystem,
 	terminal ClientTerminal,
 	events chan<- event,
@@ -71,7 +78,7 @@ func (a *Agent) resume(
 		panic("resume called without a suspended model exchange")
 	}
 	return a.runFrom(
-		ctx, value, active, ask, fileSystem, terminal, events,
+		ctx, value, active, ask, elicit, fileSystem, terminal, events,
 		suspended.RequestCount, suspended, true,
 	)
 }
@@ -81,6 +88,7 @@ func (a *Agent) runFrom(
 	value *session,
 	active *activeTurn,
 	ask requestPermission,
+	elicit requestElicitation,
 	fileSystem ClientFileSystem,
 	terminal ClientTerminal,
 	events chan<- event,
@@ -240,7 +248,7 @@ func (a *Agent) runFrom(
 			)
 		}
 		results, batchCancelled, err := a.executeSuspendedBatch(
-			ctx, value, completion.ToolCalls, ask, fileSystem, terminal, events,
+			ctx, value, completion.ToolCalls, ask, elicit, fileSystem, terminal, events,
 			active.trace, reissue,
 		)
 		if err != nil {
@@ -757,6 +765,7 @@ func (a *Agent) executeSuspendedBatch(
 	value *session,
 	calls []openrouter.ToolCall,
 	ask requestPermission,
+	elicit requestElicitation,
 	fileSystem ClientFileSystem,
 	terminal ClientTerminal,
 	events chan<- event,
@@ -948,7 +957,7 @@ func (a *Agent) executeSuspendedBatch(
 	}
 	var err error
 	results, err = a.dispatchApprovedBatch(
-		ctx, value, tools, value.primaryFileReads(), calls, ask,
+		ctx, value, tools, value.primaryFileReads(), calls, ask, elicit,
 		fileSystem, terminal, events, "", results, ready, turn,
 	)
 	if err != nil {
@@ -1001,6 +1010,7 @@ func (a *Agent) executeBatch(
 		value.primaryFileReads(),
 		calls,
 		ask,
+		nil,
 		ClientFileSystem{},
 		ClientTerminal{},
 		events,
@@ -1017,6 +1027,7 @@ func (a *Agent) executeBatchWith(
 	reads FileReads,
 	calls []openrouter.ToolCall,
 	ask requestPermission,
+	elicit requestElicitation,
 	fileSystem ClientFileSystem,
 	terminal ClientTerminal,
 	events chan<- event,
@@ -1184,7 +1195,7 @@ approvalLoop:
 
 	var err error
 	results, err = a.dispatchApprovedBatch(
-		ctx, value, tools, reads, calls, ask, fileSystem, terminal,
+		ctx, value, tools, reads, calls, ask, elicit, fileSystem, terminal,
 		events, parent, results, ready, turn,
 	)
 	a.logger.Info("tool batch completed", "session_id", value.id, "calls", len(calls))
@@ -1198,6 +1209,7 @@ func (a *Agent) dispatchApprovedBatch(
 	reads FileReads,
 	calls []openrouter.ToolCall,
 	ask requestPermission,
+	elicit requestElicitation,
 	fileSystem ClientFileSystem,
 	terminal ClientTerminal,
 	events chan<- event,
@@ -1272,6 +1284,7 @@ func (a *Agent) dispatchApprovedBatch(
 					reads,
 					calls[current],
 					ask,
+					elicit,
 					fileSystem,
 					terminal,
 					events,
@@ -1374,6 +1387,7 @@ func (a *Agent) executeOne(
 	reads FileReads,
 	call openrouter.ToolCall,
 	ask requestPermission,
+	elicit requestElicitation,
 	fileSystem ClientFileSystem,
 	terminal ClientTerminal,
 	events chan<- event,
@@ -1449,6 +1463,7 @@ func (a *Agent) executeOne(
 			}
 			return "", fmt.Errorf("workspace skill %q is not in the active catalog", name)
 		},
+		AskQuestion: elicit,
 		Emit: func(text string) {
 			events <- event{kind: eventToolOutput, call: call, text: text}
 		},
@@ -1485,6 +1500,7 @@ func (a *Agent) executeOne(
 				call.ID,
 				prompt,
 				ask,
+				elicit,
 				fileSystem,
 				terminal,
 				events,
