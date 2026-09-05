@@ -327,7 +327,7 @@ func (a *Agent) NewSession(
 		return acp.NewSessionResponse{}, err
 	}
 
-	base, models, err := a.resolveActivation(ctx, cwd)
+	base, models, err := a.resolveActivation(ctx, cwd, sessionSelections{})
 	if err != nil {
 		return acp.NewSessionResponse{}, err
 	}
@@ -629,7 +629,7 @@ func (a *Agent) activateSession(
 			"session has a pending permission request; load it before resuming",
 		)
 	}
-	base, models, err := a.resolveActivation(ctx, canonicalCWD)
+	base, models, err := a.resolveActivation(ctx, canonicalCWD, value.state.selections)
 	if err != nil {
 		return nil, err
 	}
@@ -850,10 +850,7 @@ func (a *Agent) validateActivation(
 	return canonicalCWD, nil
 }
 
-func (a *Agent) resolveConfiguration(
-	ctx context.Context,
-	cwd string,
-) (requestConfiguration, error) {
+func (a *Agent) resolveConfiguration(cwd string) (requestConfiguration, error) {
 	executorCapabilities := a.negotiatedExecutorCapabilities()
 	primaryTools, subagentTools := a.negotiatedToolSets()
 	resolved, err := a.resolveSettings(cwd)
@@ -881,32 +878,10 @@ func (a *Agent) resolveConfiguration(
 			"an OpenRouter client is required to activate a session",
 		)
 	}
-	entry, err := a.client.ModelInfo(ctx, resolved.Model)
-	if err != nil {
-		return requestConfiguration{}, jrpc2.Errorf(
-			jrpc2.InternalError,
-			"resolve model from %s: %v",
-			resolved.ModelSource,
-			err,
-		)
-	}
-	if err := settings.Validate(entry, resolved, settings.Compatibility{}); err != nil {
-		return requestConfiguration{}, jrpc2.Errorf(jrpc2.InternalError, "%v", err)
-	}
-	contextWindow := entry.ContextWindow()
-	if contextWindow <= 0 {
-		return requestConfiguration{}, jrpc2.Errorf(
-			jrpc2.InternalError,
-			"model %q from %s has no positive context length in the OpenRouter catalog; choose a model with a published context length",
-			resolved.Model,
-			resolved.ModelSource,
-		)
-	}
 	now := time.Now()
 	return requestConfiguration{
 		Mode:                 modeCode,
 		Settings:             resolved,
-		ContextWindow:        contextWindow,
 		SystemPrompt:         composePrompt(cwd, now, instructions, skillCatalog, a.clientForm),
 		Tools:                cloneTools(primaryTools.modelTools),
 		ToolKinds:            configuredToolKinds(primaryTools),
@@ -923,8 +898,9 @@ func (a *Agent) resolveConfiguration(
 func (a *Agent) resolveActivation(
 	ctx context.Context,
 	cwd string,
+	selections sessionSelections,
 ) (requestConfiguration, []openrouter.Model, error) {
-	configuration, err := a.resolveConfiguration(ctx, cwd)
+	configuration, err := a.resolveConfiguration(cwd)
 	if err != nil {
 		return requestConfiguration{}, nil, err
 	}
@@ -932,9 +908,20 @@ func (a *Agent) resolveActivation(
 		Models(context.Context) ([]openrouter.Model, error)
 	})
 	if !ok {
-		entry, err := a.client.ModelInfo(ctx, configuration.Settings.Model)
+		model := configuration.Settings.Model
+		source := configuration.Settings.ModelSource
+		if selections.Model != "" {
+			model = selections.Model
+			source = settings.SourceSession
+		}
+		entry, err := a.client.ModelInfo(ctx, model)
 		if err != nil {
-			return requestConfiguration{}, nil, err
+			return requestConfiguration{}, nil, jrpc2.Errorf(
+				jrpc2.InternalError,
+				"resolve model from %s: %v",
+				source,
+				err,
+			)
 		}
 		return configuration, []openrouter.Model{*entry}, nil
 	}
@@ -1681,6 +1668,7 @@ type session struct {
 	active         *activeTurn
 	recovering     bool
 	closing        bool
+	configChanges  sync.WaitGroup
 	grants         map[string][]string
 	reads          fileReads
 	approvalMu     sync.Mutex
@@ -1761,6 +1749,19 @@ func (s *session) claim(
 	}, nil
 }
 
+func (s *session) claimConfigChange() (func(), error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closing {
+		return nil, errors.New("session is closing")
+	}
+	s.configChanges.Add(1)
+	var releaseOnce sync.Once
+	return func() {
+		releaseOnce.Do(s.configChanges.Done)
+	}, nil
+}
+
 func (s *session) claimRecovery(
 	parent context.Context,
 	turnID string,
@@ -1807,11 +1808,11 @@ func (s *session) close() {
 		active.cancelledByClient.Store(true)
 	}
 	s.mu.Unlock()
-	if active == nil {
-		return
+	if active != nil {
+		active.cancel()
+		<-active.done
 	}
-	active.cancel()
-	<-active.done
+	s.configChanges.Wait()
 }
 
 func (s *session) cancel() bool {

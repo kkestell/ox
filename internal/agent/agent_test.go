@@ -10,10 +10,12 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/creachadair/jrpc2"
 	"github.com/zalando/go-keyring"
@@ -1492,6 +1494,91 @@ func TestConcurrentCloseHasOneOwnerAndCancelsActivePrompt(t *testing.T) {
 	}
 }
 
+func TestCloseWaitsForClaimedConfigurationChange(t *testing.T) {
+	instance := settingsAgent(t, &staticCompletionModel{}, "", "test/model")
+	created, err := instance.NewSession(context.Background(), validNewSessionRequest(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	value := instance.findSession(created.SessionID)
+	release, err := value.claimConfigChange()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	closed := make(chan error, 1)
+	go func() { closed <- instance.closeActive(created.SessionID) }()
+	deadline := time.Now().Add(time.Second)
+	for {
+		value.mu.Lock()
+		closing := value.closing
+		value.mu.Unlock()
+		if closing {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("close did not claim the session")
+		}
+		runtime.Gosched()
+	}
+	select {
+	case err := <-closed:
+		t.Fatalf("close returned before configuration change finished: %v", err)
+	default:
+	}
+	release()
+	if err := <-closed; err != nil {
+		t.Fatal(err)
+	}
+	if _, err := value.claimConfigChange(); err == nil || !strings.Contains(err.Error(), "closing") {
+		t.Fatalf("claim after close error = %v", err)
+	}
+}
+
+func TestResumeValidatesDurableModelSelectionInsteadOfBaseModel(t *testing.T) {
+	global := filepath.Join(t.TempDir(), "settings.json")
+	writeSettings(t, global, `{"model":"base/model"}`)
+	model := &catalogCompletionModel{models: []openrouter.Model{
+		*testModel("base/model", 100),
+		*testModel("selected/model", 200),
+	}}
+	instance := settingsAgent(t, model, global, "")
+	request := validNewSessionRequest(t)
+	created, err := instance.NewSession(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	value := instance.findSession(created.SessionID)
+	selections := sessionSelections{Model: "selected/model"}
+	next, err := applySelections(value.activationBase, selections, nil, value.models)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := instance.commit(value, recordOptionChanged, optionChanged{
+		Selections: selections, Configuration: next,
+		Options: buildConfigOptions(next, value.models),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := instance.closeActive(created.SessionID); err != nil {
+		t.Fatal(err)
+	}
+
+	writeSettings(t, global, `{"model":"missing/model"}`)
+	model.models = []openrouter.Model{*testModel("selected/model", 200)}
+	if _, err := instance.ResumeSession(context.Background(), acp.ResumeSessionRequest{
+		SessionID: created.SessionID,
+		CWD:       request.CWD,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	resumed := instance.findSession(created.SessionID)
+	if got := resumed.state.configuration.Settings; got.Model != "selected/model" ||
+		got.ModelSource != settings.SourceSession {
+		t.Fatalf("resumed settings = %#v", got)
+	}
+}
+
 // mustResolve creates a session and returns the settings frozen onto it.
 func (a *Agent) mustResolve(t *testing.T, request acp.NewSessionRequest) settings.Resolved {
 	t.Helper()
@@ -2192,6 +2279,25 @@ type staticCompletionModel struct {
 	completion *openrouter.Completion
 	entry      *openrouter.Model
 	entryErr   error
+}
+
+type catalogCompletionModel struct {
+	staticCompletionModel
+	models []openrouter.Model
+}
+
+func (m *catalogCompletionModel) Models(context.Context) ([]openrouter.Model, error) {
+	return cloneModels(m.models), nil
+}
+
+func (m *catalogCompletionModel) ModelInfo(_ context.Context, id string) (*openrouter.Model, error) {
+	for index := range m.models {
+		if m.models[index].ID == id {
+			entry := m.models[index]
+			return &entry, nil
+		}
+	}
+	return nil, fmt.Errorf("%w: %s", openrouter.ErrUnknownModel, id)
 }
 
 func (m *staticCompletionModel) Stream(

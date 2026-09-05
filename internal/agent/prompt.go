@@ -132,7 +132,9 @@ func loadRootInstructions(cwd string) (string, error) {
 		return "", fmt.Errorf("load workspace instructions %s: not a regular file", path)
 	}
 
-	file, err := root.OpenFile(name, os.O_RDONLY|syscall.O_NONBLOCK|syscall.O_NOFOLLOW, 0)
+	// Root.OpenFile refuses symlinks. Nonblocking mode also prevents a raced
+	// replacement with a FIFO from hanging activation.
+	file, err := root.OpenFile(name, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return "", fmt.Errorf("load workspace instructions %s: %w", path, err)
 	}

@@ -5,7 +5,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -185,9 +184,7 @@ func TestLoadRootInstructions(t *testing.T) {
 			name: "fifo",
 			make: func(t *testing.T, path string) {
 				t.Helper()
-				if err := syscall.Mkfifo(path, 0o600); err != nil {
-					t.Fatal(err)
-				}
+				makeInstructionFIFO(t, path)
 			},
 			want: "regular file",
 		},

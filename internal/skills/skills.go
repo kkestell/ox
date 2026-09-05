@@ -239,7 +239,9 @@ func readBoundedRegular(root *os.Root, name string) ([]byte, error) {
 	if !info.Mode().IsRegular() {
 		return nil, errors.New("not a regular file")
 	}
-	file, err := root.OpenFile(name, os.O_RDONLY|syscall.O_NONBLOCK|syscall.O_NOFOLLOW, 0)
+	// Root.OpenFile refuses symlinks. Nonblocking mode also prevents a raced
+	// replacement with a FIFO from hanging discovery or loading.
+	file, err := root.OpenFile(name, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, err
 	}
