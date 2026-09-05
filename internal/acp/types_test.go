@@ -158,6 +158,39 @@ func TestSessionConfigPayloadsUsePinnedWireShapes(t *testing.T) {
 	}
 }
 
+func TestPlanPayloadsUsePinnedWireShapes(t *testing.T) {
+	tests := []struct {
+		name    string
+		entries []PlanEntry
+		want    string
+	}{
+		{
+			name: "populated",
+			entries: []PlanEntry{{
+				Content: "Implement it", Priority: PlanEntryPriorityHigh,
+				Status: PlanEntryStatusInProgress,
+			}},
+			want: `{"sessionUpdate":"plan","entries":[{"content":"Implement it","priority":"high","status":"in_progress"}]}`,
+		},
+		{name: "empty", entries: []PlanEntry{}, want: `{"sessionUpdate":"plan","entries":[]}`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			value := Plan{SessionUpdate: SessionUpdatePlan, Entries: test.entries}
+			if err := value.Validate(); err != nil {
+				t.Fatal(err)
+			}
+			data, err := json.Marshal(value)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(data) != test.want {
+				t.Fatalf("payload = %s, want %s", data, test.want)
+			}
+		})
+	}
+}
+
 func TestSetSessionConfigOptionRequestValidation(t *testing.T) {
 	tests := []struct {
 		name    string

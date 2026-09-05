@@ -87,7 +87,7 @@ func invoke(t *testing.T, tool agent.Tool, invocation agent.Invocation) (string,
 
 func TestAllDeclaresValidSchemasAndClassifications(t *testing.T) {
 	tools := All()
-	if len(tools) != 7 {
+	if len(tools) != 8 {
 		t.Fatalf("tool count = %d", len(tools))
 	}
 	for _, tool := range tools {
@@ -100,6 +100,7 @@ func TestAllDeclaresValidSchemasAndClassifications(t *testing.T) {
 		mutating := tool.Name == "write_file" || tool.Name == "edit_file"
 		shell := tool.Name == "shell"
 		task := tool.Name == "task"
+		todo := tool.Name == "todo"
 		if mutating && (tool.Kind != acp.ToolKindEdit ||
 			tool.Approval != agent.ApprovalAsk || tool.ParallelSafe) {
 			t.Errorf("%s mutation classification = %+v", tool.Name, tool)
@@ -114,9 +115,70 @@ func TestAllDeclaresValidSchemasAndClassifications(t *testing.T) {
 			!tool.Delegates || tool.Label == nil) {
 			t.Errorf("task classification = %+v", tool)
 		}
-		if !mutating && !shell && !task &&
+		if todo && (tool.Kind != acp.ToolKindOther ||
+			tool.Approval != agent.ApprovalNone || tool.ParallelSafe ||
+			!tool.ParentOnly || !tool.PlanMode) {
+			t.Errorf("todo classification = %+v", tool)
+		}
+		if !mutating && !shell && !task && !todo &&
 			(!tool.ParallelSafe || tool.Approval != agent.ApprovalNone) {
 			t.Errorf("%s read-only classification = %+v", tool.Name, tool)
+		}
+	}
+}
+
+func TestTodoReplacesValidatedCompleteList(t *testing.T) {
+	invocation := testInvocation(t, `{"todos":[{"content":"first","status":"pending"},{"content":"second","priority":"high","status":"in_progress"}]}`)
+	var got []acp.PlanEntry
+	invocation.ReplaceTodo = func(entries []acp.PlanEntry) error {
+		got = entries
+		return nil
+	}
+	output, err := invoke(t, toolNamed(t, "todo"), invocation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []acp.PlanEntry{
+		{Content: "first", Priority: acp.PlanEntryPriorityMedium, Status: acp.PlanEntryStatusPending},
+		{Content: "second", Priority: acp.PlanEntryPriorityHigh, Status: acp.PlanEntryStatusInProgress},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("replacement = %#v, want %#v", got, want)
+	}
+	if output != "[pending, medium] first\n[in_progress, high] second\n" {
+		t.Fatalf("output = %q", output)
+	}
+}
+
+func TestTodoClearsAndRejectsInvalidReplacements(t *testing.T) {
+	called := false
+	clear := testInvocation(t, `{"todos":[]}`)
+	clear.ReplaceTodo = func(entries []acp.PlanEntry) error {
+		called = true
+		if entries == nil || len(entries) != 0 {
+			t.Fatalf("clear entries = %#v", entries)
+		}
+		return nil
+	}
+	output, err := invoke(t, toolNamed(t, "todo"), clear)
+	if err != nil || !called || output != "Todo list cleared" {
+		t.Fatalf("clear = output %q, called %v, error %v", output, called, err)
+	}
+
+	for _, arguments := range []string{
+		`{}`,
+		`{"todos":[{"content":" ","status":"pending"}]}`,
+		`{"todos":[{"content":"x","priority":"urgent","status":"pending"}]}`,
+		`{"todos":[{"content":"x","status":"blocked"}]}`,
+		`{"todos":[{"content":"x","status":"in_progress"},{"content":"y","status":"in_progress"}]}`,
+	} {
+		invocation := testInvocation(t, arguments)
+		invocation.ReplaceTodo = func([]acp.PlanEntry) error {
+			t.Fatalf("invalid replacement %s executed", arguments)
+			return nil
+		}
+		if _, err := invoke(t, toolNamed(t, "todo"), invocation); err == nil {
+			t.Fatalf("invalid replacement %s succeeded", arguments)
 		}
 	}
 }

@@ -13,6 +13,17 @@ import (
 func All() []agent.Tool {
 	return []agent.Tool{
 		{
+			Name:         "todo",
+			Description:  todoDescription,
+			InputSchema:  json.RawMessage(todoSchema),
+			Kind:         acp.ToolKindOther,
+			Approval:     agent.ApprovalNone,
+			ParallelSafe: false,
+			ParentOnly:   true,
+			PlanMode:     true,
+			Execute:      executeTodo,
+		},
+		{
 			Name:         "task",
 			Description:  taskDescription,
 			InputSchema:  json.RawMessage(taskSchema),
@@ -30,6 +41,7 @@ func All() []agent.Tool {
 			Kind:         acp.ToolKindRead,
 			Approval:     agent.ApprovalNone,
 			ParallelSafe: true,
+			PlanMode:     true,
 			Execute:      executeRead,
 		},
 		{
@@ -39,6 +51,7 @@ func All() []agent.Tool {
 			Kind:         acp.ToolKindSearch,
 			Approval:     agent.ApprovalNone,
 			ParallelSafe: true,
+			PlanMode:     true,
 			Execute:      executeGlob,
 		},
 		{
@@ -48,6 +61,7 @@ func All() []agent.Tool {
 			Kind:         acp.ToolKindSearch,
 			Approval:     agent.ApprovalNone,
 			ParallelSafe: true,
+			PlanMode:     true,
 			Execute:      executeGrep,
 		},
 		{

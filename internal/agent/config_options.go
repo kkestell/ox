@@ -240,8 +240,8 @@ func applySelections(
 	}
 	if selections.Mode == modePlan {
 		configuration.Mode = modePlan
-		configuration.Tools = planTools(configuration.Tools, configuration.ToolKinds)
-		configuration.Subagent.Tools = planTools(configuration.Subagent.Tools, configuration.ToolKinds)
+		configuration.Tools = planTools(configuration.Tools, configuration.PlanTools)
+		configuration.Subagent.Tools = planTools(configuration.Subagent.Tools, configuration.PlanTools)
 		allowed := make(map[string]acp.ToolKind, len(configuration.Tools))
 		for _, tool := range configuration.Tools {
 			allowed[tool.Function.Name] = configuration.ToolKinds[tool.Function.Name]
@@ -263,10 +263,9 @@ func applySelections(
 	return configuration, nil
 }
 
-func planTools(tools []openrouter.Tool, kinds map[string]acp.ToolKind) []openrouter.Tool {
+func planTools(tools []openrouter.Tool, allowed map[string]bool) []openrouter.Tool {
 	return slices.DeleteFunc(cloneTools(tools), func(tool openrouter.Tool) bool {
-		kind := kinds[tool.Function.Name]
-		return kind != acp.ToolKindRead && kind != acp.ToolKindSearch
+		return !allowed[tool.Function.Name]
 	})
 }
 

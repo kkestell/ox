@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kkestell/ox/internal/acp"
 	"github.com/kkestell/ox/internal/openrouter"
 )
 
@@ -47,6 +48,34 @@ func TestPlanCompactionKeepsFirstUserAndCompleteToolTail(t *testing.T) {
 	if !messageGroupBoundary(messages, plan.headEnd) ||
 		!messageGroupBoundary(messages, plan.tailStart) {
 		t.Fatalf("plan separates a message group: %#v", plan)
+	}
+}
+
+func TestCompactionPreservesTransientTodoContext(t *testing.T) {
+	todo := todoContextMessage([]acp.PlanEntry{{
+		Content: "keep this", Priority: acp.PlanEntryPriorityMedium,
+		Status: acp.PlanEntryStatusInProgress,
+	}})
+	messages := []openrouter.Message{
+		textMessage(openrouter.RoleSystem, "instructions"),
+		todo,
+		textMessage(openrouter.RoleUser, "do the task"),
+		textMessage(openrouter.RoleAssistant, strings.Repeat("older ", 1000)),
+		textMessage(openrouter.RoleUser, "continue"),
+	}
+	request := openrouter.Request{Model: "test/model", Messages: messages}
+	plan := planCompaction(messages, 4000)
+	if plan == nil || plan.headEnd != 3 {
+		t.Fatalf("plan = %#v", plan)
+	}
+	compacted, err := compactRequest(request, *plan, "summary", 4000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotTodo := compacted.request.Messages[1]
+	if len(compacted.request.Messages) < 3 || gotTodo.Role != todo.Role ||
+		len(gotTodo.Content) != 1 || gotTodo.Content[0].Text != todo.Content[0].Text {
+		t.Fatalf("todo context was not preserved: %#v", compacted.request.Messages)
 	}
 }
 

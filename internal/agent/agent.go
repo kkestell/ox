@@ -99,7 +99,7 @@ func New(config Config) (*Agent, error) {
 	}
 	subagentTools, err := newToolSet(slices.DeleteFunc(
 		append([]Tool(nil), tools...),
-		func(tool Tool) bool { return tool.Delegates },
+		func(tool Tool) bool { return tool.Delegates || tool.ParentOnly },
 	))
 	if err != nil {
 		return nil, err
@@ -872,6 +872,7 @@ func (a *Agent) resolveConfiguration(
 		SystemPrompt:         composePrompt(cwd, now),
 		Tools:                cloneTools(a.primaryTools.modelTools),
 		ToolKinds:            a.configuredToolKinds(),
+		PlanTools:            a.configuredPlanTools(),
 		ExecutorCapabilities: executorCapabilities,
 		Subagent: subagentConfiguration{
 			SystemPrompt: composeSubagentPrompt(cwd, now),
@@ -939,6 +940,19 @@ func (a *Agent) configuredToolKinds() map[string]acp.ToolKind {
 		return nil
 	}
 	return kinds
+}
+
+func (a *Agent) configuredPlanTools() map[string]bool {
+	result := make(map[string]bool)
+	for _, tool := range a.primaryTools.tools {
+		if tool.PlanMode || tool.Kind == acp.ToolKindRead || tool.Kind == acp.ToolKindSearch {
+			result[tool.Name] = true
+		}
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	return result
 }
 
 func (a *Agent) commit(value *session, kind string, payload any) error {
