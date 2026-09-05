@@ -12,7 +12,6 @@ import (
 	"sort"
 	"strings"
 	"time"
-	"unicode"
 
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/kkestell/ox/internal/acp"
@@ -23,11 +22,25 @@ const (
 	ProtocolVersion = "2026-07-28"
 	MaxTools        = 256
 	MaxCatalogBytes = 256 << 10
+	MaxCatalogPages = 256
 	MaxResultBytes  = 1 << 20
 	MaxWireBytes    = 2 << 20
-	connectTimeout  = 30 * time.Second
-	callTimeout     = 120 * time.Second
 )
+
+var (
+	connectTimeoutSetting = "30s"
+	callTimeoutSetting    = "120s"
+	connectTimeout        = mustDuration(connectTimeoutSetting)
+	callTimeout           = mustDuration(callTimeoutSetting)
+)
+
+func mustDuration(value string) time.Duration {
+	duration, err := time.ParseDuration(value)
+	if err != nil {
+		panic(err)
+	}
+	return duration
+}
 
 type Descriptor struct {
 	Name        string          `json:"name"`
@@ -81,6 +94,7 @@ func Activate(ctx context.Context, root string, definitions []acp.MCPServer) (*B
 		return nil, err
 	}
 	bundle := &Bundle{byName: make(map[string]toolRef)}
+	catalogBytes := 2 // JSON array delimiters.
 	for _, definition := range definitions {
 		opened, err := connectServer(ctx, root, definition)
 		if err != nil {
@@ -97,16 +111,24 @@ func Activate(ctx context.Context, root string, definitions []acp.MCPServer) (*B
 				_ = bundle.Close()
 				return nil, fmt.Errorf("MCP provider tool name %q is not unique", tool.descriptor.Name)
 			}
+			encoded, err := json.Marshal(tool.descriptor)
+			if err != nil {
+				_ = bundle.Close()
+				return nil, errors.New("encode MCP catalog")
+			}
+			if len(bundle.tools) > 0 {
+				catalogBytes++
+			}
+			catalogBytes += len(encoded)
+			if catalogBytes > MaxCatalogBytes {
+				_ = bundle.Close()
+				return nil, errors.New("MCP catalog exceeds 256 KiB")
+			}
 			bundle.tools = append(bundle.tools, cloneDescriptor(tool.descriptor))
 			bundle.byName[tool.descriptor.Name] = toolRef{server: opened, tool: tool}
 		}
 	}
 	sort.Slice(bundle.tools, func(i, j int) bool { return bundle.tools[i].Name < bundle.tools[j].Name })
-	data, err := json.Marshal(bundle.tools)
-	if err != nil || len(data) > MaxCatalogBytes {
-		_ = bundle.Close()
-		return nil, errors.New("MCP catalog exceeds 256 KiB")
-	}
 	return bundle, nil
 }
 
@@ -150,6 +172,7 @@ func (b *Bundle) Call(ctx context.Context, name string, arguments json.RawMessag
 	if err != nil {
 		return Result{}, reference.server.redact(err)
 	}
+	content = reference.server.redactContent(content)
 	if len(content) > MaxResultBytes {
 		return Result{}, errors.New("MCP tool result exceeds 1 MiB")
 	}
@@ -222,7 +245,13 @@ func discoverTools(ctx context.Context, value *server) (map[string]discoveredToo
 	result := make(map[string]discoveredTool)
 	seenCursors := map[string]struct{}{}
 	cursor := ""
+	pageCount := 0
+	catalogBytes := 2 // JSON array delimiters.
 	for {
+		pageCount++
+		if pageCount > MaxCatalogPages {
+			return nil, errors.New("MCP tools pagination exceeds 256 pages")
+		}
 		page, err := value.session.ListTools(ctx, &sdk.ListToolsParams{Cursor: cursor})
 		if err != nil {
 			return nil, err
@@ -237,6 +266,17 @@ func discoverTools(ctx context.Context, value *server) (map[string]discoveredToo
 			found, err := makeDiscovered(value, tool)
 			if err != nil {
 				return nil, fmt.Errorf("MCP tool %q: %w", tool.Name, err)
+			}
+			encoded, err := json.Marshal(found.descriptor)
+			if err != nil {
+				return nil, errors.New("encode MCP catalog")
+			}
+			if len(result) > 0 {
+				catalogBytes++
+			}
+			catalogBytes += len(encoded)
+			if catalogBytes > MaxCatalogBytes {
+				return nil, errors.New("MCP catalog exceeds 256 KiB")
 			}
 			result[tool.Name] = found
 			if len(result) > MaxTools {
@@ -275,6 +315,9 @@ func makeDiscovered(value *server, tool *sdk.Tool) (discoveredTool, error) {
 	if err != nil {
 		return discoveredTool{}, fmt.Errorf("encode definition: %w", err)
 	}
+	if value.containsSecretJSON(raw) {
+		return discoveredTool{}, errors.New("definition contains a configured secret")
+	}
 	identityData, err := json.Marshal(struct {
 		Transport identityTransport `json:"transport"`
 		Tool      json.RawMessage   `json:"tool"`
@@ -307,7 +350,8 @@ func providerName(serverName, toolName string) string {
 func safeComponent(value string) string {
 	var result strings.Builder
 	for _, r := range value {
-		if unicode.IsLetter(r) && r <= unicode.MaxASCII || unicode.IsDigit(r) || r == '_' || r == '-' {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' ||
+			r >= '0' && r <= '9' || r == '_' || r == '-' {
 			result.WriteRune(r)
 		} else {
 			result.WriteByte('_')
@@ -344,13 +388,58 @@ func cloneDescriptor(value Descriptor) Descriptor {
 }
 
 func (s *server) redact(err error) error {
-	message := err.Error()
-	for _, secret := range s.secrets {
+	return errors.New(string(s.redactContent([]byte(err.Error()))))
+}
+
+func (s *server) redactContent(content []byte) []byte {
+	message := string(content)
+	secrets := append([]string(nil), s.secrets...)
+	sort.Slice(secrets, func(i, j int) bool { return len(secrets[i]) > len(secrets[j]) })
+	for _, secret := range secrets {
 		if secret != "" {
 			message = strings.ReplaceAll(message, secret, "[redacted]")
+			if encoded, err := json.Marshal(secret); err == nil && len(encoded) >= 2 {
+				message = strings.ReplaceAll(message, string(encoded[1:len(encoded)-1]), "[redacted]")
+			}
 		}
 	}
-	return errors.New(message)
+	return []byte(message)
+}
+
+func (s *server) containsSecretJSON(data []byte) bool {
+	var value any
+	if json.Unmarshal(data, &value) != nil {
+		return true
+	}
+	return containsSecretValue(value, s.secrets)
+}
+
+func containsSecretValue(value any, secrets []string) bool {
+	contains := func(text string) bool {
+		for _, secret := range secrets {
+			if secret != "" && strings.Contains(text, secret) {
+				return true
+			}
+		}
+		return false
+	}
+	switch typed := value.(type) {
+	case string:
+		return contains(typed)
+	case []any:
+		for _, item := range typed {
+			if containsSecretValue(item, secrets) {
+				return true
+			}
+		}
+	case map[string]any:
+		for key, item := range typed {
+			if contains(key) || containsSecretValue(item, secrets) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func disableToolCache(next sdk.MethodHandler) sdk.MethodHandler {

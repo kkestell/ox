@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -153,7 +154,7 @@ func TestStdioActivationUsesRootAndEnvironment(t *testing.T) {
 	bundle, err := Activate(context.Background(), root, []acp.MCPServer{{Stdio: &acp.MCPStdioServer{
 		Name: "stdio", Command: executable,
 		Args: []string{"-test.run=^TestMCPStdioHelper$"},
-		Env:  []acp.EnvVariable{{Name: "GO_WANT_MCP_HELPER", Value: "1"}, {Name: "MCP_FIXTURE_VALUE", Value: "configured"}},
+		Env:  []acp.EnvVariable{{Name: "GO_WANT_MCP_HELPER", Value: "mcp-helper-enabled"}, {Name: "MCP_FIXTURE_VALUE", Value: "configured-secret"}},
 	}}})
 	if err != nil {
 		t.Fatal(err)
@@ -167,7 +168,7 @@ func TestStdioActivationUsesRootAndEnvironment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := canonical + "|configured"
+	want := canonical + "|[redacted]"
 	if string(result.Content) != want {
 		t.Fatalf("result = %q, want %q", result.Content, want)
 	}
@@ -177,7 +178,7 @@ func TestStdioActivationUsesRootAndEnvironment(t *testing.T) {
 }
 
 func TestMCPStdioHelper(t *testing.T) {
-	if os.Getenv("GO_WANT_MCP_HELPER") != "1" {
+	if os.Getenv("GO_WANT_MCP_HELPER") != "mcp-helper-enabled" {
 		return
 	}
 	server := sdk.NewServer(&sdk.Implementation{Name: "stdio-fixture", Version: "1"}, nil)
@@ -205,7 +206,7 @@ func TestCrossOriginRedirectStripsConfiguredHeaders(t *testing.T) {
 	}))
 	defer source.Close()
 	origin, _ := url.Parse(source.URL)
-	client := &http.Client{Transport: headerTransport{
+	client := &http.Client{Transport: &headerTransport{
 		base: http.DefaultTransport, origin: origin,
 		headers: http.Header{"Authorization": []string{"secret"}},
 	}}
@@ -216,6 +217,31 @@ func TestCrossOriginRedirectStripsConfiguredHeaders(t *testing.T) {
 	response.Body.Close()
 	if received != "" {
 		t.Fatalf("redirect leaked configured header %q", received)
+	}
+}
+
+func TestRedirectTargetsRejectPlaintextRemoteDestinations(t *testing.T) {
+	for _, raw := range []string{
+		"http://example.com/mcp",
+		"ftp://example.com/mcp",
+		"https://user:secret@example.com/mcp",
+	} {
+		target, err := url.Parse(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := validateRedirectTarget(target); err == nil {
+			t.Fatalf("accepted redirect target %q", raw)
+		}
+	}
+	for _, raw := range []string{"https://example.com/mcp", "http://127.0.0.1/mcp", "http://service.localhost/mcp"} {
+		target, err := url.Parse(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := validateRedirectTarget(target); err != nil {
+			t.Fatalf("redirect target %q: %v", raw, err)
+		}
 	}
 }
 
@@ -237,6 +263,68 @@ func TestDescriptorCloneNameAndResultBounds(t *testing.T) {
 	content, err := renderResult(&sdk.CallToolResult{Content: []sdk.Content{&sdk.TextContent{Text: "failed"}}, IsError: true})
 	if err != nil || string(content) != "failed" {
 		t.Fatalf("render = %q, %v", content, err)
+	}
+}
+
+func TestProviderNameIsASCIIAndByteBounded(t *testing.T) {
+	name := providerName(strings.Repeat("é", 80), strings.Repeat("١", 80))
+	if len(name) > 64 {
+		t.Fatalf("provider name is %d bytes: %q", len(name), name)
+	}
+	for _, value := range []byte(name) {
+		if !(value >= 'a' && value <= 'z' || value >= 'A' && value <= 'Z' ||
+			value >= '0' && value <= '9' || value == '_' || value == '-') {
+			t.Fatalf("provider name contains non-ASCII-safe byte %#x: %q", value, name)
+		}
+	}
+}
+
+func TestSecretsAreRejectedFromDefinitionsAndRedactedFromResults(t *testing.T) {
+	const secret = "configured-secret-value"
+	for _, leak := range []struct {
+		name string
+		tool *sdk.Tool
+	}{
+		{name: "name", tool: &sdk.Tool{Name: "tool-" + secret, InputSchema: json.RawMessage(`{"type":"object"}`)}},
+		{name: "description", tool: &sdk.Tool{Name: "tool", Description: secret, InputSchema: json.RawMessage(`{"type":"object"}`)}},
+		{name: "schema-key", tool: &sdk.Tool{Name: "tool", InputSchema: json.RawMessage(`{"type":"object","properties":{"configured-secret-value":{"type":"string"}}}`)}},
+	} {
+		t.Run(leak.name, func(t *testing.T) {
+			value := &server{name: "server", secrets: []string{secret}, transport: identityTransport{Kind: "http", Destination: "https://example.com"}}
+			if _, err := makeDiscovered(value, leak.tool); err == nil || strings.Contains(err.Error(), secret) {
+				t.Fatalf("definition error = %v", err)
+			}
+		})
+	}
+
+	server := sdk.NewServer(&sdk.Implementation{Name: "fixture", Version: "1"}, nil)
+	server.AddTool(&sdk.Tool{Name: "tool", InputSchema: json.RawMessage(`{"type":"object"}`)}, func(_ context.Context, _ *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
+		return &sdk.CallToolResult{Content: []sdk.Content{&sdk.TextContent{Text: "result " + secret}}}, nil
+	})
+	httpServer := httptest.NewServer(sdk.NewStreamableHTTPHandler(func(*http.Request) *sdk.Server { return server }, &sdk.StreamableHTTPOptions{JSONResponse: true, Stateless: true}))
+	defer httpServer.Close()
+	bundle, err := Activate(context.Background(), t.TempDir(), []acp.MCPServer{{HTTP: &acp.MCPHTTPServer{
+		Type: "http", Name: "server", URL: httpServer.URL,
+		Headers: []acp.HTTPHeader{{Name: "Authorization", Value: secret}},
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bundle.Close()
+	result, err := bundle.Call(context.Background(), bundle.Tools()[0].Name, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(result.Content), secret) || string(result.Content) != "result [redacted]" {
+		t.Fatalf("result = %q", result.Content)
+	}
+}
+
+func TestSecretRedactionCoversJSONEscaping(t *testing.T) {
+	value := &server{secrets: []string{"token<value"}}
+	got := string(value.redactContent([]byte(`{"token":"token\u003cvalue"}`)))
+	if strings.Contains(got, `token\u003cvalue`) || got != `{"token":"[redacted]"}` {
+		t.Fatalf("redacted content = %q", got)
 	}
 }
 
@@ -286,5 +374,58 @@ func TestWireReadersRejectOversizedFrames(t *testing.T) {
 	body := &httpBodyReader{reader: io.NopCloser(strings.NewReader(strings.Repeat("x", MaxWireBytes+1)))}
 	if _, err := io.ReadAll(body); err == nil {
 		t.Fatal("accepted oversized JSON response")
+	}
+}
+
+func TestDiscoveryRejectsExcessivePagesAndBytes(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		list func(*sdk.ListToolsParams) *sdk.ListToolsResult
+		want string
+	}{
+		{
+			name: "pages",
+			list: func(params *sdk.ListToolsParams) *sdk.ListToolsResult {
+				page := 0
+				if params.Cursor != "" {
+					page, _ = strconv.Atoi(params.Cursor)
+				}
+				return &sdk.ListToolsResult{Tools: []*sdk.Tool{}, NextCursor: strconv.Itoa(page + 1)}
+			},
+			want: "256 pages",
+		},
+		{
+			name: "bytes",
+			list: func(*sdk.ListToolsParams) *sdk.ListToolsResult {
+				return &sdk.ListToolsResult{Tools: []*sdk.Tool{{
+					Name: "tool", Description: strings.Repeat("x", MaxCatalogBytes),
+					InputSchema: json.RawMessage(`{"type":"object"}`),
+				}}}
+			},
+			want: "256 KiB",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server := sdk.NewServer(&sdk.Implementation{Name: "fixture", Version: "1"}, &sdk.ServerOptions{
+				Capabilities: &sdk.ServerCapabilities{Tools: &sdk.ToolCapabilities{}},
+			})
+			server.AddReceivingMiddleware(func(next sdk.MethodHandler) sdk.MethodHandler {
+				return func(ctx context.Context, method string, request sdk.Request) (sdk.Result, error) {
+					if method == "tools/list" {
+						params, _ := request.GetParams().(*sdk.ListToolsParams)
+						return test.list(params), nil
+					}
+					return next(ctx, method, request)
+				}
+			})
+			httpServer := httptest.NewServer(sdk.NewStreamableHTTPHandler(func(*http.Request) *sdk.Server { return server }, &sdk.StreamableHTTPOptions{JSONResponse: true, Stateless: true}))
+			defer httpServer.Close()
+			_, err := Activate(context.Background(), t.TempDir(), []acp.MCPServer{{HTTP: &acp.MCPHTTPServer{
+				Type: "http", Name: "server", URL: httpServer.URL, Headers: []acp.HTTPHeader{},
+			}}})
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("activation error = %v", err)
+			}
+		})
 	}
 }
