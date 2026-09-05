@@ -61,6 +61,9 @@ The implemented package layout assigns one owner to each boundary:
   cancellation.
 - `internal/openrouter` owns the provider vocabulary, HTTP boundary, SSE parser,
   retry policy, model catalog, and assembly of streamed provider responses.
+- `internal/mcp` owns MCP transport lifecycles, protocol negotiation, discovery,
+  catalog identities, and bounded tool calls. It exposes no credentials through
+  model-facing descriptors.
 - `internal/settings` owns global and workspace settings, validation,
   precedence, and validation of model settings. The agent combines those inputs
   with durable session selections to construct immutable turn configuration.
@@ -106,6 +109,7 @@ cmd/ox
 agent
     -> acp
     -> credentials
+    -> mcp
     -> openrouter
     -> settings
     -> skills
@@ -116,6 +120,9 @@ tools
     -> agent
     -> shellrules
     -> workspace
+
+mcp
+    -> acp
 
 evals
     -> acp

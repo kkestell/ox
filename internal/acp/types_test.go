@@ -51,7 +51,7 @@ func TestInitializeMetadataRoundTrip(t *testing.T) {
 func TestSessionPayloadsUsePinnedWireShapes(t *testing.T) {
 	request := NewSessionRequest{
 		CWD:        "/workspace",
-		MCPServers: []json.RawMessage{},
+		MCPServers: []MCPServer{},
 	}
 	data, err := json.Marshal(request)
 	if err != nil {

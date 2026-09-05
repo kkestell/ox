@@ -745,7 +745,7 @@ func TestPromptFailureReportsAndReplaysTheModelError(t *testing.T) {
 		acp.LoadSessionRequest{
 			SessionID:  sessionID,
 			CWD:        cwd,
-			MCPServers: []json.RawMessage{},
+			MCPServers: []acp.MCPServer{},
 		},
 		&loaded,
 	); err != nil {
@@ -826,7 +826,7 @@ func TestSessionRestartLoadsReplayAndContinuesExactHistory(t *testing.T) {
 	err := locked.local.Client.CallResult(t.Context(), "session/load", acp.LoadSessionRequest{
 		SessionID:  sessionID,
 		CWD:        cwd,
-		MCPServers: []json.RawMessage{},
+		MCPServers: []acp.MCPServer{},
 	}, &load)
 	if err == nil || !strings.Contains(err.Error(), "active in another runtime") {
 		t.Fatalf("locked load error = %v", err)
@@ -876,7 +876,7 @@ func TestSessionRestartLoadsReplayAndContinuesExactHistory(t *testing.T) {
 		acp.LoadSessionRequest{
 			SessionID:  sessionID,
 			CWD:        cwd,
-			MCPServers: []json.RawMessage{},
+			MCPServers: []acp.MCPServer{},
 		},
 		&load,
 	); err != nil {
@@ -927,7 +927,7 @@ func TestSessionRestartLoadsReplayAndContinuesExactHistory(t *testing.T) {
 		acp.LoadSessionRequest{
 			SessionID:  sessionID,
 			CWD:        cwd,
-			MCPServers: []json.RawMessage{},
+			MCPServers: []acp.MCPServer{},
 		},
 		&load,
 	); err != nil {
@@ -1188,7 +1188,7 @@ func TestReadOnlyToolsSpillRefuseEscapeReplayAndDelete(t *testing.T) {
 		acp.LoadSessionRequest{
 			SessionID:  sessionID,
 			CWD:        linkCWD,
-			MCPServers: []json.RawMessage{},
+			MCPServers: []acp.MCPServer{},
 		},
 		&loaded,
 	); err != nil {
@@ -1305,7 +1305,7 @@ func TestSessionActivationRecordsComposedPromptChangeOnce(t *testing.T) {
 		acp.LoadSessionRequest{
 			SessionID:  sessionID,
 			CWD:        cwd,
-			MCPServers: []json.RawMessage{},
+			MCPServers: []acp.MCPServer{},
 		},
 		&loaded,
 	); err != nil {
@@ -1611,7 +1611,7 @@ func TestConcurrentTasksNestChildCallsApproveAndReplay(t *testing.T) {
 		acp.LoadSessionRequest{
 			SessionID:  sessionID,
 			CWD:        workspace,
-			MCPServers: []json.RawMessage{},
+			MCPServers: []acp.MCPServer{},
 		},
 		&acp.LoadSessionResponse{},
 	); err != nil {
@@ -1746,7 +1746,7 @@ func TestEmptySubagentAnswerFailsTaskAndParentContinues(t *testing.T) {
 		acp.LoadSessionRequest{
 			SessionID:  sessionID,
 			CWD:        workspace,
-			MCPServers: []json.RawMessage{},
+			MCPServers: []acp.MCPServer{},
 		},
 		&acp.LoadSessionResponse{},
 	); err != nil {
@@ -2068,7 +2068,7 @@ func TestApprovalAllowsAndGrantsOnlyForTheActivation(t *testing.T) {
 		acp.LoadSessionRequest{
 			SessionID:  sessionID,
 			CWD:        workspace,
-			MCPServers: []json.RawMessage{},
+			MCPServers: []acp.MCPServer{},
 		},
 		&acp.LoadSessionResponse{},
 	); err != nil {
@@ -2217,7 +2217,7 @@ func TestShellApprovalGrantIsRuleScopedAndActivationScoped(t *testing.T) {
 		acp.LoadSessionRequest{
 			SessionID:  sessionID,
 			CWD:        workspace,
-			MCPServers: []json.RawMessage{},
+			MCPServers: []acp.MCPServer{},
 		},
 		&acp.LoadSessionResponse{},
 	); err != nil {
@@ -2241,7 +2241,7 @@ func TestShellApprovalGrantIsRuleScopedAndActivationScoped(t *testing.T) {
 		acp.ResumeSessionRequest{
 			SessionID:  sessionID,
 			CWD:        workspace,
-			MCPServers: []json.RawMessage{},
+			MCPServers: []acp.MCPServer{},
 		},
 		&acp.ResumeSessionResponse{},
 	); err != nil {
@@ -2393,7 +2393,7 @@ func TestFileMutationToolsRequireApprovalAndFreshReadsPerActivation(t *testing.T
 		acp.LoadSessionRequest{
 			SessionID:  sessionID,
 			CWD:        workspace,
-			MCPServers: []json.RawMessage{},
+			MCPServers: []acp.MCPServer{},
 		},
 		&acp.LoadSessionResponse{},
 	); err != nil {
@@ -2767,7 +2767,7 @@ func TestRejectedFileMutationLeavesTheFileUntouched(t *testing.T) {
 	}
 	if err := harness.local.Client.CallResult(
 		t.Context(), "session/load", acp.LoadSessionRequest{
-			SessionID: sessionID, CWD: workspace, MCPServers: []json.RawMessage{},
+			SessionID: sessionID, CWD: workspace, MCPServers: []acp.MCPServer{},
 		},
 		&acp.LoadSessionResponse{},
 	); err != nil {
@@ -2975,7 +2975,7 @@ func TestCancellationWhileApprovalIsOutstandingCancelsTheTurn(t *testing.T) {
 		acp.LoadSessionRequest{
 			SessionID:  sessionID,
 			CWD:        workspace,
-			MCPServers: []json.RawMessage{},
+			MCPServers: []acp.MCPServer{},
 		},
 		&acp.LoadSessionResponse{},
 	); err != nil {
@@ -3194,7 +3194,7 @@ func TestCancellationStopsConcurrentSubagentsWithoutDurableDelegations(t *testin
 		acp.LoadSessionRequest{
 			SessionID:  sessionID,
 			CWD:        workspace,
-			MCPServers: []json.RawMessage{},
+			MCPServers: []acp.MCPServer{},
 		},
 		&acp.LoadSessionResponse{},
 	); err != nil {
@@ -3332,7 +3332,7 @@ func TestCancellationRetainsCompletedChildMutationInReplay(t *testing.T) {
 		acp.LoadSessionRequest{
 			SessionID:  sessionID,
 			CWD:        workspace,
-			MCPServers: []json.RawMessage{},
+			MCPServers: []acp.MCPServer{},
 		},
 		&acp.LoadSessionResponse{},
 	); err != nil {
@@ -3613,7 +3613,7 @@ func TestWorkspaceInstructionsFreezeAcrossParentAndChildUntilReactivation(t *tes
 		t.Fatal(err)
 	}
 	if err := harness.local.Client.CallResult(t.Context(), "session/load", acp.LoadSessionRequest{
-		SessionID: sessionID, CWD: workspace, MCPServers: []json.RawMessage{},
+		SessionID: sessionID, CWD: workspace, MCPServers: []acp.MCPServer{},
 	}, &acp.LoadSessionResponse{}); err != nil {
 		t.Fatal(err)
 	}
@@ -3925,7 +3925,7 @@ func TestTodoSurvivesCloseLoadAndReplay(t *testing.T) {
 	})
 	var loaded acp.LoadSessionResponse
 	if err := second.local.Client.CallResult(t.Context(), "session/load", acp.LoadSessionRequest{
-		SessionID: sessionID, CWD: workspace, MCPServers: []json.RawMessage{},
+		SessionID: sessionID, CWD: workspace, MCPServers: []acp.MCPServer{},
 	}, &loaded); err != nil {
 		t.Fatal(err)
 	}
@@ -4155,7 +4155,7 @@ func TestAuthenticateMakesRunningRPCServerUsableWithoutRestart(t *testing.T) {
 	var session acp.NewSessionResponse
 	err = local.Client.CallResult(t.Context(), "session/new", acp.NewSessionRequest{
 		CWD:        workspace,
-		MCPServers: []json.RawMessage{},
+		MCPServers: []acp.MCPServer{},
 	}, &session)
 	assertRPCErrorCode(t, err, acp.ErrCodeAuthRequired)
 
@@ -4183,7 +4183,7 @@ func TestAuthenticateMakesRunningRPCServerUsableWithoutRestart(t *testing.T) {
 
 	if err := local.Client.CallResult(t.Context(), "session/new", acp.NewSessionRequest{
 		CWD:        workspace,
-		MCPServers: []json.RawMessage{},
+		MCPServers: []acp.MCPServer{},
 	}, &session); err != nil {
 		t.Fatalf("new session after authentication: %v", err)
 	}
@@ -4202,7 +4202,7 @@ func TestAuthenticateMakesRunningRPCServerUsableWithoutRestart(t *testing.T) {
 	}
 	err = local.Client.CallResult(t.Context(), "session/new", acp.NewSessionRequest{
 		CWD:        workspace,
-		MCPServers: []json.RawMessage{},
+		MCPServers: []acp.MCPServer{},
 	}, &session)
 	assertRPCErrorCode(t, err, acp.ErrCodeAuthRequired)
 }
@@ -4454,7 +4454,7 @@ func (h *agentHarness) callNewSession(cwd string, meta acp.Metadata) (string, er
 	var response acp.NewSessionResponse
 	err := h.local.Client.CallResult(context.Background(), "session/new", acp.NewSessionRequest{
 		CWD:        cwd,
-		MCPServers: []json.RawMessage{},
+		MCPServers: []acp.MCPServer{},
 		Meta:       meta,
 	}, &response)
 	return response.SessionID, err

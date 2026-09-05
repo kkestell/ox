@@ -281,7 +281,7 @@ func TestDiagnosticTraceRecordsOnlyLiveRecoveredWork(t *testing.T) {
 	recovered := start(t, recoveredOptions...)
 	initialize(t, recovered)
 	load := recovered.begin("session/load", acp.LoadSessionRequest{
-		SessionID: session, CWD: cwd, MCPServers: []json.RawMessage{},
+		SessionID: session, CWD: cwd, MCPServers: []acp.MCPServer{},
 	})
 	permission := recovered.serverRequest()
 	_ = permissionRequest(t, permission, "call-shell")

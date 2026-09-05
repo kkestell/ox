@@ -1157,7 +1157,7 @@ func TestNewSessionValidatesCapabilitiesAndConfiguration(t *testing.T) {
 	}
 	_, err = instance.NewSession(context.Background(), acp.NewSessionRequest{
 		CWD:        t.TempDir(),
-		MCPServers: []json.RawMessage{},
+		MCPServers: []acp.MCPServer{},
 	})
 	assertErrorCode(t, err, acp.ErrCodeAuthRequired)
 
@@ -1679,7 +1679,7 @@ func validNewSessionRequest(t *testing.T) acp.NewSessionRequest {
 func newSessionRequest(cwd string, meta acp.Metadata) acp.NewSessionRequest {
 	return acp.NewSessionRequest{
 		CWD:        cwd,
-		MCPServers: []json.RawMessage{},
+		MCPServers: []acp.MCPServer{},
 		Meta:       meta,
 	}
 }

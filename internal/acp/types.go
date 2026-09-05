@@ -65,9 +65,16 @@ type ClientAuthCapabilities struct {
 type AgentCapabilities struct {
 	PromptCapabilities  *PromptCapabilities    `json:"promptCapabilities,omitempty"`
 	SessionCapabilities *SessionCapabilities   `json:"sessionCapabilities,omitempty"`
+	MCPCapabilities     *MCPCapabilities       `json:"mcpCapabilities,omitempty"`
 	LoadSession         bool                   `json:"loadSession"`
 	Auth                *AgentAuthCapabilities `json:"auth,omitempty"`
 	Meta                Metadata               `json:"_meta,omitempty"`
+}
+
+type MCPCapabilities struct {
+	HTTP bool     `json:"http,omitempty"`
+	SSE  bool     `json:"sse,omitempty"`
+	Meta Metadata `json:"_meta,omitempty"`
 }
 
 type AgentAuthCapabilities struct {
@@ -239,10 +246,10 @@ type LogoutResponse struct {
 }
 
 type NewSessionRequest struct {
-	CWD                   string            `json:"cwd"`
-	AdditionalDirectories []string          `json:"additionalDirectories,omitempty"`
-	MCPServers            []json.RawMessage `json:"mcpServers"`
-	Meta                  Metadata          `json:"_meta,omitempty"`
+	CWD                   string      `json:"cwd"`
+	AdditionalDirectories []string    `json:"additionalDirectories,omitempty"`
+	MCPServers            []MCPServer `json:"mcpServers"`
+	Meta                  Metadata    `json:"_meta,omitempty"`
 }
 
 type NewSessionResponse struct {
@@ -252,11 +259,11 @@ type NewSessionResponse struct {
 }
 
 type LoadSessionRequest struct {
-	SessionID             string            `json:"sessionId"`
-	CWD                   string            `json:"cwd"`
-	AdditionalDirectories []string          `json:"additionalDirectories,omitempty"`
-	MCPServers            []json.RawMessage `json:"mcpServers"`
-	Meta                  Metadata          `json:"_meta,omitempty"`
+	SessionID             string      `json:"sessionId"`
+	CWD                   string      `json:"cwd"`
+	AdditionalDirectories []string    `json:"additionalDirectories,omitempty"`
+	MCPServers            []MCPServer `json:"mcpServers"`
+	Meta                  Metadata    `json:"_meta,omitempty"`
 }
 
 type LoadSessionResponse struct {
@@ -265,11 +272,11 @@ type LoadSessionResponse struct {
 }
 
 type ResumeSessionRequest struct {
-	SessionID             string            `json:"sessionId"`
-	CWD                   string            `json:"cwd"`
-	AdditionalDirectories []string          `json:"additionalDirectories,omitempty"`
-	MCPServers            []json.RawMessage `json:"mcpServers,omitempty"`
-	Meta                  Metadata          `json:"_meta,omitempty"`
+	SessionID             string      `json:"sessionId"`
+	CWD                   string      `json:"cwd"`
+	AdditionalDirectories []string    `json:"additionalDirectories,omitempty"`
+	MCPServers            []MCPServer `json:"mcpServers,omitempty"`
+	Meta                  Metadata    `json:"_meta,omitempty"`
 }
 
 type ResumeSessionResponse struct {
