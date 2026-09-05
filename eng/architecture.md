@@ -80,6 +80,9 @@ The implemented package layout assigns one owner to each boundary:
   is test-only and contributes nothing to the shipped binary.
 - `integration` owns runtime integration tests across agent, provider, tools,
   permissions, subagents, and durable state. It is also test-only.
+- `evals` owns the external ACP evaluation client, versioned task fixtures,
+  objective verifiers, run budgets, and evaluation artifacts. Production
+  packages do not depend on it.
 
 The package list may change as responsibilities grow. The ownership and
 dependency direction are the durable design. Split or merge packages when that
@@ -110,6 +113,10 @@ tools
     -> agent
     -> shellrules
     -> workspace
+
+evals
+    -> acp
+    -> ox subprocess
 ```
 
 The ACP, credential, provider, settings, shell-rule, and workspace boundaries do
@@ -357,3 +364,9 @@ fixtures and artifacts belong to the evaluation harness, not production session
 semantics. Deterministic process tests prove contracts; on-demand model runs
 compare task outcomes under fixed budgets. Neither a benchmark score nor a
 reference implementation substitutes for confinement and recovery tests.
+
+Every run gets private home, configuration, cache, data, and workspace
+directories. A local provider gateway applies the run's request budget to all Ox
+traffic, including retries and child requests, before forwarding it. The runner
+records only nonsecret provider settings and keeps credentials in the child
+process environment. Task verifiers, rather than answer text, decide success.

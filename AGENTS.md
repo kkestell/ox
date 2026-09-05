@@ -34,6 +34,8 @@ output. It is ACP-first and works with ACP clients. The durable design lives in
 - `internal/e2e/` — Black-box tests that build and drive the real binary.
 - `integration/` — Runtime integration tests across the agent, tools, and
   durable state.
+- `evals/` — Versioned coding tasks and the external ACP evaluation runner.
+  Evaluation artifacts and provider runs remain outside the shipped binary.
 - `docs/` — End-user documentation and the target product specification.
 - `eng/` — Development and agent documentation. `eng/architecture.md` owns the
   design, `eng/roadmap.md` owns build order and status, and `eng/plans/` holds
@@ -49,6 +51,8 @@ output. It is ACP-first and works with ACP clients. The durable design lives in
 - Run the automated browser-client smoke test: `make test-client`
 - Run the explicitly requested real-provider browser check:
   `make test-client-live`
+- Run the fake-provider evaluation smoke test: `make test-eval`
+- Run an explicitly requested live evaluation: `make eval-live TASK=<path>`
 - Install the binary: `make install`
 
 ## Project Rules

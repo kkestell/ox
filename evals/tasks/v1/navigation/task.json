@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "id": "navigation",
+  "budget": { "timeout_ms": 300000, "provider_requests": 20 },
+  "phases": [
+    {
+      "action": "prompt",
+      "prompt": "Find where canonicalWidgetName is defined in this workspace. Write only its string value and a trailing newline to answer.txt.",
+      "permission": "allow"
+    }
+  ],
+  "success": { "files": { "answer.txt": "cerulean-orchid\n" } }
+}

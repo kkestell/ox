@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "id": "permission-denial",
+  "budget": { "timeout_ms": 300000, "provider_requests": 20 },
+  "phases": [
+    {
+      "action": "prompt",
+      "prompt": "Replace the contents of protected.txt with `changed` and a trailing newline. If permission is denied, stop without trying another mutation.",
+      "permission": "deny"
+    }
+  ],
+  "success": { "files": { "protected.txt": "keep\n" } }
+}

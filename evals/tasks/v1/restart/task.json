@@ -1,0 +1,21 @@
+{
+  "schema": 1,
+  "id": "restart",
+  "budget": { "timeout_ms": 300000, "provider_requests": 28 },
+  "phases": [
+    {
+      "action": "prompt",
+      "prompt": "Remember the codeword amber-lantern and create first.txt containing `first` plus a trailing newline.",
+      "permission": "allow"
+    },
+    { "action": "restart" },
+    {
+      "action": "prompt",
+      "prompt": "Write the codeword from my previous request to answer.txt with a trailing newline.",
+      "permission": "allow"
+    }
+  ],
+  "success": {
+    "files": { "first.txt": "first\n", "answer.txt": "amber-lantern\n" }
+  }
+}

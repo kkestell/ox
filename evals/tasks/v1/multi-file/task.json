@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "id": "multi-file",
+  "budget": { "timeout_ms": 300000, "provider_requests": 24 },
+  "phases": [
+    {
+      "action": "prompt",
+      "prompt": "Update service/name.txt to `api` and service/port.txt to `8080`, preserving a trailing newline in each file.",
+      "permission": "allow"
+    }
+  ],
+  "success": {
+    "files": { "service/name.txt": "api\n", "service/port.txt": "8080\n" }
+  }
+}

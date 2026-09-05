@@ -2,3 +2,4 @@
 .DS_Store
 internal/e2e/browser/node_modules/
 internal/e2e/browser/test-results/
+/eval-results/
