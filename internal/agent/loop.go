@@ -15,6 +15,7 @@ import (
 
 	"github.com/kkestell/ox/internal/acp"
 	"github.com/kkestell/ox/internal/openrouter"
+	diagnostictrace "github.com/kkestell/ox/internal/trace"
 	"github.com/kkestell/ox/internal/workspace"
 )
 
@@ -116,6 +117,12 @@ func (a *Agent) runFrom(
 				kind: eventResponseStart, messageID: answerID, thoughtID: thoughtID,
 			}
 			request := a.modelRequest(value)
+			provider := active.trace.Provider(
+				diagnostictrace.ProviderPrimary,
+				requestCount,
+				providerRequestBytes(request),
+				"",
+			)
 			completion, err = a.client.Stream(ctx, request, func(delta openrouter.Delta) {
 				switch delta.Kind {
 				case openrouter.DeltaText:
@@ -124,6 +131,12 @@ func (a *Agent) runFrom(
 					events <- event{kind: eventReasoning, text: delta.Text}
 				}
 			})
+			provider.Complete(
+				providerOutcome(ctx, err, completion),
+				providerStopReason(completion),
+				providerUsage(completion),
+				providerResponseBytes(completion),
+			)
 			if err != nil {
 				if (active.cancelledByClient.Load() || errors.Is(err, context.Canceled)) &&
 					completion != nil && len(completion.ToolCalls) == 0 &&
@@ -202,10 +215,13 @@ func (a *Agent) runFrom(
 			if err := a.commit(value, recordExchangePaused, *suspended); err != nil {
 				return loopOutcome{err: fmt.Errorf("persist suspended model exchange: %w", err)}
 			}
-			a.publishPendingTools(completion.ToolCalls, suspended.ToolTargets, events)
+			a.publishPendingTools(
+				completion.ToolCalls, suspended.ToolTargets, events, active.trace,
+			)
 		}
 		results, batchCancelled, err := a.executeSuspendedBatch(
-			ctx, value, completion.ToolCalls, ask, fileSystem, terminal, events, reissue,
+			ctx, value, completion.ToolCalls, ask, fileSystem, terminal, events,
+			active.trace, reissue,
 		)
 		if err != nil {
 			return loopOutcome{err: err}
@@ -236,6 +252,13 @@ func (a *Agent) runFrom(
 			return loopOutcome{err: fmt.Errorf("persist tool exchange: %w", err)}
 		}
 		for index, call := range completion.ToolCalls {
+			active.trace.ToolCompleted(
+				call.ID,
+				call.Function.Name,
+				"",
+				toolOutcome(results[index]),
+				len(results[index].content),
+			)
 			kind := eventToolCompleted
 			if results[index].failed {
 				kind = eventToolFailed
@@ -299,8 +322,10 @@ func (a *Agent) publishPendingTools(
 	calls []openrouter.ToolCall,
 	targets map[string]string,
 	events chan<- event,
+	turn diagnostictrace.Turn,
 ) {
 	for _, call := range calls {
+		turn.ToolPending(call.ID, call.Function.Name, "")
 		var kind acp.ToolKind
 		var delegates bool
 		if index, ok := a.primaryTools.byName[call.Function.Name]; ok {
@@ -432,6 +457,7 @@ func (a *Agent) finishTurn(
 	if err := a.commit(value, recordTurnFinished, outcome); err != nil {
 		return fmt.Errorf("persist turn outcome: %w", err)
 	}
+	active.trace.Complete(kind, string(stopReason))
 	if update := outcomeUpdate(outcome); update != nil {
 		events <- event{kind: eventOutcome, update: update}
 	}
@@ -677,6 +703,7 @@ func (a *Agent) executeSuspendedBatch(
 	fileSystem ClientFileSystem,
 	terminal ClientTerminal,
 	events chan<- event,
+	turn diagnostictrace.Turn,
 	reissue bool,
 ) ([]toolResult, bool, error) {
 	a.logger.Info("suspended tool batch started", "session_id", value.id, "calls", len(calls))
@@ -856,7 +883,7 @@ func (a *Agent) executeSuspendedBatch(
 	}
 	results = a.dispatchApprovedBatch(
 		ctx, value, a.primaryTools, value.primaryFileReads(), calls, ask,
-		fileSystem, terminal, events, "", results, ready,
+		fileSystem, terminal, events, "", results, ready, turn,
 	)
 	a.logger.Info("suspended tool batch completed", "session_id", value.id, "calls", len(calls))
 	return results, batchCancelled, nil
@@ -909,6 +936,7 @@ func (a *Agent) executeBatch(
 		ClientTerminal{},
 		events,
 		"",
+		diagnostictrace.Turn{},
 	)
 }
 
@@ -923,10 +951,12 @@ func (a *Agent) executeBatchWith(
 	terminal ClientTerminal,
 	events chan<- event,
 	parent string,
+	turn diagnostictrace.Turn,
 ) []toolResult {
 	a.logger.Info("tool batch started", "session_id", value.id, "calls", len(calls))
 	targets := normalizedToolTargets(value.state.cwd, tools, calls)
 	for _, call := range calls {
+		turn.ToolPending(call.ID, call.Function.Name, parent)
 		var kind acp.ToolKind
 		var delegates bool
 		if index, ok := tools.byName[call.Function.Name]; ok {
@@ -1071,7 +1101,7 @@ approvalLoop:
 
 	results = a.dispatchApprovedBatch(
 		ctx, value, tools, reads, calls, ask, fileSystem, terminal,
-		events, parent, results, ready,
+		events, parent, results, ready, turn,
 	)
 	a.logger.Info("tool batch completed", "session_id", value.id, "calls", len(calls))
 	return results
@@ -1090,6 +1120,7 @@ func (a *Agent) dispatchApprovedBatch(
 	parent string,
 	results []toolResult,
 	ready []bool,
+	turn diagnostictrace.Turn,
 ) []toolResult {
 	groups := a.partitionWith(tools, calls)
 	executed := make([]bool, len(calls))
@@ -1120,6 +1151,7 @@ func (a *Agent) dispatchApprovedBatch(
 					events,
 					parent,
 					results[current].target,
+					turn,
 				)
 				results[current].approval = decision
 			}()
@@ -1178,6 +1210,7 @@ func (a *Agent) executeOne(
 	events chan<- event,
 	parent string,
 	target string,
+	turn diagnostictrace.Turn,
 ) (result toolResult) {
 	index, ok := tools.byName[call.Function.Name]
 	if ok && !tools.tools[index].ParallelSafe {
@@ -1193,6 +1226,7 @@ func (a *Agent) executeOne(
 			content: "tool call cancelled before start", failed: true, target: target,
 		}
 	}
+	turn.ToolStarted(call.ID, call.Function.Name, parent)
 	events <- a.toolEvent(tools, call, eventToolStarted, parent, "", target)
 	started := time.Now()
 	path := toolCallPath(call.Function.Arguments)
@@ -1259,6 +1293,7 @@ func (a *Agent) executeOne(
 				fileSystem,
 				terminal,
 				events,
+				turn,
 			)
 			return answer, err
 		}
@@ -1290,6 +1325,81 @@ func (a *Agent) executeOne(
 		}
 	}
 	return toolResult{content: output, delegation: delegation, target: target}
+}
+
+func toolOutcome(result toolResult) string {
+	if result.approval == decisionCancelled {
+		return "cancelled"
+	}
+	if result.approval == decisionRefused {
+		return "refused"
+	}
+	if result.failed {
+		return "failed"
+	}
+	return "completed"
+}
+
+func providerRequestBytes(request openrouter.Request) int {
+	data, err := json.Marshal(request)
+	if err != nil {
+		panic(err)
+	}
+	return len(data)
+}
+
+func providerResponseBytes(completion *openrouter.Completion) int {
+	if completion == nil {
+		return 0
+	}
+	size := len(completion.Text) + len(completion.Reasoning)
+	for _, detail := range completion.ReasoningDetails {
+		size += len(detail)
+	}
+	for _, call := range completion.ToolCalls {
+		size += len(call.ID) + len(call.Function.Name) + len(call.Function.Arguments)
+	}
+	return size
+}
+
+func providerUsage(completion *openrouter.Completion) diagnostictrace.Usage {
+	if completion == nil || completion.Usage == nil {
+		return diagnostictrace.Usage{}
+	}
+	usage := diagnostictrace.Usage{
+		InputTokens:  completion.Usage.PromptTokens,
+		OutputTokens: completion.Usage.CompletionTokens,
+	}
+	if completion.Usage.CompletionTokensDetails != nil {
+		usage.ReasoningTokens = completion.Usage.CompletionTokensDetails.ReasoningTokens
+	}
+	return usage
+}
+
+func providerStopReason(completion *openrouter.Completion) string {
+	if completion == nil {
+		return ""
+	}
+	return completion.FinishReason
+}
+
+func providerOutcome(
+	ctx context.Context,
+	err error,
+	completion *openrouter.Completion,
+) string {
+	if err != nil {
+		if ctx.Err() != nil || errors.Is(err, context.Canceled) ||
+			errors.Is(err, context.DeadlineExceeded) {
+			return "cancelled"
+		}
+		return "failed"
+	}
+	if completion != nil &&
+		(completion.FinishReason == "refusal" || completion.FinishReason == "content_filter") {
+		return "refused"
+	}
+	return "completed"
 }
 
 func delegationHasActivity(value *delegationRecord) bool {

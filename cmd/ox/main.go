@@ -16,6 +16,7 @@ import (
 	"github.com/kkestell/ox/internal/openrouter"
 	"github.com/kkestell/ox/internal/settings"
 	"github.com/kkestell/ox/internal/tools"
+	diagnostictrace "github.com/kkestell/ox/internal/trace"
 )
 
 var (
@@ -34,8 +35,26 @@ func main() {
 	logger := newLogger(os.Stderr, os.Getenv("OX_LOG_LEVEL"))
 	switch arguments := os.Args[1:]; {
 	case len(arguments) == 0:
-		if err := serve(os.Stdin, os.Stdout, logger); err != nil {
+		if err := serve(os.Stdin, os.Stdout, logger, diagnostictrace.Trace{}); err != nil {
 			logger.Error("ox stopped with error", "error", err)
+			os.Exit(1)
+		}
+	case len(arguments) == 2 && arguments[0] == "--trace" && arguments[1] != "":
+		tracer, err := diagnostictrace.Open(arguments[1], func(err error) {
+			logger.Error("diagnostic trace disabled after write failure", "error", err)
+		})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "ox: create diagnostic trace: %v\n", err)
+			os.Exit(1)
+		}
+		serveErr := serve(os.Stdin, os.Stdout, logger, tracer)
+		closeErr := tracer.Close()
+		if serveErr != nil {
+			logger.Error("ox stopped with error", "error", serveErr)
+			os.Exit(1)
+		}
+		if closeErr != nil {
+			logger.Error("close diagnostic trace", "error", closeErr)
 			os.Exit(1)
 		}
 	case len(arguments) == 1 && arguments[0] == "login":
@@ -55,12 +74,17 @@ func main() {
 			os.Exit(1)
 		}
 	default:
-		fmt.Fprintln(os.Stderr, "usage: ox [login]")
+		fmt.Fprintln(os.Stderr, "usage: ox [--trace path] | ox login")
 		os.Exit(2)
 	}
 }
 
-func serve(input io.ReadCloser, output io.WriteCloser, logger *slog.Logger) error {
+func serve(
+	input io.ReadCloser,
+	output io.WriteCloser,
+	logger *slog.Logger,
+	tracer diagnostictrace.Trace,
+) error {
 	settingsPath := settings.GlobalPath(os.Getenv("XDG_CONFIG_HOME"), os.Getenv("HOME"))
 	sessionPath := agent.SessionPath(os.Getenv("XDG_DATA_HOME"), os.Getenv("HOME"))
 	credentialStore := credentials.NewStore(logger)
@@ -87,6 +111,7 @@ func serve(input io.ReadCloser, output io.WriteCloser, logger *slog.Logger) erro
 		SessionDir:    sessionPath,
 		Client:        client,
 		Tools:         tools.All(),
+		Trace:         tracer,
 	})
 	if err != nil {
 		return fmt.Errorf("configure ox: %w", err)

@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/kkestell/ox/internal/openrouter"
+	diagnostictrace "github.com/kkestell/ox/internal/trace"
 )
 
 func (a *Agent) delegate(
@@ -19,6 +20,7 @@ func (a *Agent) delegate(
 	fileSystem ClientFileSystem,
 	terminal ClientTerminal,
 	events chan<- event,
+	turn diagnostictrace.Turn,
 ) (string, *delegationRecord, error) {
 	record := &delegationRecord{Prompt: prompt}
 	reads, releaseReads := value.childFileReads()
@@ -54,7 +56,7 @@ func (a *Agent) delegate(
 			}},
 		}
 		messages = append(messages, cloneMessages(history)...)
-		completion, err := a.client.Stream(ctx, openrouter.Request{
+		request := openrouter.Request{
 			Model:        configuration.Settings.Model,
 			Messages:     messages,
 			Tools:        cloneTools(configuration.Subagent.Tools),
@@ -64,7 +66,20 @@ func (a *Agent) delegate(
 			Temperature:  configuration.Settings.Temperature,
 			Reasoning:    configuration.Settings.Reasoning,
 			Provider:     configuration.Settings.Provider,
-		}, func(openrouter.Delta) {})
+		}
+		provider := turn.Provider(
+			diagnostictrace.ProviderSubagent,
+			requestCount,
+			providerRequestBytes(request),
+			parentCallID,
+		)
+		completion, err := a.client.Stream(ctx, request, func(openrouter.Delta) {})
+		provider.Complete(
+			providerOutcome(ctx, err, completion),
+			providerStopReason(completion),
+			providerUsage(completion),
+			providerResponseBytes(completion),
+		)
 		if err != nil {
 			return "", record, fmt.Errorf("stream subagent model response: %w", err)
 		}
@@ -111,6 +126,7 @@ func (a *Agent) delegate(
 			terminal,
 			events,
 			parentCallID,
+			turn,
 		)
 		assistant := openrouter.Message{
 			Role:             openrouter.RoleAssistant,
@@ -126,6 +142,13 @@ func (a *Agent) delegate(
 		history = append(history, assistant)
 		for index, call := range completion.ToolCalls {
 			result := results[index]
+			turn.ToolCompleted(
+				publicCalls[index].ID,
+				call.Function.Name,
+				parentCallID,
+				toolOutcome(result),
+				len(result.content),
+			)
 			history = append(history, openrouter.Message{
 				Role:       openrouter.RoleTool,
 				ToolCallID: call.ID,
