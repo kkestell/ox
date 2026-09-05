@@ -1465,6 +1465,15 @@ func (a *Agent) executeOne(
 			}
 			return "", fmt.Errorf("workspace skill %q is not in the active catalog", name)
 		},
+		SearchMemory: func(query string) ([]MemoryFact, error) {
+			return a.memory.search(root, query)
+		},
+		WriteMemory: func(factType, content, supersedes string) (MemoryFact, error) {
+			return a.memory.write(root, value.id, factType, content, supersedes)
+		},
+		DeleteMemory: func(id string) error {
+			return a.memory.delete(root, id)
+		},
 		AskQuestion: elicit,
 		Emit: func(text string) {
 			events <- event{kind: eventToolOutput, call: call, text: text}

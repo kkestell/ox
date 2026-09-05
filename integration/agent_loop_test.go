@@ -118,6 +118,170 @@ func TestPromptStreamsAndReplaysCompletedHistory(t *testing.T) {
 	model.assertConsumed(t)
 }
 
+func TestWorkspaceMemoryPersistsAcrossSessionsAndReplaysRetrievedFacts(t *testing.T) {
+	sessionDir := t.TempDir()
+	memoryDir := t.TempDir()
+	workspace := t.TempDir()
+	var memoryID string
+	model := &scriptedModel{scripts: []modelScript{
+		toolCompletionWithArguments(
+			"memory-write", "memory_write",
+			`{"type":"decision","content":"Use the stable workspace memory contract"}`,
+		),
+		func(_ context.Context, request openrouter.Request, _ func(openrouter.Delta)) (*openrouter.Completion, error) {
+			messages, err := conversation(request)
+			if err != nil {
+				return nil, err
+			}
+			var fact agent.MemoryFact
+			if err := json.Unmarshal([]byte(messages[len(messages)-1].Content[0].Text), &fact); err != nil {
+				return nil, fmt.Errorf("decode memory write result: %w", err)
+			}
+			memoryID = fact.ID
+			return completion("stored"), nil
+		},
+		toolCompletionWithArguments("memory-search", "memory_search", `{"query":"stable contract"}`),
+		func(_ context.Context, request openrouter.Request, _ func(openrouter.Delta)) (*openrouter.Completion, error) {
+			messages, err := conversation(request)
+			if err != nil {
+				return nil, err
+			}
+			if !strings.Contains(
+				messages[len(messages)-1].Content[0].Text,
+				"Use the stable workspace memory contract",
+			) {
+				return nil, errors.New("cross-session memory search missed stored fact")
+			}
+			return completion("found"), nil
+		},
+		func(_ context.Context, _ openrouter.Request, _ func(openrouter.Delta)) (*openrouter.Completion, error) {
+			return &openrouter.Completion{
+				ToolCalls: []openrouter.ToolCall{modelToolCall(
+					"memory-delete", "memory_delete", `{"id":"`+memoryID+`"}`,
+				)},
+				FinishReason: "tool_calls",
+			}, nil
+		},
+		func(_ context.Context, request openrouter.Request, _ func(openrouter.Delta)) (*openrouter.Completion, error) {
+			messages, err := conversation(request)
+			if err != nil {
+				return nil, err
+			}
+			if !strings.Contains(messages[len(messages)-1].Content[0].Text, memoryID) {
+				return nil, errors.New("memory deletion result omitted its ID")
+			}
+			return completion("deleted"), nil
+		},
+	}}
+	var approvals atomic.Int32
+	first := newHarnessWithCallback(t, agent.Config{
+		ModelOverride: "test/model", Client: model, Tools: oxtools.All(),
+		SessionDir: sessionDir, MemoryDir: memoryDir,
+	}, func(_ context.Context, request *jrpc2.Request) (any, error) {
+		if request.Method() != acp.MethodSessionRequestPermission {
+			return nil, jrpc2.Errorf(jrpc2.MethodNotFound, "unknown callback")
+		}
+		var permission acp.RequestPermissionRequest
+		if err := request.UnmarshalParams(&permission); err != nil {
+			return nil, err
+		}
+		if permission.ToolCall.Name != "memory_write" && permission.ToolCall.Name != "memory_delete" {
+			return nil, fmt.Errorf("unexpected memory permission: %#v", permission.ToolCall)
+		}
+		approvals.Add(1)
+		return acp.RequestPermissionResponse{Outcome: acp.RequestPermissionOutcome{
+			Outcome: "selected", OptionID: "allow_once",
+		}}, nil
+	})
+	writer := first.newSessionIn(t, workspace, nil)
+	reader := first.newSessionIn(t, workspace, nil)
+	first.prompt(t, writer, "store")
+	first.prompt(t, reader, "search")
+	first.prompt(t, writer, "delete")
+	if approvals.Load() != 2 {
+		t.Fatalf("memory approvals = %d", approvals.Load())
+	}
+	model.assertConsumed(t)
+	for _, sessionID := range []string{writer, reader} {
+		if err := first.local.Client.CallResult(t.Context(), "session/close",
+			acp.CloseSessionRequest{SessionID: sessionID}, &acp.CloseSessionResponse{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	replayModel := &scriptedModel{scripts: []modelScript{
+		func(_ context.Context, request openrouter.Request, _ func(openrouter.Delta)) (*openrouter.Completion, error) {
+			messages, err := conversation(request)
+			if err != nil {
+				return nil, err
+			}
+			for _, message := range messages {
+				if message.Role == openrouter.RoleTool && strings.Contains(
+					message.Content[0].Text, "Use the stable workspace memory contract",
+				) {
+					return completion("replayed"), nil
+				}
+			}
+			return nil, errors.New("deleted live memory changed durable tool history")
+		},
+	}}
+	second := newHarness(t, agent.Config{
+		ModelOverride: "test/model", Client: replayModel, Tools: oxtools.All(),
+		SessionDir: sessionDir, MemoryDir: memoryDir,
+	})
+	if err := second.local.Client.CallResult(t.Context(), "session/load", acp.LoadSessionRequest{
+		SessionID: reader, CWD: workspace, MCPServers: []acp.MCPServer{},
+	}, &acp.LoadSessionResponse{}); err != nil {
+		t.Fatal(err)
+	}
+	second.prompt(t, reader, "recall prior search")
+	replayModel.assertConsumed(t)
+}
+
+func TestPlanModeExposesMemorySearchButRejectsMemoryMutationDispatch(t *testing.T) {
+	memoryDir := t.TempDir()
+	model := &scriptedModel{scripts: []modelScript{
+		func(_ context.Context, request openrouter.Request, _ func(openrouter.Delta)) (*openrouter.Completion, error) {
+			if !requestHasTool(request, "memory_search") ||
+				requestHasTool(request, "memory_write") || requestHasTool(request, "memory_delete") {
+				return nil, errors.New("plan mode memory tools were not constrained")
+			}
+			return &openrouter.Completion{
+				ToolCalls: []openrouter.ToolCall{modelToolCall(
+					"hidden-memory", "memory_write", `{"type":"finding","content":"must not run"}`,
+				)},
+				FinishReason: "tool_calls",
+			}, nil
+		},
+		func(_ context.Context, request openrouter.Request, _ func(openrouter.Delta)) (*openrouter.Completion, error) {
+			messages, err := conversation(request)
+			if err != nil {
+				return nil, err
+			}
+			if !strings.Contains(messages[len(messages)-1].Content[0].Text, "unknown tool") {
+				return nil, errors.New("excluded memory mutation reached dispatch")
+			}
+			return completion("blocked"), nil
+		},
+	}}
+	harness := newHarness(t, agent.Config{
+		ModelOverride: "test/model", Client: model, Tools: oxtools.All(), MemoryDir: memoryDir,
+	})
+	sessionID := harness.newSession(t)
+	harness.setConfig(t, sessionID, "mode", "plan")
+	harness.prompt(t, sessionID, "try hidden memory write")
+	entries, err := os.ReadDir(memoryDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if filepath.Ext(entry.Name()) == ".json" {
+			t.Fatalf("plan-mode mutation created %s", entry.Name())
+		}
+	}
+	model.assertConsumed(t)
+}
+
 func TestFormQuestionUsesNegotiatedElicitationAndDurableToolHistory(t *testing.T) {
 	model := &scriptedModel{scripts: []modelScript{
 		func(
@@ -1052,7 +1216,7 @@ func TestReadOnlyToolsSpillRefuseEscapeReplayAndDelete(t *testing.T) {
 			) {
 				return nil, errors.New("system prompt did not use the canonical workspace root")
 			}
-			if len(request.Tools) != 10 {
+			if len(request.Tools) != 13 {
 				return nil, errors.New("built-in tools were not frozen into the request")
 			}
 			return &openrouter.Completion{
@@ -1449,8 +1613,8 @@ func TestConcurrentTasksNestChildCallsApproveAndReplay(t *testing.T) {
 	) (*openrouter.Completion, error) {
 		system := request.Messages[0].Content[0].Text
 		if strings.HasPrefix(system, "You are a subagent") {
-			if len(request.Tools) != 8 {
-				return nil, fmt.Errorf("subagent tools = %d, want 8", len(request.Tools))
+			if len(request.Tools) != 11 {
+				return nil, fmt.Errorf("subagent tools = %d, want 11", len(request.Tools))
 			}
 			for _, tool := range request.Tools {
 				if tool.Function.Name == "task" {

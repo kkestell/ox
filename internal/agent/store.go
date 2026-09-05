@@ -162,7 +162,7 @@ func (s *fileStore) list() ([]durableState, error) {
 	return states, nil
 }
 
-func (s *fileStore) delete(id string) (err error) {
+func (s *fileStore) delete(id string, before func(durableState) error) (err error) {
 	path, err := s.path(id)
 	if err != nil {
 		return err
@@ -194,6 +194,19 @@ func (s *fileStore) delete(id string) (err error) {
 			err = errors.Join(err, fmt.Errorf("close session for deletion: %w", closeErr))
 		}
 	}()
+	if before != nil {
+		records, _, readErr := readRecords(file)
+		if readErr != nil {
+			return fmt.Errorf("read session for deletion: %w", readErr)
+		}
+		state, foldErr := foldRecords(records)
+		if foldErr != nil {
+			return fmt.Errorf("fold session for deletion: %w", foldErr)
+		}
+		if beforeErr := before(state); beforeErr != nil {
+			return beforeErr
+		}
+	}
 	if err := os.Remove(path); err != nil {
 		return fmt.Errorf("delete session: %w", err)
 	}

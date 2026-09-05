@@ -58,20 +58,23 @@ const (
 )
 
 type Invocation struct {
-	Arguments   json.RawMessage
-	SessionID   string
-	Root        string
-	SpillDir    string
-	CallID      string
-	FileReads   FileReads
-	FileSystem  ClientFileSystem
-	Terminal    ClientTerminal
-	Delegate    func(context.Context, string) (string, error)
-	ReplaceTodo func([]acp.PlanEntry) error
-	LoadSkill   func(string) (string, error)
-	AskQuestion func(context.Context, acp.CreateElicitationRequest) (acp.CreateElicitationResponse, error)
-	Emit        func(string)
-	ReportSpill func(string)
+	Arguments    json.RawMessage
+	SessionID    string
+	Root         string
+	SpillDir     string
+	CallID       string
+	FileReads    FileReads
+	FileSystem   ClientFileSystem
+	Terminal     ClientTerminal
+	Delegate     func(context.Context, string) (string, error)
+	ReplaceTodo  func([]acp.PlanEntry) error
+	LoadSkill    func(string) (string, error)
+	SearchMemory func(string) ([]MemoryFact, error)
+	WriteMemory  func(string, string, string) (MemoryFact, error)
+	DeleteMemory func(string) error
+	AskQuestion  func(context.Context, acp.CreateElicitationRequest) (acp.CreateElicitationResponse, error)
+	Emit         func(string)
+	ReportSpill  func(string)
 }
 
 type ClientFileSystem struct {
