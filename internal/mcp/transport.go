@@ -2,8 +2,10 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -122,8 +124,14 @@ func newHTTPTransport(endpoint string, headers []acp.HTTPHeader) sdk.Transport {
 	}
 	base := http.DefaultTransport
 	origin, _ := url.Parse(endpoint)
-	client := &http.Client{Transport: headerTransport{base: base, headers: values, origin: origin}}
+	client := &http.Client{Transport: &headerTransport{
+		base: base, headers: values, origin: origin,
+		requests: &httpRequestTracker{active: make(map[string]trackedHTTPRequest)},
+	}}
 	client.CheckRedirect = func(request *http.Request, via []*http.Request) error {
+		if err := validateRedirectTarget(request.URL); err != nil {
+			return err
+		}
 		if len(via) > 0 && !sameOrigin(request.URL, via[0].URL) {
 			for name := range values {
 				request.Header.Del(name)
@@ -136,14 +144,47 @@ func newHTTPTransport(endpoint string, headers []acp.HTTPHeader) sdk.Transport {
 	}
 }
 
-type headerTransport struct {
-	base    http.RoundTripper
-	headers http.Header
-	origin  *url.URL
+func validateRedirectTarget(target *url.URL) error {
+	if target == nil || target.Host == "" || target.User != nil {
+		return errors.New("MCP HTTP redirect target must be an absolute URL without credentials")
+	}
+	if target.Scheme == "https" {
+		return nil
+	}
+	if target.Scheme != "http" || !isLocalRedirectHost(target.Hostname()) {
+		return errors.New("MCP HTTP redirect target must use HTTPS unless it is local")
+	}
+	return nil
 }
 
-func (t headerTransport) RoundTrip(request *http.Request) (*http.Response, error) {
-	clone := request.Clone(request.Context())
+func isLocalRedirectHost(host string) bool {
+	if strings.EqualFold(host, "localhost") || strings.HasSuffix(strings.ToLower(host), ".localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+type headerTransport struct {
+	base     http.RoundTripper
+	headers  http.Header
+	origin   *url.URL
+	requests *httpRequestTracker
+}
+
+func (t *headerTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	envelope := decodeHTTPRequestEnvelope(request)
+	if t.requests != nil && envelope.Method == "notifications/cancelled" {
+		t.requests.cancel(string(envelope.Params.RequestID))
+	}
+	requestContext := request.Context()
+	requestID := string(envelope.ID)
+	if t.requests != nil && len(envelope.ID) != 0 {
+		var cancel context.CancelFunc
+		requestContext, cancel = context.WithCancel(requestContext)
+		t.requests.begin(requestID, cancel)
+	}
+	clone := request.Clone(requestContext)
 	clone.Header = request.Header.Clone()
 	if sameOrigin(clone.URL, t.origin) {
 		for name, values := range t.headers {
@@ -155,17 +196,123 @@ func (t headerTransport) RoundTrip(request *http.Request) (*http.Response, error
 	}
 	response, err := t.base.RoundTrip(clone)
 	if err != nil {
+		if t.requests != nil && requestID != "" {
+			t.requests.remove(requestID, nil)
+		}
 		return nil, err
 	}
-	response.Body = &httpBodyReader{reader: response.Body, sse: strings.HasPrefix(response.Header.Get("Content-Type"), "text/event-stream")}
+	body := newHTTPBodyReader(
+		response.Body,
+		strings.HasPrefix(response.Header.Get("Content-Type"), "text/event-stream"),
+		request.Context(),
+	)
+	response.Body = body
+	if t.requests != nil && requestID != "" {
+		body.onClose = func() { t.requests.remove(requestID, body) }
+		t.requests.setBody(requestID, body)
+	}
 	return response, nil
 }
 
+type httpRequestEnvelope struct {
+	ID     json.RawMessage `json:"id"`
+	Method string          `json:"method"`
+	Params struct {
+		RequestID json.RawMessage `json:"requestId"`
+	} `json:"params"`
+}
+
+func decodeHTTPRequestEnvelope(request *http.Request) httpRequestEnvelope {
+	if request.GetBody == nil {
+		return httpRequestEnvelope{}
+	}
+	body, err := request.GetBody()
+	if err != nil {
+		return httpRequestEnvelope{}
+	}
+	defer body.Close()
+	var envelope httpRequestEnvelope
+	_ = json.NewDecoder(body).Decode(&envelope)
+	return envelope
+}
+
+type httpRequestTracker struct {
+	mu     sync.Mutex
+	active map[string]trackedHTTPRequest
+}
+
+type trackedHTTPRequest struct {
+	cancel context.CancelFunc
+	body   io.Closer
+}
+
+func (t *httpRequestTracker) begin(id string, cancel context.CancelFunc) {
+	t.mu.Lock()
+	t.active[id] = trackedHTTPRequest{cancel: cancel}
+	t.mu.Unlock()
+}
+
+func (t *httpRequestTracker) setBody(id string, body io.Closer) {
+	t.mu.Lock()
+	request, exists := t.active[id]
+	if exists {
+		request.body = body
+		t.active[id] = request
+	}
+	t.mu.Unlock()
+	if !exists {
+		_ = body.Close()
+	}
+}
+
+func (t *httpRequestTracker) cancel(id string) {
+	if id == "" || id == "null" {
+		return
+	}
+	t.mu.Lock()
+	request, exists := t.active[id]
+	t.mu.Unlock()
+	if exists {
+		request.cancel()
+		if request.body != nil {
+			_ = request.body.Close()
+		}
+	}
+}
+
+func (t *httpRequestTracker) remove(id string, body io.Closer) {
+	t.mu.Lock()
+	request, exists := t.active[id]
+	removed := exists && (body == nil || request.body == body)
+	if removed {
+		delete(t.active, id)
+	}
+	t.mu.Unlock()
+	if removed {
+		request.cancel()
+	}
+}
+
 type httpBodyReader struct {
-	reader io.ReadCloser
-	sse    bool
-	size   int
-	lastNL bool
+	reader  io.ReadCloser
+	sse     bool
+	size    int
+	lastNL  bool
+	once    sync.Once
+	closed  chan struct{}
+	onClose func()
+}
+
+func newHTTPBodyReader(reader io.ReadCloser, sse bool, ctx context.Context) *httpBodyReader {
+	result := &httpBodyReader{reader: reader, sse: sse, closed: make(chan struct{})}
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = result.Close()
+		case <-result.closed:
+		}
+	}()
+	return result
 }
 
 func (r *httpBodyReader) Read(buffer []byte) (int, error) {
@@ -190,7 +337,19 @@ func (r *httpBodyReader) Read(buffer []byte) (int, error) {
 	return n, err
 }
 
-func (r *httpBodyReader) Close() error { return r.reader.Close() }
+func (r *httpBodyReader) Close() error {
+	var err error
+	r.once.Do(func() {
+		err = r.reader.Close()
+		if r.onClose != nil {
+			r.onClose()
+		}
+		if r.closed != nil {
+			close(r.closed)
+		}
+	})
+	return err
+}
 
 func sameOrigin(left, right *url.URL) bool {
 	return strings.EqualFold(left.Scheme, right.Scheme) && strings.EqualFold(left.Host, right.Host)

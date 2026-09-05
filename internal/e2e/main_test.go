@@ -11,6 +11,9 @@ import (
 var oxBinary string
 
 func TestMain(m *testing.M) {
+	if os.Getenv("GO_WANT_E2E_MCP_SHUTDOWN_HELPER") == "enabled" {
+		os.Exit(m.Run())
+	}
 	directory, err := os.MkdirTemp("", "ox-e2e-")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "create e2e build directory:", err)
@@ -33,6 +36,10 @@ func TestMain(m *testing.M) {
 	if raceEnabled {
 		arguments = append(arguments, "-race")
 	}
+	arguments = append(arguments, "-ldflags",
+		"-X=github.com/kkestell/ox/internal/mcp.connectTimeoutSetting=2s "+
+			"-X=github.com/kkestell/ox/internal/mcp.callTimeoutSetting=2s",
+	)
 	arguments = append(arguments, "-o", oxBinary, "./cmd/ox")
 	build := exec.Command("go", arguments...)
 	build.Dir = moduleRoot
