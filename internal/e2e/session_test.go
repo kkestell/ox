@@ -710,7 +710,7 @@ func TestRecoveredTurnKeepsItsFrozenConfiguration(t *testing.T) {
 	first, session := startSession(t,
 		withModel(model),
 		withEnvironment("XDG_DATA_HOME", dataDir),
-		withEnvironment("OX_MODEL", "old/model"),
+		withModelOverride("old/model"),
 	)
 	cwd := first.cwd
 	_ = first.begin("session/prompt", acp.PromptRequest{
@@ -722,7 +722,7 @@ func TestRecoveredTurnKeepsItsFrozenConfiguration(t *testing.T) {
 	second := start(t,
 		withModel(model),
 		withEnvironment("XDG_DATA_HOME", dataDir),
-		withEnvironment("OX_MODEL", "new/model"),
+		withModelOverride("new/model"),
 	)
 	initialize(t, second)
 	load := second.begin("session/load", acp.LoadSessionRequest{
@@ -1210,15 +1210,15 @@ func TestNewSessionRejectsAnUnlistableWorkingDirectory(t *testing.T) {
 }
 
 func TestNewSessionRequiresAModel(t *testing.T) {
-	child := start(t, withEnvironment("OX_MODEL", ""))
+	child := start(t, withModelOverride(""))
 	initialize(t, child)
 
 	responseError := child.requestError("session/new", newSessionRequest(child.cwd))
 	if responseError.Code != -32603 {
 		t.Errorf("error code = %d, want -32603", responseError.Code)
 	}
-	if !strings.Contains(responseError.Message, "OX_MODEL") {
-		t.Errorf("error message = %q, want it to name OX_MODEL", responseError.Message)
+	if !strings.Contains(responseError.Message, "--model") {
+		t.Errorf("error message = %q, want it to name --model", responseError.Message)
 	}
 	for _, path := range []string{
 		filepath.Join(child.cwd, "config", "ox", "settings.json"),

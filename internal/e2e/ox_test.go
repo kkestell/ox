@@ -149,17 +149,28 @@ func TestDebugLoggingStaysOffStdout(t *testing.T) {
 }
 
 func TestStdinEOFExitsCleanly(t *testing.T) {
-	for _, level := range []string{"", "unrecognized"} {
+	for _, level := range []string{"", "info"} {
 		name := level
 		if name == "" {
 			name = "empty"
 		}
 		t.Run(name, func(t *testing.T) {
-			child := start(t, withEnvironment("OX_LOG_LEVEL", level))
+			options := []startOption{}
+			if level != "" {
+				options = append(options, withLogLevel(level))
+			}
+			child := start(t, options...)
 			child.stop()
 			if !strings.Contains(child.stderr.String(), `level=INFO msg="ox starting"`) {
 				t.Errorf("stderr = %q, want startup log", child.stderr.String())
 			}
 		})
+	}
+}
+
+func TestInvalidLogLevelFailsStartup(t *testing.T) {
+	result := runCommand(t, "", nil, withLogLevel("unrecognized"))
+	if result.ExitCode != 1 || !strings.Contains(result.Stderr, "log level") {
+		t.Fatalf("result = %#v", result)
 	}
 }

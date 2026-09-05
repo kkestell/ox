@@ -18,8 +18,9 @@ provider budget, run one task with the repository-mandated model:
 make eval-live TASK=evals/tasks/v1/edit
 ```
 
-The live target loads `OPENROUTER_API_KEY` from `.env` in the harness and passes
-it only to Ox. Results default to `eval-results/`; set `OUTPUT` to retain them
+The live target loads `OPENROUTER_API_KEY` from `.env` in the evaluation client,
+writes it to a private temporary credential file, and passes only that file's
+path to Ox. Results default to `eval-results/`; set `OUTPUT` to retain them
 elsewhere and `REPETITIONS` to request fresh repeated trials.
 
 ## Task format

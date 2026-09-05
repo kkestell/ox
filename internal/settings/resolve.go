@@ -12,8 +12,8 @@ import (
 )
 
 // ErrNoModel reports that no layer named a model and no override supplied one.
-// The caller owns the message, because it knows which files were consulted and
-// which environment variable it read.
+// The caller owns the message, because it knows which files and CLI override
+// were consulted.
 var ErrNoModel = errors.New("no model is configured")
 
 // Resolved is the frozen model configuration one session sends with every
@@ -70,7 +70,7 @@ func Resolve(merged *Config, modelOverride string) (Resolved, error) {
 	switch override := strings.TrimSpace(modelOverride); {
 	case override != "":
 		resolved.Model = override
-		resolved.ModelSource = SourceEnvironment
+		resolved.ModelSource = SourceCLI
 	case merged.Model != nil:
 		model := strings.TrimSpace(*merged.Model)
 		if model == "" {

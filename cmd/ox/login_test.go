@@ -18,8 +18,6 @@ import (
 
 func TestLoginVerifiesAndStoresCredential(t *testing.T) {
 	keyring.MockInit()
-	t.Setenv("OPENROUTER_API_KEY", "")
-	t.Setenv("OX_KEYRING_DISABLED", "")
 	const key = "login-key-that-must-stay-secret"
 	var method, path, authorization string
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
@@ -31,7 +29,7 @@ func TestLoginVerifiesAndStoresCredential(t *testing.T) {
 	t.Cleanup(server.Close)
 
 	input := pipeInput(t, "  "+key+"  \n")
-	store := credentials.NewStore(commandTestLogger())
+	store := credentials.NewStore(commandTestLogger(), "", false)
 	client := &openrouter.Client{BaseURL: server.URL}
 	var output strings.Builder
 	if err := login(t.Context(), input, &output, store, client); err != nil {
@@ -68,9 +66,7 @@ func TestLoginRefusesInvalidInputWithoutChangingKeyring(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			keyring.MockInit()
-			t.Setenv("OPENROUTER_API_KEY", "")
-			t.Setenv("OX_KEYRING_DISABLED", "")
-			store := credentials.NewStore(commandTestLogger())
+			store := credentials.NewStore(commandTestLogger(), "", false)
 			if err := store.Set("existing"); err != nil {
 				t.Fatal(err)
 			}
@@ -101,9 +97,7 @@ func TestLoginRefusesInvalidInputWithoutChangingKeyring(t *testing.T) {
 
 func TestLoginRefusesUnreachableProvider(t *testing.T) {
 	keyring.MockInit()
-	t.Setenv("OPENROUTER_API_KEY", "")
-	t.Setenv("OX_KEYRING_DISABLED", "")
-	store := credentials.NewStore(commandTestLogger())
+	store := credentials.NewStore(commandTestLogger(), "", false)
 	if err := store.Set("existing"); err != nil {
 		t.Fatal(err)
 	}
@@ -122,8 +116,6 @@ func TestLoginRefusesUnreachableProvider(t *testing.T) {
 
 func TestLoginRefusesBeforeReadingWhenKeyringIsDisabled(t *testing.T) {
 	keyring.MockInitWithError(errors.New("keyring must not be touched"))
-	t.Setenv("OPENROUTER_API_KEY", "")
-	t.Setenv("OX_KEYRING_DISABLED", "1")
 	reader, writer, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
@@ -131,35 +123,24 @@ func TestLoginRefusesBeforeReadingWhenKeyringIsDisabled(t *testing.T) {
 	t.Cleanup(func() { _ = reader.Close() })
 	t.Cleanup(func() { _ = writer.Close() })
 
-	store := credentials.NewStore(commandTestLogger())
+	store := credentials.NewStore(commandTestLogger(), "", true)
 	err = login(t.Context(), reader, io.Discard, store, &openrouter.Client{})
 	if err == nil || err.Error() != credentials.KeyringDisabledMessage {
 		t.Fatalf("login error = %v", err)
 	}
 }
 
-func TestLoginReportsEnvironmentPrecedence(t *testing.T) {
+func TestLoginRefusesCredentialFileBeforeReading(t *testing.T) {
 	keyring.MockInit()
-	t.Setenv("OPENROUTER_API_KEY", "environment-key")
-	t.Setenv("OX_KEYRING_DISABLED", "")
-	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
-		writer.WriteHeader(http.StatusOK)
-	}))
-	t.Cleanup(server.Close)
-
-	store := credentials.NewStore(commandTestLogger())
-	var output strings.Builder
-	if err := login(
-		t.Context(), pipeInput(t, "keyring-key\n"), &output, store,
-		&openrouter.Client{BaseURL: server.URL},
-	); err != nil {
+	store := credentials.NewStore(commandTestLogger(), "file-key", false)
+	reader, writer, err := os.Pipe()
+	if err != nil {
 		t.Fatal(err)
 	}
-	if store.Key() != "environment-key" || store.Source() != credentials.SourceEnvironment {
-		t.Fatalf("credential = %q from %q", store.Key(), store.Source())
-	}
-	if !strings.Contains(output.String(), "OPENROUTER_API_KEY still supplies") {
-		t.Errorf("output = %q", output.String())
+	t.Cleanup(func() { _ = reader.Close() })
+	t.Cleanup(func() { _ = writer.Close() })
+	if err := login(t.Context(), reader, io.Discard, store, &openrouter.Client{}); !errors.Is(err, credentials.ErrCredentialFileImmutable) {
+		t.Fatalf("login error = %v", err)
 	}
 }
 

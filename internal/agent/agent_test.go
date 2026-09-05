@@ -146,10 +146,8 @@ func TestAuthenticateRefreshesCredentialProvidedOutOfBand(t *testing.T) {
 	}
 }
 
-func TestLogoutRejectsEnvironmentCredential(t *testing.T) {
-	t.Setenv("OX_KEYRING_DISABLED", "1")
-	t.Setenv("OPENROUTER_API_KEY", "environment-key")
-	store := credentials.NewStore(discardLogger())
+func TestLogoutRejectsCredentialFile(t *testing.T) {
+	store := credentials.NewStore(discardLogger(), "file-key", true)
 	instance, err := New(Config{Logger: discardLogger(), Credentials: store})
 	if err != nil {
 		t.Fatal(err)
@@ -157,11 +155,11 @@ func TestLogoutRejectsEnvironmentCredential(t *testing.T) {
 
 	_, err = instance.Logout(context.Background(), acp.LogoutRequest{})
 	assertErrorCode(t, err, jrpc2.InternalError)
-	if !strings.Contains(err.Error(), "OPENROUTER_API_KEY") {
+	if !strings.Contains(err.Error(), "--credential-file") {
 		t.Fatalf("logout error = %v", err)
 	}
-	if store.Key() != "environment-key" ||
-		store.Source() != credentials.SourceEnvironment {
+	if store.Key() != "file-key" ||
+		store.Source() != credentials.SourceCredentialFile {
 		t.Fatalf("key = %q, source = %q", store.Key(), store.Source())
 	}
 }
@@ -1106,16 +1104,14 @@ func TestNewSessionValidatesCapabilitiesAndConfiguration(t *testing.T) {
 	})
 	assertErrorCode(t, err, acp.ErrCodeAuthRequired)
 
-	t.Setenv("OX_KEYRING_DISABLED", "1")
-	t.Setenv("OPENROUTER_API_KEY", "test-key")
-	store := credentials.NewStore(discardLogger())
+	store := credentials.NewStore(discardLogger(), "test-key", true)
 	instance, err = New(Config{Logger: discardLogger(), Credentials: store})
 	if err != nil {
 		t.Fatal(err)
 	}
 	_, err = instance.NewSession(context.Background(), validNewSessionRequest(t))
 	assertErrorCode(t, err, jrpc2.InternalError)
-	if !strings.Contains(err.Error(), "OX_MODEL") {
+	if !strings.Contains(err.Error(), "--model") {
 		t.Fatalf("configuration error = %v", err)
 	}
 }
@@ -1155,7 +1151,7 @@ func TestNewSessionResolvesBothSettingsLayers(t *testing.T) {
 	override := settingsAgent(t, &staticCompletionModel{}, global, "environment/model")
 	resolved = override.mustResolve(t, newSessionRequest(workspace, nil))
 	if resolved.Model != "environment/model" ||
-		resolved.ModelSource != settings.SourceEnvironment {
+		resolved.ModelSource != settings.SourceCLI {
 		t.Fatalf("overridden model = %q from %q", resolved.Model, resolved.ModelSource)
 	}
 }
@@ -1458,11 +1454,9 @@ func (a *Agent) mustResolve(t *testing.T, request acp.NewSessionRequest) setting
 
 func settingsAgent(t *testing.T, client Model, globalPath, modelOverride string) *Agent {
 	t.Helper()
-	t.Setenv("OX_KEYRING_DISABLED", "1")
-	t.Setenv("OPENROUTER_API_KEY", "test-key")
 	instance, err := New(Config{
 		Logger:        discardLogger(),
-		Credentials:   credentials.NewStore(discardLogger()),
+		Credentials:   credentials.NewStore(discardLogger(), "test-key", true),
 		ModelOverride: modelOverride,
 		SettingsPath:  globalPath,
 		Client:        client,
@@ -1530,9 +1524,7 @@ func durableTestSession(
 func emptyCredentialStore(t *testing.T) *credentials.Store {
 	t.Helper()
 	keyring.MockInit()
-	t.Setenv("OX_KEYRING_DISABLED", "")
-	t.Setenv("OPENROUTER_API_KEY", "")
-	return credentials.NewStore(discardLogger())
+	return credentials.NewStore(discardLogger(), "", false)
 }
 
 // validNewSessionRequest names an empty workspace, so no stray settings file on

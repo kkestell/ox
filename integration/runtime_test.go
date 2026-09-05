@@ -209,13 +209,13 @@ type runtimeProcess struct {
 func startRuntime(t *testing.T, logLevel string) *runtimeProcess {
 	t.Helper()
 
-	command := exec.CommandContext(t.Context(), runtimeBinary)
+	arguments := []string{"--no-keyring"}
+	if logLevel != "" {
+		arguments = append(arguments, "--log-level", logLevel)
+	}
+	command := exec.CommandContext(t.Context(), runtimeBinary, arguments...)
 	command.Env = append(
 		os.Environ(),
-		"OX_LOG_LEVEL="+logLevel,
-		"OX_KEYRING_DISABLED=1",
-		"OPENROUTER_API_KEY=",
-		"OX_MODEL=",
 		// An empty config home keeps the developer's own settings file out of
 		// the process tests.
 		"XDG_CONFIG_HOME="+t.TempDir(),

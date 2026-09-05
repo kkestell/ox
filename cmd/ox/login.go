@@ -23,6 +23,9 @@ func login(
 	store *credentials.Store,
 	client *openrouter.Client,
 ) error {
+	if store.Source() == credentials.SourceCredentialFile {
+		return credentials.ErrCredentialFileImmutable
+	}
 	if store.KeyringDisabled() {
 		return errors.New(credentials.KeyringDisabledMessage)
 	}
@@ -42,10 +45,6 @@ func login(
 		return err
 	}
 
-	if store.Source() == credentials.SourceEnvironment {
-		fmt.Fprintln(output, "Stored the OpenRouter API key in the OS keyring; OPENROUTER_API_KEY still supplies the credential.")
-		return nil
-	}
 	fmt.Fprintln(output, "Stored the OpenRouter API key in the OS keyring.")
 	return nil
 }
