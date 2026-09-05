@@ -207,7 +207,9 @@ func serve(
 		Concurrency: handlerConcurrency,
 	})
 	server.Start(channel.Line(input, output))
-	if err := server.Wait(); err != nil {
+	waitErr := server.Wait()
+	closeErr := instance.Close()
+	if err := errors.Join(waitErr, closeErr); err != nil {
 		return err
 	}
 

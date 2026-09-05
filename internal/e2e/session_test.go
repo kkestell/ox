@@ -1327,10 +1327,10 @@ func TestNewSessionRejectsInvalidRequests(t *testing.T) {
 			request: acp.NewSessionRequest{CWD: child.cwd},
 		},
 		{
-			name: "mcp server requested",
+			name: "invalid mcp server",
 			request: acp.NewSessionRequest{
 				CWD:        child.cwd,
-				MCPServers: []acp.MCPServer{{Stdio: &acp.MCPStdioServer{Name: "files", Command: "/bin/true", Args: []string{}, Env: []acp.EnvVariable{}}}},
+				MCPServers: []acp.MCPServer{{Stdio: &acp.MCPStdioServer{Name: "files", Command: "tool", Args: []string{}, Env: []acp.EnvVariable{}}}},
 			},
 		},
 		{

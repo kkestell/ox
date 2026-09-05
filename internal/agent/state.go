@@ -22,7 +22,7 @@ import (
 
 const (
 	recordVersion     = 1
-	checkpointVersion = 8
+	checkpointVersion = 9
 
 	recordSessionCreated  = "session_created"
 	recordConfigChanged   = "request_configuration_changed"
@@ -62,9 +62,18 @@ type requestConfiguration struct {
 	Tools                []openrouter.Tool       `json:"tools,omitempty"`
 	ToolKinds            map[string]acp.ToolKind `json:"toolKinds,omitempty"`
 	PlanTools            map[string]bool         `json:"planTools,omitempty"`
+	MCPTools             []mcpToolConfiguration  `json:"mcpTools,omitempty"`
 	Skills               []skills.Reference      `json:"skills,omitempty"`
 	Subagent             subagentConfiguration   `json:"subagent,omitempty"`
 	ExecutorCapabilities executorCapabilities    `json:"executorCapabilities"`
+}
+
+type mcpToolConfiguration struct {
+	Name       string `json:"name"`
+	ServerName string `json:"serverName"`
+	ToolName   string `json:"toolName"`
+	Title      string `json:"title,omitempty"`
+	Identity   string `json:"identity"`
 }
 
 type sessionSelections struct {
@@ -1993,7 +2002,7 @@ func (a *Agent) replay(s durableState) ([]any, error) {
 							acp.ToolCall{
 								SessionUpdate: "tool_call",
 								ToolCallID:    child.CallID,
-								Title:         a.toolTitle(child.Name, child.Arguments),
+								Title:         a.configuredToolTitle(turnConfiguration, child.Name, child.Arguments),
 								Name:          child.Name,
 								Kind:          turnConfiguration.ToolKinds[child.Name],
 								Status:        acp.ToolCallStatusPending,
@@ -2121,7 +2130,7 @@ func replayToolCall(
 	return acp.ToolCall{
 		SessionUpdate: "tool_call",
 		ToolCallID:    call.ID,
-		Title:         a.toolTitle(call.Function.Name, json.RawMessage(call.Function.Arguments)),
+		Title:         a.configuredToolTitle(configuration, call.Function.Name, json.RawMessage(call.Function.Arguments)),
 		Name:          call.Function.Name,
 		Kind:          configuration.ToolKinds[call.Function.Name],
 		Status:        acp.ToolCallStatusPending,
@@ -2170,6 +2179,7 @@ func cloneConfiguration(value requestConfiguration) requestConfiguration {
 	value.Subagent.Tools = cloneTools(value.Subagent.Tools)
 	value.ToolKinds = cloneToolKinds(value.ToolKinds)
 	value.PlanTools = cloneBoolMap(value.PlanTools)
+	value.MCPTools = slices.Clone(value.MCPTools)
 	value.Skills = cloneSkillReferences(value.Skills)
 	return value
 }
@@ -2419,6 +2429,19 @@ func validateConfiguration(value requestConfiguration) error {
 		if _, exists := names[name]; !exists {
 			return fmt.Errorf("plan tool names unknown tool %q", name)
 		}
+	}
+	mcpNames := make(map[string]struct{}, len(value.MCPTools))
+	for _, tool := range value.MCPTools {
+		if tool.Name == "" || tool.ServerName == "" || tool.ToolName == "" || tool.Identity == "" {
+			return errors.New("configuration contains invalid MCP tool evidence")
+		}
+		if _, exists := names[tool.Name]; !exists && value.Mode != modePlan {
+			return fmt.Errorf("MCP tool evidence names unknown tool %q", tool.Name)
+		}
+		if _, exists := mcpNames[tool.Name]; exists {
+			return fmt.Errorf("duplicate MCP tool evidence %q", tool.Name)
+		}
+		mcpNames[tool.Name] = struct{}{}
 	}
 	if err := skills.ValidateReferences(value.Skills); err != nil {
 		return fmt.Errorf("configuration skills: %w", err)

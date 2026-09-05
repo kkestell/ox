@@ -19,6 +19,7 @@ type Tool struct {
 	ParentOnly   bool
 	PlanMode     bool
 	RequiresForm bool
+	Title        func(json.RawMessage) string
 	Label        func(json.RawMessage) string
 	// Suggest and Covered narrow allow-always grants to tool-defined rules.
 	// A nil pair keeps the default name-scoped grant behavior.
@@ -31,6 +32,20 @@ type toolSet struct {
 	tools      []Tool
 	byName     map[string]int
 	modelTools []openrouter.Tool
+}
+
+func (a *Agent) sessionPrimaryTools(value *session) toolSet {
+	if value.primaryTools.byName != nil {
+		return value.primaryTools
+	}
+	return a.primaryTools
+}
+
+func (a *Agent) sessionSubagentTools(value *session) toolSet {
+	if value.subagentTools.byName != nil {
+		return value.subagentTools
+	}
+	return a.subagentTools
 }
 
 // Approval is a tool's static gate classification. The zero value asks so a

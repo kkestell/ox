@@ -178,7 +178,7 @@ func (a *Agent) delegate(
 		results, err := a.executeBatchWith(
 			ctx,
 			value,
-			a.subagentTools,
+			a.sessionSubagentTools(value),
 			reads,
 			publicCalls,
 			ask,
@@ -236,7 +236,7 @@ func (a *Agent) delegate(
 				kind = eventToolFailed
 			}
 			events <- a.toolEvent(
-				a.subagentTools,
+				a.sessionSubagentTools(value),
 				publicCalls[index],
 				kind,
 				parentCallID,

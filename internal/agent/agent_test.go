@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -18,6 +20,7 @@ import (
 	"time"
 
 	"github.com/creachadair/jrpc2"
+	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/zalando/go-keyring"
 
 	"github.com/kkestell/ox/internal/acp"
@@ -52,6 +55,11 @@ func TestInitializeNegotiatesSupportedVersion(t *testing.T) {
 	if response.AgentCapabilities == nil {
 		t.Fatal("agent capabilities were omitted")
 	}
+	if response.AgentCapabilities.MCPCapabilities == nil ||
+		!response.AgentCapabilities.MCPCapabilities.HTTP ||
+		response.AgentCapabilities.MCPCapabilities.SSE {
+		t.Fatalf("MCP capabilities = %#v", response.AgentCapabilities.MCPCapabilities)
+	}
 	if !response.AgentCapabilities.LoadSession ||
 		response.AgentCapabilities.SessionCapabilities == nil ||
 		response.AgentCapabilities.SessionCapabilities.List == nil ||
@@ -67,6 +75,149 @@ func TestInitializeNegotiatesSupportedVersion(t *testing.T) {
 	if response.AgentCapabilities.Auth == nil ||
 		response.AgentCapabilities.Auth.Logout == nil {
 		t.Fatalf("auth capabilities = %#v", response.AgentCapabilities.Auth)
+	}
+}
+
+func TestMCPActivationBuildsSessionToolsAndKeepsSecretsOutOfState(t *testing.T) {
+	var calls atomic.Int32
+	server := sdk.NewServer(&sdk.Implementation{Name: "fixture", Version: "1"}, nil)
+	server.AddTool(&sdk.Tool{
+		Name: "echo", Title: "Echo", Description: "echo input",
+		InputSchema: json.RawMessage(`{"type":"object"}`),
+	}, func(_ context.Context, _ *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
+		calls.Add(1)
+		return &sdk.CallToolResult{
+			Content: []sdk.Content{&sdk.TextContent{Text: "from MCP"}},
+		}, nil
+	})
+	server.AddTool(&sdk.Tool{
+		Name: "fail", InputSchema: json.RawMessage(`{"type":"object"}`),
+	}, func(_ context.Context, _ *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
+		return &sdk.CallToolResult{
+			Content: []sdk.Content{&sdk.TextContent{Text: "server refused"}},
+			IsError: true,
+		}, nil
+	})
+	server.AddTool(&sdk.Tool{
+		Name: "large", InputSchema: json.RawMessage(`{"type":"object"}`),
+	}, func(_ context.Context, _ *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
+		return &sdk.CallToolResult{
+			Content: []sdk.Content{&sdk.TextContent{Text: strings.Repeat("x", mcpInlineBytes+1)}},
+		}, nil
+	})
+	httpServer := httptest.NewServer(sdk.NewStreamableHTTPHandler(
+		func(request *http.Request) *sdk.Server {
+			if request.Header.Get("Authorization") != "secret-value" {
+				t.Error("MCP request omitted configured header")
+			}
+			return server
+		},
+		&sdk.StreamableHTTPOptions{JSONResponse: true, Stateless: true},
+	))
+	defer httpServer.Close()
+
+	instance := settingsAgent(t, &staticCompletionModel{}, "", "test/model")
+	request := validNewSessionRequest(t)
+	request.MCPServers = []acp.MCPServer{{HTTP: &acp.MCPHTTPServer{
+		Type: "http", Name: "fixture server", URL: httpServer.URL,
+		Headers: []acp.HTTPHeader{{Name: "Authorization", Value: "secret-value"}},
+	}}}
+	created, err := instance.NewSession(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	value := instance.findSession(created.SessionID)
+	const name = "mcp__fixture_server__echo"
+	index, ok := value.primaryTools.byName[name]
+	if !ok {
+		t.Fatalf("primary tools = %#v", value.primaryTools.byName)
+	}
+	if _, ok := value.subagentTools.byName[name]; !ok {
+		t.Fatalf("subagent tools = %#v", value.subagentTools.byName)
+	}
+	tool := value.primaryTools.tools[index]
+	if tool.Approval != ApprovalAsk || tool.ParallelSafe ||
+		toolSetTitle(value.primaryTools, name, nil) != "fixture server / echo (Echo)" {
+		t.Fatalf("MCP tool = %#v", tool)
+	}
+	if len(value.state.configuration.MCPTools) != 3 ||
+		value.state.configuration.MCPTools[0].Identity == "" {
+		t.Fatalf("MCP evidence = %#v", value.state.configuration.MCPTools)
+	}
+	rule := tool.Suggest(nil)
+	if rule == "" || !tool.Covered([]string{rule}, nil) || tool.Covered([]string{"other"}, nil) {
+		t.Fatalf("MCP grant rule = %q", rule)
+	}
+	output, err := tool.Execute(context.Background(), Invocation{
+		Arguments: json.RawMessage(`{}`), CallID: "mcp-call",
+		SpillDir: instance.store.spillDir(created.SessionID),
+	})
+	if err != nil || output != "from MCP" || calls.Load() != 1 {
+		t.Fatalf("MCP execution = %q, calls %d, error %v", output, calls.Load(), err)
+	}
+	failed := value.primaryTools.tools[value.primaryTools.byName["mcp__fixture_server__fail"]]
+	_, err = failed.Execute(context.Background(), Invocation{
+		Arguments: json.RawMessage(`{}`), CallID: "mcp-fail",
+		SpillDir: instance.store.spillDir(created.SessionID),
+	})
+	if content, ok := toolResultContent(err); !ok || content != "server refused" {
+		t.Fatalf("MCP error = %q, %v", content, err)
+	}
+	large := value.primaryTools.tools[value.primaryTools.byName["mcp__fixture_server__large"]]
+	output, err = large.Execute(context.Background(), Invocation{
+		Arguments: json.RawMessage(`{}`), CallID: "mcp-large",
+		SpillDir: instance.store.spillDir(created.SessionID),
+	})
+	if err != nil || !strings.Contains(output, "full output at") {
+		t.Fatalf("large MCP output = %q, %v", output, err)
+	}
+	spilled, err := os.ReadFile(filepath.Join(instance.store.spillDir(created.SessionID), "mcp-mcp-large.out"))
+	if err != nil || string(spilled) != strings.Repeat("x", mcpInlineBytes+1) {
+		t.Fatalf("large MCP spill = %d bytes, %v", len(spilled), err)
+	}
+	plan, err := applySelections(
+		value.activationBase, sessionSelections{Mode: modePlan}, nil, value.models,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, declaration := range plan.Tools {
+		if strings.HasPrefix(declaration.Function.Name, "mcp__") {
+			t.Fatalf("plan mode exposed MCP tool %q", declaration.Function.Name)
+		}
+	}
+	raw, err := os.ReadFile(filepath.Join(instance.store.root, created.SessionID+".jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "secret-value") {
+		t.Fatalf("session log leaked MCP secret: %s", raw)
+	}
+	if _, err := instance.CloseSession(context.Background(), acp.CloseSessionRequest{
+		SessionID: created.SessionID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRecoveredMCPRequiresTheInterruptedDefinition(t *testing.T) {
+	required := requestConfiguration{MCPTools: []mcpToolConfiguration{{
+		Name: "mcp__server__tool", ServerName: "server", ToolName: "tool", Identity: "same",
+	}}}
+	calls := []openrouter.ToolCall{toolCall("call", "mcp__server__tool")}
+	if err := validateRecoveredMCP(required, required, calls); err != nil {
+		t.Fatalf("matching definition: %v", err)
+	}
+	changed := cloneConfiguration(required)
+	changed.MCPTools[0].Identity = "changed"
+	if err := validateRecoveredMCP(required, changed, calls); err == nil || !strings.Contains(err.Error(), "changed") {
+		t.Fatalf("changed definition error = %v", err)
+	}
+	if err := validateRecoveredMCP(required, requestConfiguration{}, calls); err == nil || !strings.Contains(err.Error(), "credentials") {
+		t.Fatalf("missing definition error = %v", err)
+	}
+	if err := validateRecoveredMCP(required, requestConfiguration{}, []openrouter.ToolCall{toolCall("builtin", "read")}); err != nil {
+		t.Fatalf("unrelated call: %v", err)
 	}
 }
 

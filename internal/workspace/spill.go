@@ -23,6 +23,36 @@ type RenderResult struct {
 	Spilled    string
 }
 
+// RenderText keeps small text inline and writes larger text exactly once to a
+// session-owned spill file.
+func RenderText(dir, label, callID, content string, inlineBytes int) (RenderResult, error) {
+	if len(content) <= inlineBytes {
+		return RenderResult{
+			Content: content, TotalLines: strings.Count(content, "\n") + 1,
+			TotalBytes: len(content),
+		}, nil
+	}
+	file, spillPath, err := openSpillFile(dir, label, callID)
+	if err != nil {
+		return RenderResult{}, err
+	}
+	if _, err := file.WriteString(content); err != nil {
+		_ = file.Close()
+		_ = os.Remove(spillPath)
+		return RenderResult{}, fmt.Errorf("failed to write spill file %s: %w", spillPath, err)
+	}
+	if err := finishSpillFile(file, spillPath); err != nil {
+		_ = os.Remove(spillPath)
+		return RenderResult{}, err
+	}
+	footer := fmt.Sprintf("\n[showing a prefix of %d bytes, full output at %s]", len(content), spillPath)
+	prefix := validUTF8Prefix(content, max(0, inlineBytes-len(footer)))
+	return RenderResult{
+		Content: prefix + footer, TotalLines: strings.Count(content, "\n") + 1,
+		TotalBytes: len(content), Spilled: spillPath,
+	}, nil
+}
+
 type Capped struct {
 	Lines     []string
 	Bytes     int
