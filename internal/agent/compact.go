@@ -548,11 +548,11 @@ func bytesToTokens(bytes int) int {
 	if bytes < 0 {
 		panic("token estimate byte count cannot be negative")
 	}
-	tokens := bytes / 4
-	if bytes%4 != 0 {
-		tokens++
-	}
-	return tokens
+	// OpenRouter routes across tokenizer families, so no single local tokenizer
+	// can count every configured model exactly. Every token must encode at least
+	// one byte of the serialized request. Treating each byte as a token is thus a
+	// genuine upper bound, including dense punctuation and multibyte text.
+	return bytes
 }
 
 func renderCompactionTranscript(messages []openrouter.Message) string {

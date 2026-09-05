@@ -854,10 +854,19 @@ func (a *Agent) resolveConfiguration(
 	if err := settings.Validate(entry, resolved); err != nil {
 		return requestConfiguration{}, jrpc2.Errorf(jrpc2.InternalError, "%v", err)
 	}
+	contextWindow := entry.ContextWindow()
+	if contextWindow <= 0 {
+		return requestConfiguration{}, jrpc2.Errorf(
+			jrpc2.InternalError,
+			"model %q from %s has no positive context length in the OpenRouter catalog; choose a model with a published context length",
+			resolved.Model,
+			resolved.ModelSource,
+		)
+	}
 	now := time.Now()
 	return requestConfiguration{
 		Settings:             resolved,
-		ContextWindow:        entry.ContextWindow(),
+		ContextWindow:        contextWindow,
 		SystemPrompt:         composePrompt(cwd, now),
 		Tools:                cloneTools(a.primaryTools.modelTools),
 		ToolKinds:            a.configuredToolKinds(),
@@ -1042,7 +1051,11 @@ func (a *Agent) interruptOpenTurn(value *session) error {
 func interruptedDelegation(value *session, parentCallID string) *delegationRecord {
 	value.stateMu.Lock()
 	defer value.stateMu.Unlock()
-	child, exists := value.state.children[parentCallID]
+	return interruptedDelegationFromState(&value.state, parentCallID)
+}
+
+func interruptedDelegationFromState(state *durableState, parentCallID string) *delegationRecord {
+	child, exists := state.children[parentCallID]
 	if !exists {
 		return nil
 	}
@@ -1051,7 +1064,7 @@ func interruptedDelegation(value *session, parentCallID string) *delegationRecor
 	for _, call := range record.Calls {
 		seen[call.CallID] = struct{}{}
 	}
-	for _, execution := range sortedToolExecutions(value.state.toolExecutions) {
+	for _, execution := range sortedToolExecutions(state.toolExecutions) {
 		if execution.ParentCallID != parentCallID || execution.Result == nil {
 			continue
 		}
