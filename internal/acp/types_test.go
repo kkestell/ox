@@ -87,6 +87,173 @@ func TestSessionPayloadsUsePinnedWireShapes(t *testing.T) {
 	}
 }
 
+func TestSessionConfigPayloadsUsePinnedWireShapes(t *testing.T) {
+	options := []SessionConfigOption{{
+		Type:         SessionConfigOptionTypeSelect,
+		ID:           "mode",
+		Name:         "Mode",
+		Description:  "Choose how Ox works.",
+		Category:     SessionConfigOptionCategoryMode,
+		CurrentValue: "code",
+		Options: []SessionConfigSelectOption{
+			{Value: "code", Name: "Code"},
+			{Value: "plan", Name: "Plan", Description: "Read-only planning."},
+		},
+	}}
+
+	tests := []struct {
+		name  string
+		value any
+		want  string
+	}{
+		{
+			name:  "new session response",
+			value: NewSessionResponse{SessionID: "session-1", ConfigOptions: options},
+			want:  `{"sessionId":"session-1","configOptions":[{"type":"select","id":"mode","name":"Mode","description":"Choose how Ox works.","category":"mode","currentValue":"code","options":[{"value":"code","name":"Code"},{"value":"plan","name":"Plan","description":"Read-only planning."}]}]}`,
+		},
+		{
+			name:  "load session response",
+			value: LoadSessionResponse{ConfigOptions: options},
+			want:  `{"configOptions":[{"type":"select","id":"mode","name":"Mode","description":"Choose how Ox works.","category":"mode","currentValue":"code","options":[{"value":"code","name":"Code"},{"value":"plan","name":"Plan","description":"Read-only planning."}]}]}`,
+		},
+		{
+			name:  "resume session response",
+			value: ResumeSessionResponse{ConfigOptions: options},
+			want:  `{"configOptions":[{"type":"select","id":"mode","name":"Mode","description":"Choose how Ox works.","category":"mode","currentValue":"code","options":[{"value":"code","name":"Code"},{"value":"plan","name":"Plan","description":"Read-only planning."}]}]}`,
+		},
+		{
+			name: "setter request",
+			value: SetSessionConfigOptionRequest{
+				SessionID: "session-1",
+				ConfigID:  "mode",
+				Value:     "plan",
+			},
+			want: `{"sessionId":"session-1","configId":"mode","value":"plan"}`,
+		},
+		{
+			name:  "setter response",
+			value: SetSessionConfigOptionResponse{ConfigOptions: options},
+			want:  `{"configOptions":[{"type":"select","id":"mode","name":"Mode","description":"Choose how Ox works.","category":"mode","currentValue":"code","options":[{"value":"code","name":"Code"},{"value":"plan","name":"Plan","description":"Read-only planning."}]}]}`,
+		},
+		{
+			name: "config option update",
+			value: ConfigOptionUpdate{
+				SessionUpdate: SessionUpdateConfigOptionUpdate,
+				ConfigOptions: options,
+			},
+			want: `{"sessionUpdate":"config_option_update","configOptions":[{"type":"select","id":"mode","name":"Mode","description":"Choose how Ox works.","category":"mode","currentValue":"code","options":[{"value":"code","name":"Code"},{"value":"plan","name":"Plan","description":"Read-only planning."}]}]}`,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			data, err := json.Marshal(test.value)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(data) != test.want {
+				t.Fatalf("payload = %s, want %s", data, test.want)
+			}
+		})
+	}
+}
+
+func TestSetSessionConfigOptionRequestValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		valid   bool
+		wantErr string
+	}{
+		{
+			name:  "select value",
+			input: `{"sessionId":"session-1","configId":"mode","value":"plan"}`,
+			valid: true,
+		},
+		{
+			name:  "unknown discriminator with string value",
+			input: `{"sessionId":"session-1","configId":"mode","type":"future","value":"plan"}`,
+			valid: true,
+		},
+		{
+			name:    "missing session",
+			input:   `{"configId":"mode","value":"plan"}`,
+			wantErr: "sessionId is required",
+		},
+		{
+			name:    "missing config",
+			input:   `{"sessionId":"session-1","value":"plan"}`,
+			wantErr: "configId is required",
+		},
+		{
+			name:    "missing value",
+			input:   `{"sessionId":"session-1","configId":"mode"}`,
+			wantErr: "value is required",
+		},
+		{
+			name:    "boolean discriminator",
+			input:   `{"sessionId":"session-1","configId":"mode","type":"boolean","value":"plan"}`,
+			wantErr: "boolean session configuration options are not supported",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var request SetSessionConfigOptionRequest
+			if err := json.Unmarshal([]byte(test.input), &request); err != nil {
+				t.Fatal(err)
+			}
+			err := request.Validate()
+			if test.valid {
+				if err != nil {
+					t.Fatal(err)
+				}
+				return
+			}
+			if err == nil || err.Error() != test.wantErr {
+				t.Fatalf("validation error = %v, want %q", err, test.wantErr)
+			}
+		})
+	}
+
+	var request SetSessionConfigOptionRequest
+	err := json.Unmarshal(
+		[]byte(`{"sessionId":"session-1","configId":"mode","type":"boolean","value":false}`),
+		&request,
+	)
+	if err == nil || !strings.Contains(err.Error(), "cannot unmarshal bool") {
+		t.Fatalf("boolean value error = %v", err)
+	}
+}
+
+func TestSessionConfigOptionValidation(t *testing.T) {
+	valid := SessionConfigOption{
+		Type:         SessionConfigOptionTypeSelect,
+		ID:           "mode",
+		Name:         "Mode",
+		CurrentValue: "code",
+		Options:      []SessionConfigSelectOption{{Value: "code", Name: "Code"}},
+	}
+	if err := valid.Validate(); err != nil {
+		t.Fatal(err)
+	}
+
+	unknown := valid
+	unknown.CurrentValue = "unknown"
+	if err := unknown.Validate(); err == nil || !strings.Contains(err.Error(), "is not in options") {
+		t.Fatalf("unknown current value error = %v", err)
+	}
+
+	if err := (SetSessionConfigOptionResponse{}).Validate(); err == nil {
+		t.Fatal("response without configOptions validated unexpectedly")
+	}
+	if err := (ConfigOptionUpdate{
+		SessionUpdate: SessionUpdateConfigOptionUpdate,
+	}).Validate(); err == nil {
+		t.Fatal("update without configOptions validated unexpectedly")
+	}
+}
+
 func TestFilesystemPayloadsUsePinnedWireShapes(t *testing.T) {
 	line, limit := 10, 50
 	tests := []struct {

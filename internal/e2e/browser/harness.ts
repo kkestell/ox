@@ -379,7 +379,15 @@ export class BrowserHarness {
       return;
     }
     if (request.method === "GET" && request.url === "/api/v1/models") {
-      json(response, { data: [{ id: "test/model", context_length: this.contextWindow }] });
+      json(response, {
+        data: [{
+          id: "test/model",
+          name: "Test Model",
+          context_length: this.contextWindow,
+          supported_parameters: ["tools"],
+          architecture: { input_modalities: ["text", "image", "audio"] },
+        }],
+      });
       return;
     }
     if (request.method !== "POST" || request.url !== "/api/v1/chat/completions") {

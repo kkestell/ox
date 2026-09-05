@@ -36,6 +36,7 @@ const (
 	SourceCLI       ModelSource = "--model"
 	SourceGlobal    ModelSource = "global settings"
 	SourceWorkspace ModelSource = "workspace settings"
+	SourceSession   ModelSource = "session model option"
 )
 
 // Config is one settings layer. Every field is a pointer or a slice so an

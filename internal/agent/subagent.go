@@ -25,7 +25,7 @@ func (a *Agent) delegate(
 	reads, releaseReads := value.childFileReads()
 	defer releaseReads()
 	value.stateMu.Lock()
-	configuration := cloneConfiguration(value.state.configuration)
+	configuration := value.state.turnConfiguration()
 	child, resuming := value.state.children[parentCallID]
 	child = cloneChildContext(child)
 	value.stateMu.Unlock()

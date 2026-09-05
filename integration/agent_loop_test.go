@@ -123,7 +123,7 @@ func TestPromptCompactsModelHistoryBeforeTheNextTurn(t *testing.T) {
 	recentAnswer := strings.Repeat("recent answer ", 100)
 	var ordinarySystemPrompt string
 	model := &scriptedModel{
-		entry: &openrouter.Model{ID: "test/model", ContextLength: 7600},
+		entry: &openrouter.Model{ID: "test/model", ContextLength: 7600, SupportedParameters: []string{"tools"}},
 		scripts: []modelScript{
 			func(
 				_ context.Context,
@@ -230,7 +230,7 @@ func TestPromptCompactsWithinASingleToolLoop(t *testing.T) {
 	oldResult := strings.Repeat("old tool result ", 300)
 	recentResult := strings.Repeat("recent tool result ", 40)
 	model := &scriptedModel{
-		entry: &openrouter.Model{ID: "test/model", ContextLength: 9600},
+		entry: &openrouter.Model{ID: "test/model", ContextLength: 9600, SupportedParameters: []string{"tools"}},
 		scripts: []modelScript{
 			func(context.Context, openrouter.Request, func(openrouter.Delta)) (*openrouter.Completion, error) {
 				result := completion("")
@@ -305,7 +305,7 @@ func TestPromptCompactsWithinASingleToolLoop(t *testing.T) {
 func TestPromptCompactsWithinAChildToolLoop(t *testing.T) {
 	oldResult := strings.Repeat("old child result ", 360)
 	recentResult := strings.Repeat("recent child result ", 40)
-	model := &routedModel{entry: &openrouter.Model{ID: "test/model", ContextLength: 9600}}
+	model := &routedModel{entry: &openrouter.Model{ID: "test/model", ContextLength: 9600, SupportedParameters: []string{"tools"}}}
 	childRequests := 0
 	model.route = func(
 		_ context.Context,
@@ -3337,8 +3337,9 @@ func TestSettingsFilesShapeEveryModelRequest(t *testing.T) {
 	var globalOnly, overridden openrouter.Request
 	model := &scriptedModel{
 		entry: &openrouter.Model{
-			ID:            "global/model",
-			ContextLength: 128_000,
+			ID:                  "global/model",
+			ContextLength:       128_000,
+			SupportedParameters: []string{"tools", "temperature", "max_tokens"},
 			Reasoning: &openrouter.ModelReasoning{
 				SupportedEfforts: []string{"high", "low"},
 			},
@@ -3381,6 +3382,119 @@ func TestSettingsFilesShapeEveryModelRequest(t *testing.T) {
 		t.Fatalf("overridden provider = %#v", overridden.Provider)
 	}
 	model.assertConsumed(t)
+}
+
+func TestPlanModeHidesAndRejectsEffectfulTools(t *testing.T) {
+	var executed atomic.Int32
+	mutate := agent.Tool{
+		Name: "mutate", Kind: acp.ToolKindEdit, Approval: agent.ApprovalNone,
+		InputSchema: json.RawMessage(`{"type":"object"}`),
+		Execute: func(context.Context, agent.Invocation) (string, error) {
+			executed.Add(1)
+			return "changed", nil
+		},
+	}
+	read := agent.Tool{
+		Name: "read", Kind: acp.ToolKindRead, Approval: agent.ApprovalNone,
+		InputSchema: json.RawMessage(`{"type":"object"}`),
+		Execute:     func(context.Context, agent.Invocation) (string, error) { return "read", nil },
+	}
+	model := &scriptedModel{
+		entry: &openrouter.Model{
+			ID: "test/model", ContextLength: 128_000,
+			SupportedParameters: []string{"tools"},
+		},
+		scripts: []modelScript{
+			func(_ context.Context, request openrouter.Request, _ func(openrouter.Delta)) (*openrouter.Completion, error) {
+				if len(request.Tools) != 1 || request.Tools[0].Function.Name != "read" {
+					return nil, fmt.Errorf("plan tools = %#v", request.Tools)
+				}
+				return &openrouter.Completion{
+					FinishReason: "tool_calls",
+					ToolCalls:    []openrouter.ToolCall{modelToolCall("hidden", "mutate", `{}`)},
+				}, nil
+			},
+			func(_ context.Context, request openrouter.Request, _ func(openrouter.Delta)) (*openrouter.Completion, error) {
+				messages, err := conversation(request)
+				if err != nil {
+					return nil, err
+				}
+				if got := messages[len(messages)-1].Content[0].Text; !strings.Contains(got, "unknown tool") {
+					return nil, fmt.Errorf("hidden tool result = %q", got)
+				}
+				return completion("done"), nil
+			},
+		},
+	}
+	harness := newAgentHarness(t, model, []agent.Tool{read, mutate})
+	sessionID := harness.newSession(t)
+	response := harness.setConfig(t, sessionID, "mode", "plan")
+	if response.ConfigOptions[0].CurrentValue != "plan" {
+		t.Fatalf("mode = %q", response.ConfigOptions[0].CurrentValue)
+	}
+	harness.prompt(t, sessionID, "inspect")
+	if executed.Load() != 0 {
+		t.Fatal("effectful tool executed in plan mode")
+	}
+	model.assertConsumed(t)
+}
+
+func TestConfigurationChangeDuringTurnAppliesToNextTurn(t *testing.T) {
+	started := make(chan openrouter.Request, 1)
+	release := make(chan struct{})
+	var second openrouter.Request
+	initial := openrouter.Model{
+		ID: "test/model", ContextLength: 128_000,
+		Reasoning: &openrouter.ModelReasoning{SupportedEfforts: []string{"high"}},
+	}
+	next := openrouter.Model{
+		ID: "next/model", ContextLength: 64_000,
+		Reasoning: &openrouter.ModelReasoning{SupportedEfforts: []string{"low"}},
+	}
+	model := &catalogScriptedModel{
+		scriptedModel: &scriptedModel{
+			entry: &initial,
+			scripts: []modelScript{
+				func(_ context.Context, request openrouter.Request, _ func(openrouter.Delta)) (*openrouter.Completion, error) {
+					started <- request
+					<-release
+					return completion("first"), nil
+				},
+				captureRequest(&second),
+			}},
+		models: []openrouter.Model{next, initial},
+	}
+	harness := newAgentHarness(t, model, nil)
+	sessionID := harness.newSession(t)
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := harness.callPrompt(sessionID, "first")
+		firstDone <- err
+	}()
+	first := <-started
+	response := harness.setConfig(t, sessionID, "model", "next/model")
+	if currentOptionValue(response.ConfigOptions, "model") != "next/model" ||
+		currentOptionValue(response.ConfigOptions, "reasoning") != "default" {
+		t.Fatalf("updated options = %#v", response.ConfigOptions)
+	}
+	close(release)
+	if err := <-firstDone; err != nil {
+		t.Fatal(err)
+	}
+	harness.prompt(t, sessionID, "second")
+	if first.Model != "test/model" || second.Model != "next/model" || second.Reasoning != nil {
+		t.Fatalf("request models/reasoning = %q then %q / %#v", first.Model, second.Model, second.Reasoning)
+	}
+	model.scriptedModel.assertConsumed(t)
+}
+
+func currentOptionValue(options []acp.SessionConfigOption, id string) string {
+	for _, option := range options {
+		if option.ID == id {
+			return option.CurrentValue
+		}
+	}
+	return ""
 }
 
 func TestMalformedWorkspaceSettingsFailSessionCreationBeforeAnyRequest(t *testing.T) {
@@ -3609,7 +3723,7 @@ func (m *routedModel) ModelInfo(
 	if m.entry != nil {
 		return m.entry, nil
 	}
-	return &openrouter.Model{ID: id, ContextLength: 128_000}, nil
+	return defaultTestModel(id), nil
 }
 
 type blockingModel struct {
@@ -3647,7 +3761,7 @@ func (m *blockingModel) ModelInfo(
 	_ context.Context,
 	id string,
 ) (*openrouter.Model, error) {
-	return &openrouter.Model{ID: id, ContextLength: 128_000}, nil
+	return defaultTestModel(id), nil
 }
 
 func (m *scriptedModel) Stream(
@@ -3673,7 +3787,24 @@ func (m *scriptedModel) ModelInfo(
 	if m.entry != nil {
 		return m.entry, nil
 	}
-	return &openrouter.Model{ID: id, ContextLength: 128_000}, nil
+	return defaultTestModel(id), nil
+}
+
+type catalogScriptedModel struct {
+	*scriptedModel
+	models []openrouter.Model
+}
+
+func (m *catalogScriptedModel) Models(_ context.Context) ([]openrouter.Model, error) {
+	return append([]openrouter.Model(nil), m.models...), nil
+}
+
+func defaultTestModel(id string) *openrouter.Model {
+	return &openrouter.Model{
+		ID: id, ContextLength: 128_000,
+		SupportedParameters: []string{"tools", "temperature", "max_tokens"},
+		Architecture:        openrouter.Architecture{InputModalities: []string{"text", "image", "audio"}},
+	}
 }
 
 func (m *scriptedModel) assertConsumed(t *testing.T) {
@@ -3830,6 +3961,21 @@ func (h *agentHarness) callPrompt(sessionID, text string) (acp.PromptResponse, e
 		Prompt:    []acp.ContentBlock{{Type: "text", Text: text}},
 	}, &response)
 	return response, err
+}
+
+func (h *agentHarness) setConfig(
+	t *testing.T,
+	sessionID, id, value string,
+) acp.SetSessionConfigOptionResponse {
+	t.Helper()
+	var response acp.SetSessionConfigOptionResponse
+	if err := h.local.Client.CallResult(t.Context(), acp.MethodSessionSetConfigOption,
+		acp.SetSessionConfigOptionRequest{SessionID: sessionID, ConfigID: id, Value: value},
+		&response,
+	); err != nil {
+		t.Fatal(err)
+	}
+	return response
 }
 
 func (h *agentHarness) updates() []capturedUpdate {

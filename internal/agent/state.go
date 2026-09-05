@@ -21,10 +21,11 @@ import (
 
 const (
 	recordVersion     = 1
-	checkpointVersion = 5
+	checkpointVersion = 6
 
 	recordSessionCreated  = "session_created"
 	recordConfigChanged   = "request_configuration_changed"
+	recordOptionChanged   = "session_config_option_changed"
 	recordCompaction      = "model_context_compacted"
 	recordChildContext    = "child_context_updated"
 	recordUserMessage     = "user_message"
@@ -51,6 +52,7 @@ type sessionRecord struct {
 }
 
 type requestConfiguration struct {
+	Mode                 string                  `json:"mode"`
 	Settings             settings.Resolved       `json:"settings"`
 	ContextWindow        int                     `json:"contextWindow"`
 	SystemPrompt         string                  `json:"systemPrompt,omitempty"`
@@ -58,6 +60,12 @@ type requestConfiguration struct {
 	ToolKinds            map[string]acp.ToolKind `json:"toolKinds,omitempty"`
 	Subagent             subagentConfiguration   `json:"subagent,omitempty"`
 	ExecutorCapabilities executorCapabilities    `json:"executorCapabilities"`
+}
+
+type sessionSelections struct {
+	Mode      string  `json:"mode,omitempty"`
+	Model     string  `json:"model,omitempty"`
+	Reasoning *string `json:"reasoning,omitempty"`
 }
 
 type executorCapabilities struct {
@@ -75,10 +83,17 @@ type sessionCreated struct {
 	SessionID     string               `json:"sessionId"`
 	CWD           string               `json:"cwd"`
 	Configuration requestConfiguration `json:"configuration"`
+	Selections    sessionSelections    `json:"selections,omitempty"`
 }
 
 type configurationChanged struct {
 	Configuration requestConfiguration `json:"configuration"`
+}
+
+type optionChanged struct {
+	Selections    sessionSelections         `json:"selections"`
+	Configuration requestConfiguration      `json:"configuration"`
+	Options       []acp.SessionConfigOption `json:"options"`
 }
 
 type compactionRecord struct {
@@ -109,9 +124,10 @@ type childContext struct {
 }
 
 type userMessageRecord struct {
-	TurnID    string             `json:"turnId"`
-	MessageID string             `json:"messageId"`
-	Content   []acp.ContentBlock `json:"content"`
+	TurnID        string               `json:"turnId"`
+	MessageID     string               `json:"messageId"`
+	Content       []acp.ContentBlock   `json:"content"`
+	Configuration requestConfiguration `json:"configuration,omitempty"`
 }
 
 type storedToolResult struct {
@@ -245,25 +261,27 @@ type checkpointRecord struct {
 }
 
 type checkpointProjection struct {
-	SessionID      string                        `json:"sessionId"`
-	CWD            string                        `json:"cwd"`
-	CreatedAt      time.Time                     `json:"createdAt"`
-	UpdatedAt      time.Time                     `json:"updatedAt"`
-	Sequence       uint64                        `json:"sequence"`
-	Configuration  requestConfiguration          `json:"configuration"`
-	History        []openrouter.Message          `json:"history,omitempty"`
-	Usage          checkpointUsage               `json:"usage"`
-	Occupancy      int                           `json:"occupancy"`
-	Cost           float64                       `json:"cost"`
-	MessageIDs     []string                      `json:"messageIds,omitempty"`
-	ToolCallIDs    []string                      `json:"toolCallIds,omitempty"`
-	ChangedFiles   []string                      `json:"changedFiles,omitempty"`
-	OpenTurn       string                        `json:"openTurn,omitempty"`
-	OpenTurnBase   []openrouter.Message          `json:"openTurnBase,omitempty"`
-	Suspended      *suspendedModelExchangeRecord `json:"suspended,omitempty"`
-	Children       []childContext                `json:"children,omitempty"`
-	ToolExecutions []durableToolExecution        `json:"toolExecutions,omitempty"`
-	Title          string                        `json:"title,omitempty"`
+	SessionID             string                        `json:"sessionId"`
+	CWD                   string                        `json:"cwd"`
+	CreatedAt             time.Time                     `json:"createdAt"`
+	UpdatedAt             time.Time                     `json:"updatedAt"`
+	Sequence              uint64                        `json:"sequence"`
+	Configuration         requestConfiguration          `json:"configuration"`
+	Selections            sessionSelections             `json:"selections,omitempty"`
+	History               []openrouter.Message          `json:"history,omitempty"`
+	Usage                 checkpointUsage               `json:"usage"`
+	Occupancy             int                           `json:"occupancy"`
+	Cost                  float64                       `json:"cost"`
+	MessageIDs            []string                      `json:"messageIds,omitempty"`
+	ToolCallIDs           []string                      `json:"toolCallIds,omitempty"`
+	ChangedFiles          []string                      `json:"changedFiles,omitempty"`
+	OpenTurn              string                        `json:"openTurn,omitempty"`
+	OpenTurnBase          []openrouter.Message          `json:"openTurnBase,omitempty"`
+	OpenTurnConfiguration *requestConfiguration         `json:"openTurnConfiguration,omitempty"`
+	Suspended             *suspendedModelExchangeRecord `json:"suspended,omitempty"`
+	Children              []childContext                `json:"children,omitempty"`
+	ToolExecutions        []durableToolExecution        `json:"toolExecutions,omitempty"`
+	Title                 string                        `json:"title,omitempty"`
 }
 
 type checkpointUsage struct {
@@ -276,27 +294,29 @@ type checkpointUsage struct {
 }
 
 type durableState struct {
-	id              string
-	cwd             string
-	createdAt       time.Time
-	updatedAt       time.Time
-	sequence        uint64
-	configuration   requestConfiguration
-	history         []openrouter.Message
-	usage           turnUsage
-	occupancy       int
-	cost            float64
-	records         []sessionRecord
-	messageIDs      map[string]struct{}
-	toolCallIDs     map[string]struct{}
-	changedFiles    map[string]struct{}
-	openTurn        string
-	openTurnHistory int
-	openTurnBase    []openrouter.Message
-	suspended       *suspendedModelExchangeRecord
-	children        map[string]childContext
-	toolExecutions  map[string]durableToolExecution
-	title           string
+	id                    string
+	cwd                   string
+	createdAt             time.Time
+	updatedAt             time.Time
+	sequence              uint64
+	configuration         requestConfiguration
+	selections            sessionSelections
+	history               []openrouter.Message
+	usage                 turnUsage
+	occupancy             int
+	cost                  float64
+	records               []sessionRecord
+	messageIDs            map[string]struct{}
+	toolCallIDs           map[string]struct{}
+	changedFiles          map[string]struct{}
+	openTurn              string
+	openTurnHistory       int
+	openTurnBase          []openrouter.Message
+	openTurnConfiguration requestConfiguration
+	suspended             *suspendedModelExchangeRecord
+	children              map[string]childContext
+	toolExecutions        map[string]durableToolExecution
+	title                 string
 }
 
 func newRecord(sequence uint64, kind string, value any) (sessionRecord, error) {
@@ -362,7 +382,7 @@ func validateRecordEnvelope(record sessionRecord, previous uint64) error {
 		return errors.New("first record must create the session")
 	}
 	switch record.Type {
-	case recordSessionCreated, recordConfigChanged, recordCompaction, recordChildContext, recordUserMessage,
+	case recordSessionCreated, recordConfigChanged, recordOptionChanged, recordCompaction, recordChildContext, recordUserMessage,
 		recordExchangePaused, recordPermissionOpen, recordPermissionRetry,
 		recordPermissionDone, recordToolStarted, recordToolCompleted,
 		recordModelExchange, recordTurnFinished, recordCheckpoint:
@@ -385,6 +405,7 @@ func newCheckpointRecord(state durableState) (sessionRecord, error) {
 			UpdatedAt:     state.updatedAt,
 			Sequence:      state.sequence,
 			Configuration: cloneConfiguration(state.configuration),
+			Selections:    cloneSelections(state.selections),
 			History:       cloneMessages(state.history),
 			Usage: checkpointUsage{
 				Seen:        state.usage.seen,
@@ -394,17 +415,18 @@ func newCheckpointRecord(state durableState) (sessionRecord, error) {
 				CachedRead:  state.usage.cachedRead,
 				CachedWrite: state.usage.cachedWrite,
 			},
-			Occupancy:      state.occupancy,
-			Cost:           state.cost,
-			MessageIDs:     sortedIdentitySet(state.messageIDs),
-			ToolCallIDs:    sortedIdentitySet(state.toolCallIDs),
-			ChangedFiles:   sortedIdentitySet(state.changedFiles),
-			OpenTurn:       state.openTurn,
-			OpenTurnBase:   cloneMessages(state.openTurnBase),
-			Suspended:      cloneSuspendedExchange(state.suspended),
-			Children:       sortedChildContexts(state.children),
-			ToolExecutions: sortedToolExecutions(state.toolExecutions),
-			Title:          state.title,
+			Occupancy:             state.occupancy,
+			Cost:                  state.cost,
+			MessageIDs:            sortedIdentitySet(state.messageIDs),
+			ToolCallIDs:           sortedIdentitySet(state.toolCallIDs),
+			ChangedFiles:          sortedIdentitySet(state.changedFiles),
+			OpenTurn:              state.openTurn,
+			OpenTurnBase:          cloneMessages(state.openTurnBase),
+			OpenTurnConfiguration: optionalConfiguration(state.openTurnConfiguration),
+			Suspended:             cloneSuspendedExchange(state.suspended),
+			Children:              sortedChildContexts(state.children),
+			ToolExecutions:        sortedToolExecutions(state.toolExecutions),
+			Title:                 state.title,
 		},
 	}
 	return newRecord(state.sequence+1, recordCheckpoint, payload)
@@ -488,6 +510,7 @@ func restoreCheckpoint(record, previous sessionRecord) (durableState, error) {
 		updatedAt:     projection.UpdatedAt,
 		sequence:      record.Sequence,
 		configuration: cloneConfiguration(projection.Configuration),
+		selections:    cloneSelections(projection.Selections),
 		history:       cloneMessages(projection.History),
 		usage: turnUsage{
 			seen:        projection.Usage.Seen,
@@ -497,18 +520,19 @@ func restoreCheckpoint(record, previous sessionRecord) (durableState, error) {
 			cachedRead:  projection.Usage.CachedRead,
 			cachedWrite: projection.Usage.CachedWrite,
 		},
-		occupancy:       projection.Occupancy,
-		cost:            projection.Cost,
-		messageIDs:      messageIDs,
-		toolCallIDs:     toolCallIDs,
-		changedFiles:    changedFiles,
-		openTurn:        projection.OpenTurn,
-		openTurnHistory: len(projection.OpenTurnBase),
-		openTurnBase:    cloneMessages(projection.OpenTurnBase),
-		suspended:       cloneSuspendedExchange(projection.Suspended),
-		children:        children,
-		toolExecutions:  toolExecutions,
-		title:           projection.Title,
+		occupancy:             projection.Occupancy,
+		cost:                  projection.Cost,
+		messageIDs:            messageIDs,
+		toolCallIDs:           toolCallIDs,
+		changedFiles:          changedFiles,
+		openTurn:              projection.OpenTurn,
+		openTurnHistory:       len(projection.OpenTurnBase),
+		openTurnBase:          cloneMessages(projection.OpenTurnBase),
+		openTurnConfiguration: configurationValue(projection.OpenTurnConfiguration),
+		suspended:             cloneSuspendedExchange(projection.Suspended),
+		children:              children,
+		toolExecutions:        toolExecutions,
+		title:                 projection.Title,
 	}
 	if err := validateCheckpointTurnState(state); err != nil {
 		return durableState{}, err
@@ -576,11 +600,14 @@ func childContextMap(values []childContext) (map[string]childContext, error) {
 
 func validateCheckpointTurnState(state durableState) error {
 	if state.openTurn == "" {
-		if len(state.openTurnBase) != 0 || state.suspended != nil ||
+		if len(state.openTurnBase) != 0 || state.openTurnConfiguration.Settings.Model != "" || state.suspended != nil ||
 			len(state.children) != 0 || len(state.toolExecutions) != 0 {
 			return errors.New("checkpoint has turn state without an open turn")
 		}
 		return nil
+	}
+	if err := validateConfiguration(state.openTurnConfiguration); err != nil {
+		return fmt.Errorf("checkpoint open-turn configuration: %w", err)
 	}
 	if state.suspended != nil {
 		progress := cloneSuspendedExchange(state.suspended)
@@ -692,6 +719,8 @@ func (s durableState) clone() durableState {
 	s.openTurnBase = cloneMessages(s.openTurnBase)
 	s.records = append([]sessionRecord(nil), s.records...)
 	s.configuration = cloneConfiguration(s.configuration)
+	s.selections = cloneSelections(s.selections)
+	s.openTurnConfiguration = cloneConfiguration(s.openTurnConfiguration)
 	s.suspended = cloneSuspendedExchange(s.suspended)
 	children := s.children
 	if len(children) == 0 {
@@ -756,13 +785,14 @@ func (s *durableState) apply(record sessionRecord) error {
 		s.cwd = value.CWD
 		s.createdAt = record.At
 		s.configuration = cloneConfiguration(value.Configuration)
+		if err := validateSelections(value.Selections); err != nil {
+			return err
+		}
+		s.selections = cloneSelections(value.Selections)
 		s.messageIDs = make(map[string]struct{})
 		s.toolCallIDs = make(map[string]struct{})
 		s.changedFiles = make(map[string]struct{})
 	case recordConfigChanged:
-		if s.openTurn != "" {
-			return errors.New("configuration changed during a turn")
-		}
 		var value configurationChanged
 		if err := decodeRecord(record.Data, &value); err != nil {
 			return err
@@ -770,6 +800,27 @@ func (s *durableState) apply(record sessionRecord) error {
 		if err := validateConfiguration(value.Configuration); err != nil {
 			return err
 		}
+		s.configuration = cloneConfiguration(value.Configuration)
+	case recordOptionChanged:
+		var value optionChanged
+		if err := decodeRecord(record.Data, &value); err != nil {
+			return err
+		}
+		if err := validateSelections(value.Selections); err != nil {
+			return err
+		}
+		if err := validateConfiguration(value.Configuration); err != nil {
+			return err
+		}
+		if len(value.Options) < 2 {
+			return errors.New("configuration option change requires the complete option list")
+		}
+		for _, option := range value.Options {
+			if err := option.Validate(); err != nil {
+				return fmt.Errorf("configuration option change: %w", err)
+			}
+		}
+		s.selections = cloneSelections(value.Selections)
 		s.configuration = cloneConfiguration(value.Configuration)
 	case recordCompaction:
 		if s.suspended != nil {
@@ -811,12 +862,22 @@ func (s *durableState) apply(record sessionRecord) error {
 		if _, exists := s.messageIDs[value.MessageID]; exists {
 			return fmt.Errorf("duplicate message ID %q", value.MessageID)
 		}
+		turnConfiguration := value.Configuration
+		if turnConfiguration.Settings.Model == "" {
+			turnConfiguration = s.configuration
+		}
+		if err := validateConfiguration(turnConfiguration); err != nil {
+			return fmt.Errorf("turn configuration: %w", err)
+		}
 		if s.openTurn == "" {
 			s.openTurn = value.TurnID
 			s.openTurnHistory = len(s.history)
 			s.openTurnBase = cloneMessages(s.history)
+			s.openTurnConfiguration = cloneConfiguration(turnConfiguration)
 		} else if s.openTurn != value.TurnID {
 			return errors.New("user message belongs to another open turn")
+		} else if !sameRequestConfiguration(s.openTurnConfiguration, turnConfiguration) {
+			return errors.New("user message changed the open turn configuration")
 		}
 		message, err := promptMessage(value.Content)
 		if err != nil {
@@ -990,7 +1051,7 @@ func (s *durableState) apply(record sessionRecord) error {
 					return errors.New("tool call name and JSON arguments are required")
 				}
 				if result.Target != "" &&
-					(s.configuration.ToolKinds[call.Function.Name] != acp.ToolKindEdit ||
+					(s.turnConfiguration().ToolKinds[call.Function.Name] != acp.ToolKindEdit ||
 						!validStoredTarget(result.Target)) {
 					return fmt.Errorf("tool call %q has invalid target %q", call.ID, result.Target)
 				}
@@ -1021,7 +1082,7 @@ func (s *durableState) apply(record sessionRecord) error {
 							return fmt.Errorf("duplicate tool call ID %q", child.CallID)
 						}
 						if child.Target != "" &&
-							(s.configuration.ToolKinds[child.Name] != acp.ToolKindEdit ||
+							(s.turnConfiguration().ToolKinds[child.Name] != acp.ToolKindEdit ||
 								!validStoredTarget(child.Target)) {
 							return fmt.Errorf(
 								"delegated tool call %q has invalid target %q",
@@ -1088,6 +1149,7 @@ func (s *durableState) apply(record sessionRecord) error {
 		s.openTurn = ""
 		s.openTurnHistory = 0
 		s.openTurnBase = nil
+		s.openTurnConfiguration = requestConfiguration{}
 		s.children = nil
 		s.toolExecutions = nil
 		if s.suspended != nil {
@@ -1184,7 +1246,8 @@ func (s *durableState) applyChildContext(value childContextRecord) error {
 	if parentIndex < 0 {
 		return errors.New("child context names an unknown parent tool call")
 	}
-	if !configuredDelegatingTool(s.configuration, s.suspended.ToolCalls[parentIndex].Function.Name) {
+	configuration := s.turnConfiguration()
+	if !configuredDelegatingTool(configuration, s.suspended.ToolCalls[parentIndex].Function.Name) {
 		return errors.New("child context parent is not a delegating tool")
 	}
 	if err := validateChildHistory(child); err != nil {
@@ -1242,7 +1305,7 @@ func (s *durableState) applyChildContext(value childContextRecord) error {
 				return fmt.Errorf("duplicate tool call ID %q", current.CallID)
 			}
 			if current.Target != "" &&
-				(s.configuration.ToolKinds[current.Name] != acp.ToolKindEdit || !validStoredTarget(current.Target)) {
+				(configuration.ToolKinds[current.Name] != acp.ToolKindEdit || !validStoredTarget(current.Target)) {
 				return fmt.Errorf("child tool call %q has invalid target %q", current.CallID, current.Target)
 			}
 			execution, exists := s.toolExecutions[current.CallID]
@@ -1437,18 +1500,18 @@ func (s *durableState) validateToolExecution(value durableToolExecution) error {
 	} else {
 		if s.suspended.callIndex(value.ParentCallID) < 0 ||
 			!configuredDelegatingTool(
-				s.configuration,
+				s.turnConfiguration(),
 				s.suspended.ToolCalls[s.suspended.callIndex(value.ParentCallID)].Function.Name,
 			) {
 			return errors.New("started child call has no delegating parent")
 		}
 		if _, exists := s.children[value.ParentCallID]; !exists ||
-			!configuredSubagentTool(s.configuration, value.Call.Function.Name) {
+			!configuredSubagentTool(s.turnConfiguration(), value.Call.Function.Name) {
 			return errors.New("started child call is not part of durable child context")
 		}
 	}
 	if value.Target != "" &&
-		(s.configuration.ToolKinds[value.Call.Function.Name] != acp.ToolKindEdit ||
+		(s.turnConfiguration().ToolKinds[value.Call.Function.Name] != acp.ToolKindEdit ||
 			!validStoredTarget(value.Target)) {
 		return fmt.Errorf("tool call %q has invalid target %q", value.Call.ID, value.Target)
 	}
@@ -1568,7 +1631,7 @@ func (s *durableState) validateSuspendedExchange(value suspendedModelExchangeRec
 		if !exists {
 			return fmt.Errorf("tool target names unknown tool call %q", callID)
 		}
-		if s.configuration.ToolKinds[name] != acp.ToolKindEdit || !validStoredTarget(target) {
+		if s.turnConfiguration().ToolKinds[name] != acp.ToolKindEdit || !validStoredTarget(target) {
 			return fmt.Errorf("tool call %q has invalid target %q", callID, target)
 		}
 	}
@@ -1776,6 +1839,7 @@ func (a *Agent) replay(s durableState) ([]any, error) {
 	updates := make([]any, 0, len(s.records))
 	var cost float64
 	var configuration requestConfiguration
+	var turnConfiguration requestConfiguration
 	var suspended bool
 	for _, record := range s.records {
 		switch record.Type {
@@ -1791,6 +1855,16 @@ func (a *Agent) replay(s durableState) ([]any, error) {
 				return nil, err
 			}
 			configuration = value.Configuration
+		case recordOptionChanged:
+			var value optionChanged
+			if err := decodeRecord(record.Data, &value); err != nil {
+				return nil, err
+			}
+			configuration = value.Configuration
+			updates = append(updates, acp.ConfigOptionUpdate{
+				SessionUpdate: "config_option_update",
+				ConfigOptions: cloneConfigOptions(value.Options),
+			})
 		case recordCompaction:
 			var value compactionRecord
 			if err := decodeRecord(record.Data, &value); err != nil {
@@ -1799,11 +1873,15 @@ func (a *Agent) replay(s durableState) ([]any, error) {
 			if value.Usage != nil {
 				cost += value.Usage.Cost
 			}
-			if configuration.ContextWindow > 0 {
+			effective := configuration
+			if turnConfiguration.Settings.Model != "" {
+				effective = turnConfiguration
+			}
+			if effective.ContextWindow > 0 {
 				updates = append(updates, acp.UsageUpdate{
 					SessionUpdate: "usage_update",
 					Used:          uint64(value.Occupancy),
-					Size:          uint64(configuration.ContextWindow),
+					Size:          uint64(effective.ContextWindow),
 					Cost:          &acp.Cost{Amount: cost, Currency: "USD"},
 				})
 			}
@@ -1819,12 +1897,16 @@ func (a *Agent) replay(s durableState) ([]any, error) {
 					MessageID:     value.MessageID,
 				})
 			}
+			turnConfiguration = value.Configuration
+			if turnConfiguration.Settings.Model == "" {
+				turnConfiguration = configuration
+			}
 		case recordExchangePaused:
 			var value suspendedModelExchangeRecord
 			if err := decodeRecord(record.Data, &value); err != nil {
 				return nil, err
 			}
-			updates = append(updates, a.replaySuspendedExchange(value, configuration, s.cwd)...)
+			updates = append(updates, a.replaySuspendedExchange(value, turnConfiguration, s.cwd)...)
 			suspended = true
 		case recordPermissionOpen, recordPermissionRetry, recordPermissionDone:
 			continue
@@ -1849,7 +1931,7 @@ func (a *Agent) replay(s durableState) ([]any, error) {
 				if !suspended {
 					updates = append(
 						updates,
-						replayToolCall(a, call, configuration, parentMeta, s.cwd, result.Target),
+						replayToolCall(a, call, turnConfiguration, parentMeta, s.cwd, result.Target),
 					)
 				}
 				if result.Delegation != nil {
@@ -1865,7 +1947,7 @@ func (a *Agent) replay(s durableState) ([]any, error) {
 								ToolCallID:    child.CallID,
 								Title:         a.toolTitle(child.Name, child.Arguments),
 								Name:          child.Name,
-								Kind:          configuration.ToolKinds[child.Name],
+								Kind:          turnConfiguration.ToolKinds[child.Name],
 								Status:        acp.ToolCallStatusPending,
 								Locations:     toolLocations(s.cwd, child.Target),
 								RawInput:      append(json.RawMessage(nil), child.Arguments...),
@@ -1914,11 +1996,11 @@ func (a *Agent) replay(s durableState) ([]any, error) {
 			if exchangeUsage != nil {
 				cost += exchangeUsage.Cost
 			}
-			if value.Usage != nil && configuration.ContextWindow > 0 {
+			if value.Usage != nil && turnConfiguration.ContextWindow > 0 {
 				updates = append(updates, acp.UsageUpdate{
 					SessionUpdate: "usage_update",
 					Used:          uint64(value.Usage.PromptTokens),
-					Size:          uint64(configuration.ContextWindow),
+					Size:          uint64(turnConfiguration.ContextWindow),
 					Cost:          &acp.Cost{Amount: cost, Currency: "USD"},
 				})
 			}
@@ -1932,6 +2014,7 @@ func (a *Agent) replay(s durableState) ([]any, error) {
 				updates = append(updates, update)
 			}
 			suspended = false
+			turnConfiguration = requestConfiguration{}
 		}
 	}
 	return updates, nil
@@ -2041,6 +2124,64 @@ func cloneConfiguration(value requestConfiguration) requestConfiguration {
 	return value
 }
 
+func optionalConfiguration(value requestConfiguration) *requestConfiguration {
+	if value.Settings.Model == "" {
+		return nil
+	}
+	cloned := cloneConfiguration(value)
+	return &cloned
+}
+
+func configurationValue(value *requestConfiguration) requestConfiguration {
+	if value == nil {
+		return requestConfiguration{}
+	}
+	return cloneConfiguration(*value)
+}
+
+func cloneSelections(value sessionSelections) sessionSelections {
+	if value.Reasoning != nil {
+		reasoning := *value.Reasoning
+		value.Reasoning = &reasoning
+	}
+	return value
+}
+
+func cloneConfigOptions(values []acp.SessionConfigOption) []acp.SessionConfigOption {
+	if values == nil {
+		return nil
+	}
+	raw, err := json.Marshal(values)
+	if err != nil {
+		panic(err)
+	}
+	var cloned []acp.SessionConfigOption
+	if err := json.Unmarshal(raw, &cloned); err != nil {
+		panic(err)
+	}
+	return cloned
+}
+
+func validateSelections(value sessionSelections) error {
+	if value.Mode != "" && value.Mode != "code" && value.Mode != "plan" {
+		return fmt.Errorf("invalid mode selection %q", value.Mode)
+	}
+	if value.Model != strings.TrimSpace(value.Model) {
+		return errors.New("model selection must not have surrounding whitespace")
+	}
+	if value.Reasoning != nil && (*value.Reasoning == "" || *value.Reasoning != strings.TrimSpace(*value.Reasoning)) {
+		return errors.New("reasoning selection must be a nonempty trimmed value")
+	}
+	return nil
+}
+
+func (s durableState) turnConfiguration() requestConfiguration {
+	if s.openTurn != "" {
+		return cloneConfiguration(s.openTurnConfiguration)
+	}
+	return cloneConfiguration(s.configuration)
+}
+
 func cloneSuspendedExchange(
 	value *suspendedModelExchangeRecord,
 ) *suspendedModelExchangeRecord {
@@ -2123,6 +2264,12 @@ func sameRequestConfiguration(left, right requestConfiguration) bool {
 }
 
 func validateConfiguration(value requestConfiguration) error {
+	if value.Mode == "" {
+		value.Mode = modeCode
+	}
+	if value.Mode != modeCode && value.Mode != modePlan {
+		return errors.New("configuration mode is invalid")
+	}
 	if value.Settings.Model == "" {
 		return errors.New("configuration model is required")
 	}

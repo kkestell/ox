@@ -15,6 +15,7 @@ const (
 	MethodFSReadTextFile           = "fs/read_text_file"
 	MethodFSWriteTextFile          = "fs/write_text_file"
 	MethodSessionRequestPermission = "session/request_permission"
+	MethodSessionSetConfigOption   = "session/set_config_option"
 	MethodTerminalCreate           = "terminal/create"
 	MethodTerminalKill             = "terminal/kill"
 	MethodTerminalOutput           = "terminal/output"
@@ -229,8 +230,9 @@ type NewSessionRequest struct {
 }
 
 type NewSessionResponse struct {
-	SessionID string   `json:"sessionId"`
-	Meta      Metadata `json:"_meta,omitempty"`
+	SessionID     string                `json:"sessionId"`
+	ConfigOptions []SessionConfigOption `json:"configOptions,omitempty"`
+	Meta          Metadata              `json:"_meta,omitempty"`
 }
 
 type LoadSessionRequest struct {
@@ -242,7 +244,8 @@ type LoadSessionRequest struct {
 }
 
 type LoadSessionResponse struct {
-	Meta Metadata `json:"_meta,omitempty"`
+	ConfigOptions []SessionConfigOption `json:"configOptions,omitempty"`
+	Meta          Metadata              `json:"_meta,omitempty"`
 }
 
 type ResumeSessionRequest struct {
@@ -254,7 +257,49 @@ type ResumeSessionRequest struct {
 }
 
 type ResumeSessionResponse struct {
-	Meta Metadata `json:"_meta,omitempty"`
+	ConfigOptions []SessionConfigOption `json:"configOptions,omitempty"`
+	Meta          Metadata              `json:"_meta,omitempty"`
+}
+
+type SessionConfigOptionCategory string
+
+const (
+	SessionConfigOptionTypeSelect                                       = "select"
+	SessionConfigOptionCategoryMode         SessionConfigOptionCategory = "mode"
+	SessionConfigOptionCategoryModel        SessionConfigOptionCategory = "model"
+	SessionConfigOptionCategoryModelConfig  SessionConfigOptionCategory = "model_config"
+	SessionConfigOptionCategoryThoughtLevel SessionConfigOptionCategory = "thought_level"
+)
+
+type SessionConfigSelectOption struct {
+	Value       string   `json:"value"`
+	Name        string   `json:"name"`
+	Description string   `json:"description,omitempty"`
+	Meta        Metadata `json:"_meta,omitempty"`
+}
+
+type SessionConfigOption struct {
+	Type         string                      `json:"type"`
+	ID           string                      `json:"id"`
+	Name         string                      `json:"name"`
+	Description  string                      `json:"description,omitempty"`
+	Category     SessionConfigOptionCategory `json:"category,omitempty"`
+	CurrentValue string                      `json:"currentValue"`
+	Options      []SessionConfigSelectOption `json:"options"`
+	Meta         Metadata                    `json:"_meta,omitempty"`
+}
+
+type SetSessionConfigOptionRequest struct {
+	SessionID string   `json:"sessionId"`
+	ConfigID  string   `json:"configId"`
+	Type      string   `json:"type,omitempty"`
+	Value     string   `json:"value"`
+	Meta      Metadata `json:"_meta,omitempty"`
+}
+
+type SetSessionConfigOptionResponse struct {
+	ConfigOptions []SessionConfigOption `json:"configOptions"`
+	Meta          Metadata              `json:"_meta,omitempty"`
 }
 
 type ListSessionsRequest struct {
@@ -489,9 +534,10 @@ type ToolCallLocation struct {
 type ToolKind string
 
 const (
-	SessionUpdateAgentMessageChunk = "agent_message_chunk"
-	SessionUpdateAgentThoughtChunk = "agent_thought_chunk"
-	SessionUpdateUserMessageChunk  = "user_message_chunk"
+	SessionUpdateAgentMessageChunk  = "agent_message_chunk"
+	SessionUpdateAgentThoughtChunk  = "agent_thought_chunk"
+	SessionUpdateConfigOptionUpdate = "config_option_update"
+	SessionUpdateUserMessageChunk   = "user_message_chunk"
 
 	ToolKindRead    ToolKind = "read"
 	ToolKindSearch  ToolKind = "search"
@@ -512,6 +558,12 @@ type UsageUpdate struct {
 	Size          uint64   `json:"size"`
 	Cost          *Cost    `json:"cost,omitempty"`
 	Meta          Metadata `json:"_meta,omitempty"`
+}
+
+type ConfigOptionUpdate struct {
+	SessionUpdate string                `json:"sessionUpdate"`
+	ConfigOptions []SessionConfigOption `json:"configOptions"`
+	Meta          Metadata              `json:"_meta,omitempty"`
 }
 
 type Cost struct {

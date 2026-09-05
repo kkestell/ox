@@ -4,6 +4,8 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"github.com/kkestell/ox/internal/openrouter"
 )
 
 func TestResolveAppliesModelPrecedence(t *testing.T) {
@@ -158,5 +160,82 @@ func TestResolveDropsAnEmptyReasoningObject(t *testing.T) {
 	}
 	if resolved.Reasoning != nil {
 		t.Fatalf("reasoning = %#v", resolved.Reasoning)
+	}
+}
+
+func TestValidateChecksCatalogCompatibility(t *testing.T) {
+	entry := &openrouter.Model{
+		ID: "vendor/model",
+		Architecture: openrouter.Architecture{
+			InputModalities: []string{"text", "image"},
+		},
+		SupportedParameters: []string{"temperature", "max_tokens", "tools"},
+		Reasoning: &openrouter.ModelReasoning{
+			SupportedEfforts: []string{"high", "low"},
+		},
+	}
+	resolved := Resolved{
+		Model:       entry.ID,
+		Temperature: pointer(0.5),
+		MaxTokens:   pointer(256),
+		Reasoning:   &openrouter.Reasoning{Effort: "high"},
+	}
+	if err := Validate(entry, resolved, Compatibility{
+		Tools:      true,
+		Modalities: []string{"image", "text", "image"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestValidateRejectsUnsupportedRequirements(t *testing.T) {
+	reasoning := &openrouter.ModelReasoning{SupportedEfforts: []string{"low"}}
+	for _, test := range []struct {
+		name          string
+		entry         *openrouter.Model
+		resolved      Resolved
+		compatibility Compatibility
+		contains      string
+	}{
+		{
+			name:     "temperature",
+			entry:    &openrouter.Model{ID: "vendor/model"},
+			resolved: Resolved{Temperature: pointer(0.5)},
+			contains: "temperature",
+		},
+		{
+			name:     "max tokens",
+			entry:    &openrouter.Model{ID: "vendor/model"},
+			resolved: Resolved{MaxTokens: pointer(256)},
+			contains: "max_tokens",
+		},
+		{
+			name:          "tools",
+			entry:         &openrouter.Model{ID: "vendor/model"},
+			compatibility: Compatibility{Tools: true},
+			contains:      "tool set",
+		},
+		{
+			name: "retained modality",
+			entry: &openrouter.Model{
+				ID:           "vendor/model",
+				Architecture: openrouter.Architecture{InputModalities: []string{"text"}},
+			},
+			compatibility: Compatibility{Modalities: []string{"text", "audio", "image"}},
+			contains:      "retained audio input",
+		},
+		{
+			name:     "reasoning",
+			entry:    &openrouter.Model{ID: "vendor/model", Reasoning: reasoning},
+			resolved: Resolved{Reasoning: &openrouter.Reasoning{Effort: "high"}},
+			contains: "supported efforts are low",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := Validate(test.entry, test.resolved, test.compatibility)
+			if err == nil || !strings.Contains(err.Error(), test.contains) {
+				t.Fatalf("error = %v, want mention of %q", err, test.contains)
+			}
+		})
 	}
 }

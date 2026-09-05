@@ -180,6 +180,8 @@ func TestExecutorCapabilitiesChangeOnceAcrossReactivation(t *testing.T) {
 	wantCapabilities := []executorCapabilitySnapshot{
 		{},
 		{},
+		{},
+		{FileSystemRead: true, FileSystemWrite: true, Terminal: true},
 		{FileSystemRead: true, FileSystemWrite: true, Terminal: true},
 		{FileSystemRead: true, FileSystemWrite: true, Terminal: true},
 	}
@@ -397,33 +399,42 @@ func removeExecutorCapabilities(t *testing.T, record any) []executorCapabilitySn
 	}
 	kind, _ := recordMap["type"].(string)
 	data, _ := recordMap["data"].(map[string]any)
-	var configuration map[string]any
+	var configurations []map[string]any
 	switch kind {
-	case "session_created", "request_configuration_changed":
-		configuration, _ = data["configuration"].(map[string]any)
+	case "session_created", "request_configuration_changed", "session_config_option_changed", "user_message":
+		configuration, _ := data["configuration"].(map[string]any)
+		configurations = append(configurations, configuration)
 	case "checkpoint":
 		state, _ := data["state"].(map[string]any)
-		configuration, _ = state["configuration"].(map[string]any)
+		configuration, _ := state["configuration"].(map[string]any)
+		configurations = append(configurations, configuration)
+		if open, ok := state["openTurnConfiguration"].(map[string]any); ok {
+			configurations = append(configurations, open)
+		}
 	default:
 		return nil
 	}
-	if configuration == nil {
-		t.Fatalf("%s record has no configuration", kind)
+	result := make([]executorCapabilitySnapshot, 0, len(configurations))
+	for _, configuration := range configurations {
+		if configuration == nil {
+			t.Fatalf("%s record has no configuration", kind)
+		}
+		raw, exists := configuration["executorCapabilities"]
+		if !exists {
+			t.Fatalf("%s record has no executor capabilities", kind)
+		}
+		encoded, err := json.Marshal(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var capabilities executorCapabilitySnapshot
+		if err := json.Unmarshal(encoded, &capabilities); err != nil {
+			t.Fatalf("decode %s executor capabilities: %v", kind, err)
+		}
+		delete(configuration, "executorCapabilities")
+		result = append(result, capabilities)
 	}
-	raw, exists := configuration["executorCapabilities"]
-	if !exists {
-		t.Fatalf("%s record has no executor capabilities", kind)
-	}
-	encoded, err := json.Marshal(raw)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var capabilities executorCapabilitySnapshot
-	if err := json.Unmarshal(encoded, &capabilities); err != nil {
-		t.Fatalf("decode %s executor capabilities: %v", kind, err)
-	}
-	delete(configuration, "executorCapabilities")
-	return []executorCapabilitySnapshot{capabilities}
+	return result
 }
 
 func assertExecutorCapabilitySnapshots(
