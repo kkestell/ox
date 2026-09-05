@@ -64,6 +64,85 @@ func loadSession(t *testing.T, child *process, session, cwd string) {
 	})
 }
 
+func TestSessionConfigurationOptionsPersistAndReplay(t *testing.T) {
+	dataDir := t.TempDir()
+	model := startModel(t)
+	options := []startOption{withModel(model), withEnvironment("XDG_DATA_HOME", dataDir)}
+
+	first := start(t, options...)
+	initialize(t, first)
+	cwd := first.cwd
+	created := first.request("session/new", newSessionRequest(cwd))
+	var newResponse acp.NewSessionResponse
+	if err := json.Unmarshal(created, &newResponse); err != nil {
+		t.Fatal(err)
+	}
+	if optionValue(newResponse.ConfigOptions, "mode") != "code" ||
+		optionValue(newResponse.ConfigOptions, "model") != "test/model" {
+		t.Fatalf("new options = %#v", newResponse.ConfigOptions)
+	}
+	if err := first.requestError(acp.MethodSessionSetConfigOption, acp.SetSessionConfigOptionRequest{
+		SessionID: newResponse.SessionID, ConfigID: "mode", Value: "unknown",
+	}); err.Code != -32602 {
+		t.Fatalf("invalid mode error = %#v", err)
+	}
+	unchanged := first.request(acp.MethodSessionSetConfigOption, acp.SetSessionConfigOptionRequest{
+		SessionID: newResponse.SessionID, ConfigID: "mode", Value: "code",
+	})
+	var unchangedResponse acp.SetSessionConfigOptionResponse
+	if err := json.Unmarshal(unchanged, &unchangedResponse); err != nil {
+		t.Fatal(err)
+	}
+	if got := updates(t, first, newResponse.SessionID); len(got) != 0 {
+		t.Fatalf("invalid/no-op updates = %#v", got)
+	}
+	set := first.request(acp.MethodSessionSetConfigOption, acp.SetSessionConfigOptionRequest{
+		SessionID: newResponse.SessionID, ConfigID: "mode", Value: "plan",
+	})
+	var setResponse acp.SetSessionConfigOptionResponse
+	if err := json.Unmarshal(set, &setResponse); err != nil {
+		t.Fatal(err)
+	}
+	if optionValue(setResponse.ConfigOptions, "mode") != "plan" {
+		t.Fatalf("set options = %#v", setResponse.ConfigOptions)
+	}
+	setUpdates := updates(t, first, newResponse.SessionID)
+	if len(setUpdates) != 1 || setUpdates[0].Update.SessionUpdate != acp.SessionUpdateConfigOptionUpdate ||
+		optionValue(setUpdates[0].Update.ConfigOptions, "mode") != "plan" {
+		t.Fatalf("set updates = %#v", setUpdates)
+	}
+	first.request("session/close", acp.CloseSessionRequest{SessionID: newResponse.SessionID})
+	first.stop()
+
+	second := start(t, options...)
+	initialize(t, second)
+	loaded := second.request("session/load", acp.LoadSessionRequest{
+		SessionID: newResponse.SessionID, CWD: cwd, MCPServers: []json.RawMessage{},
+	})
+	var loadResponse acp.LoadSessionResponse
+	if err := json.Unmarshal(loaded, &loadResponse); err != nil {
+		t.Fatal(err)
+	}
+	if optionValue(loadResponse.ConfigOptions, "mode") != "plan" {
+		t.Fatalf("load options = %#v", loadResponse.ConfigOptions)
+	}
+	replay := updates(t, second, newResponse.SessionID)
+	if len(replay) != 1 || replay[0].Update.SessionUpdate != acp.SessionUpdateConfigOptionUpdate ||
+		optionValue(replay[0].Update.ConfigOptions, "mode") != "plan" {
+		t.Fatalf("replayed options = %#v", replay)
+	}
+	second.request("session/close", acp.CloseSessionRequest{SessionID: newResponse.SessionID})
+}
+
+func optionValue(options []acp.SessionConfigOption, id string) string {
+	for _, option := range options {
+		if option.ID == id {
+			return option.CurrentValue
+		}
+	}
+	return ""
+}
+
 func receivedSessionUpdates(
 	t *testing.T,
 	child *process,

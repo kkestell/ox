@@ -28,6 +28,15 @@ type Resolved struct {
 	Provider    *openrouter.Provider  `json:"provider,omitempty"`
 }
 
+// Compatibility describes request requirements that are resolved outside the
+// settings files. The active mode decides whether tools are present, and the
+// session history decides which input modalities a replacement model must
+// continue to accept.
+type Compatibility struct {
+	Tools      bool
+	Modalities []string
+}
+
 // LogValue renders the resolved settings for a log line. The wire types are full
 // of pointers, which would otherwise log as addresses; reasoning and provider are
 // rendered as the JSON a request carries.
@@ -197,10 +206,41 @@ func resolveProvider(provider *Provider) (*openrouter.Provider, error) {
 	}, nil
 }
 
-// Validate is the half of resolution that needs catalog metadata: whether the
-// chosen model supports the reasoning the settings ask for. Nothing hardcodes an
-// effort vocabulary — it is per model and comes from the catalog.
-func Validate(entry *openrouter.Model, resolved Resolved) error {
+// Validate is the half of resolution that needs catalog metadata. It checks
+// configured request fields and the requirements of the effective tools and
+// retained conversation before a model is selected.
+func Validate(entry *openrouter.Model, resolved Resolved, compatibility Compatibility) error {
+	parameters := entry.SupportedParameters
+	if resolved.Temperature != nil && !slices.Contains(parameters, "temperature") {
+		return fmt.Errorf(
+			"model %s does not support configured \"temperature\"",
+			entry.ID,
+		)
+	}
+	if resolved.MaxTokens != nil && !slices.Contains(parameters, "max_tokens") {
+		return fmt.Errorf(
+			"model %s does not support configured \"max_tokens\"",
+			entry.ID,
+		)
+	}
+	if compatibility.Tools && !slices.Contains(parameters, "tools") {
+		return fmt.Errorf(
+			"model %s does not support the effective tool set",
+			entry.ID,
+		)
+	}
+	modalities := append([]string(nil), compatibility.Modalities...)
+	slices.Sort(modalities)
+	modalities = slices.Compact(modalities)
+	for _, modality := range modalities {
+		if !slices.Contains(entry.Architecture.InputModalities, modality) {
+			return fmt.Errorf(
+				"model %s does not support retained %s input",
+				entry.ID,
+				modality,
+			)
+		}
+	}
 	if resolved.Reasoning == nil {
 		return nil
 	}

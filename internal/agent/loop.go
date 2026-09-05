@@ -498,7 +498,7 @@ func (a *Agent) finishTurn(
 
 func (a *Agent) modelRequest(value *session) openrouter.Request {
 	value.stateMu.Lock()
-	configuration := cloneConfiguration(value.state.configuration)
+	configuration := value.state.turnConfiguration()
 	history := cloneMessages(value.state.history)
 	value.stateMu.Unlock()
 	messages := make([]openrouter.Message, 1, len(history)+1)
@@ -525,10 +525,11 @@ func (a *Agent) modelRequest(value *session) openrouter.Request {
 
 // prefixFingerprint hashes everything a request carries ahead of the messages,
 // so a change that would invalidate the provider's prompt cache is visible in
-// the log. The session's settings are frozen at creation, which is what keeps
-// this stable across a tool loop.
+// the log. The turn configuration keeps this stable across a tool loop.
 func (a *Agent) prefixFingerprint(value *session) string {
-	configuration := value.state.configuration
+	value.stateMu.Lock()
+	configuration := value.state.turnConfiguration()
+	value.stateMu.Unlock()
 	return requestPrefixFingerprint(
 		configuration,
 		configuration.SystemPrompt,
@@ -743,6 +744,13 @@ func (a *Agent) executeSuspendedBatch(
 	reissue bool,
 ) ([]toolResult, bool, error) {
 	a.logger.Info("suspended tool batch started", "session_id", value.id, "calls", len(calls))
+	value.stateMu.Lock()
+	configuration := value.state.turnConfiguration()
+	value.stateMu.Unlock()
+	tools := a.primaryTools
+	if configuration.Mode != "" {
+		tools = constrainedToolSet(tools, configuration.Tools)
+	}
 	results := make([]toolResult, len(calls))
 	ready := make([]bool, len(calls))
 
@@ -791,12 +799,12 @@ func (a *Agent) executeSuspendedBatch(
 			continue
 		}
 
-		toolIndex, known := a.primaryTools.byName[call.Function.Name]
-		if !known || a.primaryTools.tools[toolIndex].Approval == ApprovalNone {
+		toolIndex, known := tools.byName[call.Function.Name]
+		if !known || tools.tools[toolIndex].Approval == ApprovalNone {
 			ready[index] = true
 			continue
 		}
-		tool := a.primaryTools.tools[toolIndex]
+		tool := tools.tools[toolIndex]
 		arguments := json.RawMessage(call.Function.Arguments)
 		if value.granted(tool, arguments) {
 			ready[index] = true
@@ -920,7 +928,7 @@ func (a *Agent) executeSuspendedBatch(
 	}
 	var err error
 	results, err = a.dispatchApprovedBatch(
-		ctx, value, a.primaryTools, value.primaryFileReads(), calls, ask,
+		ctx, value, tools, value.primaryFileReads(), calls, ask,
 		fileSystem, terminal, events, "", results, ready, turn,
 	)
 	if err != nil {
@@ -995,6 +1003,16 @@ func (a *Agent) executeBatchWith(
 	parent string,
 	turn diagnostictrace.Turn,
 ) ([]toolResult, error) {
+	value.stateMu.Lock()
+	configuration := value.state.turnConfiguration()
+	value.stateMu.Unlock()
+	declarations := configuration.Tools
+	if parent != "" {
+		declarations = configuration.Subagent.Tools
+	}
+	if configuration.Mode != "" {
+		tools = constrainedToolSet(tools, declarations)
+	}
 	a.logger.Info("tool batch started", "session_id", value.id, "calls", len(calls))
 	value.stateMu.Lock()
 	root := value.state.cwd
@@ -1642,11 +1660,12 @@ func (a *Agent) publishUsage(
 		"cache_write_tokens", cachedWrite,
 		"session_cost", value.state.cost,
 	)
-	if value.state.configuration.ContextWindow > 0 {
+	configuration := value.state.turnConfiguration()
+	if configuration.ContextWindow > 0 {
 		events <- event{
 			kind:             eventUsage,
 			contextOccupancy: current.PromptTokens,
-			contextWindow:    value.state.configuration.ContextWindow,
+			contextWindow:    configuration.ContextWindow,
 			totalCost:        value.state.cost,
 		}
 	}

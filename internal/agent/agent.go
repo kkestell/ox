@@ -152,18 +152,19 @@ func newToolSet(tools []Tool) (toolSet, error) {
 
 func (a *Agent) Methods() handler.Map {
 	return handler.Map{
-		"initialize":       handler.New(a.Initialize),
-		"authenticate":     handler.New(a.Authenticate),
-		"logout":           handler.New(a.Logout),
-		"session/new":      handler.New(a.NewSession),
-		"session/list":     handler.New(a.ListSessions),
-		"session/load":     handler.New(a.LoadSession),
-		"session/resume":   handler.New(a.ResumeSession),
-		"session/close":    handler.New(a.CloseSession),
-		"session/delete":   handler.New(a.DeleteSession),
-		"session/prompt":   handler.New(a.Prompt),
-		"session/cancel":   handler.New(a.Cancel),
-		"$/cancel_request": handler.New(a.CancelRequest),
+		"initialize":                     handler.New(a.Initialize),
+		"authenticate":                   handler.New(a.Authenticate),
+		"logout":                         handler.New(a.Logout),
+		"session/new":                    handler.New(a.NewSession),
+		"session/list":                   handler.New(a.ListSessions),
+		"session/load":                   handler.New(a.LoadSession),
+		"session/resume":                 handler.New(a.ResumeSession),
+		"session/close":                  handler.New(a.CloseSession),
+		"session/delete":                 handler.New(a.DeleteSession),
+		acp.MethodSessionSetConfigOption: handler.New(a.SetSessionConfigOption),
+		"session/prompt":                 handler.New(a.Prompt),
+		"session/cancel":                 handler.New(a.Cancel),
+		"$/cancel_request":               handler.New(a.CancelRequest),
 	}
 }
 
@@ -321,9 +322,13 @@ func (a *Agent) NewSession(
 		return acp.NewSessionResponse{}, err
 	}
 
-	configuration, err := a.resolveConfiguration(ctx, cwd)
+	base, models, err := a.resolveActivation(ctx, cwd)
 	if err != nil {
 		return acp.NewSessionResponse{}, err
+	}
+	configuration, err := applySelections(base, sessionSelections{}, nil, models)
+	if err != nil {
+		return acp.NewSessionResponse{}, jrpc2.Errorf(jrpc2.InternalError, "%v", err)
 	}
 
 	id, err := randomID()
@@ -347,9 +352,8 @@ func (a *Agent) NewSession(
 		return acp.NewSessionResponse{}, fmt.Errorf("persist new session: %w", err)
 	}
 	value := &session{
-		id:    id,
-		state: state,
-		log:   log,
+		id: id, state: state, log: log,
+		activationBase: cloneConfiguration(base), models: cloneModels(models),
 	}
 	a.sessionsMu.Lock()
 	a.sessions[id] = value
@@ -363,7 +367,10 @@ func (a *Agent) NewSession(
 		"system_prompt_length", len(configuration.SystemPrompt),
 		"system_prompt_digest", promptDigest(configuration.SystemPrompt),
 	)
-	return acp.NewSessionResponse{SessionID: id}, nil
+	return acp.NewSessionResponse{
+		SessionID:     id,
+		ConfigOptions: a.configOptions(value),
+	}, nil
 }
 
 func (a *Agent) LoadSession(
@@ -403,17 +410,8 @@ func (a *Agent) LoadSession(
 			return acp.LoadSessionResponse{}, err
 		}
 	}
-	if value.activationConfiguration != nil {
-		if err := a.commit(value, recordConfigChanged, configurationChanged{
-			Configuration: *value.activationConfiguration,
-		}); err != nil {
-			_ = a.closeActive(value.id)
-			return acp.LoadSessionResponse{}, fmt.Errorf("persist session configuration: %w", err)
-		}
-		value.activationConfiguration = nil
-	}
 	a.logger.Info("session loaded", "session_id", value.id, "updates", len(updates))
-	return acp.LoadSessionResponse{}, nil
+	return acp.LoadSessionResponse{ConfigOptions: a.configOptions(value)}, nil
 }
 
 func (a *Agent) recoverSession(ctx context.Context, value *session) error {
@@ -536,7 +534,7 @@ func (a *Agent) ResumeSession(
 	ctx context.Context,
 	request acp.ResumeSessionRequest,
 ) (acp.ResumeSessionResponse, error) {
-	_, err := a.activateSession(
+	value, err := a.activateSession(
 		ctx,
 		request.SessionID,
 		request.CWD,
@@ -549,7 +547,7 @@ func (a *Agent) ResumeSession(
 		return acp.ResumeSessionResponse{}, err
 	}
 	a.logger.Info("session resumed", "session_id", request.SessionID)
-	return acp.ResumeSessionResponse{}, nil
+	return acp.ResumeSessionResponse{ConfigOptions: a.configOptions(value)}, nil
 }
 
 func (a *Agent) activateSession(
@@ -609,12 +607,18 @@ func (a *Agent) activateSession(
 			"session has a pending permission request; load it before resuming",
 		)
 	}
-	configuration, err := a.resolveConfiguration(ctx, canonicalCWD)
+	base, models, err := a.resolveActivation(ctx, canonicalCWD)
 	if err != nil {
 		return nil, err
 	}
+	configuration, err := applySelections(base, value.state.selections, value.state.history, models)
+	if err != nil {
+		return nil, jrpc2.Errorf(jrpc2.InvalidParams, "activate session configuration: %v", err)
+	}
+	value.activationBase = cloneConfiguration(base)
+	value.models = cloneModels(models)
 	if pendingPermission {
-		required := value.state.configuration.ExecutorCapabilities
+		required := value.state.turnConfiguration().ExecutorCapabilities
 		available := configuration.ExecutorCapabilities
 		if missing := missingExecutorCapability(required, available); missing != "" {
 			return nil, jrpc2.Errorf(
@@ -624,10 +628,7 @@ func (a *Agent) activateSession(
 			)
 		}
 	}
-	if !sameRequestConfiguration(value.state.configuration, configuration) && pendingPermission {
-		pending := cloneConfiguration(configuration)
-		value.activationConfiguration = &pending
-	} else if !sameRequestConfiguration(value.state.configuration, configuration) {
+	if !sameRequestConfiguration(value.state.configuration, configuration) {
 		if err := a.commit(value, recordConfigChanged, configurationChanged{
 			Configuration: configuration,
 		}); err != nil {
@@ -851,7 +852,7 @@ func (a *Agent) resolveConfiguration(
 			err,
 		)
 	}
-	if err := settings.Validate(entry, resolved); err != nil {
+	if err := settings.Validate(entry, resolved, settings.Compatibility{}); err != nil {
 		return requestConfiguration{}, jrpc2.Errorf(jrpc2.InternalError, "%v", err)
 	}
 	contextWindow := entry.ContextWindow()
@@ -865,6 +866,7 @@ func (a *Agent) resolveConfiguration(
 	}
 	now := time.Now()
 	return requestConfiguration{
+		Mode:                 modeCode,
 		Settings:             resolved,
 		ContextWindow:        contextWindow,
 		SystemPrompt:         composePrompt(cwd, now),
@@ -876,6 +878,31 @@ func (a *Agent) resolveConfiguration(
 			Tools:        cloneTools(a.subagentTools.modelTools),
 		},
 	}, nil
+}
+
+func (a *Agent) resolveActivation(
+	ctx context.Context,
+	cwd string,
+) (requestConfiguration, []openrouter.Model, error) {
+	configuration, err := a.resolveConfiguration(ctx, cwd)
+	if err != nil {
+		return requestConfiguration{}, nil, err
+	}
+	lister, ok := a.client.(interface {
+		Models(context.Context) ([]openrouter.Model, error)
+	})
+	if !ok {
+		entry, err := a.client.ModelInfo(ctx, configuration.Settings.Model)
+		if err != nil {
+			return requestConfiguration{}, nil, err
+		}
+		return configuration, []openrouter.Model{*entry}, nil
+	}
+	models, err := lister.Models(ctx)
+	if err != nil {
+		return requestConfiguration{}, nil, jrpc2.Errorf(jrpc2.InternalError, "list OpenRouter models: %v", err)
+	}
+	return configuration, models, nil
 }
 
 func (a *Agent) negotiatedExecutorCapabilities() executorCapabilities {
@@ -1270,11 +1297,18 @@ func (a *Agent) Prompt(
 	server := jrpc2.ServerFromContext(ctx)
 	fileSystem, terminal := a.promptExecutors(server, value)
 	requestPermission := permissionCallback(server, active.trace)
-	if err := a.commit(value, recordUserMessage, userMessageRecord{
-		TurnID:    turnID,
-		MessageID: messageID,
-		Content:   append([]acp.ContentBlock(nil), request.Prompt...),
-	}); err != nil {
+	value.configMu.Lock()
+	value.stateMu.Lock()
+	turnConfiguration := cloneConfiguration(value.state.configuration)
+	value.stateMu.Unlock()
+	err = a.commit(value, recordUserMessage, userMessageRecord{
+		TurnID:        turnID,
+		MessageID:     messageID,
+		Content:       append([]acp.ContentBlock(nil), request.Prompt...),
+		Configuration: turnConfiguration,
+	})
+	value.configMu.Unlock()
+	if err != nil {
 		return acp.PromptResponse{}, fmt.Errorf("persist user message: %w", err)
 	}
 
@@ -1345,7 +1379,9 @@ func (a *Agent) promptExecutors(
 	server *jrpc2.Server,
 	value *session,
 ) (ClientFileSystem, ClientTerminal) {
-	capabilities := value.state.configuration.ExecutorCapabilities
+	value.stateMu.Lock()
+	capabilities := value.state.turnConfiguration().ExecutorCapabilities
+	value.stateMu.Unlock()
 	return a.clientFileSystem(server, value.id, capabilities),
 		a.clientTerminalOperations(server, value.id, capabilities)
 }
@@ -1549,25 +1585,27 @@ func randomID() (string, error) {
 }
 
 type session struct {
-	id                      string
-	state                   durableState
-	log                     *sessionLog
-	stateMu                 sync.Mutex
-	poisoned                bool
-	activationConfiguration *requestConfiguration
-	mu                      sync.Mutex
-	nextTurn                uint64
-	active                  *activeTurn
-	recovering              bool
-	closing                 bool
-	grants                  map[string][]string
-	reads                   fileReads
-	approvalMu              sync.Mutex
-	exclusiveMu             sync.Mutex
-	callIDsMu               sync.Mutex
-	callIDs                 map[string]struct{}
-	readScopesMu            sync.Mutex
-	readScopes              map[*fileReads]struct{}
+	id             string
+	state          durableState
+	log            *sessionLog
+	stateMu        sync.Mutex
+	poisoned       bool
+	activationBase requestConfiguration
+	models         []openrouter.Model
+	configMu       sync.Mutex
+	mu             sync.Mutex
+	nextTurn       uint64
+	active         *activeTurn
+	recovering     bool
+	closing        bool
+	grants         map[string][]string
+	reads          fileReads
+	approvalMu     sync.Mutex
+	exclusiveMu    sync.Mutex
+	callIDsMu      sync.Mutex
+	callIDs        map[string]struct{}
+	readScopesMu   sync.Mutex
+	readScopes     map[*fileReads]struct{}
 }
 
 func (s *session) granted(tool Tool, arguments json.RawMessage) bool {

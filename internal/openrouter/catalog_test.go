@@ -39,7 +39,12 @@ func TestCatalogDecodingAndCapabilityLookup(t *testing.T) {
 	err := json.Unmarshal([]byte(`{"data":[
 		{
 			"id":"top/level",
+			"name":"Top Level",
 			"context_length":131072,
+			"architecture":{
+				"input_modalities":["text","image"],
+				"output_modalities":["text"]
+			},
 			"top_provider":{"context_length":65536,"max_completion_tokens":8192},
 			"pricing":{"prompt":"0.1","input_cache_read":"0.01"},
 			"supported_parameters":["tools","reasoning"],
@@ -89,6 +94,9 @@ func TestCatalogDecodingAndCapabilityLookup(t *testing.T) {
 	}
 	model, ok := catalog.Model("top/level")
 	if !ok ||
+		model.Name != "Top Level" ||
+		strings.Join(model.Architecture.InputModalities, ",") != "text,image" ||
+		strings.Join(model.Architecture.OutputModalities, ",") != "text" ||
 		model.Pricing.InputCacheRead != "0.01" ||
 		model.TopProvider.MaxCompletionTokens != 8192 {
 		t.Fatalf("model = %#v, %v", model, ok)
@@ -287,7 +295,11 @@ func TestConcurrentCatalogCallsShareOneLoad(t *testing.T) {
 
 func TestCatalogAccessorsDoNotExposeMutableState(t *testing.T) {
 	catalog := newCatalog([]Model{{
-		ID:                  "stable/model",
+		ID: "stable/model",
+		Architecture: Architecture{
+			InputModalities:  []string{"text", "image"},
+			OutputModalities: []string{"text"},
+		},
 		SupportedParameters: []string{"tools"},
 		Reasoning: &ModelReasoning{
 			SupportedEfforts: []string{"high"},
@@ -296,18 +308,45 @@ func TestCatalogAccessorsDoNotExposeMutableState(t *testing.T) {
 	models := catalog.Models()
 	models[0].ID = "changed/model"
 	models[0].SupportedParameters[0] = "changed"
+	models[0].Architecture.InputModalities[0] = "changed"
+	models[0].Architecture.OutputModalities[0] = "changed"
 	models[0].Reasoning.SupportedEfforts[0] = "low"
 
 	model, ok := catalog.Model("stable/model")
 	if !ok ||
 		model.ID != "stable/model" ||
 		model.SupportedParameters[0] != "tools" ||
+		model.Architecture.InputModalities[0] != "text" ||
+		model.Architecture.OutputModalities[0] != "text" ||
 		model.Reasoning.SupportedEfforts[0] != "high" {
 		t.Fatalf("catalog was mutated through Models: %#v, %v", model, ok)
 	}
 	model.ID = "changed/again"
 	if _, ok := catalog.Model("stable/model"); !ok {
 		t.Fatal("catalog was mutated through Model")
+	}
+}
+
+func TestClientModelsAreSortedClones(t *testing.T) {
+	client := &Client{catalog: newCatalog([]Model{
+		{ID: "zeta/model", Name: "Zeta"},
+		{ID: "alpha/model", Name: "Alpha"},
+	})}
+
+	models, err := client.Models(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := models[0].ID + "," + models[1].ID; got != "alpha/model,zeta/model" {
+		t.Fatalf("models = %q", got)
+	}
+	models[0].Name = "Changed"
+	again, err := client.Models(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again[0].Name != "Alpha" {
+		t.Fatalf("model name = %q", again[0].Name)
 	}
 }
 

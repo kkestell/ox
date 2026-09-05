@@ -2016,7 +2016,7 @@ func (m *capturingCompletionModel) ModelInfo(
 	_ context.Context,
 	id string,
 ) (*openrouter.Model, error) {
-	return &openrouter.Model{ID: id, ContextLength: 2400}, nil
+	return testModel(id, 2400), nil
 }
 
 // staticCompletionModel answers every request with one completion. entry and
@@ -2046,7 +2046,7 @@ func (m *staticCompletionModel) ModelInfo(
 	if m.entry != nil {
 		return m.entry, nil
 	}
-	return &openrouter.Model{ID: id, ContextLength: 100}, nil
+	return testModel(id, 100), nil
 }
 
 func (m *repeatingToolModel) Stream(
@@ -2067,5 +2067,13 @@ func (*repeatingToolModel) ModelInfo(
 	_ context.Context,
 	id string,
 ) (*openrouter.Model, error) {
-	return &openrouter.Model{ID: id, ContextLength: 100}, nil
+	return testModel(id, 100), nil
+}
+
+func testModel(id string, contextLength int) *openrouter.Model {
+	return &openrouter.Model{
+		ID: id, ContextLength: contextLength,
+		SupportedParameters: []string{"tools", "temperature", "max_tokens"},
+		Architecture:        openrouter.Architecture{InputModalities: []string{"text", "image", "audio"}},
+	}
 }

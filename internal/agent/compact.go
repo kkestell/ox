@@ -40,7 +40,7 @@ func (a *Agent) admitPrimaryRequest(
 ) (openrouter.Request, *event, error) {
 	request := a.modelRequest(value)
 	value.stateMu.Lock()
-	configuration := cloneConfiguration(value.state.configuration)
+	configuration := value.state.turnConfiguration()
 	value.stateMu.Unlock()
 	planned, err := planRequestAdmission(request, configuration.ContextWindow)
 	if err != nil {
@@ -92,7 +92,7 @@ func (a *Agent) admitChildRequest(
 	requestCount int,
 ) (openrouter.Request, error) {
 	value.stateMu.Lock()
-	configuration := cloneConfiguration(value.state.configuration)
+	configuration := value.state.turnConfiguration()
 	value.stateMu.Unlock()
 	planned, err := planRequestAdmission(request, configuration.ContextWindow)
 	if err != nil {
@@ -190,7 +190,7 @@ func (a *Agent) summarizeContext(
 
 func (a *Agent) compactionUsageEvent(value *session, occupancy int) *event {
 	value.stateMu.Lock()
-	configuration := cloneConfiguration(value.state.configuration)
+	configuration := value.state.turnConfiguration()
 	totalCost := value.state.cost
 	value.stateMu.Unlock()
 	return &event{

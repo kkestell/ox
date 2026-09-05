@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"time"
 )
 
@@ -21,8 +22,14 @@ type Model struct {
 	ContextLength       int             `json:"context_length"`
 	TopProvider         TopProvider     `json:"top_provider"`
 	Pricing             Pricing         `json:"pricing"`
+	Architecture        Architecture    `json:"architecture"`
 	SupportedParameters []string        `json:"supported_parameters"`
 	Reasoning           *ModelReasoning `json:"reasoning,omitempty"`
+}
+
+type Architecture struct {
+	InputModalities  []string `json:"input_modalities"`
+	OutputModalities []string `json:"output_modalities"`
 }
 
 type ModelReasoning struct {
@@ -75,6 +82,9 @@ func (c *Catalog) Models() []Model {
 	for index := range c.models {
 		models[index] = cloneModel(c.models[index])
 	}
+	slices.SortFunc(models, func(left, right Model) int {
+		return bytes.Compare([]byte(left.ID), []byte(right.ID))
+	})
 	return models
 }
 
@@ -162,8 +172,26 @@ func (c *Client) ModelInfo(ctx context.Context, id string) (*Model, error) {
 	return model, nil
 }
 
+// Models returns the catalog entries in model-id order without exposing the
+// client's cached catalog to callers.
+func (c *Client) Models(ctx context.Context) ([]Model, error) {
+	catalog, err := c.Catalog(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return catalog.Models(), nil
+}
+
 func cloneModel(model Model) Model {
 	model.SupportedParameters = append([]string(nil), model.SupportedParameters...)
+	model.Architecture.InputModalities = append(
+		[]string(nil),
+		model.Architecture.InputModalities...,
+	)
+	model.Architecture.OutputModalities = append(
+		[]string(nil),
+		model.Architecture.OutputModalities...,
+	)
 	if model.Reasoning != nil {
 		reasoning := *model.Reasoning
 		reasoning.SupportedEfforts = append([]string(nil), reasoning.SupportedEfforts...)

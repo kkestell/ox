@@ -16,19 +16,19 @@ import (
 )
 
 const testModelCatalog = `{"data":[
-{"id":"test/model","context_length":128000},
-{"id":"canonical/model","context_length":128000},
-{"id":"environment/model","context_length":128000},
-{"id":"first/model","context_length":128000},
-{"id":"fixed/model","context_length":128000},
-{"id":"global/model","context_length":128000},
-{"id":"good/model","context_length":128000},
-{"id":"home/model","context_length":128000},
-{"id":"new/model","context_length":128000},
-{"id":"old/model","context_length":128000},
-{"id":"parent/model","context_length":128000},
-{"id":"second/model","context_length":128000},
-{"id":"workspace/model","context_length":128000}
+{"id":"test/model","name":"Test Model","context_length":128000,"supported_parameters":["tools","temperature","max_tokens"],"architecture":{"input_modalities":["text","image","audio"]}},
+{"id":"canonical/model","context_length":128000,"supported_parameters":["tools","temperature","max_tokens"]},
+{"id":"environment/model","context_length":128000,"supported_parameters":["tools","temperature","max_tokens"]},
+{"id":"first/model","context_length":128000,"supported_parameters":["tools","temperature","max_tokens"]},
+{"id":"fixed/model","context_length":128000,"supported_parameters":["tools","temperature","max_tokens"]},
+{"id":"global/model","context_length":128000,"supported_parameters":["tools","temperature","max_tokens"]},
+{"id":"good/model","context_length":128000,"supported_parameters":["tools","temperature","max_tokens"]},
+{"id":"home/model","context_length":128000,"supported_parameters":["tools","temperature","max_tokens"]},
+{"id":"new/model","context_length":128000,"supported_parameters":["tools","temperature","max_tokens"]},
+{"id":"old/model","context_length":128000,"supported_parameters":["tools","temperature","max_tokens"]},
+{"id":"parent/model","context_length":128000,"supported_parameters":["tools","temperature","max_tokens"]},
+{"id":"second/model","context_length":128000,"supported_parameters":["tools","temperature","max_tokens"]},
+{"id":"workspace/model","context_length":128000,"supported_parameters":["tools","temperature","max_tokens"]}
 ]}`
 
 type modelRequest struct {
@@ -139,8 +139,8 @@ func withModelContextWindow(model *mockModel, contextWindow int) startOption {
 	return func(config *startConfig) {
 		catalog := strings.Replace(
 			testModelCatalog,
-			`{"id":"test/model","context_length":128000}`,
-			fmt.Sprintf(`{"id":"test/model","context_length":%d}`, contextWindow),
+			`"context_length":128000`,
+			fmt.Sprintf(`"context_length":%d`, contextWindow),
 			1,
 		)
 		model.catalog = catalog

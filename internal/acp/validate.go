@@ -151,6 +151,81 @@ func (r NewSessionRequest) Validate() error {
 	return nil
 }
 
+func (r SetSessionConfigOptionRequest) Validate() error {
+	if r.SessionID == "" {
+		return errors.New("sessionId is required")
+	}
+	if r.ConfigID == "" {
+		return errors.New("configId is required")
+	}
+	if r.Type == "boolean" {
+		return errors.New("boolean session configuration options are not supported")
+	}
+	if r.Value == "" {
+		return errors.New("value is required")
+	}
+	return nil
+}
+
+func (r SetSessionConfigOptionResponse) Validate() error {
+	return validateSessionConfigOptions(r.ConfigOptions)
+}
+
+func (u ConfigOptionUpdate) Validate() error {
+	if u.SessionUpdate != SessionUpdateConfigOptionUpdate {
+		return fmt.Errorf(
+			"sessionUpdate must be %q", SessionUpdateConfigOptionUpdate,
+		)
+	}
+	return validateSessionConfigOptions(u.ConfigOptions)
+}
+
+func (o SessionConfigOption) Validate() error {
+	if o.Type != SessionConfigOptionTypeSelect {
+		return errors.New("type must be select")
+	}
+	if o.ID == "" {
+		return errors.New("id is required")
+	}
+	if o.Name == "" {
+		return errors.New("name is required")
+	}
+	if o.CurrentValue == "" {
+		return errors.New("currentValue is required")
+	}
+	if o.Options == nil {
+		return errors.New("options is required")
+	}
+	foundCurrent := false
+	for index, option := range o.Options {
+		if option.Value == "" {
+			return fmt.Errorf("option %d value is required", index+1)
+		}
+		if option.Name == "" {
+			return fmt.Errorf("option %d name is required", index+1)
+		}
+		if option.Value == o.CurrentValue {
+			foundCurrent = true
+		}
+	}
+	if !foundCurrent {
+		return fmt.Errorf("currentValue %q is not in options", o.CurrentValue)
+	}
+	return nil
+}
+
+func validateSessionConfigOptions(options []SessionConfigOption) error {
+	if options == nil {
+		return errors.New("configOptions is required")
+	}
+	for index, option := range options {
+		if err := option.Validate(); err != nil {
+			return fmt.Errorf("configOptions item %d: %w", index+1, err)
+		}
+	}
+	return nil
+}
+
 func (r PromptRequest) Validate() error {
 	if r.SessionID == "" {
 		return errors.New("sessionId is required")
