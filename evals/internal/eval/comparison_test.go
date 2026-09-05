@@ -70,6 +70,7 @@ func TestCompareRejectsIncompleteAndUnmatchedEvidence(t *testing.T) {
 		"prompt mismatch":   func(_, anchored *evidenceOptions) { anchored.prompt = "different" },
 		"budget mismatch":   func(_, anchored *evidenceOptions) { anchored.budget = Budget{TimeoutMS: 2, ProviderRequests: 1} },
 		"model mismatch":    func(_, anchored *evidenceOptions) { anchored.model = "other/model" },
+		"identical binary":  func(_, anchored *evidenceOptions) { anchored.binaryDigest = "sha256:exact" },
 	} {
 		t.Run(name, func(t *testing.T) {
 			exactRoot := t.TempDir()
@@ -110,6 +111,7 @@ type evidenceOptions struct {
 	revision        string
 	prompt          string
 	model           string
+	binaryDigest    string
 	budget          Budget
 	providerRetries int
 	failedEdits     int
@@ -132,6 +134,9 @@ func writeComparisonEvidence(t *testing.T, root, candidate string, options evide
 	if options.model == "" {
 		options.model = "test/model"
 	}
+	if options.binaryDigest == "" {
+		options.binaryDigest = "sha256:" + candidate
+	}
 	if options.budget == (Budget{}) {
 		options.budget = Budget{TimeoutMS: 1000, ProviderRequests: 4}
 	}
@@ -140,7 +145,7 @@ func writeComparisonEvidence(t *testing.T, root, candidate string, options evide
 		id := fmt.Sprintf("task-%03d", taskNumber)
 		index := RunIndex{
 			Schema: ResultSchemaVersion, TaskID: id, TaskRevision: options.revision,
-			Candidate: candidate, BinaryDigest: "sha256:" + candidate,
+			Candidate: candidate, BinaryDigest: options.binaryDigest,
 			PromptDigest: options.prompt, Model: options.model, Provider: "openrouter",
 			Budget: options.budget, Repetitions: options.repetitions,
 		}
