@@ -1,0 +1,7 @@
+{
+  "schema": 1,
+  "id": "newline-trailing-remove-18",
+  "budget": { "timeout_ms": 300000, "provider_requests": 20 },
+  "phases": [{ "action": "prompt", "prompt": "In remove.txt, change two to second and remove the final newline so the last byte is `d`.", "permission": "allow" }],
+  "success": { "files": { "remove.txt": "one\nsecond" } }
+}

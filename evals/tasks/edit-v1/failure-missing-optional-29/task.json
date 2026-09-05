@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "id": "failure-missing-optional-29",
+  "budget": { "timeout_ms": 300000, "provider_requests": 20 },
+  "phases": [{ "action": "prompt", "prompt": "Set mode=active in app.ini. optional.ini is expected to be absent: do not create it. Create status.txt containing exactly `optional.ini absent` followed by one newline.", "permission": "allow" }],
+  "success": {
+    "files": { "app.ini": "name=primary\nmode=active\n", "status.txt": "optional.ini absent\n" },
+    "overlay": "verifier",
+    "command": ["sh", "check.sh"]
+  }
+}

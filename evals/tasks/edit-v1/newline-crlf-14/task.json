@@ -1,0 +1,7 @@
+{
+  "schema": 1,
+  "id": "newline-crlf-14",
+  "budget": { "timeout_ms": 300000, "provider_requests": 20 },
+  "phases": [{ "action": "prompt", "prompt": "In windows.ini, set retries to 5. Preserve its CRLF line endings and final newline.", "permission": "allow" }],
+  "success": { "files": { "windows.ini": "timeout=30\r\nretries=5\r\nmode=safe\r\n" } }
+}

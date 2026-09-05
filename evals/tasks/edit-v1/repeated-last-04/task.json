@@ -1,0 +1,7 @@
+{
+  "schema": 1,
+  "id": "repeated-last-04",
+  "budget": { "timeout_ms": 300000, "provider_requests": 20 },
+  "phases": [{ "action": "prompt", "prompt": "In markers.txt, change only the last `MARK` line to `DONE`. Preserve all spacing and the trailing newline.", "permission": "allow" }],
+  "success": { "files": { "markers.txt": "MARK\n  item one\nMARK\n  item two\nDONE\n" } }
+}

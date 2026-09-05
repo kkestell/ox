@@ -1,0 +1,7 @@
+{
+  "schema": 1,
+  "id": "insert-end-21",
+  "budget": { "timeout_ms": 300000, "provider_requests": 20 },
+  "phases": [{ "action": "prompt", "prompt": "Append `checksum=verified` after the current last line in artifact.txt. The result must end with one newline.", "permission": "allow" }],
+  "success": { "files": { "artifact.txt": "name=widget\nsize=42\nchecksum=verified\n" } }
+}

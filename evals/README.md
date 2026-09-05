@@ -34,8 +34,34 @@ is copied into the workspace only after Ox exits so the agent cannot replace
 verifier-owned files.
 
 The task revision is a digest of the complete task directory. Run records also
-contain the Ox revision, model and provider labels, repetitions, budget,
-latency, provider attempts and retries, stop reasons, permission and rejection
-counts, failure classification, and ACP usage or cost when supplied. Missing
-usage remains `null`. Provider authorization headers are never written to
-artifacts.
+contain the Ox revision, candidate label, evaluated binary digest, model and
+provider labels, repetitions, budget, latency, provider attempts and retries,
+failed edit attempts, stop reasons, permission and rejection counts, failure
+classification, and ACP usage or cost when supplied. Missing usage remains
+`null`. Provider authorization headers are never written to artifacts.
+
+A `mutate` phase copies a task-owned overlay into the fresh workspace between
+prompts. This is used only for deterministic stale-read evaluations; the overlay
+remains outside the agent workspace until the phase runs.
+
+## Edit comparison
+
+The versioned edit corpus is under `tasks/edit-v1`. Run every task three times
+through separately built exact and anchored binaries, passing `-candidate
+exact`
+or `-candidate anchored` and keeping each task's artifacts in a distinct
+directory. Once both artifact trees are complete, produce the decision record
+with:
+
+```sh
+go run ./evals/cmd/ox-eval \
+  -compare-exact eval-results/edit-v1/exact \
+  -compare-anchored eval-results/edit-v1/anchored \
+  -anchored-safety-passed \
+  -comparison-out evals/results/edit-v1/comparison.json
+```
+
+The report rejects mismatched tasks, prompts, models, providers, budgets,
+binaries, or repetition counts. Anchored editing is selected only when it has at
+least a five-point absolute success advantage, no more than ten percent higher
+median total-token use, complete usage, and passing safety checks.

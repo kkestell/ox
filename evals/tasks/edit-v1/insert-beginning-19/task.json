@@ -1,0 +1,7 @@
+{
+  "schema": 1,
+  "id": "insert-beginning-19",
+  "budget": { "timeout_ms": 300000, "provider_requests": 20 },
+  "phases": [{ "action": "prompt", "prompt": "Insert `# generated settings` as the first line of settings.conf. Preserve the existing lines and final newline.", "permission": "allow" }],
+  "success": { "files": { "settings.conf": "# generated settings\nhost=localhost\nport=9000\n" } }
+}

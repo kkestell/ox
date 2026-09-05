@@ -1,0 +1,7 @@
+{
+  "schema": 1,
+  "id": "insert-middle-20",
+  "budget": { "timeout_ms": 300000, "provider_requests": 20 },
+  "phases": [{ "action": "prompt", "prompt": "Insert `beta` between alpha and gamma in sequence.txt. Do not reorder any existing lines.", "permission": "allow" }],
+  "success": { "files": { "sequence.txt": "alpha\nbeta\ngamma\ndelta\n" } }
+}

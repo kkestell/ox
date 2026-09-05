@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "id": "stale-appended-05",
+  "budget": { "timeout_ms": 300000, "provider_requests": 20 },
+  "phases": [
+    { "action": "prompt", "prompt": "Inspect app.conf and tell me its current mode and port. Do not change any files.", "permission": "allow" },
+    { "action": "mutate", "overlay": "mutation" },
+    { "action": "prompt", "prompt": "Now set mode to production in app.conf. Preserve all other current content.", "permission": "allow" }
+  ],
+  "success": { "files": { "app.conf": "mode=production\nport=8080\naudit=enabled\n" } }
+}

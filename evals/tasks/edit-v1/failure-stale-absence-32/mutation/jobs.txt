@@ -1,0 +1,3 @@
+job=sync
+job=backup
+job=metrics

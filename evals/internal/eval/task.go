@@ -39,6 +39,7 @@ type Phase struct {
 	Permission    string `json:"permission,omitempty"`
 	CancelAfterMS int    `json:"cancel_after_ms,omitempty"`
 	ExpectedStop  string `json:"expected_stop,omitempty"`
+	Overlay       string `json:"overlay,omitempty"`
 }
 
 type Success struct {
@@ -60,6 +61,9 @@ func LoadTask(path string) (Task, error) {
 		return Task{}, fmt.Errorf("decode task manifest: %w", err)
 	}
 	if err := validateTask(task); err != nil {
+		return Task{}, err
+	}
+	if err := validateMutationFixtures(path, task); err != nil {
 		return Task{}, err
 	}
 	revision, err := taskRevision(path)
@@ -99,6 +103,16 @@ func validateTask(task Task) error {
 			if !seenPrompt {
 				return fmt.Errorf("phase %d cannot restart before a prompt", index+1)
 			}
+		case "mutate":
+			if !seenPrompt {
+				return fmt.Errorf("phase %d cannot mutate before a prompt", index+1)
+			}
+			if index+1 == len(task.Phases) || task.Phases[index+1].Action != "prompt" {
+				return fmt.Errorf("phase %d mutation must be followed by a prompt", index+1)
+			}
+			if err := validateRelativePath(phase.Overlay); err != nil {
+				return fmt.Errorf("phase %d mutation overlay: %w", index+1, err)
+			}
 		default:
 			return fmt.Errorf("phase %d has unknown action %q", index+1, phase.Action)
 		}
@@ -120,6 +134,23 @@ func validateTask(task Task) error {
 	if task.Success.Overlay != "" {
 		if err := validateRelativePath(task.Success.Overlay); err != nil {
 			return fmt.Errorf("success overlay: %w", err)
+		}
+	}
+	return nil
+}
+
+func validateMutationFixtures(root string, task Task) error {
+	for index, phase := range task.Phases {
+		if phase.Action != "mutate" {
+			continue
+		}
+		path := filepath.Join(root, filepath.FromSlash(phase.Overlay))
+		info, err := os.Lstat(path)
+		if err != nil {
+			return fmt.Errorf("phase %d mutation overlay: %w", index+1, err)
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("phase %d mutation overlay must be a directory", index+1)
 		}
 	}
 	return nil

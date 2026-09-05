@@ -1,0 +1,7 @@
+{
+  "schema": 1,
+  "id": "disjoint-far-25",
+  "budget": { "timeout_ms": 300000, "provider_requests": 20 },
+  "phases": [{ "action": "prompt", "prompt": "In catalog.txt, change the title to `Autumn Catalog` and the final status to `published`. Preserve every numbered item between them.", "permission": "allow" }],
+  "success": { "files": { "catalog.txt": "title=Autumn Catalog\n01=alpha\n02=bravo\n03=charlie\n04=delta\n05=echo\n06=foxtrot\n07=golf\n08=hotel\n09=india\n10=juliet\nstatus=published\n" } }
+}

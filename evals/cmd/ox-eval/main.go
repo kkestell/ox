@@ -22,10 +22,29 @@ func main() {
 		model       = flag.String("model", "test/model", "model id")
 		provider    = flag.String("provider", "local", "nonsecret provider label")
 		providerURL = flag.String("provider-url", "", "provider API base URL")
+		candidate   = flag.String("candidate", evaluation.CandidateExact, "evaluated edit candidate label")
 		repetitions = flag.Int("repetitions", 1, "number of fresh runs")
 		live        = flag.Bool("live", false, "affirm an on-demand real-provider run")
+		exactRoot   = flag.String("compare-exact", "", "exact-candidate artifact tree")
+		anchorRoot  = flag.String("compare-anchored", "", "anchored-candidate artifact tree")
+		reportPath  = flag.String("comparison-out", "", "comparison report output path")
+		safetyPass  = flag.Bool("anchored-safety-passed", false, "record that all anchored safety tests passed")
 	)
 	flag.Parse()
+	if *exactRoot != "" || *anchorRoot != "" {
+		if *exactRoot == "" || *anchorRoot == "" || *reportPath == "" {
+			fail("-compare-exact, -compare-anchored, and -comparison-out are required together")
+		}
+		report, err := evaluation.Compare(evaluation.ComparisonConfig{
+			ExactRoot: *exactRoot, AnchoredRoot: *anchorRoot,
+			AnchoredSafetyPass: *safetyPass, OutputPath: *reportPath,
+		})
+		if err != nil {
+			fail(err.Error())
+		}
+		fmt.Printf("edit comparison: selected %s; report: %s\n", report.Decision, *reportPath)
+		return
+	}
 	if *taskPath == "" {
 		fail("-task is required")
 	}
@@ -46,7 +65,7 @@ func main() {
 	}
 	revision := gitRevision()
 	index, err := evaluation.Run(context.Background(), evaluation.Config{
-		OxBinary: *oxBinary, OxRevision: revision, TaskPath: *taskPath,
+		OxBinary: *oxBinary, OxRevision: revision, Candidate: *candidate, TaskPath: *taskPath,
 		OutputDir: *outputPath, Model: *model, Provider: *provider,
 		ProviderURL: *providerURL, Credential: credential, Repetitions: *repetitions,
 		AllowRemote: *live,

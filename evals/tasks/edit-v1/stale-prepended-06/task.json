@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "id": "stale-prepended-06",
+  "budget": { "timeout_ms": 300000, "provider_requests": 20 },
+  "phases": [
+    { "action": "prompt", "prompt": "Inspect deploy.txt and report the region. Do not change files.", "permission": "allow" },
+    { "action": "mutate", "overlay": "mutation" },
+    { "action": "prompt", "prompt": "Change the region in deploy.txt to eu-west-1 while preserving the current header and owner.", "permission": "allow" }
+  ],
+  "success": { "files": { "deploy.txt": "# managed externally\nregion=eu-west-1\nowner=platform\n" } }
+}

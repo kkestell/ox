@@ -3,13 +3,16 @@ package eval
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -17,11 +20,12 @@ import (
 	"github.com/kkestell/ox/internal/acp"
 )
 
-const ResultSchemaVersion = 1
+const ResultSchemaVersion = 2
 
 type Config struct {
 	OxBinary    string
 	OxRevision  string
+	Candidate   string
 	TaskPath    string
 	OutputDir   string
 	Model       string
@@ -38,6 +42,9 @@ type RunIndex struct {
 	TaskID       string      `json:"task_id"`
 	TaskRevision string      `json:"task_revision"`
 	OxRevision   string      `json:"ox_revision"`
+	Candidate    string      `json:"candidate"`
+	BinaryDigest string      `json:"binary_digest"`
+	PromptDigest string      `json:"prompt_digest"`
 	Model        string      `json:"model"`
 	Provider     string      `json:"provider"`
 	Budget       Budget      `json:"budget"`
@@ -50,6 +57,9 @@ type RunResult struct {
 	TaskID               string   `json:"task_id"`
 	TaskRevision         string   `json:"task_revision"`
 	OxRevision           string   `json:"ox_revision"`
+	Candidate            string   `json:"candidate"`
+	BinaryDigest         string   `json:"binary_digest"`
+	PromptDigest         string   `json:"prompt_digest"`
 	Model                string   `json:"model"`
 	Provider             string   `json:"provider"`
 	Budget               Budget   `json:"budget"`
@@ -60,7 +70,10 @@ type RunResult struct {
 	Failure              *Failure `json:"failure"`
 	LatencyMS            int64    `json:"latency_ms"`
 	ProviderAttempts     int      `json:"provider_attempts"`
-	Retries              int      `json:"retries"`
+	ProviderRetries      int      `json:"provider_retries"`
+	FailedEditAttempts   int      `json:"failed_edit_attempts"`
+	UsageComplete        bool     `json:"usage_complete"`
+	TotalTokens          *uint64  `json:"total_tokens"`
 	InputTokens          *uint64  `json:"input_tokens"`
 	OutputTokens         *uint64  `json:"output_tokens"`
 	CostUSD              *float64 `json:"cost_usd"`
@@ -76,8 +89,11 @@ type Failure struct {
 }
 
 func Run(ctx context.Context, config Config) (RunIndex, error) {
-	if config.OxBinary == "" || config.TaskPath == "" || config.OutputDir == "" || config.Model == "" {
-		return RunIndex{}, errors.New("ox binary, task, output directory, and model are required")
+	if config.OxBinary == "" || config.TaskPath == "" || config.OutputDir == "" || config.Model == "" || config.Candidate == "" {
+		return RunIndex{}, errors.New("ox binary, candidate, task, output directory, and model are required")
+	}
+	if config.Candidate != CandidateExact && config.Candidate != CandidateAnchored {
+		return RunIndex{}, fmt.Errorf("candidate must be %q or %q", CandidateExact, CandidateAnchored)
 	}
 	if config.Repetitions <= 0 {
 		return RunIndex{}, errors.New("repetitions must be positive")
@@ -89,12 +105,23 @@ func Run(ctx context.Context, config Config) (RunIndex, error) {
 	if err != nil {
 		return RunIndex{}, err
 	}
+	binaryPath, err := exec.LookPath(config.OxBinary)
+	if err != nil {
+		return RunIndex{}, fmt.Errorf("resolve Ox binary: %w", err)
+	}
+	config.OxBinary = binaryPath
+	binaryDigest, err := fileDigest(binaryPath)
+	if err != nil {
+		return RunIndex{}, fmt.Errorf("digest Ox binary: %w", err)
+	}
+	promptDigest := taskPromptDigest(task)
 	if err := os.MkdirAll(config.OutputDir, 0o755); err != nil {
 		return RunIndex{}, fmt.Errorf("create evaluation output: %w", err)
 	}
 	index := RunIndex{
 		Schema: ResultSchemaVersion, TaskID: task.ID, TaskRevision: task.revision,
-		OxRevision: config.OxRevision, Model: config.Model, Provider: config.Provider,
+		OxRevision: config.OxRevision, Candidate: config.Candidate, BinaryDigest: binaryDigest,
+		PromptDigest: promptDigest, Model: config.Model, Provider: config.Provider,
 		Budget: task.Budget, Repetitions: config.Repetitions,
 	}
 	for repetition := 1; repetition <= config.Repetitions; repetition++ {
@@ -102,7 +129,7 @@ func Run(ctx context.Context, config Config) (RunIndex, error) {
 		if err := os.Mkdir(runRoot, 0o755); err != nil {
 			return index, fmt.Errorf("create fresh repetition directory %s: %w", runRoot, err)
 		}
-		result := runOnce(ctx, config, task, repetition)
+		result := runOnce(ctx, config, task, repetition, binaryDigest, promptDigest)
 		index.Results = append(index.Results, result)
 		runPath := filepath.Join(runRoot, "result.json")
 		if err := writeJSON(runPath, result); err != nil {
@@ -127,13 +154,15 @@ func localProviderURL(raw string) bool {
 	return address != nil && address.IsLoopback()
 }
 
-func runOnce(parent context.Context, config Config, task Task, repetition int) RunResult {
+func runOnce(parent context.Context, config Config, task Task, repetition int, binaryDigest, promptDigest string) RunResult {
 	started := time.Now()
 	result := RunResult{
 		Schema: ResultSchemaVersion, TaskID: task.ID, TaskRevision: task.revision,
-		OxRevision: config.OxRevision, Model: config.Model, Provider: config.Provider,
+		OxRevision: config.OxRevision, Candidate: config.Candidate,
+		BinaryDigest: binaryDigest, PromptDigest: promptDigest,
+		Model: config.Model, Provider: config.Provider,
 		Budget: task.Budget, Repetitions: config.Repetitions, Repetition: repetition,
-		SuccessCriteria: task.Success,
+		SuccessCriteria: task.Success, UsageComplete: true,
 	}
 	runRoot := filepath.Join(config.OutputDir, fmt.Sprintf("run-%03d", repetition))
 	workspace := filepath.Join(runRoot, "workspace")
@@ -190,6 +219,10 @@ func runOnce(parent context.Context, config Config, task Task, repetition int) R
 
 	for _, phase := range task.Phases {
 		switch phase.Action {
+		case "mutate":
+			if err := copyOverlay(filepath.Join(task.path, filepath.FromSlash(phase.Overlay)), workspace); err != nil {
+				return finishFailed(result, started, gateway, private, "setup", fmt.Errorf("apply fixture mutation: %w", err), stopClient)
+			}
 		case "restart":
 			permissionTotal += client.stats.Permissions
 			permissionRejectionTotal += client.stats.PermissionRejections
@@ -218,19 +251,23 @@ func runOnce(parent context.Context, config Config, task Task, repetition int) R
 			}, phase.Permission, sessionID, time.Duration(phase.CancelAfterMS)*time.Millisecond)
 			syncResultStats(&result, client, permissionTotal, permissionRejectionTotal)
 			if runContext.Err() != nil {
+				clearUsage(&result)
 				return finishFailed(result, started, gateway, private, "timeout", runContext.Err(), stopClient)
 			}
 			if callErr != nil {
+				clearUsage(&result)
 				return finishFailed(result, started, gateway, private, classifyError(runContext, callErr), callErr, stopClient)
 			}
 			var response acp.PromptResponse
 			if err := json.Unmarshal(raw, &response); err != nil {
+				clearUsage(&result)
 				return finishFailed(result, started, gateway, private, "protocol", err, stopClient)
 			}
 			result.StopReasons = append(result.StopReasons, string(response.StopReason))
 			if response.Usage != nil {
-				input, output := response.Usage.InputTokens, response.Usage.OutputTokens
-				result.InputTokens, result.OutputTokens = &input, &output
+				accumulateUsage(&result, *response.Usage)
+			} else {
+				clearUsage(&result)
 			}
 			want := phase.ExpectedStop
 			if want == "" {
@@ -267,8 +304,56 @@ func runOnce(parent context.Context, config Config, task Task, repetition int) R
 	result.Success = true
 	result.LatencyMS = time.Since(started).Milliseconds()
 	result.ProviderAttempts = attempts
-	result.Retries = max(0, attempts-logical)
+	result.ProviderRetries = max(0, attempts-logical)
+	result.FailedEditAttempts = failedEditAttempts(private)
 	return result
+}
+
+func fileDigest(path string) (string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	hash := sha256.New()
+	if _, err := io.Copy(hash, file); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("sha256:%x", hash.Sum(nil)), nil
+}
+
+func taskPromptDigest(task Task) string {
+	hash := sha256.New()
+	for _, phase := range task.Phases {
+		if phase.Action == "prompt" {
+			_, _ = io.WriteString(hash, phase.Prompt)
+			_, _ = hash.Write([]byte{0})
+		}
+	}
+	return fmt.Sprintf("sha256:%x", hash.Sum(nil))
+}
+
+func accumulateUsage(result *RunResult, usage acp.Usage) {
+	if !result.UsageComplete {
+		return
+	}
+	if result.TotalTokens == nil {
+		total, input, output := usage.TotalTokens, usage.InputTokens, usage.OutputTokens
+		result.TotalTokens, result.InputTokens, result.OutputTokens = &total, &input, &output
+		return
+	}
+	if usage.TotalTokens >= *result.TotalTokens && usage.InputTokens >= *result.InputTokens && usage.OutputTokens >= *result.OutputTokens {
+		*result.TotalTokens, *result.InputTokens, *result.OutputTokens = usage.TotalTokens, usage.InputTokens, usage.OutputTokens
+		return
+	}
+	*result.TotalTokens += usage.TotalTokens
+	*result.InputTokens += usage.InputTokens
+	*result.OutputTokens += usage.OutputTokens
+}
+
+func clearUsage(result *RunResult) {
+	result.UsageComplete = false
+	result.TotalTokens, result.InputTokens, result.OutputTokens = nil, nil, nil
 }
 
 func syncResultStats(result *RunResult, client *processClient, permissionTotal, permissionRejectionTotal int) {
@@ -296,11 +381,15 @@ func finishFailed(result RunResult, started time.Time, gateway *providerGateway,
 		class = "provider_budget"
 	}
 	result.ProviderAttempts = attempts
-	result.Retries = max(0, attempts-logicalProviderRequests(private))
+	result.ProviderRetries = max(0, attempts-logicalProviderRequests(private))
+	result.FailedEditAttempts = failedEditAttempts(private)
 	return failedResult(result, started, class, err)
 }
 
 func failedResult(result RunResult, started time.Time, class string, err error) RunResult {
+	if result.TotalTokens == nil {
+		result.UsageComplete = false
+	}
 	result.LatencyMS = time.Since(started).Milliseconds()
 	result.Failure = &Failure{Class: class, Message: err.Error()}
 	return result
@@ -337,6 +426,31 @@ func logicalProviderRequests(private string) int {
 				Type string `json:"type"`
 			}
 			if json.Unmarshal(scanner.Bytes(), &record) == nil && record.Type == "provider_request_started" {
+				count++
+			}
+		}
+		_ = file.Close()
+	}
+	return count
+}
+
+func failedEditAttempts(private string) int {
+	paths, _ := filepath.Glob(filepath.Join(private, "trace-*.jsonl"))
+	count := 0
+	for _, path := range paths {
+		file, err := os.Open(path)
+		if err != nil {
+			continue
+		}
+		scanner := bufio.NewScanner(file)
+		for scanner.Scan() {
+			var record struct {
+				Type     string `json:"type"`
+				ToolName string `json:"tool_name"`
+				Outcome  string `json:"outcome"`
+			}
+			if json.Unmarshal(scanner.Bytes(), &record) == nil && record.Type == "tool_completed" &&
+				record.ToolName == "edit_file" && record.Outcome == "failed" {
 				count++
 			}
 		}

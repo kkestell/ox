@@ -56,6 +56,72 @@ func TestLoadTaskRejectsUnsafeAndInvalidManifests(t *testing.T) {
 	}
 }
 
+func TestMutationFixtureIsValidatedAndAppliedOnlyAtPhase(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "workspace"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "workspace", "note.txt"), []byte("before\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "mutation"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "mutation", "note.txt"), []byte("changed outside Ox\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writeTestTask(t, root, Task{
+		Schema: 1, ID: "stale", Budget: Budget{1, 1},
+		Phases: []Phase{
+			{Action: "prompt", Prompt: "read note", Permission: "allow"},
+			{Action: "mutate", Overlay: "mutation"},
+			{Action: "prompt", Prompt: "edit note", Permission: "allow"},
+		},
+		Success: Success{Files: map[string]string{"note.txt": "done\n"}},
+	})
+	task, err := LoadTask(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	destination := filepath.Join(t.TempDir(), "run-workspace")
+	if err := seedWorkspace(task, destination); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(filepath.Join(destination, "note.txt"))
+	if err != nil || string(before) != "before\n" {
+		t.Fatalf("seed before mutation = %q, %v", before, err)
+	}
+	if err := copyOverlay(filepath.Join(root, task.Phases[1].Overlay), destination); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.ReadFile(filepath.Join(destination, "note.txt"))
+	if err != nil || string(after) != "changed outside Ox\n" {
+		t.Fatalf("seed after mutation = %q, %v", after, err)
+	}
+}
+
+func TestMutationFixtureRejectsMissingAndEarlyOverlay(t *testing.T) {
+	for name, phases := range map[string][]Phase{
+		"before prompt": {{Action: "mutate", Overlay: "mutation"}, {Action: "prompt", Prompt: "x", Permission: "allow"}},
+		"missing":       {{Action: "prompt", Prompt: "x", Permission: "allow"}, {Action: "mutate", Overlay: "missing"}},
+		"unsafe":        {{Action: "prompt", Prompt: "x", Permission: "allow"}, {Action: "mutate", Overlay: "../outside"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			if err := os.Mkdir(filepath.Join(root, "mutation"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			writeTestTask(t, root, Task{
+				Schema: 1, ID: "bad", Budget: Budget{1, 1}, Phases: phases,
+				Success: Success{Files: map[string]string{"x": "x"}},
+			})
+			if _, err := LoadTask(root); err == nil {
+				t.Fatal("invalid mutation fixture loaded")
+			}
+		})
+	}
+}
+
 func TestVerifyTaskUsesFilesAndProtectedOverlay(t *testing.T) {
 	root := t.TempDir()
 	workspace := filepath.Join(root, "workspace-run")
@@ -132,8 +198,12 @@ func TestRunRejectsExistingRepetitionDirectory(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(output, "run-001"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	_, err := Run(context.Background(), Config{
-		OxBinary: "unused", TaskPath: taskRoot, OutputDir: output, Model: "test/model",
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = Run(context.Background(), Config{
+		OxBinary: executable, Candidate: CandidateExact, TaskPath: taskRoot, OutputDir: output, Model: "test/model",
 		Repetitions: 1, Upstream: http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}),
 	})
 	if err == nil || !strings.Contains(err.Error(), "fresh repetition directory") {
@@ -217,10 +287,59 @@ func TestRunResultPreservesUnknownUsageAsNull(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, field := range []string{`"input_tokens":null`, `"output_tokens":null`, `"cost_usd":null`} {
+	for _, field := range []string{`"total_tokens":null`, `"input_tokens":null`, `"output_tokens":null`, `"cost_usd":null`} {
 		if !strings.Contains(string(raw), field) {
 			t.Fatalf("result = %s, missing %s", raw, field)
 		}
+	}
+}
+
+func TestUsageTracksCumulativePromptPhasesAndNewScopes(t *testing.T) {
+	result := RunResult{UsageComplete: true}
+	accumulateUsage(&result, acp.Usage{TotalTokens: 12, InputTokens: 9, OutputTokens: 3})
+	accumulateUsage(&result, acp.Usage{TotalTokens: 20, InputTokens: 15, OutputTokens: 5})
+	if result.TotalTokens == nil || *result.TotalTokens != 20 || *result.InputTokens != 15 || *result.OutputTokens != 5 {
+		t.Fatalf("usage = %#v", result)
+	}
+	accumulateUsage(&result, acp.Usage{TotalTokens: 7, InputTokens: 5, OutputTokens: 2})
+	if *result.TotalTokens != 27 || *result.InputTokens != 20 || *result.OutputTokens != 7 {
+		t.Fatalf("new-scope usage = %#v", result)
+	}
+	clearUsage(&result)
+	accumulateUsage(&result, acp.Usage{TotalTokens: 100, InputTokens: 90, OutputTokens: 10})
+	if result.UsageComplete || result.TotalTokens != nil || result.InputTokens != nil || result.OutputTokens != nil {
+		t.Fatalf("incomplete usage became complete: %#v", result)
+	}
+}
+
+func TestBinaryDigestAndTraceMetrics(t *testing.T) {
+	binary := filepath.Join(t.TempDir(), "ox")
+	if err := os.WriteFile(binary, []byte("candidate"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	digest, err := fileDigest(binary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if digest != "sha256:dda18a0e21ae47c53b4309434cbc02ae8bf764fa83a6defbb719431242722aa7" {
+		t.Fatalf("digest = %q", digest)
+	}
+	private := t.TempDir()
+	trace := strings.Join([]string{
+		`{"type":"provider_request_started"}`,
+		`{"type":"provider_request_started"}`,
+		`{"type":"tool_completed","tool_name":"edit_file","outcome":"failed"}`,
+		`{"type":"tool_completed","tool_name":"edit_file","outcome":"completed"}`,
+		`{"type":"tool_completed","tool_name":"write_file","outcome":"failed"}`,
+	}, "\n")
+	if err := os.WriteFile(filepath.Join(private, "trace-1.jsonl"), []byte(trace), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := logicalProviderRequests(private); got != 2 {
+		t.Fatalf("logical provider requests = %d", got)
+	}
+	if got := failedEditAttempts(private); got != 1 {
+		t.Fatalf("failed edit attempts = %d", got)
 	}
 }
 

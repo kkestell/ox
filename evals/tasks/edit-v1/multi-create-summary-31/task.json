@@ -1,0 +1,7 @@
+{
+  "schema": 1,
+  "id": "multi-create-summary-31",
+  "budget": { "timeout_ms": 300000, "provider_requests": 20 },
+  "phases": [{ "action": "prompt", "prompt": "Change the state in data/alpha.txt and data/beta.txt from pending to complete. Then create summary.txt with exactly two lines: `alpha complete` and `beta complete`, ending with one newline.", "permission": "allow" }],
+  "success": { "files": { "data/alpha.txt": "id=alpha\nstate=complete\n", "data/beta.txt": "id=beta\nstate=complete\n", "summary.txt": "alpha complete\nbeta complete\n" } }
+}

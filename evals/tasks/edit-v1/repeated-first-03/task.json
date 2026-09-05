@@ -1,0 +1,7 @@
+{
+  "schema": 1,
+  "id": "repeated-first-03",
+  "budget": { "timeout_ms": 300000, "provider_requests": 20 },
+  "phases": [{ "action": "prompt", "prompt": "In colors.txt, change only the first `amber` line to `gold`. Leave the later `amber` lines unchanged.", "permission": "allow" }],
+  "success": { "files": { "colors.txt": "gold\nblue\namber\ngreen\namber\n" } }
+}

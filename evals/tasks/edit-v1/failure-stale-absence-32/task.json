@@ -1,0 +1,15 @@
+{
+  "schema": 1,
+  "id": "failure-stale-absence-32",
+  "budget": { "timeout_ms": 300000, "provider_requests": 20 },
+  "phases": [
+    { "action": "prompt", "prompt": "Inspect jobs.txt and report the obsolete job. Do not edit the file.", "permission": "allow" },
+    { "action": "mutate", "overlay": "mutation" },
+    { "action": "prompt", "prompt": "Remove the obsolete job only if it still exists. Do not undo external changes. Record `obsolete job already absent` in outcome.txt with a final newline if it is already gone.", "permission": "allow" }
+  ],
+  "success": {
+    "files": { "jobs.txt": "job=sync\njob=backup\njob=metrics\n", "outcome.txt": "obsolete job already absent\n" },
+    "overlay": "verifier",
+    "command": ["sh", "check.sh"]
+  }
+}

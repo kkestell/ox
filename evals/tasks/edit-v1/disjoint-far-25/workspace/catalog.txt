@@ -1,0 +1,12 @@
+title=Draft Catalog
+01=alpha
+02=bravo
+03=charlie
+04=delta
+05=echo
+06=foxtrot
+07=golf
+08=hotel
+09=india
+10=juliet
+status=draft

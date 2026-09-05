@@ -18,6 +18,8 @@ import (
 
 var smokeOxBinary string
 
+const fakeModelCatalog = `{"data":[{"id":"test/model","context_length":128000,"supported_parameters":["tools","temperature","max_tokens"]}]}`
+
 func TestMain(m *testing.M) {
 	root, err := os.Getwd()
 	if err != nil {
@@ -68,7 +70,7 @@ func TestFakeProviderSmoke(t *testing.T) {
 	upstream := http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if strings.HasSuffix(request.URL.Path, "/models") {
 			writer.Header().Set("Content-Type", "application/json")
-			_, _ = writer.Write([]byte(`{"data":[{"id":"test/model","context_length":128000}]}`))
+			_, _ = writer.Write([]byte(fakeModelCatalog))
 			return
 		}
 		mutex.Lock()
@@ -83,7 +85,7 @@ func TestFakeProviderSmoke(t *testing.T) {
 	})
 	output := filepath.Join(t.TempDir(), "artifacts")
 	index, err := Run(context.Background(), Config{
-		OxBinary: smokeOxBinary, OxRevision: "test-revision", TaskPath: taskRoot,
+		OxBinary: smokeOxBinary, OxRevision: "test-revision", Candidate: CandidateExact, TaskPath: taskRoot,
 		OutputDir: output, Model: "test/model", Provider: "fake",
 		Repetitions: 1, Upstream: upstream,
 	})
@@ -96,7 +98,7 @@ func TestFakeProviderSmoke(t *testing.T) {
 		trace, _ := os.ReadFile(filepath.Join(output, "run-001/private/trace-1.jsonl"))
 		t.Fatalf("failure = %+v, result = %#v\nstderr=%s\nevents=%s\ntrace=%s", index.Results[0].Failure, index.Results, stderr, events, trace)
 	}
-	if index.Results[0].ProviderAttempts != 2 || index.Results[0].Retries != 0 || index.Results[0].Permissions != 1 {
+	if index.Results[0].ProviderAttempts != 2 || index.Results[0].ProviderRetries != 0 || index.Results[0].Permissions != 1 {
 		t.Fatalf("metrics = %#v", index.Results[0])
 	}
 	for _, path := range []string{
@@ -126,9 +128,13 @@ func TestFakeProviderSmoke(t *testing.T) {
 }
 
 func TestSmokeFailureClassifications(t *testing.T) {
+	badBinary := filepath.Join(t.TempDir(), "invalid-ox")
+	if err := os.WriteFile(badBinary, []byte("not an executable format"), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	final := http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if strings.HasSuffix(request.URL.Path, "/models") {
-			_, _ = writer.Write([]byte(`{"data":[{"id":"test/model","context_length":128000}]}`))
+			_, _ = writer.Write([]byte(fakeModelCatalog))
 			return
 		}
 		writer.Header().Set("Content-Type", "text/event-stream")
@@ -158,7 +164,7 @@ func TestSmokeFailureClassifications(t *testing.T) {
 		files    map[string]string
 		want     string
 	}{
-		"setup":        {filepath.Join(t.TempDir(), "missing"), final, 1000, map[string]string{"sentinel.txt": "ok\n"}, "setup"},
+		"setup":        {badBinary, final, 1000, map[string]string{"sentinel.txt": "ok\n"}, "setup"},
 		"protocol":     {"/bin/echo", final, 1000, map[string]string{"sentinel.txt": "ok\n"}, "protocol"},
 		"process exit": {"true", final, 1000, map[string]string{"sentinel.txt": "ok\n"}, "process_exit"},
 		"provider":     {smokeOxBinary, providerFailure, 1000, map[string]string{"sentinel.txt": "ok\n"}, "provider"},
@@ -179,7 +185,7 @@ func TestSmokeFailureClassifications(t *testing.T) {
 				Success: Success{Files: test.files},
 			})
 			index, err := Run(context.Background(), Config{
-				OxBinary: test.binary, OxRevision: "test", TaskPath: taskRoot,
+				OxBinary: test.binary, OxRevision: "test", Candidate: CandidateExact, TaskPath: taskRoot,
 				OutputDir: filepath.Join(t.TempDir(), "artifacts"), Model: "test/model",
 				Provider: "fake", Repetitions: 1, Upstream: test.upstream,
 			})
@@ -218,7 +224,7 @@ func TestFakeProviderRestart(t *testing.T) {
 	var mutex sync.Mutex
 	upstream := http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if strings.HasSuffix(request.URL.Path, "/models") {
-			_, _ = writer.Write([]byte(`{"data":[{"id":"test/model","context_length":128000}]}`))
+			_, _ = writer.Write([]byte(fakeModelCatalog))
 			return
 		}
 		mutex.Lock()
@@ -229,7 +235,7 @@ func TestFakeProviderRestart(t *testing.T) {
 	})
 	output := filepath.Join(t.TempDir(), "artifacts")
 	index, err := Run(context.Background(), Config{
-		OxBinary: smokeOxBinary, OxRevision: "test", TaskPath: taskRoot,
+		OxBinary: smokeOxBinary, OxRevision: "test", Candidate: CandidateExact, TaskPath: taskRoot,
 		OutputDir: output, Model: "test/model", Provider: "fake",
 		Repetitions: 1, Upstream: upstream,
 	})
@@ -241,6 +247,70 @@ func TestFakeProviderRestart(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(output, "run-001/private/trace-2.jsonl")); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestFakeProviderMutationAndMultiPhaseMetrics(t *testing.T) {
+	taskRoot := t.TempDir()
+	for _, directory := range []string{"workspace", "mutation"} {
+		if err := os.MkdirAll(filepath.Join(taskRoot, directory), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(taskRoot, "workspace", "note.txt"), []byte("before\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(taskRoot, "mutation", "note.txt"), []byte("outside\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writeTestTask(t, taskRoot, Task{
+		Schema: 1, ID: "mutation", Budget: Budget{TimeoutMS: 5000, ProviderRequests: 6},
+		Phases: []Phase{
+			{Action: "prompt", Prompt: "read note.txt", Permission: "allow"},
+			{Action: "mutate", Overlay: "mutation"},
+			{Action: "prompt", Prompt: "change note.txt to after", Permission: "allow"},
+		},
+		Success: Success{Files: map[string]string{"note.txt": "after\n"}},
+	})
+	responses := []string{
+		sse(evToolCall("read", "read_file", `{"path":"note.txt"}`), evFinish("tool_calls"), evUsage(10, 2, 12)),
+		sse(evText("read"), evFinish("stop"), evUsage(11, 1, 12)),
+		sse(evToolCall("stale", "edit_file", `{"path":"note.txt","old_string":"before\n","new_string":"after\n"}`), evFinish("tool_calls"), evUsage(12, 2, 14)),
+		sse(evToolCall("reread", "read_file", `{"path":"note.txt"}`), evFinish("tool_calls"), evUsage(13, 2, 15)),
+		sse(evToolCall("retry", "edit_file", `{"path":"note.txt","old_string":"outside\n","new_string":"after\n"}`), evFinish("tool_calls"), evUsage(14, 2, 16)),
+		sse(evText("done"), evFinish("stop"), evUsage(15, 1, 16)),
+	}
+	var mutex sync.Mutex
+	upstream := http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if strings.HasSuffix(request.URL.Path, "/models") {
+			_, _ = writer.Write([]byte(fakeModelCatalog))
+			return
+		}
+		mutex.Lock()
+		defer mutex.Unlock()
+		writer.Header().Set("Content-Type", "text/event-stream")
+		_, _ = writer.Write([]byte(responses[0]))
+		responses = responses[1:]
+	})
+	index, err := Run(context.Background(), Config{
+		OxBinary: smokeOxBinary, OxRevision: "test", Candidate: CandidateExact,
+		TaskPath: taskRoot, OutputDir: filepath.Join(t.TempDir(), "artifacts"),
+		Model: "test/model", Provider: "fake", Repetitions: 1, Upstream: upstream,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := index.Results[0]
+	var totalTokens uint64
+	if result.TotalTokens != nil {
+		totalTokens = *result.TotalTokens
+	}
+	if !result.Success || !result.UsageComplete || result.TotalTokens == nil || *result.TotalTokens != 85 ||
+		result.ProviderAttempts != 6 || result.ProviderRetries != 0 || result.FailedEditAttempts != 1 {
+		t.Fatalf("result = %#v, total tokens = %d", result, totalTokens)
+	}
+	if index.Candidate != CandidateExact || !strings.HasPrefix(index.BinaryDigest, "sha256:") || index.PromptDigest == "" {
+		t.Fatalf("index identity = %#v", index)
 	}
 }
 
@@ -277,7 +347,7 @@ func TestFakeProviderRequiresPermissionRejection(t *testing.T) {
 			response := 0
 			upstream := http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 				if strings.HasSuffix(request.URL.Path, "/models") {
-					_, _ = writer.Write([]byte(`{"data":[{"id":"test/model","context_length":128000}]}`))
+					_, _ = writer.Write([]byte(fakeModelCatalog))
 					return
 				}
 				writer.Header().Set("Content-Type", "text/event-stream")
@@ -285,7 +355,7 @@ func TestFakeProviderRequiresPermissionRejection(t *testing.T) {
 				response++
 			})
 			index, err := Run(context.Background(), Config{
-				OxBinary: smokeOxBinary, TaskPath: taskRoot, OutputDir: filepath.Join(t.TempDir(), "artifacts"),
+				OxBinary: smokeOxBinary, Candidate: CandidateExact, TaskPath: taskRoot, OutputDir: filepath.Join(t.TempDir(), "artifacts"),
 				Model: "test/model", Provider: "fake", Repetitions: 1, Upstream: upstream,
 			})
 			if err != nil {

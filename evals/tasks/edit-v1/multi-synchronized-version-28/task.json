@@ -1,0 +1,7 @@
+{
+  "schema": 1,
+  "id": "multi-synchronized-version-28",
+  "budget": { "timeout_ms": 300000, "provider_requests": 20 },
+  "phases": [{ "action": "prompt", "prompt": "Set version=7.4.0 in api/release.ini, web/release.ini, and worker/release.ini. Preserve each component line and all final newlines.", "permission": "allow" }],
+  "success": { "files": { "api/release.ini": "component=api\nversion=7.4.0\n", "web/release.ini": "component=web\nversion=7.4.0\n", "worker/release.ini": "component=worker\nversion=7.4.0\n" } }
+}

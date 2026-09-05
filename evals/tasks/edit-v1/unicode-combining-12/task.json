@@ -1,0 +1,7 @@
+{
+  "schema": 1,
+  "id": "unicode-combining-12",
+  "budget": { "timeout_ms": 300000, "provider_requests": 20 },
+  "phases": [{ "action": "prompt", "prompt": "In normalization.txt, change only the value after `target=` to `done`. Do not normalize or otherwise alter the two visually similar café lines.", "permission": "allow" }],
+  "success": { "files": { "normalization.txt": "precomposed=café\ncombining=café\ntarget=done\n" } }
+}
