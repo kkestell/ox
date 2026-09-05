@@ -3,7 +3,6 @@ package e2e
 import (
 	"encoding/json"
 	"net/http"
-	"reflect"
 	"runtime"
 	"strconv"
 	"strings"
@@ -173,18 +172,6 @@ func assertConversation(t *testing.T, messages []modelMessage, want []exchange) 
 	}
 }
 
-func assertContent(t *testing.T, got []modelContentPart, want string) {
-	t.Helper()
-	var decoded []modelContentPart
-	if err := json.Unmarshal([]byte(want), &decoded); err != nil {
-		t.Fatalf("decode expected model content: %v", err)
-	}
-	if !reflect.DeepEqual(got, decoded) {
-		gotJSON, _ := json.Marshal(got)
-		t.Fatalf("model content mismatch\ngot:  %s\nwant: %s", gotJSON, want)
-	}
-}
-
 func TestPromptStreamsTheAnswerBeforeTheResponse(t *testing.T) {
 	model := startModel(t, sse(evText("Hello, "), evText(""), evText("world"), evFinishReason("stop")))
 	child, session := startSession(t, withModel(model))
@@ -295,11 +282,11 @@ func TestPromptRendersResourceLinksAsMarkdown(t *testing.T) {
 	})
 }
 
-func TestPromptSendsEveryContentVariantInClientOrder(t *testing.T) {
-	model := startModel(t, sse(evText("done"), evFinishReason("stop")))
+func TestPromptRejectsContentItCannotSize(t *testing.T) {
+	model := startModel(t)
 	child, session := startSession(t, withModel(model))
 
-	child.request("session/prompt", acp.PromptRequest{
+	responseError := child.requestError("session/prompt", acp.PromptRequest{
 		SessionID: session,
 		Prompt: []acp.ContentBlock{
 			{Type: "text", Text: "inspect these"},
@@ -319,37 +306,28 @@ func TestPromptSendsEveryContentVariantInClientOrder(t *testing.T) {
 		},
 	})
 	updates(t, child, session)
-
-	requests := model.requests()
-	if len(requests) != 1 || len(requests[0].Messages) != 2 {
-		t.Fatalf("model requests = %#v, want one request with one message", requests)
+	if !strings.Contains(responseError.Message, "cannot size provider request containing image content") {
+		t.Fatalf("error = %q", responseError.Message)
 	}
-	want := `[
-		{"type":"text","text":"inspect these"},
-		{"type":"image_url","image_url":{"url":"data:image/png;base64,cGljdHVyZQ=="}},
-		{"type":"input_audio","input_audio":{"data":"c291bmQ=","format":"wav"}},
-		{"type":"text","text":"[a \\[file\\]](file:///tmp/a(b\\).go)"},
-		{"type":"text","text":"[/tmp/context file.txt:12-14]\n` + "````" + `\ninside ` + "```" + ` a fence\n` + "````" + `"},
-		{"type":"image_url","image_url":{"url":"data:image/png;base64,aW1hZ2U="}},
-		{"type":"input_audio","input_audio":{"data":"YXVkaW8=","format":"flac"}}
-	]`
-	assertContent(t, requests[0].Messages[1].Content, want)
+	if requests := model.requests(); len(requests) != 0 {
+		t.Fatalf("model received unsized request: %#v", requests)
+	}
 }
 
-func TestPromptKeepsMultimodalPartsInHistory(t *testing.T) {
-	model := startModel(t,
-		sse(evText("first answer"), evFinishReason("stop")),
-		sse(evText("second answer"), evFinishReason("stop")),
-	)
+func TestRejectedUnsizedPromptDoesNotEnterHistory(t *testing.T) {
+	model := startModel(t, sse(evText("second answer"), evFinishReason("stop")))
 	child, session := startSession(t, withModel(model))
 
-	child.request("session/prompt", acp.PromptRequest{
+	responseError := child.requestError("session/prompt", acp.PromptRequest{
 		SessionID: session,
 		Prompt: []acp.ContentBlock{
 			{Type: "text", Text: "describe"},
 			{Type: "image", MIMEType: "image/png", Data: "cGljdHVyZQ=="},
 		},
 	})
+	if !strings.Contains(responseError.Message, "image content") {
+		t.Fatalf("error = %q", responseError.Message)
+	}
 	updates(t, child, session)
 	child.request("session/prompt", acp.PromptRequest{
 		SessionID: session,
@@ -358,13 +336,10 @@ func TestPromptKeepsMultimodalPartsInHistory(t *testing.T) {
 	updates(t, child, session)
 
 	requests := model.requests()
-	if len(requests) != 2 || len(requests[1].Messages) != 4 {
-		t.Fatalf("second model request = %#v, want three messages", requests)
+	if len(requests) != 1 || len(requests[0].Messages) != 2 {
+		t.Fatalf("model requests = %#v, want only the retry", requests)
 	}
-	assertContent(t, requests[1].Messages[1].Content, `[
-		{"type":"text","text":"describe"},
-		{"type":"image_url","image_url":{"url":"data:image/png;base64,cGljdHVyZQ=="}}
-	]`)
+	assertConversation(t, requests[0].Messages, []exchange{{role: "user", text: "again"}})
 }
 
 func TestPromptRejectsUnroutableResourcesWithoutOccupyingTheSession(t *testing.T) {

@@ -171,11 +171,12 @@ func TestDiagnosticTraceClassifiesCompactionSubagentAndCancellation(t *testing.T
 		cancelSentinel   = "cancel-trace-sentinel"
 	)
 	oldAnswer := strings.Repeat("old trace detail ", 240)
+	recentAnswer := strings.Repeat("recent trace answer ", 100)
 	taskArguments := `{"description":"inspect","prompt":"subagent-trace-sentinel"}`
 	held := (*modelResponse)(nil)
 	model := startModel(t,
 		sse(evText(oldAnswer), evFinishReason("stop"), evUsage(100, 600, 700)),
-		sse(evText("recent trace answer"), evFinishReason("stop"), evUsage(800, 5, 805)),
+		sse(evText(recentAnswer), evFinishReason("stop"), evUsage(800, 5, 805)),
 		sse(evText(summarySentinel), evFinishReason("stop"), evUsage(650, 20, 670)),
 		sse(
 			evToolCall(0, "call-task", "function", "task", taskArguments),
@@ -187,7 +188,7 @@ func TestDiagnosticTraceClassifiesCompactionSubagentAndCancellation(t *testing.T
 	held = model.holdFor("cancel this turn", frames(evReasoning(cancelSentinel)))
 	child := start(t,
 		withModel(model),
-		withModelContextWindow(model, 1000),
+		withModelContextWindow(model, 3700),
 		withArguments("--trace", "trace.jsonl"),
 	)
 	initialize(t, child)

@@ -5,7 +5,7 @@ import { BrowserHarness } from "./harness";
 let harness: BrowserHarness | undefined;
 
 test.beforeEach(async ({ page }) => {
-	harness = await BrowserHarness.start({ contextWindow: 1_000, logLevel: "debug" });
+	harness = await BrowserHarness.start({ contextWindow: 3_300, logLevel: "debug" });
   await harness.open(page);
 });
 
@@ -106,7 +106,7 @@ test("renders a complete tool turn live and from session replay", async ({ page 
       update: {
         sessionUpdate: "usage_update",
 		used: 8,
-		size: 1_000,
+		size: 3_300,
         cost: { amount: 0.001, currency: "USD" },
       },
     },
@@ -147,7 +147,7 @@ test("accepts a compacted context usage update", async ({ page }) => {
   const firstPrompt = "Start a long browser task";
   const oldAnswer = "old detail ".repeat(240);
   const secondPrompt = "Keep going";
-  const recentAnswer = "Recent work is complete.";
+	const recentAnswer = "Recent work is complete. ".repeat(100);
   const thirdPrompt = "Finish the task";
   const summary = "The old details remain available.";
   const finalAnswer = "The compacted task is complete.";
@@ -184,7 +184,7 @@ test("accepts a compacted context usage update", async ({ page }) => {
       update: {
         sessionUpdate: "usage_update",
         used: expect.any(Number),
-        size: 1_000,
+			size: 3_300,
         cost: { amount: 0.006, currency: "USD" },
       },
     },

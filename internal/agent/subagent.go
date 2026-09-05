@@ -22,10 +22,14 @@ func (a *Agent) delegate(
 	events chan<- event,
 	turn diagnostictrace.Turn,
 ) (string, *delegationRecord, error) {
-	record := &delegationRecord{Prompt: prompt}
 	reads, releaseReads := value.childFileReads()
 	defer releaseReads()
-	configuration := value.state.configuration
+	value.stateMu.Lock()
+	configuration := cloneConfiguration(value.state.configuration)
+	child, resuming := value.state.children[parentCallID]
+	child = cloneChildContext(child)
+	value.stateMu.Unlock()
+	record := &delegationRecord{Prompt: prompt}
 	history := []openrouter.Message{{
 		Role: openrouter.RoleUser,
 		Content: []openrouter.ContentBlock{{
@@ -33,10 +37,41 @@ func (a *Agent) delegate(
 			Text: prompt,
 		}},
 	}}
+	if resuming {
+		if child.Prompt != prompt {
+			return "", record, errors.New("durable child context has a different prompt")
+		}
+		record = delegationFromChild(child)
+		history = cloneMessages(child.History)
+		if child.Answer != "" {
+			return child.Answer, record, nil
+		}
+	} else {
+		record.History = cloneMessages(history)
+		if err := a.persistChildContext(value, parentCallID, *record, nil); err != nil {
+			return "", record, fmt.Errorf("persist child context: %w", err)
+		}
+	}
 	providerCallIDs := make(map[string]struct{})
-	lastText := ""
+	lastText := record.Answer
+	for _, message := range history {
+		for _, call := range message.ToolCalls {
+			providerCallIDs[call.ID] = struct{}{}
+		}
+		if message.Role == openrouter.RoleAssistant && len(message.Content) > 0 {
+			lastText = message.Content[0].Text
+		}
+	}
+	if record.RequestCount == maxTurnRequests {
+		answer := childRequestLimitAnswer(lastText)
+		record.Answer = answer
+		if err := a.persistChildContext(value, parentCallID, *record, nil); err != nil {
+			return "", record, fmt.Errorf("persist child context: %w", err)
+		}
+		return answer, record, nil
+	}
 
-	for requestCount := 1; requestCount <= maxTurnRequests; requestCount++ {
+	for requestCount := record.RequestCount + 1; requestCount <= maxTurnRequests; requestCount++ {
 		if err := ctx.Err(); err != nil {
 			return "", record, err
 		}
@@ -67,6 +102,13 @@ func (a *Agent) delegate(
 			Reasoning:    configuration.Settings.Reasoning,
 			Provider:     configuration.Settings.Provider,
 		}
+		request, err := a.admitChildRequest(
+			ctx, value, parentCallID, record, request, turn, requestCount,
+		)
+		if err != nil {
+			return "", record, err
+		}
+		history = cloneMessages(request.Messages[1:])
 		provider := turn.Provider(
 			diagnostictrace.ProviderSubagent,
 			requestCount,
@@ -83,17 +125,34 @@ func (a *Agent) delegate(
 		if err != nil {
 			return "", record, fmt.Errorf("stream subagent model response: %w", err)
 		}
-		if completion.Usage != nil {
-			record.Usage = append(record.Usage, *completion.Usage)
-		}
 		if completion.Text != "" {
 			lastText = completion.Text
 		}
 		if completion.FinishReason != "tool_calls" || len(completion.ToolCalls) == 0 {
+			if completion.Usage != nil {
+				record.Usage = append(record.Usage, *completion.Usage)
+				record.Occupancy = completion.Usage.PromptTokens
+			}
+			assistant := openrouter.Message{
+				Role:             openrouter.RoleAssistant,
+				ReasoningDetails: cloneRawMessages(completion.ReasoningDetails),
+			}
+			if completion.Text != "" {
+				assistant.Content = []openrouter.ContentBlock{{Type: "text", Text: completion.Text}}
+			}
+			history = append(history, assistant)
+			record.History = cloneMessages(history)
+			record.RequestCount = requestCount
 			if strings.TrimSpace(completion.Text) == "" {
+				if persistErr := a.persistChildContext(value, parentCallID, *record, nil); persistErr != nil {
+					return "", record, fmt.Errorf("persist child context: %w", persistErr)
+				}
 				return "", record, errors.New("subagent returned an empty final answer")
 			}
 			record.Answer = completion.Text
+			if err := a.persistChildContext(value, parentCallID, *record, nil); err != nil {
+				return "", record, fmt.Errorf("persist child context: %w", err)
+			}
 			return completion.Text, record, nil
 		}
 
@@ -179,15 +238,65 @@ func (a *Agent) delegate(
 				result.target,
 			)
 		}
+		if completion.Usage != nil {
+			record.Usage = append(record.Usage, *completion.Usage)
+			record.Occupancy = completion.Usage.PromptTokens
+		}
+		record.History = cloneMessages(history)
+		record.RequestCount = requestCount
 		if requestCount == maxTurnRequests {
-			answer := strings.TrimSpace(lastText)
-			if answer != "" {
-				answer += "\n\n"
-			}
-			answer += "Subagent stopped after reaching the request limit."
+			answer := childRequestLimitAnswer(lastText)
 			record.Answer = answer
-			return answer, record, nil
+		}
+		if err := a.persistChildContext(value, parentCallID, *record, nil); err != nil {
+			return "", record, fmt.Errorf("persist child context: %w", err)
+		}
+		if record.Answer != "" {
+			return record.Answer, record, nil
 		}
 	}
 	panic("unreachable")
+}
+
+func childRequestLimitAnswer(lastText string) string {
+	answer := strings.TrimSpace(lastText)
+	if answer != "" {
+		answer += "\n\n"
+	}
+	return answer + "Subagent stopped after reaching the request limit."
+}
+
+func delegationFromChild(child childContext) *delegationRecord {
+	return &delegationRecord{
+		Prompt:       child.Prompt,
+		Answer:       child.Answer,
+		Calls:        append([]delegatedCall(nil), child.Calls...),
+		Usage:        append([]openrouter.Usage(nil), child.Usage...),
+		History:      cloneMessages(child.History),
+		RequestCount: child.RequestCount,
+		Occupancy:    child.Occupancy,
+	}
+}
+
+func (a *Agent) persistChildContext(
+	value *session,
+	parentCallID string,
+	record delegationRecord,
+	compaction *compactionRecord,
+) error {
+	value.stateMu.Lock()
+	defer value.stateMu.Unlock()
+	child := childContext{
+		ParentCallID: parentCallID,
+		Prompt:       record.Prompt,
+		History:      cloneMessages(record.History),
+		Calls:        append([]delegatedCall(nil), record.Calls...),
+		Usage:        append([]openrouter.Usage(nil), record.Usage...),
+		RequestCount: record.RequestCount,
+		Occupancy:    record.Occupancy,
+		Answer:       record.Answer,
+	}
+	return a.commitLocked(value, recordChildContext, childContextRecord{
+		TurnID: value.state.openTurn, Child: child, Compaction: compaction,
+	})
 }

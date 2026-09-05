@@ -196,14 +196,14 @@ func TestCompactionSurvivesCheckpointWithoutDoubleCountingUsage(t *testing.T) {
 	}
 }
 
-func TestCompactionRejectsOpenTurnsAndIncompleteToolGroups(t *testing.T) {
+func TestCompactionAcceptsOpenTurnBoundariesAndRejectsIncompleteToolGroups(t *testing.T) {
 	records, summary := compactionFixture(t)
-	base, err := foldRecords(records[:7])
+	base, err := foldRecords(records[:6])
 	if err != nil {
 		t.Fatal(err)
 	}
-	invalidBoundary := mustRecord(t, 8, recordCompaction, compactionRecord{
-		HeadEnd: 1, TailStart: 4, Summary: summary, Occupancy: 222,
+	invalidBoundary := mustRecord(t, 7, recordCompaction, compactionRecord{
+		TurnID: "second", HeadEnd: 1, TailStart: 4, Summary: summary, Occupancy: 222,
 	})
 	if err := base.apply(invalidBoundary); err == nil ||
 		!strings.Contains(err.Error(), "separates a tool call") {
@@ -211,16 +211,22 @@ func TestCompactionRejectsOpenTurnsAndIncompleteToolGroups(t *testing.T) {
 	}
 
 	open := base.clone()
-	if err := open.apply(mustRecord(t, 8, recordUserMessage, userMessageRecord{
-		TurnID: "open", MessageID: "open-user",
-		Content: []acp.ContentBlock{{Type: "text", Text: "new request"}},
+	if err := open.apply(mustRecord(t, 7, recordCompaction, compactionRecord{
+		TurnID: "second", HeadEnd: 1, TailStart: 3, Summary: summary, Occupancy: 222,
 	})); err != nil {
+		t.Fatalf("open-turn compaction error = %v", err)
+	}
+	checkpoint, err := newCheckpointRecord(open)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := open.apply(mustRecord(t, 9, recordCompaction, compactionRecord{
-		HeadEnd: 1, TailStart: 3, Summary: summary, Occupancy: 222,
-	})); err == nil || !strings.Contains(err.Error(), "during a turn") {
-		t.Fatalf("open-turn compaction error = %v", err)
+	restored, err := foldRecords(append(open.records, checkpoint))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restored.openTurn != "second" || restored.suspended != nil ||
+		!jsonSlicePrefix(open.history, restored.history) || len(open.history) != len(restored.history) {
+		t.Fatalf("restored open-turn compaction = %#v", restored)
 	}
 }
 
@@ -273,16 +279,17 @@ func compactionFixture(t *testing.T) ([]sessionRecord, openrouter.Message) {
 			}},
 			ToolResults: []storedToolResult{{CallID: "call", Content: "package a"}},
 		}),
-		mustRecord(t, 7, recordTurnFinished, turnFinishedRecord{
-			TurnID: "second", Kind: "request_limit",
-			StopReason: acp.StopReasonMaxTokens,
-		}),
-		mustRecord(t, 8, recordCompaction, compactionRecord{
+		mustRecord(t, 7, recordCompaction, compactionRecord{
+			TurnID:  "second",
 			HeadEnd: 1, TailStart: 3, Summary: summary,
 			Usage: &openrouter.Usage{
 				PromptTokens: 100, CompletionTokens: 10, TotalTokens: 110, Cost: 0.3,
 			},
 			Occupancy: 222,
+		}),
+		mustRecord(t, 8, recordTurnFinished, turnFinishedRecord{
+			TurnID: "second", Kind: "request_limit",
+			StopReason: acp.StopReasonMaxTokens,
 		}),
 	}, summary
 }

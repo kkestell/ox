@@ -170,16 +170,17 @@ func TestSessionCanContinueInANewProcess(t *testing.T) {
 func TestSessionCompactionSurvivesRestartWithoutChangingReplay(t *testing.T) {
 	dataDir := t.TempDir()
 	oldAnswer := strings.Repeat("old detail ", 240)
+	recentAnswer := strings.Repeat("recent answer ", 100)
 	model := startModel(t,
 		sse(evText(oldAnswer), evFinishReason("stop"), evUsage(100, 600, 700)),
-		sse(evText("recent answer"), evFinishReason("stop"), evUsage(800, 5, 805)),
+		sse(evText(recentAnswer), evFinishReason("stop"), evUsage(800, 5, 805)),
 		sse(evText("preserved old details"), evFinishReason("stop"), evUsage(650, 20, 670)),
 		sse(evText("third answer"), evFinishReason("stop"), evUsage(100, 5, 105)),
 		sse(evText("fourth answer"), evFinishReason("stop"), evUsage(120, 5, 125)),
 	)
 	options := []startOption{
 		withModel(model),
-		withModelContextWindow(model, 1000),
+		withModelContextWindow(model, 3000),
 		withEnvironment("XDG_DATA_HOME", dataDir),
 	}
 
@@ -220,7 +221,7 @@ func TestSessionCompactionSurvivesRestartWithoutChangingReplay(t *testing.T) {
 	}
 	if !reflect.DeepEqual(replayedText, []string{
 		"first prompt", oldAnswer,
-		"second prompt", "recent answer",
+		"second prompt", recentAnswer,
 		"third prompt", "third answer",
 	}) {
 		t.Fatalf("full replay text = %#v", replayedText)
@@ -242,7 +243,7 @@ func TestSessionCompactionSurvivesRestartWithoutChangingReplay(t *testing.T) {
 		{role: "user", text: "first prompt"},
 		{role: "user", text: "Summary of earlier conversation:\n\npreserved old details"},
 		{role: "user", text: "second prompt"},
-		{role: "assistant", text: "recent answer"},
+		{role: "assistant", text: recentAnswer},
 		{role: "user", text: "third prompt"},
 		{role: "assistant", text: "third answer"},
 		{role: "user", text: "fourth prompt"},
