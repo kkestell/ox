@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "id": "stale-target-changed-07",
+  "budget": { "timeout_ms": 300000, "provider_requests": 20 },
+  "phases": [
+    { "action": "prompt", "prompt": "Inspect flags.ini and report the checkout flag. Do not change anything.", "permission": "allow" },
+    { "action": "mutate", "overlay": "mutation" },
+    { "action": "prompt", "prompt": "Set the current checkout flag to stable and keep the current search flag unchanged.", "permission": "allow" }
+  ],
+  "success": { "files": { "flags.ini": "checkout=stable\nsearch=enabled\n" } }
+}

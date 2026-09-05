@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "id": "stale-multifile-08",
+  "budget": { "timeout_ms": 300000, "provider_requests": 20 },
+  "phases": [
+    { "action": "prompt", "prompt": "Inspect api/version.txt and web/version.txt and report both values. Do not edit them.", "permission": "allow" },
+    { "action": "mutate", "overlay": "mutation" },
+    { "action": "prompt", "prompt": "Set both current version files to 3.1. Preserve their current comments.", "permission": "allow" }
+  ],
+  "success": { "files": { "api/version.txt": "3.1\n# api release\n", "web/version.txt": "3.1\n# web hotfix retained\n" } }
+}

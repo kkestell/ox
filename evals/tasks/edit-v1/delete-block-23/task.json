@@ -1,0 +1,7 @@
+{
+  "schema": 1,
+  "id": "delete-block-23",
+  "budget": { "timeout_ms": 300000, "provider_requests": 20 },
+  "phases": [{ "action": "prompt", "prompt": "Remove the complete `[legacy]` section from config.ini, including its heading and two values. Preserve the adjacent sections exactly.", "permission": "allow" }],
+  "success": { "files": { "config.ini": "[current]\nenabled=true\n\n[logging]\nlevel=info\n" } }
+}

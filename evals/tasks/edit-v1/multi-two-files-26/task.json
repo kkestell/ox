@@ -1,0 +1,7 @@
+{
+  "schema": 1,
+  "id": "multi-two-files-26",
+  "budget": { "timeout_ms": 300000, "provider_requests": 20 },
+  "phases": [{ "action": "prompt", "prompt": "Update service/name.txt to `payments` and service/port.txt to `8443`. Each file must contain only that value followed by one newline.", "permission": "allow" }],
+  "success": { "files": { "service/name.txt": "payments\n", "service/port.txt": "8443\n" } }
+}

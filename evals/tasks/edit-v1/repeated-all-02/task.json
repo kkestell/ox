@@ -1,0 +1,7 @@
+{
+  "schema": 1,
+  "id": "repeated-all-02",
+  "budget": { "timeout_ms": 300000, "provider_requests": 20 },
+  "phases": [{ "action": "prompt", "prompt": "In release.txt, replace every standalone `draft` line with `final`. Do not change text containing that word as part of a longer line.", "permission": "allow" }],
+  "success": { "files": { "release.txt": "final\nkeep draft notes\nfinal\ndraftsmanship\nfinal\n" } }
+}

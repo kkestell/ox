@@ -84,7 +84,10 @@ func startProcess(binary, workspace, private, model, baseURL, credential string,
 	if err := os.MkdirAll(catalogDirectory, 0o700); err != nil {
 		return nil, fmt.Errorf("create model cache: %w", err)
 	}
-	catalog, _ := json.Marshal(map[string]any{"data": []map[string]any{{"id": model, "context_length": 128000}}})
+	catalog, _ := json.Marshal(map[string]any{"data": []map[string]any{{
+		"id": model, "context_length": 128000,
+		"supported_parameters": []string{"tools", "temperature", "max_tokens"},
+	}}})
 	if err := os.WriteFile(filepath.Join(catalogDirectory, "models.json"), catalog, 0o600); err != nil {
 		return nil, fmt.Errorf("write model cache: %w", err)
 	}

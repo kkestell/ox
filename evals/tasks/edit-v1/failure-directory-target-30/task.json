@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "id": "failure-directory-target-30",
+  "budget": { "timeout_ms": 300000, "provider_requests": 20 },
+  "phases": [{ "action": "prompt", "prompt": "Change ready.txt to contain `ready` followed by one newline. archive is a directory, not a text file: leave it and its contents unchanged. Create status.txt containing `archive skipped` followed by one newline.", "permission": "allow" }],
+  "success": {
+    "files": { "ready.txt": "ready\n", "status.txt": "archive skipped\n", "archive/keep.txt": "keep\n" },
+    "overlay": "verifier",
+    "command": ["sh", "check.sh"]
+  }
+}

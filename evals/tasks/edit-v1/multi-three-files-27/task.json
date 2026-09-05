@@ -1,0 +1,7 @@
+{
+  "schema": 1,
+  "id": "multi-three-files-27",
+  "budget": { "timeout_ms": 300000, "provider_requests": 20 },
+  "phases": [{ "action": "prompt", "prompt": "Enable each application in apps/alpha.ini, apps/beta.ini, and apps/gamma.ini by changing enabled=false to enabled=true. Preserve the application names.", "permission": "allow" }],
+  "success": { "files": { "apps/alpha.ini": "name=alpha\nenabled=true\n", "apps/beta.ini": "name=beta\nenabled=true\n", "apps/gamma.ini": "name=gamma\nenabled=true\n" } }
+}

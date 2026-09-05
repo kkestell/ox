@@ -1,0 +1,7 @@
+{
+  "schema": 1,
+  "id": "disjoint-near-24",
+  "budget": { "timeout_ms": 300000, "provider_requests": 20 },
+  "phases": [{ "action": "prompt", "prompt": "In profile.txt, set the name to Ada and the active value to true. Leave the id and role lines unchanged.", "permission": "allow" }],
+  "success": { "files": { "profile.txt": "id=17\nname=Ada\nrole=admin\nactive=true\n" } }
+}

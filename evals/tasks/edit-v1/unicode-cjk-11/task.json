@@ -1,0 +1,7 @@
+{
+  "schema": 1,
+  "id": "unicode-cjk-11",
+  "budget": { "timeout_ms": 300000, "provider_requests": 20 },
+  "phases": [{ "action": "prompt", "prompt": "In labels.txt, change the Japanese value for status from `待機` to `完了`. Leave the Chinese and Korean labels unchanged.", "permission": "allow" }],
+  "success": { "files": { "labels.txt": "状態=完了\n中文=保留\n한국어=유지\n" } }
+}

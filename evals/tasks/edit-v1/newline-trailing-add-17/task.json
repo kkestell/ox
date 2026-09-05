@@ -1,0 +1,7 @@
+{
+  "schema": 1,
+  "id": "newline-trailing-add-17",
+  "budget": { "timeout_ms": 300000, "provider_requests": 20 },
+  "phases": [{ "action": "prompt", "prompt": "In absent.txt, change two to second and ensure the file ends with exactly one newline.", "permission": "allow" }],
+  "success": { "files": { "absent.txt": "one\nsecond\n" } }
+}

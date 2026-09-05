@@ -1,0 +1,7 @@
+{
+  "schema": 1,
+  "id": "delete-line-22",
+  "budget": { "timeout_ms": 300000, "provider_requests": 20 },
+  "phases": [{ "action": "prompt", "prompt": "Delete only the `debug=true` line from service.env. Close the gap and preserve the final newline.", "permission": "allow" }],
+  "success": { "files": { "service.env": "name=api\nport=8080\nworkers=4\n" } }
+}

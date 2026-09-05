@@ -1,0 +1,7 @@
+{
+  "schema": 1,
+  "id": "repeated-middle-01",
+  "budget": { "timeout_ms": 300000, "provider_requests": 20 },
+  "phases": [{ "action": "prompt", "prompt": "In queue.txt, change only the READY entry between beta and gamma to RUNNING. Preserve every other line exactly.", "permission": "allow" }],
+  "success": { "files": { "queue.txt": "alpha\nREADY\nbeta\nRUNNING\ngamma\nREADY\nomega\n" } }
+}
