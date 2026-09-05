@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/kkestell/ox/internal/openrouter"
+	diagnostictrace "github.com/kkestell/ox/internal/trace"
 )
 
 const (
@@ -25,6 +26,7 @@ type compactionPlan struct {
 func (a *Agent) maybeCompact(
 	ctx context.Context,
 	value *session,
+	turn diagnostictrace.Turn,
 ) (*event, error) {
 	value.stateMu.Lock()
 	configuration := cloneConfiguration(value.state.configuration)
@@ -40,7 +42,17 @@ func (a *Agent) maybeCompact(
 	}
 
 	transcript := renderCompactionTranscript(history[plan.headEnd:plan.tailStart])
-	completion, err := a.client.Stream(ctx, summarizerRequest(value.id, configuration, transcript), nil)
+	request := summarizerRequest(value.id, configuration, transcript)
+	provider := turn.Provider(
+		diagnostictrace.ProviderCompaction, 1, providerRequestBytes(request), "",
+	)
+	completion, err := a.client.Stream(ctx, request, nil)
+	provider.Complete(
+		providerOutcome(ctx, err, completion),
+		providerStopReason(completion),
+		providerUsage(completion),
+		providerResponseBytes(completion),
+	)
 	if err != nil {
 		return nil, fmt.Errorf("summarize model context: %w", err)
 	}

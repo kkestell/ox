@@ -125,7 +125,7 @@ func TestLoginCommandRefusesDisabledKeyringBeforeReading(t *testing.T) {
 
 func TestUnknownArgumentIsAUsageError(t *testing.T) {
 	result := runCommand(t, "", []string{"unknown"})
-	if result.ExitCode != 2 || !strings.Contains(result.Stderr, "usage: ox [login]") {
+	if result.ExitCode != 2 || !strings.Contains(result.Stderr, "usage: ox [--trace path] | ox login") {
 		t.Fatalf("result = %#v", result)
 	}
 }

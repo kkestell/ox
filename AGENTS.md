@@ -5,7 +5,7 @@ KEEP THIS FILE AND ITS LINKED REFERENCES UP TO DATE AT ALL TIMES.
 Ox is a coding agent written in Go that speaks ACP v1 over standard input and
 output. It is ACP-first and works with ACP clients. The durable design lives in
 `eng/architecture.md`, and the build order and ACP method coverage live in
-`eng/roadmap.md`.
+`eng/roadmap.md`. `docs/spec.md` owns target product behavior.
 
 ## Tech Stack
 
@@ -26,6 +26,7 @@ output. It is ACP-first and works with ACP clients. The durable design lives in
 - `internal/settings/` — Layered model and provider settings resolved for a
   session activation.
 - `internal/credentials/` — Environment and OS-keyring credential storage.
+- `internal/trace/` — Sanitized, concurrency-safe JSONL diagnostic tracing.
 - `internal/tools/` — Local coding tools exposed to the model.
 - `internal/shellrules/` — Parsed reusable permissions for shell commands.
 - `internal/workspace/` — Confined filesystem access, traversal, and streamed
@@ -33,7 +34,7 @@ output. It is ACP-first and works with ACP clients. The durable design lives in
 - `internal/e2e/` — Black-box tests that build and drive the real binary.
 - `integration/` — Runtime integration tests across the agent, tools, and
   durable state.
-- `docs/` — End-user documentation.
+- `docs/` — End-user documentation and the target product specification.
 - `eng/` — Development and agent documentation. `eng/architecture.md` owns the
   design, `eng/roadmap.md` owns build order and status, and `eng/plans/` holds
   plans for individual roadmap slices.
@@ -149,18 +150,20 @@ Keep ACP method coverage in the roadmap synchronized with the implementation.
 
 ### One home for every fact
 
-Every fact lives in exactly one place. End-user documentation describes how to
-use Ox, `eng/architecture.md` defines the implementation design,
-`eng/roadmap.md` defines what gets built next, plans say how one bounded change
-will be made, and this file defines how to work in the repository. Reference a
-fact that lives elsewhere by naming the file that owns it. Do not keep a
-convenient copy nearby.
+Every fact lives in exactly one place. `docs/spec.md` defines target product
+behavior. End-user guides describe how to use shipped Ox, `eng/architecture.md`
+defines the implementation design, `eng/roadmap.md` defines what gets built
+next, plans say how one bounded change will be made, and this file defines how
+to work in the repository. Reference a fact that lives elsewhere by naming the
+file that owns it. Do not keep a convenient copy nearby.
 
 ### What gets documented
 
-`docs/` holds end-user documentation. It describes behavior that exists without
-previewing roadmap work. Note an omission only when it is an intentional product
-decision a user must understand.
+`docs/` holds end-user documentation. Guides describe behavior that exists
+without previewing roadmap work. `docs/spec.md` is the explicit exception: it
+defines target behavior, with implementation status owned by `eng/roadmap.md`.
+Note an omission only when it is an intentional product decision a user must
+understand.
 
 `eng/architecture.md` covers process boundaries, component responsibilities,
 dependency direction, state ownership, and decisions that would be expensive to

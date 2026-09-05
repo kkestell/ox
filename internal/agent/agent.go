@@ -22,6 +22,7 @@ import (
 	"github.com/kkestell/ox/internal/credentials"
 	"github.com/kkestell/ox/internal/openrouter"
 	"github.com/kkestell/ox/internal/settings"
+	diagnostictrace "github.com/kkestell/ox/internal/trace"
 	"github.com/kkestell/ox/internal/workspace"
 )
 
@@ -48,6 +49,7 @@ type Config struct {
 	SessionDir string
 	Client     Model
 	Tools      []Tool
+	Trace      diagnostictrace.Trace
 }
 
 type Agent struct {
@@ -61,6 +63,7 @@ type Agent struct {
 	primaryTools         toolSet
 	subagentTools        toolSet
 	store                *fileStore
+	trace                diagnostictrace.Trace
 	clientCapabilitiesMu sync.RWMutex
 	clientFS             acp.FileSystemCapabilities
 	clientTerminal       bool
@@ -119,6 +122,7 @@ func New(config Config) (*Agent, error) {
 		primaryTools:  primaryTools,
 		subagentTools: subagentTools,
 		store:         store,
+		trace:         config.Trace,
 		sessions:      make(map[string]*session),
 	}, nil
 }
@@ -426,6 +430,15 @@ func (a *Agent) recoverSession(ctx context.Context, value *session) error {
 			release()
 		}
 	}()
+	active.trace = a.trace.Turn(value.id, turnID)
+	active.trace.Start()
+	defer func() {
+		outcome := "failed"
+		if runCtx.Err() != nil {
+			outcome = "cancelled"
+		}
+		active.trace.Complete(outcome, "")
+	}()
 
 	server := jrpc2.ServerFromContext(ctx)
 	adapter := newAdapter(value.id, value.state.cwd, func(notification acp.SessionNotification) error {
@@ -437,7 +450,7 @@ func (a *Agent) recoverSession(ctx context.Context, value *session) error {
 	outcome := make(chan loopOutcome, 1)
 	go func() {
 		outcome <- a.resume(
-			runCtx, value, active, permissionCallback(server),
+			runCtx, value, active, permissionCallback(server, active.trace),
 			fileSystem, terminal, events,
 		)
 		close(events)
@@ -483,19 +496,35 @@ func (a *Agent) recoverSession(ctx context.Context, value *session) error {
 	return nil
 }
 
-func permissionCallback(server *jrpc2.Server) requestPermission {
+func permissionCallback(server *jrpc2.Server, turn diagnostictrace.Turn) requestPermission {
 	return func(
 		ctx context.Context,
 		request acp.RequestPermissionRequest,
 	) (acp.RequestPermissionResponse, error) {
+		parent, _ := request.ToolCall.Meta[acp.MetaParentToolCallID].(string)
+		turn.PermissionRequested(
+			request.ToolCall.ToolCallID, request.ToolCall.Name, parent,
+		)
 		response, err := server.Callback(ctx, acp.MethodSessionRequestPermission, request)
 		if err != nil {
+			turn.PermissionDecided(
+				request.ToolCall.ToolCallID, request.ToolCall.Name, parent,
+				string(decideApproval(acp.RequestPermissionResponse{}, err)),
+			)
 			return acp.RequestPermissionResponse{}, err
 		}
 		var result acp.RequestPermissionResponse
 		if err := response.UnmarshalResult(&result); err != nil {
+			turn.PermissionDecided(
+				request.ToolCall.ToolCallID, request.ToolCall.Name, parent,
+				string(decisionRefused),
+			)
 			return acp.RequestPermissionResponse{}, err
 		}
+		turn.PermissionDecided(
+			request.ToolCall.ToolCallID, request.ToolCall.Name, parent,
+			string(decideApproval(result, nil)),
+		)
 		return result, nil
 	}
 }
@@ -1073,12 +1102,21 @@ func (a *Agent) Prompt(
 			release()
 		}
 	}()
+	active.trace = a.trace.Turn(value.id, turnID)
+	active.trace.Start()
+	defer func() {
+		outcome := "failed"
+		if runCtx.Err() != nil {
+			outcome = "cancelled"
+		}
+		active.trace.Complete(outcome, "")
+	}()
 
 	adapter := newAdapter(value.id, value.state.cwd, func(notification acp.SessionNotification) error {
 		return jrpc2.ServerFromContext(ctx).Notify(ctx, "session/update", notification)
 	})
 	defer adapter.close()
-	compactionUpdate, err := a.maybeCompact(runCtx, value)
+	compactionUpdate, err := a.maybeCompact(runCtx, value, active.trace)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
 			return acp.PromptResponse{}, jrpc2.Errorf(
@@ -1095,7 +1133,7 @@ func (a *Agent) Prompt(
 	}
 	server := jrpc2.ServerFromContext(ctx)
 	fileSystem, terminal := a.promptExecutors(server, value)
-	requestPermission := permissionCallback(server)
+	requestPermission := permissionCallback(server, active.trace)
 	if err := a.commit(value, recordUserMessage, userMessageRecord{
 		TurnID:    turnID,
 		MessageID: messageID,
@@ -1423,6 +1461,7 @@ type activeTurn struct {
 	cancel            context.CancelFunc
 	cancelledByClient atomic.Bool
 	done              chan struct{}
+	trace             diagnostictrace.Turn
 }
 
 func (s *session) claim(

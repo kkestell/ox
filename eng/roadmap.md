@@ -1,129 +1,61 @@
 # Ox Implementation Roadmap
 
-The order in which Ox is built. This file keeps a brief summary of the most
-recently completed milestone, then the scope and gates for work that remains. It
-records scope and gates, not design. `eng/architecture.md` owns the design.
+`docs/spec.md` owns target behavior, `eng/architecture.md` owns durable design,
+and this file owns build order and evidence of completion. User guides describe
+shipped behavior. Milestones and their slices are ordered by position. All
+remaining slices have concrete gates so implementation does not need another
+product decision; a separate bounded plan still precedes each slice.
 
-Milestones are ordered and build on each other. Slices within a milestone may be
-planned and implemented independently when their contracts do not overlap.
+Apply the checks required by `AGENTS.md`. ACP-visible changes additionally pass
+`make test-client` and schema-based process tests for behavior the browser
+cannot exercise. Review completeness and simplicity once per finished milestone.
+Do not mark a gate passed from a reference implementation or this specification
+alone.
 
-Every milestone passes the project gates before it is complete:
+The browser submodule pins ACP UI at `e6e36d05`; its lockfile pins the stdio
+bridge. The protocol oracle is `third-party/protocol/agent-client-protocol` at
+`8e3eb8f2`, specifically `schema/v1/schema.json` and `meta.json`. Unstable and
+v2 schemas are separate. Adopt new protocol/client revisions together in an
+explicit interoperability change; documentation on the web is context, not
+permission to silently change the pinned wire contract.
 
-```sh
-make check
-```
+## Prior art and adoption decisions
 
-Every milestone that changes ACP-visible behavior also passes the automated
-browser-client smoke test and checks the changed behavior against the pinned ACP
-v1 schema:
+Paths below are relative to `~/src/references/repos`. The feature inventory is
+`~/src/references/index.md`. Plans name exact source files and useful tests,
+what is ported, and the deliberate Ox adaptation. Port coherent behavior and its
+tests without importing the surrounding framework or UI.
 
-```sh
-make test-client
-```
+| Capability                   | Preferred source                                                                                                                 | Ox decision                                                                                                                                                    |
+| ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Durable context and recovery | `personal/gamma/internal/agent/{engine,state,store}.go`; `personal/beta/src/{session,agent,acp}.rs`                              | Keep the existing JSONL/checkpoint model; prove recovery before adding new durable state.                                                                      |
+| Compaction                   | `personal/beta/src/compaction.rs`; `personal/eta/internal/agent/compact.go`; `personal/delta/cmd/fleur/compaction.go`            | Preserve paired tool groups and transcript replay; extend Ox's idle-only compaction to long turns and children.                                                |
+| Trace                        | `personal/beta/src/trace.rs`                                                                                                     | Port scoped correlation, excluding Beta's raw content fields. The existing trace plan defines the adaptation.                                                  |
+| Todo and instructions        | `personal/eta/internal/agent/tools/{todo,todo_test}.go`; `personal/eta/internal/agent/{prompt,prompt_test}.go`                   | Eta's todo returns text but does not own durable todo state. Add that state in Ox rather than assuming a direct port supplies it. Keep root-only instructions. |
+| Skills                       | `personal/eta/internal/skills/{skills,skills_test}.go`                                                                           | Port metadata validation and deterministic discovery. Use confined workspace skills, explicit loading, and change detection; omit Eta's user-root access.      |
+| MCP                          | `personal/mu/src/agent/mcp.ts`                                                                                                   | Port namespacing and lifecycle. Replace its silent partial startup with atomic activation; do not persist secrets or import LangGraph.                         |
+| LSP                          | `personal/eta/internal/lsp/{client,manager,diagnostics,uri}.go` and adjacent tests; `personal/eta/internal/agent/tools/lsp_*.go` | Port navigation and version-aware diagnostics. Add deadlines, confined result paths, and client-file synchronization.                                          |
+| Web fetch                    | `personal/eta/internal/agent/tools/{web_fetch,web_fetch_test}.go`                                                                | Port extraction and spills; add redirect/address validation and explicit oversize failures. Search comes from MCP, not Eta's embedded Brave credential path.   |
+| Questions                    | `personal/kappa/taikonaut/ask_user_tools.py`; canonical ACP form schema                                                          | Adapt one question to negotiated form elicitation. Keep permission and clarification distinct.                                                                 |
+| Edit comparison              | `personal/iota/crates/app/src/tools/hashlines.rs`; current Ox edit tests                                                         | Measure anchors against exact edits before changing the production tool.                                                                                       |
+| Isolation                    | `personal/iota/crates/adapter-git/src/lib.rs` and `personal/iota/crates/bin-web/src/lifecycle`                                   | Reuse dirty-tree and conflict scenarios as tests. The client owns worktree creation and teardown; do not port forced removal into the agent.                   |
+| Memory                       | `personal/kappa/taikonaut/memory_manager.py`                                                                                     | Keep typed facts, expiry, supersession, and provenance. Begin with explicit bounded text retrieval; omit SQLite/Chroma and automatic extraction.               |
+| Task queue                   | `personal/kappa/taikonaut/{task_queue,task_queue_tools}.py`; current Ox delegation                                               | Port explicit state transitions; add interrupted attempts. Atomic queue-file replacement alone cannot guarantee exactly-once side effects.                     |
+| Evaluations                  | `personal/eta/harbor`; `personal/beta/evals/src/coral_harbor`                                                                    | Build an ACP adapter and task baseline before choosing experimental features.                                                                                  |
 
-The gates listed under each slice are the behavior that slice must prove on top
-of that. Behavior the pinned browser client cannot exercise is proved through
-the process harness in `internal/e2e` against the schema.
+Use third-party protocol implementations when the personal projects do not own
+the contract: `third-party/protocol/acp-go-sdk` for JSON/cancellation parity and
+`third-party/protocol/zed-acp` for additional real-client semantics. MCP
+transport and cancellation use the official `2026-07-28` protocol and Go SDK
+selected in `eng/architecture.md`. Where Mu lacks lifecycle behavior, also
+consult `third-party/coding-agents/goose/crates/goose/src/agents/mcp_client.rs`.
+Do not import a provider framework, TUI, web host, or editor extension.
 
-`.gitmodules` pins the browser client, the browser suite's lockfile pins the
-stdio bridge, and the prior-art map below pins the schema and the browser
-client's source. Move them together when an interoperability pass adopts newer
-versions.
-
-## Porting policy
-
-Ox should reuse proven code from the reference projects instead of rediscovering
-its behavior. Port the smallest coherent seam, including its invariants and
-tests. Do not copy a framework, UI, storage format, or protocol merely because
-it surrounds useful code.
-
-Every implementation plan must name the exact source files, behavior, and tests
-being ported. It must also record deliberate omissions or ACP adaptations and
-the browser-client acceptance case when the client boundary is involved.
-
-Prefer the personal repositories. Use third-party repositories for the ACP
-contract, ACP client behavior, or a capability with no strong personal
-implementation.
-
-## Prior-art map
-
-Paths in this section are relative to `~/src/references/repos`.
-
-### ACP and client behavior
-
-Use the canonical schema as the protocol oracle and the pinned browser client as
-the interoperability oracle:
-
-- `third-party/protocol/agent-client-protocol` at `8e3eb8f2` for the canonical
-  v1 schema, the drafts it marks unstable, and the RFDs behind them;
-- `third-party/protocol/acp-go-sdk` for typed APIs, cancellation, notification
-  ordering, and cross-language JSON test cases; and
-- the ACP UI web release checked out as the `internal/e2e/browser/acp-ui`
-  submodule, built from `formulahendry/acp-ui` at `e6e36d05`, for what a real
-  client sends, renders, and tolerates.
-
-### Later tools
-
-Eta has the widest useful remaining tool set. Draw later capabilities from
-`personal/eta/internal/agent/tools`, `internal/lsp`, `internal/permissions`,
-`internal/skills`, and `internal/agents`. Its LSP navigation, todo, web, skills,
-and agent-instruction behavior are the preferred starting points. Use
-`personal/eta/internal/agent/tool.go` and `loop.go` for per-path locking and
-concurrent tool execution where the current scheduler needs to grow.
-
-Use `personal/mu/src/agent/mcp.ts` for starting namespaced MCP servers and
-exposing their tools. Use Alpha's steering persistence in
-`personal/alpha/runtime/internal/agent/loop.go` for queued mid-turn input once
-its ACP entry point is settled.
-
-### Durable sessions
-
-Gamma has the strongest checkpoint and recovery semantics. Use
-`personal/gamma/internal/agent/engine.go`, `state.go`, `store.go`, and their
-invariant tests for checkpoint parity and for reissuing pending approvals with
-stable identities.
-
-Use `personal/beta/src/session.rs`, `agent.rs`, and `acp.rs` as a second ACP
-implementation for lossless model-history persistence, replay, permission
-memory, cancellation, and concurrent stdio test cases. Use the clean reference
-snapshot, not Beta's current working tree.
-
-### Context and diagnostics
-
-Use `personal/beta/src/compaction.rs`, `personal/eta/internal/agent/compact.go`,
-and `personal/delta/cmd/fleur/compaction.go` for model-context compaction that
-keeps tool calls paired. Use `personal/beta/src/trace.rs` for a sanitized
-machine-readable trace and `personal/beta/src/session.rs` for changed-file
-accounting.
-
-### Supporting capabilities
-
-- Use `personal/theta/internal/tui/preview.go` for permission-preview data and
-  `internal/session/snapshot.go` for atomic snapshot tests. The ACP client owns
-  the UI.
-- Use `personal/iota/crates/adapter-git`, `crates/bin-web/src/lifecycle`, and
-  `crates/app/src/tools/hashlines.rs` for later worktree isolation,
-  merge-or-abandon lifecycle, and anchored edits.
-- Use `personal/delta/cmd/fleur/session.go` and `events.go` for transcript
-  pagination, reconnect, and interrupted-tool recovery cases when they become
-  relevant to ACP replay.
-- Use `personal/kappa/taikonaut/memory_manager.py` and `task_queue.py` for
-  semantic workspace memory with retention and for a durable subtask queue.
-- Use `personal/eta/harbor` and `personal/beta/evals/src/coral_harbor` for the
-  Harbor evaluation adapter.
-
-### Deliberate non-ports
-
-- Do not port Alpha's VS Code extension, Eta or Theta's terminal UI, or Delta
-  and Iota's web UI. The ACP client owns interactive presentation.
-- Do not port Alpha's `_amber/session/steer` extension method. Steering enters
-  through an ACP mechanism settled before it is planned.
-- Do not port Gamma's custom Coral protocol. Translate its state invariants to
-  ACP.
-- Do not run a private terminal implementation when the ACP client capability is
-  available and sufficient.
-- Do not introduce Nu's provider framework or a multi-provider abstraction
-  before Ox has a second provider.
+The review also considered Alpha's steering persistence and Eta's per-path
+scheduler. Neither is a required port: v1 has no stable steering method, and
+Ox's parallel reads plus serialized effectful calls remain the simpler default.
+Worktree lifecycle, semantic retrieval, and anchored edits are not evidence of
+quality merely because a reference has them.
 
 ## Most recently completed: durable session completion
 
@@ -133,258 +65,333 @@ permission.
 
 ## Milestone: context and diagnostics
 
-Ox emits a trace that tools can read without exposing secrets or workspace
-content.
+Complete the remaining live diagnostic surface. Changed-file accounting and
+idle-turn compaction already exist; the long-turn gaps are scoped separately
+below and are not claimed complete.
 
 ### Sanitized trace
 
 **Build**
 
-- Emit a machine-readable trace of turns, provider requests, tool calls,
-  permissions, and stop reasons. It never goes to standard output.
+- Implement the existing sanitized-trace plan against
+  `docs/spec.md#diagnostic-trace`.
 
 **Gates**
 
-- The trace contains no credential, prompt text, model output, file content, or
-  shell output. Identifiers, kinds, timings, sizes, and outcomes are enough to
-  reconstruct a turn's shape.
-- Standard output still carries only ACP messages while tracing is on.
-- Every trace line is one JSON object that names its session and, where one
-  applies, its tool-call identity.
+- Turn, provider, tool, permission, cancellation, recovery, and child activity
+  have correlated JSONL events with no content or credential fields.
+- Trace startup/write failures satisfy the spec and stdout remains ACP-only.
+- The cumulative milestone review covers changed-file accounting, existing
+  compaction, and trace together before replacing the completed summary.
 
-## Milestone: agent capabilities
+## Milestone: evaluation baseline
 
-Ox gains the working-context tools of the reference harnesses: todo state,
-workspace instructions, skills, session modes and configuration options, a
-process configuration file, MCP servers, steering, language-server tools, and
-web tools. Each slice enters through standard ACP or a model-facing tool, not a
-client-specific channel.
+Establish evidence before changing edit behavior or adding memory machinery.
 
-### Todo tool
+### ACP evaluation adapter
 
 **Build**
 
-- Port Eta's todo tool, keep its state in the durable record, and publish it as
-  the ACP `plan` update.
+- Port the useful Harbor adapter seam to drive the shipped binary through ACP.
+- Add a versioned local task set covering edits, multi-file work, navigation,
+  long context, permission denial, cancellation, and restart.
 
 **Gates**
 
-- Each todo change emits one `plan` update whose entries match the tool's state,
-  and `session/load` replays the latest plan.
-- Todo state survives model-context compaction and restart.
-- Invalid todo arguments fail the tool call with a message the model can act on.
+- A fake-provider smoke run proves setup, prompt, timeout, artifact capture,
+  teardown, and failure classification without a paid request.
+- Each run records Ox revision, task revision, model/provider settings, budget,
+  repetitions, success criteria, latency, tokens/cost when supplied, retries,
+  and failures. Missing provider usage is unknown, not zero.
+- Task success is checked from expected files or task tests, not a model's
+  declaration. Each task starts in a fresh workspace and all child work counts
+  against its budget.
+- Real-provider evaluations are on demand only under the repository's explicit
+  authorization rule. Evaluation does not run as part of normal project checks.
 
-### Workspace instructions
+## Milestone: context continuity
+
+Make long tool loops and recovery as reliable as short turns.
+
+### Provider-request context admission
 
 **Build**
 
-- Load `AGENTS.md` from the session root into the frozen request configuration
-  at activation.
+- Apply the specification's context budget to new prompts, tool continuations,
+  and children; compact at complete model/tool boundaries.
+- Extend durable compaction and checkpoints to those boundaries without changing
+  ACP transcript replay.
 
 **Gates**
 
-- The instructions reach the model on every turn, a missing file adds nothing,
-  and a file outside the root or through a symlink is never read.
-- Changing the file between activations appends one configuration change, and
-  the configuration stays frozen during a turn.
-- An unreadable file is reported with its path rather than silently skipped.
+- A long single turn and a long child both compact before exhausting context;
+  pending input, tool schemas, and reserved output contribute to admission.
+- Oversized input, unsupported multimodal sizing, an irreducible prefix, a
+  failed summary, and cancellation produce bounded, useful outcomes.
+- Crash/reload at compaction boundaries reconstructs identical provider history;
+  complete tool pairs, cumulative usage, and original ACP replay are preserved.
 
-### Skills
+### Interrupted-effect recovery
 
 **Build**
 
-- Discover Agent Skills, list their names and descriptions in the prompt, and
-  load a skill's body only when the model asks for it.
+- Audit and close dispatch/completion gaps in ordinary, delegated, and recovered
+  tool execution using the specification's unknown-outcome contract.
 
 **Gates**
 
-- Only skill metadata enters the prompt until a skill is loaded, and loading
-  reads confined paths and records the content as a tool result.
-- A malformed skill is reported by path and does not hide the others.
-- The listed skills are part of the frozen configuration and change only between
-  activations.
+- Fault injection before dispatch, after an external effect, and before its
+  completion record proves that an unrecorded effect is never blindly repeated.
+- Pending permission recovery cannot redispatch an already started sibling call.
+- Persistence failure prevents further dispatch and false success; unrelated
+  sessions and cancellation remain responsive.
 
-### Session modes and configuration options
+## Milestone: session controls and working context
+
+Add the configuration and context surfaces needed by later tools.
+
+### Process configuration
 
 **Build**
 
-- Settle first: which modes Ox offers and which configuration options besides
-  the model it exposes.
-- Return modes and configuration options from `session/new`, `session/load`, and
-  `session/resume`, implement `session/set_mode` and
-  `session/set_config_option`, and expose model selection as a configuration
-  option.
+- Implement the process configuration transition in `docs/spec.md`; migrate
+  process/browser/evaluation harnesses to public flags and explicit credential
+  files.
+- Update shipped settings and client setup guides when the behavior lands.
 
 **Gates**
 
-- A model change is validated against the model catalog before it is accepted,
-  recorded as a configuration change, applied from the next turn, and announced
-  with `config_option_update`.
-- The running turn keeps its frozen configuration.
-- `current_mode_update` and `config_option_update` are replayed on
-  `session/load` so a reconnecting client shows the current state.
-- An unknown mode or option identifier is a useful JSON-RPC error.
+- All precedence and startup-error cases are proved through the real binary.
+- Workspace files cannot set process controls. No shipped behavior reads `OX_*`
+  or `OPENROUTER_*`; ordinary platform environment handling still works.
+- Tests prove credential-file ownership/type checks, keyring-disabled operation,
+  login/logout behavior, and absence of credentials in diagnostics and records.
+- The live harness can consume `.env` without exposing its credential or adding
+  a hidden shipped-binary test hook. No live provider run is required here.
 
-### Process configuration file
+### Session configuration options
 
 **Build**
 
-- Move process settings to the global configuration file with explicit CLI flags
-  for overrides, keep credentials in ACP authentication and the keyring, and
-  replace test-only environment switches with explicit test entry points or CLI
-  flags.
-- Remove `OX_MODEL`, `OX_LOG_LEVEL`, `OX_OPENROUTER_BASE_URL`,
-  `OX_KEYRING_DISABLED`, `OPENROUTER_API_KEY`, `OX_LIVE_TESTS`, and
-  `OX_LIVE_MODEL`.
+- Implement only `session/set_config_option` with the spec's mode, model, and
+  reasoning selectors; partition activation inputs from per-turn selections.
 
 **Gates**
 
-- The shipped binary reads no `OX_` or `OPENROUTER_` environment variable, and a
-  workspace still cannot redirect provider requests or change process logging.
-- The end-to-end and browser harnesses drive the binary through the explicit
-  entry points and flags, and the live checks take the credential from `.env`
-  through a test entry point rather than through the shipped binary's
-  environment.
-- `docs/settings.md`, `docs/zed.md`, and `eng/architecture.md` describe the file
-  and flags and name no environment variable.
+- New/load/resume responses and setter responses carry complete current state;
+  accepted updates are durable before acknowledgement and replay correctly.
+- In-flight changes leave the current turn and pending approvals unchanged.
+- Model incompatibility rejects atomically; reasoning reset, repeated setters,
+  unknown values, and reload precedence have deterministic tests.
+- Plan-mode tool exclusion is enforced at dispatch and for children, not just
+  described in the prompt. Existing grants cannot bypass it.
 
-### MCP servers
+### Todo state
 
 **Build**
 
-- Accept the `mcpServers` a client passes to `session/new`, `session/load`, and
-  `session/resume`, advertise `mcpCapabilities` only for transports Ox
-  implements, and expose each server's tools to the model.
+- Add durable todo state, a validated replacement tool, and ACP plan projection.
 
 **Gates**
 
-- MCP tools go through the same permission and durable-record path as local
-  tools and replay with the same ACP tool-call updates.
-- A server that fails to start or list tools fails the session request with an
-  error naming the server, and a server that fails mid-session fails its tool
-  calls rather than the turn.
-- The server list is part of the frozen request configuration, and a transport
-  Ox does not advertise is rejected at the boundary.
+- Invalid replacement is atomic; every accepted replacement emits one matching
+  plan update after persistence, including clearing the list.
+- Restart, checkpoint, and compaction preserve the current list. Child calls
+  cannot overwrite the parent list.
 
-### Steering and queued input
+### Root instructions
 
 **Build**
 
-- Settle first: how mid-turn input enters over ACP while each session admits one
-  prompt turn at a time.
-- Persist queued input before it is acknowledged, deliver it at the next model
-  boundary, and keep the order the client saw.
+- Add activation-frozen root instructions to parent and child context.
 
 **Gates**
 
-- Input queued during a turn is durable before the client learns it was
-  accepted, appears in the model history at the boundary where it was applied,
-  and replays in that position.
-- Cancelling the turn records what happened to acknowledged input so the next
-  turn neither loses nor duplicates it.
-- A turn with no queued input behaves exactly as it does today.
+- Missing, unreadable, oversized, symlinked, and invalid-text files follow the
+  specification; no parent/nested file is implicitly loaded.
+- Reactivation captures a changed instruction file while running and recovered
+  turns retain their original instruction content.
 
-### Language-server tools
+### Workspace skills
 
 **Build**
 
-- Port Eta's definition, reference, symbol, and diagnostics tools only where
-  they add context the ACP client does not already attach.
+- Add confined discovery, metadata-only prompting, and explicit body loading.
 
 **Gates**
 
-- Every tool resolves and confines its paths through the workspace boundary and
-  reports results relative to the session root.
-- A missing or crashed language server fails the tool call with a useful message
-  and never blocks the turn or the process.
+- Catalog order, bounds, malformed entries, missing/unreadable directories,
+  symlinks, and changed bodies have deterministic coverage.
+- A fake-model process test loads a skill and its reference file, records what
+  the model saw, and proves metadata does not authorize script execution.
+- Parent and child see the same applicable catalog without access outside the
+  workspace; loaded context survives restart.
 
-### Web search and fetch
+### Form questions
 
 **Build**
 
-- Settle first: the trust, citation, and content-size contracts for fetched
-  content.
-- Add web search and fetch tools under those contracts.
+- Add a model-facing question tool backed by ACP form elicitation.
 
 **Gates**
 
-- Fetched content is bounded and spills like other large tool output, is labeled
-  as untrusted in the model's context, and carries its source URL in the tool
-  result.
+- Capability absence removes the tool; accepted, declined, cancelled, invalid,
+  and interrupted responses have distinct durable outcomes.
+- A default is never submitted automatically. Cancellation releases the form
+  wait and an unrelated session can still complete.
+- Wire requests and response validation match the pinned form schema; no URL
+  completion notification or private question method is introduced.
 
-## Milestone: differentiators
+## Milestone: external context tools
 
-Ox adds the capabilities that set it apart from the reference agents: isolated
-worktrees, one well-evidenced edit primitive, workspace memory, task
-decomposition, and an evaluation harness.
+Build MCP first so search does not require another built-in service integration.
 
-### Worktree isolation
+### MCP activation and dispatch
 
 **Build**
 
-- Port Iota's one-worktree-per-session isolation and its explicit merge,
-  abandon, and rollback lifecycle.
+- Implement stdio and Streamable HTTP tool clients, bounded discovery, atomic
+  activation, permission projection, and session-owned cleanup.
 
 **Gates**
 
-- A session's tools operate in its worktree, and two sessions on one repository
-  never see each other's changes.
-- Merge, abandon, and rollback are explicit operations proved against a real Git
-  repository through the process boundary, and each refuses with a useful error
-  when it would discard changes the user has not seen.
+- Local mock servers prove both transports, discovery failure cleanup,
+  pagination, collisions, catalog limits, tool errors, deadlines, and shutdown.
+- Secret-bearing headers and environments never appear in durable configuration,
+  trace, errors, or model-visible tool metadata.
+- A changed schema/destination invalidates grants and pending recovery; rotated
+  credentials alone do not. Missing recovery credentials cause no dispatch.
+- Cancellation and connection loss never silently retry a possibly executed
+  call. Restart/replay emits recorded results without contacting the server.
+- Wire fixtures prove per-request metadata, HTTP header parity, both HTTP
+  response formats, and transport-specific cancellation for the selected MCP
+  revision. SDK input buffering is bounded before parsing, not just after a tool
+  result has already been allocated.
+- Legacy revisions/SSE and unsupported input interactions fail explicitly;
+  untrusted annotations cannot skip permissions or enter plan mode.
 
-### One edit primitive
+### Language-server context
 
 **Build**
 
-- Evaluate Iota's hashline-anchored edits against the current exact-edit
-  contract on the same edit tasks.
+- Add explicit global server configuration and the specified navigation and
+  diagnostics tools using Eta's focused implementation seams.
 
 **Gates**
 
-- The evaluation records success rate, retries, and failure modes for both
-  primitives, and Ox keeps one model-facing edit primitive unless the evidence
-  shows both are needed.
+- A mock LSP proves initialization/query deadlines, cancellation, shutdown,
+  malformed replies, and crash behavior without installed language servers.
+- Non-ASCII positions, confined URIs, stale diagnostic versions, and client
+  unsaved-file synchronization are exercised. Unknown diagnostics are not clean.
+- No workspace-selected executable, implicit installation, automatic edit-time
+  diagnostics, or mutation tool is added.
+
+### Public web fetch and MCP search
+
+**Build**
+
+- Add bounded public web fetch and source-bearing output. Exercise search using
+  an MCP fixture and document how the client supplies a search server.
+
+**Gates**
+
+- Tests cover redirected nonpublic addresses, DNS/address validation, URL
+  credentials, response caps, decompression growth, timeout, and cancellation.
+- Small and spilled results identify sources and untrusted content. Error paths
+  do not leak headers or provider credentials.
+- HTML/text/JSON conversion is deterministic; unsupported binary content fails.
+- Search requires no additional Ox credential/configuration surface. A process
+  fixture proves the search-to-fetch flow and source links in model context.
+
+## Milestone: deliberate memory and delegation
+
+Add explicit durable state after the recovery and context contracts are proven.
 
 ### Workspace memory
 
 **Build**
 
-- Add persistent semantic workspace memory with bounded retention, following
-  Kappa's typed facts, supersession, and retrieval into turns.
+- Add the specification's bounded, typed memory tools and deterministic text
+  retrieval with expiry, supersession, and source-session deletion.
 
 **Gates**
 
-- Retention bounds are enforced, and expired or superseded facts never reach the
-  model.
-- Retrieval into a turn is visible in the durable record, so replay shows what
-  the model saw.
+- Injected time proves expiry cannot be prolonged by reads; capacity and byte
+  bounds are enforced on writes and retrieval.
+- Restart, concurrent sessions, deletion, supersession, and separate worktrees
+  preserve correct ownership and expose no stale facts to a new retrieval.
+- Tool results persist retrieved content for replay. No background extraction,
+  embedding request, or second authoritative index is introduced.
 
-### Task decomposition
+### Durable delegated queue
 
 **Build**
 
-- Add automatic task decomposition backed by a durable subtask queue, following
-  Kappa's task queue and Ox's existing subagent delegation.
+- Add explicit bounded queue tools over existing nonrecursive delegation with
+  durable dispatch, terminal outcomes, and explicit retry attempts.
 
 **Gates**
 
-- The queue survives restart, each subtask runs to completion at most once, and
-  the parent turn's ACP updates nest subtask activity as they do for subagents
-  today.
-- Cancellation stops running subtasks and leaves the queue replayable.
+- Queue transitions reject invalid IDs/states without changing accepted work.
+- Restart distinguishes pending, completed, and interrupted tasks. A crash after
+  a side effect never automatically repeats the task.
+- Parent cancellation stops the child, pauses pending work, and returns through
+  the owning ACP request. No detached worker remains after turn completion.
+- Parent and child share policy and total request budget; nested updates and
+  retained child context replay in the same order after restart.
 
-### Evaluation harness
+## Milestone: measured editing and isolation
+
+Close the remaining comparative questions with executable evidence, not a second
+production implementation kept indefinitely.
+
+### Edit primitive comparison
 
 **Build**
 
-- Add a Harbor evaluation adapter and a small regression task suite.
+- Run exact and Iota-style anchored edits on the same versioned edit tasks with
+  matched models, prompts, request budgets, and fresh workspaces.
 
 **Gates**
 
-- The adapter drives the shipped binary over ACP with no test-only hooks.
-- The suite runs on demand, records a result per task, and does not run under
-  `make check`.
+- Use at least 30 tasks with three runs per candidate, including repeated text,
+  stale reads, Unicode, line-ending preservation, and multi-file failures.
+- Record task success, retries, tokens, latency, and failure categories. Adopt
+  anchors only for an absolute success improvement of at least five percentage
+  points with no confinement, stale-read, preview, or text-preservation failure
+  and no greater than ten percent increase in median total tokens.
+- If the threshold is not met or evidence is unavailable, keep exact editing.
+  Store the result with evaluation artifacts and ship one edit primitive.
+
+### Client-owned worktree acceptance
+
+**Build**
+
+- Add real-Git process tests and a user guide for opening sessions in worktrees
+  prepared by the client or user.
+
+**Gates**
+
+- Two worktree sessions do not mutate each other's working files through file
+  tools. Canonical paths, spills, instructions, and memory use the supplied
+  root.
+- Close/delete preserve dirty and untracked worktree files and branches.
+- Tests and documentation distinguish file confinement from host process
+  privileges and shared Git metadata. No hidden worktree or rollback API exists.
+
+## Deliberately outside the build queue
+
+- Steering, input queues, background workers, session fork, and ACP v2 require a
+  separate protocol adoption decision; v1 cancellation plus a new prompt is the
+  supported redirection workflow.
+- Semantic retrieval is a research candidate only after the explicit-memory
+  baseline exposes retrieval misses. It needs a versioned relevance set and a
+  demonstrated task-success improvement within recorded cost/privacy bounds
+  before any storage/provider change is proposed. Plain retrieval remains the
+  settled implementation.
+- Agent-managed merge/abandon/rollback, OS sandboxing, automatic skill installs,
+  MCP OAuth/sampling/resources/prompts, URL elicitation, personas, and a second
+  model provider are not implied by the tools above.
 
 ## ACP method coverage
 
@@ -401,7 +408,7 @@ Requests and notifications Ox accepts from an ACP client:
 - [x] `session/delete`
 - [x] `session/prompt`
 - [x] `session/cancel`
-- [ ] `session/set_mode`
+- Not planned: `session/set_mode`; config options are the sole mode interface.
 - [ ] `session/set_config_option`
 - [x] `$/cancel_request`
 
@@ -420,9 +427,11 @@ Requests Ox sends to an ACP client:
 Notifications Ox sends to an ACP client:
 
 - [x] `session/update`
-- [ ] `elicitation/complete`
+- Not planned: `elicitation/complete`; URL elicitation is excluded.
 
-Elicitation has no milestone yet. `session/fork` is an unstable draft in the
-pinned schema and is not tracked until the schema stabilizes it. Terminal
-authentication methods are also a draft there, and Ox advertises one only when
-the client asks for it.
+Form elicitation is included in the form-questions slice. The canonical v1
+schema at the revision above governs coverage; an unchecked method is not
+advertised merely because its types exist. `session/fork`, provider management,
+and terminal authentication remain draft-specific. Existing terminal auth is
+advertised only when the client explicitly negotiates it. Steering and ACP v2
+are not commitments in this roadmap.

@@ -44,6 +44,7 @@ type message struct {
 type startConfig struct {
 	environment map[string]string
 	files       map[string]string
+	arguments   []string
 }
 
 type startOption func(*startConfig)
@@ -57,6 +58,12 @@ func withEnvironment(name, value string) startOption {
 func withFile(path, content string) startOption {
 	return func(config *startConfig) {
 		config.files[path] = content
+	}
+}
+
+func withArguments(arguments ...string) startOption {
+	return func(config *startConfig) {
+		config.arguments = append([]string(nil), arguments...)
 	}
 }
 
@@ -101,7 +108,7 @@ func start(t *testing.T, options ...startOption) *process {
 		t.Fatalf("create ox stdout pipe: %v", err)
 	}
 
-	command := exec.Command(oxBinary)
+	command := exec.Command(oxBinary, config.arguments...)
 	command.Dir = scratch
 	command.Env = environment(config.environment)
 	command.Stdout = stdoutWriter
