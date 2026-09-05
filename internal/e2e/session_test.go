@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kkestell/ox/internal/acp"
 )
@@ -571,6 +572,146 @@ func TestRecoveredTurnKeepsItsFrozenConfiguration(t *testing.T) {
 	models := []string{requests[0].Model, requests[1].Model, requests[2].Model}
 	if !reflect.DeepEqual(models, []string{"old/model", "old/model", "new/model"}) {
 		t.Fatalf("model sequence = %v", models)
+	}
+}
+
+func TestRestartDoesNotRepeatStartedLocalTool(t *testing.T) {
+	dataDir := t.TempDir()
+	model := startModel(t, shellToolCallResponse("printf 'once\\n' >> effect.txt; sleep 1"))
+	options := []startOption{
+		withModel(model), withEnvironment("XDG_DATA_HOME", dataDir),
+	}
+	first, session := startSession(t, options...)
+	cwd := first.cwd
+	_ = first.begin("session/prompt", acp.PromptRequest{
+		SessionID: session, Prompt: textPrompt("run one effect"),
+	})
+	permission := first.serverRequest()
+	_ = permissionRequest(t, permission, "call-shell")
+	first.respond(permission, acp.RequestPermissionResponse{
+		Outcome: acp.RequestPermissionOutcome{Outcome: "selected", OptionID: "allow_once"},
+	})
+	marker := filepath.Join(cwd, "effect.txt")
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		content, err := os.ReadFile(marker)
+		if err == nil && string(content) == "once\n" {
+			break
+		}
+		if err != nil && !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("local tool effect did not occur")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	first.kill()
+
+	second := start(t, options...)
+	initialize(t, second)
+	replayStart := len(second.received)
+	loadSession(t, second, session, cwd)
+	replay := receivedSessionUpdates(t, second, replayStart, session)
+	_ = updates(t, second, session)
+	content, err := os.ReadFile(marker)
+	if err != nil || string(content) != "once\n" {
+		t.Fatalf("effect after recovery = %q, %v", content, err)
+	}
+	if requests := model.requests(); len(requests) != 1 {
+		t.Fatalf("model requests = %d, want 1", len(requests))
+	}
+	assertUnknownToolReplay(t, replay, "call-shell")
+	second.stop()
+}
+
+func TestRestartDoesNotRepeatStartedChildTool(t *testing.T) {
+	dataDir := t.TempDir()
+	model := startModel(t,
+		toolResponse(
+			"task-effect", "task",
+			`{"description":"Child effect","prompt":"run the shell effect"}`,
+		),
+		shellToolCallResponse("printf 'once\\n' >> child-effect.txt; sleep 1"),
+	)
+	options := []startOption{
+		withModel(model), withEnvironment("XDG_DATA_HOME", dataDir),
+	}
+	first, session := startSession(t, options...)
+	cwd := first.cwd
+	_ = first.begin("session/prompt", acp.PromptRequest{
+		SessionID: session, Prompt: textPrompt("delegate one effect"),
+	})
+	permission := first.serverRequest()
+	if permission.Method != acp.MethodSessionRequestPermission {
+		t.Fatalf("callback method = %q, want permission", permission.Method)
+	}
+	var requested acp.RequestPermissionRequest
+	if err := json.Unmarshal(permission.Params, &requested); err != nil {
+		t.Fatal(err)
+	}
+	childCallID := requested.ToolCall.ToolCallID
+	if childCallID == "" || requested.ToolCall.Name != "shell" {
+		t.Fatalf("child permission = %#v", requested)
+	}
+	first.respond(permission, acp.RequestPermissionResponse{
+		Outcome: acp.RequestPermissionOutcome{Outcome: "selected", OptionID: "allow_once"},
+	})
+	marker := filepath.Join(cwd, "child-effect.txt")
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		content, err := os.ReadFile(marker)
+		if err == nil && string(content) == "once\n" {
+			break
+		}
+		if err != nil && !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("child tool effect did not occur")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	first.kill()
+
+	second := start(t, options...)
+	initialize(t, second)
+	replayStart := len(second.received)
+	loadSession(t, second, session, cwd)
+	replay := receivedSessionUpdates(t, second, replayStart, session)
+	_ = updates(t, second, session)
+	content, err := os.ReadFile(marker)
+	if err != nil || string(content) != "once\n" {
+		t.Fatalf("child effect after recovery = %q, %v", content, err)
+	}
+	if requests := model.requests(); len(requests) != 2 {
+		t.Fatalf("model requests = %d, want 2", len(requests))
+	}
+	assertUnknownToolReplay(t, replay, "task-effect")
+	assertUnknownToolReplay(t, replay, childCallID)
+	second.stop()
+}
+
+func assertUnknownToolReplay(t *testing.T, replay []sessionNotification, callID string) {
+	t.Helper()
+	var pending, unknown int
+	for _, notification := range replay {
+		update := notification.Update
+		if update.ToolCallID != callID {
+			continue
+		}
+		switch update.SessionUpdate {
+		case "tool_call":
+			pending++
+		case "tool_call_update":
+			if update.Status == acp.ToolCallStatusFailed &&
+				strings.Contains(update.Content.Text, "outcome is unknown") {
+				unknown++
+			}
+		}
+	}
+	if pending != 1 || unknown != 1 {
+		t.Fatalf("unknown replay = pending %d terminal %d", pending, unknown)
 	}
 }
 

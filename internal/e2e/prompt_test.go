@@ -85,6 +85,15 @@ func (u *sessionUpdate) UnmarshalJSON(data []byte) error {
 	if len(wire.Content) > 0 && wire.Content[0] == '{' {
 		return json.Unmarshal(wire.Content, &u.Content)
 	}
+	if len(wire.Content) > 0 && wire.Content[0] == '[' {
+		var content []acp.ToolCallContent
+		if err := json.Unmarshal(wire.Content, &content); err != nil {
+			return err
+		}
+		if len(content) > 0 {
+			u.Content = content[0].Content
+		}
+	}
 	return nil
 }
 

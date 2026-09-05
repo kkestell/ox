@@ -21,7 +21,7 @@ import (
 
 const (
 	recordVersion     = 1
-	checkpointVersion = 4
+	checkpointVersion = 5
 
 	recordSessionCreated  = "session_created"
 	recordConfigChanged   = "request_configuration_changed"
@@ -32,9 +32,14 @@ const (
 	recordPermissionOpen  = "permission_requested"
 	recordPermissionRetry = "permission_reissued"
 	recordPermissionDone  = "permission_decided"
+	recordToolStarted     = "tool_started"
+	recordToolCompleted   = "tool_completed"
 	recordModelExchange   = "completed_model_exchange"
 	recordTurnFinished    = "turn_finished"
 	recordCheckpoint      = "checkpoint"
+
+	unknownToolOutcome     = "tool call outcome is unknown after interruption"
+	interruptedBeforeStart = "tool call interrupted before start"
 )
 
 type sessionRecord struct {
@@ -116,6 +121,32 @@ type storedToolResult struct {
 	ApprovalDecision approvalDecision  `json:"approvalDecision,omitempty"`
 	Delegation       *delegationRecord `json:"delegation,omitempty"`
 	Target           string            `json:"target,omitempty"`
+	Unknown          bool              `json:"unknown,omitempty"`
+}
+
+type toolStartedRecord struct {
+	TurnID           string              `json:"turnId"`
+	ParentCallID     string              `json:"parentCallId,omitempty"`
+	Call             openrouter.ToolCall `json:"call"`
+	ApprovalDecision approvalDecision    `json:"approvalDecision,omitempty"`
+	Target           string              `json:"target,omitempty"`
+}
+
+type toolCompletedRecord struct {
+	TurnID       string           `json:"turnId"`
+	ParentCallID string           `json:"parentCallId,omitempty"`
+	CallID       string           `json:"callId"`
+	Result       storedToolResult `json:"result"`
+}
+
+type durableToolExecution struct {
+	TurnID           string              `json:"turnId"`
+	ParentCallID     string              `json:"parentCallId,omitempty"`
+	Call             openrouter.ToolCall `json:"call"`
+	ApprovalDecision approvalDecision    `json:"approvalDecision,omitempty"`
+	Target           string              `json:"target,omitempty"`
+	StartedSequence  uint64              `json:"startedSequence"`
+	Result           *storedToolResult   `json:"result,omitempty"`
 }
 
 type delegationRecord struct {
@@ -136,6 +167,7 @@ type delegatedCall struct {
 	Failed           bool             `json:"failed,omitempty"`
 	ApprovalDecision approvalDecision `json:"approvalDecision,omitempty"`
 	Target           string           `json:"target,omitempty"`
+	Unknown          bool             `json:"unknown,omitempty"`
 }
 
 type modelExchangeRecord struct {
@@ -149,6 +181,7 @@ type modelExchangeRecord struct {
 	Usage            *openrouter.Usage     `json:"usage,omitempty"`
 	ToolCalls        []openrouter.ToolCall `json:"toolCalls,omitempty"`
 	ToolResults      []storedToolResult    `json:"toolResults,omitempty"`
+	Interrupted      bool                  `json:"interrupted,omitempty"`
 }
 
 type suspendedModelExchangeRecord struct {
@@ -212,24 +245,25 @@ type checkpointRecord struct {
 }
 
 type checkpointProjection struct {
-	SessionID     string                        `json:"sessionId"`
-	CWD           string                        `json:"cwd"`
-	CreatedAt     time.Time                     `json:"createdAt"`
-	UpdatedAt     time.Time                     `json:"updatedAt"`
-	Sequence      uint64                        `json:"sequence"`
-	Configuration requestConfiguration          `json:"configuration"`
-	History       []openrouter.Message          `json:"history,omitempty"`
-	Usage         checkpointUsage               `json:"usage"`
-	Occupancy     int                           `json:"occupancy"`
-	Cost          float64                       `json:"cost"`
-	MessageIDs    []string                      `json:"messageIds,omitempty"`
-	ToolCallIDs   []string                      `json:"toolCallIds,omitempty"`
-	ChangedFiles  []string                      `json:"changedFiles,omitempty"`
-	OpenTurn      string                        `json:"openTurn,omitempty"`
-	OpenTurnBase  []openrouter.Message          `json:"openTurnBase,omitempty"`
-	Suspended     *suspendedModelExchangeRecord `json:"suspended,omitempty"`
-	Children      []childContext                `json:"children,omitempty"`
-	Title         string                        `json:"title,omitempty"`
+	SessionID      string                        `json:"sessionId"`
+	CWD            string                        `json:"cwd"`
+	CreatedAt      time.Time                     `json:"createdAt"`
+	UpdatedAt      time.Time                     `json:"updatedAt"`
+	Sequence       uint64                        `json:"sequence"`
+	Configuration  requestConfiguration          `json:"configuration"`
+	History        []openrouter.Message          `json:"history,omitempty"`
+	Usage          checkpointUsage               `json:"usage"`
+	Occupancy      int                           `json:"occupancy"`
+	Cost           float64                       `json:"cost"`
+	MessageIDs     []string                      `json:"messageIds,omitempty"`
+	ToolCallIDs    []string                      `json:"toolCallIds,omitempty"`
+	ChangedFiles   []string                      `json:"changedFiles,omitempty"`
+	OpenTurn       string                        `json:"openTurn,omitempty"`
+	OpenTurnBase   []openrouter.Message          `json:"openTurnBase,omitempty"`
+	Suspended      *suspendedModelExchangeRecord `json:"suspended,omitempty"`
+	Children       []childContext                `json:"children,omitempty"`
+	ToolExecutions []durableToolExecution        `json:"toolExecutions,omitempty"`
+	Title          string                        `json:"title,omitempty"`
 }
 
 type checkpointUsage struct {
@@ -261,6 +295,7 @@ type durableState struct {
 	openTurnBase    []openrouter.Message
 	suspended       *suspendedModelExchangeRecord
 	children        map[string]childContext
+	toolExecutions  map[string]durableToolExecution
 	title           string
 }
 
@@ -329,7 +364,8 @@ func validateRecordEnvelope(record sessionRecord, previous uint64) error {
 	switch record.Type {
 	case recordSessionCreated, recordConfigChanged, recordCompaction, recordChildContext, recordUserMessage,
 		recordExchangePaused, recordPermissionOpen, recordPermissionRetry,
-		recordPermissionDone, recordModelExchange, recordTurnFinished, recordCheckpoint:
+		recordPermissionDone, recordToolStarted, recordToolCompleted,
+		recordModelExchange, recordTurnFinished, recordCheckpoint:
 		return nil
 	default:
 		return fmt.Errorf("unsupported record type %q", record.Type)
@@ -358,16 +394,17 @@ func newCheckpointRecord(state durableState) (sessionRecord, error) {
 				CachedRead:  state.usage.cachedRead,
 				CachedWrite: state.usage.cachedWrite,
 			},
-			Occupancy:    state.occupancy,
-			Cost:         state.cost,
-			MessageIDs:   sortedIdentitySet(state.messageIDs),
-			ToolCallIDs:  sortedIdentitySet(state.toolCallIDs),
-			ChangedFiles: sortedIdentitySet(state.changedFiles),
-			OpenTurn:     state.openTurn,
-			OpenTurnBase: cloneMessages(state.openTurnBase),
-			Suspended:    cloneSuspendedExchange(state.suspended),
-			Children:     sortedChildContexts(state.children),
-			Title:        state.title,
+			Occupancy:      state.occupancy,
+			Cost:           state.cost,
+			MessageIDs:     sortedIdentitySet(state.messageIDs),
+			ToolCallIDs:    sortedIdentitySet(state.toolCallIDs),
+			ChangedFiles:   sortedIdentitySet(state.changedFiles),
+			OpenTurn:       state.openTurn,
+			OpenTurnBase:   cloneMessages(state.openTurnBase),
+			Suspended:      cloneSuspendedExchange(state.suspended),
+			Children:       sortedChildContexts(state.children),
+			ToolExecutions: sortedToolExecutions(state.toolExecutions),
+			Title:          state.title,
 		},
 	}
 	return newRecord(state.sequence+1, recordCheckpoint, payload)
@@ -440,6 +477,10 @@ func restoreCheckpoint(record, previous sessionRecord) (durableState, error) {
 	if err != nil {
 		return durableState{}, err
 	}
+	toolExecutions, err := toolExecutionMap(projection.ToolExecutions)
+	if err != nil {
+		return durableState{}, err
+	}
 	state := durableState{
 		id:            projection.SessionID,
 		cwd:           projection.CWD,
@@ -466,6 +507,7 @@ func restoreCheckpoint(record, previous sessionRecord) (durableState, error) {
 		openTurnBase:    cloneMessages(projection.OpenTurnBase),
 		suspended:       cloneSuspendedExchange(projection.Suspended),
 		children:        children,
+		toolExecutions:  toolExecutions,
 		title:           projection.Title,
 	}
 	if err := validateCheckpointTurnState(state); err != nil {
@@ -483,6 +525,36 @@ func sortedChildContexts(values map[string]childContext) []childContext {
 		return result[i].ParentCallID < result[j].ParentCallID
 	})
 	return result
+}
+
+func sortedToolExecutions(values map[string]durableToolExecution) []durableToolExecution {
+	result := make([]durableToolExecution, 0, len(values))
+	for _, value := range values {
+		result = append(result, cloneToolExecution(value))
+	}
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].StartedSequence < result[j].StartedSequence
+	})
+	return result
+}
+
+func toolExecutionMap(values []durableToolExecution) (map[string]durableToolExecution, error) {
+	if len(values) == 0 {
+		return nil, nil
+	}
+	result := make(map[string]durableToolExecution, len(values))
+	var previous uint64
+	for _, value := range values {
+		if value.Call.ID == "" || value.StartedSequence == 0 || value.StartedSequence <= previous {
+			return nil, errors.New("checkpoint tool executions are not in durable order")
+		}
+		if _, duplicate := result[value.Call.ID]; duplicate {
+			return nil, fmt.Errorf("checkpoint contains duplicate tool execution %q", value.Call.ID)
+		}
+		result[value.Call.ID] = cloneToolExecution(value)
+		previous = value.StartedSequence
+	}
+	return result, nil
 }
 
 func childContextMap(values []childContext) (map[string]childContext, error) {
@@ -504,7 +576,8 @@ func childContextMap(values []childContext) (map[string]childContext, error) {
 
 func validateCheckpointTurnState(state durableState) error {
 	if state.openTurn == "" {
-		if len(state.openTurnBase) != 0 || state.suspended != nil || len(state.children) != 0 {
+		if len(state.openTurnBase) != 0 || state.suspended != nil ||
+			len(state.children) != 0 || len(state.toolExecutions) != 0 {
 			return errors.New("checkpoint has turn state without an open turn")
 		}
 		return nil
@@ -537,6 +610,20 @@ func validateCheckpointTurnState(state durableState) error {
 		}
 	} else if len(state.children) != 0 {
 		return errors.New("checkpoint has child context without a suspended exchange")
+	}
+	for _, execution := range state.toolExecutions {
+		copy := state.clone()
+		delete(copy.toolExecutions, execution.Call.ID)
+		started := cloneToolExecution(execution)
+		started.Result = nil
+		if err := copy.validateToolExecution(started); err != nil {
+			return fmt.Errorf("checkpoint tool execution: %w", err)
+		}
+		if execution.Result != nil {
+			if err := validateStoredExecutionResult(execution, *execution.Result); err != nil {
+				return fmt.Errorf("checkpoint tool execution: %w", err)
+			}
+		}
 	}
 	seen := make(map[string]struct{}, len(state.children))
 	for id, child := range state.children {
@@ -613,6 +700,15 @@ func (s durableState) clone() durableState {
 		s.children = make(map[string]childContext, len(children))
 		for id, child := range children {
 			s.children[id] = cloneChildContext(child)
+		}
+	}
+	toolExecutions := s.toolExecutions
+	if len(toolExecutions) == 0 {
+		s.toolExecutions = nil
+	} else {
+		s.toolExecutions = make(map[string]durableToolExecution, len(toolExecutions))
+		for id, execution := range toolExecutions {
+			s.toolExecutions[id] = cloneToolExecution(execution)
 		}
 	}
 	messageIDs := s.messageIDs
@@ -802,13 +898,55 @@ func (s *durableState) apply(record sessionRecord) error {
 			CallID: value.CallID, Decision: value.Decision, Rule: value.Rule,
 		})
 		s.suspended.Pending = nil
+	case recordToolStarted:
+		var value toolStartedRecord
+		if err := decodeRecord(record.Data, &value); err != nil {
+			return err
+		}
+		execution := durableToolExecution{
+			TurnID:           value.TurnID,
+			ParentCallID:     value.ParentCallID,
+			Call:             value.Call,
+			ApprovalDecision: value.ApprovalDecision,
+			Target:           value.Target,
+			StartedSequence:  record.Sequence,
+		}
+		if _, exists := s.toolCallIDs[value.Call.ID]; exists {
+			return fmt.Errorf("tool call %q was already completed", value.Call.ID)
+		}
+		if err := s.validateToolExecution(execution); err != nil {
+			return err
+		}
+		if s.toolExecutions == nil {
+			s.toolExecutions = make(map[string]durableToolExecution)
+		}
+		s.toolExecutions[value.Call.ID] = execution
+	case recordToolCompleted:
+		var value toolCompletedRecord
+		if err := decodeRecord(record.Data, &value); err != nil {
+			return err
+		}
+		execution, exists := s.toolExecutions[value.CallID]
+		if !exists || execution.Result != nil || value.TurnID != s.openTurn ||
+			value.TurnID != execution.TurnID || value.ParentCallID != execution.ParentCallID {
+			return errors.New("tool completion has no matching started call")
+		}
+		if err := validateStoredExecutionResult(execution, value.Result); err != nil {
+			return err
+		}
+		result := cloneStoredToolResult(value.Result)
+		execution.Result = &result
+		s.toolExecutions[value.CallID] = execution
+		if !result.Failed && result.Target != "" {
+			s.changedFiles[result.Target] = struct{}{}
+		}
 	case recordModelExchange:
 		var value modelExchangeRecord
 		if err := decodeRecord(record.Data, &value); err != nil {
 			return err
 		}
 		if s.suspended != nil {
-			if err := validateCompletedSuspension(*s.suspended, value); err != nil {
+			if err := s.validateCompletedSuspension(*s.suspended, value); err != nil {
 				return err
 			}
 		}
@@ -866,8 +1004,11 @@ func (s *durableState) apply(record sessionRecord) error {
 				if result.Delegation != nil {
 					child, durableChild := s.children[call.ID]
 					if durableChild {
-						if !delegationMatchesChild(*result.Delegation, child) {
+						if !value.Interrupted && !delegationMatchesChild(*result.Delegation, child) {
 							return fmt.Errorf("delegation result for tool call %q does not match durable child context", call.ID)
+						}
+						if value.Interrupted && !s.interruptedDelegationExtendsChild(*result.Delegation, child) {
+							return fmt.Errorf("interrupted delegation for tool call %q does not extend durable child context", call.ID)
 						}
 						delete(s.children, call.ID)
 					}
@@ -921,6 +1062,7 @@ func (s *durableState) apply(record sessionRecord) error {
 			return errors.New("completed model exchange has unfinished child context")
 		}
 		s.suspended = nil
+		s.toolExecutions = nil
 	case recordTurnFinished:
 		var value turnFinishedRecord
 		if err := decodeRecord(record.Data, &value); err != nil {
@@ -947,6 +1089,7 @@ func (s *durableState) apply(record sessionRecord) error {
 		s.openTurnHistory = 0
 		s.openTurnBase = nil
 		s.children = nil
+		s.toolExecutions = nil
 		if s.suspended != nil {
 			if value.Kind != "cancelled" &&
 				(value.Kind != "interrupted" || s.suspended.Pending != nil) {
@@ -1102,6 +1245,14 @@ func (s *durableState) applyChildContext(value childContextRecord) error {
 				(s.configuration.ToolKinds[current.Name] != acp.ToolKindEdit || !validStoredTarget(current.Target)) {
 				return fmt.Errorf("child tool call %q has invalid target %q", current.CallID, current.Target)
 			}
+			execution, exists := s.toolExecutions[current.CallID]
+			if !exists && !current.Failed {
+				return fmt.Errorf("successful child tool call %q has no durable dispatch", current.CallID)
+			}
+			if exists && (execution.ParentCallID != child.ParentCallID ||
+				execution.Result == nil || !delegatedCallMatchesExecution(current, execution)) {
+				return fmt.Errorf("child tool call %q has no matching durable completion", current.CallID)
+			}
 			s.toolCallIDs[current.CallID] = struct{}{}
 			if !current.Failed && current.Target != "" {
 				s.changedFiles[current.Target] = struct{}{}
@@ -1116,6 +1267,17 @@ func (s *durableState) applyChildContext(value childContextRecord) error {
 	}
 	s.children[child.ParentCallID] = cloneChildContext(child)
 	return nil
+}
+
+func delegatedCallMatchesExecution(value delegatedCall, execution durableToolExecution) bool {
+	if value.CallID != execution.Call.ID || value.Name != execution.Call.Function.Name ||
+		!sameJSON(value.Arguments, []byte(execution.Call.Function.Arguments)) {
+		return false
+	}
+	result := execution.Result
+	return result != nil && value.Content == result.Content && value.Failed == result.Failed &&
+		value.ApprovalDecision == result.ApprovalDecision && value.Target == result.Target &&
+		value.Unknown == result.Unknown
 }
 
 func validateChildHistory(child childContext) error {
@@ -1201,6 +1363,27 @@ func delegationMatchesChild(value delegationRecord, child childContext) bool {
 	return bytes.Equal(gotJSON, wantJSON)
 }
 
+func (s *durableState) interruptedDelegationExtendsChild(
+	value delegationRecord,
+	child childContext,
+) bool {
+	if value.Prompt != child.Prompt || value.Answer != child.Answer ||
+		!reflect.DeepEqual(value.Usage, child.Usage) ||
+		!reflect.DeepEqual(value.History, child.History) ||
+		value.RequestCount != child.RequestCount || value.Occupancy != child.Occupancy ||
+		!slicePrefix(child.Calls, value.Calls) {
+		return false
+	}
+	for _, call := range value.Calls[len(child.Calls):] {
+		execution, exists := s.toolExecutions[call.CallID]
+		if !exists || execution.ParentCallID != child.ParentCallID ||
+			execution.Result == nil || !delegatedCallMatchesExecution(call, execution) {
+			return false
+		}
+	}
+	return true
+}
+
 func configuredDelegatingTool(configuration requestConfiguration, name string) bool {
 	var primary bool
 	for _, tool := range configuration.Tools {
@@ -1218,6 +1401,112 @@ func configuredDelegatingTool(configuration requestConfiguration, name string) b
 		}
 	}
 	return true
+}
+
+func configuredSubagentTool(configuration requestConfiguration, name string) bool {
+	for _, tool := range configuration.Subagent.Tools {
+		if tool.Function.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *durableState) validateToolExecution(value durableToolExecution) error {
+	if s.openTurn == "" || s.suspended == nil || value.TurnID != s.openTurn ||
+		value.Call.ID == "" || value.Call.Function.Name == "" ||
+		!json.Valid([]byte(value.Call.Function.Arguments)) || value.StartedSequence == 0 {
+		return errors.New("started tool call identity, scope, and arguments are required")
+	}
+	if _, exists := s.toolExecutions[value.Call.ID]; exists {
+		return fmt.Errorf("tool call %q was started twice", value.Call.ID)
+	}
+	if value.ApprovalDecision != "" && !validApprovalDecision(value.ApprovalDecision) {
+		return fmt.Errorf("tool call %q has an invalid approval decision", value.Call.ID)
+	}
+	if value.ParentCallID == "" {
+		index := s.suspended.callIndex(value.Call.ID)
+		if index < 0 || !sameToolCall(s.suspended.ToolCalls[index], value.Call) ||
+			value.Target != s.suspended.ToolTargets[value.Call.ID] {
+			return errors.New("started tool call does not match the suspended exchange")
+		}
+		if decision := s.suspended.decision(value.Call.ID); decision != nil &&
+			decision.Decision != value.ApprovalDecision {
+			return errors.New("started tool call does not match its permission decision")
+		}
+	} else {
+		if s.suspended.callIndex(value.ParentCallID) < 0 ||
+			!configuredDelegatingTool(
+				s.configuration,
+				s.suspended.ToolCalls[s.suspended.callIndex(value.ParentCallID)].Function.Name,
+			) {
+			return errors.New("started child call has no delegating parent")
+		}
+		if _, exists := s.children[value.ParentCallID]; !exists ||
+			!configuredSubagentTool(s.configuration, value.Call.Function.Name) {
+			return errors.New("started child call is not part of durable child context")
+		}
+	}
+	if value.Target != "" &&
+		(s.configuration.ToolKinds[value.Call.Function.Name] != acp.ToolKindEdit ||
+			!validStoredTarget(value.Target)) {
+		return fmt.Errorf("tool call %q has invalid target %q", value.Call.ID, value.Target)
+	}
+	if value.Result != nil {
+		return errors.New("new started tool call cannot contain a result")
+	}
+	return nil
+}
+
+func validateStoredExecutionResult(
+	execution durableToolExecution,
+	result storedToolResult,
+) error {
+	if result.CallID != execution.Call.ID || result.Target != execution.Target ||
+		result.ApprovalDecision != execution.ApprovalDecision {
+		return errors.New("tool completion does not match its started call")
+	}
+	if result.Unknown && (!result.Failed || result.Content != unknownToolOutcome ||
+		result.Delegation != nil) {
+		return errors.New("unknown tool completion is invalid")
+	}
+	return nil
+}
+
+func sameToolCall(left, right openrouter.ToolCall) bool {
+	leftJSON, err := json.Marshal(left)
+	if err != nil {
+		panic(err)
+	}
+	rightJSON, err := json.Marshal(right)
+	if err != nil {
+		panic(err)
+	}
+	return bytes.Equal(leftJSON, rightJSON)
+}
+
+func cloneStoredToolResult(value storedToolResult) storedToolResult {
+	data, err := json.Marshal(value)
+	if err != nil {
+		panic(err)
+	}
+	var cloned storedToolResult
+	if err := json.Unmarshal(data, &cloned); err != nil {
+		panic(err)
+	}
+	return cloned
+}
+
+func cloneToolExecution(value durableToolExecution) durableToolExecution {
+	data, err := json.Marshal(value)
+	if err != nil {
+		panic(err)
+	}
+	var cloned durableToolExecution
+	if err := json.Unmarshal(data, &cloned); err != nil {
+		panic(err)
+	}
+	return cloned
 }
 
 func messageGroupBoundary(messages []openrouter.Message, index int) bool {
@@ -1373,7 +1662,7 @@ func validApprovalDecision(value approvalDecision) bool {
 	}
 }
 
-func validateCompletedSuspension(
+func (s *durableState) validateCompletedSuspension(
 	suspended suspendedModelExchangeRecord,
 	completed modelExchangeRecord,
 ) error {
@@ -1392,6 +1681,7 @@ func validateCompletedSuspension(
 	}
 	got := completed
 	got.ToolResults = nil
+	got.Interrupted = false
 	wantJSON, err := json.Marshal(want)
 	if err != nil {
 		panic(err)
@@ -1413,6 +1703,30 @@ func validateCompletedSuspension(
 	for index, call := range completed.ToolCalls {
 		if completed.ToolResults[index].Target != suspended.ToolTargets[call.ID] {
 			return errors.New("completed tool targets do not match the suspended exchange")
+		}
+		execution, started := s.toolExecutions[call.ID]
+		if !started {
+			if !completed.ToolResults[index].Failed {
+				return errors.New("successful tool result has no durable dispatch")
+			}
+			continue
+		}
+		if execution.ParentCallID != "" {
+			return errors.New("parent tool result matched a child execution")
+		}
+		if execution.Result == nil {
+			if !completed.ToolResults[index].Unknown {
+				return errors.New("started tool without completion must have unknown outcome")
+			}
+			continue
+		}
+		gotResult := completed.ToolResults[index]
+		wantResult := *execution.Result
+		if completed.Interrupted && gotResult.Unknown {
+			gotResult.Delegation = nil
+		}
+		if !reflect.DeepEqual(gotResult, wantResult) {
+			return errors.New("completed tool result does not match its durable completion")
 		}
 	}
 	return nil
