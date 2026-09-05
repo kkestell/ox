@@ -837,6 +837,10 @@ func (a *Agent) resolveConfiguration(
 	if err != nil {
 		return requestConfiguration{}, jrpc2.Errorf(jrpc2.InternalError, "%v", err)
 	}
+	instructions, err := loadRootInstructions(cwd)
+	if err != nil {
+		return requestConfiguration{}, jrpc2.Errorf(jrpc2.InternalError, "%v", err)
+	}
 	if a.client == nil {
 		return requestConfiguration{}, jrpc2.Errorf(
 			jrpc2.InternalError,
@@ -869,13 +873,13 @@ func (a *Agent) resolveConfiguration(
 		Mode:                 modeCode,
 		Settings:             resolved,
 		ContextWindow:        contextWindow,
-		SystemPrompt:         composePrompt(cwd, now),
+		SystemPrompt:         composePrompt(cwd, now, instructions),
 		Tools:                cloneTools(a.primaryTools.modelTools),
 		ToolKinds:            a.configuredToolKinds(),
 		PlanTools:            a.configuredPlanTools(),
 		ExecutorCapabilities: executorCapabilities,
 		Subagent: subagentConfiguration{
-			SystemPrompt: composeSubagentPrompt(cwd, now),
+			SystemPrompt: composeSubagentPrompt(cwd, now, instructions),
 			Tools:        cloneTools(a.subagentTools.modelTools),
 		},
 	}, nil
