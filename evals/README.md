@@ -27,12 +27,14 @@ elsewhere and `REPETITIONS` to request fresh repeated trials.
 Each versioned task directory contains `task.json` and an optional `workspace/`
 seed. The manifest declares ordered prompt or restart phases, the permission
 policy for each prompt, a wall-clock and provider-request budget, and objective
-success criteria. Success may require exact file contents or an argument-vector
-command. A verifier overlay is copied into the workspace only after Ox exits so
-the agent cannot replace verifier-owned files.
+success criteria. Success may require exact file contents, an argument-vector
+command, or a minimum number of rejected permission requests. A verifier overlay
+is copied into the workspace only after Ox exits so the agent cannot replace
+verifier-owned files.
 
 The task revision is a digest of the complete task directory. Run records also
 contain the Ox revision, model and provider labels, repetitions, budget,
-latency, provider attempts and retries, stop reasons, permission count, failure
-classification, and ACP usage or cost when supplied. Missing usage remains
-`null`. Provider authorization headers are never written to artifacts.
+latency, provider attempts and retries, stop reasons, permission and rejection
+counts, failure classification, and ACP usage or cost when supplied. Missing
+usage remains `null`. Provider authorization headers are never written to
+artifacts.

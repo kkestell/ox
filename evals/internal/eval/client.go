@@ -34,9 +34,10 @@ type rpcMessage struct {
 }
 
 type protocolStats struct {
-	Answer      strings.Builder
-	CostUSD     *float64
-	Permissions int
+	Answer               strings.Builder
+	CostUSD              *float64
+	Permissions          int
+	PermissionRejections int
 }
 
 type processClient struct {
@@ -259,11 +260,26 @@ func (c *processClient) respondToRequest(message rpcMessage, permission string) 
 	}
 	outcome := permissionOutcome(request.Options, permission)
 	c.stats.Permissions++
+	if permissionRejected(request.Options, outcome) {
+		c.stats.PermissionRejections++
+	}
 	return c.send(struct {
 		JSONRPC string                        `json:"jsonrpc"`
 		ID      json.RawMessage               `json:"id"`
 		Result  acp.RequestPermissionResponse `json:"result"`
 	}{"2.0", message.ID, acp.RequestPermissionResponse{Outcome: outcome}})
+}
+
+func permissionRejected(options []acp.PermissionOption, outcome acp.RequestPermissionOutcome) bool {
+	if outcome.Outcome != "selected" {
+		return false
+	}
+	for _, option := range options {
+		if option.OptionID == outcome.OptionID {
+			return option.Kind == acp.PermissionOptionRejectOnce || option.Kind == acp.PermissionOptionRejectAlways
+		}
+	}
+	return false
 }
 
 func permissionOutcome(options []acp.PermissionOption, permission string) acp.RequestPermissionOutcome {
