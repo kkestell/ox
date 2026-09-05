@@ -36,7 +36,7 @@ func TestDiagnosticTraceRecordsTurnShapeWithoutContent(t *testing.T) {
 	)
 	child := start(t,
 		withModel(model),
-		withEnvironment("OPENROUTER_API_KEY", credential),
+		withCredential(credential),
 		withArguments("--trace", "trace.jsonl"),
 	)
 	initialize(t, child)
@@ -149,7 +149,7 @@ func TestDiagnosticTraceFileLifecycleAndArguments(t *testing.T) {
 		t.Run(strings.Join(arguments, "_"), func(t *testing.T) {
 			result := runCommand(t, "", arguments)
 			if result.ExitCode != 2 ||
-				!strings.Contains(result.Stderr, "usage: ox [--trace path] | ox login") {
+				!strings.Contains(result.Stderr, "usage: ox [") {
 				t.Fatalf("result = %#v", result)
 			}
 		})

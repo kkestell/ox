@@ -3493,10 +3493,8 @@ func TestProcessSessionCreationReportsMissingConfiguration(t *testing.T) {
 
 func TestAuthenticateMakesRunningRPCServerUsableWithoutRestart(t *testing.T) {
 	keyring.MockInit()
-	t.Setenv("OX_KEYRING_DISABLED", "")
-	t.Setenv("OPENROUTER_API_KEY", "")
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	store := credentials.NewStore(logger)
+	store := credentials.NewStore(logger, "", false)
 	instance, err := agent.New(agent.Config{
 		Logger:        logger,
 		Credentials:   store,
@@ -3715,7 +3713,7 @@ type agentHarness struct {
 
 type callbackHandler func(context.Context, *jrpc2.Request) (any, error)
 
-// newAgentHarness drives the real runtime with OX_MODEL set, so the settings
+// newAgentHarness drives the runtime with a model override, so the settings
 // files play no part. Use newSettingsHarness to exercise them.
 func newAgentHarness(t *testing.T, model agent.Model, tools []agent.Tool) *agentHarness {
 	t.Helper()
@@ -3743,13 +3741,11 @@ func newHarnessWithCallback(
 	onCallback callbackHandler,
 ) *agentHarness {
 	t.Helper()
-	t.Setenv("OX_KEYRING_DISABLED", "1")
-	t.Setenv("OPENROUTER_API_KEY", "test-key")
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	config.Name = "test-agent"
 	config.Version = "test"
 	config.Logger = logger
-	config.Credentials = credentials.NewStore(logger)
+	config.Credentials = credentials.NewStore(logger, "test-key", true)
 	instance, err := agent.New(config)
 	if err != nil {
 		t.Fatal(err)

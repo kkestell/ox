@@ -311,6 +311,9 @@ func classifyError(ctx context.Context, err error) string {
 		return "timeout"
 	}
 	message := strings.ToLower(err.Error())
+	if strings.Contains(message, "invalid json-rpc") {
+		return "protocol"
+	}
 	if strings.Contains(message, "openrouter") || strings.Contains(message, "provider") {
 		return "provider"
 	}

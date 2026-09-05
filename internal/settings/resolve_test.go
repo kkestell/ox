@@ -25,7 +25,7 @@ func TestResolveAppliesModelPrecedence(t *testing.T) {
 	}
 	resolved, err = Resolve(Merge(global, workspace), " environment/model ")
 	if err != nil || resolved.Model != "environment/model" ||
-		resolved.ModelSource != SourceEnvironment {
+		resolved.ModelSource != SourceCLI {
 		t.Fatalf("overridden model = %#v, %v", resolved, err)
 	}
 	if _, err := Resolve(&Config{Model: pointer("  ")}, ""); err == nil ||

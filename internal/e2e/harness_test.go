@@ -44,6 +44,7 @@ type message struct {
 type startConfig struct {
 	environment map[string]string
 	files       map[string]string
+	fileModes   map[string]os.FileMode
 	arguments   []string
 }
 
@@ -61,9 +62,69 @@ func withFile(path, content string) startOption {
 	}
 }
 
+func withFileMode(path, content string, mode os.FileMode) startOption {
+	return func(config *startConfig) {
+		config.files[path] = content
+		config.fileModes[path] = mode
+	}
+}
+
 func withArguments(arguments ...string) startOption {
 	return func(config *startConfig) {
-		config.arguments = append([]string(nil), arguments...)
+		config.arguments = append(config.arguments, arguments...)
+	}
+}
+
+func withModelOverride(model string) startOption {
+	return func(config *startConfig) {
+		if model == "" {
+			removeFlag(config, "--model")
+			return
+		}
+		setStringFlag(config, "--model", model)
+	}
+}
+
+func withCredential(credential string) startOption {
+	return func(config *startConfig) {
+		if credential == "" {
+			removeFlag(config, "--credential-file")
+			delete(config.files, "credential")
+			return
+		}
+		config.files["credential"] = credential + "\n"
+	}
+}
+
+func withLogLevel(level string) startOption {
+	return func(config *startConfig) { setStringFlag(config, "--log-level", level) }
+}
+
+func withoutFlag(name string) startOption {
+	return func(config *startConfig) { removeFlag(config, name) }
+}
+
+func setStringFlag(config *startConfig, name, value string) {
+	for index := 0; index+1 < len(config.arguments); index++ {
+		if config.arguments[index] == name {
+			config.arguments[index+1] = value
+			return
+		}
+	}
+	config.arguments = append(config.arguments, name, value)
+}
+
+func removeFlag(config *startConfig, name string) {
+	for index := 0; index < len(config.arguments); index++ {
+		if config.arguments[index] != name {
+			continue
+		}
+		end := index + 1
+		if end < len(config.arguments) && !strings.HasPrefix(config.arguments[end], "--") {
+			end++
+		}
+		config.arguments = append(config.arguments[:index], config.arguments[end:]...)
+		return
 	}
 }
 
@@ -157,18 +218,21 @@ func prepare(t *testing.T, options ...startOption) (string, startConfig) {
 			"XDG_CACHE_HOME":  filepath.Join(scratch, "cache"),
 			"XDG_CONFIG_HOME": filepath.Join(scratch, "config"),
 			"XDG_DATA_HOME":   filepath.Join(scratch, "data"),
-			// The test binary must never access the developer's real keyring.
-			"OX_KEYRING_DISABLED": "1",
-			"OX_LOG_LEVEL":        "debug",
-			"OX_MODEL":            "test/model",
-			// A test must explicitly start the mock model before Ox can contact a
-			// provider. This prevents a forgotten option from reaching OpenRouter.
-			"OX_OPENROUTER_BASE_URL": "http://127.0.0.1:1/api/v1",
-			"OPENROUTER_API_KEY":     "test-key",
-			"GORACE":                 "halt_on_error=1",
+			"GORACE":          "halt_on_error=1",
 		},
 		files: map[string]string{
 			filepath.Join("cache", "ox", "models.json"): testModelCatalog,
+			"credential": "test-key\n",
+		},
+		fileModes: make(map[string]os.FileMode),
+		arguments: []string{
+			"--log-level", "debug",
+			"--model", "test/model",
+			// A test must explicitly start the mock model before Ox can contact a
+			// provider. This prevents a forgotten option from reaching OpenRouter.
+			"--openrouter-base-url", "http://127.0.0.1:1/api/v1",
+			"--credential-file", "credential",
+			"--no-keyring",
 		},
 	}
 	for _, option := range options {
@@ -179,8 +243,17 @@ func prepare(t *testing.T, options ...startOption) (string, startConfig) {
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			t.Fatalf("create seed file directory: %v", err)
 		}
-		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		mode := config.fileModes[relative]
+		if mode == 0 {
+			mode = 0o600
+		}
+		if err := os.WriteFile(path, []byte(content), mode); err != nil {
 			t.Fatalf("write seed file: %v", err)
+		}
+		if _, explicit := config.fileModes[relative]; explicit {
+			if err := os.Chmod(path, mode); err != nil {
+				t.Fatalf("set seed file mode: %v", err)
+			}
 		}
 	}
 	return scratch, config
@@ -202,7 +275,7 @@ func runCommand(
 	scratch, config := prepare(t, options...)
 	ctx, cancel := context.WithTimeout(t.Context(), shutdownTimeout)
 	defer cancel()
-	command := exec.CommandContext(ctx, oxBinary, arguments...)
+	command := exec.CommandContext(ctx, oxBinary, append(config.arguments, arguments...)...)
 	command.Dir = scratch
 	command.Env = environment(config.environment)
 	command.Stdin = strings.NewReader(input)

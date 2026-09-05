@@ -34,7 +34,7 @@ func TestLoadTreatsAbsentAndBlankLayersAsHarmless(t *testing.T) {
 		"no path":      "",
 		"missing file": filepath.Join(directory, "missing.json"),
 	} {
-		config, err := Load(path)
+		config, err := LoadWorkspace(path)
 		if err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
@@ -46,7 +46,7 @@ func TestLoadTreatsAbsentAndBlankLayersAsHarmless(t *testing.T) {
 		"empty file":      "",
 		"whitespace only": " \n\t ",
 	} {
-		config, err := Load(write(t, filepath.Join(t.TempDir(), "settings.json"), body))
+		config, err := LoadWorkspace(write(t, filepath.Join(t.TempDir(), "settings.json"), body))
 		if err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
@@ -57,7 +57,7 @@ func TestLoadTreatsAbsentAndBlankLayersAsHarmless(t *testing.T) {
 }
 
 func TestLoadDecodesTheAllowlistedVocabulary(t *testing.T) {
-	config, err := Load(write(t, filepath.Join(t.TempDir(), "settings.json"), `{
+	config, err := LoadWorkspace(write(t, filepath.Join(t.TempDir(), "settings.json"), `{
 		"model": "vendor/model",
 		"max_tokens": 512,
 		"temperature": 0.25,
@@ -111,12 +111,71 @@ func TestLoadRejectsUnknownKeysAndWrongTypesNamingTheFile(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			path := write(t, filepath.Join(t.TempDir(), "settings.json"), body)
-			config, err := Load(path)
+			config, err := LoadWorkspace(path)
 			if err == nil {
 				t.Fatalf("layer = %#v", config)
 			}
 			if !strings.Contains(err.Error(), path) {
 				t.Fatalf("error = %v, want mention of %q", err, path)
+			}
+		})
+	}
+}
+
+func TestGlobalProcessSettingsAndWorkspaceExclusion(t *testing.T) {
+	path := write(t, filepath.Join(t.TempDir(), "settings.json"), `{
+		"model":"vendor/model",
+		"process":{"log_level":"debug","openrouter_base_url":"http://localhost:8080/api/v1","trace":"trace.jsonl"}
+	}`)
+	model, process, err := LoadGlobal(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if *model.Model != "vendor/model" || *process.LogLevel != "debug" ||
+		*process.OpenRouterBaseURL != "http://localhost:8080/api/v1" || *process.Trace != "trace.jsonl" {
+		t.Fatalf("global settings = %#v, %#v", model, process)
+	}
+	if _, err := LoadWorkspace(path); err == nil || !strings.Contains(err.Error(), `unknown field "process"`) {
+		t.Fatalf("workspace process error = %v", err)
+	}
+}
+
+func TestResolveProcessPrecedenceDefaultsAndValidation(t *testing.T) {
+	resolved, err := ResolveProcess(nil, ProcessOverrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.LogLevel != DefaultLogLevel || resolved.OpenRouterBaseURL != DefaultOpenRouterBaseURL || resolved.Trace != "" {
+		t.Fatalf("defaults = %#v", resolved)
+	}
+
+	global := &Process{
+		LogLevel:          pointer("warn"),
+		OpenRouterBaseURL: pointer("https://global.example/api/v1"),
+		Trace:             pointer("global.jsonl"),
+	}
+	resolved, err = ResolveProcess(global, ProcessOverrides{
+		LogLevel:          pointer("DEBUG"),
+		OpenRouterBaseURL: pointer("http://127.0.0.1:8080/api/v1"),
+		Trace:             pointer("cli.jsonl"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.LogLevel != "debug" || resolved.OpenRouterBaseURL != "http://127.0.0.1:8080/api/v1" || resolved.Trace != "cli.jsonl" {
+		t.Fatalf("overrides = %#v", resolved)
+	}
+
+	for name, process := range map[string]*Process{
+		"log level":       {LogLevel: pointer("verbose")},
+		"blank trace":     {Trace: pointer("  ")},
+		"relative URL":    {OpenRouterBaseURL: pointer("api/v1")},
+		"URL credentials": {OpenRouterBaseURL: pointer("https://key@example.com/api/v1")},
+		"URL query":       {OpenRouterBaseURL: pointer("https://example.com/api/v1?q=1")},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := ResolveProcess(process, ProcessOverrides{}); err == nil {
+				t.Fatal("invalid process setting was accepted")
 			}
 		})
 	}

@@ -43,7 +43,9 @@ an OpenRouter model and credential before Zed starts it.
 
    Replace `/Users/you/.local/bin/ox` with the absolute path to your installed
    binary. Do not use `$HOME` or `~` in this value, and do not put the
-   OpenRouter credential in Zed's settings.
+   OpenRouter credential in Zed's settings. To use a credential file instead of
+   the keyring, put `"--credential-file"` and its absolute path in `args`; make
+   that file readable only by your user.
 
 4. Open Zed's Agent Panel. Use the agent selector or new-thread menu to start an
    **Ox** thread.

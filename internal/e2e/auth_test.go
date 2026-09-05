@@ -32,7 +32,7 @@ func TestInitializeAdvertisesTerminalAuthenticationWhenSupported(t *testing.T) {
 
 func TestAuthenticateVerifiesCredentialAndEnablesSession(t *testing.T) {
 	model := startModel(t)
-	child := start(t, withModel(model), withEnvironment("OPENROUTER_API_KEY", "verified-key"))
+	child := start(t, withModel(model), withCredential("verified-key"))
 	initialize(t, child)
 
 	child.request("authenticate", acp.AuthenticateRequest{MethodID: "openrouter"})
@@ -45,11 +45,11 @@ func TestAuthenticateVerifiesCredentialAndEnablesSession(t *testing.T) {
 
 func TestAuthenticateRequiresCredentialWithoutContactingProvider(t *testing.T) {
 	model := startModel(t)
-	child := start(t, withModel(model), withEnvironment("OPENROUTER_API_KEY", ""))
+	child := start(t, withModel(model), withCredential(""))
 	initialize(t, child)
 
 	responseError := child.requestError("authenticate", acp.AuthenticateRequest{MethodID: "openrouter"})
-	assertE2EAuthError(t, responseError, acp.ErrCodeAuthRequired, "OPENROUTER_API_KEY", "ox", "openrouter")
+	assertE2EAuthError(t, responseError, acp.ErrCodeAuthRequired, "--credential-file", "ox login")
 	if checks := model.checks(); len(checks) != 0 {
 		t.Errorf("credential checks = %#v", checks)
 	}
@@ -58,13 +58,13 @@ func TestAuthenticateRequiresCredentialWithoutContactingProvider(t *testing.T) {
 func TestAuthenticateReportsRejectedCredentialAndKeepsSessionGated(t *testing.T) {
 	model := startModel(t)
 	model.rejectCredential("User not found.")
-	child := start(t, withModel(model), withEnvironment("OPENROUTER_API_KEY", "bad-key"))
+	child := start(t, withModel(model), withCredential("bad-key"))
 	initialize(t, child)
 
 	responseError := child.requestError("authenticate", acp.AuthenticateRequest{MethodID: "openrouter"})
 	assertE2EAuthError(t, responseError, acp.ErrCodeAuthRequired, "User not found.")
-	// The gate reports the rejection rather than sending someone who has set
-	// OPENROUTER_API_KEY back to set it again.
+	// The gate reports the provider rejection rather than replacing it with a
+	// generic setup message.
 	responseError = child.requestError("session/new", newSessionRequest(child.cwd))
 	assertE2EAuthError(t, responseError, acp.ErrCodeAuthRequired, "User not found.")
 }
@@ -102,20 +102,20 @@ func TestAuthenticateRejectsInvalidMethodRequests(t *testing.T) {
 	}
 }
 
-func TestLogoutRefusesEnvironmentCredential(t *testing.T) {
-	child := start(t, withEnvironment("OPENROUTER_API_KEY", "environment-key"))
+func TestLogoutRefusesCredentialFile(t *testing.T) {
+	child := start(t, withCredential("file-key"))
 	initialize(t, child)
 	responseError := child.requestError("logout", acp.LogoutRequest{})
-	assertE2EAuthError(t, responseError, -32603, "OPENROUTER_API_KEY")
+	assertE2EAuthError(t, responseError, -32603, "--credential-file")
 	_ = newSession(t, child, child.cwd)
 }
 
 func TestLoginCommandRefusesDisabledKeyringBeforeReading(t *testing.T) {
-	result := runCommand(t, "secret-that-must-not-appear\n", []string{"login"})
+	result := runCommand(t, "secret-that-must-not-appear\n", []string{"login"}, withCredential(""))
 	if result.ExitCode != 1 {
 		t.Fatalf("exit code = %d, stderr = %s", result.ExitCode, result.Stderr)
 	}
-	if !strings.Contains(result.Stderr, "OX_KEYRING_DISABLED") {
+	if !strings.Contains(result.Stderr, "keyring access is disabled") {
 		t.Errorf("stderr = %q", result.Stderr)
 	}
 	if strings.Contains(result.Stdout+result.Stderr, "secret-that-must-not-appear") {
@@ -125,7 +125,7 @@ func TestLoginCommandRefusesDisabledKeyringBeforeReading(t *testing.T) {
 
 func TestUnknownArgumentIsAUsageError(t *testing.T) {
 	result := runCommand(t, "", []string{"unknown"})
-	if result.ExitCode != 2 || !strings.Contains(result.Stderr, "usage: ox [--trace path] | ox login") {
+	if result.ExitCode != 2 || !strings.Contains(result.Stderr, "usage: ox [") {
 		t.Fatalf("result = %#v", result)
 	}
 }

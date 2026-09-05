@@ -122,8 +122,17 @@ func startModel(t *testing.T, bodies ...string) *mockModel {
 
 func withModel(model *mockModel) startOption {
 	return func(config *startConfig) {
-		config.environment["OX_OPENROUTER_BASE_URL"] = model.server.URL + "/api/v1"
+		setStringFlag(config, "--openrouter-base-url", model.server.URL+"/api/v1")
 	}
+}
+
+func flagValue(arguments []string, name string) string {
+	for index := 0; index+1 < len(arguments); index++ {
+		if arguments[index] == name {
+			return arguments[index+1]
+		}
+	}
+	return ""
 }
 
 func withModelContextWindow(model *mockModel, contextWindow int) startOption {
@@ -461,7 +470,7 @@ func TestMockModelQueuesResponsesAndRecordsRequests(t *testing.T) {
 
 	request, err := http.NewRequest(
 		http.MethodPost,
-		config.environment["OX_OPENROUTER_BASE_URL"]+"/chat/completions",
+		flagValue(config.arguments, "--openrouter-base-url")+"/chat/completions",
 		bytes.NewBufferString(
 			`{"model":"test/model","messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}],"stream":true}`,
 		),
@@ -535,7 +544,7 @@ func TestMockModelRoutesConcurrentRequestsByFinalMessage(t *testing.T) {
 			}
 			request, err := http.NewRequest(
 				http.MethodPost,
-				config.environment["OX_OPENROUTER_BASE_URL"]+"/chat/completions",
+				flagValue(config.arguments, "--openrouter-base-url")+"/chat/completions",
 				bytes.NewReader(body),
 			)
 			if err != nil {
@@ -598,7 +607,7 @@ func TestMockModelHoldsAResponseUntilReleased(t *testing.T) {
 	go func() {
 		request, err := http.NewRequest(
 			http.MethodPost,
-			config.environment["OX_OPENROUTER_BASE_URL"]+"/chat/completions",
+			flagValue(config.arguments, "--openrouter-base-url")+"/chat/completions",
 			bytes.NewBufferString(`{"model":"test/model","messages":[],"stream":true}`),
 		)
 		if err != nil {

@@ -107,14 +107,9 @@ export class BrowserHarness {
     const scratch = await mkdtemp(join(tmpdir(), "ox-client-e2e-"));
     const workspace = join(scratch, "workspace");
     const configHome = join(scratch, "config");
-    const globalSettings = join(configHome, "ox");
     await mkdir(workspace, { recursive: true });
-    await mkdir(globalSettings, { recursive: true });
-    await writeFile(
-      join(globalSettings, "settings.json"),
-      JSON.stringify({ model: liveProvider ? "openai/gpt-5.6-luna" : "test/model" }) + "\n",
-      { mode: 0o600 },
-    );
+    const credentialFile = join(scratch, "credential");
+    await writeFile(credentialFile, `${options.liveAPIKey ?? "browser-test-key"}\n`, { mode: 0o600 });
 
     const oxBin = join(scratch, "ox");
     await run("go", ["build", "-o", oxBin, "./cmd/ox"], repositoryRoot);
@@ -143,20 +138,21 @@ export class BrowserHarness {
       XDG_CACHE_HOME: join(scratch, "cache"),
       XDG_CONFIG_HOME: configHome,
       XDG_DATA_HOME: join(scratch, "data"),
-      OPENROUTER_API_KEY: options.liveAPIKey ?? "browser-test-key",
     };
-    if (options.logLevel !== undefined) {
-      oxEnvironment.OX_LOG_LEVEL = options.logLevel;
-    }
-    if (!liveProvider) {
-      oxEnvironment.OX_OPENROUTER_BASE_URL = `http://127.0.0.1:${providerPort}/api/v1`;
-    } else {
-      delete oxEnvironment.OX_OPENROUTER_BASE_URL;
-    }
+    const oxArguments = [
+      "--model",
+      liveProvider ? "openai/gpt-5.6-luna" : "test/model",
+      "--credential-file",
+      credentialFile,
+      "--no-keyring",
+    ];
+    if (!liveProvider) oxArguments.push("--openrouter-base-url", `http://127.0.0.1:${providerPort}/api/v1`);
+    if (options.logLevel !== undefined) oxArguments.push("--log-level", options.logLevel);
+    const oxCommand = [oxBin, ...oxArguments].map((argument) => JSON.stringify(argument)).join(" ");
 
     const bridge = spawn(
       bridgeBin,
-      ["--port", String(bridgePort), JSON.stringify(oxBin)],
+      ["--port", String(bridgePort), oxCommand],
       {
         cwd: workspace,
         env: oxEnvironment,

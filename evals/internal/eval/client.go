@@ -41,16 +41,17 @@ type protocolStats struct {
 }
 
 type processClient struct {
-	command  *exec.Cmd
-	stdin    io.WriteCloser
-	stdout   io.ReadCloser
-	stderr   *os.File
-	events   *eventWriter
-	messages chan rpcMessage
-	readErr  chan error
-	nextID   int
-	writeMu  sync.Mutex
-	stats    protocolStats
+	command             *exec.Cmd
+	stdin               io.WriteCloser
+	stdout              io.ReadCloser
+	stderr              *os.File
+	events              *eventWriter
+	messages            chan rpcMessage
+	readErr             chan error
+	nextID              int
+	writeMu             sync.Mutex
+	stats               protocolStats
+	credentialDirectory string
 }
 
 type eventWriter struct {
@@ -87,6 +88,20 @@ func startProcess(binary, workspace, private, model, baseURL, credential string,
 	if err := os.WriteFile(filepath.Join(catalogDirectory, "models.json"), catalog, 0o600); err != nil {
 		return nil, fmt.Errorf("write model cache: %w", err)
 	}
+	credentialDirectory, err := os.MkdirTemp("", "ox-eval-credential-")
+	if err != nil {
+		return nil, fmt.Errorf("create credential directory: %w", err)
+	}
+	keepCredential := false
+	defer func() {
+		if !keepCredential {
+			_ = os.RemoveAll(credentialDirectory)
+		}
+	}()
+	credentialPath := filepath.Join(credentialDirectory, "credential")
+	if err := os.WriteFile(credentialPath, []byte(strings.TrimSpace(credential)+"\n"), 0o600); err != nil {
+		return nil, fmt.Errorf("write credential file: %w", err)
+	}
 
 	eventsFile, err := os.OpenFile(filepath.Join(private, "events.jsonl"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
@@ -98,9 +113,16 @@ func startProcess(binary, workspace, private, model, baseURL, credential string,
 		return nil, fmt.Errorf("open stderr artifact: %w", err)
 	}
 	tracePath := filepath.Join(private, fmt.Sprintf("trace-%d.jsonl", ordinal))
-	command := exec.Command(binary, "--trace", tracePath)
+	command := exec.Command(
+		binary,
+		"--trace", tracePath,
+		"--model", model,
+		"--openrouter-base-url", baseURL,
+		"--credential-file", credentialPath,
+		"--no-keyring",
+	)
 	command.Dir = workspace
-	command.Env = evaluationEnvironment(private, model, baseURL, credential)
+	command.Env = evaluationEnvironment(private)
 	command.Stderr = stderr
 	stdin, err := command.StdinPipe()
 	if err != nil {
@@ -125,21 +147,20 @@ func startProcess(binary, workspace, private, model, baseURL, credential string,
 	client := &processClient{
 		command: command, stdin: stdin, stdout: stdout, stderr: stderr,
 		events: &eventWriter{file: eventsFile}, messages: make(chan rpcMessage),
-		readErr: make(chan error, 1), nextID: 1,
+		readErr: make(chan error, 1), nextID: 1, credentialDirectory: credentialDirectory,
 	}
+	keepCredential = true
 	go client.readLoop()
 	return client, nil
 }
 
-func evaluationEnvironment(private, model, baseURL, credential string) []string {
+func evaluationEnvironment(private string) []string {
 	result := sanitizedEnvironment()
 	result = append(result,
 		"HOME="+filepath.Join(private, "home"),
 		"XDG_CACHE_HOME="+filepath.Join(private, "cache"),
 		"XDG_CONFIG_HOME="+filepath.Join(private, "config"),
 		"XDG_DATA_HOME="+filepath.Join(private, "data"),
-		"OX_KEYRING_DISABLED=1", "OX_LOG_LEVEL=info", "OX_MODEL="+model,
-		"OX_OPENROUTER_BASE_URL="+baseURL, "OPENROUTER_API_KEY="+credential,
 	)
 	return result
 }
@@ -357,7 +378,12 @@ func (c *processClient) stop() error {
 		<-done
 		waitErr = errors.New("ox did not exit before shutdown deadline")
 	}
-	closeErr := errors.Join(closeUnlessClosed(c.stdout), closeUnlessClosed(c.stderr), closeUnlessClosed(c.events.file))
+	closeErr := errors.Join(
+		closeUnlessClosed(c.stdout),
+		closeUnlessClosed(c.stderr),
+		closeUnlessClosed(c.events.file),
+		os.RemoveAll(c.credentialDirectory),
+	)
 	if waitErr != nil {
 		return errors.Join(fmt.Errorf("ox exit: %w", waitErr), closeErr)
 	}

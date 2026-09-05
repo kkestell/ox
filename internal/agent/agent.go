@@ -38,8 +38,8 @@ type Config struct {
 	Version     string
 	Logger      *slog.Logger
 	Credentials *credentials.Store
-	// ModelOverride wins over both settings layers. Empty means the settings
-	// files decide.
+	// ModelOverride is the CLI value and wins over both settings layers. Empty
+	// means the settings files decide.
 	ModelOverride string
 	// SettingsPath is the global settings layer. Empty skips it.
 	SettingsPath string
@@ -1132,14 +1132,14 @@ func (a *Agent) resolveSettings(cwd string) (settings.Resolved, error) {
 	workspacePath := settings.WorkspacePath(cwd)
 	consulted := make([]string, 0, 2)
 
-	global, err := settings.Load(a.settingsPath)
+	global, _, err := settings.LoadGlobal(a.settingsPath)
 	if err != nil {
 		return settings.Resolved{}, err
 	}
 	if a.settingsPath != "" {
 		consulted = append(consulted, a.settingsPath)
 	}
-	workspace, err := settings.Load(workspacePath)
+	workspace, err := settings.LoadWorkspace(workspacePath)
 	if err != nil {
 		return settings.Resolved{}, err
 	}
@@ -1154,7 +1154,7 @@ func (a *Agent) resolveSettings(cwd string) (settings.Resolved, error) {
 
 	resolved, err := settings.Resolve(settings.Merge(global, workspace), a.modelOverride)
 	if errors.Is(err, settings.ErrNoModel) {
-		message := "a model is required to create a session: set OX_MODEL"
+		message := "a model is required to create a session: pass --model"
 		if len(consulted) > 0 {
 			message += ` or "model" in ` + strings.Join(consulted, " or ")
 		}

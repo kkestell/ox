@@ -18,7 +18,7 @@ func TestConfigurationPrecedence(t *testing.T) {
 		{
 			name: "global",
 			options: []startOption{
-				withEnvironment("OX_MODEL", ""),
+				withModelOverride(""),
 				withGlobalConfig(`{"model":"global/model"}`),
 			},
 			wantModel: "global/model",
@@ -26,16 +26,16 @@ func TestConfigurationPrecedence(t *testing.T) {
 		{
 			name: "workspace over global",
 			options: []startOption{
-				withEnvironment("OX_MODEL", ""),
+				withModelOverride(""),
 				withGlobalConfig(`{"model":"global/model"}`),
 				withWorkspaceConfig(`{"model":"workspace/model"}`),
 			},
 			wantModel: "workspace/model",
 		},
 		{
-			name: "environment over workspace and global",
+			name: "CLI over workspace and global",
 			options: []startOption{
-				withEnvironment("OX_MODEL", "environment/model"),
+				withModelOverride("environment/model"),
 				withGlobalConfig(`{"model":"global/model"}`),
 				withWorkspaceConfig(`{"model":"workspace/model"}`),
 			},
@@ -56,11 +56,104 @@ func TestConfigurationPrecedence(t *testing.T) {
 	}
 }
 
+func TestProcessConfigurationPrecedenceAndGlobalTrace(t *testing.T) {
+	model := startModel(t, sse(evFinishReason("stop")))
+	child, session := startSession(t,
+		withGlobalConfig(`{
+			"process": {
+				"log_level": "warn",
+				"openrouter_base_url": "`+model.server.URL+`/api/v1",
+				"trace": "global-trace.jsonl"
+			}
+		}`),
+		withoutFlag("--log-level"),
+		withoutFlag("--openrouter-base-url"),
+	)
+	prompt(t, child, session, "global process")
+	child.stop()
+	if _, err := os.Stat(filepath.Join(child.cwd, "global-trace.jsonl")); err != nil {
+		t.Fatalf("global trace: %v", err)
+	}
+	if strings.Contains(child.stderr.String(), `level=INFO msg="ox starting"`) {
+		t.Fatalf("global warn level emitted info log: %s", child.stderr.String())
+	}
+}
+
+func TestCLIProcessConfigurationOverridesGlobal(t *testing.T) {
+	model := startModel(t, sse(evFinishReason("stop")))
+	child, session := startSession(t,
+		withModel(model),
+		withGlobalConfig(`{
+			"process": {
+				"log_level": "error",
+				"openrouter_base_url": "https://global.invalid/api/v1",
+				"trace": "global-trace.jsonl"
+			}
+		}`),
+		withLogLevel("debug"),
+		withArguments("--trace", "cli-trace.jsonl"),
+	)
+	prompt(t, child, session, "CLI process")
+	child.stop()
+	if _, err := os.Stat(filepath.Join(child.cwd, "cli-trace.jsonl")); err != nil {
+		t.Fatalf("CLI trace: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(child.cwd, "global-trace.jsonl")); !os.IsNotExist(err) {
+		t.Fatalf("global trace unexpectedly used: %v", err)
+	}
+	if !strings.Contains(child.stderr.String(), `level=INFO msg="ox starting"`) {
+		t.Fatalf("CLI debug level was not used: %s", child.stderr.String())
+	}
+}
+
+func TestInvalidGlobalProcessConfigurationFailsStartup(t *testing.T) {
+	for name, content := range map[string]string{
+		"malformed": `{"model":`,
+		"invalid":   `{"process":{"log_level":"verbose"}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			result := runCommand(t, "", nil, withGlobalConfig(content))
+			if result.ExitCode != 1 || !strings.Contains(result.Stderr, "configure process") {
+				t.Fatalf("result = %#v", result)
+			}
+		})
+	}
+}
+
+func TestWorkspaceCannotSetProcessConfiguration(t *testing.T) {
+	child := start(t, withWorkspaceConfig(`{"process":{"log_level":"error"}}`))
+	initialize(t, child)
+	responseError := child.requestError("session/new", newSessionRequest(child.cwd))
+	if responseError.Code != -32603 || !strings.Contains(responseError.Message, `unknown field "process"`) {
+		t.Fatalf("workspace process error = %#v", responseError)
+	}
+}
+
+func TestLegacyConfigurationEnvironmentIsIgnored(t *testing.T) {
+	model := startModel(t, sse(evFinishReason("stop")))
+	child, session := startSession(t,
+		withModel(model),
+		withEnvironment("OX_MODEL", "legacy/model"),
+		withEnvironment("OX_LOG_LEVEL", "error"),
+		withEnvironment("OX_OPENROUTER_BASE_URL", "https://legacy.invalid/api/v1"),
+		withEnvironment("OX_KEYRING_DISABLED", ""),
+		withEnvironment("OPENROUTER_API_KEY", "legacy-secret"),
+	)
+	prompt(t, child, session, "legacy environment")
+	if request := model.requestFor("legacy environment"); request.Model != "test/model" || request.Authorization != "Bearer test-key" {
+		t.Fatalf("request used legacy environment: %#v", request)
+	}
+	child.stop()
+	if !strings.Contains(child.stderr.String(), `level=INFO msg="ox starting"`) || strings.Contains(child.stderr.String(), "legacy-secret") {
+		t.Fatalf("stderr = %s", child.stderr.String())
+	}
+}
+
 func TestGlobalConfigurationFallsBackToHome(t *testing.T) {
 	model := startModel(t, sse(evFinishReason("stop")))
 	child, session := startSession(t,
 		withModel(model),
-		withEnvironment("OX_MODEL", ""),
+		withModelOverride(""),
 		withEnvironment("XDG_CONFIG_HOME", ""),
 		withFile(filepath.Join(".config", "ox", "settings.json"), `{"model":"home/model"}`),
 	)
@@ -72,7 +165,7 @@ func TestGlobalConfigurationFallsBackToHome(t *testing.T) {
 
 func TestWorkspaceConfigurationDoesNotWalkToAParent(t *testing.T) {
 	child := start(t,
-		withEnvironment("OX_MODEL", ""),
+		withModelOverride(""),
 		withWorkspaceConfig(`{"model":"parent/model"}`),
 		withFile(filepath.Join("child", ".keep"), ""),
 	)
@@ -94,7 +187,7 @@ func TestSessionsResolveConfigurationForTheirOwnWorkspaces(t *testing.T) {
 	model.queueFor("second prompt", sse(evFinishReason("stop")))
 	child := start(t,
 		withModel(model),
-		withEnvironment("OX_MODEL", ""),
+		withModelOverride(""),
 		withFile(filepath.Join("first", ".ox", "settings.json"), `{"model":"first/model"}`),
 		withFile(filepath.Join("second", ".ox", "settings.json"), `{"model":"second/model"}`),
 	)
@@ -118,7 +211,7 @@ func TestSessionConfigurationIsFrozen(t *testing.T) {
 	model.queueFor("new session", sse(evFinishReason("stop")))
 	child := start(t,
 		withModel(model),
-		withEnvironment("OX_MODEL", ""),
+		withModelOverride(""),
 		withWorkspaceConfig(`{"model":"old/model"}`),
 	)
 	initialize(t, child)
@@ -144,7 +237,7 @@ func TestWorkspaceConfigurationUsesCanonicalDirectory(t *testing.T) {
 	model := startModel(t, sse(evFinishReason("stop")))
 	child := start(t,
 		withModel(model),
-		withEnvironment("OX_MODEL", ""),
+		withModelOverride(""),
 		withFile(filepath.Join("real", ".ox", "settings.json"), `{"model":"canonical/model"}`),
 	)
 	link := filepath.Join(child.cwd, "link")
@@ -165,7 +258,7 @@ func TestInvalidConfigurationFailsOnlyThatSession(t *testing.T) {
 	held := model.holdFor("running prompt", frames(evText("running")))
 	child := start(t,
 		withModel(model),
-		withEnvironment("OX_MODEL", ""),
+		withModelOverride(""),
 		withFile(filepath.Join("good", ".ox", "settings.json"), `{"model":"good/model"}`),
 		withFile(filepath.Join("bad", ".ox", "settings.json"), `{"unknown":true}`),
 	)
@@ -193,7 +286,6 @@ func TestBadConfigurationFilesNameTheirPathAndOxRecovers(t *testing.T) {
 		content  string
 		want     string
 	}{
-		{name: "malformed global", relative: filepath.Join("config", "ox", "settings.json"), content: `{"model":`, want: "parse settings file"},
 		{name: "unknown workspace key", relative: filepath.Join(".ox", "settings.json"), content: `{"modle":"test/model"}`, want: `unknown field "modle"`},
 		{name: "wrong model type", relative: filepath.Join(".ox", "settings.json"), content: `{"model":1}`, want: "cannot unmarshal number"},
 		{name: "blank model", relative: filepath.Join(".ox", "settings.json"), content: `{"model":"   "}`, want: `"model" must not be blank`},
@@ -202,7 +294,7 @@ func TestBadConfigurationFilesNameTheirPathAndOxRecovers(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			child := start(t,
-				withEnvironment("OX_MODEL", ""),
+				withModelOverride(""),
 				withFile(test.relative, test.content),
 			)
 			initialize(t, child)
@@ -231,7 +323,7 @@ func TestHarmlessWorkspaceFilesFallThroughToGlobalConfiguration(t *testing.T) {
 			model := startModel(t, sse(evFinishReason("stop")))
 			child, session := startSession(t,
 				withModel(model),
-				withEnvironment("OX_MODEL", ""),
+				withModelOverride(""),
 				withGlobalConfig(`{"model":"global/model"}`),
 				withWorkspaceConfig(content),
 			)
@@ -272,7 +364,7 @@ func TestConfigurationReadFailuresNameTheirPath(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			child := start(t, withEnvironment("OX_MODEL", ""))
+			child := start(t, withModelOverride(""))
 			path := test.setup(t, child)
 			initialize(t, child)
 			responseError := child.requestError("session/new", newSessionRequest(child.cwd))
@@ -285,7 +377,7 @@ func TestConfigurationReadFailuresNameTheirPath(t *testing.T) {
 
 func TestNoUsableGlobalBaseNamesOnlyWorkspaceConfiguration(t *testing.T) {
 	child := start(t,
-		withEnvironment("OX_MODEL", ""),
+		withModelOverride(""),
 		withEnvironment("XDG_CONFIG_HOME", "relative"),
 		withEnvironment("HOME", ""),
 	)
