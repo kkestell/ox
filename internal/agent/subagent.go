@@ -76,13 +76,9 @@ func (a *Agent) delegate(
 		if err := ctx.Err(); err != nil {
 			return "", record, err
 		}
-		a.logger.Info(
-			"starting subagent model request",
-			"session_id", value.id,
-			"parent_tool_call_id", parentCallID,
-			"request", requestCount,
-			"prefix_fingerprint", subagentPrefixFingerprint(configuration),
-		)
+		if !providerRequestAvailable(value) {
+			return "", record, errTurnRequestLimit
+		}
 		messages := make([]openrouter.Message, 1, len(history)+1)
 		messages[0] = openrouter.Message{
 			Role: openrouter.RoleSystem,
@@ -110,9 +106,21 @@ func (a *Agent) delegate(
 			return "", record, err
 		}
 		history = cloneMessages(request.Messages[1:])
+		budgetRequest, err := a.reserveProviderRequest(value, parentCallID)
+		if err != nil {
+			return "", record, err
+		}
+		a.logger.Info(
+			"starting subagent model request",
+			"session_id", value.id,
+			"parent_tool_call_id", parentCallID,
+			"request", requestCount,
+			"turn_request", budgetRequest,
+			"prefix_fingerprint", subagentPrefixFingerprint(configuration),
+		)
 		provider := turn.Provider(
 			diagnostictrace.ProviderSubagent,
-			requestCount,
+			budgetRequest,
 			providerRequestBytes(request),
 			parentCallID,
 		)

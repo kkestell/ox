@@ -699,6 +699,50 @@ func TestPromptCompactsWithinAChildToolLoop(t *testing.T) {
 	}
 }
 
+func TestParentAndChildShareOneProviderRequestAllowance(t *testing.T) {
+	childRequests := 0
+	model := &routedModel{route: func(
+		_ context.Context,
+		request openrouter.Request,
+		_ func(openrouter.Delta),
+	) (*openrouter.Completion, error) {
+		if strings.HasPrefix(request.Messages[0].Content[0].Text, "You are a subagent") {
+			childRequests++
+			return &openrouter.Completion{FinishReason: "tool_calls", ToolCalls: []openrouter.ToolCall{
+				modelToolCall(fmt.Sprintf("read-%d", childRequests), "read", `{}`),
+			}}, nil
+		}
+		messages, err := conversation(request)
+		if err != nil {
+			return nil, err
+		}
+		if len(messages) != 1 {
+			return nil, errors.New("parent received another provider request after the shared allowance was exhausted")
+		}
+		return &openrouter.Completion{FinishReason: "tool_calls", ToolCalls: []openrouter.ToolCall{
+			modelToolCall("delegate", "task", `{"prompt":"consume the allowance"}`),
+		}}, nil
+	}}
+	task := agent.Tool{
+		Name: "task", Description: "delegate", InputSchema: json.RawMessage(`{"type":"object"}`),
+		Kind: acp.ToolKindOther, Approval: agent.ApprovalNone, ParallelSafe: true,
+		Delegates: true, Label: func(json.RawMessage) string { return "task" },
+		Execute: func(ctx context.Context, invocation agent.Invocation) (string, error) {
+			return invocation.Delegate(ctx, "consume the allowance")
+		},
+	}
+	read := agent.Tool{
+		Name: "read", Description: "read", InputSchema: json.RawMessage(`{"type":"object"}`),
+		Kind: acp.ToolKindRead, Approval: agent.ApprovalNone, ParallelSafe: true,
+		Execute: func(context.Context, agent.Invocation) (string, error) { return "read", nil },
+	}
+	harness := newAgentHarness(t, model, []agent.Tool{task, read})
+	response := harness.prompt(t, harness.newSession(t), "delegate")
+	if response.StopReason != acp.StopReasonMaxTurnRequests || childRequests != 15 {
+		t.Fatalf("response = %#v, child requests = %d", response, childRequests)
+	}
+}
+
 func TestPromptCompactionFailureLeavesHistoryUntouched(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -1216,7 +1260,7 @@ func TestReadOnlyToolsSpillRefuseEscapeReplayAndDelete(t *testing.T) {
 			) {
 				return nil, errors.New("system prompt did not use the canonical workspace root")
 			}
-			if len(request.Tools) != 13 {
+			if len(request.Tools) != 17 {
 				return nil, errors.New("built-in tools were not frozen into the request")
 			}
 			return &openrouter.Completion{
@@ -1601,6 +1645,202 @@ func TestParallelToolsFinishOutOfOrderAndReplayInCallOrder(t *testing.T) {
 	model.assertConsumed(t)
 }
 
+func TestDurableTaskQueueStagesAndRunsChildrenSequentially(t *testing.T) {
+	var firstID, secondID string
+	decodeID := func(message openrouter.Message) (string, error) {
+		var task struct {
+			ID string `json:"id"`
+		}
+		if len(message.Content) != 1 || json.Unmarshal([]byte(message.Content[0].Text), &task) != nil || task.ID == "" {
+			return "", fmt.Errorf("invalid task result %#v", message)
+		}
+		return task.ID, nil
+	}
+	model := &scriptedModel{scripts: []modelScript{
+		func(_ context.Context, _ openrouter.Request, _ func(openrouter.Delta)) (*openrouter.Completion, error) {
+			return &openrouter.Completion{FinishReason: "tool_calls", ToolCalls: []openrouter.ToolCall{
+				modelToolCall("add-one", "task_add", `{"description":"first child"}`),
+				modelToolCall("add-two", "task_add", `{"description":"second child"}`),
+			}}, nil
+		},
+		func(_ context.Context, request openrouter.Request, _ func(openrouter.Delta)) (*openrouter.Completion, error) {
+			messages, err := conversation(request)
+			if err != nil || len(messages) != 4 {
+				return nil, fmt.Errorf("add history = %#v, %v", messages, err)
+			}
+			firstID, err = decodeID(messages[2])
+			if err != nil {
+				return nil, err
+			}
+			secondID, err = decodeID(messages[3])
+			if err != nil {
+				return nil, err
+			}
+			return &openrouter.Completion{FinishReason: "tool_calls", ToolCalls: []openrouter.ToolCall{
+				modelToolCall("run-one", "task_run", fmt.Sprintf(`{"task_id":%q}`, firstID)),
+			}}, nil
+		},
+		func(_ context.Context, request openrouter.Request, _ func(openrouter.Delta)) (*openrouter.Completion, error) {
+			if request.Messages[1].Content[0].Text != "first child" {
+				return nil, fmt.Errorf("first child prompt = %#v", request.Messages)
+			}
+			for _, tool := range request.Tools {
+				if strings.HasPrefix(tool.Function.Name, "task_") {
+					return nil, fmt.Errorf("child retained queue tool %q", tool.Function.Name)
+				}
+			}
+			return completion("first done"), nil
+		},
+		func(_ context.Context, request openrouter.Request, _ func(openrouter.Delta)) (*openrouter.Completion, error) {
+			messages, err := conversation(request)
+			if err != nil || len(messages) != 6 || messages[5].Content[0].Text != "first done" {
+				return nil, fmt.Errorf("first completion history = %#v, %v", messages, err)
+			}
+			return &openrouter.Completion{FinishReason: "tool_calls", ToolCalls: []openrouter.ToolCall{
+				modelToolCall("run-two", "task_run", fmt.Sprintf(`{"task_id":%q}`, secondID)),
+			}}, nil
+		},
+		func(_ context.Context, request openrouter.Request, _ func(openrouter.Delta)) (*openrouter.Completion, error) {
+			if request.Messages[1].Content[0].Text != "second child" {
+				return nil, fmt.Errorf("second child prompt = %#v", request.Messages)
+			}
+			return completion("second done"), nil
+		},
+		func(_ context.Context, request openrouter.Request, _ func(openrouter.Delta)) (*openrouter.Completion, error) {
+			messages, err := conversation(request)
+			if err != nil || len(messages) != 8 || messages[7].Content[0].Text != "second done" {
+				return nil, fmt.Errorf("second completion history = %#v, %v", messages, err)
+			}
+			return &openrouter.Completion{FinishReason: "tool_calls", ToolCalls: []openrouter.ToolCall{
+				modelToolCall("list", "task_list", `{}`),
+			}}, nil
+		},
+		func(_ context.Context, request openrouter.Request, _ func(openrouter.Delta)) (*openrouter.Completion, error) {
+			messages, err := conversation(request)
+			if err != nil || len(messages) != 10 ||
+				strings.Count(messages[9].Content[0].Text, `"state":"completed"`) != 4 {
+				return nil, fmt.Errorf("queue listing = %#v, %v", messages, err)
+			}
+			return completion("parent done"), nil
+		},
+	}}
+	harness := newAgentHarness(t, model, oxtools.All())
+	response := harness.prompt(t, harness.newSession(t), "queue both")
+	if response.StopReason != acp.StopReasonEndTurn {
+		t.Fatalf("response = %#v", response)
+	}
+	model.assertConsumed(t)
+}
+
+func TestTaskQueueCancellationPausesPendingWork(t *testing.T) {
+	started := make(chan struct{})
+	var firstID string
+	model := &scriptedModel{scripts: []modelScript{
+		func(_ context.Context, _ openrouter.Request, _ func(openrouter.Delta)) (*openrouter.Completion, error) {
+			return &openrouter.Completion{FinishReason: "tool_calls", ToolCalls: []openrouter.ToolCall{
+				modelToolCall("add-running", "task_add", `{"description":"wait"}`),
+				modelToolCall("add-pending", "task_add", `{"description":"stay pending"}`),
+			}}, nil
+		},
+		func(_ context.Context, request openrouter.Request, _ func(openrouter.Delta)) (*openrouter.Completion, error) {
+			messages, err := conversation(request)
+			if err != nil || len(messages) != 4 {
+				return nil, fmt.Errorf("task additions = %#v, %v", messages, err)
+			}
+			var task struct {
+				ID string `json:"id"`
+			}
+			if err := json.Unmarshal([]byte(messages[2].Content[0].Text), &task); err != nil {
+				return nil, err
+			}
+			firstID = task.ID
+			return &openrouter.Completion{FinishReason: "tool_calls", ToolCalls: []openrouter.ToolCall{
+				modelToolCall("run-wait", "task_run", fmt.Sprintf(`{"task_id":%q}`, firstID)),
+			}}, nil
+		},
+		func(ctx context.Context, _ openrouter.Request, _ func(openrouter.Delta)) (*openrouter.Completion, error) {
+			close(started)
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+		func(_ context.Context, _ openrouter.Request, _ func(openrouter.Delta)) (*openrouter.Completion, error) {
+			return &openrouter.Completion{FinishReason: "tool_calls", ToolCalls: []openrouter.ToolCall{
+				modelToolCall("list-after-cancel", "task_list", `{}`),
+			}}, nil
+		},
+		func(_ context.Context, request openrouter.Request, _ func(openrouter.Delta)) (*openrouter.Completion, error) {
+			messages, err := conversation(request)
+			if err != nil || len(messages) < 2 {
+				return nil, fmt.Errorf("queue history = %#v, %v", messages, err)
+			}
+			listing := messages[len(messages)-1].Content[0].Text
+			if strings.Count(listing, `"state":"cancelled"`) != 2 ||
+				strings.Count(listing, `"state":"pending"`) != 2 {
+				return nil, fmt.Errorf("queue after cancellation = %s", listing)
+			}
+			return completion("paused"), nil
+		},
+		func(_ context.Context, _ openrouter.Request, _ func(openrouter.Delta)) (*openrouter.Completion, error) {
+			return &openrouter.Completion{FinishReason: "tool_calls", ToolCalls: []openrouter.ToolCall{
+				modelToolCall("retry-cancelled", "task_retry", fmt.Sprintf(`{"task_id":%q}`, firstID)),
+			}}, nil
+		},
+		func(_ context.Context, _ openrouter.Request, _ func(openrouter.Delta)) (*openrouter.Completion, error) {
+			return &openrouter.Completion{FinishReason: "tool_calls", ToolCalls: []openrouter.ToolCall{
+				modelToolCall("run-retry", "task_run", fmt.Sprintf(`{"task_id":%q}`, firstID)),
+			}}, nil
+		},
+		func(_ context.Context, request openrouter.Request, _ func(openrouter.Delta)) (*openrouter.Completion, error) {
+			if request.Messages[1].Content[0].Text != "wait" {
+				return nil, fmt.Errorf("retry child prompt = %#v", request.Messages)
+			}
+			return completion("retried done"), nil
+		},
+		func(_ context.Context, _ openrouter.Request, _ func(openrouter.Delta)) (*openrouter.Completion, error) {
+			return &openrouter.Completion{FinishReason: "tool_calls", ToolCalls: []openrouter.ToolCall{
+				modelToolCall("list-after-retry", "task_list", `{}`),
+			}}, nil
+		},
+		func(_ context.Context, request openrouter.Request, _ func(openrouter.Delta)) (*openrouter.Completion, error) {
+			messages, err := conversation(request)
+			if err != nil || len(messages) < 2 {
+				return nil, fmt.Errorf("retry history = %#v, %v", messages, err)
+			}
+			listing := messages[len(messages)-1].Content[0].Text
+			if strings.Count(listing, `"state":"completed"`) != 2 ||
+				strings.Count(listing, `"state":"cancelled"`) != 1 ||
+				strings.Count(listing, `"state":"pending"`) != 2 {
+				return nil, fmt.Errorf("queue after retry = %s", listing)
+			}
+			return completion("retried"), nil
+		},
+	}}
+	harness := newAgentHarness(t, model, oxtools.All())
+	sessionID := harness.newSession(t)
+	result := make(chan promptResult, 1)
+	go func() {
+		response, err := harness.callPrompt(sessionID, "queue and cancel")
+		result <- promptResult{response: response, err: err}
+	}()
+	<-started
+	if err := harness.local.Client.Notify(t.Context(), "session/cancel", acp.CancelNotification{
+		SessionID: sessionID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	first := <-result
+	if first.err != nil || first.response.StopReason != acp.StopReasonCancelled {
+		t.Fatalf("cancelled prompt = %#v, %v", first.response, first.err)
+	}
+	if response := harness.prompt(t, sessionID, "inspect paused queue"); response.StopReason != acp.StopReasonEndTurn {
+		t.Fatalf("inspection response = %#v", response)
+	}
+	if response := harness.prompt(t, sessionID, "retry the cancelled task"); response.StopReason != acp.StopReasonEndTurn {
+		t.Fatalf("retry response = %#v", response)
+	}
+	model.assertConsumed(t)
+}
+
 func TestConcurrentTasksNestChildCallsApproveAndReplay(t *testing.T) {
 	var approvals atomic.Int32
 	var terminalMu sync.Mutex
@@ -1681,7 +1921,7 @@ func TestConcurrentTasksNestChildCallsApproveAndReplay(t *testing.T) {
 	harness := newHarnessWithCallback(t, agent.Config{
 		ModelOverride: "test/model",
 		Client:        model,
-		Tools:         oxtools.All(),
+		Tools:         legacyDelegatingTools(),
 	}, func(_ context.Context, request *jrpc2.Request) (any, error) {
 		terminalMu.Lock()
 		defer terminalMu.Unlock()
@@ -1889,7 +2129,7 @@ func TestEmptySubagentAnswerFailsTaskAndParentContinues(t *testing.T) {
 		ModelOverride: "test/model",
 		Client:        model,
 		SessionDir:    sessionDir,
-		Tools:         oxtools.All(),
+		Tools:         legacyDelegatingTools(),
 	})
 	sessionID := harness.newSessionIn(t, workspace, nil)
 	if response := harness.prompt(t, sessionID, "delegate empty"); response.StopReason != acp.StopReasonEndTurn {
@@ -1982,7 +2222,7 @@ func TestRejectedChildToolContinuesSubagentLoop(t *testing.T) {
 	harness := newHarnessWithCallback(t, agent.Config{
 		ModelOverride: "test/model",
 		Client:        model,
-		Tools:         oxtools.All(),
+		Tools:         legacyDelegatingTools(),
 	}, func(_ context.Context, request *jrpc2.Request) (any, error) {
 		if request.Method() != acp.MethodSessionRequestPermission {
 			return nil, jrpc2.Errorf(jrpc2.MethodNotFound, "unknown callback")
@@ -2093,7 +2333,7 @@ func TestConcurrentSubagentWritesUseIndependentReadEvidence(t *testing.T) {
 	harness := newHarnessWithCallback(t, agent.Config{
 		ModelOverride: "test/model",
 		Client:        model,
-		Tools:         oxtools.All(),
+		Tools:         legacyDelegatingTools(),
 	}, func(_ context.Context, request *jrpc2.Request) (any, error) {
 		if request.Method() != acp.MethodSessionRequestPermission {
 			return nil, jrpc2.Errorf(jrpc2.MethodNotFound, "unknown callback")
@@ -3319,7 +3559,7 @@ func TestCancellationStopsConcurrentSubagentsWithoutDurableDelegations(t *testin
 		ModelOverride: "test/model",
 		Client:        model,
 		SessionDir:    sessionDir,
-		Tools:         oxtools.All(),
+		Tools:         legacyDelegatingTools(),
 	})
 	sessionID := harness.newSessionIn(t, workspace, nil)
 	result := make(chan promptResult, 1)
@@ -3416,7 +3656,7 @@ func TestCancellationRetainsCompletedChildMutationInReplay(t *testing.T) {
 		ModelOverride: "test/model",
 		Client:        model,
 		SessionDir:    sessionDir,
-		Tools:         oxtools.All(),
+		Tools:         legacyDelegatingTools(),
 	}, func(_ context.Context, request *jrpc2.Request) (any, error) {
 		if request.Method() != acp.MethodSessionRequestPermission {
 			return nil, jrpc2.Errorf(jrpc2.MethodNotFound, "unknown callback")
@@ -3765,7 +4005,7 @@ func TestWorkspaceInstructionsFreezeAcrossParentAndChildUntilReactivation(t *tes
 			return completion("parent reactivated"), nil
 		},
 	}}
-	harness := newAgentHarness(t, model, oxtools.All())
+	harness := newAgentHarness(t, model, legacyDelegatingTools())
 	sessionID := harness.newSessionIn(t, workspace, nil)
 	if err := os.WriteFile(rootPath, []byte("reactivated rules\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -3839,7 +4079,7 @@ Read the fixture carefully.
 		}
 		return completion("parent done"), nil
 	}}
-	harness := newAgentHarness(t, model, oxtools.All())
+	harness := newAgentHarness(t, model, legacyDelegatingTools())
 	harness.prompt(t, harness.newSessionIn(t, workspace, nil), "delegate skill use")
 	if parentCatalog == "" || childCatalog != parentCatalog {
 		t.Fatalf("catalogs differ:\nparent = %q\nchild = %q", parentCatalog, childCatalog)
@@ -4030,7 +4270,7 @@ func TestChildCannotSeeOrReplaceParentTodo(t *testing.T) {
 		}
 		return completion("parent done"), nil
 	}}
-	harness := newAgentHarness(t, model, oxtools.All())
+	harness := newAgentHarness(t, model, legacyDelegatingTools())
 	harness.prompt(t, harness.newSession(t), "delegate")
 	for _, update := range harness.updates() {
 		if update.discriminator(t) == acp.SessionUpdatePlan {
@@ -4543,6 +4783,45 @@ func newAgentHarness(t *testing.T, model agent.Model, tools []agent.Tool) *agent
 		Client:        model,
 		Tools:         tools,
 	})
+}
+
+func legacyDelegatingTools() []agent.Tool {
+	var result []agent.Tool
+	for _, tool := range oxtools.All() {
+		if !strings.HasPrefix(tool.Name, "task_") {
+			result = append(result, tool)
+		}
+	}
+	result = append(result, agent.Tool{
+		Name: "task", Description: "delegate a task",
+		InputSchema: json.RawMessage(`{
+			"type":"object",
+			"properties":{"description":{"type":"string"},"prompt":{"type":"string"}},
+			"required":["description","prompt"],"additionalProperties":false
+		}`),
+		Kind: acp.ToolKindOther, Approval: agent.ApprovalNone,
+		ParallelSafe: true, Delegates: true,
+		Label: func(arguments json.RawMessage) string {
+			var value struct {
+				Description string `json:"description"`
+			}
+			_ = json.Unmarshal(arguments, &value)
+			return value.Description
+		},
+		Execute: func(ctx context.Context, invocation agent.Invocation) (string, error) {
+			var value struct {
+				Prompt string `json:"prompt"`
+			}
+			if err := json.Unmarshal(invocation.Arguments, &value); err != nil {
+				return "", err
+			}
+			if strings.TrimSpace(value.Prompt) == "" || invocation.Delegate == nil {
+				return "", errors.New("delegation is unavailable")
+			}
+			return invocation.Delegate(ctx, value.Prompt)
+		},
+	})
+	return result
 }
 
 // newSettingsHarness drives the runtime with no model override and one global

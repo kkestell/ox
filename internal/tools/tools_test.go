@@ -87,7 +87,7 @@ func invoke(t *testing.T, tool agent.Tool, invocation agent.Invocation) (string,
 
 func TestAllDeclaresValidSchemasAndClassifications(t *testing.T) {
 	tools := All()
-	if len(tools) != 14 {
+	if len(tools) != 18 {
 		t.Fatalf("tool count = %d", len(tools))
 	}
 	for _, tool := range tools {
@@ -99,7 +99,8 @@ func TestAllDeclaresValidSchemasAndClassifications(t *testing.T) {
 		}
 		mutating := tool.Name == "write_file" || tool.Name == "edit_file"
 		shell := tool.Name == "shell"
-		task := tool.Name == "task"
+		queue := strings.HasPrefix(tool.Name, "task_")
+		taskRun := tool.Name == "task_run"
 		todo := tool.Name == "todo"
 		question := tool.Name == "question"
 		webFetch := tool.Name == "web_fetch"
@@ -114,10 +115,11 @@ func TestAllDeclaresValidSchemasAndClassifications(t *testing.T) {
 			tool.Suggest == nil || tool.Covered == nil) {
 			t.Errorf("shell classification = %+v", tool)
 		}
-		if task && (tool.Kind != acp.ToolKindOther ||
-			tool.Approval != agent.ApprovalNone || !tool.ParallelSafe ||
-			!tool.Delegates || tool.Label == nil) {
-			t.Errorf("task classification = %+v", tool)
+		if queue && (tool.Kind != acp.ToolKindOther ||
+			tool.Approval != agent.ApprovalNone || tool.ParallelSafe ||
+			!tool.ParentOnly || tool.PlanMode ||
+			(tool.Delegates != taskRun) || ((tool.Label != nil) != taskRun)) {
+			t.Errorf("task queue classification = %+v", tool)
 		}
 		if todo && (tool.Kind != acp.ToolKindOther ||
 			tool.Approval != agent.ApprovalNone || tool.ParallelSafe ||
@@ -141,10 +143,75 @@ func TestAllDeclaresValidSchemasAndClassifications(t *testing.T) {
 			tool.Approval != agent.ApprovalAsk || tool.ParallelSafe || tool.PlanMode) {
 			t.Errorf("%s classification = %+v", tool.Name, tool)
 		}
-		if !mutating && !shell && !task && !todo && !question && !webFetch &&
+		if !mutating && !shell && !queue && !todo && !question && !webFetch &&
 			!memorySearch && !memoryMutation &&
 			(!tool.ParallelSafe || tool.Approval != agent.ApprovalNone) {
 			t.Errorf("%s read-only classification = %+v", tool.Name, tool)
+		}
+	}
+}
+
+func TestTaskQueueToolsValidateAndRouteOperations(t *testing.T) {
+	added := agent.QueuedTask{ID: strings.Repeat("a", 32), Description: "inspect", State: "pending"}
+	invocation := testInvocation(t, `{"description":"inspect"}`)
+	invocation.AddTask = func(description string) (agent.QueuedTask, error) {
+		if description != "inspect" {
+			t.Fatalf("description = %q", description)
+		}
+		return added, nil
+	}
+	if output, err := invoke(t, toolNamed(t, "task_add"), invocation); err != nil ||
+		!strings.Contains(output, added.ID) {
+		t.Fatalf("task_add = %q, %v", output, err)
+	}
+
+	for _, name := range []string{"task_run", "task_cancel", "task_retry"} {
+		invocation := testInvocation(t, `{"task_id":"abc"}`)
+		switch name {
+		case "task_run":
+			invocation.RunTask = func(_ context.Context, id string) (string, error) {
+				if id != "abc" {
+					t.Fatalf("task id = %q", id)
+				}
+				return "done", nil
+			}
+		case "task_cancel":
+			invocation.CancelTask = func(id string) (agent.QueuedTask, error) {
+				if id != "abc" {
+					t.Fatalf("task id = %q", id)
+				}
+				return added, nil
+			}
+		case "task_retry":
+			invocation.RetryTask = func(id string) (agent.QueuedTask, error) {
+				if id != "abc" {
+					t.Fatalf("task id = %q", id)
+				}
+				return added, nil
+			}
+		}
+		if _, err := invoke(t, toolNamed(t, name), invocation); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+	}
+
+	list := testInvocation(t, `{}`)
+	list.ListTasks = func() []agent.QueuedTask { return []agent.QueuedTask{added} }
+	if output, err := invoke(t, toolNamed(t, "task_list"), list); err != nil ||
+		!strings.Contains(output, added.ID) {
+		t.Fatalf("task_list = %q, %v", output, err)
+	}
+
+	for _, test := range []struct{ name, arguments string }{
+		{"task_add", `{"description":" "}`},
+		{"task_add", `{"description":"x","extra":true}`},
+		{"task_run", `{}`},
+		{"task_cancel", `{"task_id":" "}`},
+		{"task_retry", `{"task_id":"x","extra":true}`},
+		{"task_list", `{"extra":true}`},
+	} {
+		if _, err := invoke(t, toolNamed(t, test.name), testInvocation(t, test.arguments)); err == nil {
+			t.Fatalf("%s accepted %s", test.name, test.arguments)
 		}
 	}
 }

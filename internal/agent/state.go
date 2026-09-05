@@ -22,12 +22,14 @@ import (
 
 const (
 	recordVersion     = 1
-	checkpointVersion = 9
+	checkpointVersion = 10
 
 	recordSessionCreated  = "session_created"
 	recordConfigChanged   = "request_configuration_changed"
 	recordOptionChanged   = "session_config_option_changed"
 	recordTodoChanged     = "todo_replaced"
+	recordTaskChanged     = "task_changed"
+	recordProviderStarted = "provider_request_started"
 	recordCompaction      = "model_context_compacted"
 	recordChildContext    = "child_context_updated"
 	recordUserMessage     = "user_message"
@@ -44,6 +46,17 @@ const (
 	unknownToolOutcome     = "tool call outcome is unknown after interruption"
 	interruptedBeforeStart = "tool call interrupted before start"
 	interruptedQuestion    = "question interrupted"
+)
+
+const maxQueuedTasks = 32
+
+const (
+	taskPending     = "pending"
+	taskRunning     = "running"
+	taskCompleted   = "completed"
+	taskFailed      = "failed"
+	taskCancelled   = "cancelled"
+	taskInterrupted = "interrupted"
 )
 
 type sessionRecord struct {
@@ -114,6 +127,33 @@ type todoChanged struct {
 	TurnID  string          `json:"turnId"`
 	CallID  string          `json:"callId"`
 	Entries []acp.PlanEntry `json:"entries"`
+}
+
+type taskChanged struct {
+	TurnID    string        `json:"turnId"`
+	CallID    string        `json:"callId"`
+	Operation string        `json:"operation"`
+	Task      delegatedTask `json:"task"`
+}
+
+type providerRequestStarted struct {
+	TurnID       string `json:"turnId"`
+	ParentCallID string `json:"parentCallId,omitempty"`
+	Count        int    `json:"count"`
+}
+
+type delegatedTask struct {
+	ID          string                 `json:"id"`
+	Description string                 `json:"description"`
+	Attempts    []delegatedTaskAttempt `json:"attempts"`
+}
+
+type delegatedTaskAttempt struct {
+	Number int    `json:"number"`
+	State  string `json:"state"`
+	TurnID string `json:"turnId,omitempty"`
+	CallID string `json:"callId,omitempty"`
+	Result string `json:"result,omitempty"`
 }
 
 type compactionRecord struct {
@@ -289,6 +329,8 @@ type checkpointProjection struct {
 	Configuration         requestConfiguration          `json:"configuration"`
 	Selections            sessionSelections             `json:"selections,omitempty"`
 	Todo                  []acp.PlanEntry               `json:"todo"`
+	Tasks                 []delegatedTask               `json:"tasks,omitempty"`
+	TurnRequests          int                           `json:"turnRequests,omitempty"`
 	History               []openrouter.Message          `json:"history,omitempty"`
 	Usage                 checkpointUsage               `json:"usage"`
 	Occupancy             int                           `json:"occupancy"`
@@ -323,6 +365,8 @@ type durableState struct {
 	configuration         requestConfiguration
 	selections            sessionSelections
 	todo                  []acp.PlanEntry
+	tasks                 []delegatedTask
+	turnRequests          int
 	history               []openrouter.Message
 	usage                 turnUsage
 	occupancy             int
@@ -404,7 +448,8 @@ func validateRecordEnvelope(record sessionRecord, previous uint64) error {
 		return errors.New("first record must create the session")
 	}
 	switch record.Type {
-	case recordSessionCreated, recordConfigChanged, recordOptionChanged, recordTodoChanged, recordCompaction, recordChildContext, recordUserMessage,
+	case recordSessionCreated, recordConfigChanged, recordOptionChanged, recordTodoChanged,
+		recordTaskChanged, recordProviderStarted, recordCompaction, recordChildContext, recordUserMessage,
 		recordExchangePaused, recordPermissionOpen, recordPermissionRetry,
 		recordPermissionDone, recordToolStarted, recordToolCompleted,
 		recordModelExchange, recordTurnFinished, recordCheckpoint:
@@ -429,6 +474,8 @@ func newCheckpointRecord(state durableState) (sessionRecord, error) {
 			Configuration: cloneConfiguration(state.configuration),
 			Selections:    cloneSelections(state.selections),
 			Todo:          clonePlanEntries(state.todo),
+			Tasks:         cloneDelegatedTasks(state.tasks),
+			TurnRequests:  state.turnRequests,
 			History:       cloneMessages(state.history),
 			Usage: checkpointUsage{
 				Seen:        state.usage.seen,
@@ -505,6 +552,12 @@ func restoreCheckpoint(record, previous sessionRecord) (durableState, error) {
 			return durableState{}, fmt.Errorf("checkpoint todo: %w", err)
 		}
 	}
+	if err := validateDelegatedTasks(projection.Tasks); err != nil {
+		return durableState{}, fmt.Errorf("checkpoint task queue: %w", err)
+	}
+	if projection.TurnRequests < 0 || projection.TurnRequests > maxTurnRequests {
+		return durableState{}, errors.New("checkpoint turn request count is invalid")
+	}
 	if projection.Occupancy < 0 {
 		return durableState{}, errors.New("checkpoint context occupancy is invalid")
 	}
@@ -540,6 +593,8 @@ func restoreCheckpoint(record, previous sessionRecord) (durableState, error) {
 		configuration: cloneConfiguration(projection.Configuration),
 		selections:    cloneSelections(projection.Selections),
 		todo:          clonePlanEntries(projection.Todo),
+		tasks:         cloneDelegatedTasks(projection.Tasks),
+		turnRequests:  projection.TurnRequests,
 		history:       cloneMessages(projection.History),
 		usage: turnUsage{
 			seen:        projection.Usage.Seen,
@@ -630,8 +685,11 @@ func childContextMap(values []childContext) (map[string]childContext, error) {
 func validateCheckpointTurnState(state durableState) error {
 	if state.openTurn == "" {
 		if len(state.openTurnBase) != 0 || state.openTurnConfiguration.Settings.Model != "" || state.suspended != nil ||
-			len(state.children) != 0 || len(state.toolExecutions) != 0 {
+			len(state.children) != 0 || len(state.toolExecutions) != 0 || state.turnRequests != 0 {
 			return errors.New("checkpoint has turn state without an open turn")
+		}
+		if hasRunningTask(state.tasks) {
+			return errors.New("checkpoint has a running task without an open turn")
 		}
 		return nil
 	}
@@ -750,6 +808,7 @@ func (s durableState) clone() durableState {
 	s.configuration = cloneConfiguration(s.configuration)
 	s.selections = cloneSelections(s.selections)
 	s.todo = clonePlanEntries(s.todo)
+	s.tasks = cloneDelegatedTasks(s.tasks)
 	s.openTurnConfiguration = cloneConfiguration(s.openTurnConfiguration)
 	s.suspended = cloneSuspendedExchange(s.suspended)
 	children := s.children
@@ -820,6 +879,7 @@ func (s *durableState) apply(record sessionRecord) error {
 		}
 		s.selections = cloneSelections(value.Selections)
 		s.todo = nil
+		s.tasks = nil
 		s.messageIDs = make(map[string]struct{})
 		s.toolCallIDs = make(map[string]struct{})
 		s.changedFiles = make(map[string]struct{})
@@ -870,6 +930,32 @@ func (s *durableState) apply(record sessionRecord) error {
 			return err
 		}
 		s.todo = clonePlanEntries(value.Entries)
+	case recordTaskChanged:
+		var value taskChanged
+		if err := decodeRecord(record.Data, &value); err != nil {
+			return err
+		}
+		if err := s.applyTaskChange(value); err != nil {
+			return err
+		}
+	case recordProviderStarted:
+		var value providerRequestStarted
+		if err := decodeRecord(record.Data, &value); err != nil {
+			return err
+		}
+		if value.TurnID == "" || value.TurnID != s.openTurn ||
+			value.Count != s.turnRequests+1 || value.Count > maxTurnRequests {
+			return errors.New("provider request does not advance the open turn allowance")
+		}
+		if value.ParentCallID != "" {
+			if s.suspended == nil || s.suspended.callIndex(value.ParentCallID) < 0 {
+				return errors.New("child provider request has no delegating parent")
+			}
+			if _, exists := s.children[value.ParentCallID]; !exists {
+				return errors.New("child provider request has no durable child context")
+			}
+		}
+		s.turnRequests = value.Count
 	case recordCompaction:
 		if s.suspended != nil {
 			return errors.New("model context compacted with an unresolved tool group")
@@ -919,6 +1005,7 @@ func (s *durableState) apply(record sessionRecord) error {
 		}
 		if s.openTurn == "" {
 			s.openTurn = value.TurnID
+			s.turnRequests = 0
 			s.openTurnHistory = len(s.history)
 			s.openTurnBase = cloneMessages(s.history)
 			s.openTurnConfiguration = cloneConfiguration(turnConfiguration)
@@ -1194,10 +1281,14 @@ func (s *durableState) apply(record sessionRecord) error {
 			}
 			s.messageIDs[value.MessageID] = struct{}{}
 		}
+		if hasRunningTask(s.tasks) {
+			return errors.New("turn finished with a running queued task")
+		}
 		s.openTurn = ""
 		s.openTurnHistory = 0
 		s.openTurnBase = nil
 		s.openTurnConfiguration = requestConfiguration{}
+		s.turnRequests = 0
 		s.children = nil
 		s.toolExecutions = nil
 		if s.suspended != nil {
@@ -2263,6 +2354,205 @@ func validateTodoEntries(entries []acp.PlanEntry) error {
 		return errors.New("todo has more than one in-progress item")
 	}
 	return nil
+}
+
+func (s *durableState) applyTaskChange(value taskChanged) error {
+	if value.TurnID == "" || value.TurnID != s.openTurn || value.CallID == "" {
+		return errors.New("task change has no matching open turn")
+	}
+	execution, exists := s.toolExecutions[value.CallID]
+	if !exists || execution.Result != nil || execution.TurnID != value.TurnID ||
+		execution.ParentCallID != "" {
+		return errors.New("task change has no matching started top-level call")
+	}
+	expectedTool := map[string]string{
+		"add": taskAddTool, "cancel": taskCancelTool, "retry": taskRetryTool,
+		"run": taskRunTool, taskCompleted: taskRunTool, taskFailed: taskRunTool,
+		taskCancelled: taskRunTool, taskInterrupted: taskRunTool,
+	}[value.Operation]
+	if expectedTool == "" || execution.Call.Function.Name != expectedTool {
+		return errors.New("task change operation does not match its tool call")
+	}
+	if err := validateDelegatedTask(value.Task); err != nil {
+		return err
+	}
+	index := delegatedTaskIndex(s.tasks, value.Task.ID)
+	if value.Operation == "add" {
+		if index >= 0 || len(s.tasks) == maxQueuedTasks || len(value.Task.Attempts) != 1 ||
+			value.Task.Attempts[0].State != taskPending {
+			return errors.New("invalid queued task addition")
+		}
+		next := append(cloneDelegatedTasks(s.tasks), cloneDelegatedTask(value.Task))
+		if err := validateDelegatedTasks(next); err != nil {
+			return err
+		}
+		s.tasks = next
+		return nil
+	}
+	if index < 0 {
+		return errors.New("queued task does not exist")
+	}
+	previous := s.tasks[index]
+	if previous.ID != value.Task.ID || previous.Description != value.Task.Description {
+		return errors.New("queued task identity changed")
+	}
+	switch value.Operation {
+	case "cancel":
+		if !sameAttemptPrefix(previous.Attempts, value.Task.Attempts, len(previous.Attempts)-1) ||
+			len(value.Task.Attempts) != len(previous.Attempts) ||
+			lastAttempt(previous).State != taskPending || lastAttempt(value.Task).State != taskCancelled {
+			return errors.New("only a pending task may be cancelled")
+		}
+	case "retry":
+		state := lastAttempt(previous).State
+		if state != taskFailed && state != taskCancelled && state != taskInterrupted {
+			return errors.New("only an unsuccessful task may be retried")
+		}
+		if len(value.Task.Attempts) != len(previous.Attempts)+1 ||
+			!sameAttemptPrefix(previous.Attempts, value.Task.Attempts, len(previous.Attempts)) ||
+			lastAttempt(value.Task).State != taskPending {
+			return errors.New("task retry did not append a pending attempt")
+		}
+	case "run":
+		if len(value.Task.Attempts) != len(previous.Attempts) ||
+			!sameAttemptPrefix(previous.Attempts, value.Task.Attempts, len(previous.Attempts)-1) ||
+			lastAttempt(previous).State != taskPending || lastAttempt(value.Task).State != taskRunning ||
+			lastAttempt(value.Task).TurnID != value.TurnID || lastAttempt(value.Task).CallID != value.CallID {
+			return errors.New("task dispatch did not start its pending attempt")
+		}
+	case taskCompleted, taskFailed, taskCancelled, taskInterrupted:
+		before, after := lastAttempt(previous), lastAttempt(value.Task)
+		if len(value.Task.Attempts) != len(previous.Attempts) ||
+			!sameAttemptPrefix(previous.Attempts, value.Task.Attempts, len(previous.Attempts)-1) ||
+			before.State != taskRunning || after.State != value.Operation ||
+			before.TurnID != after.TurnID || before.CallID != after.CallID || after.Result == "" {
+			return errors.New("task completion does not match its running attempt")
+		}
+	}
+	next := cloneDelegatedTasks(s.tasks)
+	next[index] = cloneDelegatedTask(value.Task)
+	if err := validateDelegatedTasks(next); err != nil {
+		return err
+	}
+	s.tasks = next
+	return nil
+}
+
+const (
+	taskAddTool    = "task_add"
+	taskListTool   = "task_list"
+	taskRunTool    = "task_run"
+	taskCancelTool = "task_cancel"
+	taskRetryTool  = "task_retry"
+)
+
+func validateDelegatedTasks(tasks []delegatedTask) error {
+	if len(tasks) > maxQueuedTasks {
+		return fmt.Errorf("task queue contains %d tasks; maximum is %d", len(tasks), maxQueuedTasks)
+	}
+	seen := make(map[string]struct{}, len(tasks))
+	running := 0
+	for _, task := range tasks {
+		if _, exists := seen[task.ID]; exists {
+			return fmt.Errorf("duplicate queued task %q", task.ID)
+		}
+		seen[task.ID] = struct{}{}
+		if err := validateDelegatedTask(task); err != nil {
+			return err
+		}
+		if lastAttempt(task).State == taskRunning {
+			running++
+		}
+	}
+	if running > 1 {
+		return errors.New("task queue has more than one running child")
+	}
+	return nil
+}
+
+func validateDelegatedTask(task delegatedTask) error {
+	if !validSessionID(task.ID) || strings.TrimSpace(task.Description) == "" || len(task.Attempts) == 0 {
+		return errors.New("queued task identity and description are required")
+	}
+	for index, attempt := range task.Attempts {
+		if attempt.Number != index+1 || !validTaskState(attempt.State) {
+			return errors.New("queued task attempts are invalid")
+		}
+		if index < len(task.Attempts)-1 && !terminalTaskState(attempt.State) {
+			return errors.New("queued task has an unfinished earlier attempt")
+		}
+		switch attempt.State {
+		case taskPending:
+			if attempt.TurnID != "" || attempt.CallID != "" || attempt.Result != "" {
+				return errors.New("pending task attempt has execution state")
+			}
+		case taskRunning:
+			if attempt.TurnID == "" || attempt.CallID == "" || attempt.Result != "" {
+				return errors.New("running task attempt is invalid")
+			}
+		case taskCompleted, taskFailed, taskInterrupted:
+			if attempt.TurnID == "" || attempt.CallID == "" || attempt.Result == "" {
+				return errors.New("terminal task attempt is incomplete")
+			}
+		case taskCancelled:
+			if attempt.Result == "" || (attempt.TurnID == "") != (attempt.CallID == "") {
+				return errors.New("cancelled task attempt is invalid")
+			}
+		}
+	}
+	return nil
+}
+
+func validTaskState(state string) bool {
+	return state == taskPending || state == taskRunning || terminalTaskState(state)
+}
+
+func hasRunningTask(tasks []delegatedTask) bool {
+	for _, task := range tasks {
+		if len(task.Attempts) > 0 && lastAttempt(task).State == taskRunning {
+			return true
+		}
+	}
+	return false
+}
+
+func terminalTaskState(state string) bool {
+	return state == taskCompleted || state == taskFailed ||
+		state == taskCancelled || state == taskInterrupted
+}
+
+func delegatedTaskIndex(tasks []delegatedTask, id string) int {
+	for index := range tasks {
+		if tasks[index].ID == id {
+			return index
+		}
+	}
+	return -1
+}
+
+func lastAttempt(task delegatedTask) delegatedTaskAttempt {
+	return task.Attempts[len(task.Attempts)-1]
+}
+
+func sameAttemptPrefix(left, right []delegatedTaskAttempt, count int) bool {
+	return count >= 0 && len(left) >= count && len(right) >= count &&
+		reflect.DeepEqual(left[:count], right[:count])
+}
+
+func cloneDelegatedTask(value delegatedTask) delegatedTask {
+	value.Attempts = append([]delegatedTaskAttempt(nil), value.Attempts...)
+	return value
+}
+
+func cloneDelegatedTasks(values []delegatedTask) []delegatedTask {
+	if values == nil {
+		return nil
+	}
+	result := make([]delegatedTask, len(values))
+	for index := range values {
+		result[index] = cloneDelegatedTask(values[index])
+	}
+	return result
 }
 
 func validateSelections(value sessionSelections) error {

@@ -1355,6 +1355,113 @@ func mustFold(t *testing.T, records []sessionRecord) durableState {
 	return state
 }
 
+func TestTaskQueueTransitionsRetainAttemptsAndRejectInvalidMutation(t *testing.T) {
+	const taskID = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	state := durableState{openTurn: "turn", toolExecutions: map[string]durableToolExecution{}}
+	started := func(callID, name string) {
+		state.toolExecutions[callID] = durableToolExecution{
+			TurnID: "turn", Call: openrouter.ToolCall{
+				ID: callID, Type: "function",
+				Function: openrouter.ToolCallFunction{Name: name, Arguments: `{}`},
+			}, StartedSequence: 1,
+		}
+	}
+	started("add", taskAddTool)
+	task := delegatedTask{
+		ID: taskID, Description: "inspect",
+		Attempts: []delegatedTaskAttempt{{Number: 1, State: taskPending}},
+	}
+	if err := state.applyTaskChange(taskChanged{
+		TurnID: "turn", CallID: "add", Operation: "add", Task: task,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	started("run", taskRunTool)
+	running := cloneDelegatedTask(task)
+	running.Attempts[0] = delegatedTaskAttempt{
+		Number: 1, State: taskRunning, TurnID: "turn", CallID: "run",
+	}
+	if err := state.applyTaskChange(taskChanged{
+		TurnID: "turn", CallID: "run", Operation: "run", Task: running,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	failed := cloneDelegatedTask(running)
+	failed.Attempts[0].State = taskFailed
+	failed.Attempts[0].Result = "provider failed"
+	if err := state.applyTaskChange(taskChanged{
+		TurnID: "turn", CallID: "run", Operation: taskFailed, Task: failed,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	started("retry", taskRetryTool)
+	retried := cloneDelegatedTask(failed)
+	retried.Attempts = append(retried.Attempts, delegatedTaskAttempt{Number: 2, State: taskPending})
+	if err := state.applyTaskChange(taskChanged{
+		TurnID: "turn", CallID: "retry", Operation: "retry", Task: retried,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := state.tasks[0]; len(got.Attempts) != 2 || got.Attempts[0].Result != "provider failed" {
+		t.Fatalf("retried task = %#v", got)
+	}
+
+	before := cloneDelegatedTasks(state.tasks)
+	if err := state.applyTaskChange(taskChanged{
+		TurnID: "turn", CallID: "retry", Operation: "retry", Task: retried,
+	}); err == nil || !reflect.DeepEqual(state.tasks, before) {
+		t.Fatalf("invalid retry = %v, queue %#v", err, state.tasks)
+	}
+}
+
+func TestProviderRequestAllowanceIsBoundedAndCloned(t *testing.T) {
+	state := durableState{sequence: 1, openTurn: "turn"}
+	for count := 1; count <= maxTurnRequests; count++ {
+		if err := state.apply(mustRecord(t, uint64(count+1), recordProviderStarted, providerRequestStarted{
+			TurnID: "turn", Count: count,
+		})); err != nil {
+			t.Fatal(err)
+		}
+	}
+	before := state.clone()
+	if err := state.apply(mustRecord(t, uint64(maxTurnRequests+2), recordProviderStarted, providerRequestStarted{
+		TurnID: "turn", Count: maxTurnRequests + 1,
+	})); err == nil || state.turnRequests != before.turnRequests {
+		t.Fatalf("overflow request = %v, count %d", err, state.turnRequests)
+	}
+}
+
+func TestTaskQueueEnforcesCapacityWithoutMutation(t *testing.T) {
+	state := durableState{openTurn: "turn", toolExecutions: make(map[string]durableToolExecution)}
+	for index := 0; index < maxQueuedTasks+1; index++ {
+		callID := fmt.Sprintf("add-%d", index)
+		state.toolExecutions[callID] = durableToolExecution{
+			TurnID: "turn", Call: openrouter.ToolCall{
+				ID: callID, Type: "function",
+				Function: openrouter.ToolCallFunction{Name: taskAddTool, Arguments: `{}`},
+			}, StartedSequence: uint64(index + 1),
+		}
+		task := delegatedTask{
+			ID: fmt.Sprintf("%032x", index+1), Description: callID,
+			Attempts: []delegatedTaskAttempt{{Number: 1, State: taskPending}},
+		}
+		err := state.applyTaskChange(taskChanged{
+			TurnID: "turn", CallID: callID, Operation: "add", Task: task,
+		})
+		if index < maxQueuedTasks && err != nil {
+			t.Fatal(err)
+		}
+		if index == maxQueuedTasks && err == nil {
+			t.Fatal("task queue accepted a task above capacity")
+		}
+	}
+	if len(state.tasks) != maxQueuedTasks {
+		t.Fatalf("task count = %d", len(state.tasks))
+	}
+}
+
 func mustRecord(t *testing.T, sequence uint64, kind string, value any) sessionRecord {
 	t.Helper()
 	record, err := newRecord(sequence, kind, value)

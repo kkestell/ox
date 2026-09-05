@@ -63,9 +63,11 @@ func composePrompt(cwd string, now time.Time, instructions, skillCatalog string,
 	toolProse += webToolProse + memoryToolProse
 	prompt := promptPrefix(strings.TrimSpace(basePrompt), cwd, now) + "\n\n" +
 		toolProse + "\n\n" +
-		"Use task to delegate self-contained work when it helps. Give each subagent a " +
-		"complete standalone prompt, do not duplicate its work, and partition file work " +
-		"so concurrent subagents never touch the same file."
+		"Use task_add to queue self-contained work and task_run to run one queued child at " +
+		"a time. A task description must be a complete standalone prompt. Pending tasks " +
+		"never run in the background. Retry an unsuccessful task only when the user " +
+		"explicitly requests it; earlier effects may remain visible. The todo list reports " +
+		"progress but never schedules queued work."
 	prompt += skillCatalog
 	return appendWorkspaceInstructions(prompt, instructions)
 }
