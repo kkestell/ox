@@ -47,8 +47,10 @@ an OpenRouter model and credential before Zed starts it.
    the keyring, put `"--credential-file"` and its absolute path in `args`; make
    that file readable only by your user.
 
-4. Open Zed's Agent Panel. Use the agent selector or new-thread menu to start an
-   **Ox** thread.
+4. Open the project directory that Ox should use as its workspace, then open
+   Zed's Agent Panel. Use the agent selector or new-thread menu to start an
+   **Ox** thread. To work on an independent branch, prepare and open a
+   [Git worktree](worktrees.md).
 
 ## Troubleshooting
 
