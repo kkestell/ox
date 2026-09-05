@@ -67,6 +67,11 @@ type Invocation struct {
 	FileSystem   ClientFileSystem
 	Terminal     ClientTerminal
 	Delegate     func(context.Context, string) (string, error)
+	AddTask      func(string) (QueuedTask, error)
+	ListTasks    func() []QueuedTask
+	RunTask      func(context.Context, string) (string, error)
+	CancelTask   func(string) (QueuedTask, error)
+	RetryTask    func(string) (QueuedTask, error)
 	ReplaceTodo  func([]acp.PlanEntry) error
 	LoadSkill    func(string) (string, error)
 	SearchMemory func(string) ([]MemoryFact, error)
@@ -75,6 +80,19 @@ type Invocation struct {
 	AskQuestion  func(context.Context, acp.CreateElicitationRequest) (acp.CreateElicitationResponse, error)
 	Emit         func(string)
 	ReportSpill  func(string)
+}
+
+type QueuedTask struct {
+	ID          string              `json:"id"`
+	Description string              `json:"description"`
+	State       string              `json:"state"`
+	Attempts    []QueuedTaskAttempt `json:"attempts"`
+}
+
+type QueuedTaskAttempt struct {
+	Number int    `json:"number"`
+	State  string `json:"state"`
+	Result string `json:"result,omitempty"`
 }
 
 type ClientFileSystem struct {

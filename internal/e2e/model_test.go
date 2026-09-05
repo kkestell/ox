@@ -78,6 +78,7 @@ type modelResponse struct {
 	prompt   string
 	status   int
 	body     string
+	respond  func(modelRequest) string
 	started  chan struct{}
 	rest     chan string
 	consumed bool
@@ -150,6 +151,12 @@ func withModelContextWindow(model *mockModel, contextWindow int) startOption {
 
 func (m *mockModel) queue(body string) {
 	m.queueFor("", body)
+}
+
+func (m *mockModel) queueDynamic(respond func(modelRequest) string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.responses = append(m.responses, &modelResponse{respond: respond})
 }
 
 // queueFor queues a response for the request whose final message has prompt.
@@ -274,6 +281,10 @@ func (m *mockModel) serveHTTP(writer http.ResponseWriter, request *http.Request)
 		return
 	}
 	m.mu.Unlock()
+	body := response.body
+	if response.respond != nil {
+		body = response.respond(decoded)
+	}
 
 	if response.status != 0 {
 		http.Error(writer, response.body, response.status)
@@ -282,7 +293,7 @@ func (m *mockModel) serveHTTP(writer http.ResponseWriter, request *http.Request)
 
 	writer.Header().Set("Content-Type", "text/event-stream")
 	flusher := writer.(http.Flusher)
-	if !writeFrames(writer, flusher, response.body) || response.started == nil {
+	if !writeFrames(writer, flusher, body) || response.started == nil {
 		return
 	}
 	close(response.started)
@@ -290,6 +301,25 @@ func (m *mockModel) serveHTTP(writer http.ResponseWriter, request *http.Request)
 	case rest := <-response.rest:
 		writeFrames(writer, flusher, rest)
 	case <-request.Context().Done():
+	}
+}
+
+func queuedTaskRunResponse(callID string) func(modelRequest) string {
+	return func(request modelRequest) string {
+		if len(request.Messages) == 0 {
+			return sse(evFinishReason("stop"))
+		}
+		var task struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal([]byte(request.Messages[len(request.Messages)-1].text()), &task); err != nil || task.ID == "" {
+			return sse(evFinishReason("stop"))
+		}
+		return sse(
+			evToolCall(0, callID, "function", "task_run", fmt.Sprintf(`{"task_id":%q}`, task.ID)),
+			evFinishReason("tool_calls"),
+			evUsage(1, 1, 2),
+		)
 	}
 }
 

@@ -1173,6 +1173,9 @@ func (a *Agent) closeUnknownExecutions(value *session) error {
 }
 
 func (a *Agent) interruptOpenTurn(value *session) error {
+	if err := a.interruptRunningTasks(value); err != nil {
+		return fmt.Errorf("persist interrupted queued task: %w", err)
+	}
 	if err := a.closeUnknownExecutions(value); err != nil {
 		return err
 	}
@@ -1757,6 +1760,7 @@ type session struct {
 	reads          fileReads
 	approvalMu     sync.Mutex
 	exclusiveMu    sync.Mutex
+	queueMu        sync.Mutex
 	callIDsMu      sync.Mutex
 	callIDs        map[string]struct{}
 	readScopesMu   sync.Mutex

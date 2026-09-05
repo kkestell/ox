@@ -243,9 +243,16 @@ func TestMCPChildDispatchThroughShippedBinary(t *testing.T) {
 	))
 	defer httpServer.Close()
 	model := startModel(t,
-		toolResponse("call-task", "task", `{"description":"MCP child","prompt":"use the MCP lookup tool"}`),
+		toolResponse("call-task-add", "task_add", `{"description":"use the MCP lookup tool"}`),
+	)
+	model.queueDynamic(queuedTaskRunResponse("call-task-run"))
+	model.queue(
 		toolResponse("call-child-mcp", toolName, `{}`),
+	)
+	model.queue(
 		sse(evText("child done"), evFinishReason("stop")),
+	)
+	model.queue(
 		sse(evText("parent done"), evFinishReason("stop")),
 	)
 	child := start(t, withModel(model))
@@ -271,8 +278,8 @@ func TestMCPChildDispatchThroughShippedBinary(t *testing.T) {
 		t.Fatalf("MCP calls = %d", calls.Load())
 	}
 	requests := model.requests()
-	if len(requests) != 4 || !requestHasTool(requests[0], toolName) || !requestHasTool(requests[1], toolName) ||
-		!requestContainsText(requests[2], "child result") {
+	if len(requests) != 5 || !requestHasTool(requests[0], toolName) || !requestHasTool(requests[2], toolName) ||
+		!requestContainsText(requests[3], "child result") {
 		t.Fatalf("parent/child MCP requests = %#v", requests)
 	}
 }

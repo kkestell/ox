@@ -22,6 +22,8 @@ import (
 
 const maxTurnRequests = 16
 
+var errTurnRequestLimit = errors.New("turn provider request limit reached")
+
 type loopOutcome struct {
 	response acp.PromptResponse
 	err      error
@@ -107,12 +109,16 @@ func (a *Agent) runFrom(
 			thoughtID = suspended.ThoughtID
 			completion = suspended.completion()
 		} else {
-			a.logger.Info(
-				"starting model request",
-				"session_id", value.id,
-				"request", requestCount,
-				"prefix_fingerprint", a.prefixFingerprint(value),
-			)
+			if !providerRequestAvailable(value) {
+				if finishErr := a.finishTurn(
+					value, active, "request_limit", acp.StopReasonMaxTurnRequests, "", events,
+				); finishErr != nil {
+					return loopOutcome{err: finishErr}
+				}
+				return loopOutcome{response: acp.PromptResponse{
+					StopReason: acp.StopReasonMaxTurnRequests, Usage: value.state.usage.acp(),
+				}}
+			}
 			var err error
 			answerID, err = randomID()
 			if err != nil {
@@ -145,9 +151,30 @@ func (a *Agent) runFrom(
 			if compactionUpdate != nil {
 				events <- *compactionUpdate
 			}
+			budgetRequest, err := a.reserveProviderRequest(value, "")
+			if errors.Is(err, errTurnRequestLimit) {
+				if finishErr := a.finishTurn(
+					value, active, "request_limit", acp.StopReasonMaxTurnRequests, "", events,
+				); finishErr != nil {
+					return loopOutcome{err: finishErr}
+				}
+				return loopOutcome{response: acp.PromptResponse{
+					StopReason: acp.StopReasonMaxTurnRequests, Usage: value.state.usage.acp(),
+				}}
+			}
+			if err != nil {
+				return loopOutcome{err: fmt.Errorf("persist provider request allowance: %w", err)}
+			}
+			a.logger.Info(
+				"starting model request",
+				"session_id", value.id,
+				"request", requestCount,
+				"turn_request", budgetRequest,
+				"prefix_fingerprint", a.prefixFingerprint(value),
+			)
 			provider := active.trace.Provider(
 				diagnostictrace.ProviderPrimary,
-				requestCount,
+				budgetRequest,
 				providerRequestBytes(request),
 				"",
 			)
@@ -348,6 +375,27 @@ func (a *Agent) runFrom(
 		}
 	}
 	panic("unreachable")
+}
+
+func (a *Agent) reserveProviderRequest(value *session, parentCallID string) (int, error) {
+	value.stateMu.Lock()
+	defer value.stateMu.Unlock()
+	if value.state.turnRequests >= maxTurnRequests {
+		return 0, errTurnRequestLimit
+	}
+	next := value.state.turnRequests + 1
+	if err := a.commitLocked(value, recordProviderStarted, providerRequestStarted{
+		TurnID: value.state.openTurn, ParentCallID: parentCallID, Count: next,
+	}); err != nil {
+		return 0, err
+	}
+	return next, nil
+}
+
+func providerRequestAvailable(value *session) bool {
+	value.stateMu.Lock()
+	defer value.stateMu.Unlock()
+	return value.state.turnRequests < maxTurnRequests
 }
 
 func (s *suspendedModelExchangeRecord) completion() *openrouter.Completion {
@@ -1399,8 +1447,13 @@ func (a *Agent) executeOne(
 ) (result toolResult) {
 	index, ok := tools.byName[call.Function.Name]
 	if ok && !tools.tools[index].ParallelSafe {
-		value.exclusiveMu.Lock()
-		defer value.exclusiveMu.Unlock()
+		if parent == "" && strings.HasPrefix(tools.tools[index].Name, "task_") {
+			value.queueMu.Lock()
+			defer value.queueMu.Unlock()
+		} else {
+			value.exclusiveMu.Lock()
+			defer value.exclusiveMu.Unlock()
+		}
 		if ctx.Err() != nil {
 			return toolResult{
 				content: "tool call cancelled before start", failed: true, target: target,
@@ -1501,8 +1554,29 @@ func (a *Agent) executeOne(
 			return nil
 		}
 	}
+	if parent == "" {
+		value.stateMu.Lock()
+		turnID := value.state.openTurn
+		value.stateMu.Unlock()
+		switch tool.Name {
+		case taskAddTool:
+			invocation.AddTask = func(description string) (QueuedTask, error) {
+				return a.addQueuedTask(value, turnID, call.ID, description)
+			}
+		case taskListTool:
+			invocation.ListTasks = func() []QueuedTask { return a.queuedTasks(value) }
+		case taskCancelTool:
+			invocation.CancelTask = func(id string) (QueuedTask, error) {
+				return a.cancelQueuedTask(value, turnID, call.ID, id)
+			}
+		case taskRetryTool:
+			invocation.RetryTask = func(id string) (QueuedTask, error) {
+				return a.retryQueuedTask(value, turnID, call.ID, id)
+			}
+		}
+	}
 	if tool.Delegates {
-		invocation.Delegate = func(delegateCtx context.Context, prompt string) (string, error) {
+		delegateCall := func(delegateCtx context.Context, prompt string) (string, error) {
 			var err error
 			var answer string
 			answer, delegation, err = a.delegate(
@@ -1518,6 +1592,33 @@ func (a *Agent) executeOne(
 				turn,
 			)
 			return answer, err
+		}
+		if parent == "" && tool.Name == taskRunTool {
+			invocation.RunTask = func(delegateCtx context.Context, id string) (string, error) {
+				value.stateMu.Lock()
+				turnID := value.state.openTurn
+				value.stateMu.Unlock()
+				task, err := a.beginQueuedTask(value, turnID, call.ID, id)
+				if err != nil {
+					return "", err
+				}
+				answer, runErr := delegateCall(delegateCtx, task.Description)
+				state, result := taskCompleted, answer
+				if runErr != nil {
+					state, result = taskFailed, runErr.Error()
+					if delegateCtx.Err() != nil {
+						state, result = taskCancelled, "task cancelled"
+					}
+				}
+				if finishErr := a.finishQueuedTask(
+					value, turnID, call.ID, id, state, result,
+				); finishErr != nil {
+					return "", finishErr
+				}
+				return answer, runErr
+			}
+		} else {
+			invocation.Delegate = delegateCall
 		}
 	}
 	output, err := tool.Execute(ctx, invocation)

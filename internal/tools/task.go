@@ -4,59 +4,162 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"strings"
 
 	"github.com/kkestell/ox/internal/agent"
 )
 
-const taskDescription = "Delegate a complete, standalone subtask to a subagent with the same " +
-	"tools except task. The subagent cannot see this conversation and only its final answer " +
-	"comes back, so prompt must contain all necessary context. Several task calls in one " +
-	"message run concurrently; do not duplicate their work, and partition file work so no " +
-	"two subagents touch the same file. Description is a short label shown to the user."
+const taskAddDescription = "Add one complete standalone subtask to the durable queue. Adding does not run it; use task_run with the returned ID."
+const taskListDescription = "Inspect the durable delegated-task queue, including every attempt and terminal result."
+const taskRunDescription = "Run the pending attempt for one queued task. Only one queued child runs at a time, and pending tasks never run in the background."
+const taskCancelDescription = "Cancel a pending queued task. A running child is cancelled by cancelling the session turn."
+const taskRetryDescription = "Append a pending attempt for a failed, cancelled, or interrupted task. Use only when the user explicitly requested a retry."
 
-const taskSchema = `{
+const taskAddSchema = `{
 	"type": "object",
 	"properties": {
 		"description": {
 			"type": "string",
-			"description": "A short label for the delegated work."
-		},
-		"prompt": {
-			"type": "string",
-			"description": "The complete standalone task for the subagent."
+			"description": "The complete standalone prompt for the child agent."
 		}
 	},
-	"required": ["description", "prompt"],
+	"required": ["description"],
 	"additionalProperties": false
 }`
 
-type taskArguments struct {
+const taskIDSchema = `{
+	"type": "object",
+	"properties": {
+		"task_id": {"type": "string"}
+	},
+	"required": ["task_id"],
+	"additionalProperties": false
+}`
+
+const emptyObjectSchema = `{
+	"type": "object",
+	"properties": {},
+	"additionalProperties": false
+}`
+
+type taskAddArguments struct {
 	Description *string `json:"description"`
-	Prompt      *string `json:"prompt"`
 }
 
-func taskLabel(arguments json.RawMessage) string {
-	var input taskArguments
-	if decodeArgs(arguments, &input) != nil || input.Description == nil {
+type taskIDArguments struct {
+	TaskID *string `json:"task_id"`
+}
+
+func taskRunLabel(arguments json.RawMessage) string {
+	var input taskIDArguments
+	if decodeArgs(arguments, &input) != nil || input.TaskID == nil {
 		return ""
 	}
-	return *input.Description
+	return *input.TaskID
 }
 
-func executeTask(ctx context.Context, invocation agent.Invocation) (string, error) {
-	var arguments taskArguments
+func executeTaskAdd(_ context.Context, invocation agent.Invocation) (string, error) {
+	var arguments taskAddArguments
 	if err := decodeArgs(invocation.Arguments, &arguments); err != nil {
 		return "", err
 	}
-	if _, err := requireString("description", arguments.Description); err != nil {
-		return "", err
-	}
-	prompt, err := requireString("prompt", arguments.Prompt)
+	description, err := requireNonemptyString("description", arguments.Description)
 	if err != nil {
 		return "", err
 	}
-	if invocation.Delegate == nil {
-		return "", errors.New("delegation is unavailable")
+	if invocation.AddTask == nil {
+		return "", errors.New("task queue is unavailable")
 	}
-	return invocation.Delegate(ctx, prompt)
+	task, err := invocation.AddTask(description)
+	if err != nil {
+		return "", err
+	}
+	return renderTask(task)
+}
+
+func executeTaskList(_ context.Context, invocation agent.Invocation) (string, error) {
+	var arguments struct{}
+	if err := decodeArgs(invocation.Arguments, &arguments); err != nil {
+		return "", err
+	}
+	if invocation.ListTasks == nil {
+		return "", errors.New("task queue is unavailable")
+	}
+	tasks := invocation.ListTasks()
+	data, err := json.Marshal(struct {
+		Tasks []agent.QueuedTask `json:"tasks"`
+	}{Tasks: tasks})
+	if err != nil {
+		return "", fmt.Errorf("render task queue: %w", err)
+	}
+	return string(data), nil
+}
+
+func executeTaskRun(ctx context.Context, invocation agent.Invocation) (string, error) {
+	taskID, err := decodeTaskID(invocation.Arguments)
+	if err != nil {
+		return "", err
+	}
+	if invocation.RunTask == nil {
+		return "", errors.New("task queue is unavailable")
+	}
+	return invocation.RunTask(ctx, taskID)
+}
+
+func executeTaskCancel(_ context.Context, invocation agent.Invocation) (string, error) {
+	taskID, err := decodeTaskID(invocation.Arguments)
+	if err != nil {
+		return "", err
+	}
+	if invocation.CancelTask == nil {
+		return "", errors.New("task queue is unavailable")
+	}
+	task, err := invocation.CancelTask(taskID)
+	if err != nil {
+		return "", err
+	}
+	return renderTask(task)
+}
+
+func executeTaskRetry(_ context.Context, invocation agent.Invocation) (string, error) {
+	taskID, err := decodeTaskID(invocation.Arguments)
+	if err != nil {
+		return "", err
+	}
+	if invocation.RetryTask == nil {
+		return "", errors.New("task queue is unavailable")
+	}
+	task, err := invocation.RetryTask(taskID)
+	if err != nil {
+		return "", err
+	}
+	return renderTask(task)
+}
+
+func decodeTaskID(arguments json.RawMessage) (string, error) {
+	var input taskIDArguments
+	if err := decodeArgs(arguments, &input); err != nil {
+		return "", err
+	}
+	return requireNonemptyString("task_id", input.TaskID)
+}
+
+func requireNonemptyString(name string, value *string) (string, error) {
+	result, err := requireString(name, value)
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(result) == "" {
+		return "", errors.New("`" + name + "` must not be blank")
+	}
+	return result, nil
+}
+
+func renderTask(task agent.QueuedTask) (string, error) {
+	data, err := json.Marshal(task)
+	if err != nil {
+		return "", fmt.Errorf("render queued task: %w", err)
+	}
+	return string(data), nil
 }

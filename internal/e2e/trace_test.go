@@ -172,19 +172,21 @@ func TestDiagnosticTraceClassifiesCompactionSubagentAndCancellation(t *testing.T
 	)
 	oldAnswer := strings.Repeat("old trace detail ", 240)
 	recentAnswer := strings.Repeat("recent trace answer ", 100)
-	taskArguments := `{"description":"inspect","prompt":"subagent-trace-sentinel"}`
+	taskArguments := `{"description":"subagent-trace-sentinel"}`
 	held := (*modelResponse)(nil)
 	model := startModel(t,
 		sse(evText(oldAnswer), evFinishReason("stop"), evUsage(100, 600, 700)),
 		sse(evText(recentAnswer), evFinishReason("stop"), evUsage(800, 5, 805)),
 		sse(evText(summarySentinel), evFinishReason("stop"), evUsage(650, 20, 670)),
 		sse(
-			evToolCall(0, "call-task", "function", "task", taskArguments),
+			evToolCall(0, "call-task-add", "function", "task_add", taskArguments),
 			evFinishReason("tool_calls"), evUsage(100, 5, 105),
 		),
-		sse(evText("subagent final"), evFinishReason("stop"), evUsage(40, 4, 44)),
-		sse(evText("primary final"), evFinishReason("stop"), evUsage(90, 3, 93)),
 	)
+	model.queueDynamic(queuedTaskRunResponse("call-task-run"))
+	model.queue(sse(evText("subagent final"), evFinishReason("stop"), evUsage(40, 4, 44)))
+	model.queue(sse(evText("queue trace summary"), evFinishReason("stop"), evUsage(90, 3, 93)))
+	model.queue(sse(evText("primary final"), evFinishReason("stop"), evUsage(90, 3, 93)))
 	held = model.holdFor("cancel this turn", frames(evReasoning(cancelSentinel)))
 	child := start(t,
 		withModel(model),
@@ -231,7 +233,7 @@ func TestDiagnosticTraceClassifiesCompactionSubagentAndCancellation(t *testing.T
 			case "compaction":
 				compaction = true
 			case "subagent":
-				if record["parent_tool_call_id"] == "call-task" {
+				if record["parent_tool_call_id"] == "call-task-run" {
 					subagent = true
 				}
 			}

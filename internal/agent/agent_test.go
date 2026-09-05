@@ -1993,6 +1993,58 @@ func TestTodoPersistenceFailureEmitsNoPlanOrSuccessfulResult(t *testing.T) {
 	}
 }
 
+func TestQueuedTaskDispatchPersistenceFailureSkipsChild(t *testing.T) {
+	const taskID = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	var value *session
+	instance, err := New(Config{
+		Logger: discardLogger(),
+		Tools: []Tool{
+			{
+				Name: taskRunTool, InputSchema: json.RawMessage(`{"type":"object"}`),
+				Approval: ApprovalNone, Delegates: true, ParentOnly: true,
+				Label: func(json.RawMessage) string { return "task" },
+				Execute: func(ctx context.Context, invocation Invocation) (string, error) {
+					value.log.close()
+					return invocation.RunTask(ctx, taskID)
+				},
+			},
+			{Name: "read", Kind: acp.ToolKindRead, Approval: ApprovalNone},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	configuration := requestConfiguration{
+		Settings:  settings.Resolved{Model: "test/model"},
+		Tools:     cloneTools(instance.primaryTools.modelTools),
+		ToolKinds: map[string]acp.ToolKind{taskRunTool: acp.ToolKindOther, "read": acp.ToolKindRead},
+		Subagent:  subagentConfiguration{SystemPrompt: "child", Tools: cloneTools(instance.subagentTools.modelTools)},
+	}
+	value = durableTestSession(t, instance, configuration, "turn")
+	value.state.tasks = []delegatedTask{{
+		ID: taskID, Description: "must not run",
+		Attempts: []delegatedTaskAttempt{{Number: 1, State: taskPending}},
+	}}
+	call := openrouter.ToolCall{
+		ID: "run-call", Type: "function",
+		Function: openrouter.ToolCallFunction{Name: taskRunTool, Arguments: fmt.Sprintf(`{"task_id":%q}`, taskID)},
+	}
+	if err := instance.commit(value, recordExchangePaused, suspendedModelExchangeRecord{
+		TurnID: "turn", AnswerID: "answer", ThoughtID: "thought",
+		FinishReason: "tool_calls", ToolCalls: []openrouter.ToolCall{call}, RequestCount: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, err = instance.dispatchApprovedBatch(
+		context.Background(), value, instance.primaryTools, value.primaryFileReads(),
+		[]openrouter.ToolCall{call}, nil, nil, ClientFileSystem{}, ClientTerminal{},
+		make(chan event, 8), "", []toolResult{{}}, []bool{true}, diagnostictrace.Turn{},
+	)
+	if err == nil || len(value.state.children) != 0 || lastAttempt(value.state.tasks[0]).State != taskPending {
+		t.Fatalf("dispatch = %v, children = %#v, task = %#v", err, value.state.children, value.state.tasks[0])
+	}
+}
+
 func TestToolCompletionPersistenceFailureStopsLaterSibling(t *testing.T) {
 	var first, siblingCancelled, later atomic.Int32
 	siblingStarted := make(chan struct{})
