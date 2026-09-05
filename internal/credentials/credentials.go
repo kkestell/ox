@@ -70,7 +70,10 @@ func LoadFile(path string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("inspect credential file %s: %w", path, err)
 	}
-	if err := validateFile(before); err != nil {
+	if err := validateFileType(before); err != nil {
+		return "", fmt.Errorf("credential file %s: %w", path, err)
+	}
+	if err := validateFileSecurityBeforeOpen(before); err != nil {
 		return "", fmt.Errorf("credential file %s: %w", path, err)
 	}
 	file, err := os.Open(path)
@@ -82,7 +85,10 @@ func LoadFile(path string) (string, error) {
 		statErr = errors.New("file changed while it was being opened")
 	}
 	if statErr == nil {
-		statErr = validateFile(after)
+		statErr = validateFileType(after)
+	}
+	if statErr == nil {
+		statErr = validateFileSecurity(file, after)
 	}
 	raw, readErr := io.ReadAll(file)
 	closeErr := file.Close()
@@ -99,18 +105,9 @@ func LoadFile(path string) (string, error) {
 	return key, nil
 }
 
-func validateFile(info os.FileInfo) error {
+func validateFileType(info os.FileInfo) error {
 	if !info.Mode().IsRegular() {
 		return errors.New("must be a regular file, not a directory, device, or symlink")
-	}
-	if info.Mode().Perm()&0o077 != 0 {
-		return fmt.Errorf("must not be accessible by group or other users (mode is %04o)", info.Mode().Perm())
-	}
-	if info.Mode().Perm()&0o400 == 0 {
-		return errors.New("must be readable by its owner")
-	}
-	if !ownedByCurrentUser(info) {
-		return errors.New("must be owned by the current user")
 	}
 	return nil
 }

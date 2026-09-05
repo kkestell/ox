@@ -33,6 +33,11 @@ func (a *Agent) SetSessionConfigOption(
 	if value == nil {
 		return acp.SetSessionConfigOptionResponse{}, jrpc2.Errorf(jrpc2.InvalidParams, "unknown session")
 	}
+	release, err := value.claimConfigChange()
+	if err != nil {
+		return acp.SetSessionConfigOptionResponse{}, jrpc2.Errorf(jrpc2.InvalidParams, "%v", err)
+	}
+	defer release()
 
 	value.configMu.Lock()
 	defer value.configMu.Unlock()
@@ -252,7 +257,10 @@ func applySelections(
 	}
 	configuration.ContextWindow = entry.ContextWindow()
 	if configuration.ContextWindow <= 0 {
-		return requestConfiguration{}, fmt.Errorf("model %q has no positive context length", entry.ID)
+		return requestConfiguration{}, fmt.Errorf(
+			"model %q has no positive context length in the OpenRouter catalog; choose a model with a published context length",
+			entry.ID,
+		)
 	}
 	if err := settings.Validate(entry, configuration.Settings, settings.Compatibility{
 		Tools:      len(configuration.Tools) > 0,

@@ -8,6 +8,7 @@ require (
 	github.com/go-git/go-git/v5 v5.19.1
 	github.com/zalando/go-keyring v0.2.8
 	golang.org/x/term v0.45.0
+	golang.org/x/sys v0.47.0
 	gopkg.in/yaml.v3 v3.0.1
 	mvdan.cc/sh/v3 v3.13.1
 )
@@ -21,6 +22,5 @@ require (
 	github.com/jbenet/go-context v0.0.0-20150711004518-d14ea06fba99 // indirect
 	golang.org/x/net v0.53.0 // indirect
 	golang.org/x/sync v0.19.0 // indirect
-	golang.org/x/sys v0.47.0 // indirect
 	gopkg.in/warnings.v0 v0.1.2 // indirect
 )

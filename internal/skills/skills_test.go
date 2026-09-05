@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"testing"
 )
 
@@ -151,7 +150,7 @@ func TestDiscoverSkipsNonRegularSkillFiles(t *testing.T) {
 		make func(string) error
 	}{
 		{name: "directory", make: func(path string) error { return os.Mkdir(path, 0o700) }},
-		{name: "fifo", make: func(path string) error { return syscall.Mkfifo(path, 0o600) }},
+		{name: "fifo", make: makeFIFO},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			workspace := t.TempDir()
