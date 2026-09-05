@@ -87,7 +87,7 @@ func invoke(t *testing.T, tool agent.Tool, invocation agent.Invocation) (string,
 
 func TestAllDeclaresValidSchemasAndClassifications(t *testing.T) {
 	tools := All()
-	if len(tools) != 8 {
+	if len(tools) != 9 {
 		t.Fatalf("tool count = %d", len(tools))
 	}
 	for _, tool := range tools {
@@ -123,6 +123,42 @@ func TestAllDeclaresValidSchemasAndClassifications(t *testing.T) {
 		if !mutating && !shell && !task && !todo &&
 			(!tool.ParallelSafe || tool.Approval != agent.ApprovalNone) {
 			t.Errorf("%s read-only classification = %+v", tool.Name, tool)
+		}
+	}
+}
+
+func TestSkillLoadsExactCatalogName(t *testing.T) {
+	invocation := testInvocation(t, `{"name":"review"}`)
+	invocation.LoadSkill = func(name string) (string, error) {
+		if name != "review" {
+			t.Fatalf("name = %q", name)
+		}
+		return "Review instructions.\n", nil
+	}
+	output, err := invoke(t, toolNamed(t, "skill"), invocation)
+	if err != nil || output != "Review instructions.\n" {
+		t.Fatalf("output = %q, error = %v", output, err)
+	}
+}
+
+func TestSkillRejectsInvalidOrUnavailableLoads(t *testing.T) {
+	for _, test := range []struct {
+		arguments  string
+		invocation func(*agent.Invocation)
+		want       string
+	}{
+		{arguments: `{}`, want: "must be a string"},
+		{arguments: `{"name":""}`, want: "must not be empty"},
+		{arguments: `{"name":"missing"}`, want: "unavailable"},
+		{arguments: `{"name":"review","extra":true}`, want: "unknown field"},
+	} {
+		invocation := testInvocation(t, test.arguments)
+		if test.invocation != nil {
+			test.invocation(&invocation)
+		}
+		_, err := invoke(t, toolNamed(t, "skill"), invocation)
+		if err == nil || !strings.Contains(err.Error(), test.want) {
+			t.Fatalf("arguments %s: error = %v", test.arguments, err)
 		}
 	}
 }

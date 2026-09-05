@@ -923,7 +923,7 @@ func TestReadOnlyToolsSpillRefuseEscapeReplayAndDelete(t *testing.T) {
 			) {
 				return nil, errors.New("system prompt did not use the canonical workspace root")
 			}
-			if len(request.Tools) != 8 {
+			if len(request.Tools) != 9 {
 				return nil, errors.New("built-in tools were not frozen into the request")
 			}
 			return &openrouter.Completion{
@@ -1320,8 +1320,8 @@ func TestConcurrentTasksNestChildCallsApproveAndReplay(t *testing.T) {
 	) (*openrouter.Completion, error) {
 		system := request.Messages[0].Content[0].Text
 		if strings.HasPrefix(system, "You are a subagent") {
-			if len(request.Tools) != 6 {
-				return nil, fmt.Errorf("subagent tools = %d, want 6", len(request.Tools))
+			if len(request.Tools) != 7 {
+				return nil, fmt.Errorf("subagent tools = %d, want 7", len(request.Tools))
 			}
 			for _, tool := range request.Tools {
 				if tool.Function.Name == "task" {
@@ -3492,6 +3492,93 @@ func TestWorkspaceInstructionsFreezeAcrossParentAndChildUntilReactivation(t *tes
 	model.assertConsumed(t)
 }
 
+func TestWorkspaceSkillsShareCatalogAcrossParentAndChild(t *testing.T) {
+	workspace := t.TempDir()
+	skillPath := filepath.Join(workspace, ".agents", "skills", "inspect", "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(skillPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(skillPath, []byte(`---
+name: inspect
+description: Inspect workspace fixtures.
+---
+Read the fixture carefully.
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var parentCatalog, childCatalog string
+	model := &routedModel{route: func(
+		_ context.Context,
+		request openrouter.Request,
+		_ func(openrouter.Delta),
+	) (*openrouter.Completion, error) {
+		system := request.Messages[0].Content[0].Text
+		start := strings.Index(system, "<skills>")
+		end := strings.Index(system, "</skills>")
+		if start < 0 || end < start {
+			return nil, errors.New("request omitted workspace skill catalog")
+		}
+		catalog := system[start : end+len("</skills>")]
+		messages, err := conversation(request)
+		if err != nil {
+			return nil, err
+		}
+		if strings.HasPrefix(system, "You are a subagent") {
+			childCatalog = catalog
+			if !requestHasTool(request, "skill") {
+				return nil, errors.New("child omitted skill tool")
+			}
+			if messages[len(messages)-1].Role == openrouter.RoleUser {
+				return &openrouter.Completion{FinishReason: "tool_calls", ToolCalls: []openrouter.ToolCall{
+					modelToolCall("child-skill", "skill", `{"name":"inspect"}`),
+				}}, nil
+			}
+			if !strings.Contains(messages[len(messages)-1].Content[0].Text, "Read the fixture carefully") {
+				return nil, errors.New("child did not receive loaded skill body")
+			}
+			return completion("child done"), nil
+		}
+		parentCatalog = catalog
+		if len(messages) == 1 {
+			return &openrouter.Completion{FinishReason: "tool_calls", ToolCalls: []openrouter.ToolCall{
+				modelToolCall("task-skill", "task", `{"description":"inspect","prompt":"use the inspect skill"}`),
+			}}, nil
+		}
+		return completion("parent done"), nil
+	}}
+	harness := newAgentHarness(t, model, oxtools.All())
+	harness.prompt(t, harness.newSessionIn(t, workspace, nil), "delegate skill use")
+	if parentCatalog == "" || childCatalog != parentCatalog {
+		t.Fatalf("catalogs differ:\nparent = %q\nchild = %q", parentCatalog, childCatalog)
+	}
+}
+
+func TestOversizedRenderedWorkspaceSkillCatalogRejectsActivation(t *testing.T) {
+	workspace := t.TempDir()
+	for index := 0; index < 128; index++ {
+		name := fmt.Sprintf("skill-%03d", index)
+		path := filepath.Join(workspace, ".agents", "skills", name, "SKILL.md")
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		body := fmt.Sprintf(
+			"---\nname: %s\ndescription: %s\n---\nbody\n",
+			name,
+			strings.Repeat("x", 600),
+		)
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	harness := newAgentHarness(t, &scriptedModel{}, oxtools.All())
+	_, err := harness.callNewSession(workspace, nil)
+	assertRPCErrorCode(t, err, jrpc2.InternalError)
+	if !strings.Contains(err.Error(), "skill catalog renders") ||
+		!strings.Contains(err.Error(), "maximum") {
+		t.Fatalf("activation error = %v", err)
+	}
+}
+
 func TestPlanModeHidesAndRejectsEffectfulTools(t *testing.T) {
 	var executed atomic.Int32
 	mutate := agent.Tool{
@@ -3579,7 +3666,8 @@ func TestTodoProjectsDurablePlanAndCurrentParentContext(t *testing.T) {
 			return completion("done"), nil
 		},
 		func(_ context.Context, request openrouter.Request, _ func(openrouter.Delta)) (*openrouter.Completion, error) {
-			if !requestHasTool(request, "todo") || requestHasTool(request, "write_file") {
+			if !requestHasTool(request, "todo") || !requestHasTool(request, "skill") ||
+				requestHasTool(request, "write_file") {
 				return nil, fmt.Errorf("plan tools = %#v", request.Tools)
 			}
 			return completion("planned"), nil

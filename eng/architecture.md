@@ -64,6 +64,8 @@ The implemented package layout assigns one owner to each boundary:
 - `internal/settings` owns global and workspace settings, validation,
   precedence, and validation of model settings. The agent combines those inputs
   with durable session selections to construct immutable turn configuration.
+- `internal/skills` owns confined workspace-skill discovery, Agent Skills
+  metadata validation, and activation-frozen body loading.
 - `internal/credentials` owns credential precedence and mutable access to the OS
   keyring. It exposes the currently resolved credential without exposing keyring
   mechanics to the agent or provider.
@@ -106,6 +108,7 @@ agent
     -> credentials
     -> openrouter
     -> settings
+    -> skills
     -> trace
     -> workspace
 
@@ -119,10 +122,11 @@ evals
     -> ox subprocess
 ```
 
-The ACP, credential, provider, settings, shell-rule, and workspace boundaries do
-not depend on `agent` or `cmd/ox`. Provider types do not appear in ACP types,
-and ACP types do not define provider behavior. The command package wires
-concrete components together rather than hiding them behind a service registry.
+The ACP, credential, provider, settings, skill, shell-rule, and workspace
+boundaries do not depend on `agent` or `cmd/ox`. Provider types do not appear in
+ACP types, and ACP types do not define provider behavior. The command package
+wires concrete components together rather than hiding them behind a service
+registry.
 
 The optional diagnostic trace is a lossy view of live execution rather than a
 durable record. It receives identifiers, event kinds, timings, sizes, and

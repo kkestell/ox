@@ -22,6 +22,7 @@ import (
 	"github.com/kkestell/ox/internal/credentials"
 	"github.com/kkestell/ox/internal/openrouter"
 	"github.com/kkestell/ox/internal/settings"
+	"github.com/kkestell/ox/internal/skills"
 	diagnostictrace "github.com/kkestell/ox/internal/trace"
 	"github.com/kkestell/ox/internal/workspace"
 )
@@ -841,6 +842,17 @@ func (a *Agent) resolveConfiguration(
 	if err != nil {
 		return requestConfiguration{}, jrpc2.Errorf(jrpc2.InternalError, "%v", err)
 	}
+	skillReferences, warnings, err := skills.Discover(cwd)
+	for _, warning := range warnings {
+		a.logger.Warn("skipping malformed workspace skill", "error", warning)
+	}
+	if err != nil {
+		return requestConfiguration{}, jrpc2.Errorf(jrpc2.InternalError, "%v", err)
+	}
+	skillCatalog, err := renderSkillCatalog(skillReferences)
+	if err != nil {
+		return requestConfiguration{}, jrpc2.Errorf(jrpc2.InternalError, "%v", err)
+	}
 	if a.client == nil {
 		return requestConfiguration{}, jrpc2.Errorf(
 			jrpc2.InternalError,
@@ -873,13 +885,14 @@ func (a *Agent) resolveConfiguration(
 		Mode:                 modeCode,
 		Settings:             resolved,
 		ContextWindow:        contextWindow,
-		SystemPrompt:         composePrompt(cwd, now, instructions),
+		SystemPrompt:         composePrompt(cwd, now, instructions, skillCatalog),
 		Tools:                cloneTools(a.primaryTools.modelTools),
 		ToolKinds:            a.configuredToolKinds(),
 		PlanTools:            a.configuredPlanTools(),
+		Skills:               cloneSkillReferences(skillReferences),
 		ExecutorCapabilities: executorCapabilities,
 		Subagent: subagentConfiguration{
-			SystemPrompt: composeSubagentPrompt(cwd, now, instructions),
+			SystemPrompt: composeSubagentPrompt(cwd, now, instructions, skillCatalog),
 			Tools:        cloneTools(a.subagentTools.modelTools),
 		},
 	}, nil

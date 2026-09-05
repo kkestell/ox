@@ -8,6 +8,7 @@ require (
 	github.com/go-git/go-git/v5 v5.19.1
 	github.com/zalando/go-keyring v0.2.8
 	golang.org/x/term v0.45.0
+	gopkg.in/yaml.v3 v3.0.1
 	mvdan.cc/sh/v3 v3.13.1
 )
 

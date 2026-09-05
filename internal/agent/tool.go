@@ -52,6 +52,7 @@ type Invocation struct {
 	Terminal    ClientTerminal
 	Delegate    func(context.Context, string) (string, error)
 	ReplaceTodo func([]acp.PlanEntry) error
+	LoadSkill   func(string) (string, error)
 	Emit        func(string)
 	ReportSpill func(string)
 }

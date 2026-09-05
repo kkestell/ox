@@ -25,6 +25,8 @@ output. It is ACP-first and works with ACP clients. The durable design lives in
   catalog, and stream assembly.
 - `internal/settings/` — Layered model and provider settings resolved for a
   session activation.
+- `internal/skills/` — Confined workspace-skill discovery, validation, and
+  activation-frozen loading.
 - `internal/credentials/` — Environment and OS-keyring credential storage.
 - `internal/trace/` — Sanitized, concurrency-safe JSONL diagnostic tracing.
 - `internal/tools/` — Local coding tools exposed to the model.

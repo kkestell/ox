@@ -841,6 +841,7 @@ func TestRecoveredTurnKeepsItsFrozenConfiguration(t *testing.T) {
 	dataDir := t.TempDir()
 	model := startModel(t,
 		shellToolCallResponse("true"),
+		toolResponse("call-skill", "skill", `{"name":"recovery"}`),
 		sse(evText("recovered"), evFinishReason("stop")),
 		sse(evText("next"), evFinishReason("stop")),
 	)
@@ -854,6 +855,13 @@ func TestRecoveredTurnKeepsItsFrozenConfiguration(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(cwd, "AGENTS.md"), []byte("old instructions\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	skillPath := filepath.Join(cwd, ".agents", "skills", "recovery", "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(skillPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(skillPath, []byte("---\nname: recovery\ndescription: old skill\n---\nold body\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	session := newSession(t, first, cwd)
 	_ = first.begin("session/prompt", acp.PromptRequest{
 		SessionID: session, Prompt: textPrompt("recover with old settings"),
@@ -861,6 +869,9 @@ func TestRecoveredTurnKeepsItsFrozenConfiguration(t *testing.T) {
 	_ = permissionRequest(t, first.serverRequest(), "call-shell")
 	first.kill()
 	if err := os.WriteFile(filepath.Join(cwd, "AGENTS.md"), []byte("new instructions\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(skillPath, []byte("---\nname: recovery\ndescription: new skill\n---\nnew body\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -886,11 +897,11 @@ func TestRecoveredTurnKeepsItsFrozenConfiguration(t *testing.T) {
 	_ = updates(t, second, session)
 
 	requests := model.requests()
-	if len(requests) != 3 {
-		t.Fatalf("model requests = %d, want 3", len(requests))
+	if len(requests) != 4 {
+		t.Fatalf("model requests = %d, want 4", len(requests))
 	}
-	models := []string{requests[0].Model, requests[1].Model, requests[2].Model}
-	if !reflect.DeepEqual(models, []string{"old/model", "old/model", "new/model"}) {
+	models := []string{requests[0].Model, requests[1].Model, requests[2].Model, requests[3].Model}
+	if !reflect.DeepEqual(models, []string{"old/model", "old/model", "old/model", "new/model"}) {
 		t.Fatalf("model sequence = %v", models)
 	}
 	instructions := make([]string, len(requests))
@@ -898,9 +909,15 @@ func TestRecoveredTurnKeepsItsFrozenConfiguration(t *testing.T) {
 		instructions[index] = request.Messages[0].Content[0].Text
 	}
 	if !strings.Contains(instructions[0], "<workspace-instructions>\nold instructions\n\n</workspace-instructions>") ||
-		instructions[1] != instructions[0] ||
-		!strings.Contains(instructions[2], "<workspace-instructions>\nnew instructions\n\n</workspace-instructions>") {
+		!strings.Contains(instructions[0], `"description":"old skill"`) ||
+		instructions[1] != instructions[0] || instructions[2] != instructions[0] ||
+		!strings.Contains(instructions[3], "<workspace-instructions>\nnew instructions\n\n</workspace-instructions>") ||
+		!strings.Contains(instructions[3], `"description":"new skill"`) {
 		t.Fatalf("instruction prompts did not remain frozen through recovery")
+	}
+	if !requestContainsText(requests[2], "changed since activation") ||
+		!requestContainsText(requests[2], "reactivate the session") {
+		t.Fatal("recovered stale skill load did not fail with reactivation guidance")
 	}
 }
 
