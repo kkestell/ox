@@ -844,17 +844,25 @@ func TestRecoveredTurnKeepsItsFrozenConfiguration(t *testing.T) {
 		sse(evText("recovered"), evFinishReason("stop")),
 		sse(evText("next"), evFinishReason("stop")),
 	)
-	first, session := startSession(t,
+	first := start(t,
 		withModel(model),
 		withEnvironment("XDG_DATA_HOME", dataDir),
 		withModelOverride("old/model"),
 	)
+	initialize(t, first)
 	cwd := first.cwd
+	if err := os.WriteFile(filepath.Join(cwd, "AGENTS.md"), []byte("old instructions\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	session := newSession(t, first, cwd)
 	_ = first.begin("session/prompt", acp.PromptRequest{
 		SessionID: session, Prompt: textPrompt("recover with old settings"),
 	})
 	_ = permissionRequest(t, first.serverRequest(), "call-shell")
 	first.kill()
+	if err := os.WriteFile(filepath.Join(cwd, "AGENTS.md"), []byte("new instructions\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	second := start(t,
 		withModel(model),
@@ -884,6 +892,15 @@ func TestRecoveredTurnKeepsItsFrozenConfiguration(t *testing.T) {
 	models := []string{requests[0].Model, requests[1].Model, requests[2].Model}
 	if !reflect.DeepEqual(models, []string{"old/model", "old/model", "new/model"}) {
 		t.Fatalf("model sequence = %v", models)
+	}
+	instructions := make([]string, len(requests))
+	for index, request := range requests {
+		instructions[index] = request.Messages[0].Content[0].Text
+	}
+	if !strings.Contains(instructions[0], "<workspace-instructions>\nold instructions\n\n</workspace-instructions>") ||
+		instructions[1] != instructions[0] ||
+		!strings.Contains(instructions[2], "<workspace-instructions>\nnew instructions\n\n</workspace-instructions>") {
+		t.Fatalf("instruction prompts did not remain frozen through recovery")
 	}
 }
 

@@ -3384,6 +3384,114 @@ func TestSettingsFilesShapeEveryModelRequest(t *testing.T) {
 	model.assertConsumed(t)
 }
 
+func TestWorkspaceInstructionsFreezeAcrossParentAndChildUntilReactivation(t *testing.T) {
+	workspace := t.TempDir()
+	parent := filepath.Dir(workspace)
+	if err := os.WriteFile(filepath.Join(parent, "AGENTS.md"), []byte("parent rules"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(workspace, "nested"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, "nested", "AGENTS.md"), []byte("nested rules"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rootPath := filepath.Join(workspace, "AGENTS.md")
+	if err := os.WriteFile(rootPath, []byte("original rules\r\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	assertPrompt := func(request openrouter.Request, want string) error {
+		system := request.Messages[0].Content[0].Text
+		block := "<workspace-instructions>\n" + want + "\n</workspace-instructions>"
+		if strings.Count(system, block) != 1 {
+			return fmt.Errorf("system prompt instruction block = %q", system)
+		}
+		if strings.Contains(system, "parent rules") || strings.Contains(system, "nested rules") {
+			return fmt.Errorf("system prompt loaded instructions outside the root: %q", system)
+		}
+		messages, err := conversation(request)
+		if err != nil {
+			return err
+		}
+		for _, message := range messages {
+			for _, content := range message.Content {
+				if strings.Contains(content.Text, "<workspace-instructions>") {
+					return errors.New("workspace instructions entered conversation history")
+				}
+			}
+		}
+		return nil
+	}
+
+	model := &scriptedModel{scripts: []modelScript{
+		func(_ context.Context, request openrouter.Request, _ func(openrouter.Delta)) (*openrouter.Completion, error) {
+			if err := assertPrompt(request, "original rules\r\n"); err != nil {
+				return nil, err
+			}
+			return &openrouter.Completion{FinishReason: "tool_calls", ToolCalls: []openrouter.ToolCall{
+				modelToolCall("task-original", "task", `{"description":"check","prompt":"check rules"}`),
+			}}, nil
+		},
+		func(_ context.Context, request openrouter.Request, _ func(openrouter.Delta)) (*openrouter.Completion, error) {
+			if !strings.HasPrefix(request.Messages[0].Content[0].Text, "You are a subagent") {
+				return nil, errors.New("expected subagent request")
+			}
+			if err := assertPrompt(request, "original rules\r\n"); err != nil {
+				return nil, err
+			}
+			return completion("child original"), nil
+		},
+		func(_ context.Context, request openrouter.Request, _ func(openrouter.Delta)) (*openrouter.Completion, error) {
+			if err := assertPrompt(request, "original rules\r\n"); err != nil {
+				return nil, err
+			}
+			return completion("parent original"), nil
+		},
+		func(_ context.Context, request openrouter.Request, _ func(openrouter.Delta)) (*openrouter.Completion, error) {
+			if err := assertPrompt(request, "reactivated rules\n"); err != nil {
+				return nil, err
+			}
+			return &openrouter.Completion{FinishReason: "tool_calls", ToolCalls: []openrouter.ToolCall{
+				modelToolCall("task-reactivated", "task", `{"description":"check","prompt":"check rules again"}`),
+			}}, nil
+		},
+		func(_ context.Context, request openrouter.Request, _ func(openrouter.Delta)) (*openrouter.Completion, error) {
+			if !strings.HasPrefix(request.Messages[0].Content[0].Text, "You are a subagent") {
+				return nil, errors.New("expected reactivated subagent request")
+			}
+			if err := assertPrompt(request, "reactivated rules\n"); err != nil {
+				return nil, err
+			}
+			return completion("child reactivated"), nil
+		},
+		func(_ context.Context, request openrouter.Request, _ func(openrouter.Delta)) (*openrouter.Completion, error) {
+			if err := assertPrompt(request, "reactivated rules\n"); err != nil {
+				return nil, err
+			}
+			return completion("parent reactivated"), nil
+		},
+	}}
+	harness := newAgentHarness(t, model, oxtools.All())
+	sessionID := harness.newSessionIn(t, workspace, nil)
+	if err := os.WriteFile(rootPath, []byte("reactivated rules\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	harness.prompt(t, sessionID, "first")
+	if err := harness.local.Client.CallResult(t.Context(), "session/close",
+		acp.CloseSessionRequest{SessionID: sessionID}, &acp.CloseSessionResponse{},
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := harness.local.Client.CallResult(t.Context(), "session/load", acp.LoadSessionRequest{
+		SessionID: sessionID, CWD: workspace, MCPServers: []json.RawMessage{},
+	}, &acp.LoadSessionResponse{}); err != nil {
+		t.Fatal(err)
+	}
+	harness.prompt(t, sessionID, "second")
+	model.assertConsumed(t)
+}
+
 func TestPlanModeHidesAndRejectsEffectfulTools(t *testing.T) {
 	var executed atomic.Int32
 	mutate := agent.Tool{
