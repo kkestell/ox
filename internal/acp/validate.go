@@ -44,6 +44,100 @@ func (r InitializeRequest) Validate() error {
 	return nil
 }
 
+func (r CreateElicitationRequest) Validate() error {
+	if r.SessionID == "" {
+		return errors.New("sessionId is required")
+	}
+	if r.ToolCallID == "" {
+		return errors.New("toolCallId is required")
+	}
+	if r.Mode != ElicitationModeForm {
+		return errors.New("mode must be form")
+	}
+	if strings.TrimSpace(r.Message) == "" {
+		return errors.New("message is required")
+	}
+	if r.RequestedSchema.Type != "object" {
+		return errors.New("requestedSchema type must be object")
+	}
+	if len(r.RequestedSchema.Properties) != 1 {
+		return errors.New("requestedSchema must contain only the answer property")
+	}
+	answer, ok := r.RequestedSchema.Properties["answer"]
+	if !ok {
+		return errors.New("requestedSchema answer property is required")
+	}
+	if len(r.RequestedSchema.Required) != 1 || r.RequestedSchema.Required[0] != "answer" {
+		return errors.New("requestedSchema must require answer")
+	}
+	if answer.Type != "string" {
+		return errors.New("answer type must be string")
+	}
+	if answer.MinLength != nil && *answer.MinLength != 1 {
+		return errors.New("answer minLength must be 1")
+	}
+	values := make(map[string]struct{}, len(answer.OneOf))
+	for index, option := range answer.OneOf {
+		if strings.TrimSpace(option.Const) == "" || strings.TrimSpace(option.Title) == "" {
+			return fmt.Errorf("answer option %d must have a value and title", index+1)
+		}
+		if _, exists := values[option.Const]; exists {
+			return fmt.Errorf("answer option %d duplicates %q", index+1, option.Const)
+		}
+		values[option.Const] = struct{}{}
+	}
+	if answer.Default != nil {
+		if strings.TrimSpace(*answer.Default) == "" {
+			return errors.New("answer default must not be blank")
+		}
+		if len(values) > 0 {
+			if _, exists := values[*answer.Default]; !exists {
+				return errors.New("answer default must match an option")
+			}
+		}
+	}
+	return nil
+}
+
+func (r CreateElicitationResponse) Validate(
+	request CreateElicitationRequest,
+) (string, error) {
+	switch r.Action {
+	case ElicitationActionDecline, ElicitationActionCancel:
+		return "", nil
+	case ElicitationActionAccept:
+	default:
+		return "", errors.New("elicitation action must be accept, decline, or cancel")
+	}
+	if len(r.Content) != 1 {
+		return "", errors.New("accepted elicitation content must contain only answer")
+	}
+	raw, ok := r.Content["answer"]
+	if !ok {
+		return "", errors.New("accepted elicitation answer is required")
+	}
+	var answer string
+	if err := json.Unmarshal(raw, &answer); err != nil {
+		return "", errors.New("accepted elicitation answer must be a string")
+	}
+	if strings.TrimSpace(answer) == "" {
+		return "", errors.New("accepted elicitation answer must not be blank")
+	}
+	property, ok := request.RequestedSchema.Properties["answer"]
+	if !ok {
+		return "", errors.New("requested schema has no answer property")
+	}
+	if len(property.OneOf) > 0 {
+		for _, option := range property.OneOf {
+			if answer == option.Const {
+				return answer, nil
+			}
+		}
+		return "", errors.New("accepted elicitation answer is not one of the requested options")
+	}
+	return answer, nil
+}
+
 func (r ReadTextFileRequest) Validate() error {
 	if r.SessionID == "" {
 		return errors.New("sessionId is required")

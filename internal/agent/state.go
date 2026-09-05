@@ -43,6 +43,7 @@ const (
 
 	unknownToolOutcome     = "tool call outcome is unknown after interruption"
 	interruptedBeforeStart = "tool call interrupted before start"
+	interruptedQuestion    = "question interrupted"
 )
 
 type sessionRecord struct {

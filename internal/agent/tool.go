@@ -18,6 +18,7 @@ type Tool struct {
 	Delegates    bool
 	ParentOnly   bool
 	PlanMode     bool
+	RequiresForm bool
 	Label        func(json.RawMessage) string
 	// Suggest and Covered narrow allow-always grants to tool-defined rules.
 	// A nil pair keeps the default name-scoped grant behavior.
@@ -53,6 +54,7 @@ type Invocation struct {
 	Delegate    func(context.Context, string) (string, error)
 	ReplaceTodo func([]acp.PlanEntry) error
 	LoadSkill   func(string) (string, error)
+	AskQuestion func(context.Context, acp.CreateElicitationRequest) (acp.CreateElicitationResponse, error)
 	Emit        func(string)
 	ReportSpill func(string)
 }

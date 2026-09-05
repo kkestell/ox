@@ -13,6 +13,17 @@ import (
 func All() []agent.Tool {
 	return []agent.Tool{
 		{
+			Name:         "question",
+			Description:  questionDescription,
+			InputSchema:  json.RawMessage(questionSchema),
+			Kind:         acp.ToolKindOther,
+			Approval:     agent.ApprovalNone,
+			ParallelSafe: false,
+			PlanMode:     true,
+			RequiresForm: true,
+			Execute:      executeQuestion,
+		},
+		{
 			Name:         "skill",
 			Description:  skillDescription,
 			InputSchema:  json.RawMessage(skillSchema),

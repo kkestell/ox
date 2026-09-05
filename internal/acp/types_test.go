@@ -191,6 +191,142 @@ func TestPlanPayloadsUsePinnedWireShapes(t *testing.T) {
 	}
 }
 
+func TestElicitationCapabilitiesUseExplicitFormPresence(t *testing.T) {
+	tests := []struct {
+		name string
+		json string
+		form bool
+	}{
+		{name: "omitted", json: `{}`},
+		{name: "null", json: `{"elicitation":null}`},
+		{name: "empty", json: `{"elicitation":{}}`},
+		{name: "null form", json: `{"elicitation":{"form":null}}`},
+		{name: "form", json: `{"elicitation":{"form":{}}}`, form: true},
+		{name: "url only", json: `{"elicitation":{"url":{}}}`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var capabilities ClientCapabilities
+			if err := json.Unmarshal([]byte(test.json), &capabilities); err != nil {
+				t.Fatal(err)
+			}
+			got := capabilities.Elicitation != nil && capabilities.Elicitation.Form != nil
+			if got != test.form {
+				t.Fatalf("form support = %v, want %v", got, test.form)
+			}
+		})
+	}
+}
+
+func TestElicitationPayloadsUsePinnedWireShapes(t *testing.T) {
+	minimum := uint32(1)
+	defaultValue := "balanced"
+	tests := []struct {
+		name  string
+		value any
+		want  string
+	}{
+		{
+			name: "free text request",
+			value: CreateElicitationRequest{
+				SessionID: "session-1", ToolCallID: "call-1", Mode: ElicitationModeForm,
+				Message: "What should I name it?",
+				RequestedSchema: ElicitationSchema{
+					Type: "object",
+					Properties: map[string]ElicitationStringProperty{
+						"answer": {Type: "string", Title: "Answer", MinLength: &minimum},
+					},
+					Required: []string{"answer"},
+				},
+			},
+			want: `{"sessionId":"session-1","toolCallId":"call-1","mode":"form","message":"What should I name it?","requestedSchema":{"type":"object","properties":{"answer":{"type":"string","title":"Answer","minLength":1}},"required":["answer"]}}`,
+		},
+		{
+			name: "choice request",
+			value: CreateElicitationRequest{
+				SessionID: "session-1", ToolCallID: "call-1", Mode: ElicitationModeForm,
+				Message: "Choose a strategy.",
+				RequestedSchema: ElicitationSchema{
+					Type: "object",
+					Properties: map[string]ElicitationStringProperty{
+						"answer": {
+							Type: "string", Title: "Answer", Default: &defaultValue,
+							OneOf: []ElicitationEnumOption{
+								{Const: "safe", Title: "safe", Description: "Small changes."},
+								{Const: "balanced", Title: "balanced"},
+							},
+						},
+					},
+					Required: []string{"answer"},
+				},
+			},
+			want: `{"sessionId":"session-1","toolCallId":"call-1","mode":"form","message":"Choose a strategy.","requestedSchema":{"type":"object","properties":{"answer":{"type":"string","title":"Answer","default":"balanced","oneOf":[{"const":"safe","title":"safe","description":"Small changes."},{"const":"balanced","title":"balanced"}]}},"required":["answer"]}}`,
+		},
+		{name: "accept response", value: CreateElicitationResponse{
+			Action:  ElicitationActionAccept,
+			Content: map[string]json.RawMessage{"answer": json.RawMessage(`"safe"`)},
+		}, want: `{"action":"accept","content":{"answer":"safe"}}`},
+		{name: "decline response", value: CreateElicitationResponse{Action: ElicitationActionDecline}, want: `{"action":"decline"}`},
+		{name: "cancel response", value: CreateElicitationResponse{Action: ElicitationActionCancel}, want: `{"action":"cancel"}`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			data, err := json.Marshal(test.value)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(data) != test.want {
+				t.Fatalf("payload = %s, want %s", data, test.want)
+			}
+		})
+	}
+}
+
+func TestElicitationResponseValidation(t *testing.T) {
+	defaultValue := "safe"
+	request := CreateElicitationRequest{
+		SessionID: "session-1", ToolCallID: "call-1", Mode: ElicitationModeForm,
+		Message: "Choose.",
+		RequestedSchema: ElicitationSchema{
+			Type: "object",
+			Properties: map[string]ElicitationStringProperty{"answer": {
+				Type: "string", Default: &defaultValue,
+				OneOf: []ElicitationEnumOption{{Const: "safe", Title: "Safe"}},
+			}},
+			Required: []string{"answer"},
+		},
+	}
+	if err := request.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	valid := CreateElicitationResponse{
+		Action:  ElicitationActionAccept,
+		Content: map[string]json.RawMessage{"answer": json.RawMessage(`"safe"`)},
+	}
+	if answer, err := valid.Validate(request); err != nil || answer != "safe" {
+		t.Fatalf("answer = %q, error = %v", answer, err)
+	}
+	for _, response := range []CreateElicitationResponse{
+		{Action: ElicitationActionAccept},
+		{Action: ElicitationActionAccept, Content: map[string]json.RawMessage{"answer": json.RawMessage(`1`)}},
+		{Action: ElicitationActionAccept, Content: map[string]json.RawMessage{"answer": json.RawMessage(`""`)}},
+		{Action: ElicitationActionAccept, Content: map[string]json.RawMessage{"answer": json.RawMessage(`"other"`)}},
+		{Action: ElicitationActionAccept, Content: map[string]json.RawMessage{
+			"answer": json.RawMessage(`"safe"`), "extra": json.RawMessage(`true`),
+		}},
+		{Action: "future"},
+	} {
+		if _, err := response.Validate(request); err == nil {
+			t.Fatalf("response %#v validated unexpectedly", response)
+		}
+	}
+	for _, action := range []ElicitationAction{ElicitationActionDecline, ElicitationActionCancel} {
+		if _, err := (CreateElicitationResponse{Action: action}).Validate(request); err != nil {
+			t.Fatalf("%s response error = %v", action, err)
+		}
+	}
+}
+
 func TestSetSessionConfigOptionRequestValidation(t *testing.T) {
 	tests := []struct {
 		name    string

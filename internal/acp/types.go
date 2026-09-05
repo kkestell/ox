@@ -14,6 +14,7 @@ const (
 	MetaSubagent                   = "kkestell.ox/subagent"
 	MethodFSReadTextFile           = "fs/read_text_file"
 	MethodFSWriteTextFile          = "fs/write_text_file"
+	MethodElicitationCreate        = "elicitation/create"
 	MethodSessionRequestPermission = "session/request_permission"
 	MethodSessionSetConfigOption   = "session/set_config_option"
 	MethodTerminalCreate           = "terminal/create"
@@ -37,9 +38,24 @@ type FileSystemCapabilities struct {
 }
 
 type ClientCapabilities struct {
-	FS       *FileSystemCapabilities `json:"fs,omitempty"`
-	Terminal bool                    `json:"terminal,omitempty"`
-	Auth     *ClientAuthCapabilities `json:"auth,omitempty"`
+	FS          *FileSystemCapabilities  `json:"fs,omitempty"`
+	Terminal    bool                     `json:"terminal,omitempty"`
+	Auth        *ClientAuthCapabilities  `json:"auth,omitempty"`
+	Elicitation *ElicitationCapabilities `json:"elicitation,omitempty"`
+}
+
+type ElicitationCapabilities struct {
+	Form *ElicitationFormCapabilities `json:"form,omitempty"`
+	URL  *ElicitationURLCapabilities  `json:"url,omitempty"`
+	Meta Metadata                     `json:"_meta,omitempty"`
+}
+
+type ElicitationFormCapabilities struct {
+	Meta Metadata `json:"_meta,omitempty"`
+}
+
+type ElicitationURLCapabilities struct {
+	Meta Metadata `json:"_meta,omitempty"`
 }
 
 type ClientAuthCapabilities struct {
@@ -392,6 +408,57 @@ type RequestPermissionResponse struct {
 type RequestPermissionOutcome struct {
 	Outcome  string `json:"outcome"`
 	OptionID string `json:"optionId,omitempty"`
+}
+
+const ElicitationModeForm = "form"
+
+type CreateElicitationRequest struct {
+	SessionID       string            `json:"sessionId"`
+	ToolCallID      string            `json:"toolCallId,omitempty"`
+	Mode            string            `json:"mode"`
+	Message         string            `json:"message"`
+	RequestedSchema ElicitationSchema `json:"requestedSchema"`
+	Meta            Metadata          `json:"_meta,omitempty"`
+}
+
+type ElicitationSchema struct {
+	Type        string                               `json:"type"`
+	Properties  map[string]ElicitationStringProperty `json:"properties"`
+	Required    []string                             `json:"required,omitempty"`
+	Title       string                               `json:"title,omitempty"`
+	Description string                               `json:"description,omitempty"`
+	Meta        Metadata                             `json:"_meta,omitempty"`
+}
+
+type ElicitationStringProperty struct {
+	Type        string                  `json:"type"`
+	Title       string                  `json:"title,omitempty"`
+	Description string                  `json:"description,omitempty"`
+	MinLength   *uint32                 `json:"minLength,omitempty"`
+	Default     *string                 `json:"default,omitempty"`
+	OneOf       []ElicitationEnumOption `json:"oneOf,omitempty"`
+	Meta        Metadata                `json:"_meta,omitempty"`
+}
+
+type ElicitationEnumOption struct {
+	Const       string   `json:"const"`
+	Title       string   `json:"title"`
+	Description string   `json:"description,omitempty"`
+	Meta        Metadata `json:"_meta,omitempty"`
+}
+
+type ElicitationAction string
+
+const (
+	ElicitationActionAccept  ElicitationAction = "accept"
+	ElicitationActionDecline ElicitationAction = "decline"
+	ElicitationActionCancel  ElicitationAction = "cancel"
+)
+
+type CreateElicitationResponse struct {
+	Action  ElicitationAction          `json:"action"`
+	Content map[string]json.RawMessage `json:"content,omitempty"`
+	Meta    Metadata                   `json:"_meta,omitempty"`
 }
 
 type ContentBlock struct {

@@ -245,6 +245,57 @@ func TestNewBuildsSubagentToolSetWithoutDelegators(t *testing.T) {
 	}
 }
 
+func TestFormCapabilityFiltersParentChildAndPlanTools(t *testing.T) {
+	instance, err := New(Config{Logger: discardLogger(), Tools: []Tool{
+		{Name: "question", Kind: acp.ToolKindOther, RequiresForm: true, PlanMode: true},
+		{Name: "read", Kind: acp.ToolKindRead, PlanMode: true},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, capabilities := range []*acp.ClientCapabilities{
+		nil,
+		{},
+		{Elicitation: &acp.ElicitationCapabilities{}},
+		{Elicitation: &acp.ElicitationCapabilities{URL: &acp.ElicitationURLCapabilities{}}},
+	} {
+		if _, err := instance.Initialize(context.Background(), acp.InitializeRequest{
+			ProtocolVersion: acp.ProtocolVersion, ClientCapabilities: capabilities,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		primary, child := instance.negotiatedToolSets()
+		if _, exists := primary.byName["question"]; exists {
+			t.Fatalf("question present for capabilities %#v", capabilities)
+		}
+		if _, exists := child.byName["question"]; exists {
+			t.Fatalf("child question present for capabilities %#v", capabilities)
+		}
+		if configuredPlanTools(primary)["question"] {
+			t.Fatalf("plan question present for capabilities %#v", capabilities)
+		}
+	}
+
+	if _, err := instance.Initialize(context.Background(), acp.InitializeRequest{
+		ProtocolVersion: acp.ProtocolVersion,
+		ClientCapabilities: &acp.ClientCapabilities{Elicitation: &acp.ElicitationCapabilities{
+			Form: &acp.ElicitationFormCapabilities{},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	primary, child := instance.negotiatedToolSets()
+	if _, exists := primary.byName["question"]; !exists {
+		t.Fatal("parent question omitted with form support")
+	}
+	if _, exists := child.byName["question"]; !exists {
+		t.Fatal("child question omitted with form support")
+	}
+	if !configuredPlanTools(primary)["question"] {
+		t.Fatal("question omitted from plan tools with form support")
+	}
+}
+
 func TestPromptMessageConvertsPromptContent(t *testing.T) {
 	message, err := promptMessage([]acp.ContentBlock{
 		{Type: "text", Text: "hello"},
@@ -811,6 +862,7 @@ func TestLoopStopsAtMaximumModelRequestsWithReplayableHistory(t *testing.T) {
 		value,
 		&activeTurn{turnID: "turn-max"},
 		nil,
+		nil,
 		ClientFileSystem{},
 		ClientTerminal{},
 		events,
@@ -959,6 +1011,7 @@ func TestDelegateResumesCompactedChildFromOpenTurnCheckpoint(t *testing.T) {
 	value.state = restored
 	answer, delegation, err := instance.delegate(
 		context.Background(), value, "parent", "inspect", nil,
+		nil,
 		ClientFileSystem{}, ClientTerminal{}, make(chan event, 8),
 		instance.trace.Turn(value.id, "turn"),
 	)
@@ -1067,6 +1120,7 @@ func TestLoopDoesNotDispatchCallsFromIncompleteCompletions(t *testing.T) {
 				context.Background(),
 				value,
 				&activeTurn{turnID: "turn-finish"},
+				nil,
 				nil,
 				ClientFileSystem{},
 				ClientTerminal{},
@@ -1628,7 +1682,7 @@ func TestToolDispatchPersistenceFailureSkipsExecutor(t *testing.T) {
 	value.log.close()
 	_, err = instance.dispatchApprovedBatch(
 		context.Background(), value, instance.primaryTools, value.primaryFileReads(),
-		[]openrouter.ToolCall{call}, nil, ClientFileSystem{}, ClientTerminal{},
+		[]openrouter.ToolCall{call}, nil, nil, ClientFileSystem{}, ClientTerminal{},
 		make(chan event, 8), "", []toolResult{{}}, []bool{true}, diagnostictrace.Turn{},
 	)
 	if err == nil || !strings.Contains(err.Error(), "persist tool dispatch") {
@@ -1683,7 +1737,7 @@ func TestTodoPersistenceFailureEmitsNoPlanOrSuccessfulResult(t *testing.T) {
 	events := make(chan event, 8)
 	_, err = instance.dispatchApprovedBatch(
 		context.Background(), value, instance.primaryTools, value.primaryFileReads(),
-		[]openrouter.ToolCall{call}, nil, ClientFileSystem{}, ClientTerminal{}, events,
+		[]openrouter.ToolCall{call}, nil, nil, ClientFileSystem{}, ClientTerminal{}, events,
 		"", []toolResult{{}}, []bool{true}, diagnostictrace.Turn{},
 	)
 	if err == nil || !value.poisoned || value.state.todo != nil {
@@ -1758,7 +1812,7 @@ func TestToolCompletionPersistenceFailureStopsLaterSibling(t *testing.T) {
 	}
 	_, err = instance.dispatchApprovedBatch(
 		context.Background(), value, instance.primaryTools, value.primaryFileReads(),
-		calls, nil, ClientFileSystem{}, ClientTerminal{}, make(chan event, 16), "",
+		calls, nil, nil, ClientFileSystem{}, ClientTerminal{}, make(chan event, 16), "",
 		make([]toolResult, len(calls)), []bool{true, true, true}, diagnostictrace.Turn{},
 	)
 	if err == nil || !strings.Contains(err.Error(), "persist tool completion") {
@@ -1780,7 +1834,7 @@ func TestToolCompletionPersistenceFailureStopsLaterSibling(t *testing.T) {
 	}
 	if _, err := instance.dispatchApprovedBatch(
 		context.Background(), other, instance.primaryTools, other.primaryFileReads(),
-		[]openrouter.ToolCall{otherCall}, nil, ClientFileSystem{}, ClientTerminal{},
+		[]openrouter.ToolCall{otherCall}, nil, nil, ClientFileSystem{}, ClientTerminal{},
 		make(chan event, 8), "", []toolResult{{}}, []bool{true}, diagnostictrace.Turn{},
 	); err != nil {
 		t.Fatal(err)
@@ -1830,6 +1884,53 @@ func TestInterruptedStartedToolBecomesUnknownWithoutExecution(t *testing.T) {
 	result := value.state.history[2]
 	if result.Role != openrouter.RoleTool || result.Content[0].Text != unknownToolOutcome {
 		t.Fatalf("unknown result = %#v", result)
+	}
+}
+
+func TestInterruptedQuestionIsRecordedWithoutReissue(t *testing.T) {
+	instance, err := New(Config{
+		Logger: discardLogger(),
+		Tools: []Tool{{
+			Name: "question", InputSchema: json.RawMessage(`{"type":"object"}`),
+			Approval: ApprovalNone, RequiresForm: true,
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	configuration := requestConfiguration{
+		Settings: settings.Resolved{Model: "test/model"},
+		Tools:    cloneTools(instance.primaryTools.modelTools),
+	}
+	value := durableTestSession(t, instance, configuration, "turn")
+	call := toolCall("question-call", "question")
+	if err := instance.commit(value, recordExchangePaused, suspendedModelExchangeRecord{
+		TurnID: "turn", AnswerID: "answer", ThoughtID: "thought",
+		FinishReason: "tool_calls", ToolCalls: []openrouter.ToolCall{call}, RequestCount: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := instance.startToolExecution(value, "turn", "", call, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := instance.interruptOpenTurn(value); err != nil {
+		t.Fatal(err)
+	}
+	result := value.state.history[len(value.state.history)-1]
+	if result.Role != openrouter.RoleTool || result.Content[0].Text != interruptedQuestion {
+		t.Fatalf("interrupted result = %#v", result)
+	}
+	var completion toolCompletedRecord
+	for _, record := range value.state.records {
+		if record.Type == recordToolCompleted {
+			if err := decodeRecord(record.Data, &completion); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if completion.CallID != call.ID || completion.Result.Unknown ||
+		!completion.Result.Failed || completion.Result.Content != interruptedQuestion {
+		t.Fatalf("completion = %#v", completion)
 	}
 }
 
@@ -1889,6 +1990,7 @@ func TestRecoveredPermissionDoesNotRedispatchStartedSibling(t *testing.T) {
 				Outcome: "selected", OptionID: permissionAllowOnceID,
 			}}, nil
 		},
+		nil,
 		ClientFileSystem{}, ClientTerminal{}, make(chan event, 32),
 		diagnostictrace.Turn{}, true,
 	)
@@ -1970,6 +2072,7 @@ func TestRecoveredPermissionCommitsUnknownDelegatingSibling(t *testing.T) {
 				Outcome: "selected", OptionID: permissionAllowOnceID,
 			}}, nil
 		},
+		nil,
 		ClientFileSystem{}, ClientTerminal{}, make(chan event, 32),
 		diagnostictrace.Turn{}, true,
 	)
