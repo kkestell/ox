@@ -174,7 +174,7 @@ func (a *Agent) delegate(
 			publicCalls[index] = call
 			publicCalls[index].ID = callID
 		}
-		results := a.executeBatchWith(
+		results, err := a.executeBatchWith(
 			ctx,
 			value,
 			a.subagentTools,
@@ -187,6 +187,9 @@ func (a *Agent) delegate(
 			parentCallID,
 			turn,
 		)
+		if err != nil {
+			return "", record, err
+		}
 		assistant := openrouter.Message{
 			Role:             openrouter.RoleAssistant,
 			ToolCalls:        append([]openrouter.ToolCall(nil), completion.ToolCalls...),
@@ -224,6 +227,7 @@ func (a *Agent) delegate(
 				Failed:           result.failed,
 				ApprovalDecision: result.approval,
 				Target:           result.target,
+				Unknown:          result.unknown,
 			})
 			kind := eventToolCompleted
 			if result.failed {

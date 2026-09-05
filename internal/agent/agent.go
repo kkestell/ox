@@ -439,6 +439,9 @@ func (a *Agent) recoverSession(ctx context.Context, value *session) error {
 		}
 		active.trace.Complete(outcome, "")
 	}()
+	if err := a.closeUnknownExecutions(value); err != nil {
+		return fmt.Errorf("close interrupted tool calls: %w", err)
+	}
 
 	server := jrpc2.ServerFromContext(ctx)
 	adapter := newAdapter(value.id, value.state.cwd, func(notification acp.SessionNotification) error {
@@ -596,15 +599,7 @@ func (a *Agent) activateSession(
 	}
 	pendingPermission := value.state.suspended != nil && value.state.suspended.Pending != nil
 	if value.state.openTurn != "" && !pendingPermission {
-		outcomeID, idErr := randomID()
-		if idErr != nil {
-			return nil, idErr
-		}
-		if err := a.commit(value, recordTurnFinished, turnFinishedRecord{
-			TurnID:    value.state.openTurn,
-			Kind:      "interrupted",
-			MessageID: outcomeID,
-		}); err != nil {
+		if err := a.interruptOpenTurn(value); err != nil {
 			return nil, fmt.Errorf("recover interrupted session: %w", err)
 		}
 	}
@@ -930,6 +925,149 @@ func (a *Agent) commitPermissionDecision(
 		return false, nil
 	}
 	return true, a.commitLocked(value, recordPermissionDone, decision)
+}
+
+func (a *Agent) startToolExecution(
+	value *session,
+	turnID string,
+	parentCallID string,
+	call openrouter.ToolCall,
+	decision approvalDecision,
+	target string,
+) error {
+	return a.commit(value, recordToolStarted, toolStartedRecord{
+		TurnID:           turnID,
+		ParentCallID:     parentCallID,
+		Call:             call,
+		ApprovalDecision: decision,
+		Target:           target,
+	})
+}
+
+func (a *Agent) completeToolExecution(
+	value *session,
+	turnID string,
+	parentCallID string,
+	callID string,
+	result storedToolResult,
+) error {
+	return a.commit(value, recordToolCompleted, toolCompletedRecord{
+		TurnID:       turnID,
+		ParentCallID: parentCallID,
+		CallID:       callID,
+		Result:       result,
+	})
+}
+
+func toolExecution(value *session, callID string) (durableToolExecution, bool) {
+	value.stateMu.Lock()
+	defer value.stateMu.Unlock()
+	execution, ok := value.state.toolExecutions[callID]
+	return cloneToolExecution(execution), ok
+}
+
+func (a *Agent) closeUnknownExecutions(value *session) error {
+	value.stateMu.Lock()
+	executions := sortedToolExecutions(value.state.toolExecutions)
+	value.stateMu.Unlock()
+	for _, execution := range executions {
+		if execution.Result != nil {
+			continue
+		}
+		result := storedToolResult{
+			CallID: execution.Call.ID, Content: unknownToolOutcome, Failed: true,
+			ApprovalDecision: execution.ApprovalDecision,
+			Target:           execution.Target,
+			Unknown:          true,
+		}
+		if err := a.completeToolExecution(
+			value, execution.TurnID, execution.ParentCallID, execution.Call.ID, result,
+		); err != nil {
+			return fmt.Errorf("persist unknown outcome for tool %q: %w", execution.Call.ID, err)
+		}
+	}
+	return nil
+}
+
+func (a *Agent) interruptOpenTurn(value *session) error {
+	if err := a.closeUnknownExecutions(value); err != nil {
+		return err
+	}
+	value.stateMu.Lock()
+	turnID := value.state.openTurn
+	suspended := cloneSuspendedExchange(value.state.suspended)
+	value.stateMu.Unlock()
+	if suspended != nil {
+		results := make([]storedToolResult, len(suspended.ToolCalls))
+		for index, call := range suspended.ToolCalls {
+			execution, started := toolExecution(value, call.ID)
+			if started && execution.Result != nil {
+				results[index] = cloneStoredToolResult(*execution.Result)
+				if results[index].Unknown {
+					results[index].Delegation = interruptedDelegation(value, call.ID)
+				}
+				continue
+			}
+			decision := approvalDecision("")
+			if recorded := suspended.decision(call.ID); recorded != nil {
+				decision = recorded.Decision
+			}
+			results[index] = storedToolResult{
+				CallID: call.ID, Content: interruptedBeforeStart, Failed: true,
+				ApprovalDecision: decision, Target: suspended.ToolTargets[call.ID],
+			}
+		}
+		if err := a.commit(value, recordModelExchange, modelExchangeRecord{
+			TurnID: suspended.TurnID, AnswerID: suspended.AnswerID,
+			ThoughtID: suspended.ThoughtID, Text: suspended.Text,
+			Reasoning: suspended.Reasoning, ReasoningDetails: suspended.ReasoningDetails,
+			FinishReason: suspended.FinishReason, Usage: suspended.Usage,
+			ToolCalls: suspended.ToolCalls, ToolResults: results, Interrupted: true,
+		}); err != nil {
+			return fmt.Errorf("persist interrupted tool exchange: %w", err)
+		}
+	}
+	outcomeID, err := randomID()
+	if err != nil {
+		return err
+	}
+	if err := a.commit(value, recordTurnFinished, turnFinishedRecord{
+		TurnID: turnID, Kind: "interrupted", MessageID: outcomeID,
+	}); err != nil {
+		return err
+	}
+	return nil
+}
+
+func interruptedDelegation(value *session, parentCallID string) *delegationRecord {
+	value.stateMu.Lock()
+	defer value.stateMu.Unlock()
+	child, exists := value.state.children[parentCallID]
+	if !exists {
+		return nil
+	}
+	record := delegationFromChild(child)
+	seen := make(map[string]struct{}, len(record.Calls))
+	for _, call := range record.Calls {
+		seen[call.CallID] = struct{}{}
+	}
+	for _, execution := range sortedToolExecutions(value.state.toolExecutions) {
+		if execution.ParentCallID != parentCallID || execution.Result == nil {
+			continue
+		}
+		if _, duplicate := seen[execution.Call.ID]; duplicate {
+			continue
+		}
+		result := execution.Result
+		record.Calls = append(record.Calls, delegatedCall{
+			CallID: execution.Call.ID, Name: execution.Call.Function.Name,
+			Arguments: json.RawMessage(execution.Call.Function.Arguments),
+			Content:   result.Content, Failed: result.Failed,
+			ApprovalDecision: result.ApprovalDecision,
+			Target:           execution.Target, Unknown: result.Unknown,
+		})
+	}
+	return record
 }
 
 func (a *Agent) commitLocked(value *session, kind string, payload any) error {

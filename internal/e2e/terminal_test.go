@@ -196,6 +196,45 @@ func TestDelegatedTerminalClientErrorFailsToolAndContinues(t *testing.T) {
 	}
 }
 
+func TestRestartDoesNotRepeatStartedDelegatedTerminal(t *testing.T) {
+	dataDir := t.TempDir()
+	model := startModel(t, shellToolCallResponse("printf delegated"))
+	options := []startOption{
+		withModel(model), withEnvironment("XDG_DATA_HOME", dataDir),
+	}
+	first := start(t, options...)
+	initializeWithCapabilities(t, first, &acp.ClientCapabilities{Terminal: true})
+	session := newSession(t, first, first.cwd)
+	cwd := first.cwd
+	_ = first.begin("session/prompt", acp.PromptRequest{
+		SessionID: session, Prompt: textPrompt("run delegated effect"),
+	})
+	allowPermission(t, first, "call-shell", true)
+	create := first.serverRequest()
+	assertTerminalCreate(t, create, session, cwd, "printf delegated")
+	marker := filepath.Join(cwd, "delegated-effect.txt")
+	if err := os.WriteFile(marker, []byte("once\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	first.kill()
+
+	second := start(t, options...)
+	initializeWithCapabilities(t, second, &acp.ClientCapabilities{Terminal: true})
+	replayStart := len(second.received)
+	loadSession(t, second, session, cwd)
+	replay := receivedSessionUpdates(t, second, replayStart, session)
+	_ = updates(t, second, session)
+	content, err := os.ReadFile(marker)
+	if err != nil || string(content) != "once\n" {
+		t.Fatalf("delegated effect after recovery = %q, %v", content, err)
+	}
+	if requests := model.requests(); len(requests) != 1 {
+		t.Fatalf("model requests = %d, want 1", len(requests))
+	}
+	assertUnknownToolReplay(t, replay, "call-shell")
+	second.stop()
+}
+
 func terminalRoundTrip(
 	t *testing.T,
 	child *process,

@@ -247,14 +247,7 @@ func (a *Agent) runFrom(
 		}
 		storedResults := make([]storedToolResult, len(results))
 		for index, result := range results {
-			storedResults[index] = storedToolResult{
-				CallID:           completion.ToolCalls[index].ID,
-				Content:          result.content,
-				Failed:           result.failed,
-				ApprovalDecision: result.approval,
-				Delegation:       result.delegation,
-				Target:           result.target,
-			}
+			storedResults[index] = storedResult(completion.ToolCalls[index].ID, result)
 		}
 		if err := a.commit(value, recordModelExchange, modelExchangeRecord{
 			TurnID:           active.turnID,
@@ -271,6 +264,26 @@ func (a *Agent) runFrom(
 			return loopOutcome{err: fmt.Errorf("persist tool exchange: %w", err)}
 		}
 		for index, call := range completion.ToolCalls {
+			if results[index].unknown && results[index].delegation != nil {
+				for _, child := range results[index].delegation.Calls {
+					childCall := openrouter.ToolCall{
+						ID: child.CallID, Type: "function",
+						Function: openrouter.ToolCallFunction{
+							Name: child.Name, Arguments: string(child.Arguments),
+						},
+					}
+					events <- a.toolEvent(
+						a.subagentTools, childCall, eventToolPending, call.ID, "", child.Target,
+					)
+					kind := eventToolCompleted
+					if child.Failed {
+						kind = eventToolFailed
+					}
+					events <- a.toolEvent(
+						a.subagentTools, childCall, kind, call.ID, child.Content, child.Target,
+					)
+				}
+			}
 			active.trace.ToolCompleted(
 				call.ID,
 				call.Function.Name,
@@ -715,6 +728,7 @@ type toolResult struct {
 	approval   approvalDecision
 	delegation *delegationRecord
 	target     string
+	unknown    bool
 }
 
 func (a *Agent) executeSuspendedBatch(
@@ -734,6 +748,7 @@ func (a *Agent) executeSuspendedBatch(
 
 	value.stateMu.Lock()
 	progress := cloneSuspendedExchange(value.state.suspended)
+	root := value.state.cwd
 	value.stateMu.Unlock()
 	if progress == nil {
 		return nil, false, errors.New("suspended tool batch has no durable state")
@@ -799,7 +814,7 @@ func (a *Agent) executeSuspendedBatch(
 			continue
 		}
 		request := a.permissionRequest(
-			value.id, value.state.cwd, tool, call, rule, "", results[index].target,
+			value.id, root, tool, call, rule, "", results[index].target,
 		)
 		value.stateMu.Lock()
 		progress = cloneSuspendedExchange(value.state.suspended)
@@ -903,10 +918,14 @@ func (a *Agent) executeSuspendedBatch(
 			}
 		}
 	}
-	results = a.dispatchApprovedBatch(
+	var err error
+	results, err = a.dispatchApprovedBatch(
 		ctx, value, a.primaryTools, value.primaryFileReads(), calls, ask,
 		fileSystem, terminal, events, "", results, ready, turn,
 	)
+	if err != nil {
+		return nil, false, err
+	}
 	a.logger.Info("suspended tool batch completed", "session_id", value.id, "calls", len(calls))
 	return results, batchCancelled, nil
 }
@@ -947,7 +966,7 @@ func (a *Agent) executeBatch(
 	ask requestPermission,
 	events chan<- event,
 ) []toolResult {
-	return a.executeBatchWith(
+	results, _ := a.executeBatchWith(
 		ctx,
 		value,
 		a.primaryTools,
@@ -960,6 +979,7 @@ func (a *Agent) executeBatch(
 		"",
 		diagnostictrace.Turn{},
 	)
+	return results
 }
 
 func (a *Agent) executeBatchWith(
@@ -974,9 +994,12 @@ func (a *Agent) executeBatchWith(
 	events chan<- event,
 	parent string,
 	turn diagnostictrace.Turn,
-) []toolResult {
+) ([]toolResult, error) {
 	a.logger.Info("tool batch started", "session_id", value.id, "calls", len(calls))
-	targets := normalizedToolTargets(value.state.cwd, tools, calls)
+	value.stateMu.Lock()
+	root := value.state.cwd
+	value.stateMu.Unlock()
+	targets := normalizedToolTargets(root, tools, calls)
 	for _, call := range calls {
 		turn.ToolPending(call.ID, call.Function.Name, parent)
 		var kind acp.ToolKind
@@ -1042,7 +1065,7 @@ approvalLoop:
 			continue
 		}
 		request := a.permissionRequest(
-			value.id, value.state.cwd, tool, call, rule, parent, results[index].target,
+			value.id, root, tool, call, rule, parent, results[index].target,
 		)
 		a.logger.Info(
 			"tool approval requested",
@@ -1121,12 +1144,13 @@ approvalLoop:
 		}
 	}
 
-	results = a.dispatchApprovedBatch(
+	var err error
+	results, err = a.dispatchApprovedBatch(
 		ctx, value, tools, reads, calls, ask, fileSystem, terminal,
 		events, parent, results, ready, turn,
 	)
 	a.logger.Info("tool batch completed", "session_id", value.id, "calls", len(calls))
-	return results
+	return results, err
 }
 
 func (a *Agent) dispatchApprovedBatch(
@@ -1143,17 +1167,59 @@ func (a *Agent) dispatchApprovedBatch(
 	results []toolResult,
 	ready []bool,
 	turn diagnostictrace.Turn,
-) []toolResult {
+) ([]toolResult, error) {
 	groups := a.partitionWith(tools, calls)
 	executed := make([]bool, len(calls))
 	for _, group := range groups {
 		if ctx.Err() != nil {
 			break
 		}
+		groupCtx, cancelGroup := context.WithCancel(ctx)
 		var wait sync.WaitGroup
+		errorsByIndex := make([]error, group.end-group.start)
+		startFailed := false
 		for index := group.start; index < group.end; index++ {
 			if !ready[index] {
 				continue
+			}
+			if value.log != nil {
+				progress, exists := toolExecution(value, calls[index].ID)
+				if exists {
+					executed[index] = true
+					if progress.Result == nil {
+						unknown := storedToolResult{
+							CallID: calls[index].ID, Content: unknownToolOutcome,
+							Failed: true, ApprovalDecision: progress.ApprovalDecision,
+							Target: progress.Target, Unknown: true,
+						}
+						if err := a.completeToolExecution(
+							value, progress.TurnID, progress.ParentCallID, calls[index].ID, unknown,
+						); err != nil {
+							cancelGroup()
+							return results, fmt.Errorf("persist unknown tool outcome: %w", err)
+						}
+						results[index] = toolResultFromStored(unknown)
+						results[index].delegation = interruptedDelegation(value, calls[index].ID)
+					} else {
+						results[index] = toolResultFromStored(*progress.Result)
+						if progress.Result.Unknown {
+							results[index].delegation = interruptedDelegation(value, calls[index].ID)
+						}
+					}
+					continue
+				}
+				value.stateMu.Lock()
+				turnID := value.state.openTurn
+				value.stateMu.Unlock()
+				if err := a.startToolExecution(
+					value, turnID, parent, calls[index], results[index].approval,
+					results[index].target,
+				); err != nil {
+					startFailed = true
+					errorsByIndex[index-group.start] = fmt.Errorf("persist tool dispatch: %w", err)
+					cancelGroup()
+					break
+				}
 			}
 			current := index
 			wait.Add(1)
@@ -1162,7 +1228,7 @@ func (a *Agent) dispatchApprovedBatch(
 				defer wait.Done()
 				decision := results[current].approval
 				results[current] = a.executeOne(
-					ctx,
+					groupCtx,
 					value,
 					tools,
 					reads,
@@ -1176,9 +1242,32 @@ func (a *Agent) dispatchApprovedBatch(
 					turn,
 				)
 				results[current].approval = decision
+				if value.log != nil {
+					stored := storedResult(calls[current].ID, results[current])
+					value.stateMu.Lock()
+					turnID := value.state.openTurn
+					value.stateMu.Unlock()
+					if err := a.completeToolExecution(
+						value, turnID, parent, calls[current].ID, stored,
+					); err != nil {
+						errorsByIndex[current-group.start] = fmt.Errorf(
+							"persist tool completion: %w", err,
+						)
+						cancelGroup()
+					}
+				}
 			}()
 		}
 		wait.Wait()
+		cancelGroup()
+		for _, err := range errorsByIndex {
+			if err != nil {
+				return results, err
+			}
+		}
+		if startFailed {
+			break
+		}
 	}
 	for index := range calls {
 		if ready[index] && !executed[index] {
@@ -1190,7 +1279,27 @@ func (a *Agent) dispatchApprovedBatch(
 			}
 		}
 	}
-	return results
+	return results, nil
+}
+
+func storedResult(callID string, result toolResult) storedToolResult {
+	return storedToolResult{
+		CallID:           callID,
+		Content:          result.content,
+		Failed:           result.failed,
+		ApprovalDecision: result.approval,
+		Delegation:       result.delegation,
+		Target:           result.target,
+		Unknown:          result.unknown,
+	}
+}
+
+func toolResultFromStored(result storedToolResult) toolResult {
+	return toolResult{
+		content: result.Content, failed: result.Failed,
+		approval: result.ApprovalDecision, delegation: result.Delegation,
+		target: result.Target, unknown: result.Unknown,
+	}
 }
 
 func (a *Agent) partition(calls []openrouter.ToolCall) []toolGroup {

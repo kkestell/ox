@@ -12,6 +12,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/creachadair/jrpc2"
@@ -21,6 +22,7 @@ import (
 	"github.com/kkestell/ox/internal/credentials"
 	"github.com/kkestell/ox/internal/openrouter"
 	"github.com/kkestell/ox/internal/settings"
+	diagnostictrace "github.com/kkestell/ox/internal/trace"
 )
 
 func TestInitializeNegotiatesSupportedVersion(t *testing.T) {
@@ -893,6 +895,18 @@ func TestDelegateResumesCompactedChildFromOpenTurnCheckpoint(t *testing.T) {
 	if err := instance.persistChildContext(value, "parent", record, nil); err != nil {
 		t.Fatal(err)
 	}
+	oldCall := openrouter.ToolCall{
+		ID: "child-public-old", Type: "function",
+		Function: openrouter.ToolCallFunction{Name: "read", Arguments: `{}`},
+	}
+	if err := instance.startToolExecution(value, "turn", "parent", oldCall, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := instance.completeToolExecution(value, "turn", "parent", oldCall.ID, storedToolResult{
+		CallID: oldCall.ID, Content: "old result",
+	}); err != nil {
+		t.Fatal(err)
+	}
 	firstUsage := openrouter.Usage{PromptTokens: 5, CompletionTokens: 2, TotalTokens: 7}
 	record.History = append(record.History, firstAssistant, firstTool)
 	record.Calls = append(record.Calls, delegatedCall{
@@ -902,6 +916,18 @@ func TestDelegateResumesCompactedChildFromOpenTurnCheckpoint(t *testing.T) {
 	record.RequestCount = 1
 	record.Occupancy = 5
 	if err := instance.persistChildContext(value, "parent", record, nil); err != nil {
+		t.Fatal(err)
+	}
+	recentCall := openrouter.ToolCall{
+		ID: "child-public-recent", Type: "function",
+		Function: openrouter.ToolCallFunction{Name: "read", Arguments: `{}`},
+	}
+	if err := instance.startToolExecution(value, "turn", "parent", recentCall, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := instance.completeToolExecution(value, "turn", "parent", recentCall.ID, storedToolResult{
+		CallID: recentCall.ID, Content: "recent result",
+	}); err != nil {
 		t.Fatal(err)
 	}
 	secondUsage := openrouter.Usage{PromptTokens: 7, CompletionTokens: 2, TotalTokens: 9}
@@ -947,6 +973,14 @@ func TestDelegateResumesCompactedChildFromOpenTurnCheckpoint(t *testing.T) {
 	if len(messages) != 4 || messages[1].Content[0].Text != summary.Content[0].Text ||
 		messages[3].ToolCallID != "provider-recent" {
 		t.Fatalf("resumed provider history = %#v", messages)
+	}
+	if err := instance.startToolExecution(value, "turn", "", parentCall, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := instance.completeToolExecution(value, "turn", "", parentCall.ID, storedToolResult{
+		CallID: parentCall.ID, Content: answer, Delegation: delegation,
+	}); err != nil {
+		t.Fatal(err)
 	}
 	if err := instance.commit(value, recordModelExchange, modelExchangeRecord{
 		TurnID: "turn", AnswerID: "answer", ThoughtID: "thought",
@@ -1550,6 +1584,308 @@ func TestSuccessfulToolResultSurvivesConcurrentCancellation(t *testing.T) {
 	if len(results) != 1 || results[0].failed ||
 		results[0].content != "mutation completed" {
 		t.Fatalf("result = %#v", results)
+	}
+}
+
+func TestToolDispatchPersistenceFailureSkipsExecutor(t *testing.T) {
+	var executions atomic.Int32
+	instance, err := New(Config{
+		Logger: discardLogger(),
+		Tools: []Tool{{
+			Name: "mutation", InputSchema: json.RawMessage(`{"type":"object"}`),
+			Approval: ApprovalNone,
+			Execute: func(context.Context, Invocation) (string, error) {
+				executions.Add(1)
+				return "changed", nil
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	configuration := requestConfiguration{
+		Settings: settings.Resolved{Model: "test/model"},
+		Tools:    cloneTools(instance.primaryTools.modelTools),
+	}
+	value := durableTestSession(t, instance, configuration, "turn")
+	call := toolCall("call", "mutation")
+	if err := instance.commit(value, recordExchangePaused, suspendedModelExchangeRecord{
+		TurnID: "turn", AnswerID: "answer", ThoughtID: "thought",
+		FinishReason: "tool_calls", ToolCalls: []openrouter.ToolCall{call}, RequestCount: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	value.log.close()
+	_, err = instance.dispatchApprovedBatch(
+		context.Background(), value, instance.primaryTools, value.primaryFileReads(),
+		[]openrouter.ToolCall{call}, nil, ClientFileSystem{}, ClientTerminal{},
+		make(chan event, 8), "", []toolResult{{}}, []bool{true}, diagnostictrace.Turn{},
+	)
+	if err == nil || !strings.Contains(err.Error(), "persist tool dispatch") {
+		t.Fatalf("dispatch error = %v", err)
+	}
+	if executions.Load() != 0 {
+		t.Fatalf("executions = %d", executions.Load())
+	}
+}
+
+func TestToolCompletionPersistenceFailureStopsLaterSibling(t *testing.T) {
+	var first, siblingCancelled, later atomic.Int32
+	siblingStarted := make(chan struct{})
+	var value *session
+	instance, err := New(Config{
+		Logger: discardLogger(),
+		Tools: []Tool{
+			{
+				Name: "first", InputSchema: json.RawMessage(`{"type":"object"}`),
+				Approval: ApprovalNone, ParallelSafe: true,
+				Execute: func(context.Context, Invocation) (string, error) {
+					first.Add(1)
+					<-siblingStarted
+					value.log.close()
+					return "effect happened", nil
+				},
+			},
+			{
+				Name: "sibling", InputSchema: json.RawMessage(`{"type":"object"}`),
+				Approval: ApprovalNone, ParallelSafe: true,
+				Execute: func(ctx context.Context, _ Invocation) (string, error) {
+					close(siblingStarted)
+					<-ctx.Done()
+					siblingCancelled.Add(1)
+					return "", ctx.Err()
+				},
+			},
+			{
+				Name: "later", InputSchema: json.RawMessage(`{"type":"object"}`),
+				Approval: ApprovalNone,
+				Execute: func(context.Context, Invocation) (string, error) {
+					later.Add(1)
+					return "should not happen", nil
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	configuration := requestConfiguration{
+		Settings: settings.Resolved{Model: "test/model"},
+		Tools:    cloneTools(instance.primaryTools.modelTools),
+	}
+	value = durableTestSession(t, instance, configuration, "turn")
+	calls := []openrouter.ToolCall{
+		toolCall("first-call", "first"), toolCall("sibling-call", "sibling"),
+		toolCall("later-call", "later"),
+	}
+	if err := instance.commit(value, recordExchangePaused, suspendedModelExchangeRecord{
+		TurnID: "turn", AnswerID: "answer", ThoughtID: "thought",
+		FinishReason: "tool_calls", ToolCalls: calls, RequestCount: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, err = instance.dispatchApprovedBatch(
+		context.Background(), value, instance.primaryTools, value.primaryFileReads(),
+		calls, nil, ClientFileSystem{}, ClientTerminal{}, make(chan event, 16), "",
+		make([]toolResult, len(calls)), []bool{true, true, true}, diagnostictrace.Turn{},
+	)
+	if err == nil || !strings.Contains(err.Error(), "persist tool completion") {
+		t.Fatalf("completion error = %v", err)
+	}
+	if first.Load() != 1 || siblingCancelled.Load() != 1 || later.Load() != 0 || !value.poisoned {
+		t.Fatalf(
+			"executions = first %d sibling cancelled %d later %d, poisoned = %v",
+			first.Load(), siblingCancelled.Load(), later.Load(), value.poisoned,
+		)
+	}
+	other := durableTestSession(t, instance, configuration, "other-turn")
+	otherCall := toolCall("other-call", "later")
+	if err := instance.commit(other, recordExchangePaused, suspendedModelExchangeRecord{
+		TurnID: "other-turn", AnswerID: "other-answer", ThoughtID: "other-thought",
+		FinishReason: "tool_calls", ToolCalls: []openrouter.ToolCall{otherCall}, RequestCount: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := instance.dispatchApprovedBatch(
+		context.Background(), other, instance.primaryTools, other.primaryFileReads(),
+		[]openrouter.ToolCall{otherCall}, nil, ClientFileSystem{}, ClientTerminal{},
+		make(chan event, 8), "", []toolResult{{}}, []bool{true}, diagnostictrace.Turn{},
+	); err != nil {
+		t.Fatal(err)
+	}
+	if later.Load() != 1 {
+		t.Fatalf("unrelated session executions = %d", later.Load())
+	}
+}
+
+func TestInterruptedStartedToolBecomesUnknownWithoutExecution(t *testing.T) {
+	var executions atomic.Int32
+	instance, err := New(Config{
+		Logger: discardLogger(),
+		Tools: []Tool{{
+			Name: "mutation", InputSchema: json.RawMessage(`{"type":"object"}`),
+			Approval: ApprovalNone,
+			Execute: func(context.Context, Invocation) (string, error) {
+				executions.Add(1)
+				return "repeated", nil
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	configuration := requestConfiguration{
+		Settings: settings.Resolved{Model: "test/model"},
+		Tools:    cloneTools(instance.primaryTools.modelTools),
+	}
+	value := durableTestSession(t, instance, configuration, "turn")
+	call := toolCall("call", "mutation")
+	if err := instance.commit(value, recordExchangePaused, suspendedModelExchangeRecord{
+		TurnID: "turn", AnswerID: "answer", ThoughtID: "thought",
+		FinishReason: "tool_calls", ToolCalls: []openrouter.ToolCall{call}, RequestCount: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := instance.startToolExecution(value, "turn", "", call, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := instance.interruptOpenTurn(value); err != nil {
+		t.Fatal(err)
+	}
+	if executions.Load() != 0 || value.state.openTurn != "" || len(value.state.history) != 3 {
+		t.Fatalf("executions = %d, state = %#v", executions.Load(), value.state)
+	}
+	result := value.state.history[2]
+	if result.Role != openrouter.RoleTool || result.Content[0].Text != unknownToolOutcome {
+		t.Fatalf("unknown result = %#v", result)
+	}
+}
+
+func TestRecoveredPermissionDoesNotRedispatchStartedSibling(t *testing.T) {
+	var first, second atomic.Int32
+	instance, err := New(Config{
+		Logger: discardLogger(),
+		Tools: []Tool{
+			{
+				Name: "first", InputSchema: json.RawMessage(`{"type":"object"}`),
+				Approval: ApprovalNone, ParallelSafe: true,
+				Execute: func(context.Context, Invocation) (string, error) {
+					first.Add(1)
+					return "repeated", nil
+				},
+			},
+			{
+				Name: "second", InputSchema: json.RawMessage(`{"type":"object"}`),
+				Approval: ApprovalAsk, ParallelSafe: true,
+				Execute: func(context.Context, Invocation) (string, error) {
+					second.Add(1)
+					return "second done", nil
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	configuration := requestConfiguration{
+		Settings: settings.Resolved{Model: "test/model"},
+		Tools:    cloneTools(instance.primaryTools.modelTools),
+	}
+	value := durableTestSession(t, instance, configuration, "turn")
+	calls := []openrouter.ToolCall{toolCall("first-call", "first"), toolCall("second-call", "second")}
+	if err := instance.commit(value, recordExchangePaused, suspendedModelExchangeRecord{
+		TurnID: "turn", AnswerID: "answer", ThoughtID: "thought",
+		FinishReason: "tool_calls", ToolCalls: calls, RequestCount: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := instance.startToolExecution(value, "turn", "", calls[0], "", ""); err != nil {
+		t.Fatal(err)
+	}
+	secondTool := instance.primaryTools.tools[instance.primaryTools.byName["second"]]
+	request := instance.permissionRequest(value.id, value.state.cwd, secondTool, calls[1], "", "", "")
+	if err := instance.commit(value, recordPermissionOpen, permissionRequestedRecord{
+		TurnID:  "turn",
+		Pending: pendingPermissionRecord{CallID: calls[1].ID, Generation: 1, Request: request},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	results, cancelled, err := instance.executeSuspendedBatch(
+		context.Background(), value, calls,
+		func(context.Context, acp.RequestPermissionRequest) (acp.RequestPermissionResponse, error) {
+			return acp.RequestPermissionResponse{Outcome: acp.RequestPermissionOutcome{
+				Outcome: "selected", OptionID: permissionAllowOnceID,
+			}}, nil
+		},
+		ClientFileSystem{}, ClientTerminal{}, make(chan event, 32),
+		diagnostictrace.Turn{}, true,
+	)
+	if err != nil || cancelled {
+		t.Fatalf("recovered batch = cancelled %v, error %v", cancelled, err)
+	}
+	if first.Load() != 0 || second.Load() != 1 || len(results) != 2 ||
+		!results[0].unknown || results[0].content != unknownToolOutcome ||
+		results[1].failed || results[1].content != "second done" {
+		t.Fatalf(
+			"executions = first %d second %d, results = %#v",
+			first.Load(), second.Load(), results,
+		)
+	}
+}
+
+func TestInterruptedBatchPreservesCompletedAndClassifiesRemainingCalls(t *testing.T) {
+	instance, err := New(Config{
+		Logger: discardLogger(),
+		Tools: []Tool{
+			{Name: "completed", InputSchema: json.RawMessage(`{"type":"object"}`), Approval: ApprovalNone},
+			{Name: "started", InputSchema: json.RawMessage(`{"type":"object"}`), Approval: ApprovalNone},
+			{Name: "untouched", InputSchema: json.RawMessage(`{"type":"object"}`), Approval: ApprovalNone},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	configuration := requestConfiguration{
+		Settings: settings.Resolved{Model: "test/model"},
+		Tools:    cloneTools(instance.primaryTools.modelTools),
+	}
+	value := durableTestSession(t, instance, configuration, "turn")
+	calls := []openrouter.ToolCall{
+		toolCall("completed-call", "completed"),
+		toolCall("started-call", "started"),
+		toolCall("untouched-call", "untouched"),
+	}
+	if err := instance.commit(value, recordExchangePaused, suspendedModelExchangeRecord{
+		TurnID: "turn", AnswerID: "answer", ThoughtID: "thought",
+		FinishReason: "tool_calls", ToolCalls: calls, RequestCount: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, call := range calls[:2] {
+		if err := instance.startToolExecution(value, "turn", "", call, "", ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := instance.completeToolExecution(
+		value, "turn", "", calls[0].ID,
+		storedToolResult{CallID: calls[0].ID, Content: "durable result"},
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := instance.interruptOpenTurn(value); err != nil {
+		t.Fatal(err)
+	}
+	if len(value.state.history) != 5 {
+		t.Fatalf("history = %#v", value.state.history)
+	}
+	got := []string{
+		value.state.history[2].Content[0].Text,
+		value.state.history[3].Content[0].Text,
+		value.state.history[4].Content[0].Text,
+	}
+	want := []string{"durable result", unknownToolOutcome, interruptedBeforeStart}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("tool results = %v, want %v", got, want)
 	}
 }
 

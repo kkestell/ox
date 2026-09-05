@@ -531,7 +531,17 @@ func TestFoldResumesSuspendedPermissionGenerationAndReplaysOnce(t *testing.T) {
 			TurnID: "turn", CallID: call.ID, Generation: 2,
 			Decision: decisionAllowOnce,
 		}),
-		mustRecord(t, 7, recordModelExchange, modelExchangeRecord{
+		mustRecord(t, 7, recordToolStarted, toolStartedRecord{
+			TurnID: "turn", Call: call, ApprovalDecision: decisionAllowOnce, Target: "a.go",
+		}),
+		mustRecord(t, 8, recordToolCompleted, toolCompletedRecord{
+			TurnID: "turn", CallID: call.ID,
+			Result: storedToolResult{
+				CallID: call.ID, Content: "done",
+				ApprovalDecision: decisionAllowOnce, Target: "a.go",
+			},
+		}),
+		mustRecord(t, 9, recordModelExchange, modelExchangeRecord{
 			TurnID: "turn", AnswerID: "answer", ThoughtID: "thought",
 			Text: "working", FinishReason: "tool_calls",
 			ToolCalls: []openrouter.ToolCall{call},
@@ -540,7 +550,7 @@ func TestFoldResumesSuspendedPermissionGenerationAndReplaysOnce(t *testing.T) {
 				ApprovalDecision: decisionAllowOnce, Target: "a.go",
 			}},
 		}),
-		mustRecord(t, 8, recordTurnFinished, turnFinishedRecord{
+		mustRecord(t, 10, recordTurnFinished, turnFinishedRecord{
 			TurnID: "turn", Kind: "completed", StopReason: acp.StopReasonEndTurn,
 		}),
 	)
@@ -684,6 +694,66 @@ func TestFoldRejectsInvalidSuspendedPermissionRecords(t *testing.T) {
 	state := mustFold(t, interrupted)
 	if state.openTurn != "" || state.suspended != nil {
 		t.Fatalf("interrupted non-pending suspension = %#v", state)
+	}
+}
+
+func TestFoldRejectsInvalidToolExecutionLifecycle(t *testing.T) {
+	call := openrouter.ToolCall{
+		ID: "call", Type: "function",
+		Function: openrouter.ToolCallFunction{Name: "mutation", Arguments: `{}`},
+	}
+	base := []sessionRecord{
+		mustRecord(t, 1, recordSessionCreated, sessionCreated{
+			SessionID: "0123456789abcdef0123456789abcdef", CWD: "/workspace",
+			Configuration: requestConfiguration{
+				Settings: settings.Resolved{Model: "test/model"},
+				Tools: []openrouter.Tool{{Type: "function", Function: openrouter.ToolFunction{
+					Name: "mutation", Parameters: json.RawMessage(`{"type":"object"}`),
+				}}},
+			},
+		}),
+		mustRecord(t, 2, recordUserMessage, userMessageRecord{
+			TurnID: "turn", MessageID: "user",
+			Content: []acp.ContentBlock{{Type: "text", Text: "run it"}},
+		}),
+		mustRecord(t, 3, recordExchangePaused, suspendedModelExchangeRecord{
+			TurnID: "turn", AnswerID: "answer", ThoughtID: "thought",
+			FinishReason: "tool_calls", ToolCalls: []openrouter.ToolCall{call}, RequestCount: 1,
+		}),
+	}
+	started := mustRecord(t, 4, recordToolStarted, toolStartedRecord{TurnID: "turn", Call: call})
+	tests := []struct {
+		name    string
+		records []sessionRecord
+	}{
+		{
+			name: "completion before dispatch",
+			records: append(append([]sessionRecord(nil), base...),
+				mustRecord(t, 4, recordToolCompleted, toolCompletedRecord{
+					TurnID: "turn", CallID: call.ID,
+					Result: storedToolResult{CallID: call.ID, Content: "done"},
+				})),
+		},
+		{
+			name: "duplicate dispatch",
+			records: append(append(append([]sessionRecord(nil), base...), started),
+				mustRecord(t, 5, recordToolStarted, toolStartedRecord{TurnID: "turn", Call: call})),
+		},
+		{
+			name: "invalid unknown outcome",
+			records: append(append(append([]sessionRecord(nil), base...), started),
+				mustRecord(t, 5, recordToolCompleted, toolCompletedRecord{
+					TurnID: "turn", CallID: call.ID,
+					Result: storedToolResult{CallID: call.ID, Content: unknownToolOutcome, Unknown: true},
+				})),
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := foldRecords(test.records); err == nil {
+				t.Fatal("invalid lifecycle was accepted")
+			}
+		})
 	}
 }
 
