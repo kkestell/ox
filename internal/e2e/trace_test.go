@@ -188,7 +188,7 @@ func TestDiagnosticTraceClassifiesCompactionSubagentAndCancellation(t *testing.T
 	held = model.holdFor("cancel this turn", frames(evReasoning(cancelSentinel)))
 	child := start(t,
 		withModel(model),
-		withModelContextWindow(model, 3700),
+		withModelContextWindow(model, 14800),
 		withArguments("--trace", "trace.jsonl"),
 	)
 	initialize(t, child)

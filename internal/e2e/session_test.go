@@ -181,7 +181,7 @@ func TestSessionCompactionSurvivesRestartWithoutChangingReplay(t *testing.T) {
 	)
 	options := []startOption{
 		withModel(model),
-		withModelContextWindow(model, 3000),
+		withModelContextWindow(model, 12000),
 		withEnvironment("XDG_DATA_HOME", dataDir),
 	}
 
@@ -250,6 +250,181 @@ func TestSessionCompactionSurvivesRestartWithoutChangingReplay(t *testing.T) {
 		{role: "user", text: "fourth prompt"},
 	}
 	assertConversation(t, requests[4].Messages, wantCompacted)
+}
+
+func TestOpenParentCompactionCheckpointSurvivesCrash(t *testing.T) {
+	dataDir := t.TempDir()
+	oldAnswer := strings.Repeat("old checkpoint detail ", 240)
+	recentAnswer := strings.Repeat("recent checkpoint answer ", 80)
+	held := (*modelResponse)(nil)
+	model := startModel(t,
+		sse(evText(oldAnswer), evFinishReason("stop"), evUsageCost(100, 600, 700, 0.1)),
+		sse(evText(recentAnswer), evFinishReason("stop"), evUsageCost(800, 5, 805, 0.2)),
+		sse(evText("folded parent facts"), evFinishReason("stop"), evUsageCost(650, 20, 670, 0.3)),
+	)
+	held = model.holdFor("third checkpoint prompt", "")
+	model.queue(sse(evText("continued"), evFinishReason("stop"), evUsageCost(90, 3, 93, 0.4)))
+	options := []startOption{
+		withModel(model),
+		withModelContextWindow(model, 17000),
+		withEnvironment("XDG_DATA_HOME", dataDir),
+	}
+
+	first, session := startSession(t, options...)
+	cwd := first.cwd
+	prompt(t, first, session, "first checkpoint prompt")
+	_ = updates(t, first, session)
+	prompt(t, first, session, "second checkpoint prompt")
+	_ = updates(t, first, session)
+	_ = first.begin("session/prompt", acp.PromptRequest{
+		SessionID: session, Prompt: textPrompt("third checkpoint prompt"),
+	})
+	held.await(t)
+	first.kill()
+
+	second := start(t, options...)
+	initialize(t, second)
+	replayStart := len(second.received)
+	loadSession(t, second, session, cwd)
+	firstReplay := receivedSessionUpdates(t, second, replayStart, session)
+	_ = updates(t, second, session)
+	second.request("session/close", acp.CloseSessionRequest{SessionID: session})
+	second.stop()
+
+	third := start(t, options...)
+	initialize(t, third)
+	replayStart = len(third.received)
+	loadSession(t, third, session, cwd)
+	secondReplay := receivedSessionUpdates(t, third, replayStart, session)
+	_ = updates(t, third, session)
+	if !reflect.DeepEqual(secondReplay, firstReplay) {
+		t.Fatalf("parent checkpoint replay changed across reloads:\nsecond = %#v\nfirst = %#v", secondReplay, firstReplay)
+	}
+	assertReplayUsage(t, secondReplay, 17000, 0.59)
+	prompt(t, third, session, "fourth checkpoint prompt")
+	_ = updates(t, third, session)
+
+	requests := model.requests()
+	if len(requests) != 5 {
+		t.Fatalf("model requests = %d, want 5", len(requests))
+	}
+	assertConversation(t, requests[4].Messages, []exchange{
+		{role: "user", text: "first checkpoint prompt"},
+		{role: "user", text: "Summary of earlier conversation:\n\nfolded parent facts"},
+		{role: "user", text: "second checkpoint prompt"},
+		{role: "assistant", text: recentAnswer},
+		{role: "user", text: "third checkpoint prompt"},
+		{role: "user", text: "fourth checkpoint prompt"},
+	})
+}
+
+func TestOpenChildCompactionCheckpointSurvivesCrash(t *testing.T) {
+	dataDir := t.TempDir()
+	oldContents := strings.Repeat("old child detail ", 240)
+	held := (*modelResponse)(nil)
+	model := startModel(t,
+		sse(
+			evToolCall(0, "task-checkpoint", "function", "task", `{"description":"inspect","prompt":"inspect checkpoint files"}`),
+			evFinishReason("tool_calls"), evUsageCost(20, 4, 24, 0.1),
+		),
+		sse(
+			evToolCall(0, "provider-old", "function", "read_file", `{"path":"old.txt"}`),
+			evFinishReason("tool_calls"), evUsageCost(40, 4, 44, 0.2),
+		),
+		sse(
+			evToolCall(0, "provider-recent", "function", "read_file", `{"path":"recent.txt"}`),
+			evFinishReason("tool_calls"), evUsageCost(5000, 4, 5004, 0.3),
+		),
+		sse(evText("folded child facts"), evFinishReason("stop"), evUsageCost(5200, 20, 5220, 0.4)),
+	)
+	held = model.holdFor("recent child detail\n", "")
+	options := []startOption{
+		withModel(model),
+		withModelContextWindow(model, 12000),
+		withEnvironment("XDG_DATA_HOME", dataDir),
+		withFile("old.txt", oldContents),
+		withFile("recent.txt", "recent child detail\n"),
+	}
+
+	first, session := startSession(t, options...)
+	cwd := first.cwd
+	_ = first.begin("session/prompt", acp.PromptRequest{
+		SessionID: session, Prompt: textPrompt("delegate checkpoint work"),
+	})
+	held.await(t)
+	first.kill()
+
+	second := start(t, options...)
+	initialize(t, second)
+	replayStart := len(second.received)
+	loadSession(t, second, session, cwd)
+	firstReplay := receivedSessionUpdates(t, second, replayStart, session)
+	_ = updates(t, second, session)
+	second.request("session/close", acp.CloseSessionRequest{SessionID: session})
+	second.stop()
+
+	third := start(t, options...)
+	initialize(t, third)
+	replayStart = len(third.received)
+	loadSession(t, third, session, cwd)
+	secondReplay := receivedSessionUpdates(t, third, replayStart, session)
+	_ = updates(t, third, session)
+	if !reflect.DeepEqual(secondReplay, firstReplay) {
+		t.Fatalf("child checkpoint replay changed across reloads:\nsecond = %#v\nfirst = %#v", secondReplay, firstReplay)
+	}
+	assertReplayUsage(t, secondReplay, 12000, 0.99)
+	assertUnknownToolReplay(t, secondReplay, "task-checkpoint")
+
+	requests := model.requests()
+	if len(requests) != 5 {
+		t.Fatalf("model requests = %d, want 5", len(requests))
+	}
+	compacted := requests[4].Messages
+	assertProviderToolPairs(t, compacted)
+	assertConversation(t, compacted, []exchange{
+		{role: "user", text: "inspect checkpoint files"},
+		{role: "user", text: "Summary of earlier conversation:\n\nfolded child facts"},
+		{role: "assistant", text: ""},
+		{role: "tool", text: "recent child detail\n"},
+	})
+}
+
+func assertProviderToolPairs(t *testing.T, messages []modelMessage) {
+	t.Helper()
+	known := make(map[string]struct{})
+	for _, message := range messages {
+		for _, call := range message.ToolCalls {
+			known[call.ID] = struct{}{}
+		}
+		if message.Role == "tool" {
+			if _, ok := known[message.ToolCallID]; !ok {
+				t.Fatalf("tool result %q has no preceding provider call", message.ToolCallID)
+			}
+		}
+	}
+}
+
+func assertReplayUsage(t *testing.T, replay []sessionNotification, size uint64, minimumCost float64) {
+	t.Helper()
+	var seen bool
+	var maximumCost float64
+	for _, notification := range replay {
+		if notification.Update.SessionUpdate != "usage_update" {
+			continue
+		}
+		seen = true
+		if notification.Update.Size != size || notification.Update.Used == 0 ||
+			notification.Update.Cost == nil {
+			t.Fatalf("replayed usage = %#v", notification.Update)
+		}
+		maximumCost = max(maximumCost, notification.Update.Cost.Amount)
+	}
+	if !seen {
+		t.Fatal("replay omitted usage")
+	}
+	if maximumCost < minimumCost {
+		t.Fatalf("maximum replayed cost = %g, want at least %g", maximumCost, minimumCost)
+	}
 }
 
 func TestChangedFilesAndToolLocationsSurviveProcessRestart(t *testing.T) {

@@ -104,6 +104,27 @@ func TestEstimateRequestIncludesProtectedPrefix(t *testing.T) {
 	}
 }
 
+func TestEstimateRequestConservativelySizesAdversarialText(t *testing.T) {
+	for _, text := range []string{
+		strings.Repeat("!@#$%^&*()_+{}[]:;,.?/|", 40),
+		strings.Repeat("漢字🙂e\u0301", 100),
+	} {
+		request := admissionTestRequest([]openrouter.Message{
+			textMessage(openrouter.RoleUser, text),
+		})
+		occupancy, _, err := estimateProviderRequest(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if occupancy < len(text) {
+			t.Fatalf("occupancy = %d, want at least %d source bytes", occupancy, len(text))
+		}
+		if _, err := planRequestAdmission(request, len(text)/2); err == nil {
+			t.Fatalf("dense %q request fit an undersized context", text[:min(len(text), 12)])
+		}
+	}
+}
+
 func TestRequestAdmissionIncludesPendingPrompt(t *testing.T) {
 	request := admissionTestRequest([]openrouter.Message{
 		textMessage(openrouter.RoleUser, "do the task"),

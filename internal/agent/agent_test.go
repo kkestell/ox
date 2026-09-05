@@ -1303,6 +1303,23 @@ func TestNewSessionValidatesSettingsAgainstTheCatalog(t *testing.T) {
 			contains: []string{"nope/nope", string(settings.SourceGlobal)},
 		},
 		{
+			name: "model without context length",
+			body: `{"model": "plain/model"}`,
+			client: &staticCompletionModel{entry: &openrouter.Model{
+				ID: "plain/model",
+			}},
+			contains: []string{"plain/model", "no positive context length", "choose a model"},
+		},
+		{
+			name: "model with nonpositive context length",
+			body: `{"model": "plain/model"}`,
+			client: &staticCompletionModel{entry: &openrouter.Model{
+				ID: "plain/model", ContextLength: -1,
+				TopProvider: openrouter.TopProvider{ContextLength: -2},
+			}},
+			contains: []string{"plain/model", "no positive context length", "choose a model"},
+		},
+		{
 			name:     "reasoning on a model without reasoning",
 			body:     `{"model": "plain/model", "reasoning": {"effort": "high"}}`,
 			client:   &staticCompletionModel{},
@@ -1830,6 +1847,92 @@ func TestRecoveredPermissionDoesNotRedispatchStartedSibling(t *testing.T) {
 			"executions = first %d second %d, results = %#v",
 			first.Load(), second.Load(), results,
 		)
+	}
+}
+
+func TestRecoveredPermissionCommitsUnknownDelegatingSibling(t *testing.T) {
+	instance, err := New(Config{
+		Logger: discardLogger(),
+		Tools: []Tool{
+			{
+				Name: "task", InputSchema: json.RawMessage(`{"type":"object"}`),
+				Approval: ApprovalNone, ParallelSafe: true, Delegates: true,
+				Label: func(json.RawMessage) string { return "Task" },
+			},
+			{
+				Name: "second", InputSchema: json.RawMessage(`{"type":"object"}`),
+				Approval: ApprovalAsk, ParallelSafe: true,
+				Execute: func(context.Context, Invocation) (string, error) {
+					return "second done", nil
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	configuration := requestConfiguration{
+		Settings: settings.Resolved{Model: "test/model"},
+		Tools:    cloneTools(instance.primaryTools.modelTools),
+		Subagent: subagentConfiguration{
+			SystemPrompt: "child",
+			Tools:        cloneTools(instance.subagentTools.modelTools),
+		},
+	}
+	value := durableTestSession(t, instance, configuration, "turn")
+	calls := []openrouter.ToolCall{
+		toolCall("task-call", "task"),
+		toolCall("second-call", "second"),
+	}
+	if err := instance.commit(value, recordExchangePaused, suspendedModelExchangeRecord{
+		TurnID: "turn", AnswerID: "answer", ThoughtID: "thought",
+		FinishReason: "tool_calls", ToolCalls: calls, RequestCount: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := instance.startToolExecution(value, "turn", "", calls[0], "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := instance.persistChildContext(value, calls[0].ID, delegationRecord{
+		Prompt: "inspect", History: []openrouter.Message{
+			textMessage(openrouter.RoleUser, "inspect"),
+		},
+	}, nil); err != nil {
+		t.Fatal(err)
+	}
+	secondTool := instance.primaryTools.tools[instance.primaryTools.byName["second"]]
+	request := instance.permissionRequest(value.id, value.state.cwd, secondTool, calls[1], "", "", "")
+	if err := instance.commit(value, recordPermissionOpen, permissionRequestedRecord{
+		TurnID:  "turn",
+		Pending: pendingPermissionRecord{CallID: calls[1].ID, Generation: 1, Request: request},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	results, cancelled, err := instance.executeSuspendedBatch(
+		context.Background(), value, calls,
+		func(context.Context, acp.RequestPermissionRequest) (acp.RequestPermissionResponse, error) {
+			return acp.RequestPermissionResponse{Outcome: acp.RequestPermissionOutcome{
+				Outcome: "selected", OptionID: permissionAllowOnceID,
+			}}, nil
+		},
+		ClientFileSystem{}, ClientTerminal{}, make(chan event, 32),
+		diagnostictrace.Turn{}, true,
+	)
+	if err != nil || cancelled {
+		t.Fatalf("recovered batch = cancelled %v, error %v", cancelled, err)
+	}
+	stored := make([]storedToolResult, len(results))
+	for index := range results {
+		stored[index] = storedResult(calls[index].ID, results[index])
+	}
+	if stored[0].Delegation == nil || !stored[0].Unknown {
+		t.Fatalf("delegating sibling result = %#v", stored[0])
+	}
+	if err := instance.commit(value, recordModelExchange, modelExchangeRecord{
+		TurnID: "turn", AnswerID: "answer", ThoughtID: "thought",
+		FinishReason: "tool_calls", ToolCalls: calls, ToolResults: stored,
+	}); err != nil {
+		t.Fatalf("persist recovered exchange: %v", err)
 	}
 }
 

@@ -40,8 +40,14 @@ type modelRequest struct {
 }
 
 type modelMessage struct {
-	Role    string             `json:"role"`
-	Content []modelContentPart `json:"content"`
+	Role       string             `json:"role"`
+	Content    []modelContentPart `json:"content"`
+	ToolCalls  []modelToolCall    `json:"tool_calls"`
+	ToolCallID string             `json:"tool_call_id"`
+}
+
+type modelToolCall struct {
+	ID string `json:"id"`
 }
 
 type modelContentPart struct {
@@ -369,6 +375,13 @@ func evUsage(promptTokens, completionTokens, totalTokens int) string {
 	return fmt.Sprintf(
 		`{"choices":[],"usage":{"prompt_tokens":%d,"completion_tokens":%d,"total_tokens":%d}}`,
 		promptTokens, completionTokens, totalTokens,
+	)
+}
+
+func evUsageCost(promptTokens, completionTokens, totalTokens int, cost float64) string {
+	return fmt.Sprintf(
+		`{"choices":[],"usage":{"prompt_tokens":%d,"completion_tokens":%d,"total_tokens":%d,"cost":%g}}`,
+		promptTokens, completionTokens, totalTokens, cost,
 	)
 }
 

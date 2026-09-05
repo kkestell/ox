@@ -1721,12 +1721,20 @@ func (s *durableState) validateCompletedSuspension(
 			continue
 		}
 		gotResult := completed.ToolResults[index]
-		wantResult := *execution.Result
-		if completed.Interrupted && gotResult.Unknown {
-			gotResult.Delegation = nil
+		wantResult := cloneStoredToolResult(*execution.Result)
+		if wantResult.Unknown {
+			wantResult.Delegation = interruptedDelegationFromState(s, call.ID)
 		}
-		if !reflect.DeepEqual(gotResult, wantResult) {
-			return errors.New("completed tool result does not match its durable completion")
+		gotResultJSON, err := json.Marshal(gotResult)
+		if err != nil {
+			panic(err)
+		}
+		wantResultJSON, err := json.Marshal(wantResult)
+		if err != nil {
+			panic(err)
+		}
+		if !bytes.Equal(gotResultJSON, wantResultJSON) {
+			return fmt.Errorf("completed tool result %q does not match its durable completion", call.ID)
 		}
 	}
 	return nil
