@@ -403,7 +403,7 @@ func TestOpenParentCompactionCheckpointSurvivesCrash(t *testing.T) {
 	model.queue(sse(evText("continued"), evFinishReason("stop"), evUsageCost(90, 3, 93, 0.4)))
 	options := []startOption{
 		withModel(model),
-		withModelContextWindow(model, 17000),
+		withModelContextWindow(model, 18000),
 		withEnvironment("XDG_DATA_HOME", dataDir),
 	}
 
@@ -437,7 +437,7 @@ func TestOpenParentCompactionCheckpointSurvivesCrash(t *testing.T) {
 	if !reflect.DeepEqual(secondReplay, firstReplay) {
 		t.Fatalf("parent checkpoint replay changed across reloads:\nsecond = %#v\nfirst = %#v", secondReplay, firstReplay)
 	}
-	assertReplayUsage(t, secondReplay, 17000, 0.59)
+	assertReplayUsage(t, secondReplay, 18000, 0.59)
 	prompt(t, third, session, "fourth checkpoint prompt")
 	_ = updates(t, third, session)
 

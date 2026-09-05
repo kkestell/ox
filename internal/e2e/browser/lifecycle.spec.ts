@@ -5,7 +5,7 @@ import { BrowserHarness } from "./harness";
 let harness: BrowserHarness | undefined;
 
 test.beforeEach(async ({ page }) => {
-	harness = await BrowserHarness.start({ contextWindow: 13_200, logLevel: "debug" });
+  harness = await BrowserHarness.start({ contextWindow: 17_550, logLevel: "debug" });
   await harness.open(page);
 });
 
@@ -106,7 +106,7 @@ test("renders a complete tool turn live and from session replay", async ({ page 
       update: {
         sessionUpdate: "usage_update",
 		used: 8,
-		size: 13_200,
+        size: 17_550,
         cost: { amount: 0.001, currency: "USD" },
       },
     },
@@ -184,7 +184,7 @@ test("accepts a compacted context usage update", async ({ page }) => {
       update: {
         sessionUpdate: "usage_update",
         used: expect.any(Number),
-			size: 13_200,
+        size: 17_550,
         cost: { amount: 0.006, currency: "USD" },
       },
     },

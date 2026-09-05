@@ -32,7 +32,7 @@ func TestMain(m *testing.M) {
 	}
 
 	oxBinary = filepath.Join(directory, "ox")
-	arguments := []string{"build"}
+	arguments := []string{"build", "-tags=oxe2e"}
 	if raceEnabled {
 		arguments = append(arguments, "-race")
 	}

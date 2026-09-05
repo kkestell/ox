@@ -1052,7 +1052,7 @@ func TestReadOnlyToolsSpillRefuseEscapeReplayAndDelete(t *testing.T) {
 			) {
 				return nil, errors.New("system prompt did not use the canonical workspace root")
 			}
-			if len(request.Tools) != 9 {
+			if len(request.Tools) != 10 {
 				return nil, errors.New("built-in tools were not frozen into the request")
 			}
 			return &openrouter.Completion{
@@ -1449,8 +1449,8 @@ func TestConcurrentTasksNestChildCallsApproveAndReplay(t *testing.T) {
 	) (*openrouter.Completion, error) {
 		system := request.Messages[0].Content[0].Text
 		if strings.HasPrefix(system, "You are a subagent") {
-			if len(request.Tools) != 7 {
-				return nil, fmt.Errorf("subagent tools = %d, want 7", len(request.Tools))
+			if len(request.Tools) != 8 {
+				return nil, fmt.Errorf("subagent tools = %d, want 8", len(request.Tools))
 			}
 			for _, tool := range request.Tools {
 				if tool.Function.Name == "task" {

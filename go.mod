@@ -3,6 +3,7 @@ module github.com/kkestell/ox
 go 1.26.4
 
 require (
+	github.com/JohannesKaufmann/html-to-markdown/v2 v2.5.1
 	github.com/bmatcuk/doublestar/v4 v4.10.0
 	github.com/creachadair/jrpc2 v1.3.5
 	github.com/go-git/go-git/v5 v5.19.1
@@ -16,6 +17,7 @@ require (
 )
 
 require (
+	github.com/JohannesKaufmann/dom v0.2.0 // indirect
 	github.com/creachadair/mds v0.26.1 // indirect
 	github.com/danieljoos/wincred v1.2.3 // indirect
 	github.com/go-git/gcfg v1.5.1-0.20230307220236-3a3c6141e376 // indirect
