@@ -40,10 +40,11 @@ func TestLoadTaskValidatesAndRevisionTracksContent(t *testing.T) {
 
 func TestLoadTaskRejectsUnsafeAndInvalidManifests(t *testing.T) {
 	for name, task := range map[string]Task{
-		"schema":     {Schema: 2, ID: "task", Budget: Budget{1, 1}, Phases: []Phase{{Action: "prompt", Prompt: "x", Permission: "allow"}}, Success: Success{Files: map[string]string{"x": "x"}}},
-		"budget":     {Schema: 1, ID: "task", Phases: []Phase{{Action: "prompt", Prompt: "x", Permission: "allow"}}, Success: Success{Files: map[string]string{"x": "x"}}},
-		"path":       {Schema: 1, ID: "task", Budget: Budget{1, 1}, Phases: []Phase{{Action: "prompt", Prompt: "x", Permission: "allow"}}, Success: Success{Files: map[string]string{"../x": "x"}}},
-		"permission": {Schema: 1, ID: "task", Budget: Budget{1, 1}, Phases: []Phase{{Action: "prompt", Prompt: "x", Permission: "maybe"}}, Success: Success{Files: map[string]string{"x": "x"}}},
+		"schema":              {Schema: 2, ID: "task", Budget: Budget{1, 1}, Phases: []Phase{{Action: "prompt", Prompt: "x", Permission: "allow"}}, Success: Success{Files: map[string]string{"x": "x"}}},
+		"budget":              {Schema: 1, ID: "task", Phases: []Phase{{Action: "prompt", Prompt: "x", Permission: "allow"}}, Success: Success{Files: map[string]string{"x": "x"}}},
+		"path":                {Schema: 1, ID: "task", Budget: Budget{1, 1}, Phases: []Phase{{Action: "prompt", Prompt: "x", Permission: "allow"}}, Success: Success{Files: map[string]string{"../x": "x"}}},
+		"permission":          {Schema: 1, ID: "task", Budget: Budget{1, 1}, Phases: []Phase{{Action: "prompt", Prompt: "x", Permission: "maybe"}}, Success: Success{Files: map[string]string{"x": "x"}}},
+		"negative rejections": {Schema: 1, ID: "task", Budget: Budget{1, 1}, Phases: []Phase{{Action: "prompt", Prompt: "x", Permission: "deny"}}, Success: Success{Files: map[string]string{"x": "x"}, MinimumPermissionRejections: -1}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			root := t.TempDir()
@@ -101,6 +102,45 @@ func TestVerifierRejectsWorkspaceSymlinkTraversal(t *testing.T) {
 	}
 }
 
+func TestVerifierRejectsExpectedFileSymlink(t *testing.T) {
+	root := t.TempDir()
+	workspace := filepath.Join(root, "workspace")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(root, "outside.txt")
+	if err := os.WriteFile(outside, []byte("expected\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(workspace, "answer.txt")); err != nil {
+		t.Fatal(err)
+	}
+	task := Task{Success: Success{Files: map[string]string{"answer.txt": "expected\n"}}}
+	if _, err := verifyTask(context.Background(), task, workspace); err == nil {
+		t.Fatal("verifier accepted an expected-file symlink")
+	}
+}
+
+func TestRunRejectsExistingRepetitionDirectory(t *testing.T) {
+	taskRoot := t.TempDir()
+	writeTestTask(t, taskRoot, Task{
+		Schema: 1, ID: "task", Budget: Budget{TimeoutMS: 1000, ProviderRequests: 1},
+		Phases:  []Phase{{Action: "prompt", Prompt: "finish", Permission: "allow"}},
+		Success: Success{Files: map[string]string{"answer.txt": "expected\n"}},
+	})
+	output := t.TempDir()
+	if err := os.Mkdir(filepath.Join(output, "run-001"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Run(context.Background(), Config{
+		OxBinary: "unused", TaskPath: taskRoot, OutputDir: output, Model: "test/model",
+		Repetitions: 1, Upstream: http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}),
+	})
+	if err == nil || !strings.Contains(err.Error(), "fresh repetition directory") {
+		t.Fatalf("Run error = %v, want existing repetition rejection", err)
+	}
+}
+
 func TestGatewayEnforcesBudgetAndForgetsAuthorization(t *testing.T) {
 	var authorization string
 	upstream := http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
@@ -140,6 +180,12 @@ func TestPermissionOutcomeSelectsRequestedPolicy(t *testing.T) {
 	}
 	if got := permissionOutcome(nil, "allow"); got.Outcome != "cancelled" {
 		t.Fatalf("empty outcome = %#v", got)
+	}
+	if !permissionRejected(options, permissionOutcome(options, "deny")) {
+		t.Fatal("deny selection was not tracked as a rejection")
+	}
+	if permissionRejected(options, permissionOutcome(options, "allow")) {
+		t.Fatal("allow selection was tracked as a rejection")
 	}
 }
 

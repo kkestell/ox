@@ -46,27 +46,28 @@ type RunIndex struct {
 }
 
 type RunResult struct {
-	Schema           int      `json:"schema"`
-	TaskID           string   `json:"task_id"`
-	TaskRevision     string   `json:"task_revision"`
-	OxRevision       string   `json:"ox_revision"`
-	Model            string   `json:"model"`
-	Provider         string   `json:"provider"`
-	Budget           Budget   `json:"budget"`
-	Repetitions      int      `json:"repetitions"`
-	Repetition       int      `json:"repetition"`
-	Success          bool     `json:"success"`
-	SuccessCriteria  Success  `json:"success_criteria"`
-	Failure          *Failure `json:"failure"`
-	LatencyMS        int64    `json:"latency_ms"`
-	ProviderAttempts int      `json:"provider_attempts"`
-	Retries          int      `json:"retries"`
-	InputTokens      *uint64  `json:"input_tokens"`
-	OutputTokens     *uint64  `json:"output_tokens"`
-	CostUSD          *float64 `json:"cost_usd"`
-	StopReasons      []string `json:"stop_reasons"`
-	Permissions      int      `json:"permissions"`
-	Answer           string   `json:"answer"`
+	Schema               int      `json:"schema"`
+	TaskID               string   `json:"task_id"`
+	TaskRevision         string   `json:"task_revision"`
+	OxRevision           string   `json:"ox_revision"`
+	Model                string   `json:"model"`
+	Provider             string   `json:"provider"`
+	Budget               Budget   `json:"budget"`
+	Repetitions          int      `json:"repetitions"`
+	Repetition           int      `json:"repetition"`
+	Success              bool     `json:"success"`
+	SuccessCriteria      Success  `json:"success_criteria"`
+	Failure              *Failure `json:"failure"`
+	LatencyMS            int64    `json:"latency_ms"`
+	ProviderAttempts     int      `json:"provider_attempts"`
+	Retries              int      `json:"retries"`
+	InputTokens          *uint64  `json:"input_tokens"`
+	OutputTokens         *uint64  `json:"output_tokens"`
+	CostUSD              *float64 `json:"cost_usd"`
+	StopReasons          []string `json:"stop_reasons"`
+	Permissions          int      `json:"permissions"`
+	PermissionRejections int      `json:"permission_rejections"`
+	Answer               string   `json:"answer"`
 }
 
 type Failure struct {
@@ -97,9 +98,13 @@ func Run(ctx context.Context, config Config) (RunIndex, error) {
 		Budget: task.Budget, Repetitions: config.Repetitions,
 	}
 	for repetition := 1; repetition <= config.Repetitions; repetition++ {
+		runRoot := filepath.Join(config.OutputDir, fmt.Sprintf("run-%03d", repetition))
+		if err := os.Mkdir(runRoot, 0o755); err != nil {
+			return index, fmt.Errorf("create fresh repetition directory %s: %w", runRoot, err)
+		}
 		result := runOnce(ctx, config, task, repetition)
 		index.Results = append(index.Results, result)
-		runPath := filepath.Join(config.OutputDir, fmt.Sprintf("run-%03d", repetition), "result.json")
+		runPath := filepath.Join(runRoot, "result.json")
 		if err := writeJSON(runPath, result); err != nil {
 			return index, err
 		}
@@ -153,6 +158,7 @@ func runOnce(parent context.Context, config Config, task Task, repetition int) R
 	}
 	ordinal := 1
 	permissionTotal := 0
+	permissionRejectionTotal := 0
 	client, err := startProcess(config.OxBinary, workspace, private, config.Model, gateway.BaseURL(), credential, ordinal)
 	if err != nil {
 		return failedResult(result, started, "setup", err)
@@ -186,6 +192,7 @@ func runOnce(parent context.Context, config Config, task Task, repetition int) R
 		switch phase.Action {
 		case "restart":
 			permissionTotal += client.stats.Permissions
+			permissionRejectionTotal += client.stats.PermissionRejections
 			if err := stopClient(); err != nil {
 				return finishFailed(result, started, gateway, private, "process_exit", err, func() error { return nil })
 			}
@@ -209,7 +216,7 @@ func runOnce(parent context.Context, config Config, task Task, repetition int) R
 				SessionID: sessionID,
 				Prompt:    []acp.ContentBlock{{Type: "text", Text: phase.Prompt}},
 			}, phase.Permission, sessionID, time.Duration(phase.CancelAfterMS)*time.Millisecond)
-			syncResultStats(&result, client, permissionTotal)
+			syncResultStats(&result, client, permissionTotal, permissionRejectionTotal)
 			if runContext.Err() != nil {
 				return finishFailed(result, started, gateway, private, "timeout", runContext.Err(), stopClient)
 			}
@@ -238,6 +245,7 @@ func runOnce(parent context.Context, config Config, task Task, repetition int) R
 	if err := stopClient(); err != nil {
 		return finishFailed(result, started, gateway, private, "process_exit", err, func() error { return nil })
 	}
+	syncResultStats(&result, client, permissionTotal, permissionRejectionTotal)
 	output, err := verifyTask(runContext, task, workspace)
 	_ = os.WriteFile(filepath.Join(private, "verifier.log"), []byte(output), 0o600)
 	if err != nil {
@@ -246,6 +254,10 @@ func runOnce(parent context.Context, config Config, task Task, repetition int) R
 			class = "timeout"
 		}
 		return finishFailed(result, started, gateway, private, class, err, func() error { return nil })
+	}
+	if result.PermissionRejections < task.Success.MinimumPermissionRejections {
+		err := fmt.Errorf("permission rejections = %d, want at least %d", result.PermissionRejections, task.Success.MinimumPermissionRejections)
+		return finishFailed(result, started, gateway, private, "verifier", err, func() error { return nil })
 	}
 	attempts, exceeded := gateway.Counts()
 	if exceeded {
@@ -256,13 +268,13 @@ func runOnce(parent context.Context, config Config, task Task, repetition int) R
 	result.LatencyMS = time.Since(started).Milliseconds()
 	result.ProviderAttempts = attempts
 	result.Retries = max(0, attempts-logical)
-	syncResultStats(&result, client, permissionTotal)
 	return result
 }
 
-func syncResultStats(result *RunResult, client *processClient, permissionTotal int) {
+func syncResultStats(result *RunResult, client *processClient, permissionTotal, permissionRejectionTotal int) {
 	result.CostUSD = client.stats.CostUSD
 	result.Permissions = permissionTotal + client.stats.Permissions
+	result.PermissionRejections = permissionRejectionTotal + client.stats.PermissionRejections
 	result.Answer = client.stats.Answer.String()
 }
 

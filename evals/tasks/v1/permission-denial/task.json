@@ -9,5 +9,8 @@
       "permission": "deny"
     }
   ],
-  "success": { "files": { "protected.txt": "keep\n" } }
+  "success": {
+    "files": { "protected.txt": "keep\n" },
+    "minimum_permission_rejections": 1
+  }
 }

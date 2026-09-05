@@ -244,6 +244,64 @@ func TestFakeProviderRestart(t *testing.T) {
 	}
 }
 
+func TestFakeProviderRequiresPermissionRejection(t *testing.T) {
+	for name, test := range map[string]struct {
+		responses []string
+		success   bool
+		rejected  int
+	}{
+		"rejected request": {
+			responses: []string{
+				sse(evToolCall("call-1", "write_file", `{"path":"protected.txt","content":"changed\n"}`), evFinish("tool_calls")),
+				sse(evText("denied"), evFinish("stop")),
+			},
+			success: true, rejected: 1,
+		},
+		"no request": {responses: []string{sse(evText("done"), evFinish("stop"))}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			taskRoot := t.TempDir()
+			if err := os.MkdirAll(filepath.Join(taskRoot, "workspace"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(taskRoot, "workspace", "protected.txt"), []byte("keep\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			writeTestTask(t, taskRoot, Task{
+				Schema: 1, ID: "permission", Budget: Budget{TimeoutMS: 5000, ProviderRequests: 2},
+				Phases: []Phase{{Action: "prompt", Prompt: "finish", Permission: "deny"}},
+				Success: Success{
+					Files: map[string]string{"protected.txt": "keep\n"}, MinimumPermissionRejections: 1,
+				},
+			})
+			response := 0
+			upstream := http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				if strings.HasSuffix(request.URL.Path, "/models") {
+					_, _ = writer.Write([]byte(`{"data":[{"id":"test/model","context_length":128000}]}`))
+					return
+				}
+				writer.Header().Set("Content-Type", "text/event-stream")
+				_, _ = writer.Write([]byte(test.responses[response]))
+				response++
+			})
+			index, err := Run(context.Background(), Config{
+				OxBinary: smokeOxBinary, TaskPath: taskRoot, OutputDir: filepath.Join(t.TempDir(), "artifacts"),
+				Model: "test/model", Provider: "fake", Repetitions: 1, Upstream: upstream,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			result := index.Results[0]
+			if result.Success != test.success || result.PermissionRejections != test.rejected {
+				t.Fatalf("result = %#v, want success %t and %d rejection(s)", result, test.success, test.rejected)
+			}
+			if !test.success && (result.Failure == nil || result.Failure.Class != "verifier") {
+				t.Fatalf("failure = %#v, want verifier failure", result.Failure)
+			}
+		})
+	}
+}
+
 func TestFailureClassification(t *testing.T) {
 	deadline, cancel := context.WithCancel(context.Background())
 	cancel()

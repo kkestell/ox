@@ -42,9 +42,10 @@ type Phase struct {
 }
 
 type Success struct {
-	Files   map[string]string `json:"files,omitempty"`
-	Command []string          `json:"command,omitempty"`
-	Overlay string            `json:"overlay,omitempty"`
+	Files                       map[string]string `json:"files,omitempty"`
+	Command                     []string          `json:"command,omitempty"`
+	Overlay                     string            `json:"overlay,omitempty"`
+	MinimumPermissionRejections int               `json:"minimum_permission_rejections,omitempty"`
 }
 
 func LoadTask(path string) (Task, error) {
@@ -107,6 +108,9 @@ func validateTask(task Task) error {
 	}
 	if len(task.Success.Command) > 0 && strings.TrimSpace(task.Success.Command[0]) == "" {
 		return errors.New("task success command executable is empty")
+	}
+	if task.Success.MinimumPermissionRejections < 0 {
+		return errors.New("task success minimum_permission_rejections must not be negative")
 	}
 	for path := range task.Success.Files {
 		if err := validateRelativePath(path); err != nil {
@@ -222,6 +226,13 @@ func verifyTask(ctx context.Context, task Task, workspace string) (string, error
 		target, err := confinedWorkspacePath(workspace, path)
 		if err != nil {
 			return "", fmt.Errorf("expected file %s: %w", path, err)
+		}
+		info, err := os.Lstat(target)
+		if err != nil {
+			return "", fmt.Errorf("inspect expected file %s: %w", path, err)
+		}
+		if !info.Mode().IsRegular() {
+			return "", fmt.Errorf("expected file %s is not a regular file", path)
 		}
 		raw, err := os.ReadFile(target)
 		if err != nil {

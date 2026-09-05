@@ -48,4 +48,11 @@ func TestVersionedTaskCorpus(t *testing.T) {
 	if payload.Size() < 32*1024 {
 		t.Fatalf("long-context payload is only %d bytes", payload.Size())
 	}
+	denial, err := LoadTask(filepath.Join(root, "permission-denial"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if denial.Success.MinimumPermissionRejections < 1 {
+		t.Fatal("permission-denial task does not require a rejected permission request")
+	}
 }
