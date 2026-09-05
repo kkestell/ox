@@ -20,6 +20,7 @@ import (
 
 	"github.com/kkestell/ox/internal/acp"
 	"github.com/kkestell/ox/internal/credentials"
+	"github.com/kkestell/ox/internal/mcp"
 	"github.com/kkestell/ox/internal/openrouter"
 	"github.com/kkestell/ox/internal/settings"
 	"github.com/kkestell/ox/internal/skills"
@@ -211,6 +212,7 @@ func (a *Agent) Initialize(
 	response := acp.InitializeResponse{
 		ProtocolVersion: acp.ProtocolVersion,
 		AgentCapabilities: &acp.AgentCapabilities{
+			MCPCapabilities: &acp.MCPCapabilities{HTTP: true},
 			PromptCapabilities: &acp.PromptCapabilities{
 				Image:           true,
 				Audio:           true,
@@ -326,8 +328,22 @@ func (a *Agent) NewSession(
 	if err != nil {
 		return acp.NewSessionResponse{}, err
 	}
+	bundle, primaryTools, subagentTools, mcpTools, err := a.activateMCP(
+		ctx, cwd, request.MCPServers,
+	)
+	if err != nil {
+		return acp.NewSessionResponse{}, jrpc2.Errorf(jrpc2.InternalError, "activate MCP servers: %v", err)
+	}
+	keepBundle := false
+	defer func() {
+		if !keepBundle {
+			_ = bundle.Close()
+		}
+	}()
 
-	base, models, err := a.resolveActivation(ctx, cwd, sessionSelections{})
+	base, models, err := a.resolveActivation(
+		ctx, cwd, sessionSelections{}, primaryTools, subagentTools, mcpTools,
+	)
 	if err != nil {
 		return acp.NewSessionResponse{}, err
 	}
@@ -359,10 +375,12 @@ func (a *Agent) NewSession(
 	value := &session{
 		id: id, state: state, log: log,
 		activationBase: cloneConfiguration(base), models: cloneModels(models),
+		mcp: bundle, primaryTools: primaryTools, subagentTools: subagentTools,
 	}
 	a.sessionsMu.Lock()
 	a.sessions[id] = value
 	a.sessionsMu.Unlock()
+	keepBundle = true
 
 	a.logger.Info(
 		"session created",
@@ -629,7 +647,24 @@ func (a *Agent) activateSession(
 			"session has a pending permission request; load it before resuming",
 		)
 	}
-	base, models, err := a.resolveActivation(ctx, canonicalCWD, value.state.selections)
+	bundle, primaryTools, subagentTools, mcpTools, err := a.activateMCP(
+		ctx, canonicalCWD, mcpServers,
+	)
+	if err != nil {
+		return nil, jrpc2.Errorf(jrpc2.InternalError, "activate MCP servers: %v", err)
+	}
+	value.mcp = bundle
+	value.primaryTools = primaryTools
+	value.subagentTools = subagentTools
+	defer func() {
+		if !activated {
+			_ = bundle.Close()
+		}
+	}()
+	base, models, err := a.resolveActivation(
+		ctx, canonicalCWD, value.state.selections,
+		primaryTools, subagentTools, mcpTools,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -640,7 +675,8 @@ func (a *Agent) activateSession(
 	value.activationBase = cloneConfiguration(base)
 	value.models = cloneModels(models)
 	if pendingPermission {
-		required := value.state.turnConfiguration().ExecutorCapabilities
+		requiredConfiguration := value.state.turnConfiguration()
+		required := requiredConfiguration.ExecutorCapabilities
 		available := configuration.ExecutorCapabilities
 		if missing := missingExecutorCapability(required, available); missing != "" {
 			return nil, jrpc2.Errorf(
@@ -648,6 +684,11 @@ func (a *Agent) activateSession(
 				"session recovery requires client %s capability",
 				missing,
 			)
+		}
+		if err := validateRecoveredMCP(
+			requiredConfiguration, configuration, value.state.suspended.ToolCalls,
+		); err != nil {
+			return nil, jrpc2.Errorf(jrpc2.InvalidParams, "%v", err)
 		}
 	}
 	if !sameRequestConfiguration(value.state.configuration, configuration) {
@@ -814,9 +855,26 @@ func (a *Agent) closeActive(id string) error {
 	}
 	delete(a.sessions, id)
 	a.sessionsMu.Unlock()
-	value.close()
+	closeErr := value.close()
 	value.log.close()
-	return nil
+	return closeErr
+}
+
+// Close cancels active work and releases every activation-owned resource.
+func (a *Agent) Close() error {
+	a.sessionsMu.Lock()
+	values := make([]*session, 0, len(a.sessions))
+	for _, value := range a.sessions {
+		values = append(values, value)
+	}
+	a.sessions = make(map[string]*session)
+	a.sessionsMu.Unlock()
+	var result error
+	for _, value := range values {
+		result = errors.Join(result, value.close())
+		value.log.close()
+	}
+	return result
 }
 
 func (a *Agent) validateActivation(
@@ -841,8 +899,8 @@ func (a *Agent) validateActivation(
 	if requireMCP && mcpServers == nil {
 		return "", jrpc2.Errorf(jrpc2.InvalidParams, "mcpServers is required")
 	}
-	if len(mcpServers) != 0 {
-		return "", jrpc2.Errorf(jrpc2.InvalidParams, "MCP servers are not supported")
+	if err := acp.ValidateMCPServers(mcpServers); err != nil {
+		return "", jrpc2.Errorf(jrpc2.InvalidParams, "%v", err)
 	}
 	if problem := a.credentialProblem(); problem != "" {
 		return "", jrpc2.Errorf(acp.ErrCodeAuthRequired, "%s", problem)
@@ -850,9 +908,13 @@ func (a *Agent) validateActivation(
 	return canonicalCWD, nil
 }
 
-func (a *Agent) resolveConfiguration(cwd string) (requestConfiguration, error) {
+func (a *Agent) resolveConfiguration(
+	cwd string,
+	primaryTools toolSet,
+	subagentTools toolSet,
+	mcpTools []mcpToolConfiguration,
+) (requestConfiguration, error) {
 	executorCapabilities := a.negotiatedExecutorCapabilities()
-	primaryTools, subagentTools := a.negotiatedToolSets()
 	resolved, err := a.resolveSettings(cwd)
 	if err != nil {
 		return requestConfiguration{}, jrpc2.Errorf(jrpc2.InternalError, "%v", err)
@@ -886,6 +948,7 @@ func (a *Agent) resolveConfiguration(cwd string) (requestConfiguration, error) {
 		Tools:                cloneTools(primaryTools.modelTools),
 		ToolKinds:            configuredToolKinds(primaryTools),
 		PlanTools:            configuredPlanTools(primaryTools),
+		MCPTools:             slices.Clone(mcpTools),
 		Skills:               cloneSkillReferences(skillReferences),
 		ExecutorCapabilities: executorCapabilities,
 		Subagent: subagentConfiguration{
@@ -899,8 +962,11 @@ func (a *Agent) resolveActivation(
 	ctx context.Context,
 	cwd string,
 	selections sessionSelections,
+	primaryTools toolSet,
+	subagentTools toolSet,
+	mcpTools []mcpToolConfiguration,
 ) (requestConfiguration, []openrouter.Model, error) {
-	configuration, err := a.resolveConfiguration(cwd)
+	configuration, err := a.resolveConfiguration(cwd, primaryTools, subagentTools, mcpTools)
 	if err != nil {
 		return requestConfiguration{}, nil, err
 	}
@@ -1662,6 +1728,9 @@ type session struct {
 	poisoned       bool
 	activationBase requestConfiguration
 	models         []openrouter.Model
+	mcp            *mcp.Bundle
+	primaryTools   toolSet
+	subagentTools  toolSet
 	configMu       sync.Mutex
 	mu             sync.Mutex
 	nextTurn       uint64
@@ -1800,7 +1869,7 @@ func (s *session) claimRecovery(
 	}, nil
 }
 
-func (s *session) close() {
+func (s *session) close() error {
 	s.mu.Lock()
 	s.closing = true
 	active := s.active
@@ -1813,6 +1882,10 @@ func (s *session) close() {
 		<-active.done
 	}
 	s.configChanges.Wait()
+	if s.mcp != nil {
+		return s.mcp.Close()
+	}
+	return nil
 }
 
 func (s *session) cancel() bool {

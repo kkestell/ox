@@ -153,3 +153,26 @@ func TestCappedUsesTheTrueJoinedSizeAndLatchesTruncation(t *testing.T) {
 		t.Fatal("overflow did not latch truncation")
 	}
 }
+
+func TestRenderTextUsesExactInlineBoundaryAndFaithfulSpill(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "spills")
+	inline, err := RenderText(dir, "mcp", "inline", "hello", 5)
+	if err != nil || inline.Content != "hello" || inline.Spilled != "" {
+		t.Fatalf("inline = %#v, %v", inline, err)
+	}
+	content := "α\n" + strings.Repeat("x", 256)
+	spilled, err := RenderText(dir, "mcp", "spill", content, 256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if spilled.Spilled == "" || len(spilled.Content) > 256 || !strings.Contains(spilled.Content, spilled.Spilled) {
+		t.Fatalf("spilled = %#v", spilled)
+	}
+	raw, err := os.ReadFile(spilled.Spilled)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != content {
+		t.Fatalf("spill = %q", raw)
+	}
+}

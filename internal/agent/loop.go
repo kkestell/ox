@@ -237,14 +237,14 @@ func (a *Agent) runFrom(
 				ReasoningDetails: opaqueMessages(completion.ReasoningDetails),
 				FinishReason:     completion.FinishReason, Usage: completion.Usage,
 				ToolCalls:    append([]openrouter.ToolCall(nil), completion.ToolCalls...),
-				ToolTargets:  normalizedToolTargets(value.state.cwd, a.primaryTools, completion.ToolCalls),
+				ToolTargets:  normalizedToolTargets(value.state.cwd, a.sessionPrimaryTools(value), completion.ToolCalls),
 				RequestCount: requestCount,
 			}
 			if err := a.commit(value, recordExchangePaused, *suspended); err != nil {
 				return loopOutcome{err: fmt.Errorf("persist suspended model exchange: %w", err)}
 			}
 			a.publishPendingTools(
-				completion.ToolCalls, suspended.ToolTargets, events, active.trace,
+				value, completion.ToolCalls, suspended.ToolTargets, events, active.trace,
 			)
 		}
 		results, batchCancelled, err := a.executeSuspendedBatch(
@@ -282,14 +282,14 @@ func (a *Agent) runFrom(
 						},
 					}
 					events <- a.toolEvent(
-						a.subagentTools, childCall, eventToolPending, call.ID, "", child.Target,
+						a.sessionSubagentTools(value), childCall, eventToolPending, call.ID, "", child.Target,
 					)
 					kind := eventToolCompleted
 					if child.Failed {
 						kind = eventToolFailed
 					}
 					events <- a.toolEvent(
-						a.subagentTools, childCall, kind, call.ID, child.Content, child.Target,
+						a.sessionSubagentTools(value), childCall, kind, call.ID, child.Content, child.Target,
 					)
 				}
 			}
@@ -305,7 +305,7 @@ func (a *Agent) runFrom(
 				kind = eventToolFailed
 			}
 			events <- a.toolEvent(
-				a.primaryTools,
+				a.sessionPrimaryTools(value),
 				call,
 				kind,
 				"",
@@ -360,22 +360,24 @@ func (s *suspendedModelExchangeRecord) completion() *openrouter.Completion {
 }
 
 func (a *Agent) publishPendingTools(
+	value *session,
 	calls []openrouter.ToolCall,
 	targets map[string]string,
 	events chan<- event,
 	turn diagnostictrace.Turn,
 ) {
+	tools := a.sessionPrimaryTools(value)
 	for _, call := range calls {
 		turn.ToolPending(call.ID, call.Function.Name, "")
 		var kind acp.ToolKind
 		var delegates bool
-		if index, ok := a.primaryTools.byName[call.Function.Name]; ok {
-			kind = a.primaryTools.tools[index].Kind
-			delegates = a.primaryTools.tools[index].Delegates
+		if index, ok := tools.byName[call.Function.Name]; ok {
+			kind = tools.tools[index].Kind
+			delegates = tools.tools[index].Delegates
 		}
 		events <- event{
 			kind: eventToolPending, call: call, toolKind: kind,
-			title:     a.toolTitle(call.Function.Name, json.RawMessage(call.Function.Arguments)),
+			title:     toolSetTitle(tools, call.Function.Name, json.RawMessage(call.Function.Arguments)),
 			target:    targets[call.ID],
 			delegates: delegates,
 		}
@@ -776,7 +778,7 @@ func (a *Agent) executeSuspendedBatch(
 	value.stateMu.Lock()
 	configuration := value.state.turnConfiguration()
 	value.stateMu.Unlock()
-	tools := a.primaryTools
+	tools := a.sessionPrimaryTools(value)
 	if configuration.Mode != "" {
 		tools = constrainedToolSet(tools, configuration.Tools)
 	}
@@ -988,7 +990,7 @@ func (a *Agent) permissionRequest(
 		SessionID: sessionID,
 		ToolCall: acp.ToolCallUpdate{
 			ToolCallID: call.ID, Kind: tool.Kind,
-			Title: a.toolTitle(call.Function.Name, arguments), Name: call.Function.Name,
+			Title: toolTitle(tool, arguments), Name: call.Function.Name,
 			Locations: toolLocations(root, target), RawInput: arguments,
 			Meta: toolEventMetadata(parent, false),
 		},
@@ -1006,7 +1008,7 @@ func (a *Agent) executeBatch(
 	results, _ := a.executeBatchWith(
 		ctx,
 		value,
-		a.primaryTools,
+		a.sessionPrimaryTools(value),
 		value.primaryFileReads(),
 		calls,
 		ask,
@@ -1062,7 +1064,7 @@ func (a *Agent) executeBatchWith(
 			call:      call,
 			toolKind:  kind,
 			parent:    parent,
-			title:     a.toolTitle(call.Function.Name, json.RawMessage(call.Function.Arguments)),
+			title:     toolSetTitle(tools, call.Function.Name, json.RawMessage(call.Function.Arguments)),
 			target:    targets[call.ID],
 			delegates: delegates,
 		}
@@ -1528,8 +1530,12 @@ func (a *Agent) executeOne(
 			"tool", call.Function.Name,
 			"error", err,
 		)
+		content := "tool error: " + err.Error()
+		if failedContent, ok := toolResultContent(err); ok {
+			content = failedContent
+		}
 		return toolResult{
-			content:    "tool error: " + err.Error(),
+			content:    content,
 			failed:     true,
 			delegation: delegation,
 			target:     target,
@@ -1637,7 +1643,7 @@ func (a *Agent) toolEvent(
 		call:      call,
 		toolKind:  toolKind,
 		parent:    parent,
-		title:     a.toolTitle(call.Function.Name, json.RawMessage(call.Function.Arguments)),
+		title:     toolSetTitle(tools, call.Function.Name, json.RawMessage(call.Function.Arguments)),
 		target:    target,
 		delegates: delegates,
 		text:      text,
@@ -1645,14 +1651,25 @@ func (a *Agent) toolEvent(
 }
 
 func (a *Agent) toolTitle(name string, arguments json.RawMessage) string {
-	if index, ok := a.primaryTools.byName[name]; ok {
-		if label := a.primaryTools.tools[index].Label; label != nil {
-			if title := label(arguments); title != "" {
-				return title
+	return toolSetTitle(a.primaryTools, name, arguments)
+}
+
+func toolSetTitle(tools toolSet, name string, arguments json.RawMessage) string {
+	if index, ok := tools.byName[name]; ok {
+		return toolTitle(tools.tools[index], arguments)
+	}
+	return name
+}
+
+func toolTitle(tool Tool, arguments json.RawMessage) string {
+	for _, title := range []func(json.RawMessage) string{tool.Title, tool.Label} {
+		if title != nil {
+			if value := title(arguments); value != "" {
+				return value
 			}
 		}
 	}
-	return name
+	return tool.Name
 }
 
 func (a *Agent) toolDelegates(name string) bool {
