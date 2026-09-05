@@ -86,6 +86,17 @@ func All() []agent.Tool {
 			Execute:      executeGrep,
 		},
 		{
+			Name:         "web_fetch",
+			Description:  webFetchDescription,
+			InputSchema:  json.RawMessage(webFetchSchema),
+			Kind:         acp.ToolKindSearch,
+			Approval:     agent.ApprovalAsk,
+			ParallelSafe: true,
+			PlanMode:     true,
+			Title:        webFetchTitle,
+			Execute:      executeWebFetch,
+		},
+		{
 			Name:         "write_file",
 			Description:  writeDescription,
 			InputSchema:  json.RawMessage(writeSchema),

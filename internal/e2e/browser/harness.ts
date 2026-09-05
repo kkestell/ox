@@ -215,7 +215,7 @@ export class BrowserHarness {
       finishDelta(),
       usageDelta(800, 5, 805, 0.002),
     ]);
-    this.queue(`[assistant] ${oldAnswer}\n\n[user] ${secondPrompt}\n\n`, [
+    this.queue(`[assistant] ${oldAnswer}\n\n`, [
       textDelta(summary),
       finishDelta(),
       usageDelta(650, 20, 670, 0.003),

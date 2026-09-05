@@ -87,7 +87,7 @@ func invoke(t *testing.T, tool agent.Tool, invocation agent.Invocation) (string,
 
 func TestAllDeclaresValidSchemasAndClassifications(t *testing.T) {
 	tools := All()
-	if len(tools) != 10 {
+	if len(tools) != 11 {
 		t.Fatalf("tool count = %d", len(tools))
 	}
 	for _, tool := range tools {
@@ -102,6 +102,7 @@ func TestAllDeclaresValidSchemasAndClassifications(t *testing.T) {
 		task := tool.Name == "task"
 		todo := tool.Name == "todo"
 		question := tool.Name == "question"
+		webFetch := tool.Name == "web_fetch"
 		if mutating && (tool.Kind != acp.ToolKindEdit ||
 			tool.Approval != agent.ApprovalAsk || tool.ParallelSafe) {
 			t.Errorf("%s mutation classification = %+v", tool.Name, tool)
@@ -126,7 +127,11 @@ func TestAllDeclaresValidSchemasAndClassifications(t *testing.T) {
 			!tool.PlanMode || !tool.RequiresForm || tool.ParentOnly) {
 			t.Errorf("question classification = %+v", tool)
 		}
-		if !mutating && !shell && !task && !todo && !question &&
+		if webFetch && (tool.Kind != acp.ToolKindSearch ||
+			tool.Approval != agent.ApprovalAsk || !tool.ParallelSafe || !tool.PlanMode) {
+			t.Errorf("web_fetch classification = %+v", tool)
+		}
+		if !mutating && !shell && !task && !todo && !question && !webFetch &&
 			(!tool.ParallelSafe || tool.Approval != agent.ApprovalNone) {
 			t.Errorf("%s read-only classification = %+v", tool.Name, tool)
 		}

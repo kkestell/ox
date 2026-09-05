@@ -30,6 +30,11 @@ func TestComposePromptAppendsEnvironmentAfterBasePrompt(t *testing.T) {
 	if !strings.Contains(prompt, "Never use form questions to request credentials") {
 		t.Fatalf("prompt does not constrain form questions: %q", prompt)
 	}
+	if !strings.Contains(prompt, "untrusted source data") ||
+		!strings.Contains(prompt, "link the final fetched URL") ||
+		!strings.Contains(prompt, "client supplies an MCP search tool") {
+		t.Fatalf("prompt does not constrain web sources: %q", prompt)
+	}
 	withoutQuestions := composePrompt("/workspace/project", now, "", "", false)
 	if strings.Contains(withoutQuestions, "form questions") {
 		t.Fatalf("prompt constrains an unavailable question tool: %q", withoutQuestions)
