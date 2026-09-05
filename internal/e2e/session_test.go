@@ -39,7 +39,7 @@ func initializeWithCapabilities(
 }
 
 func newSessionRequest(cwd string) acp.NewSessionRequest {
-	return acp.NewSessionRequest{CWD: cwd, MCPServers: []json.RawMessage{}}
+	return acp.NewSessionRequest{CWD: cwd, MCPServers: []acp.MCPServer{}}
 }
 
 func newSession(t *testing.T, child *process, cwd string) string {
@@ -60,7 +60,7 @@ func loadSession(t *testing.T, child *process, session, cwd string) {
 	child.request("session/load", acp.LoadSessionRequest{
 		SessionID:  session,
 		CWD:        cwd,
-		MCPServers: []json.RawMessage{},
+		MCPServers: []acp.MCPServer{},
 	})
 }
 
@@ -117,7 +117,7 @@ func TestSessionConfigurationOptionsPersistAndReplay(t *testing.T) {
 	second := start(t, options...)
 	initialize(t, second)
 	loaded := second.request("session/load", acp.LoadSessionRequest{
-		SessionID: newResponse.SessionID, CWD: cwd, MCPServers: []json.RawMessage{},
+		SessionID: newResponse.SessionID, CWD: cwd, MCPServers: []acp.MCPServer{},
 	})
 	var loadResponse acp.LoadSessionResponse
 	if err := json.Unmarshal(loaded, &loadResponse); err != nil {
@@ -799,7 +799,7 @@ func TestPendingPermissionRecoversAcrossProcessRestart(t *testing.T) {
 			second := start(t, options...)
 			initialize(t, second)
 			load := second.begin("session/load", acp.LoadSessionRequest{
-				SessionID: session, CWD: cwd, MCPServers: []json.RawMessage{},
+				SessionID: session, CWD: cwd, MCPServers: []acp.MCPServer{},
 			})
 			reissuedMessage := second.serverRequest()
 			reissued := permissionRequest(t, reissuedMessage, "call-recovery")
@@ -882,7 +882,7 @@ func TestRecoveredTurnKeepsItsFrozenConfiguration(t *testing.T) {
 	)
 	initialize(t, second)
 	load := second.begin("session/load", acp.LoadSessionRequest{
-		SessionID: session, CWD: cwd, MCPServers: []json.RawMessage{},
+		SessionID: session, CWD: cwd, MCPServers: []acp.MCPServer{},
 	})
 	permission := second.serverRequest()
 	_ = permissionRequest(t, permission, "call-shell")
@@ -1083,7 +1083,7 @@ func TestRecoveryRequiresTheFrozenClientExecutor(t *testing.T) {
 	unsupported := start(t, options...)
 	initialize(t, unsupported)
 	failure := unsupported.requestError("session/load", acp.LoadSessionRequest{
-		SessionID: session, CWD: cwd, MCPServers: []json.RawMessage{},
+		SessionID: session, CWD: cwd, MCPServers: []acp.MCPServer{},
 	})
 	if failure.Code != -32602 || !strings.Contains(failure.Message, "terminal capability") {
 		t.Fatalf("unsupported recovery error = %#v", failure)
@@ -1093,7 +1093,7 @@ func TestRecoveryRequiresTheFrozenClientExecutor(t *testing.T) {
 	recovered := start(t, options...)
 	initializeWithCapabilities(t, recovered, &acp.ClientCapabilities{Terminal: true})
 	load := recovered.begin("session/load", acp.LoadSessionRequest{
-		SessionID: session, CWD: cwd, MCPServers: []json.RawMessage{},
+		SessionID: session, CWD: cwd, MCPServers: []acp.MCPServer{},
 	})
 	permission := recovered.serverRequest()
 	_ = permissionRequest(t, permission, "call-shell")
@@ -1309,18 +1309,18 @@ func TestNewSessionRejectsInvalidRequests(t *testing.T) {
 	}{
 		{
 			name:    "relative cwd",
-			request: acp.NewSessionRequest{CWD: "workspace", MCPServers: []json.RawMessage{}},
+			request: acp.NewSessionRequest{CWD: "workspace", MCPServers: []acp.MCPServer{}},
 		},
 		{
 			name: "unreachable cwd",
 			request: acp.NewSessionRequest{
 				CWD:        filepath.Join(child.cwd, "missing"),
-				MCPServers: []json.RawMessage{},
+				MCPServers: []acp.MCPServer{},
 			},
 		},
 		{
 			name:    "cwd is a file",
-			request: acp.NewSessionRequest{CWD: file, MCPServers: []json.RawMessage{}},
+			request: acp.NewSessionRequest{CWD: file, MCPServers: []acp.MCPServer{}},
 		},
 		{
 			name:    "missing mcpServers",
@@ -1330,14 +1330,14 @@ func TestNewSessionRejectsInvalidRequests(t *testing.T) {
 			name: "mcp server requested",
 			request: acp.NewSessionRequest{
 				CWD:        child.cwd,
-				MCPServers: []json.RawMessage{json.RawMessage(`{"name":"files","command":"/bin/true","args":[]}`)},
+				MCPServers: []acp.MCPServer{{Stdio: &acp.MCPStdioServer{Name: "files", Command: "/bin/true", Args: []string{}, Env: []acp.EnvVariable{}}}},
 			},
 		},
 		{
 			name: "additional directory requested",
 			request: acp.NewSessionRequest{
 				CWD:                   child.cwd,
-				MCPServers:            []json.RawMessage{},
+				MCPServers:            []acp.MCPServer{},
 				AdditionalDirectories: []string{child.cwd},
 			},
 		},

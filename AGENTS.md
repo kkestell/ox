@@ -21,6 +21,7 @@ output. It is ACP-first and works with ACP clients. The durable design lives in
 - `internal/acp/` — ACP wire types and protocol-boundary validation.
 - `internal/agent/` — ACP methods, durable sessions, model/tool orchestration,
   permissions, subagents, replay, authentication, and cancellation.
+- `internal/mcp/` — MCP transports, catalog discovery, and bounded tool calls.
 - `internal/openrouter/` — OpenRouter transport, SSE parsing, retry, model
   catalog, and stream assembly.
 - `internal/settings/` — Layered model and provider settings resolved for a

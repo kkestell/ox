@@ -236,8 +236,8 @@ func (r NewSessionRequest) Validate() error {
 	if r.MCPServers == nil {
 		return errors.New("mcpServers is required")
 	}
-	if len(r.MCPServers) != 0 {
-		return errors.New("MCP servers are not supported")
+	if err := ValidateMCPServers(r.MCPServers); err != nil {
+		return err
 	}
 	if len(r.AdditionalDirectories) != 0 {
 		return errors.New("additional directories are not supported")

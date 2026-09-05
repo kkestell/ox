@@ -177,7 +177,7 @@ func runOnce(parent context.Context, config Config, task Task, repetition int) R
 		return finishFailed(result, started, gateway, private, classifyError(runContext, err), err, stopClient)
 	}
 	newRaw, _, err := client.call(runContext, "session/new", acp.NewSessionRequest{
-		CWD: workspace, MCPServers: []json.RawMessage{},
+		CWD: workspace, MCPServers: []acp.MCPServer{},
 	}, "allow", "", 0)
 	if err != nil {
 		return finishFailed(result, started, gateway, private, classifyError(runContext, err), err, stopClient)
@@ -206,7 +206,7 @@ func runOnce(parent context.Context, config Config, task Task, repetition int) R
 				return finishFailed(result, started, gateway, private, classifyError(runContext, err), err, stopClient)
 			}
 			_, _, err = client.call(runContext, "session/load", acp.LoadSessionRequest{
-				SessionID: sessionID, CWD: workspace, MCPServers: []json.RawMessage{},
+				SessionID: sessionID, CWD: workspace, MCPServers: []acp.MCPServer{},
 			}, "allow", "", 0)
 			if err != nil {
 				return finishFailed(result, started, gateway, private, classifyError(runContext, err), err, stopClient)

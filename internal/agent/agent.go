@@ -577,7 +577,7 @@ func (a *Agent) activateSession(
 	id string,
 	cwd string,
 	additionalDirectories []string,
-	mcpServers []json.RawMessage,
+	mcpServers []acp.MCPServer,
 	requireMCP bool,
 	recoverSuspended bool,
 ) (*session, error) {
@@ -822,7 +822,7 @@ func (a *Agent) closeActive(id string) error {
 func (a *Agent) validateActivation(
 	cwd string,
 	additionalDirectories []string,
-	mcpServers []json.RawMessage,
+	mcpServers []acp.MCPServer,
 	requireMCP bool,
 ) (string, error) {
 	if !filepath.IsAbs(cwd) {
