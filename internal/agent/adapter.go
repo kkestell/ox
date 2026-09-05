@@ -125,6 +125,11 @@ func (a *eventAdapter) handle(current event) error {
 			return err
 		}
 		delete(a.outputs, current.call.ID)
+	case eventPlan:
+		return a.send(acp.Plan{
+			SessionUpdate: acp.SessionUpdatePlan,
+			Entries:       clonePlanEntries(current.plan),
+		})
 	case eventUsage:
 		return a.send(acp.UsageUpdate{
 			SessionUpdate: "usage_update",

@@ -134,6 +134,64 @@ func TestSessionConfigurationOptionsPersistAndReplay(t *testing.T) {
 	second.request("session/close", acp.CloseSessionRequest{SessionID: newResponse.SessionID})
 }
 
+func TestTodoPlanPersistsAndReplaysThroughRealProcess(t *testing.T) {
+	dataDir := t.TempDir()
+	model := startModel(t,
+		toolResponse("todo-call", "todo", `{"todos":[{"content":"Keep going","status":"in_progress"}]}`),
+		sse(evText("working"), evFinishReason("stop")),
+	)
+	options := []startOption{withModel(model), withEnvironment("XDG_DATA_HOME", dataDir)}
+	first, session := startSession(t, options...)
+	cwd := first.cwd
+	first.request(acp.MethodSessionSetConfigOption, acp.SetSessionConfigOptionRequest{
+		SessionID: session, ConfigID: "mode", Value: "plan",
+	})
+	_ = updates(t, first, session)
+	prompt(t, first, session, "track work")
+	var live bool
+	for _, notification := range updates(t, first, session) {
+		if notification.Update.SessionUpdate == acp.SessionUpdatePlan &&
+			len(notification.Update.Entries) == 1 &&
+			notification.Update.Entries[0].Content == "Keep going" {
+			live = true
+		}
+	}
+	if !live {
+		t.Fatal("prompt emitted no matching plan update")
+	}
+	requests := model.requests()
+	if len(requests) != 2 {
+		t.Fatalf("model requests = %d, want 2", len(requests))
+	}
+	var contextSeen bool
+	for _, message := range requests[1].Messages {
+		if message.Role == "system" && strings.Contains(message.text(), `"content":"Keep going"`) {
+			contextSeen = true
+		}
+	}
+	if !contextSeen {
+		t.Fatalf("continuation request omitted todo context: %#v", requests[1].Messages)
+	}
+	first.request("session/close", acp.CloseSessionRequest{SessionID: session})
+	first.stop()
+
+	second := start(t, options...)
+	initialize(t, second)
+	loadSession(t, second, session, cwd)
+	var replayed bool
+	for _, notification := range updates(t, second, session) {
+		if notification.Update.SessionUpdate == acp.SessionUpdatePlan &&
+			len(notification.Update.Entries) == 1 &&
+			notification.Update.Entries[0].Content == "Keep going" {
+			replayed = true
+		}
+	}
+	if !replayed {
+		t.Fatal("session/load did not replay the plan update")
+	}
+	second.request("session/close", acp.CloseSessionRequest{SessionID: session})
+}
+
 func optionValue(options []acp.SessionConfigOption, id string) string {
 	for _, option := range options {
 		if option.ID == id {
@@ -260,7 +318,7 @@ func TestSessionCompactionSurvivesRestartWithoutChangingReplay(t *testing.T) {
 	)
 	options := []startOption{
 		withModel(model),
-		withModelContextWindow(model, 12000),
+		withModelContextWindow(model, 14000),
 		withEnvironment("XDG_DATA_HOME", dataDir),
 	}
 

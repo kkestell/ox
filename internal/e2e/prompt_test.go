@@ -56,6 +56,7 @@ type sessionUpdate struct {
 	Cost          *acp.Cost                 `json:"cost"`
 	Meta          acp.Metadata              `json:"_meta"`
 	ConfigOptions []acp.SessionConfigOption `json:"configOptions"`
+	Entries       []acp.PlanEntry           `json:"entries"`
 }
 
 func (u *sessionUpdate) UnmarshalJSON(data []byte) error {
@@ -71,6 +72,7 @@ func (u *sessionUpdate) UnmarshalJSON(data []byte) error {
 		Cost          *acp.Cost                 `json:"cost"`
 		Meta          acp.Metadata              `json:"_meta"`
 		ConfigOptions []acp.SessionConfigOption `json:"configOptions"`
+		Entries       []acp.PlanEntry           `json:"entries"`
 	}
 	if err := json.Unmarshal(data, &wire); err != nil {
 		return err
@@ -85,6 +87,7 @@ func (u *sessionUpdate) UnmarshalJSON(data []byte) error {
 	u.Cost = wire.Cost
 	u.Meta = wire.Meta
 	u.ConfigOptions = wire.ConfigOptions
+	u.Entries = wire.Entries
 	if len(wire.Content) > 0 && wire.Content[0] == '{' {
 		return json.Unmarshal(wire.Content, &u.Content)
 	}

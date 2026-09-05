@@ -923,7 +923,7 @@ func TestReadOnlyToolsSpillRefuseEscapeReplayAndDelete(t *testing.T) {
 			) {
 				return nil, errors.New("system prompt did not use the canonical workspace root")
 			}
-			if len(request.Tools) != 7 {
+			if len(request.Tools) != 8 {
 				return nil, errors.New("built-in tools were not frozen into the request")
 			}
 			return &openrouter.Completion{
@@ -3437,6 +3437,207 @@ func TestPlanModeHidesAndRejectsEffectfulTools(t *testing.T) {
 		t.Fatal("effectful tool executed in plan mode")
 	}
 	model.assertConsumed(t)
+}
+
+func TestTodoProjectsDurablePlanAndCurrentParentContext(t *testing.T) {
+	model := &scriptedModel{scripts: []modelScript{
+		func(_ context.Context, request openrouter.Request, _ func(openrouter.Delta)) (*openrouter.Completion, error) {
+			if !requestHasTool(request, "todo") {
+				return nil, fmt.Errorf("code tools omit todo: %#v", request.Tools)
+			}
+			return &openrouter.Completion{
+				FinishReason: "tool_calls",
+				ToolCalls: []openrouter.ToolCall{modelToolCall(
+					"todo-set", "todo",
+					`{"todos":[{"content":"Ship it","priority":"high","status":"in_progress"}]}`,
+				)},
+			}, nil
+		},
+		func(_ context.Context, request openrouter.Request, _ func(openrouter.Delta)) (*openrouter.Completion, error) {
+			if !requestHasTodoContext(request, `"content":"Ship it"`) {
+				return nil, fmt.Errorf("request omits current todo context: %#v", request.Messages)
+			}
+			return &openrouter.Completion{
+				FinishReason: "tool_calls",
+				ToolCalls: []openrouter.ToolCall{
+					modelToolCall("todo-clear", "todo", `{"todos":[]}`),
+				},
+			}, nil
+		},
+		func(_ context.Context, request openrouter.Request, _ func(openrouter.Delta)) (*openrouter.Completion, error) {
+			if requestHasTodoContext(request, "") {
+				return nil, fmt.Errorf("cleared todo remained in context: %#v", request.Messages)
+			}
+			return completion("done"), nil
+		},
+		func(_ context.Context, request openrouter.Request, _ func(openrouter.Delta)) (*openrouter.Completion, error) {
+			if !requestHasTool(request, "todo") || requestHasTool(request, "write_file") {
+				return nil, fmt.Errorf("plan tools = %#v", request.Tools)
+			}
+			return completion("planned"), nil
+		},
+	}}
+	harness := newAgentHarness(t, model, oxtools.All())
+	sessionID := harness.newSession(t)
+	harness.prompt(t, sessionID, "track the work")
+	var plans []acp.Plan
+	for _, update := range harness.updates() {
+		if update.discriminator(t) != acp.SessionUpdatePlan {
+			continue
+		}
+		var plan acp.Plan
+		update.decode(t, &plan)
+		plans = append(plans, plan)
+	}
+	if len(plans) != 2 || len(plans[0].Entries) != 1 ||
+		plans[0].Entries[0].Content != "Ship it" || plans[1].Entries == nil ||
+		len(plans[1].Entries) != 0 {
+		t.Fatalf("plan updates = %#v", plans)
+	}
+
+	planSession := harness.newSession(t)
+	harness.setConfig(t, planSession, "mode", "plan")
+	harness.prompt(t, planSession, "make a plan")
+	model.assertConsumed(t)
+}
+
+func TestChildCannotSeeOrReplaceParentTodo(t *testing.T) {
+	var childRequests int
+	model := &routedModel{route: func(
+		_ context.Context,
+		request openrouter.Request,
+		_ func(openrouter.Delta),
+	) (*openrouter.Completion, error) {
+		system := request.Messages[0].Content[0].Text
+		messages, err := conversation(request)
+		if err != nil {
+			return nil, err
+		}
+		if strings.HasPrefix(system, "You are a subagent") {
+			childRequests++
+			if requestHasTool(request, "todo") {
+				return nil, errors.New("child received todo declaration")
+			}
+			if childRequests == 1 {
+				return &openrouter.Completion{
+					FinishReason: "tool_calls",
+					ToolCalls: []openrouter.ToolCall{
+						modelToolCall("fabricated-todo", "todo", `{"todos":[]}`),
+					},
+				}, nil
+			}
+			if !strings.Contains(messages[len(messages)-1].Content[0].Text, "unknown tool") {
+				return nil, fmt.Errorf("fabricated child result = %#v", messages[len(messages)-1])
+			}
+			return completion("child done"), nil
+		}
+		if len(messages) == 1 {
+			return &openrouter.Completion{
+				FinishReason: "tool_calls",
+				ToolCalls: []openrouter.ToolCall{modelToolCall(
+					"task-call", "task", `{"description":"check","prompt":"check it"}`,
+				)},
+			}, nil
+		}
+		return completion("parent done"), nil
+	}}
+	harness := newAgentHarness(t, model, oxtools.All())
+	harness.prompt(t, harness.newSession(t), "delegate")
+	for _, update := range harness.updates() {
+		if update.discriminator(t) == acp.SessionUpdatePlan {
+			t.Fatal("fabricated child todo changed the parent plan")
+		}
+	}
+	if childRequests != 1 {
+		t.Fatalf("child requests = %d, want 1 rejected dispatch", childRequests)
+	}
+}
+
+func TestTodoSurvivesCloseLoadAndReplay(t *testing.T) {
+	sessionDir := t.TempDir()
+	workspace := t.TempDir()
+	firstModel := &scriptedModel{scripts: []modelScript{
+		func(_ context.Context, _ openrouter.Request, _ func(openrouter.Delta)) (*openrouter.Completion, error) {
+			return &openrouter.Completion{
+				FinishReason: "tool_calls",
+				ToolCalls: []openrouter.ToolCall{modelToolCall(
+					"todo-set", "todo", `{"todos":[{"content":"Resume me","status":"pending"}]}`,
+				)},
+			}, nil
+		},
+		func(_ context.Context, request openrouter.Request, _ func(openrouter.Delta)) (*openrouter.Completion, error) {
+			if !requestHasTodoContext(request, `"content":"Resume me"`) {
+				return nil, errors.New("first activation lost todo context")
+			}
+			return completion("paused"), nil
+		},
+	}}
+	first := newHarness(t, agent.Config{
+		ModelOverride: "test/model", Client: firstModel,
+		SessionDir: sessionDir, Tools: oxtools.All(),
+	})
+	sessionID := first.newSessionIn(t, workspace, nil)
+	first.prompt(t, sessionID, "start")
+	var closed acp.CloseSessionResponse
+	if err := first.local.Client.CallResult(t.Context(), "session/close",
+		acp.CloseSessionRequest{SessionID: sessionID}, &closed,
+	); err != nil {
+		t.Fatal(err)
+	}
+	firstModel.assertConsumed(t)
+
+	secondModel := &scriptedModel{scripts: []modelScript{
+		func(_ context.Context, request openrouter.Request, _ func(openrouter.Delta)) (*openrouter.Completion, error) {
+			if !requestHasTodoContext(request, `"content":"Resume me"`) {
+				return nil, fmt.Errorf("reactivated request lost todo: %#v", request.Messages)
+			}
+			return completion("resumed"), nil
+		},
+	}}
+	second := newHarness(t, agent.Config{
+		ModelOverride: "test/model", Client: secondModel,
+		SessionDir: sessionDir, Tools: oxtools.All(),
+	})
+	var loaded acp.LoadSessionResponse
+	if err := second.local.Client.CallResult(t.Context(), "session/load", acp.LoadSessionRequest{
+		SessionID: sessionID, CWD: workspace, MCPServers: []json.RawMessage{},
+	}, &loaded); err != nil {
+		t.Fatal(err)
+	}
+	var replayed bool
+	for _, update := range second.updates() {
+		if update.discriminator(t) != acp.SessionUpdatePlan {
+			continue
+		}
+		var plan acp.Plan
+		update.decode(t, &plan)
+		replayed = len(plan.Entries) == 1 && plan.Entries[0].Content == "Resume me"
+	}
+	if !replayed {
+		t.Fatal("session load did not replay the durable plan")
+	}
+	second.prompt(t, sessionID, "continue")
+	secondModel.assertConsumed(t)
+}
+
+func requestHasTool(request openrouter.Request, name string) bool {
+	for _, tool := range request.Tools {
+		if tool.Function.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+func requestHasTodoContext(request openrouter.Request, contains string) bool {
+	for index, message := range request.Messages {
+		if index == 0 || message.Role != openrouter.RoleSystem || len(message.Content) != 1 ||
+			!strings.HasPrefix(message.Content[0].Text, "Current todo progress state") {
+			continue
+		}
+		return contains == "" || strings.Contains(message.Content[0].Text, contains)
+	}
+	return false
 }
 
 func TestConfigurationChangeDuringTurnAppliesToNextTurn(t *testing.T) {

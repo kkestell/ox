@@ -149,6 +149,102 @@ func TestCompactionFoldsIntoProviderHistoryWithoutChangingReplay(t *testing.T) {
 	}
 }
 
+func TestTodoReplacementFoldsCheckpointsAndReplays(t *testing.T) {
+	call := openrouter.ToolCall{
+		ID: "todo-call", Type: "function",
+		Function: openrouter.ToolCallFunction{Name: "todo", Arguments: `{"todos":[]}`},
+	}
+	configuration := requestConfiguration{
+		Settings: settings.Resolved{Model: "test/model"}, ContextWindow: 1000,
+		Tools: []openrouter.Tool{{
+			Type: "function", Function: openrouter.ToolFunction{
+				Name: "todo", Parameters: json.RawMessage(`{"type":"object"}`),
+			},
+		}},
+		ToolKinds: map[string]acp.ToolKind{"todo": acp.ToolKindOther},
+		PlanTools: map[string]bool{"todo": true},
+	}
+	entries := []acp.PlanEntry{{
+		Content: "Implement state", Priority: acp.PlanEntryPriorityHigh,
+		Status: acp.PlanEntryStatusInProgress,
+	}}
+	result := storedToolResult{CallID: call.ID, Content: "updated"}
+	records := []sessionRecord{
+		mustRecord(t, 1, recordSessionCreated, sessionCreated{
+			SessionID: "0123456789abcdef0123456789abcdef", CWD: "/workspace",
+			Configuration: configuration,
+		}),
+		mustRecord(t, 2, recordUserMessage, userMessageRecord{
+			TurnID: "turn", MessageID: "user",
+			Content: []acp.ContentBlock{{Type: "text", Text: "work"}},
+		}),
+		mustRecord(t, 3, recordExchangePaused, suspendedModelExchangeRecord{
+			TurnID: "turn", AnswerID: "answer", ThoughtID: "thought",
+			FinishReason: "tool_calls", ToolCalls: []openrouter.ToolCall{call},
+			RequestCount: 1,
+		}),
+		mustRecord(t, 4, recordToolStarted, toolStartedRecord{TurnID: "turn", Call: call}),
+		mustRecord(t, 5, recordTodoChanged, todoChanged{
+			TurnID: "turn", CallID: call.ID, Entries: entries,
+		}),
+		mustRecord(t, 6, recordToolCompleted, toolCompletedRecord{
+			TurnID: "turn", CallID: call.ID, Result: result,
+		}),
+		mustRecord(t, 7, recordModelExchange, modelExchangeRecord{
+			TurnID: "turn", AnswerID: "answer", ThoughtID: "thought",
+			FinishReason: "tool_calls", ToolCalls: []openrouter.ToolCall{call},
+			ToolResults: []storedToolResult{result},
+		}),
+		mustRecord(t, 8, recordTurnFinished, turnFinishedRecord{
+			TurnID: "turn", Kind: "completed", StopReason: acp.StopReasonEndTurn,
+		}),
+	}
+	state := mustFold(t, records)
+	if !reflect.DeepEqual(state.todo, entries) {
+		t.Fatalf("todo = %#v, want %#v", state.todo, entries)
+	}
+	updates, err := (&Agent{}).replay(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var plans []acp.Plan
+	for _, update := range updates {
+		if plan, ok := update.(acp.Plan); ok {
+			plans = append(plans, plan)
+		}
+	}
+	if len(plans) != 1 || !reflect.DeepEqual(plans[0].Entries, entries) {
+		t.Fatalf("replayed plans = %#v", plans)
+	}
+
+	checkpoint, err := newCheckpointRecord(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored := mustFold(t, append(records, checkpoint))
+	if !reflect.DeepEqual(restored.todo, entries) {
+		t.Fatalf("checkpoint todo = %#v, want %#v", restored.todo, entries)
+	}
+
+	base := mustFold(t, records[:4])
+	invalid := mustRecord(t, 5, recordTodoChanged, todoChanged{
+		TurnID: "turn", CallID: call.ID,
+		Entries: []acp.PlanEntry{
+			{Content: "one", Priority: acp.PlanEntryPriorityMedium, Status: acp.PlanEntryStatusInProgress},
+			{Content: "two", Priority: acp.PlanEntryPriorityMedium, Status: acp.PlanEntryStatusInProgress},
+		},
+	})
+	if err := base.apply(invalid); err == nil || len(base.todo) != 0 || base.sequence != 4 {
+		t.Fatalf("invalid replacement = error %v, todo %#v, sequence %d", err, base.todo, base.sequence)
+	}
+	orphan := mustRecord(t, 5, recordTodoChanged, todoChanged{
+		TurnID: "turn", CallID: "other", Entries: []acp.PlanEntry{},
+	})
+	if err := base.apply(orphan); err == nil || len(base.todo) != 0 || base.sequence != 4 {
+		t.Fatalf("orphan replacement = error %v, todo %#v, sequence %d", err, base.todo, base.sequence)
+	}
+}
+
 func TestCompactionSurvivesCheckpointWithoutDoubleCountingUsage(t *testing.T) {
 	records, summary := compactionFixture(t)
 	state, err := foldRecords(records)

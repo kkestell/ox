@@ -21,11 +21,12 @@ import (
 
 const (
 	recordVersion     = 1
-	checkpointVersion = 6
+	checkpointVersion = 7
 
 	recordSessionCreated  = "session_created"
 	recordConfigChanged   = "request_configuration_changed"
 	recordOptionChanged   = "session_config_option_changed"
+	recordTodoChanged     = "todo_replaced"
 	recordCompaction      = "model_context_compacted"
 	recordChildContext    = "child_context_updated"
 	recordUserMessage     = "user_message"
@@ -58,6 +59,7 @@ type requestConfiguration struct {
 	SystemPrompt         string                  `json:"systemPrompt,omitempty"`
 	Tools                []openrouter.Tool       `json:"tools,omitempty"`
 	ToolKinds            map[string]acp.ToolKind `json:"toolKinds,omitempty"`
+	PlanTools            map[string]bool         `json:"planTools,omitempty"`
 	Subagent             subagentConfiguration   `json:"subagent,omitempty"`
 	ExecutorCapabilities executorCapabilities    `json:"executorCapabilities"`
 }
@@ -94,6 +96,12 @@ type optionChanged struct {
 	Selections    sessionSelections         `json:"selections"`
 	Configuration requestConfiguration      `json:"configuration"`
 	Options       []acp.SessionConfigOption `json:"options"`
+}
+
+type todoChanged struct {
+	TurnID  string          `json:"turnId"`
+	CallID  string          `json:"callId"`
+	Entries []acp.PlanEntry `json:"entries"`
 }
 
 type compactionRecord struct {
@@ -268,6 +276,7 @@ type checkpointProjection struct {
 	Sequence              uint64                        `json:"sequence"`
 	Configuration         requestConfiguration          `json:"configuration"`
 	Selections            sessionSelections             `json:"selections,omitempty"`
+	Todo                  []acp.PlanEntry               `json:"todo"`
 	History               []openrouter.Message          `json:"history,omitempty"`
 	Usage                 checkpointUsage               `json:"usage"`
 	Occupancy             int                           `json:"occupancy"`
@@ -301,6 +310,7 @@ type durableState struct {
 	sequence              uint64
 	configuration         requestConfiguration
 	selections            sessionSelections
+	todo                  []acp.PlanEntry
 	history               []openrouter.Message
 	usage                 turnUsage
 	occupancy             int
@@ -382,7 +392,7 @@ func validateRecordEnvelope(record sessionRecord, previous uint64) error {
 		return errors.New("first record must create the session")
 	}
 	switch record.Type {
-	case recordSessionCreated, recordConfigChanged, recordOptionChanged, recordCompaction, recordChildContext, recordUserMessage,
+	case recordSessionCreated, recordConfigChanged, recordOptionChanged, recordTodoChanged, recordCompaction, recordChildContext, recordUserMessage,
 		recordExchangePaused, recordPermissionOpen, recordPermissionRetry,
 		recordPermissionDone, recordToolStarted, recordToolCompleted,
 		recordModelExchange, recordTurnFinished, recordCheckpoint:
@@ -406,6 +416,7 @@ func newCheckpointRecord(state durableState) (sessionRecord, error) {
 			Sequence:      state.sequence,
 			Configuration: cloneConfiguration(state.configuration),
 			Selections:    cloneSelections(state.selections),
+			Todo:          clonePlanEntries(state.todo),
 			History:       cloneMessages(state.history),
 			Usage: checkpointUsage{
 				Seen:        state.usage.seen,
@@ -477,6 +488,11 @@ func restoreCheckpoint(record, previous sessionRecord) (durableState, error) {
 	if err := validateConfiguration(projection.Configuration); err != nil {
 		return durableState{}, err
 	}
+	if projection.Todo != nil {
+		if err := validateTodoEntries(projection.Todo); err != nil {
+			return durableState{}, fmt.Errorf("checkpoint todo: %w", err)
+		}
+	}
 	if projection.Occupancy < 0 {
 		return durableState{}, errors.New("checkpoint context occupancy is invalid")
 	}
@@ -511,6 +527,7 @@ func restoreCheckpoint(record, previous sessionRecord) (durableState, error) {
 		sequence:      record.Sequence,
 		configuration: cloneConfiguration(projection.Configuration),
 		selections:    cloneSelections(projection.Selections),
+		todo:          clonePlanEntries(projection.Todo),
 		history:       cloneMessages(projection.History),
 		usage: turnUsage{
 			seen:        projection.Usage.Seen,
@@ -720,6 +737,7 @@ func (s durableState) clone() durableState {
 	s.records = append([]sessionRecord(nil), s.records...)
 	s.configuration = cloneConfiguration(s.configuration)
 	s.selections = cloneSelections(s.selections)
+	s.todo = clonePlanEntries(s.todo)
 	s.openTurnConfiguration = cloneConfiguration(s.openTurnConfiguration)
 	s.suspended = cloneSuspendedExchange(s.suspended)
 	children := s.children
@@ -789,6 +807,7 @@ func (s *durableState) apply(record sessionRecord) error {
 			return err
 		}
 		s.selections = cloneSelections(value.Selections)
+		s.todo = nil
 		s.messageIDs = make(map[string]struct{})
 		s.toolCallIDs = make(map[string]struct{})
 		s.changedFiles = make(map[string]struct{})
@@ -822,6 +841,23 @@ func (s *durableState) apply(record sessionRecord) error {
 		}
 		s.selections = cloneSelections(value.Selections)
 		s.configuration = cloneConfiguration(value.Configuration)
+	case recordTodoChanged:
+		var value todoChanged
+		if err := decodeRecord(record.Data, &value); err != nil {
+			return err
+		}
+		if value.TurnID == "" || value.TurnID != s.openTurn || value.CallID == "" {
+			return errors.New("todo replacement has no matching open turn")
+		}
+		execution, exists := s.toolExecutions[value.CallID]
+		if !exists || execution.Result != nil || execution.TurnID != value.TurnID ||
+			execution.ParentCallID != "" || execution.Call.Function.Name != "todo" {
+			return errors.New("todo replacement has no matching started top-level call")
+		}
+		if err := validateTodoEntries(value.Entries); err != nil {
+			return err
+		}
+		s.todo = clonePlanEntries(value.Entries)
 	case recordCompaction:
 		if s.suspended != nil {
 			return errors.New("model context compacted with an unresolved tool group")
@@ -1865,6 +1901,15 @@ func (a *Agent) replay(s durableState) ([]any, error) {
 				SessionUpdate: "config_option_update",
 				ConfigOptions: cloneConfigOptions(value.Options),
 			})
+		case recordTodoChanged:
+			var value todoChanged
+			if err := decodeRecord(record.Data, &value); err != nil {
+				return nil, err
+			}
+			updates = append(updates, acp.Plan{
+				SessionUpdate: acp.SessionUpdatePlan,
+				Entries:       clonePlanEntries(value.Entries),
+			})
 		case recordCompaction:
 			var value compactionRecord
 			if err := decodeRecord(record.Data, &value); err != nil {
@@ -2121,6 +2166,7 @@ func cloneConfiguration(value requestConfiguration) requestConfiguration {
 	value.Tools = cloneTools(value.Tools)
 	value.Subagent.Tools = cloneTools(value.Subagent.Tools)
 	value.ToolKinds = cloneToolKinds(value.ToolKinds)
+	value.PlanTools = cloneBoolMap(value.PlanTools)
 	return value
 }
 
@@ -2160,6 +2206,42 @@ func cloneConfigOptions(values []acp.SessionConfigOption) []acp.SessionConfigOpt
 		panic(err)
 	}
 	return cloned
+}
+
+func clonePlanEntries(values []acp.PlanEntry) []acp.PlanEntry {
+	if values == nil {
+		return nil
+	}
+	cloned := make([]acp.PlanEntry, len(values))
+	for index, value := range values {
+		cloned[index] = value
+		if value.Meta != nil {
+			cloned[index].Meta = make(acp.Metadata, len(value.Meta))
+			for key, metaValue := range value.Meta {
+				cloned[index].Meta[key] = metaValue
+			}
+		}
+	}
+	return cloned
+}
+
+func validateTodoEntries(entries []acp.PlanEntry) error {
+	if entries == nil {
+		return errors.New("todo entries are required")
+	}
+	inProgress := 0
+	for index, entry := range entries {
+		if err := entry.Validate(); err != nil {
+			return fmt.Errorf("todo item %d: %w", index+1, err)
+		}
+		if entry.Status == acp.PlanEntryStatusInProgress {
+			inProgress++
+		}
+	}
+	if inProgress > 1 {
+		return errors.New("todo has more than one in-progress item")
+	}
+	return nil
 }
 
 func validateSelections(value sessionSelections) error {
@@ -2206,6 +2288,17 @@ func cloneToolKinds(values map[string]acp.ToolKind) map[string]acp.ToolKind {
 	cloned := make(map[string]acp.ToolKind, len(values))
 	for name, kind := range values {
 		cloned[name] = kind
+	}
+	return cloned
+}
+
+func cloneBoolMap(values map[string]bool) map[string]bool {
+	if values == nil {
+		return nil
+	}
+	cloned := make(map[string]bool, len(values))
+	for name, enabled := range values {
+		cloned[name] = enabled
 	}
 	return cloned
 }
@@ -2306,6 +2399,14 @@ func validateConfiguration(value requestConfiguration) error {
 			kind != acp.ToolKindEdit && kind != acp.ToolKindExecute &&
 			kind != acp.ToolKindOther {
 			return fmt.Errorf("configured tool %q has invalid kind %q", name, kind)
+		}
+	}
+	for name, enabled := range value.PlanTools {
+		if !enabled {
+			return fmt.Errorf("plan tool %q is disabled", name)
+		}
+		if _, exists := names[name]; !exists {
+			return fmt.Errorf("plan tool names unknown tool %q", name)
 		}
 	}
 	return nil

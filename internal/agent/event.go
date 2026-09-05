@@ -16,6 +16,7 @@ const (
 	eventToolOutput
 	eventToolCompleted
 	eventToolFailed
+	eventPlan
 	eventUsage
 	eventOutcome
 )
@@ -35,4 +36,5 @@ type event struct {
 	contextWindow    int
 	totalCost        float64
 	update           any
+	plan             []acp.PlanEntry
 }

@@ -180,6 +180,38 @@ func (u ConfigOptionUpdate) Validate() error {
 	return validateSessionConfigOptions(u.ConfigOptions)
 }
 
+func (p Plan) Validate() error {
+	if p.SessionUpdate != SessionUpdatePlan {
+		return fmt.Errorf("sessionUpdate must be %q", SessionUpdatePlan)
+	}
+	if p.Entries == nil {
+		return errors.New("entries is required")
+	}
+	for index, entry := range p.Entries {
+		if err := entry.Validate(); err != nil {
+			return fmt.Errorf("entries item %d: %w", index+1, err)
+		}
+	}
+	return nil
+}
+
+func (e PlanEntry) Validate() error {
+	if strings.TrimSpace(e.Content) == "" {
+		return errors.New("content is required")
+	}
+	switch e.Priority {
+	case PlanEntryPriorityHigh, PlanEntryPriorityMedium, PlanEntryPriorityLow:
+	default:
+		return errors.New("priority must be high, medium, or low")
+	}
+	switch e.Status {
+	case PlanEntryStatusPending, PlanEntryStatusInProgress, PlanEntryStatusCompleted:
+	default:
+		return errors.New("status must be pending, in_progress, or completed")
+	}
+	return nil
+}
+
 func (o SessionConfigOption) Validate() error {
 	if o.Type != SessionConfigOptionTypeSelect {
 		return errors.New("type must be select")

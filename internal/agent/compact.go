@@ -38,7 +38,7 @@ func (a *Agent) admitPrimaryRequest(
 	turn diagnostictrace.Turn,
 	requestCount int,
 ) (openrouter.Request, *event, error) {
-	request := a.modelRequest(value)
+	request, historyOffset := a.modelRequest(value)
 	value.stateMu.Lock()
 	configuration := value.state.turnConfiguration()
 	value.stateMu.Unlock()
@@ -71,10 +71,11 @@ func (a *Agent) admitPrimaryRequest(
 	turnID := value.state.openTurn
 	value.stateMu.Unlock()
 	record := compactionRecord{
-		TurnID:  turnID,
-		HeadEnd: planned.plan.headEnd - 1, TailStart: planned.plan.tailStart - 1,
-		Summary: admitted.request.Messages[planned.plan.headEnd],
-		Usage:   completion.Usage, Occupancy: admitted.occupancy,
+		TurnID:    turnID,
+		HeadEnd:   planned.plan.headEnd - historyOffset,
+		TailStart: planned.plan.tailStart - historyOffset,
+		Summary:   admitted.request.Messages[planned.plan.headEnd],
+		Usage:     completion.Usage, Occupancy: admitted.occupancy,
 	}
 	if err := a.commit(value, recordCompaction, record); err != nil {
 		return openrouter.Request{}, nil, fmt.Errorf("persist model context compaction: %w", err)

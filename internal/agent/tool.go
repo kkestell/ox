@@ -16,6 +16,8 @@ type Tool struct {
 	Approval     Approval
 	ParallelSafe bool
 	Delegates    bool
+	ParentOnly   bool
+	PlanMode     bool
 	Label        func(json.RawMessage) string
 	// Suggest and Covered narrow allow-always grants to tool-defined rules.
 	// A nil pair keeps the default name-scoped grant behavior.
@@ -49,6 +51,7 @@ type Invocation struct {
 	FileSystem  ClientFileSystem
 	Terminal    ClientTerminal
 	Delegate    func(context.Context, string) (string, error)
+	ReplaceTodo func([]acp.PlanEntry) error
 	Emit        func(string)
 	ReportSpill func(string)
 }

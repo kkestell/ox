@@ -229,11 +229,12 @@ func TestNewBuildsSubagentToolSetWithoutDelegators(t *testing.T) {
 			Label:     func(json.RawMessage) string { return "Task" },
 		},
 		{Name: "read"},
+		{Name: "todo", ParentOnly: true, PlanMode: true},
 	}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(instance.primaryTools.tools) != 2 ||
+	if len(instance.primaryTools.tools) != 3 ||
 		len(instance.subagentTools.tools) != 1 ||
 		instance.subagentTools.tools[0].Name != "read" {
 		t.Fatalf(
@@ -1635,6 +1636,68 @@ func TestToolDispatchPersistenceFailureSkipsExecutor(t *testing.T) {
 	}
 	if executions.Load() != 0 {
 		t.Fatalf("executions = %d", executions.Load())
+	}
+}
+
+func TestTodoPersistenceFailureEmitsNoPlanOrSuccessfulResult(t *testing.T) {
+	var value *session
+	instance, err := New(Config{
+		Logger: discardLogger(),
+		Tools: []Tool{
+			{
+				Name: "todo", InputSchema: json.RawMessage(`{"type":"object"}`),
+				Approval: ApprovalNone, ParentOnly: true, PlanMode: true,
+				Execute: func(_ context.Context, invocation Invocation) (string, error) {
+					value.log.close()
+					if err := invocation.ReplaceTodo([]acp.PlanEntry{{
+						Content: "must persist", Priority: acp.PlanEntryPriorityMedium,
+						Status: acp.PlanEntryStatusPending,
+					}}); err != nil {
+						return "", err
+					}
+					return "updated", nil
+				},
+			},
+			{Name: "read", Kind: acp.ToolKindRead, Approval: ApprovalNone},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	configuration := requestConfiguration{
+		Settings: settings.Resolved{Model: "test/model"},
+		Tools:    cloneTools(instance.primaryTools.modelTools),
+		ToolKinds: map[string]acp.ToolKind{
+			"todo": acp.ToolKindOther, "read": acp.ToolKindRead,
+		},
+		PlanTools: map[string]bool{"todo": true, "read": true},
+	}
+	value = durableTestSession(t, instance, configuration, "turn")
+	call := toolCall("todo-call", "todo")
+	if err := instance.commit(value, recordExchangePaused, suspendedModelExchangeRecord{
+		TurnID: "turn", AnswerID: "answer", ThoughtID: "thought",
+		FinishReason: "tool_calls", ToolCalls: []openrouter.ToolCall{call}, RequestCount: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	events := make(chan event, 8)
+	_, err = instance.dispatchApprovedBatch(
+		context.Background(), value, instance.primaryTools, value.primaryFileReads(),
+		[]openrouter.ToolCall{call}, nil, ClientFileSystem{}, ClientTerminal{}, events,
+		"", []toolResult{{}}, []bool{true}, diagnostictrace.Turn{},
+	)
+	if err == nil || !value.poisoned || value.state.todo != nil {
+		t.Fatalf("dispatch = error %v, poisoned %v, todo %#v", err, value.poisoned, value.state.todo)
+	}
+	close(events)
+	for current := range events {
+		if current.kind == eventPlan {
+			t.Fatal("failed todo persistence emitted a plan update")
+		}
+	}
+	execution, ok := value.state.toolExecutions[call.ID]
+	if !ok || execution.Result != nil {
+		t.Fatalf("durable execution = %#v, present %v", execution, ok)
 	}
 }
 

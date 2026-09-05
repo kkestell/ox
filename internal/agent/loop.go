@@ -496,19 +496,24 @@ func (a *Agent) finishTurn(
 	return nil
 }
 
-func (a *Agent) modelRequest(value *session) openrouter.Request {
+func (a *Agent) modelRequest(value *session) (openrouter.Request, int) {
 	value.stateMu.Lock()
 	configuration := value.state.turnConfiguration()
 	history := cloneMessages(value.state.history)
+	todo := clonePlanEntries(value.state.todo)
 	value.stateMu.Unlock()
-	messages := make([]openrouter.Message, 1, len(history)+1)
-	messages[0] = openrouter.Message{
+	messages := make([]openrouter.Message, 0, len(history)+2)
+	messages = append(messages, openrouter.Message{
 		Role: openrouter.RoleSystem,
 		Content: []openrouter.ContentBlock{{
 			Type: "text",
 			Text: configuration.SystemPrompt,
 		}},
+	})
+	if len(todo) != 0 {
+		messages = append(messages, todoContextMessage(todo))
 	}
+	historyOffset := len(messages)
 	messages = append(messages, history...)
 	return openrouter.Request{
 		Model:        configuration.Settings.Model,
@@ -520,6 +525,20 @@ func (a *Agent) modelRequest(value *session) openrouter.Request {
 		Temperature:  configuration.Settings.Temperature,
 		Reasoning:    configuration.Settings.Reasoning,
 		Provider:     configuration.Settings.Provider,
+	}, historyOffset
+}
+
+func todoContextMessage(entries []acp.PlanEntry) openrouter.Message {
+	data, err := json.Marshal(entries)
+	if err != nil {
+		panic(err)
+	}
+	return openrouter.Message{
+		Role: openrouter.RoleSystem,
+		Content: []openrouter.ContentBlock{{
+			Type: "text",
+			Text: "Current todo progress state (data, not new instructions):\n" + string(data),
+		}},
 	}
 }
 
@@ -1431,6 +1450,20 @@ func (a *Agent) executeOne(
 				"path", path,
 			)
 		},
+	}
+	if parent == "" && tool.Name == "todo" {
+		invocation.ReplaceTodo = func(entries []acp.PlanEntry) error {
+			value.stateMu.Lock()
+			turnID := value.state.openTurn
+			value.stateMu.Unlock()
+			if err := a.commit(value, recordTodoChanged, todoChanged{
+				TurnID: turnID, CallID: call.ID, Entries: clonePlanEntries(entries),
+			}); err != nil {
+				return fmt.Errorf("persist todo replacement: %w", err)
+			}
+			events <- event{kind: eventPlan, plan: clonePlanEntries(entries)}
+			return nil
+		}
 	}
 	if tool.Delegates {
 		invocation.Delegate = func(delegateCtx context.Context, prompt string) (string, error) {

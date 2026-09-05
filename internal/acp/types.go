@@ -537,6 +537,7 @@ const (
 	SessionUpdateAgentMessageChunk  = "agent_message_chunk"
 	SessionUpdateAgentThoughtChunk  = "agent_thought_chunk"
 	SessionUpdateConfigOptionUpdate = "config_option_update"
+	SessionUpdatePlan               = "plan"
 	SessionUpdateUserMessageChunk   = "user_message_chunk"
 
 	ToolKindRead    ToolKind = "read"
@@ -564,6 +565,35 @@ type ConfigOptionUpdate struct {
 	SessionUpdate string                `json:"sessionUpdate"`
 	ConfigOptions []SessionConfigOption `json:"configOptions"`
 	Meta          Metadata              `json:"_meta,omitempty"`
+}
+
+type PlanEntryPriority string
+
+const (
+	PlanEntryPriorityHigh   PlanEntryPriority = "high"
+	PlanEntryPriorityMedium PlanEntryPriority = "medium"
+	PlanEntryPriorityLow    PlanEntryPriority = "low"
+)
+
+type PlanEntryStatus string
+
+const (
+	PlanEntryStatusPending    PlanEntryStatus = "pending"
+	PlanEntryStatusInProgress PlanEntryStatus = "in_progress"
+	PlanEntryStatusCompleted  PlanEntryStatus = "completed"
+)
+
+type PlanEntry struct {
+	Content  string            `json:"content"`
+	Priority PlanEntryPriority `json:"priority"`
+	Status   PlanEntryStatus   `json:"status"`
+	Meta     Metadata          `json:"_meta,omitempty"`
+}
+
+type Plan struct {
+	SessionUpdate string      `json:"sessionUpdate"`
+	Entries       []PlanEntry `json:"entries"`
+	Meta          Metadata    `json:"_meta,omitempty"`
 }
 
 type Cost struct {
