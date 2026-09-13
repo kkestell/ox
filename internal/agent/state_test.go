@@ -1173,3 +1173,55 @@ func agedState(size int) durableState {
 	}
 	return state
 }
+
+// TestOutputTailKeepsValidOutputAroundBadBytes covers the retained tool-output
+// tail: a byte cut can split a rune, and a stream can carry a stray invalid
+// byte. Neither may cost the valid output around it.
+func TestOutputTailKeepsValidOutputAroundBadBytes(t *testing.T) {
+	tests := []struct {
+		name  string
+		value string
+		want  string
+	}{
+		{name: "short output is untouched", value: "hello", want: "hello"},
+		{
+			name:  "an interior bad byte is replaced, not truncated to",
+			value: "before\xffafter",
+			want:  "before�after",
+		},
+		{
+			// The cut lands inside the leading rune, so only its bytes go.
+			name:  "a cut mid-rune drops only that rune",
+			value: "é" + strings.Repeat("a", maxToolOutputTail-1),
+			want:  strings.Repeat("a", maxToolOutputTail-1),
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := outputTail(test.value); got != test.want {
+				t.Fatalf("outputTail = %q, want %q", got, test.want)
+			}
+		})
+	}
+
+	// A run of small chunks must stay bounded and keep the newest output.
+	var tail []byte
+	for index := range 4 * maxToolOutputTail {
+		tail = appendOutput(tail, string(rune('a'+index%26)))
+	}
+	if len(tail) > 2*maxToolOutputTail {
+		t.Fatalf("accumulated tail = %d bytes, want at most %d", len(tail), 2*maxToolOutputTail)
+	}
+	bounded := outputTail(string(tail))
+	if len(bounded) != maxToolOutputTail {
+		t.Fatalf("flushed tail = %d bytes, want %d", len(bounded), maxToolOutputTail)
+	}
+	if want := string(rune('a' + (4*maxToolOutputTail-1)%26)); !strings.HasSuffix(bounded, want) {
+		t.Fatalf("flushed tail ends %q, want it to end with the newest output %q", bounded, want)
+	}
+
+	// A single chunk larger than the bound is still trimmed to it.
+	if got := outputTail(string(appendOutput(nil, strings.Repeat("x", 3*maxToolOutputTail)))); len(got) != maxToolOutputTail {
+		t.Fatalf("oversized chunk tail = %d bytes, want %d", len(got), maxToolOutputTail)
+	}
+}

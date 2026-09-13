@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -18,7 +19,7 @@ const (
 type notifyFunc func(acp.SessionNotification) error
 
 type outputState struct {
-	tail   string
+	tail   []byte
 	dirty  bool
 	parent string
 }
@@ -106,7 +107,7 @@ func (a *eventAdapter) handle(current event) error {
 				state = &outputState{parent: current.parent}
 				a.outputs[current.call.ID] = state
 			}
-			state.tail = outputTail(current.text)
+			state.tail = appendOutput(state.tail[:0], current.text)
 			state.dirty = true
 		}
 		if err := a.flush(current.call.ID); err != nil {
@@ -181,7 +182,7 @@ func (a *eventAdapter) flush(id string) error {
 		ToolCallID:    id,
 		Content: []acp.ToolCallContent{{
 			Type:    "content",
-			Content: acp.ContentBlock{Type: "text", Text: state.tail},
+			Content: acp.ContentBlock{Type: "text", Text: outputTail(string(state.tail))},
 		}},
 		Meta: toolEventMetadata(state.parent),
 	})
@@ -206,20 +207,37 @@ func (a *eventAdapter) send(update any) error {
 	})
 }
 
+// outputTail keeps the last maxToolOutputTail bytes of value as valid UTF-8.
+// The byte cut can split a rune, so the continuation bytes it leaves at the
+// front are dropped. Anything else invalid is replaced in one pass: output
+// before a bad byte is still output worth showing.
 func outputTail(value string) string {
-	if len(value) <= maxToolOutputTail {
+	if len(value) > maxToolOutputTail {
+		value = trimPartialRune(value[len(value)-maxToolOutputTail:])
+	}
+	if utf8.ValidString(value) {
 		return value
 	}
-	value = value[len(value)-maxToolOutputTail:]
-	for !utf8.ValidString(value) {
-		value = value[1:]
+	return strings.ToValidUTF8(value, "\uFFFD")
+}
+
+func trimPartialRune(value string) string {
+	for index := 0; index < len(value) && index < utf8.UTFMax; index++ {
+		if utf8.RuneStart(value[index]) {
+			return value[index:]
+		}
 	}
 	return value
 }
 
-func appendOutput(tail, chunk string) string {
-	if len(chunk) >= maxToolOutputTail {
-		return outputTail(chunk)
+// appendOutput accumulates output while keeping at least the last
+// maxToolOutputTail bytes. The buffer may double before it is compacted, so
+// copying is amortized over a bound's worth of new output instead of being paid
+// for every chunk. A flush bounds it exactly.
+func appendOutput(tail []byte, chunk string) []byte {
+	tail = append(tail, chunk...)
+	if len(tail) > 2*maxToolOutputTail {
+		tail = append(tail[:0], tail[len(tail)-maxToolOutputTail:]...)
 	}
-	return outputTail(tail + chunk)
+	return tail
 }

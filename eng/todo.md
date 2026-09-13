@@ -38,7 +38,7 @@
         (F08, F09)
   - [x] Keep read evidence and write verification on a coherent filesystem
         executor (F10)
-  - [ ] Make streamed tool-output retention bounded and incremental (F11, F17)
+  - [x] Make streamed tool-output retention bounded and incremental (F11, F17)
   - [ ] Use consistent token units for context occupancy and compaction (F12)
   - [ ] Correct provider stream retry detection and classification (F13, F25)
   - [ ] Repair model-catalog caching and refresh ownership (F14)

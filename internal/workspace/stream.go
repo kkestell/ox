@@ -43,6 +43,7 @@ type StreamRecorder struct {
 
 	totalBytes int
 	lines      streamLineCounter
+	headLines  streamLineCounter
 
 	lineCarry []byte
 	pending   []string
@@ -115,19 +116,36 @@ func (r *StreamRecorder) writeSpill(data []byte) {
 func (r *StreamRecorder) capturePreview(data []byte) {
 	if !r.headFull {
 		room := streamHeadBytes - len(r.head)
-		r.head = append(r.head, data[:min(room, len(data))]...)
-		lineOverflow := textLineCount(r.head) > streamHeadLines
-		r.headFull = len(data) >= room || lineOverflow
-		for len(r.head) > 0 && !utf8.Valid(r.head) {
-			r.head = r.head[:len(r.head)-1]
+		taken := data[:min(room, len(data))]
+		r.head = append(r.head, taken...)
+		// Counting incrementally keeps the head's cost proportional to the bytes
+		// it takes rather than to everything it already holds.
+		r.headLines.Write(taken)
+		r.headFull = len(taken) == room || r.headLines.Count() > streamHeadLines
+		if r.headFull {
+			r.head = boundedHead(r.head)
 		}
-		r.head = firstLines(r.head, streamHeadLines)
 	}
+	// The tail may double before it is compacted, which amortizes the trimming
+	// over a bound's worth of new output instead of paying it on every write.
 	r.tail = append(r.tail, data...)
-	if len(r.tail) > streamTailBytes {
-		r.tail = validUTF8Suffix(r.tail[len(r.tail)-streamTailBytes:])
+	if len(r.tail) > 2*streamTailBytes {
+		r.tail = boundedTail(r.tail)
 	}
-	r.tail = lastLines(r.tail, streamTailLines)
+}
+
+func boundedHead(head []byte) []byte {
+	for len(head) > 0 && !utf8.Valid(head) {
+		head = head[:len(head)-1]
+	}
+	return firstLines(head, streamHeadLines)
+}
+
+func boundedTail(tail []byte) []byte {
+	if len(tail) > streamTailBytes {
+		tail = validUTF8Suffix(tail[len(tail)-streamTailBytes:])
+	}
+	return lastLines(tail, streamTailLines)
 }
 
 func (r *StreamRecorder) emitLines(data []byte) {
@@ -217,7 +235,11 @@ func (r *StreamRecorder) Finish() (RenderResult, error) {
 		}, nil
 	}
 
-	tail := r.tail
+	if !r.headFull {
+		r.head = boundedHead(r.head)
+		r.headFull = true
+	}
+	tail := boundedTail(r.tail)
 	tailOffset := r.totalBytes - len(tail)
 	if overlap := len(r.head) - tailOffset; overlap > 0 {
 		tail = validUTF8Suffix(tail[min(overlap, len(tail)):])
@@ -362,11 +384,20 @@ func lineBoundaries(data []byte) []int {
 	return boundaries
 }
 
+// validUTF8Suffix drops the continuation bytes a byte cut leaves at the front
+// and replaces anything else invalid in one pass, so data before a bad byte is
+// kept rather than used to truncate everything ahead of it.
 func validUTF8Suffix(data []byte) []byte {
-	for len(data) > 0 && !utf8.Valid(data) {
-		data = data[1:]
+	for index := 0; index < len(data) && index < utf8.UTFMax; index++ {
+		if utf8.RuneStart(data[index]) {
+			data = data[index:]
+			break
+		}
 	}
-	return data
+	if utf8.Valid(data) {
+		return data
+	}
+	return []byte(strings.ToValidUTF8(string(data), "\uFFFD"))
 }
 
 func incompleteUTF8Tail(data []byte) int {

@@ -204,3 +204,61 @@ func TestStreamRecorderDefersSpillFailure(t *testing.T) {
 		t.Fatal("Finish succeeded after spill creation failed")
 	}
 }
+
+// TestStreamRecorderPreviewIsIndependentOfWriteSize checks that the preview a
+// spilled stream renders does not depend on how the output arrived. The
+// recorder lets its tail grow before compacting it, so a stream delivered one
+// byte at a time must still produce the same bounded preview as one write.
+func TestStreamRecorderPreviewIsIndependentOfWriteSize(t *testing.T) {
+	// Long enough that the recorder's tail crosses the slack it allows before
+	// compacting, so the two delivery shapes exercise different paths.
+	body := strings.Repeat("line of shell output\n", 4000)
+
+	whole := NewStreamRecorder(filepath.Join(t.TempDir(), "spill"), "shell", "whole", nil)
+	if _, err := whole.Write([]byte(body)); err != nil {
+		t.Fatal(err)
+	}
+	wholeResult, err := whole.Finish()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wholeResult.Spilled == "" {
+		t.Fatal("fixture did not spill")
+	}
+
+	split := NewStreamRecorder(filepath.Join(t.TempDir(), "spill"), "shell", "split", nil)
+	for index := range len(body) {
+		if _, err := split.Write([]byte(body[index : index+1])); err != nil {
+			t.Fatal(err)
+		}
+	}
+	splitResult, err := split.Finish()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if replaceSpillPath(splitResult.Content, splitResult.Spilled) !=
+		replaceSpillPath(wholeResult.Content, wholeResult.Spilled) {
+		t.Fatalf("byte-at-a-time preview = %q, want %q",
+			splitResult.Content, wholeResult.Content)
+	}
+	for name, content := range map[string]string{
+		"whole": wholeResult.Content,
+		"split": splitResult.Content,
+	} {
+		if len(content) > InlineMaxBytes {
+			t.Fatalf("%s preview = %d bytes, want at most %d",
+				name, len(content), InlineMaxBytes)
+		}
+	}
+	if splitResult.TotalBytes != wholeResult.TotalBytes ||
+		splitResult.TotalLines != wholeResult.TotalLines {
+		t.Fatalf("split totals = %d bytes %d lines, want %d and %d",
+			splitResult.TotalBytes, splitResult.TotalLines,
+			wholeResult.TotalBytes, wholeResult.TotalLines)
+	}
+}
+
+func replaceSpillPath(content, path string) string {
+	return strings.ReplaceAll(content, path, "<spill>")
+}
