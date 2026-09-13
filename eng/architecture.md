@@ -211,10 +211,13 @@ The agent translates validated ACP prompt content into provider messages.
 deltas. It returns the completion assembled so far when a stream ends early so
 the agent can apply ACP cancellation and history rules.
 
-The provider boundary caches and validates OpenRouter's model catalog. It
-retries transient failures within a bounded budget only before response content
-has been observed. Raw reasoning details and usage survive provider translation
-when they are needed for continued requests or accounting.
+The provider boundary caches and validates OpenRouter's model catalog. A cached
+catalog is served while it is fresh and refetched on the spot once it is not,
+falling back to the stale entries only when the provider is unreachable; no
+background refresh owns that work. It retries transient failures within a
+bounded budget only before response content has been observed. Raw reasoning
+details and usage survive provider translation when they are needed for
+continued requests or accounting.
 
 The agent admits every provider request against the selected model's context
 window. It budgets the complete messages and tool declarations plus the

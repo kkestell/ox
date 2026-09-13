@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -16,23 +15,6 @@ import (
 	"testing"
 	"time"
 )
-
-type lockedBuffer struct {
-	mu     sync.Mutex
-	buffer strings.Builder
-}
-
-func (b *lockedBuffer) Write(data []byte) (int, error) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buffer.Write(data)
-}
-
-func (b *lockedBuffer) String() string {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buffer.String()
-}
 
 func TestCatalogDecodingAndCapabilityLookup(t *testing.T) {
 	var envelope modelEnvelope
@@ -161,13 +143,15 @@ func TestCatalogCorruptCacheIsMissAndIsRewritten(t *testing.T) {
 	if catalog.ContextWindow("fresh/model") != 4096 || requests.Load() != 1 {
 		t.Fatalf("catalog = %#v, requests = %d", catalog, requests.Load())
 	}
-	reloaded, err := readCatalogCache(path)
+	reloaded, _, err := readCatalogCache(path)
 	if err != nil || reloaded.ContextWindow("fresh/model") != 4096 {
 		t.Fatalf("rewritten cache = %#v, %v", reloaded, err)
 	}
 }
 
-func TestCatalogCacheHitReturnsImmediatelyAndRefreshesExactlyOnce(t *testing.T) {
+// TestCatalogServesAFreshCacheWithoutARequest covers the ordinary activation:
+// a cache written recently answers immediately and the provider is not asked.
+func TestCatalogServesAFreshCacheWithoutARequest(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "models.json")
 	if err := writeCatalogCache(path, []Model{{
 		ID:            "cached/model",
@@ -175,15 +159,9 @@ func TestCatalogCacheHitReturnsImmediatelyAndRefreshesExactlyOnce(t *testing.T) 
 	}}); err != nil {
 		t.Fatal(err)
 	}
-
-	refreshStarted := make(chan struct{})
-	releaseRefresh := make(chan struct{})
 	var requests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		if requests.Add(1) == 1 {
-			close(refreshStarted)
-		}
-		<-releaseRefresh
+		requests.Add(1)
 		_, _ = io.WriteString(w, `{"data":[{"id":"fresh/model","context_length":2048}]}`)
 	}))
 	t.Cleanup(server.Close)
@@ -197,29 +175,124 @@ func TestCatalogCacheHitReturnsImmediatelyAndRefreshesExactlyOnce(t *testing.T) 
 	if catalog.ContextWindow("cached/model") != 1024 {
 		t.Fatalf("cached catalog = %#v", catalog)
 	}
-	select {
-	case <-refreshStarted:
-	case <-time.After(2 * time.Second):
-		t.Fatal("background refresh did not start")
-	}
 	if second, err := client.Catalog(t.Context()); err != nil || second != catalog {
 		t.Fatalf("second catalog = %#v, %v", second, err)
 	}
-	close(releaseRefresh)
-
-	deadline := time.Now().Add(2 * time.Second)
-	for {
-		refreshed, readErr := readCatalogCache(path)
-		if readErr == nil && refreshed.ContextWindow("fresh/model") == 2048 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("cache was not refreshed: %#v, %v", refreshed, readErr)
-		}
-		time.Sleep(10 * time.Millisecond)
+	if requests.Load() != 0 {
+		t.Fatalf("requests = %d, want a fresh cache to need none", requests.Load())
 	}
-	if requests.Load() != 1 {
-		t.Fatalf("refresh requests = %d", requests.Load())
+}
+
+// TestCatalogRefetchesAStaleCache covers the other side of the freshness rule,
+// including the fallback that keeps an unreachable provider from leaving a
+// session with no catalog at all.
+func TestCatalogRefetchesAStaleCache(t *testing.T) {
+	stale := func(t *testing.T) string {
+		t.Helper()
+		path := filepath.Join(t.TempDir(), "models.json")
+		if err := writeCatalogCache(path, []Model{{ID: "cached/model", ContextLength: 1024}}); err != nil {
+			t.Fatal(err)
+		}
+		old := time.Now().Add(-catalogMaxAge - time.Minute)
+		if err := os.Chtimes(path, old, old); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+
+	t.Run("refetches and rewrites", func(t *testing.T) {
+		path := stale(t)
+		var requests atomic.Int32
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			requests.Add(1)
+			_, _ = io.WriteString(w, `{"data":[{"id":"fresh/model","context_length":2048}]}`)
+		}))
+		t.Cleanup(server.Close)
+
+		client := testClient(server.URL)
+		client.cachePathOverride = path
+		catalog, err := client.Catalog(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if catalog.ContextWindow("fresh/model") != 2048 || requests.Load() != 1 {
+			t.Fatalf("catalog = %#v after %d requests", catalog, requests.Load())
+		}
+		rewritten, age, err := readCatalogCache(path)
+		if err != nil || rewritten.ContextWindow("fresh/model") != 2048 || age > time.Minute {
+			t.Fatalf("rewritten cache = %#v, age %v, %v", rewritten, age, err)
+		}
+	})
+
+	t.Run("falls back to the stale entries", func(t *testing.T) {
+		path := stale(t)
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			http.Error(w, "bad request", http.StatusBadRequest)
+		}))
+		t.Cleanup(server.Close)
+
+		client := testClient(server.URL)
+		client.cachePathOverride = path
+		catalog, err := client.Catalog(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if catalog.ContextWindow("cached/model") != 1024 {
+			t.Fatalf("stale fallback = %#v", catalog)
+		}
+	})
+}
+
+// TestCatalogRejectsACacheWithNoModels covers a cache that parses but answers
+// nothing. Accepting it would memoize an empty catalog for the process.
+func TestCatalogRejectsACacheWithNoModels(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "models.json")
+	if err := os.WriteFile(path, []byte(`{"data":[]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := readCatalogCache(path); err == nil ||
+		!strings.Contains(err.Error(), "no models") {
+		t.Fatalf("empty cache error = %v", err)
+	}
+
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		_, _ = io.WriteString(w, `{"data":[{"id":"fresh/model","context_length":2048}]}`)
+	}))
+	t.Cleanup(server.Close)
+
+	client := testClient(server.URL)
+	client.cachePathOverride = path
+	catalog, err := client.Catalog(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if catalog.ContextWindow("fresh/model") != 2048 || requests.Load() != 1 {
+		t.Fatalf("catalog = %#v after %d requests", catalog, requests.Load())
+	}
+}
+
+// TestCatalogRefusesAnOversizedResponse keeps a hostile or broken endpoint from
+// being read into memory without a bound.
+func TestCatalogRefusesAnOversizedResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `{"data":[{"id":"huge/model","name":"`)
+		filler := strings.Repeat("x", 1<<20)
+		for written := 0; written <= maxCatalogBytes; written += len(filler) {
+			if _, err := io.WriteString(w, filler); err != nil {
+				return
+			}
+		}
+		_, _ = io.WriteString(w, `"}]}`)
+	}))
+	t.Cleanup(server.Close)
+
+	client := testClient(server.URL)
+	client.cachePathOverride = filepath.Join(t.TempDir(), "models.json")
+	if _, err := client.Catalog(t.Context()); err == nil ||
+		!strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("oversized response error = %v", err)
 	}
 }
 
@@ -350,43 +423,6 @@ func TestClientModelsAreSortedClones(t *testing.T) {
 	}
 }
 
-func TestCatalogWarmCacheSurvivesRefreshFailureAndLogs(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "models.json")
-	if err := writeCatalogCache(path, []Model{{ID: "cached/model"}}); err != nil {
-		t.Fatal(err)
-	}
-	var logs lockedBuffer
-	requested := make(chan struct{})
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		close(requested)
-		http.Error(w, "bad request", http.StatusBadRequest)
-	}))
-	t.Cleanup(server.Close)
-
-	client := testClient(server.URL)
-	client.Logger = slog.New(slog.NewTextHandler(&logs, nil))
-	client.cachePathOverride = path
-	catalog, err := client.Catalog(t.Context())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := catalog.Model("cached/model"); !ok {
-		t.Fatal("warm cache was not served")
-	}
-	select {
-	case <-requested:
-	case <-time.After(2 * time.Second):
-		t.Fatal("refresh was not requested")
-	}
-	deadline := time.Now().Add(2 * time.Second)
-	for !strings.Contains(logs.String(), "failed to refresh OpenRouter catalog cache") {
-		if time.Now().After(deadline) {
-			t.Fatalf("refresh failure was not logged:\n%s", logs.String())
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-}
-
 func TestConcurrentCatalogWritersLeaveReadableCache(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "nested", "models.json")
 	var group sync.WaitGroup
@@ -402,7 +438,7 @@ func TestConcurrentCatalogWritersLeaveReadableCache(t *testing.T) {
 	}
 	group.Wait()
 
-	catalog, err := readCatalogCache(path)
+	catalog, _, err := readCatalogCache(path)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -4,9 +4,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sync/atomic"
+	"time"
 )
 
 const (
@@ -36,16 +38,32 @@ func catalogCachePath(xdgCacheHome, home string) string {
 	return filepath.Join(base, cacheDirectory, cacheFile)
 }
 
-func readCatalogCache(path string) (*Catalog, error) {
-	raw, err := os.ReadFile(path)
+// readCatalogCache returns the cached catalog and how long ago it was written.
+// A cache holding no models is refused: it parses, so nothing else would notice
+// it, and memoizing it would answer every model lookup for the process with an
+// empty catalog.
+func readCatalogCache(path string) (*Catalog, time.Duration, error) {
+	file, err := os.Open(path)
 	if err != nil {
-		return nil, fmt.Errorf("read catalog cache: %w", err)
+		return nil, 0, fmt.Errorf("read catalog cache: %w", err)
+	}
+	info, statErr := file.Stat()
+	raw, readErr := io.ReadAll(io.LimitReader(file, maxCatalogBytes+1))
+	closeErr := file.Close()
+	if err := errors.Join(statErr, readErr, closeErr); err != nil {
+		return nil, 0, fmt.Errorf("read catalog cache: %w", err)
+	}
+	if len(raw) > maxCatalogBytes {
+		return nil, 0, fmt.Errorf("catalog cache exceeds %d bytes", maxCatalogBytes)
 	}
 	var envelope modelEnvelope
 	if err := json.Unmarshal(raw, &envelope); err != nil {
-		return nil, fmt.Errorf("decode catalog cache: %w", err)
+		return nil, 0, fmt.Errorf("decode catalog cache: %w", err)
 	}
-	return newCatalog(envelope.Data), nil
+	if len(envelope.Data) == 0 {
+		return nil, 0, errors.New("catalog cache contains no models")
+	}
+	return newCatalog(envelope.Data), time.Since(info.ModTime()), nil
 }
 
 func writeCatalogCache(path string, models []Model) error {

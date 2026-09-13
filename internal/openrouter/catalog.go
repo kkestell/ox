@@ -12,7 +12,16 @@ import (
 	"time"
 )
 
-const modelsPath = "/models"
+const (
+	modelsPath = "/models"
+	// catalogMaxAge is how long a cached catalog is served before Ox refetches
+	// it. Model entries change over days, so a day old is still worth trusting;
+	// past that a session should see current context windows and parameters.
+	catalogMaxAge = 24 * time.Hour
+	// maxCatalogBytes bounds both the cached file and the models response. The
+	// published catalog is a few megabytes.
+	maxCatalogBytes = 16 << 20
+)
 
 var ErrUnknownModel = errors.New("model is not in the OpenRouter catalog")
 
@@ -200,22 +209,41 @@ func cloneModel(model Model) Model {
 	return model
 }
 
+// loadCatalog serves a fresh cache and otherwise fetches the catalog on the
+// spot, so the load a caller waits for is the one that produces its answer.
+// A stale cache is kept as a fallback: an outdated catalog beats no catalog
+// when the provider is unreachable.
 func (c *Client) loadCatalog(ctx context.Context) (*Catalog, error) {
 	path := c.resolvedCachePath()
-	if path != "" {
-		cached, err := readCatalogCache(path)
-		if err == nil {
-			c.logger().Info("OpenRouter catalog cache hit", "path", path, "models", len(cached.models))
-			go c.refreshCatalog(path)
-			return cached, nil
-		}
-		c.logger().Info("OpenRouter catalog cache miss", "path", path, "reason", err)
-	} else {
+	var stale *Catalog
+	switch {
+	case path == "":
 		c.logger().Info("OpenRouter catalog cache unavailable")
+	default:
+		cached, age, err := readCatalogCache(path)
+		switch {
+		case err != nil:
+			c.logger().Info("OpenRouter catalog cache miss", "path", path, "reason", err)
+		case age <= catalogMaxAge:
+			c.logger().Info(
+				"OpenRouter catalog cache hit",
+				"path", path, "models", len(cached.models), "age", age,
+			)
+			return cached, nil
+		default:
+			c.logger().Info("OpenRouter catalog cache is stale", "path", path, "age", age)
+			stale = cached
+		}
 	}
 
 	catalog, err := c.fetchCatalog(ctx)
 	if err != nil {
+		if stale != nil {
+			c.logger().Warn(
+				"serving stale OpenRouter catalog", "path", path, "error", err,
+			)
+			return stale, nil
+		}
 		return nil, err
 	}
 	if path != "" {
@@ -226,23 +254,6 @@ func (c *Client) loadCatalog(ctx context.Context) (*Catalog, error) {
 		}
 	}
 	return catalog, nil
-}
-
-func (c *Client) refreshCatalog(path string) {
-	c.logger().Info("refreshing OpenRouter catalog cache", "path", path)
-	ctx, cancel := context.WithTimeout(context.Background(), c.retryBudget()+maxBackoff)
-	defer cancel()
-
-	catalog, err := c.fetchCatalog(ctx)
-	if err != nil {
-		c.logger().Warn("failed to refresh OpenRouter catalog cache", "path", path, "error", err)
-		return
-	}
-	if err := writeCatalogCache(path, catalog.models); err != nil {
-		c.logger().Error("failed to write refreshed OpenRouter catalog cache", "path", path, "error", err)
-		return
-	}
-	c.logger().Info("refreshed OpenRouter catalog cache", "path", path, "models", len(catalog.models))
 }
 
 func (c *Client) fetchCatalog(ctx context.Context) (*Catalog, error) {
@@ -304,11 +315,15 @@ func (c *Client) fetchCatalogAttempt(
 	}
 
 	retryAfter := response.Header.Get("Retry-After")
-	raw, readErr := io.ReadAll(response.Body)
+	raw, readErr := io.ReadAll(io.LimitReader(response.Body, maxCatalogBytes+1))
 	closeErr := response.Body.Close()
 	if readErr != nil {
 		return nil, 0, retryAfter,
 			errors.Join(fmt.Errorf("read OpenRouter models response: %w", readErr), closeErr)
+	}
+	if len(raw) > maxCatalogBytes {
+		return nil, response.StatusCode, retryAfter,
+			fmt.Errorf("OpenRouter models response exceeds %d bytes", maxCatalogBytes)
 	}
 	if closeErr != nil {
 		return nil, 0, retryAfter, fmt.Errorf("close OpenRouter models response: %w", closeErr)
