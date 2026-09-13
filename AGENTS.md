@@ -48,11 +48,14 @@ output. It is ACP-first and works with ACP clients. The durable design lives in
 
 ## Commands
 
-- Run every required check: `make check`
+- Run the fast checks: `make check`
+- Run every check, including the process-spawning suites: `make check-all`
 - Format Go and Markdown: `make format`
 - Check Go formatting, vet, and static analysis: `make check-go`
 - Check documentation formatting: `make check-docs`
-- Run the race-enabled test suite without the test cache: `make test`
+- Run the unit test suite: `make test`
+- Run the unit test suite under the race detector: `make test-race`
+- Run every test under the race detector without the test cache: `make test-all`
 - Run the fake-provider evaluation smoke test: `make test-eval`
 - Run an explicitly requested live evaluation: `make eval-live TASK=<path>`
 - Install the binary: `make install`
@@ -236,11 +239,12 @@ provider check. Such checks use `deepseek/deepseek-v4-flash-0731` and no other
 model. Never expose the credential in output or commit it.
 
 The end-to-end harness builds outside Go's test cache, so always run tests with
-`-count=1`. Before considering a behavior change complete, run:
+`-count=1`.
 
-```sh
-make check
-```
+`make check` pairs the documentation and Go checks with the unit test suite, and
+is the check to run while iterating. `make check-all` adds the race detector and
+the `internal/e2e` and `integration` suites, which start a real `ox` process per
+test. Run it before considering a behavior change complete.
 
 Choose validation from the changes made for the current task. Pre-existing or
 unrelated working-tree changes do not widen that scope, including when the user

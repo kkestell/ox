@@ -1,6 +1,10 @@
-.PHONY: check check-docs check-go eval-live format format-docs format-go install test test-eval
+.PHONY: check check-all check-docs check-go eval-live format format-docs format-go install test test-all test-eval test-race
+
+unit_packages = $$(go list ./... | grep -vE '/(internal/e2e|integration)$$')
 
 check: check-docs check-go test
+
+check-all: check-docs check-go test-all
 
 format: format-docs format-go
 
@@ -22,6 +26,12 @@ check-docs:
 	dprint check
 
 test:
+	go test -count=1 $(unit_packages)
+
+test-race:
+	go test -race -count=1 $(unit_packages)
+
+test-all:
 	go test -race -count=1 ./...
 
 test-eval:
