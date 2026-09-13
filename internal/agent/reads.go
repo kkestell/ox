@@ -28,32 +28,8 @@ func (s *session) primaryFileReads() FileReads {
 	return &scopedFileReads{session: s, local: &s.reads}
 }
 
-func (s *session) childFileReads() (FileReads, func()) {
-	local := &fileReads{}
-	s.readScopesMu.Lock()
-	if s.readScopes == nil {
-		s.readScopes = make(map[*fileReads]struct{})
-	}
-	s.readScopes[local] = struct{}{}
-	s.readScopesMu.Unlock()
-	return &scopedFileReads{session: s, local: local}, func() {
-		s.readScopesMu.Lock()
-		delete(s.readScopes, local)
-		s.readScopesMu.Unlock()
-	}
-}
-
 func (s *session) clearFileReads() {
-	s.readScopesMu.Lock()
-	scopes := make([]*fileReads, 0, len(s.readScopes)+1)
-	scopes = append(scopes, &s.reads)
-	for scope := range s.readScopes {
-		scopes = append(scopes, scope)
-	}
-	s.readScopesMu.Unlock()
-	for _, scope := range scopes {
-		scope.Clear()
-	}
+	s.reads.Clear()
 }
 
 func (r *fileReads) Record(key, hash string) {

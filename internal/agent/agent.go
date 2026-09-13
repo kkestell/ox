@@ -521,14 +521,11 @@ func permissionCallback(server *jrpc2.Server, turn diagnostictrace.Turn) request
 		ctx context.Context,
 		request acp.RequestPermissionRequest,
 	) (acp.RequestPermissionResponse, error) {
-		parent, _ := request.ToolCall.Meta[acp.MetaParentToolCallID].(string)
-		turn.PermissionRequested(
-			request.ToolCall.ToolCallID, request.ToolCall.Name, parent,
-		)
+		turn.PermissionRequested(request.ToolCall.ToolCallID, request.ToolCall.Name)
 		response, err := server.Callback(ctx, acp.MethodSessionRequestPermission, request)
 		if err != nil {
 			turn.PermissionDecided(
-				request.ToolCall.ToolCallID, request.ToolCall.Name, parent,
+				request.ToolCall.ToolCallID, request.ToolCall.Name,
 				string(decideApproval(acp.RequestPermissionResponse{}, err)),
 			)
 			return acp.RequestPermissionResponse{}, err
@@ -536,13 +533,13 @@ func permissionCallback(server *jrpc2.Server, turn diagnostictrace.Turn) request
 		var result acp.RequestPermissionResponse
 		if err := response.UnmarshalResult(&result); err != nil {
 			turn.PermissionDecided(
-				request.ToolCall.ToolCallID, request.ToolCall.Name, parent,
+				request.ToolCall.ToolCallID, request.ToolCall.Name,
 				string(decisionRefused),
 			)
 			return acp.RequestPermissionResponse{}, err
 		}
 		turn.PermissionDecided(
-			request.ToolCall.ToolCallID, request.ToolCall.Name, parent,
+			request.ToolCall.ToolCallID, request.ToolCall.Name,
 			string(decideApproval(result, nil)),
 		)
 		return result, nil
@@ -1114,14 +1111,12 @@ func (a *Agent) commitPermissionDecision(
 func (a *Agent) startToolExecution(
 	value *session,
 	turnID string,
-	parentCallID string,
 	call openrouter.ToolCall,
 	decision approvalDecision,
 	target string,
 ) error {
 	return a.commit(value, recordToolStarted, toolStartedRecord{
 		TurnID:           turnID,
-		ParentCallID:     parentCallID,
 		Call:             call,
 		ApprovalDecision: decision,
 		Target:           target,
@@ -1131,15 +1126,13 @@ func (a *Agent) startToolExecution(
 func (a *Agent) completeToolExecution(
 	value *session,
 	turnID string,
-	parentCallID string,
 	callID string,
 	result storedToolResult,
 ) error {
 	return a.commit(value, recordToolCompleted, toolCompletedRecord{
-		TurnID:       turnID,
-		ParentCallID: parentCallID,
-		CallID:       callID,
-		Result:       result,
+		TurnID: turnID,
+		CallID: callID,
+		Result: result,
 	})
 }
 
@@ -1169,7 +1162,7 @@ func (a *Agent) closeUnknownExecutions(value *session) error {
 			result.Unknown = false
 		}
 		if err := a.completeToolExecution(
-			value, execution.TurnID, execution.ParentCallID, execution.Call.ID, result,
+			value, execution.TurnID, execution.Call.ID, result,
 		); err != nil {
 			return fmt.Errorf("persist unknown outcome for tool %q: %w", execution.Call.ID, err)
 		}
@@ -1745,10 +1738,6 @@ type session struct {
 	// whose durable half is state.toolCallIDs.
 	callIDsMu sync.Mutex
 	callIDs   map[string]struct{}
-	// readScopesMu guards readScopes, the set of per-turn read ledgers a write
-	// must invalidate.
-	readScopesMu sync.Mutex
-	readScopes   map[*fileReads]struct{}
 }
 
 // snapshot copies the live state. The copy aliases the slices and maps inside

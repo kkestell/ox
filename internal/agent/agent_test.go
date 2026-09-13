@@ -718,7 +718,6 @@ func TestEditToolTargetsAreCanonicalAndConfined(t *testing.T) {
 		instance.primaryTools.tools[instance.primaryTools.byName["write_file"]],
 		calls[0],
 		"",
-		"",
 		targets["write"],
 	)
 	if len(request.ToolCall.Locations) != 1 ||
@@ -1640,7 +1639,7 @@ func dispatchBatch(
 	}
 	results, err := instance.dispatchApprovedBatch(
 		ctx, value, tools, value.primaryFileReads(),
-		calls, nil, nil, ClientFileSystem{}, ClientTerminal{}, events, "",
+		calls, nil, nil, ClientFileSystem{}, ClientTerminal{}, events,
 		make([]toolResult, len(calls)), ready, diagnostictrace.Turn{},
 	)
 	if err != nil {
@@ -1756,7 +1755,7 @@ func TestToolDispatchPersistenceFailureSkipsExecutor(t *testing.T) {
 	_, err = instance.dispatchApprovedBatch(
 		context.Background(), value, instance.primaryTools, value.primaryFileReads(),
 		[]openrouter.ToolCall{call}, nil, nil, ClientFileSystem{}, ClientTerminal{},
-		make(chan event, 8), "", []toolResult{{}}, []bool{true}, diagnostictrace.Turn{},
+		make(chan event, 8), []toolResult{{}}, []bool{true}, diagnostictrace.Turn{},
 	)
 	if err == nil || !strings.Contains(err.Error(), "persist tool dispatch") {
 		t.Fatalf("dispatch error = %v", err)
@@ -1773,7 +1772,7 @@ func TestTodoPersistenceFailureEmitsNoPlanOrSuccessfulResult(t *testing.T) {
 		Tools: []Tool{
 			{
 				Name: "todo", InputSchema: json.RawMessage(`{"type":"object"}`),
-				Approval: ApprovalNone, ParentOnly: true, PlanMode: true,
+				Approval: ApprovalNone, PlanMode: true,
 				Execute: func(_ context.Context, invocation Invocation) (string, error) {
 					value.log.close()
 					if err := invocation.ReplaceTodo([]acp.PlanEntry{{
@@ -1811,7 +1810,7 @@ func TestTodoPersistenceFailureEmitsNoPlanOrSuccessfulResult(t *testing.T) {
 	_, err = instance.dispatchApprovedBatch(
 		context.Background(), value, instance.primaryTools, value.primaryFileReads(),
 		[]openrouter.ToolCall{call}, nil, nil, ClientFileSystem{}, ClientTerminal{}, events,
-		"", []toolResult{{}}, []bool{true}, diagnostictrace.Turn{},
+		[]toolResult{{}}, []bool{true}, diagnostictrace.Turn{},
 	)
 	if err == nil || !value.poisoned || value.state.todo != nil {
 		t.Fatalf("dispatch = error %v, poisoned %v, todo %#v", err, value.poisoned, value.state.todo)
@@ -1885,7 +1884,7 @@ func TestToolCompletionPersistenceFailureStopsLaterSibling(t *testing.T) {
 	}
 	_, err = instance.dispatchApprovedBatch(
 		context.Background(), value, instance.primaryTools, value.primaryFileReads(),
-		calls, nil, nil, ClientFileSystem{}, ClientTerminal{}, make(chan event, 16), "",
+		calls, nil, nil, ClientFileSystem{}, ClientTerminal{}, make(chan event, 16),
 		make([]toolResult, len(calls)), []bool{true, true, true}, diagnostictrace.Turn{},
 	)
 	if err == nil || !strings.Contains(err.Error(), "persist tool completion") {
@@ -1908,7 +1907,7 @@ func TestToolCompletionPersistenceFailureStopsLaterSibling(t *testing.T) {
 	if _, err := instance.dispatchApprovedBatch(
 		context.Background(), other, instance.primaryTools, other.primaryFileReads(),
 		[]openrouter.ToolCall{otherCall}, nil, nil, ClientFileSystem{}, ClientTerminal{},
-		make(chan event, 8), "", []toolResult{{}}, []bool{true}, diagnostictrace.Turn{},
+		make(chan event, 8), []toolResult{{}}, []bool{true}, diagnostictrace.Turn{},
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -1945,7 +1944,7 @@ func TestInterruptedStartedToolBecomesUnknownWithoutExecution(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := instance.startToolExecution(value, "turn", "", call, "", ""); err != nil {
+	if err := instance.startToolExecution(value, "turn", call, "", ""); err != nil {
 		t.Fatal(err)
 	}
 	if err := instance.interruptOpenTurn(value); err != nil {
@@ -1983,7 +1982,7 @@ func TestInterruptedQuestionIsRecordedWithoutReissue(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := instance.startToolExecution(value, "turn", "", call, "", ""); err != nil {
+	if err := instance.startToolExecution(value, "turn", call, "", ""); err != nil {
 		t.Fatal(err)
 	}
 	if err := instance.interruptOpenTurn(value); err != nil {
@@ -2045,11 +2044,11 @@ func TestRecoveredPermissionDoesNotRedispatchStartedSibling(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := instance.startToolExecution(value, "turn", "", calls[0], "", ""); err != nil {
+	if err := instance.startToolExecution(value, "turn", calls[0], "", ""); err != nil {
 		t.Fatal(err)
 	}
 	secondTool := instance.primaryTools.tools[instance.primaryTools.byName["second"]]
-	request := instance.permissionRequest(value.id, value.state.cwd, secondTool, calls[1], "", "", "")
+	request := instance.permissionRequest(value.id, value.state.cwd, secondTool, calls[1], "", "")
 	if err := instance.commit(value, recordPermissionOpen, permissionRequestedRecord{
 		TurnID:  "turn",
 		Pending: pendingPermissionRecord{CallID: calls[1].ID, Generation: 1, Request: request},
@@ -2109,12 +2108,12 @@ func TestInterruptedBatchPreservesCompletedAndClassifiesRemainingCalls(t *testin
 		t.Fatal(err)
 	}
 	for _, call := range calls[:2] {
-		if err := instance.startToolExecution(value, "turn", "", call, "", ""); err != nil {
+		if err := instance.startToolExecution(value, "turn", call, "", ""); err != nil {
 			t.Fatal(err)
 		}
 	}
 	if err := instance.completeToolExecution(
-		value, "turn", "", calls[0].ID,
+		value, "turn", calls[0].ID,
 		storedToolResult{CallID: calls[0].ID, Content: "durable result"},
 	); err != nil {
 		t.Fatal(err)

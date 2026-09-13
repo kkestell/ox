@@ -17,12 +17,12 @@ func TestDisabledTraceDoesNothing(t *testing.T) {
 		t.Fatal("a turn without a sink reported itself as recording")
 	}
 	turn.Start()
-	turn.Provider(ProviderPrimary, 1, 12, "").Complete("completed", "stop", Usage{}, 4)
-	turn.ToolPending("call", "read", "")
-	turn.ToolStarted("call", "read", "")
-	turn.ToolCompleted("call", "read", "", "completed", 2)
-	turn.PermissionRequested("call", "read", "")
-	turn.PermissionDecided("call", "read", "", "allowed_once")
+	turn.Provider(ProviderPrimary, 1, 12).Complete("completed", "stop", Usage{}, 4)
+	turn.ToolPending("call", "read")
+	turn.ToolStarted("call", "read")
+	turn.ToolCompleted("call", "read", "completed", 2)
+	turn.PermissionRequested("call", "read")
+	turn.PermissionDecided("call", "read", "allowed_once")
 	turn.Complete("completed", "end_turn")
 	if err := disabled.Close(); err != nil {
 		t.Fatal(err)
@@ -37,11 +37,11 @@ func TestTraceWritesCompleteVersionedCorrelatedLines(t *testing.T) {
 		t.Fatal("a turn with a sink reported itself as not recording")
 	}
 	turn.Start()
-	request := turn.Provider(ProviderPrimary, 1, 12, "parent")
+	request := turn.Provider(ProviderPrimary, 1, 12)
 	request.Complete("completed", "stop", Usage{1, 2, 3}, 4)
-	turn.ToolPending("call", "read", "parent")
-	turn.ToolStarted("call", "read", "parent")
-	turn.ToolCompleted("call", "read", "parent", "completed", 5)
+	turn.ToolPending("call", "read")
+	turn.ToolStarted("call", "read")
+	turn.ToolCompleted("call", "read", "completed", 5)
 	turn.Complete("completed", "end_turn")
 
 	for number, line := range bytes.Split(bytes.TrimSpace(writer.Bytes()), []byte{'\n'}) {
@@ -67,7 +67,7 @@ func TestConcurrentTraceWritesDoNotInterleave(t *testing.T) {
 		wait.Add(1)
 		go func() {
 			defer wait.Done()
-			turn.ToolPending("call", "tool", "")
+			turn.ToolPending("call", "tool")
 		}()
 	}
 	wait.Wait()

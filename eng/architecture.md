@@ -78,8 +78,9 @@ The implemented package layout assigns one owner to each boundary:
 - `internal/trace` owns the versioned, concurrency-safe JSONL diagnostic sink
   and its session, turn, provider, tool, and permission correlation scopes. It
   accepts only allowlisted metadata and never receives event content.
-- `internal/tools` owns the model-facing task, file, search, edit, and shell
-  tool contracts and their implementations.
+- `internal/tools` owns the model-facing file, search, edit, shell, todo,
+  question, skill, memory, and web-fetch tool contracts and their
+  implementations.
 - `internal/shellrules` owns the command grammar used for reusable shell
   permissions.
 - `internal/workspace` owns canonical session roots, confined file access,
@@ -87,7 +88,7 @@ The implemented package layout assigns one owner to each boundary:
 - `internal/e2e` owns the black-box process harness and protocol-level tests. It
   is test-only and contributes nothing to the shipped binary.
 - `integration` owns runtime integration tests across agent, provider, tools,
-  permissions, subagents, and durable state. It is also test-only.
+  permissions, and durable state. It is also test-only.
 - `evals` owns the external ACP evaluation client, versioned task fixtures,
   objective verifiers, run budgets, and evaluation artifacts. Production
   packages do not depend on it.
@@ -201,9 +202,8 @@ Turn execution stays within a JSON-RPC request lifecycle: ordinary turns run
 under `session/prompt`, and recovered turns run under `session/load`. The model
 and independent tools may run concurrently where their contracts allow it, while
 session mutation and conflicting tool calls remain serialized. Cancellation
-reaches provider streams, permission callbacks, subagents, and whole shell
-process groups. The resulting terminal state is persisted before the owning
-request returns.
+reaches provider streams, permission callbacks, and whole shell process groups.
+The resulting terminal state is persisted before the owning request returns.
 
 Each claimed live turn has one diagnostic scope when tracing is enabled.
 Recovered work uses the original durable turn identifier, while replay of
@@ -363,9 +363,9 @@ root.
 Focused unit tests exercise ACP validation, session folding and storage,
 settings, credentials, tool scheduling, workspace confinement, shell process
 handling, and provider behavior at their package boundaries. Runtime integration
-tests cover tools, permissions, subagents, replay, and recovery. Protocol-level
-ACP behavior is proved through `internal/e2e`, which builds the real executable
-and drives its process, stdio, environment, working directory, and provider
+tests cover tools, permissions, replay, and recovery. Protocol-level ACP
+behavior is proved through `internal/e2e`, which builds the real executable and
+drives its process, stdio, environment, working directory, and provider
 connection.
 
 The mock provider is the normal end-to-end boundary. A real OpenRouter check is

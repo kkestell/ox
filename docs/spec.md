@@ -235,9 +235,9 @@ same boundary within a long turn.
 Ox loads only the session root's `AGENTS.md` automatically. A missing file adds
 nothing; an unreadable, non-regular, invalid UTF-8, symlinked, or larger than 64
 KiB file fails activation with its path. Parent and nested instruction files are
-not automatically discovered. Root instructions apply to parent and child agents
-and cannot expand permissions or override the user's current request. Their
-bytes are fixed until reactivation and retained for reproducible history.
+not automatically discovered. Root instructions cannot expand permissions or
+override the user's current request. Their bytes are fixed until reactivation
+and retained for reproducible history.
 
 Skills are discovered in `<workspace>/.agents/skills/<name>/SKILL.md` only.
 User-wide skill roots are intentionally excluded to preserve the workspace
@@ -268,8 +268,8 @@ content, a priority (`high`, `medium`, or `low`, default `medium`), and status
 (`pending`, `in_progress`, or `completed`). At most one entry is in progress; an
 empty list clears it. Invalid input leaves the old list unchanged. Each accepted
 change is persisted before one ACP `plan` update, and the current list is
-retained across compaction, replay, and restart. Child agents cannot replace the
-parent's plan. A todo list describes progress; it does not schedule work.
+retained across compaction, replay, and restart. A todo list describes progress;
+it does not schedule work.
 
 A model-facing question tool uses ACP form elicitation only when the client
 advertises form support. It asks one question per call, accepting a string or a

@@ -164,38 +164,32 @@ func TestDiagnosticTraceFileLifecycleAndArguments(t *testing.T) {
 	})
 }
 
-func TestDiagnosticTraceClassifiesCompactionSubagentAndCancellation(t *testing.T) {
+// TestDiagnosticTraceClassifiesCompactionAndCancellation checks the two
+// provider outcomes the trace has to distinguish, and that none of the content
+// that produced them reaches the trace file.
+func TestDiagnosticTraceClassifiesCompactionAndCancellation(t *testing.T) {
 	const (
-		summarySentinel  = "summary-trace-sentinel"
-		subagentSentinel = "subagent-trace-sentinel"
-		cancelSentinel   = "cancel-trace-sentinel"
+		summarySentinel = "summary-trace-sentinel"
+		cancelSentinel  = "cancel-trace-sentinel"
 	)
 	oldAnswer := strings.Repeat("old trace detail ", 240)
 	recentAnswer := strings.Repeat("recent trace answer ", 100)
-	taskArguments := `{"description":"subagent-trace-sentinel"}`
 	held := (*modelResponse)(nil)
 	model := startModel(t,
 		sse(evText(oldAnswer), evFinishReason("stop"), evUsage(100, 600, 700)),
 		sse(evText(recentAnswer), evFinishReason("stop"), evUsage(800, 5, 805)),
 		sse(evText(summarySentinel), evFinishReason("stop"), evUsage(650, 20, 670)),
-		sse(
-			evToolCall(0, "call-task-add", "function", "task_add", taskArguments),
-			evFinishReason("tool_calls"), evUsage(100, 5, 105),
-		),
+		sse(evText("third trace answer"), evFinishReason("stop"), evUsage(100, 5, 105)),
 	)
-	model.queueDynamic(queuedTaskRunResponse("call-task-run"))
-	model.queue(sse(evText("subagent final"), evFinishReason("stop"), evUsage(40, 4, 44)))
-	model.queue(sse(evText("queue trace summary"), evFinishReason("stop"), evUsage(90, 3, 93)))
-	model.queue(sse(evText("primary final"), evFinishReason("stop"), evUsage(90, 3, 93)))
 	held = model.holdFor("cancel this turn", frames(evReasoning(cancelSentinel)))
 	child := start(t,
 		withModel(model),
-		withModelContextWindow(model, 14800),
+		withModelContextWindow(model, 7400),
 		withArguments("--trace", "trace.jsonl"),
 	)
 	initialize(t, child)
 	session := newSession(t, child, child.cwd)
-	for _, text := range []string{"first trace prompt", "second trace prompt", "delegate trace prompt"} {
+	for _, text := range []string{"first trace prompt", "second trace prompt", "third trace prompt"} {
 		prompt(t, child, session, text)
 		_ = updates(t, child, session)
 	}
@@ -218,24 +212,19 @@ func TestDiagnosticTraceClassifiesCompactionSubagentAndCancellation(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, sentinel := range []string{summarySentinel, subagentSentinel, cancelSentinel, taskArguments} {
+	for _, sentinel := range []string{summarySentinel, cancelSentinel} {
 		if strings.Contains(string(data), sentinel) {
 			t.Errorf("trace contains private sentinel %q", sentinel)
 		}
 	}
 
 	records := readTrace(t, path)
-	var compaction, subagent, cancelledProvider, cancelledTurn bool
+	var compaction, cancelledProvider, cancelledTurn bool
 	for _, record := range records {
 		switch record["type"] {
 		case "provider_request_completed":
-			switch record["provider_kind"] {
-			case "compaction":
+			if record["provider_kind"] == "compaction" {
 				compaction = true
-			case "subagent":
-				if record["parent_tool_call_id"] == "call-task-run" {
-					subagent = true
-				}
 			}
 			if record["outcome"] == "cancelled" {
 				cancelledProvider = true
@@ -247,10 +236,10 @@ func TestDiagnosticTraceClassifiesCompactionSubagentAndCancellation(t *testing.T
 			}
 		}
 	}
-	if !compaction || !subagent || !cancelledProvider || !cancelledTurn {
+	if !compaction || !cancelledProvider || !cancelledTurn {
 		t.Fatalf(
-			"trace classifications: compaction=%t subagent=%t provider cancellation=%t turn cancellation=%t",
-			compaction, subagent, cancelledProvider, cancelledTurn,
+			"trace classifications: compaction=%t provider cancellation=%t turn cancellation=%t",
+			compaction, cancelledProvider, cancelledTurn,
 		)
 	}
 }

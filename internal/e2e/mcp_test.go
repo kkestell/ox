@@ -229,7 +229,7 @@ func requestHasTool(request modelRequest, name string) bool {
 	return false
 }
 
-func TestMCPChildDispatchThroughShippedBinary(t *testing.T) {
+func TestMCPDispatchThroughShippedBinary(t *testing.T) {
 	const toolName = "mcp__fixture__lookup"
 	var calls atomic.Int32
 	server := sdk.NewServer(&sdk.Implementation{Name: "fixture", Version: "1"}, nil)
@@ -243,29 +243,20 @@ func TestMCPChildDispatchThroughShippedBinary(t *testing.T) {
 	))
 	defer httpServer.Close()
 	model := startModel(t,
-		toolResponse("call-task-add", "task_add", `{"description":"use the MCP lookup tool"}`),
-	)
-	model.queueDynamic(queuedTaskRunResponse("call-task-run"))
-	model.queue(
-		toolResponse("call-child-mcp", toolName, `{}`),
-	)
-	model.queue(
-		sse(evText("child done"), evFinishReason("stop")),
-	)
-	model.queue(
-		sse(evText("parent done"), evFinishReason("stop")),
+		toolResponse("call-mcp", toolName, `{}`),
+		sse(evText("done"), evFinishReason("stop")),
 	)
 	child := start(t, withModel(model))
 	initialize(t, child)
 	session := newMCPSession(t, child, mcpHTTPServer("fixture", httpServer.URL, ""))
-	turn := child.begin("session/prompt", acp.PromptRequest{SessionID: session, Prompt: textPrompt("delegate MCP")})
+	turn := child.begin("session/prompt", acp.PromptRequest{SessionID: session, Prompt: textPrompt("use MCP")})
 	permission := child.serverRequest()
 	var requested acp.RequestPermissionRequest
 	if err := json.Unmarshal(permission.Params, &requested); err != nil {
 		t.Fatal(err)
 	}
 	if permission.Method != acp.MethodSessionRequestPermission || requested.ToolCall.ToolCallID == "" || requested.ToolCall.Name != toolName {
-		t.Fatalf("child MCP permission = %#v", requested.ToolCall)
+		t.Fatalf("MCP permission = %#v", requested.ToolCall)
 	}
 	child.respond(permission, acp.RequestPermissionResponse{Outcome: acp.RequestPermissionOutcome{
 		Outcome: "selected", OptionID: "allow_once",
@@ -278,9 +269,9 @@ func TestMCPChildDispatchThroughShippedBinary(t *testing.T) {
 		t.Fatalf("MCP calls = %d", calls.Load())
 	}
 	requests := model.requests()
-	if len(requests) != 5 || !requestHasTool(requests[0], toolName) || !requestHasTool(requests[2], toolName) ||
-		!requestContainsText(requests[3], "child result") {
-		t.Fatalf("parent/child MCP requests = %#v", requests)
+	if len(requests) != 2 || !requestHasTool(requests[0], toolName) ||
+		!requestContainsText(requests[1], "child result") {
+		t.Fatalf("MCP requests = %#v", requests)
 	}
 }
 

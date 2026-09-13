@@ -19,9 +19,8 @@ const (
 type notifyFunc func(acp.SessionNotification) error
 
 type outputState struct {
-	tail   []byte
-	dirty  bool
-	parent string
+	tail  []byte
+	dirty bool
 }
 
 type eventAdapter struct {
@@ -70,8 +69,7 @@ func (a *eventAdapter) handle(current event) error {
 			MessageID:     a.thoughtMessageID,
 		})
 	case eventToolPending:
-		a.outputs[current.call.ID] = &outputState{parent: current.parent}
-		meta := toolEventMetadata(current.parent)
+		a.outputs[current.call.ID] = &outputState{}
 		return a.send(acp.ToolCall{
 			SessionUpdate: "tool_call",
 			ToolCallID:    current.call.ID,
@@ -81,19 +79,17 @@ func (a *eventAdapter) handle(current event) error {
 			Status:        acp.ToolCallStatusPending,
 			Locations:     toolLocations(a.root, current.target),
 			RawInput:      json.RawMessage(current.call.Function.Arguments),
-			Meta:          meta,
 		})
 	case eventToolStarted:
 		return a.send(acp.ToolCallUpdate{
 			SessionUpdate: "tool_call_update",
 			ToolCallID:    current.call.ID,
 			Status:        acp.ToolCallStatusInProgress,
-			Meta:          toolEventMetadata(current.parent),
 		})
 	case eventToolOutput:
 		state := a.outputs[current.call.ID]
 		if state == nil {
-			state = &outputState{parent: current.parent}
+			state = &outputState{}
 			a.outputs[current.call.ID] = state
 		}
 		if current.text != "" {
@@ -104,7 +100,7 @@ func (a *eventAdapter) handle(current event) error {
 		if current.text != "" {
 			state := a.outputs[current.call.ID]
 			if state == nil {
-				state = &outputState{parent: current.parent}
+				state = &outputState{}
 				a.outputs[current.call.ID] = state
 			}
 			state.tail = appendOutput(state.tail[:0], current.text)
@@ -121,7 +117,6 @@ func (a *eventAdapter) handle(current event) error {
 			SessionUpdate: "tool_call_update",
 			ToolCallID:    current.call.ID,
 			Status:        status,
-			Meta:          toolEventMetadata(current.parent),
 		}); err != nil {
 			return err
 		}
@@ -184,20 +179,12 @@ func (a *eventAdapter) flush(id string) error {
 			Type:    "content",
 			Content: acp.ContentBlock{Type: "text", Text: outputTail(string(state.tail))},
 		}},
-		Meta: toolEventMetadata(state.parent),
 	})
 	if err != nil {
 		return err
 	}
 	state.dirty = false
 	return nil
-}
-
-func toolEventMetadata(parent string) acp.Metadata {
-	if parent == "" {
-		return nil
-	}
-	return acp.Metadata{acp.MetaParentToolCallID: parent}
 }
 
 func (a *eventAdapter) send(update any) error {

@@ -126,12 +126,12 @@ func TestAllDeclaresValidSchemasAndClassifications(t *testing.T) {
 		}
 		if todo && (tool.Kind != acp.ToolKindOther ||
 			tool.Approval != agent.ApprovalNone || tool.ParallelSafe ||
-			!tool.ParentOnly || !tool.PlanMode) {
+			!tool.PlanMode) {
 			t.Errorf("todo classification = %+v", tool)
 		}
 		if question && (tool.Kind != acp.ToolKindOther ||
 			tool.Approval != agent.ApprovalNone || tool.ParallelSafe ||
-			!tool.PlanMode || !tool.RequiresForm || tool.ParentOnly) {
+			!tool.PlanMode || !tool.RequiresForm) {
 			t.Errorf("question classification = %+v", tool)
 		}
 		if webFetch && (tool.Kind != acp.ToolKindSearch ||

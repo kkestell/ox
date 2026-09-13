@@ -2,36 +2,23 @@ package agent
 
 import "testing"
 
-func TestFileReadScopesIsolateEvidenceAndClearTogether(t *testing.T) {
+// TestFileReadEvidenceClearsOnAWrite covers the rule a write depends on: once a
+// mutation invalidates the session's read evidence, no earlier read can still
+// authorize a change.
+func TestFileReadEvidenceClearsOnAWrite(t *testing.T) {
 	value := &session{}
-	parent := value.primaryFileReads()
-	first, releaseFirst := value.childFileReads()
-	defer releaseFirst()
-	second, releaseSecond := value.childFileReads()
-	defer releaseSecond()
+	reads := value.primaryFileReads()
 
-	parent.Record("parent", "one")
-	first.Record("shared", "old")
-	first.Record("first", "one")
-	second.Record("shared", "old")
-	second.Record("second", "two")
-	first.Record("shared", "new")
-
-	if hash, _ := second.Hash("shared"); hash != "old" {
-		t.Fatalf("sibling read evidence = %q, want old", hash)
-	}
-	if _, exists := parent.Hash("first"); exists {
-		t.Fatal("parent observed child read evidence")
+	reads.Record("notes.txt", "one")
+	reads.Record("other.txt", "two")
+	if hash, ok := reads.Hash("notes.txt"); !ok || hash != "one" {
+		t.Fatalf("recorded evidence = %q, %v", hash, ok)
 	}
 
-	first.Clear()
-	for name, reads := range map[string]FileReads{
-		"parent": parent,
-		"first":  first,
-		"second": second,
-	} {
-		if _, exists := reads.Hash("shared"); exists {
-			t.Fatalf("%s scope survived global clear", name)
+	reads.Clear()
+	for _, key := range []string{"notes.txt", "other.txt"} {
+		if _, exists := reads.Hash(key); exists {
+			t.Fatalf("%s survived the clear", key)
 		}
 	}
 }

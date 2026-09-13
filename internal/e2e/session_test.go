@@ -318,7 +318,7 @@ func TestSessionCompactionSurvivesRestartWithoutChangingReplay(t *testing.T) {
 	)
 	options := []startOption{
 		withModel(model),
-		withModelContextWindow(model, 18000),
+		withModelContextWindow(model, 8000),
 		withEnvironment("XDG_DATA_HOME", dataDir),
 	}
 
@@ -403,7 +403,7 @@ func TestOpenParentCompactionCheckpointSurvivesCrash(t *testing.T) {
 	model.queue(sse(evText("continued"), evFinishReason("stop"), evUsageCost(90, 3, 93, 0.4)))
 	options := []startOption{
 		withModel(model),
-		withModelContextWindow(model, 23000),
+		withModelContextWindow(model, 10000),
 		withEnvironment("XDG_DATA_HOME", dataDir),
 	}
 
@@ -437,7 +437,7 @@ func TestOpenParentCompactionCheckpointSurvivesCrash(t *testing.T) {
 	if !reflect.DeepEqual(secondReplay, firstReplay) {
 		t.Fatalf("parent checkpoint replay changed across reloads:\nsecond = %#v\nfirst = %#v", secondReplay, firstReplay)
 	}
-	assertReplayUsage(t, secondReplay, 23000, 0.59)
+	assertReplayUsage(t, secondReplay, 10000, 0.59)
 	prompt(t, third, session, "fourth checkpoint prompt")
 	_ = updates(t, third, session)
 
@@ -452,84 +452,6 @@ func TestOpenParentCompactionCheckpointSurvivesCrash(t *testing.T) {
 		{role: "assistant", text: recentAnswer},
 		{role: "user", text: "third checkpoint prompt"},
 		{role: "user", text: "fourth checkpoint prompt"},
-	})
-}
-
-func TestOpenChildCompactionCheckpointSurvivesCrash(t *testing.T) {
-	dataDir := t.TempDir()
-	oldContents := strings.Repeat("old child detail ", 240)
-	held := (*modelResponse)(nil)
-	model := startModel(t,
-		sse(
-			evToolCall(0, "task-checkpoint-add", "function", "task_add", `{"description":"inspect checkpoint files"}`),
-			evFinishReason("tool_calls"), evUsageCost(20, 4, 24, 0.1),
-		),
-	)
-	model.queueDynamic(queuedTaskRunResponse("task-checkpoint-run"))
-	model.queue(
-		sse(
-			evToolCall(0, "provider-old", "function", "read_file", `{"path":"old.txt"}`),
-			evFinishReason("tool_calls"), evUsageCost(40, 4, 44, 0.2),
-		),
-	)
-	model.queue(
-		sse(
-			evToolCall(0, "provider-recent", "function", "read_file", `{"path":"recent.txt"}`),
-			evFinishReason("tool_calls"), evUsageCost(5000, 4, 5004, 0.3),
-		),
-	)
-	model.queue(
-		sse(evText("folded child facts"), evFinishReason("stop"), evUsageCost(5200, 20, 5220, 0.4)),
-	)
-	held = model.holdFor("recent child detail\n", "")
-	options := []startOption{
-		withModel(model),
-		withModelContextWindow(model, 14000),
-		withEnvironment("XDG_DATA_HOME", dataDir),
-		withFile("old.txt", oldContents),
-		withFile("recent.txt", "recent child detail\n"),
-	}
-
-	first, session := startSession(t, options...)
-	cwd := first.cwd
-	_ = first.begin("session/prompt", acp.PromptRequest{
-		SessionID: session, Prompt: textPrompt("delegate checkpoint work"),
-	})
-	held.await(t)
-	first.kill()
-
-	second := start(t, options...)
-	initialize(t, second)
-	replayStart := len(second.received)
-	loadSession(t, second, session, cwd)
-	firstReplay := receivedSessionUpdates(t, second, replayStart, session)
-	_ = updates(t, second, session)
-	second.request("session/close", acp.CloseSessionRequest{SessionID: session})
-	second.stop()
-
-	third := start(t, options...)
-	initialize(t, third)
-	replayStart = len(third.received)
-	loadSession(t, third, session, cwd)
-	secondReplay := receivedSessionUpdates(t, third, replayStart, session)
-	_ = updates(t, third, session)
-	if !reflect.DeepEqual(secondReplay, firstReplay) {
-		t.Fatalf("child checkpoint replay changed across reloads:\nsecond = %#v\nfirst = %#v", secondReplay, firstReplay)
-	}
-	assertReplayUsage(t, secondReplay, 14000, 0.99)
-	assertUnknownToolReplay(t, secondReplay, "task-checkpoint-run")
-
-	requests := model.requests()
-	if len(requests) != 6 {
-		t.Fatalf("model requests = %d, want 6", len(requests))
-	}
-	compacted := requests[5].Messages
-	assertProviderToolPairs(t, compacted)
-	assertConversation(t, compacted, []exchange{
-		{role: "user", text: "inspect checkpoint files"},
-		{role: "user", text: "Summary of earlier conversation:\n\nfolded child facts"},
-		{role: "assistant", text: ""},
-		{role: "tool", text: "recent child detail\n"},
 	})
 }
 
@@ -978,27 +900,21 @@ func TestRestartDoesNotRepeatStartedLocalTool(t *testing.T) {
 	second.stop()
 }
 
-func TestRestartDoesNotRepeatStartedChildTool(t *testing.T) {
+// TestRestartDoesNotRepeatAStartedTool covers the effect a crash must not
+// duplicate: a shell command that had already started is reported with an
+// unknown outcome after recovery rather than run a second time.
+func TestRestartDoesNotRepeatAStartedTool(t *testing.T) {
 	dataDir := t.TempDir()
 	model := startModel(t,
-		toolResponse(
-			"task-effect-add", "task_add",
-			`{"description":"run the shell effect"}`,
-		),
+		shellToolCallResponse("printf 'once\\n' >> effect.txt; sleep 1"),
 	)
-	model.queueDynamic(queuedTaskRunResponse("task-effect-run"))
-	model.queue(
-		shellToolCallResponse("printf 'once\\n' >> child-effect.txt; sleep 1"),
-	)
-	model.queue(toolResponse("task-list-after-restart", "task_list", `{}`))
-	model.queue(sse(evText("inspected"), evFinishReason("stop")))
 	options := []startOption{
 		withModel(model), withEnvironment("XDG_DATA_HOME", dataDir),
 	}
 	first, session := startSession(t, options...)
 	cwd := first.cwd
 	_ = first.begin("session/prompt", acp.PromptRequest{
-		SessionID: session, Prompt: textPrompt("delegate one effect"),
+		SessionID: session, Prompt: textPrompt("run one effect"),
 	})
 	permission := first.serverRequest()
 	if permission.Method != acp.MethodSessionRequestPermission {
@@ -1008,14 +924,14 @@ func TestRestartDoesNotRepeatStartedChildTool(t *testing.T) {
 	if err := json.Unmarshal(permission.Params, &requested); err != nil {
 		t.Fatal(err)
 	}
-	childCallID := requested.ToolCall.ToolCallID
-	if childCallID == "" || requested.ToolCall.Name != "shell" {
-		t.Fatalf("child permission = %#v", requested)
+	callID := requested.ToolCall.ToolCallID
+	if callID == "" || requested.ToolCall.Name != "shell" {
+		t.Fatalf("permission = %#v", requested)
 	}
 	first.respond(permission, acp.RequestPermissionResponse{
 		Outcome: acp.RequestPermissionOutcome{Outcome: "selected", OptionID: "allow_once"},
 	})
-	marker := filepath.Join(cwd, "child-effect.txt")
+	marker := filepath.Join(cwd, "effect.txt")
 	deadline := time.Now().Add(3 * time.Second)
 	for {
 		content, err := os.ReadFile(marker)
@@ -1026,7 +942,7 @@ func TestRestartDoesNotRepeatStartedChildTool(t *testing.T) {
 			t.Fatal(err)
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("child tool effect did not occur")
+			t.Fatal("tool effect did not occur")
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -1040,23 +956,12 @@ func TestRestartDoesNotRepeatStartedChildTool(t *testing.T) {
 	_ = updates(t, second, session)
 	content, err := os.ReadFile(marker)
 	if err != nil || string(content) != "once\n" {
-		t.Fatalf("child effect after recovery = %q, %v", content, err)
+		t.Fatalf("effect after recovery = %q, %v", content, err)
 	}
-	if requests := model.requests(); len(requests) != 3 {
-		t.Fatalf("model requests = %d, want 3", len(requests))
+	if requests := model.requests(); len(requests) != 1 {
+		t.Fatalf("model requests = %d, want 1", len(requests))
 	}
-	assertUnknownToolReplay(t, replay, "task-effect-run")
-	assertUnknownToolReplay(t, replay, childCallID)
-	prompt(t, second, session, "inspect interrupted queue")
-	queueUpdates := updates(t, second, session)
-	var interrupted bool
-	for _, notification := range queueUpdates {
-		interrupted = interrupted || notification.Update.ToolCallID == "task-list-after-restart" &&
-			strings.Contains(notification.Update.Content.Text, `"state":"interrupted"`)
-	}
-	if !interrupted {
-		t.Fatalf("queue updates omit interrupted attempt: %#v", queueUpdates)
-	}
+	assertUnknownToolReplay(t, replay, callID)
 	second.stop()
 }
 

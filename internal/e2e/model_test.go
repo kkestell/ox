@@ -304,25 +304,6 @@ func (m *mockModel) serveHTTP(writer http.ResponseWriter, request *http.Request)
 	}
 }
 
-func queuedTaskRunResponse(callID string) func(modelRequest) string {
-	return func(request modelRequest) string {
-		if len(request.Messages) == 0 {
-			return sse(evFinishReason("stop"))
-		}
-		var task struct {
-			ID string `json:"id"`
-		}
-		if err := json.Unmarshal([]byte(request.Messages[len(request.Messages)-1].text()), &task); err != nil || task.ID == "" {
-			return sse(evFinishReason("stop"))
-		}
-		return sse(
-			evToolCall(0, callID, "function", "task_run", fmt.Sprintf(`{"task_id":%q}`, task.ID)),
-			evFinishReason("tool_calls"),
-			evUsage(1, 1, 2),
-		)
-	}
-}
-
 func (m *mockModel) serveCredentialCheck(writer http.ResponseWriter, authorization string) {
 	m.mu.Lock()
 	m.credentialChecks = append(m.credentialChecks, authorization)

@@ -1585,51 +1585,6 @@ func TestParallelToolsFinishOutOfOrderAndReplayInCallOrder(t *testing.T) {
 	model.assertConsumed(t)
 }
 
-func assertNestedTaskUpdates(t *testing.T, updates []capturedUpdate) {
-	t.Helper()
-	parents := map[string]string{
-		"task-shell": "Run child shell",
-		"task-read":  "Read child guide",
-	}
-	childCalls := 0
-	childTerminals := 0
-	for _, update := range updates {
-		switch update.discriminator(t) {
-		case "tool_call":
-			var call acp.ToolCall
-			update.decode(t, &call)
-			if title, parent := parents[call.ToolCallID]; parent {
-				if call.Title != title || call.Meta[acp.MetaSubagent] != true {
-					t.Fatalf("parent call = %#v", call)
-				}
-				continue
-			}
-			parent, ok := call.Meta[acp.MetaParentToolCallID].(string)
-			if !ok || parents[parent] == "" {
-				t.Fatalf("child call = %#v", call)
-			}
-			childCalls++
-		case "tool_call_update":
-			var call acp.ToolCallUpdate
-			update.decode(t, &call)
-			if _, parent := parents[call.ToolCallID]; parent {
-				continue
-			}
-			parent, ok := call.Meta[acp.MetaParentToolCallID].(string)
-			if !ok || parents[parent] == "" {
-				t.Fatalf("child update = %#v", call)
-			}
-			if call.Status == acp.ToolCallStatusCompleted ||
-				call.Status == acp.ToolCallStatusFailed {
-				childTerminals++
-			}
-		}
-	}
-	if childCalls != 2 || childTerminals != 2 {
-		t.Fatalf("child calls = %d, terminals = %d", childCalls, childTerminals)
-	}
-}
-
 func TestApprovalAllowsAndGrantsOnlyForTheActivation(t *testing.T) {
 	var executions atomic.Int32
 	var requests atomic.Int32

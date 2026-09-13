@@ -55,7 +55,6 @@ func (a *Agent) admitPrimaryRequest(
 		request.Messages[planned.plan.headEnd:planned.plan.tailStart],
 		turn,
 		requestCount,
-		"",
 	)
 	if err != nil {
 		return openrouter.Request{}, nil, err
@@ -87,7 +86,6 @@ func (a *Agent) summarizeContext(
 	messages []openrouter.Message,
 	turn diagnostictrace.Turn,
 	requestCount int,
-	parentCallID string,
 ) (*openrouter.Completion, error) {
 	transcript := renderCompactionTranscript(messages)
 	request := summarizerRequest(sessionID, configuration, transcript)
@@ -105,7 +103,6 @@ func (a *Agent) summarizeContext(
 		diagnostictrace.ProviderCompaction,
 		requestCount,
 		tracedRequestBytes(turn, request),
-		parentCallID,
 	)
 	completion, err := a.client.Stream(ctx, request, nil)
 	provider.Complete(

@@ -15,7 +15,6 @@ type Tool struct {
 	Kind         acp.ToolKind
 	Approval     Approval
 	ParallelSafe bool
-	ParentOnly   bool
 	PlanMode     bool
 	RequiresForm bool
 	Title        func(json.RawMessage) string

@@ -40,7 +40,6 @@ func All() []agent.Tool {
 			Kind:         acp.ToolKindOther,
 			Approval:     agent.ApprovalNone,
 			ParallelSafe: false,
-			ParentOnly:   true,
 			PlanMode:     true,
 			Execute:      executeTodo,
 		},

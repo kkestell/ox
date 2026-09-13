@@ -154,22 +154,19 @@ type storedToolResult struct {
 
 type toolStartedRecord struct {
 	TurnID           string              `json:"turnId"`
-	ParentCallID     string              `json:"parentCallId,omitempty"`
 	Call             openrouter.ToolCall `json:"call"`
 	ApprovalDecision approvalDecision    `json:"approvalDecision,omitempty"`
 	Target           string              `json:"target,omitempty"`
 }
 
 type toolCompletedRecord struct {
-	TurnID       string           `json:"turnId"`
-	ParentCallID string           `json:"parentCallId,omitempty"`
-	CallID       string           `json:"callId"`
-	Result       storedToolResult `json:"result"`
+	TurnID string           `json:"turnId"`
+	CallID string           `json:"callId"`
+	Result storedToolResult `json:"result"`
 }
 
 type durableToolExecution struct {
 	TurnID           string              `json:"turnId"`
-	ParentCallID     string              `json:"parentCallId,omitempty"`
 	Call             openrouter.ToolCall `json:"call"`
 	ApprovalDecision approvalDecision    `json:"approvalDecision,omitempty"`
 	Target           string              `json:"target,omitempty"`
@@ -833,8 +830,8 @@ func (s *durableState) apply(record sessionRecord) error {
 		}
 		execution, exists := s.toolExecutions[value.CallID]
 		if !exists || execution.Result != nil || execution.TurnID != value.TurnID ||
-			execution.ParentCallID != "" || execution.Call.Function.Name != "todo" {
-			return errors.New("todo replacement has no matching started top-level call")
+			execution.Call.Function.Name != "todo" {
+			return errors.New("todo replacement has no matching started call")
 		}
 		if err := validateTodoEntries(value.Entries); err != nil {
 			return err
@@ -987,7 +984,6 @@ func (s *durableState) apply(record sessionRecord) error {
 		}
 		execution := durableToolExecution{
 			TurnID:           value.TurnID,
-			ParentCallID:     value.ParentCallID,
 			Call:             value.Call,
 			ApprovalDecision: value.ApprovalDecision,
 			Target:           value.Target,
@@ -1010,7 +1006,7 @@ func (s *durableState) apply(record sessionRecord) error {
 		}
 		execution, exists := s.toolExecutions[value.CallID]
 		if !exists || execution.Result != nil || value.TurnID != s.openTurn ||
-			value.TurnID != execution.TurnID || value.ParentCallID != execution.ParentCallID {
+			value.TurnID != execution.TurnID {
 			return errors.New("tool completion has no matching started call")
 		}
 		if err := validateStoredExecutionResult(execution, value.Result); err != nil {
@@ -1485,9 +1481,6 @@ func (s *durableState) validateCompletedSuspension(
 				return errors.New("successful tool result has no durable dispatch")
 			}
 			continue
-		}
-		if execution.ParentCallID != "" {
-			return errors.New("parent tool result matched a child execution")
 		}
 		if execution.Result == nil {
 			if !completed.ToolResults[index].Unknown {

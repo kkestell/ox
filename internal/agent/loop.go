@@ -177,7 +177,6 @@ func (a *Agent) runFrom(
 				diagnostictrace.ProviderPrimary,
 				budgetRequest,
 				tracedRequestBytes(active.trace, request),
-				"",
 			)
 			completion, err = a.client.Stream(ctx, request, func(delta openrouter.Delta) {
 				switch delta.Kind {
@@ -306,7 +305,6 @@ func (a *Agent) runFrom(
 			active.trace.ToolCompleted(
 				call.ID,
 				call.Function.Name,
-				"",
 				toolOutcome(results[index]),
 				len(results[index].content),
 			)
@@ -318,7 +316,6 @@ func (a *Agent) runFrom(
 				a.sessionPrimaryTools(value),
 				call,
 				kind,
-				"",
 				results[index].content,
 				results[index].target,
 			)
@@ -391,7 +388,7 @@ func (a *Agent) publishPendingTools(
 ) {
 	tools := a.sessionPrimaryTools(value)
 	for _, call := range calls {
-		turn.ToolPending(call.ID, call.Function.Name, "")
+		turn.ToolPending(call.ID, call.Function.Name)
 		var kind acp.ToolKind
 		if index, ok := tools.byName[call.Function.Name]; ok {
 			kind = tools.tools[index].Kind
@@ -856,7 +853,7 @@ func (a *Agent) executeSuspendedBatch(
 			continue
 		}
 		request := a.permissionRequest(
-			value.id, root, tool, call, rule, "", results[index].target,
+			value.id, root, tool, call, rule, results[index].target,
 		)
 		progress = value.suspendedExchange()
 		pending, err := a.openPermission(value, progress, call.ID, request, reissue)
@@ -940,7 +937,7 @@ func (a *Agent) executeSuspendedBatch(
 	var err error
 	results, err = a.dispatchApprovedBatch(
 		ctx, value, tools, value.primaryFileReads(), calls, ask, elicit,
-		fileSystem, terminal, events, "", results, ready, turn,
+		fileSystem, terminal, events, results, ready, turn,
 	)
 	if err != nil {
 		return nil, false, err
@@ -998,7 +995,6 @@ func (a *Agent) permissionRequest(
 	tool Tool,
 	call openrouter.ToolCall,
 	rule string,
-	parent string,
 	target string,
 ) acp.RequestPermissionRequest {
 	arguments := json.RawMessage(call.Function.Arguments)
@@ -1008,7 +1004,6 @@ func (a *Agent) permissionRequest(
 			ToolCallID: call.ID, Kind: tool.Kind,
 			Title: toolTitle(tool, arguments), Name: call.Function.Name,
 			Locations: toolLocations(root, target), RawInput: arguments,
-			Meta: toolEventMetadata(parent),
 		},
 		Options: permissionOptions(rule, tool.Suggest != nil),
 	}
@@ -1025,7 +1020,6 @@ func (a *Agent) dispatchApprovedBatch(
 	fileSystem ClientFileSystem,
 	terminal ClientTerminal,
 	events chan<- event,
-	parent string,
 	results []toolResult,
 	ready []bool,
 	turn diagnostictrace.Turn,
@@ -1055,7 +1049,7 @@ func (a *Agent) dispatchApprovedBatch(
 							Target: progress.Target, Unknown: true,
 						}
 						if err := a.completeToolExecution(
-							value, progress.TurnID, progress.ParentCallID, calls[index].ID, unknown,
+							value, progress.TurnID, calls[index].ID, unknown,
 						); err != nil {
 							cancelGroup()
 							return results, fmt.Errorf("persist unknown tool outcome: %w", err)
@@ -1068,7 +1062,7 @@ func (a *Agent) dispatchApprovedBatch(
 				}
 				turnID := value.openTurn()
 				if err := a.startToolExecution(
-					value, turnID, parent, calls[index], results[index].approval,
+					value, turnID, calls[index], results[index].approval,
 					results[index].target,
 				); err != nil {
 					startFailed = true
@@ -1094,7 +1088,6 @@ func (a *Agent) dispatchApprovedBatch(
 					fileSystem,
 					terminal,
 					events,
-					parent,
 					results[current].target,
 					turn,
 				)
@@ -1103,7 +1096,7 @@ func (a *Agent) dispatchApprovedBatch(
 					stored := storedResult(calls[current].ID, results[current])
 					turnID := value.openTurn()
 					if err := a.completeToolExecution(
-						value, turnID, parent, calls[current].ID, stored,
+						value, turnID, calls[current].ID, stored,
 					); err != nil {
 						errorsByIndex[current-group.start] = fmt.Errorf(
 							"persist tool completion: %w", err,
@@ -1194,7 +1187,6 @@ func (a *Agent) executeOne(
 	fileSystem ClientFileSystem,
 	terminal ClientTerminal,
 	events chan<- event,
-	parent string,
 	target string,
 	turn diagnostictrace.Turn,
 ) (result toolResult) {
@@ -1212,8 +1204,8 @@ func (a *Agent) executeOne(
 			content: "tool call cancelled before start", failed: true, target: target,
 		}
 	}
-	turn.ToolStarted(call.ID, call.Function.Name, parent)
-	events <- a.toolEvent(tools, call, eventToolStarted, parent, "", target)
+	turn.ToolStarted(call.ID, call.Function.Name)
+	events <- a.toolEvent(tools, call, eventToolStarted, "", target)
 	started := time.Now()
 	path := toolCallPath(call.Function.Arguments)
 	defer func() {
@@ -1285,7 +1277,7 @@ func (a *Agent) executeOne(
 			)
 		},
 	}
-	if parent == "" && tool.Name == "todo" {
+	if tool.Name == "todo" {
 		invocation.ReplaceTodo = func(entries []acp.PlanEntry) error {
 			turnID := value.openTurn()
 			if err := a.commit(value, recordTodoChanged, todoChanged{
@@ -1406,7 +1398,6 @@ func (a *Agent) toolEvent(
 	tools toolSet,
 	call openrouter.ToolCall,
 	kind eventKind,
-	parent string,
 	text string,
 	target string,
 ) event {
@@ -1418,7 +1409,6 @@ func (a *Agent) toolEvent(
 		kind:     kind,
 		call:     call,
 		toolKind: toolKind,
-		parent:   parent,
 		title:    toolSetTitle(tools, call.Function.Name, json.RawMessage(call.Function.Arguments)),
 		target:   target,
 		text:     text,

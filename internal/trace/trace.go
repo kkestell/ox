@@ -18,7 +18,6 @@ type ProviderKind string
 const (
 	ProviderPrimary    ProviderKind = "primary"
 	ProviderCompaction ProviderKind = "compaction"
-	ProviderSubagent   ProviderKind = "subagent"
 )
 
 type Usage struct {
@@ -123,7 +122,7 @@ func (t Turn) Complete(outcome, stopReason string) {
 	})
 }
 
-func (t Turn) Provider(kind ProviderKind, requestCount, requestBytes int, parentCallID string) ProviderRequest {
+func (t Turn) Provider(kind ProviderKind, requestCount, requestBytes int) ProviderRequest {
 	if t.trace.state == nil {
 		return ProviderRequest{}
 	}
@@ -131,12 +130,11 @@ func (t Turn) Provider(kind ProviderKind, requestCount, requestBytes int, parent
 	bytes := int64(requestBytes)
 	t.emit(record{
 		Type: "provider_request_started", ProviderKind: kind,
-		ProviderRequestID: id, RequestCount: requestCount,
-		ParentToolCallID: parentCallID, RequestBytes: &bytes,
+		ProviderRequestID: id, RequestCount: requestCount, RequestBytes: &bytes,
 	})
 	return ProviderRequest{
 		turn: t, id: id, kind: kind, requestCount: requestCount,
-		parentCallID: parentCallID, started: time.Now(), complete: new(sync.Once),
+		started: time.Now(), complete: new(sync.Once),
 	}
 }
 
@@ -145,7 +143,6 @@ type ProviderRequest struct {
 	id           string
 	kind         ProviderKind
 	requestCount int
-	parentCallID string
 	started      time.Time
 	complete     *sync.Once
 }
@@ -163,21 +160,20 @@ func (r ProviderRequest) Complete(outcome, stopReason string, usage Usage, respo
 		r.turn.emit(record{
 			Type: "provider_request_completed", ProviderKind: r.kind,
 			ProviderRequestID: r.id, RequestCount: r.requestCount,
-			ParentToolCallID: r.parentCallID, Outcome: outcome,
+			Outcome:    outcome,
 			StopReason: stopReason, ElapsedMS: &elapsed, ResponseBytes: &bytes,
 			InputTokens: &input, OutputTokens: &output, ReasoningTokens: &reasoning,
 		})
 	})
 }
 
-func (t Turn) ToolPending(callID, name, parentCallID string) {
+func (t Turn) ToolPending(callID, name string) {
 	t.emit(record{
 		Type: "tool_pending", ToolCallID: callID, ToolName: name,
-		ParentToolCallID: parentCallID,
 	})
 }
 
-func (t Turn) ToolStarted(callID, name, parentCallID string) {
+func (t Turn) ToolStarted(callID, name string) {
 	if t.trace.state != nil {
 		t.trace.state.spansMu.Lock()
 		t.trace.state.tools[toolKey{t.sessionID, t.turnID, callID}] = time.Now()
@@ -185,11 +181,10 @@ func (t Turn) ToolStarted(callID, name, parentCallID string) {
 	}
 	t.emit(record{
 		Type: "tool_started", ToolCallID: callID, ToolName: name,
-		ParentToolCallID: parentCallID,
 	})
 }
 
-func (t Turn) ToolCompleted(callID, name, parentCallID, outcome string, outputBytes int) {
+func (t Turn) ToolCompleted(callID, name, outcome string, outputBytes int) {
 	started := time.Time{}
 	if t.trace.state != nil {
 		key := toolKey{t.sessionID, t.turnID, callID}
@@ -202,22 +197,21 @@ func (t Turn) ToolCompleted(callID, name, parentCallID, outcome string, outputBy
 	bytes := int64(outputBytes)
 	t.emit(record{
 		Type: "tool_completed", ToolCallID: callID, ToolName: name,
-		ParentToolCallID: parentCallID, Outcome: outcome,
+		Outcome:   outcome,
 		ElapsedMS: &elapsed, OutputBytes: &bytes,
 	})
 }
 
-func (t Turn) PermissionRequested(callID, name, parentCallID string) {
+func (t Turn) PermissionRequested(callID, name string) {
 	t.emit(record{
 		Type: "permission_requested", ToolCallID: callID, ToolName: name,
-		ParentToolCallID: parentCallID,
 	})
 }
 
-func (t Turn) PermissionDecided(callID, name, parentCallID, outcome string) {
+func (t Turn) PermissionDecided(callID, name, outcome string) {
 	t.emit(record{
 		Type: "permission_decided", ToolCallID: callID, ToolName: name,
-		ParentToolCallID: parentCallID, Outcome: outcome,
+		Outcome: outcome,
 	})
 }
 
@@ -231,7 +225,6 @@ type record struct {
 	ProviderRequestID string       `json:"provider_request_id,omitempty"`
 	RequestCount      int          `json:"request_count,omitempty"`
 	ToolCallID        string       `json:"tool_call_id,omitempty"`
-	ParentToolCallID  string       `json:"parent_tool_call_id,omitempty"`
 	ToolName          string       `json:"tool_name,omitempty"`
 	Outcome           string       `json:"outcome,omitempty"`
 	StopReason        string       `json:"stop_reason,omitempty"`

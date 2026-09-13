@@ -10,8 +10,6 @@ const (
 	MetaBlockIndex                 = "kkestell.ox/blockIndex"
 	MetaMessageID                  = "kkestell.ox/messageId"
 	MetaOutcome                    = "kkestell.ox/outcome"
-	MetaParentToolCallID           = "kkestell.ox/parentToolCallId"
-	MetaSubagent                   = "kkestell.ox/subagent"
 	MethodFSReadTextFile           = "fs/read_text_file"
 	MethodFSWriteTextFile          = "fs/write_text_file"
 	MethodElicitationCreate        = "elicitation/create"
