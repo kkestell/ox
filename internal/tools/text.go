@@ -81,5 +81,14 @@ func acquireText(
 	if err != nil {
 		return nil, err
 	}
+	return boundedText(path, content)
+}
+
+// boundedText holds client-supplied text to the same size the local read
+// boundary enforces, so delegation cannot widen the limit.
+func boundedText(path, content string) ([]byte, error) {
+	if len(content) > workspace.MaxFileBytes {
+		return nil, workspace.OversizeError(path)
+	}
 	return []byte(content), nil
 }

@@ -13,6 +13,9 @@ const (
 	InlineMaxLines       = 200
 	InlineMaxBytes       = 50 * 1024
 	CollectionLimitBytes = 10 * 1024 * 1024
+	// MaxFileBytes bounds a whole-file read. The file tools serve source text,
+	// and reading, editing, and hashing all need the whole file in memory.
+	MaxFileBytes = 8 << 20
 )
 
 type RenderResult struct {
@@ -46,7 +49,7 @@ func RenderText(dir, label, callID, content string, inlineBytes int) (RenderResu
 		return RenderResult{}, err
 	}
 	footer := fmt.Sprintf("\n[showing a prefix of %d bytes, full output at %s]", len(content), spillPath)
-	prefix := validUTF8Prefix(content, max(0, inlineBytes-len(footer)))
+	prefix := ValidUTF8Prefix(content, max(0, inlineBytes-len(footer)))
 	return RenderResult{
 		Content: prefix + footer, TotalLines: strings.Count(content, "\n") + 1,
 		TotalBytes: len(content), Spilled: spillPath,
@@ -153,7 +156,7 @@ func SpilledPreview(
 		}
 		if content.Len()+cost > contentBudget {
 			if previewCount == 0 && contentBudget > 0 {
-				content.WriteString(validUTF8Prefix(line, contentBudget))
+				content.WriteString(ValidUTF8Prefix(line, contentBudget))
 				partialFirst = true
 			}
 			break
@@ -203,7 +206,9 @@ func spillFooter(
 	)
 }
 
-func validUTF8Prefix(value string, limit int) string {
+// ValidUTF8Prefix returns the longest prefix of value within limit bytes that
+// does not split a rune.
+func ValidUTF8Prefix(value string, limit int) string {
 	if len(value) <= limit {
 		return value
 	}

@@ -51,7 +51,10 @@ session. Cancelling an idle or unknown session has no effect.
 
 Built-in file-tool paths are confined to the session workspace. Ox rejects
 parent traversal, absolute paths, and symlink traversal when they would escape
-the workspace. Model-facing reads open only regular files.
+the workspace. Model-facing reads open only regular files. A file tool refuses a
+file too large to hold in memory, and a read returns a bounded window: a line
+longer than that window is shown as a prefix that reports how much of the line
+it covers.
 
 Ox requires evidence from an earlier read, glob, or search before a model may
 change an existing file. File changes and shell commands require client

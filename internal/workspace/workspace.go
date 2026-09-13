@@ -93,11 +93,28 @@ func (w *Workspace) ReadFile(path string) ([]byte, error) {
 	defer func() {
 		_ = file.Close()
 	}()
-	data, err := io.ReadAll(file)
+	info, err := file.Stat()
 	if err != nil {
 		return nil, accessError(err, path)
 	}
+	if info.Size() > MaxFileBytes {
+		return nil, OversizeError(path)
+	}
+	// The size above is advisory: the file can grow between the stat and the
+	// read, so read one byte past the bound and reject what overruns it.
+	data, err := io.ReadAll(io.LimitReader(file, MaxFileBytes+1))
+	if err != nil {
+		return nil, accessError(err, path)
+	}
+	if len(data) > MaxFileBytes {
+		return nil, OversizeError(path)
+	}
 	return data, nil
+}
+
+// OversizeError reports a file the read boundary refuses to materialize.
+func OversizeError(path string) error {
+	return fmt.Errorf("cannot read `%s`: file exceeds the %d byte limit", path, MaxFileBytes)
 }
 
 // Resolve returns the canonical absolute path selected by the workspace's

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -1172,9 +1173,68 @@ func TestReadFileValidatesBoundsUTF8AndHugeLines(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(got, strings.Repeat("x", workspace.InlineMaxBytes+1)) ||
-		!strings.Contains(got, "[lines 1-1 of 2") {
-		t.Fatal("huge first line did not make paging progress")
+	if len(got) > workspace.InlineMaxBytes {
+		t.Fatalf("huge first line returned %d bytes, want at most %d",
+			len(got), workspace.InlineMaxBytes)
+	}
+	if !strings.HasPrefix(got, "xxx") ||
+		!strings.Contains(got, fmt.Sprintf("of %d bytes]", workspace.InlineMaxBytes+1)) {
+		t.Fatalf("huge first line = %q", got)
+	}
+}
+
+func TestReadFileBoundsOutputAtTheInlineLimit(t *testing.T) {
+	invocation := testInvocation(t, `{"path":"exact"}`)
+	read := toolNamed(t, "read_file")
+
+	// A file exactly at the inline bound still comes back whole: the footer is
+	// only reserved once a window is needed.
+	line := strings.Repeat("a", workspace.InlineMaxBytes/workspace.InlineMaxLines-1) + "\n"
+	exact := strings.Repeat(line, workspace.InlineMaxLines)
+	writeToolFile(t, invocation.Root, "exact", exact)
+	got, err := invoke(t, read, invocation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(exact) != workspace.InlineMaxBytes {
+		t.Fatalf("fixture is %d bytes, want exactly %d", len(exact), workspace.InlineMaxBytes)
+	}
+	if got != exact {
+		t.Fatalf("exact-limit read returned %d bytes, want the whole %d byte file",
+			len(got), len(exact))
+	}
+
+	// A single oversized line with no trailing newline is truncated on a rune
+	// boundary, not in the middle of one.
+	runes := strings.Repeat("é", workspace.InlineMaxBytes)
+	writeToolFile(t, invocation.Root, "one-line", runes)
+	invocation.Arguments = json.RawMessage(`{"path":"one-line"}`)
+	got, err = invoke(t, read, invocation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) > workspace.InlineMaxBytes {
+		t.Fatalf("single-line read returned %d bytes, want at most %d",
+			len(got), workspace.InlineMaxBytes)
+	}
+	shown, _, ok := strings.Cut(got, "\n[line 1 of 1;")
+	if !ok {
+		t.Fatalf("single-line read = %q", got[max(0, len(got)-80):])
+	}
+	if !utf8.ValidString(shown) {
+		t.Fatal("truncation split a rune")
+	}
+}
+
+func TestReadFileRefusesAFileOverTheWorkspaceLimit(t *testing.T) {
+	invocation := testInvocation(t, `{"path":"big"}`)
+	path := filepath.Join(invocation.Root, "big")
+	if err := os.WriteFile(path, make([]byte, workspace.MaxFileBytes+1), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := invoke(t, toolNamed(t, "read_file"), invocation)
+	if err == nil || !strings.Contains(err.Error(), "exceeds the") {
+		t.Fatalf("oversized read error = %v", err)
 	}
 }
 

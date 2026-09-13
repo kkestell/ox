@@ -138,6 +138,7 @@ func TestLoadFile(t *testing.T) {
 	for name, body := range map[string]string{
 		"blank":      " \n",
 		"multi-line": "first\nsecond\n",
+		"oversized":  strings.Repeat("k", maxCredentialFileBytes+1),
 	} {
 		t.Run(name, func(t *testing.T) {
 			path := filepath.Join(directory, name)

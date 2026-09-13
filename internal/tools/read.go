@@ -74,7 +74,10 @@ func executeRead(ctx context.Context, invocation agent.Invocation) (string, erro
 		if err != nil {
 			return "", err
 		}
-		raw = []byte(content)
+		raw, err = boundedText(path, content)
+		if err != nil {
+			return "", err
+		}
 	} else {
 		var err error
 		raw, err = files.ReadFile(path)
@@ -125,21 +128,7 @@ func window(content string, offset, limit int) windowed {
 			windowed: true,
 		}
 	}
-
-	end := start
-	bytes := 0
-	for end < total && end-start < limit {
-		cost := len(lines[end])
-		if end > start {
-			cost++
-		}
-		if end > start && bytes+cost > workspace.InlineMaxBytes {
-			break
-		}
-		bytes += cost
-		end++
-	}
-	if start == 0 && end == total {
+	if start == 0 && limit >= total && len(content) <= workspace.InlineMaxBytes {
 		return windowed{
 			content: content,
 			start:   1,
@@ -148,13 +137,42 @@ func window(content string, offset, limit int) windowed {
 		}
 	}
 
-	output := strings.Join(lines[start:end], "\n")
-	output += fmt.Sprintf(
-		"\n[lines %d-%d of %d; pass offset/limit to read more]",
-		start+1,
-		end,
-		total,
+	// The footer is part of the result, so its bytes come out of the same bound
+	// the selected lines spend. Reserve the longer of the two shapes.
+	budget := workspace.InlineMaxBytes - max(
+		len(windowFooter(start+1, total, total)),
+		len(elisionFooter(start+1, total, len(lines[start]), len(lines[start]))),
 	)
+	budget = max(budget, 0)
+
+	end := start
+	bytes := 0
+	for end < total && end-start < limit {
+		cost := len(lines[end])
+		if end > start {
+			cost++
+		}
+		if bytes+cost > budget {
+			break
+		}
+		bytes += cost
+		end++
+	}
+	if end == start {
+		// The first selected line alone overruns the bound. Show what fits so a
+		// read still makes progress, and say how much of the line that was.
+		shown := workspace.ValidUTF8Prefix(lines[start], budget)
+		return windowed{
+			content:  shown + elisionFooter(start+1, total, len(shown), len(lines[start])),
+			start:    start + 1,
+			end:      start + 1,
+			total:    total,
+			windowed: true,
+		}
+	}
+
+	output := strings.Join(lines[start:end], "\n")
+	output += windowFooter(start+1, end, total)
 	return windowed{
 		content:  output,
 		start:    start + 1,
@@ -162,6 +180,17 @@ func window(content string, offset, limit int) windowed {
 		total:    total,
 		windowed: true,
 	}
+}
+
+func windowFooter(start, end, total int) string {
+	return fmt.Sprintf("\n[lines %d-%d of %d; pass offset/limit to read more]", start, end, total)
+}
+
+func elisionFooter(line, total, shown, length int) string {
+	return fmt.Sprintf(
+		"\n[line %d of %d; showing %d of %d bytes]",
+		line, total, shown, length,
+	)
 }
 
 func splitLines(content string) []string {

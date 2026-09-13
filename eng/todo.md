@@ -28,7 +28,7 @@
   - [x] Synchronize live-turn session-state access and cover concurrent
         configuration changes (F01, F36)
   - [x] Harden reusable shell-rule derivation (F02)
-  - [ ] Bound model-chosen file reads and `read_file` output (F03, F26)
+  - [x] Bound model-chosen file reads and `read_file` output (F03, F26)
   - [ ] Bound checkpoint growth and keep aged sessions reloadable (F04)
   - [ ] Remove quadratic durable-state cloning from record commits (F05)
   - [ ] Consolidate permission approval and move tests onto its production path

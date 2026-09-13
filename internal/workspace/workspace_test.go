@@ -125,6 +125,26 @@ func TestReadFileAllowsInternalSymlinkAndReadableRoot(t *testing.T) {
 	}
 }
 
+func TestReadFileRefusesAFileOverTheSizeLimit(t *testing.T) {
+	root := canonicalTempDir(t)
+	files := NewWorkspace(root)
+	path := filepath.Join(root, "big")
+	if err := os.WriteFile(path, make([]byte, MaxFileBytes+1), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := files.ReadFile("big"); err == nil ||
+		!strings.Contains(err.Error(), "exceeds the") {
+		t.Fatalf("oversized ReadFile error = %v", err)
+	}
+	if err := os.Truncate(path, MaxFileBytes); err != nil {
+		t.Fatal(err)
+	}
+	data, err := files.ReadFile("big")
+	if err != nil || len(data) != MaxFileBytes {
+		t.Fatalf("ReadFile at the limit = %d bytes, %v", len(data), err)
+	}
+}
+
 func TestWriteFileCreatesParentsAndAtomicallyPreservesMode(t *testing.T) {
 	root := canonicalTempDir(t)
 	files := NewWorkspace(root)

@@ -16,6 +16,10 @@ const (
 	service = "ox"
 	account = "openrouter"
 
+	// maxCredentialFileBytes bounds the credential file read. The file holds one
+	// API key on one line, so anything larger is a mistaken path.
+	maxCredentialFileBytes = 4096
+
 	KeyringDisabledMessage = "cannot store an OpenRouter API key: keyring access is disabled"
 	NoCredentialMessage    = "no OpenRouter credential is configured: pass --credential-file or store a key with ox login"
 )
@@ -90,7 +94,10 @@ func LoadFile(path string) (string, error) {
 	if statErr == nil {
 		statErr = validateFileSecurity(file, after)
 	}
-	raw, readErr := io.ReadAll(file)
+	raw, readErr := io.ReadAll(io.LimitReader(file, maxCredentialFileBytes+1))
+	if readErr == nil && len(raw) > maxCredentialFileBytes {
+		readErr = fmt.Errorf("must be at most %d bytes", maxCredentialFileBytes)
+	}
 	closeErr := file.Close()
 	if err := errors.Join(statErr, readErr, closeErr); err != nil {
 		return "", fmt.Errorf("read credential file %s: %w", path, err)
