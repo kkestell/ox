@@ -58,7 +58,7 @@
   - [x] Deduplicate small safety and protocol rules (F32)
   - [x] Make atomic file replacement crash-safe and cover its sync failures
         (F27, F43)
-  - [ ] Reduce configuration copying and prevent settings-result aliasing (F33,
+  - [x] Reduce configuration copying and prevent settings-result aliasing (F33,
         F40)
   - [ ] Simplify durable-state transition code (F37)
   - [ ] Remove production test artifacts and test-only mutable seams (F38)

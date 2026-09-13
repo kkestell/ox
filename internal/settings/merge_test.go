@@ -94,3 +94,84 @@ func TestMergeOfTwoAbsentLayersSetsNothing(t *testing.T) {
 func pointer[T any](value T) *T {
 	return &value
 }
+
+// TestMergeResultSharesNothingWithItsInputs pins the non-mutation contract as a
+// property of the merge rather than of its callers. A result that aliased an
+// input would let a later change to one session's settings reach another's.
+func TestMergeResultSharesNothingWithItsInputs(t *testing.T) {
+	enabled := true
+	effort := "high"
+	prompt := 1.0
+	build := func() *Config {
+		return &Config{
+			Model:     pointerTo("author/model"),
+			MaxTokens: pointerTo(1024),
+			Reasoning: &Reasoning{Enabled: &enabled, Effort: &effort},
+			Provider: &Provider{
+				Order:    []string{"alpha"},
+				MaxPrice: &MaxPrice{Prompt: &prompt},
+			},
+		}
+	}
+
+	for _, test := range []struct {
+		name      string
+		global    *Config
+		workspace *Config
+	}{
+		{name: "both layers", global: build(), workspace: build()},
+		{name: "workspace only", workspace: build()},
+		{name: "global only", global: build()},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			merged := Merge(test.global, test.workspace)
+			if merged.Model == nil || merged.Reasoning == nil || merged.Provider == nil {
+				t.Fatalf("merged = %#v", merged)
+			}
+
+			*merged.Model = "changed/model"
+			*merged.MaxTokens = 1
+			*merged.Reasoning.Enabled = false
+			*merged.Reasoning.Effort = "low"
+			merged.Provider.Order[0] = "omega"
+			*merged.Provider.MaxPrice.Prompt = 999
+
+			for name, input := range map[string]*Config{
+				"global":    test.global,
+				"workspace": test.workspace,
+			} {
+				if input == nil {
+					continue
+				}
+				if *input.Model != "author/model" || *input.MaxTokens != 1024 {
+					t.Fatalf("%s scalars changed: %q, %d", name, *input.Model, *input.MaxTokens)
+				}
+				if !*input.Reasoning.Enabled || *input.Reasoning.Effort != "high" {
+					t.Fatalf("%s reasoning changed: %#v", name, *input.Reasoning)
+				}
+				if input.Provider.Order[0] != "alpha" || *input.Provider.MaxPrice.Prompt != 1 {
+					t.Fatalf("%s provider changed: %#v", name, *input.Provider)
+				}
+			}
+		})
+	}
+}
+
+// TestMergeKeepsTheEmptySliceOverride guards the distinction the clone could
+// have flattened: an explicit empty workspace list clears a global one.
+func TestMergeKeepsTheEmptySliceOverride(t *testing.T) {
+	merged := Merge(
+		&Config{Provider: &Provider{Order: []string{"alpha"}, Only: []string{"beta"}}},
+		&Config{Provider: &Provider{Order: []string{}}},
+	)
+	if merged.Provider.Order == nil || len(merged.Provider.Order) != 0 {
+		t.Fatalf("cleared list = %#v, want an empty non-nil slice", merged.Provider.Order)
+	}
+	if len(merged.Provider.Only) != 1 || merged.Provider.Only[0] != "beta" {
+		t.Fatalf("omitted list = %#v, want the global value", merged.Provider.Only)
+	}
+}
+
+func pointerTo[T any](value T) *T {
+	return &value
+}

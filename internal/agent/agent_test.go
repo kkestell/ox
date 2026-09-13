@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -2246,4 +2247,22 @@ func testModel(id string, contextLength int) *openrouter.Model {
 		SupportedParameters: []string{"tools", "temperature", "max_tokens"},
 		Architecture:        openrouter.Architecture{InputModalities: []string{"text", "image", "audio"}},
 	}
+}
+
+// cloneModels gives a fake catalog the same private-copy contract the real one
+// has, so a test cannot accidentally share its fixture with a session.
+func cloneModels(values []openrouter.Model) []openrouter.Model {
+	result := make([]openrouter.Model, len(values))
+	for index := range values {
+		result[index] = values[index]
+		result[index].SupportedParameters = slices.Clone(values[index].SupportedParameters)
+		result[index].Architecture.InputModalities = slices.Clone(values[index].Architecture.InputModalities)
+		result[index].Architecture.OutputModalities = slices.Clone(values[index].Architecture.OutputModalities)
+		if values[index].Reasoning != nil {
+			reasoning := *values[index].Reasoning
+			reasoning.SupportedEfforts = slices.Clone(values[index].Reasoning.SupportedEfforts)
+			result[index].Reasoning = &reasoning
+		}
+	}
+	return result
 }

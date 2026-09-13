@@ -367,7 +367,7 @@ func (a *Agent) NewSession(
 	}
 	value := &session{
 		id: id, state: state, log: log,
-		activationBase: cloneConfiguration(base), models: cloneModels(models),
+		activationBase: cloneConfiguration(base), models: models,
 		mcp: bundle, primaryTools: primaryTools,
 	}
 	a.sessionsMu.Lock()
@@ -680,7 +680,7 @@ func (a *Agent) activateSession(
 		return nil, jrpc2.Errorf(jrpc2.InvalidParams, "activate session configuration: %v", err)
 	}
 	value.activationBase = cloneConfiguration(base)
-	value.models = cloneModels(models)
+	value.models = models
 	if pendingPermission {
 		requiredConfiguration := value.state.turnConfiguration()
 		required := requiredConfiguration.ExecutorCapabilities

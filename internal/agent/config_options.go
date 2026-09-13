@@ -169,10 +169,6 @@ func buildConfigOptions(
 }
 
 func modelOptions(models []openrouter.Model) []acp.SessionConfigSelectOption {
-	models = cloneModels(models)
-	slices.SortFunc(models, func(left, right openrouter.Model) int {
-		return strings.Compare(left.ID, right.ID)
-	})
 	result := make([]acp.SessionConfigSelectOption, 0, len(models))
 	for _, model := range models {
 		name := strings.TrimSpace(model.Name)
@@ -181,6 +177,11 @@ func modelOptions(models []openrouter.Model) []acp.SessionConfigSelectOption {
 		}
 		result = append(result, acp.SessionConfigSelectOption{Value: model.ID, Name: name})
 	}
+	// Sorting the rendered options leaves the catalog untouched, so it can stay
+	// frozen rather than be copied for every option list.
+	slices.SortFunc(result, func(left, right acp.SessionConfigSelectOption) int {
+		return strings.Compare(left.Value, right.Value)
+	})
 	return result
 }
 
@@ -302,22 +303,6 @@ func retainedModalities(history []openrouter.Message) []string {
 			case "input_audio":
 				result = append(result, "audio")
 			}
-		}
-	}
-	return result
-}
-
-func cloneModels(values []openrouter.Model) []openrouter.Model {
-	result := make([]openrouter.Model, len(values))
-	for index := range values {
-		result[index] = values[index]
-		result[index].SupportedParameters = slices.Clone(values[index].SupportedParameters)
-		result[index].Architecture.InputModalities = slices.Clone(values[index].Architecture.InputModalities)
-		result[index].Architecture.OutputModalities = slices.Clone(values[index].Architecture.OutputModalities)
-		if values[index].Reasoning != nil {
-			reasoning := *values[index].Reasoning
-			reasoning.SupportedEfforts = slices.Clone(values[index].Reasoning.SupportedEfforts)
-			result[index].Reasoning = &reasoning
 		}
 	}
 	return result

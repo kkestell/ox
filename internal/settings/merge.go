@@ -1,5 +1,7 @@
 package settings
 
+import "slices"
+
 // Merge folds workspace over global into a new Config, mutating neither input.
 // Every setting is workspace-wins-per-field: a field the workspace sets replaces
 // the global one, a field it omits falls through, and the nested reasoning,
@@ -30,11 +32,14 @@ func Merge(global, workspace *Config) *Config {
 }
 
 func mergeReasoning(global, workspace *Reasoning) *Reasoning {
+	if global == nil && workspace == nil {
+		return nil
+	}
 	if global == nil {
-		return workspace
+		global = &Reasoning{}
 	}
 	if workspace == nil {
-		return global
+		workspace = &Reasoning{}
 	}
 	return &Reasoning{
 		Enabled: pick(workspace.Enabled, global.Enabled),
@@ -44,11 +49,14 @@ func mergeReasoning(global, workspace *Reasoning) *Reasoning {
 }
 
 func mergeProvider(global, workspace *Provider) *Provider {
+	if global == nil && workspace == nil {
+		return nil
+	}
 	if global == nil {
-		return workspace
+		global = &Provider{}
 	}
 	if workspace == nil {
-		return global
+		workspace = &Provider{}
 	}
 	return &Provider{
 		Order:          pickSlice(workspace.Order, global.Order),
@@ -63,11 +71,14 @@ func mergeProvider(global, workspace *Provider) *Provider {
 }
 
 func mergeMaxPrice(global, workspace *MaxPrice) *MaxPrice {
+	if global == nil && workspace == nil {
+		return nil
+	}
 	if global == nil {
-		return workspace
+		global = &MaxPrice{}
 	}
 	if workspace == nil {
-		return global
+		workspace = &MaxPrice{}
 	}
 	return &MaxPrice{
 		Prompt:     pick(workspace.Prompt, global.Prompt),
@@ -75,18 +86,26 @@ func mergeMaxPrice(global, workspace *MaxPrice) *MaxPrice {
 	}
 }
 
+// pick prefers the workspace value when it is set and copies whichever it
+// takes, so the merged result shares no pointer with either input.
 func pick[T any](workspace, global *T) *T {
+	chosen := global
 	if workspace != nil {
-		return workspace
+		chosen = workspace
 	}
-	return global
+	if chosen == nil {
+		return nil
+	}
+	copied := *chosen
+	return &copied
 }
 
 // pickSlice prefers the workspace slice when it is non-nil, so an explicit empty
-// array overrides rather than falls through.
+// array overrides rather than falls through. The clone keeps that distinction,
+// because cloning nil yields nil, and leaves the result independent.
 func pickSlice[T any](workspace, global []T) []T {
 	if workspace != nil {
-		return workspace
+		return slices.Clone(workspace)
 	}
-	return global
+	return slices.Clone(global)
 }
