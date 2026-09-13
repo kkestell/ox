@@ -213,10 +213,11 @@ response is the completion signal.
 Turn execution stays within a JSON-RPC request lifecycle: ordinary turns run
 under `session/prompt`, and recovered turns run under `session/load`. The model
 and independent tools or children may run concurrently where their contracts
-allow it, while session mutation and conflicting tool calls remain serialized.
-Cancellation reaches provider streams, child loops, permission callbacks, and
-whole shell process groups. The resulting primary terminal state is persisted
-before the owning request returns.
+allow it, while session mutation stays serialized. Each loop dispatches its own
+conflicting tool calls one at a time; a child's tool call never waits on the
+primary agent or on another child. Cancellation reaches provider streams, child
+loops, permission callbacks, and whole shell process groups. The resulting
+primary terminal state is persisted before the owning request returns.
 
 Each claimed live turn has one diagnostic scope when tracing is enabled.
 Recovered work uses the original durable turn identifier, while replay of

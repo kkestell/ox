@@ -1103,15 +1103,7 @@ func (a *Agent) executeOne(
 ) (result toolResult) {
 	value, events, turn := run.session, run.events, run.active.trace
 	index, ok := tools.byName[call.Function.Name]
-	if ok && !tools.tools[index].ParallelSafe {
-		value.exclusiveMu.Lock()
-		defer value.exclusiveMu.Unlock()
-		if ctx.Err() != nil {
-			return toolResult{
-				content: toolCancelledBeforeStart, failed: true, target: target,
-			}
-		}
-	} else if ctx.Err() != nil {
+	if ctx.Err() != nil {
 		return toolResult{
 			content: toolCancelledBeforeStart, failed: true, target: target,
 		}

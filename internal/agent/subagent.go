@@ -485,6 +485,9 @@ func (a *Agent) runSubagent(
 		}
 		results, err := a.executeSubagentCalls(ctx, run, group.tools, reads, completion.ToolCalls)
 		if err != nil {
+			if ctx.Err() != nil || errors.Is(err, context.Canceled) {
+				return subagentStatusCancelled, "", err
+			}
 			return subagentStatusFailed, "", err
 		}
 		for index, call := range completion.ToolCalls {

@@ -1744,8 +1744,6 @@ type session struct {
 	// approvalMu admits one permission request at a time, so parallel tool calls
 	// cannot present competing prompts for the same session.
 	approvalMu sync.Mutex
-	// exclusiveMu serializes tools that declare they cannot run beside another.
-	exclusiveMu sync.Mutex
 	// callIDsMu guards callIDs, the live-turn half of tool call ID uniqueness
 	// whose durable half is state.toolCallIDs.
 	callIDsMu sync.Mutex

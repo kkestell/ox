@@ -15,7 +15,9 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/creachadair/jrpc2"
 	"github.com/creachadair/jrpc2/channel"
@@ -29,6 +31,11 @@ import (
 	"github.com/kkestell/ox/internal/settings"
 	oxtools "github.com/kkestell/ox/internal/tools"
 )
+
+// subagentProgressLimit bounds how long an unblocked subagent may take to finish
+// two in-process provider exchanges, so a serialization regression reports
+// itself instead of stalling the package.
+const subagentProgressLimit = 30 * time.Second
 
 func TestPromptStreamsAndReplaysCompletedHistory(t *testing.T) {
 	var systemPrompt string
@@ -274,6 +281,164 @@ func TestConcurrentSubagentsExchangeMessagesAndReturnResults(t *testing.T) {
 	}
 }
 
+func TestOneSubagentsBlockingShellLeavesTheRestRunning(t *testing.T) {
+	workspace := t.TempDir()
+	gate := filepath.Join(workspace, "gate")
+	if err := syscall.Mkfifo(gate, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Opening the pipe for writing returns exactly when the blocked child's
+	// command opens it for reading, so the handshake needs no wall-clock guess.
+	blocking := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseGate := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(releaseGate)
+	go func() {
+		writer, err := os.OpenFile(gate, os.O_WRONLY, 0)
+		if err != nil {
+			return
+		}
+		close(blocking)
+		<-release
+		_, _ = writer.WriteString("go\n")
+		_ = writer.Close()
+	}()
+
+	// Serialization across children strands the primary agent too, so the
+	// deadline lives beside the turn rather than inside the model.
+	quick := make(chan struct{})
+	var quickOnce sync.Once
+	go func() {
+		select {
+		case <-quick:
+		case <-time.After(subagentProgressLimit):
+			t.Errorf("the quick child stalled while another child's shell blocked")
+			releaseGate()
+		}
+	}()
+
+	var mu sync.Mutex
+	rootRequests := 0
+	childRequests := map[string]int{}
+	quickID := ""
+
+	model := &routedModel{route: func(
+		ctx context.Context,
+		request openrouter.Request,
+		_ func(openrouter.Delta),
+	) (*openrouter.Completion, error) {
+		if strings.Contains(request.Messages[0].Content[0].Text, "<subagent-role>") {
+			task := request.Messages[1].Content[0].Text
+			mu.Lock()
+			childRequests[task]++
+			number := childRequests[task]
+			mu.Unlock()
+			if number == 1 {
+				if task == "block" {
+					return toolCompletionWithArguments(
+						"blocked-shell", "shell",
+						`{"command":"cat `+gate+`","timeout":600}`,
+					)(ctx, request, nil)
+				}
+				return toolCompletionWithArguments(
+					"quick-shell", "shell", `{"command":"printf quick"}`,
+				)(ctx, request, nil)
+			}
+			messages, err := conversation(request)
+			if err != nil {
+				return nil, err
+			}
+			if task == "quick" {
+				if !strings.Contains(messages[len(messages)-1].Content[0].Text, "quick") {
+					return nil, errors.New("quick child never saw its shell output")
+				}
+				quickOnce.Do(func() { close(quick) })
+				return completion("quick done"), nil
+			}
+			return completion("blocked done"), nil
+		}
+
+		mu.Lock()
+		rootRequests++
+		number := rootRequests
+		mu.Unlock()
+		switch number {
+		case 1:
+			return toolCompletionWithArguments(
+				"start-block", "subagent_start", `{"name":"block","task":"block"}`,
+			)(ctx, request, nil)
+		case 2:
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-blocking:
+			}
+			return toolCompletionWithArguments(
+				"start-quick", "subagent_start", `{"name":"quick","task":"quick"}`,
+			)(ctx, request, nil)
+		case 3:
+			messages, err := conversation(request)
+			if err != nil {
+				return nil, err
+			}
+			for _, message := range messages {
+				if message.Role != openrouter.RoleTool {
+					continue
+				}
+				var result struct {
+					Subagents []agent.SubagentSnapshot `json:"subagents"`
+				}
+				if json.Unmarshal([]byte(message.Content[0].Text), &result) == nil &&
+					len(result.Subagents) == 1 && result.Subagents[0].Name == "quick" {
+					quickID = result.Subagents[0].ID
+				}
+			}
+			if quickID == "" {
+				return nil, errors.New("start result omitted the quick child's ID")
+			}
+			return toolCompletionWithArguments(
+				"wait-quick", "subagent_wait", `{"ids":["`+quickID+`"]}`,
+			)(ctx, request, nil)
+		case 4:
+			messages, err := conversation(request)
+			if err != nil {
+				return nil, err
+			}
+			if !strings.Contains(messages[len(messages)-1].Content[0].Text, "quick done") {
+				return nil, errors.New("wait result omitted the quick child's final answer")
+			}
+			releaseGate()
+			return completion("parent done"), nil
+		default:
+			return nil, fmt.Errorf("unexpected primary request %d", number)
+		}
+	}}
+
+	harness := newHarnessWithCallback(t, agent.Config{
+		ModelOverride: "test/model",
+		Client:        model,
+		Tools:         oxtools.All(),
+	}, func(_ context.Context, request *jrpc2.Request) (any, error) {
+		if request.Method() != acp.MethodSessionRequestPermission {
+			return nil, jrpc2.Errorf(jrpc2.MethodNotFound, "unknown callback")
+		}
+		return acp.RequestPermissionResponse{Outcome: acp.RequestPermissionOutcome{
+			Outcome: "selected", OptionID: "allow_once",
+		}}, nil
+	})
+	sessionID := harness.newSessionIn(t, workspace, nil)
+	response := harness.prompt(t, sessionID, "delegate")
+	if response.StopReason != acp.StopReasonEndTurn {
+		t.Fatalf("stop reason = %q", response.StopReason)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if childRequests["quick"] != 2 {
+		t.Fatalf("quick child requests = %d", childRequests["quick"])
+	}
+}
+
 func TestSubagentReportsAndStopsWhileRunning(t *testing.T) {
 	childBlocked := make(chan struct{})
 	var blockedOnce sync.Once
@@ -369,6 +534,125 @@ func TestSubagentReportsAndStopsWhileRunning(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 	if rootRequests != 5 || childRequests != 2 {
+		t.Fatalf("requests = root %d, child %d", rootRequests, childRequests)
+	}
+}
+
+func TestStoppingASubagentInsideAToolCallReportsCancelled(t *testing.T) {
+	workspace := t.TempDir()
+	gate := filepath.Join(workspace, "gate")
+	if err := syscall.Mkfifo(gate, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	blocking := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
+	go func() {
+		writer, err := os.OpenFile(gate, os.O_WRONLY, 0)
+		if err != nil {
+			return
+		}
+		close(blocking)
+		<-release
+		_ = writer.Close()
+	}()
+
+	var mu sync.Mutex
+	rootRequests := 0
+	childRequests := 0
+	childID := ""
+	model := &routedModel{route: func(
+		ctx context.Context,
+		request openrouter.Request,
+		_ func(openrouter.Delta),
+	) (*openrouter.Completion, error) {
+		if strings.Contains(request.Messages[0].Content[0].Text, "<subagent-role>") {
+			mu.Lock()
+			childRequests++
+			mu.Unlock()
+			return toolCompletionWithArguments(
+				"blocked-shell", "shell", `{"command":"cat `+gate+`","timeout":600}`,
+			)(ctx, request, nil)
+		}
+
+		mu.Lock()
+		rootRequests++
+		requestNumber := rootRequests
+		mu.Unlock()
+		switch requestNumber {
+		case 1:
+			return toolCompletionWithArguments(
+				"start", "subagent_start", `{"name":"sleeper","task":"block"}`,
+			)(ctx, request, nil)
+		case 2:
+			messages, err := conversation(request)
+			if err != nil {
+				return nil, err
+			}
+			var result struct {
+				Subagents []agent.SubagentSnapshot `json:"subagents"`
+			}
+			if err := json.Unmarshal(
+				[]byte(messages[len(messages)-1].Content[0].Text), &result,
+			); err != nil || len(result.Subagents) != 1 {
+				return nil, errors.New("start result omitted child")
+			}
+			childID = result.Subagents[0].ID
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-blocking:
+			}
+			return toolCompletionWithArguments(
+				"stop", "subagent_stop", `{"id":"`+childID+`"}`,
+			)(ctx, request, nil)
+		case 3:
+			return toolCompletionWithArguments(
+				"wait-stop", "subagent_wait", `{"ids":["`+childID+`"]}`,
+			)(ctx, request, nil)
+		case 4:
+			messages, err := conversation(request)
+			if err != nil {
+				return nil, err
+			}
+			var result struct {
+				Subagents []agent.SubagentSnapshot `json:"subagents"`
+			}
+			if err := json.Unmarshal(
+				[]byte(messages[len(messages)-1].Content[0].Text), &result,
+			); err != nil || len(result.Subagents) != 1 {
+				return nil, errors.New("wait result omitted child")
+			}
+			if result.Subagents[0].Status != "cancelled" || result.Subagents[0].Error != "" {
+				return nil, fmt.Errorf("stopped child = %#v", result.Subagents[0])
+			}
+			return completion("stopped"), nil
+		default:
+			return nil, fmt.Errorf("unexpected primary request %d", requestNumber)
+		}
+	}}
+
+	harness := newHarnessWithCallback(t, agent.Config{
+		ModelOverride: "test/model",
+		Client:        model,
+		Tools:         oxtools.All(),
+	}, func(_ context.Context, request *jrpc2.Request) (any, error) {
+		if request.Method() != acp.MethodSessionRequestPermission {
+			return nil, jrpc2.Errorf(jrpc2.MethodNotFound, "unknown callback")
+		}
+		return acp.RequestPermissionResponse{Outcome: acp.RequestPermissionOutcome{
+			Outcome: "selected", OptionID: "allow_once",
+		}}, nil
+	})
+	sessionID := harness.newSessionIn(t, workspace, nil)
+	response := harness.prompt(t, sessionID, "delegate and stop")
+	if response.StopReason != acp.StopReasonEndTurn {
+		t.Fatalf("stop reason = %q", response.StopReason)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if rootRequests != 4 || childRequests != 1 {
 		t.Fatalf("requests = root %d, child %d", rootRequests, childRequests)
 	}
 }

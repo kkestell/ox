@@ -56,8 +56,9 @@ turn. Children share the turn's frozen model and provider settings, workspace,
 session permission grants, executor selection, skills, memory, and MCP
 activation. They receive their own private conversation and read evidence. Every
 successful file mutation invalidates read evidence held by the primary agent and
-all live children, and tools that are unsafe to overlap remain serialized across
-the whole session.
+all live children. Tools that are unsafe to overlap are serialized within one
+loop's batch of calls; the primary agent and its children run their tools
+independently of one another.
 
 The primary agent can send a message only while a child is running. Messages
 join the child's conversation before its next provider request. When one arrives
@@ -340,7 +341,7 @@ namespaced; the original server and tool identity remain visible in ACP details.
 Every MCP tool call requires permission unless a session grant covers that
 specific server, tool, and unchanged definition. Server annotations are hints,
 not authority to bypass permissions or enable a tool in `plan` mode. Calls are
-serialized with other potentially mutating work in the same session. External
+serialized with other potentially mutating work in the same loop. External
 servers are not sandboxed by the workspace root.
 
 Tool schemas are frozen for an activation. Ox does not subscribe to catalog
