@@ -85,7 +85,11 @@ commit explicitly.
 
 ### Planning and completion review
 
-Write a plan in `eng/plans/` for every todo item before implementation. Use
+Roadmap maintenance does not require a plan. Add, remove, clarify, and reorder
+`eng/todo.md` items directly when requested. Do not create a plan merely to make
+a todo-list change.
+
+Before implementing a todo item, write its plan in `eng/plans/`. Use
 `eng/plans/TEMPLATE.md` as a scaffold, then keep the plan to the smallest useful
 set of source references, implementation tasks, and tests. Do not restate the
 todo list, architecture, repository rules, or standard validation commands.
@@ -95,7 +99,8 @@ After every top-level todo item is complete, run one completeness and
 simplification review before marking it complete. Fix its findings and rerun
 affected gates.
 
-Use a focused task workflow for small work that does not need a plan or commit.
+Small work outside the todo list may proceed without a plan. Whether to commit
+is determined only by the user's request.
 
 ### Prior art
 
@@ -224,11 +229,16 @@ provider check. Such checks use `deepseek/deepseek-v4-flash-0731` and no other
 model. Never expose the credential in output or commit it.
 
 The end-to-end harness builds outside Go's test cache, so always run tests with
-`-count=1`. Before considering behavior complete, run:
+`-count=1`. Before considering a behavior change complete, run:
 
 ```sh
 make check
 ```
+
+Choose validation from the changes made for the current task. Pre-existing or
+unrelated working-tree changes do not widen that scope, including when the user
+asks to commit the whole worktree. Inspect those changes before committing them,
+but do not assume responsibility for rerunning their validation.
 
 For documentation-only and filename-only work, run the focused documentation
 checks and inspect the diff instead of rebuilding or testing the binary.
