@@ -417,7 +417,7 @@ func TestPromptCompactsModelHistoryBeforeTheNextTurn(t *testing.T) {
 	recentAnswer := strings.Repeat("recent answer ", 100)
 	var ordinarySystemPrompt string
 	model := &scriptedModel{
-		entry: &openrouter.Model{ID: "test/model", ContextLength: 7600, SupportedParameters: []string{"tools"}},
+		entry: &openrouter.Model{ID: "test/model", ContextLength: 3800, SupportedParameters: []string{"tools"}},
 		scripts: []modelScript{
 			func(
 				_ context.Context,
@@ -524,7 +524,7 @@ func TestPromptCompactsWithinASingleToolLoop(t *testing.T) {
 	oldResult := strings.Repeat("old tool result ", 300)
 	recentResult := strings.Repeat("recent tool result ", 40)
 	model := &scriptedModel{
-		entry: &openrouter.Model{ID: "test/model", ContextLength: 9600, SupportedParameters: []string{"tools"}},
+		entry: &openrouter.Model{ID: "test/model", ContextLength: 4800, SupportedParameters: []string{"tools"}},
 		scripts: []modelScript{
 			func(context.Context, openrouter.Request, func(openrouter.Delta)) (*openrouter.Completion, error) {
 				result := completion("")
@@ -628,7 +628,7 @@ func TestPromptCompactionFailureLeavesHistoryUntouched(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			model := &scriptedModel{
-				entry:   &openrouter.Model{ID: "test/model", ContextLength: 7600},
+				entry:   &openrouter.Model{ID: "test/model", ContextLength: 3800},
 				scripts: compactionAtomicityScripts(test.summary, ""),
 			}
 			harness := newAgentHarness(t, model, nil)
@@ -648,7 +648,7 @@ func TestPromptCompactionFailureLeavesHistoryUntouched(t *testing.T) {
 func TestPromptCompactionCancellationLeavesHistoryUntouched(t *testing.T) {
 	started := make(chan struct{})
 	model := &scriptedModel{
-		entry: &openrouter.Model{ID: "test/model", ContextLength: 7600},
+		entry: &openrouter.Model{ID: "test/model", ContextLength: 3800},
 		scripts: compactionAtomicityScripts(func(
 			ctx context.Context,
 			_ openrouter.Request,

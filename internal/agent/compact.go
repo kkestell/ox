@@ -521,15 +521,19 @@ func mediaBlockTokens(blockType string) int {
 	return 0
 }
 
+// bytesPerToken converts a serialized request's bytes into the unit a model's
+// context window is expressed in. OpenRouter routes across tokenizer families,
+// so no local tokenizer can count every configured model exactly. Ordinary
+// prose runs about four bytes per token and code or dense punctuation about
+// three, so two stays above what a model actually charges without the fourfold
+// inflation of calling every byte a token.
+const bytesPerToken = 2
+
 func bytesToTokens(bytes int) int {
 	if bytes < 0 {
 		panic("token estimate byte count cannot be negative")
 	}
-	// OpenRouter routes across tokenizer families, so no single local tokenizer
-	// can count every configured model exactly. Every token must encode at least
-	// one byte of the serialized request. Treating each byte as a token is thus a
-	// genuine upper bound, including dense punctuation and multibyte text.
-	return bytes
+	return (bytes + bytesPerToken - 1) / bytesPerToken
 }
 
 func renderCompactionTranscript(messages []openrouter.Message) string {

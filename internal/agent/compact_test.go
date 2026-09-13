@@ -133,7 +133,10 @@ func TestEstimateRequestIncludesProtectedPrefix(t *testing.T) {
 	}
 }
 
-func TestEstimateRequestConservativelySizesAdversarialText(t *testing.T) {
+// TestEstimateRequestSizesDenseTextInTokens checks that an estimate is a token
+// count derived from the serialized request rather than its byte count, and
+// that the conversion still leaves headroom for text far denser than prose.
+func TestEstimateRequestSizesDenseTextInTokens(t *testing.T) {
 	for _, text := range []string{
 		strings.Repeat("!@#$%^&*()_+{}[]:;,.?/|", 40),
 		strings.Repeat("漢字🙂e\u0301", 100),
@@ -145,12 +148,41 @@ func TestEstimateRequestConservativelySizesAdversarialText(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if occupancy < len(text) {
-			t.Fatalf("occupancy = %d, want at least %d source bytes", occupancy, len(text))
+		if occupancy < len(text)/bytesPerToken {
+			t.Fatalf("occupancy = %d, want at least %d tokens for %d dense bytes",
+				occupancy, len(text)/bytesPerToken, len(text))
 		}
-		if _, err := planRequestAdmission(request, len(text)/2); err == nil {
+		if occupancy >= len(text) {
+			t.Fatalf("occupancy = %d for %d bytes, want a token count rather than a byte count",
+				occupancy, len(text))
+		}
+		if _, err := planRequestAdmission(request, occupancy/2); err == nil {
 			t.Fatalf("dense %q request fit an undersized context", text[:min(len(text), 12)])
 		}
+	}
+}
+
+// TestCompactionWaitsForTheDocumentedShareOfTheWindow pins the unit the
+// threshold is expressed in: a conversation that fills half the window must not
+// trigger compaction at an eighty percent threshold.
+func TestCompactionWaitsForTheDocumentedShareOfTheWindow(t *testing.T) {
+	const contextWindow = 100_000
+	half := strings.Repeat("word ", contextWindow*bytesPerToken/2/len("word "))
+	request := admissionTestRequest([]openrouter.Message{
+		textMessage(openrouter.RoleUser, "do the task"),
+		textMessage(openrouter.RoleAssistant, half),
+		textMessage(openrouter.RoleUser, "continue"),
+	})
+	planned, err := planRequestAdmission(request, contextWindow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if planned.plan != nil {
+		t.Fatalf("compaction planned at occupancy %d of a %d token window",
+			planned.occupancy, contextWindow)
+	}
+	if planned.occupancy < contextWindow/4 || planned.occupancy > contextWindow*3/4 {
+		t.Fatalf("occupancy = %d, want roughly half of %d", planned.occupancy, contextWindow)
 	}
 }
 

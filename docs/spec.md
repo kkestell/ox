@@ -209,7 +209,10 @@ Before each provider request, including tool continuations and child requests,
 Ox budgets the full request plus the requested output against the selected
 model's context window. Estimates include the pending prompt, instructions, tool
 schemas, and multimodal content. When exact token counts are unavailable, Ox
-uses conservative estimates and does not claim exact occupancy.
+uses conservative estimates and does not claim exact occupancy. Occupancy is
+always a token count: Ox derives one from the serialized request at a fixed,
+deliberately low bytes-per-token ratio, and replaces it with the provider's
+reported prompt tokens once a turn reports them.
 
 Compaction preserves the system instructions, the first user request, and
 complete recent assistant/tool groups. It never separates a tool call from its
