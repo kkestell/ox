@@ -455,21 +455,6 @@ func TestOpenParentCompactionCheckpointSurvivesCrash(t *testing.T) {
 	})
 }
 
-func assertProviderToolPairs(t *testing.T, messages []modelMessage) {
-	t.Helper()
-	known := make(map[string]struct{})
-	for _, message := range messages {
-		for _, call := range message.ToolCalls {
-			known[call.ID] = struct{}{}
-		}
-		if message.Role == "tool" {
-			if _, ok := known[message.ToolCallID]; !ok {
-				t.Fatalf("tool result %q has no preceding provider call", message.ToolCallID)
-			}
-		}
-	}
-}
-
 func assertReplayUsage(t *testing.T, replay []sessionNotification, size uint64, minimumCost float64) {
 	t.Helper()
 	var seen bool

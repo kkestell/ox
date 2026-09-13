@@ -16,10 +16,11 @@ correctness, performance, testing.
 `publishUsage` reads `value.state.cost` and calls
 `value.state.turnConfiguration()` without holding `stateMu`, and `Prompt` reads
 `value.state.cwd` the same way when it builds the event adapter.
-`SetSessionConfigOption` reaches `commitLocked`, which assigns `value.state =
-next` under `stateMu`, and it is gated only by `claimConfigChange`, which
-refuses nothing but a closing session. A live turn and a configuration change
-therefore run concurrently by design.
+`SetSessionConfigOption` reaches `commitLocked`, which assigns
+`value.state =
+next` under `stateMu`, and it is gated only by
+`claimConfigChange`, which refuses nothing but a closing session. A live turn
+and a configuration change therefore run concurrently by design.
 
 Failure scenario: a client sends `session/set_config_option` (model or mode)
 while `session/prompt` is streaming. The turn goroutine reads a `durableState`
@@ -423,9 +424,9 @@ and the line where scanning stopped.
   tool-result publication loop are the two natural extractions.
 - `internal/workspace/workspace.go:301` (`isEscape`) detects a confinement
   escape with `strings.Contains(pathErr.Err.Error(), "escapes from parent")`.
-  Nothing breaks if the stdlib rewords that message — the operation still
-  fails — but the user-facing error silently degrades from "outside the
-  workspace" to "cannot access". Worth a comment naming the dependency.
+  Nothing breaks if the stdlib rewords that message — the operation still fails
+  — but the user-facing error silently degrades from "outside the workspace" to
+  "cannot access". Worth a comment naming the dependency.
 - `internal/openrouter/client.go:144` classifies a retryable failure with
   `strings.Contains(attemptErr.Error(), "read OpenRouter stream")` two lines
   after branching on the `errStreamEnded` sentinel. Wrap the same site in
@@ -439,7 +440,7 @@ and the line where scanning stopped.
 ### Correctness
 
 - `internal/tools/text.go:48` (`restoreText`): when the original file had no
-  trailing newline, the else branch strips *all* trailing line endings from the
+  trailing newline, the else branch strips _all_ trailing line endings from the
   result, not just one. An edit whose `new_string` deliberately ends in blank
   lines loses them. The symmetric branch adds at most one.
 - `internal/tools/text.go:40` (`convertEnding`) normalizes the whole file to the
@@ -516,11 +517,11 @@ These are gaps in what the suite proves, not defects in the tests that exist.
   delegated-read with local-write, but seeds the client with the same bytes as
   disk. Making the client content differ from the file turns it into the
   regression test for finding 13.
-- **Six `internal/e2e` tests fail.**
-  `TestMCPChildDispatchThroughShippedBinary` (`mcp_test.go:232`),
-  `TestOpenParentCompactionCheckpointSurvivesCrash` (`session_test.go:392`),
-  `TestOpenChildCompactionCheckpointSurvivesCrash` (`session_test.go:458`),
-  `TestRestartDoesNotRepeatStartedChildTool` (`session_test.go:981`), and
+- **Six `internal/e2e` tests fail.** `TestMCPChildDispatchThroughShippedBinary`
+  (`mcp_test.go:232`), `TestOpenParentCompactionCheckpointSurvivesCrash`
+  (`session_test.go:392`), `TestOpenChildCompactionCheckpointSurvivesCrash`
+  (`session_test.go:458`), `TestRestartDoesNotRepeatStartedChildTool`
+  (`session_test.go:981`), and
   `TestDiagnosticTraceClassifiesCompactionSubagentAndCancellation`
   (`trace_test.go:167`) all drive `task_add` and `task_run`, which no longer
   exist. `TestSessionCompactionSurvivesRestartWithoutChangingReplay`
@@ -543,7 +544,7 @@ These are gaps in what the suite proves, not defects in the tests that exist.
   tool turn. Reported two races against `agent.go:1230`, from `loop.go:1702` and
   `agent.go:1380`. Removed after confirmation.
 - Rule reproduction for finding 2: a temporary test in `internal/shellrules`
-  feeding `Suggest` the commands `*`, `* `, `?`, and `[a-z]` and passing each
+  feeding `Suggest` the commands `*`, `*`, `?`, and `[a-z]` and passing each
   result to `Allowed`. Removed after confirmation.
 - Overlap reproduction for finding 8: a standalone program comparing
   `matchSites` against `strings.ReplaceAll` on `"aaa"` / `"aa"`.
@@ -571,8 +572,9 @@ These are gaps in what the suite proves, not defects in the tests that exist.
   ACP request is an acceptable place for that data depends on the client's
   logging, which is outside this corpus. Settling it needs a stated trust model
   for client request logs, which no document in the repository provides.
-- `internal/agent/memory.go` (`validateMemoryFact`) requires `ExpiresAt ==
-  CreatedAt + memoryRetention` exactly, so changing `memoryRetention` makes
-  every stored fact fail validation and the whole document unloadable. With no
-  users this is harmless today; it is listed only because the failure mode is
-  total rather than partial.
+- `internal/agent/memory.go` (`validateMemoryFact`) requires
+  `ExpiresAt ==
+  CreatedAt + memoryRetention` exactly, so changing
+  `memoryRetention` makes every stored fact fail validation and the whole
+  document unloadable. With no users this is harmless today; it is listed only
+  because the failure mode is total rather than partial.

@@ -23,7 +23,7 @@
   - [x] Verify client-owned worktrees
 - [x] Simplify the agent runtime
   - [x] Remove delegated tasks and child-agent runtime
-- [ ] Address findings in the
+- [x] Address findings in the
       [consolidated codebase review](reviews/2026-09-12-consolidated-codebase-review.md)
   - [x] Synchronize live-turn session-state access and cover concurrent
         configuration changes (F01, F36)

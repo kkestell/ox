@@ -2150,27 +2150,6 @@ type repeatingToolModel struct {
 	requests int
 }
 
-type capturingCompletionModel struct {
-	completion *openrouter.Completion
-	requests   []openrouter.Request
-}
-
-func (m *capturingCompletionModel) Stream(
-	_ context.Context,
-	request openrouter.Request,
-	_ func(openrouter.Delta),
-) (*openrouter.Completion, error) {
-	m.requests = append(m.requests, request)
-	return m.completion, nil
-}
-
-func (m *capturingCompletionModel) ModelInfo(
-	_ context.Context,
-	id string,
-) (*openrouter.Model, error) {
-	return testModel(id, 2400), nil
-}
-
 // staticCompletionModel answers every request with one completion. entry and
 // entryErr stand in for the catalog, so a test can present a model that declares
 // reasoning, one that does not, or an id the catalog does not know.

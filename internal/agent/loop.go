@@ -428,28 +428,6 @@ func validateToolCallIDs(value *session, calls []openrouter.ToolCall) error {
 	return nil
 }
 
-func allocateToolCallID(value *session) (string, error) {
-	for {
-		id, err := randomID()
-		if err != nil {
-			return "", err
-		}
-		value.callIDsMu.Lock()
-		value.stateMu.Lock()
-		_, durable := value.state.toolCallIDs[id]
-		value.stateMu.Unlock()
-		if _, live := value.callIDs[id]; !durable && !live {
-			if value.callIDs == nil {
-				value.callIDs = make(map[string]struct{})
-			}
-			value.callIDs[id] = struct{}{}
-			value.callIDsMu.Unlock()
-			return id, nil
-		}
-		value.callIDsMu.Unlock()
-	}
-}
-
 func (a *Agent) finishCancelled(
 	value *session,
 	active *activeTurn,

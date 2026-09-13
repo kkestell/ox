@@ -78,7 +78,6 @@ type modelResponse struct {
 	prompt   string
 	status   int
 	body     string
-	respond  func(modelRequest) string
 	started  chan struct{}
 	rest     chan string
 	consumed bool
@@ -151,12 +150,6 @@ func withModelContextWindow(model *mockModel, contextWindow int) startOption {
 
 func (m *mockModel) queue(body string) {
 	m.queueFor("", body)
-}
-
-func (m *mockModel) queueDynamic(respond func(modelRequest) string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.responses = append(m.responses, &modelResponse{respond: respond})
 }
 
 // queueFor queues a response for the request whose final message has prompt.
@@ -282,9 +275,6 @@ func (m *mockModel) serveHTTP(writer http.ResponseWriter, request *http.Request)
 	}
 	m.mu.Unlock()
 	body := response.body
-	if response.respond != nil {
-		body = response.respond(decoded)
-	}
 
 	if response.status != 0 {
 		http.Error(writer, response.body, response.status)
