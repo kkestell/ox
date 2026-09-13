@@ -404,8 +404,7 @@ func (a *Agent) LoadSession(
 		request.CWD,
 		request.AdditionalDirectories,
 		request.MCPServers,
-		true,
-		true,
+		activationOptions{requireMCPServers: true, recoverPendingPermission: true},
 	)
 	if err != nil {
 		return acp.LoadSessionResponse{}, err
@@ -466,38 +465,14 @@ func (a *Agent) recoverSession(ctx context.Context, value *session) error {
 	})
 	defer adapter.close()
 	fileSystem, terminal := a.promptExecutors(server, value)
-	events := make(chan event)
-	outcome := make(chan loopOutcome, 1)
-	go func() {
-		outcome <- a.resume(
-			runCtx, value, active, permissionCallback(server, active.trace),
-			elicitationCallback(server), fileSystem, terminal, events,
-		)
-		close(events)
-	}()
-
-	var notifyErr error
-	for events != nil {
-		select {
-		case current, ok := <-events:
-			if !ok {
-				events = nil
-				continue
-			}
-			if notifyErr == nil {
-				if err := adapter.handle(current); err != nil {
-					notifyErr = a.adapterFailed(value.id, active, err)
-				}
-			}
-		case <-adapter.tick():
-			if notifyErr == nil {
-				if err := adapter.flushDirty(); err != nil {
-					notifyErr = a.adapterFailed(value.id, active, err)
-				}
-			}
-		}
-	}
-	result := <-outcome
+	result, notifyErr := a.relayTurn(runCtx, turnRun{
+		session:    value,
+		active:     active,
+		ask:        permissionCallback(server, active.trace),
+		elicit:     elicitationCallback(server),
+		fileSystem: fileSystem,
+		terminal:   terminal,
+	}, adapter, a.resume)
 	release()
 	released = true
 	if notifyErr != nil {
@@ -514,6 +489,48 @@ func (a *Agent) recoverSession(ctx context.Context, value *session) error {
 	}
 	a.logger.Info("recovered turn stopped", "session_id", value.id, "turn_id", turnID)
 	return nil
+}
+
+// relayTurn runs one turn while forwarding its updates to the client. It owns
+// the update channel so the turn and the relay cannot disagree about when the
+// stream ends, and it reports the first notification failure separately from
+// the turn's own outcome.
+func (a *Agent) relayTurn(
+	ctx context.Context,
+	run turnRun,
+	adapter *eventAdapter,
+	drive func(context.Context, turnRun) loopOutcome,
+) (loopOutcome, error) {
+	events := make(chan event)
+	run.events = events
+	outcome := make(chan loopOutcome, 1)
+	go func() {
+		outcome <- drive(ctx, run)
+		close(events)
+	}()
+
+	var notifyErr error
+	for relaying := (<-chan event)(events); relaying != nil; {
+		select {
+		case current, ok := <-relaying:
+			if !ok {
+				relaying = nil
+				continue
+			}
+			if notifyErr == nil {
+				if err := adapter.handle(current); err != nil {
+					notifyErr = a.adapterFailed(run.session.id, run.active, err)
+				}
+			}
+		case <-adapter.tick():
+			if notifyErr == nil {
+				if err := adapter.flushDirty(); err != nil {
+					notifyErr = a.adapterFailed(run.session.id, run.active, err)
+				}
+			}
+		}
+	}
+	return <-outcome, notifyErr
 }
 
 func permissionCallback(server *jrpc2.Server, turn diagnostictrace.Turn) requestPermission {
@@ -573,8 +590,7 @@ func (a *Agent) ResumeSession(
 		request.CWD,
 		request.AdditionalDirectories,
 		request.MCPServers,
-		false,
-		false,
+		activationOptions{},
 	)
 	if err != nil {
 		return acp.ResumeSessionResponse{}, err
@@ -583,14 +599,22 @@ func (a *Agent) ResumeSession(
 	return acp.ResumeSessionResponse{ConfigOptions: a.configOptions(value)}, nil
 }
 
+// activationOptions names how a session is being reactivated. session/load
+// resupplies MCP servers and reissues a permission request the restart
+// interrupted; session/resume does neither and refuses a session that is
+// waiting on one.
+type activationOptions struct {
+	requireMCPServers        bool
+	recoverPendingPermission bool
+}
+
 func (a *Agent) activateSession(
 	ctx context.Context,
 	id string,
 	cwd string,
 	additionalDirectories []string,
 	mcpServers []acp.MCPServer,
-	requireMCP bool,
-	recoverSuspended bool,
+	options activationOptions,
 ) (*session, error) {
 	if !validSessionID(id) {
 		return nil, jrpc2.Errorf(jrpc2.InvalidParams, "invalid session ID")
@@ -599,7 +623,7 @@ func (a *Agent) activateSession(
 		cwd,
 		additionalDirectories,
 		mcpServers,
-		requireMCP,
+		options.requireMCPServers,
 	)
 	if err != nil {
 		return nil, err
@@ -634,7 +658,7 @@ func (a *Agent) activateSession(
 			return nil, fmt.Errorf("recover interrupted session: %w", err)
 		}
 	}
-	if pendingPermission && !recoverSuspended {
+	if pendingPermission && !options.recoverPendingPermission {
 		return nil, jrpc2.Errorf(
 			jrpc2.InvalidParams,
 			"session has a pending permission request; load it before resuming",
@@ -1435,38 +1459,14 @@ func (a *Agent) Prompt(
 		"turn_id", turnID,
 		"message_id", messageID,
 	)
-	events := make(chan event)
-	outcome := make(chan loopOutcome, 1)
-	go func() {
-		outcome <- a.run(
-			runCtx, value, active, requestPermission, requestElicitation,
-			fileSystem, terminal, events,
-		)
-		close(events)
-	}()
-
-	var notifyErr error
-	for events != nil {
-		select {
-		case current, ok := <-events:
-			if !ok {
-				events = nil
-				continue
-			}
-			if notifyErr == nil {
-				if err := adapter.handle(current); err != nil {
-					notifyErr = a.adapterFailed(value.id, active, err)
-				}
-			}
-		case <-adapter.tick():
-			if notifyErr == nil {
-				if err := adapter.flushDirty(); err != nil {
-					notifyErr = a.adapterFailed(value.id, active, err)
-				}
-			}
-		}
-	}
-	result := <-outcome
+	result, notifyErr := a.relayTurn(runCtx, turnRun{
+		session:    value,
+		active:     active,
+		ask:        requestPermission,
+		elicit:     requestElicitation,
+		fileSystem: fileSystem,
+		terminal:   terminal,
+	}, adapter, a.run)
 	cancelledByClient := release()
 	released = true
 	if notifyErr != nil {

@@ -48,54 +48,48 @@ type requestElicitation func(
 	acp.CreateElicitationRequest,
 ) (acp.CreateElicitationResponse, error)
 
-func (a *Agent) run(
-	ctx context.Context,
-	value *session,
-	active *activeTurn,
-	ask requestPermission,
-	elicit requestElicitation,
-	fileSystem ClientFileSystem,
-	terminal ClientTerminal,
-	events chan<- event,
-) loopOutcome {
-	return a.runFrom(
-		ctx, value, active, ask, elicit, fileSystem, terminal, events, 1, nil, false,
-	)
+// turnRun is the fixed context of one turn: the session it belongs to, the
+// claimed turn, the client callbacks it may use, and the channel its updates
+// leave by. The turn's diagnostic trace comes from the claimed turn.
+type turnRun struct {
+	session    *session
+	active     *activeTurn
+	ask        requestPermission
+	elicit     requestElicitation
+	fileSystem ClientFileSystem
+	terminal   ClientTerminal
+	events     chan<- event
 }
 
-func (a *Agent) resume(
-	ctx context.Context,
-	value *session,
-	active *activeTurn,
-	ask requestPermission,
-	elicit requestElicitation,
-	fileSystem ClientFileSystem,
-	terminal ClientTerminal,
-	events chan<- event,
-) loopOutcome {
-	suspended := value.suspendedExchange()
-	if suspended == nil {
+// turnStart says where a turn begins. A new turn starts at its first provider
+// request; a turn recovered from a restart continues the exchange it was
+// interrupted in and re-asks the permission request that was lost with it.
+type turnStart struct {
+	request int
+	pending *suspendedModelExchangeRecord
+	reissue bool
+}
+
+func (a *Agent) run(ctx context.Context, run turnRun) loopOutcome {
+	return a.runFrom(ctx, run, turnStart{request: 1})
+}
+
+func (a *Agent) resume(ctx context.Context, run turnRun) loopOutcome {
+	pending := run.session.suspendedExchange()
+	if pending == nil {
 		panic("resume called without a suspended model exchange")
 	}
-	return a.runFrom(
-		ctx, value, active, ask, elicit, fileSystem, terminal, events,
-		suspended.RequestCount, suspended, true,
-	)
+	return a.runFrom(ctx, run, turnStart{
+		request: pending.RequestCount, pending: pending, reissue: true,
+	})
 }
 
-func (a *Agent) runFrom(
-	ctx context.Context,
-	value *session,
-	active *activeTurn,
-	ask requestPermission,
-	elicit requestElicitation,
-	fileSystem ClientFileSystem,
-	terminal ClientTerminal,
-	events chan<- event,
-	startRequest int,
-	suspended *suspendedModelExchangeRecord,
-	reissue bool,
-) loopOutcome {
+func (a *Agent) runFrom(ctx context.Context, run turnRun, start turnStart) loopOutcome {
+	value, active, events := run.session, run.active, run.events
+	// Copies, because the loop decides these as it goes and the start says only
+	// what the caller asked for.
+	suspended, reissue := start.pending, start.reissue
+	startRequest := start.request
 	// The fingerprint hashes the turn's frozen configuration, which no request in
 	// this loop can change, so it is computed once rather than per request.
 	fingerprint := a.prefixFingerprint(value)
@@ -277,8 +271,7 @@ func (a *Agent) runFrom(
 			)
 		}
 		results, batchCancelled, err := a.executeSuspendedBatch(
-			ctx, value, completion.ToolCalls, ask, elicit, fileSystem, terminal, events,
-			active.trace, reissue,
+			ctx, run, completion.ToolCalls, reissue,
 		)
 		if err != nil {
 			return loopOutcome{err: err}
@@ -770,16 +763,11 @@ type toolResult struct {
 
 func (a *Agent) executeSuspendedBatch(
 	ctx context.Context,
-	value *session,
+	run turnRun,
 	calls []openrouter.ToolCall,
-	ask requestPermission,
-	elicit requestElicitation,
-	fileSystem ClientFileSystem,
-	terminal ClientTerminal,
-	events chan<- event,
-	turn diagnostictrace.Turn,
 	reissue bool,
 ) ([]toolResult, bool, error) {
+	value := run.session
 	a.logger.Info("suspended tool batch started", "session_id", value.id, "calls", len(calls))
 	configuration := value.turnConfiguration()
 	tools := a.sessionPrimaryTools(value)
@@ -871,7 +859,7 @@ func (a *Agent) executeSuspendedBatch(
 			"generation", generation, "rule_scoped", tool.Suggest != nil,
 			"rule_derived", rule != "",
 		)
-		response, askErr := ask(ctx, pending.Request)
+		response, askErr := run.ask(ctx, pending.Request)
 		decision := decideApproval(response, askErr)
 		if ctx.Err() != nil {
 			decision = decisionCancelled
@@ -936,8 +924,7 @@ func (a *Agent) executeSuspendedBatch(
 	}
 	var err error
 	results, err = a.dispatchApprovedBatch(
-		ctx, value, tools, value.primaryFileReads(), calls, ask, elicit,
-		fileSystem, terminal, events, results, ready, turn,
+		ctx, run, tools, value.primaryFileReads(), calls, results, ready,
 	)
 	if err != nil {
 		return nil, false, err
@@ -1011,19 +998,14 @@ func (a *Agent) permissionRequest(
 
 func (a *Agent) dispatchApprovedBatch(
 	ctx context.Context,
-	value *session,
+	run turnRun,
 	tools toolSet,
 	reads FileReads,
 	calls []openrouter.ToolCall,
-	ask requestPermission,
-	elicit requestElicitation,
-	fileSystem ClientFileSystem,
-	terminal ClientTerminal,
-	events chan<- event,
 	results []toolResult,
 	ready []bool,
-	turn diagnostictrace.Turn,
 ) ([]toolResult, error) {
+	value := run.session
 	groups := a.partitionWith(tools, calls)
 	executed := make([]bool, len(calls))
 	for _, group := range groups {
@@ -1079,17 +1061,11 @@ func (a *Agent) dispatchApprovedBatch(
 				decision := results[current].approval
 				results[current] = a.executeOne(
 					groupCtx,
-					value,
+					run,
 					tools,
 					reads,
 					calls[current],
-					ask,
-					elicit,
-					fileSystem,
-					terminal,
-					events,
 					results[current].target,
-					turn,
 				)
 				results[current].approval = decision
 				if value.log != nil {
@@ -1178,18 +1154,13 @@ func (a *Agent) partitionWith(tools toolSet, calls []openrouter.ToolCall) []tool
 
 func (a *Agent) executeOne(
 	ctx context.Context,
-	value *session,
+	run turnRun,
 	tools toolSet,
 	reads FileReads,
 	call openrouter.ToolCall,
-	ask requestPermission,
-	elicit requestElicitation,
-	fileSystem ClientFileSystem,
-	terminal ClientTerminal,
-	events chan<- event,
 	target string,
-	turn diagnostictrace.Turn,
 ) (result toolResult) {
+	value, events, turn := run.session, run.events, run.active.trace
 	index, ok := tools.byName[call.Function.Name]
 	if ok && !tools.tools[index].ParallelSafe {
 		value.exclusiveMu.Lock()
@@ -1245,8 +1216,8 @@ func (a *Agent) executeOne(
 		SpillDir:   a.store.spillDir(value.id),
 		CallID:     call.ID,
 		FileReads:  reads,
-		FileSystem: fileSystem,
-		Terminal:   terminal,
+		FileSystem: run.fileSystem,
+		Terminal:   run.terminal,
 		LoadSkill: func(name string) (string, error) {
 			for _, reference := range catalog {
 				if reference.Name == name {
@@ -1264,7 +1235,7 @@ func (a *Agent) executeOne(
 		DeleteMemory: func(id string) error {
 			return a.memory.delete(root, id)
 		},
-		AskQuestion: elicit,
+		AskQuestion: run.elicit,
 		Emit: func(text string) {
 			events <- event{kind: eventToolOutput, call: call, text: text}
 		},

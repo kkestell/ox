@@ -906,16 +906,11 @@ func TestLoopStopsAtMaximumModelRequestsWithReplayableHistory(t *testing.T) {
 		for range events {
 		}
 	}()
-	outcome := instance.run(
-		context.Background(),
-		value,
-		&activeTurn{turnID: "turn-max"},
-		nil,
-		nil,
-		ClientFileSystem{},
-		ClientTerminal{},
-		events,
-	)
+	outcome := instance.run(context.Background(), turnRun{
+		session: value,
+		active:  &activeTurn{turnID: "turn-max"},
+		events:  events,
+	})
 	close(events)
 	wait.Wait()
 
@@ -983,16 +978,11 @@ func TestLoopDoesNotDispatchCallsFromIncompleteCompletions(t *testing.T) {
 				for range events {
 				}
 			}()
-			outcome := instance.run(
-				context.Background(),
-				value,
-				&activeTurn{turnID: "turn-finish"},
-				nil,
-				nil,
-				ClientFileSystem{},
-				ClientTerminal{},
-				events,
-			)
+			outcome := instance.run(context.Background(), turnRun{
+				session: value,
+				active:  &activeTurn{turnID: "turn-finish"},
+				events:  events,
+			})
 			close(events)
 
 			if executions != 0 {
@@ -1610,9 +1600,10 @@ func suspendedBatch(
 		t.Fatal(err)
 	}
 	results, _, err := instance.executeSuspendedBatch(
-		context.Background(), value, calls, ask, nil,
-		ClientFileSystem{}, ClientTerminal{}, events,
-		diagnostictrace.Turn{}, false,
+		context.Background(),
+		turnRun{session: value, active: &activeTurn{turnID: "turn"}, ask: ask, events: events},
+		calls,
+		false,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -1638,9 +1629,10 @@ func dispatchBatch(
 		ready[index] = true
 	}
 	results, err := instance.dispatchApprovedBatch(
-		ctx, value, tools, value.primaryFileReads(),
-		calls, nil, nil, ClientFileSystem{}, ClientTerminal{}, events,
-		make([]toolResult, len(calls)), ready, diagnostictrace.Turn{},
+		ctx,
+		turnRun{session: value, active: &activeTurn{}, events: events},
+		tools, value.primaryFileReads(), calls,
+		make([]toolResult, len(calls)), ready,
 	)
 	if err != nil {
 		panic(err)
@@ -1753,9 +1745,10 @@ func TestToolDispatchPersistenceFailureSkipsExecutor(t *testing.T) {
 	}
 	value.log.close()
 	_, err = instance.dispatchApprovedBatch(
-		context.Background(), value, instance.primaryTools, value.primaryFileReads(),
-		[]openrouter.ToolCall{call}, nil, nil, ClientFileSystem{}, ClientTerminal{},
-		make(chan event, 8), []toolResult{{}}, []bool{true}, diagnostictrace.Turn{},
+		context.Background(),
+		turnRun{session: value, active: &activeTurn{}, events: make(chan event, 8)},
+		instance.primaryTools, value.primaryFileReads(),
+		[]openrouter.ToolCall{call}, []toolResult{{}}, []bool{true},
 	)
 	if err == nil || !strings.Contains(err.Error(), "persist tool dispatch") {
 		t.Fatalf("dispatch error = %v", err)
@@ -1808,9 +1801,10 @@ func TestTodoPersistenceFailureEmitsNoPlanOrSuccessfulResult(t *testing.T) {
 	}
 	events := make(chan event, 8)
 	_, err = instance.dispatchApprovedBatch(
-		context.Background(), value, instance.primaryTools, value.primaryFileReads(),
-		[]openrouter.ToolCall{call}, nil, nil, ClientFileSystem{}, ClientTerminal{}, events,
-		[]toolResult{{}}, []bool{true}, diagnostictrace.Turn{},
+		context.Background(),
+		turnRun{session: value, active: &activeTurn{}, events: events},
+		instance.primaryTools, value.primaryFileReads(),
+		[]openrouter.ToolCall{call}, []toolResult{{}}, []bool{true},
 	)
 	if err == nil || !value.poisoned || value.state.todo != nil {
 		t.Fatalf("dispatch = error %v, poisoned %v, todo %#v", err, value.poisoned, value.state.todo)
@@ -1883,9 +1877,10 @@ func TestToolCompletionPersistenceFailureStopsLaterSibling(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = instance.dispatchApprovedBatch(
-		context.Background(), value, instance.primaryTools, value.primaryFileReads(),
-		calls, nil, nil, ClientFileSystem{}, ClientTerminal{}, make(chan event, 16),
-		make([]toolResult, len(calls)), []bool{true, true, true}, diagnostictrace.Turn{},
+		context.Background(),
+		turnRun{session: value, active: &activeTurn{}, events: make(chan event, 16)},
+		instance.primaryTools, value.primaryFileReads(),
+		calls, make([]toolResult, len(calls)), []bool{true, true, true},
 	)
 	if err == nil || !strings.Contains(err.Error(), "persist tool completion") {
 		t.Fatalf("completion error = %v", err)
@@ -1905,9 +1900,10 @@ func TestToolCompletionPersistenceFailureStopsLaterSibling(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := instance.dispatchApprovedBatch(
-		context.Background(), other, instance.primaryTools, other.primaryFileReads(),
-		[]openrouter.ToolCall{otherCall}, nil, nil, ClientFileSystem{}, ClientTerminal{},
-		make(chan event, 8), []toolResult{{}}, []bool{true}, diagnostictrace.Turn{},
+		context.Background(),
+		turnRun{session: other, active: &activeTurn{}, events: make(chan event, 8)},
+		instance.primaryTools, other.primaryFileReads(),
+		[]openrouter.ToolCall{otherCall}, []toolResult{{}}, []bool{true},
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -2056,15 +2052,19 @@ func TestRecoveredPermissionDoesNotRedispatchStartedSibling(t *testing.T) {
 		t.Fatal(err)
 	}
 	results, cancelled, err := instance.executeSuspendedBatch(
-		context.Background(), value, calls,
-		func(context.Context, acp.RequestPermissionRequest) (acp.RequestPermissionResponse, error) {
-			return acp.RequestPermissionResponse{Outcome: acp.RequestPermissionOutcome{
-				Outcome: "selected", OptionID: permissionAllowOnceID,
-			}}, nil
+		context.Background(),
+		turnRun{
+			session: value,
+			active:  &activeTurn{turnID: "turn"},
+			ask: func(context.Context, acp.RequestPermissionRequest) (acp.RequestPermissionResponse, error) {
+				return acp.RequestPermissionResponse{Outcome: acp.RequestPermissionOutcome{
+					Outcome: "selected", OptionID: permissionAllowOnceID,
+				}}, nil
+			},
+			events: make(chan event, 32),
 		},
-		nil,
-		ClientFileSystem{}, ClientTerminal{}, make(chan event, 32),
-		diagnostictrace.Turn{}, true,
+		calls,
+		true,
 	)
 	if err != nil || cancelled {
 		t.Fatalf("recovered batch = cancelled %v, error %v", cancelled, err)

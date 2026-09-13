@@ -52,7 +52,7 @@
   - [x] Centralize confined regular-file reads at the workspace boundary (F21)
   - [x] Remove delegated-task remnants and repair affected docs and tests (F22,
         F24, F31)
-  - [ ] Simplify turn orchestration and lifecycle plumbing (F23)
+  - [x] Simplify turn orchestration and lifecycle plumbing (F23)
   - [ ] Centralize process path resolution and XDG validation (F29)
   - [ ] Remove duplicate ACP activation validation (F30)
   - [ ] Deduplicate small safety and protocol rules (F32)
