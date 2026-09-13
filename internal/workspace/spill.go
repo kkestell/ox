@@ -249,7 +249,7 @@ func openSpillFile(dir, label, callID string) (*os.File, string, error) {
 		return nil, "", fmt.Errorf("failed to secure spill directory %s: %w", dir, err)
 	}
 	if createdDir {
-		if err := syncDir(filepath.Dir(dir)); err != nil {
+		if err := SyncDirectory(filepath.Dir(dir)); err != nil {
 			return nil, "", fmt.Errorf("failed to sync spill parent directory: %w", err)
 		}
 	}
@@ -270,7 +270,7 @@ func finishSpillFile(file *os.File, spillPath string) error {
 		return fmt.Errorf("failed to close spill file %s: %w", spillPath, err)
 	}
 	dir := filepath.Dir(spillPath)
-	if err := syncDir(dir); err != nil {
+	if err := SyncDirectory(dir); err != nil {
 		return fmt.Errorf("failed to sync spill directory %s: %w", dir, err)
 	}
 	return nil

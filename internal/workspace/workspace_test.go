@@ -294,15 +294,12 @@ func TestMutationThroughAnInternalSymlinkChangesItsTarget(t *testing.T) {
 
 func TestWriteReportsAPostRenameSyncFailureAsCommitted(t *testing.T) {
 	root := canonicalTempDir(t)
-	originalSyncDir := syncDir
-	syncDir = func(string) error {
+	files := NewWorkspace(root)
+	files.syncDirectory = func(string) error {
 		return errors.New("sync failed")
 	}
-	t.Cleanup(func() {
-		syncDir = originalSyncDir
-	})
 
-	created, err := NewWorkspace(root).WriteFile("file.txt", []byte("landed"))
+	created, err := files.WriteFile("file.txt", []byte("landed"))
 	if !created || !MutationCommitted(err) ||
 		!strings.Contains(err.Error(), "sync failed") {
 		t.Fatalf("created = %v, error = %v", created, err)
@@ -460,15 +457,12 @@ func TestConcurrentReplacementsBothComplete(t *testing.T) {
 func TestEditReportsAPostRenameSyncFailureAsCommitted(t *testing.T) {
 	root := canonicalTempDir(t)
 	writeFile(t, root, "notes.txt", "before")
-	originalSyncDir := syncDir
-	syncDir = func(string) error {
+	files := NewWorkspace(root)
+	files.syncDirectory = func(string) error {
 		return errors.New("sync failed")
 	}
-	t.Cleanup(func() {
-		syncDir = originalSyncDir
-	})
 
-	err := NewWorkspace(root).Edit("notes.txt", func(current []byte) ([]byte, error) {
+	err := files.Edit("notes.txt", func(current []byte) ([]byte, error) {
 		if string(current) != "before" {
 			return nil, fmt.Errorf("edit saw %q", current)
 		}

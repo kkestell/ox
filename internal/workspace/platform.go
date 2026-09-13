@@ -73,11 +73,7 @@ func openRegularFile(root *os.Root, name string) (*os.File, error) {
 
 // SyncDirectory flushes a directory's entries, so a file created or replaced
 // inside it survives a crash.
-func SyncDirectory(path string) error {
-	return syncDir(path)
-}
-
-var syncDir = func(path string) (err error) {
+func SyncDirectory(path string) (err error) {
 	dir, err := os.Open(path)
 	if err != nil {
 		return err

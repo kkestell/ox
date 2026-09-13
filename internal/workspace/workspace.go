@@ -16,6 +16,17 @@ import (
 type Workspace struct {
 	root     string
 	readable []string
+	// syncDirectory flushes the directory a replacement landed in. The zero
+	// value uses the real filesystem; a test supplies its own to prove what a
+	// mutation reports when it lands but cannot be made durable.
+	syncDirectory func(string) error
+}
+
+func (w *Workspace) syncParent(path string) error {
+	if w.syncDirectory != nil {
+		return w.syncDirectory(path)
+	}
+	return SyncDirectory(path)
 }
 
 type committedError struct {
@@ -173,7 +184,7 @@ func (w *Workspace) WriteFile(path string, data []byte) (bool, error) {
 	default:
 		mode = info.Mode().Perm()
 	}
-	committed, err := atomicReplace(root, name, data, mode)
+	committed, err := w.atomicReplace(root, name, data, mode)
 	if err != nil {
 		if committed {
 			return created, committedError{writeError(err, path)}
@@ -213,7 +224,7 @@ func (w *Workspace) Edit(path string, transform func([]byte) ([]byte, error)) er
 	if err != nil {
 		return err
 	}
-	committed, err := atomicReplace(root, name, replacement, info.Mode().Perm())
+	committed, err := w.atomicReplace(root, name, replacement, info.Mode().Perm())
 	if err != nil {
 		if committed {
 			return committedError{writeError(err, path)}
@@ -320,7 +331,7 @@ func isEscape(err error) bool {
 		strings.Contains(pathErr.Err.Error(), "escapes from parent")
 }
 
-func atomicReplace(
+func (w *Workspace) atomicReplace(
 	root *os.Root,
 	name string,
 	data []byte,
@@ -363,7 +374,7 @@ func atomicReplace(
 		return false, err
 	}
 	remove = false
-	return true, syncDir(filepath.Join(root.Name(), filepath.Dir(name)))
+	return true, w.syncParent(filepath.Join(root.Name(), filepath.Dir(name)))
 }
 
 func temporaryName(name string) (string, error) {

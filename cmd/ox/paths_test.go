@@ -1,7 +1,10 @@
 package main
 
 import (
+	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -73,5 +76,22 @@ func TestResolveProcessPathsPlacesEveryStore(t *testing.T) {
 	}
 	if paths.settings != filepath.Join("/home/user", ".config", "ox", "settings.json") {
 		t.Fatalf("settings path followed the data directory: %q", paths.settings)
+	}
+}
+
+// TestShippedBinaryDoesNotLinkTesting guards against a test helper named so
+// that Go does not treat it as one. A file whose name does not end in
+// _test.go compiles into the binary and drags its imports along with it.
+func TestShippedBinaryDoesNotLinkTesting(t *testing.T) {
+	command := exec.Command("go", "list", "-deps", ".")
+	command.Env = append(os.Environ(), "GOFLAGS=")
+	output, err := command.Output()
+	if err != nil {
+		t.Skipf("cannot list dependencies: %v", err)
+	}
+	for _, dependency := range strings.Split(strings.TrimSpace(string(output)), "\n") {
+		if dependency == "testing" {
+			t.Fatal("the ox binary depends on testing; a test helper is misnamed")
+		}
 	}
 }
