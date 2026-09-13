@@ -39,6 +39,7 @@ type Client struct {
 	catalogLoading bool
 	catalogReady   chan struct{}
 	catalog        *Catalog
+	catalogExpires time.Time
 }
 
 type streamRequest struct {

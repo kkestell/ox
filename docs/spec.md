@@ -356,15 +356,18 @@ servers are not sandboxed by the workspace root.
 
 Tool schemas are frozen for an activation. Ox does not subscribe to catalog
 changes; unavailable tools fail by name and new definitions require
-reactivation. Before dispatch Ox refreshes the selected definition and rejects a
-change rather than executing it under an old grant. Calls have a 120-second
-deadline. Cancellation sends a notification on stdio and closes the request
-response stream on HTTP, following the selected transport. These checks cannot
-prove that an external server implements the behavior its schema describes.
-Transport failure fails the tool without retrying a possibly executed call. Text
-and structured JSON results are bounded to a 1 MiB accepted payload and 64 KiB
-inline, with truncation explicit and accepted overflow stored as a spill.
-Unsupported content types produce a useful tool error.
+reactivation. A server that gains or redefines tools mid-session therefore
+cannot change the tools or system prompt a later request carries. Before
+dispatch Ox validates the selected definition against a listing of that server
+no more than a minute old and rejects a change rather than executing it under an
+old grant. Calls have a 120-second deadline. Cancellation sends a notification
+on stdio and closes the request response stream on HTTP, following the selected
+transport. These checks cannot prove that an external server implements the
+behavior its schema describes. Transport failure fails the tool without retrying
+a possibly executed call. Text and structured JSON results are bounded to a 1
+MiB accepted payload and 64 KiB inline, with truncation explicit and accepted
+overflow stored as a spill. Unsupported content types produce a useful tool
+error.
 
 Server command environments and HTTP headers remain in activation memory; secret
 values are never persisted or exposed to the model. Restart requires fresh

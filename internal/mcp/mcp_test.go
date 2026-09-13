@@ -12,7 +12,9 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/kkestell/ox/internal/acp"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -91,6 +93,9 @@ func TestHTTPActivationDiscoveryAndCall(t *testing.T) {
 	}
 }
 
+// TestCallRejectsChangedDefinition covers the definition check a dispatch makes
+// and the listing window it makes it against: a burst of calls reuses one
+// listing, and a redefinition is rejected once that listing ages out.
 func TestCallRejectsChangedDefinition(t *testing.T) {
 	server := sdk.NewServer(&sdk.Implementation{Name: "fixture", Version: "1"}, nil)
 	add := func(description string) {
@@ -99,15 +104,42 @@ func TestCallRejectsChangedDefinition(t *testing.T) {
 		})
 	}
 	add("first")
-	httpServer := httptest.NewServer(sdk.NewStreamableHTTPHandler(func(*http.Request) *sdk.Server { return server }, &sdk.StreamableHTTPOptions{JSONResponse: true, Stateless: true}))
+	var listings atomic.Int32
+	handler := sdk.NewStreamableHTTPHandler(func(*http.Request) *sdk.Server { return server }, &sdk.StreamableHTTPOptions{JSONResponse: true, Stateless: true})
+	httpServer := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		body, err := io.ReadAll(request.Body)
+		if err != nil {
+			t.Errorf("read MCP request: %v", err)
+			return
+		}
+		if bytes.Contains(body, []byte(`"tools/list"`)) {
+			listings.Add(1)
+		}
+		request.Body = io.NopCloser(bytes.NewReader(body))
+		handler.ServeHTTP(writer, request)
+	}))
 	defer httpServer.Close()
 	bundle, err := Activate(context.Background(), t.TempDir(), []acp.MCPServer{{HTTP: &acp.MCPHTTPServer{Type: "http", Name: "server", URL: httpServer.URL, Headers: []acp.HTTPHeader{}}}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer bundle.Close()
+	name := bundle.Tools()[0].Name
+	activationListings := listings.Load()
+
 	add("changed")
-	if _, err := bundle.Call(context.Background(), bundle.Tools()[0].Name, nil); err == nil || !strings.Contains(err.Error(), "changed") {
+	for range 3 {
+		if _, err := bundle.Call(context.Background(), name, nil); err != nil {
+			t.Fatalf("call inside the listing window = %v", err)
+		}
+	}
+	if listings.Load() != activationListings {
+		t.Fatalf("listings = %d, want the activation's %d", listings.Load(), activationListings)
+	}
+
+	bundle.servers[0].listedAt = time.Now().Add(-listMaxAge - time.Second)
+	if _, err := bundle.Call(context.Background(), name, nil); err == nil ||
+		!strings.Contains(err.Error(), "changed") {
 		t.Fatalf("call error = %v", err)
 	}
 }

@@ -231,12 +231,14 @@ deltas. It returns the completion assembled so far when a stream ends early so
 the agent can apply ACP cancellation and history rules.
 
 The provider boundary caches and validates OpenRouter's model catalog. A cached
-catalog is served while it is fresh and refetched on the spot once it is not,
-falling back to the stale entries only when the provider is unreachable; no
-background refresh owns that work. It retries transient failures within a
-bounded budget only before response content has been observed. Raw reasoning
-details and usage survive provider translation when they are needed for
-continued requests or accounting.
+catalog is served while it is fresh and refetched on the spot once it is not, in
+memory as well as on disk, so a long-running process sees current context
+windows and parameters. It falls back to the stale entries only when the
+provider is unreachable, and then bounds how soon it tries again so one outage
+cannot cost a fetch per request; no background refresh owns that work. It
+retries transient failures within a bounded budget only before response content
+has been observed. Raw reasoning details and usage survive provider translation
+when they are needed for continued requests or accounting.
 
 The agent admits every provider request against the selected model's context
 window. It budgets the complete messages and tool declarations plus the
@@ -324,7 +326,12 @@ workspace boundary and return immutable content or metadata to the agent.
 Language tools translate positions and synchronize the selected filesystem's
 content; they cannot treat the local disk as authoritative when the client owns
 an unsaved document. MCP tools retain server identity and are effectful by
-default. Changes in server metadata cannot expand an active turn's authority.
+default. Changes in server metadata cannot expand an active turn's authority,
+and never reach the model-facing tool set or system prompt, which an activation
+freezes so the provider's prompt cache survives a server changing underneath a
+session. Because MCP can only list a server's whole catalog, a dispatch
+validates the selected definition against a bounded-age listing rather than
+paying for the catalog on every call.
 
 Web fetch owns public-address HTTP retrieval and text extraction under the
 ordinary tool permission path. MCP supplies search, so Ox does not own a search

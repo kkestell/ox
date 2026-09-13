@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/jsonschema-go/jsonschema"
@@ -32,6 +33,12 @@ var (
 	connectTimeout        = mustDuration(connectTimeoutSetting)
 	callTimeout           = mustDuration(callTimeoutSetting)
 )
+
+// listMaxAge bounds how old the listing a dispatch validates against may be.
+// MCP exposes no way to read one tool, so without a window every call would pay
+// for the server's whole catalog and an unrelated page failure would stop a
+// stable tool from running.
+const listMaxAge = time.Minute
 
 func mustDuration(value string) time.Duration {
 	duration, err := time.ParseDuration(value)
@@ -66,8 +73,30 @@ type server struct {
 	name      string
 	session   *sdk.ClientSession
 	transport identityTransport
-	tools     map[string]Descriptor
 	secrets   []string
+
+	// listMu guards the server's most recent tool listing. The model-facing
+	// tool set is frozen at activation, so a relisting decides only whether a
+	// selected tool still matches the definition its grant was taken for.
+	listMu   sync.Mutex
+	tools    map[string]Descriptor
+	listedAt time.Time
+}
+
+// currentTools returns the server's tool listing, relisting it only once the
+// last one has aged out.
+func (s *server) currentTools(ctx context.Context) (map[string]Descriptor, error) {
+	s.listMu.Lock()
+	defer s.listMu.Unlock()
+	if s.tools != nil && time.Since(s.listedAt) <= listMaxAge {
+		return s.tools, nil
+	}
+	fresh, err := discoverTools(ctx, s)
+	if err != nil {
+		return nil, err
+	}
+	s.tools, s.listedAt = fresh, time.Now()
+	return fresh, nil
 }
 
 type identityTransport struct {
@@ -139,7 +168,7 @@ func (b *Bundle) Call(ctx context.Context, name string, arguments json.RawMessag
 	}
 	callCtx, cancel := context.WithTimeout(ctx, callTimeout)
 	defer cancel()
-	fresh, err := discoverTools(callCtx, reference.server)
+	fresh, err := reference.server.currentTools(callCtx)
 	if err != nil {
 		return Result{}, reference.server.redact(fmt.Errorf("refresh MCP server %q tools: %w", reference.server.name, err))
 	}
@@ -216,6 +245,7 @@ func connectServer(parent context.Context, root string, definition acp.MCPServer
 		_ = session.Close()
 		return nil, value.redact(fmt.Errorf("discover MCP server %q tools: %w", value.name, err))
 	}
+	value.listedAt = time.Now()
 	return value, nil
 }
 

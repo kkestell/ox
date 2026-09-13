@@ -18,6 +18,11 @@ const (
 	// it. Model entries change over days, so a day old is still worth trusting;
 	// past that a session should see current context windows and parameters.
 	catalogMaxAge = 24 * time.Hour
+	// catalogRetryInterval is how long a catalog that is already past
+	// catalogMaxAge is served before the process tries to replace it. Reaching
+	// the provider is what failed, so retrying on every request would turn one
+	// outage into a fetch per model request.
+	catalogRetryInterval = 5 * time.Minute
 	// maxCatalogBytes bounds both the cached file and the models response. The
 	// published catalog is a few megabytes.
 	maxCatalogBytes = 16 << 20
@@ -134,7 +139,7 @@ func (c *Catalog) Reasoning(id string) *ModelReasoning {
 func (c *Client) Catalog(ctx context.Context) (*Catalog, error) {
 	for {
 		c.catalogMu.Lock()
-		if c.catalog != nil {
+		if c.catalog != nil && time.Now().Before(c.catalogExpires) {
 			catalog := c.catalog
 			c.catalogMu.Unlock()
 			return catalog, nil
@@ -154,11 +159,12 @@ func (c *Client) Catalog(ctx context.Context) (*Catalog, error) {
 		ready := c.catalogReady
 		c.catalogMu.Unlock()
 
-		catalog, err := c.loadCatalog(ctx)
+		catalog, age, err := c.loadCatalog(ctx)
 
 		c.catalogMu.Lock()
 		if err == nil {
 			c.catalog = catalog
+			c.catalogExpires = catalogExpiry(time.Now(), age)
 		}
 		c.catalogLoading = false
 		close(ready)
@@ -209,13 +215,26 @@ func cloneModel(model Model) Model {
 	return model
 }
 
+// catalogExpiry returns when a catalog of the given age stops being served from
+// memory. It expires with the catalog itself so a long-running process sees
+// current context windows and parameters, but never sooner than the retry
+// interval, which keeps an already-stale catalog from refetching per request.
+func catalogExpiry(now time.Time, age time.Duration) time.Time {
+	if remaining := catalogMaxAge - age; remaining > catalogRetryInterval {
+		return now.Add(remaining)
+	}
+	return now.Add(catalogRetryInterval)
+}
+
 // loadCatalog serves a fresh cache and otherwise fetches the catalog on the
 // spot, so the load a caller waits for is the one that produces its answer.
 // A stale cache is kept as a fallback: an outdated catalog beats no catalog
-// when the provider is unreachable.
-func (c *Client) loadCatalog(ctx context.Context) (*Catalog, error) {
+// when the provider is unreachable. The returned age is the age of what it
+// returned, which is zero for a fetch.
+func (c *Client) loadCatalog(ctx context.Context) (*Catalog, time.Duration, error) {
 	path := c.CachePath
 	var stale *Catalog
+	var staleAge time.Duration
 	switch {
 	case path == "":
 		c.logger().Info("OpenRouter catalog cache unavailable")
@@ -229,10 +248,10 @@ func (c *Client) loadCatalog(ctx context.Context) (*Catalog, error) {
 				"OpenRouter catalog cache hit",
 				"path", path, "models", len(cached.models), "age", age,
 			)
-			return cached, nil
+			return cached, age, nil
 		default:
 			c.logger().Info("OpenRouter catalog cache is stale", "path", path, "age", age)
-			stale = cached
+			stale, staleAge = cached, age
 		}
 	}
 
@@ -242,9 +261,9 @@ func (c *Client) loadCatalog(ctx context.Context) (*Catalog, error) {
 			c.logger().Warn(
 				"serving stale OpenRouter catalog", "path", path, "error", err,
 			)
-			return stale, nil
+			return stale, staleAge, nil
 		}
-		return nil, err
+		return nil, 0, err
 	}
 	if path != "" {
 		if err := writeCatalogCache(path, catalog.models); err != nil {
@@ -253,7 +272,7 @@ func (c *Client) loadCatalog(ctx context.Context) (*Catalog, error) {
 			c.logger().Info("wrote OpenRouter catalog cache", "path", path, "models", len(catalog.models))
 		}
 	}
-	return catalog, nil
+	return catalog, 0, nil
 }
 
 func (c *Client) fetchCatalog(ctx context.Context) (*Catalog, error) {

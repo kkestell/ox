@@ -229,6 +229,58 @@ func TestCatalogRefetchesAStaleCache(t *testing.T) {
 	})
 }
 
+// TestCatalogExpiresInMemory covers the freshness rule a long-running process
+// depends on. The catalog held in memory ages out with the catalog itself, so
+// a process that runs for days sees current context windows and parameters,
+// while a catalog that is already stale is retried on an interval rather than
+// on every request.
+func TestCatalogExpiresInMemory(t *testing.T) {
+	now := time.Now()
+	for _, test := range []struct {
+		name string
+		age  time.Duration
+		want time.Duration
+	}{
+		{name: "freshly fetched", age: 0, want: catalogMaxAge},
+		{name: "partly aged cache", age: catalogMaxAge - time.Hour, want: time.Hour},
+		{
+			name: "nearly expired cache",
+			age:  catalogMaxAge - time.Second, want: catalogRetryInterval,
+		},
+		{
+			name: "stale fallback",
+			age:  catalogMaxAge + time.Hour, want: catalogRetryInterval,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := catalogExpiry(now, test.age).Sub(now); got != test.want {
+				t.Fatalf("lifetime = %v, want %v", got, test.want)
+			}
+		})
+	}
+
+	t.Run("reloads once the memory copy expires", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "models.json")
+		if err := writeCatalogCache(path, []Model{
+			{ID: "reloaded/model", ContextLength: 4096},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		client := testClient("")
+		client.CachePath = path
+		client.catalog = newCatalog([]Model{{ID: "memoized/model", ContextLength: 1024}})
+		client.catalogExpires = time.Now().Add(-time.Second)
+
+		catalog, err := client.Catalog(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if catalog.ContextWindow("reloaded/model") != 4096 {
+			t.Fatalf("expired memory catalog was served: %#v", catalog)
+		}
+	})
+}
+
 // TestCatalogRejectsACacheWithNoModels covers a cache that parses but answers
 // nothing. Accepting it would memoize an empty catalog for the process.
 func TestCatalogRejectsACacheWithNoModels(t *testing.T) {
@@ -387,10 +439,13 @@ func TestCatalogAccessorsDoNotExposeMutableState(t *testing.T) {
 }
 
 func TestClientModelsAreSortedClones(t *testing.T) {
-	client := &Client{catalog: newCatalog([]Model{
-		{ID: "zeta/model", Name: "Zeta"},
-		{ID: "alpha/model", Name: "Alpha"},
-	})}
+	client := &Client{
+		catalog: newCatalog([]Model{
+			{ID: "zeta/model", Name: "Zeta"},
+			{ID: "alpha/model", Name: "Alpha"},
+		}),
+		catalogExpires: time.Now().Add(catalogMaxAge),
+	}
 
 	models, err := client.Models(t.Context())
 	if err != nil {

@@ -84,7 +84,7 @@
       [full-codebase testing review](reviews/2026-09-13-002-full-codebase-testing-review.md)
   - [x] Harden turn finalization and cancellation history for malformed or
         partial provider tool calls
-  - [ ] Reconcile OpenRouter and MCP catalog freshness with bounded refresh cost
+  - [x] Reconcile OpenRouter and MCP catalog freshness with bounded refresh cost
   - [ ] Stabilize the required gate and complete shipped-process and evaluation
         coverage
   - [ ] Settle the platform contract and repair documentation and line-ending

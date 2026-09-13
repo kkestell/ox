@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -624,4 +625,60 @@ func TestMCPActivationFailureCleansUpAndCatalogBoundsThroughShippedBinary(t *tes
 			}
 		})
 	}
+}
+
+// TestMCPCatalogChangeDoesNotMoveTheRequestPrefix covers prefix-cache
+// stability. The model-facing tool set and system prompt are frozen at
+// activation, so a server that adds or redefines tools mid-session cannot move
+// the bytes ahead of the conversation in a later request.
+func TestMCPCatalogChangeDoesNotMoveTheRequestPrefix(t *testing.T) {
+	server := sdk.NewServer(&sdk.Implementation{Name: "fixture", Version: "1"}, nil)
+	server.AddTool(&sdk.Tool{
+		Name: "lookup", Description: "look up a value",
+		InputSchema: json.RawMessage(`{"type":"object"}`),
+	}, func(_ context.Context, _ *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
+		return &sdk.CallToolResult{Content: []sdk.Content{&sdk.TextContent{Text: "found"}}}, nil
+	})
+	httpServer := httptest.NewServer(sdk.NewStreamableHTTPHandler(
+		func(*http.Request) *sdk.Server { return server },
+		&sdk.StreamableHTTPOptions{JSONResponse: true, Stateless: true},
+	))
+	defer httpServer.Close()
+
+	model := startModel(t,
+		sse(evText("first"), evFinishReason("stop")),
+		sse(evText("second"), evFinishReason("stop")),
+	)
+	child := start(t, withModel(model))
+	initialize(t, child)
+	session := newMCPSession(t, child, mcpHTTPServer("fixture server", httpServer.URL, ""))
+	prompt(t, child, session, "before the catalog changes")
+	_ = updates(t, child, session)
+
+	server.AddTool(&sdk.Tool{
+		Name: "appeared", Description: "added after activation",
+		InputSchema: json.RawMessage(`{"type":"object"}`),
+	}, func(_ context.Context, _ *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
+		return &sdk.CallToolResult{Content: []sdk.Content{&sdk.TextContent{Text: "new"}}}, nil
+	})
+	prompt(t, child, session, "after the catalog changes")
+	_ = updates(t, child, session)
+
+	requests := model.requests()
+	if len(requests) != 2 {
+		t.Fatalf("model requests = %d, want 2", len(requests))
+	}
+	if !reflect.DeepEqual(requests[0].Tools, requests[1].Tools) {
+		t.Fatalf("tool set moved:\n%s\n%s", requests[0].Tools, requests[1].Tools)
+	}
+	if requests[1].Messages[0].Role != "system" ||
+		requests[0].Messages[0].text() != requests[1].Messages[0].text() {
+		t.Fatalf("system prompt moved:\n%q\n%q",
+			requests[0].Messages[0].text(), requests[1].Messages[0].text())
+	}
+	if !requestHasTool(requests[1], "mcp__fixture_server__lookup") ||
+		requestHasTool(requests[1], "mcp__fixture_server__appeared") {
+		t.Fatalf("MCP tool set after the change = %s", requests[1].Tools)
+	}
+	child.request("session/close", acp.CloseSessionRequest{SessionID: session})
 }
