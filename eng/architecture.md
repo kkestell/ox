@@ -68,9 +68,7 @@ The implemented package layout assigns one owner to each boundary:
   catalog identities, and bounded tool calls. It exposes no credentials through
   model-facing descriptors.
 - `internal/lsp` owns language-server process lifecycles, JSON-RPC framing,
-  document synchronization, position translation, and confined query results. No
-  package imports it yet; `eng/todo.md` owns when session activation wires it
-  up.
+  document synchronization, position translation, and confined query results.
 - `internal/settings` owns global and workspace settings, validation,
   precedence, and validation of model settings. The agent combines those inputs
   with durable session selections to construct immutable turn configuration.
@@ -117,19 +115,19 @@ cmd/ox
 agent
     -> acp
     -> credentials
+    -> lsp
     -> mcp
     -> openrouter
     -> settings
     -> skills
     -> trace
     -> workspace
-    -> lsp (planned)
 
 tools
     -> agent
+    -> lsp
     -> shellrules
     -> workspace
-    -> lsp (planned)
 
 lsp
     -> workspace
@@ -180,7 +178,9 @@ active turn. Process configuration inputs, credentials, provider transport,
 logging, and the session store are shared across sessions. Planned explicit
 workspace memory is shared only by sessions with the same canonical root and has
 its own serialized owner. MCP and language-server connections belong to
-individual activations.
+individual activations. A session serializes its own language queries, because
+each one updates the server's view of open documents; separate sessions hold
+separate servers and stay independent.
 
 Each session is an owner-only, versioned JSONL log in the Ox data directory.
 Records are appended and synced before live state or ACP-visible outcomes

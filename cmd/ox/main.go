@@ -116,7 +116,7 @@ func run(arguments []string, input *os.File, output io.WriteCloser, errorOutput 
 			return 1
 		}
 	}
-	serveErr := serve(input, output, logger, tracer, paths, credentialStore, client, options.model.value)
+	serveErr := serve(input, output, logger, tracer, paths, credentialStore, client, process, options.model.value)
 	closeErr := tracer.Close()
 	if serveErr != nil {
 		logger.Error("ox stopped with error", "error", serveErr)
@@ -182,6 +182,7 @@ func serve(
 	paths processPaths,
 	credentialStore *credentials.Store,
 	client *openrouter.Client,
+	process settings.ResolvedProcess,
 	modelOverride string,
 ) error {
 	logger.Info(
@@ -192,21 +193,23 @@ func serve(
 		"memory_store_path", paths.memory,
 		"model_catalog_cache_path", paths.modelCatalog,
 		"credential_source", credentialStore.Source(),
+		"language_servers", len(process.LanguageServers),
 	)
 
 	client.APIKey = credentialStore.Key
 	instance, err := agent.New(agent.Config{
-		Name:          name,
-		Version:       version,
-		Logger:        logger,
-		Credentials:   credentialStore,
-		ModelOverride: modelOverride,
-		SettingsPath:  paths.settings,
-		SessionDir:    paths.sessions,
-		MemoryDir:     paths.memory,
-		Client:        client,
-		Tools:         tools.All(),
-		Trace:         tracer,
+		Name:            name,
+		Version:         version,
+		Logger:          logger,
+		Credentials:     credentialStore,
+		ModelOverride:   modelOverride,
+		SettingsPath:    paths.settings,
+		SessionDir:      paths.sessions,
+		MemoryDir:       paths.memory,
+		Client:          client,
+		Tools:           tools.All(),
+		Trace:           tracer,
+		LanguageServers: process.LanguageServers,
 	})
 	if err != nil {
 		return fmt.Errorf("configure ox: %w", err)

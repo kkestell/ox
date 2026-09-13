@@ -3,6 +3,7 @@ package settings
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -173,4 +174,64 @@ func write(t *testing.T, path, body string) string {
 		t.Fatal(err)
 	}
 	return path
+}
+
+func TestResolveLanguageServers(t *testing.T) {
+	resolved, err := ResolveProcess(&Process{
+		LanguageServers: map[string]LanguageServer{
+			"typescript": {
+				Command:    pointer("typescript-language-server"),
+				Args:       []string{"--stdio"},
+				Extensions: []string{".TS", "tsx"},
+			},
+			"gopls": {Command: pointer(" gopls "), Extensions: []string{"go"}},
+		},
+	}, ProcessOverrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []ResolvedLanguageServer{
+		{Name: "gopls", Command: "gopls", Extensions: []string{"go"}},
+		{
+			Name: "typescript", Command: "typescript-language-server",
+			Args: []string{"--stdio"}, Extensions: []string{"ts", "tsx"},
+		},
+	}
+	if !reflect.DeepEqual(resolved.LanguageServers, want) {
+		t.Fatalf("language servers = %#v", resolved.LanguageServers)
+	}
+
+	for name, servers := range map[string]map[string]LanguageServer{
+		"blank name":       {"  ": {Command: pointer("gopls"), Extensions: []string{"go"}}},
+		"missing command":  {"gopls": {Extensions: []string{"go"}}},
+		"blank command":    {"gopls": {Command: pointer(" "), Extensions: []string{"go"}}},
+		"blank argument":   {"gopls": {Command: pointer("gopls"), Args: []string{""}, Extensions: []string{"go"}}},
+		"no extensions":    {"gopls": {Command: pointer("gopls")}},
+		"blank extension":  {"gopls": {Command: pointer("gopls"), Extensions: []string{" . "}}},
+		"path extension":   {"gopls": {Command: pointer("gopls"), Extensions: []string{"a/b"}}},
+		"shared extension": {"gopls": {Command: pointer("gopls"), Extensions: []string{"go"}}, "other": {Command: pointer("other"), Extensions: []string{".GO"}}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := ResolveProcess(&Process{LanguageServers: servers}, ProcessOverrides{}); err == nil {
+				t.Fatal("invalid language server was accepted")
+			}
+		})
+	}
+}
+
+// A later change to the settings value must not reach an already-resolved
+// definition, which every session activation reads.
+func TestResolvedLanguageServersDoNotAliasSettings(t *testing.T) {
+	arguments := []string{"--stdio"}
+	process := &Process{LanguageServers: map[string]LanguageServer{
+		"gopls": {Command: pointer("gopls"), Args: arguments, Extensions: []string{"go"}},
+	}}
+	resolved, err := ResolveProcess(process, ProcessOverrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	arguments[0] = "mutated"
+	if resolved.LanguageServers[0].Args[0] != "--stdio" {
+		t.Fatalf("resolved arguments = %#v", resolved.LanguageServers[0].Args)
+	}
 }

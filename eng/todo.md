@@ -72,6 +72,7 @@
         bidirectional messaging
   - [x] Remove model-request and tool-loop iteration ceilings from primary and
         child agents
-- [ ] Language-server context
+- [x] Language-server context
   - [x] Add the lazy LSP process adapter
-  - [ ] Integrate language tools with session activation
+  - [x] Integrate language tools with session activation
+- [ ] Accept MCP servers that negotiate older protocol revisions

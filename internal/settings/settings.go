@@ -14,9 +14,11 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -57,9 +59,18 @@ type Config struct {
 // Process contains settings that apply to the whole Ox process. It is accepted
 // only in the global settings file; a workspace cannot choose process behavior.
 type Process struct {
-	LogLevel          *string `json:"log_level,omitempty"`
-	OpenRouterBaseURL *string `json:"openrouter_base_url,omitempty"`
-	Trace             *string `json:"trace,omitempty"`
+	LogLevel          *string                   `json:"log_level,omitempty"`
+	OpenRouterBaseURL *string                   `json:"openrouter_base_url,omitempty"`
+	Trace             *string                   `json:"trace,omitempty"`
+	LanguageServers   map[string]LanguageServer `json:"language_servers,omitempty"`
+}
+
+// LanguageServer is one entry of the global language_servers object, keyed by
+// the stable name the server is reported under.
+type LanguageServer struct {
+	Command    *string  `json:"command,omitempty"`
+	Args       []string `json:"args,omitempty"`
+	Extensions []string `json:"extensions,omitempty"`
 }
 
 type globalFile struct {
@@ -80,6 +91,20 @@ type ResolvedProcess struct {
 	LogLevel          string
 	OpenRouterBaseURL string
 	Trace             string
+	// LanguageServers is ordered by name so a startup log and every session
+	// activation see the same sequence.
+	LanguageServers []ResolvedLanguageServer
+}
+
+// ResolvedLanguageServer is one validated language-server definition. Its
+// extensions are lower-cased and carry no leading dot. The command is not
+// looked up here: a server is started lazily, on the first query for a file it
+// owns, so a missing executable is a query failure rather than a startup one.
+type ResolvedLanguageServer struct {
+	Name       string
+	Command    string
+	Args       []string
+	Extensions []string
 }
 
 type Reasoning struct {
@@ -196,7 +221,74 @@ func ResolveProcess(config *Process, overrides ProcessOverrides) (ResolvedProces
 		resolved.Trace = *overrides.Trace
 	}
 
-	return validateProcess(resolved, config.Trace != nil || overrides.Trace != nil)
+	resolved, err = validateProcess(resolved, config.Trace != nil || overrides.Trace != nil)
+	if err != nil {
+		return ResolvedProcess{}, err
+	}
+	resolved.LanguageServers, err = resolveLanguageServers(config.LanguageServers)
+	if err != nil {
+		return ResolvedProcess{}, err
+	}
+	return resolved, nil
+}
+
+// resolveLanguageServers validates the global language_servers object and
+// returns it as an ordered slice. Two servers cannot claim the same extension,
+// because the file being queried is the only thing that selects a server.
+func resolveLanguageServers(configured map[string]LanguageServer) ([]ResolvedLanguageServer, error) {
+	if len(configured) == 0 {
+		return nil, nil
+	}
+	names := slices.Sorted(maps.Keys(configured))
+	owner := make(map[string]string, len(configured))
+	resolved := make([]ResolvedLanguageServer, 0, len(configured))
+	for _, name := range names {
+		server := configured[name]
+		trimmed := strings.TrimSpace(name)
+		if trimmed == "" {
+			return nil, errors.New(`"language_servers" must not contain a blank server name`)
+		}
+		command := ""
+		if server.Command != nil {
+			command = strings.TrimSpace(*server.Command)
+		}
+		if command == "" {
+			return nil, fmt.Errorf(`"language_servers.%s.command" must not be blank`, trimmed)
+		}
+		for _, argument := range server.Args {
+			if strings.TrimSpace(argument) == "" {
+				return nil, fmt.Errorf(`"language_servers.%s.args" must not contain a blank entry`, trimmed)
+			}
+		}
+		if len(server.Extensions) == 0 {
+			return nil, fmt.Errorf(`"language_servers.%s.extensions" must name at least one extension`, trimmed)
+		}
+		extensions := make([]string, 0, len(server.Extensions))
+		for _, extension := range server.Extensions {
+			normalized := strings.ToLower(strings.TrimPrefix(strings.TrimSpace(extension), "."))
+			if normalized == "" || strings.ContainsAny(normalized, `/\`) {
+				return nil, fmt.Errorf(
+					`"language_servers.%s.extensions" contains invalid extension %q`,
+					trimmed, extension,
+				)
+			}
+			if previous, taken := owner[normalized]; taken {
+				return nil, fmt.Errorf(
+					`language servers %q and %q both claim extension %q`,
+					previous, trimmed, normalized,
+				)
+			}
+			owner[normalized] = trimmed
+			extensions = append(extensions, normalized)
+		}
+		resolved = append(resolved, ResolvedLanguageServer{
+			Name:       trimmed,
+			Command:    command,
+			Args:       slices.Clone(server.Args),
+			Extensions: extensions,
+		})
+	}
+	return resolved, nil
 }
 
 func validateProcess(resolved ResolvedProcess, traceSet bool) (ResolvedProcess, error) {

@@ -43,9 +43,8 @@ identities do not depend on whether a server is installed or running.
   work exposes.
 - `internal/e2e` - real-process configuration, ACP callback, provider, and
   lifecycle seams.
-- `eng/plans/2026-09-05-003-lsp-process-adapter.md` and
-  `eng/plans/2026-09-13-lsp-adapter-reconciliation.md` - the implemented and
-  subsequently hardened adapter boundary.
+- `eng/plans/2026-09-05-003-lsp-process-adapter.md` - the implemented adapter
+  boundary.
 - `~/src/references/repos/personal/eta/internal/agent/tools/lsp_*.go` and
   `~/src/references/repos/personal/eta/internal/lsp/diagnostics.go` - prior
   model contracts and deterministic renderers to adapt without retaining Eta's

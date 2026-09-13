@@ -1151,6 +1151,7 @@ func (a *Agent) executeOne(
 		FileReads:  reads,
 		FileSystem: run.fileSystem,
 		Terminal:   run.terminal,
+		Languages:  value.languagesFor(),
 		LoadSkill: func(name string) (string, error) {
 			for _, reference := range catalog {
 				if reference.Name == name {

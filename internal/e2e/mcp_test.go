@@ -356,7 +356,7 @@ func TestMCPStdioShutdownThroughShippedBinary(t *testing.T) {
 		Name: "stdio", Command: executable,
 		Args: []string{"-test.run=^TestMCPStdioShutdownHelper$"},
 		Env: []acp.EnvVariable{
-			{Name: "GO_WANT_E2E_MCP_SHUTDOWN_HELPER", Value: "enabled"},
+			{Name: helperVariable, Value: "enabled"},
 			{Name: "MCP_SHUTDOWN_MARKER", Value: marker},
 		},
 	}})
@@ -376,7 +376,7 @@ func TestMCPStdioShutdownThroughShippedBinary(t *testing.T) {
 }
 
 func TestMCPStdioShutdownHelper(t *testing.T) {
-	if os.Getenv("GO_WANT_E2E_MCP_SHUTDOWN_HELPER") != "enabled" {
+	if os.Getenv(helperVariable) != "enabled" {
 		return
 	}
 	server := sdk.NewServer(&sdk.Implementation{Name: "stdio-fixture", Version: "1"}, &sdk.ServerOptions{
@@ -533,7 +533,7 @@ func TestMCPActivationFailureCleansUpAndCatalogBoundsThroughShippedBinary(t *tes
 			Name: "first", Command: executable,
 			Args: []string{"-test.run=^TestMCPStdioShutdownHelper$"},
 			Env: []acp.EnvVariable{
-				{Name: "GO_WANT_E2E_MCP_SHUTDOWN_HELPER", Value: "enabled"},
+				{Name: helperVariable, Value: "enabled"},
 				{Name: "MCP_SHUTDOWN_MARKER", Value: marker},
 			},
 		}}

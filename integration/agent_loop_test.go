@@ -1784,7 +1784,7 @@ func TestReadOnlyToolsSpillRefuseEscapeReplayAndDelete(t *testing.T) {
 			) {
 				return nil, errors.New("system prompt did not use the canonical workspace root")
 			}
-			if len(request.Tools) != 17 {
+			if len(request.Tools) != 22 {
 				return nil, errors.New("built-in tools were not frozen into the request")
 			}
 			return &openrouter.Completion{

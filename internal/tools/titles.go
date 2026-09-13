@@ -171,3 +171,41 @@ func subagentReportTitle(arguments json.RawMessage) string {
 	_ = json.Unmarshal(arguments, &input)
 	return title("Report:", input.Message, "Report to the primary agent")
 }
+
+// A language-query title names the position it asks about, because the file
+// alone does not say which symbol the model is following.
+func lspPositionTitle(verb string, arguments json.RawMessage, fallback string) string {
+	var input lspPositionArguments
+	_ = json.Unmarshal(arguments, &input)
+	if input.Path == nil || input.Line == nil || input.Column == nil {
+		return fallback
+	}
+	where := fmt.Sprintf("%s:%d:%d", *input.Path, *input.Line, *input.Column)
+	return title(verb, &where, fallback)
+}
+
+func lspDefinitionTitle(arguments json.RawMessage) string {
+	return lspPositionTitle("Find the definition of", arguments, "Find a definition")
+}
+
+func lspReferencesTitle(arguments json.RawMessage) string {
+	return lspPositionTitle("Find references to", arguments, "Find references")
+}
+
+func lspDocumentSymbolsTitle(arguments json.RawMessage) string {
+	var input lspPathArguments
+	_ = json.Unmarshal(arguments, &input)
+	return title("Outline", input.Path, "Outline a file")
+}
+
+func lspWorkspaceSymbolsTitle(arguments json.RawMessage) string {
+	var input lspQueryArguments
+	_ = json.Unmarshal(arguments, &input)
+	return title("Find symbol", input.Query, "Find workspace symbols")
+}
+
+func lspDiagnosticsTitle(arguments json.RawMessage) string {
+	var input lspPathArguments
+	_ = json.Unmarshal(arguments, &input)
+	return title("Check", input.Path, "Check diagnostics")
+}

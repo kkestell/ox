@@ -84,7 +84,7 @@ func runLSPHelper(input io.Reader, output io.Writer, scenario string) {
 				syncKind = 0
 			}
 			capabilities := map[string]any{"positionEncoding": encoding, "textDocumentSync": syncKind}
-			if scenario == "pull-diagnostics" {
+			if strings.HasPrefix(scenario, "pull-") {
 				capabilities["diagnosticProvider"] = map[string]any{"interFileDependencies": false, "workspaceDiagnostics": false}
 			}
 			write(map[string]any{"jsonrpc": "2.0", "id": message.ID, "result": map[string]any{"capabilities": capabilities}})
@@ -174,6 +174,21 @@ func runLSPHelper(input io.Reader, output io.Writer, scenario string) {
 				map[string]any{"name": "Found", "kind": 12, "containerName": "pkg", "location": map[string]any{"uri": rootURI + "/main.go", "range": rangeValue(0, 0, 0, 1)}},
 			}})
 		case "textDocument/diagnostic":
+			if scenario == "pull-related" {
+				item := func(character int, message string) any {
+					return map[string]any{"range": rangeValue(0, character, 0, character+1), "severity": 1, "message": message, "source": "fixture", "code": "E1"}
+				}
+				full := func(items ...any) any { return map[string]any{"kind": "full", "items": items} }
+				write(map[string]any{"jsonrpc": "2.0", "id": message.ID, "result": map[string]any{
+					"kind":  "full",
+					"items": []any{item(2, "main second"), item(0, "main first")},
+					"relatedDocuments": map[string]any{
+						rootURI + "/z.go": full(item(0, "last file")),
+						rootURI + "/a.go": full(item(0, "first file")),
+					},
+				}})
+				continue
+			}
 			write(map[string]any{"jsonrpc": "2.0", "id": message.ID, "result": map[string]any{"kind": "full", "items": []any{
 				map[string]any{"range": rangeValue(0, 0, 0, 1), "severity": 1, "message": "broken", "source": "fixture", "code": "E1"},
 			}}})
@@ -401,6 +416,27 @@ func TestDiagnosticsStates(t *testing.T) {
 			}
 		})
 	}
+	t.Run("related documents order by path and position", func(t *testing.T) {
+		manager, path, reader := fixtureManager(t, "pull-related")
+		defer manager.Close()
+		for _, name := range []string{"a.go", "z.go"} {
+			if err := os.WriteFile(filepath.Join(filepath.Dir(path), name), []byte("abcd\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		report, err := manager.Diagnostics(context.Background(), path, reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got []string
+		for _, item := range report.Items {
+			got = append(got, fmt.Sprintf("%s %s %s", item.Path, item.Range.Start, item.Message))
+		}
+		want := []string{"a.go 1:1 first file", "main.go 1:1 main first", "main.go 1:3 main second", "z.go 1:1 last file"}
+		if !slices.Equal(got, want) {
+			t.Fatalf("diagnostics = %v", got)
+		}
+	})
 	t.Run("diagnostic cancellation", func(t *testing.T) {
 		manager, path, reader := fixtureManager(t, "normal")
 		defer manager.Close()

@@ -68,6 +68,7 @@ type Invocation struct {
 	FileReads      FileReads
 	FileSystem     ClientFileSystem
 	Terminal       ClientTerminal
+	Languages      LanguageQueries
 	ReplaceTodo    func([]acp.PlanEntry) error
 	LoadSkill      func(string) (string, error)
 	SearchMemory   func(string) ([]MemoryFact, error)

@@ -98,7 +98,7 @@ func invoke(t *testing.T, tool agent.Tool, invocation agent.Invocation) (string,
 
 func TestAllDeclaresValidSchemasAndClassifications(t *testing.T) {
 	tools := All()
-	if len(tools) != 19 {
+	if len(tools) != 24 {
 		t.Fatalf("tool count = %d", len(tools))
 	}
 	for _, tool := range tools {
@@ -116,6 +116,7 @@ func TestAllDeclaresValidSchemasAndClassifications(t *testing.T) {
 		memorySearch := tool.Name == "memory_search"
 		memoryMutation := tool.Name == "memory_write" || tool.Name == "memory_delete"
 		subagent := strings.HasPrefix(tool.Name, "subagent_")
+		language := strings.HasPrefix(tool.Name, "lsp_")
 		if mutating && (tool.Kind != acp.ToolKindEdit ||
 			tool.Approval != agent.ApprovalAsk || tool.ParallelSafe) {
 			t.Errorf("%s mutation classification = %+v", tool.Name, tool)
@@ -149,6 +150,11 @@ func TestAllDeclaresValidSchemasAndClassifications(t *testing.T) {
 		}
 		if subagent && (tool.Kind != acp.ToolKindOther || tool.Approval != agent.ApprovalNone ||
 			!tool.PlanMode || tool.Scope == agent.ToolScopeAll) {
+			t.Errorf("%s classification = %+v", tool.Name, tool)
+		}
+		// Language queries read without side effects, so plan mode keeps them.
+		if language && (tool.Approval != agent.ApprovalNone || !tool.ParallelSafe ||
+			!tool.PlanMode || tool.Scope != agent.ToolScopeAll) {
 			t.Errorf("%s classification = %+v", tool.Name, tool)
 		}
 		if !mutating && !shell && !todo && !question && !webFetch && !subagent &&

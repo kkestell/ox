@@ -8,10 +8,14 @@ import (
 	"testing"
 )
 
+const helperVariable = "GO_WANT_E2E_HELPER"
+
 var oxBinary string
 
 func TestMain(m *testing.M) {
-	if os.Getenv("GO_WANT_E2E_MCP_SHUTDOWN_HELPER") == "enabled" {
+	// A helper re-executes this test binary as a child process ox drives, so it
+	// runs the named test rather than rebuilding ox.
+	if os.Getenv(helperVariable) == "enabled" {
 		os.Exit(m.Run())
 	}
 	directory, err := os.MkdirTemp("", "ox-e2e-")

@@ -20,6 +20,7 @@ import (
 
 	"github.com/kkestell/ox/internal/acp"
 	"github.com/kkestell/ox/internal/credentials"
+	"github.com/kkestell/ox/internal/lsp"
 	"github.com/kkestell/ox/internal/mcp"
 	"github.com/kkestell/ox/internal/openrouter"
 	"github.com/kkestell/ox/internal/settings"
@@ -56,6 +57,9 @@ type Config struct {
 	Client    Model
 	Tools     []Tool
 	Trace     diagnostictrace.Trace
+	// LanguageServers are the process's validated language-server definitions.
+	// Every activation gets its own lazy manager built from them.
+	LanguageServers []settings.ResolvedLanguageServer
 }
 
 type Agent struct {
@@ -68,6 +72,7 @@ type Agent struct {
 	client               Model
 	primaryTools         toolSet
 	subagentTools        toolSet
+	languageServers      []lsp.Definition
 	store                *fileStore
 	memory               *memoryStore
 	trace                diagnostictrace.Trace
@@ -116,19 +121,20 @@ func New(config Config) (*Agent, error) {
 		return nil, err
 	}
 	return &Agent{
-		name:          config.Name,
-		version:       config.Version,
-		logger:        config.Logger,
-		credentials:   config.Credentials,
-		modelOverride: config.ModelOverride,
-		settingsPath:  config.SettingsPath,
-		client:        config.Client,
-		primaryTools:  primaryTools,
-		subagentTools: subagentTools,
-		store:         store,
-		memory:        memory,
-		trace:         config.Trace,
-		sessions:      make(map[string]*session),
+		name:            config.Name,
+		version:         config.Version,
+		logger:          config.Logger,
+		credentials:     config.Credentials,
+		modelOverride:   config.ModelOverride,
+		settingsPath:    config.SettingsPath,
+		client:          config.Client,
+		primaryTools:    primaryTools,
+		subagentTools:   subagentTools,
+		languageServers: languageDefinitions(config.LanguageServers),
+		store:           store,
+		memory:          memory,
+		trace:           config.Trace,
+		sessions:        make(map[string]*session),
 	}, nil
 }
 
@@ -348,10 +354,18 @@ func (a *Agent) NewSession(
 	if err != nil {
 		return acp.NewSessionResponse{}, jrpc2.Errorf(jrpc2.InternalError, "activate MCP servers: %v", err)
 	}
+	languages, err := a.activateLanguages(cwd)
+	if err != nil {
+		_ = bundle.Close()
+		return acp.NewSessionResponse{}, jrpc2.Errorf(jrpc2.InternalError, "configure language servers: %v", err)
+	}
 	keepBundle := false
 	defer func() {
 		if !keepBundle {
 			_ = bundle.Close()
+			if languages != nil {
+				_ = languages.Close()
+			}
 		}
 	}()
 
@@ -389,7 +403,8 @@ func (a *Agent) NewSession(
 	value := &session{
 		id: id, state: state, log: log,
 		activationBase: cloneConfiguration(base), models: models,
-		mcp: bundle, primaryTools: primaryTools, subagentTools: subagentTools,
+		mcp: bundle, languages: newSessionLanguages(languages),
+		primaryTools: primaryTools, subagentTools: subagentTools,
 	}
 	a.sessionsMu.Lock()
 	a.sessions[id] = value
@@ -682,12 +697,21 @@ func (a *Agent) activateSession(
 	if err != nil {
 		return nil, jrpc2.Errorf(jrpc2.InternalError, "activate MCP servers: %v", err)
 	}
+	languages, err := a.activateLanguages(canonicalCWD)
+	if err != nil {
+		_ = bundle.Close()
+		return nil, jrpc2.Errorf(jrpc2.InternalError, "configure language servers: %v", err)
+	}
 	value.mcp = bundle
+	value.languages = newSessionLanguages(languages)
 	value.primaryTools = primaryTools
 	value.subagentTools = subagentTools
 	defer func() {
 		if !activated {
 			_ = bundle.Close()
+			if languages != nil {
+				_ = languages.Close()
+			}
 		}
 	}()
 	base, models, err := a.resolveActivation(
@@ -1724,6 +1748,7 @@ type session struct {
 	activationBase requestConfiguration
 	models         []openrouter.Model
 	mcp            *mcp.Bundle
+	languages      *sessionLanguages
 	primaryTools   toolSet
 	subagentTools  toolSet
 	// configMu serializes a configuration change against the user-message commit
@@ -1938,10 +1963,14 @@ func (s *session) close() error {
 		<-active.done
 	}
 	s.configChanges.Wait()
+	var closeErr error
 	if s.mcp != nil {
-		return s.mcp.Close()
+		closeErr = s.mcp.Close()
 	}
-	return nil
+	if s.languages != nil {
+		closeErr = errors.Join(closeErr, s.languages.manager.Close())
+	}
+	return closeErr
 }
 
 func (s *session) cancel() bool {
