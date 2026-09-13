@@ -19,7 +19,6 @@ import (
 )
 
 const (
-	ProtocolVersion = "2026-07-28"
 	MaxTools        = 256
 	MaxCatalogBytes = 256 << 10
 	MaxCatalogPages = 256
@@ -212,14 +211,6 @@ func connectServer(parent context.Context, root string, definition acp.MCPServer
 		return nil, value.redact(fmt.Errorf("connect MCP server %q: %w", value.name, err))
 	}
 	value.session = session
-	if result := session.InitializeResult(); result == nil || result.ProtocolVersion != ProtocolVersion {
-		_ = session.Close()
-		got := ""
-		if result != nil {
-			got = result.ProtocolVersion
-		}
-		return nil, fmt.Errorf("MCP server %q negotiated unsupported protocol revision %q", value.name, got)
-	}
 	value.tools, err = discoverTools(ctx, value)
 	if err != nil {
 		_ = session.Close()

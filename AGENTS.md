@@ -121,8 +121,8 @@ reader who has never opened the todo list.
 
 ### Maintaining the todo list
 
-`eng/todo.md` is forward-looking. Keep it as a compact nested checklist. Mark
-completed items with `[x]` and add work only after its bounded plan exists.
+`eng/todo.md` is forward-looking. Keep it as a compact nested checklist and mark
+completed items with `[x]`.
 
 ### One home for every fact
 
@@ -220,8 +220,8 @@ in-memory provider in unit tests. When a test does not start the mock provider,
 the harness points Ox at a refused local address.
 
 Use the `OPENROUTER_API_KEY` in `.env` only for an explicitly required real
-provider check. Such checks use `openai/gpt-5.6-luna` and no other model. Never
-expose the credential in output or commit it.
+provider check. Such checks use `deepseek/deepseek-v4-flash-0731` and no other
+model. Never expose the credential in output or commit it.
 
 The end-to-end harness builds outside Go's test cache, so always run tests with
 `-count=1`. Before considering behavior complete, run:

@@ -113,6 +113,11 @@ func Run(ctx context.Context, config Config) (RunIndex, error) {
 		return RunIndex{}, fmt.Errorf("digest Ox binary: %w", err)
 	}
 	promptDigest := taskPromptDigest(task)
+	outputDirectory, err := filepath.Abs(config.OutputDir)
+	if err != nil {
+		return RunIndex{}, fmt.Errorf("resolve evaluation output: %w", err)
+	}
+	config.OutputDir = outputDirectory
 	if err := os.MkdirAll(config.OutputDir, 0o755); err != nil {
 		return RunIndex{}, fmt.Errorf("create evaluation output: %w", err)
 	}

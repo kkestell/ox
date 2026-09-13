@@ -470,7 +470,7 @@ func TestCatalogSizeCountsSerializedBytes(t *testing.T) {
 	}
 }
 
-func TestActivationRefusesAnUnsupportedProtocolRevision(t *testing.T) {
+func TestActivationAcceptsAnOlderProtocolRevision(t *testing.T) {
 	server := sdk.NewServer(&sdk.Implementation{Name: "fixture", Version: "1"}, nil)
 	server.AddTool(
 		&sdk.Tool{Name: "tool", InputSchema: json.RawMessage(`{"type":"object"}`)},
@@ -482,12 +482,56 @@ func TestActivationRefusesAnUnsupportedProtocolRevision(t *testing.T) {
 		func(*http.Request) *sdk.Server { return server },
 		&sdk.StreamableHTTPOptions{JSONResponse: true, Stateless: true},
 	)
-	// The server advertises the revisions it supports and the client picks one,
-	// so withholding the revision Ox speaks is what forces the mismatch.
+	// Withholding the newest revision forces the SDK through its legacy
+	// initialize fallback, which settles on 2025-11-25.
 	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		recorder := httptest.NewRecorder()
 		inner.ServeHTTP(recorder, r)
-		body := bytes.ReplaceAll(recorder.Body.Bytes(), []byte(`"`+ProtocolVersion+`",`), nil)
+		body := bytes.ReplaceAll(recorder.Body.Bytes(), []byte(`"2026-07-28",`), nil)
+		for key, values := range recorder.Header() {
+			if key == "Content-Length" {
+				continue
+			}
+			for _, value := range values {
+				w.Header().Add(key, value)
+			}
+		}
+		w.WriteHeader(recorder.Code)
+		_, _ = w.Write(body)
+	}))
+	defer httpServer.Close()
+
+	bundle, err := Activate(context.Background(), t.TempDir(), []acp.MCPServer{{HTTP: &acp.MCPHTTPServer{
+		Type: "http", Name: "server", URL: httpServer.URL, Headers: []acp.HTTPHeader{},
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bundle.Close()
+	initialized := bundle.servers[0].session.InitializeResult()
+	if initialized == nil || initialized.ProtocolVersion != "2025-11-25" {
+		t.Fatalf("initialize result = %#v", initialized)
+	}
+	tools := bundle.Tools()
+	if len(tools) != 1 || tools[0].ToolName != "tool" {
+		t.Fatalf("tools = %#v", tools)
+	}
+}
+
+func TestActivationNamesServerWithIncompatibleProtocolRevision(t *testing.T) {
+	server := sdk.NewServer(&sdk.Implementation{Name: "fixture", Version: "1"}, nil)
+	inner := sdk.NewStreamableHTTPHandler(
+		func(*http.Request) *sdk.Server { return server },
+		&sdk.StreamableHTTPOptions{JSONResponse: true, Stateless: true},
+	)
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		recorder := httptest.NewRecorder()
+		inner.ServeHTTP(recorder, r)
+		body := bytes.ReplaceAll(recorder.Body.Bytes(), []byte(`"2026-07-28",`), nil)
+		body = bytes.ReplaceAll(body,
+			[]byte(`"protocolVersion":"2025-11-25"`),
+			[]byte(`"protocolVersion":"1999-01-01"`),
+		)
 		for key, values := range recorder.Header() {
 			if key == "Content-Length" {
 				continue
@@ -502,9 +546,10 @@ func TestActivationRefusesAnUnsupportedProtocolRevision(t *testing.T) {
 	defer httpServer.Close()
 
 	_, err := Activate(context.Background(), t.TempDir(), []acp.MCPServer{{HTTP: &acp.MCPHTTPServer{
-		Type: "http", Name: "server", URL: httpServer.URL, Headers: []acp.HTTPHeader{},
+		Type: "http", Name: "incompatible", URL: httpServer.URL, Headers: []acp.HTTPHeader{},
 	}}})
-	if err == nil || !strings.Contains(err.Error(), `negotiated unsupported protocol revision`) {
+	if err == nil || !strings.Contains(err.Error(), `connect MCP server "incompatible"`) ||
+		!strings.Contains(err.Error(), `unsupported protocol version: "1999-01-01"`) {
 		t.Fatalf("activation error = %v", err)
 	}
 }

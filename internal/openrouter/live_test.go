@@ -23,7 +23,7 @@ func liveClient(t *testing.T) *Client {
 func TestLiveStreamingCompletion(t *testing.T) {
 	client := liveClient(t)
 	completion, err := client.Stream(t.Context(), Request{
-		Model:        "openai/gpt-5.6-luna",
+		Model:        "deepseek/deepseek-v4-flash-0731",
 		SessionID:    "ox-live-test",
 		CacheControl: &CacheControl{Type: "ephemeral"},
 		Messages: []Message{{

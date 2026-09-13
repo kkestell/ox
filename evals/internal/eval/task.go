@@ -269,7 +269,9 @@ func verifyTask(ctx context.Context, task Task, workspace string) (string, error
 		if err != nil {
 			return "", fmt.Errorf("read expected file %s: %w", path, err)
 		}
-		if string(raw) != want {
+		// The final newline is a formatting convention, not task content, so a
+		// missing or extra trailing newline does not fail verification.
+		if strings.TrimSuffix(string(raw), "\n") != strings.TrimSuffix(want, "\n") {
 			return "", fmt.Errorf("file %s did not match expected content", path)
 		}
 	}

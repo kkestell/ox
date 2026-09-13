@@ -322,9 +322,9 @@ elicitation and `elicitation/complete` are outside this product scope.
 ## MCP tools
 
 Ox accepts only client-supplied `mcpServers` on activation. It supports stdio
-and Streamable HTTP using protocol revision `2026-07-28`, advertises only HTTP
-in `mcpCapabilities`, and rejects older revisions and legacy HTTP+SSE. These are
-the selected
+and Streamable HTTP using the protocol revisions negotiated by the embedded MCP
+SDK, advertises only HTTP in `mcpCapabilities`, and rejects legacy HTTP+SSE.
+These are the selected
 [MCP transports](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports).
 Workspace files cannot start additional servers. Client-configured HTTP servers
 may be local; remote endpoints require HTTPS and credentials are never forwarded

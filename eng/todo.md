@@ -75,4 +75,7 @@
 - [x] Language-server context
   - [x] Add the lazy LSP process adapter
   - [x] Integrate language tools with session activation
-- [ ] Accept MCP servers that negotiate older protocol revisions
+- [x] Accept MCP servers that negotiate older protocol revisions
+- [ ] Auto-approval mode
+  - [ ] Add a third session mode that uses the code tool set and runs
+        approval-gated parent and child calls without client prompts

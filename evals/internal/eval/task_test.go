@@ -149,6 +149,27 @@ func TestVerifyTaskUsesFilesAndProtectedOverlay(t *testing.T) {
 	}
 }
 
+func TestVerifyTaskToleratesTrailingNewlineDifference(t *testing.T) {
+	root := t.TempDir()
+	workspace := filepath.Join(root, "workspace")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, "answer.txt"), []byte("yes"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	task := Task{Success: Success{Files: map[string]string{"answer.txt": "yes\n"}}}
+	if _, err := verifyTask(context.Background(), task, workspace); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, "answer.txt"), []byte("yes\n\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := verifyTask(context.Background(), task, workspace); err == nil {
+		t.Fatal("verifier accepted extra blank lines")
+	}
+}
+
 func TestVerifierRejectsWorkspaceSymlinkTraversal(t *testing.T) {
 	root := t.TempDir()
 	workspace := filepath.Join(root, "workspace")

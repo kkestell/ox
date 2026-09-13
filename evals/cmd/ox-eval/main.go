@@ -12,7 +12,7 @@ import (
 	evaluation "github.com/kkestell/ox/evals/internal/eval"
 )
 
-const liveModel = "openai/gpt-5.6-luna"
+const liveModel = "deepseek/deepseek-v4-flash-0731"
 
 func main() {
 	var (

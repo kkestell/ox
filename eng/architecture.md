@@ -314,10 +314,10 @@ do not own permission decisions or durable history. MCP uses the
 [official Go SDK](https://github.com/modelcontextprotocol/go-sdk) behind this
 adapter, initially pinned to stable `v1.7.0`, with explicit framing/output
 bounds and Ox's stricter retry policy. Do not take a prerelease merely to obtain
-new features. Protocol revision and enabled capabilities are deliberately
-restricted to the specification; SDK compatibility paths do not expand Ox's
-contract. LSP ports Eta's focused client. Neither adapter introduces a general
-plugin runtime or a second agent framework.
+new features. Protocol revision follows the embedded SDK's negotiation; enabled
+capabilities remain deliberately restricted to the specification. LSP ports
+Eta's focused client. Neither adapter introduces a general plugin runtime or a
+second agent framework.
 
 Workspace context loaders own bounded instruction/skill discovery. They use the
 workspace boundary and return immutable content or metadata to the agent.

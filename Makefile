@@ -35,7 +35,7 @@ eval-live:
 		go build -o "$$eval_build_dir/ox" ./cmd/ox; \
 		go run ./evals/cmd/ox-eval -live \
 			-ox "$$eval_build_dir/ox" \
-			-model openai/gpt-5.6-luna \
+			-model deepseek/deepseek-v4-flash-0731 \
 			-task "$$TASK" \
 			-out "$${OUTPUT:-eval-results}" \
 			-repetitions "$${REPETITIONS:-1}"
