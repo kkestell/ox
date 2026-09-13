@@ -227,19 +227,52 @@ func (r AuthenticateRequest) Validate() error {
 }
 
 func (r NewSessionRequest) Validate() error {
-	if r.CWD == "" {
-		return errors.New("cwd is required")
-	}
-	if !filepath.IsAbs(r.CWD) {
-		return errors.New("cwd must be an absolute path")
+	if err := validateActivationWorkspace(r.CWD, r.AdditionalDirectories); err != nil {
+		return err
 	}
 	if r.MCPServers == nil {
 		return errors.New("mcpServers is required")
 	}
-	if err := ValidateMCPServers(r.MCPServers); err != nil {
+	return ValidateMCPServers(r.MCPServers)
+}
+
+// Validate checks a session/load request. The client resupplies its MCP servers
+// on load, so the field is required, exactly as it is for session/new.
+func (r LoadSessionRequest) Validate() error {
+	if r.SessionID == "" {
+		return errors.New("sessionId is required")
+	}
+	if err := validateActivationWorkspace(r.CWD, r.AdditionalDirectories); err != nil {
 		return err
 	}
-	if len(r.AdditionalDirectories) != 0 {
+	if r.MCPServers == nil {
+		return errors.New("mcpServers is required")
+	}
+	return ValidateMCPServers(r.MCPServers)
+}
+
+// Validate checks a session/resume request. Resuming does not reconnect MCP
+// servers, so an absent list is the ordinary case.
+func (r ResumeSessionRequest) Validate() error {
+	if r.SessionID == "" {
+		return errors.New("sessionId is required")
+	}
+	if err := validateActivationWorkspace(r.CWD, r.AdditionalDirectories); err != nil {
+		return err
+	}
+	return ValidateMCPServers(r.MCPServers)
+}
+
+// validateActivationWorkspace checks what every activation says about the
+// workspace it is for.
+func validateActivationWorkspace(cwd string, additionalDirectories []string) error {
+	if cwd == "" {
+		return errors.New("cwd is required")
+	}
+	if !filepath.IsAbs(cwd) {
+		return errors.New("cwd must be an absolute path")
+	}
+	if len(additionalDirectories) != 0 {
 		return errors.New("additional directories are not supported")
 	}
 	return nil

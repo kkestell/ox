@@ -317,12 +317,7 @@ func (a *Agent) NewSession(
 	if err := request.Validate(); err != nil {
 		return acp.NewSessionResponse{}, jrpc2.Errorf(jrpc2.InvalidParams, "%v", err)
 	}
-	cwd, err := a.validateActivation(
-		request.CWD,
-		request.AdditionalDirectories,
-		request.MCPServers,
-		true,
-	)
+	cwd, err := a.validateActivation(request.CWD)
 	if err != nil {
 		return acp.NewSessionResponse{}, err
 	}
@@ -398,13 +393,15 @@ func (a *Agent) LoadSession(
 	ctx context.Context,
 	request acp.LoadSessionRequest,
 ) (acp.LoadSessionResponse, error) {
+	if err := request.Validate(); err != nil {
+		return acp.LoadSessionResponse{}, jrpc2.Errorf(jrpc2.InvalidParams, "%v", err)
+	}
 	value, err := a.activateSession(
 		ctx,
 		request.SessionID,
 		request.CWD,
-		request.AdditionalDirectories,
 		request.MCPServers,
-		activationOptions{requireMCPServers: true, recoverPendingPermission: true},
+		activationOptions{recoverPendingPermission: true},
 	)
 	if err != nil {
 		return acp.LoadSessionResponse{}, err
@@ -584,11 +581,13 @@ func (a *Agent) ResumeSession(
 	ctx context.Context,
 	request acp.ResumeSessionRequest,
 ) (acp.ResumeSessionResponse, error) {
+	if err := request.Validate(); err != nil {
+		return acp.ResumeSessionResponse{}, jrpc2.Errorf(jrpc2.InvalidParams, "%v", err)
+	}
 	value, err := a.activateSession(
 		ctx,
 		request.SessionID,
 		request.CWD,
-		request.AdditionalDirectories,
 		request.MCPServers,
 		activationOptions{},
 	)
@@ -600,11 +599,9 @@ func (a *Agent) ResumeSession(
 }
 
 // activationOptions names how a session is being reactivated. session/load
-// resupplies MCP servers and reissues a permission request the restart
-// interrupted; session/resume does neither and refuses a session that is
-// waiting on one.
+// reissues a permission request the restart interrupted; session/resume refuses
+// a session that is waiting on one.
 type activationOptions struct {
-	requireMCPServers        bool
 	recoverPendingPermission bool
 }
 
@@ -612,19 +609,13 @@ func (a *Agent) activateSession(
 	ctx context.Context,
 	id string,
 	cwd string,
-	additionalDirectories []string,
 	mcpServers []acp.MCPServer,
 	options activationOptions,
 ) (*session, error) {
 	if !validSessionID(id) {
 		return nil, jrpc2.Errorf(jrpc2.InvalidParams, "invalid session ID")
 	}
-	canonicalCWD, err := a.validateActivation(
-		cwd,
-		additionalDirectories,
-		mcpServers,
-		options.requireMCPServers,
-	)
+	canonicalCWD, err := a.validateActivation(cwd)
 	if err != nil {
 		return nil, err
 	}
@@ -900,29 +891,12 @@ func (a *Agent) Close() error {
 	return result
 }
 
-func (a *Agent) validateActivation(
-	cwd string,
-	additionalDirectories []string,
-	mcpServers []acp.MCPServer,
-	requireMCP bool,
-) (string, error) {
-	if !filepath.IsAbs(cwd) {
-		return "", jrpc2.Errorf(jrpc2.InvalidParams, "session cwd must be absolute")
-	}
+// validateActivation checks what the ACP boundary cannot: whether the requested
+// workspace resolves on this filesystem, and whether the process has a
+// credential to run a session with. The request's own shape is already valid.
+func (a *Agent) validateActivation(cwd string) (string, error) {
 	canonicalCWD, err := workspace.Canonical(cwd)
 	if err != nil {
-		return "", jrpc2.Errorf(jrpc2.InvalidParams, "%v", err)
-	}
-	if len(additionalDirectories) != 0 {
-		return "", jrpc2.Errorf(
-			jrpc2.InvalidParams,
-			"additional directories are not supported",
-		)
-	}
-	if requireMCP && mcpServers == nil {
-		return "", jrpc2.Errorf(jrpc2.InvalidParams, "mcpServers is required")
-	}
-	if err := acp.ValidateMCPServers(mcpServers); err != nil {
 		return "", jrpc2.Errorf(jrpc2.InvalidParams, "%v", err)
 	}
 	if problem := a.credentialProblem(); problem != "" {
