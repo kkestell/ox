@@ -84,6 +84,7 @@ type modelResponse struct {
 	started  chan struct{}
 	rest     chan string
 	consumed bool
+	used     bool
 }
 
 type mockModel struct {
@@ -110,14 +111,22 @@ func startModel(t *testing.T, bodies ...string) *mockModel {
 		model.server.Close()
 		model.mu.Lock()
 		defer model.mu.Unlock()
-		remaining := 0
+		remaining, unusedFallbacks := 0, 0
 		for _, response := range model.responses {
-			if !response.consumed && !response.repeat {
+			switch {
+			case response.repeat:
+				if !response.used {
+					unusedFallbacks++
+				}
+			case !response.consumed:
 				remaining++
 			}
 		}
 		if remaining != 0 {
 			t.Errorf("mock model has %d unmatched responses", remaining)
+		}
+		if unusedFallbacks != 0 {
+			t.Errorf("mock model has %d unused repeating responses", unusedFallbacks)
 		}
 	})
 	return model
@@ -310,6 +319,10 @@ func (m *mockModel) serveHTTP(writer http.ResponseWriter, request *http.Request)
 		if candidate.primary && child {
 			continue
 		}
+		// A repeating response answers as often as it is asked, so being used
+		// is what the cleanup check can assert about it rather than being
+		// used up.
+		candidate.used = true
 		candidate.consumed = !candidate.repeat
 		response = candidate
 		break
