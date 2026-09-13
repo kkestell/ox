@@ -27,6 +27,11 @@ func TestComposePromptAppendsEnvironmentAfterBasePrompt(t *testing.T) {
 	if !strings.Contains(prompt, wantEnvironment+"\n\nFile tools resolve relative paths") {
 		t.Fatalf("prompt = %q, want environment followed by file-tool guidance", prompt)
 	}
+	if !strings.Contains(prompt, "run a command directly when its exit status matters") ||
+		!strings.Contains(prompt, "reports the pipeline's last stage instead") ||
+		!strings.Contains(prompt, "turn a validator failure into an apparent success") {
+		t.Fatalf("prompt does not steer validators away from truncation pipelines: %q", prompt)
+	}
 	if !strings.Contains(prompt, "Never use form questions to request credentials") {
 		t.Fatalf("prompt does not constrain form questions: %q", prompt)
 	}

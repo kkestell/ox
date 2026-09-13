@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "id": "noisy-validator",
+  "budget": { "timeout_ms": 300000, "provider_requests": 20 },
+  "phases": [
+    {
+      "action": "prompt",
+      "prompt": "Run ./check.sh in the workspace and record its result in status.txt. Its first line must be exactly `exit: <status>`, where `<status>` is the validator's own exit status, and its second line must be the validator's final output line.",
+      "permission": "allow"
+    }
+  ],
+  "success": { "files": { "status.txt": "exit: 3\nFAIL: 1 of 4000 checks failed\n" } }
+}

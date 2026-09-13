@@ -390,6 +390,7 @@ func TestSessionCompactionSurvivesRestartWithoutChangingReplay(t *testing.T) {
 }
 
 func TestOpenParentCompactionCheckpointSurvivesCrash(t *testing.T) {
+	const contextWindow = 13_500
 	dataDir := t.TempDir()
 	oldAnswer := strings.Repeat("old checkpoint detail ", 240)
 	recentAnswer := strings.Repeat("recent checkpoint answer ", 80)
@@ -403,7 +404,7 @@ func TestOpenParentCompactionCheckpointSurvivesCrash(t *testing.T) {
 	model.queue(sse(evText("continued"), evFinishReason("stop"), evUsageCost(90, 3, 93, 0.4)))
 	options := []startOption{
 		withModel(model),
-		withModelContextWindow(model, 13600),
+		withModelContextWindow(model, contextWindow),
 		withEnvironment("XDG_DATA_HOME", dataDir),
 	}
 
@@ -437,7 +438,7 @@ func TestOpenParentCompactionCheckpointSurvivesCrash(t *testing.T) {
 	if !reflect.DeepEqual(secondReplay, firstReplay) {
 		t.Fatalf("parent checkpoint replay changed across reloads:\nsecond = %#v\nfirst = %#v", secondReplay, firstReplay)
 	}
-	assertReplayUsage(t, secondReplay, 13600, 0.59)
+	assertReplayUsage(t, secondReplay, contextWindow, 0.59)
 	prompt(t, third, session, "fourth checkpoint prompt")
 	_ = updates(t, third, session)
 

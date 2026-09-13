@@ -142,9 +142,7 @@ func (g *subagentGroup) start(name, task string) (SubagentSnapshot, error) {
 	g.wait.Add(1)
 	go func() {
 		defer g.wait.Done()
-		reads, releaseReads := g.run.session.childFileReads()
-		defer releaseReads()
-		status, result, runErr := g.agent.runSubagent(childCtx, g, id, task, reads)
+		status, result, runErr := g.agent.runSubagent(childCtx, g, id, task)
 		g.complete(id, status, result, runErr)
 	}()
 	return snapshotSubagent(child), nil
@@ -367,7 +365,6 @@ func (a *Agent) runSubagent(
 	group *subagentGroup,
 	id string,
 	task string,
-	reads FileReads,
 ) (string, string, error) {
 	history := []openrouter.Message{{
 		Role:    openrouter.RoleUser,
@@ -484,7 +481,7 @@ func (a *Agent) runSubagent(
 			providerIDs[call.ID] = struct{}{}
 		}
 		results, err := a.executeSubagentCalls(
-			ctx, run, group.configuration.Mode, group.tools, reads, completion.ToolCalls,
+			ctx, run, group.configuration.Mode, group.tools, completion.ToolCalls,
 		)
 		if err != nil {
 			if ctx.Err() != nil || errors.Is(err, context.Canceled) {
@@ -539,7 +536,6 @@ func (a *Agent) executeSubagentCalls(
 	run turnRun,
 	mode string,
 	tools toolSet,
-	reads FileReads,
 	calls []openrouter.ToolCall,
 ) ([]toolResult, error) {
 	results := make([]toolResult, len(calls))
@@ -591,7 +587,7 @@ func (a *Agent) executeSubagentCalls(
 			results[index] = toolResult{content: toolCancelledBeforeStart, failed: true, approval: decisionCancelled, target: target}
 		default:
 			decision := results[index].approval
-			results[index] = a.executeOne(ctx, run, tools, reads, call, target)
+			results[index] = a.executeOne(ctx, run, tools, call, target)
 			results[index].approval = decision
 		}
 		run.active.trace.ToolCompleted(

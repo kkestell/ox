@@ -33,38 +33,7 @@ func testInvocation(t *testing.T, arguments string) agent.Invocation {
 		Root:      root,
 		SpillDir:  filepath.Join(t.TempDir(), "session.spill"),
 		CallID:    "call-1",
-		FileReads: &testReads{},
 		Emit:      func(string) {},
-	}
-}
-
-type testReads struct {
-	hashes map[string]string
-}
-
-func (r *testReads) Record(key, hash string) {
-	if r.hashes == nil {
-		r.hashes = make(map[string]string)
-	}
-	r.hashes[key] = hash
-}
-
-func (r *testReads) Hash(key string) (string, bool) {
-	hash, ok := r.hashes[key]
-	return hash, ok
-}
-
-func (r *testReads) Clear() {
-	r.hashes = nil
-}
-
-// readEvidence runs read_file so a later write or edit has the evidence it
-// requires. It leaves the read's arguments in place for the caller to restore.
-func readEvidence(t *testing.T, invocation agent.Invocation, path string) {
-	t.Helper()
-	invocation.Arguments = json.RawMessage(`{"path":"` + path + `"}`)
-	if _, err := invoke(t, toolNamed(t, "read_file"), invocation); err != nil {
-		t.Fatal(err)
 	}
 }
 
@@ -642,21 +611,16 @@ func TestShellCancellationKillsTheProcessGroup(t *testing.T) {
 	t.Fatalf("grandchild %d survived cancellation", pid)
 }
 
-func TestShellClearsReadsAndSpillsLargeOutput(t *testing.T) {
+func TestShellSpillsLargeOutput(t *testing.T) {
 	invocation := testInvocation(
 		t,
 		`{"command":"i=0; while [ $i -lt 10000 ]; do printf 'line %05d xxxxxxxxxxxxxxxxxxxx\\n' \"$i\"; i=$((i + 1)); done"}`,
 	)
-	reads := invocation.FileReads.(*testReads)
-	reads.Record("file.txt", "hash")
 	var spill string
 	invocation.ReportSpill = func(path string) { spill = path }
 	result, err := invoke(t, toolNamed(t, "shell"), invocation)
 	if err != nil {
 		t.Fatal(err)
-	}
-	if _, ok := reads.Hash("file.txt"); ok {
-		t.Fatal("shell left stale file-read hashes")
 	}
 	if spill == "" || !strings.Contains(result, "full output at "+spill) ||
 		!strings.Contains(result, "line 00000") ||
@@ -669,6 +633,36 @@ func TestShellClearsReadsAndSpillsLargeOutput(t *testing.T) {
 	}
 	if lines := strings.Count(string(content), "\n"); lines != 10_000 {
 		t.Fatalf("spill has %d lines", lines)
+	}
+}
+
+// A validator that fails loudly reports its own status without the model
+// piping it through head, tail, or grep: the recorder bounds the inline
+// preview and keeps every line in the spill.
+func TestShellSpillsLargeFailingOutputWithItsOwnStatus(t *testing.T) {
+	invocation := testInvocation(
+		t,
+		`{"command":"i=0; while [ $i -lt 10000 ]; do printf 'check %05d ok\\n' \"$i\"; i=$((i + 1)); done; printf 'FAIL: 1 of 10000 checks failed\\n'; exit 3"}`,
+	)
+	var spill string
+	invocation.ReportSpill = func(path string) { spill = path }
+	result, err := invoke(t, toolNamed(t, "shell"), invocation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(result, "exit code: 3\n") ||
+		spill == "" ||
+		!strings.Contains(result, "FAIL: 1 of 10000 checks failed") ||
+		!strings.Contains(result, "full output at "+spill) {
+		t.Fatalf("result = %q, spill = %q", result, spill)
+	}
+	content, err := os.ReadFile(spill)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSuffix(string(content), "\n"), "\n")
+	if len(lines) != 10_001 || lines[len(lines)-1] != "FAIL: 1 of 10000 checks failed" {
+		t.Fatalf("spill has %d lines, last = %q", len(lines), lines[len(lines)-1])
 	}
 }
 
@@ -984,7 +978,7 @@ func TestShellDelegatedCleanupPreservesFirstError(t *testing.T) {
 	}
 }
 
-func TestWriteFileCreatesAndRequiresAFreshReadToOverwrite(t *testing.T) {
+func TestWriteFileCreatesAndReplacesWithoutReadingFirst(t *testing.T) {
 	invocation := testInvocation(t, `{"path":"nested/file.txt","content":"first\n"}`)
 	write := toolNamed(t, "write_file")
 	got, err := invoke(t, write, invocation)
@@ -998,16 +992,6 @@ func TestWriteFileCreatesAndRequiresAFreshReadToOverwrite(t *testing.T) {
 	path := filepath.Join(invocation.Root, "nested", "file.txt")
 	writeToolFile(t, invocation.Root, "existing.txt", "before\n")
 	invocation.Arguments = json.RawMessage(`{"path":"existing.txt","content":"after\n"}`)
-	if _, err := invoke(t, write, invocation); err == nil ||
-		!strings.Contains(err.Error(), "has not read") {
-		t.Fatalf("unread overwrite error = %v", err)
-	}
-
-	invocation.Arguments = json.RawMessage(`{"path":"existing.txt"}`)
-	if _, err := invoke(t, toolNamed(t, "read_file"), invocation); err != nil {
-		t.Fatal(err)
-	}
-	invocation.Arguments = json.RawMessage(`{"path":"existing.txt","content":"after\n"}`)
 	if _, err := invoke(t, write, invocation); err != nil {
 		t.Fatal(err)
 	}
@@ -1019,19 +1003,49 @@ func TestWriteFileCreatesAndRequiresAFreshReadToOverwrite(t *testing.T) {
 		t.Fatalf("overwrite = %q", data)
 	}
 
-	invocation.Arguments = json.RawMessage(`{"path":"existing.txt","content":"again\n"}`)
-	if _, err := invoke(t, write, invocation); err != nil {
-		t.Fatalf("successful write did not refresh read record: %v", err)
-	}
 	if err := os.WriteFile(filepath.Join(invocation.Root, "existing.txt"), []byte("external\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := invoke(t, write, invocation); err == nil ||
-		!strings.Contains(err.Error(), "changed since") {
-		t.Fatalf("stale overwrite error = %v", err)
+	invocation.Arguments = json.RawMessage(`{"path":"existing.txt","content":"again\n"}`)
+	if _, err := invoke(t, write, invocation); err != nil {
+		t.Fatalf("replace after an outside change: %v", err)
+	}
+	if data, err := os.ReadFile(filepath.Join(invocation.Root, "existing.txt")); err != nil || string(data) != "again\n" {
+		t.Fatalf("replacement after outside change = %q, %v", data, err)
 	}
 	if data, err := os.ReadFile(path); err != nil || string(data) != "first\n" {
 		t.Fatalf("created file = %q, %v", data, err)
+	}
+}
+
+func TestShellAndFileMutationsRunInEitherOrder(t *testing.T) {
+	invocation := testInvocation(t, `{"command":"printf 'shell\\n' > from-shell.txt"}`)
+	path := writeToolFile(t, invocation.Root, "file.txt", "one\n")
+	if _, err := invoke(t, toolNamed(t, "shell"), invocation); err != nil {
+		t.Fatal(err)
+	}
+
+	invocation.Arguments = json.RawMessage(
+		`{"path":"file.txt","old_string":"one","new_string":"ONE"}`,
+	)
+	if _, err := invoke(t, toolNamed(t, "edit_file"), invocation); err != nil {
+		t.Fatalf("edit after shell: %v", err)
+	}
+
+	invocation.Arguments = json.RawMessage(`{"path":"file.txt","content":"two\n"}`)
+	if _, err := invoke(t, toolNamed(t, "write_file"), invocation); err != nil {
+		t.Fatal(err)
+	}
+	invocation.Arguments = json.RawMessage(`{"command":"test \"$(cat file.txt)\" = two"}`)
+	result, err := invoke(t, toolNamed(t, "shell"), invocation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(result, "exit code: 0\n") {
+		t.Fatalf("shell after write = %q", result)
+	}
+	if data, err := os.ReadFile(path); err != nil || string(data) != "two\n" {
+		t.Fatalf("final content = %q, %v", data, err)
 	}
 }
 
@@ -1040,9 +1054,6 @@ func TestWriteFilePreservesInvisibleTextState(t *testing.T) {
 	path := filepath.Join(invocation.Root, "file.txt")
 	original := append(append([]byte(nil), utf8BOM...), []byte("one\r\ntwo")...)
 	if err := os.WriteFile(path, original, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := invoke(t, toolNamed(t, "read_file"), invocation); err != nil {
 		t.Fatal(err)
 	}
 	invocation.Arguments = json.RawMessage(`{"path":"file.txt","content":"three\nfour\n"}`)
@@ -1059,14 +1070,11 @@ func TestWriteFilePreservesInvisibleTextState(t *testing.T) {
 	}
 }
 
-func TestReadRecordFollowsInternalSymlinkSpellings(t *testing.T) {
+func TestWriteFileFollowsInternalSymlinkSpellings(t *testing.T) {
 	invocation := testInvocation(t, `{"path":"link"}`)
 	target := writeToolFile(t, invocation.Root, "real/file.txt", "before\n")
 	link := filepath.Join(invocation.Root, "link")
 	if err := os.Symlink("real/file.txt", link); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := invoke(t, toolNamed(t, "read_file"), invocation); err != nil {
 		t.Fatal(err)
 	}
 	invocation.Arguments = json.RawMessage(`{"path":"link","content":"after\n"}`)
@@ -1075,7 +1083,7 @@ func TestReadRecordFollowsInternalSymlinkSpellings(t *testing.T) {
 	}
 	invocation.Arguments = json.RawMessage(`{"path":"real/file.txt","content":"again\n"}`)
 	if _, err := invoke(t, toolNamed(t, "write_file"), invocation); err != nil {
-		t.Fatalf("canonical spelling did not share the refreshed read record: %v", err)
+		t.Fatalf("canonical spelling failed: %v", err)
 	}
 	data, err := os.ReadFile(target)
 	if err != nil {
@@ -1132,7 +1140,6 @@ func TestEditFileMatchesExactlyAndExplainsRefusals(t *testing.T) {
 	invocation := testInvocation(t, `{"path":"file.txt","old_string":"one","new_string":"ONE"}`)
 	path := writeToolFile(t, invocation.Root, "file.txt", "one\ntwo\none\n")
 	edit := toolNamed(t, "edit_file")
-	readEvidence(t, invocation, "file.txt")
 	if _, err := invoke(t, edit, invocation); err == nil ||
 		!strings.Contains(err.Error(), "occurs 2 times") ||
 		!strings.Contains(err.Error(), "lines 1 and 3") {
@@ -1184,9 +1191,6 @@ func TestEditFilePreservesCRLFBOMAndTrailingNewlineState(t *testing.T) {
 	if err := os.WriteFile(path, original, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	arguments := invocation.Arguments
-	readEvidence(t, invocation, "file.txt")
-	invocation.Arguments = arguments
 	if _, err := invoke(t, toolNamed(t, "edit_file"), invocation); err != nil {
 		t.Fatal(err)
 	}
@@ -1201,32 +1205,27 @@ func TestEditFilePreservesCRLFBOMAndTrailingNewlineState(t *testing.T) {
 	}
 }
 
-func TestEditFileRequiresFreshReadEvidence(t *testing.T) {
+func TestEditFileUsesCurrentContentWithoutReadingFirst(t *testing.T) {
 	invocation := testInvocation(t, `{"path":"file.txt","old_string":"one","new_string":"ONE"}`)
 	path := writeToolFile(t, invocation.Root, "file.txt", "one\ntwo\n")
 	edit := toolNamed(t, "edit_file")
 
-	blind, err := invoke(t, edit, invocation)
-	if err == nil || !strings.Contains(err.Error(), "has not read its current contents") {
-		t.Fatalf("blind edit = %q, %v", blind, err)
+	if _, err := invoke(t, edit, invocation); err != nil {
+		t.Fatalf("unread edit: %v", err)
 	}
-
-	arguments := invocation.Arguments
-	readEvidence(t, invocation, "file.txt")
-	invocation.Arguments = arguments
-	if err := os.WriteFile(path, []byte("one\ntwo\nthree\n"), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte("ONE\ntwo\nthree\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	stale, err := invoke(t, edit, invocation)
-	if err == nil || !strings.Contains(err.Error(), "changed since read_file read it") {
-		t.Fatalf("stale edit = %q, %v", stale, err)
+	invocation.Arguments = json.RawMessage(`{"path":"file.txt","old_string":"two","new_string":"TWO"}`)
+	if _, err := invoke(t, edit, invocation); err != nil {
+		t.Fatalf("edit after outside change: %v", err)
 	}
 	after, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(after) != "one\ntwo\nthree\n" {
-		t.Fatalf("refused edits changed the file: %q", after)
+	if string(after) != "ONE\nTWO\nthree\n" {
+		t.Fatalf("edited current content = %q", after)
 	}
 }
 
@@ -1236,9 +1235,6 @@ func TestEditFileReplacesNonOverlappingMatchesAndKeepsOtherBytes(t *testing.T) {
 	// CRLF line is untouched by the edit so it must survive as CRLF.
 	path := writeToolFile(t, invocation.Root, "file.txt", "aaa\nkeep\r\ntail\n\n\n")
 	edit := toolNamed(t, "edit_file")
-	arguments := invocation.Arguments
-	readEvidence(t, invocation, "file.txt")
-	invocation.Arguments = arguments
 
 	got, err := invoke(t, edit, invocation)
 	if err != nil {

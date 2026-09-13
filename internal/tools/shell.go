@@ -75,9 +75,6 @@ func executeShell(ctx context.Context, invocation agent.Invocation) (string, err
 			shellMaximumTimeout,
 		)
 	}
-	if invocation.FileReads != nil {
-		invocation.FileReads.Clear()
-	}
 	if invocation.Terminal.Available() {
 		return executeDelegatedShell(ctx, invocation, command, timeout)
 	}

@@ -36,8 +36,8 @@
   - [x] Make multimodal admission match advertised ACP capabilities (F07)
   - [x] Enforce coherent edit evidence, replacement, and text-format semantics
         (F08, F09)
-  - [x] Keep read evidence and write verification on a coherent filesystem
-        executor (F10)
+  - [x] Keep delegated reads and mutations on a coherent filesystem executor
+        (F10)
   - [x] Make streamed tool-output retention bounded and incremental (F11, F17)
   - [x] Use consistent token units for context occupancy and compaction (F12)
   - [x] Correct provider stream retry detection and classification (F13, F25)
@@ -99,7 +99,7 @@
 - [x] Publish versioned release binaries
 - [ ] Address findings in the
       [session tool-friction review](reviews/2026-09-13-006-session-tool-friction-review.md)
-  - [ ] Remove session read evidence from file mutations and shell execution
+  - [x] Remove session read evidence from file mutations and shell execution
         (F01)
   - [ ] Preserve validator exit status without model-added output-truncation
         pipelines (F02)

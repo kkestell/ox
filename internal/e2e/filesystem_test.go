@@ -11,9 +11,8 @@ import (
 )
 
 // TestInitializeRefusesHalfDelegatedFilesystem covers the shipped binary's
-// refusal of a filesystem capability advertised in only one direction. Reads
-// from an editor buffer paired with writes to disk would record evidence no
-// later mutation could satisfy.
+// refusal of a filesystem capability advertised in only one direction. Exact
+// edits need current content and their replacement to use the same filesystem.
 func TestInitializeRefusesHalfDelegatedFilesystem(t *testing.T) {
 	for _, test := range []struct {
 		name         string
@@ -45,7 +44,7 @@ func TestInitializeRefusesHalfDelegatedFilesystem(t *testing.T) {
 	}
 }
 
-func TestDelegatedFilesystemRunsThroughClientAndRefusesBeforeDispatch(t *testing.T) {
+func TestDelegatedFilesystemRunsThroughClientWithoutPriorReads(t *testing.T) {
 	model := startModel(t,
 		toolResponse("read", "read_file", `{"path":"notes.txt"}`),
 		toolResponse("write", "write_file", `{"path":"notes.txt","content":"three\nfour\n"}`),
@@ -53,8 +52,8 @@ func TestDelegatedFilesystemRunsThroughClientAndRefusesBeforeDispatch(t *testing
 		toolResponse("missing", "read_file", `{"path":"missing.txt"}`),
 		sse(
 			evToolCall(0, "escape", "function", "read_file", `{"path":"../outside.txt"}`),
-			evToolCall(1, "unread", "function", "write_file", `{"path":"unread.txt","content":"changed"}`),
-			evToolCall(2, "rejected", "function", "edit_file", `{"path":"reject.txt","old_string":"before","new_string":"after"}`),
+			evToolCall(1, "blind-write", "function", "write_file", `{"path":"unread.txt","content":"changed"}`),
+			evToolCall(2, "blind-edit", "function", "edit_file", `{"path":"edit.txt","old_string":"before","new_string":"after"}`),
 			evFinishReason("tool_calls"),
 		),
 		sse(evText("done"), evFinishReason("stop")),
@@ -63,7 +62,7 @@ func TestDelegatedFilesystemRunsThroughClientAndRefusesBeforeDispatch(t *testing
 		withModel(model),
 		withFile("notes.txt", "local notes\n"),
 		withFile("unread.txt", "unread local\n"),
-		withFile("reject.txt", "before\n"),
+		withFile("edit.txt", "before\n"),
 	)
 	initializeWithCapabilities(t, child, &acp.ClientCapabilities{
 		FS: &acp.FileSystemCapabilities{ReadTextFile: true, WriteTextFile: true},
@@ -77,11 +76,13 @@ func TestDelegatedFilesystemRunsThroughClientAndRefusesBeforeDispatch(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	rejectPath, err := filepath.EvalSymlinks(filepath.Join(child.cwd, "reject.txt"))
+	editPath, err := filepath.EvalSymlinks(filepath.Join(child.cwd, "edit.txt"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	clientContent := "one\r\ntwo"
+	notesContent := "one\r\ntwo"
+	unreadContent := "unread client\n"
+	editContent := "before\n"
 	promptCall := child.begin("session/prompt", acp.PromptRequest{
 		SessionID: session,
 		Prompt:    textPrompt("delegate filesystem work"),
@@ -89,22 +90,22 @@ func TestDelegatedFilesystemRunsThroughClientAndRefusesBeforeDispatch(t *testing
 
 	read := child.serverRequest()
 	assertReadRequest(t, read, session, notesPath)
-	child.respond(read, acp.ReadTextFileResponse{Content: clientContent})
+	child.respond(read, acp.ReadTextFileResponse{Content: notesContent})
 
 	allowFilePermission(t, child, "write", notesPath, true)
 	read = child.serverRequest()
 	assertReadRequest(t, read, session, notesPath)
-	child.respond(read, acp.ReadTextFileResponse{Content: clientContent})
+	child.respond(read, acp.ReadTextFileResponse{Content: notesContent})
 	write := child.serverRequest()
-	clientContent = assertWriteRequest(t, write, session, notesPath, "three\r\nfour")
+	notesContent = assertWriteRequest(t, write, session, notesPath, "three\r\nfour")
 	child.respond(write, acp.WriteTextFileResponse{})
 
 	allowFilePermission(t, child, "edit", notesPath, true)
 	read = child.serverRequest()
 	assertReadRequest(t, read, session, notesPath)
-	child.respond(read, acp.ReadTextFileResponse{Content: clientContent})
+	child.respond(read, acp.ReadTextFileResponse{Content: notesContent})
 	write = child.serverRequest()
-	clientContent = assertWriteRequest(t, write, session, notesPath, "THREE\r\nfour")
+	notesContent = assertWriteRequest(t, write, session, notesPath, "THREE\r\nfour")
 	child.respond(write, acp.WriteTextFileResponse{})
 
 	missing := child.serverRequest()
@@ -113,8 +114,23 @@ func TestDelegatedFilesystemRunsThroughClientAndRefusesBeforeDispatch(t *testing
 	}
 	child.respondError(missing, -32602, "client cannot read missing file")
 
-	allowFilePermission(t, child, "unread", unreadPath, true)
-	allowFilePermission(t, child, "rejected", rejectPath, false)
+	allowFilePermission(t, child, "blind-write", unreadPath, true)
+	allowFilePermission(t, child, "blind-edit", editPath, true)
+
+	read = child.serverRequest()
+	assertReadRequest(t, read, session, unreadPath)
+	child.respond(read, acp.ReadTextFileResponse{Content: unreadContent})
+	write = child.serverRequest()
+	unreadContent = assertWriteRequest(t, write, session, unreadPath, "changed\n")
+	child.respond(write, acp.WriteTextFileResponse{})
+
+	read = child.serverRequest()
+	assertReadRequest(t, read, session, editPath)
+	child.respond(read, acp.ReadTextFileResponse{Content: editContent})
+	write = child.serverRequest()
+	editContent = assertWriteRequest(t, write, session, editPath, "after\n")
+	child.respond(write, acp.WriteTextFileResponse{})
+
 	response := child.result(child.await(promptCall))
 	var promptResponse acp.PromptResponse
 	if err := json.Unmarshal(response, &promptResponse); err != nil {
@@ -123,13 +139,16 @@ func TestDelegatedFilesystemRunsThroughClientAndRefusesBeforeDispatch(t *testing
 	if promptResponse.StopReason != acp.StopReasonEndTurn {
 		t.Fatalf("stop reason = %q", promptResponse.StopReason)
 	}
-	if clientContent != "THREE\r\nfour" {
-		t.Fatalf("client content = %q", clientContent)
+	if notesContent != "THREE\r\nfour" || unreadContent != "changed\n" || editContent != "after\n" {
+		t.Fatalf(
+			"client content = notes %q, unread %q, edit %q",
+			notesContent, unreadContent, editContent,
+		)
 	}
 	for name, want := range map[string]string{
 		"notes.txt":  "local notes\n",
 		"unread.txt": "unread local\n",
-		"reject.txt": "before\n",
+		"edit.txt":   "before\n",
 	} {
 		data, err := os.ReadFile(filepath.Join(child.cwd, name))
 		if err != nil || string(data) != want {
@@ -150,13 +169,13 @@ func TestDelegatedFilesystemRunsThroughClientAndRefusesBeforeDispatch(t *testing
 	}
 	for callID, want := range map[string]string{
 		"write": notesPath, "edit": notesPath,
-		"unread": unreadPath, "rejected": rejectPath,
+		"blind-write": unreadPath, "blind-edit": editPath,
 	} {
 		if locations[callID] != want {
 			t.Errorf("tool call %q location = %q, want %q", callID, locations[callID], want)
 		}
 	}
-	for _, callID := range []string{"missing", "escape", "unread", "rejected"} {
+	for _, callID := range []string{"missing", "escape"} {
 		if !failed[callID] {
 			t.Errorf("tool call %q was not reported failed", callID)
 		}

@@ -1015,9 +1015,9 @@ func TestNewSessionResolvesBothSettingsLayers(t *testing.T) {
 	}
 }
 
-// TestInitializeRequiresBothFilesystemMethods covers the pairing rule: read
-// evidence and the mutation that consumes it must come from one filesystem, so
-// a client cannot delegate only half of it.
+// TestInitializeRequiresBothFilesystemMethods covers the pairing rule: exact
+// edits must read and write through one filesystem, so a client cannot delegate
+// only half of it.
 func TestInitializeRequiresBothFilesystemMethods(t *testing.T) {
 	for _, test := range []struct {
 		name         string
@@ -1641,7 +1641,7 @@ func dispatchBatch(
 	results, err := instance.dispatchApprovedBatch(
 		ctx,
 		turnRun{session: value, active: &activeTurn{}, events: events},
-		tools, value.primaryFileReads(), calls,
+		tools, calls,
 		make([]toolResult, len(calls)), ready,
 	)
 	if err != nil {
@@ -1757,7 +1757,7 @@ func TestToolDispatchPersistenceFailureSkipsExecutor(t *testing.T) {
 	_, err = instance.dispatchApprovedBatch(
 		context.Background(),
 		turnRun{session: value, active: &activeTurn{}, events: make(chan event, 8)},
-		instance.primaryTools, value.primaryFileReads(),
+		instance.primaryTools,
 		[]openrouter.ToolCall{call}, []toolResult{{}}, []bool{true},
 	)
 	if err == nil || !strings.Contains(err.Error(), "persist tool dispatch") {
@@ -1813,7 +1813,7 @@ func TestTodoPersistenceFailureEmitsNoPlanOrSuccessfulResult(t *testing.T) {
 	_, err = instance.dispatchApprovedBatch(
 		context.Background(),
 		turnRun{session: value, active: &activeTurn{}, events: events},
-		instance.primaryTools, value.primaryFileReads(),
+		instance.primaryTools,
 		[]openrouter.ToolCall{call}, []toolResult{{}}, []bool{true},
 	)
 	if err == nil || !value.poisoned || value.state.todo != nil {
@@ -1889,7 +1889,7 @@ func TestToolCompletionPersistenceFailureStopsLaterSibling(t *testing.T) {
 	_, err = instance.dispatchApprovedBatch(
 		context.Background(),
 		turnRun{session: value, active: &activeTurn{}, events: make(chan event, 16)},
-		instance.primaryTools, value.primaryFileReads(),
+		instance.primaryTools,
 		calls, make([]toolResult, len(calls)), []bool{true, true, true},
 	)
 	if err == nil || !strings.Contains(err.Error(), "persist tool completion") {
@@ -1912,7 +1912,7 @@ func TestToolCompletionPersistenceFailureStopsLaterSibling(t *testing.T) {
 	if _, err := instance.dispatchApprovedBatch(
 		context.Background(),
 		turnRun{session: other, active: &activeTurn{}, events: make(chan event, 8)},
-		instance.primaryTools, other.primaryFileReads(),
+		instance.primaryTools,
 		[]openrouter.ToolCall{otherCall}, []toolResult{{}}, []bool{true},
 	); err != nil {
 		t.Fatal(err)

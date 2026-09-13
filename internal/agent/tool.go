@@ -65,7 +65,6 @@ type Invocation struct {
 	Root           string
 	SpillDir       string
 	CallID         string
-	FileReads      FileReads
 	FileSystem     ClientFileSystem
 	Terminal       ClientTerminal
 	Languages      LanguageQueries
@@ -101,10 +100,4 @@ type ClientTerminal struct {
 func (t ClientTerminal) Available() bool {
 	return t.Create != nil && t.Output != nil && t.WaitForExit != nil &&
 		t.Kill != nil && t.Release != nil
-}
-
-type FileReads interface {
-	Record(string, string)
-	Hash(string) (string, bool)
-	Clear()
 }

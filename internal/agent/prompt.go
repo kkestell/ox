@@ -26,7 +26,7 @@ const maxRootInstructionsBytes = 64 << 10
 
 const sharedToolProse = "File tools resolve relative paths against the workspace root and refuse paths " +
 	"outside it. When a search result spills, use read_file with the reported spill " +
-	"path and offset/limit to read it back. Read an existing file before overwriting it. " +
+	"path and offset/limit to read it back. write_file creates or replaces a whole file. " +
 	"For edit_file, old_string must be exact and unique unless replace_all is set; after " +
 	"a refused match, read the file again instead of guessing. Some tool calls require " +
 	"the user's approval. Shell commands run through a fresh `sh -c` from the workspace " +
@@ -34,9 +34,11 @@ const sharedToolProse = "File tools resolve relative paths against the workspace
 	"between calls. Chain dependent commands with `&&` in one call and use parallel tool " +
 	"calls for independent work. Prefer read_file, grep, and glob over shell cat, grep, " +
 	"and find. Shell stdin is closed, so interactive commands fail rather than hang. Set " +
-	"timeout for legitimately long work. Shell output combines stdout and stderr; when " +
-	"it spills, use read_file on the reported path. A rejected call returns an error, " +
-	"so do not simply retry it."
+	"timeout for legitimately long work. Shell output combines stdout and stderr and is " +
+	"already bounded, so run a command directly when its exit status matters; piping it " +
+	"through head, tail, or grep reports the pipeline's last stage instead and can turn " +
+	"a validator failure into an apparent success. When output spills, use read_file on " +
+	"the reported path. A rejected call returns an error, so do not simply retry it."
 
 const questionToolProse = " Never use form questions to request credentials, secrets, " +
 	"authorization, or permission to run a tool."

@@ -873,7 +873,7 @@ func (a *Agent) executeSuspendedBatch(
 	}
 	var err error
 	results, err = a.dispatchApprovedBatch(
-		ctx, run, tools, value.primaryFileReads(), calls, results, ready,
+		ctx, run, tools, calls, results, ready,
 	)
 	if err != nil {
 		return nil, false, err
@@ -949,7 +949,6 @@ func (a *Agent) dispatchApprovedBatch(
 	ctx context.Context,
 	run turnRun,
 	tools toolSet,
-	reads FileReads,
 	calls []openrouter.ToolCall,
 	results []toolResult,
 	ready []bool,
@@ -1012,7 +1011,6 @@ func (a *Agent) dispatchApprovedBatch(
 					groupCtx,
 					run,
 					tools,
-					reads,
 					calls[current],
 					results[current].target,
 				)
@@ -1105,7 +1103,6 @@ func (a *Agent) executeOne(
 	ctx context.Context,
 	run turnRun,
 	tools toolSet,
-	reads FileReads,
 	call openrouter.ToolCall,
 	target string,
 ) (result toolResult) {
@@ -1156,7 +1153,6 @@ func (a *Agent) executeOne(
 		Root:       root,
 		SpillDir:   a.store.spillDir(value.id),
 		CallID:     call.ID,
-		FileReads:  reads,
 		FileSystem: run.fileSystem,
 		Terminal:   run.terminal,
 		Languages:  value.languagesFor(),

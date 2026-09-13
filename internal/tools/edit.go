@@ -2,8 +2,6 @@ package tools
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"strings"
 	"unicode/utf8"
@@ -12,9 +10,9 @@ import (
 	"github.com/kkestell/ox/internal/workspace"
 )
 
-const editDescription = "Replace exact text in an existing UTF-8 file you have read with " +
-	"read_file. old_string must occur exactly once unless replace_all is true. Matching is " +
-	"literal; read the file again after a miss, an ambiguous match, or an outside change. " +
+const editDescription = "Replace exact text in an existing UTF-8 file. old_string must occur " +
+	"exactly once unless replace_all is true. Matching is literal; read the file after a miss or " +
+	"an ambiguous match. " +
 	"old_string and new_string adopt the file's line endings, and every byte outside the replaced " +
 	"text is left as it was."
 
@@ -65,7 +63,7 @@ func executeEdit(ctx context.Context, invocation agent.Invocation) (string, erro
 	}
 	replaceAll := arguments.ReplaceAll != nil && *arguments.ReplaceAll
 	files := workspace.NewWorkspace(invocation.Root).WithReadable(invocation.SpillDir)
-	key, ok := files.Key(path)
+	_, ok := files.Key(path)
 	if !ok {
 		return "", fmt.Errorf("`%s` is outside the workspace", path)
 	}
@@ -74,20 +72,17 @@ func executeEdit(ctx context.Context, invocation agent.Invocation) (string, erro
 			ctx,
 			invocation,
 			files,
-			key,
 			path,
 			oldString,
 			newString,
 			replaceAll,
 		)
 	}
-	return executeLocalEdit(invocation, files, key, path, oldString, newString, replaceAll)
+	return executeLocalEdit(files, path, oldString, newString, replaceAll)
 }
 
 func executeLocalEdit(
-	invocation agent.Invocation,
 	files *workspace.Workspace,
-	key string,
 	path string,
 	oldString string,
 	newString string,
@@ -96,19 +91,12 @@ func executeLocalEdit(
 	var written []byte
 	replacements := 0
 	err := files.Edit(path, func(current []byte) ([]byte, error) {
-		if err := requireReadEvidence(invocation.FileReads, key, path, "edit", current); err != nil {
-			return nil, err
-		}
 		var err error
 		written, replacements, err = replaceExact(path, current, oldString, newString, replaceAll)
 		return written, err
 	})
 	if err != nil && !workspace.MutationCommitted(err) {
 		return "", err
-	}
-	if invocation.FileReads != nil {
-		sum := sha256.Sum256(written)
-		invocation.FileReads.Record(key, hex.EncodeToString(sum[:]))
 	}
 	return mutationResult(
 		fmt.Sprintf("Edited %s (%d replacement(s))", path, replacements),
@@ -120,7 +108,6 @@ func executeDelegatedEdit(
 	ctx context.Context,
 	invocation agent.Invocation,
 	files *workspace.Workspace,
-	key string,
 	path string,
 	oldString string,
 	newString string,
@@ -130,15 +117,8 @@ func executeDelegatedEdit(
 	if err != nil {
 		return "", err
 	}
-	want, err := recordedReadHash(invocation.FileReads, key, path, "edit")
-	if err != nil {
-		return "", err
-	}
 	current, err := acquireText(ctx, files, path, absolute, invocation.FileSystem.ReadTextFile)
 	if err != nil {
-		return "", err
-	}
-	if err := matchesReadEvidence(want, current, path, "edit"); err != nil {
 		return "", err
 	}
 	written, replacements, err := replaceExact(path, current, oldString, newString, replaceAll)
@@ -147,10 +127,6 @@ func executeDelegatedEdit(
 	}
 	if err := invocation.FileSystem.WriteTextFile(ctx, absolute, string(written)); err != nil {
 		return "", err
-	}
-	if invocation.FileReads != nil {
-		sum := sha256.Sum256(written)
-		invocation.FileReads.Record(key, hex.EncodeToString(sum[:]))
 	}
 	return fmt.Sprintf("Edited %s (%d replacement(s))", path, replacements), nil
 }

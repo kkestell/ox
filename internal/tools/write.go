@@ -2,8 +2,6 @@ package tools
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -15,8 +13,7 @@ import (
 )
 
 const writeDescription = "Create or replace a UTF-8 text file. Missing parent directories are " +
-	"created. Before replacing an existing file, use read_file so the current contents can be " +
-	"verified. Existing line endings, UTF-8 BOM, trailing-newline state, and file mode are preserved."
+	"created. Existing line endings, UTF-8 BOM, trailing-newline state, and file mode are preserved."
 
 const writeSchema = `{
 	"type": "object",
@@ -50,20 +47,18 @@ func executeWrite(ctx context.Context, invocation agent.Invocation) (string, err
 		return "", err
 	}
 	files := workspace.NewWorkspace(invocation.Root).WithReadable(invocation.SpillDir)
-	key, ok := files.Key(path)
+	_, ok := files.Key(path)
 	if !ok {
 		return "", fmt.Errorf("`%s` is outside the workspace", path)
 	}
 	if invocation.FileSystem.WriteTextFile != nil {
-		return executeDelegatedWrite(ctx, invocation, files, key, path, content)
+		return executeDelegatedWrite(ctx, invocation, files, path, content)
 	}
-	return executeLocalWrite(invocation, files, key, path, content)
+	return executeLocalWrite(files, path, content)
 }
 
 func executeLocalWrite(
-	invocation agent.Invocation,
 	files *workspace.Workspace,
-	key string,
 	path string,
 	content string,
 ) (string, error) {
@@ -72,9 +67,6 @@ func executeLocalWrite(
 	err := files.Edit(path, func(current []byte) ([]byte, error) {
 		if !utf8.Valid(current) {
 			return nil, fmt.Errorf("cannot overwrite `%s`: file is not valid UTF-8", path)
-		}
-		if err := requireReadEvidence(invocation.FileReads, key, path, "overwrite", current); err != nil {
-			return nil, err
 		}
 		body, state := inspectText(current)
 		previousLines = lineCount(body)
@@ -89,10 +81,6 @@ func executeLocalWrite(
 	committed := workspace.MutationCommitted(err)
 	if err != nil && !committed {
 		return "", err
-	}
-	if invocation.FileReads != nil {
-		sum := sha256.Sum256(written)
-		invocation.FileReads.Record(key, hex.EncodeToString(sum[:]))
 	}
 	if created {
 		return mutationResult(
@@ -109,7 +97,6 @@ func executeDelegatedWrite(
 	ctx context.Context,
 	invocation agent.Invocation,
 	files *workspace.Workspace,
-	key string,
 	path string,
 	content string,
 ) (string, error) {
@@ -129,10 +116,6 @@ func executeDelegatedWrite(
 	written := []byte(content)
 	previousLines := 0
 	if !created {
-		want, err := recordedReadHash(invocation.FileReads, key, path, "overwrite")
-		if err != nil {
-			return "", err
-		}
 		current, err := acquireText(ctx, files, path, absolute, invocation.FileSystem.ReadTextFile)
 		if err != nil {
 			return "", err
@@ -140,19 +123,12 @@ func executeDelegatedWrite(
 		if !utf8.Valid(current) {
 			return "", fmt.Errorf("cannot overwrite `%s`: file is not valid UTF-8", path)
 		}
-		if err := matchesReadEvidence(want, current, path, "overwrite"); err != nil {
-			return "", err
-		}
 		body, state := inspectText(current)
 		previousLines = lineCount(body)
 		written = restoreText(convertEnding(content, state.ending), state)
 	}
 	if err := invocation.FileSystem.WriteTextFile(ctx, absolute, string(written)); err != nil {
 		return "", err
-	}
-	if invocation.FileReads != nil {
-		sum := sha256.Sum256(written)
-		invocation.FileReads.Record(key, hex.EncodeToString(sum[:]))
 	}
 	if created {
 		return fmt.Sprintf("Created %s (%d lines)", path, lineCount(content)), nil

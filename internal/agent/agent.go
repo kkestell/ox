@@ -1069,10 +1069,8 @@ func (a *Agent) configuredModels(
 }
 
 // validateFileSystemCapabilities requires the client's filesystem methods to
-// arrive as a pair. Read evidence and the mutation that consumes it must come
-// from the same filesystem: a client that reads from an editor buffer and
-// leaves writes on disk records a hash no later write can match, and the
-// reverse verifies a file on disk before replacing a buffer.
+// arrive as a pair. Exact edits must read current content from the same
+// filesystem that receives the replacement.
 func validateFileSystemCapabilities(capabilities *acp.ClientCapabilities) error {
 	if capabilities == nil || capabilities.FS == nil {
 		return nil
@@ -1803,9 +1801,6 @@ type session struct {
 	closing       bool
 	configChanges sync.WaitGroup
 	grants        map[string][]string
-	reads         fileReads
-	readScopesMu  sync.Mutex
-	childReads    map[*fileReads]struct{}
 	// approvalMu admits one permission request at a time, so parallel tool calls
 	// cannot present competing prompts for the same session.
 	approvalMu sync.Mutex

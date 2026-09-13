@@ -996,12 +996,28 @@ func TestFormQuestionCancellationDoesNotBlockAnotherSession(t *testing.T) {
 	}
 }
 
+// Every provider request carries the agent's own system prompt and tool
+// schemas, which these fixtures do not control. compactionContextWindow is far
+// larger than those, so each fixture below keeps thousands of tokens of margin
+// on both sides of the threshold that triggers compaction: an earlier blob that
+// must stay under it and a later one that must push past it.
+const compactionContextWindow = 40_000
+
+// compactionFiller repeats unit until it covers at least size bytes.
+func compactionFiller(unit string, size int) string {
+	return strings.Repeat(unit, size/len(unit)+1)
+}
+
 func TestPromptCompactsModelHistoryBeforeTheNextTurn(t *testing.T) {
 	const oldAnswer = "old detail "
-	recentAnswer := strings.Repeat("recent answer ", 100)
+	secondPrompt := compactionFiller("second detail ", 8_000)
+	recentAnswer := compactionFiller("recent answer ", 12_000)
 	var ordinarySystemPrompt string
 	model := &scriptedModel{
-		entry: &openrouter.Model{ID: "test/model", ContextLength: 3800, SupportedParameters: []string{"tools"}},
+		entry: &openrouter.Model{
+			ID: "test/model", ContextLength: compactionContextWindow,
+			SupportedParameters: []string{"tools"},
+		},
 		scripts: []modelScript{
 			func(
 				_ context.Context,
@@ -1010,7 +1026,7 @@ func TestPromptCompactsModelHistoryBeforeTheNextTurn(t *testing.T) {
 			) (*openrouter.Completion, error) {
 				ordinarySystemPrompt = request.Messages[0].Content[0].Text
 				return &openrouter.Completion{
-					Text: strings.Repeat(oldAnswer, 240), FinishReason: "stop",
+					Text: compactionFiller(oldAnswer, 47_000), FinishReason: "stop",
 					Usage: &openrouter.Usage{
 						PromptTokens: 100, CompletionTokens: 600, TotalTokens: 700, Cost: 0.001,
 					},
@@ -1084,7 +1100,7 @@ func TestPromptCompactsModelHistoryBeforeTheNextTurn(t *testing.T) {
 	harness := newAgentHarness(t, model, tools)
 	sessionID := harness.newSession(t)
 	harness.prompt(t, sessionID, "first")
-	harness.prompt(t, sessionID, "second")
+	harness.prompt(t, sessionID, secondPrompt)
 	beforeThird := len(harness.updates())
 	harness.prompt(t, sessionID, "third")
 
@@ -1097,7 +1113,8 @@ func TestPromptCompactsModelHistoryBeforeTheNextTurn(t *testing.T) {
 		update.decode(t, &usage)
 		occupancies = append(occupancies, usage.Used)
 	}
-	if len(occupancies) != 2 || occupancies[0] == 0 || occupancies[0] >= 7600 ||
+	if len(occupancies) != 2 || occupancies[0] == 0 ||
+		occupancies[0] >= 2*compactionContextWindow ||
 		occupancies[1] != 7 {
 		t.Fatalf("third-turn occupancies = %#v", occupancies)
 	}
@@ -1105,10 +1122,13 @@ func TestPromptCompactsModelHistoryBeforeTheNextTurn(t *testing.T) {
 }
 
 func TestPromptCompactsWithinASingleToolLoop(t *testing.T) {
-	oldResult := strings.Repeat("old tool result ", 300)
-	recentResult := strings.Repeat("recent tool result ", 40)
+	oldResult := compactionFiller("old tool result ", 48_000)
+	recentResult := compactionFiller("recent tool result ", 24_000)
 	model := &scriptedModel{
-		entry: &openrouter.Model{ID: "test/model", ContextLength: 4800, SupportedParameters: []string{"tools"}},
+		entry: &openrouter.Model{
+			ID: "test/model", ContextLength: compactionContextWindow,
+			SupportedParameters: []string{"tools"},
+		},
 		scripts: []modelScript{
 			func(context.Context, openrouter.Request, func(openrouter.Delta)) (*openrouter.Completion, error) {
 				result := completion("")
@@ -1212,7 +1232,7 @@ func TestPromptCompactionFailureLeavesHistoryUntouched(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			model := &scriptedModel{
-				entry:   &openrouter.Model{ID: "test/model", ContextLength: 3800},
+				entry:   &openrouter.Model{ID: "test/model", ContextLength: compactionContextWindow},
 				scripts: compactionAtomicityScripts(test.summary, ""),
 			}
 			harness := newAgentHarness(t, model, nil)
@@ -1229,18 +1249,27 @@ func TestPromptCompactionFailureLeavesHistoryUntouched(t *testing.T) {
 	}
 }
 
+// compactionCancelWait bounds the summary that session/cancel is expected to
+// interrupt, so a fixture that stops reaching it reports a failure rather than
+// blocking until the package timeout.
+const compactionCancelWait = 30 * time.Second
+
 func TestPromptCompactionCancellationLeavesHistoryUntouched(t *testing.T) {
 	started := make(chan struct{})
 	model := &scriptedModel{
-		entry: &openrouter.Model{ID: "test/model", ContextLength: 3800},
+		entry: &openrouter.Model{ID: "test/model", ContextLength: compactionContextWindow},
 		scripts: compactionAtomicityScripts(func(
 			ctx context.Context,
 			_ openrouter.Request,
 			_ func(openrouter.Delta),
 		) (*openrouter.Completion, error) {
 			close(started)
-			<-ctx.Done()
-			return nil, ctx.Err()
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(compactionCancelWait):
+				return nil, errors.New("summary context outlived the cancelled prompt")
+			}
 		}, "cancelled prompt"),
 	}
 	harness := newAgentHarness(t, model, nil)
@@ -1269,8 +1298,8 @@ func TestPromptCompactionCancellationLeavesHistoryUntouched(t *testing.T) {
 }
 
 func compactionAtomicityScripts(failedSummary modelScript, retainedPrompt string) []modelScript {
-	oldAnswer := strings.Repeat("old detail ", 240)
-	recentAnswer := strings.Repeat("recent answer ", 100)
+	oldAnswer := compactionFiller("old detail ", 47_000)
+	recentAnswer := compactionFiller("recent answer ", 24_000)
 	return []modelScript{
 		func(
 			_ context.Context,
@@ -2463,13 +2492,12 @@ func TestShellApprovalGrantIsRuleScopedAndActivationScoped(t *testing.T) {
 	model.assertConsumed(t)
 }
 
-func TestFileMutationToolsRequireApprovalAndFreshReadsPerActivation(t *testing.T) {
+func TestFileMutationToolsRequireApprovalWithoutReadState(t *testing.T) {
 	workspace := t.TempDir()
 	path := filepath.Join(workspace, "notes.txt")
 	if err := os.WriteFile(path, []byte("before\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	writeArguments := `{"path":"notes.txt","content":"after\n"}`
 	model := &scriptedModel{scripts: []modelScript{
 		func(
 			_ context.Context,
@@ -2481,45 +2509,9 @@ func TestFileMutationToolsRequireApprovalAndFreshReadsPerActivation(t *testing.T
 			}
 			return &openrouter.Completion{
 				ToolCalls: []openrouter.ToolCall{
-					modelToolCall("write-unread", "write_file", writeArguments),
-				},
-				FinishReason: "tool_calls",
-			}, nil
-		},
-		func(
-			_ context.Context,
-			request openrouter.Request,
-			_ func(openrouter.Delta),
-		) (*openrouter.Completion, error) {
-			messages, err := conversation(request)
-			if err != nil {
-				return nil, err
-			}
-			if got := messages[len(messages)-1].Content[0].Text; !strings.Contains(got, "has not read") {
-				return nil, fmt.Errorf("unread overwrite result = %q", got)
-			}
-			return &openrouter.Completion{
-				ToolCalls: []openrouter.ToolCall{
-					modelToolCall("read-current", "read_file", `{"path":"notes.txt"}`),
-				},
-				FinishReason: "tool_calls",
-			}, nil
-		},
-		func(
-			_ context.Context,
-			request openrouter.Request,
-			_ func(openrouter.Delta),
-		) (*openrouter.Completion, error) {
-			messages, err := conversation(request)
-			if err != nil {
-				return nil, err
-			}
-			if got := messages[len(messages)-1].Content[0].Text; got != "before\n" {
-				return nil, fmt.Errorf("read result = %q", got)
-			}
-			return &openrouter.Completion{
-				ToolCalls: []openrouter.ToolCall{
-					modelToolCall("write-fresh", "write_file", writeArguments),
+					modelToolCall(
+						"write-unread", "write_file", `{"path":"notes.txt","content":"after\n"}`,
+					),
 				},
 				FinishReason: "tool_calls",
 			}, nil
@@ -2534,7 +2526,7 @@ func TestFileMutationToolsRequireApprovalAndFreshReadsPerActivation(t *testing.T
 				return nil, err
 			}
 			if got := messages[len(messages)-1].Content[0].Text; !strings.Contains(got, "Wrote notes.txt") {
-				return nil, fmt.Errorf("write result = %q", got)
+				return nil, fmt.Errorf("unread overwrite result = %q", got)
 			}
 			return completion("first activation complete"), nil
 		},
@@ -2548,7 +2540,9 @@ func TestFileMutationToolsRequireApprovalAndFreshReadsPerActivation(t *testing.T
 			}
 			return &openrouter.Completion{
 				ToolCalls: []openrouter.ToolCall{
-					modelToolCall("write-after-load", "write_file", writeArguments),
+					modelToolCall(
+						"write-after-load", "write_file", `{"path":"notes.txt","content":"again\n"}`,
+					),
 				},
 				FinishReason: "tool_calls",
 			}, nil
@@ -2562,10 +2556,10 @@ func TestFileMutationToolsRequireApprovalAndFreshReadsPerActivation(t *testing.T
 			if err != nil {
 				return nil, err
 			}
-			if got := messages[len(messages)-1].Content[0].Text; !strings.Contains(got, "has not read") {
+			if got := messages[len(messages)-1].Content[0].Text; !strings.Contains(got, "Wrote notes.txt") {
 				return nil, fmt.Errorf("reactivated overwrite result = %q", got)
 			}
-			return completion("second activation refused"), nil
+			return completion("second activation complete"), nil
 		},
 	}}
 	var approvals atomic.Int32
@@ -2609,11 +2603,11 @@ func TestFileMutationToolsRequireApprovalAndFreshReadsPerActivation(t *testing.T
 		t.Fatal(err)
 	}
 	harness.prompt(t, sessionID, "replace the notes again")
-	if data, err := os.ReadFile(path); err != nil || string(data) != "after\n" {
+	if data, err := os.ReadFile(path); err != nil || string(data) != "again\n" {
 		t.Fatalf("reactivated content = %q, %v", data, err)
 	}
-	if approvals.Load() != 3 {
-		t.Fatalf("approval requests = %d, want 3", approvals.Load())
+	if approvals.Load() != 2 {
+		t.Fatalf("approval requests = %d, want 2", approvals.Load())
 	}
 	model.assertConsumed(t)
 }
@@ -2790,9 +2784,8 @@ func TestDelegatedFilesystemPreservesToolSemanticsAndContinuesAfterClientError(t
 }
 
 // TestFilesystemCapabilitiesApplyAsAPair checks that filesystem delegation is
-// all or nothing. With both methods advertised a read and the write that
-// consumes its evidence both go to the client, even when the client's buffer
-// differs from the file on disk; with neither, both stay local.
+// all or nothing. With both methods advertised the write reads and replaces the
+// client buffer even when it differs from disk; with neither, both stay local.
 func TestFilesystemCapabilitiesApplyAsAPair(t *testing.T) {
 	for _, test := range []struct {
 		name       string
@@ -2827,8 +2820,8 @@ func TestFilesystemCapabilitiesApplyAsAPair(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			// The client's buffer never matches the file on disk, so a mutation
-			// verified against the wrong one would be refused as stale.
+			// The client buffer never matches the file on disk, so the result
+			// identifies which filesystem supplied current content.
 			clientContent := "unsaved buffer\n"
 			model := &scriptedModel{scripts: []modelScript{
 				toolCompletionWithArguments("read", "read_file", `{"path":"notes.txt"}`),

@@ -2,8 +2,6 @@ package tools
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"fmt"
 	"strings"
 	"unicode/utf8"
@@ -85,10 +83,6 @@ func executeRead(ctx context.Context, invocation agent.Invocation) (string, erro
 			"failed to read file: %s: stream did not contain valid UTF-8",
 			path,
 		)
-	}
-	if key, ok := files.Key(path); ok && invocation.FileReads != nil {
-		sum := sha256.Sum256(raw)
-		invocation.FileReads.Record(key, hex.EncodeToString(sum[:]))
 	}
 	return window(string(raw), offset, limit), nil
 }
