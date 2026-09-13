@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -2798,6 +2799,99 @@ func TestOneSessionRejectsOverlapWhileSeparateSessionsRun(t *testing.T) {
 	}
 }
 
+// TestConfigurationChangeOverlapsALiveTurn holds a turn inside a tool call and
+// changes the session mode while it runs, releasing the tool without waiting for
+// the change so the rest of the turn and the commit that replaces session state
+// stay unordered. The running turn keeps its frozen tool set and the next turn
+// picks the change up.
+func TestConfigurationChangeOverlapsALiveTurn(t *testing.T) {
+	entered := make(chan struct{})
+	resume := make(chan struct{})
+	tools := []agent.Tool{
+		{
+			Name: "wait", Description: "block until released", Kind: acp.ToolKindOther,
+			InputSchema: json.RawMessage(`{"type":"object"}`),
+			Approval:    agent.ApprovalNone, PlanMode: true,
+			Execute: func(context.Context, agent.Invocation) (string, error) {
+				entered <- struct{}{}
+				<-resume
+				return "released", nil
+			},
+		},
+		{
+			Name: "mutate", Description: "change the workspace", Kind: acp.ToolKindEdit,
+			InputSchema: json.RawMessage(`{"type":"object"}`),
+			Approval:    agent.ApprovalNone,
+			Execute: func(context.Context, agent.Invocation) (string, error) {
+				return "", nil
+			},
+		},
+	}
+	var mu sync.Mutex
+	var offered [][]string
+	model := &routedModel{route: func(
+		_ context.Context,
+		request openrouter.Request,
+		_ func(openrouter.Delta),
+	) (*openrouter.Completion, error) {
+		names := make([]string, 0, len(request.Tools))
+		for _, tool := range request.Tools {
+			names = append(names, tool.Function.Name)
+		}
+		mu.Lock()
+		offered = append(offered, names)
+		count := len(offered)
+		mu.Unlock()
+		if count != 1 {
+			return completion("done"), nil
+		}
+		return &openrouter.Completion{
+			ToolCalls:    []openrouter.ToolCall{modelToolCall("wait-call", "wait", `{}`)},
+			FinishReason: "tool_calls",
+		}, nil
+	}}
+	harness := newAgentHarness(t, model, tools)
+	sessionID := harness.newSession(t)
+
+	held := make(chan promptResult, 1)
+	go func() {
+		response, err := harness.callPrompt(sessionID, "hold the turn open")
+		held <- promptResult{response: response, err: err}
+	}()
+	<-entered
+
+	changed := make(chan error, 1)
+	go func() {
+		_, err := harness.callSetConfig(sessionID, "mode", "plan")
+		changed <- err
+	}()
+	resume <- struct{}{}
+
+	if result := <-held; result.err != nil {
+		t.Fatal(result.err)
+	} else if result.response.StopReason != acp.StopReasonEndTurn {
+		t.Fatalf("stopReason = %q, want %q", result.response.StopReason, acp.StopReasonEndTurn)
+	}
+	if err := <-changed; err != nil {
+		t.Fatal(err)
+	}
+	harness.prompt(t, sessionID, "after the change")
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(offered) != 3 {
+		t.Fatalf("model requests = %d, want 3", len(offered))
+	}
+	for index, names := range offered[:2] {
+		if !slices.Contains(names, "mutate") {
+			t.Fatalf("request %d tools = %v, want the frozen code-mode tool set", index, names)
+		}
+	}
+	if slices.Contains(offered[2], "mutate") {
+		t.Fatalf("request 2 tools = %v, want the plan-mode tool set", offered[2])
+	}
+}
+
 func TestSettingsFilesShapeEveryModelRequest(t *testing.T) {
 	workspace := t.TempDir()
 	global := writeSettingsFile(t, filepath.Join(t.TempDir(), "settings.json"), `{
@@ -3623,6 +3717,17 @@ func (h *agentHarness) setConfig(
 		t.Fatal(err)
 	}
 	return response
+}
+
+func (h *agentHarness) callSetConfig(
+	sessionID, id, value string,
+) (acp.SetSessionConfigOptionResponse, error) {
+	var response acp.SetSessionConfigOptionResponse
+	err := h.local.Client.CallResult(context.Background(), acp.MethodSessionSetConfigOption,
+		acp.SetSessionConfigOptionRequest{SessionID: sessionID, ConfigID: id, Value: value},
+		&response,
+	)
+	return response, err
 }
 
 func (h *agentHarness) updates() []capturedUpdate {

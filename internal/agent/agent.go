@@ -407,7 +407,7 @@ func (a *Agent) LoadSession(
 	if err != nil {
 		return acp.LoadSessionResponse{}, err
 	}
-	updates, err := a.replay(value.state)
+	updates, err := a.replay(value.snapshot())
 	if err != nil {
 		_ = a.closeActive(value.id)
 		return acp.LoadSessionResponse{}, fmt.Errorf("project session replay: %w", err)
@@ -422,7 +422,7 @@ func (a *Agent) LoadSession(
 			return acp.LoadSessionResponse{}, fmt.Errorf("replay session update: %w", err)
 		}
 	}
-	if value.state.suspended != nil && value.state.suspended.Pending != nil {
+	if pending := value.suspendedExchange(); pending != nil && pending.Pending != nil {
 		if err := a.recoverSession(ctx, value); err != nil {
 			_ = a.closeActive(value.id)
 			return acp.LoadSessionResponse{}, err
@@ -433,9 +433,7 @@ func (a *Agent) LoadSession(
 }
 
 func (a *Agent) recoverSession(ctx context.Context, value *session) error {
-	value.stateMu.Lock()
-	turnID := value.state.openTurn
-	value.stateMu.Unlock()
+	turnID := value.openTurn()
 	runCtx, active, release, err := value.claimRecovery(ctx, turnID)
 	if err != nil {
 		return fmt.Errorf("claim recovered turn: %w", err)
@@ -460,7 +458,7 @@ func (a *Agent) recoverSession(ctx context.Context, value *session) error {
 	}
 
 	server := jrpc2.ServerFromContext(ctx)
-	adapter := newAdapter(value.id, value.state.cwd, func(notification acp.SessionNotification) error {
+	adapter := newAdapter(value.id, value.workspaceRoot(), func(notification acp.SessionNotification) error {
 		return server.Notify(ctx, "session/update", notification)
 	})
 	defer adapter.close()
@@ -699,6 +697,8 @@ func (a *Agent) activateSession(
 			value.callIDs[call.ID] = struct{}{}
 		}
 	}
+	recordCount := len(value.state.records)
+	systemPrompt := value.state.configuration.SystemPrompt
 	a.sessionsMu.Lock()
 	if a.sessions[id] != nil {
 		a.sessionsMu.Unlock()
@@ -713,9 +713,9 @@ func (a *Agent) activateSession(
 	a.logger.Info(
 		"session activated",
 		"session_id", id,
-		"records", len(value.state.records),
-		"system_prompt_length", len(value.state.configuration.SystemPrompt),
-		"system_prompt_digest", promptDigest(value.state.configuration.SystemPrompt),
+		"records", recordCount,
+		"system_prompt_length", len(systemPrompt),
+		"system_prompt_digest", promptDigest(systemPrompt),
 	)
 	return value, nil
 }
@@ -1154,10 +1154,8 @@ func (a *Agent) interruptOpenTurn(value *session) error {
 	if err := a.closeUnknownExecutions(value); err != nil {
 		return err
 	}
-	value.stateMu.Lock()
-	turnID := value.state.openTurn
-	suspended := cloneSuspendedExchange(value.state.suspended)
-	value.stateMu.Unlock()
+	turnID := value.openTurn()
+	suspended := value.suspendedExchange()
 	if suspended != nil {
 		results := make([]storedToolResult, len(suspended.ToolCalls))
 		for index, call := range suspended.ToolCalls {
@@ -1197,6 +1195,8 @@ func (a *Agent) interruptOpenTurn(value *session) error {
 	return nil
 }
 
+// commitLocked requires stateMu. It builds the next state, appends the record,
+// and publishes the new state only after the append succeeds.
 func (a *Agent) commitLocked(value *session, kind string, payload any) error {
 	if value.poisoned {
 		return errors.New("session activation is poisoned by an earlier persistence failure")
@@ -1377,7 +1377,7 @@ func (a *Agent) Prompt(
 		active.trace.Complete(outcome, "")
 	}()
 
-	adapter := newAdapter(value.id, value.state.cwd, func(notification acp.SessionNotification) error {
+	adapter := newAdapter(value.id, value.workspaceRoot(), func(notification acp.SessionNotification) error {
 		return jrpc2.ServerFromContext(ctx).Notify(ctx, "session/update", notification)
 	})
 	defer adapter.close()
@@ -1385,6 +1385,8 @@ func (a *Agent) Prompt(
 	fileSystem, terminal := a.promptExecutors(server, value)
 	requestPermission := permissionCallback(server, active.trace)
 	requestElicitation := elicitationCallback(server)
+	// Reading the configuration and recording it as the turn's frozen
+	// configuration is one step against a concurrent configuration change.
 	value.configMu.Lock()
 	value.stateMu.Lock()
 	turnConfiguration := cloneConfiguration(value.state.configuration)
@@ -1445,7 +1447,7 @@ func (a *Agent) Prompt(
 	}
 	if cancelledByClient {
 		result.response.StopReason = acp.StopReasonCancelled
-		result.response.Usage = value.state.usage.acp()
+		result.response.Usage = value.usage()
 		result.err = nil
 	}
 	if result.err != nil {
@@ -1470,9 +1472,7 @@ func (a *Agent) promptExecutors(
 	server *jrpc2.Server,
 	value *session,
 ) (ClientFileSystem, ClientTerminal) {
-	value.stateMu.Lock()
-	capabilities := value.state.turnConfiguration().ExecutorCapabilities
-	value.stateMu.Unlock()
+	capabilities := value.turnConfiguration().ExecutorCapabilities
 	return a.clientFileSystem(server, value.id, capabilities),
 		a.clientTerminalOperations(server, value.id, capabilities)
 }
@@ -1676,30 +1676,90 @@ func randomID() (string, error) {
 }
 
 type session struct {
-	id             string
+	id string
+	// state is copy-on-write: commitLocked builds the next value and assigns it
+	// whole. Activation owns it exclusively until the session joins the agent's
+	// session map; afterwards every read takes stateMu, including fields no
+	// record changes, because a commit replaces the struct rather than a field.
 	state          durableState
-	log            *sessionLog
 	stateMu        sync.Mutex
+	log            *sessionLog
 	poisoned       bool
 	activationBase requestConfiguration
 	models         []openrouter.Model
 	mcp            *mcp.Bundle
 	primaryTools   toolSet
-	configMu       sync.Mutex
-	mu             sync.Mutex
-	nextTurn       uint64
-	active         *activeTurn
-	recovering     bool
-	closing        bool
-	configChanges  sync.WaitGroup
-	grants         map[string][]string
-	reads          fileReads
-	approvalMu     sync.Mutex
-	exclusiveMu    sync.Mutex
-	callIDsMu      sync.Mutex
-	callIDs        map[string]struct{}
-	readScopesMu   sync.Mutex
-	readScopes     map[*fileReads]struct{}
+	// configMu serializes a configuration change against the user-message commit
+	// that freezes the turn configuration, so a turn either starts before or
+	// after a change and never straddles it.
+	configMu sync.Mutex
+	// mu guards the turn lifecycle and grant fields below it.
+	mu            sync.Mutex
+	nextTurn      uint64
+	active        *activeTurn
+	recovering    bool
+	closing       bool
+	configChanges sync.WaitGroup
+	grants        map[string][]string
+	reads         fileReads
+	// approvalMu admits one permission request at a time, so parallel tool calls
+	// cannot present competing prompts for the same session.
+	approvalMu sync.Mutex
+	// exclusiveMu serializes tools that declare they cannot run beside another.
+	exclusiveMu sync.Mutex
+	// callIDsMu guards callIDs, the live-turn half of tool call ID uniqueness
+	// whose durable half is state.toolCallIDs.
+	callIDsMu sync.Mutex
+	callIDs   map[string]struct{}
+	// readScopesMu guards readScopes, the set of per-turn read ledgers a write
+	// must invalidate.
+	readScopesMu sync.Mutex
+	readScopes   map[*fileReads]struct{}
+}
+
+// snapshot copies the live state. The copy aliases the slices and maps inside
+// it, which is safe to read because a commit replaces them rather than mutating
+// them in place.
+func (s *session) snapshot() durableState {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	return s.state
+}
+
+func (s *session) workspaceRoot() string {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	return s.state.cwd
+}
+
+func (s *session) openTurn() string {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	return s.state.openTurn
+}
+
+func (s *session) turnConfiguration() requestConfiguration {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	return s.state.turnConfiguration()
+}
+
+func (s *session) usage() *acp.Usage {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	return s.state.usage.acp()
+}
+
+func (s *session) cost() float64 {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	return s.state.cost
+}
+
+func (s *session) suspendedExchange() *suspendedModelExchangeRecord {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	return cloneSuspendedExchange(s.state.suspended)
 }
 
 func (s *session) granted(tool Tool, arguments json.RawMessage) bool {

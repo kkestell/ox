@@ -73,9 +73,7 @@ func (a *Agent) resume(
 	terminal ClientTerminal,
 	events chan<- event,
 ) loopOutcome {
-	value.stateMu.Lock()
-	suspended := cloneSuspendedExchange(value.state.suspended)
-	value.stateMu.Unlock()
+	suspended := value.suspendedExchange()
 	if suspended == nil {
 		panic("resume called without a suspended model exchange")
 	}
@@ -116,7 +114,7 @@ func (a *Agent) runFrom(
 					return loopOutcome{err: finishErr}
 				}
 				return loopOutcome{response: acp.PromptResponse{
-					StopReason: acp.StopReasonMaxTurnRequests, Usage: value.state.usage.acp(),
+					StopReason: acp.StopReasonMaxTurnRequests, Usage: value.usage(),
 				}}
 			}
 			var err error
@@ -159,7 +157,7 @@ func (a *Agent) runFrom(
 					return loopOutcome{err: finishErr}
 				}
 				return loopOutcome{response: acp.PromptResponse{
-					StopReason: acp.StopReasonMaxTurnRequests, Usage: value.state.usage.acp(),
+					StopReason: acp.StopReasonMaxTurnRequests, Usage: value.usage(),
 				}}
 			}
 			if err != nil {
@@ -250,7 +248,7 @@ func (a *Agent) runFrom(
 			}
 			return loopOutcome{response: acp.PromptResponse{
 				StopReason: stopReason,
-				Usage:      value.state.usage.acp(),
+				Usage:      value.usage(),
 			}}
 		}
 
@@ -263,8 +261,10 @@ func (a *Agent) runFrom(
 				Text: completion.Text, Reasoning: completion.Reasoning,
 				ReasoningDetails: opaqueMessages(completion.ReasoningDetails),
 				FinishReason:     completion.FinishReason, Usage: completion.Usage,
-				ToolCalls:    append([]openrouter.ToolCall(nil), completion.ToolCalls...),
-				ToolTargets:  normalizedToolTargets(value.state.cwd, a.sessionPrimaryTools(value), completion.ToolCalls),
+				ToolCalls: append([]openrouter.ToolCall(nil), completion.ToolCalls...),
+				ToolTargets: normalizedToolTargets(
+					value.workspaceRoot(), a.sessionPrimaryTools(value), completion.ToolCalls,
+				),
 				RequestCount: requestCount,
 			}
 			if err := a.commit(value, recordExchangePaused, *suspended); err != nil {
@@ -342,7 +342,7 @@ func (a *Agent) runFrom(
 			}
 			return loopOutcome{response: acp.PromptResponse{
 				StopReason: acp.StopReasonMaxTurnRequests,
-				Usage:      value.state.usage.acp(),
+				Usage:      value.usage(),
 			}}
 		}
 	}
@@ -471,7 +471,7 @@ func (a *Agent) finishCancelled(
 	if active.cancelledByClient.Load() {
 		return loopOutcome{response: acp.PromptResponse{
 			StopReason: acp.StopReasonCancelled,
-			Usage:      value.state.usage.acp(),
+			Usage:      value.usage(),
 		}}
 	}
 	return loopOutcome{err: context.Canceled}
@@ -574,9 +574,7 @@ func todoContextMessage(entries []acp.PlanEntry) openrouter.Message {
 // so a change that would invalidate the provider's prompt cache is visible in
 // the log. The turn configuration keeps this stable across a tool loop.
 func (a *Agent) prefixFingerprint(value *session) string {
-	value.stateMu.Lock()
-	configuration := value.state.turnConfiguration()
-	value.stateMu.Unlock()
+	configuration := value.turnConfiguration()
 	return requestPrefixFingerprint(
 		configuration,
 		configuration.SystemPrompt,
@@ -783,9 +781,7 @@ func (a *Agent) executeSuspendedBatch(
 	reissue bool,
 ) ([]toolResult, bool, error) {
 	a.logger.Info("suspended tool batch started", "session_id", value.id, "calls", len(calls))
-	value.stateMu.Lock()
-	configuration := value.state.turnConfiguration()
-	value.stateMu.Unlock()
+	configuration := value.turnConfiguration()
 	tools := a.sessionPrimaryTools(value)
 	if configuration.Mode != "" {
 		tools = constrainedToolSet(tools, configuration.Tools)
@@ -793,10 +789,8 @@ func (a *Agent) executeSuspendedBatch(
 	results := make([]toolResult, len(calls))
 	ready := make([]bool, len(calls))
 
-	value.stateMu.Lock()
-	progress := cloneSuspendedExchange(value.state.suspended)
-	root := value.state.cwd
-	value.stateMu.Unlock()
+	progress := value.suspendedExchange()
+	root := value.workspaceRoot()
 	if progress == nil {
 		return nil, false, errors.New("suspended tool batch has no durable state")
 	}
@@ -813,9 +807,7 @@ func (a *Agent) executeSuspendedBatch(
 	batchCancelled := false
 	for index := 0; index < len(calls); index++ {
 		call := calls[index]
-		value.stateMu.Lock()
-		progress = cloneSuspendedExchange(value.state.suspended)
-		value.stateMu.Unlock()
+		progress = value.suspendedExchange()
 		if progress == nil {
 			return nil, false, errors.New("suspended tool batch lost its durable state")
 		}
@@ -863,9 +855,7 @@ func (a *Agent) executeSuspendedBatch(
 		request := a.permissionRequest(
 			value.id, root, tool, call, rule, "", results[index].target,
 		)
-		value.stateMu.Lock()
-		progress = cloneSuspendedExchange(value.state.suspended)
-		value.stateMu.Unlock()
+		progress = value.suspendedExchange()
 		if progress.Pending == nil {
 			if err := a.commit(value, recordPermissionOpen, permissionRequestedRecord{
 				TurnID: progress.TurnID,
@@ -1044,16 +1034,12 @@ func (a *Agent) executeBatchWith(
 	parent string,
 	turn diagnostictrace.Turn,
 ) ([]toolResult, error) {
-	value.stateMu.Lock()
-	configuration := value.state.turnConfiguration()
-	value.stateMu.Unlock()
+	configuration := value.turnConfiguration()
 	if configuration.Mode != "" {
 		tools = constrainedToolSet(tools, configuration.Tools)
 	}
 	a.logger.Info("tool batch started", "session_id", value.id, "calls", len(calls))
-	value.stateMu.Lock()
-	root := value.state.cwd
-	value.stateMu.Unlock()
+	root := value.workspaceRoot()
 	targets := normalizedToolTargets(root, tools, calls)
 	for _, call := range calls {
 		turn.ToolPending(call.ID, call.Function.Name, parent)
@@ -1257,9 +1243,7 @@ func (a *Agent) dispatchApprovedBatch(
 					}
 					continue
 				}
-				value.stateMu.Lock()
-				turnID := value.state.openTurn
-				value.stateMu.Unlock()
+				turnID := value.openTurn()
 				if err := a.startToolExecution(
 					value, turnID, parent, calls[index], results[index].approval,
 					results[index].target,
@@ -1294,9 +1278,7 @@ func (a *Agent) dispatchApprovedBatch(
 				results[current].approval = decision
 				if value.log != nil {
 					stored := storedResult(calls[current].ID, results[current])
-					value.stateMu.Lock()
-					turnID := value.state.openTurn
-					value.stateMu.Unlock()
+					turnID := value.openTurn()
 					if err := a.completeToolExecution(
 						value, turnID, parent, calls[current].ID, stored,
 					); err != nil {
@@ -1439,10 +1421,8 @@ func (a *Agent) executeOne(
 	if tool.Execute == nil {
 		return toolResult{content: "tool has no executor", failed: true, target: target}
 	}
-	value.stateMu.Lock()
-	root := value.state.cwd
-	configuration := value.state.turnConfiguration()
-	value.stateMu.Unlock()
+	root := value.workspaceRoot()
+	configuration := value.turnConfiguration()
 	invocation := Invocation{
 		Arguments:  json.RawMessage(call.Function.Arguments),
 		SessionID:  value.id,
@@ -1484,9 +1464,7 @@ func (a *Agent) executeOne(
 	}
 	if parent == "" && tool.Name == "todo" {
 		invocation.ReplaceTodo = func(entries []acp.PlanEntry) error {
-			value.stateMu.Lock()
-			turnID := value.state.openTurn
-			value.stateMu.Unlock()
+			turnID := value.openTurn()
 			if err := a.commit(value, recordTodoChanged, todoChanged{
 				TurnID: turnID, CallID: call.ID, Entries: clonePlanEntries(entries),
 			}); err != nil {
@@ -1691,21 +1669,22 @@ func (a *Agent) publishUsage(
 		cachedRead = current.PromptTokensDetails.CachedTokens
 		cachedWrite = current.PromptTokensDetails.CacheWriteTokens
 	}
+	cost := value.cost()
 	a.logger.Info(
 		"model request completed",
 		"session_id", value.id,
 		"total_tokens", current.TotalTokens,
 		"cache_read_tokens", cachedRead,
 		"cache_write_tokens", cachedWrite,
-		"session_cost", value.state.cost,
+		"session_cost", cost,
 	)
-	configuration := value.state.turnConfiguration()
+	configuration := value.turnConfiguration()
 	if configuration.ContextWindow > 0 {
 		events <- event{
 			kind:             eventUsage,
 			contextOccupancy: current.PromptTokens,
 			contextWindow:    configuration.ContextWindow,
-			totalCost:        value.state.cost,
+			totalCost:        cost,
 		}
 	}
 }

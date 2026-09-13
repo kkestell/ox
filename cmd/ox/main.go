@@ -27,6 +27,10 @@ var (
 )
 
 const (
+	// handlerConcurrency lifts the JSON-RPC server's worker cap out of the way.
+	// Ox bounds concurrency itself: one turn per session, and a turn's tool
+	// dispatch decides how much runs in parallel. A smaller cap would instead
+	// let long-running requests starve cancellation and client callbacks.
 	handlerConcurrency = 1 << 30
 	usage              = "usage: ox [--log-level level] [--openrouter-base-url url] [--trace path] [--model id] [--credential-file path] [--no-keyring] [login]"
 )

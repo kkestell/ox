@@ -39,9 +39,7 @@ func (a *Agent) admitPrimaryRequest(
 	requestCount int,
 ) (openrouter.Request, *event, error) {
 	request, historyOffset := a.modelRequest(value)
-	value.stateMu.Lock()
-	configuration := value.state.turnConfiguration()
-	value.stateMu.Unlock()
+	configuration := value.turnConfiguration()
 	planned, err := planRequestAdmission(request, configuration.ContextWindow)
 	if err != nil {
 		return openrouter.Request{}, nil, err
@@ -67,9 +65,7 @@ func (a *Agent) admitPrimaryRequest(
 	if err != nil {
 		return openrouter.Request{}, nil, err
 	}
-	value.stateMu.Lock()
-	turnID := value.state.openTurn
-	value.stateMu.Unlock()
+	turnID := value.openTurn()
 	record := compactionRecord{
 		TurnID:    turnID,
 		HeadEnd:   planned.plan.headEnd - historyOffset,
@@ -133,10 +129,8 @@ func (a *Agent) summarizeContext(
 }
 
 func (a *Agent) compactionUsageEvent(value *session, occupancy int) *event {
-	value.stateMu.Lock()
-	configuration := value.state.turnConfiguration()
-	totalCost := value.state.cost
-	value.stateMu.Unlock()
+	configuration := value.turnConfiguration()
+	totalCost := value.cost()
 	return &event{
 		kind: eventUsage, contextOccupancy: occupancy,
 		contextWindow: configuration.ContextWindow, totalCost: totalCost,

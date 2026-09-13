@@ -25,7 +25,7 @@
   - [x] Remove delegated tasks and child-agent runtime
 - [ ] Address findings in the
       [consolidated codebase review](reviews/2026-09-12-consolidated-codebase-review.md)
-  - [ ] Synchronize live-turn session-state access and cover concurrent
+  - [x] Synchronize live-turn session-state access and cover concurrent
         configuration changes (F01, F36)
   - [ ] Harden reusable shell-rule derivation (F02)
   - [ ] Bound model-chosen file reads and `read_file` output (F03, F26)
