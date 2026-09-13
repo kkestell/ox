@@ -72,6 +72,12 @@ type streamAssembler struct {
 	toolCalls             map[int]*partialToolCall
 	reasoningDetailBlocks map[reasoningDetailKey]int
 	sawChoice             bool
+	// observedContent records that the model produced part of a response. A
+	// retry after that would ask for the response twice, so the caller uses it
+	// to make a failed attempt final. The assembler owns it because it decodes
+	// every kind of delta, including the tool-call and reasoning-detail
+	// fragments that reach no delta callback.
+	observedContent bool
 }
 
 type reasoningDetailKey struct {
@@ -108,6 +114,10 @@ func (a *streamAssembler) push(data []byte, onDelta func(Delta)) error {
 
 	for _, choice := range chunk.Choices {
 		a.sawChoice = true
+		if choice.Delta.Content != "" || choice.Delta.Reasoning != "" ||
+			len(choice.Delta.ReasoningDetails) > 0 || len(choice.Delta.ToolCalls) > 0 {
+			a.observedContent = true
+		}
 		if choice.Delta.Content != "" {
 			a.text.WriteString(choice.Delta.Content)
 			if onDelta != nil {

@@ -126,6 +126,90 @@ func TestClientReturnsPartialCompletionForMidStreamErrorWithoutRetry(t *testing.
 	}
 }
 
+// TestClientDoesNotRetryAfterObservingContentWithoutADeltaCallback covers the
+// deltas that reach no callback. A retry after the model has already produced
+// part of a response would ask for that response a second time, so observing a
+// tool call or a reasoning detail has to make the attempt final just as text
+// does.
+func TestClientDoesNotRetryAfterObservingContentWithoutADeltaCallback(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		chunk string
+		check func(*testing.T, *Completion)
+	}{
+		{
+			name:  "tool call only",
+			chunk: `{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"lookup","arguments":"{\"x\":1}"}}]}}]}`,
+			check: func(t *testing.T, completion *Completion) {
+				if len(completion.ToolCalls) != 1 ||
+					completion.ToolCalls[0].Function.Name != "lookup" {
+					t.Fatalf("partial completion = %#v", completion)
+				}
+			},
+		},
+		{
+			name:  "reasoning detail only",
+			chunk: `{"choices":[{"delta":{"reasoning_details":[{"type":"reasoning.text","index":0,"text":"thinking"}]}}]}`,
+			check: func(t *testing.T, completion *Completion) {
+				if len(completion.ReasoningDetails) != 1 {
+					t.Fatalf("partial completion = %#v", completion)
+				}
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var requests atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				requests.Add(1)
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = io.WriteString(w, sse(
+					test.chunk,
+					`{"error":{"code":502,"message":"upstream failed"},"choices":[{"finish_reason":"error"}]}`,
+				))
+			}))
+			t.Cleanup(server.Close)
+
+			client := testClient(server.URL)
+			client.retryWait = noWait
+			completion, err := client.Stream(t.Context(), Request{Model: "author/model"}, nil)
+			if err == nil || !strings.Contains(err.Error(), "upstream failed") {
+				t.Fatalf("error = %v", err)
+			}
+			if requests.Load() != 1 {
+				t.Fatalf("requests = %d, want the attempt to be final", requests.Load())
+			}
+			test.check(t, completion)
+		})
+	}
+}
+
+// TestClientRetriesWhenNothingWasObserved is the other half: an upstream
+// failure before any content is safe to send again.
+func TestClientRetriesWhenNothingWasObserved(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		if requests.Add(1) == 1 {
+			_, _ = io.WriteString(w, sse(
+				`{"error":{"code":502,"message":"upstream failed"},"choices":[{"finish_reason":"error"}]}`,
+			))
+			return
+		}
+		_, _ = io.WriteString(w, sse(`{"choices":[{"delta":{"content":"recovered"}}]}`))
+	}))
+	t.Cleanup(server.Close)
+
+	client := testClient(server.URL)
+	client.retryWait = noWait
+	completion, err := client.Stream(t.Context(), Request{Model: "author/model"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if completion.Text != "recovered" || requests.Load() != 2 {
+		t.Fatalf("completion = %#v after %d requests", completion, requests.Load())
+	}
+}
+
 func TestClientDoesNotRetryMalformedSuccessfulStream(t *testing.T) {
 	var requests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

@@ -10,7 +10,12 @@ import (
 
 const maxSSEEventSize = 16 * 1024 * 1024
 
-var errStreamEnded = errors.New("OpenRouter stream ended before [DONE]")
+var (
+	errStreamEnded = errors.New("OpenRouter stream ended before [DONE]")
+	// errStreamRead marks a transport failure while reading the stream, which
+	// the retry classification treats as transient.
+	errStreamRead = errors.New("read OpenRouter stream")
+)
 
 func readSSE(reader io.Reader, onEvent func([]byte) error) error {
 	scanner := bufio.NewScanner(reader)
@@ -44,7 +49,7 @@ func readSSE(reader io.Reader, onEvent func([]byte) error) error {
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return fmt.Errorf("read OpenRouter stream: %w", err)
+		return fmt.Errorf("%w: %w", errStreamRead, err)
 	}
 	if len(data) > 0 {
 		done, err := emitSSEEvent(data, onEvent)

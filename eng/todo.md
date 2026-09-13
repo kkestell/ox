@@ -40,7 +40,7 @@
         executor (F10)
   - [x] Make streamed tool-output retention bounded and incremental (F11, F17)
   - [x] Use consistent token units for context occupancy and compaction (F12)
-  - [ ] Correct provider stream retry detection and classification (F13, F25)
+  - [x] Correct provider stream retry detection and classification (F13, F25)
   - [ ] Repair model-catalog caching and refresh ownership (F14)
   - [ ] Make `session/list` bounded, resilient, and cursor-tested (F15)
   - [ ] Eliminate redundant provider-request encoding (F16)

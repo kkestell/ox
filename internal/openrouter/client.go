@@ -118,7 +118,7 @@ func (c *Client) Stream(
 	lastCompletion := &Completion{}
 	var lastErr error
 	for attempt := 0; attempt < maxRetryAttempts; attempt++ {
-		completion, status, retryAfter, emitted, attemptErr := c.streamAttempt(
+		completion, status, retryAfter, observed, attemptErr := c.streamAttempt(
 			ctx,
 			body,
 			onDelta,
@@ -132,7 +132,7 @@ func (c *Client) Stream(
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return completion, ctxErr
 		}
-		if emitted {
+		if observed {
 			return completion, attemptErr
 		}
 
@@ -141,7 +141,7 @@ func (c *Client) Stream(
 		if errors.As(attemptErr, &streamError) {
 			classification = classify(streamError.code, attemptErr)
 		} else if errors.Is(attemptErr, errStreamEnded) ||
-			strings.Contains(attemptErr.Error(), "read OpenRouter stream") {
+			errors.Is(attemptErr, errStreamRead) {
 			classification = retry
 		}
 		if classification != retry {
@@ -213,32 +213,27 @@ func (c *Client) streamAttempt(
 	}
 
 	var assembler streamAssembler
-	emitted := false
 	streamErr := readSSE(response.Body, func(data []byte) error {
-		return assembler.push(data, func(delta Delta) {
-			emitted = true
-			if onDelta != nil {
-				onDelta(delta)
-			}
-		})
+		return assembler.push(data, onDelta)
 	})
 	closeErr := response.Body.Close()
 	completion := assembler.finish()
+	observed := assembler.observedContent
 	if streamErr != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
-			return completion, response.StatusCode, retryAfter, emitted, ctxErr
+			return completion, response.StatusCode, retryAfter, observed, ctxErr
 		}
-		return completion, response.StatusCode, retryAfter, emitted, streamErr
+		return completion, response.StatusCode, retryAfter, observed, streamErr
 	}
 	if closeErr != nil {
-		return completion, response.StatusCode, retryAfter, emitted,
+		return completion, response.StatusCode, retryAfter, observed,
 			fmt.Errorf("close OpenRouter response: %w", closeErr)
 	}
 	if !assembler.sawChoice {
-		return completion, response.StatusCode, retryAfter, emitted,
+		return completion, response.StatusCode, retryAfter, observed,
 			errors.New("OpenRouter stream contained no completion choices")
 	}
-	return completion, response.StatusCode, retryAfter, emitted, nil
+	return completion, response.StatusCode, retryAfter, observed, nil
 }
 
 func (c *Client) setHeaders(request *http.Request) {

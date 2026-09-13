@@ -55,3 +55,24 @@ func TestSSEAcceptsAnEventLargerThanScannerDefault(t *testing.T) {
 		t.Fatalf("event length = %d", len(got))
 	}
 }
+
+// TestSSEReportsAReadFailureAsAValue covers the condition the retry
+// classification branches on, so rewording the wrap cannot change it.
+func TestSSEReportsAReadFailureAsAValue(t *testing.T) {
+	broken := errors.New("connection reset")
+	err := readSSE(failingReader{err: broken}, func([]byte) error { return nil })
+	if !errors.Is(err, errStreamRead) {
+		t.Fatalf("error = %v, want it to wrap errStreamRead", err)
+	}
+	if !errors.Is(err, broken) {
+		t.Fatalf("error = %v, want it to wrap the transport failure", err)
+	}
+}
+
+type failingReader struct {
+	err error
+}
+
+func (r failingReader) Read([]byte) (int, error) {
+	return 0, r.err
+}
