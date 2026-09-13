@@ -96,3 +96,4 @@
   - [x] Serve and bound a held model catalog when a refresh fails
   - [x] Fail an end-to-end test whose repeating model response is never used
 - [x] Configure and switch complete per-model request profiles
+- [ ] Publish versioned release binaries
