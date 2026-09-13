@@ -4,6 +4,7 @@
 package shellrules
 
 import (
+	"path"
 	"strings"
 
 	"mvdan.cc/sh/v3/syntax"
@@ -65,22 +66,42 @@ func ruleMatchesCall(rule string, call *syntax.CallExpr) bool {
 	return true
 }
 
-// Suggest derives a conservative rule from the command's first invocation.
+// indirectPrograms run a program chosen by their arguments. A rule naming one
+// of them authorizes whatever the next command asks it to run, so no reusable
+// rule can stand in for the command the user approved.
+var indirectPrograms = map[string]bool{
+	"ash": true, "bash": true, "csh": true, "dash": true, "fish": true,
+	"ksh": true, "sh": true, "tcsh": true, "zsh": true,
+
+	"bun": true, "deno": true, "lua": true, "node": true, "nodejs": true,
+	"osascript": true, "perl": true, "php": true, "python": true,
+	"python2": true, "python3": true, "ruby": true, "tclsh": true,
+
+	"chroot": true, "command": true, "doas": true, "env": true, "eval": true,
+	"exec": true, "ionice": true, "nice": true, "nohup": true, "rsh": true,
+	"script": true, "setsid": true, "ssh": true, "stdbuf": true, "su": true,
+	"sudo": true, "time": true, "timeout": true, "watch": true, "xargs": true,
+}
+
+// Suggest derives a reusable rule from the command's first invocation, or ""
+// when no rule can stand in for the command. Because Allowed matches a rule as
+// a word prefix, a rule is only safe when every word of the invocation is a
+// literal the user could read and the program is not one that runs another
+// program of its arguments' choosing.
 func Suggest(command string) string {
-	var words []string
-	if call := firstCall(command); call != nil {
-		for _, argument := range call.Args {
-			value, ok := literalValue(argument)
-			if !ok {
-				break
-			}
-			words = append(words, value)
+	call := firstCall(command)
+	if call == nil || len(call.Args) == 0 {
+		return ""
+	}
+	words := make([]string, 0, len(call.Args))
+	for _, argument := range call.Args {
+		value, ok := literalValue(argument)
+		if !ok || value == "" {
+			return ""
 		}
+		words = append(words, value)
 	}
-	if len(words) == 0 {
-		words = strings.Fields(command)
-	}
-	if len(words) == 0 {
+	if indirectPrograms[path.Base(words[0])] {
 		return ""
 	}
 	if len(words) >= 2 && !strings.HasPrefix(words[1], "-") {

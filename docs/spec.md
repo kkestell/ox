@@ -55,9 +55,12 @@ the workspace. Model-facing reads open only regular files.
 
 Ox requires evidence from an earlier read, glob, or search before a model may
 change an existing file. File changes and shell commands require client
-permission unless the session already holds a matching grant. Delegating an
-operation to a capable ACP client preserves the same confinement, evidence,
-permission, output, and cancellation behavior as local execution.
+permission unless the session already holds a matching grant. A shell approval
+becomes a reusable grant only when Ox can derive a literal command prefix that
+means what the user read: a command that runs a program of its arguments'
+choosing, or whose words Ox cannot resolve, is approved for that call alone.
+Delegating an operation to a capable ACP client preserves the same confinement,
+evidence, permission, output, and cancellation behavior as local execution.
 
 ## Authentication
 

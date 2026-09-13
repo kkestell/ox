@@ -55,20 +55,34 @@ func TestAllowed(t *testing.T) {
 
 func TestSuggest(t *testing.T) {
 	tests := []struct {
+		name    string
 		command string
 		want    string
 	}{
-		{"go test ./...", "go test"},
-		{"ls -la", "ls"},
-		{"git commit -m x", "git commit"},
-		{"FOO=1 go test", "go test"},
-		{"pwd", "pwd"},
-		{"ls ((", "ls (("},
-		{"", ""},
+		{"subcommand", "go test ./...", "go test"},
+		{"flags only", "ls -la", "ls"},
+		{"subcommand with flags", "git commit -m x", "git commit"},
+		{"assignment prefix", "FOO=1 go test", "go test"},
+		{"single word", "pwd", "pwd"},
+		{"shell", "sh -c 'rm -rf /'", ""},
+		{"shell by path", "/bin/bash -lc 'rm -rf /'", ""},
+		{"language runtime", "python3 -c 'import os'", ""},
+		{"wrapper", "env FOO=1 rm -rf /", ""},
+		{"privilege wrapper", "sudo rm -rf /", ""},
+		{"wildcard program", "* --version", ""},
+		{"wildcard argument", "rm *.txt", ""},
+		{"expanded program", "$TOOL build", ""},
+		{"expanded argument", "grep foo $FILE", ""},
+		{"substituted argument", "echo $(rm -rf /)", ""},
+		{"parse failure", "ls ((", ""},
+		{"empty", "", ""},
+		{"blank", "   ", ""},
 	}
 	for _, test := range tests {
-		if got := Suggest(test.command); got != test.want {
-			t.Errorf("Suggest(%q) = %q, want %q", test.command, got, test.want)
-		}
+		t.Run(test.name, func(t *testing.T) {
+			if got := Suggest(test.command); got != test.want {
+				t.Fatalf("Suggest(%q) = %q, want %q", test.command, got, test.want)
+			}
+		})
 	}
 }
