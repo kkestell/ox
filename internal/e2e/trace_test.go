@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kkestell/ox/internal/acp"
 )
@@ -21,6 +22,7 @@ func TestDiagnosticTraceRecordsTurnShapeWithoutContent(t *testing.T) {
 		shellText  = "shell-trace-sentinel"
 	)
 	arguments := `{"command":"printf shell-trace-sentinel"}`
+	started := time.Now()
 	model := startModel(t,
 		sse(
 			evToolCall(0, "call-shell", "function", "shell", arguments),
@@ -105,14 +107,21 @@ func TestDiagnosticTraceRecordsTurnShapeWithoutContent(t *testing.T) {
 	}
 	if stringField(t, records[5], "outcome") != "allow_once" ||
 		stringField(t, records[7], "outcome") != "completed" ||
-		numberField(t, records[7], "output_bytes") == 0 ||
-		numberField(t, records[7], "elapsed_ms") < 0 {
+		numberField(t, records[7], "output_bytes") == 0 {
 		t.Fatalf("tool outcomes = %#v / %#v", records[5], records[7])
 	}
 	if stringField(t, records[10], "outcome") != "completed" ||
-		stringField(t, records[10], "stop_reason") != string(acp.StopReasonEndTurn) ||
-		numberField(t, records[10], "elapsed_ms") < 0 {
+		stringField(t, records[10], "stop_reason") != string(acp.StopReasonEndTurn) {
 		t.Fatalf("turn outcome = %#v", records[10])
+	}
+	// The tool ran inside the turn, so its span cannot outlast the turn's and
+	// neither can outlast the process. A completion whose span was never opened
+	// reports zero, which the turn's own span rules out.
+	toolElapsed := numberField(t, records[7], "elapsed_ms")
+	turnElapsed := numberField(t, records[10], "elapsed_ms")
+	wall := float64(time.Since(started).Milliseconds())
+	if toolElapsed < 0 || toolElapsed > turnElapsed || turnElapsed > wall {
+		t.Fatalf("tool span %v ms, turn span %v ms, wall %v ms", toolElapsed, turnElapsed, wall)
 	}
 }
 

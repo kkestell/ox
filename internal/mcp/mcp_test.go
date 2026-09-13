@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -466,5 +467,91 @@ func TestCatalogSizeCountsSerializedBytes(t *testing.T) {
 		t.Fatal(err)
 	} else if len(marshalled) != two.bytes {
 		t.Fatalf("counted %d bytes, but the catalog serializes to %d", two.bytes, len(marshalled))
+	}
+}
+
+func TestActivationRefusesAnUnsupportedProtocolRevision(t *testing.T) {
+	server := sdk.NewServer(&sdk.Implementation{Name: "fixture", Version: "1"}, nil)
+	server.AddTool(
+		&sdk.Tool{Name: "tool", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		func(context.Context, *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
+			return &sdk.CallToolResult{}, nil
+		},
+	)
+	inner := sdk.NewStreamableHTTPHandler(
+		func(*http.Request) *sdk.Server { return server },
+		&sdk.StreamableHTTPOptions{JSONResponse: true, Stateless: true},
+	)
+	// The server advertises the revisions it supports and the client picks one,
+	// so withholding the revision Ox speaks is what forces the mismatch.
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		recorder := httptest.NewRecorder()
+		inner.ServeHTTP(recorder, r)
+		body := bytes.ReplaceAll(recorder.Body.Bytes(), []byte(`"`+ProtocolVersion+`",`), nil)
+		for key, values := range recorder.Header() {
+			if key == "Content-Length" {
+				continue
+			}
+			for _, value := range values {
+				w.Header().Add(key, value)
+			}
+		}
+		w.WriteHeader(recorder.Code)
+		_, _ = w.Write(body)
+	}))
+	defer httpServer.Close()
+
+	_, err := Activate(context.Background(), t.TempDir(), []acp.MCPServer{{HTTP: &acp.MCPHTTPServer{
+		Type: "http", Name: "server", URL: httpServer.URL, Headers: []acp.HTTPHeader{},
+	}}})
+	if err == nil || !strings.Contains(err.Error(), `negotiated unsupported protocol revision`) {
+		t.Fatalf("activation error = %v", err)
+	}
+}
+
+func TestCallRejectsUnknownToolsAndNonObjectArguments(t *testing.T) {
+	server := sdk.NewServer(&sdk.Implementation{Name: "fixture", Version: "1"}, nil)
+	var calls int
+	server.AddTool(
+		&sdk.Tool{Name: "tool", InputSchema: json.RawMessage(`{"type":"object"}`)},
+		func(context.Context, *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
+			calls++
+			return &sdk.CallToolResult{Content: []sdk.Content{&sdk.TextContent{Text: "called"}}}, nil
+		},
+	)
+	httpServer := httptest.NewServer(sdk.NewStreamableHTTPHandler(
+		func(*http.Request) *sdk.Server { return server },
+		&sdk.StreamableHTTPOptions{JSONResponse: true, Stateless: true},
+	))
+	defer httpServer.Close()
+	bundle, err := Activate(context.Background(), t.TempDir(), []acp.MCPServer{{HTTP: &acp.MCPHTTPServer{
+		Type: "http", Name: "server", URL: httpServer.URL, Headers: []acp.HTTPHeader{},
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bundle.Close()
+	name := bundle.Tools()[0].Name
+
+	if _, err := bundle.Call(context.Background(), "mcp__server__absent", nil); err == nil ||
+		!strings.Contains(err.Error(), `unknown MCP tool "mcp__server__absent"`) {
+		t.Fatalf("unknown tool error = %v", err)
+	}
+	for _, arguments := range []string{`[1,2]`, `"text"`, `null`, `{`} {
+		if _, err := bundle.Call(context.Background(), name, json.RawMessage(arguments)); err == nil ||
+			!strings.Contains(err.Error(), "MCP tool arguments must be a JSON object") {
+			t.Fatalf("arguments %s error = %v", arguments, err)
+		}
+	}
+	if calls != 0 {
+		t.Fatalf("calls = %d, want the refusals to stop before the server", calls)
+	}
+
+	// Absent arguments are an empty object, which the server does accept.
+	if _, err := bundle.Call(context.Background(), name, nil); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Fatalf("calls = %d, want 1", calls)
 	}
 }

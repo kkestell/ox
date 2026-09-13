@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestDisabledTraceDoesNothing(t *testing.T) {
@@ -135,3 +136,58 @@ func (w *failingWriter) Close() error {
 }
 
 var _ io.WriteCloser = (*bufferCloser)(nil)
+
+func TestToolSpansPairStartsWithCompletionsPerTurn(t *testing.T) {
+	writer := &bufferCloser{}
+	trace := newTrace(writer, nil)
+	first := trace.Turn("session", "turn-1")
+	second := trace.Turn("session", "turn-2")
+
+	first.ToolStarted("call", "read")
+	second.ToolStarted("call", "read")
+	if spans := len(trace.state.tools); spans != 2 {
+		t.Fatalf("open spans = %d, want one per turn", spans)
+	}
+
+	// Seeding the start time is what makes the reported duration exact rather
+	// than whatever the test machine took to reach the next line.
+	trace.state.tools[toolKey{"session", "turn-1", "call"}] = time.Now().Add(-250 * time.Millisecond)
+	first.ToolCompleted("call", "read", "completed", 5)
+	if spans := len(trace.state.tools); spans != 1 {
+		t.Fatalf("open spans after completion = %d, want the other turn's", spans)
+	}
+
+	// A completion with no span left reports zero rather than the age of the
+	// zero time.
+	first.ToolCompleted("call", "read", "completed", 5)
+	// A turn that never started its tool is the same case.
+	trace.Turn("session", "turn-3").ToolCompleted("call", "read", "completed", 5)
+
+	second.ToolCompleted("call", "read", "completed", 5)
+	if spans := len(trace.state.tools); spans != 0 {
+		t.Fatalf("open spans at the end = %d", spans)
+	}
+
+	var elapsed []float64
+	for _, line := range bytes.Split(bytes.TrimSpace(writer.Bytes()), []byte{'\n'}) {
+		var value map[string]any
+		if err := json.Unmarshal(line, &value); err != nil {
+			t.Fatal(err)
+		}
+		if value["type"] == "tool_completed" {
+			elapsed = append(elapsed, value["elapsed_ms"].(float64))
+		}
+	}
+	if len(elapsed) != 4 {
+		t.Fatalf("completions = %#v", elapsed)
+	}
+	if elapsed[0] < 250 || elapsed[0] > 5000 {
+		t.Fatalf("seeded span = %v ms, want about 250", elapsed[0])
+	}
+	if elapsed[1] != 0 || elapsed[2] != 0 {
+		t.Fatalf("unmatched completions = %v and %v ms, want 0", elapsed[1], elapsed[2])
+	}
+	if elapsed[3] < 0 {
+		t.Fatalf("second turn's span = %v ms", elapsed[3])
+	}
+}
