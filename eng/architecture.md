@@ -129,6 +129,9 @@ tools
 lsp
     -> workspace
 
+skills
+    -> workspace
+
 mcp
     -> acp
 

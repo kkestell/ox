@@ -49,7 +49,7 @@
         F34, F41)
   - [x] Reconcile the parked LSP adapter and harden it before integration (F20,
         F28)
-  - [ ] Centralize confined regular-file reads at the workspace boundary (F21)
+  - [x] Centralize confined regular-file reads at the workspace boundary (F21)
   - [ ] Remove delegated-task remnants and repair affected docs and tests (F22,
         F24, F31)
   - [ ] Simplify turn orchestration and lifecycle plumbing (F23)

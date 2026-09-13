@@ -101,13 +101,13 @@ func (w *Workspace) ReadFile(path string) ([]byte, error) {
 		return nil, OversizeError(path)
 	}
 	// The size above is advisory: the file can grow between the stat and the
-	// read, so read one byte past the bound and reject what overruns it.
-	data, err := io.ReadAll(io.LimitReader(file, MaxFileBytes+1))
+	// read, so the bounded read rejects what overruns the limit anyway.
+	data, err := readBounded(file, MaxFileBytes)
+	if errors.Is(err, errTooLarge) {
+		return nil, OversizeError(path)
+	}
 	if err != nil {
 		return nil, accessError(err, path)
-	}
-	if len(data) > MaxFileBytes {
-		return nil, OversizeError(path)
 	}
 	return data, nil
 }

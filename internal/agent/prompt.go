@@ -7,17 +7,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
-	"syscall"
 	"time"
 	"unicode/utf8"
 
 	"github.com/kkestell/ox/internal/skills"
+	"github.com/kkestell/ox/internal/workspace"
 )
 
 //go:embed prompt.md
@@ -108,44 +107,13 @@ func loadRootInstructions(cwd string) (string, error) {
 	}
 	defer func() { _ = root.Close() }()
 
-	info, err := root.Lstat(name)
+	// A workspace without instructions is the ordinary case, not a failure.
+	data, err := workspace.ReadConfined(root, name, maxRootInstructionsBytes)
 	if errors.Is(err, fs.ErrNotExist) {
 		return "", nil
 	}
 	if err != nil {
 		return "", fmt.Errorf("load workspace instructions %s: %w", path, err)
-	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		return "", fmt.Errorf("load workspace instructions %s: symbolic links are not allowed", path)
-	}
-	if !info.Mode().IsRegular() {
-		return "", fmt.Errorf("load workspace instructions %s: not a regular file", path)
-	}
-
-	// Root.OpenFile refuses symlinks. Nonblocking mode also prevents a raced
-	// replacement with a FIFO from hanging activation.
-	file, err := root.OpenFile(name, os.O_RDONLY|syscall.O_NONBLOCK, 0)
-	if err != nil {
-		return "", fmt.Errorf("load workspace instructions %s: %w", path, err)
-	}
-	defer func() { _ = file.Close() }()
-	opened, err := file.Stat()
-	if err != nil {
-		return "", fmt.Errorf("load workspace instructions %s: %w", path, err)
-	}
-	if !opened.Mode().IsRegular() {
-		return "", fmt.Errorf("load workspace instructions %s: not a regular file", path)
-	}
-	data, err := io.ReadAll(io.LimitReader(file, maxRootInstructionsBytes+1))
-	if err != nil {
-		return "", fmt.Errorf("load workspace instructions %s: %w", path, err)
-	}
-	if len(data) > maxRootInstructionsBytes {
-		return "", fmt.Errorf(
-			"load workspace instructions %s: file exceeds %d bytes",
-			path,
-			maxRootInstructionsBytes,
-		)
 	}
 	if !utf8.Valid(data) {
 		return "", fmt.Errorf("load workspace instructions %s: file is not valid UTF-8", path)

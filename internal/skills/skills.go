@@ -7,17 +7,17 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
-	"syscall"
 	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/kkestell/ox/internal/workspace"
 )
 
 const (
@@ -228,37 +228,12 @@ func validateDirectory(root *os.Root, name string) (bool, error) {
 	return false, nil
 }
 
+// readBoundedRegular adds the skill catalog's own content policy to the
+// workspace boundary's confined read: a skill file must be UTF-8 text.
 func readBoundedRegular(root *os.Root, name string) ([]byte, error) {
-	info, err := root.Lstat(name)
+	data, err := workspace.ReadConfined(root, name, MaxFileBytes)
 	if err != nil {
 		return nil, err
-	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		return nil, errors.New("symbolic links are not allowed")
-	}
-	if !info.Mode().IsRegular() {
-		return nil, errors.New("not a regular file")
-	}
-	// Root.OpenFile refuses symlinks. Nonblocking mode also prevents a raced
-	// replacement with a FIFO from hanging discovery or loading.
-	file, err := root.OpenFile(name, os.O_RDONLY|syscall.O_NONBLOCK, 0)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = file.Close() }()
-	opened, err := file.Stat()
-	if err != nil {
-		return nil, err
-	}
-	if !opened.Mode().IsRegular() {
-		return nil, errors.New("not a regular file")
-	}
-	data, err := io.ReadAll(io.LimitReader(file, MaxFileBytes+1))
-	if err != nil {
-		return nil, err
-	}
-	if len(data) > MaxFileBytes {
-		return nil, fmt.Errorf("file exceeds %d bytes", MaxFileBytes)
 	}
 	if !utf8.Valid(data) {
 		return nil, errors.New("file is not valid UTF-8")
