@@ -102,15 +102,16 @@ Ox requires an earlier read of an existing file before a model may write or edit
 it, and refuses the change when the file has since moved on from what that read
 saw. Evidence is the content the read returned, so discovery alone does not
 establish it. File changes and shell commands require client permission unless
-the session already holds a matching grant. A shell approval becomes a reusable
-grant only when Ox can derive a literal command prefix that means what the user
-read: a command that runs a program of its arguments' choosing, or whose words
-Ox cannot resolve, is approved for that call alone. Delegating an operation to a
-capable ACP client preserves the same confinement, evidence, permission, output,
-and cancellation behavior as local execution. Filesystem delegation is all or
-nothing: a client must offer both the read and the write method or neither,
-because evidence and the change that consumes it have to come from one
-filesystem. Offering one without the other is refused at initialization.
+the turn's mode authorizes them or the session already holds a matching grant. A
+shell approval becomes a reusable grant only when Ox can derive a literal
+command prefix that means what the user read: a command that runs a program of
+its arguments' choosing, or whose words Ox cannot resolve, is approved for that
+call alone. Delegating an operation to a capable ACP client preserves the same
+confinement, evidence, permission, output, and cancellation behavior as local
+execution. Filesystem delegation is all or nothing: a client must offer both the
+read and the write method or neither, because evidence and the change that
+consumes it have to come from one filesystem. Offering one without the other is
+refused at initialization.
 
 ## Authentication
 
@@ -184,7 +185,7 @@ Ox exposes select-valued ACP configuration options in this order:
 
 | Identifier  | Values and default                                                       | Effect                                                                  |
 | ----------- | ------------------------------------------------------------------------ | ----------------------------------------------------------------------- |
-| `mode`      | `code` (default), `plan`                                                 | Chooses the available tool set.                                         |
+| `mode`      | `code` (default), `auto`, `plan`                                         | Chooses the available tool set and whether calls are asked about.       |
 | `model`     | Validated OpenRouter model IDs; activation's configured model by default | Chooses the model for subsequent turns.                                 |
 | `reasoning` | `default`, plus efforts supported by the selected model                  | `default` uses the model's provider default without an explicit effort. |
 
@@ -194,11 +195,18 @@ selectable reasoning omit that option. A model change resets reasoning to
 modality settings rather than silently dropping them. Retained conversation
 content must be usable by the new model; otherwise the change is rejected.
 
-`code` uses the ordinary permission-gated tools. `plan` permits file discovery
-and reads, instructions and skills, todo, subagent coordination, form questions,
-and read-only LSP queries. It excludes shell, file mutations, memory writes, and
-MCP tools whose effects Ox cannot enforce. Web fetch retains its permission
-gate. Changing mode never grants permissions or widens an existing grant.
+`code` uses the ordinary permission-gated tools. `auto` has the same tool set
+and runs every one of its calls, including a child agent's, without a permission
+request. `plan` permits file discovery and reads, instructions and skills, todo,
+subagent coordination, form questions, and read-only LSP queries. It excludes
+shell, file mutations, memory writes, and MCP tools whose effects Ox cannot
+enforce. Web fetch retains its permission gate in `code` and `plan`.
+
+Confinement, read evidence, validation, output bounds, executor selection, and
+cancellation are identical in all three modes. Auto authorization belongs to the
+turn that ran under it, not to the session: it is not a grant, so a later `code`
+turn asks about the same call again. Changing mode never grants permissions or
+widens an existing grant.
 
 `session/set_config_option` validates and persists the entire resulting state
 before responding with the complete option list and emitting
@@ -212,7 +220,9 @@ activation defaults. Files are reread on activation; incompatible saved
 selections fail activation with the responsible option named. Replayed option
 history is followed by the current complete state. Tools, instructions, and
 model settings in a recovered permission wait remain those of its original turn;
-a changed required tool definition rejects recovery before dispatch.
+a changed required tool definition rejects recovery before dispatch. Selecting
+`auto` does not answer a `code` turn's outstanding permission request, including
+one reissued by `session/load`.
 
 Ox uses configuration options as its only mode interface. It does not advertise
 legacy `modes` or implement `session/set_mode`. This follows ACP's preferred

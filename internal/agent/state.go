@@ -1890,7 +1890,7 @@ func validateTodoEntries(entries []acp.PlanEntry) error {
 }
 
 func validateSelections(value sessionSelections) error {
-	if value.Mode != "" && value.Mode != "code" && value.Mode != "plan" {
+	if value.Mode != "" && !validMode(value.Mode) {
 		return fmt.Errorf("invalid mode selection %q", value.Mode)
 	}
 	if value.Model != strings.TrimSpace(value.Model) {
@@ -2082,7 +2082,7 @@ func validateConfiguration(value requestConfiguration) error {
 	if value.Mode == "" {
 		value.Mode = modeCode
 	}
-	if value.Mode != modeCode && value.Mode != modePlan {
+	if !validMode(value.Mode) {
 		return errors.New("configuration mode is invalid")
 	}
 	if value.Settings.Model == "" {

@@ -362,23 +362,28 @@ byte outside the replaced text as it was. Discovery follows Git ignore rules.
 Large tool and shell output is bounded in the conversation and spills to a
 confined session directory.
 
-Mutating file tools and shell commands require ACP permission unless a previous
-session grant covers the operation. Reusable shell grants are derived from a
-parsed command rather than string prefixes. Shell commands run from the session
-root with a sanitized environment, and cancellation kills their process group.
-Read, write, and exact-edit file content uses ACP filesystem callbacks when the
-client advertises the filesystem methods and otherwise uses the local executor.
-Those methods are one capability: read evidence and the mutation that consumes
-it must come from the same filesystem, so a client advertising one without the
-other is refused at initialization. Shell commands similarly use ACP terminal
-callbacks when the client advertises terminal support and otherwise use Ox's
-local process-group runner. Client delegation preserves Ox's validation,
-read-evidence, permission, output, and cancellation requirements. The client
-owns actual execution; ACP callbacks are not an OS sandbox or a cross-filesystem
-transaction. Local root-confined handles cannot prove that a remote client
-implements its side correctly. Approved shell commands and external server
-processes retain host privileges even when launched from the confined workspace
-root.
+Mutating file tools and shell commands require ACP permission unless the turn's
+frozen mode authorizes the whole tool set or a previous session grant covers the
+operation. A turn's mode is its execution policy: it decides whether a call
+proceeds, prompts, or is unavailable before any approval mechanics run, and
+primary and child loops share that decision. Authorization a mode confers is not
+a session grant and outlives nothing but its turn.
+
+Reusable shell grants are derived from a parsed command rather than string
+prefixes. Shell commands run from the session root with a sanitized environment,
+and cancellation kills their process group. Read, write, and exact-edit file
+content uses ACP filesystem callbacks when the client advertises the filesystem
+methods and otherwise uses the local executor. Those methods are one capability:
+read evidence and the mutation that consumes it must come from the same
+filesystem, so a client advertising one without the other is refused at
+initialization. Shell commands similarly use ACP terminal callbacks when the
+client advertises terminal support and otherwise use Ox's local process-group
+runner. Client delegation preserves Ox's validation, read-evidence, permission,
+output, and cancellation requirements. The client owns actual execution; ACP
+callbacks are not an OS sandbox or a cross-filesystem transaction. Local
+root-confined handles cannot prove that a remote client implements its side
+correctly. Approved shell commands and external server processes retain host
+privileges even when launched from the confined workspace root.
 
 ## Testing boundaries
 

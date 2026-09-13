@@ -19,8 +19,13 @@ const (
 	configReasoning  = "reasoning"
 	modeCode         = "code"
 	modePlan         = "plan"
+	modeAuto         = "auto"
 	reasoningDefault = "default"
 )
+
+func validMode(value string) bool {
+	return value == modeCode || value == modeAuto || value == modePlan
+}
 
 func (a *Agent) SetSessionConfigOption(
 	ctx context.Context,
@@ -58,7 +63,7 @@ func (a *Agent) SetSessionConfigOption(
 
 	switch request.ConfigID {
 	case configMode:
-		if request.Value != modeCode && request.Value != modePlan {
+		if !validMode(request.Value) {
 			return acp.SetSessionConfigOptionResponse{}, jrpc2.Errorf(
 				jrpc2.InvalidParams, "unknown mode %q", request.Value,
 			)
@@ -134,6 +139,7 @@ func buildConfigOptions(
 			Category: acp.SessionConfigOptionCategoryMode, CurrentValue: mode,
 			Options: []acp.SessionConfigSelectOption{
 				{Value: modeCode, Name: "Code"},
+				{Value: modeAuto, Name: "Auto"},
 				{Value: modePlan, Name: "Plan"},
 			},
 		},
@@ -244,7 +250,8 @@ func applySelections(
 			configuration.Settings.Reasoning = reasoning
 		}
 	}
-	if selections.Mode == modePlan {
+	switch selections.Mode {
+	case modePlan:
 		configuration.Mode = modePlan
 		configuration.Tools = planTools(configuration.Tools, configuration.PlanTools)
 		allowed := make(map[string]acp.ToolKind, len(configuration.Tools))
@@ -252,7 +259,9 @@ func applySelections(
 			allowed[tool.Function.Name] = configuration.ToolKinds[tool.Function.Name]
 		}
 		configuration.ToolKinds = allowed
-	} else {
+	case modeAuto:
+		configuration.Mode = modeAuto
+	default:
 		configuration.Mode = modeCode
 	}
 	configuration.ContextWindow = entry.ContextWindow()

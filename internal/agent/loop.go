@@ -760,13 +760,13 @@ func (a *Agent) executeSuspendedBatch(
 		}
 
 		toolIndex, known := tools.byName[call.Function.Name]
-		if !known || tools.tools[toolIndex].Approval == ApprovalNone {
+		if !known {
 			ready[index] = true
 			continue
 		}
 		tool := tools.tools[toolIndex]
 		arguments := json.RawMessage(call.Function.Arguments)
-		if value.granted(tool, arguments) {
+		if authorized(configuration.Mode, value, tool, arguments) {
 			ready[index] = true
 			continue
 		}

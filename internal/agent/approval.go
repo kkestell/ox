@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 
 	"github.com/kkestell/ox/internal/acp"
@@ -21,6 +22,15 @@ const (
 	decisionRefused     approvalDecision = "refused"
 	decisionCancelled   approvalDecision = "cancelled"
 )
+
+// authorized reports whether a tool call may run without a client decision,
+// because the tool is not approval-gated, the turn's mode authorizes the whole
+// tool set, or a session grant already covers the arguments. Auto mode
+// authorizes a call without recording a decision or a grant, so a later
+// code-mode turn asks about the same call again.
+func authorized(mode string, value *session, tool Tool, arguments json.RawMessage) bool {
+	return tool.Approval == ApprovalNone || mode == modeAuto || value.granted(tool, arguments)
+}
 
 func permissionOptions(rule string, ruleScoped bool) []acp.PermissionOption {
 	options := []acp.PermissionOption{{

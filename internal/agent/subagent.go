@@ -483,7 +483,9 @@ func (a *Agent) runSubagent(
 			}
 			providerIDs[call.ID] = struct{}{}
 		}
-		results, err := a.executeSubagentCalls(ctx, run, group.tools, reads, completion.ToolCalls)
+		results, err := a.executeSubagentCalls(
+			ctx, run, group.configuration.Mode, group.tools, reads, completion.ToolCalls,
+		)
 		if err != nil {
 			if ctx.Err() != nil || errors.Is(err, context.Canceled) {
 				return subagentStatusCancelled, "", err
@@ -535,6 +537,7 @@ func subagentInboxMessage(messages []string) openrouter.Message {
 func (a *Agent) executeSubagentCalls(
 	ctx context.Context,
 	run turnRun,
+	mode string,
 	tools toolSet,
 	reads FileReads,
 	calls []openrouter.ToolCall,
@@ -552,10 +555,10 @@ func (a *Agent) executeSubagentCalls(
 		run.events <- a.toolEvent(tools, call, eventToolPending, "", target)
 
 		toolIndex, known := tools.byName[call.Function.Name]
-		if known && tools.tools[toolIndex].Approval != ApprovalNone {
+		if known {
 			tool := tools.tools[toolIndex]
 			arguments := json.RawMessage(call.Function.Arguments)
-			if !run.session.granted(tool, arguments) {
+			if !authorized(mode, run.session, tool, arguments) {
 				run.session.approvalMu.Lock()
 				if !run.session.granted(tool, arguments) {
 					rule := ""

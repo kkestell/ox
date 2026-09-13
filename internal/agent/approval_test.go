@@ -298,3 +298,54 @@ func permissionResponse(outcome, optionID string) acp.RequestPermissionResponse 
 		OptionID: optionID,
 	}}
 }
+
+// Auto mode's whole contract lives at this boundary: a gated call executes
+// without a permission request, and nothing it leaves behind would authorize
+// the same call in a later code-mode turn.
+func TestExecuteBatchRunsGatedToolsWithoutAskingInAutoMode(t *testing.T) {
+	var executions atomic.Int32
+	gated := Tool{
+		Name:        "gated",
+		InputSchema: json.RawMessage(`{"type":"object"}`),
+		Execute: func(context.Context, Invocation) (string, error) {
+			executions.Add(1)
+			return "gated", nil
+		},
+	}
+	instance, err := New(Config{Logger: discardLogger(), Tools: []Tool{gated}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	configuration := testConfiguration(instance)
+	configuration.Mode = modeAuto
+	value := durableTestSession(t, instance, configuration, "turn")
+
+	results := suspendedBatch(
+		t,
+		instance,
+		value,
+		[]openrouter.ToolCall{toolCall("1", "gated"), toolCall("2", "gated")},
+		func(
+			_ context.Context,
+			request acp.RequestPermissionRequest,
+		) (acp.RequestPermissionResponse, error) {
+			t.Errorf("auto mode asked for permission: %#v", request.ToolCall)
+			return permissionResponse("selected", permissionRejectOnceID), nil
+		},
+		make(chan event, 16),
+	)
+	if executions.Load() != 2 {
+		t.Fatalf("executions = %d, want 2", executions.Load())
+	}
+	for _, result := range results {
+		if result.failed || result.approval != "" {
+			t.Fatalf("results = %#v", results)
+		}
+	}
+	if value.granted(gated, json.RawMessage(`{}`)) {
+		t.Fatal("auto mode left a session grant behind")
+	}
+	if decisions := value.suspendedExchange().Decisions; len(decisions) != 0 {
+		t.Fatalf("recorded decisions = %#v", decisions)
+	}
+}

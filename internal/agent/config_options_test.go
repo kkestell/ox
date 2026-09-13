@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -157,4 +158,54 @@ func optionValue(options []acp.SessionConfigOption, id string) string {
 		}
 	}
 	return ""
+}
+
+// Auto mode is advertised beside code and plan and exposes code's whole tool
+// set, so the only difference between them is whether a call is asked about.
+func TestAutoModeIsAdvertisedAndKeepsTheCodeToolSet(t *testing.T) {
+	_, value := configOptionSession(t)
+	models := []openrouter.Model{{
+		ID: "test/model", Name: "Test Model", ContextLength: 1000,
+		SupportedParameters: []string{"tools"},
+	}}
+	base := value.activationBase
+	base.Tools = []openrouter.Tool{
+		{Type: "function", Function: openrouter.ToolFunction{Name: "read_file"}},
+		{Type: "function", Function: openrouter.ToolFunction{Name: "shell"}},
+	}
+	base.PlanTools = map[string]bool{"read_file": true}
+
+	var offered []string
+	for _, option := range buildConfigOptions(base, models)[0].Options {
+		offered = append(offered, option.Value)
+	}
+	if !reflect.DeepEqual(offered, []string{modeCode, modeAuto, modePlan}) {
+		t.Fatalf("mode options = %#v", offered)
+	}
+
+	code, err := applySelections(base, sessionSelections{}, nil, models)
+	if err != nil {
+		t.Fatal(err)
+	}
+	auto, err := applySelections(base, sessionSelections{Mode: modeAuto}, nil, models)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if auto.Mode != modeAuto || !reflect.DeepEqual(auto.Tools, code.Tools) {
+		t.Fatalf("auto configuration = %#v, code tools = %#v", auto, code.Tools)
+	}
+	if err := validateSelections(sessionSelections{Mode: modeAuto}); err != nil {
+		t.Fatalf("auto selection is invalid: %v", err)
+	}
+	if err := validateConfiguration(auto); err != nil {
+		t.Fatalf("auto configuration is invalid: %v", err)
+	}
+
+	plan, err := applySelections(base, sessionSelections{Mode: modePlan}, nil, models)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Tools) != 1 || plan.Tools[0].Function.Name != "read_file" {
+		t.Fatalf("plan tools = %#v", plan.Tools)
+	}
 }

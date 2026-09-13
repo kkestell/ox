@@ -18,7 +18,7 @@ Sessions:
 
 Modes and models:
 
-- Plan and code modes.
+- Code, auto, and plan modes.
 - Per-session model selection.
 - Reasoning effort selection, including provider defaults.
 - OpenRouter provider routing, sampling, and output limits.
@@ -40,6 +40,7 @@ Built-in tools:
 Permissions and safety:
 
 - Per-operation permission prompts.
+- Auto mode execution without prompts.
 - Reusable session grants, including parsed shell-command grants.
 - Read-before-edit evidence.
 - Workspace path confinement.
