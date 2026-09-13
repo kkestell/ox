@@ -33,7 +33,7 @@
   - [x] Remove quadratic durable-state cloning from record commits (F05)
   - [x] Consolidate permission approval and move tests onto its production path
         (F06)
-  - [ ] Make multimodal admission match advertised ACP capabilities (F07)
+  - [x] Make multimodal admission match advertised ACP capabilities (F07)
   - [ ] Enforce coherent edit evidence, replacement, and text-format semantics
         (F08, F09)
   - [ ] Keep read evidence and write verification on a coherent filesystem

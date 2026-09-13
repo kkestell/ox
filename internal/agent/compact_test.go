@@ -257,22 +257,50 @@ func TestRequestAdmissionRejectsCheckedOverflow(t *testing.T) {
 	}
 }
 
-func TestRequestAdmissionRejectsUnsupportedMultimodalSizing(t *testing.T) {
+// TestRequestAdmissionChargesMultimodalAnAllowance checks that a media block
+// costs its allowance rather than its payload. Sizing an inline image by its
+// base64 bytes would refuse an ordinary picture, and ignoring it would let a
+// request overrun the model's window.
+func TestRequestAdmissionChargesMultimodalAnAllowance(t *testing.T) {
+	payload := strings.Repeat("a", 200_000)
 	for _, test := range []struct {
-		name  string
-		block openrouter.ContentBlock
-		want  string
+		name      string
+		block     openrouter.ContentBlock
+		allowance int
 	}{
-		{name: "image", block: openrouter.ContentBlock{Type: "image_url", ImageURL: "data:image/png;base64,aaaa"}, want: "image content"},
-		{name: "audio", block: openrouter.ContentBlock{Type: "input_audio", AudioData: "aaaa", AudioFormat: "wav"}, want: "audio content"},
+		{
+			name:      "linked image",
+			block:     openrouter.ContentBlock{Type: "image_url", ImageURL: "https://example.com/a.png"},
+			allowance: imageBlockTokens,
+		},
+		{
+			name:      "inline image",
+			block:     openrouter.ContentBlock{Type: "image_url", ImageURL: "data:image/png;base64," + payload},
+			allowance: imageBlockTokens,
+		},
+		{
+			name:      "inline audio",
+			block:     openrouter.ContentBlock{Type: "input_audio", AudioData: payload, AudioFormat: "wav"},
+			allowance: audioBlockTokens,
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			request := admissionTestRequest([]openrouter.Message{{
 				Role: openrouter.RoleUser, Content: []openrouter.ContentBlock{test.block},
 			}})
-			if _, err := planRequestAdmission(request, 1000); err == nil ||
-				!strings.Contains(err.Error(), test.want) {
-				t.Fatalf("error = %v", err)
+			occupancy, _, err := estimateProviderRequest(request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if occupancy <= test.allowance || occupancy > test.allowance+1000 {
+				t.Fatalf("occupancy = %d, want just over the %d allowance", occupancy, test.allowance)
+			}
+			planned, err := planRequestAdmission(request, 100_000)
+			if err != nil {
+				t.Fatalf("admission = %v", err)
+			}
+			if planned.plan != nil {
+				t.Fatal("a single multimodal request asked to be compacted")
 			}
 		})
 	}

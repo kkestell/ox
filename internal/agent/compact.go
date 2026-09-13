@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/kkestell/ox/internal/openrouter"
@@ -312,25 +313,7 @@ func requestWithMessages(
 // estimateProviderRequest returns the conservative prompt occupancy followed
 // by the total budget after reserving max_tokens.
 func estimateProviderRequest(request openrouter.Request) (int, int, error) {
-	for _, message := range request.Messages {
-		for _, block := range message.Content {
-			switch block.Type {
-			case "image_url":
-				return 0, 0, errors.New("cannot size provider request containing image content; remove the image or choose a model with a larger known context window")
-			case "input_audio":
-				return 0, 0, errors.New("cannot size provider request containing audio content; remove the audio or choose a model with a larger known context window")
-			}
-		}
-	}
-	prompt := struct {
-		Messages []openrouter.Message `json:"messages"`
-		Tools    []openrouter.Tool    `json:"tools,omitempty"`
-	}{Messages: request.Messages, Tools: request.Tools}
-	data, err := json.Marshal(prompt)
-	if err != nil {
-		return 0, 0, fmt.Errorf("size provider request: %w", err)
-	}
-	occupancy := bytesToTokens(len(data))
+	occupancy := promptTokens(request.Messages, request.Tools)
 	reserve := 0
 	if request.MaxTokens != nil {
 		reserve = *request.MaxTokens
@@ -463,23 +446,79 @@ func estimateRequestTokens(
 		}},
 	}
 	messages = append(messages, history...)
-	request := struct {
-		Messages []openrouter.Message `json:"messages"`
-		Tools    []openrouter.Tool    `json:"tools,omitempty"`
-	}{Messages: messages, Tools: tools}
-	data, err := json.Marshal(request)
-	if err != nil {
-		panic(err)
-	}
-	return bytesToTokens(len(data))
+	return promptTokens(messages, tools)
 }
 
 func estimateMessages(messages []openrouter.Message) int {
-	data, err := json.Marshal(messages)
+	sized, media := sizedForEstimate(messages)
+	data, err := json.Marshal(sized)
 	if err != nil {
 		panic(err)
 	}
-	return bytesToTokens(len(data))
+	return bytesToTokens(len(data)) + media
+}
+
+const (
+	// imageBlockTokens and audioBlockTokens are what one media block costs in a
+	// request estimate. A model prices media by its own tiling and sampling
+	// rules, which the serialized request's byte count does not predict: the
+	// same picture costs about the same whether it arrives as a short link or as
+	// hundreds of kilobytes of base64. These allowances sit above what current
+	// vision and audio models charge for one block.
+	imageBlockTokens = 4096
+	audioBlockTokens = 8192
+)
+
+// promptTokens conservatively sizes a prompt. Text is counted from its
+// serialized bytes, and each media block is charged a fixed allowance in place
+// of its payload.
+func promptTokens(messages []openrouter.Message, tools []openrouter.Tool) int {
+	sized, media := sizedForEstimate(messages)
+	prompt := struct {
+		Messages []openrouter.Message `json:"messages"`
+		Tools    []openrouter.Tool    `json:"tools,omitempty"`
+	}{Messages: sized, Tools: tools}
+	data, err := json.Marshal(prompt)
+	if err != nil {
+		panic(err)
+	}
+	return bytesToTokens(len(data)) + media
+}
+
+// sizedForEstimate empties every media block and returns the messages to count
+// bytes from alongside the tokens those blocks are charged instead.
+func sizedForEstimate(messages []openrouter.Message) ([]openrouter.Message, int) {
+	media := 0
+	sized := make([]openrouter.Message, len(messages))
+	for index, message := range messages {
+		sized[index] = message
+		var content []openrouter.ContentBlock
+		for blockIndex, block := range message.Content {
+			allowance := mediaBlockTokens(block.Type)
+			if allowance == 0 {
+				continue
+			}
+			if content == nil {
+				content = slices.Clone(message.Content)
+			}
+			media += allowance
+			content[blockIndex] = openrouter.ContentBlock{Type: block.Type}
+		}
+		if content != nil {
+			sized[index].Content = content
+		}
+	}
+	return sized, media
+}
+
+func mediaBlockTokens(blockType string) int {
+	switch blockType {
+	case "image_url":
+		return imageBlockTokens
+	case "input_audio":
+		return audioBlockTokens
+	}
+	return 0
 }
 
 func bytesToTokens(bytes int) int {

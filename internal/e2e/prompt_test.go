@@ -297,52 +297,60 @@ func TestPromptRendersResourceLinksAsMarkdown(t *testing.T) {
 	})
 }
 
-func TestPromptRejectsContentItCannotSize(t *testing.T) {
-	model := startModel(t)
+// TestPromptSendsAdvertisedMultimodalContent covers the image and audio prompt
+// capabilities Ox advertises: both reach the provider as their own content
+// parts, and the turn completes.
+func TestPromptSendsAdvertisedMultimodalContent(t *testing.T) {
+	model := startModel(t, sse(evText("described"), evFinishReason("stop")))
 	child, session := startSession(t, withModel(model))
 
-	responseError := child.requestError("session/prompt", acp.PromptRequest{
+	response := promptResponse(t, child.request("session/prompt", acp.PromptRequest{
 		SessionID: session,
 		Prompt: []acp.ContentBlock{
 			{Type: "text", Text: "inspect these"},
 			{Type: "image", MIMEType: "image/png", Data: "cGljdHVyZQ=="},
 			{Type: "audio", MIMEType: "audio/x-wav", Data: "c291bmQ="},
-			{Type: "resource_link", Name: `a [file]`, URI: "file:///tmp/a(b).go"},
-			{Type: "resource", Resource: &acp.EmbeddedResource{
-				URI:  "file:///tmp/context%20file.txt#L12-L14",
-				Text: e2ePointer("inside ``` a fence"),
-			}},
-			{Type: "resource", Resource: &acp.EmbeddedResource{
-				URI: "file:///tmp/embedded.png", MIMEType: "image/png", Blob: e2ePointer("aW1hZ2U="),
-			}},
-			{Type: "resource", Resource: &acp.EmbeddedResource{
-				URI: "file:///tmp/embedded.flac", MIMEType: "audio/flac", Blob: e2ePointer("YXVkaW8="),
-			}},
 		},
-	})
+	}))
 	updates(t, child, session)
-	if !strings.Contains(responseError.Message, "cannot size provider request containing image content") {
-		t.Fatalf("error = %q", responseError.Message)
+	if response.StopReason != acp.StopReasonEndTurn {
+		t.Fatalf("stopReason = %q, want %q", response.StopReason, acp.StopReasonEndTurn)
 	}
-	if requests := model.requests(); len(requests) != 0 {
-		t.Fatalf("model received unsized request: %#v", requests)
+
+	requests := model.requests()
+	if len(requests) != 1 {
+		t.Fatalf("model requests = %d, want 1", len(requests))
+	}
+	messages := requests[0].Messages
+	parts := messages[len(messages)-1].Content
+	if len(parts) != 3 {
+		t.Fatalf("content parts = %#v", parts)
+	}
+	if parts[1].ImageURL == nil || parts[1].ImageURL.URL != "data:image/png;base64,cGljdHVyZQ==" {
+		t.Fatalf("image part = %#v", parts[1])
+	}
+	if parts[2].InputAudio == nil || parts[2].InputAudio.Data != "c291bmQ=" ||
+		parts[2].InputAudio.Format != "wav" {
+		t.Fatalf("audio part = %#v", parts[2])
 	}
 }
 
-func TestRejectedUnsizedPromptDoesNotEnterHistory(t *testing.T) {
-	model := startModel(t, sse(evText("second answer"), evFinishReason("stop")))
+// TestPromptAccumulatesMultimodalHistory checks that an admitted multimodal
+// prompt stays in the conversation the next turn sends.
+func TestPromptAccumulatesMultimodalHistory(t *testing.T) {
+	model := startModel(t,
+		sse(evText("first answer"), evFinishReason("stop")),
+		sse(evText("second answer"), evFinishReason("stop")),
+	)
 	child, session := startSession(t, withModel(model))
 
-	responseError := child.requestError("session/prompt", acp.PromptRequest{
+	child.request("session/prompt", acp.PromptRequest{
 		SessionID: session,
 		Prompt: []acp.ContentBlock{
 			{Type: "text", Text: "describe"},
 			{Type: "image", MIMEType: "image/png", Data: "cGljdHVyZQ=="},
 		},
 	})
-	if !strings.Contains(responseError.Message, "image content") {
-		t.Fatalf("error = %q", responseError.Message)
-	}
 	updates(t, child, session)
 	child.request("session/prompt", acp.PromptRequest{
 		SessionID: session,
@@ -351,10 +359,18 @@ func TestRejectedUnsizedPromptDoesNotEnterHistory(t *testing.T) {
 	updates(t, child, session)
 
 	requests := model.requests()
-	if len(requests) != 1 || len(requests[0].Messages) != 2 {
-		t.Fatalf("model requests = %#v, want only the retry", requests)
+	if len(requests) != 2 {
+		t.Fatalf("model requests = %d, want 2", len(requests))
 	}
-	assertConversation(t, requests[0].Messages, []exchange{{role: "user", text: "again"}})
+	assertConversation(t, requests[1].Messages, []exchange{
+		{role: "user", text: "describe"},
+		{role: "assistant", text: "first answer"},
+		{role: "user", text: "again"},
+	})
+	retained := requests[1].Messages[1].Content
+	if len(retained) != 2 || retained[1].ImageURL == nil {
+		t.Fatalf("retained content = %#v", retained)
+	}
 }
 
 func TestPromptRejectsUnroutableResourcesWithoutOccupyingTheSession(t *testing.T) {
