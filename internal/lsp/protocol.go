@@ -1,12 +1,14 @@
 package lsp
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"unicode/utf16"
@@ -427,6 +429,17 @@ func (m *Manager) decodeDiagnostics(ctx context.Context, raw json.RawMessage, ta
 			diagnostics = append(diagnostics, Diagnostic{Path: relative, Range: valueRange, Severity: item.Severity, Message: item.Message, Source: item.Source, Code: diagnosticCode(item.Code)})
 		}
 	}
+	// Reports arrive keyed by document URI, so the same analysis would otherwise
+	// come back in a different order each time it is asked for.
+	slices.SortStableFunc(diagnostics, func(left, right Diagnostic) int {
+		if order := strings.Compare(left.Path, right.Path); order != 0 {
+			return order
+		}
+		if order := cmp.Compare(left.Range.Start.Line, right.Range.Start.Line); order != 0 {
+			return order
+		}
+		return cmp.Compare(left.Range.Start.Column, right.Range.Start.Column)
+	})
 	return diagnostics, omitted, nil
 }
 

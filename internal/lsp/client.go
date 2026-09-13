@@ -303,10 +303,14 @@ func (c *client) send(message any) error {
 		return c.failure()
 	default:
 	}
-	if _, err := fmt.Fprintf(c.stdin, "Content-Length: %d\r\n\r\n", len(body)); err != nil {
-		return err
-	}
-	_, err = c.stdin.Write(body)
+	// One write keeps a framed message from reaching the server as a header
+	// syscall and a body syscall.
+	framed := make([]byte, 0, len(body)+32)
+	framed = append(framed, "Content-Length: "...)
+	framed = strconv.AppendInt(framed, int64(len(body)), 10)
+	framed = append(framed, "\r\n\r\n"...)
+	framed = append(framed, body...)
+	_, err = c.stdin.Write(framed)
 	return err
 }
 

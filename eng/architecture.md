@@ -64,7 +64,9 @@ The implemented package layout assigns one owner to each boundary:
   catalog identities, and bounded tool calls. It exposes no credentials through
   model-facing descriptors.
 - `internal/lsp` owns language-server process lifecycles, JSON-RPC framing,
-  document synchronization, position translation, and confined query results.
+  document synchronization, position translation, and confined query results. No
+  package imports it yet; `eng/todo.md` owns when session activation wires it
+  up.
 - `internal/settings` owns global and workspace settings, validation,
   precedence, and validation of model settings. The agent combines those inputs
   with durable session selections to construct immutable turn configuration.
@@ -110,19 +112,19 @@ cmd/ox
 agent
     -> acp
     -> credentials
-    -> lsp
     -> mcp
     -> openrouter
     -> settings
     -> skills
     -> trace
     -> workspace
+    -> lsp (planned)
 
 tools
     -> agent
-    -> lsp
     -> shellrules
     -> workspace
+    -> lsp (planned)
 
 lsp
     -> workspace

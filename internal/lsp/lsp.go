@@ -207,11 +207,18 @@ func (s *serverState) get(ctx context.Context) (*client, error) {
 			return nil, errors.New("language-server activation is closed")
 		}
 	}
+	if s.manager.ctx.Err() != nil {
+		s.mu.Unlock()
+		return nil, errors.New("language-server activation is closed")
+	}
 	s.starting = true
 	s.ready = make(chan struct{})
 	ready := s.ready
 	s.mu.Unlock()
 
+	// startClient runs the process under the manager's context, so closing the
+	// activation already reaches a server that is still coming up. ctx bounds
+	// only this caller's wait for the handshake.
 	client, err := startClient(ctx, s.manager, s.definition)
 	if err != nil {
 		err = fmt.Errorf("start language server %q: %w", s.definition.Name, err)
@@ -248,6 +255,33 @@ func readText(ctx context.Context, reader TextReader, path string) (string, erro
 	return text, nil
 }
 
+// query resolves a model-supplied path inside the workspace, reads its
+// authoritative text, and returns the running server that owns it. Every
+// document query begins this way.
+func (m *Manager) query(
+	ctx context.Context,
+	path string,
+	reader TextReader,
+) (absolute string, text string, client *client, err error) {
+	absolute, err = m.resolve(path)
+	if err != nil {
+		return "", "", nil, err
+	}
+	text, err = readText(ctx, reader, absolute)
+	if err != nil {
+		return "", "", nil, err
+	}
+	state, err := m.stateFor(absolute)
+	if err != nil {
+		return "", "", nil, err
+	}
+	client, err = state.get(ctx)
+	if err != nil {
+		return "", "", nil, err
+	}
+	return absolute, text, client, nil
+}
+
 func (m *Manager) Definition(ctx context.Context, path string, position Position, reader TextReader) (Locations, error) {
 	return m.locations(ctx, "textDocument/definition", path, position, false, reader)
 }
@@ -257,19 +291,7 @@ func (m *Manager) References(ctx context.Context, path string, position Position
 }
 
 func (m *Manager) locations(ctx context.Context, method, path string, position Position, includeDeclaration bool, reader TextReader) (Locations, error) {
-	absolute, err := m.resolve(path)
-	if err != nil {
-		return Locations{}, err
-	}
-	text, err := readText(ctx, reader, absolute)
-	if err != nil {
-		return Locations{}, err
-	}
-	state, err := m.stateFor(absolute)
-	if err != nil {
-		return Locations{}, err
-	}
-	client, err := state.get(ctx)
+	absolute, text, client, err := m.query(ctx, path, reader)
 	if err != nil {
 		return Locations{}, err
 	}
@@ -281,19 +303,7 @@ func (m *Manager) locations(ctx context.Context, method, path string, position P
 }
 
 func (m *Manager) DocumentSymbols(ctx context.Context, path string, reader TextReader) (Symbols, error) {
-	absolute, err := m.resolve(path)
-	if err != nil {
-		return Symbols{}, err
-	}
-	text, err := readText(ctx, reader, absolute)
-	if err != nil {
-		return Symbols{}, err
-	}
-	state, err := m.stateFor(absolute)
-	if err != nil {
-		return Symbols{}, err
-	}
-	client, err := state.get(ctx)
+	absolute, text, client, err := m.query(ctx, path, reader)
 	if err != nil {
 		return Symbols{}, err
 	}
@@ -329,19 +339,7 @@ func (m *Manager) WorkspaceSymbols(ctx context.Context, query string, reader Tex
 }
 
 func (m *Manager) Diagnostics(ctx context.Context, path string, reader TextReader) (DiagnosticReport, error) {
-	absolute, err := m.resolve(path)
-	if err != nil {
-		return DiagnosticReport{}, err
-	}
-	text, err := readText(ctx, reader, absolute)
-	if err != nil {
-		return DiagnosticReport{}, err
-	}
-	state, err := m.stateFor(absolute)
-	if err != nil {
-		return DiagnosticReport{}, err
-	}
-	client, err := state.get(ctx)
+	absolute, text, client, err := m.query(ctx, path, reader)
 	if err != nil {
 		return DiagnosticReport{}, err
 	}
@@ -356,12 +354,23 @@ func (m *Manager) Diagnostics(ctx context.Context, path string, reader TextReade
 	return DiagnosticReport{Version: version, Complete: complete, Items: items, Omitted: omitted}, nil
 }
 
-// Close shuts down every server that was actually started.
+// Close shuts down every server that was started. A start still in flight is
+// waited for first, because its process would otherwise outlive the activation:
+// the handshake is bounded, so the wait is too. Cancelling the manager comes
+// last, so each server gets its graceful shutdown before the context that owns
+// its process goes away.
 func (m *Manager) Close() error {
 	m.closeOnce.Do(func() {
 		for _, state := range m.servers {
 			state.mu.Lock()
+			ready, starting := state.ready, state.starting
+			state.mu.Unlock()
+			if starting {
+				<-ready
+			}
+			state.mu.Lock()
 			client := state.client
+			state.client = nil
 			state.mu.Unlock()
 			if client != nil {
 				m.closeErr = errors.Join(m.closeErr, client.close(m.shutdownTimeout))

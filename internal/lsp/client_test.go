@@ -562,3 +562,61 @@ func TestPATHWorkingDirectoryAndForcedShutdown(t *testing.T) {
 		t.Fatalf("forced close error/time = %v, %v", err, time.Since(started))
 	}
 }
+
+// TestCloseWaitsForAStartInFlight covers the shutdown gap a running start would
+// otherwise leave: Close must not return while a server is still coming up, or
+// that server's process outlives the activation.
+func TestCloseWaitsForAStartInFlight(t *testing.T) {
+	manager, path, reader := fixtureManager(t, "initialize-timeout")
+	queryFailed := make(chan struct{})
+	go func() {
+		defer close(queryFailed)
+		if _, err := manager.Definition(
+			context.Background(), path, Position{Line: 1, Column: 1}, reader,
+		); err == nil {
+			t.Error("a server that never finishes initializing answered a query")
+		}
+	}()
+
+	// Wait until the start has actually begun, so Close has something in flight
+	// to wait for rather than racing it.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		manager.servers[0].mu.Lock()
+		starting := manager.servers[0].starting
+		manager.servers[0].mu.Unlock()
+		if starting {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the start never began")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	_ = manager.Close()
+	manager.servers[0].mu.Lock()
+	starting := manager.servers[0].starting
+	manager.servers[0].mu.Unlock()
+	if starting {
+		t.Fatal("Close returned while a start was still in flight")
+	}
+	<-queryFailed
+}
+
+// TestClosedManagerRefusesToStart keeps a query that arrives after shutdown
+// from launching a process nothing will close.
+func TestClosedManagerRefusesToStart(t *testing.T) {
+	manager, path, reader := fixtureManager(t, "normal")
+	if err := manager.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Definition(
+		context.Background(), path, Position{Line: 1, Column: 1}, reader,
+	); err == nil || !strings.Contains(err.Error(), "closed") {
+		t.Fatalf("query after close = %v", err)
+	}
+	if manager.servers[0].client != nil {
+		t.Fatal("a query after close started a language server")
+	}
+}

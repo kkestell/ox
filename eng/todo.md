@@ -47,7 +47,7 @@
   - [x] Stop cloning frozen turn configuration inside per-call loops (F18)
   - [x] Preserve partial grep results and reduce workspace-walk overhead (F19,
         F34, F41)
-  - [ ] Reconcile the parked LSP adapter and harden it before integration (F20,
+  - [x] Reconcile the parked LSP adapter and harden it before integration (F20,
         F28)
   - [ ] Centralize confined regular-file reads at the workspace boundary (F21)
   - [ ] Remove delegated-task remnants and repair affected docs and tests (F22,
