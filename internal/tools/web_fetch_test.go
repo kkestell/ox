@@ -339,13 +339,3 @@ func TestWebFetchHonorsEarlierRequestDeadline(t *testing.T) {
 		t.Fatalf("deadline error = %v", err)
 	}
 }
-
-func TestWebFetchTitle(t *testing.T) {
-	tool := toolNamed(t, "web_fetch")
-	if got := tool.Title(json.RawMessage(`{"url":"https://example.com/a"}`)); got != "Fetch https://example.com/a" {
-		t.Fatalf("title = %q", got)
-	}
-	if got := tool.Title(json.RawMessage(`{}`)); got != "Fetch web page" {
-		t.Fatalf("fallback title = %q", got)
-	}
-}

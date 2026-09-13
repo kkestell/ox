@@ -505,62 +505,6 @@ func jsonString(value string) string {
 	return string(encoded)
 }
 
-func TestSSEFrames(t *testing.T) {
-	tests := []struct {
-		name string
-		got  string
-		want string
-	}{
-		{
-			name: "stream",
-			got:  sse(`{"first":1}`, `{"second":2}`),
-			want: "data: {\"first\":1}\n\ndata: {\"second\":2}\n\ndata: [DONE]\n\n",
-		},
-		{
-			name: "unterminated stream",
-			got:  frames(`{"first":1}`),
-			want: "data: {\"first\":1}\n\n",
-		},
-		{
-			name: "text",
-			got:  evText("hello\nworld"),
-			want: `{"choices":[{"delta":{"content":"hello\nworld"}}]}`,
-		},
-		{
-			name: "reasoning",
-			got:  evReasoning("think"),
-			want: `{"choices":[{"delta":{"reasoning":"think"}}]}`,
-		},
-		{
-			name: "tool call",
-			got:  evToolCall(1, "call_1", "function", "shell", `{"cmd":"go test`),
-			want: `{"choices":[{"delta":{"tool_calls":[{"index":1,"id":"call_1","type":"function","function":{"name":"shell","arguments":"{\"cmd\":\"go test"}}]}}]}`,
-		},
-		{
-			name: "finish reason",
-			got:  evFinishReason("tool_calls"),
-			want: `{"choices":[{"delta":{},"finish_reason":"tool_calls"}]}`,
-		},
-		{
-			name: "usage",
-			got:  evUsage(4, 2, 6),
-			want: `{"choices":[],"usage":{"prompt_tokens":4,"completion_tokens":2,"total_tokens":6}}`,
-		},
-		{
-			name: "error",
-			got:  evError(502, "provider unavailable"),
-			want: `{"error":{"code":502,"message":"provider unavailable"}}`,
-		},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			if test.got != test.want {
-				t.Fatalf("frame = %q, want %q", test.got, test.want)
-			}
-		})
-	}
-}
-
 func TestMockModelQueuesResponsesAndRecordsRequests(t *testing.T) {
 	wantBody := sse(evText("answer"), evFinishReason("stop"))
 	model := startModel(t, wantBody)

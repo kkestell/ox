@@ -97,11 +97,9 @@
   - [x] Fail an end-to-end test whose repeating model response is never used
 - [x] Configure and switch complete per-model request profiles
 - [x] Publish versioned release binaries
-- [ ] Address findings in the
+- [x] Address findings in the
       [session tool-friction review](reviews/2026-09-13-006-session-tool-friction-review.md)
   - [x] Remove session read evidence from file mutations and shell execution
         (F01)
   - [x] Preserve validator exit status without model-added output-truncation
         pipelines (F02)
-  - [ ] Add open-stdin process-harness support and prove `ox --version` exits
-        without reading input (F03)

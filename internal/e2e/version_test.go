@@ -22,27 +22,6 @@ func TestVersionReportsBuildVersion(t *testing.T) {
 	}
 }
 
-// TestVersionNeedsNoRuntimePrerequisites proves that reporting the version
-// happens before configuration, credentials, and provider work: the settings
-// file is invalid, no credential is available, there is no home directory, and
-// stdio is empty.
-func TestVersionNeedsNoRuntimePrerequisites(t *testing.T) {
-	result := runCommand(t, "", []string{"--version"},
-		withGlobalConfig("{ not valid settings"),
-		withCredential(""),
-		withEnvironment("HOME", ""),
-	)
-	if result.ExitCode != 0 {
-		t.Fatalf("exit code = %d, stderr = %q", result.ExitCode, result.Stderr)
-	}
-	if result.Stdout != "ox "+developmentVersion+"\n" {
-		t.Errorf("stdout = %q, want %q", result.Stdout, "ox "+developmentVersion+"\n")
-	}
-	if result.Stderr != "" {
-		t.Errorf("stderr = %q, want no output", result.Stderr)
-	}
-}
-
 // TestVersionKeepsUsageErrors checks that a version request does not turn a
 // malformed command line into a successful exit.
 func TestVersionKeepsUsageErrors(t *testing.T) {

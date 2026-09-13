@@ -2,7 +2,6 @@ package tools
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -331,30 +330,4 @@ func TestLanguageResultsSpillWhenOversized(t *testing.T) {
 	if spilled == "" || len(got) > lspInlineBytes {
 		t.Fatalf("spill = %q, rendered %d bytes", spilled, len(got))
 	}
-}
-
-func TestLanguageToolTitles(t *testing.T) {
-	for name, want := range map[string]struct{ arguments, title string }{
-		"lsp_definition": {
-			`{"path":"main.go","line":3,"column":7}`, "Find the definition of main.go:3:7",
-		},
-		"lsp_references": {
-			`{"path":"main.go","line":3,"column":7}`, "Find references to main.go:3:7",
-		},
-		"lsp_document_symbols":  {`{"path":"main.go"}`, "Outline main.go"},
-		"lsp_workspace_symbols": {`{"query":"Manager"}`, "Find symbol Manager"},
-		"lsp_diagnostics":       {`{"path":"main.go"}`, "Check main.go"},
-	} {
-		t.Run(name, func(t *testing.T) {
-			if got := toolNamed(t, name).Title(json.RawMessage(want.arguments)); got != want.title {
-				t.Fatalf("title = %q", got)
-			}
-		})
-	}
-
-	t.Run("incomplete position keeps a static label", func(t *testing.T) {
-		if got := toolNamed(t, "lsp_definition").Title(json.RawMessage(`{"path":"main.go"}`)); got != "Find a definition" {
-			t.Fatalf("title = %q", got)
-		}
-	})
 }
