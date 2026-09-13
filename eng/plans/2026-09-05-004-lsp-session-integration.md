@@ -1,89 +1,163 @@
-# Language Tools Session Integration
-
-## Sources
-
-- `docs/spec.md#language-intelligence`, `docs/spec.md#session-configuration`,
-  and `docs/spec.md#isolation-memory-and-delegated-work` — configuration
-  authority, tool behavior, plan-mode access, filesystem selection, and
-  host-privilege boundary
-- `eng/todo.md` — slice scope and completion gates
-- `eng/architecture.md#session-and-turn-state`,
-  `eng/architecture.md#configuration-and-credentials`, and
-  `eng/architecture.md#extension-boundaries` — process inputs, per-activation
-  resources, tool wiring, and cleanup
-- `internal/settings/settings.go`, `internal/agent/{agent,tool,loop}.go`,
-  `internal/tools`, and `internal/e2e` — current configuration, activation,
-  selected filesystem, built-in tool, and real-process seams
-- `~/src/references/repos/personal/eta/internal/agent/tools/lsp_*.go` — model
-  contracts and deterministic rendering patterns to adapt
-- `eng/plans/2026-09-05-003-lsp-process-adapter.md` — required adapter starting
-  point
+# Integrate language-server tools with sessions
 
 ## Goal
 
-Expose the LSP adapter through global process configuration and five read-only
-tools shared by parent and child turns. Each session activation owns its lazy
-server processes, uses client-backed unsaved content when selected, and releases
-all processes on close or process exit.
+`internal/lsp` implements the required lazy, confined language-server boundary,
+but no package imports it. Ox cannot configure that boundary, give an activation
+ownership of it, or expose its queries to the model.
 
-## Implementation
+## Desired outcome
 
-- `internal/settings` — add `process.language_servers`, a map from stable server
-  name to `command`, optional `args`, and nonempty `extensions`. Validate names,
-  commands, extensions, and duplicate extension ownership at startup; normalize
-  extensions without leading dots in the resolved process value. Keep the object
-  global-only through the existing workspace decoder boundary.
-- `cmd/ox` and `internal/agent` — pass the resolved definitions as immutable
-  process input. Create one lazy `lsp.Manager` for each new, loaded, or resumed
-  activation without starting a command. Store it on the active session, make
-  failed activation cleanup atomic, and close it only after active work and
-  configuration setters finish. Process shutdown and session close share the
-  same cleanup path.
-- Extend tool invocation with the activation's language manager and the turn's
-  frozen client-filesystem callbacks. A query resolves its input through the
-  existing workspace boundary, reads through `fs/read_text_file` when that
-  executor was selected and otherwise through confined local handles, validates
-  UTF-8, then supplies those exact bytes to LSP synchronization. Do not require
-  prior read evidence for these nonmutating queries.
-- `internal/tools` — add `lsp_definition`, `lsp_references`,
-  `lsp_document_symbols`, `lsp_workspace_symbols`, and `lsp_diagnostics` with
-  strict schemas. File-position tools accept workspace-relative `path`,
-  one-based `line`, and one-based Unicode-scalar `column`; references also
-  accepts `include_declaration`. Render deterministic bounded results with
-  relative paths, symbol kinds, observed document versions, diagnostic
-  severity/source/code, omission counts, and explicit unavailable or unknown
-  states.
-- Register all five as approval-free read/search tools available to parent and
-  child in both code and plan modes. They never mutate files, format, rename,
-  apply code actions, run automatically after edits, install a server, or expose
-  an IDE side channel. No configured server produces a clear tool result rather
-  than starting an implicit fallback.
-- `docs/settings.md` — document the shipped global JSON shape, validation, lazy
-  startup, deadlines, and the fact that configured servers run with host
-  privileges in the session root. Keep target behavior in `docs/spec.md`.
+Global process settings configure language servers, every active session owns a
+lazy manager, and the stable built-in tool catalog exposes definition,
+reference, document-symbol, workspace-symbol, and diagnostic queries in code and
+plan modes. Queries use the activation's selected filesystem, return bounded
+deterministic output, and release every started server on activation close or
+process exit.
 
-## Tests
+## Summary of approach
 
-- Settings tests prove accepted maps, normalization, startup errors, duplicate
-  extension rejection, and workspace exclusion. Command lookup uses a temporary
-  `PATH`; tests never require an installed language server.
-- Tool tests prove strict arguments, confinement, UTF-8 handling, one-based
-  positions, deterministic truncation, omission reporting, no read-evidence or
-  permission gate, and parent/child plus plan-mode registration.
-- Real-binary tests use a configurable helper LSP and fake provider to prove
-  lazy startup, each tool's model-visible request/result, client unsaved-file
-  synchronization, cancellation with an unrelated responsive session, crashed
-  and timed-out servers, stale diagnostic handling, and session/process
-  shutdown. Assert no mutation, install, formatting, or automatic diagnostic
-  request occurs.
+Resolve and validate immutable language-server definitions with the other
+process settings, then pass them through `cmd/ox` into the agent. Construct one
+`lsp.Manager` for each activation without starting a server and store it beside
+the activation's MCP resources. The built-in tools pass the manager an
+authoritative whole-file reader built from the existing per-turn filesystem
+callbacks. Tool registration remains independent of configuration so model tool
+identities do not depend on whether a server is installed or running.
 
-## Sequence
+## Related code
 
-This is the second of two plans. It requires the complete adapter from the first
-plan and completes the language-server context slice.
+- `docs/spec.md#language-intelligence`, `docs/spec.md#session-configuration`,
+  and `docs/spec.md#isolation-and-memory` - observable configuration, query,
+  filesystem-authority, lifecycle, and host-privilege requirements.
+- `eng/architecture.md#session-and-turn-state`,
+  `eng/architecture.md#configuration-and-credentials`, and
+  `eng/architecture.md#extension-boundaries` - process inputs, activation-owned
+  resources, dependency direction, and cleanup.
+- `internal/settings/settings.go` and `cmd/ox/main.go` - global process settings
+  and the one-time process wiring point.
+- `internal/agent/{agent,tool,loop}.go` and `internal/tools` - activation
+  lifecycle, per-turn filesystem callbacks, dispatch metadata, and the stable
+  built-in catalog.
+- `internal/lsp` - the complete lazy manager and model-facing query values this
+  work exposes.
+- `internal/e2e` - real-process configuration, ACP callback, provider, and
+  lifecycle seams.
+- `eng/plans/2026-09-05-003-lsp-process-adapter.md` and
+  `eng/plans/2026-09-13-lsp-adapter-reconciliation.md` - the implemented and
+  subsequently hardened adapter boundary.
+- `~/src/references/repos/personal/eta/internal/agent/tools/lsp_*.go` and
+  `~/src/references/repos/personal/eta/internal/lsp/diagnostics.go` - prior
+  model contracts and deterministic renderers to adapt without retaining Eta's
+  local-disk or read-evidence assumptions.
 
-## Decisions
+## Current state
 
-- LSP tools remain part of the stable built-in catalog even when no server is
-  configured; availability is decided at invocation so replay and model tool
-  identities do not depend on a live child process.
+- The adapter already owns command lookup, lazy startup, deadlines,
+  cancellation, failed-server state, position conversion, document versions,
+  result confinement, omission counts, and shutdown. Integration must not
+  duplicate those protocol rules.
+- Process settings are loaded once by `cmd/ox`; model settings are separately
+  reloaded for each activation. `Invocation` already carries the turn's selected
+  client-filesystem callbacks.
+- A session currently owns and closes only its MCP activation resource after
+  active work and configuration setters finish.
+- Delegated tasks and child-agent tools have been removed. There is one tool
+  catalog and one invocation path to integrate.
+- Local whole-file reads are capped by `workspace.MaxFileBytes`; client-backed
+  reads must retain the same bound before their text reaches the adapter.
+
+## Structural considerations
+
+- `internal/settings` owns the JSON vocabulary and startup validation,
+  `internal/lsp` continues to own runtime definitions and protocol behavior, and
+  `internal/agent` translates and wires the two. Do not add a general
+  activation-resource registry.
+- Language-server definitions are process inputs. Clone their maps and slices at
+  resolution and agent construction so later mutation cannot change an
+  activation.
+- The session owns the concrete manager for cleanup; tool invocation receives
+  only the query access it needs plus the already-selected filesystem callback.
+- Language queries mutate server-side document synchronization state, so
+  serialize them within a session while preserving concurrency between sessions.
+- The tool catalog is stable even with no configured server. An unavailable,
+  missing, crashed, or timed-out server becomes a clear model-visible tool
+  failure and never triggers installation, restart, or another fallback.
+
+## Test plan
+
+- **Key behaviors to verify:** accepted global maps and normalized extensions;
+  startup rejection of blank names or commands, empty or invalid extensions, and
+  overlapping normalized extension ownership; workspace exclusion; immutable
+  resolved values; strict tool arguments and reference defaults;
+  selected-filesystem whole-file reads with the local size and UTF-8 rules;
+  one-based positions; deterministic rendering, diagnostic completeness and
+  version wording, omission counts, and bounded spills; approval-free code- and
+  plan-mode registration; lazy startup; and complete session/process cleanup.
+- **Test levels:** settings and renderer unit tests, focused agent lifecycle and
+  invocation tests, and real-binary tests with the existing fake provider plus a
+  helper-process language server.
+- **Edge cases and failure modes:** no configured servers, no server for a file
+  extension, a missing executable on first use, an unknown symbol kind or
+  diagnostic severity, an incomplete push-diagnostic observation,
+  client-supplied unsaved text, cancellation of one blocked language query while
+  another session remains responsive, activation failure after manager
+  construction, and errors from both LSP and MCP cleanup.
+- **What not to test:** installed third-party servers or a live model. Keep LSP
+  framing, encoding, confinement, crash, timeout, stale-diagnostic, and forced
+  shutdown permutations in `internal/lsp`; process coverage needs only to prove
+  their failures and results cross the integrated boundary correctly.
+
+## Implementation plan
+
+- Add `process.language_servers` to `internal/settings` as a map from stable
+  server name to `command`, optional `args`, and nonempty `extensions`. Validate
+  and normalize definitions in `ResolveProcess`, including duplicate ownership
+  after case-folding and leading-dot removal, while preserving lazy executable
+  lookup and rejecting the field in workspace settings.
+- Pass cloned resolved definitions from `cmd/ox` into `internal/agent`. Create a
+  manager for every new, loaded, or resumed activation; include it in failed
+  activation cleanup; and close it after active work and configuration changes,
+  joining its error with MCP cleanup. Process shutdown continues to use the
+  session close path.
+- Extend tool invocation with the activation's language queries. Build the
+  adapter reader from the existing turn filesystem selection: resolve inside the
+  workspace, call `fs/read_text_file` for a client-backed executor or the
+  confined local whole-file read otherwise, enforce `workspace.MaxFileBytes`,
+  and let the adapter validate UTF-8. These read-only queries neither record nor
+  require mutation read evidence.
+- Add strict `lsp_definition`, `lsp_references`, `lsp_document_symbols`,
+  `lsp_workspace_symbols`, and `lsp_diagnostics` tools. File-position tools take
+  workspace-relative `path` and one-based Unicode-scalar `line` and `column`;
+  references defaults `include_declaration` to true. Classify navigation and
+  symbol tools as searches and diagnostics as a read; make all five
+  approval-free, plan-mode available, and session-serialized.
+- Sort and render adapter values with workspace-relative paths, one-based
+  ranges, stable names for known symbol kinds and diagnostic severities,
+  explicit numeric fallbacks for unknown kinds, diagnostic source/code when
+  present, the observed diagnostic version and completeness, and adapter
+  omission counts. Send oversized text through the ordinary bounded spill
+  renderer and report its spill path.
+- Update `docs/settings.md` with the global JSON shape, normalization, lazy
+  executable lookup and startup, deadlines, lifecycle, and host-privilege
+  boundary. Update `eng/architecture.md` to remove the parked-adapter wording,
+  mark the LSP dependency edges implemented, and include language queries in
+  tool ownership. `docs/spec.md` already owns the target behavior and needs no
+  duplicated implementation detail.
+
+## Impact assessment
+
+- **Code paths affected:** process configuration, executable wiring, session
+  activation and close, tool invocation, and built-in tool rendering.
+- **Data, protocol, or schema impact:** one additive global settings field and
+  five new model-facing tool schemas; no ACP or durable-session format change.
+- **Dependency or API impact:** `agent` and `tools` begin importing the existing
+  `internal/lsp` package; no production dependency is added. Configured server
+  processes retain host privileges in the session root.
+
+## Validation
+
+- Run the focused settings, tools, agent, LSP, and end-to-end tests while
+  iterating.
+- Run `make check` before marking language-server context complete in
+  `eng/todo.md`.
