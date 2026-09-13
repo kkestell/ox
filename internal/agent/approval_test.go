@@ -123,9 +123,10 @@ func TestExecuteBatchAsksForZeroValueAndSkipsUnknownTools(t *testing.T) {
 	}
 	var asked []string
 	events := make(chan event, 16)
-	results := instance.executeBatch(
-		context.Background(),
-		ephemeralToolSession(t),
+	results := suspendedBatch(
+		t,
+		instance,
+		durableTestSession(t, instance, testConfiguration(instance), "turn"),
 		[]openrouter.ToolCall{
 			toolCall("1", "gated"),
 			toolCall("2", "safe"),
@@ -190,9 +191,10 @@ func TestExecuteBatchScopesAllowAlwaysToToolRules(t *testing.T) {
 		t.Fatal(err)
 	}
 	var requests []acp.RequestPermissionRequest
-	results := instance.executeBatch(
-		context.Background(),
-		ephemeralToolSession(t),
+	results := suspendedBatch(
+		t,
+		instance,
+		durableTestSession(t, instance, testConfiguration(instance), "turn"),
 		[]openrouter.ToolCall{
 			{
 				ID: "1",
@@ -263,9 +265,10 @@ func TestExecuteBatchOmitsUnscopedAllowAlways(t *testing.T) {
 		t.Fatal(err)
 	}
 	requests := 0
-	results := instance.executeBatch(
-		context.Background(),
-		ephemeralToolSession(t),
+	results := suspendedBatch(
+		t,
+		instance,
+		durableTestSession(t, instance, testConfiguration(instance), "turn"),
 		[]openrouter.ToolCall{toolCall("1", "ruled"), toolCall("2", "ruled")},
 		func(
 			_ context.Context,
@@ -286,75 +289,6 @@ func TestExecuteBatchOmitsUnscopedAllowAlways(t *testing.T) {
 		if result.failed {
 			t.Fatalf("results = %#v", results)
 		}
-	}
-}
-
-func TestConcurrentBatchesSerializeApprovalAndRecheckGrant(t *testing.T) {
-	var executions atomic.Int32
-	tool := Tool{
-		Name:        "gated",
-		InputSchema: json.RawMessage(`{"type":"object"}`),
-		Execute: func(context.Context, Invocation) (string, error) {
-			executions.Add(1)
-			return "done", nil
-		},
-	}
-	instance, err := New(Config{Logger: discardLogger(), Tools: []Tool{tool}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	value := ephemeralToolSession(t)
-	asked := make(chan string, 2)
-	release := make(chan struct{})
-	ask := func(
-		_ context.Context,
-		request acp.RequestPermissionRequest,
-	) (acp.RequestPermissionResponse, error) {
-		asked <- request.ToolCall.ToolCallID
-		<-release
-		return permissionResponse("selected", permissionAllowAlwaysID), nil
-	}
-	done := make(chan []toolResult, 2)
-	go func() {
-		done <- instance.executeBatch(
-			context.Background(),
-			value,
-			[]openrouter.ToolCall{toolCall("first", "gated")},
-			ask,
-			make(chan event, 8),
-		)
-	}()
-	if call := <-asked; call != "first" {
-		t.Fatalf("first approval = %q", call)
-	}
-	go func() {
-		done <- instance.executeBatch(
-			context.Background(),
-			value,
-			[]openrouter.ToolCall{toolCall("second", "gated")},
-			ask,
-			make(chan event, 8),
-		)
-	}()
-	select {
-	case call := <-asked:
-		t.Fatalf("second approval was concurrently outstanding: %q", call)
-	default:
-	}
-	close(release)
-	for range 2 {
-		results := <-done
-		if len(results) != 1 || results[0].failed {
-			t.Fatalf("results = %#v", results)
-		}
-	}
-	select {
-	case call := <-asked:
-		t.Fatalf("waiting call ignored the shared grant: %q", call)
-	default:
-	}
-	if executions.Load() != 2 {
-		t.Fatalf("executions = %d", executions.Load())
 	}
 }
 

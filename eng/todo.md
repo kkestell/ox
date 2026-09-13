@@ -31,7 +31,7 @@
   - [x] Bound model-chosen file reads and `read_file` output (F03, F26)
   - [x] Bound checkpoint growth and keep aged sessions reloadable (F04)
   - [x] Remove quadratic durable-state cloning from record commits (F05)
-  - [ ] Consolidate permission approval and move tests onto its production path
+  - [x] Consolidate permission approval and move tests onto its production path
         (F06)
   - [ ] Make multimodal admission match advertised ACP capabilities (F07)
   - [ ] Enforce coherent edit evidence, replacement, and text-format semantics

@@ -856,43 +856,22 @@ func (a *Agent) executeSuspendedBatch(
 			value.id, root, tool, call, rule, "", results[index].target,
 		)
 		progress = value.suspendedExchange()
-		if progress.Pending == nil {
-			if err := a.commit(value, recordPermissionOpen, permissionRequestedRecord{
-				TurnID: progress.TurnID,
-				Pending: pendingPermissionRecord{
-					CallID: call.ID, Generation: 1, Request: request,
-				},
-			}); err != nil {
-				value.approvalMu.Unlock()
-				return nil, false, fmt.Errorf("persist permission request: %w", err)
-			}
-			progress.Pending = &pendingPermissionRecord{
-				CallID: call.ID, Generation: 1, Request: request,
-			}
-			reissue = false
-		} else if progress.Pending.CallID != call.ID {
+		pending, err := a.openPermission(value, progress, call.ID, request, reissue)
+		if err != nil {
 			value.approvalMu.Unlock()
-			return nil, false, errors.New("pending permission is out of tool-call order")
+			return nil, false, err
 		}
-		if reissue {
-			generation := progress.Pending.Generation + 1
-			if err := a.commit(value, recordPermissionRetry, permissionReissuedRecord{
-				TurnID: progress.TurnID, CallID: call.ID, Generation: generation,
-			}); err != nil {
-				value.approvalMu.Unlock()
-				return nil, false, fmt.Errorf("persist permission reissue: %w", err)
-			}
-			progress.Pending.Generation = generation
-			reissue = false
-		}
-		generation := progress.Pending.Generation
+		// A restart asks again only for the request it recovered, so the next
+		// call in this batch opens a fresh request at generation one.
+		reissue = false
+		generation := pending.Generation
 		a.logger.Info(
 			"tool approval requested", "session_id", value.id,
 			"tool_call_id", call.ID, "tool", call.Function.Name,
 			"generation", generation, "rule_scoped", tool.Suggest != nil,
 			"rule_derived", rule != "",
 		)
-		response, askErr := ask(ctx, progress.Pending.Request)
+		response, askErr := ask(ctx, pending.Request)
 		decision := decideApproval(response, askErr)
 		if ctx.Err() != nil {
 			decision = decisionCancelled
@@ -900,11 +879,11 @@ func (a *Agent) executeSuspendedBatch(
 		if decision == decisionAllowAlways && tool.Suggest != nil && rule == "" {
 			decision = decisionAllowOnce
 		}
-		recorded, err := a.commitPermissionDecision(value, permissionDecidedRecord{
+		recorded, decisionErr := a.commitPermissionDecision(value, permissionDecidedRecord{
 			TurnID: progress.TurnID, CallID: call.ID, Generation: generation,
 			Decision: decision, Rule: permissionDecisionRule(decision, rule),
 		})
-		if err != nil {
+		if err := decisionErr; err != nil {
 			value.approvalMu.Unlock()
 			return nil, false, fmt.Errorf("persist permission decision: %w", err)
 		}
@@ -967,6 +946,42 @@ func (a *Agent) executeSuspendedBatch(
 	return results, batchCancelled, nil
 }
 
+// openPermission returns the durable pending permission this call must be asked
+// under, opening one at generation one when the turn has none. A turn recovered
+// from a restart reissues the request it found, taking a new generation so an
+// answer to the lost request is ignored.
+func (a *Agent) openPermission(
+	value *session,
+	progress *suspendedModelExchangeRecord,
+	callID string,
+	request acp.RequestPermissionRequest,
+	reissue bool,
+) (pendingPermissionRecord, error) {
+	if progress.Pending == nil {
+		pending := pendingPermissionRecord{CallID: callID, Generation: 1, Request: request}
+		if err := a.commit(value, recordPermissionOpen, permissionRequestedRecord{
+			TurnID: progress.TurnID, Pending: pending,
+		}); err != nil {
+			return pendingPermissionRecord{}, fmt.Errorf("persist permission request: %w", err)
+		}
+		return pending, nil
+	}
+	if progress.Pending.CallID != callID {
+		return pendingPermissionRecord{}, errors.New("pending permission is out of tool-call order")
+	}
+	pending := *progress.Pending
+	if !reissue {
+		return pending, nil
+	}
+	pending.Generation++
+	if err := a.commit(value, recordPermissionRetry, permissionReissuedRecord{
+		TurnID: progress.TurnID, CallID: callID, Generation: pending.Generation,
+	}); err != nil {
+		return pendingPermissionRecord{}, fmt.Errorf("persist permission reissue: %w", err)
+	}
+	return pending, nil
+}
+
 func permissionDecisionRule(decision approvalDecision, rule string) string {
 	if decision == decisionAllowAlways {
 		return rule
@@ -994,201 +1009,6 @@ func (a *Agent) permissionRequest(
 		},
 		Options: permissionOptions(rule, tool.Suggest != nil),
 	}
-}
-
-func (a *Agent) executeBatch(
-	ctx context.Context,
-	value *session,
-	calls []openrouter.ToolCall,
-	ask requestPermission,
-	events chan<- event,
-) []toolResult {
-	results, _ := a.executeBatchWith(
-		ctx,
-		value,
-		a.sessionPrimaryTools(value),
-		value.primaryFileReads(),
-		calls,
-		ask,
-		nil,
-		ClientFileSystem{},
-		ClientTerminal{},
-		events,
-		"",
-		diagnostictrace.Turn{},
-	)
-	return results
-}
-
-func (a *Agent) executeBatchWith(
-	ctx context.Context,
-	value *session,
-	tools toolSet,
-	reads FileReads,
-	calls []openrouter.ToolCall,
-	ask requestPermission,
-	elicit requestElicitation,
-	fileSystem ClientFileSystem,
-	terminal ClientTerminal,
-	events chan<- event,
-	parent string,
-	turn diagnostictrace.Turn,
-) ([]toolResult, error) {
-	configuration := value.turnConfiguration()
-	if configuration.Mode != "" {
-		tools = constrainedToolSet(tools, configuration.Tools)
-	}
-	a.logger.Info("tool batch started", "session_id", value.id, "calls", len(calls))
-	root := value.workspaceRoot()
-	targets := normalizedToolTargets(root, tools, calls)
-	for _, call := range calls {
-		turn.ToolPending(call.ID, call.Function.Name, parent)
-		var kind acp.ToolKind
-		if index, ok := tools.byName[call.Function.Name]; ok {
-			kind = tools.tools[index].Kind
-		}
-		events <- event{
-			kind:     eventToolPending,
-			call:     call,
-			toolKind: kind,
-			parent:   parent,
-			title:    toolSetTitle(tools, call.Function.Name, json.RawMessage(call.Function.Arguments)),
-			target:   targets[call.ID],
-		}
-	}
-
-	results := make([]toolResult, len(calls))
-	for index, call := range calls {
-		results[index].target = targets[call.ID]
-	}
-	ready := make([]bool, len(calls))
-	handled := make([]bool, len(calls))
-	batchCancelled := false
-approvalLoop:
-	for index, call := range calls {
-		if ctx.Err() != nil {
-			break
-		}
-		handled[index] = true
-		toolIndex, known := tools.byName[call.Function.Name]
-		if !known || tools.tools[toolIndex].Approval == ApprovalNone {
-			ready[index] = true
-			continue
-		}
-		tool := tools.tools[toolIndex]
-		arguments := json.RawMessage(call.Function.Arguments)
-		if value.granted(tool, arguments) {
-			ready[index] = true
-			continue
-		}
-		rule := ""
-		if tool.Suggest != nil {
-			rule = tool.Suggest(arguments)
-		}
-		value.approvalMu.Lock()
-		if ctx.Err() != nil {
-			value.approvalMu.Unlock()
-			results[index] = toolResult{
-				content:  "tool call cancelled before start",
-				failed:   true,
-				approval: decisionCancelled,
-				target:   targets[call.ID],
-			}
-			batchCancelled = true
-			break approvalLoop
-		}
-		if value.granted(tool, arguments) {
-			value.approvalMu.Unlock()
-			ready[index] = true
-			continue
-		}
-		request := a.permissionRequest(
-			value.id, root, tool, call, rule, parent, results[index].target,
-		)
-		a.logger.Info(
-			"tool approval requested",
-			"session_id", value.id,
-			"tool_call_id", call.ID,
-			"tool", call.Function.Name,
-			"rule_scoped", tool.Suggest != nil,
-			"rule_derived", rule != "",
-		)
-		response, err := ask(ctx, request)
-		decision := decideApproval(response, err)
-		if ctx.Err() != nil {
-			decision = decisionCancelled
-		}
-		if decision == decisionAllowAlways {
-			if tool.Suggest != nil && rule == "" {
-				decision = decisionAllowOnce
-				a.logger.Info(
-					"tool allow-always ignored without a derivable rule",
-					"session_id", value.id,
-					"tool_call_id", call.ID,
-					"tool", call.Function.Name,
-				)
-			} else {
-				value.grant(call.Function.Name, rule)
-				a.logger.Info(
-					"tool approval granted for activation",
-					"session_id", value.id,
-					"tool_call_id", call.ID,
-					"tool", call.Function.Name,
-					"rule_scoped", tool.Suggest != nil,
-				)
-			}
-		}
-		value.approvalMu.Unlock()
-		results[index].approval = decision
-		a.logger.Info(
-			"tool approval decided",
-			"session_id", value.id,
-			"tool_call_id", call.ID,
-			"tool", call.Function.Name,
-			"decision", decision,
-			"rule_scoped", tool.Suggest != nil,
-			"rule_derived", rule != "",
-		)
-		switch decision {
-		case decisionAllowOnce, decisionAllowAlways:
-			ready[index] = true
-		case decisionCancelled:
-			results[index].content = "tool call cancelled before start"
-			results[index].failed = true
-			batchCancelled = true
-			break approvalLoop
-		default:
-			results[index].content = "the user rejected this tool call"
-			results[index].failed = true
-		}
-	}
-	for index := range calls {
-		if !handled[index] {
-			results[index] = toolResult{
-				content:  "tool call cancelled before start",
-				failed:   true,
-				approval: decisionCancelled,
-				target:   targets[calls[index].ID],
-			}
-		}
-	}
-	if batchCancelled {
-		for index := range ready {
-			if ready[index] {
-				ready[index] = false
-				results[index].content = "tool call cancelled before start"
-				results[index].failed = true
-			}
-		}
-	}
-
-	var err error
-	results, err = a.dispatchApprovedBatch(
-		ctx, value, tools, reads, calls, ask, elicit, fileSystem, terminal,
-		events, parent, results, ready, turn,
-	)
-	a.logger.Info("tool batch completed", "session_id", value.id, "calls", len(calls))
-	return results, err
 }
 
 func (a *Agent) dispatchApprovedBatch(

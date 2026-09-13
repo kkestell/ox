@@ -434,10 +434,10 @@ func TestParallelToolResultsJoinInCallOrder(t *testing.T) {
 	}()
 	done := make(chan []toolResult, 1)
 	go func() {
-		done <- instance.executeBatch(context.Background(), ephemeralToolSession(t), []openrouter.ToolCall{
+		done <- dispatchBatch(context.Background(), instance, ephemeralToolSession(t), []openrouter.ToolCall{
 			toolCallWithArguments("call-1", "parallel", `"1"`),
 			toolCallWithArguments("call-2", "parallel", `"2"`),
-		}, nil, events)
+		}, events)
 		close(events)
 	}()
 
@@ -509,12 +509,12 @@ func TestExclusiveToolFencesParallelGroups(t *testing.T) {
 	}()
 	done := make(chan struct{})
 	go func() {
-		instance.executeBatch(context.Background(), ephemeralToolSession(t), []openrouter.ToolCall{
+		dispatchBatch(context.Background(), instance, ephemeralToolSession(t), []openrouter.ToolCall{
 			toolCallWithArguments("1", "parallel", `"one"`),
 			toolCallWithArguments("2", "parallel", `"two"`),
 			toolCall("3", "exclusive"),
 			toolCallWithArguments("4", "parallel", `"three"`),
-		}, nil, events)
+		}, events)
 		close(events)
 		close(done)
 	}()
@@ -571,13 +571,13 @@ func TestExclusiveToolSerializesAcrossConcurrentBatches(t *testing.T) {
 	events := make(chan event, 16)
 	for _, id := range []string{"first", "second"} {
 		go func() {
-			done <- instance.executeBatch(
+			done <- dispatchBatch(
 				context.Background(),
+				instance,
 				value,
 				[]openrouter.ToolCall{
 					toolCallWithArguments(id, "exclusive", `"`+id+`"`),
 				},
-				nil,
 				events,
 			)
 		}()
@@ -651,11 +651,11 @@ func TestToolFailuresEachProduceOneTerminalResult(t *testing.T) {
 			}
 		}
 	}()
-	results := instance.executeBatch(context.Background(), ephemeralToolSession(t), []openrouter.ToolCall{
+	results := dispatchBatch(context.Background(), instance, ephemeralToolSession(t), []openrouter.ToolCall{
 		toolCall("1", "missing"),
 		toolCall("2", "panic"),
 		toolCall("3", "error"),
-	}, nil, events)
+	}, events)
 	close(events)
 	wait.Wait()
 
@@ -1529,6 +1529,72 @@ func durableTestSession(
 	return value
 }
 
+// testConfiguration names the agent's own tools as the session's catalog, which
+// is what activation resolves for a real session.
+func testConfiguration(instance *Agent) requestConfiguration {
+	return requestConfiguration{
+		Settings: settings.Resolved{Model: "test/model"},
+		Tools:    cloneTools(instance.primaryTools.modelTools),
+	}
+}
+
+// suspendedBatch drives the production approval path. It records the paused
+// model exchange the calls belong to, which is what a turn commits before it
+// asks for permission, then runs the batch.
+func suspendedBatch(
+	t *testing.T,
+	instance *Agent,
+	value *session,
+	calls []openrouter.ToolCall,
+	ask requestPermission,
+	events chan<- event,
+) []toolResult {
+	t.Helper()
+	if err := instance.commit(value, recordExchangePaused, suspendedModelExchangeRecord{
+		TurnID: "turn", AnswerID: "answer", ThoughtID: "thought",
+		FinishReason: "tool_calls", ToolCalls: calls, RequestCount: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	results, _, err := instance.executeSuspendedBatch(
+		context.Background(), value, calls, ask, nil,
+		ClientFileSystem{}, ClientTerminal{}, events,
+		diagnostictrace.Turn{}, false,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return results
+}
+
+// dispatchBatch runs the production dispatch half with every call approved,
+// which is the state the approval loop hands it. Dispatch owns no durable
+// state, so unlike a whole batch it can run twice over one session at once.
+func dispatchBatch(
+	ctx context.Context,
+	instance *Agent,
+	value *session,
+	calls []openrouter.ToolCall,
+	events chan<- event,
+) []toolResult {
+	tools := instance.sessionPrimaryTools(value)
+	targets := normalizedToolTargets(value.workspaceRoot(), tools, calls)
+	instance.publishPendingTools(value, calls, targets, events, diagnostictrace.Turn{})
+	ready := make([]bool, len(calls))
+	for index := range ready {
+		ready[index] = true
+	}
+	results, err := instance.dispatchApprovedBatch(
+		ctx, value, tools, value.primaryFileReads(),
+		calls, nil, nil, ClientFileSystem{}, ClientTerminal{}, events, "",
+		make([]toolResult, len(calls)), ready, diagnostictrace.Turn{},
+	)
+	if err != nil {
+		panic(err)
+	}
+	return results
+}
+
 func emptyCredentialStore(t *testing.T) *credentials.Store {
 	t.Helper()
 	keyring.MockInit()
@@ -1591,11 +1657,11 @@ func TestSuccessfulToolResultSurvivesConcurrentCancellation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	results := instance.executeBatch(
+	results := dispatchBatch(
 		ctx,
+		instance,
 		ephemeralToolSession(t),
 		[]openrouter.ToolCall{toolCall("call", "mutation")},
-		nil,
 		make(chan event, 8),
 	)
 	if len(results) != 1 || results[0].failed ||
