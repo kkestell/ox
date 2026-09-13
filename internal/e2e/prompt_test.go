@@ -1099,3 +1099,89 @@ func TestServerStaysResponsiveWithManyConcurrentTurns(t *testing.T) {
 		updates(t, child, sessions[index])
 	}
 }
+
+// TestSessionCancelKeepsStreamedTextBesideAnUnfinishedToolCall covers the
+// transcript a client keeps after cancelling a stream that had already shown
+// text and then begun a tool call. The unfinished call is dropped; the text the
+// client rendered is not.
+func TestSessionCancelKeepsStreamedTextBesideAnUnfinishedToolCall(t *testing.T) {
+	model := startModel(t)
+	held := model.hold(frames(
+		evText("partial"),
+		evToolCall(0, "unfinished", "function", "shell", `{"command":"ec`),
+	))
+	model.queue(sse(evText("second answer"), evFinishReason("stop")))
+	child, session := startSession(t, withModel(model))
+
+	turn := child.begin("session/prompt", acp.PromptRequest{
+		SessionID: session,
+		Prompt:    textPrompt("hi"),
+	})
+	held.await(t)
+	// Reading the chunk before cancelling makes what the turn streamed, and so
+	// what the history keeps, deterministic.
+	chunk := child.notification("session/update")
+	child.notify("session/cancel", acp.CancelNotification{SessionID: session})
+
+	response := promptResponse(t, child.result(child.await(turn)))
+	if response.StopReason != acp.StopReasonCancelled {
+		t.Fatalf("stopReason = %q, want %q", response.StopReason, acp.StopReasonCancelled)
+	}
+	var streamed sessionNotification
+	if err := json.Unmarshal(chunk.Params, &streamed); err != nil {
+		t.Fatal(err)
+	}
+	if streamed.Update.Content.Text != "partial" {
+		t.Fatalf("streamed %q, want %q", streamed.Update.Content.Text, "partial")
+	}
+
+	child.request("session/prompt", acp.PromptRequest{
+		SessionID: session,
+		Prompt:    textPrompt("again"),
+	})
+	updates(t, child, session)
+	requests := model.requests()
+	if len(requests) != 2 {
+		t.Fatalf("model received %d requests, want 2", len(requests))
+	}
+	assertConversation(t, requests[1].Messages, []exchange{
+		{role: "user", text: "hi"},
+		{role: "assistant", text: "partial"},
+		{role: "user", text: "again"},
+	})
+}
+
+// TestDuplicateToolCallIDFailsOneTurnAndNotTheSession covers a provider that
+// repeats a tool-call ID. The turn fails, and the session still takes the next
+// prompt rather than needing a close and reload.
+func TestDuplicateToolCallIDFailsOneTurnAndNotTheSession(t *testing.T) {
+	model := startModel(t,
+		sse(
+			evToolCall(0, "repeated", "function", "shell", `{"command":"true"}`),
+			evToolCall(1, "repeated", "function", "shell", `{"command":"false"}`),
+			evFinishReason("tool_calls"),
+		),
+		sse(evText("recovered"), evFinishReason("stop")),
+	)
+	child, session := startSession(t, withModel(model))
+
+	failure := child.requestError("session/prompt", acp.PromptRequest{
+		SessionID: session,
+		Prompt:    textPrompt("call a tool twice"),
+	})
+	if !strings.Contains(failure.Message, `duplicate tool call ID "repeated"`) {
+		t.Fatalf("error = %#v", failure)
+	}
+	_ = updates(t, child, session)
+
+	prompt(t, child, session, "carry on")
+	_ = updates(t, child, session)
+	requests := model.requests()
+	if len(requests) != 2 {
+		t.Fatalf("model received %d requests, want 2", len(requests))
+	}
+	assertConversation(t, requests[1].Messages, []exchange{
+		{role: "user", text: "call a tool twice"},
+		{role: "user", text: "carry on"},
+	})
+}

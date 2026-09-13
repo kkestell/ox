@@ -82,7 +82,7 @@
       [repository rough-edges review](reviews/2026-09-13-003-repository-rough-edges-review.md)
       and
       [full-codebase testing review](reviews/2026-09-13-002-full-codebase-testing-review.md)
-  - [ ] Harden turn finalization and cancellation history for malformed or
+  - [x] Harden turn finalization and cancellation history for malformed or
         partial provider tool calls
   - [ ] Reconcile OpenRouter and MCP catalog freshness with bounded refresh cost
   - [ ] Stabilize the required gate and complete shipped-process and evaluation

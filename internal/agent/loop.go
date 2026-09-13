@@ -177,8 +177,11 @@ func (a *Agent) runFrom(ctx context.Context, run turnRun, start turnStart) loopO
 				providerResponseBytes(completion),
 			)
 			if err != nil {
+				// An unfinished tool call is not a call this turn made, so it is
+				// dropped. The text and reasoning around it are already on the
+				// client's screen and have to stay in history.
 				if (active.cancelledByClient.Load() || errors.Is(err, context.Canceled)) &&
-					completion != nil && len(completion.ToolCalls) == 0 &&
+					completion != nil &&
 					(completion.Text != "" || completion.Reasoning != "" || completion.Usage != nil) {
 					if commitErr := a.commit(value, recordModelExchange, modelExchangeRecord{
 						TurnID: active.turnID, AnswerID: answerID, ThoughtID: thoughtID,
@@ -239,8 +242,13 @@ func (a *Agent) runFrom(ctx context.Context, run turnRun, start turnStart) loopO
 		}
 
 		if suspended == nil {
+			// Tool-call identity is provider output, so rejecting it fails this
+			// turn rather than leaving the session with a turn it can never
+			// close.
 			if err := validateToolCallIDs(value, completion.ToolCalls); err != nil {
-				return loopOutcome{err: fmt.Errorf("validate tool calls: %w", err)}
+				return a.finishFailed(
+					value, active, events, fmt.Errorf("validate tool calls: %w", err),
+				)
 			}
 			suspended = &suspendedModelExchangeRecord{
 				TurnID: active.turnID, AnswerID: answerID, ThoughtID: thoughtID,
