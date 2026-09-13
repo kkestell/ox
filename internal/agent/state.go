@@ -30,6 +30,7 @@ const (
 	recordOptionChanged   = "session_config_option_changed"
 	recordTodoChanged     = "todo_replaced"
 	recordProviderStarted = "provider_request_started"
+	recordSubagentUsage   = "subagent_model_usage"
 	recordCompaction      = "model_context_compacted"
 	recordUserMessage     = "user_message"
 	recordExchangePaused  = "suspended_model_exchange"
@@ -114,6 +115,13 @@ type todoChanged struct {
 type providerRequestStarted struct {
 	TurnID string `json:"turnId"`
 	Count  int    `json:"count"`
+}
+
+type subagentUsageRecord struct {
+	TurnID     string            `json:"turnId"`
+	SubagentID string            `json:"subagentId"`
+	Usage      *openrouter.Usage `json:"usage"`
+	Occupancy  int               `json:"occupancy"`
 }
 
 type compactionRecord struct {
@@ -412,7 +420,7 @@ func validateRecordEnvelope(record sessionRecord, previous uint64) error {
 	}
 	switch record.Type {
 	case recordSessionCreated, recordConfigChanged, recordOptionChanged, recordTodoChanged,
-		recordProviderStarted, recordCompaction, recordUserMessage,
+		recordProviderStarted, recordSubagentUsage, recordCompaction, recordUserMessage,
 		recordExchangePaused, recordPermissionOpen, recordPermissionRetry,
 		recordPermissionDone, recordToolStarted, recordToolCompleted,
 		recordModelExchange, recordTurnFinished, recordCheckpoint:
@@ -513,7 +521,7 @@ func restoreCheckpoint(record, previous sessionRecord) (durableState, error) {
 			return durableState{}, fmt.Errorf("checkpoint todo: %w", err)
 		}
 	}
-	if projection.TurnRequests < 0 || projection.TurnRequests > maxTurnRequests {
+	if projection.TurnRequests < 0 {
 		return durableState{}, errors.New("checkpoint turn request count is invalid")
 	}
 	if projection.Occupancy < 0 {
@@ -832,10 +840,20 @@ func (s *durableState) apply(record sessionRecord) error {
 			return err
 		}
 		if value.TurnID == "" || value.TurnID != s.openTurn ||
-			value.Count != s.turnRequests+1 || value.Count > maxTurnRequests {
-			return errors.New("provider request does not advance the open turn allowance")
+			value.Count != s.turnRequests+1 {
+			return errors.New("provider request does not advance the open turn count")
 		}
 		s.turnRequests = value.Count
+	case recordSubagentUsage:
+		var value subagentUsageRecord
+		if err := decodeRecord(record.Data, &value); err != nil {
+			return err
+		}
+		if value.TurnID == "" || value.TurnID != s.openTurn ||
+			value.SubagentID == "" || value.Usage == nil || value.Occupancy < 0 {
+			return errors.New("subagent usage has no matching open turn")
+		}
+		s.addUsage(value.Usage)
 	case recordCompaction:
 		if s.suspended != nil {
 			return errors.New("model context compacted with an unresolved tool group")
@@ -1023,7 +1041,7 @@ func (s *durableState) apply(record sessionRecord) error {
 			s.history = cloneMessages(s.openTurnBase)
 		}
 		switch value.Kind {
-		case "completed", "cancelled", "interrupted", "failed", "refusal", "request_limit":
+		case "completed", "cancelled", "interrupted", "failed", "refusal":
 		default:
 			return fmt.Errorf("unknown turn outcome %q", value.Kind)
 		}
@@ -1317,7 +1335,7 @@ func (s *durableState) validateSuspendedExchange(value suspendedModelExchangeRec
 	if value.FinishReason != "tool_calls" || len(value.ToolCalls) == 0 {
 		return errors.New("suspended model exchange requires tool calls")
 	}
-	if value.RequestCount < 1 || value.RequestCount > maxTurnRequests {
+	if value.RequestCount < 1 {
 		return errors.New("suspended model exchange request count is invalid")
 	}
 	if len(value.Decisions) != 0 || value.Pending != nil {
@@ -1568,6 +1586,26 @@ func (a *Agent) replay(s durableState) ([]any, error) {
 				SessionUpdate: acp.SessionUpdatePlan,
 				Entries:       clonePlanEntries(value.Entries),
 			})
+		case recordSubagentUsage:
+			var value subagentUsageRecord
+			if err := decodeRecord(record.Data, &value); err != nil {
+				return nil, err
+			}
+			if value.Usage != nil {
+				cost += value.Usage.Cost
+			}
+			effective := configuration
+			if turnConfiguration.Settings.Model != "" {
+				effective = turnConfiguration
+			}
+			if value.Occupancy > 0 && effective.ContextWindow > 0 {
+				updates = append(updates, acp.UsageUpdate{
+					SessionUpdate: acp.SessionUpdateUsageUpdate,
+					Used:          uint64(value.Occupancy),
+					Size:          uint64(effective.ContextWindow),
+					Cost:          &acp.Cost{Amount: cost, Currency: "USD"},
+				})
+			}
 		case recordCompaction:
 			var value compactionRecord
 			if err := decodeRecord(record.Data, &value); err != nil {
@@ -1731,7 +1769,7 @@ func replayToolCall(
 }
 
 func outcomeUpdate(value turnFinishedRecord) any {
-	if value.Kind == "completed" || value.Kind == "refusal" || value.Kind == "request_limit" {
+	if value.Kind == "completed" || value.Kind == "refusal" {
 		return nil
 	}
 	text := value.Message

@@ -98,7 +98,7 @@ func invoke(t *testing.T, tool agent.Tool, invocation agent.Invocation) (string,
 
 func TestAllDeclaresValidSchemasAndClassifications(t *testing.T) {
 	tools := All()
-	if len(tools) != 13 {
+	if len(tools) != 19 {
 		t.Fatalf("tool count = %d", len(tools))
 	}
 	for _, tool := range tools {
@@ -115,6 +115,7 @@ func TestAllDeclaresValidSchemasAndClassifications(t *testing.T) {
 		webFetch := tool.Name == "web_fetch"
 		memorySearch := tool.Name == "memory_search"
 		memoryMutation := tool.Name == "memory_write" || tool.Name == "memory_delete"
+		subagent := strings.HasPrefix(tool.Name, "subagent_")
 		if mutating && (tool.Kind != acp.ToolKindEdit ||
 			tool.Approval != agent.ApprovalAsk || tool.ParallelSafe) {
 			t.Errorf("%s mutation classification = %+v", tool.Name, tool)
@@ -146,11 +147,79 @@ func TestAllDeclaresValidSchemasAndClassifications(t *testing.T) {
 			tool.Approval != agent.ApprovalAsk || tool.ParallelSafe || tool.PlanMode) {
 			t.Errorf("%s classification = %+v", tool.Name, tool)
 		}
-		if !mutating && !shell && !todo && !question && !webFetch &&
+		if subagent && (tool.Kind != acp.ToolKindOther || tool.Approval != agent.ApprovalNone ||
+			!tool.PlanMode || tool.Scope == agent.ToolScopeAll) {
+			t.Errorf("%s classification = %+v", tool.Name, tool)
+		}
+		if !mutating && !shell && !todo && !question && !webFetch && !subagent &&
 			!memorySearch && !memoryMutation &&
 			(!tool.ParallelSafe || tool.Approval != agent.ApprovalNone) {
 			t.Errorf("%s read-only classification = %+v", tool.Name, tool)
 		}
+	}
+}
+
+func TestSubagentToolsDispatchStrictCoordinationCallbacks(t *testing.T) {
+	started := false
+	invocation := testInvocation(t, `{"name":" scout ","task":" inspect this "}`)
+	invocation.StartSubagent = func(name, task string) (agent.SubagentSnapshot, error) {
+		started = name == "scout" && task == "inspect this"
+		return agent.SubagentSnapshot{ID: "child-1", Name: name, Status: "running"}, nil
+	}
+	output, err := invoke(t, toolNamed(t, "subagent_start"), invocation)
+	if err != nil || !started || !strings.Contains(output, `"id":"child-1"`) {
+		t.Fatalf("start output = %q, called = %t, error = %v", output, started, err)
+	}
+
+	invocation.Arguments = json.RawMessage(`{"id":" child-1 ","message":" follow up "}`)
+	invocation.SendSubagent = func(id, message string) (agent.SubagentSnapshot, error) {
+		if id != "child-1" || message != "follow up" {
+			t.Fatalf("send = %q, %q", id, message)
+		}
+		return agent.SubagentSnapshot{ID: id, Status: "running"}, nil
+	}
+	if _, err := invoke(t, toolNamed(t, "subagent_send"), invocation); err != nil {
+		t.Fatal(err)
+	}
+
+	invocation.Arguments = json.RawMessage(`{"ids":["child-1"]}`)
+	invocation.WaitSubagents = func(_ context.Context, ids []string) ([]agent.SubagentSnapshot, error) {
+		if !reflect.DeepEqual(ids, []string{"child-1"}) {
+			t.Fatalf("wait IDs = %#v", ids)
+		}
+		return []agent.SubagentSnapshot{{ID: "child-1", Status: "completed", Result: "done"}}, nil
+	}
+	output, err = invoke(t, toolNamed(t, "subagent_wait"), invocation)
+	if err != nil || !strings.Contains(output, `"result":"done"`) {
+		t.Fatalf("wait output = %q, error = %v", output, err)
+	}
+
+	invocation.Arguments = json.RawMessage(`{"message":" finding "}`)
+	reported := ""
+	invocation.ReportToParent = func(message string) error { reported = message; return nil }
+	if _, err := invoke(t, toolNamed(t, "subagent_report"), invocation); err != nil || reported != "finding" {
+		t.Fatalf("report = %q, error = %v", reported, err)
+	}
+}
+
+func TestSubagentToolsRejectMalformedArgumentsAndUnavailableScope(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		arguments string
+	}{
+		{name: "subagent_start", arguments: `{"name":"","task":"work"}`},
+		{name: "subagent_start", arguments: `{"name":"child","task":"work","extra":true}`},
+		{name: "subagent_send", arguments: `{"id":"child","message":" "}`},
+		{name: "subagent_stop", arguments: `{}`},
+		{name: "subagent_wait", arguments: `{"ids":[""]}`},
+		{name: "subagent_report", arguments: `{"message":"ok"}`},
+	} {
+		t.Run(test.name+test.arguments, func(t *testing.T) {
+			invocation := testInvocation(t, test.arguments)
+			if _, err := invoke(t, toolNamed(t, test.name), invocation); err == nil {
+				t.Fatal("invalid arguments were accepted")
+			}
+		})
 	}
 }
 

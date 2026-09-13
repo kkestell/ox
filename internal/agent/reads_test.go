@@ -22,3 +22,28 @@ func TestFileReadEvidenceClearsOnAWrite(t *testing.T) {
 		}
 	}
 }
+
+func TestFileMutationClearsEveryLiveAgentReadScope(t *testing.T) {
+	value := &session{}
+	primary := value.primaryFileReads()
+	first, releaseFirst := value.childFileReads()
+	defer releaseFirst()
+	second, releaseSecond := value.childFileReads()
+	defer releaseSecond()
+	primary.Record("primary.txt", "one")
+	first.Record("first.txt", "two")
+	second.Record("second.txt", "three")
+
+	first.Clear()
+	for name, reads := range map[string]FileReads{
+		"primary": primary,
+		"first":   first,
+		"second":  second,
+	} {
+		for _, path := range []string{"primary.txt", "first.txt", "second.txt"} {
+			if _, ok := reads.Hash(path); ok {
+				t.Fatalf("%s retained %s after a sibling mutation", name, path)
+			}
+		}
+	}
+}

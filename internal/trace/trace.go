@@ -18,6 +18,7 @@ type ProviderKind string
 const (
 	ProviderPrimary    ProviderKind = "primary"
 	ProviderCompaction ProviderKind = "compaction"
+	ProviderSubagent   ProviderKind = "subagent"
 )
 
 type Usage struct {

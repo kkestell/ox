@@ -67,6 +67,11 @@
   - [x] Add focused configuration-option error coverage (F42)
   - [x] Add focused MCP and trace error-path coverage (F44)
   - [x] Replace wall-clock test heuristics with deterministic signals (F45)
+- [x] Concurrent subagents
+  - [x] Add turn-scoped concurrent children with lifecycle control and
+        bidirectional messaging
+  - [x] Remove model-request and tool-loop iteration ceilings from primary and
+        child agents
 - [ ] Language-server context
   - [x] Add the lazy LSP process adapter
   - [ ] Integrate language tools with session activation

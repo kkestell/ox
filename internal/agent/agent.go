@@ -67,6 +67,7 @@ type Agent struct {
 	settingsPath         string
 	client               Model
 	primaryTools         toolSet
+	subagentTools        toolSet
 	store                *fileStore
 	memory               *memoryStore
 	trace                diagnostictrace.Trace
@@ -96,11 +97,16 @@ func New(config Config) (*Agent, error) {
 		if tool.Label != nil {
 			return nil, fmt.Errorf("tool %q cannot set Label", tool.Name)
 		}
+		if tool.Scope > ToolScopeSubagent {
+			return nil, fmt.Errorf("tool %q has an invalid scope", tool.Name)
+		}
 	}
-	primaryTools, err := newToolSet(tools)
+	allTools, err := newToolSet(tools)
 	if err != nil {
 		return nil, err
 	}
+	primaryTools := scopedTools(allTools, false)
+	subagentTools := scopedTools(allTools, true)
 	store, err := newFileStore(config.SessionDir, config.Logger)
 	if err != nil {
 		return nil, err
@@ -118,11 +124,26 @@ func New(config Config) (*Agent, error) {
 		settingsPath:  config.SettingsPath,
 		client:        config.Client,
 		primaryTools:  primaryTools,
+		subagentTools: subagentTools,
 		store:         store,
 		memory:        memory,
 		trace:         config.Trace,
 		sessions:      make(map[string]*session),
 	}, nil
+}
+
+func scopedTools(source toolSet, subagent bool) toolSet {
+	tools := slices.DeleteFunc(slices.Clone(source.tools), func(tool Tool) bool {
+		if subagent {
+			return tool.Scope == ToolScopePrimary
+		}
+		return tool.Scope == ToolScopeSubagent
+	})
+	result, err := newToolSet(tools)
+	if err != nil {
+		panic(err)
+	}
+	return result
 }
 
 func newToolSet(tools []Tool) (toolSet, error) {
@@ -321,7 +342,7 @@ func (a *Agent) NewSession(
 	if err != nil {
 		return acp.NewSessionResponse{}, err
 	}
-	bundle, primaryTools, mcpTools, err := a.activateMCP(
+	bundle, primaryTools, subagentTools, mcpTools, err := a.activateMCP(
 		ctx, cwd, request.MCPServers,
 	)
 	if err != nil {
@@ -368,7 +389,7 @@ func (a *Agent) NewSession(
 	value := &session{
 		id: id, state: state, log: log,
 		activationBase: cloneConfiguration(base), models: models,
-		mcp: bundle, primaryTools: primaryTools,
+		mcp: bundle, primaryTools: primaryTools, subagentTools: subagentTools,
 	}
 	a.sessionsMu.Lock()
 	a.sessions[id] = value
@@ -655,7 +676,7 @@ func (a *Agent) activateSession(
 			"session has a pending permission request; load it before resuming",
 		)
 	}
-	bundle, primaryTools, mcpTools, err := a.activateMCP(
+	bundle, primaryTools, subagentTools, mcpTools, err := a.activateMCP(
 		ctx, canonicalCWD, mcpServers,
 	)
 	if err != nil {
@@ -663,6 +684,7 @@ func (a *Agent) activateSession(
 	}
 	value.mcp = bundle
 	value.primaryTools = primaryTools
+	value.subagentTools = subagentTools
 	defer func() {
 		if !activated {
 			_ = bundle.Close()
@@ -1070,6 +1092,16 @@ func (a *Agent) negotiatedTools() toolSet {
 		return a.primaryTools
 	}
 	return toolsWithoutForm(a.primaryTools)
+}
+
+func (a *Agent) negotiatedSubagentTools() toolSet {
+	a.clientCapabilitiesMu.RLock()
+	form := a.clientForm
+	a.clientCapabilitiesMu.RUnlock()
+	if form {
+		return a.subagentTools
+	}
+	return toolsWithoutForm(a.subagentTools)
 }
 
 func toolsWithoutForm(source toolSet) toolSet {
@@ -1693,6 +1725,7 @@ type session struct {
 	models         []openrouter.Model
 	mcp            *mcp.Bundle
 	primaryTools   toolSet
+	subagentTools  toolSet
 	// configMu serializes a configuration change against the user-message commit
 	// that freezes the turn configuration, so a turn either starts before or
 	// after a change and never straddles it.
@@ -1706,6 +1739,8 @@ type session struct {
 	configChanges sync.WaitGroup
 	grants        map[string][]string
 	reads         fileReads
+	readScopesMu  sync.Mutex
+	childReads    map[*fileReads]struct{}
 	// approvalMu admits one permission request at a time, so parallel tool calls
 	// cannot present competing prompts for the same session.
 	approvalMu sync.Mutex
@@ -1798,6 +1833,7 @@ type activeTurn struct {
 	cancelledByClient atomic.Bool
 	done              chan struct{}
 	trace             diagnostictrace.Turn
+	subagents         *subagentGroup
 }
 
 func (s *session) claim(

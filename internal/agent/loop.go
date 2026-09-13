@@ -20,13 +20,9 @@ import (
 	"github.com/kkestell/ox/internal/workspace"
 )
 
-const maxTurnRequests = 16
-
 // toolCancelledBeforeStart is the result recorded for a tool call the turn never
 // dispatched, so the model sees why the call has no output.
 const toolCancelledBeforeStart = "tool call cancelled before start"
-
-var errTurnRequestLimit = errors.New("turn provider request limit reached")
 
 type loopOutcome struct {
 	response acp.PromptResponse
@@ -63,6 +59,8 @@ type turnRun struct {
 	fileSystem ClientFileSystem
 	terminal   ClientTerminal
 	events     chan<- event
+	subagents  *subagentGroup
+	subagentID string
 }
 
 // turnStart says where a turn begins. A new turn starts at its first provider
@@ -75,7 +73,7 @@ type turnStart struct {
 }
 
 func (a *Agent) run(ctx context.Context, run turnRun) loopOutcome {
-	return a.runFrom(ctx, run, turnStart{request: 1})
+	return a.runWithSubagents(ctx, run, turnStart{request: 1})
 }
 
 func (a *Agent) resume(ctx context.Context, run turnRun) loopOutcome {
@@ -83,9 +81,17 @@ func (a *Agent) resume(ctx context.Context, run turnRun) loopOutcome {
 	if pending == nil {
 		panic("resume called without a suspended model exchange")
 	}
-	return a.runFrom(ctx, run, turnStart{
+	return a.runWithSubagents(ctx, run, turnStart{
 		request: pending.RequestCount, pending: pending, reissue: true,
 	})
+}
+
+func (a *Agent) runWithSubagents(ctx context.Context, run turnRun, start turnStart) loopOutcome {
+	group := newSubagentGroup(a, ctx, run)
+	run.subagents = group
+	run.active.subagents = group
+	defer group.close()
+	return a.runFrom(ctx, run, start)
 }
 
 func (a *Agent) runFrom(ctx context.Context, run turnRun, start turnStart) loopOutcome {
@@ -97,7 +103,7 @@ func (a *Agent) runFrom(ctx context.Context, run turnRun, start turnStart) loopO
 	// The fingerprint hashes the turn's frozen configuration, which no request in
 	// this loop can change, so it is computed once rather than per request.
 	fingerprint := a.prefixFingerprint(value)
-	for requestCount := startRequest; requestCount <= maxTurnRequests; requestCount++ {
+	for requestCount := startRequest; ; requestCount++ {
 		if ctx.Err() != nil {
 			return a.finishCancelled(value, active, events)
 		}
@@ -108,16 +114,6 @@ func (a *Agent) runFrom(ctx context.Context, run turnRun, start turnStart) loopO
 			thoughtID = suspended.ThoughtID
 			completion = suspended.completion()
 		} else {
-			if !providerRequestAvailable(value) {
-				if finishErr := a.finishTurn(
-					value, active, "request_limit", acp.StopReasonMaxTurnRequests, "", events,
-				); finishErr != nil {
-					return loopOutcome{err: finishErr}
-				}
-				return loopOutcome{response: acp.PromptResponse{
-					StopReason: acp.StopReasonMaxTurnRequests, Usage: value.usage(),
-				}}
-			}
 			var err error
 			answerID, err = randomID()
 			if err != nil {
@@ -151,18 +147,8 @@ func (a *Agent) runFrom(ctx context.Context, run turnRun, start turnStart) loopO
 				events <- *compactionUpdate
 			}
 			budgetRequest, err := a.reserveProviderRequest(value)
-			if errors.Is(err, errTurnRequestLimit) {
-				if finishErr := a.finishTurn(
-					value, active, "request_limit", acp.StopReasonMaxTurnRequests, "", events,
-				); finishErr != nil {
-					return loopOutcome{err: finishErr}
-				}
-				return loopOutcome{response: acp.PromptResponse{
-					StopReason: acp.StopReasonMaxTurnRequests, Usage: value.usage(),
-				}}
-			}
 			if err != nil {
-				return loopOutcome{err: fmt.Errorf("persist provider request allowance: %w", err)}
+				return loopOutcome{err: fmt.Errorf("persist provider request start: %w", err)}
 			}
 			a.logger.Info(
 				"starting model request",
@@ -326,45 +312,22 @@ func (a *Agent) runFrom(ctx context.Context, run turnRun, start turnStart) loopO
 		if ctx.Err() != nil {
 			return a.finishFailed(value, active, events, ctx.Err())
 		}
-		if requestCount == maxTurnRequests {
-			if err := a.finishTurn(
-				value,
-				active,
-				"request_limit",
-				acp.StopReasonMaxTurnRequests,
-				"",
-				events,
-			); err != nil {
-				return loopOutcome{err: err}
-			}
-			return loopOutcome{response: acp.PromptResponse{
-				StopReason: acp.StopReasonMaxTurnRequests,
-				Usage:      value.usage(),
-			}}
-		}
 	}
-	panic("unreachable")
 }
 
 func (a *Agent) reserveProviderRequest(value *session) (int, error) {
 	value.stateMu.Lock()
 	defer value.stateMu.Unlock()
-	if value.state.turnRequests >= maxTurnRequests {
-		return 0, errTurnRequestLimit
-	}
 	next := value.state.turnRequests + 1
+	if next <= value.state.turnRequests {
+		return 0, errors.New("provider request count overflow")
+	}
 	if err := a.commitLocked(value, recordProviderStarted, providerRequestStarted{
 		TurnID: value.state.openTurn, Count: next,
 	}); err != nil {
 		return 0, err
 	}
 	return next, nil
-}
-
-func providerRequestAvailable(value *session) bool {
-	value.stateMu.Lock()
-	defer value.stateMu.Unlock()
-	return value.state.turnRequests < maxTurnRequests
 }
 
 func (s *suspendedModelExchangeRecord) completion() *openrouter.Completion {
@@ -478,6 +441,9 @@ func (a *Agent) finishTurn(
 	message string,
 	events chan<- event,
 ) error {
+	if active.subagents != nil {
+		active.subagents.close()
+	}
 	messageID, err := randomID()
 	if err != nil {
 		return err
@@ -1222,6 +1188,18 @@ func (a *Agent) executeOne(
 				"path", path,
 			)
 		},
+	}
+	if run.subagents != nil {
+		invocation.StartSubagent = run.subagents.start
+		invocation.SendSubagent = run.subagents.send
+		invocation.StopSubagent = run.subagents.stop
+		invocation.ListSubagents = run.subagents.list
+		invocation.WaitSubagents = run.subagents.waitFor
+		if run.subagentID != "" {
+			invocation.ReportToParent = func(message string) error {
+				return run.subagents.report(run.subagentID, message)
+			}
+		}
 	}
 	if tool.Name == "todo" {
 		invocation.ReplaceTodo = func(entries []acp.PlanEntry) error {

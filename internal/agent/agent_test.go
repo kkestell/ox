@@ -873,62 +873,6 @@ func TestPrefixFingerprintIsStableAndSensitiveToToolOrderAndSettings(t *testing.
 	}
 }
 
-func TestLoopStopsAtMaximumModelRequestsWithReplayableHistory(t *testing.T) {
-	model := &repeatingToolModel{}
-	instance, err := New(Config{
-		Logger:        discardLogger(),
-		ModelOverride: "model",
-		Client:        model,
-		Tools: []Tool{{
-			Name:        "again",
-			Approval:    ApprovalNone,
-			InputSchema: json.RawMessage(`{"type":"object"}`),
-			Execute: func(
-				context.Context,
-				Invocation,
-			) (string, error) {
-				return "ok", nil
-			},
-		}},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	value := durableTestSession(t, instance, requestConfiguration{
-		Settings:      settings.Resolved{Model: "model"},
-		ContextWindow: 1_000_000,
-		Tools:         instance.primaryTools.modelTools,
-	}, "turn-max")
-	events := make(chan event)
-	var wait sync.WaitGroup
-	wait.Add(1)
-	go func() {
-		defer wait.Done()
-		for range events {
-		}
-	}()
-	outcome := instance.run(context.Background(), turnRun{
-		session: value,
-		active:  &activeTurn{turnID: "turn-max"},
-		events:  events,
-	})
-	close(events)
-	wait.Wait()
-
-	if outcome.err != nil {
-		t.Fatal(outcome.err)
-	}
-	if outcome.response.StopReason != acp.StopReasonMaxTurnRequests {
-		t.Fatalf("stop reason = %q", outcome.response.StopReason)
-	}
-	if model.requests != maxTurnRequests {
-		t.Fatalf("model requests = %d", model.requests)
-	}
-	if len(value.state.history) != 1+2*maxTurnRequests {
-		t.Fatalf("history length = %d", len(value.state.history))
-	}
-}
-
 func TestLoopDoesNotDispatchCallsFromIncompleteCompletions(t *testing.T) {
 	for _, test := range []struct {
 		name       string
@@ -2146,10 +2090,6 @@ func ephemeralToolSession(t *testing.T) *session {
 	}
 }
 
-type repeatingToolModel struct {
-	requests int
-}
-
 // staticCompletionModel answers every request with one completion. entry and
 // entryErr stand in for the catalog, so a test can present a model that declares
 // reasoning, one that does not, or an id the catalog does not know.
@@ -2196,27 +2136,6 @@ func (m *staticCompletionModel) ModelInfo(
 	if m.entry != nil {
 		return m.entry, nil
 	}
-	return testModel(id, 100), nil
-}
-
-func (m *repeatingToolModel) Stream(
-	context.Context,
-	openrouter.Request,
-	func(openrouter.Delta),
-) (*openrouter.Completion, error) {
-	m.requests++
-	return &openrouter.Completion{
-		ToolCalls: []openrouter.ToolCall{
-			toolCall(fmt.Sprintf("call-%d", m.requests), "again"),
-		},
-		FinishReason: "tool_calls",
-	}, nil
-}
-
-func (*repeatingToolModel) ModelInfo(
-	_ context.Context,
-	id string,
-) (*openrouter.Model, error) {
 	return testModel(id, 100), nil
 }
 

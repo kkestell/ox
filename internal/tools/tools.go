@@ -11,7 +11,8 @@ import (
 )
 
 func All() []agent.Tool {
-	return []agent.Tool{
+	coordination := subagentTools()
+	return append(coordination, []agent.Tool{
 		{
 			Name:         "question",
 			Description:  questionDescription,
@@ -41,6 +42,7 @@ func All() []agent.Tool {
 			Approval:     agent.ApprovalNone,
 			ParallelSafe: false,
 			PlanMode:     true,
+			Scope:        agent.ToolScopePrimary,
 			Execute:      executeTodo,
 		},
 		{
@@ -143,7 +145,7 @@ func All() []agent.Tool {
 			Covered:      shellCovered,
 			Execute:      executeShell,
 		},
-	}
+	}...)
 }
 
 func decodeArgs(arguments json.RawMessage, target any) error {

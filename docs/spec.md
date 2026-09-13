@@ -44,8 +44,43 @@ durably waiting for permission. A refused prompt does not enter conversation
 history.
 
 Cancelling a session stops its active provider request, permission wait, and
-running tools. Output already streamed to the client remains part of the
-session. Cancelling an idle or unknown session has no effect.
+running tools and subagents. Output already streamed to the client remains part
+of the session. Cancelling an idle or unknown session has no effect.
+
+## Concurrent subagents
+
+In either mode, the primary agent may start a child on a complete standalone
+task and continue its own tool loop while that child runs. A turn may start at
+most eight children and run at most four at once. Names are unique within the
+turn. Children share the turn's frozen model and provider settings, workspace,
+session permission grants, executor selection, skills, memory, and MCP
+activation. They receive their own private conversation and read evidence. Every
+successful file mutation invalidates read evidence held by the primary agent and
+all live children, and tools that are unsafe to overlap remain serialized across
+the whole session.
+
+The primary agent can send a message only while a child is running. Messages
+join the child's conversation before its next provider request. When one arrives
+during a response that would otherwise finish the child, Ox continues the child
+with that message instead of dropping it. A child can report bounded interim
+messages, and its terminal state retains either its final answer or failure. The
+primary agent can inspect all children, wait without polling until selected
+children report or finish, and request cancellation. A stopped child reports
+`stopping` until its loop exits and then `cancelled`.
+
+Children have the ordinary tools allowed by the current mode, except todo and
+subagent lifecycle tools; they receive a child-only reporting tool and cannot
+create children. Coordination calls and child tool activity appear as ordinary
+live ACP tool updates. Child conversations and child tool updates are not added
+to durable transcript history and are never replayed or resumed. Only the
+primary conversation's coordination calls and results are retained. Primary and
+child loops have no model-request or tool-loop iteration limit. Child usage is
+recorded without its content.
+
+Subagents belong to one prompt turn. Finishing or cancelling the primary turn,
+closing the session, losing the ACP request, or exiting the process cancels and
+waits for every live child. An interrupted child is not redispatched; any file,
+shell, MCP, or other external effect it completed may remain visible.
 
 ## Workspace operations
 
@@ -159,10 +194,10 @@ modality settings rather than silently dropping them. Retained conversation
 content must be usable by the new model; otherwise the change is rejected.
 
 `code` uses the ordinary permission-gated tools. `plan` permits file discovery
-and reads, instructions and skills, todo, form questions, and read-only LSP
-queries. It excludes shell, file mutations, memory writes, and MCP tools whose
-effects Ox cannot enforce. Web fetch retains its permission gate. Changing mode
-never grants permissions or widens an existing grant.
+and reads, instructions and skills, todo, subagent coordination, form questions,
+and read-only LSP queries. It excludes shell, file mutations, memory writes, and
+MCP tools whose effects Ox cannot enforce. Web fetch retains its permission
+gate. Changing mode never grants permissions or widens an existing grant.
 
 `session/set_config_option` validates and persists the entire resulting state
 before responding with the complete option list and emitting
@@ -211,14 +246,14 @@ and uses the existing repository-mandated model. Ox itself does not load `.env`.
 
 ## Context continuity
 
-Before each provider request, including tool continuations and child requests,
-Ox budgets the full request plus the requested output against the selected
-model's context window. Estimates include the pending prompt, instructions, tool
-schemas, and multimodal content. When exact token counts are unavailable, Ox
-uses conservative estimates and does not claim exact occupancy. Occupancy is
-always a token count: Ox derives one from the serialized request at a fixed,
-deliberately low bytes-per-token ratio, and replaces it with the provider's
-reported prompt tokens once a turn reports them.
+Before each provider request, including tool continuations and subagent
+requests, Ox budgets the full request plus the requested output against the
+selected model's context window. Estimates include the pending prompt,
+instructions, tool schemas, and multimodal content. When exact token counts are
+unavailable, Ox uses conservative estimates and does not claim exact occupancy.
+Occupancy is always a token count: Ox derives one from the serialized request at
+a fixed, deliberately low bytes-per-token ratio, and replaces it with the
+provider's reported prompt tokens once a turn reports them.
 
 Compaction preserves the system instructions, the first user request, and
 complete recent assistant/tool groups. It never separates a tool call from its

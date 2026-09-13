@@ -17,6 +17,7 @@ type Tool struct {
 	ParallelSafe bool
 	PlanMode     bool
 	RequiresForm bool
+	Scope        ToolScope
 	Title        func(json.RawMessage) string
 	Label        func(json.RawMessage) string
 	// Suggest and Covered narrow allow-always grants to tool-defined rules.
@@ -25,6 +26,16 @@ type Tool struct {
 	Covered func([]string, json.RawMessage) bool
 	Execute func(context.Context, Invocation) (string, error)
 }
+
+// ToolScope limits a tool to one side of subagent coordination. The zero value
+// makes an ordinary tool available to both primary and child agents.
+type ToolScope uint8
+
+const (
+	ToolScopeAll ToolScope = iota
+	ToolScopePrimary
+	ToolScopeSubagent
+)
 
 type toolSet struct {
 	tools      []Tool
@@ -49,22 +60,28 @@ const (
 )
 
 type Invocation struct {
-	Arguments    json.RawMessage
-	SessionID    string
-	Root         string
-	SpillDir     string
-	CallID       string
-	FileReads    FileReads
-	FileSystem   ClientFileSystem
-	Terminal     ClientTerminal
-	ReplaceTodo  func([]acp.PlanEntry) error
-	LoadSkill    func(string) (string, error)
-	SearchMemory func(string) ([]MemoryFact, error)
-	WriteMemory  func(string, string, string) (MemoryFact, error)
-	DeleteMemory func(string) error
-	AskQuestion  func(context.Context, acp.CreateElicitationRequest) (acp.CreateElicitationResponse, error)
-	Emit         func(string)
-	ReportSpill  func(string)
+	Arguments      json.RawMessage
+	SessionID      string
+	Root           string
+	SpillDir       string
+	CallID         string
+	FileReads      FileReads
+	FileSystem     ClientFileSystem
+	Terminal       ClientTerminal
+	ReplaceTodo    func([]acp.PlanEntry) error
+	LoadSkill      func(string) (string, error)
+	SearchMemory   func(string) ([]MemoryFact, error)
+	WriteMemory    func(string, string, string) (MemoryFact, error)
+	DeleteMemory   func(string) error
+	AskQuestion    func(context.Context, acp.CreateElicitationRequest) (acp.CreateElicitationResponse, error)
+	StartSubagent  func(string, string) (SubagentSnapshot, error)
+	SendSubagent   func(string, string) (SubagentSnapshot, error)
+	StopSubagent   func(string) (SubagentSnapshot, error)
+	ListSubagents  func() []SubagentSnapshot
+	WaitSubagents  func(context.Context, []string) ([]SubagentSnapshot, error)
+	ReportToParent func(string) error
+	Emit           func(string)
+	ReportSpill    func(string)
 }
 
 type ClientFileSystem struct {

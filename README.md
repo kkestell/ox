@@ -28,6 +28,8 @@ Built-in tools:
 - `question` — ask the user a question.
 - `skill` — load a workspace skill.
 - `todo` — maintain the session plan.
+- `subagent_start`, `subagent_send`, `subagent_stop`, `subagent_list`, and
+  `subagent_wait` — coordinate concurrent turn-scoped child agents.
 - `read_file`, `glob`, and `grep` — inspect the workspace.
 - `write_file` and `edit_file` — change workspace files.
 - `shell` — run commands.

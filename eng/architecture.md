@@ -38,7 +38,7 @@ capabilities rather than client-specific side channels.
 - Activation inputs and each running turn are immutable. Explicit session
   selections are durable and affect subsequent turns.
 - Each session admits at most one prompt turn at a time. Different sessions may
-  run concurrently.
+  run concurrently. A turn may own several live child loops.
 - Session history preserves exactly the conversation the model should see on the
   next turn, including streamed text retained after client cancellation and
   excluding a refused prompt.
@@ -60,7 +60,8 @@ The implemented package layout assigns one owner to each boundary:
   does not own session state or provider translation.
 - `internal/agent` owns ACP method semantics, capability negotiation,
   authentication flow, durable sessions, prompt and tool orchestration,
-  permissions, replay, streaming updates, stop reasons, and cancellation.
+  turn-scoped subagent lifecycles and messaging, permissions, replay, streaming
+  updates, stop reasons, and cancellation.
 - `internal/openrouter` owns the provider vocabulary, HTTP boundary, SSE parser,
   retry policy, model catalog, and assembly of streamed provider responses.
 - `internal/mcp` owns MCP transport lifecycles, protocol negotiation, discovery,
@@ -193,6 +194,14 @@ restart. A checkpoint is a load-time shortcut rather than a durability
 requirement, so one is written only when it is no larger than the records it
 lets a load skip.
 
+The active turn owns an in-memory subagent group. Each child has a private
+conversation, inbox, report stream, cancellation scope, and read-evidence scope,
+while sharing the turn's immutable provider configuration, activation resources,
+permission grants, and session-wide exclusion lock. Coordination tools mutate
+only this group. Child loops are not sessions and do not own logs, recovery,
+configuration, or nested child groups. Ending the turn cancels and joins the
+group before the durable turn outcome is committed.
+
 An unfinished turn is closed as interrupted unless it has a durable pending
 permission request. `session/load` reissues such a request with the same
 tool-call identity and a new generation, ignores answers for older generations,
@@ -203,10 +212,11 @@ response is the completion signal.
 
 Turn execution stays within a JSON-RPC request lifecycle: ordinary turns run
 under `session/prompt`, and recovered turns run under `session/load`. The model
-and independent tools may run concurrently where their contracts allow it, while
-session mutation and conflicting tool calls remain serialized. Cancellation
-reaches provider streams, permission callbacks, and whole shell process groups.
-The resulting terminal state is persisted before the owning request returns.
+and independent tools or children may run concurrently where their contracts
+allow it, while session mutation and conflicting tool calls remain serialized.
+Cancellation reaches provider streams, child loops, permission callbacks, and
+whole shell process groups. The resulting primary terminal state is persisted
+before the owning request returns.
 
 Each claimed live turn has one diagnostic scope when tracing is enabled.
 Recovered work uses the original durable turn identifier, while replay of
@@ -235,6 +245,12 @@ no tools. The ordinary system prompt, tool declarations, first user message, and
 complete recent message groups remain outside the summary. Context occupancy is
 the last measured provider prompt size, or the estimated prompt size immediately
 after a durable compaction; token and cost totals remain cumulative.
+
+Primary and subagent loops have no model-request or tool-loop iteration limit.
+The primary loop durably records a monotonically increasing request count for
+recovery and diagnostics. Subagent response usage advances cumulative session
+totals through a content-free record, while its private conversation remains in
+memory only.
 
 Provider transport failures remain ordinary Go errors. ACP-visible stop reasons,
 refusal behavior, and durable history are decided by the agent, where the client
@@ -279,12 +295,14 @@ and tool catalogs form a stable prefix; transient state is explicit context.
 Prompt caching is an optimization and cannot affect history or request
 correctness.
 
-The log cannot commit an external effect atomically. Dispatch intent precedes
-execution, completion follows it, and a missing completion means the outcome may
-be unknown. Recovery may continue a never-dispatched permission wait but must
-not blindly retry a dispatched operation. This applies to sibling calls and
-child calls as well as top-level tools. A storage failure stops further session
-dispatch; a checkpoint cannot turn uncertain work into completed work.
+The log cannot commit an external effect atomically. For the primary loop,
+dispatch intent precedes execution, completion follows it, and a missing
+completion means the outcome may be unknown. Recovery may continue a
+never-dispatched permission wait but must not blindly retry a dispatched
+operation. Child conversations and tool activity are deliberately live-only: the
+log records their content-free provider usage but never reconstructs or
+redispatches them. A storage failure stops further session dispatch; a
+checkpoint cannot turn uncertain work into completed work.
 
 ## Extension boundaries
 

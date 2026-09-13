@@ -409,8 +409,8 @@ func compactionFixture(t *testing.T) ([]sessionRecord, openrouter.Message) {
 			Occupancy: 222,
 		}),
 		mustRecord(t, 8, recordTurnFinished, turnFinishedRecord{
-			TurnID: "second", Kind: "request_limit",
-			StopReason: acp.StopReasonMaxTokens,
+			TurnID: "second", Kind: "completed",
+			StopReason: acp.StopReasonEndTurn,
 		}),
 	}, summary
 }
@@ -1100,20 +1100,43 @@ func mustFold(t *testing.T, records []sessionRecord) durableState {
 	return state
 }
 
-func TestProviderRequestAllowanceIsBoundedAndCloned(t *testing.T) {
+func TestProviderRequestCountAdvancesAndIsCloned(t *testing.T) {
 	state := durableState{sequence: 1, openTurn: "turn"}
-	for count := 1; count <= maxTurnRequests; count++ {
-		if err := state.apply(mustRecord(t, uint64(count+1), recordProviderStarted, providerRequestStarted{
-			TurnID: "turn", Count: count,
-		})); err != nil {
-			t.Fatal(err)
-		}
+	if err := state.apply(mustRecord(t, 2, recordProviderStarted, providerRequestStarted{
+		TurnID: "turn", Count: 1,
+	})); err != nil {
+		t.Fatal(err)
+	}
+	cloned := state.clone()
+	if err := state.apply(mustRecord(t, 3, recordProviderStarted, providerRequestStarted{
+		TurnID: "turn", Count: 2,
+	})); err != nil {
+		t.Fatal(err)
+	}
+	if cloned.turnRequests != 1 || state.turnRequests != 2 {
+		t.Fatalf("request counts = clone %d, state %d", cloned.turnRequests, state.turnRequests)
+	}
+}
+
+func TestSubagentUsageAdvancesTotalsWithoutHistory(t *testing.T) {
+	state := durableState{sequence: 1, openTurn: "turn"}
+	usage := &openrouter.Usage{
+		PromptTokens: 7, CompletionTokens: 5, TotalTokens: 12, Cost: 0.25,
+	}
+	if err := state.apply(mustRecord(t, 2, recordSubagentUsage, subagentUsageRecord{
+		TurnID: "turn", SubagentID: "child", Usage: usage, Occupancy: 7,
+	})); err != nil {
+		t.Fatal(err)
+	}
+	if len(state.history) != 0 || state.usage.input != 7 || state.usage.output != 5 ||
+		state.cost != 0.25 {
+		t.Fatalf("state = history %#v, usage %#v, cost %g", state.history, state.usage, state.cost)
 	}
 	before := state.clone()
-	if err := state.apply(mustRecord(t, uint64(maxTurnRequests+2), recordProviderStarted, providerRequestStarted{
-		TurnID: "turn", Count: maxTurnRequests + 1,
-	})); err == nil || state.turnRequests != before.turnRequests {
-		t.Fatalf("overflow request = %v, count %d", err, state.turnRequests)
+	if err := state.apply(mustRecord(t, 3, recordSubagentUsage, subagentUsageRecord{
+		TurnID: "other", SubagentID: "child", Usage: usage, Occupancy: 7,
+	})); err == nil || state.usage != before.usage {
+		t.Fatalf("mismatched usage = error %v, state %#v", err, state.usage)
 	}
 }
 

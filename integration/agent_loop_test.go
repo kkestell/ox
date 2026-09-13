@@ -119,6 +119,306 @@ func TestPromptStreamsAndReplaysCompletedHistory(t *testing.T) {
 	model.assertConsumed(t)
 }
 
+func TestConcurrentSubagentsExchangeMessagesAndReturnResults(t *testing.T) {
+	started := make(chan string, 2)
+	release := make(chan struct{})
+	secondA := make(chan struct{})
+	var releaseOnce sync.Once
+	var secondOnce sync.Once
+	var mu sync.Mutex
+	rootRequests := 0
+	childRequests := map[string]int{}
+	childIDs := map[string]string{}
+
+	model := &routedModel{route: func(
+		ctx context.Context,
+		request openrouter.Request,
+		_ func(openrouter.Delta),
+	) (*openrouter.Completion, error) {
+		if strings.Contains(request.Messages[0].Content[0].Text, "<subagent-role>") {
+			toolNames := make(map[string]bool, len(request.Tools))
+			for _, tool := range request.Tools {
+				toolNames[tool.Function.Name] = true
+			}
+			if !toolNames["subagent_report"] || toolNames["subagent_start"] || toolNames["todo"] {
+				return nil, fmt.Errorf("child tool scope = %#v", toolNames)
+			}
+			task := request.Messages[1].Content[0].Text
+			mu.Lock()
+			childRequests[task]++
+			requestNumber := childRequests[task]
+			mu.Unlock()
+			if requestNumber == 1 {
+				started <- task
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				case <-release:
+				}
+				if task == "task B" {
+					select {
+					case <-ctx.Done():
+						return nil, ctx.Err()
+					case <-secondA:
+					}
+					return completion("B done"), nil
+				}
+				return completion("A first answer"), nil
+			}
+			if task != "task A" || requestNumber != 2 {
+				return nil, fmt.Errorf("unexpected child request %q #%d", task, requestNumber)
+			}
+			messages, err := conversation(request)
+			if err != nil {
+				return nil, err
+			}
+			if !strings.Contains(messages[len(messages)-1].Content[0].Text, "focus on parsing") {
+				return nil, errors.New("follow-up message did not reach child A")
+			}
+			secondOnce.Do(func() { close(secondA) })
+			return completion("A done after follow-up"), nil
+		}
+
+		mu.Lock()
+		rootRequests++
+		requestNumber := rootRequests
+		mu.Unlock()
+		switch requestNumber {
+		case 1:
+			toolNames := make(map[string]bool, len(request.Tools))
+			for _, tool := range request.Tools {
+				toolNames[tool.Function.Name] = true
+			}
+			if !toolNames["subagent_start"] || toolNames["subagent_report"] {
+				return nil, fmt.Errorf("primary tool scope = %#v", toolNames)
+			}
+			return &openrouter.Completion{
+				FinishReason: "tool_calls",
+				ToolCalls: []openrouter.ToolCall{
+					modelToolCall("start-a", "subagent_start", `{"name":"a","task":"task A"}`),
+					modelToolCall("start-b", "subagent_start", `{"name":"b","task":"task B"}`),
+				},
+			}, nil
+		case 2:
+			for range 2 {
+				select {
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				case <-started:
+				}
+			}
+			messages, err := conversation(request)
+			if err != nil {
+				return nil, err
+			}
+			for _, message := range messages {
+				if message.Role != openrouter.RoleTool {
+					continue
+				}
+				var result struct {
+					Subagents []agent.SubagentSnapshot `json:"subagents"`
+				}
+				if json.Unmarshal([]byte(message.Content[0].Text), &result) == nil && len(result.Subagents) == 1 {
+					childIDs[result.Subagents[0].Name] = result.Subagents[0].ID
+				}
+			}
+			if childIDs["a"] == "" || childIDs["b"] == "" {
+				return nil, errors.New("start results omitted child IDs")
+			}
+			return toolCompletionWithArguments(
+				"send-a", "subagent_send",
+				`{"id":"`+childIDs["a"]+`","message":"focus on parsing"}`,
+			)(ctx, request, nil)
+		case 3:
+			releaseOnce.Do(func() { close(release) })
+			return toolCompletionWithArguments(
+				"wait-a", "subagent_wait", `{"ids":["`+childIDs["a"]+`"]}`,
+			)(ctx, request, nil)
+		case 4:
+			messages, err := conversation(request)
+			if err != nil {
+				return nil, err
+			}
+			if !strings.Contains(messages[len(messages)-1].Content[0].Text, "A done after follow-up") {
+				return nil, errors.New("wait result omitted child A's final answer")
+			}
+			return toolCompletionWithArguments(
+				"wait-b", "subagent_wait", `{"ids":["`+childIDs["b"]+`"]}`,
+			)(ctx, request, nil)
+		case 5:
+			messages, err := conversation(request)
+			if err != nil {
+				return nil, err
+			}
+			if !strings.Contains(messages[len(messages)-1].Content[0].Text, "B done") {
+				return nil, errors.New("wait result omitted child B's final answer")
+			}
+			return completion("parent done"), nil
+		default:
+			return nil, fmt.Errorf("unexpected primary request %d", requestNumber)
+		}
+	}}
+	harness := newAgentHarness(t, model, oxtools.All())
+	sessionID := harness.newSession(t)
+	response := harness.prompt(t, sessionID, "delegate")
+	if response.StopReason != acp.StopReasonEndTurn {
+		t.Fatalf("stop reason = %q", response.StopReason)
+	}
+	if response.Usage == nil || response.Usage.TotalTokens != 48 {
+		t.Fatalf("usage = %#v, want four metered provider responses", response.Usage)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if rootRequests != 5 || childRequests["task A"] != 2 || childRequests["task B"] != 1 {
+		t.Fatalf("requests = root %d, children %#v", rootRequests, childRequests)
+	}
+}
+
+func TestSubagentReportsAndStopsWhileRunning(t *testing.T) {
+	childBlocked := make(chan struct{})
+	var blockedOnce sync.Once
+	var mu sync.Mutex
+	rootRequests := 0
+	childRequests := 0
+	childID := ""
+	model := &routedModel{route: func(
+		ctx context.Context,
+		request openrouter.Request,
+		_ func(openrouter.Delta),
+	) (*openrouter.Completion, error) {
+		if strings.Contains(request.Messages[0].Content[0].Text, "<subagent-role>") {
+			mu.Lock()
+			childRequests++
+			requestNumber := childRequests
+			mu.Unlock()
+			if requestNumber == 1 {
+				return &openrouter.Completion{
+					FinishReason: "tool_calls",
+					ToolCalls: []openrouter.ToolCall{modelToolCall(
+						"report", "subagent_report", `{"message":"found the seam"}`,
+					)},
+				}, nil
+			}
+			blockedOnce.Do(func() { close(childBlocked) })
+			<-ctx.Done()
+			return nil, ctx.Err()
+		}
+
+		mu.Lock()
+		rootRequests++
+		requestNumber := rootRequests
+		mu.Unlock()
+		switch requestNumber {
+		case 1:
+			return toolCompletionWithArguments(
+				"start", "subagent_start", `{"name":"scout","task":"inspect"}`,
+			)(ctx, request, nil)
+		case 2:
+			messages, err := conversation(request)
+			if err != nil {
+				return nil, err
+			}
+			var result struct {
+				Subagents []agent.SubagentSnapshot `json:"subagents"`
+			}
+			if err := json.Unmarshal([]byte(messages[len(messages)-1].Content[0].Text), &result); err != nil || len(result.Subagents) != 1 {
+				return nil, errors.New("start result omitted child")
+			}
+			childID = result.Subagents[0].ID
+			return toolCompletionWithArguments(
+				"wait-report", "subagent_wait", `{"ids":["`+childID+`"]}`,
+			)(ctx, request, nil)
+		case 3:
+			messages, err := conversation(request)
+			if err != nil {
+				return nil, err
+			}
+			if !strings.Contains(messages[len(messages)-1].Content[0].Text, "found the seam") {
+				return nil, errors.New("parent did not receive child report")
+			}
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-childBlocked:
+			}
+			return toolCompletionWithArguments(
+				"stop", "subagent_stop", `{"id":"`+childID+`"}`,
+			)(ctx, request, nil)
+		case 4:
+			return toolCompletionWithArguments(
+				"wait-stop", "subagent_wait", `{"ids":["`+childID+`"]}`,
+			)(ctx, request, nil)
+		case 5:
+			messages, err := conversation(request)
+			if err != nil {
+				return nil, err
+			}
+			if !strings.Contains(messages[len(messages)-1].Content[0].Text, `"status":"cancelled"`) {
+				return nil, errors.New("stopped child did not reach cancelled state")
+			}
+			return completion("stopped"), nil
+		default:
+			return nil, fmt.Errorf("unexpected primary request %d", requestNumber)
+		}
+	}}
+	harness := newAgentHarness(t, model, oxtools.All())
+	response := harness.prompt(t, harness.newSession(t), "delegate and stop")
+	if response.StopReason != acp.StopReasonEndTurn {
+		t.Fatalf("stop reason = %q", response.StopReason)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if rootRequests != 5 || childRequests != 2 {
+		t.Fatalf("requests = root %d, child %d", rootRequests, childRequests)
+	}
+}
+
+func TestFinishingParentTurnCancelsRunningSubagents(t *testing.T) {
+	childStarted := make(chan struct{})
+	childCancelled := make(chan struct{})
+	var startOnce sync.Once
+	var cancelOnce sync.Once
+	rootRequests := 0
+	var mu sync.Mutex
+	model := &routedModel{route: func(
+		ctx context.Context,
+		request openrouter.Request,
+		_ func(openrouter.Delta),
+	) (*openrouter.Completion, error) {
+		if strings.Contains(request.Messages[0].Content[0].Text, "<subagent-role>") {
+			startOnce.Do(func() { close(childStarted) })
+			<-ctx.Done()
+			cancelOnce.Do(func() { close(childCancelled) })
+			return nil, ctx.Err()
+		}
+		mu.Lock()
+		rootRequests++
+		requestNumber := rootRequests
+		mu.Unlock()
+		if requestNumber == 1 {
+			return toolCompletionWithArguments(
+				"start", "subagent_start", `{"name":"worker","task":"keep working"}`,
+			)(ctx, request, nil)
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-childStarted:
+		}
+		return completion("parent finished"), nil
+	}}
+	harness := newAgentHarness(t, model, oxtools.All())
+	response := harness.prompt(t, harness.newSession(t), "start then finish")
+	if response.StopReason != acp.StopReasonEndTurn {
+		t.Fatalf("stop reason = %q", response.StopReason)
+	}
+	select {
+	case <-childCancelled:
+	default:
+		t.Fatal("parent turn returned before its child was cancelled")
+	}
+}
+
 func TestWorkspaceMemoryPersistsAcrossSessionsAndReplaysRetrievedFacts(t *testing.T) {
 	sessionDir := t.TempDir()
 	memoryDir := t.TempDir()
@@ -1200,7 +1500,7 @@ func TestReadOnlyToolsSpillRefuseEscapeReplayAndDelete(t *testing.T) {
 			) {
 				return nil, errors.New("system prompt did not use the canonical workspace root")
 			}
-			if len(request.Tools) != 12 {
+			if len(request.Tools) != 17 {
 				return nil, errors.New("built-in tools were not frozen into the request")
 			}
 			return &openrouter.Completion{
