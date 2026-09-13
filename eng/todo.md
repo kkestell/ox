@@ -66,7 +66,7 @@
         code (F35, F39)
   - [x] Add focused configuration-option error coverage (F42)
   - [x] Add focused MCP and trace error-path coverage (F44)
-  - [ ] Replace wall-clock test heuristics with deterministic signals (F45)
+  - [x] Replace wall-clock test heuristics with deterministic signals (F45)
 - [ ] Language-server context
   - [x] Add the lazy LSP process adapter
   - [ ] Integrate language tools with session activation

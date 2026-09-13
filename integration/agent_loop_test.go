@@ -16,9 +16,9 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/creachadair/jrpc2"
+	"github.com/creachadair/jrpc2/channel"
 	"github.com/creachadair/jrpc2/server"
 	"github.com/zalando/go-keyring"
 
@@ -3628,9 +3628,58 @@ func (u capturedUpdate) decode(t *testing.T, target any) {
 }
 
 type agentHarness struct {
-	local       server.Local
-	mu          sync.Mutex
+	local server.Local
+	mu    sync.Mutex
+	// delivered wakes updates when a session update reaches the client's
+	// notification handler.
+	delivered   *sync.Cond
 	updatesList []capturedUpdate
+	// sent counts the session updates the server has written. A response is
+	// written after the updates that precede it, so once a call returns this
+	// count is final and updates knows exactly how many to wait for.
+	sent       int
+	dispatched int
+}
+
+// countingChannel counts session updates as the client reads them, which is
+// before the client dispatches them on its own goroutine.
+type countingChannel struct {
+	channel.Channel
+	harness *agentHarness
+}
+
+func (c countingChannel) Recv() ([]byte, error) {
+	bits, err := c.Channel.Recv()
+	if err == nil {
+		c.harness.countSessionUpdates(bits)
+	}
+	return bits, err
+}
+
+func (h *agentHarness) countSessionUpdates(bits []byte) {
+	type envelope struct {
+		Method string `json:"method"`
+	}
+	var batch []envelope
+	if err := json.Unmarshal(bits, &batch); err != nil {
+		var single envelope
+		if json.Unmarshal(bits, &single) != nil {
+			return
+		}
+		batch = []envelope{single}
+	}
+	count := 0
+	for _, message := range batch {
+		if message.Method == "session/update" {
+			count++
+		}
+	}
+	if count == 0 {
+		return
+	}
+	h.mu.Lock()
+	h.sent += count
+	h.mu.Unlock()
 }
 
 type callbackHandler func(context.Context, *jrpc2.Request) (any, error)
@@ -3671,24 +3720,33 @@ func newHarnessWithCallback(
 		t.Fatal(err)
 	}
 	harness := &agentHarness{}
-	harness.local = server.NewLocal(instance.Methods(), &server.LocalOptions{
-		Client: &jrpc2.ClientOptions{
+	harness.delivered = sync.NewCond(&harness.mu)
+	clientPipe, serverPipe := channel.Direct()
+	harness.local = server.Local{
+		Server: jrpc2.NewServer(instance.Methods(), &jrpc2.ServerOptions{
+			AllowPush: true, Concurrency: 16,
+		}).Start(serverPipe),
+		Client: jrpc2.NewClient(countingChannel{Channel: clientPipe, harness: harness}, &jrpc2.ClientOptions{
 			OnCallback: onCallback,
 			OnNotify: func(request *jrpc2.Request) {
 				if request.Method() != "session/update" {
 					return
 				}
 				var update capturedUpdate
-				if err := request.UnmarshalParams(&update); err != nil {
-					return
-				}
+				err := request.UnmarshalParams(&update)
 				harness.mu.Lock()
-				harness.updatesList = append(harness.updatesList, update)
+				harness.dispatched++
+				if err == nil {
+					harness.updatesList = append(harness.updatesList, update)
+				}
+				harness.delivered.Broadcast()
 				harness.mu.Unlock()
+				if err != nil {
+					t.Errorf("session update params: %v", err)
+				}
 			},
-		},
-		Server: &jrpc2.ServerOptions{AllowPush: true, Concurrency: 16},
-	})
+		}),
+	}
 	t.Cleanup(func() {
 		if err := harness.local.Close(); err != nil {
 			t.Errorf("close local server: %v", err)
@@ -3778,21 +3836,16 @@ func (h *agentHarness) callSetConfig(
 	return response, err
 }
 
+// updates returns every session update the server has written so far. A caller
+// reaches it after the request that produced them returned, so the count the
+// channel took is complete and this waits only for the client to catch up.
 func (h *agentHarness) updates() []capturedUpdate {
-	const quietPeriod = 25 * time.Millisecond
-	for {
-		h.mu.Lock()
-		count := len(h.updatesList)
-		h.mu.Unlock()
-		time.Sleep(quietPeriod)
-		h.mu.Lock()
-		if len(h.updatesList) == count {
-			updates := append([]capturedUpdate(nil), h.updatesList...)
-			h.mu.Unlock()
-			return updates
-		}
-		h.mu.Unlock()
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for h.dispatched < h.sent {
+		h.delivered.Wait()
 	}
+	return append([]capturedUpdate(nil), h.updatesList...)
 }
 
 type promptResult struct {

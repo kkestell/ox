@@ -243,21 +243,21 @@ func TestClientRetriesRetryAfterAndSucceeds(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	started := time.Now()
-	completion, err := testClient(server.URL).Stream(
-		t.Context(),
-		Request{Model: "author/model"},
-		nil,
-	)
-	elapsed := time.Since(started)
+	var delays []time.Duration
+	client := testClient(server.URL)
+	client.retryWait = func(_ context.Context, delay time.Duration) error {
+		delays = append(delays, delay)
+		return nil
+	}
+	completion, err := client.Stream(t.Context(), Request{Model: "author/model"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if completion.Text != "ok" || requests.Load() != 2 {
 		t.Fatalf("completion = %#v, requests = %d", completion, requests.Load())
 	}
-	if elapsed < 1800*time.Millisecond || elapsed > 3500*time.Millisecond {
-		t.Fatalf("Retry-After elapsed = %v", elapsed)
+	if len(delays) != 1 || delays[0] != 2*time.Second {
+		t.Fatalf("delays = %#v, want one of 2s", delays)
 	}
 }
 
