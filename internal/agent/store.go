@@ -348,16 +348,23 @@ func readRecords(file *os.File) ([]sessionRecord, int64, int, error) {
 	return records, truncateAt, sinceCheckpoint, nil
 }
 
-func validSessionID(id string) bool {
-	if len(id) != 32 {
+// ValidID reports whether value has the shape of an identifier Ox generated:
+// thirty-two lowercase hexadecimal characters. Sessions, memory facts, and
+// everything else Ox names come from one generator, so they share one shape.
+func ValidID(value string) bool {
+	if len(value) != 32 {
 		return false
 	}
-	for _, char := range id {
+	for _, char := range value {
 		if (char < '0' || char > '9') && (char < 'a' || char > 'f') {
 			return false
 		}
 	}
 	return true
+}
+
+func validSessionID(id string) bool {
+	return ValidID(id)
 }
 
 type listCursor struct {

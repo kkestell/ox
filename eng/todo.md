@@ -55,7 +55,7 @@
   - [x] Simplify turn orchestration and lifecycle plumbing (F23)
   - [x] Centralize process path resolution and XDG validation (F29)
   - [x] Remove duplicate ACP activation validation (F30)
-  - [ ] Deduplicate small safety and protocol rules (F32)
+  - [x] Deduplicate small safety and protocol rules (F32)
   - [ ] Make atomic file replacement crash-safe and cover its sync failures
         (F27, F43)
   - [ ] Reduce configuration copying and prevent settings-result aliasing (F33,

@@ -429,3 +429,42 @@ func TestDiscoveryRejectsExcessivePagesAndBytes(t *testing.T) {
 		})
 	}
 }
+
+// TestCatalogSizeCountsSerializedBytes pins what the catalog limit measures.
+// The delimiters are the subtle part: an empty catalog is the two brackets, and
+// each tool after the first adds a comma.
+func TestCatalogSizeCountsSerializedBytes(t *testing.T) {
+	var empty catalogSize
+	if empty.bytes != 0 {
+		t.Fatalf("unused size = %d bytes, want 0", empty.bytes)
+	}
+
+	descriptor := Descriptor{Name: "lookup", InputSchema: json.RawMessage(`{"type":"object"}`)}
+	encoded, err := json.Marshal(descriptor)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var one catalogSize
+	if err := one.add(descriptor); err != nil {
+		t.Fatal(err)
+	}
+	if want := len(encoded) + 2; one.bytes != want {
+		t.Fatalf("one tool = %d bytes, want %d", one.bytes, want)
+	}
+
+	var two catalogSize
+	for range 2 {
+		if err := two.add(descriptor); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if want := 2*len(encoded) + 3; two.bytes != want {
+		t.Fatalf("two tools = %d bytes, want %d", two.bytes, want)
+	}
+	if marshalled, err := json.Marshal([]Descriptor{descriptor, descriptor}); err != nil {
+		t.Fatal(err)
+	} else if len(marshalled) != two.bytes {
+		t.Fatalf("counted %d bytes, but the catalog serializes to %d", two.bytes, len(marshalled))
+	}
+}

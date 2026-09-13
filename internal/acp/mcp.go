@@ -119,7 +119,7 @@ func (s MCPHTTPServer) Validate() error {
 	if parsed.Scheme != "https" && parsed.Scheme != "http" {
 		return errors.New("MCP HTTP server URL must use http or https")
 	}
-	if parsed.Scheme == "http" && !isLocalHost(parsed.Hostname()) {
+	if parsed.Scheme == "http" && !IsLocalHost(parsed.Hostname()) {
 		return errors.New("plaintext MCP HTTP is allowed only for loopback or localhost")
 	}
 	seen := map[string]struct{}{}
@@ -182,7 +182,9 @@ func ValidateMCPServers(servers []MCPServer) error {
 	return nil
 }
 
-func isLocalHost(host string) bool {
+// IsLocalHost reports whether host names this machine, which is the one case
+// where an MCP server may be reached without TLS.
+func IsLocalHost(host string) bool {
 	if strings.EqualFold(host, "localhost") || strings.HasSuffix(strings.ToLower(host), ".localhost") {
 		return true
 	}

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -151,18 +150,10 @@ func validateRedirectTarget(target *url.URL) error {
 	if target.Scheme == "https" {
 		return nil
 	}
-	if target.Scheme != "http" || !isLocalRedirectHost(target.Hostname()) {
+	if target.Scheme != "http" || !acp.IsLocalHost(target.Hostname()) {
 		return errors.New("MCP HTTP redirect target must use HTTPS unless it is local")
 	}
 	return nil
-}
-
-func isLocalRedirectHost(host string) bool {
-	if strings.EqualFold(host, "localhost") || strings.HasSuffix(strings.ToLower(host), ".localhost") {
-		return true
-	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
 }
 
 type headerTransport struct {

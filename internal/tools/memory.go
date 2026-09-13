@@ -116,7 +116,7 @@ func executeMemoryWrite(_ context.Context, invocation agent.Invocation) (string,
 		if supersedes == "" {
 			return "", errors.New("`supersedes` must not be empty")
 		}
-		if !validMemoryID(supersedes) {
+		if !agent.ValidID(supersedes) {
 			return "", errors.New("`supersedes` must be a 32-character lowercase hexadecimal ID")
 		}
 	}
@@ -147,7 +147,7 @@ func executeMemoryDelete(_ context.Context, invocation agent.Invocation) (string
 	if id == "" {
 		return "", errors.New("`id` must not be empty")
 	}
-	if !validMemoryID(id) {
+	if !agent.ValidID(id) {
 		return "", errors.New("`id` must be a 32-character lowercase hexadecimal ID")
 	}
 	if invocation.DeleteMemory == nil {
@@ -181,16 +181,4 @@ func memoryDeleteTitle(arguments json.RawMessage) string {
 		return "Delete workspace memory"
 	}
 	return "Delete workspace memory " + strings.TrimSpace(*args.ID)
-}
-
-func validMemoryID(value string) bool {
-	if len(value) != 32 {
-		return false
-	}
-	for _, current := range value {
-		if (current < '0' || current > '9') && (current < 'a' || current > 'f') {
-			return false
-		}
-	}
-	return true
 }

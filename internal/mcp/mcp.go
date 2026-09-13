@@ -94,7 +94,7 @@ func Activate(ctx context.Context, root string, definitions []acp.MCPServer) (*B
 		return nil, err
 	}
 	bundle := &Bundle{byName: make(map[string]toolRef)}
-	catalogBytes := 2 // JSON array delimiters.
+	var size catalogSize
 	for _, definition := range definitions {
 		opened, err := connectServer(ctx, root, definition)
 		if err != nil {
@@ -111,18 +111,9 @@ func Activate(ctx context.Context, root string, definitions []acp.MCPServer) (*B
 				_ = bundle.Close()
 				return nil, fmt.Errorf("MCP provider tool name %q is not unique", tool.descriptor.Name)
 			}
-			encoded, err := json.Marshal(tool.descriptor)
-			if err != nil {
+			if err := size.add(tool.descriptor); err != nil {
 				_ = bundle.Close()
-				return nil, errors.New("encode MCP catalog")
-			}
-			if len(bundle.tools) > 0 {
-				catalogBytes++
-			}
-			catalogBytes += len(encoded)
-			if catalogBytes > MaxCatalogBytes {
-				_ = bundle.Close()
-				return nil, errors.New("MCP catalog exceeds 256 KiB")
+				return nil, err
 			}
 			bundle.tools = append(bundle.tools, cloneDescriptor(tool.descriptor))
 			bundle.byName[tool.descriptor.Name] = toolRef{server: opened, tool: tool}
@@ -241,12 +232,38 @@ func connectServer(parent context.Context, root string, definition acp.MCPServer
 	return value, nil
 }
 
+// catalogSize measures a tool catalog the way it will be serialized, so a
+// server's own catalog and the combined catalog agree on what the limit counts:
+// the brackets around the array and one comma between elements.
+type catalogSize struct {
+	bytes int
+	count int
+}
+
+func (c *catalogSize) add(descriptor Descriptor) error {
+	encoded, err := json.Marshal(descriptor)
+	if err != nil {
+		return errors.New("encode MCP catalog")
+	}
+	if c.count == 0 {
+		c.bytes = 2
+	} else {
+		c.bytes++
+	}
+	c.bytes += len(encoded)
+	c.count++
+	if c.bytes > MaxCatalogBytes {
+		return errors.New("MCP catalog exceeds 256 KiB")
+	}
+	return nil
+}
+
 func discoverTools(ctx context.Context, value *server) (map[string]discoveredTool, error) {
 	result := make(map[string]discoveredTool)
 	seenCursors := map[string]struct{}{}
 	cursor := ""
 	pageCount := 0
-	catalogBytes := 2 // JSON array delimiters.
+	var size catalogSize
 	for {
 		pageCount++
 		if pageCount > MaxCatalogPages {
@@ -267,16 +284,8 @@ func discoverTools(ctx context.Context, value *server) (map[string]discoveredToo
 			if err != nil {
 				return nil, fmt.Errorf("MCP tool %q: %w", tool.Name, err)
 			}
-			encoded, err := json.Marshal(found.descriptor)
-			if err != nil {
-				return nil, errors.New("encode MCP catalog")
-			}
-			if len(result) > 0 {
-				catalogBytes++
-			}
-			catalogBytes += len(encoded)
-			if catalogBytes > MaxCatalogBytes {
-				return nil, errors.New("MCP catalog exceeds 256 KiB")
+			if err := size.add(found.descriptor); err != nil {
+				return nil, err
 			}
 			result[tool.Name] = found
 			if len(result) > MaxTools {
