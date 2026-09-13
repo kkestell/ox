@@ -85,7 +85,7 @@
   - [x] Harden turn finalization and cancellation history for malformed or
         partial provider tool calls
   - [x] Reconcile OpenRouter and MCP catalog freshness with bounded refresh cost
-  - [ ] Stabilize the required gate and complete shipped-process and evaluation
+  - [x] Stabilize the required gate and complete shipped-process and evaluation
         coverage
   - [ ] Settle the platform contract and repair documentation and line-ending
         portability edges

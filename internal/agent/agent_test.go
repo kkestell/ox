@@ -546,7 +546,12 @@ func TestExclusiveToolFencesParallelGroups(t *testing.T) {
 	<-done
 }
 
-func TestExclusiveToolSerializesAcrossConcurrentBatches(t *testing.T) {
+// TestExclusiveToolDoesNotFenceAnotherLoop covers the far edge of the exclusion
+// rule. Unsafe tools are fenced within one loop's batch, so a call blocked in
+// one loop must not keep an independent loop from running the same tool.
+// Waiting for both executions to start proves that without timing a race: a
+// fence between loops would block here rather than fail a scheduling guess.
+func TestExclusiveToolDoesNotFenceAnotherLoop(t *testing.T) {
 	started := make(chan string, 2)
 	release := make(chan struct{})
 	instance, err := New(Config{Logger: discardLogger(), Tools: []Tool{{
@@ -558,9 +563,7 @@ func TestExclusiveToolSerializesAcrossConcurrentBatches(t *testing.T) {
 		) (string, error) {
 			id := strings.Trim(string(invocation.Arguments), `"`)
 			started <- id
-			if id == "first" {
-				<-release
-			}
+			<-release
 			return id, nil
 		},
 	}}})
@@ -582,30 +585,15 @@ func TestExclusiveToolSerializesAcrossConcurrentBatches(t *testing.T) {
 				events,
 			)
 		}()
-		if id == "first" {
-			if call := <-started; call != "first" {
-				t.Fatalf("first execution = %q", call)
-			}
-		}
 	}
-	for {
-		current := <-events
-		if current.call.ID == "second" && current.kind == eventToolStarted {
-			t.Fatal("waiting exclusive tool was announced as running")
-		}
-		if current.call.ID == "second" && current.kind == eventToolPending {
-			break
-		}
+	running := map[string]bool{}
+	for range 2 {
+		running[<-started] = true
 	}
-	select {
-	case call := <-started:
-		t.Fatalf("exclusive sibling started early: %q", call)
-	default:
+	if !running["first"] || !running["second"] {
+		t.Fatalf("concurrently running exclusive tools = %#v", running)
 	}
 	close(release)
-	if call := <-started; call != "second" {
-		t.Fatalf("second execution = %q", call)
-	}
 	for range 2 {
 		results := <-done
 		if len(results) != 1 || results[0].failed {

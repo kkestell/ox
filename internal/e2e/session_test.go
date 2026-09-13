@@ -1328,3 +1328,99 @@ func TestCancelWithoutARunningTurnIsANoOp(t *testing.T) {
 		t.Fatalf("session/new returned %s twice", session)
 	}
 }
+
+// TestResumeRestoresHistoryWithoutReplay covers what separates `session/resume`
+// from `session/load` at the ACP boundary: the model still sees the whole
+// durable conversation, but the client is sent no historical updates, because a
+// resuming client already has them.
+func TestResumeRestoresHistoryWithoutReplay(t *testing.T) {
+	dataDir := t.TempDir()
+	model := startModel(t,
+		sse(evText("remembered"), evFinishReason("stop")),
+		sse(evText("continued"), evFinishReason("stop")),
+	)
+	options := []startOption{withModel(model), withEnvironment("XDG_DATA_HOME", dataDir)}
+	first, session := startSession(t, options...)
+	cwd := first.cwd
+	first.request(acp.MethodSessionSetConfigOption, acp.SetSessionConfigOptionRequest{
+		SessionID: session, ConfigID: "mode", Value: "plan",
+	})
+	_ = updates(t, first, session)
+	prompt(t, first, session, "establish history")
+	_ = updates(t, first, session)
+	first.request("session/close", acp.CloseSessionRequest{SessionID: session})
+	first.stop()
+
+	second := start(t, options...)
+	initialize(t, second)
+	resumed := second.request("session/resume", acp.ResumeSessionRequest{
+		SessionID: session, CWD: cwd, MCPServers: []acp.MCPServer{},
+	})
+	var resumeResponse acp.ResumeSessionResponse
+	if err := json.Unmarshal(resumed, &resumeResponse); err != nil {
+		t.Fatal(err)
+	}
+	if optionValue(resumeResponse.ConfigOptions, "mode") != "plan" ||
+		optionValue(resumeResponse.ConfigOptions, "model") != "test/model" {
+		t.Fatalf("resumed options = %#v", resumeResponse.ConfigOptions)
+	}
+	if replayed := updates(t, second, session); len(replayed) != 0 {
+		t.Fatalf("resume replayed %d updates: %#v", len(replayed), replayed)
+	}
+
+	prompt(t, second, session, "carry on")
+	_ = updates(t, second, session)
+	requests := model.requests()
+	if len(requests) != 2 {
+		t.Fatalf("model requests = %d, want 2", len(requests))
+	}
+	assertConversation(t, requests[1].Messages, []exchange{
+		{role: "user", text: "establish history"},
+		{role: "assistant", text: "remembered"},
+		{role: "user", text: "carry on"},
+	})
+	second.request("session/close", acp.CloseSessionRequest{SessionID: session})
+}
+
+// TestResumeRefusesAPendingPermissionWait covers the one activation a resume
+// must decline. Answering the interrupted request is `session/load`'s job, so
+// resume refuses and names load rather than silently dropping the wait.
+func TestResumeRefusesAPendingPermissionWait(t *testing.T) {
+	dataDir := t.TempDir()
+	model := startModel(t,
+		shellRecoveryResponse(),
+		sse(evText("recovered"), evFinishReason("stop")),
+	)
+	options := []startOption{withModel(model), withEnvironment("XDG_DATA_HOME", dataDir)}
+	first, session := startSession(t, options...)
+	cwd := first.cwd
+	_ = first.begin("session/prompt", acp.PromptRequest{
+		SessionID: session, Prompt: textPrompt("run a command"),
+	})
+	_ = permissionRequest(t, first.serverRequest(), "call-recovery")
+	first.kill()
+
+	second := start(t, options...)
+	initialize(t, second)
+	refusal := second.requestError("session/resume", acp.ResumeSessionRequest{
+		SessionID: session, CWD: cwd, MCPServers: []acp.MCPServer{},
+	})
+	if refusal.Code != -32602 ||
+		!strings.Contains(refusal.Message, "load it before resuming") {
+		t.Fatalf("resume refusal = %#v", refusal)
+	}
+
+	// Load remains the recovery path, and the refused resume left nothing
+	// behind that would stop it.
+	load := second.begin("session/load", acp.LoadSessionRequest{
+		SessionID: session, CWD: cwd, MCPServers: []acp.MCPServer{},
+	})
+	reissued := second.serverRequest()
+	_ = permissionRequest(t, reissued, "call-recovery")
+	second.respond(reissued, acp.RequestPermissionResponse{
+		Outcome: acp.RequestPermissionOutcome{Outcome: "selected", OptionID: "reject_once"},
+	})
+	second.result(second.await(load))
+	_ = updates(t, second, session)
+	second.request("session/close", acp.CloseSessionRequest{SessionID: session})
+}

@@ -67,30 +67,7 @@ func TestFakeProviderSmoke(t *testing.T) {
 		Phases:  []Phase{{Action: "prompt", Prompt: "write note.txt", Permission: "allow"}},
 		Success: Success{Files: map[string]string{"note.txt": "hello\n"}},
 	})
-	responses := []string{
-		sse(
-			evToolCall("call-1", "write_file", `{"path":"note.txt","content":"hello\n"}`),
-			evFinish("tool_calls"), evUsage(20, 4, 24),
-		),
-		sse(evText("done"), evFinish("stop"), evUsage(30, 2, 32)),
-	}
-	var mutex sync.Mutex
-	upstream := http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if strings.HasSuffix(request.URL.Path, "/models") {
-			writer.Header().Set("Content-Type", "application/json")
-			_, _ = writer.Write([]byte(fakeModelCatalog))
-			return
-		}
-		mutex.Lock()
-		defer mutex.Unlock()
-		if len(responses) == 0 {
-			http.Error(writer, "unexpected provider request", http.StatusInternalServerError)
-			return
-		}
-		writer.Header().Set("Content-Type", "text/event-stream")
-		_, _ = writer.Write([]byte(responses[0]))
-		responses = responses[1:]
-	})
+	upstream := noteWritingProvider()
 	output := filepath.Join(t.TempDir(), "artifacts")
 	index, err := Run(context.Background(), Config{
 		OxBinary: relativeOxBinary, OxRevision: "test-revision", TaskPath: taskRoot,
@@ -132,6 +109,72 @@ func TestFakeProviderSmoke(t *testing.T) {
 		return err
 	}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// noteWritingProvider answers the two requests the smoke task needs: a
+// write_file call and a final answer.
+func noteWritingProvider() http.Handler {
+	responses := []string{
+		sse(
+			evToolCall("call-1", "write_file", `{"path":"note.txt","content":"hello\n"}`),
+			evFinish("tool_calls"), evUsage(20, 4, 24),
+		),
+		sse(evText("done"), evFinish("stop"), evUsage(30, 2, 32)),
+	}
+	var mutex sync.Mutex
+	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if strings.HasSuffix(request.URL.Path, "/models") {
+			writer.Header().Set("Content-Type", "application/json")
+			_, _ = writer.Write([]byte(fakeModelCatalog))
+			return
+		}
+		mutex.Lock()
+		defer mutex.Unlock()
+		if len(responses) == 0 {
+			http.Error(writer, "unexpected provider request", http.StatusInternalServerError)
+			return
+		}
+		writer.Header().Set("Content-Type", "text/event-stream")
+		_, _ = writer.Write([]byte(responses[0]))
+		responses = responses[1:]
+	})
+}
+
+// TestSmokeResolvesARelativeOutputDirectory covers the evaluation command's
+// default `eval-results` path. Each repetition runs Ox in its own workspace, so
+// a relative output directory has to be resolved against the caller's working
+// directory before any of that starts; otherwise results, logs, and traces land
+// under a repetition's workspace instead.
+func TestSmokeResolvesARelativeOutputDirectory(t *testing.T) {
+	caller := t.TempDir()
+	t.Chdir(caller)
+	taskRoot := t.TempDir()
+	writeTestTask(t, taskRoot, Task{
+		Schema: 1, ID: "smoke", Budget: Budget{TimeoutMS: 5000, ProviderRequests: 3},
+		Phases:  []Phase{{Action: "prompt", Prompt: "write note.txt", Permission: "allow"}},
+		Success: Success{Files: map[string]string{"note.txt": "hello\n"}},
+	})
+
+	index, err := Run(context.Background(), Config{
+		OxBinary: smokeOxBinary, OxRevision: "test-revision", TaskPath: taskRoot,
+		OutputDir: "eval-results", Model: "test/model", Provider: "fake",
+		Repetitions: 1, Upstream: noteWritingProvider(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(index.Results) != 1 || !index.Results[0].Success {
+		t.Fatalf("failure = %+v, result = %#v", index.Results[0].Failure, index.Results)
+	}
+	resolved := filepath.Join(caller, "eval-results")
+	for _, path := range []string{
+		"index.json", "run-001/result.json", "run-001/private/events.jsonl",
+		"run-001/private/stderr.log", "run-001/workspace/note.txt",
+	} {
+		if _, err := os.Stat(filepath.Join(resolved, path)); err != nil {
+			t.Errorf("artifact %s: %v", path, err)
+		}
 	}
 }
 

@@ -197,10 +197,10 @@ lets a load skip.
 The active turn owns an in-memory subagent group. Each child has a private
 conversation, inbox, report stream, cancellation scope, and read-evidence scope,
 while sharing the turn's immutable provider configuration, activation resources,
-permission grants, and session-wide exclusion lock. Coordination tools mutate
-only this group. Child loops are not sessions and do not own logs, recovery,
-configuration, or nested child groups. Ending the turn cancels and joins the
-group before the durable turn outcome is committed.
+and permission grants. Coordination tools mutate only this group. Child loops
+are not sessions and do not own logs, recovery, configuration, or nested child
+groups. Ending the turn cancels and joins the group before the durable turn
+outcome is committed.
 
 An unfinished turn is closed as interrupted unless it has a durable pending
 permission request. `session/load` reissues such a request with the same

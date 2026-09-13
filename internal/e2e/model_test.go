@@ -76,8 +76,11 @@ func (m modelMessage) text() string {
 // cancellation is scripted.
 type modelResponse struct {
 	prompt   string
+	primary  bool
+	repeat   bool
 	status   int
 	body     string
+	build    func(modelRequest) string
 	started  chan struct{}
 	rest     chan string
 	consumed bool
@@ -109,7 +112,7 @@ func startModel(t *testing.T, bodies ...string) *mockModel {
 		defer model.mu.Unlock()
 		remaining := 0
 		for _, response := range model.responses {
-			if !response.consumed {
+			if !response.consumed && !response.repeat {
 				remaining++
 			}
 		}
@@ -159,6 +162,34 @@ func (m *mockModel) queueFor(prompt, body string) {
 	m.responses = append(m.responses, &modelResponse{prompt: prompt, body: body})
 }
 
+// queuePrimaryFunc queues a response built from the request it answers, which
+// is how a test scripts a call naming an identifier ox generated at runtime.
+// Only the primary agent can take it: children share this endpoint, so an
+// unrestricted step is consumed by whichever loop happens to ask first.
+func (m *mockModel) queuePrimaryFunc(build func(modelRequest) string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.responses = append(m.responses, &modelResponse{primary: true, build: build})
+}
+
+// queuePrimaryDefault answers every primary request no queued response claims,
+// as many times as the agent asks. It is how a test drives a loop whose number
+// of steps depends on when children finish rather than on the script.
+func (m *mockModel) queuePrimaryDefault(build func(modelRequest) string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.responses = append(m.responses, &modelResponse{
+		primary: true, repeat: true, build: build,
+	})
+}
+
+// fromSubagent reports whether a request belongs to a child loop, which its
+// system prompt names.
+func fromSubagent(request modelRequest) bool {
+	return len(request.Messages) != 0 &&
+		strings.Contains(request.Messages[0].text(), "<subagent-role>")
+}
+
 // fail queues a non-2xx response, which is how a provider outage is scripted.
 func (m *mockModel) fail(status int, body string) {
 	m.mu.Lock()
@@ -184,6 +215,18 @@ func (m *mockModel) failCredential(status int, body string) {
 // the request context ends.
 func (m *mockModel) hold(opening string) *modelResponse {
 	return m.holdFor("", opening)
+}
+
+// holdPrimary queues a held response only the primary agent can take.
+func (m *mockModel) holdPrimary(opening string) *modelResponse {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	held := &modelResponse{
+		primary: true, body: opening,
+		started: make(chan struct{}), rest: make(chan string, 1),
+	}
+	m.responses = append(m.responses, held)
+	return held
 }
 
 // holdFor queues a held response for the request whose final message has
@@ -258,12 +301,16 @@ func (m *mockModel) serveHTTP(writer http.ResponseWriter, request *http.Request)
 	if len(decoded.Messages) != 0 {
 		prompt = decoded.Messages[len(decoded.Messages)-1].text()
 	}
+	child := fromSubagent(decoded)
 	var response *modelResponse
 	for _, candidate := range m.responses {
 		if candidate.consumed || candidate.prompt != "" && candidate.prompt != prompt {
 			continue
 		}
-		candidate.consumed = true
+		if candidate.primary && child {
+			continue
+		}
+		candidate.consumed = !candidate.repeat
 		response = candidate
 		break
 	}
@@ -275,6 +322,9 @@ func (m *mockModel) serveHTTP(writer http.ResponseWriter, request *http.Request)
 	}
 	m.mu.Unlock()
 	body := response.body
+	if response.build != nil {
+		body = response.build(decoded)
+	}
 
 	if response.status != 0 {
 		http.Error(writer, response.body, response.status)

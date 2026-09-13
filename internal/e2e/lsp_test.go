@@ -16,28 +16,26 @@ import (
 	"github.com/kkestell/ox/internal/acp"
 )
 
-// languageServerConfig points ox at this test binary running as a language
-// server for .go files, which is the only configuration a session needs.
-func languageServerConfig(t *testing.T, marker string) startOption {
+// fixtureLanguageServer points ox at this test binary running as a language
+// server for .go files, which is the only server a session needs to answer a
+// query.
+func fixtureLanguageServer(t *testing.T) map[string]any {
 	t.Helper()
 	executable, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
 	}
+	return map[string]any{
+		"command":    executable,
+		"args":       []string{"-test.run=^TestE2ELanguageServerHelper$"},
+		"extensions": []string{".GO"},
+	}
+}
+
+func languageServerConfig(t *testing.T, marker string, servers map[string]any) startOption {
+	t.Helper()
 	config, err := json.Marshal(map[string]any{
-		"process": map[string]any{
-			"language_servers": map[string]any{
-				"fixture": map[string]any{
-					"command":    executable,
-					"args":       []string{"-test.run=^TestE2ELanguageServerHelper$"},
-					"extensions": []string{".GO"},
-				},
-				"uninstalled": map[string]any{
-					"command":    "ox-language-server-that-is-not-installed",
-					"extensions": []string{"py"},
-				},
-			},
-		},
+		"process": map[string]any{"language_servers": servers},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -64,6 +62,10 @@ func TestLanguageQueriesThroughShippedBinary(t *testing.T) {
 		sse(evText("outlined"), evFinishReason("stop")),
 		toolResponse("call-definition", "lsp_definition", `{"path":"main.go","line":1,"column":6}`),
 		sse(evText("located"), evFinishReason("stop")),
+		toolResponse("call-references", "lsp_references", `{"path":"main.go","line":3,"column":6}`),
+		sse(evText("referenced"), evFinishReason("stop")),
+		toolResponse("call-fanned-out", "lsp_workspace_symbols", `{"query":"main"}`),
+		sse(evText("searched"), evFinishReason("stop")),
 		toolResponse("call-diagnostics", "lsp_diagnostics", `{"path":"main.go"}`),
 		sse(evText("checked"), evFinishReason("stop")),
 		toolResponse("call-unowned", "lsp_definition", `{"path":"notes.txt","line":1,"column":1}`),
@@ -73,7 +75,13 @@ func TestLanguageQueriesThroughShippedBinary(t *testing.T) {
 	)
 	child := start(t,
 		withModel(model),
-		languageServerConfig(t, marker),
+		languageServerConfig(t, marker, map[string]any{
+			"fixture": fixtureLanguageServer(t),
+			"uninstalled": map[string]any{
+				"command":    "ox-language-server-that-is-not-installed",
+				"extensions": []string{"py"},
+			},
+		}),
 		withFile("main.go", "package main\n\nfunc main() {}\n"),
 		withFile("notes.txt", "plain text\n"),
 		withFile("script.py", "x = 1\n"),
@@ -85,6 +93,10 @@ func TestLanguageQueriesThroughShippedBinary(t *testing.T) {
 	_ = updates(t, child, session)
 	prompt(t, child, session, "find the definition")
 	_ = updates(t, child, session)
+	prompt(t, child, session, "find the references")
+	_ = updates(t, child, session)
+	prompt(t, child, session, "search every configured server")
+	_ = updates(t, child, session)
 	prompt(t, child, session, "check diagnostics")
 	_ = updates(t, child, session)
 	prompt(t, child, session, "query an unowned file")
@@ -93,27 +105,71 @@ func TestLanguageQueriesThroughShippedBinary(t *testing.T) {
 	_ = updates(t, child, session)
 
 	requests := model.requests()
-	if len(requests) != 10 {
-		t.Fatalf("model requests = %d, want 10", len(requests))
+	if len(requests) != 14 {
+		t.Fatalf("model requests = %d, want 14", len(requests))
 	}
-	if !requestHasTool(requests[0], "lsp_document_symbols") ||
-		!requestHasTool(requests[0], "lsp_workspace_symbols") {
-		t.Fatal("language tools were not offered to the model")
+	for _, name := range []string{
+		"lsp_document_symbols", "lsp_workspace_symbols", "lsp_definition",
+		"lsp_references", "lsp_diagnostics",
+	} {
+		if !requestHasTool(requests[0], name) {
+			t.Fatalf("language tool %q was not offered to the model", name)
+		}
 	}
 	for index, want := range map[int]string{
 		1: "function main main.go:3:1-3:15",
 		3: "main.go:1:6",
+		// The location outside the workspace is dropped, so one confined
+		// reference is reported and the omission is noted.
+		5: "main.go:3:6",
+		// A workspace-wide query has no file to choose a server by, so it
+		// reaches every configured one and fails when any cannot start.
+		7: `start language server "uninstalled"`,
 		// The version counts this session's synchronizations of main.go: the
-		// outline opened it, and each later query resent it.
-		5: "version 3, analysis complete\nerror main.go:1:1 fixture diagnostic [fixture E1]",
-		7: `no language server is configured for extension "txt"`,
+		// outline opened it, and the definition, references, and diagnostics
+		// queries each resent it. The failed workspace query never reached it.
+		9:  "version 4, analysis complete\nerror main.go:1:1 fixture diagnostic [fixture E1]",
+		11: `no language server is configured for extension "txt"`,
 		// Ox never installs a server, so a command it cannot run is an ordinary
 		// tool failure rather than a retry or a download.
-		9: `start language server "uninstalled"`,
+		13: `start language server "uninstalled"`,
 	} {
 		if !requestContainsText(requests[index], want) {
 			t.Fatalf("request %d did not carry %q: %s", index, want, requestText(requests[index]))
 		}
+	}
+
+	child.request("session/close", acp.CloseSessionRequest{SessionID: session})
+	awaitMarker(t, marker)
+	child.stop()
+}
+
+// TestWorkspaceSymbolsThroughShippedBinary covers the one language tool a
+// path-scoped query cannot reach. It needs a workspace whose every configured
+// server can start, because a workspace-wide query reaches all of them.
+func TestWorkspaceSymbolsThroughShippedBinary(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "language-server-closed")
+	model := startModel(t,
+		toolResponse("call-workspace-symbols", "lsp_workspace_symbols", `{"query":"main"}`),
+		sse(evText("searched"), evFinishReason("stop")),
+	)
+	child := start(t,
+		withModel(model),
+		languageServerConfig(t, marker, map[string]any{"fixture": fixtureLanguageServer(t)}),
+		withFile("main.go", "package main\n\nfunc main() {}\n"),
+	)
+	initialize(t, child)
+	session := newSession(t, child, child.cwd)
+
+	prompt(t, child, session, "search workspace symbols")
+	_ = updates(t, child, session)
+
+	requests := model.requests()
+	if len(requests) != 2 {
+		t.Fatalf("model requests = %d, want 2", len(requests))
+	}
+	if !requestContainsText(requests[1], "function pkg.main main.go:3:1-3:15") {
+		t.Fatalf("workspace symbols did not reach the model: %s", requestText(requests[1]))
 	}
 
 	child.request("session/close", acp.CloseSessionRequest{SessionID: session})
@@ -170,7 +226,7 @@ func runLanguageServerHelper(input io.Reader, output io.Writer) {
 		body, _ := json.Marshal(value)
 		_, _ = fmt.Fprintf(output, "Content-Length: %d\r\n\r\n%s", len(body), body)
 	}
-	var documentURI string
+	var documentURI, rootURI string
 	for {
 		raw, err := readLanguageServerMessage(reader)
 		if err != nil {
@@ -186,6 +242,11 @@ func runLanguageServerHelper(input io.Reader, output io.Writer) {
 		}
 		switch request.Method {
 		case "initialize":
+			var params struct {
+				RootURI string `json:"rootUri"`
+			}
+			_ = json.Unmarshal(request.Params, &params)
+			rootURI = params.RootURI
 			write(map[string]any{"jsonrpc": "2.0", "id": request.ID, "result": map[string]any{
 				"capabilities": map[string]any{
 					"positionEncoding": "utf-16",
@@ -214,6 +275,26 @@ func runLanguageServerHelper(input io.Reader, output io.Writer) {
 		case "textDocument/definition":
 			write(map[string]any{"jsonrpc": "2.0", "id": request.ID, "result": map[string]any{
 				"uri": documentURI, "range": languageServerRange(0, 5, 0, 9),
+			}})
+		case "textDocument/references":
+			// The second location is outside the workspace, so the confined
+			// result must drop it rather than report a path a tool cannot read.
+			write(map[string]any{"jsonrpc": "2.0", "id": request.ID, "result": []any{
+				map[string]any{"uri": documentURI, "range": languageServerRange(2, 5, 2, 9)},
+				map[string]any{
+					"uri":   "file:///outside.go",
+					"range": languageServerRange(0, 0, 0, 1),
+				},
+			}})
+		case "workspace/symbol":
+			write(map[string]any{"jsonrpc": "2.0", "id": request.ID, "result": []any{
+				map[string]any{
+					"name": "main", "kind": 12, "containerName": "pkg",
+					"location": map[string]any{
+						"uri":   rootURI + "/main.go",
+						"range": languageServerRange(2, 0, 2, 14),
+					},
+				},
 			}})
 		case "textDocument/diagnostic":
 			write(map[string]any{"jsonrpc": "2.0", "id": request.ID, "result": map[string]any{
