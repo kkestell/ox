@@ -1280,3 +1280,49 @@ func TestListProjectionAgreesWithAFullFold(t *testing.T) {
 		})
 	}
 }
+
+// TestTurnConfigurationIsSharedButNeverRewritten pins the invariant that lets a
+// turn read its frozen configuration without copying it: a commit builds a
+// successor rather than writing through the configuration a reader holds.
+func TestTurnConfigurationIsSharedButNeverRewritten(t *testing.T) {
+	id := "0123456789abcdef0123456789abcdef"
+	cwd := t.TempDir()
+	configuration := requestConfiguration{
+		Settings:  settings.Resolved{Model: "test/model"},
+		Tools:     []openrouter.Tool{{Type: "function", Function: openrouter.ToolFunction{Name: "read"}}},
+		ToolKinds: map[string]acp.ToolKind{"read": acp.ToolKindRead},
+	}
+	state, err := foldRecords([]sessionRecord{
+		mustRecord(t, 1, recordSessionCreated, sessionCreated{
+			SessionID: id, CWD: cwd, Configuration: configuration,
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	held := state.turnConfiguration()
+	if len(held.ToolKinds) != 1 {
+		t.Fatalf("configuration = %#v", held)
+	}
+
+	replacement := cloneConfiguration(configuration)
+	replacement.Tools = nil
+	replacement.ToolKinds = map[string]acp.ToolKind{}
+	next := state.clone()
+	if err := next.apply(mustRecord(t, 2, recordConfigChanged, configurationChanged{
+		Configuration: replacement,
+	})); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(held.Tools) != 1 || held.ToolKinds["read"] != acp.ToolKindRead {
+		t.Fatalf("a commit rewrote a configuration a reader was holding: %#v", held)
+	}
+	if state.turnToolKind("read") != acp.ToolKindRead {
+		t.Fatal("a commit rewrote the state it succeeded")
+	}
+	if next.turnToolKind("read") != "" {
+		t.Fatalf("successor kept the replaced tool kind: %#v", next.configuration)
+	}
+}

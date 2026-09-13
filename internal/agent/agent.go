@@ -1772,6 +1772,14 @@ func (s *session) openTurn() string {
 	return s.state.openTurn
 }
 
+// turnSkills returns the turn's skill catalog. Tool dispatch reads it per call
+// and needs nothing else from the configuration.
+func (s *session) turnSkills() []skills.Reference {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	return s.state.turnConfiguration().Skills
+}
+
 func (s *session) turnConfiguration() requestConfiguration {
 	s.stateMu.Lock()
 	defer s.stateMu.Unlock()

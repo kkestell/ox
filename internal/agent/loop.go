@@ -1245,7 +1245,7 @@ func (a *Agent) executeOne(
 		return toolResult{content: "tool has no executor", failed: true, target: target}
 	}
 	root := value.workspaceRoot()
-	configuration := value.turnConfiguration()
+	catalog := value.turnSkills()
 	invocation := Invocation{
 		Arguments:  json.RawMessage(call.Function.Arguments),
 		SessionID:  value.id,
@@ -1256,7 +1256,7 @@ func (a *Agent) executeOne(
 		FileSystem: fileSystem,
 		Terminal:   terminal,
 		LoadSkill: func(name string) (string, error) {
-			for _, reference := range configuration.Skills {
+			for _, reference := range catalog {
 				if reference.Name == name {
 					return skills.Load(root, reference)
 				}

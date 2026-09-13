@@ -1072,7 +1072,7 @@ func (s *durableState) apply(record sessionRecord) error {
 					return errors.New("tool call name and JSON arguments are required")
 				}
 				if result.Target != "" &&
-					(s.turnConfiguration().ToolKinds[call.Function.Name] != acp.ToolKindEdit ||
+					(s.turnToolKind(call.Function.Name) != acp.ToolKindEdit ||
 						!validStoredTarget(result.Target)) {
 					return fmt.Errorf("tool call %q has invalid target %q", call.ID, result.Target)
 				}
@@ -1234,7 +1234,7 @@ func (s *durableState) validateToolExecution(value durableToolExecution) error {
 		return errors.New("started tool call does not match its permission decision")
 	}
 	if value.Target != "" &&
-		(s.turnConfiguration().ToolKinds[value.Call.Function.Name] != acp.ToolKindEdit ||
+		(s.turnToolKind(value.Call.Function.Name) != acp.ToolKindEdit ||
 			!validStoredTarget(value.Target)) {
 		return fmt.Errorf("tool call %q has invalid target %q", value.Call.ID, value.Target)
 	}
@@ -1343,7 +1343,7 @@ func (s *durableState) validateSuspendedExchange(value suspendedModelExchangeRec
 		if !exists {
 			return fmt.Errorf("tool target names unknown tool call %q", callID)
 		}
-		if s.turnConfiguration().ToolKinds[name] != acp.ToolKindEdit || !validStoredTarget(target) {
+		if s.turnToolKind(name) != acp.ToolKindEdit || !validStoredTarget(target) {
 			return fmt.Errorf("tool call %q has invalid target %q", callID, target)
 		}
 	}
@@ -1882,11 +1882,25 @@ func validateSelections(value sessionSelections) error {
 	return nil
 }
 
+// turnConfiguration returns the configuration a running turn is frozen to, or
+// the session's current one between turns. The value is shared rather than
+// copied: durable state is copy-on-write, so a commit builds a successor
+// configuration instead of writing through this one, and every reader treats
+// what it gets as read-only.
 func (s durableState) turnConfiguration() requestConfiguration {
 	if s.openTurn != "" {
-		return cloneConfiguration(s.openTurnConfiguration)
+		return s.openTurnConfiguration
 	}
-	return cloneConfiguration(s.configuration)
+	return s.configuration
+}
+
+// turnToolKind looks up one tool's kind, so record validation can check a call
+// inside a loop without materializing a whole configuration per call.
+func (s durableState) turnToolKind(name string) acp.ToolKind {
+	if s.openTurn != "" {
+		return s.openTurnConfiguration.ToolKinds[name]
+	}
+	return s.configuration.ToolKinds[name]
 }
 
 // cloneSuspendedExchange copies the parts of a suspended exchange a caller may
