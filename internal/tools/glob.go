@@ -43,14 +43,15 @@ func executeGlob(ctx context.Context, invocation agent.Invocation) (string, erro
 	if arguments.Path != nil {
 		rootArg = *arguments.Path
 	}
-	if !doublestar.ValidatePattern(normalizeGlob(pattern)) {
+	normalized := normalizeGlob(pattern)
+	if !doublestar.ValidatePattern(normalized) {
 		return "", fmt.Errorf("invalid glob: %s", pattern)
 	}
 
 	files := workspace.NewWorkspace(invocation.Root).WithReadable(invocation.SpillDir)
 	var collected workspace.Capped
 	if err := files.WalkFiles(ctx, rootArg, func(file workspace.WalkedFile) bool {
-		if !globMatches(pattern, workspace.RelativeTo(rootArg, file.Display)) {
+		if !globMatches(normalized, workspace.RelativeTo(rootArg, file.Display)) {
 			return true
 		}
 		return collected.Push(file.Display)
@@ -81,7 +82,9 @@ func normalizeGlob(pattern string) string {
 	return pattern
 }
 
-func globMatches(pattern, relative string) bool {
-	matched, err := doublestar.Match(normalizeGlob(pattern), relative)
+// globMatches takes an already normalized pattern, so a walk does not reshape
+// the same pattern for every file it visits.
+func globMatches(normalized, relative string) bool {
+	matched, err := doublestar.Match(normalized, relative)
 	return err == nil && matched
 }

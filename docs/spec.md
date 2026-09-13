@@ -56,6 +56,12 @@ file too large to hold in memory, and a read returns a bounded window: a line
 longer than that window is shown as a prefix that reports how much of the line
 it covers.
 
+Glob and search follow Git ignore rules and skip any path whose components begin
+with a dot, so a dotfile and everything inside a dot-directory stay out of
+discovery. Naming such a path directly still reads it. Search returns the
+matches it found in a file that later becomes unreadable, and says where the
+scan stopped rather than reporting the file as empty.
+
 Ox requires an earlier read of an existing file before a model may write or edit
 it, and refuses the change when the file has since moved on from what that read
 saw. Evidence is the content the read returned, so discovery alone does not

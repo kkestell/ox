@@ -45,7 +45,7 @@
   - [x] Make `session/list` bounded, resilient, and cursor-tested (F15)
   - [x] Eliminate redundant provider-request encoding (F16)
   - [x] Stop cloning frozen turn configuration inside per-call loops (F18)
-  - [ ] Preserve partial grep results and reduce workspace-walk overhead (F19,
+  - [x] Preserve partial grep results and reduce workspace-walk overhead (F19,
         F34, F41)
   - [ ] Reconcile the parked LSP adapter and harden it before integration (F20,
         F28)

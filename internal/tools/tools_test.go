@@ -1326,7 +1326,10 @@ func TestGrepModesGlobFilterAndBinaryTail(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(got, "binary.go") ||
+	// The binary file matches on its first line and only then becomes
+	// unreadable, so that match survives and the file says where it stopped.
+	if !strings.Contains(got, "./binary.go:1: needle") ||
+		!strings.Contains(got, "./binary.go:2: [scan stopped:") ||
 		!strings.Contains(got, "./a.go:1: needle") ||
 		!strings.Contains(got, "./nested/c.txt:1: needle") {
 		t.Fatalf("content output = %q", got)
@@ -1348,7 +1351,10 @@ func TestGrepModesGlobFilterAndBinaryTail(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(got, "./a.go: 2") || strings.Contains(got, "binary.go") {
+	// A count cut short says so rather than reporting a quietly low number.
+	if !strings.Contains(got, "./a.go: 2") ||
+		!strings.Contains(got, "./binary.go: 1") ||
+		!strings.Contains(got, "./binary.go:2: [scan stopped:") {
 		t.Fatalf("count output = %q", got)
 	}
 }
@@ -1376,8 +1382,57 @@ func TestGrepRejectsInvalidValuesAndSkipsOverlongLines(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != "no matches" {
+	// Reporting the stop keeps an unsearchable file from reading as a file with
+	// nothing in it.
+	if !strings.Contains(got, "./huge.txt:1: [scan stopped:") {
 		t.Fatalf("overlong file output = %q", got)
+	}
+}
+
+// TestGrepStopsAtTheFirstMatchForFilenames checks that a filename-only search
+// does not keep reading a file after it has its answer, which also means an
+// unreadable later line cannot turn a match into a diagnostic.
+func TestGrepStopsAtTheFirstMatchForFilenames(t *testing.T) {
+	invocation := testInvocation(t, `{"pattern":"needle","output_mode":"files_with_matches"}`)
+	if err := os.WriteFile(
+		filepath.Join(invocation.Root, "binary.go"),
+		[]byte("needle\n\xff"),
+		0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+	got, err := invoke(t, toolNamed(t, "grep"), invocation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "./binary.go" {
+		t.Fatalf("filenames output = %q", got)
+	}
+}
+
+// TestDiscoverySkipsHiddenPaths holds glob and grep to the hidden-path rule the
+// specification states.
+func TestDiscoverySkipsHiddenPaths(t *testing.T) {
+	invocation := testInvocation(t, `{"pattern":"**/*.go"}`)
+	writeToolFile(t, invocation.Root, "visible.go", "needle\n")
+	writeToolFile(t, invocation.Root, ".hidden.go", "needle\n")
+	writeToolFile(t, invocation.Root, ".config/inside.go", "needle\n")
+
+	globbed, err := invoke(t, toolNamed(t, "glob"), invocation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if globbed != "./visible.go" {
+		t.Fatalf("glob output = %q", globbed)
+	}
+
+	invocation.Arguments = json.RawMessage(`{"pattern":"needle"}`)
+	grepped, err := invoke(t, toolNamed(t, "grep"), invocation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if grepped != "./visible.go:1: needle" {
+		t.Fatalf("grep output = %q", grepped)
 	}
 }
 

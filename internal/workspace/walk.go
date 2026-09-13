@@ -68,6 +68,11 @@ func walkRoot(
 			return true
 		}
 		matcher := gitignore.NewMatcher(patterns)
+		// Every entry in this directory shares the directory's path components,
+		// so they are built once and only the final element changes per entry.
+		parent := pathComponents(filepath.Join(root.Name(), name))
+		childComponents := make([]string, len(parent)+1)
+		copy(childComponents, parent)
 		for {
 			entries, readErr := dir.ReadDir(256)
 			for _, entry := range entries {
@@ -82,7 +87,8 @@ func walkRoot(
 				childName := filepath.Join(name, entryName)
 				childDisplay := joinDisplay(displayDir, entryName)
 				isDir := entry.IsDir()
-				if matcher.Match(pathComponents(filepath.Join(root.Name(), childName)), isDir) {
+				childComponents[len(parent)] = entryName
+				if matcher.Match(childComponents, isDir) {
 					continue
 				}
 				if isDir {

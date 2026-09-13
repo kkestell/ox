@@ -60,8 +60,12 @@ func executeGrep(ctx context.Context, invocation agent.Invocation) (string, erro
 	if arguments.Path != nil {
 		rootArg = *arguments.Path
 	}
-	if arguments.Glob != nil && !doublestar.ValidatePattern(normalizeGlob(*arguments.Glob)) {
-		return "", fmt.Errorf("invalid glob: %s", *arguments.Glob)
+	normalizedGlob := ""
+	if arguments.Glob != nil {
+		normalizedGlob = normalizeGlob(*arguments.Glob)
+		if !doublestar.ValidatePattern(normalizedGlob) {
+			return "", fmt.Errorf("invalid glob: %s", *arguments.Glob)
+		}
 	}
 	mode := "content"
 	if arguments.OutputMode != nil {
@@ -79,15 +83,18 @@ func executeGrep(ctx context.Context, invocation agent.Invocation) (string, erro
 	files := workspace.NewWorkspace(invocation.Root).WithReadable(invocation.SpillDir)
 	var collected workspace.Capped
 	err = files.WalkFiles(ctx, rootArg, func(file workspace.WalkedFile) bool {
-		if arguments.Glob != nil &&
-			!globMatches(*arguments.Glob, workspace.RelativeTo(rootArg, file.Display)) {
+		if normalizedGlob != "" &&
+			!globMatches(normalizedGlob, workspace.RelativeTo(rootArg, file.Display)) {
 			return true
 		}
-		entries, over := scanFile(ctx, file, expression, mode, collected.Remaining())
+		entries, note, over := scanFile(ctx, file, expression, mode, collected.Remaining())
 		for _, entry := range entries {
 			if !collected.Push(entry) {
 				return false
 			}
+		}
+		if note != "" && !collected.Push(note) {
+			return false
 		}
 		if over {
 			collected.Truncated = true
@@ -114,16 +121,21 @@ func executeGrep(ctx context.Context, invocation agent.Invocation) (string, erro
 	return rendered.Content, nil
 }
 
+// scanFile searches one file. A line it cannot read stops the scan for that
+// file but does not discard what the file already matched: entries holds those
+// matches and note says where the scan stopped, so a result is never silently
+// short. capped reports the collection byte budget running out, which ends the
+// whole search.
 func scanFile(
 	ctx context.Context,
 	source workspace.WalkedFile,
 	expression *regexp.Regexp,
 	mode string,
 	budget int,
-) (entries []string, capped bool) {
+) (entries []string, note string, capped bool) {
 	file, err := source.Open()
 	if err != nil {
-		return nil, false
+		return nil, "", false
 	}
 	defer func() {
 		_ = file.Close()
@@ -137,14 +149,15 @@ func scanFile(
 	matched := false
 	for {
 		if lineNumber%scanCheckLines == 0 && ctx.Err() != nil {
-			return nil, false
+			return entries, "", false
 		}
 		line, readErr := readBoundedLine(reader, &lineBuffer)
 		if readErr != nil {
 			if errors.Is(readErr, io.EOF) {
 				break
 			}
-			return nil, false
+			note = fmt.Sprintf("%s:%d: [scan stopped: %v]", source.Display, lineNumber+1, readErr)
+			break
 		}
 		lineNumber++
 		switch mode {
@@ -152,18 +165,25 @@ func scanFile(
 			if expression.Match(line) {
 				entry := fmt.Sprintf("%s:%d: %s", source.Display, lineNumber, line)
 				if entryBytes+len(entry)+1 > budget {
-					return entries, true
+					return entries, "", true
 				}
 				entryBytes += len(entry) + 1
 				entries = append(entries, entry)
 			}
-		case "files_with_matches", "count":
-			if !matched || mode == "count" {
-				if expression.Match(line) {
-					matched = true
-					count++
-				}
+		case "files_with_matches":
+			if expression.Match(line) {
+				// The answer is the filename, so the rest of the file cannot
+				// change it.
+				matched = true
+				note = ""
 			}
+		case "count":
+			if expression.Match(line) {
+				count++
+			}
+		}
+		if matched && mode == "files_with_matches" {
+			break
 		}
 	}
 	switch mode {
@@ -176,7 +196,7 @@ func scanFile(
 			entries = append(entries, fmt.Sprintf("%s: %d", source.Display, count))
 		}
 	}
-	return entries, false
+	return entries, note, false
 }
 
 var (
