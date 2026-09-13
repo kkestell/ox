@@ -221,7 +221,8 @@ func prepare(t *testing.T, options ...startOption) (string, startConfig) {
 			"GORACE":          "halt_on_error=1",
 		},
 		files: map[string]string{
-			filepath.Join("cache", "ox", "models.json"): testModelCatalog,
+			filepath.Join("cache", "ox", "models.json"):    testModelCatalog,
+			filepath.Join("config", "ox", "settings.json"): testSettings,
 			"credential": "test-key\n",
 		},
 		fileModes: make(map[string]os.FileMode),

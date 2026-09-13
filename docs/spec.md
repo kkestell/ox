@@ -185,17 +185,24 @@ unrecorded state. Other sessions continue when their storage remains usable.
 
 Ox exposes select-valued ACP configuration options in this order:
 
-| Identifier  | Values and default                                                       | Effect                                                                  |
-| ----------- | ------------------------------------------------------------------------ | ----------------------------------------------------------------------- |
-| `mode`      | `code` (default), `auto`, `plan`                                         | Chooses the available tool set and whether calls are asked about.       |
-| `model`     | Validated OpenRouter model IDs; activation's configured model by default | Chooses the model for subsequent turns.                                 |
-| `reasoning` | `default`, plus efforts supported by the selected model                  | `default` uses the model's provider default without an explicit effort. |
+| Identifier  | Values and default                                                          | Effect                                                                                                     |
+| ----------- | --------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `mode`      | `code` (default), `auto`, `plan`                                            | Chooses the available tool set and whether calls are asked about.                                          |
+| `model`     | The models configured in settings; activation's default model to begin with | Applies that model's whole request profile to subsequent turns.                                            |
+| `reasoning` | `default`, plus efforts supported by the selected model                     | `default` uses the selected model's configured reasoning, or the provider default when it configures none. |
 
-A configured explicit reasoning effort is the initial selection. Models without
-selectable reasoning omit that option. A model change resets reasoning to
-`default` and rejects incompatible explicit sampling, output-limit, tool, or
-modality settings rather than silently dropping them. Retained conversation
-content must be usable by the new model; otherwise the change is rejected.
+Selecting a model replaces the complete set of request settings, so provider
+routing, sampling, output limits, and reasoning always come from the profile of
+the model in use. A configured explicit reasoning effort is the initial
+selection, and a model change restores the new model's own reasoning. Models
+without selectable reasoning omit that option. A change rejects incompatible
+explicit sampling, output-limit, tool, or modality settings rather than silently
+dropping them. Retained conversation content must be usable by the new model;
+otherwise the change is rejected.
+
+A durable selection records the model ID rather than a copy of its settings, so
+loading a session resolves that model against the settings files as they stand
+and fails clearly when it is no longer configured.
 
 `code` uses the ordinary permission-gated tools. `auto` has the same tool set
 and runs every one of its calls, including a child agent's, without a permission
@@ -238,10 +245,10 @@ fields are `log_level` (default `info`), `openrouter_base_url` (default the
 OpenRouter API), and optional `trace`. Workspace files cannot set this object.
 Language-server process fields are defined under language intelligence below.
 The corresponding CLI overrides are `--log-level`, `--openrouter-base-url`, and
-`--trace`. `--model` overrides the activation's file-based model default;
-explicit durable session selections still take precedence. Invalid flags or
-process settings fail startup. A process endpoint override does not travel in a
-workspace file or become a model-facing setting.
+`--trace`. `--model` selects one configured model in place of the file-based
+`default_model`; explicit durable session selections still take precedence.
+Invalid flags or process settings fail startup. A process endpoint override does
+not travel in a workspace file or become a model-facing setting.
 
 The shipped process stops reading `OX_*` and `OPENROUTER_*` variables. Standard
 home, XDG, PATH, and platform environment variables retain their usual purpose.

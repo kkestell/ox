@@ -174,7 +174,8 @@ func TestMCPActivationBuildsSessionToolsAndKeepsSecretsOutOfState(t *testing.T) 
 		t.Fatalf("large MCP spill = %d bytes, %v", len(spilled), err)
 	}
 	plan, err := applySelections(
-		value.activationBase, sessionSelections{Mode: modePlan}, nil, value.models,
+		value.activationBase, sessionSelections{Mode: modePlan}, nil,
+		value.models, value.profiles,
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -225,7 +226,12 @@ func TestAuthenticateAndLogoutUpdateRunningAgent(t *testing.T) {
 		Logger:        discardLogger(),
 		Credentials:   store,
 		ModelOverride: "test/model",
-		Client:        &staticCompletionModel{},
+		SettingsPath: writeSettings(
+			t,
+			filepath.Join(t.TempDir(), "settings.json"),
+			`{"models": {"test/model": {}}}`,
+		),
+		Client: &staticCompletionModel{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -956,7 +962,7 @@ func TestNewSessionValidatesCapabilitiesAndConfiguration(t *testing.T) {
 	}
 	_, err = instance.NewSession(context.Background(), validNewSessionRequest(t))
 	assertErrorCode(t, err, jrpc2.InternalError)
-	if !strings.Contains(err.Error(), "--model") {
+	if !strings.Contains(err.Error(), "at least one model must be configured") {
 		t.Fatalf("configuration error = %v", err)
 	}
 }
@@ -964,12 +970,20 @@ func TestNewSessionValidatesCapabilitiesAndConfiguration(t *testing.T) {
 func TestNewSessionResolvesBothSettingsLayers(t *testing.T) {
 	workspace := t.TempDir()
 	global := writeSettings(t, filepath.Join(t.TempDir(), "settings.json"), `{
-		"model": "global/model",
-		"temperature": 0.2,
-		"max_tokens": 256,
-		"provider": {"order": ["alpha"]}
+		"default_model": "global/model",
+		"models": {
+			"global/model": {
+				"temperature": 0.2,
+				"max_tokens": 256,
+				"provider": {"order": ["alpha"]}
+			},
+			"workspace/model": {},
+			"environment/model": {}
+		}
 	}`)
-	writeSettings(t, settings.WorkspacePath(workspace), `{"temperature": 0.9}`)
+	writeSettings(t, settings.WorkspacePath(workspace), `{
+		"models": {"global/model": {"temperature": 0.9}}
+	}`)
 	instance := settingsAgent(t, &staticCompletionModel{}, global, "")
 
 	resolved := instance.mustResolve(t, newSessionRequest(workspace, nil))
@@ -986,7 +1000,7 @@ func TestNewSessionResolvesBothSettingsLayers(t *testing.T) {
 		t.Fatalf("provider = %#v", resolved.Provider)
 	}
 
-	writeSettings(t, settings.WorkspacePath(workspace), `{"model": "workspace/model"}`)
+	writeSettings(t, settings.WorkspacePath(workspace), `{"default_model": "workspace/model"}`)
 	resolved = instance.mustResolve(t, newSessionRequest(workspace, nil))
 	if resolved.Model != "workspace/model" ||
 		resolved.ModelSource != settings.SourceWorkspace {
@@ -1191,15 +1205,15 @@ func TestNewSessionValidatesSettingsAgainstTheCatalog(t *testing.T) {
 	}{
 		{
 			name: "unknown model",
-			body: `{"model": "nope/nope"}`,
+			body: `{"default_model": "nope/nope", "models": {"nope/nope": {}}}`,
 			client: &staticCompletionModel{
 				entryErr: fmt.Errorf("%w: nope/nope", openrouter.ErrUnknownModel),
 			},
-			contains: []string{"nope/nope", string(settings.SourceGlobal)},
+			contains: []string{"resolve configured model", "nope/nope"},
 		},
 		{
 			name: "model without context length",
-			body: `{"model": "plain/model"}`,
+			body: `{"default_model": "plain/model", "models": {"plain/model": {}}}`,
 			client: &staticCompletionModel{entry: &openrouter.Model{
 				ID: "plain/model",
 			}},
@@ -1207,7 +1221,7 @@ func TestNewSessionValidatesSettingsAgainstTheCatalog(t *testing.T) {
 		},
 		{
 			name: "model with nonpositive context length",
-			body: `{"model": "plain/model"}`,
+			body: `{"default_model": "plain/model", "models": {"plain/model": {}}}`,
 			client: &staticCompletionModel{entry: &openrouter.Model{
 				ID: "plain/model", ContextLength: -1,
 				TopProvider: openrouter.TopProvider{ContextLength: -2},
@@ -1215,20 +1229,23 @@ func TestNewSessionValidatesSettingsAgainstTheCatalog(t *testing.T) {
 			contains: []string{"plain/model", "no positive context length", "choose a model"},
 		},
 		{
-			name:     "reasoning on a model without reasoning",
-			body:     `{"model": "plain/model", "reasoning": {"effort": "high"}}`,
+			name: "reasoning on a model without reasoning",
+			body: `{"default_model": "plain/model",
+				"models": {"plain/model": {"reasoning": {"effort": "high"}}}}`,
 			client:   &staticCompletionModel{},
 			contains: []string{"plain/model", "does not support reasoning"},
 		},
 		{
-			name:     "unsupported effort",
-			body:     `{"model": "reasoning/model", "reasoning": {"effort": "medium"}}`,
+			name: "unsupported effort",
+			body: `{"default_model": "reasoning/model",
+				"models": {"reasoning/model": {"reasoning": {"effort": "medium"}}}}`,
 			client:   &staticCompletionModel{entry: reasoningModel(false, "high", "low")},
 			contains: []string{"medium", "high, low"},
 		},
 		{
-			name:     "reasoning disabled on a mandatory model",
-			body:     `{"model": "reasoning/model", "reasoning": {"enabled": false}}`,
+			name: "reasoning disabled on a mandatory model",
+			body: `{"default_model": "reasoning/model",
+				"models": {"reasoning/model": {"reasoning": {"enabled": false}}}}`,
 			client:   &staticCompletionModel{entry: reasoningModel(true)},
 			contains: []string{"reasoning/model", "cannot be false"},
 		},
@@ -1254,7 +1271,8 @@ func TestNewSessionValidatesSettingsAgainstTheCatalog(t *testing.T) {
 		global := writeSettings(
 			t,
 			filepath.Join(t.TempDir(), "settings.json"),
-			`{"model": "reasoning/model", "reasoning": {"effort": "high"}}`,
+			`{"default_model": "reasoning/model",
+				"models": {"reasoning/model": {"reasoning": {"effort": "high"}}}}`,
 		)
 		client := &staticCompletionModel{entry: reasoningModel(false)}
 		instance := settingsAgent(t, client, global, "")
@@ -1377,9 +1395,17 @@ func TestCloseWaitsForClaimedConfigurationChange(t *testing.T) {
 	}
 }
 
-func TestResumeValidatesDurableModelSelectionInsteadOfBaseModel(t *testing.T) {
+// A durable selection is a model ID, not a copy of its profile, so reactivation
+// resolves it against whatever the settings files say now.
+func TestResumeReResolvesTheDurableModelSelection(t *testing.T) {
 	global := filepath.Join(t.TempDir(), "settings.json")
-	writeSettings(t, global, `{"model":"base/model"}`)
+	writeSettings(t, global, `{
+		"default_model": "base/model",
+		"models": {
+			"base/model": {},
+			"selected/model": {"temperature": 0.2}
+		}
+	}`)
 	model := &catalogCompletionModel{models: []openrouter.Model{
 		*testModel("base/model", 100),
 		*testModel("selected/model", 200),
@@ -1392,7 +1418,9 @@ func TestResumeValidatesDurableModelSelectionInsteadOfBaseModel(t *testing.T) {
 	}
 	value := instance.findSession(created.SessionID)
 	selections := sessionSelections{Model: "selected/model"}
-	next, err := applySelections(value.activationBase, selections, nil, value.models)
+	next, err := applySelections(
+		value.activationBase, selections, nil, value.models, value.profiles,
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1406,8 +1434,15 @@ func TestResumeValidatesDurableModelSelectionInsteadOfBaseModel(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	writeSettings(t, global, `{"model":"missing/model"}`)
-	model.models = []openrouter.Model{*testModel("selected/model", 200)}
+	// The selected profile now asks for a different temperature, and the default
+	// moved. Reactivation must follow the current profile, not the frozen copy.
+	writeSettings(t, global, `{
+		"default_model": "base/model",
+		"models": {
+			"base/model": {},
+			"selected/model": {"temperature": 0.9}
+		}
+	}`)
 	if _, err := instance.ResumeSession(context.Background(), acp.ResumeSessionRequest{
 		SessionID: created.SessionID,
 		CWD:       request.CWD,
@@ -1415,9 +1450,26 @@ func TestResumeValidatesDurableModelSelectionInsteadOfBaseModel(t *testing.T) {
 		t.Fatal(err)
 	}
 	resumed := instance.findSession(created.SessionID)
-	if got := resumed.state.configuration.Settings; got.Model != "selected/model" ||
-		got.ModelSource != settings.SourceSession {
+	got := resumed.state.configuration.Settings
+	if got.Model != "selected/model" || got.ModelSource != settings.SourceSession {
 		t.Fatalf("resumed settings = %#v", got)
+	}
+	if got.Temperature == nil || *got.Temperature != 0.9 {
+		t.Fatalf("resumed temperature = %v, want the current profile", got.Temperature)
+	}
+	if err := instance.closeActive(created.SessionID); err != nil {
+		t.Fatal(err)
+	}
+
+	// Removing the selected profile leaves no definition to reload, so the
+	// session reports that rather than silently falling back to the default.
+	writeSettings(t, global, `{"default_model": "base/model", "models": {"base/model": {}}}`)
+	_, err = instance.ResumeSession(context.Background(), acp.ResumeSessionRequest{
+		SessionID: created.SessionID,
+		CWD:       request.CWD,
+	})
+	if err == nil || !strings.Contains(err.Error(), `"selected/model" is not configured`) {
+		t.Fatalf("resume after removal = %v", err)
 	}
 }
 
@@ -1436,8 +1488,18 @@ func (a *Agent) mustResolve(t *testing.T, request acp.NewSessionRequest) setting
 	return value.state.configuration.Settings
 }
 
+// settingsAgent builds an agent over one global settings file. An empty path
+// gets a file configuring exactly the model the override names, which is what a
+// test that cares about something other than settings needs to reach a session.
 func settingsAgent(t *testing.T, client Model, globalPath, modelOverride string) *Agent {
 	t.Helper()
+	if globalPath == "" && modelOverride != "" {
+		globalPath = writeSettings(
+			t,
+			filepath.Join(t.TempDir(), "settings.json"),
+			fmt.Sprintf(`{"models": {%q: {}}}`, modelOverride),
+		)
+	}
 	instance, err := New(Config{
 		Logger:        discardLogger(),
 		Credentials:   credentials.NewStore(discardLogger(), "test-key", true),
@@ -1449,6 +1511,21 @@ func settingsAgent(t *testing.T, client Model, globalPath, modelOverride string)
 		t.Fatal(err)
 	}
 	return instance
+}
+
+// testProfiles resolves the configured model profiles an activation would
+// freeze, with the first ID as the selected default.
+func testProfiles(t *testing.T, ids ...string) settings.Profiles {
+	t.Helper()
+	models := make(map[string]settings.ModelConfig, len(ids))
+	for _, id := range ids {
+		models[id] = settings.ModelConfig{}
+	}
+	profiles, err := settings.Resolve(&settings.Config{Models: models}, ids[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	return profiles
 }
 
 func writeSettings(t *testing.T, path, body string) string {

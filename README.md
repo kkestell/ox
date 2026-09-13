@@ -19,9 +19,9 @@ Sessions:
 Modes and models:
 
 - Code, auto, and plan modes.
-- Per-session model selection.
+- Per-session selection among the models you configure.
+- Complete per-model provider routing, sampling, and output limits.
 - Reasoning effort selection, including provider defaults.
-- OpenRouter provider routing, sampling, and output limits.
 
 Built-in tools:
 
@@ -72,9 +72,9 @@ make install            # installs ox to $HOME/.local/bin/ox
 ~/.local/bin/ox login   # verifies and stores an OpenRouter key
 ```
 
-Configure a model in `$XDG_CONFIG_HOME/ox/settings.json`, or pass `--model`.
-Start Ox from your ACP client; see the [Zed guide](docs/zed.md) for a worked
-setup.
+Configure your models in `$XDG_CONFIG_HOME/ox/settings.json` and name one with
+`default_model`, or pass `--model` to pick one of them. Start Ox from your ACP
+client; see the [Zed guide](docs/zed.md) for a worked setup.
 
 ## Documentation
 

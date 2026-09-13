@@ -35,6 +35,7 @@ func configOptionSession(t *testing.T) (*Agent, *session) {
 	value := durableTestSession(t, instance, configuration, "turn")
 	value.activationBase = cloneConfiguration(configuration)
 	value.models = models
+	value.profiles = testProfiles(t, "test/model", "plain/model")
 	instance.sessionsMu.Lock()
 	instance.sessions[value.id] = value
 	instance.sessionsMu.Unlock()
@@ -183,11 +184,12 @@ func TestAutoModeIsAdvertisedAndKeepsTheCodeToolSet(t *testing.T) {
 		t.Fatalf("mode options = %#v", offered)
 	}
 
-	code, err := applySelections(base, sessionSelections{}, nil, models)
+	profiles := testProfiles(t, "test/model")
+	code, err := applySelections(base, sessionSelections{}, nil, models, profiles)
 	if err != nil {
 		t.Fatal(err)
 	}
-	auto, err := applySelections(base, sessionSelections{Mode: modeAuto}, nil, models)
+	auto, err := applySelections(base, sessionSelections{Mode: modeAuto}, nil, models, profiles)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -201,7 +203,7 @@ func TestAutoModeIsAdvertisedAndKeepsTheCodeToolSet(t *testing.T) {
 		t.Fatalf("auto configuration is invalid: %v", err)
 	}
 
-	plan, err := applySelections(base, sessionSelections{Mode: modePlan}, nil, models)
+	plan, err := applySelections(base, sessionSelections{Mode: modePlan}, nil, models, profiles)
 	if err != nil {
 		t.Fatal(err)
 	}

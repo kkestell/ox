@@ -3527,11 +3527,15 @@ func TestConfigurationChangeOverlapsALiveTurn(t *testing.T) {
 func TestSettingsFilesShapeEveryModelRequest(t *testing.T) {
 	workspace := t.TempDir()
 	global := writeSettingsFile(t, filepath.Join(t.TempDir(), "settings.json"), `{
-		"model": "global/model",
-		"max_tokens": 512,
-		"temperature": 0.2,
-		"reasoning": {"effort": "high"},
-		"provider": {"order": ["alpha"], "allow_fallbacks": false}
+		"default_model": "global/model",
+		"models": {
+			"global/model": {
+				"max_tokens": 512,
+				"temperature": 0.2,
+				"reasoning": {"effort": "high"},
+				"provider": {"order": ["alpha"], "allow_fallbacks": false}
+			}
+		}
 	}`)
 	var globalOnly, overridden openrouter.Request
 	model := &scriptedModel{
@@ -3565,8 +3569,12 @@ func TestSettingsFilesShapeEveryModelRequest(t *testing.T) {
 	}
 
 	writeSettingsFile(t, settings.WorkspacePath(workspace), `{
-		"temperature": 0.9,
-		"provider": {"order": ["beta"]}
+		"models": {
+			"global/model": {
+				"temperature": 0.9,
+				"provider": {"order": ["beta"]}
+			}
+		}
 	}`)
 	harness.prompt(t, harness.newSessionIn(t, workspace, nil), "workspace override")
 	if overridden.Model != "global/model" || *overridden.MaxTokens != 512 ||
@@ -3839,7 +3847,12 @@ func TestConfigurationChangeDuringTurnAppliesToNextTurn(t *testing.T) {
 			}},
 		models: []openrouter.Model{next, initial},
 	}
-	harness := newAgentHarness(t, model, nil)
+	harness := newHarness(t, agent.Config{
+		ModelOverride: "test/model",
+		SettingsPath: writeSettingsFile(t, filepath.Join(t.TempDir(), "settings.json"),
+			`{"models": {"test/model": {}, "next/model": {}}}`),
+		Client: model,
+	})
 	sessionID := harness.newSession(t)
 	firstDone := make(chan error, 1)
 	go func() {
@@ -3889,8 +3902,13 @@ func TestMalformedWorkspaceSettingsFailSessionCreationBeforeAnyRequest(t *testin
 func TestSessionSettingsAreFrozenAtCreation(t *testing.T) {
 	workspace := t.TempDir()
 	global := filepath.Join(t.TempDir(), "settings.json")
-	writeSettingsFile(t, global, `{"model": "first/model", "temperature": 0.1}`)
-	writeSettingsFile(t, settings.WorkspacePath(workspace), `{"max_tokens": 100}`)
+	writeSettingsFile(t, global, `{
+		"default_model": "first/model",
+		"models": {"first/model": {"temperature": 0.1}}
+	}`)
+	writeSettingsFile(t, settings.WorkspacePath(workspace), `{
+		"models": {"first/model": {"max_tokens": 100}}
+	}`)
 
 	var before, after, fresh openrouter.Request
 	model := &scriptedModel{scripts: []modelScript{
@@ -3902,8 +3920,13 @@ func TestSessionSettingsAreFrozenAtCreation(t *testing.T) {
 	frozen := harness.newSessionIn(t, workspace, nil)
 	harness.prompt(t, frozen, "before the edit")
 
-	writeSettingsFile(t, global, `{"model": "second/model", "temperature": 0.7}`)
-	writeSettingsFile(t, settings.WorkspacePath(workspace), `{"max_tokens": 200}`)
+	writeSettingsFile(t, global, `{
+		"default_model": "second/model",
+		"models": {"second/model": {"temperature": 0.7}}
+	}`)
+	writeSettingsFile(t, settings.WorkspacePath(workspace), `{
+		"models": {"second/model": {"max_tokens": 200}}
+	}`)
 	harness.prompt(t, frozen, "after the edit")
 	if after.Model != before.Model || *after.Temperature != *before.Temperature ||
 		*after.MaxTokens != *before.MaxTokens {
@@ -3988,7 +4011,9 @@ func TestAuthenticateMakesRunningRPCServerUsableWithoutRestart(t *testing.T) {
 		Logger:        logger,
 		Credentials:   store,
 		ModelOverride: "test/model",
-		Client:        &scriptedModel{},
+		SettingsPath: writeSettingsFile(t, filepath.Join(t.TempDir(), "settings.json"),
+			`{"models": {"test/model": {}}}`),
+		Client: &scriptedModel{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -4299,6 +4324,13 @@ func newHarnessWithCallback(
 	config.Version = "test"
 	config.Logger = logger
 	config.Credentials = credentials.NewStore(logger, "test-key", true)
+	if config.SettingsPath == "" && config.ModelOverride != "" {
+		config.SettingsPath = filepath.Join(t.TempDir(), "settings.json")
+		body := fmt.Sprintf(`{"models": {%q: {}}}`, config.ModelOverride)
+		if err := os.WriteFile(config.SettingsPath, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
 	instance, err := agent.New(config)
 	if err != nil {
 		t.Fatal(err)

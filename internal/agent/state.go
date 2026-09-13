@@ -1802,7 +1802,7 @@ func decodeRecord(data json.RawMessage, target any) error {
 }
 
 func cloneConfiguration(value requestConfiguration) requestConfiguration {
-	value.Settings = cloneResolved(value.Settings)
+	value.Settings = value.Settings.Clone()
 	value.Tools = cloneTools(value.Tools)
 	value.ToolKinds = cloneToolKinds(value.ToolKinds)
 	value.PlanTools = cloneBoolMap(value.PlanTools)
@@ -1980,46 +1980,6 @@ func cloneBoolMap(values map[string]bool) map[string]bool {
 		cloned[name] = enabled
 	}
 	return cloned
-}
-
-func cloneResolved(value settings.Resolved) settings.Resolved {
-	if value.MaxTokens != nil {
-		maxTokens := *value.MaxTokens
-		value.MaxTokens = &maxTokens
-	}
-	if value.Temperature != nil {
-		temperature := *value.Temperature
-		value.Temperature = &temperature
-	}
-	if value.Reasoning != nil {
-		reasoning := *value.Reasoning
-		reasoning.Exclude = cloneBool(reasoning.Exclude)
-		reasoning.Enabled = cloneBool(reasoning.Enabled)
-		value.Reasoning = &reasoning
-	}
-	if value.Provider != nil {
-		provider := *value.Provider
-		provider.Order = slices.Clone(provider.Order)
-		provider.Only = slices.Clone(provider.Only)
-		provider.Ignore = slices.Clone(provider.Ignore)
-		provider.Quantizations = slices.Clone(provider.Quantizations)
-		provider.AllowFallbacks = cloneBool(provider.AllowFallbacks)
-		provider.RequireParameters = cloneBool(provider.RequireParameters)
-		if provider.MaxPrice != nil {
-			maxPrice := *provider.MaxPrice
-			provider.MaxPrice = &maxPrice
-		}
-		value.Provider = &provider
-	}
-	return value
-}
-
-func cloneBool(value *bool) *bool {
-	if value == nil {
-		return nil
-	}
-	cloned := *value
-	return &cloned
 }
 
 func cloneTools(values []openrouter.Tool) []openrouter.Tool {

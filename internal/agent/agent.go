@@ -369,13 +369,11 @@ func (a *Agent) NewSession(
 		}
 	}()
 
-	base, models, err := a.resolveActivation(
-		ctx, cwd, sessionSelections{}, primaryTools, mcpTools,
-	)
+	base, models, profiles, err := a.resolveActivation(ctx, cwd, primaryTools, mcpTools)
 	if err != nil {
 		return acp.NewSessionResponse{}, err
 	}
-	configuration, err := applySelections(base, sessionSelections{}, nil, models)
+	configuration, err := applySelections(base, sessionSelections{}, nil, models, profiles)
 	if err != nil {
 		return acp.NewSessionResponse{}, jrpc2.Errorf(jrpc2.InternalError, "%v", err)
 	}
@@ -402,7 +400,7 @@ func (a *Agent) NewSession(
 	}
 	value := &session{
 		id: id, state: state, log: log,
-		activationBase: cloneConfiguration(base), models: models,
+		activationBase: cloneConfiguration(base), models: models, profiles: profiles,
 		mcp: bundle, languages: newSessionLanguages(languages),
 		primaryTools: primaryTools, subagentTools: subagentTools,
 	}
@@ -714,19 +712,19 @@ func (a *Agent) activateSession(
 			}
 		}
 	}()
-	base, models, err := a.resolveActivation(
-		ctx, canonicalCWD, value.state.selections,
-		primaryTools, mcpTools,
-	)
+	base, models, profiles, err := a.resolveActivation(ctx, canonicalCWD, primaryTools, mcpTools)
 	if err != nil {
 		return nil, err
 	}
-	configuration, err := applySelections(base, value.state.selections, value.state.history, models)
+	configuration, err := applySelections(
+		base, value.state.selections, value.state.history, models, profiles,
+	)
 	if err != nil {
 		return nil, jrpc2.Errorf(jrpc2.InvalidParams, "activate session configuration: %v", err)
 	}
 	value.activationBase = cloneConfiguration(base)
 	value.models = models
+	value.profiles = profiles
 	if pendingPermission {
 		requiredConfiguration := value.state.turnConfiguration()
 		required := requiredConfiguration.ExecutorCapabilities
@@ -955,29 +953,29 @@ func (a *Agent) resolveConfiguration(
 	cwd string,
 	primaryTools toolSet,
 	mcpTools []mcpToolConfiguration,
-) (requestConfiguration, error) {
+) (requestConfiguration, settings.Profiles, error) {
 	executorCapabilities := a.negotiatedExecutorCapabilities()
-	resolved, err := a.resolveSettings(cwd)
+	profiles, err := a.resolveSettings(cwd)
 	if err != nil {
-		return requestConfiguration{}, jrpc2.Errorf(jrpc2.InternalError, "%v", err)
+		return requestConfiguration{}, settings.Profiles{}, jrpc2.Errorf(jrpc2.InternalError, "%v", err)
 	}
 	instructions, err := loadRootInstructions(cwd)
 	if err != nil {
-		return requestConfiguration{}, jrpc2.Errorf(jrpc2.InternalError, "%v", err)
+		return requestConfiguration{}, settings.Profiles{}, jrpc2.Errorf(jrpc2.InternalError, "%v", err)
 	}
 	skillReferences, warnings, err := skills.Discover(cwd)
 	for _, warning := range warnings {
 		a.logger.Warn("skipping malformed workspace skill", "error", warning)
 	}
 	if err != nil {
-		return requestConfiguration{}, jrpc2.Errorf(jrpc2.InternalError, "%v", err)
+		return requestConfiguration{}, settings.Profiles{}, jrpc2.Errorf(jrpc2.InternalError, "%v", err)
 	}
 	skillCatalog, err := renderSkillCatalog(skillReferences)
 	if err != nil {
-		return requestConfiguration{}, jrpc2.Errorf(jrpc2.InternalError, "%v", err)
+		return requestConfiguration{}, settings.Profiles{}, jrpc2.Errorf(jrpc2.InternalError, "%v", err)
 	}
 	if a.client == nil {
-		return requestConfiguration{}, jrpc2.Errorf(
+		return requestConfiguration{}, settings.Profiles{}, jrpc2.Errorf(
 			jrpc2.InternalError,
 			"an OpenRouter client is required to activate a session",
 		)
@@ -985,7 +983,7 @@ func (a *Agent) resolveConfiguration(
 	now := time.Now()
 	return requestConfiguration{
 		Mode:                 modeCode,
-		Settings:             resolved,
+		Settings:             profiles.DefaultProfile(),
 		SystemPrompt:         composePrompt(cwd, now, instructions, skillCatalog, a.clientForm),
 		Tools:                cloneTools(primaryTools.modelTools),
 		ToolKinds:            configuredToolKinds(primaryTools),
@@ -993,46 +991,81 @@ func (a *Agent) resolveConfiguration(
 		MCPTools:             slices.Clone(mcpTools),
 		Skills:               cloneSkillReferences(skillReferences),
 		ExecutorCapabilities: executorCapabilities,
-	}, nil
+	}, profiles, nil
 }
 
+// resolveActivation freezes what a session may choose from: its configured
+// model profiles and the catalog entry backing each one. Every configured
+// profile is checked here, so a settings file that names a model the provider
+// cannot serve fails at activation rather than when that model is selected.
 func (a *Agent) resolveActivation(
 	ctx context.Context,
 	cwd string,
-	selections sessionSelections,
 	primaryTools toolSet,
 	mcpTools []mcpToolConfiguration,
-) (requestConfiguration, []openrouter.Model, error) {
-	configuration, err := a.resolveConfiguration(cwd, primaryTools, mcpTools)
+) (requestConfiguration, []openrouter.Model, settings.Profiles, error) {
+	configuration, profiles, err := a.resolveConfiguration(cwd, primaryTools, mcpTools)
 	if err != nil {
-		return requestConfiguration{}, nil, err
+		return requestConfiguration{}, nil, settings.Profiles{}, err
 	}
+	models, err := a.configuredModels(ctx, profiles)
+	if err != nil {
+		return requestConfiguration{}, nil, settings.Profiles{}, err
+	}
+	// Only a profile's request fields matter to this check, so every profile is
+	// read under the default's source rather than the one that would select it.
+	compatibility := settings.Compatibility{Tools: len(configuration.Tools) > 0}
+	for index := range models {
+		profile, err := profiles.Select(models[index].ID, profiles.DefaultSource)
+		if err != nil {
+			return requestConfiguration{}, nil, settings.Profiles{}, jrpc2.Errorf(jrpc2.InternalError, "%v", err)
+		}
+		if err := settings.Validate(&models[index], profile, compatibility); err != nil {
+			return requestConfiguration{}, nil, settings.Profiles{}, jrpc2.Errorf(jrpc2.InternalError, "%v", err)
+		}
+	}
+	return configuration, models, profiles, nil
+}
+
+// configuredModels returns the catalog entry for every configured model, in the
+// order the model option offers them.
+func (a *Agent) configuredModels(
+	ctx context.Context,
+	profiles settings.Profiles,
+) ([]openrouter.Model, error) {
+	ids := profiles.IDs()
+	models := make([]openrouter.Model, 0, len(ids))
 	lister, ok := a.client.(interface {
 		Models(context.Context) ([]openrouter.Model, error)
 	})
 	if !ok {
-		model := configuration.Settings.Model
-		source := configuration.Settings.ModelSource
-		if selections.Model != "" {
-			model = selections.Model
-			source = settings.SourceSession
+		for _, id := range ids {
+			entry, err := a.client.ModelInfo(ctx, id)
+			if err != nil {
+				return nil, jrpc2.Errorf(
+					jrpc2.InternalError, "resolve configured model %s: %v", id, err,
+				)
+			}
+			models = append(models, *entry)
 		}
-		entry, err := a.client.ModelInfo(ctx, model)
-		if err != nil {
-			return requestConfiguration{}, nil, jrpc2.Errorf(
+		return models, nil
+	}
+	catalog, err := lister.Models(ctx)
+	if err != nil {
+		return nil, jrpc2.Errorf(jrpc2.InternalError, "list OpenRouter models: %v", err)
+	}
+	for _, id := range ids {
+		entry := modelEntry(catalog, id)
+		if entry == nil {
+			return nil, jrpc2.Errorf(
 				jrpc2.InternalError,
-				"resolve model from %s: %v",
-				source,
-				err,
+				"configured model %s is not in the OpenRouter catalog",
+				id,
 			)
 		}
-		return configuration, []openrouter.Model{*entry}, nil
+		models = append(models, *entry)
 	}
-	models, err := lister.Models(ctx)
-	if err != nil {
-		return requestConfiguration{}, nil, jrpc2.Errorf(jrpc2.InternalError, "list OpenRouter models: %v", err)
-	}
-	return configuration, models, nil
+	return models, nil
 }
 
 // validateFileSystemCapabilities requires the client's filesystem methods to
@@ -1320,25 +1353,25 @@ func (a *Agent) commitLocked(value *session, kind string, payload any) error {
 	return nil
 }
 
-// resolveSettings reads both settings layers and folds them into the frozen
-// configuration one session sends with every request. Both files are read here
-// rather than at startup: the runtime does not learn a workspace until cwd
-// arrives, and re-reading per session keeps the two layers on one rule with no
-// cache to invalidate.
-func (a *Agent) resolveSettings(cwd string) (settings.Resolved, error) {
+// resolveSettings reads both settings layers and folds them into the model
+// profiles a session may select. Both files are read here rather than at
+// startup: the runtime does not learn a workspace until cwd arrives, and
+// re-reading per session keeps the two layers on one rule with no cache to
+// invalidate.
+func (a *Agent) resolveSettings(cwd string) (settings.Profiles, error) {
 	workspacePath := settings.WorkspacePath(cwd)
 	consulted := make([]string, 0, 2)
 
 	global, _, err := settings.LoadGlobal(a.settingsPath)
 	if err != nil {
-		return settings.Resolved{}, err
+		return settings.Profiles{}, err
 	}
 	if a.settingsPath != "" {
 		consulted = append(consulted, a.settingsPath)
 	}
 	workspace, err := settings.LoadWorkspace(workspacePath)
 	if err != nil {
-		return settings.Resolved{}, err
+		return settings.Profiles{}, err
 	}
 	consulted = append(consulted, workspacePath)
 	a.logger.Info(
@@ -1349,22 +1382,26 @@ func (a *Agent) resolveSettings(cwd string) (settings.Resolved, error) {
 		"workspace_present", workspace != nil,
 	)
 
-	resolved, err := settings.Resolve(settings.Merge(global, workspace), a.modelOverride)
-	if errors.Is(err, settings.ErrNoModel) {
-		message := "a model is required to create a session: pass --model"
-		if len(consulted) > 0 {
-			message += ` or "model" in ` + strings.Join(consulted, " or ")
-		}
-		return settings.Resolved{}, errors.New(message)
-	}
-	if err != nil {
-		return settings.Resolved{}, fmt.Errorf(
+	profiles, err := settings.Resolve(settings.Merge(global, workspace), a.modelOverride)
+	switch {
+	case errors.Is(err, settings.ErrNoModels):
+		return settings.Profiles{}, errors.New(
+			"at least one model must be configured to create a session: add " +
+				`"models" to ` + strings.Join(consulted, " or "),
+		)
+	case errors.Is(err, settings.ErrNoDefaultModel):
+		return settings.Profiles{}, errors.New(
+			"a model is required to create a session: pass --model or add " +
+				`"default_model" to ` + strings.Join(consulted, " or "),
+		)
+	case err != nil:
+		return settings.Profiles{}, fmt.Errorf(
 			"resolve settings from %s: %w",
 			strings.Join(consulted, " and "),
 			err,
 		)
 	}
-	return resolved, err
+	return profiles, nil
 }
 
 func (a *Agent) credentialSource() credentials.Source {
@@ -1747,10 +1784,13 @@ type session struct {
 	poisoned       bool
 	activationBase requestConfiguration
 	models         []openrouter.Model
-	mcp            *mcp.Bundle
-	languages      *sessionLanguages
-	primaryTools   toolSet
-	subagentTools  toolSet
+	// profiles are the settings-configured model profiles this activation froze;
+	// models holds the catalog entry backing each one, in the same order.
+	profiles      settings.Profiles
+	mcp           *mcp.Bundle
+	languages     *sessionLanguages
+	primaryTools  toolSet
+	subagentTools toolSet
 	// configMu serializes a configuration change against the user-message commit
 	// that freezes the turn configuration, so a turn either starts before or
 	// after a change and never straddles it.

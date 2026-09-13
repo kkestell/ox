@@ -71,9 +71,9 @@ The implemented package layout assigns one owner to each boundary:
   model-facing descriptors.
 - `internal/lsp` owns language-server process lifecycles, JSON-RPC framing,
   document synchronization, position translation, and confined query results.
-- `internal/settings` owns global and workspace settings, validation,
-  precedence, and validation of model settings. The agent combines those inputs
-  with durable session selections to construct immutable turn configuration.
+- `internal/settings` owns global and workspace settings, precedence, and the
+  validation of per-model request profiles. The agent combines those inputs with
+  durable session selections to construct immutable turn configuration.
 - `internal/skills` owns confined workspace-skill discovery, Agent Skills
   metadata validation, and activation-frozen body loading.
 - `internal/credentials` owns credential precedence and mutable access to the OS
@@ -263,19 +263,24 @@ protocol and session state meet.
 
 ## Configuration and credentials
 
-Activation resolves global/workspace model defaults, root instructions, skill
-metadata, client capabilities, and tool definitions. Process inputs cannot come
-from the workspace. `docs/settings.md` owns shipped configuration fields and
-precedence; `docs/spec.md#process-configuration-transition` owns the planned
-transition. This separation keeps process authority out of project-controlled
-files without duplicating the settings reference here.
+Activation resolves the configured model profiles, root instructions, skill
+metadata, client capabilities, and tool definitions. A session freezes the whole
+resolved profile map beside the OpenRouter catalog entry backing each one, so
+the models a client may choose from and the request settings each carries are
+fixed for that activation. Process inputs cannot come from the workspace.
+`docs/settings.md` owns shipped configuration fields and precedence;
+`docs/spec.md#process-configuration-transition` owns the planned transition.
+This separation keeps process authority out of project-controlled files without
+duplicating the settings reference here.
 
 The agent owns durable session selections independently of activation inputs. A
-setter validates the resulting complete configuration, commits it, then
-publishes it. At turn admission the agent constructs one immutable configuration
-used by the provider, dispatcher, and children. A running or recovered turn
-never reads a later session selection. The dispatcher enforces tool exclusion;
-prompt wording and server annotations are not policy enforcement.
+selection records a model ID, not a copy of its settings, so every activation
+resolves it against current files. A setter loads the chosen profile, validates
+the resulting complete configuration, commits it, then publishes it. At turn
+admission the agent constructs one immutable configuration used by the provider,
+dispatcher, and children. A running or recovered turn never reads a later
+session selection. The dispatcher enforces tool exclusion; prompt wording and
+server annotations are not policy enforcement.
 
 Credentials are resolved by the credential boundary and passed to transports in
 memory. Authentication and login own mutation. Neither durable configuration nor

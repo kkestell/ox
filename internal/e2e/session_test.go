@@ -1295,16 +1295,21 @@ func TestNewSessionRejectsAnUnlistableWorkingDirectory(t *testing.T) {
 	}
 }
 
-func TestNewSessionRequiresAModel(t *testing.T) {
-	child := start(t, withModelOverride(""))
+func TestNewSessionRequiresAConfiguredModel(t *testing.T) {
+	child := start(t,
+		withModelOverride(""),
+		withGlobalConfig(`{"models":{"test/model":{}}}`),
+	)
 	initialize(t, child)
 
 	responseError := child.requestError("session/new", newSessionRequest(child.cwd))
 	if responseError.Code != -32603 {
 		t.Errorf("error code = %d, want -32603", responseError.Code)
 	}
-	if !strings.Contains(responseError.Message, "--model") {
-		t.Errorf("error message = %q, want it to name --model", responseError.Message)
+	for _, want := range []string{"--model", `"default_model"`} {
+		if !strings.Contains(responseError.Message, want) {
+			t.Errorf("error message = %q, want it to name %s", responseError.Message, want)
+		}
 	}
 	for _, path := range []string{
 		filepath.Join(child.cwd, "config", "ox", "settings.json"),

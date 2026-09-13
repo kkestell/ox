@@ -37,7 +37,7 @@ func TestLoadTreatsAbsentAndBlankLayersAsHarmless(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
-		if config == nil || *config != (Config{}) {
+		if config == nil || config.DefaultModel != nil || config.Models != nil {
 			t.Fatalf("%s: layer = %#v", name, config)
 		}
 	}
@@ -45,33 +45,41 @@ func TestLoadTreatsAbsentAndBlankLayersAsHarmless(t *testing.T) {
 
 func TestLoadDecodesTheAllowlistedVocabulary(t *testing.T) {
 	config, err := LoadWorkspace(write(t, filepath.Join(t.TempDir(), "settings.json"), `{
-		"model": "vendor/model",
-		"max_tokens": 512,
-		"temperature": 0.25,
-		"reasoning": {"enabled": true, "effort": "high", "exclude": false},
-		"provider": {
-			"order": ["alpha", "beta"],
-			"only": ["alpha"],
-			"ignore": ["gamma"],
-			"quantizations": ["fp8"],
-			"sort": "throughput",
-			"data_collection": "deny",
-			"allow_fallbacks": false,
-			"max_price": {"prompt": 1.5, "completion": 2}
+		"default_model": "vendor/model",
+		"models": {
+			"other/model": {},
+			"vendor/model": {
+				"max_tokens": 512,
+				"temperature": 0.25,
+				"reasoning": {"enabled": true, "effort": "high", "exclude": false},
+				"provider": {
+					"order": ["alpha", "beta"],
+					"only": ["alpha"],
+					"ignore": ["gamma"],
+					"quantizations": ["fp8"],
+					"sort": "throughput",
+					"data_collection": "deny",
+					"allow_fallbacks": false,
+					"max_price": {"prompt": 1.5, "completion": 2}
+				}
+			}
 		}
 	}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if *config.Model != "vendor/model" || *config.MaxTokens != 512 ||
-		*config.Temperature != 0.25 {
-		t.Fatalf("scalars = %#v", config)
+	if *config.DefaultModel != "vendor/model" || len(config.Models) != 2 {
+		t.Fatalf("layer = %#v", config)
 	}
-	if !*config.Reasoning.Enabled || *config.Reasoning.Effort != "high" ||
-		*config.Reasoning.Exclude {
-		t.Fatalf("reasoning = %#v", config.Reasoning)
+	model := config.Models["vendor/model"]
+	if *model.MaxTokens != 512 || *model.Temperature != 0.25 {
+		t.Fatalf("scalars = %#v", model)
 	}
-	provider := config.Provider
+	if !*model.Reasoning.Enabled || *model.Reasoning.Effort != "high" ||
+		*model.Reasoning.Exclude {
+		t.Fatalf("reasoning = %#v", model.Reasoning)
+	}
+	provider := model.Provider
 	if strings.Join(provider.Order, ",") != "alpha,beta" ||
 		strings.Join(provider.Only, ",") != "alpha" ||
 		strings.Join(provider.Ignore, ",") != "gamma" ||
@@ -88,13 +96,16 @@ func TestLoadDecodesTheAllowlistedVocabulary(t *testing.T) {
 
 func TestLoadRejectsUnknownKeysAndWrongTypesNamingTheFile(t *testing.T) {
 	for name, body := range map[string]string{
-		"malformed json":       `{"model":`,
-		"unknown key":          `{"models": "vendor/model"}`,
-		"unknown provider key": `{"provider": {"require_parameters": true}}`,
-		"unknown nested key":   `{"reasoning": {"effort_level": "high"}}`,
-		"unknown price key":    `{"provider": {"max_price": {"image": 1}}}`,
-		"wrong scalar type":    `{"temperature": "hot"}`,
-		"wrong list type":      `{"provider": {"order": "alpha"}}`,
+		"malformed json":          `{"default_model":`,
+		"unknown key":             `{"model": "vendor/model"}`,
+		"top-level request field": `{"max_tokens": 512}`,
+		"unknown profile key":     `{"models": {"vendor/model": {"models": {}}}}`,
+		"unknown provider key":    `{"models": {"vendor/model": {"provider": {"require_parameters": true}}}}`,
+		"unknown nested key":      `{"models": {"vendor/model": {"reasoning": {"effort_level": "high"}}}}`,
+		"unknown price key":       `{"models": {"vendor/model": {"provider": {"max_price": {"image": 1}}}}}`,
+		"wrong scalar type":       `{"models": {"vendor/model": {"temperature": "hot"}}}`,
+		"wrong list type":         `{"models": {"vendor/model": {"provider": {"order": "alpha"}}}}`,
+		"wrong profile type":      `{"models": {"vendor/model": "profile"}}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			path := write(t, filepath.Join(t.TempDir(), "settings.json"), body)
@@ -111,14 +122,15 @@ func TestLoadRejectsUnknownKeysAndWrongTypesNamingTheFile(t *testing.T) {
 
 func TestGlobalProcessSettingsAndWorkspaceExclusion(t *testing.T) {
 	path := write(t, filepath.Join(t.TempDir(), "settings.json"), `{
-		"model":"vendor/model",
+		"default_model":"vendor/model",
+		"models":{"vendor/model":{}},
 		"process":{"log_level":"debug","openrouter_base_url":"http://localhost:8080/api/v1","trace":"trace.jsonl"}
 	}`)
 	model, process, err := LoadGlobal(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if *model.Model != "vendor/model" || *process.LogLevel != "debug" ||
+	if *model.DefaultModel != "vendor/model" || *process.LogLevel != "debug" ||
 		*process.OpenRouterBaseURL != "http://localhost:8080/api/v1" || *process.Trace != "trace.jsonl" {
 		t.Fatalf("global settings = %#v, %#v", model, process)
 	}

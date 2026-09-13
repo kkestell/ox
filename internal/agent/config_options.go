@@ -80,19 +80,26 @@ func (a *Agent) SetSessionConfigOption(
 			)
 		}
 		selections.Model = request.Value
-		reset := reasoningDefault
-		selections.Reasoning = &reset
+		// A profile carries its own reasoning, so a model change drops the
+		// override rather than carrying one model's effort onto another.
+		selections.Reasoning = nil
 	case configReasoning:
 		if !reasoningValueAvailable(value.models, configuration.Settings.Model, request.Value) {
 			return acp.SetSessionConfigOptionResponse{}, jrpc2.Errorf(
 				jrpc2.InvalidParams, "unknown reasoning value %q", request.Value,
 			)
 		}
-		selected := request.Value
-		selections.Reasoning = &selected
+		if request.Value == reasoningDefault {
+			selections.Reasoning = nil
+		} else {
+			selected := request.Value
+			selections.Reasoning = &selected
+		}
 	}
 
-	next, err := applySelections(value.activationBase, selections, history, value.models)
+	next, err := applySelections(
+		value.activationBase, selections, history, value.models, value.profiles,
+	)
 	if err != nil {
 		return acp.SetSessionConfigOptionResponse{}, jrpc2.Errorf(
 			jrpc2.InvalidParams, "%s: %v", request.ConfigID, err,
@@ -217,38 +224,42 @@ func modelEntry(models []openrouter.Model, id string) *openrouter.Model {
 	return nil
 }
 
+// applySelections folds a session's durable choices over the configuration its
+// activation resolved. Choosing a model replaces the whole request profile, so
+// no provider routing, sampling, or output limit survives from the model that
+// was selected before it.
 func applySelections(
 	base requestConfiguration,
 	selections sessionSelections,
 	history []openrouter.Message,
 	models []openrouter.Model,
+	profiles settings.Profiles,
 ) (requestConfiguration, error) {
 	if err := validateSelections(selections); err != nil {
 		return requestConfiguration{}, err
 	}
 	configuration := cloneConfiguration(base)
 	if selections.Model != "" {
-		configuration.Settings.Model = selections.Model
-		configuration.Settings.ModelSource = settings.SourceSession
+		profile, err := profiles.Select(selections.Model, settings.SourceSession)
+		if err != nil {
+			return requestConfiguration{}, err
+		}
+		configuration.Settings = profile
 	}
 	entry := modelEntry(models, configuration.Settings.Model)
 	if entry == nil {
 		return requestConfiguration{}, fmt.Errorf("model %q is not in the OpenRouter catalog", configuration.Settings.Model)
 	}
-	if selections.Reasoning != nil {
-		if *selections.Reasoning == reasoningDefault {
-			configuration.Settings.Reasoning = nil
-		} else {
-			reasoning := configuration.Settings.Reasoning
-			if reasoning == nil {
-				reasoning = &openrouter.Reasoning{}
-			} else {
-				selected := *reasoning
-				reasoning = &selected
-			}
-			reasoning.Effort = *selections.Reasoning
-			configuration.Settings.Reasoning = reasoning
+	// An omitted reasoning selection leaves the profile's own reasoning in place,
+	// which is what "default" means once a model carries its own settings.
+	if selections.Reasoning != nil && *selections.Reasoning != reasoningDefault {
+		reasoning := &openrouter.Reasoning{}
+		if configuration.Settings.Reasoning != nil {
+			selected := *configuration.Settings.Reasoning
+			reasoning = &selected
 		}
+		reasoning.Effort = *selections.Reasoning
+		configuration.Settings.Reasoning = reasoning
 	}
 	switch selections.Mode {
 	case modePlan:

@@ -3,11 +3,13 @@ package settings
 import "slices"
 
 // Merge folds workspace over global into a new Config, mutating neither input.
-// Every setting is workspace-wins-per-field: a field the workspace sets replaces
-// the global one, a field it omits falls through, and the nested reasoning,
-// provider, and max_price objects merge per field rather than wholesale. Slices
-// keep the nil-versus-empty distinction, so `"ignore": []` in the workspace
-// clears a global list instead of falling through to it.
+// Model profiles merge by exact model ID: a profile only one layer defines
+// survives untouched, and two definitions of the same ID merge field by field.
+// Every field is workspace-wins: a field the workspace sets replaces the global
+// one, a field it omits falls through, and the nested reasoning, provider, and
+// max_price objects merge per field rather than wholesale. Slices keep the
+// nil-versus-empty distinction, so `"ignore": []` in the workspace clears a
+// global list instead of falling through to it.
 func Merge(global, workspace *Config) *Config {
 	if global == nil {
 		global = &Config{}
@@ -16,19 +18,42 @@ func Merge(global, workspace *Config) *Config {
 		workspace = &Config{}
 	}
 	merged := &Config{
-		Model:       pick(workspace.Model, global.Model),
+		DefaultModel: pick(workspace.DefaultModel, global.DefaultModel),
+		Models:       mergeModels(global.Models, workspace.Models),
+	}
+	switch {
+	case workspace.DefaultModel != nil:
+		merged.defaultSource = SourceWorkspace
+	case global.DefaultModel != nil:
+		merged.defaultSource = SourceGlobal
+	}
+	return merged
+}
+
+func mergeModels(global, workspace map[string]ModelConfig) map[string]ModelConfig {
+	if global == nil && workspace == nil {
+		return nil
+	}
+	merged := make(map[string]ModelConfig, len(global)+len(workspace))
+	for id, profile := range global {
+		merged[id] = mergeModel(ModelConfig{}, profile)
+	}
+	for id, profile := range workspace {
+		merged[id] = mergeModel(merged[id], profile)
+	}
+	return merged
+}
+
+// mergeModel folds one workspace profile over its global counterpart. Passing an
+// empty global copies a profile, which is what keeps the merged map independent
+// of both inputs.
+func mergeModel(global, workspace ModelConfig) ModelConfig {
+	return ModelConfig{
 		MaxTokens:   pick(workspace.MaxTokens, global.MaxTokens),
 		Temperature: pick(workspace.Temperature, global.Temperature),
 		Reasoning:   mergeReasoning(global.Reasoning, workspace.Reasoning),
 		Provider:    mergeProvider(global.Provider, workspace.Provider),
 	}
-	switch {
-	case workspace.Model != nil:
-		merged.modelSource = SourceWorkspace
-	case global.Model != nil:
-		merged.modelSource = SourceGlobal
-	}
-	return merged
 }
 
 func mergeReasoning(global, workspace *Reasoning) *Reasoning {

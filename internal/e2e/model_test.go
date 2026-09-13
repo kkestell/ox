@@ -28,15 +28,50 @@ const testModelCatalog = `{"data":[
 {"id":"old/model","context_length":128000,"supported_parameters":["tools","temperature","max_tokens"]},
 {"id":"parent/model","context_length":128000,"supported_parameters":["tools","temperature","max_tokens"]},
 {"id":"second/model","context_length":128000,"supported_parameters":["tools","temperature","max_tokens"]},
-{"id":"workspace/model","context_length":128000,"supported_parameters":["tools","temperature","max_tokens"]}
+{"id":"workspace/model","context_length":128000,"supported_parameters":["tools","temperature","max_tokens"]},
+{"id":"profile/alpha","name":"Profile Alpha","context_length":128000,"supported_parameters":["tools","temperature","max_tokens","reasoning"],"reasoning":{"supported_efforts":["low","medium","high"]}},
+{"id":"profile/beta","name":"Profile Beta","context_length":128000,"supported_parameters":["tools","temperature","max_tokens","reasoning"],"reasoning":{"supported_efforts":["low","medium","high"]}}
 ]}`
+
+// testSettings is the global settings file every harness process starts with: a
+// profile for each model in the test catalog, defaulting to test/model. A test
+// that supplies its own global settings replaces it entirely.
+const testSettings = `{
+"default_model": "test/model",
+"models": {
+	"test/model": {},
+	"canonical/model": {},
+	"environment/model": {},
+	"first/model": {},
+	"fixed/model": {},
+	"global/model": {},
+	"good/model": {},
+	"home/model": {},
+	"new/model": {},
+	"old/model": {},
+	"parent/model": {},
+	"second/model": {},
+	"workspace/model": {}
+}}`
 
 type modelRequest struct {
 	Model         string            `json:"model"`
 	Messages      []modelMessage    `json:"messages"`
 	Tools         []json.RawMessage `json:"tools"`
 	Stream        bool              `json:"stream"`
+	MaxTokens     *int              `json:"max_tokens"`
+	Temperature   *float64          `json:"temperature"`
+	Reasoning     *modelReasoning   `json:"reasoning"`
+	Provider      *modelProvider    `json:"provider"`
 	Authorization string            `json:"-"`
+}
+
+type modelReasoning struct {
+	Effort string `json:"effort"`
+}
+
+type modelProvider struct {
+	Only []string `json:"only"`
 }
 
 type modelMessage struct {

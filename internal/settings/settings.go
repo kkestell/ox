@@ -1,7 +1,7 @@
 // Package settings owns Ox's settings files: the global
 // $XDG_CONFIG_HOME/ox/settings.json, the per-workspace
-// <workspace>/.ox/settings.json, and the resolution of the two into the
-// model configuration one session sends with every request.
+// <workspace>/.ox/settings.json, and the resolution of the two into the model
+// profiles a session may select and the request configuration each one sends.
 //
 // The model vocabulary is a deliberate allowlist of OpenRouter wire keys. The
 // global-only process object separately owns process authority such as the
@@ -41,19 +41,27 @@ const (
 	SourceSession   ModelSource = "session model option"
 )
 
-// Config is one settings layer. Every field is a pointer or a slice so an
-// omitted key is distinguishable from a zero value, which is what lets the
-// workspace layer override one field without discarding the global one.
+// Config is one settings layer: the model profiles it defines and the profile a
+// session starts on.
 type Config struct {
-	Model       *string    `json:"model,omitempty"`
+	DefaultModel *string                `json:"default_model,omitempty"`
+	Models       map[string]ModelConfig `json:"models,omitempty"`
+
+	// defaultSource records which layer supplied DefaultModel. Merge sets it; a
+	// layer straight from a loader leaves it empty, so Resolve expects a merged
+	// Config.
+	defaultSource ModelSource
+}
+
+// ModelConfig is one model profile, keyed elsewhere by its exact OpenRouter
+// model ID. Every field is a pointer or a slice so an omitted key is
+// distinguishable from a zero value, which is what lets the workspace layer
+// override one field without discarding the global one.
+type ModelConfig struct {
 	MaxTokens   *int       `json:"max_tokens,omitempty"`
 	Temperature *float64   `json:"temperature,omitempty"`
 	Reasoning   *Reasoning `json:"reasoning,omitempty"`
 	Provider    *Provider  `json:"provider,omitempty"`
-
-	// modelSource records which layer supplied Model. Merge sets it; a layer
-	// straight from a loader leaves it empty, so Resolve expects a merged Config.
-	modelSource ModelSource
 }
 
 // Process contains settings that apply to the whole Ox process. It is accepted

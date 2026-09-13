@@ -1,6 +1,7 @@
 package e2e
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -19,7 +20,7 @@ func TestConfigurationPrecedence(t *testing.T) {
 			name: "global",
 			options: []startOption{
 				withModelOverride(""),
-				withGlobalConfig(`{"model":"global/model"}`),
+				withGlobalConfig(`{"default_model":"global/model","models":{"global/model":{}}}`),
 			},
 			wantModel: "global/model",
 		},
@@ -27,8 +28,11 @@ func TestConfigurationPrecedence(t *testing.T) {
 			name: "workspace over global",
 			options: []startOption{
 				withModelOverride(""),
-				withGlobalConfig(`{"model":"global/model"}`),
-				withWorkspaceConfig(`{"model":"workspace/model"}`),
+				withGlobalConfig(`{
+					"default_model":"global/model",
+					"models":{"global/model":{},"workspace/model":{}}
+				}`),
+				withWorkspaceConfig(`{"default_model":"workspace/model"}`),
 			},
 			wantModel: "workspace/model",
 		},
@@ -36,8 +40,15 @@ func TestConfigurationPrecedence(t *testing.T) {
 			name: "CLI over workspace and global",
 			options: []startOption{
 				withModelOverride("environment/model"),
-				withGlobalConfig(`{"model":"global/model"}`),
-				withWorkspaceConfig(`{"model":"workspace/model"}`),
+				withGlobalConfig(`{
+					"default_model":"global/model",
+					"models":{
+						"global/model":{},
+						"workspace/model":{},
+						"environment/model":{}
+					}
+				}`),
+				withWorkspaceConfig(`{"default_model":"workspace/model"}`),
 			},
 			wantModel: "environment/model",
 		},
@@ -60,6 +71,8 @@ func TestProcessConfigurationPrecedenceAndGlobalTrace(t *testing.T) {
 	model := startModel(t, sse(evFinishReason("stop")))
 	child, session := startSession(t,
 		withGlobalConfig(`{
+			"default_model": "test/model",
+			"models": {"test/model": {}},
 			"process": {
 				"log_level": "warn",
 				"openrouter_base_url": "`+model.server.URL+`/api/v1",
@@ -84,6 +97,8 @@ func TestCLIProcessConfigurationOverridesGlobal(t *testing.T) {
 	child, session := startSession(t,
 		withModel(model),
 		withGlobalConfig(`{
+			"default_model": "test/model",
+			"models": {"test/model": {}},
 			"process": {
 				"log_level": "error",
 				"openrouter_base_url": "https://global.invalid/api/v1",
@@ -108,7 +123,7 @@ func TestCLIProcessConfigurationOverridesGlobal(t *testing.T) {
 
 func TestInvalidGlobalProcessConfigurationFailsStartup(t *testing.T) {
 	for name, content := range map[string]string{
-		"malformed": `{"model":`,
+		"malformed": `{"default_model":`,
 		"invalid":   `{"process":{"log_level":"verbose"}}`,
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -155,7 +170,8 @@ func TestGlobalConfigurationFallsBackToHome(t *testing.T) {
 		withModel(model),
 		withModelOverride(""),
 		withEnvironment("XDG_CONFIG_HOME", ""),
-		withFile(filepath.Join(".config", "ox", "settings.json"), `{"model":"home/model"}`),
+		withFile(filepath.Join(".config", "ox", "settings.json"),
+			`{"default_model":"home/model","models":{"home/model":{}}}`),
 	)
 	prompt(t, child, session, "home fallback")
 	if got := model.requestFor("home fallback").Model; got != "home/model" {
@@ -166,7 +182,8 @@ func TestGlobalConfigurationFallsBackToHome(t *testing.T) {
 func TestWorkspaceConfigurationDoesNotWalkToAParent(t *testing.T) {
 	child := start(t,
 		withModelOverride(""),
-		withWorkspaceConfig(`{"model":"parent/model"}`),
+		withGlobalConfig(`{}`),
+		withWorkspaceConfig(`{"default_model":"parent/model","models":{"parent/model":{}}}`),
 		withFile(filepath.Join("child", ".keep"), ""),
 	)
 	initialize(t, child)
@@ -188,8 +205,10 @@ func TestSessionsResolveConfigurationForTheirOwnWorkspaces(t *testing.T) {
 	child := start(t,
 		withModel(model),
 		withModelOverride(""),
-		withFile(filepath.Join("first", ".ox", "settings.json"), `{"model":"first/model"}`),
-		withFile(filepath.Join("second", ".ox", "settings.json"), `{"model":"second/model"}`),
+		withFile(filepath.Join("first", ".ox", "settings.json"),
+			`{"default_model":"first/model","models":{"first/model":{}}}`),
+		withFile(filepath.Join("second", ".ox", "settings.json"),
+			`{"default_model":"second/model","models":{"second/model":{}}}`),
 	)
 	initialize(t, child)
 	first := newSession(t, child, filepath.Join(child.cwd, "first"))
@@ -212,13 +231,14 @@ func TestSessionConfigurationIsFrozen(t *testing.T) {
 	child := start(t,
 		withModel(model),
 		withModelOverride(""),
-		withWorkspaceConfig(`{"model":"old/model"}`),
+		withWorkspaceConfig(`{"default_model":"old/model","models":{"old/model":{}}}`),
 	)
 	initialize(t, child)
 	older := newSession(t, child, child.cwd)
 
 	path := filepath.Join(child.cwd, ".ox", "settings.json")
-	if err := os.WriteFile(path, []byte(`{"model":"new/model"}`), 0o600); err != nil {
+	settings := []byte(`{"default_model":"new/model","models":{"new/model":{}}}`)
+	if err := os.WriteFile(path, settings, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	newer := newSession(t, child, child.cwd)
@@ -238,7 +258,8 @@ func TestWorkspaceConfigurationUsesCanonicalDirectory(t *testing.T) {
 	child := start(t,
 		withModel(model),
 		withModelOverride(""),
-		withFile(filepath.Join("real", ".ox", "settings.json"), `{"model":"canonical/model"}`),
+		withFile(filepath.Join("real", ".ox", "settings.json"),
+			`{"default_model":"canonical/model","models":{"canonical/model":{}}}`),
 	)
 	link := filepath.Join(child.cwd, "link")
 	if err := os.Symlink(filepath.Join(child.cwd, "real"), link); err != nil {
@@ -259,7 +280,8 @@ func TestInvalidConfigurationFailsOnlyThatSession(t *testing.T) {
 	child := start(t,
 		withModel(model),
 		withModelOverride(""),
-		withFile(filepath.Join("good", ".ox", "settings.json"), `{"model":"good/model"}`),
+		withFile(filepath.Join("good", ".ox", "settings.json"),
+			`{"default_model":"good/model","models":{"good/model":{}}}`),
 		withFile(filepath.Join("bad", ".ox", "settings.json"), `{"unknown":true}`),
 	)
 	initialize(t, child)
@@ -287,8 +309,10 @@ func TestBadConfigurationFilesNameTheirPathAndOxRecovers(t *testing.T) {
 		want     string
 	}{
 		{name: "unknown workspace key", relative: filepath.Join(".ox", "settings.json"), content: `{"modle":"test/model"}`, want: `unknown field "modle"`},
-		{name: "wrong model type", relative: filepath.Join(".ox", "settings.json"), content: `{"model":1}`, want: "cannot unmarshal number"},
-		{name: "blank model", relative: filepath.Join(".ox", "settings.json"), content: `{"model":"   "}`, want: `"model" must not be blank`},
+		{name: "retired top-level model key", relative: filepath.Join(".ox", "settings.json"), content: `{"model":"test/model"}`, want: `unknown field "model"`},
+		{name: "wrong default model type", relative: filepath.Join(".ox", "settings.json"), content: `{"default_model":1}`, want: "cannot unmarshal number"},
+		{name: "blank default model", relative: filepath.Join(".ox", "settings.json"), content: `{"default_model":"   "}`, want: `"default_model" must not be blank`},
+		{name: "unconfigured default model", relative: filepath.Join(".ox", "settings.json"), content: `{"default_model":"absent/model","models":{"fixed/model":{}}}`, want: `"absent/model", which is not configured`},
 	}
 
 	for _, test := range tests {
@@ -305,7 +329,8 @@ func TestBadConfigurationFilesNameTheirPathAndOxRecovers(t *testing.T) {
 				t.Fatalf("configuration error = %#v, want path and %q", responseError, test.want)
 			}
 
-			if err := os.WriteFile(path, []byte(`{"model":"fixed/model"}`), 0o600); err != nil {
+			fixed := []byte(`{"default_model":"fixed/model","models":{"fixed/model":{}}}`)
+			if err := os.WriteFile(path, fixed, 0o600); err != nil {
 				t.Fatal(err)
 			}
 			_ = newSession(t, child, child.cwd)
@@ -324,7 +349,7 @@ func TestHarmlessWorkspaceFilesFallThroughToGlobalConfiguration(t *testing.T) {
 			child, session := startSession(t,
 				withModel(model),
 				withModelOverride(""),
-				withGlobalConfig(`{"model":"global/model"}`),
+				withGlobalConfig(`{"default_model":"global/model","models":{"global/model":{}}}`),
 				withWorkspaceConfig(content),
 			)
 			prompt(t, child, session, name)
@@ -389,5 +414,64 @@ func TestNoUsableGlobalBaseNamesOnlyWorkspaceConfiguration(t *testing.T) {
 	}
 	if strings.Contains(responseError.Message, filepath.Join("relative", "ox")) {
 		t.Errorf("configuration error = %q, want no relative global path", responseError.Message)
+	}
+}
+
+// A model option chooses a whole request profile, so nothing from the model
+// that was selected before it survives the change.
+func TestSelectingAModelAppliesItsWholeProfile(t *testing.T) {
+	model := startModel(t)
+	model.queueFor("alpha turn", sse(evFinishReason("stop")))
+	model.queueFor("beta turn", sse(evFinishReason("stop")))
+	child, session := startSession(t,
+		withModel(model),
+		withModelOverride(""),
+		withGlobalConfig(`{
+			"default_model": "profile/alpha",
+			"models": {
+				"profile/alpha": {
+					"max_tokens": 256,
+					"temperature": 0.2,
+					"reasoning": {"effort": "low"},
+					"provider": {"only": ["alpha-host"]}
+				},
+				"profile/beta": {
+					"max_tokens": 1024,
+					"temperature": 0.9,
+					"reasoning": {"effort": "medium"},
+					"provider": {"only": ["beta-host"]}
+				}
+			}
+		}`),
+	)
+	prompt(t, child, session, "alpha turn")
+
+	// An explicit effort overlays the selected profile, and the model change
+	// drops it rather than carrying it onto the next profile.
+	child.request(acp.MethodSessionSetConfigOption, acp.SetSessionConfigOptionRequest{
+		SessionID: session, ConfigID: "reasoning", Value: "high",
+	})
+	switched := child.request(acp.MethodSessionSetConfigOption, acp.SetSessionConfigOptionRequest{
+		SessionID: session, ConfigID: "model", Value: "profile/beta",
+	})
+	var response acp.SetSessionConfigOptionResponse
+	if err := json.Unmarshal(switched, &response); err != nil {
+		t.Fatal(err)
+	}
+	if optionValue(response.ConfigOptions, "reasoning") != "medium" {
+		t.Fatalf("reasoning after switch = %#v", response.ConfigOptions)
+	}
+	prompt(t, child, session, "beta turn")
+	_ = updates(t, child, session)
+
+	alpha := model.requestFor("alpha turn")
+	beta := model.requestFor("beta turn")
+	if alpha.Model != "profile/alpha" || *alpha.MaxTokens != 256 || *alpha.Temperature != 0.2 ||
+		alpha.Reasoning.Effort != "low" || strings.Join(alpha.Provider.Only, ",") != "alpha-host" {
+		t.Fatalf("alpha request = %#v", alpha)
+	}
+	if beta.Model != "profile/beta" || *beta.MaxTokens != 1024 || *beta.Temperature != 0.9 ||
+		beta.Reasoning.Effort != "medium" || strings.Join(beta.Provider.Only, ",") != "beta-host" {
+		t.Fatalf("beta request = %#v", beta)
 	}
 }

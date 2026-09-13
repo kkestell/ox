@@ -35,7 +35,9 @@ func fixtureLanguageServer(t *testing.T) map[string]any {
 func languageServerConfig(t *testing.T, marker string, servers map[string]any) startOption {
 	t.Helper()
 	config, err := json.Marshal(map[string]any{
-		"process": map[string]any{"language_servers": servers},
+		"default_model": "test/model",
+		"models":        map[string]any{"test/model": map[string]any{}},
+		"process":       map[string]any{"language_servers": servers},
 	})
 	if err != nil {
 		t.Fatal(err)

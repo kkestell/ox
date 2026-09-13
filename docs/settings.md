@@ -5,13 +5,37 @@ at `$XDG_CONFIG_HOME/ox/settings.json`, or `$HOME/.config/ox/settings.json` when
 `XDG_CONFIG_HOME` is unset. Workspace settings live at
 `<workspace>/.ox/settings.json`.
 
-Workspace values override global values one field at a time. `--model` overrides
-the model from either file. Ox rejects unknown keys and invalid values instead
-of ignoring them.
+`models` maps an exact OpenRouter model ID to the complete set of request
+settings Ox sends when that model is selected. `default_model` names the entry a
+new session starts on. Ox rejects unknown keys and invalid values instead of
+ignoring them.
 
 ```json
 {
-  "model": "openai/gpt-5.4",
+  "default_model": "openai/gpt-5.4",
+  "models": {
+    "openai/gpt-5.4": {
+      "max_tokens": 8192,
+      "temperature": 0.2,
+      "reasoning": {
+        "enabled": true,
+        "effort": "high",
+        "exclude": false
+      },
+      "provider": {
+        "only": ["openai"],
+        "allow_fallbacks": true,
+        "data_collection": "deny",
+        "max_price": {
+          "prompt": 5,
+          "completion": 20
+        }
+      }
+    },
+    "z-ai/glm-4.6": {
+      "provider": { "only": ["z-ai"] }
+    }
+  },
   "process": {
     "log_level": "info",
     "openrouter_base_url": "https://openrouter.ai/api/v1",
@@ -27,40 +51,47 @@ of ignoring them.
         "extensions": [".ts", ".tsx"]
       }
     }
-  },
-  "max_tokens": 8192,
-  "temperature": 0.2,
-  "reasoning": {
-    "enabled": true,
-    "effort": "high",
-    "exclude": false
-  },
-  "provider": {
-    "order": ["OpenAI"],
-    "allow_fallbacks": true,
-    "data_collection": "deny",
-    "max_price": {
-      "prompt": 5,
-      "completion": 20
-    }
   }
 }
 ```
+
+## Model profiles
+
+At least one model must be configured, and `default_model` or `--model` must
+name a configured one. A client offers exactly the configured models, and
+selecting one applies that entry's whole set of request settings to subsequent
+turns. Nothing carries over from the model selected before it, so provider
+routing, sampling, and output limits are always the ones written beside the
+model in use.
+
+The reasoning option's `default` value means the selected model's configured
+reasoning, or the provider's own default when that model configures none.
+Choosing an explicit effort overrides it until the model changes.
+
+Every configured model is resolved against OpenRouter's model catalog when a
+session activates, so an unavailable model or an unsupported setting is reported
+then rather than when it is selected. `max_tokens` must be positive and
+`temperature` must be between `0` and `2`. Provider routing supports `order`,
+`only`, `ignore`, `quantizations`, `sort`, `data_collection`, `allow_fallbacks`,
+and `max_price.prompt` and `max_price.completion`. The
+[provider routing guide](https://openrouter.ai/docs/guides/routing/provider-selection)
+lists the provider slugs those lists accept.
+
+## Precedence
+
+The two `models` maps merge by exact model ID. A model only one file defines is
+kept as written, and two definitions of the same model merge one field at a
+time, with the workspace value winning. An explicit empty list such as
+`"ignore": []` clears an inherited list rather than falling through to it. The
+workspace `default_model` overrides the global one, and `--model` overrides
+both. A durable session selection is a model ID, so reloading a session resolves
+that model against the current files and fails clearly when it is gone.
 
 The `process` object is global-only. A workspace settings file cannot choose
 logging, tracing, the provider endpoint, or language servers. `log_level`
 accepts `debug`, `info`, `warn`, or `error`. The command-line flags
 `--log-level`, `--openrouter-base-url`, and `--trace` override their global
 values.
-
-All fields are optional, but a model must be supplied by one of the three
-layers. `max_tokens` must be positive and `temperature` must be between `0` and
-`2`. Reasoning support and effort names are validated against OpenRouter's model
-catalog.
-
-Provider routing supports `order`, `only`, `ignore`, `quantizations`, `sort`,
-`data_collection`, `allow_fallbacks`, and `max_price.prompt` and
-`max_price.completion`.
 
 ## Language servers
 
@@ -91,6 +122,5 @@ contain one nonempty credential. A file credential cannot be changed by login or
 logout. `--no-keyring` disables keyring reads and writes while leaving an
 explicit credential file available.
 
-Its other process flags are `--model`, which overrides the activation model, and
-the process flags described above. Put flags before the optional `login`
-command.
+Its other process flags are `--model`, which selects a configured model, and the
+process flags described above. Put flags before the optional `login` command.

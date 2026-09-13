@@ -91,6 +91,16 @@ func startProcess(binary, workspace, private, model, baseURL, credential string,
 	if err := os.WriteFile(filepath.Join(catalogDirectory, "models.json"), catalog, 0o600); err != nil {
 		return nil, fmt.Errorf("write model cache: %w", err)
 	}
+	settingsDirectory := filepath.Join(private, "config", "ox")
+	if err := os.MkdirAll(settingsDirectory, 0o700); err != nil {
+		return nil, fmt.Errorf("create settings directory: %w", err)
+	}
+	settings, _ := json.Marshal(map[string]any{
+		"models": map[string]any{model: map[string]any{}},
+	})
+	if err := os.WriteFile(filepath.Join(settingsDirectory, "settings.json"), settings, 0o600); err != nil {
+		return nil, fmt.Errorf("write settings file: %w", err)
+	}
 	credentialDirectory, err := os.MkdirTemp("", "ox-eval-credential-")
 	if err != nil {
 		return nil, fmt.Errorf("create credential directory: %w", err)

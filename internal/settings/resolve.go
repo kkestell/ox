@@ -5,20 +5,24 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"slices"
 	"strings"
 
 	"github.com/kkestell/ox/internal/openrouter"
 )
 
-// ErrNoModel reports that no layer named a model and no override supplied one.
-// The caller owns the message, because it knows which files and CLI override
-// were consulted.
-var ErrNoModel = errors.New("no model is configured")
+// ErrNoModels reports that no layer defined a model profile, and
+// ErrNoDefaultModel that profiles exist but nothing chose one. The caller owns
+// both messages, because it knows which files and CLI override were consulted.
+var (
+	ErrNoModels       = errors.New("no model profiles are configured")
+	ErrNoDefaultModel = errors.New("no model is selected")
+)
 
-// Resolved is the frozen model configuration one session sends with every
-// request: the model, where it came from, and the request fields the settings
-// files may set.
+// Resolved is one model profile after validation: the model, where its
+// selection came from, and the request fields the settings files may set. It is
+// the frozen configuration one turn sends with every request.
 type Resolved struct {
 	Model       string                `json:"model"`
 	ModelSource ModelSource           `json:"modelSource,omitempty"`
@@ -26,6 +30,94 @@ type Resolved struct {
 	Temperature *float64              `json:"temperature,omitempty"`
 	Reasoning   *openrouter.Reasoning `json:"reasoning,omitempty"`
 	Provider    *openrouter.Provider  `json:"provider,omitempty"`
+}
+
+// Clone returns a Resolved that shares no pointer or slice with its receiver,
+// so a session override cannot write through into another profile or into a
+// configuration a running turn is frozen to.
+func (r Resolved) Clone() Resolved {
+	if r.MaxTokens != nil {
+		maxTokens := *r.MaxTokens
+		r.MaxTokens = &maxTokens
+	}
+	if r.Temperature != nil {
+		temperature := *r.Temperature
+		r.Temperature = &temperature
+	}
+	if r.Reasoning != nil {
+		reasoning := *r.Reasoning
+		reasoning.Enabled = cloneBool(reasoning.Enabled)
+		reasoning.Exclude = cloneBool(reasoning.Exclude)
+		r.Reasoning = &reasoning
+	}
+	if r.Provider != nil {
+		provider := *r.Provider
+		provider.Order = slices.Clone(provider.Order)
+		provider.Only = slices.Clone(provider.Only)
+		provider.Ignore = slices.Clone(provider.Ignore)
+		provider.Quantizations = slices.Clone(provider.Quantizations)
+		provider.AllowFallbacks = cloneBool(provider.AllowFallbacks)
+		provider.RequireParameters = cloneBool(provider.RequireParameters)
+		if provider.MaxPrice != nil {
+			maxPrice := *provider.MaxPrice
+			provider.MaxPrice = &maxPrice
+		}
+		r.Provider = &provider
+	}
+	return r
+}
+
+func cloneBool(value *bool) *bool {
+	if value == nil {
+		return nil
+	}
+	copied := *value
+	return &copied
+}
+
+// Profiles is the validated set of configured model profiles and the model a
+// session selects when it makes no choice of its own. A session freezes the set
+// at activation, so later edits to the settings files reach only later
+// sessions.
+type Profiles struct {
+	// Default is the model ID a new session starts on, and DefaultSource names
+	// the flag or layer that chose it.
+	Default       string
+	DefaultSource ModelSource
+
+	models map[string]Resolved
+}
+
+// IDs lists the configured model IDs in sorted order.
+func (p Profiles) IDs() []string {
+	return slices.Sorted(maps.Keys(p.models))
+}
+
+// Select returns an independent copy of one configured profile, tagged with the
+// source that chose it.
+func (p Profiles) Select(id string, source ModelSource) (Resolved, error) {
+	profile, configured := p.models[id]
+	if !configured {
+		return Resolved{}, fmt.Errorf(
+			"model %q is not configured: configured models are %s",
+			id,
+			strings.Join(p.IDs(), ", "),
+		)
+	}
+	profile = profile.Clone()
+	profile.ModelSource = source
+	return profile, nil
+}
+
+// DefaultProfile returns the profile a new session starts on. Resolve validates
+// that the default is configured, so its absence here is a bug rather than a
+// settings problem.
+func (p Profiles) DefaultProfile() Resolved {
+	profile, err := p.Select(p.Default, p.DefaultSource)
+	if err != nil {
+		panic(err)
+	}
+	return profile
 }
 
 // Compatibility describes request requirements that are resolved outside the
@@ -68,55 +160,87 @@ func encoded(value any) string {
 	return string(raw)
 }
 
-// Resolve folds a merged Config and a model override into one Resolved value,
-// performing every check that does not need the catalog. Precedence for the
-// model is override, then workspace, then global.
-func Resolve(merged *Config, modelOverride string) (Resolved, error) {
+// Resolve validates every configured profile and the effective model
+// selection, performing every check that does not need the catalog. The
+// selection is the --model override when present, then the workspace
+// default_model, then the global one.
+func Resolve(merged *Config, modelOverride string) (Profiles, error) {
 	if merged == nil {
 		merged = &Config{}
 	}
-	var resolved Resolved
+	if len(merged.Models) == 0 {
+		return Profiles{}, ErrNoModels
+	}
+	profiles := Profiles{models: make(map[string]Resolved, len(merged.Models))}
+	for _, id := range slices.Sorted(maps.Keys(merged.Models)) {
+		if strings.TrimSpace(id) == "" || strings.TrimSpace(id) != id {
+			return Profiles{}, fmt.Errorf(
+				`"models" key %q must be a model ID with no surrounding whitespace`,
+				id,
+			)
+		}
+		resolved, err := resolveModel(merged.Models[id])
+		if err != nil {
+			return Profiles{}, fmt.Errorf("model %q: %w", id, err)
+		}
+		resolved.Model = id
+		profiles.models[id] = resolved
+	}
+
 	switch override := strings.TrimSpace(modelOverride); {
 	case override != "":
-		resolved.Model = override
-		resolved.ModelSource = SourceCLI
-	case merged.Model != nil:
-		model := strings.TrimSpace(*merged.Model)
+		profiles.Default = override
+		profiles.DefaultSource = SourceCLI
+	case merged.DefaultModel != nil:
+		model := strings.TrimSpace(*merged.DefaultModel)
 		if model == "" {
-			return Resolved{}, errors.New(`"model" must not be blank`)
+			return Profiles{}, errors.New(`"default_model" must not be blank`)
 		}
-		resolved.Model = model
-		resolved.ModelSource = merged.modelSource
+		profiles.Default = model
+		profiles.DefaultSource = merged.defaultSource
 	default:
-		return Resolved{}, ErrNoModel
+		return Profiles{}, ErrNoDefaultModel
 	}
+	if _, configured := profiles.models[profiles.Default]; !configured {
+		return Profiles{}, fmt.Errorf(
+			"%s names model %q, which is not configured: configured models are %s",
+			profiles.DefaultSource,
+			profiles.Default,
+			strings.Join(profiles.IDs(), ", "),
+		)
+	}
+	return profiles, nil
+}
 
-	if merged.MaxTokens != nil {
-		if *merged.MaxTokens < 1 {
+// resolveModel maps one profile's request fields onto the wire types.
+func resolveModel(profile ModelConfig) (Resolved, error) {
+	var resolved Resolved
+	if profile.MaxTokens != nil {
+		if *profile.MaxTokens < 1 {
 			return Resolved{}, fmt.Errorf(
 				`"max_tokens" must be at least 1, got %d`,
-				*merged.MaxTokens,
+				*profile.MaxTokens,
 			)
 		}
-		resolved.MaxTokens = merged.MaxTokens
+		resolved.MaxTokens = profile.MaxTokens
 	}
-	if merged.Temperature != nil {
-		if *merged.Temperature < 0 || *merged.Temperature > 2 {
+	if profile.Temperature != nil {
+		if *profile.Temperature < 0 || *profile.Temperature > 2 {
 			return Resolved{}, fmt.Errorf(
 				`"temperature" must be between 0 and 2, got %v`,
-				*merged.Temperature,
+				*profile.Temperature,
 			)
 		}
-		resolved.Temperature = merged.Temperature
+		resolved.Temperature = profile.Temperature
 	}
 
-	reasoning, err := resolveReasoning(merged.Reasoning)
+	reasoning, err := resolveReasoning(profile.Reasoning)
 	if err != nil {
 		return Resolved{}, err
 	}
 	resolved.Reasoning = reasoning
 
-	provider, err := resolveProvider(merged.Provider)
+	provider, err := resolveProvider(profile.Provider)
 	if err != nil {
 		return Resolved{}, err
 	}
