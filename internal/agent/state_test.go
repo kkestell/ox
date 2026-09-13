@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -1223,5 +1224,59 @@ func TestOutputTailKeepsValidOutputAroundBadBytes(t *testing.T) {
 	// A single chunk larger than the bound is still trimmed to it.
 	if got := outputTail(string(appendOutput(nil, strings.Repeat("x", 3*maxToolOutputTail)))); len(got) != maxToolOutputTail {
 		t.Fatalf("oversized chunk tail = %d bytes, want %d", len(got), maxToolOutputTail)
+	}
+}
+
+// TestListProjectionAgreesWithAFullFold pins the projection to the state it
+// stands in for. A listing that disagreed on the timestamp would hand out
+// cursors the next page rejects as stale.
+func TestListProjectionAgreesWithAFullFold(t *testing.T) {
+	id := "0123456789abcdef0123456789abcdef"
+	cwd := t.TempDir()
+	configuration := requestConfiguration{Settings: settings.Resolved{Model: "test/model"}}
+	records := []sessionRecord{
+		mustRecord(t, 1, recordSessionCreated, sessionCreated{
+			SessionID: id, CWD: cwd, Configuration: configuration,
+		}),
+		mustRecord(t, 2, recordUserMessage, userMessageRecord{
+			TurnID: "turn", MessageID: "message",
+			Content:       []acp.ContentBlock{{Type: "text", Text: "first prompt"}},
+			Configuration: configuration,
+		}),
+		mustRecord(t, 3, recordTurnFinished, turnFinishedRecord{
+			TurnID: "turn", Kind: "completed", StopReason: "end_turn", MessageID: "outcome",
+		}),
+	}
+	folded, err := foldRecords(records)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkpoint, err := newCheckpointRecord(folded)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, test := range []struct {
+		name    string
+		records []sessionRecord
+	}{
+		{name: "without a checkpoint", records: records},
+		{name: "ending in a checkpoint", records: append(slices.Clone(records), checkpoint)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			state, err := foldRecords(test.records)
+			if err != nil {
+				t.Fatal(err)
+			}
+			projected, err := foldListProjection(test.records)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if projected.id != state.id || projected.cwd != state.cwd ||
+				projected.title != state.title || !projected.updatedAt.Equal(state.updatedAt) {
+				t.Fatalf("projection = %#v, folded = %s %s %q %s",
+					projected, state.id, state.cwd, state.title, state.updatedAt)
+			}
+		})
 	}
 }

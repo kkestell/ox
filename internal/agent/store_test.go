@@ -1,17 +1,20 @@
 package agent
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/kkestell/ox/internal/acp"
 	"github.com/kkestell/ox/internal/settings"
 )
 
 func TestFileStorePersistsLocksAndRepairsTornTail(t *testing.T) {
-	store, err := newFileStore(t.TempDir())
+	store, err := newFileStore(t.TempDir(), discardLogger())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,7 +75,7 @@ func TestFileStorePersistsLocksAndRepairsTornTail(t *testing.T) {
 }
 
 func TestFileStoreRepairsTornCheckpointAndContinuesSequence(t *testing.T) {
-	store, err := newFileStore(t.TempDir())
+	store, err := newFileStore(t.TempDir(), discardLogger())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,24 +155,64 @@ func TestFileStoreRepairsTornCheckpointAndContinuesSequence(t *testing.T) {
 }
 
 func TestFileStoreRejectsTraversalAndInteriorCorruption(t *testing.T) {
-	store, err := newFileStore(t.TempDir())
+	store, err := newFileStore(t.TempDir(), discardLogger())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.path("../session"); err == nil {
 		t.Fatal("traversal session ID was accepted")
 	}
-	path := filepath.Join(store.root, "0123456789abcdef0123456789abcdef.jsonl")
-	if err := os.WriteFile(path, []byte("{bad}\n{}\n"), 0o600); err != nil {
+	// A damaged log is skipped rather than fatal: one unreadable file must not
+	// hide every other session from the client.
+	corrupt := filepath.Join(store.root, "0123456789abcdef0123456789abcdef.jsonl")
+	if err := os.WriteFile(corrupt, []byte("{bad}\n{}\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.list(); err == nil {
-		t.Fatal("interior corruption was ignored")
+	readable := writeListableSession(t, store, "fedcba9876543210fedcba9876543210", "readable")
+	listed, err := store.list()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 1 || listed[0].id != readable {
+		t.Fatalf("listed = %#v, want only the readable session", listed)
 	}
 }
 
+// writeListableSession creates a session with one prompt, which is what gives a
+// listing its title, and closes its log so the store can read it back.
+func writeListableSession(t *testing.T, store *fileStore, id, prompt string) string {
+	t.Helper()
+	created, err := newRecord(1, recordSessionCreated, sessionCreated{
+		SessionID: id,
+		CWD:       t.TempDir(),
+		Configuration: requestConfiguration{
+			Settings: settings.Resolved{Model: "test/model"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	log, err := store.create(id, created)
+	if err != nil {
+		t.Fatal(err)
+	}
+	message, err := newRecord(2, recordUserMessage, userMessageRecord{
+		TurnID:    "turn",
+		MessageID: "message",
+		Content:   []acp.ContentBlock{{Type: "text", Text: prompt}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := log.append(message); err != nil {
+		t.Fatal(err)
+	}
+	log.close()
+	return id
+}
+
 func TestFileStoreDeletesOnlyInactiveSessions(t *testing.T) {
-	store, err := newFileStore(t.TempDir())
+	store, err := newFileStore(t.TempDir(), discardLogger())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -205,7 +248,7 @@ func TestFileStoreDeletesOnlyInactiveSessions(t *testing.T) {
 }
 
 func TestFileStoreCanRetryOrphanedSpillDeletion(t *testing.T) {
-	store, err := newFileStore(t.TempDir())
+	store, err := newFileStore(t.TempDir(), discardLogger())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -229,7 +272,7 @@ func TestFileStoreCanRetryOrphanedSpillDeletion(t *testing.T) {
 }
 
 func TestFileStoreRunsCleanupBeforeDeletingSession(t *testing.T) {
-	store, err := newFileStore(t.TempDir())
+	store, err := newFileStore(t.TempDir(), discardLogger())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -269,4 +312,89 @@ func TestFileStoreRunsCleanupBeforeDeletingSession(t *testing.T) {
 	if err := store.delete(id, func(state durableState) error { return nil }); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// TestListSessionsPagesAtFiftyAndRejectsBadCursors covers the page boundary and
+// every reason a cursor is refused, which is where a client either loses
+// sessions or loops.
+func TestListSessionsPagesAtFiftyAndRejectsBadCursors(t *testing.T) {
+	list := func(t *testing.T, instance *Agent, request acp.ListSessionsRequest) acp.ListSessionsResponse {
+		t.Helper()
+		response, err := instance.ListSessions(context.Background(), request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return response
+	}
+
+	t.Run("a full page needs no cursor", func(t *testing.T) {
+		instance := listTestAgent(t, 50)
+		response := list(t, instance, acp.ListSessionsRequest{})
+		if len(response.Sessions) != 50 || response.NextCursor != "" {
+			t.Fatalf("sessions = %d, cursor = %q", len(response.Sessions), response.NextCursor)
+		}
+	})
+
+	t.Run("one more session pages", func(t *testing.T) {
+		instance := listTestAgent(t, 51)
+		first := list(t, instance, acp.ListSessionsRequest{})
+		if len(first.Sessions) != 50 || first.NextCursor == "" {
+			t.Fatalf("first page = %d sessions, cursor = %q",
+				len(first.Sessions), first.NextCursor)
+		}
+		second := list(t, instance, acp.ListSessionsRequest{Cursor: first.NextCursor})
+		if len(second.Sessions) != 1 || second.NextCursor != "" {
+			t.Fatalf("second page = %d sessions, cursor = %q",
+				len(second.Sessions), second.NextCursor)
+		}
+		seen := make(map[string]struct{}, 51)
+		for _, session := range append(first.Sessions, second.Sessions...) {
+			if _, repeated := seen[session.SessionID]; repeated {
+				t.Fatalf("session %s appeared on both pages", session.SessionID)
+			}
+			seen[session.SessionID] = struct{}{}
+		}
+		if len(seen) != 51 {
+			t.Fatalf("paged over %d sessions, want 51", len(seen))
+		}
+	})
+
+	t.Run("bad cursors are refused", func(t *testing.T) {
+		instance := listTestAgent(t, 51)
+		page := list(t, instance, acp.ListSessionsRequest{})
+		stale := encodeCursor(listCursor{
+			UpdatedAt: time.Unix(0, 0).UTC().Format(time.RFC3339Nano),
+			SessionID: "0123456789abcdef0123456789abcdef",
+		})
+		for name, request := range map[string]acp.ListSessionsRequest{
+			"stale":      {Cursor: stale},
+			"mismatched": {Cursor: page.NextCursor, CWD: t.TempDir()},
+			"malformed":  {Cursor: "not-a-cursor"},
+		} {
+			t.Run(name, func(t *testing.T) {
+				if _, err := instance.ListSessions(
+					context.Background(), request,
+				); err == nil {
+					t.Fatal("cursor was accepted")
+				}
+			})
+		}
+	})
+}
+
+func listTestAgent(t *testing.T, sessions int) *Agent {
+	t.Helper()
+	instance, err := New(Config{Logger: discardLogger(), SessionDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index := range sessions {
+		writeListableSession(
+			t,
+			instance.store,
+			fmt.Sprintf("%032x", index+1),
+			fmt.Sprintf("prompt %d", index+1),
+		)
+	}
+	return instance
 }

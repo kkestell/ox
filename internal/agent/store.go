@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -22,7 +23,8 @@ const (
 var errSessionLocked = errors.New("session is active in another runtime")
 
 type fileStore struct {
-	root string
+	root   string
+	logger *slog.Logger
 }
 
 type sessionLog struct {
@@ -39,7 +41,7 @@ func SessionPath(xdgDataHome, home string) string {
 	return filepath.Join(home, ".local", "share", "ox", "sessions")
 }
 
-func newFileStore(root string) (*fileStore, error) {
+func newFileStore(root string, logger *slog.Logger) (*fileStore, error) {
 	if root == "" {
 		var err error
 		root, err = os.MkdirTemp("", "ox-sessions-")
@@ -53,7 +55,7 @@ func newFileStore(root string) (*fileStore, error) {
 	if err := os.Chmod(root, 0o700); err != nil {
 		return nil, fmt.Errorf("secure session store: %w", err)
 	}
-	return &fileStore{root: root}, nil
+	return &fileStore{root: root, logger: logger}, nil
 }
 
 func (s *fileStore) create(id string, record sessionRecord) (*sessionLog, error) {
@@ -124,45 +126,62 @@ func (s *fileStore) open(id string) (*sessionLog, []sessionRecord, bool, error) 
 	return &sessionLog{file: file, sinceCheckpoint: sinceCheckpoint}, records, repaired, nil
 }
 
-func (s *fileStore) list() ([]durableState, error) {
+// list projects every session in the store, newest first. A session whose log
+// cannot be read or projected is skipped and logged: one damaged file must not
+// hide every other session from the client.
+func (s *fileStore) list() ([]sessionListEntry, error) {
 	entries, err := os.ReadDir(s.root)
 	if err != nil {
 		return nil, fmt.Errorf("list session store: %w", err)
 	}
-	states := make([]durableState, 0, len(entries))
+	listed := make([]sessionListEntry, 0, len(entries))
 	for _, entry := range entries {
 		if entry.IsDir() || filepath.Ext(entry.Name()) != ".jsonl" {
 			continue
 		}
 		id := strings.TrimSuffix(entry.Name(), ".jsonl")
 		if !validSessionID(id) {
-			return nil, fmt.Errorf("invalid session filename %q", entry.Name())
+			s.skip(entry.Name(), errors.New("invalid session filename"))
+			continue
 		}
-		file, err := os.Open(filepath.Join(s.root, entry.Name()))
+		projected, err := s.project(entry.Name())
 		if err != nil {
-			return nil, fmt.Errorf("open listed session %s: %w", id, err)
+			s.skip(entry.Name(), err)
+			continue
 		}
-		records, _, _, readErr := readRecords(file)
-		closeErr := file.Close()
-		if readErr != nil {
-			return nil, fmt.Errorf("read listed session %s: %w", id, readErr)
+		if projected.id != id {
+			s.skip(entry.Name(), errors.New("session ID does not match its filename"))
+			continue
 		}
-		if closeErr != nil {
-			return nil, fmt.Errorf("close listed session %s: %w", id, closeErr)
-		}
-		state, err := foldRecords(records)
-		if err != nil {
-			return nil, fmt.Errorf("fold listed session %s: %w", id, err)
-		}
-		states = append(states, state)
+		listed = append(listed, projected)
 	}
-	sort.Slice(states, func(i, j int) bool {
-		if states[i].updatedAt.Equal(states[j].updatedAt) {
-			return states[i].id > states[j].id
+	sort.Slice(listed, func(i, j int) bool {
+		if listed[i].updatedAt.Equal(listed[j].updatedAt) {
+			return listed[i].id > listed[j].id
 		}
-		return states[i].updatedAt.After(states[j].updatedAt)
+		return listed[i].updatedAt.After(listed[j].updatedAt)
 	})
-	return states, nil
+	return listed, nil
+}
+
+func (s *fileStore) project(name string) (sessionListEntry, error) {
+	file, err := os.Open(filepath.Join(s.root, name))
+	if err != nil {
+		return sessionListEntry{}, err
+	}
+	records, _, _, readErr := readRecords(file)
+	closeErr := file.Close()
+	if err := errors.Join(readErr, closeErr); err != nil {
+		return sessionListEntry{}, err
+	}
+	return foldListProjection(records)
+}
+
+func (s *fileStore) skip(name string, err error) {
+	if s.logger == nil {
+		return
+	}
+	s.logger.Warn("skipping unlistable session", "file", name, "error", err)
 }
 
 func (s *fileStore) delete(id string, before func(durableState) error) (err error) {

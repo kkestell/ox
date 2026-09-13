@@ -101,7 +101,7 @@ func New(config Config) (*Agent, error) {
 	if err != nil {
 		return nil, err
 	}
-	store, err := newFileStore(config.SessionDir)
+	store, err := newFileStore(config.SessionDir, config.Logger)
 	if err != nil {
 		return nil, err
 	}
@@ -755,7 +755,7 @@ func (a *Agent) ListSessions(
 	if err != nil {
 		return acp.ListSessionsResponse{}, fmt.Errorf("list sessions: %w", err)
 	}
-	filtered := make([]durableState, 0, len(states))
+	filtered := make([]sessionListEntry, 0, len(states))
 	for _, state := range states {
 		if request.CWD == "" || state.cwd == request.CWD {
 			filtered = append(filtered, state)

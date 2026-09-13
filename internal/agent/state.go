@@ -358,6 +358,56 @@ func foldRecords(records []sessionRecord) (durableState, error) {
 	return state, nil
 }
 
+// sessionListEntry is everything session/list shows about a session. Building
+// it decodes the creation record, the first prompt, and one timestamp, instead
+// of folding a whole history the listing never displays.
+type sessionListEntry struct {
+	id        string
+	cwd       string
+	title     string
+	updatedAt time.Time
+}
+
+func foldListProjection(records []sessionRecord) (sessionListEntry, error) {
+	if len(records) == 0 {
+		return sessionListEntry{}, errors.New("session log has no creation record")
+	}
+	if records[0].Type != recordSessionCreated {
+		return sessionListEntry{}, errors.New("first record must create the session")
+	}
+	var created sessionCreated
+	if err := decodeRecord(records[0].Data, &created); err != nil {
+		return sessionListEntry{}, err
+	}
+	if !validSessionID(created.SessionID) {
+		return sessionListEntry{}, errors.New("invalid session ID")
+	}
+	if !filepath.IsAbs(created.CWD) {
+		return sessionListEntry{}, errors.New("session cwd must be absolute")
+	}
+	entry := sessionListEntry{id: created.SessionID, cwd: created.CWD}
+	// A checkpoint projects the state at the record before it, so folding never
+	// advances the timestamp past a trailing checkpoint either.
+	for index := len(records) - 1; index >= 0; index-- {
+		if records[index].Type != recordCheckpoint {
+			entry.updatedAt = records[index].At
+			break
+		}
+	}
+	for _, record := range records {
+		if record.Type != recordUserMessage {
+			continue
+		}
+		var message userMessageRecord
+		if err := decodeRecord(record.Data, &message); err != nil {
+			return sessionListEntry{}, err
+		}
+		entry.title = sessionTitle(message.Content)
+		break
+	}
+	return entry, nil
+}
+
 func validateRecordEnvelope(record sessionRecord, previous uint64) error {
 	if record.Version != recordVersion {
 		return fmt.Errorf("unsupported record version %d", record.Version)

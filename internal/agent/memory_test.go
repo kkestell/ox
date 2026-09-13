@@ -246,7 +246,7 @@ func TestDeleteSessionRemovesOnlyItsWorkspaceMemories(t *testing.T) {
 	sessionDirectory := t.TempDir()
 	memoryDirectory := t.TempDir()
 	workspace := memoryWorkspace(t)
-	files, err := newFileStore(sessionDirectory)
+	files, err := newFileStore(sessionDirectory, discardLogger())
 	if err != nil {
 		t.Fatal(err)
 	}
