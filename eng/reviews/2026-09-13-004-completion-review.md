@@ -157,3 +157,21 @@ contract is stated, and the MCP catalog-refresh cost is bounded.
   stale exclusion-lock and Windows claims are gone.
 - **Dependencies:** nothing to report. `golang.org/x/sys` correctly became
   indirect; no version moved and nothing was added.
+
+## Follow-up
+
+All four findings were implemented in `9d9d622`, `e49c41b`, and `7500630`, and
+re-reviewed for completeness and simplification. No new findings.
+
+The MCP fix narrows the critical section rather than single-flighting the
+refresh, which was the suggestion here. Two callers arriving together after an
+expiry now both list, which is what happened before the window existed;
+single-flight machinery would coordinate a duplicate that is rare and harmless.
+Publishing through one method also resolved the separate field-ownership finding
+without a comment naming an exception.
+
+Each fix was confirmed to fail against the behavior it replaces. The MCP test
+needed care: cancelling the call that holds the listing passes against the old
+locking, because releasing the holder releases the mutex. The defect is that a
+_second_ call's own cancellation cannot reach it, so the test cancels a
+different call under a different context while the first is still listing.

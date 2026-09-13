@@ -170,7 +170,7 @@ func (c *Client) Catalog(ctx context.Context) (*Catalog, error) {
 			// The same rule the disk cache follows: an outdated catalog beats
 			// no catalog when the provider is unreachable. Bounding the retry
 			// keeps one outage from costing a fetch per request.
-			c.logger().Warn("serving the loaded OpenRouter catalog", "error", err)
+			c.logger().Warn("serving the held OpenRouter catalog", "error", err)
 			catalog, err = c.catalog, nil
 			c.catalogExpires = time.Now().Add(catalogRetryInterval)
 		}
