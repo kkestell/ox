@@ -32,7 +32,8 @@ type Client struct {
 
 	retryBudgetOverride time.Duration
 	retryWait           func(context.Context, time.Duration) error
-	cachePathOverride   string
+	// CachePath is where the model catalog is cached. Empty disables caching.
+	CachePath string
 
 	catalogMu      sync.Mutex
 	catalogLoading bool

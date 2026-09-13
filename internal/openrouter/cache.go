@@ -18,26 +18,6 @@ const (
 
 var cacheWriteSequence atomic.Uint64
 
-func (c *Client) resolvedCachePath() string {
-	if c.cachePathOverride != "" {
-		return c.cachePathOverride
-	}
-	return catalogCachePath(os.Getenv("XDG_CACHE_HOME"), os.Getenv("HOME"))
-}
-
-func catalogCachePath(xdgCacheHome, home string) string {
-	var base string
-	if filepath.IsAbs(xdgCacheHome) {
-		base = xdgCacheHome
-	} else if home != "" {
-		base = filepath.Join(home, ".cache")
-	}
-	if !filepath.IsAbs(base) {
-		return ""
-	}
-	return filepath.Join(base, cacheDirectory, cacheFile)
-}
-
 // readCatalogCache returns the cached catalog and how long ago it was written.
 // A cache holding no models is refused: it parses, so nothing else would notice
 // it, and memoizing it would answer every model lookup for the process with an

@@ -7,20 +7,6 @@ import (
 	"testing"
 )
 
-func TestGlobalPathUsesXDGThenHome(t *testing.T) {
-	if got := GlobalPath("/var/config/user", "/home/user"); got !=
-		"/var/config/user/ox/settings.json" {
-		t.Fatalf("XDG path = %q", got)
-	}
-	if got := GlobalPath("relative", "/home/user"); got !=
-		"/home/user/.config/ox/settings.json" {
-		t.Fatalf("home path = %q", got)
-	}
-	if got := GlobalPath("", "relative"); got != "" {
-		t.Fatalf("unusable path = %q", got)
-	}
-}
-
 func TestWorkspacePathDoesNotWalkUpwards(t *testing.T) {
 	if got := WorkspacePath("/work/project"); got !=
 		"/work/project/.ox/settings.json" {

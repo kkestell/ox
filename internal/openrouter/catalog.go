@@ -214,7 +214,7 @@ func cloneModel(model Model) Model {
 // A stale cache is kept as a fallback: an outdated catalog beats no catalog
 // when the provider is unreachable.
 func (c *Client) loadCatalog(ctx context.Context) (*Catalog, error) {
-	path := c.resolvedCachePath()
+	path := c.CachePath
 	var stale *Catalog
 	switch {
 	case path == "":

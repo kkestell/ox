@@ -15,8 +15,8 @@ func liveClient(t *testing.T) *Client {
 		t.Skip("OPENROUTER_API_KEY is not set")
 	}
 	return &Client{
-		APIKey:            func() string { return apiKey },
-		cachePathOverride: t.TempDir() + "/models.json",
+		APIKey:    func() string { return apiKey },
+		CachePath: t.TempDir() + "/models.json",
 	}
 }
 

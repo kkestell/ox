@@ -109,19 +109,6 @@ type MaxPrice struct {
 // GlobalPath is the global settings path, $XDG_CONFIG_HOME/ox/settings.json
 // falling back to $HOME/.config/ox/settings.json, or "" when neither yields
 // an absolute base — in which case there is no global layer to load.
-func GlobalPath(xdgConfigHome, home string) string {
-	var base string
-	if filepath.IsAbs(xdgConfigHome) {
-		base = xdgConfigHome
-	} else if home != "" {
-		base = filepath.Join(home, ".config")
-	}
-	if !filepath.IsAbs(base) {
-		return ""
-	}
-	return filepath.Join(base, directory, file)
-}
-
 // WorkspacePath is the workspace settings path, <dir>/.ox/settings.json.
 // There is no upward walk: a parent's .ox belongs to another workspace.
 func WorkspacePath(dir string) string {

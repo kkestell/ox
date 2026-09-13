@@ -50,13 +50,6 @@ type memoryStore struct {
 	beforeRename func() error
 }
 
-func MemoryPath(xdgDataHome, home string) string {
-	if xdgDataHome != "" {
-		return filepath.Join(xdgDataHome, "ox", "memory")
-	}
-	return filepath.Join(home, ".local", "share", "ox", "memory")
-}
-
 func newMemoryStore(root string) (*memoryStore, error) {
 	if root == "" {
 		var err error

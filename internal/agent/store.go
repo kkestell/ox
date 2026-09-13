@@ -34,13 +34,6 @@ type sessionLog struct {
 	sinceCheckpoint int
 }
 
-func SessionPath(xdgDataHome, home string) string {
-	if xdgDataHome != "" {
-		return filepath.Join(xdgDataHome, "ox", "sessions")
-	}
-	return filepath.Join(home, ".local", "share", "ox", "sessions")
-}
-
 func newFileStore(root string, logger *slog.Logger) (*fileStore, error) {
 	if root == "" {
 		var err error

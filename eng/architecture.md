@@ -52,7 +52,10 @@ capabilities rather than client-specific side channels.
 The implemented package layout assigns one owner to each boundary:
 
 - `cmd/ox` owns process startup, process inputs, logging, the stdio transport,
-  and top-level commands. It contains no session or provider semantics.
+  and top-level commands. It resolves every per-user path once, under one rule
+  that honors an XDG variable only when it is absolute, and hands concrete paths
+  to the boundaries that use them; no lower package reads the environment. It
+  contains no session or provider semantics.
 - `internal/acp` owns the ACP wire vocabulary and validation of client input. It
   does not own session state or provider translation.
 - `internal/agent` owns ACP method semantics, capability negotiation,

@@ -108,20 +108,6 @@ func TestCatalogResolvesAPIKeyPerRequest(t *testing.T) {
 	}
 }
 
-func TestCatalogCachePathUsesXDGThenHome(t *testing.T) {
-	if got := catalogCachePath("/var/cache/user", "/home/user"); got !=
-		"/var/cache/user/ox/models.json" {
-		t.Fatalf("XDG path = %q", got)
-	}
-	if got := catalogCachePath("relative", "/home/user"); got !=
-		"/home/user/.cache/ox/models.json" {
-		t.Fatalf("home path = %q", got)
-	}
-	if got := catalogCachePath("", "relative"); got != "" {
-		t.Fatalf("unusable path = %q", got)
-	}
-}
-
 func TestCatalogCorruptCacheIsMissAndIsRewritten(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "models.json")
 	if err := os.WriteFile(path, []byte("not json"), 0o600); err != nil {
@@ -135,7 +121,7 @@ func TestCatalogCorruptCacheIsMissAndIsRewritten(t *testing.T) {
 	t.Cleanup(server.Close)
 
 	client := testClient(server.URL)
-	client.cachePathOverride = path
+	client.CachePath = path
 	catalog, err := client.Catalog(t.Context())
 	if err != nil {
 		t.Fatal(err)
@@ -167,7 +153,7 @@ func TestCatalogServesAFreshCacheWithoutARequest(t *testing.T) {
 	t.Cleanup(server.Close)
 
 	client := testClient(server.URL)
-	client.cachePathOverride = path
+	client.CachePath = path
 	catalog, err := client.Catalog(t.Context())
 	if err != nil {
 		t.Fatal(err)
@@ -210,7 +196,7 @@ func TestCatalogRefetchesAStaleCache(t *testing.T) {
 		t.Cleanup(server.Close)
 
 		client := testClient(server.URL)
-		client.cachePathOverride = path
+		client.CachePath = path
 		catalog, err := client.Catalog(t.Context())
 		if err != nil {
 			t.Fatal(err)
@@ -232,7 +218,7 @@ func TestCatalogRefetchesAStaleCache(t *testing.T) {
 		t.Cleanup(server.Close)
 
 		client := testClient(server.URL)
-		client.cachePathOverride = path
+		client.CachePath = path
 		catalog, err := client.Catalog(t.Context())
 		if err != nil {
 			t.Fatal(err)
@@ -263,7 +249,7 @@ func TestCatalogRejectsACacheWithNoModels(t *testing.T) {
 	t.Cleanup(server.Close)
 
 	client := testClient(server.URL)
-	client.cachePathOverride = path
+	client.CachePath = path
 	catalog, err := client.Catalog(t.Context())
 	if err != nil {
 		t.Fatal(err)
@@ -289,7 +275,7 @@ func TestCatalogRefusesAnOversizedResponse(t *testing.T) {
 	t.Cleanup(server.Close)
 
 	client := testClient(server.URL)
-	client.cachePathOverride = filepath.Join(t.TempDir(), "models.json")
+	client.CachePath = filepath.Join(t.TempDir(), "models.json")
 	if _, err := client.Catalog(t.Context()); err == nil ||
 		!strings.Contains(err.Error(), "exceeds") {
 		t.Fatalf("oversized response error = %v", err)
@@ -305,7 +291,7 @@ func TestCatalogFailureDoesNotPoisonClient(t *testing.T) {
 	t.Cleanup(server.Close)
 
 	client := testClient(server.URL)
-	client.cachePathOverride = filepath.Join(t.TempDir(), "models.json")
+	client.CachePath = filepath.Join(t.TempDir(), "models.json")
 	cancelled, cancel := context.WithCancel(t.Context())
 	cancel()
 	if _, err := client.Catalog(cancelled); !errors.Is(err, context.Canceled) {
@@ -337,7 +323,7 @@ func TestConcurrentCatalogCallsShareOneLoad(t *testing.T) {
 	t.Cleanup(server.Close)
 
 	client := testClient(server.URL)
-	client.cachePathOverride = filepath.Join(t.TempDir(), "models.json")
+	client.CachePath = filepath.Join(t.TempDir(), "models.json")
 	results := make(chan *Catalog, 2)
 	errors := make(chan error, 2)
 	for range 2 {
@@ -464,7 +450,7 @@ func TestCatalogDoesNotRetryMalformedSuccessfulResponse(t *testing.T) {
 	t.Cleanup(server.Close)
 
 	client := testClient(server.URL)
-	client.cachePathOverride = filepath.Join(t.TempDir(), "models.json")
+	client.CachePath = filepath.Join(t.TempDir(), "models.json")
 	client.retryWait = noWait
 	if _, err := client.Catalog(t.Context()); err == nil {
 		t.Fatal("malformed response succeeded")
@@ -486,7 +472,7 @@ func TestCatalogRetriesServerError(t *testing.T) {
 	t.Cleanup(server.Close)
 
 	client := testClient(server.URL)
-	client.cachePathOverride = filepath.Join(t.TempDir(), "models.json")
+	client.CachePath = filepath.Join(t.TempDir(), "models.json")
 	client.retryWait = noWait
 	catalog, err := client.Catalog(t.Context())
 	if err != nil {

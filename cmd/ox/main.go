@@ -67,8 +67,8 @@ func run(arguments []string, input *os.File, output io.WriteCloser, errorOutput 
 		fmt.Fprintf(errorOutput, "ox: %v\n%s\n", err, usage)
 		return 2
 	}
-	settingsPath := settings.GlobalPath(os.Getenv("XDG_CONFIG_HOME"), os.Getenv("HOME"))
-	_, processConfig, err := settings.LoadGlobal(settingsPath)
+	paths := resolveProcessPaths()
+	_, processConfig, err := settings.LoadGlobal(paths.settings)
 	if err != nil {
 		fmt.Fprintf(errorOutput, "ox: configure process: %v\n", err)
 		return 1
@@ -92,7 +92,11 @@ func run(arguments []string, input *os.File, output io.WriteCloser, errorOutput 
 	}
 	logger := newLogger(errorOutput, process.LogLevel)
 	credentialStore := credentials.NewStore(logger, fileCredential, options.noKeyring)
-	client := &openrouter.Client{BaseURL: process.OpenRouterBaseURL, Logger: logger}
+	client := &openrouter.Client{
+		BaseURL:   process.OpenRouterBaseURL,
+		Logger:    logger,
+		CachePath: paths.modelCatalog,
+	}
 
 	if options.command == "login" {
 		if err := login(context.Background(), input, errorOutput, credentialStore, client); err != nil {
@@ -112,7 +116,7 @@ func run(arguments []string, input *os.File, output io.WriteCloser, errorOutput 
 			return 1
 		}
 	}
-	serveErr := serve(input, output, logger, tracer, settingsPath, credentialStore, client, options.model.value)
+	serveErr := serve(input, output, logger, tracer, paths, credentialStore, client, options.model.value)
 	closeErr := tracer.Close()
 	if serveErr != nil {
 		logger.Error("ox stopped with error", "error", serveErr)
@@ -175,19 +179,18 @@ func serve(
 	output io.WriteCloser,
 	logger *slog.Logger,
 	tracer diagnostictrace.Trace,
-	settingsPath string,
+	paths processPaths,
 	credentialStore *credentials.Store,
 	client *openrouter.Client,
 	modelOverride string,
 ) error {
-	sessionPath := agent.SessionPath(os.Getenv("XDG_DATA_HOME"), os.Getenv("HOME"))
-	memoryPath := agent.MemoryPath(os.Getenv("XDG_DATA_HOME"), os.Getenv("HOME"))
 	logger.Info(
 		"ox starting",
 		"version", version,
-		"global_settings_path", settingsPath,
-		"session_store_path", sessionPath,
-		"memory_store_path", memoryPath,
+		"global_settings_path", paths.settings,
+		"session_store_path", paths.sessions,
+		"memory_store_path", paths.memory,
+		"model_catalog_cache_path", paths.modelCatalog,
 		"credential_source", credentialStore.Source(),
 	)
 
@@ -198,9 +201,9 @@ func serve(
 		Logger:        logger,
 		Credentials:   credentialStore,
 		ModelOverride: modelOverride,
-		SettingsPath:  settingsPath,
-		SessionDir:    sessionPath,
-		MemoryDir:     memoryPath,
+		SettingsPath:  paths.settings,
+		SessionDir:    paths.sessions,
+		MemoryDir:     paths.memory,
 		Client:        client,
 		Tools:         tools.All(),
 		Trace:         tracer,

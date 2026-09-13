@@ -480,7 +480,7 @@ func TestClientAndCatalogNeverWriteToStdout(t *testing.T) {
 	}()
 
 	client := testClient(server.URL)
-	client.cachePathOverride = filepath.Join(t.TempDir(), "models.json")
+	client.CachePath = filepath.Join(t.TempDir(), "models.json")
 	_, streamErr := client.Stream(t.Context(), Request{Model: "author/model"}, nil)
 	_, catalogErr := client.Catalog(t.Context())
 
