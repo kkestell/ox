@@ -1,5 +1,3 @@
-//go:build unix
-
 package credentials
 
 import (
@@ -9,7 +7,7 @@ import (
 	"syscall"
 )
 
-func validateFileSecurityBeforeOpen(info os.FileInfo) error {
+func validateFileSecurity(info os.FileInfo) error {
 	if info.Mode().Perm()&0o077 != 0 {
 		return fmt.Errorf("must not be accessible by group or other users (mode is %04o)", info.Mode().Perm())
 	}
@@ -20,10 +18,6 @@ func validateFileSecurityBeforeOpen(info os.FileInfo) error {
 		return errors.New("must be owned by the current user")
 	}
 	return nil
-}
-
-func validateFileSecurity(_ *os.File, info os.FileInfo) error {
-	return validateFileSecurityBeforeOpen(info)
 }
 
 func ownedByCurrentUser(info os.FileInfo) bool {

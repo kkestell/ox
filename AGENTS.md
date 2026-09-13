@@ -22,7 +22,7 @@ output. It is ACP-first and works with ACP clients. The durable design lives in
 - `internal/agent/` — ACP methods, durable sessions, model/tool orchestration,
   permissions, replay, authentication, and cancellation.
 - `internal/lsp/` — Language-server lifecycles, framing, and confined query
-  results. Written but not yet imported by any package.
+  results.
 - `internal/mcp/` — MCP transports, catalog discovery, and bounded tool calls.
 - `internal/openrouter/` — OpenRouter transport, SSE parsing, retry, model
   catalog, and stream assembly.
@@ -30,7 +30,7 @@ output. It is ACP-first and works with ACP clients. The durable design lives in
   session activation.
 - `internal/skills/` — Confined workspace-skill discovery, validation, and
   activation-frozen loading.
-- `internal/credentials/` — Environment and OS-keyring credential storage.
+- `internal/credentials/` — Credential-file and OS-keyring credential storage.
 - `internal/trace/` — Sanitized, concurrency-safe JSONL diagnostic tracing.
 - `internal/tools/` — Local coding tools exposed to the model.
 - `internal/shellrules/` — Parsed reusable permissions for shell commands.

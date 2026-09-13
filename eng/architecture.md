@@ -24,8 +24,10 @@ OpenRouter
 Ox owns model interaction, protocol semantics, sessions, tool orchestration,
 permissions, and durable conversation state. The client owns presentation,
 editor integration, terminal presentation, context attachment, and process
-supervision. Features that cross that boundary use ACP methods and negotiated
-capabilities rather than client-specific side channels.
+supervision. Ox targets Unix-like systems, so process groups, file ownership and
+permission bits, and advisory locks are used directly rather than behind a
+platform abstraction. Features that cross that boundary use ACP methods and
+negotiated capabilities rather than client-specific side channels.
 
 ## Invariants
 

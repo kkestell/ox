@@ -78,7 +78,7 @@
 - [x] Accept MCP servers that negotiate older protocol revisions
 - [x] Add auto-approval mode with one parent/child permission policy, durable
       selection, shipped-process coverage, and documentation
-- [ ] Address remaining findings in the
+- [x] Address remaining findings in the
       [repository rough-edges review](reviews/2026-09-13-003-repository-rough-edges-review.md)
       and
       [full-codebase testing review](reviews/2026-09-13-002-full-codebase-testing-review.md)
@@ -87,5 +87,5 @@
   - [x] Reconcile OpenRouter and MCP catalog freshness with bounded refresh cost
   - [x] Stabilize the required gate and complete shipped-process and evaluation
         coverage
-  - [ ] Settle the platform contract and repair documentation and line-ending
+  - [x] Settle the platform contract and repair documentation and line-ending
         portability edges

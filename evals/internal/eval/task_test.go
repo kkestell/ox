@@ -155,18 +155,28 @@ func TestVerifyTaskToleratesTrailingNewlineDifference(t *testing.T) {
 	if err := os.MkdirAll(workspace, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(workspace, "answer.txt"), []byte("yes"), 0o600); err != nil {
-		t.Fatal(err)
-	}
 	task := Task{Success: Success{Files: map[string]string{"answer.txt": "yes\n"}}}
-	if _, err := verifyTask(context.Background(), task, workspace); err != nil {
-		t.Fatal(err)
+	for _, content := range []string{"yes", "yes\n", "yes\r\n"} {
+		if err := os.WriteFile(
+			filepath.Join(workspace, "answer.txt"), []byte(content), 0o600,
+		); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := verifyTask(context.Background(), task, workspace); err != nil {
+			t.Fatalf("content %q: %v", content, err)
+		}
 	}
-	if err := os.WriteFile(filepath.Join(workspace, "answer.txt"), []byte("yes\n\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := verifyTask(context.Background(), task, workspace); err == nil {
-		t.Fatal("verifier accepted extra blank lines")
+	// Only the one terminator is a convention. A blank line, or a carriage
+	// return that is not part of a terminator, is content.
+	for _, content := range []string{"yes\n\n", "yes\r"} {
+		if err := os.WriteFile(
+			filepath.Join(workspace, "answer.txt"), []byte(content), 0o600,
+		); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := verifyTask(context.Background(), task, workspace); err == nil {
+			t.Fatalf("verifier accepted %q", content)
+		}
 	}
 }
 

@@ -77,7 +77,7 @@ func LoadFile(path string) (string, error) {
 	if err := validateFileType(before); err != nil {
 		return "", fmt.Errorf("credential file %s: %w", path, err)
 	}
-	if err := validateFileSecurityBeforeOpen(before); err != nil {
+	if err := validateFileSecurity(before); err != nil {
 		return "", fmt.Errorf("credential file %s: %w", path, err)
 	}
 	file, err := os.Open(path)
@@ -92,7 +92,7 @@ func LoadFile(path string) (string, error) {
 		statErr = validateFileType(after)
 	}
 	if statErr == nil {
-		statErr = validateFileSecurity(file, after)
+		statErr = validateFileSecurity(after)
 	}
 	raw, readErr := io.ReadAll(io.LimitReader(file, maxCredentialFileBytes+1))
 	if readErr == nil && len(raw) > maxCredentialFileBytes {

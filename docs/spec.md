@@ -7,8 +7,10 @@ failure behavior, including the target behavior of planned capabilities.
 only shipped behavior; `docs/settings.md` owns the shipped settings reference.
 
 Ox is a coding agent that serves one ACP v1 client over standard input and
-output and uses OpenRouter as its model provider. Ox validates request inputs
-and prerequisites before accepting an operation. Invalid requests do not enter
+output and uses OpenRouter as its model provider. It targets Unix-like systems:
+shell execution, process-group cancellation, owner-only credential files, and
+session locking all assume POSIX semantics. Ox validates request inputs and
+prerequisites before accepting an operation. Invalid requests do not enter
 conversation history. An accepted operation may fail after producing output or
 effects; Ox records that outcome rather than claiming the operation was rolled
 back.

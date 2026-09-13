@@ -78,12 +78,10 @@ Review the sanitized environment, process groups, cancellation, delegated
 terminal cleanup, and reusable shell grants.
 
 **Stateful interaction tools:**
-`internal/tools/{question,todo,memory,skill,task}.go`,
-`internal/agent/{memory,task_queue}.go`, and the todo/task state sections of
-`internal/agent/state.go`.
+`internal/tools/{question,todo,memory,skill}.go`, `internal/agent/memory.go`,
+and the todo state sections of `internal/agent/state.go`.
 
-Review elicitation, plans, durable memory, skill loading, task transitions, and
-replay.
+Review elicitation, plans, durable memory, skill loading, and replay.
 
 **Web retrieval:** `internal/tools/web_fetch.go` and `web_fetch_oxe2e.go`.
 

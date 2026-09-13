@@ -49,8 +49,8 @@ an OpenRouter model and credential before Zed starts it.
 
 4. Open the project directory that Ox should use as its workspace, then open
    Zed's Agent Panel. Use the agent selector or new-thread menu to start an
-   **Ox** thread. To work on an independent branch, prepare and open a
-   [Git worktree](worktrees.md).
+   **Ox** thread. To work on an independent branch, prepare a Git worktree and
+   open it as the project directory.
 
 ## Troubleshooting
 

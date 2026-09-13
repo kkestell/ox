@@ -36,6 +36,9 @@ Built-in tools:
 - `web_fetch` — fetch public web pages.
 - `memory_search`, `memory_write`, and `memory_delete` — manage workspace
   memory.
+- `lsp_definition`, `lsp_references`, `lsp_document_symbols`,
+  `lsp_workspace_symbols`, and `lsp_diagnostics` — query configured language
+  servers.
 
 Permissions and safety:
 
@@ -61,8 +64,8 @@ Operations:
 
 ## Getting started
 
-Requirements: Go 1.26.4 or later, an ACP client, an OpenRouter model ID, and an
-OpenRouter credential.
+Requirements: a Unix-like system, Go 1.26.4 or later, an ACP client, an
+OpenRouter model ID, and an OpenRouter credential.
 
 ```sh
 make install            # installs ox to $HOME/.local/bin/ox
