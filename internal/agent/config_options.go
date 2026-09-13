@@ -237,8 +237,8 @@ func applySelections(
 			if reasoning == nil {
 				reasoning = &openrouter.Reasoning{}
 			} else {
-				copy := *reasoning
-				reasoning = &copy
+				selected := *reasoning
+				reasoning = &selected
 			}
 			reasoning.Effort = *selections.Reasoning
 			configuration.Settings.Reasoning = reasoning
@@ -286,6 +286,8 @@ func constrainedToolSet(base toolSet, declarations []openrouter.Tool) toolSet {
 		_, ok := allowed[tool.Name]
 		return !ok
 	})
+	// The tools are a subset of an already-validated set, so no name can
+	// collide here.
 	result, err := newToolSet(tools)
 	if err != nil {
 		panic(err)

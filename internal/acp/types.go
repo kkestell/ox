@@ -610,6 +610,9 @@ const (
 	SessionUpdateAgentThoughtChunk  = "agent_thought_chunk"
 	SessionUpdateConfigOptionUpdate = "config_option_update"
 	SessionUpdatePlan               = "plan"
+	SessionUpdateToolCall           = "tool_call"
+	SessionUpdateToolCallUpdate     = "tool_call_update"
+	SessionUpdateUsageUpdate        = "usage_update"
 	SessionUpdateUserMessageChunk   = "user_message_chunk"
 
 	ToolKindRead    ToolKind = "read"

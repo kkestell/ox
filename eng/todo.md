@@ -62,7 +62,7 @@
         F40)
   - [x] Simplify durable-state transition code (F37)
   - [x] Remove production test artifacts and test-only mutable seams (F38)
-  - [ ] Standardize session-update values and remove trivial dead or misleading
+  - [x] Standardize session-update values and remove trivial dead or misleading
         code (F35, F39)
   - [ ] Add focused configuration-option error coverage (F42)
   - [ ] Add focused MCP and trace error-path coverage (F44)

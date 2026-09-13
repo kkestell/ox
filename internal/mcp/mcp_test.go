@@ -358,10 +358,10 @@ func TestIdentityExcludesCredentialValues(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if left.descriptor.Identity != right.descriptor.Identity {
+	if left.Identity != right.Identity {
 		t.Fatal("credential rotation changed tool identity")
 	}
-	if strings.Contains(left.descriptor.Identity, "first") {
+	if strings.Contains(left.Identity, "first") {
 		t.Fatal("identity leaked credential")
 	}
 }

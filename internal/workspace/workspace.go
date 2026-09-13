@@ -325,6 +325,9 @@ func writeError(err error, path string) error {
 	return fmt.Errorf("cannot write `%s`: %w", path, err)
 }
 
+// isEscape reports whether a root-confined operation refused a name that
+// reaches outside the root. The standard library keeps that error unexported,
+// so its message is the only thing there is to match on.
 func isEscape(err error) bool {
 	var pathErr *fs.PathError
 	return errors.As(err, &pathErr) &&

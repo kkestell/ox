@@ -34,14 +34,6 @@ type readArguments struct {
 	Limit  *int    `json:"limit"`
 }
 
-type windowed struct {
-	content  string
-	start    int
-	end      int
-	total    int
-	windowed bool
-}
-
 func executeRead(ctx context.Context, invocation agent.Invocation) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
@@ -98,7 +90,7 @@ func executeRead(ctx context.Context, invocation agent.Invocation) (string, erro
 		sum := sha256.Sum256(raw)
 		invocation.FileReads.Record(key, hex.EncodeToString(sum[:]))
 	}
-	return window(string(raw), offset, limit).content, nil
+	return window(string(raw), offset, limit), nil
 }
 
 func positiveInt(name string, value *int, fallback int) (int, error) {
@@ -111,30 +103,19 @@ func positiveInt(name string, value *int, fallback int) (int, error) {
 	return *value, nil
 }
 
-func window(content string, offset, limit int) windowed {
+func window(content string, offset, limit int) string {
 	if content == "" {
-		return windowed{}
+		return ""
 	}
 
 	lines := splitLines(content)
 	total := len(lines)
 	start := offset - 1
 	if start >= total {
-		return windowed{
-			content:  fmt.Sprintf("[offset %d is past the end of the file (%d lines)]", offset, total),
-			start:    offset,
-			end:      offset,
-			total:    total,
-			windowed: true,
-		}
+		return fmt.Sprintf("[offset %d is past the end of the file (%d lines)]", offset, total)
 	}
 	if start == 0 && limit >= total && len(content) <= workspace.InlineMaxBytes {
-		return windowed{
-			content: content,
-			start:   1,
-			end:     total,
-			total:   total,
-		}
+		return content
 	}
 
 	// The footer is part of the result, so its bytes come out of the same bound
@@ -162,24 +143,11 @@ func window(content string, offset, limit int) windowed {
 		// The first selected line alone overruns the bound. Show what fits so a
 		// read still makes progress, and say how much of the line that was.
 		shown := workspace.ValidUTF8Prefix(lines[start], budget)
-		return windowed{
-			content:  shown + elisionFooter(start+1, total, len(shown), len(lines[start])),
-			start:    start + 1,
-			end:      start + 1,
-			total:    total,
-			windowed: true,
-		}
+		return shown + elisionFooter(start+1, total, len(shown), len(lines[start]))
 	}
 
 	output := strings.Join(lines[start:end], "\n")
-	output += windowFooter(start+1, end, total)
-	return windowed{
-		content:  output,
-		start:    start + 1,
-		end:      end,
-		total:    total,
-		windowed: true,
-	}
+	return output + windowFooter(start+1, end, total)
 }
 
 func windowFooter(start, end, total int) string {

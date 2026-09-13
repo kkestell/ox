@@ -22,6 +22,10 @@ import (
 
 const maxTurnRequests = 16
 
+// toolCancelledBeforeStart is the result recorded for a tool call the turn never
+// dispatched, so the model sees why the call has no output.
+const toolCancelledBeforeStart = "tool call cancelled before start"
+
 var errTurnRequestLimit = errors.New("turn provider request limit reached")
 
 type loopOutcome struct {
@@ -550,10 +554,7 @@ func (a *Agent) modelRequest(value *session) (openrouter.Request, int) {
 }
 
 func todoContextMessage(entries []acp.PlanEntry) openrouter.Message {
-	data, err := json.Marshal(entries)
-	if err != nil {
-		panic(err)
-	}
+	data := mustMarshal(entries)
 	return openrouter.Message{
 		Role: openrouter.RoleSystem,
 		Content: []openrouter.ContentBlock{{
@@ -599,11 +600,7 @@ func requestPrefixFingerprint(
 		Reasoning:    configuration.Settings.Reasoning,
 		Provider:     configuration.Settings.Provider,
 	}
-	data, err := json.Marshal(config)
-	if err != nil {
-		panic(err)
-	}
-	sum := sha256.Sum256(data)
+	sum := sha256.Sum256(mustMarshal(config))
 	return hex.EncodeToString(sum[:])
 }
 
@@ -805,7 +802,7 @@ func (a *Agent) executeSuspendedBatch(
 			case decisionAllowOnce, decisionAllowAlways:
 				ready[index] = true
 			case decisionCancelled:
-				results[index].content = "tool call cancelled before start"
+				results[index].content = toolCancelledBeforeStart
 				results[index].failed = true
 				batchCancelled = true
 			default:
@@ -894,7 +891,7 @@ func (a *Agent) executeSuspendedBatch(
 		case decisionAllowOnce, decisionAllowAlways:
 			ready[index] = true
 		case decisionCancelled:
-			results[index].content = "tool call cancelled before start"
+			results[index].content = toolCancelledBeforeStart
 			results[index].failed = true
 			batchCancelled = true
 		default:
@@ -910,12 +907,12 @@ func (a *Agent) executeSuspendedBatch(
 		for index := range calls {
 			if ready[index] {
 				ready[index] = false
-				results[index].content = "tool call cancelled before start"
+				results[index].content = toolCancelledBeforeStart
 				results[index].failed = true
 			}
 			if results[index].content == "" {
 				results[index] = toolResult{
-					content: "tool call cancelled before start", failed: true,
+					content: toolCancelledBeforeStart, failed: true,
 					approval: decisionCancelled,
 					target:   progress.ToolTargets[calls[index].ID],
 				}
@@ -989,7 +986,7 @@ func (a *Agent) permissionRequest(
 		SessionID: sessionID,
 		ToolCall: acp.ToolCallUpdate{
 			ToolCallID: call.ID, Kind: tool.Kind,
-			Title: toolTitle(tool, arguments), Name: call.Function.Name,
+			Title: titleOfTool(tool, arguments), Name: call.Function.Name,
 			Locations: toolLocations(root, target), RawInput: arguments,
 		},
 		Options: permissionOptions(rule, tool.Suggest != nil),
@@ -1096,7 +1093,7 @@ func (a *Agent) dispatchApprovedBatch(
 	for index := range calls {
 		if ready[index] && !executed[index] {
 			results[index] = toolResult{
-				content:  "tool call cancelled before start",
+				content:  toolCancelledBeforeStart,
 				failed:   true,
 				approval: results[index].approval,
 				target:   results[index].target,
@@ -1167,12 +1164,12 @@ func (a *Agent) executeOne(
 		defer value.exclusiveMu.Unlock()
 		if ctx.Err() != nil {
 			return toolResult{
-				content: "tool call cancelled before start", failed: true, target: target,
+				content: toolCancelledBeforeStart, failed: true, target: target,
 			}
 		}
 	} else if ctx.Err() != nil {
 		return toolResult{
-			content: "tool call cancelled before start", failed: true, target: target,
+			content: toolCancelledBeforeStart, failed: true, target: target,
 		}
 	}
 	turn.ToolStarted(call.ID, call.Function.Name)
@@ -1304,11 +1301,7 @@ func tracedRequestBytes(turn diagnostictrace.Turn, request openrouter.Request) i
 	if !turn.Enabled() {
 		return 0
 	}
-	data, err := json.Marshal(request)
-	if err != nil {
-		panic(err)
-	}
-	return len(data)
+	return len(mustMarshal(request))
 }
 
 func providerResponseBytes(completion *openrouter.Completion) int {
@@ -1386,18 +1379,14 @@ func (a *Agent) toolEvent(
 	}
 }
 
-func (a *Agent) toolTitle(name string, arguments json.RawMessage) string {
-	return toolSetTitle(a.primaryTools, name, arguments)
-}
-
 func toolSetTitle(tools toolSet, name string, arguments json.RawMessage) string {
 	if index, ok := tools.byName[name]; ok {
-		return toolTitle(tools.tools[index], arguments)
+		return titleOfTool(tools.tools[index], arguments)
 	}
 	return name
 }
 
-func toolTitle(tool Tool, arguments json.RawMessage) string {
+func titleOfTool(tool Tool, arguments json.RawMessage) string {
 	for _, title := range []func(json.RawMessage) string{tool.Title, tool.Label} {
 		if title != nil {
 			if value := title(arguments); value != "" {

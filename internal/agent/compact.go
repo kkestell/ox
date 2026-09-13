@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -447,11 +446,7 @@ func estimateRequestTokens(
 
 func estimateMessages(messages []openrouter.Message) int {
 	sized, media := sizedForEstimate(messages)
-	data, err := json.Marshal(sized)
-	if err != nil {
-		panic(err)
-	}
-	return bytesToTokens(len(data)) + media
+	return bytesToTokens(len(mustMarshal(sized))) + media
 }
 
 const (
@@ -474,11 +469,7 @@ func promptTokens(messages []openrouter.Message, tools []openrouter.Tool) int {
 		Messages []openrouter.Message `json:"messages"`
 		Tools    []openrouter.Tool    `json:"tools,omitempty"`
 	}{Messages: sized, Tools: tools}
-	data, err := json.Marshal(prompt)
-	if err != nil {
-		panic(err)
-	}
-	return bytesToTokens(len(data)) + media
+	return bytesToTokens(len(mustMarshal(prompt))) + media
 }
 
 // sizedForEstimate empties every media block and returns the messages to count

@@ -374,11 +374,7 @@ type listCursor struct {
 }
 
 func encodeCursor(cursor listCursor) string {
-	data, err := json.Marshal(cursor)
-	if err != nil {
-		panic(err)
-	}
-	return base64.RawURLEncoding.EncodeToString(data)
+	return base64.RawURLEncoding.EncodeToString(mustMarshal(cursor))
 }
 
 func decodeCursor(value string) (listCursor, error) {

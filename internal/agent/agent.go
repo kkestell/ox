@@ -1077,6 +1077,8 @@ func toolsWithoutForm(source toolSet) toolSet {
 		append([]Tool(nil), source.tools...),
 		func(tool Tool) bool { return tool.RequiresForm },
 	)
+	// The tools are a subset of an already-validated set, so no name can
+	// collide here.
 	result, err := newToolSet(tools)
 	if err != nil {
 		panic(err)
@@ -1359,11 +1361,11 @@ func (a *Agent) Prompt(
 	if value == nil {
 		return acp.PromptResponse{}, jrpc2.Errorf(jrpc2.InvalidParams, "unknown session")
 	}
-	userMessage, err := promptMessage(request.Prompt)
-	if err != nil {
+	// The prompt is rendered here only to reject content the model cannot be
+	// sent; the turn builds its own history from the durable record.
+	if _, err := promptMessage(request.Prompt); err != nil {
 		return acp.PromptResponse{}, jrpc2.Errorf(jrpc2.InvalidParams, "%v", err)
 	}
-	_ = userMessage
 	var promptMeta acp.Metadata
 	if len(request.Prompt) > 0 {
 		promptMeta = request.Prompt[0].Meta
@@ -1446,18 +1448,19 @@ func (a *Agent) Prompt(
 	if notifyErr != nil {
 		return acp.PromptResponse{}, notifyErr
 	}
-	if cancelledByClient {
+	switch {
+	case cancelledByClient:
+		// A client cancellation is an outcome of the turn, not a failure of the
+		// prompt method, so whatever the run reported is replaced rather than
+		// returned.
 		result.response.StopReason = acp.StopReasonCancelled
 		result.response.Usage = value.usage()
-		result.err = nil
-	}
-	if result.err != nil {
-		if errors.Is(result.err, context.Canceled) {
-			return acp.PromptResponse{}, jrpc2.Errorf(
-				acp.ErrCodeRequestCancelled,
-				"request cancelled",
-			)
-		}
+	case errors.Is(result.err, context.Canceled):
+		return acp.PromptResponse{}, jrpc2.Errorf(
+			acp.ErrCodeRequestCancelled,
+			"request cancelled",
+		)
+	case result.err != nil:
 		return acp.PromptResponse{}, result.err
 	}
 	a.logger.Info(

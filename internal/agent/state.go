@@ -648,19 +648,19 @@ func validateCheckpointTurnState(state durableState) error {
 			}
 		}
 		if pending != nil {
-			copy := state
-			copy.suspended = progress
-			if err := copy.validatePendingPermission(*pending); err != nil {
+			candidate := state
+			candidate.suspended = progress
+			if err := candidate.validatePendingPermission(*pending); err != nil {
 				return fmt.Errorf("checkpoint pending permission: %w", err)
 			}
 		}
 	}
 	for _, execution := range state.toolExecutions {
-		copy := state.clone()
-		delete(copy.toolExecutions, execution.Call.ID)
+		candidate := state.clone()
+		delete(candidate.toolExecutions, execution.Call.ID)
 		started := cloneToolExecution(execution)
 		started.Result = nil
-		if err := copy.validateToolExecution(started); err != nil {
+		if err := candidate.validateToolExecution(started); err != nil {
 			return fmt.Errorf("checkpoint tool execution: %w", err)
 		}
 		if execution.Result != nil {
@@ -1254,7 +1254,7 @@ func (s *durableState) validateToolExecution(value durableToolExecution) error {
 		return fmt.Errorf("tool call %q has an invalid approval decision", value.Call.ID)
 	}
 	index := s.suspended.callIndex(value.Call.ID)
-	if index < 0 || !sameToolCall(s.suspended.ToolCalls[index], value.Call) ||
+	if index < 0 || !sameEncoding(s.suspended.ToolCalls[index], value.Call) ||
 		value.Target != s.suspended.ToolTargets[value.Call.ID] {
 		return errors.New("started tool call does not match the suspended exchange")
 	}
@@ -1285,18 +1285,6 @@ func validateStoredExecutionResult(
 		return errors.New("unknown tool completion is invalid")
 	}
 	return nil
-}
-
-func sameToolCall(left, right openrouter.ToolCall) bool {
-	leftJSON, err := json.Marshal(left)
-	if err != nil {
-		panic(err)
-	}
-	rightJSON, err := json.Marshal(right)
-	if err != nil {
-		panic(err)
-	}
-	return bytes.Equal(leftJSON, rightJSON)
 }
 
 // cloneStoredToolResult copies a tool outcome. Every field is a value, so the
@@ -1579,7 +1567,7 @@ func (a *Agent) replay(s durableState) ([]any, error) {
 			}
 			configuration = value.Configuration
 			updates = append(updates, acp.ConfigOptionUpdate{
-				SessionUpdate: "config_option_update",
+				SessionUpdate: acp.SessionUpdateConfigOptionUpdate,
 				ConfigOptions: cloneConfigOptions(value.Options),
 			})
 		case recordTodoChanged:
@@ -1605,7 +1593,7 @@ func (a *Agent) replay(s durableState) ([]any, error) {
 			}
 			if effective.ContextWindow > 0 {
 				updates = append(updates, acp.UsageUpdate{
-					SessionUpdate: "usage_update",
+					SessionUpdate: acp.SessionUpdateUsageUpdate,
 					Used:          uint64(value.Occupancy),
 					Size:          uint64(effective.ContextWindow),
 					Cost:          &acp.Cost{Amount: cost, Currency: "USD"},
@@ -1618,7 +1606,7 @@ func (a *Agent) replay(s durableState) ([]any, error) {
 			}
 			for index, content := range value.Content {
 				updates = append(updates, acp.UserMessageChunk{
-					SessionUpdate: "user_message_chunk",
+					SessionUpdate: acp.SessionUpdateUserMessageChunk,
 					Content:       replayContent(content, index),
 					MessageID:     value.MessageID,
 				})
@@ -1653,11 +1641,11 @@ func (a *Agent) replay(s durableState) ([]any, error) {
 				if !suspended {
 					updates = append(
 						updates,
-						replayToolCall(a, call, turnConfiguration, nil, s.cwd, result.Target),
+						replayToolCall(a, call, turnConfiguration, s.cwd, result.Target),
 					)
 				}
 				updates = append(updates, acp.ToolCallUpdate{
-					SessionUpdate: "tool_call_update",
+					SessionUpdate: acp.SessionUpdateToolCallUpdate,
 					ToolCallID:    call.ID,
 					Status:        status,
 					Content: []acp.ToolCallContent{{
@@ -1667,7 +1655,6 @@ func (a *Agent) replay(s durableState) ([]any, error) {
 							Text: outputTail(result.Content),
 						},
 					}},
-					Meta: nil,
 				})
 			}
 			if value.Usage != nil {
@@ -1675,7 +1662,7 @@ func (a *Agent) replay(s durableState) ([]any, error) {
 			}
 			if value.Usage != nil && turnConfiguration.ContextWindow > 0 {
 				updates = append(updates, acp.UsageUpdate{
-					SessionUpdate: "usage_update",
+					SessionUpdate: acp.SessionUpdateUsageUpdate,
 					Used:          uint64(value.Usage.PromptTokens),
 					Size:          uint64(turnConfiguration.ContextWindow),
 					Cost:          &acp.Cost{Amount: cost, Currency: "USD"},
@@ -1710,7 +1697,7 @@ func (a *Agent) replaySuspendedExchange(
 	for _, call := range value.ToolCalls {
 		updates = append(
 			updates,
-			replayToolCall(a, call, configuration, nil, root, value.ToolTargets[call.ID]),
+			replayToolCall(a, call, configuration, root, value.ToolTargets[call.ID]),
 		)
 	}
 	return updates
@@ -1720,14 +1707,14 @@ func (a *Agent) replayModelContent(value modelExchangeRecord) []any {
 	updates := make([]any, 0, 2)
 	if value.Reasoning != "" {
 		updates = append(updates, acp.AgentThoughtChunk{
-			SessionUpdate: "agent_thought_chunk",
+			SessionUpdate: acp.SessionUpdateAgentThoughtChunk,
 			Content:       acp.ContentBlock{Type: "text", Text: value.Reasoning},
 			MessageID:     value.ThoughtID,
 		})
 	}
 	if value.Text != "" {
 		updates = append(updates, acp.AgentMessageChunk{
-			SessionUpdate: "agent_message_chunk",
+			SessionUpdate: acp.SessionUpdateAgentMessageChunk,
 			Content:       acp.ContentBlock{Type: "text", Text: value.Text},
 			MessageID:     value.AnswerID,
 		})
@@ -1739,12 +1726,11 @@ func replayToolCall(
 	a *Agent,
 	call openrouter.ToolCall,
 	configuration requestConfiguration,
-	meta acp.Metadata,
 	root string,
 	target string,
 ) acp.ToolCall {
 	return acp.ToolCall{
-		SessionUpdate: "tool_call",
+		SessionUpdate: acp.SessionUpdateToolCall,
 		ToolCallID:    call.ID,
 		Title:         a.configuredToolTitle(configuration, call.Function.Name, json.RawMessage(call.Function.Arguments)),
 		Name:          call.Function.Name,
@@ -1752,7 +1738,6 @@ func replayToolCall(
 		Status:        acp.ToolCallStatusPending,
 		Locations:     toolLocations(root, target),
 		RawInput:      json.RawMessage(call.Function.Arguments),
-		Meta:          meta,
 	}
 }
 
@@ -1772,7 +1757,7 @@ func outcomeUpdate(value turnFinishedRecord) any {
 		}
 	}
 	return acp.AgentMessageChunk{
-		SessionUpdate: "agent_message_chunk",
+		SessionUpdate: acp.SessionUpdateAgentMessageChunk,
 		Content:       acp.ContentBlock{Type: "text", Text: text},
 		MessageID:     value.MessageID,
 		Meta:          acp.Metadata{acp.MetaOutcome: value.Kind},
@@ -2052,15 +2037,18 @@ func comparableConfiguration(value requestConfiguration) requestConfiguration {
 // sameEncoding compares two values by their JSON encodings, which is how this
 // package asks whether a recorded value still matches the one in hand.
 func sameEncoding(left, right any) bool {
-	leftJSON, err := json.Marshal(left)
+	return bytes.Equal(mustMarshal(left), mustMarshal(right))
+}
+
+// mustMarshal encodes a value this package built. Every such value is made of
+// types the package controls, so a failure here is a bug in those types rather
+// than a condition a caller could handle.
+func mustMarshal(value any) []byte {
+	data, err := json.Marshal(value)
 	if err != nil {
 		panic(err)
 	}
-	rightJSON, err := json.Marshal(right)
-	if err != nil {
-		panic(err)
-	}
-	return bytes.Equal(leftJSON, rightJSON)
+	return data
 }
 
 func validateConfiguration(value requestConfiguration) error {

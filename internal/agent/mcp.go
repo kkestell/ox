@@ -35,7 +35,6 @@ func (a *Agent) activateMCP(
 	dynamic := make([]Tool, 0, len(descriptors))
 	evidence := make([]mcpToolConfiguration, 0, len(descriptors))
 	for _, descriptor := range descriptors {
-		descriptor := descriptor
 		dynamic = append(dynamic, Tool{
 			Name:        descriptor.Name,
 			Description: descriptor.Description,
@@ -115,7 +114,7 @@ func (a *Agent) configuredToolTitle(
 	if tool, ok := configuredMCPTool(configuration, name); ok {
 		return mcpToolTitle(tool.ServerName, tool.ToolName, tool.Title)
 	}
-	return a.toolTitle(name, arguments)
+	return toolSetTitle(a.primaryTools, name, arguments)
 }
 
 func validateRecoveredMCP(

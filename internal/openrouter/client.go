@@ -118,12 +118,9 @@ func (c *Client) Stream(
 	started := time.Now()
 	lastCompletion := &Completion{}
 	var lastErr error
-	for attempt := 0; attempt < maxRetryAttempts; attempt++ {
-		completion, status, retryAfter, observed, attemptErr := c.streamAttempt(
-			ctx,
-			body,
-			onDelta,
-		)
+	for number := 0; number < maxRetryAttempts; number++ {
+		attempt, attemptErr := c.streamAttempt(ctx, body, onDelta)
+		completion := attempt.completion
 		lastCompletion = completion
 		if attemptErr == nil {
 			c.logCompletion(completion)
@@ -133,11 +130,11 @@ func (c *Client) Stream(
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return completion, ctxErr
 		}
-		if observed {
+		if attempt.observedContent {
 			return completion, attemptErr
 		}
 
-		classification := classify(status, attemptErr)
+		classification := classify(attempt.status, attemptErr)
 		var streamError *streamAPIError
 		if errors.As(attemptErr, &streamError) {
 			classification = classify(streamError.code, attemptErr)
@@ -148,18 +145,18 @@ func (c *Client) Stream(
 		if classification != retry {
 			return completion, attemptErr
 		}
-		if attempt == maxRetryAttempts-1 {
+		if number == maxRetryAttempts-1 {
 			break
 		}
 
-		delay := retryDelay(attempt, retryAfter)
+		delay := retryDelay(number, attempt.retryAfter)
 		if time.Since(started)+delay > c.retryBudget() {
 			break
 		}
 		c.logger().Warn(
 			"retrying OpenRouter stream",
-			"attempt", attempt+1,
-			"status", status,
+			"attempt", number+1,
+			"status", attempt.status,
 			"delay", delay,
 			"error", attemptErr,
 		)
@@ -173,11 +170,21 @@ func (c *Client) Stream(
 	)
 }
 
+// streamAttemptResult carries what the retry decision needs from one request:
+// its status, the server's Retry-After, and whether any content already reached
+// the caller.
+type streamAttemptResult struct {
+	completion      *Completion
+	status          int
+	retryAfter      string
+	observedContent bool
+}
+
 func (c *Client) streamAttempt(
 	ctx context.Context,
 	body []byte,
 	onDelta func(Delta),
-) (*Completion, int, string, bool, error) {
+) (streamAttemptResult, error) {
 	request, err := http.NewRequestWithContext(
 		ctx,
 		http.MethodPost,
@@ -185,31 +192,36 @@ func (c *Client) streamAttempt(
 		bytes.NewReader(body),
 	)
 	if err != nil {
-		return &Completion{}, 0, "", false, fmt.Errorf("build OpenRouter request: %w", err)
+		return streamAttemptResult{completion: &Completion{}},
+			fmt.Errorf("build OpenRouter request: %w", err)
 	}
 	c.setHeaders(request)
 
 	response, err := c.httpClient().Do(request)
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
-			return &Completion{}, 0, "", false, ctxErr
+			return streamAttemptResult{completion: &Completion{}}, ctxErr
 		}
-		return &Completion{}, 0, "", false, fmt.Errorf("send OpenRouter request: %w", err)
+		return streamAttemptResult{completion: &Completion{}},
+			fmt.Errorf("send OpenRouter request: %w", err)
 	}
 
-	retryAfter := response.Header.Get("Retry-After")
+	failed := streamAttemptResult{
+		completion: &Completion{},
+		status:     response.StatusCode,
+		retryAfter: response.Header.Get("Retry-After"),
+	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		raw, readErr := io.ReadAll(io.LimitReader(response.Body, maxErrorBodySize))
 		closeErr := response.Body.Close()
 		if readErr != nil {
-			return &Completion{}, response.StatusCode, retryAfter, false,
+			return failed,
 				errors.Join(fmt.Errorf("read OpenRouter error response: %w", readErr), closeErr)
 		}
 		if closeErr != nil {
-			return &Completion{}, response.StatusCode, retryAfter, false,
-				fmt.Errorf("close OpenRouter error response: %w", closeErr)
+			return failed, fmt.Errorf("close OpenRouter error response: %w", closeErr)
 		}
-		return &Completion{}, response.StatusCode, retryAfter, false,
+		return failed,
 			fmt.Errorf("OpenRouter returned %s: %s", response.Status, strings.TrimSpace(string(raw)))
 	}
 
@@ -218,23 +230,25 @@ func (c *Client) streamAttempt(
 		return assembler.push(data, onDelta)
 	})
 	closeErr := response.Body.Close()
-	completion := assembler.finish()
-	observed := assembler.observedContent
+	result := streamAttemptResult{
+		completion:      assembler.finish(),
+		status:          failed.status,
+		retryAfter:      failed.retryAfter,
+		observedContent: assembler.observedContent,
+	}
 	if streamErr != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
-			return completion, response.StatusCode, retryAfter, observed, ctxErr
+			return result, ctxErr
 		}
-		return completion, response.StatusCode, retryAfter, observed, streamErr
+		return result, streamErr
 	}
 	if closeErr != nil {
-		return completion, response.StatusCode, retryAfter, observed,
-			fmt.Errorf("close OpenRouter response: %w", closeErr)
+		return result, fmt.Errorf("close OpenRouter response: %w", closeErr)
 	}
 	if !assembler.sawChoice {
-		return completion, response.StatusCode, retryAfter, observed,
-			errors.New("OpenRouter stream contained no completion choices")
+		return result, errors.New("OpenRouter stream contained no completion choices")
 	}
-	return completion, response.StatusCode, retryAfter, observed, nil
+	return result, nil
 }
 
 func (c *Client) setHeaders(request *http.Request) {

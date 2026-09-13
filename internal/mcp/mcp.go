@@ -67,7 +67,7 @@ type server struct {
 	name      string
 	session   *sdk.ClientSession
 	transport identityTransport
-	tools     map[string]discoveredTool
+	tools     map[string]Descriptor
 	secrets   []string
 }
 
@@ -77,13 +77,9 @@ type identityTransport struct {
 	SecretNames []string `json:"secretNames,omitempty"`
 }
 
-type discoveredTool struct {
-	descriptor Descriptor
-}
-
 type toolRef struct {
 	server *server
-	tool   discoveredTool
+	tool   Descriptor
 }
 
 func Activate(ctx context.Context, root string, definitions []acp.MCPServer) (*Bundle, error) {
@@ -107,16 +103,16 @@ func Activate(ctx context.Context, root string, definitions []acp.MCPServer) (*B
 				_ = bundle.Close()
 				return nil, errors.New("MCP catalog exceeds 256 tools")
 			}
-			if _, exists := bundle.byName[tool.descriptor.Name]; exists {
+			if _, exists := bundle.byName[tool.Name]; exists {
 				_ = bundle.Close()
-				return nil, fmt.Errorf("MCP provider tool name %q is not unique", tool.descriptor.Name)
+				return nil, fmt.Errorf("MCP provider tool name %q is not unique", tool.Name)
 			}
-			if err := size.add(tool.descriptor); err != nil {
+			if err := size.add(tool); err != nil {
 				_ = bundle.Close()
 				return nil, err
 			}
-			bundle.tools = append(bundle.tools, cloneDescriptor(tool.descriptor))
-			bundle.byName[tool.descriptor.Name] = toolRef{server: opened, tool: tool}
+			bundle.tools = append(bundle.tools, cloneDescriptor(tool))
+			bundle.byName[tool.Name] = toolRef{server: opened, tool: tool}
 		}
 	}
 	sort.Slice(bundle.tools, func(i, j int) bool { return bundle.tools[i].Name < bundle.tools[j].Name })
@@ -148,11 +144,11 @@ func (b *Bundle) Call(ctx context.Context, name string, arguments json.RawMessag
 	if err != nil {
 		return Result{}, reference.server.redact(fmt.Errorf("refresh MCP server %q tools: %w", reference.server.name, err))
 	}
-	current, ok := fresh[reference.tool.descriptor.ToolName]
-	if !ok || current.descriptor.Identity != reference.tool.descriptor.Identity {
+	current, ok := fresh[reference.tool.ToolName]
+	if !ok || current.Identity != reference.tool.Identity {
 		return Result{}, fmt.Errorf("MCP tool %q changed since activation", name)
 	}
-	value, err := reference.server.session.CallTool(callCtx, &sdk.CallToolParams{Name: current.descriptor.ToolName, Arguments: input})
+	value, err := reference.server.session.CallTool(callCtx, &sdk.CallToolParams{Name: current.ToolName, Arguments: input})
 	if err != nil {
 		return Result{}, reference.server.redact(fmt.Errorf("call MCP tool %q: %w", name, err))
 	}
@@ -258,8 +254,8 @@ func (c *catalogSize) add(descriptor Descriptor) error {
 	return nil
 }
 
-func discoverTools(ctx context.Context, value *server) (map[string]discoveredTool, error) {
-	result := make(map[string]discoveredTool)
+func discoverTools(ctx context.Context, value *server) (map[string]Descriptor, error) {
+	result := make(map[string]Descriptor)
 	seenCursors := map[string]struct{}{}
 	cursor := ""
 	pageCount := 0
@@ -284,7 +280,7 @@ func discoverTools(ctx context.Context, value *server) (map[string]discoveredToo
 			if err != nil {
 				return nil, fmt.Errorf("MCP tool %q: %w", tool.Name, err)
 			}
-			if err := size.add(found.descriptor); err != nil {
+			if err := size.add(found); err != nil {
 				return nil, err
 			}
 			result[tool.Name] = found
@@ -304,35 +300,35 @@ func discoverTools(ctx context.Context, value *server) (map[string]discoveredToo
 	return result, nil
 }
 
-func makeDiscovered(value *server, tool *sdk.Tool) (discoveredTool, error) {
+func makeDiscovered(value *server, tool *sdk.Tool) (Descriptor, error) {
 	schema, err := json.Marshal(tool.InputSchema)
 	if err != nil {
-		return discoveredTool{}, errors.New("input schema is not valid JSON")
+		return Descriptor{}, errors.New("input schema is not valid JSON")
 	}
 	var object map[string]json.RawMessage
 	if err := json.Unmarshal(schema, &object); err != nil || object == nil {
-		return discoveredTool{}, errors.New("input schema must be a JSON Schema object")
+		return Descriptor{}, errors.New("input schema must be a JSON Schema object")
 	}
 	var parsed jsonschema.Schema
 	if err := json.Unmarshal(schema, &parsed); err != nil {
-		return discoveredTool{}, fmt.Errorf("invalid input schema: %w", err)
+		return Descriptor{}, fmt.Errorf("invalid input schema: %w", err)
 	}
 	if _, err := parsed.Resolve(&jsonschema.ResolveOptions{ValidateDefaults: true}); err != nil {
-		return discoveredTool{}, fmt.Errorf("invalid input schema: %w", err)
+		return Descriptor{}, fmt.Errorf("invalid input schema: %w", err)
 	}
 	raw, err := json.Marshal(tool)
 	if err != nil {
-		return discoveredTool{}, fmt.Errorf("encode definition: %w", err)
+		return Descriptor{}, fmt.Errorf("encode definition: %w", err)
 	}
 	if value.containsSecretJSON(raw) {
-		return discoveredTool{}, errors.New("definition contains a configured secret")
+		return Descriptor{}, errors.New("definition contains a configured secret")
 	}
 	identityData, err := json.Marshal(struct {
 		Transport identityTransport `json:"transport"`
 		Tool      json.RawMessage   `json:"tool"`
 	}{value.transport, raw})
 	if err != nil {
-		return discoveredTool{}, err
+		return Descriptor{}, err
 	}
 	digest := sha256.Sum256(identityData)
 	title := tool.Title
@@ -344,7 +340,7 @@ func makeDiscovered(value *server, tool *sdk.Tool) (discoveredTool, error) {
 		ToolName: tool.Name, Title: title, Description: tool.Description,
 		InputSchema: append(json.RawMessage(nil), schema...), Identity: hex.EncodeToString(digest[:]),
 	}
-	return discoveredTool{descriptor: descriptor}, nil
+	return descriptor, nil
 }
 
 func providerName(serverName, toolName string) string {

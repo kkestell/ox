@@ -58,20 +58,20 @@ func (a *eventAdapter) handle(current event) error {
 		a.thoughtMessageID = current.thoughtID
 	case eventText:
 		return a.send(acp.AgentMessageChunk{
-			SessionUpdate: "agent_message_chunk",
+			SessionUpdate: acp.SessionUpdateAgentMessageChunk,
 			Content:       acp.ContentBlock{Type: "text", Text: current.text},
 			MessageID:     a.answerMessageID,
 		})
 	case eventReasoning:
 		return a.send(acp.AgentThoughtChunk{
-			SessionUpdate: "agent_thought_chunk",
+			SessionUpdate: acp.SessionUpdateAgentThoughtChunk,
 			Content:       acp.ContentBlock{Type: "text", Text: current.text},
 			MessageID:     a.thoughtMessageID,
 		})
 	case eventToolPending:
 		a.outputs[current.call.ID] = &outputState{}
 		return a.send(acp.ToolCall{
-			SessionUpdate: "tool_call",
+			SessionUpdate: acp.SessionUpdateToolCall,
 			ToolCallID:    current.call.ID,
 			Title:         current.title,
 			Name:          current.call.Function.Name,
@@ -82,7 +82,7 @@ func (a *eventAdapter) handle(current event) error {
 		})
 	case eventToolStarted:
 		return a.send(acp.ToolCallUpdate{
-			SessionUpdate: "tool_call_update",
+			SessionUpdate: acp.SessionUpdateToolCallUpdate,
 			ToolCallID:    current.call.ID,
 			Status:        acp.ToolCallStatusInProgress,
 		})
@@ -114,7 +114,7 @@ func (a *eventAdapter) handle(current event) error {
 			status = acp.ToolCallStatusFailed
 		}
 		if err := a.send(acp.ToolCallUpdate{
-			SessionUpdate: "tool_call_update",
+			SessionUpdate: acp.SessionUpdateToolCallUpdate,
 			ToolCallID:    current.call.ID,
 			Status:        status,
 		}); err != nil {
@@ -128,7 +128,7 @@ func (a *eventAdapter) handle(current event) error {
 		})
 	case eventUsage:
 		return a.send(acp.UsageUpdate{
-			SessionUpdate: "usage_update",
+			SessionUpdate: acp.SessionUpdateUsageUpdate,
 			Used:          uint64(current.contextOccupancy),
 			Size:          uint64(current.contextWindow),
 			Cost: &acp.Cost{
@@ -173,7 +173,7 @@ func (a *eventAdapter) flush(id string) error {
 		return nil
 	}
 	err := a.send(acp.ToolCallUpdate{
-		SessionUpdate: "tool_call_update",
+		SessionUpdate: acp.SessionUpdateToolCallUpdate,
 		ToolCallID:    id,
 		Content: []acp.ToolCallContent{{
 			Type:    "content",

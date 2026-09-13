@@ -148,6 +148,7 @@ func executeQuestion(ctx context.Context, invocation agent.Invocation) (string, 
 	case acp.ElicitationActionCancel:
 		result = questionResult{Outcome: "cancelled"}
 	}
+	// questionResult is a fixed shape of strings, so encoding it cannot fail.
 	data, err := json.Marshal(result)
 	if err != nil {
 		panic(err)

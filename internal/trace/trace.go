@@ -249,6 +249,8 @@ func (t Turn) emit(value record) {
 }
 
 func (t Trace) write(value record) {
+	// A record is built from this package's own types, so encoding it cannot
+	// fail for any reason a caller could act on.
 	line, err := json.Marshal(value)
 	if err != nil {
 		panic(err)

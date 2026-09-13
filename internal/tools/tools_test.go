@@ -1210,6 +1210,16 @@ func TestReadFileWindowsTruthfullyAndPreservesSmallFiles(t *testing.T) {
 	if !strings.Contains(got, "past the end of the file (2 lines)") {
 		t.Fatalf("past-EOF read = %q", got)
 	}
+
+	writeToolFile(t, invocation.Root, "empty.txt", "")
+	invocation.Arguments = json.RawMessage(`{"path":"empty.txt"}`)
+	got, err = invoke(t, read, invocation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "" {
+		t.Fatalf("empty read = %q", got)
+	}
 }
 
 func TestReadFileValidatesBoundsUTF8AndHugeLines(t *testing.T) {
