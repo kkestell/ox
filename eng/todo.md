@@ -36,7 +36,7 @@
   - [x] Make multimodal admission match advertised ACP capabilities (F07)
   - [x] Enforce coherent edit evidence, replacement, and text-format semantics
         (F08, F09)
-  - [ ] Keep read evidence and write verification on a coherent filesystem
+  - [x] Keep read evidence and write verification on a coherent filesystem
         executor (F10)
   - [ ] Make streamed tool-output retention bounded and incremental (F11, F17)
   - [ ] Use consistent token units for context occupancy and compaction (F12)

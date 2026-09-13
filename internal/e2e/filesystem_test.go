@@ -4,10 +4,46 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/kkestell/ox/internal/acp"
 )
+
+// TestInitializeRefusesHalfDelegatedFilesystem covers the shipped binary's
+// refusal of a filesystem capability advertised in only one direction. Reads
+// from an editor buffer paired with writes to disk would record evidence no
+// later mutation could satisfy.
+func TestInitializeRefusesHalfDelegatedFilesystem(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		capabilities *acp.FileSystemCapabilities
+		want         string
+	}{
+		{
+			name:         "read only",
+			capabilities: &acp.FileSystemCapabilities{ReadTextFile: true},
+			want:         "fs/read_text_file without fs/write_text_file",
+		},
+		{
+			name:         "write only",
+			capabilities: &acp.FileSystemCapabilities{WriteTextFile: true},
+			want:         "fs/write_text_file without fs/read_text_file",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			child := start(t)
+			responseError := child.requestError("initialize", acp.InitializeRequest{
+				ProtocolVersion:    acp.ProtocolVersion,
+				ClientCapabilities: &acp.ClientCapabilities{FS: test.capabilities},
+			})
+			if responseError.Code != -32602 ||
+				!strings.Contains(responseError.Message, test.want) {
+				t.Fatalf("error = %#v, want -32602 mentioning %q", responseError, test.want)
+			}
+		})
+	}
+}
 
 func TestDelegatedFilesystemRunsThroughClientAndRefusesBeforeDispatch(t *testing.T) {
 	model := startModel(t,

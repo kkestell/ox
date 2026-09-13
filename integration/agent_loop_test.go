@@ -2250,41 +2250,47 @@ func TestDelegatedFilesystemPreservesToolSemanticsAndContinuesAfterClientError(t
 	model.assertConsumed(t)
 }
 
-func TestFilesystemCapabilitiesSelectEachMethodIndependently(t *testing.T) {
+// TestFilesystemCapabilitiesApplyAsAPair checks that filesystem delegation is
+// all or nothing. With both methods advertised a read and the write that
+// consumes its evidence both go to the client, even when the client's buffer
+// differs from the file on disk; with neither, both stay local.
+func TestFilesystemCapabilitiesApplyAsAPair(t *testing.T) {
 	for _, test := range []struct {
 		name       string
-		capability acp.FileSystemCapabilities
+		capability *acp.FileSystemCapabilities
 		wantLocal  string
 		wantClient string
 		wantReads  int
 		wantWrites int
 	}{
 		{
-			name:       "delegated read and local write",
-			capability: acp.FileSystemCapabilities{ReadTextFile: true},
-			wantLocal:  "after\n",
-			wantClient: "before\n",
-			wantReads:  1,
+			name:       "delegated",
+			capability: &acp.FileSystemCapabilities{ReadTextFile: true, WriteTextFile: true},
+			wantLocal:  "on disk\n",
+			wantClient: "after\n",
+			wantReads:  2,
+			wantWrites: 1,
 		},
 		{
-			name:       "local read and delegated write",
-			capability: acp.FileSystemCapabilities{WriteTextFile: true},
-			wantLocal:  "before\n",
-			wantClient: "after\n",
-			wantWrites: 1,
+			name:       "local",
+			capability: &acp.FileSystemCapabilities{},
+			wantLocal:  "after\n",
+			wantClient: "unsaved buffer\n",
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			root := t.TempDir()
 			path := filepath.Join(root, "notes.txt")
-			if err := os.WriteFile(path, []byte("before\n"), 0o644); err != nil {
+			if err := os.WriteFile(path, []byte("on disk\n"), 0o644); err != nil {
 				t.Fatal(err)
 			}
 			absolute, err := filepath.EvalSymlinks(path)
 			if err != nil {
 				t.Fatal(err)
 			}
-			clientContent := "before\n"
+			// The client's buffer never matches the file on disk, so a mutation
+			// verified against the wrong one would be refused as stale.
+			clientContent := "unsaved buffer\n"
 			model := &scriptedModel{scripts: []modelScript{
 				toolCompletionWithArguments("read", "read_file", `{"path":"notes.txt"}`),
 				toolCompletionWithArguments(
@@ -2334,7 +2340,7 @@ func TestFilesystemCapabilitiesSelectEachMethodIndependently(t *testing.T) {
 					return nil, jrpc2.Errorf(jrpc2.MethodNotFound, "unknown callback")
 				}
 			})
-			harness.initialize(t, &acp.ClientCapabilities{FS: &test.capability})
+			harness.initialize(t, &acp.ClientCapabilities{FS: test.capability})
 			sessionID = harness.newSessionIn(t, root, nil)
 			harness.prompt(t, sessionID, "read then write")
 			data, err := os.ReadFile(path)

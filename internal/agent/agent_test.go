@@ -1079,6 +1079,60 @@ func TestNewSessionResolvesBothSettingsLayers(t *testing.T) {
 	}
 }
 
+// TestInitializeRequiresBothFilesystemMethods covers the pairing rule: read
+// evidence and the mutation that consumes it must come from one filesystem, so
+// a client cannot delegate only half of it.
+func TestInitializeRequiresBothFilesystemMethods(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		capabilities *acp.ClientCapabilities
+		want         string
+	}{
+		{
+			name:         "read only",
+			capabilities: &acp.ClientCapabilities{FS: &acp.FileSystemCapabilities{ReadTextFile: true}},
+			want:         "fs/read_text_file without fs/write_text_file",
+		},
+		{
+			name:         "write only",
+			capabilities: &acp.ClientCapabilities{FS: &acp.FileSystemCapabilities{WriteTextFile: true}},
+			want:         "fs/write_text_file without fs/read_text_file",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			instance, err := New(Config{Logger: discardLogger()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = instance.Initialize(context.Background(), acp.InitializeRequest{
+				ProtocolVersion:    acp.ProtocolVersion,
+				ClientCapabilities: test.capabilities,
+			})
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("initialize error = %v, want it to mention %q", err, test.want)
+			}
+		})
+	}
+
+	for _, capabilities := range []*acp.ClientCapabilities{
+		nil,
+		{},
+		{FS: &acp.FileSystemCapabilities{}},
+		{FS: &acp.FileSystemCapabilities{ReadTextFile: true, WriteTextFile: true}},
+	} {
+		instance, err := New(Config{Logger: discardLogger()})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := instance.Initialize(context.Background(), acp.InitializeRequest{
+			ProtocolVersion:    acp.ProtocolVersion,
+			ClientCapabilities: capabilities,
+		}); err != nil {
+			t.Fatalf("initialize(%#v) = %v", capabilities, err)
+		}
+	}
+}
+
 func TestSessionActivationFreezesExecutorCapabilities(t *testing.T) {
 	instance := settingsAgent(t, &staticCompletionModel{}, "", "test/model")
 	if _, err := instance.Initialize(context.Background(), acp.InitializeRequest{
@@ -1102,7 +1156,7 @@ func TestSessionActivationFreezesExecutorCapabilities(t *testing.T) {
 	}
 
 	delegated := &acp.ClientCapabilities{
-		FS:       &acp.FileSystemCapabilities{ReadTextFile: true},
+		FS:       &acp.FileSystemCapabilities{ReadTextFile: true, WriteTextFile: true},
 		Terminal: true,
 	}
 	if _, err := instance.Initialize(context.Background(), acp.InitializeRequest{
@@ -1118,7 +1172,7 @@ func TestSessionActivationFreezesExecutorCapabilities(t *testing.T) {
 		t.Fatal(err)
 	}
 	value = instance.findSession(created.SessionID)
-	want := executorCapabilities{FileSystemRead: true, Terminal: true}
+	want := executorCapabilities{FileSystemRead: true, FileSystemWrite: true, Terminal: true}
 	if value.state.configuration.ExecutorCapabilities != want {
 		t.Fatalf("reactivated capabilities = %#v, want %#v",
 			value.state.configuration.ExecutorCapabilities, want)

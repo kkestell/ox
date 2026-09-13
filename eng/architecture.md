@@ -337,15 +337,18 @@ session grant covers the operation. Reusable shell grants are derived from a
 parsed command rather than string prefixes. Shell commands run from the session
 root with a sanitized environment, and cancellation kills their process group.
 Read, write, and exact-edit file content uses ACP filesystem callbacks when the
-client advertises the corresponding method and otherwise uses the local
-executor. Shell commands similarly use ACP terminal callbacks when the client
-advertises terminal support and otherwise use Ox's local process-group runner.
-Client delegation preserves Ox's validation, read-evidence, permission, output,
-and cancellation requirements. The client owns actual execution; ACP callbacks
-are not an OS sandbox or a cross-filesystem transaction. Local root-confined
-handles cannot prove that a remote client implements its side correctly.
-Approved shell commands and external server processes retain host privileges
-even when launched from the confined workspace root.
+client advertises the filesystem methods and otherwise uses the local executor.
+Those methods are one capability: read evidence and the mutation that consumes
+it must come from the same filesystem, so a client advertising one without the
+other is refused at initialization. Shell commands similarly use ACP terminal
+callbacks when the client advertises terminal support and otherwise use Ox's
+local process-group runner. Client delegation preserves Ox's validation,
+read-evidence, permission, output, and cancellation requirements. The client
+owns actual execution; ACP callbacks are not an OS sandbox or a cross-filesystem
+transaction. Local root-confined handles cannot prove that a remote client
+implements its side correctly. Approved shell commands and external server
+processes retain host privileges even when launched from the confined workspace
+root.
 
 ## Testing boundaries
 

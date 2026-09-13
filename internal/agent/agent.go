@@ -173,6 +173,9 @@ func (a *Agent) Initialize(
 	if err := request.Validate(); err != nil {
 		return acp.InitializeResponse{}, jrpc2.Errorf(jrpc2.InvalidParams, "%v", err)
 	}
+	if err := validateFileSystemCapabilities(request.ClientCapabilities); err != nil {
+		return acp.InitializeResponse{}, jrpc2.Errorf(jrpc2.InvalidParams, "%v", err)
+	}
 	a.logger.Info("initializing client", "requested_protocol_version", request.ProtocolVersion)
 
 	a.clientCapabilitiesMu.Lock()
@@ -989,6 +992,30 @@ func (a *Agent) resolveActivation(
 		return requestConfiguration{}, nil, jrpc2.Errorf(jrpc2.InternalError, "list OpenRouter models: %v", err)
 	}
 	return configuration, models, nil
+}
+
+// validateFileSystemCapabilities requires the client's filesystem methods to
+// arrive as a pair. Read evidence and the mutation that consumes it must come
+// from the same filesystem: a client that reads from an editor buffer and
+// leaves writes on disk records a hash no later write can match, and the
+// reverse verifies a file on disk before replacing a buffer.
+func validateFileSystemCapabilities(capabilities *acp.ClientCapabilities) error {
+	if capabilities == nil || capabilities.FS == nil {
+		return nil
+	}
+	switch {
+	case capabilities.FS.ReadTextFile && !capabilities.FS.WriteTextFile:
+		return errors.New(
+			"client advertises fs/read_text_file without fs/write_text_file; " +
+				"advertise both so reads and edits use one filesystem, or neither",
+		)
+	case capabilities.FS.WriteTextFile && !capabilities.FS.ReadTextFile:
+		return errors.New(
+			"client advertises fs/write_text_file without fs/read_text_file; " +
+				"advertise both so reads and edits use one filesystem, or neither",
+		)
+	}
+	return nil
 }
 
 func (a *Agent) negotiatedExecutorCapabilities() executorCapabilities {

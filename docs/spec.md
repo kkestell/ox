@@ -65,7 +65,10 @@ grant only when Ox can derive a literal command prefix that means what the user
 read: a command that runs a program of its arguments' choosing, or whose words
 Ox cannot resolve, is approved for that call alone. Delegating an operation to a
 capable ACP client preserves the same confinement, evidence, permission, output,
-and cancellation behavior as local execution.
+and cancellation behavior as local execution. Filesystem delegation is all or
+nothing: a client must offer both the read and the write method or neither,
+because evidence and the change that consumes it have to come from one
+filesystem. Offering one without the other is refused at initialization.
 
 ## Authentication
 
