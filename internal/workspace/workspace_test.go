@@ -3,10 +3,12 @@ package workspace
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -383,5 +385,103 @@ func TestWalkFilesFollowsAnExplicitInternalSymlinkAndRefusesAnEscape(t *testing.
 	})
 	if err == nil || !strings.Contains(err.Error(), "outside the workspace") {
 		t.Fatalf("escaping symlink error = %v", err)
+	}
+}
+
+// TestReplacementSurvivesAnAbandonedTemporaryFile covers what a crash between
+// creating a temporary file and renaming it leaves behind. A name derived from
+// the target would still be taken, blocking every later write to that path.
+func TestReplacementSurvivesAnAbandonedTemporaryFile(t *testing.T) {
+	root := canonicalTempDir(t)
+	files := NewWorkspace(root)
+	if _, err := files.WriteFile("notes.txt", []byte("first")); err != nil {
+		t.Fatal(err)
+	}
+	// The name the previous implementation would have chosen, left as a crash
+	// would leave it.
+	if err := os.WriteFile(
+		filepath.Join(root, "notes.txt.ox-tmp"), []byte("abandoned"), 0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := files.WriteFile("notes.txt", []byte("second")); err != nil {
+		t.Fatalf("an abandoned temporary file blocked a later write: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(root, "notes.txt"))
+	if err != nil || string(data) != "second" {
+		t.Fatalf("content = %q, %v", data, err)
+	}
+}
+
+// TestConcurrentReplacementsBothComplete checks that two writers aiming at one
+// path do not collide over a shared temporary name.
+func TestConcurrentReplacementsBothComplete(t *testing.T) {
+	root := canonicalTempDir(t)
+	files := NewWorkspace(root)
+	if _, err := files.WriteFile("notes.txt", []byte("start")); err != nil {
+		t.Fatal(err)
+	}
+
+	var group sync.WaitGroup
+	failures := make(chan error, 8)
+	for index := range 8 {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			content := fmt.Appendf(nil, "writer %d", index)
+			if _, err := NewWorkspace(root).WriteFile("notes.txt", content); err != nil {
+				failures <- err
+			}
+		}()
+	}
+	group.Wait()
+	close(failures)
+	for err := range failures {
+		t.Fatalf("concurrent replacement failed: %v", err)
+	}
+
+	// Every attempt either replaced the file or lost the race, and none left a
+	// temporary behind.
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.Contains(entry.Name(), "ox-tmp") {
+			t.Fatalf("replacement left %q behind", entry.Name())
+		}
+	}
+}
+
+// TestEditReportsAPostRenameSyncFailureAsCommitted mirrors the write proof for
+// exact edits: the change landed, so the failure must say so rather than read
+// as though nothing happened.
+func TestEditReportsAPostRenameSyncFailureAsCommitted(t *testing.T) {
+	root := canonicalTempDir(t)
+	writeFile(t, root, "notes.txt", "before")
+	originalSyncDir := syncDir
+	syncDir = func(string) error {
+		return errors.New("sync failed")
+	}
+	t.Cleanup(func() {
+		syncDir = originalSyncDir
+	})
+
+	err := NewWorkspace(root).Edit("notes.txt", func(current []byte) ([]byte, error) {
+		if string(current) != "before" {
+			return nil, fmt.Errorf("edit saw %q", current)
+		}
+		return []byte("after"), nil
+	})
+	if !MutationCommitted(err) || !strings.Contains(err.Error(), "sync failed") {
+		t.Fatalf("edit error = %v", err)
+	}
+	data, readErr := os.ReadFile(filepath.Join(root, "notes.txt"))
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(data) != "after" {
+		t.Fatalf("content = %q, want the edit to have landed", data)
 	}
 }

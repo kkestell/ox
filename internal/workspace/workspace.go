@@ -2,6 +2,8 @@ package workspace
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -324,7 +326,14 @@ func atomicReplace(
 	data []byte,
 	mode fs.FileMode,
 ) (bool, error) {
-	temporary := filepath.Join(filepath.Dir(name), filepath.Base(name)+".ox-tmp")
+	// The temporary name is unique rather than derived from the target: a name
+	// derived from the target is still taken after a crash, and would then block
+	// every later write to that path at the exclusive open. It stays in the
+	// target's directory so the rename is atomic.
+	temporary, err := temporaryName(name)
+	if err != nil {
+		return false, err
+	}
 	file, err := root.OpenFile(temporary, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
 	if err != nil {
 		return false, err
@@ -355,6 +364,17 @@ func atomicReplace(
 	}
 	remove = false
 	return true, syncDir(filepath.Join(root.Name(), filepath.Dir(name)))
+}
+
+func temporaryName(name string) (string, error) {
+	var suffix [8]byte
+	if _, err := rand.Read(suffix[:]); err != nil {
+		return "", fmt.Errorf("name temporary file: %w", err)
+	}
+	return filepath.Join(
+		filepath.Dir(name),
+		fmt.Sprintf(".%s.%s.ox-tmp", filepath.Base(name), hex.EncodeToString(suffix[:])),
+	), nil
 }
 
 func resolveExisting(path string) (string, error) {

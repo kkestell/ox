@@ -56,7 +56,7 @@
   - [x] Centralize process path resolution and XDG validation (F29)
   - [x] Remove duplicate ACP activation validation (F30)
   - [x] Deduplicate small safety and protocol rules (F32)
-  - [ ] Make atomic file replacement crash-safe and cover its sync failures
+  - [x] Make atomic file replacement crash-safe and cover its sync failures
         (F27, F43)
   - [ ] Reduce configuration copying and prevent settings-result aliasing (F33,
         F40)
