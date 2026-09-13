@@ -101,7 +101,7 @@
       [session tool-friction review](reviews/2026-09-13-006-session-tool-friction-review.md)
   - [x] Remove session read evidence from file mutations and shell execution
         (F01)
-  - [ ] Preserve validator exit status without model-added output-truncation
+  - [x] Preserve validator exit status without model-added output-truncation
         pipelines (F02)
   - [ ] Add open-stdin process-harness support and prove `ox --version` exits
         without reading input (F03)
