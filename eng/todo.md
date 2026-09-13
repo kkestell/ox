@@ -60,7 +60,7 @@
         (F27, F43)
   - [x] Reduce configuration copying and prevent settings-result aliasing (F33,
         F40)
-  - [ ] Simplify durable-state transition code (F37)
+  - [x] Simplify durable-state transition code (F37)
   - [ ] Remove production test artifacts and test-only mutable seams (F38)
   - [ ] Standardize session-update values and remove trivial dead or misleading
         code (F35, F39)

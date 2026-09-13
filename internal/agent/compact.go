@@ -264,18 +264,17 @@ func compactedMessages(
 	if err := validateCompactionPlan(messages, plan); err != nil {
 		return nil, err
 	}
-	messageCount, ok := checkedAdd(plan.headEnd, 1)
+	// Refuse a plan whose spliced length would overflow before allocating it.
+	count, ok := checkedAdd(plan.headEnd, 1)
 	if ok {
-		messageCount, ok = checkedAdd(messageCount, len(messages)-plan.tailStart)
+		_, ok = checkedAdd(count, len(messages)-plan.tailStart)
 	}
 	if !ok {
 		return nil, errors.New("size compacted provider request: integer overflow")
 	}
-	compacted := make([]openrouter.Message, 0, messageCount)
-	compacted = append(compacted, cloneMessages(messages[:plan.headEnd])...)
-	compacted = append(compacted, newSummaryMessage(summary))
-	compacted = append(compacted, cloneMessages(messages[plan.tailStart:])...)
-	return compacted, nil
+	return spliceCompacted(
+		messages, plan.headEnd, plan.tailStart, newSummaryMessage(summary),
+	), nil
 }
 
 func protectedMessageEnd(messages []openrouter.Message) int {

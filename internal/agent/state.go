@@ -858,11 +858,7 @@ func (s *durableState) apply(record sessionRecord) error {
 		if err := validateCompaction(*s, value); err != nil {
 			return err
 		}
-		history := make([]openrouter.Message, 0, value.HeadEnd+1+len(s.history)-value.TailStart)
-		history = append(history, cloneMessages(s.history[:value.HeadEnd])...)
-		history = append(history, cloneMessages([]openrouter.Message{value.Summary})...)
-		history = append(history, cloneMessages(s.history[value.TailStart:])...)
-		s.history = history
+		s.history = spliceCompacted(s.history, value.HeadEnd, value.TailStart, value.Summary)
 		s.addUsage(value.Usage)
 		s.occupancy = value.Occupancy
 	case recordUserMessage:
@@ -1023,82 +1019,9 @@ func (s *durableState) apply(record sessionRecord) error {
 		if err := decodeRecord(record.Data, &value); err != nil {
 			return err
 		}
-		if s.suspended != nil {
-			if err := s.validateCompletedSuspension(*s.suspended, value); err != nil {
-				return err
-			}
+		if err := s.applyModelExchange(value); err != nil {
+			return err
 		}
-		if s.openTurn == "" || value.TurnID != s.openTurn {
-			return errors.New("model exchange has no matching open turn")
-		}
-		if value.AnswerID == "" || value.ThoughtID == "" ||
-			value.AnswerID == value.ThoughtID {
-			return errors.New("model exchange identities are invalid")
-		}
-		if _, exists := s.messageIDs[value.AnswerID]; exists {
-			return fmt.Errorf("duplicate message ID %q", value.AnswerID)
-		}
-		if _, exists := s.messageIDs[value.ThoughtID]; exists {
-			return fmt.Errorf("duplicate message ID %q", value.ThoughtID)
-		}
-		if len(value.ToolCalls) != len(value.ToolResults) {
-			return errors.New("tool calls and results must be one complete group")
-		}
-		for _, detail := range value.ReasoningDetails {
-			if !json.Valid(detail) {
-				return errors.New("reasoning detail is not valid JSON")
-			}
-		}
-		assistant := openrouter.Message{
-			Role:             openrouter.RoleAssistant,
-			ToolCalls:        append([]openrouter.ToolCall(nil), value.ToolCalls...),
-			ReasoningDetails: rawMessages(value.ReasoningDetails),
-		}
-		if value.Text != "" {
-			assistant.Content = []openrouter.ContentBlock{{Type: "text", Text: value.Text}}
-		}
-		if len(value.ToolCalls) > 0 {
-			s.history = append(s.history, assistant)
-			for index, call := range value.ToolCalls {
-				result := value.ToolResults[index]
-				if call.ID == "" || result.CallID != call.ID {
-					return errors.New("tool result order does not match tool calls")
-				}
-				if call.Function.Name == "" || !json.Valid([]byte(call.Function.Arguments)) {
-					return errors.New("tool call name and JSON arguments are required")
-				}
-				if result.Target != "" &&
-					(s.turnToolKind(call.Function.Name) != acp.ToolKindEdit ||
-						!validStoredTarget(result.Target)) {
-					return fmt.Errorf("tool call %q has invalid target %q", call.ID, result.Target)
-				}
-				if _, exists := s.toolCallIDs[call.ID]; exists {
-					return fmt.Errorf("duplicate tool call ID %q", call.ID)
-				}
-				s.toolCallIDs[call.ID] = struct{}{}
-				if !result.Failed && result.Target != "" {
-					s.changedFiles[result.Target] = struct{}{}
-				}
-				s.history = append(s.history, openrouter.Message{
-					Role:       openrouter.RoleTool,
-					ToolCallID: call.ID,
-					Content: []openrouter.ContentBlock{{
-						Type: "text",
-						Text: result.Content,
-					}},
-				})
-			}
-		} else if stopReason(value.FinishReason) != acp.StopReasonRefusal {
-			s.history = append(s.history, assistant)
-		}
-		s.messageIDs[value.AnswerID] = struct{}{}
-		s.messageIDs[value.ThoughtID] = struct{}{}
-		s.addUsage(value.Usage)
-		if value.Usage != nil {
-			s.occupancy = value.Usage.PromptTokens
-		}
-		s.suspended = nil
-		s.toolExecutions = nil
 	case recordTurnFinished:
 		var value turnFinishedRecord
 		if err := decodeRecord(record.Data, &value); err != nil {
@@ -1200,12 +1123,122 @@ func validateCompactionHistory(history []openrouter.Message, value compactionRec
 	return nil
 }
 
-func applyCompaction(history []openrouter.Message, value compactionRecord) []openrouter.Message {
-	compacted := make([]openrouter.Message, 0, value.HeadEnd+1+len(history)-value.TailStart)
-	compacted = append(compacted, cloneMessages(history[:value.HeadEnd])...)
-	compacted = append(compacted, cloneMessages([]openrouter.Message{value.Summary})...)
-	compacted = append(compacted, cloneMessages(history[value.TailStart:])...)
+// spliceCompacted replaces the middle of messages with one summary, keeping the
+// protected head and the retained tail. Planning a compaction and applying a
+// recorded one both land here, so a replayed session rebuilds exactly the
+// history the turn sent.
+func spliceCompacted(
+	messages []openrouter.Message,
+	headEnd, tailStart int,
+	summary openrouter.Message,
+) []openrouter.Message {
+	compacted := make([]openrouter.Message, 0, headEnd+1+len(messages)-tailStart)
+	compacted = append(compacted, cloneMessages(messages[:headEnd])...)
+	// The summary is cloned like the rest, so a replayed compaction and a planned
+	// one produce identical messages rather than differing in empty fields.
+	compacted = append(compacted, cloneMessages([]openrouter.Message{summary})...)
+	compacted = append(compacted, cloneMessages(messages[tailStart:])...)
 	return compacted
+}
+
+// validateModelExchange checks everything a completed exchange must satisfy.
+// It runs before any of the exchange reaches history, so the rules read as a
+// set rather than interleaved with the construction they guard.
+func (s *durableState) validateModelExchange(value modelExchangeRecord) error {
+	if s.suspended != nil {
+		if err := s.validateCompletedSuspension(*s.suspended, value); err != nil {
+			return err
+		}
+	}
+	if s.openTurn == "" || value.TurnID != s.openTurn {
+		return errors.New("model exchange has no matching open turn")
+	}
+	if value.AnswerID == "" || value.ThoughtID == "" ||
+		value.AnswerID == value.ThoughtID {
+		return errors.New("model exchange identities are invalid")
+	}
+	for _, id := range []string{value.AnswerID, value.ThoughtID} {
+		if _, exists := s.messageIDs[id]; exists {
+			return fmt.Errorf("duplicate message ID %q", id)
+		}
+	}
+	if len(value.ToolCalls) != len(value.ToolResults) {
+		return errors.New("tool calls and results must be one complete group")
+	}
+	for _, detail := range value.ReasoningDetails {
+		if !json.Valid(detail) {
+			return errors.New("reasoning detail is not valid JSON")
+		}
+	}
+	seen := make(map[string]struct{}, len(value.ToolCalls))
+	for index, call := range value.ToolCalls {
+		result := value.ToolResults[index]
+		if call.ID == "" || result.CallID != call.ID {
+			return errors.New("tool result order does not match tool calls")
+		}
+		if call.Function.Name == "" || !json.Valid([]byte(call.Function.Arguments)) {
+			return errors.New("tool call name and JSON arguments are required")
+		}
+		if result.Target != "" &&
+			(s.turnToolKind(call.Function.Name) != acp.ToolKindEdit ||
+				!validStoredTarget(result.Target)) {
+			return fmt.Errorf("tool call %q has invalid target %q", call.ID, result.Target)
+		}
+		_, durable := s.toolCallIDs[call.ID]
+		_, repeated := seen[call.ID]
+		if durable || repeated {
+			return fmt.Errorf("duplicate tool call ID %q", call.ID)
+		}
+		seen[call.ID] = struct{}{}
+	}
+	return nil
+}
+
+// applyModelExchange folds a completed exchange into the turn: the assistant
+// message, one tool message per call, and the usage and identities the exchange
+// settles.
+func (s *durableState) applyModelExchange(value modelExchangeRecord) error {
+	if err := s.validateModelExchange(value); err != nil {
+		return err
+	}
+	assistant := openrouter.Message{
+		Role:             openrouter.RoleAssistant,
+		ToolCalls:        append([]openrouter.ToolCall(nil), value.ToolCalls...),
+		ReasoningDetails: rawMessages(value.ReasoningDetails),
+	}
+	if value.Text != "" {
+		assistant.Content = []openrouter.ContentBlock{{Type: "text", Text: value.Text}}
+	}
+	switch {
+	case len(value.ToolCalls) > 0:
+		s.history = append(s.history, assistant)
+		for index, call := range value.ToolCalls {
+			result := value.ToolResults[index]
+			s.toolCallIDs[call.ID] = struct{}{}
+			if !result.Failed && result.Target != "" {
+				s.changedFiles[result.Target] = struct{}{}
+			}
+			s.history = append(s.history, openrouter.Message{
+				Role:       openrouter.RoleTool,
+				ToolCallID: call.ID,
+				Content: []openrouter.ContentBlock{{
+					Type: "text",
+					Text: result.Content,
+				}},
+			})
+		}
+	case stopReason(value.FinishReason) != acp.StopReasonRefusal:
+		s.history = append(s.history, assistant)
+	}
+	s.messageIDs[value.AnswerID] = struct{}{}
+	s.messageIDs[value.ThoughtID] = struct{}{}
+	s.addUsage(value.Usage)
+	if value.Usage != nil {
+		s.occupancy = value.Usage.PromptTokens
+	}
+	s.suspended = nil
+	s.toolExecutions = nil
+	return nil
 }
 
 func (s *durableState) validateToolExecution(value durableToolExecution) error {
@@ -1453,15 +1486,7 @@ func (s *durableState) validateCompletedSuspension(
 	got := completed
 	got.ToolResults = nil
 	got.Interrupted = false
-	wantJSON, err := json.Marshal(want)
-	if err != nil {
-		panic(err)
-	}
-	gotJSON, err := json.Marshal(got)
-	if err != nil {
-		panic(err)
-	}
-	if !bytes.Equal(wantJSON, gotJSON) {
+	if !sameEncoding(want, got) {
 		return errors.New("completed model exchange does not match its suspension")
 	}
 	for _, decision := range suspended.Decisions {
@@ -1488,17 +1513,7 @@ func (s *durableState) validateCompletedSuspension(
 			}
 			continue
 		}
-		gotResult := completed.ToolResults[index]
-		wantResult := cloneStoredToolResult(*execution.Result)
-		gotResultJSON, err := json.Marshal(gotResult)
-		if err != nil {
-			panic(err)
-		}
-		wantResultJSON, err := json.Marshal(wantResult)
-		if err != nil {
-			panic(err)
-		}
-		if !bytes.Equal(gotResultJSON, wantResultJSON) {
+		if !sameEncoding(completed.ToolResults[index], *execution.Result) {
 			return fmt.Errorf("completed tool result %q does not match its durable completion", call.ID)
 		}
 	}
@@ -2022,9 +2037,21 @@ func rawMessages(values [][]byte) []json.RawMessage {
 	return cloned
 }
 
+// sameRequestConfiguration reports whether two configurations would produce the
+// same provider request. The model's source records where the value came from
+// rather than what the request carries, so comparableConfiguration drops it.
 func sameRequestConfiguration(left, right requestConfiguration) bool {
-	left.Settings.ModelSource = ""
-	right.Settings.ModelSource = ""
+	return sameEncoding(comparableConfiguration(left), comparableConfiguration(right))
+}
+
+func comparableConfiguration(value requestConfiguration) requestConfiguration {
+	value.Settings.ModelSource = ""
+	return value
+}
+
+// sameEncoding compares two values by their JSON encodings, which is how this
+// package asks whether a recorded value still matches the one in hand.
+func sameEncoding(left, right any) bool {
 	leftJSON, err := json.Marshal(left)
 	if err != nil {
 		panic(err)
