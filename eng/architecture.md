@@ -324,11 +324,13 @@ use root-confined operating-system handles so the confinement check and access
 cannot be separated by a symlink race. Only regular files can be opened as model
 context.
 
-Read, glob, and grep operations establish session-scoped evidence. Writes and
-exact edits require that evidence, preserve the existing file's text format and
-mode, and replace files atomically. Discovery follows Git ignore rules. Large
-tool and shell output is bounded in the conversation and spills to a confined
-session directory.
+Reading a file establishes session-scoped evidence of its content. Writes and
+exact edits require that evidence, preserve the existing file's mode, and
+replace files atomically. A write preserves the file's text format because it
+supplies whole content; an exact edit preserves it by splicing, leaving every
+byte outside the replaced text as it was. Discovery follows Git ignore rules.
+Large tool and shell output is bounded in the conversation and spills to a
+confined session directory.
 
 Mutating file tools and shell commands require ACP permission unless a previous
 session grant covers the operation. Reusable shell grants are derived from a

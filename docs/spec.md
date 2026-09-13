@@ -56,14 +56,16 @@ file too large to hold in memory, and a read returns a bounded window: a line
 longer than that window is shown as a prefix that reports how much of the line
 it covers.
 
-Ox requires evidence from an earlier read, glob, or search before a model may
-change an existing file. File changes and shell commands require client
-permission unless the session already holds a matching grant. A shell approval
-becomes a reusable grant only when Ox can derive a literal command prefix that
-means what the user read: a command that runs a program of its arguments'
-choosing, or whose words Ox cannot resolve, is approved for that call alone.
-Delegating an operation to a capable ACP client preserves the same confinement,
-evidence, permission, output, and cancellation behavior as local execution.
+Ox requires an earlier read of an existing file before a model may write or edit
+it, and refuses the change when the file has since moved on from what that read
+saw. Evidence is the content the read returned, so discovery alone does not
+establish it. File changes and shell commands require client permission unless
+the session already holds a matching grant. A shell approval becomes a reusable
+grant only when Ox can derive a literal command prefix that means what the user
+read: a command that runs a program of its arguments' choosing, or whose words
+Ox cannot resolve, is approved for that call alone. Delegating an operation to a
+capable ACP client preserves the same confinement, evidence, permission, output,
+and cancellation behavior as local execution.
 
 ## Authentication
 

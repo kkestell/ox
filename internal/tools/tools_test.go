@@ -58,6 +58,16 @@ func (r *testReads) Clear() {
 	r.hashes = nil
 }
 
+// readEvidence runs read_file so a later write or edit has the evidence it
+// requires. It leaves the read's arguments in place for the caller to restore.
+func readEvidence(t *testing.T, invocation agent.Invocation, path string) {
+	t.Helper()
+	invocation.Arguments = json.RawMessage(`{"path":"` + path + `"}`)
+	if _, err := invoke(t, toolNamed(t, "read_file"), invocation); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func writeToolFile(t *testing.T, root, name, content string) string {
 	t.Helper()
 	path := filepath.Join(root, name)
@@ -1047,6 +1057,7 @@ func TestEditFileMatchesExactlyAndExplainsRefusals(t *testing.T) {
 	invocation := testInvocation(t, `{"path":"file.txt","old_string":"one","new_string":"ONE"}`)
 	path := writeToolFile(t, invocation.Root, "file.txt", "one\ntwo\none\n")
 	edit := toolNamed(t, "edit_file")
+	readEvidence(t, invocation, "file.txt")
 	if _, err := invoke(t, edit, invocation); err == nil ||
 		!strings.Contains(err.Error(), "occurs 2 times") ||
 		!strings.Contains(err.Error(), "lines 1 and 3") {
@@ -1098,6 +1109,9 @@ func TestEditFilePreservesCRLFBOMAndTrailingNewlineState(t *testing.T) {
 	if err := os.WriteFile(path, original, 0o644); err != nil {
 		t.Fatal(err)
 	}
+	arguments := invocation.Arguments
+	readEvidence(t, invocation, "file.txt")
+	invocation.Arguments = arguments
 	if _, err := invoke(t, toolNamed(t, "edit_file"), invocation); err != nil {
 		t.Fatal(err)
 	}
@@ -1105,9 +1119,65 @@ func TestEditFilePreservesCRLFBOMAndTrailingNewlineState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := append(append([]byte(nil), utf8BOM...), []byte("three\r\nfour")...)
+	// The replacement asked for a trailing newline, so the edit keeps it.
+	want := append(append([]byte(nil), utf8BOM...), []byte("three\r\nfour\r\n")...)
 	if string(got) != string(want) {
 		t.Fatalf("edited bytes = %q, want %q", got, want)
+	}
+}
+
+func TestEditFileRequiresFreshReadEvidence(t *testing.T) {
+	invocation := testInvocation(t, `{"path":"file.txt","old_string":"one","new_string":"ONE"}`)
+	path := writeToolFile(t, invocation.Root, "file.txt", "one\ntwo\n")
+	edit := toolNamed(t, "edit_file")
+
+	blind, err := invoke(t, edit, invocation)
+	if err == nil || !strings.Contains(err.Error(), "has not read its current contents") {
+		t.Fatalf("blind edit = %q, %v", blind, err)
+	}
+
+	arguments := invocation.Arguments
+	readEvidence(t, invocation, "file.txt")
+	invocation.Arguments = arguments
+	if err := os.WriteFile(path, []byte("one\ntwo\nthree\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stale, err := invoke(t, edit, invocation)
+	if err == nil || !strings.Contains(err.Error(), "changed since read_file read it") {
+		t.Fatalf("stale edit = %q, %v", stale, err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != "one\ntwo\nthree\n" {
+		t.Fatalf("refused edits changed the file: %q", after)
+	}
+}
+
+func TestEditFileReplacesNonOverlappingMatchesAndKeepsOtherBytes(t *testing.T) {
+	invocation := testInvocation(t, `{"path":"file.txt","old_string":"aa","new_string":"b"}`)
+	// "aaa" offers two overlapping candidates but only one replacement, and the
+	// CRLF line is untouched by the edit so it must survive as CRLF.
+	path := writeToolFile(t, invocation.Root, "file.txt", "aaa\nkeep\r\ntail\n\n\n")
+	edit := toolNamed(t, "edit_file")
+	arguments := invocation.Arguments
+	readEvidence(t, invocation, "file.txt")
+	invocation.Arguments = arguments
+
+	got, err := invoke(t, edit, invocation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got, "1 replacement(s)") {
+		t.Fatalf("result = %q", got)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != "ba\nkeep\r\ntail\n\n\n" {
+		t.Fatalf("edited bytes = %q", after)
 	}
 }
 

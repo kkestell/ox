@@ -73,22 +73,8 @@ func executeLocalWrite(
 		if !utf8.Valid(current) {
 			return nil, fmt.Errorf("cannot overwrite `%s`: file is not valid UTF-8", path)
 		}
-		if invocation.FileReads == nil {
-			return nil, fmt.Errorf("cannot overwrite `%s`: read_file has not read its current contents", path)
-		}
-		want, read := invocation.FileReads.Hash(key)
-		if !read {
-			return nil, fmt.Errorf(
-				"cannot overwrite `%s`: read_file has not read its current contents; read it first",
-				path,
-			)
-		}
-		sum := sha256.Sum256(current)
-		if want != hex.EncodeToString(sum[:]) {
-			return nil, fmt.Errorf(
-				"cannot overwrite `%s`: the file changed since read_file read it; read it again",
-				path,
-			)
+		if err := requireReadEvidence(invocation.FileReads, key, path, "overwrite", current); err != nil {
+			return nil, err
 		}
 		body, state := inspectText(current)
 		previousLines = lineCount(body)
@@ -143,15 +129,9 @@ func executeDelegatedWrite(
 	written := []byte(content)
 	previousLines := 0
 	if !created {
-		if invocation.FileReads == nil {
-			return "", fmt.Errorf("cannot overwrite `%s`: read_file has not read its current contents", path)
-		}
-		want, read := invocation.FileReads.Hash(key)
-		if !read {
-			return "", fmt.Errorf(
-				"cannot overwrite `%s`: read_file has not read its current contents; read it first",
-				path,
-			)
+		want, err := recordedReadHash(invocation.FileReads, key, path, "overwrite")
+		if err != nil {
+			return "", err
 		}
 		current, err := acquireText(ctx, files, path, absolute, invocation.FileSystem.ReadTextFile)
 		if err != nil {
@@ -160,12 +140,8 @@ func executeDelegatedWrite(
 		if !utf8.Valid(current) {
 			return "", fmt.Errorf("cannot overwrite `%s`: file is not valid UTF-8", path)
 		}
-		sum := sha256.Sum256(current)
-		if want != hex.EncodeToString(sum[:]) {
-			return "", fmt.Errorf(
-				"cannot overwrite `%s`: the file changed since read_file read it; read it again",
-				path,
-			)
+		if err := matchesReadEvidence(want, current, path, "overwrite"); err != nil {
+			return "", err
 		}
 		body, state := inspectText(current)
 		previousLines = lineCount(body)

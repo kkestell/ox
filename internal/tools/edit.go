@@ -12,10 +12,11 @@ import (
 	"github.com/kkestell/ox/internal/workspace"
 )
 
-const editDescription = "Replace exact text in an existing UTF-8 file. old_string must occur " +
-	"exactly once unless replace_all is true. Matching is literal; read the file again after a " +
-	"miss or ambiguous match. The file's line endings, UTF-8 BOM, trailing-newline state, and mode " +
-	"are preserved."
+const editDescription = "Replace exact text in an existing UTF-8 file you have read with " +
+	"read_file. old_string must occur exactly once unless replace_all is true. Matching is " +
+	"literal; read the file again after a miss, an ambiguous match, or an outside change. " +
+	"old_string and new_string adopt the file's line endings, and every byte outside the replaced " +
+	"text is left as it was."
 
 const editSchema = `{
 	"type": "object",
@@ -95,6 +96,9 @@ func executeLocalEdit(
 	var written []byte
 	replacements := 0
 	err := files.Edit(path, func(current []byte) ([]byte, error) {
+		if err := requireReadEvidence(invocation.FileReads, key, path, "edit", current); err != nil {
+			return nil, err
+		}
 		var err error
 		written, replacements, err = replaceExact(path, current, oldString, newString, replaceAll)
 		return written, err
@@ -126,8 +130,15 @@ func executeDelegatedEdit(
 	if err != nil {
 		return "", err
 	}
+	want, err := recordedReadHash(invocation.FileReads, key, path, "edit")
+	if err != nil {
+		return "", err
+	}
 	current, err := acquireText(ctx, files, path, absolute, invocation.FileSystem.ReadTextFile)
 	if err != nil {
+		return "", err
+	}
+	if err := matchesReadEvidence(want, current, path, "edit"); err != nil {
 		return "", err
 	}
 	written, replacements, err := replaceExact(path, current, oldString, newString, replaceAll)
@@ -154,8 +165,10 @@ func replaceExact(
 	if !utf8.Valid(current) {
 		return nil, 0, fmt.Errorf("cannot edit `%s`: file is not valid UTF-8", path)
 	}
+	// The body is spliced, not rewritten: only old_string and new_string are
+	// converted to the file's dominant line ending, so every byte outside a
+	// replaced span survives, including mixed endings and trailing blank lines.
 	body, state := inspectText(current)
-	body = convertEnding(body, state.ending)
 	oldText := convertEnding(oldString, state.ending)
 	newText := convertEnding(newString, state.ending)
 	if oldText == newText {
@@ -168,12 +181,19 @@ func replaceExact(
 	if !replaceAll && len(matches) != 1 {
 		return nil, 0, ambiguousMatch(path, body, matches)
 	}
+	replacements := 1
 	if replaceAll {
-		return restoreText(strings.ReplaceAll(body, oldText, newText), state), len(matches), nil
+		replacements = len(matches)
 	}
-	return restoreText(strings.Replace(body, oldText, newText, 1), state), 1, nil
+	edited := strings.Replace(body, oldText, newText, replacements)
+	if state.bom {
+		edited = string(utf8BOM) + edited
+	}
+	return []byte(edited), replacements, nil
 }
 
+// matchSites reports where strings.Replace will replace oldText. It consumes
+// each match, so overlapping candidates are not separate replacements.
 func matchSites(content, oldText string) []int {
 	var sites []int
 	for offset := 0; offset <= len(content)-len(oldText); {
@@ -183,7 +203,7 @@ func matchSites(content, oldText string) []int {
 		}
 		index += offset
 		sites = append(sites, index)
-		offset = index + 1
+		offset = index + len(oldText)
 	}
 	return sites
 }

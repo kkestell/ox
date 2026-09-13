@@ -34,7 +34,7 @@
   - [x] Consolidate permission approval and move tests onto its production path
         (F06)
   - [x] Make multimodal admission match advertised ACP capabilities (F07)
-  - [ ] Enforce coherent edit evidence, replacement, and text-format semantics
+  - [x] Enforce coherent edit evidence, replacement, and text-format semantics
         (F08, F09)
   - [ ] Keep read evidence and write verification on a coherent filesystem
         executor (F10)
