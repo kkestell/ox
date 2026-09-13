@@ -126,60 +126,70 @@ func TestClientReturnsPartialCompletionForMidStreamErrorWithoutRetry(t *testing.
 	}
 }
 
-// TestClientDoesNotRetryAfterObservingContentWithoutADeltaCallback covers the
-// deltas that reach no callback. A retry after the model has already produced
-// part of a response would ask for that response a second time, so observing a
-// tool call or a reasoning detail has to make the attempt final just as text
-// does.
-func TestClientDoesNotRetryAfterObservingContentWithoutADeltaCallback(t *testing.T) {
-	for _, test := range []struct {
-		name  string
-		chunk string
-		check func(*testing.T, *Completion)
-	}{
-		{
-			name:  "tool call only",
-			chunk: `{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"lookup","arguments":"{\"x\":1}"}}]}}]}`,
-			check: func(t *testing.T, completion *Completion) {
-				if len(completion.ToolCalls) != 1 ||
-					completion.ToolCalls[0].Function.Name != "lookup" {
-					t.Fatalf("partial completion = %#v", completion)
-				}
-			},
-		},
-		{
-			name:  "reasoning detail only",
-			chunk: `{"choices":[{"delta":{"reasoning_details":[{"type":"reasoning.text","index":0,"text":"thinking"}]}}]}`,
-			check: func(t *testing.T, completion *Completion) {
-				if len(completion.ReasoningDetails) != 1 {
-					t.Fatalf("partial completion = %#v", completion)
-				}
-			},
-		},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			var requests atomic.Int32
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-				requests.Add(1)
-				w.Header().Set("Content-Type", "text/event-stream")
-				_, _ = io.WriteString(w, sse(
-					test.chunk,
-					`{"error":{"code":502,"message":"upstream failed"},"choices":[{"finish_reason":"error"}]}`,
-				))
-			}))
-			t.Cleanup(server.Close)
+// TestClientDoesNotRetryAfterAToolCallFragment covers the answer deltas that
+// reach no delta callback. A tool call is part of the answer, so observing one
+// has to make a failed attempt final just as text does.
+func TestClientDoesNotRetryAfterAToolCallFragment(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, sse(
+			`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"lookup","arguments":"{\"x\":1}"}}]}}]}`,
+			`{"error":{"code":502,"message":"upstream failed"},"choices":[{"finish_reason":"error"}]}`,
+		))
+	}))
+	t.Cleanup(server.Close)
 
-			client := testClient(server.URL)
-			client.retryWait = noWait
-			completion, err := client.Stream(t.Context(), Request{Model: "author/model"}, nil)
-			if err == nil || !strings.Contains(err.Error(), "upstream failed") {
-				t.Fatalf("error = %v", err)
-			}
-			if requests.Load() != 1 {
-				t.Fatalf("requests = %d, want the attempt to be final", requests.Load())
-			}
-			test.check(t, completion)
-		})
+	client := testClient(server.URL)
+	client.retryWait = noWait
+	completion, err := client.Stream(t.Context(), Request{Model: "author/model"}, nil)
+	if err == nil || !strings.Contains(err.Error(), "upstream failed") {
+		t.Fatalf("error = %v", err)
+	}
+	if requests.Load() != 1 {
+		t.Fatalf("requests = %d, want the attempt to be final", requests.Load())
+	}
+	if len(completion.ToolCalls) != 1 ||
+		completion.ToolCalls[0].Function.Name != "lookup" {
+		t.Fatalf("partial completion = %#v", completion)
+	}
+}
+
+// TestClientRetriesAfterReasoningOnlyPartial covers a failure during a thought
+// block. No part of the answer exists yet, so the attempt is retryable and the
+// abandoned reasoning must not survive into the completion.
+func TestClientRetriesAfterReasoningOnlyPartial(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		if requests.Add(1) == 1 {
+			_, _ = io.WriteString(w, sse(
+				`{"choices":[{"delta":{"reasoning":"abandoned","reasoning_details":[{"type":"reasoning.text","index":0,"text":"abandoned"}]}}]}`,
+				`{"error":{"code":502,"message":"upstream failed"},"choices":[{"finish_reason":"error"}]}`,
+			))
+			return
+		}
+		_, _ = io.WriteString(w, sse(
+			`{"choices":[{"delta":{"reasoning":"fresh"}}]}`,
+			`{"choices":[{"delta":{"content":"recovered"},"finish_reason":"stop"}]}`,
+		))
+	}))
+	t.Cleanup(server.Close)
+
+	client := testClient(server.URL)
+	client.retryWait = noWait
+	completion, err := client.Stream(t.Context(), Request{Model: "author/model"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requests.Load() != 2 {
+		t.Fatalf("requests = %d, want the attempt to be retried", requests.Load())
+	}
+	if completion.Text != "recovered" ||
+		completion.Reasoning != "fresh" ||
+		len(completion.ReasoningDetails) != 0 {
+		t.Fatalf("completion = %#v", completion)
 	}
 }
 

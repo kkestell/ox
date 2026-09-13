@@ -72,11 +72,13 @@ type streamAssembler struct {
 	toolCalls             map[int]*partialToolCall
 	reasoningDetailBlocks map[reasoningDetailKey]int
 	sawChoice             bool
-	// observedContent records that the model produced part of a response. A
-	// retry after that would ask for the response twice, so the caller uses it
-	// to make a failed attempt final. The assembler owns it because it decodes
-	// every kind of delta, including the tool-call and reasoning-detail
-	// fragments that reach no delta callback.
+	// observedContent records that the model produced part of the answer:
+	// message text or a tool call. Those deltas have already reached the client,
+	// which cannot unsend them, so a retry would show the answer starting twice
+	// and the caller makes such an attempt final instead. Reasoning is excluded
+	// because a repeated thought block costs the reader much less than a failed
+	// turn. The assembler owns this because it decodes every kind of delta,
+	// including the tool-call fragments that reach no delta callback.
 	observedContent bool
 }
 
@@ -114,8 +116,7 @@ func (a *streamAssembler) push(data []byte, onDelta func(Delta)) error {
 
 	for _, choice := range chunk.Choices {
 		a.sawChoice = true
-		if choice.Delta.Content != "" || choice.Delta.Reasoning != "" ||
-			len(choice.Delta.ReasoningDetails) > 0 || len(choice.Delta.ToolCalls) > 0 {
+		if choice.Delta.Content != "" || len(choice.Delta.ToolCalls) > 0 {
 			a.observedContent = true
 		}
 		if choice.Delta.Content != "" {

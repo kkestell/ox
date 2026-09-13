@@ -238,9 +238,11 @@ memory as well as on disk, so a long-running process sees current context
 windows and parameters. It falls back to the stale entries only when the
 provider is unreachable, and then bounds how soon it tries again so one outage
 cannot cost a fetch per request; no background refresh owns that work. It
-retries transient failures within a bounded budget only before response content
-has been observed. Raw reasoning details and usage survive provider translation
-when they are needed for continued requests or accounting.
+retries transient failures within a bounded budget, but only until part of the
+answer has been streamed to the client, because ACP cannot unsend it. Message
+text and tool calls are the answer; a failure during reasoning alone stays
+retryable. Raw reasoning details and usage survive provider translation when
+they are needed for continued requests or accounting.
 
 The agent admits every provider request against the selected model's context
 window. It budgets the complete messages and tool declarations plus the
