@@ -161,24 +161,3 @@ func executeMemoryDelete(_ context.Context, invocation agent.Invocation) (string
 	}{Deleted: id})
 	return string(data), nil
 }
-
-func memoryWriteTitle(arguments json.RawMessage) string {
-	var args memoryWriteArgs
-	if decodeArgs(arguments, &args) != nil || args.Content == nil {
-		return "Write workspace memory"
-	}
-	content := strings.TrimSpace(*args.Content)
-	runes := []rune(content)
-	if len(runes) > 80 {
-		content = string(runes[:80]) + "…"
-	}
-	return "Remember: " + content
-}
-
-func memoryDeleteTitle(arguments json.RawMessage) string {
-	var args memoryDeleteArgs
-	if decodeArgs(arguments, &args) != nil || args.ID == nil {
-		return "Delete workspace memory"
-	}
-	return "Delete workspace memory " + strings.TrimSpace(*args.ID)
-}

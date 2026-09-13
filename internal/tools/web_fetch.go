@@ -318,13 +318,3 @@ func webFetchContent(header string, body []byte) (string, string, error) {
 		return "", "", fmt.Errorf("web response Content-Type %q is not supported", mediaType)
 	}
 }
-
-func webFetchTitle(arguments json.RawMessage) string {
-	var input struct {
-		URL string `json:"url"`
-	}
-	if json.Unmarshal(arguments, &input) != nil || input.URL == "" {
-		return "Fetch web page"
-	}
-	return "Fetch " + input.URL
-}

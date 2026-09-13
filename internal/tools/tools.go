@@ -22,6 +22,7 @@ func All() []agent.Tool {
 			ParallelSafe: false,
 			PlanMode:     true,
 			RequiresForm: true,
+			Title:        questionTitle,
 			Execute:      executeQuestion,
 		},
 		{
@@ -32,6 +33,7 @@ func All() []agent.Tool {
 			Approval:     agent.ApprovalNone,
 			ParallelSafe: true,
 			PlanMode:     true,
+			Title:        skillTitle,
 			Execute:      executeSkill,
 		},
 		{
@@ -43,6 +45,7 @@ func All() []agent.Tool {
 			ParallelSafe: false,
 			PlanMode:     true,
 			Scope:        agent.ToolScopePrimary,
+			Title:        todoTitle,
 			Execute:      executeTodo,
 		},
 		{
@@ -53,6 +56,7 @@ func All() []agent.Tool {
 			Approval:     agent.ApprovalNone,
 			ParallelSafe: true,
 			PlanMode:     true,
+			Title:        readTitle,
 			Execute:      executeRead,
 		},
 		{
@@ -63,6 +67,7 @@ func All() []agent.Tool {
 			Approval:     agent.ApprovalNone,
 			ParallelSafe: true,
 			PlanMode:     true,
+			Title:        globTitle,
 			Execute:      executeGlob,
 		},
 		{
@@ -73,6 +78,7 @@ func All() []agent.Tool {
 			Approval:     agent.ApprovalNone,
 			ParallelSafe: true,
 			PlanMode:     true,
+			Title:        grepTitle,
 			Execute:      executeGrep,
 		},
 		{
@@ -94,6 +100,7 @@ func All() []agent.Tool {
 			Approval:     agent.ApprovalNone,
 			ParallelSafe: true,
 			PlanMode:     true,
+			Title:        memorySearchTitle,
 			Execute:      executeMemorySearch,
 		},
 		{
@@ -123,6 +130,7 @@ func All() []agent.Tool {
 			Kind:         acp.ToolKindEdit,
 			Approval:     agent.ApprovalAsk,
 			ParallelSafe: false,
+			Title:        writeTitle,
 			Execute:      executeWrite,
 		},
 		{
@@ -132,6 +140,7 @@ func All() []agent.Tool {
 			Kind:         acp.ToolKindEdit,
 			Approval:     agent.ApprovalAsk,
 			ParallelSafe: false,
+			Title:        editTitle,
 			Execute:      executeEdit,
 		},
 		{
@@ -143,6 +152,7 @@ func All() []agent.Tool {
 			ParallelSafe: false,
 			Suggest:      shellSuggestion,
 			Covered:      shellCovered,
+			Title:        shellTitle,
 			Execute:      executeShell,
 		},
 	}...)
