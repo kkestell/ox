@@ -104,7 +104,7 @@ func (a *Agent) summarizeContext(
 	provider := turn.Provider(
 		diagnostictrace.ProviderCompaction,
 		requestCount,
-		providerRequestBytes(request),
+		tracedRequestBytes(turn, request),
 		parentCallID,
 	)
 	completion, err := a.client.Stream(ctx, request, nil)

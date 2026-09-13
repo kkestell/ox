@@ -99,6 +99,13 @@ type Turn struct {
 	complete  *sync.Once
 }
 
+// Enabled reports whether this turn is being recorded. A caller uses it to skip
+// measuring something only the trace would read, since Go evaluates a call's
+// arguments before the trace can return.
+func (t Turn) Enabled() bool {
+	return t.trace.state != nil
+}
+
 func (t Turn) Start() {
 	t.emit(record{Type: "turn_started"})
 }

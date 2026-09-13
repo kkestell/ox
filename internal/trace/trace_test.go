@@ -13,6 +13,9 @@ import (
 func TestDisabledTraceDoesNothing(t *testing.T) {
 	var disabled Trace
 	turn := disabled.Turn("session", "turn")
+	if turn.Enabled() {
+		t.Fatal("a turn without a sink reported itself as recording")
+	}
 	turn.Start()
 	turn.Provider(ProviderPrimary, 1, 12, "").Complete("completed", "stop", Usage{}, 4)
 	turn.ToolPending("call", "read", "")
@@ -30,6 +33,9 @@ func TestTraceWritesCompleteVersionedCorrelatedLines(t *testing.T) {
 	writer := &bufferCloser{}
 	trace := newTrace(writer, nil)
 	turn := trace.Turn("session", "turn")
+	if !turn.Enabled() {
+		t.Fatal("a turn with a sink reported itself as not recording")
+	}
 	turn.Start()
 	request := turn.Provider(ProviderPrimary, 1, 12, "parent")
 	request.Complete("completed", "stop", Usage{1, 2, 3}, 4)

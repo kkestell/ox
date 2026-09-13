@@ -96,6 +96,9 @@ func (a *Agent) runFrom(
 	suspended *suspendedModelExchangeRecord,
 	reissue bool,
 ) loopOutcome {
+	// The fingerprint hashes the turn's frozen configuration, which no request in
+	// this loop can change, so it is computed once rather than per request.
+	fingerprint := a.prefixFingerprint(value)
 	for requestCount := startRequest; requestCount <= maxTurnRequests; requestCount++ {
 		if ctx.Err() != nil {
 			return a.finishCancelled(value, active, events)
@@ -168,12 +171,12 @@ func (a *Agent) runFrom(
 				"session_id", value.id,
 				"request", requestCount,
 				"turn_request", budgetRequest,
-				"prefix_fingerprint", a.prefixFingerprint(value),
+				"prefix_fingerprint", fingerprint,
 			)
 			provider := active.trace.Provider(
 				diagnostictrace.ProviderPrimary,
 				budgetRequest,
-				providerRequestBytes(request),
+				tracedRequestBytes(active.trace, request),
 				"",
 			)
 			completion, err = a.client.Stream(ctx, request, func(delta openrouter.Delta) {
@@ -1331,7 +1334,13 @@ func toolOutcome(result toolResult) string {
 	return "completed"
 }
 
-func providerRequestBytes(request openrouter.Request) int {
+// tracedRequestBytes encodes the request only for a turn that is recording one.
+// Counting its bytes costs a full marshal, and nothing but the trace reads the
+// result.
+func tracedRequestBytes(turn diagnostictrace.Turn, request openrouter.Request) int {
+	if !turn.Enabled() {
+		return 0
+	}
 	data, err := json.Marshal(request)
 	if err != nil {
 		panic(err)

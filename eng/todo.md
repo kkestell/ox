@@ -43,7 +43,7 @@
   - [x] Correct provider stream retry detection and classification (F13, F25)
   - [x] Repair model-catalog caching and refresh ownership (F14)
   - [x] Make `session/list` bounded, resilient, and cursor-tested (F15)
-  - [ ] Eliminate redundant provider-request encoding (F16)
+  - [x] Eliminate redundant provider-request encoding (F16)
   - [ ] Stop cloning frozen turn configuration inside per-call loops (F18)
   - [ ] Preserve partial grep results and reduce workspace-walk overhead (F19,
         F34, F41)
