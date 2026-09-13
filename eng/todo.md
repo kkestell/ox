@@ -64,7 +64,7 @@
   - [x] Remove production test artifacts and test-only mutable seams (F38)
   - [x] Standardize session-update values and remove trivial dead or misleading
         code (F35, F39)
-  - [ ] Add focused configuration-option error coverage (F42)
+  - [x] Add focused configuration-option error coverage (F42)
   - [ ] Add focused MCP and trace error-path coverage (F44)
   - [ ] Replace wall-clock test heuristics with deterministic signals (F45)
 - [ ] Language-server context
