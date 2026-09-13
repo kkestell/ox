@@ -180,7 +180,9 @@ model history and replays the recorded ACP transcript. Compaction records
 replace only the provider-facing middle of that history with a model-produced
 summary. The earlier user, assistant, and tool records remain authoritative for
 ACP replay, while checkpoints project the exact compacted provider history for
-restart.
+restart. A checkpoint is a load-time shortcut rather than a durability
+requirement, so one is written only when it is no larger than the records it
+lets a load skip.
 
 An unfinished turn is closed as interrupted unless it has a durable pending
 permission request. `session/load` reissues such a request with the same

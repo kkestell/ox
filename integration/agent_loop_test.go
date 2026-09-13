@@ -830,6 +830,93 @@ func assertFailureUpdate(t *testing.T, updates []capturedUpdate, want string) {
 	t.Fatalf("failure update %q was not observed", want)
 }
 
+// TestSessionLogGrowthStaysWithinItsTranscript drives many turns and checks the
+// amortization invariant: a checkpoint is written only when it is no larger than
+// the records appended since the last one, and those spans are disjoint, so
+// checkpoint bytes never exceed the transcript's own bytes no matter how old the
+// session is. The session must still load and replay every turn afterwards.
+func TestSessionLogGrowthStaysWithinItsTranscript(t *testing.T) {
+	const turns = 24
+	sessionDir := t.TempDir()
+	cwd := t.TempDir()
+	answer := strings.Repeat("a durable sentence of model output. ", 20)
+	model := &routedModel{route: func(
+		_ context.Context,
+		_ openrouter.Request,
+		_ func(openrouter.Delta),
+	) (*openrouter.Completion, error) {
+		return completion(answer), nil
+	}}
+	harness := newHarness(t, agent.Config{
+		ModelOverride: "test/model",
+		Client:        model,
+		SessionDir:    sessionDir,
+	})
+	sessionID := harness.newSessionIn(t, cwd, nil)
+	for turn := range turns {
+		harness.prompt(t, sessionID, fmt.Sprintf("question %d", turn))
+	}
+	var closed acp.CloseSessionResponse
+	if err := harness.local.Client.CallResult(
+		t.Context(),
+		"session/close",
+		acp.CloseSessionRequest{SessionID: sessionID},
+		&closed,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	logData, err := os.ReadFile(filepath.Join(sessionDir, sessionID+".jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkpoints, checkpointBytes, transcriptBytes := 0, 0, 0
+	for _, line := range bytes.Split(bytes.TrimSpace(logData), []byte{'\n'}) {
+		var envelope struct {
+			Type string `json:"type"`
+		}
+		if err := json.Unmarshal(line, &envelope); err != nil {
+			t.Fatal(err)
+		}
+		if envelope.Type == "checkpoint" {
+			checkpoints++
+			checkpointBytes += len(line) + 1
+			continue
+		}
+		transcriptBytes += len(line) + 1
+	}
+	if checkpoints == 0 {
+		t.Fatalf("no checkpoint was written over %d turns", turns)
+	}
+	if checkpointBytes > transcriptBytes {
+		t.Fatalf("checkpoints are %d bytes over a %d byte transcript",
+			checkpointBytes, transcriptBytes)
+	}
+
+	reloaded := newHarness(t, agent.Config{
+		ModelOverride: "test/model",
+		Client:        model,
+		SessionDir:    sessionDir,
+	})
+	var load acp.LoadSessionResponse
+	if err := reloaded.local.Client.CallResult(t.Context(), "session/load", acp.LoadSessionRequest{
+		SessionID:  sessionID,
+		CWD:        cwd,
+		MCPServers: []acp.MCPServer{},
+	}, &load); err != nil {
+		t.Fatal(err)
+	}
+	replayed := 0
+	for _, update := range reloaded.updates() {
+		if update.discriminator(t) == "agent_message_chunk" {
+			replayed++
+		}
+	}
+	if replayed < turns {
+		t.Fatalf("replayed %d agent messages, want at least %d", replayed, turns)
+	}
+}
+
 func TestSessionRestartLoadsReplayAndContinuesExactHistory(t *testing.T) {
 	sessionDir := t.TempDir()
 	cwd := t.TempDir()
@@ -923,8 +1010,8 @@ func TestSessionRestartLoadsReplayAndContinuesExactHistory(t *testing.T) {
 		}
 		previousType = envelope.Type
 	}
-	if checkpointCount != 2 {
-		t.Fatalf("checkpoint records = %d, want 2", checkpointCount)
+	if checkpointCount == 0 {
+		t.Fatal("no checkpoint was written")
 	}
 	baseline := newHarness(t, agent.Config{
 		ModelOverride: "test/model",

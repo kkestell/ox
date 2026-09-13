@@ -1215,13 +1215,20 @@ func (a *Agent) commitLocked(value *session, kind string, payload any) error {
 		if err != nil {
 			return fmt.Errorf("create checkpoint: %w", err)
 		}
-		restored, err := restoreCheckpoint(checkpoint, record)
+		encoded, err := encodeRecord(checkpoint)
 		if err != nil {
-			return fmt.Errorf("validate checkpoint: %w", err)
+			return fmt.Errorf("encode checkpoint: %w", err)
 		}
-		restored.records = append(next.records, checkpoint)
-		next = restored
-		records = append(records, checkpoint)
+		// A checkpoint is a load-time shortcut, not a durability requirement:
+		// folding the records it covers rebuilds the same state. Writing one only
+		// when it is no larger than the records it lets a load skip keeps total
+		// checkpoint bytes inside the transcript they summarize, instead of
+		// growing with the square of the session's age.
+		if len(encoded) <= value.log.sinceCheckpoint {
+			next.records = append(next.records, checkpoint)
+			next.sequence = checkpoint.Sequence
+			records = append(records, checkpoint)
+		}
 	}
 	if err := value.log.append(records...); err != nil {
 		value.poisoned = true
