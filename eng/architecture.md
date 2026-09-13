@@ -175,14 +175,14 @@ is enabled only when the advertised capability supports it.
 
 The agent owns a collection of independent active sessions. A session owns its
 canonical workspace, immutable activation inputs and turn configuration,
-model-visible history, permission grants, read evidence, usage, and at most one
-active turn. Process configuration inputs, credentials, provider transport,
-logging, and the session store are shared across sessions. Planned explicit
-workspace memory is shared only by sessions with the same canonical root and has
-its own serialized owner. MCP and language-server connections belong to
-individual activations. A session serializes its own language queries, because
-each one updates the server's view of open documents; separate sessions hold
-separate servers and stay independent.
+model-visible history, permission grants, usage, and at most one active turn.
+Process configuration inputs, credentials, provider transport, logging, and the
+session store are shared across sessions. Planned explicit workspace memory is
+shared only by sessions with the same canonical root and has its own serialized
+owner. MCP and language-server connections belong to individual activations. A
+session serializes its own language queries, because each one updates the
+server's view of open documents; separate sessions hold separate servers and
+stay independent.
 
 Each session is an owner-only, versioned JSONL log in the Ox data directory.
 Records are appended and synced before live state or ACP-visible outcomes
@@ -197,12 +197,11 @@ requirement, so one is written only when it is no larger than the records it
 lets a load skip.
 
 The active turn owns an in-memory subagent group. Each child has a private
-conversation, inbox, report stream, cancellation scope, and read-evidence scope,
-while sharing the turn's immutable provider configuration, activation resources,
-and permission grants. Coordination tools mutate only this group. Child loops
-are not sessions and do not own logs, recovery, configuration, or nested child
-groups. Ending the turn cancels and joins the group before the durable turn
-outcome is committed.
+conversation, inbox, report stream, and cancellation scope while sharing the
+turn's immutable provider configuration, activation resources, and permission
+grants. Coordination tools mutate only this group. Child loops are not sessions
+and do not own logs, recovery, configuration, or nested child groups. Ending the
+turn cancels and joins the group before the durable turn outcome is committed.
 
 An unfinished turn is closed as interrupted unless it has a durable pending
 permission request. `session/load` reissues such a request with the same
@@ -370,11 +369,10 @@ use root-confined operating-system handles so the confinement check and access
 cannot be separated by a symlink race. Only regular files can be opened as model
 context.
 
-Reading a file establishes session-scoped evidence of its content. Writes and
-exact edits require that evidence, preserve the existing file's mode, and
-replace files atomically. A write preserves the file's text format because it
-supplies whole content; an exact edit preserves it by splicing, leaving every
-byte outside the replaced text as it was. Discovery follows Git ignore rules.
+The write tool creates or replaces whole text files. Exact edit reads current
+content and requires an exact literal match before atomically replacing the
+file, preserving its mode and every byte outside the replaced text. File
+mutations do not depend on session history. Discovery follows Git ignore rules.
 Large tool and shell output is bounded in the conversation and spills to a
 confined session directory.
 
@@ -390,16 +388,16 @@ prefixes. Shell commands run from the session root with a sanitized environment,
 and cancellation kills their process group. Read, write, and exact-edit file
 content uses ACP filesystem callbacks when the client advertises the filesystem
 methods and otherwise uses the local executor. Those methods are one capability:
-read evidence and the mutation that consumes it must come from the same
-filesystem, so a client advertising one without the other is refused at
+an exact edit must read current content from the same filesystem that receives
+its replacement, so a client advertising one without the other is refused at
 initialization. Shell commands similarly use ACP terminal callbacks when the
 client advertises terminal support and otherwise use Ox's local process-group
-runner. Client delegation preserves Ox's validation, read-evidence, permission,
-output, and cancellation requirements. The client owns actual execution; ACP
-callbacks are not an OS sandbox or a cross-filesystem transaction. Local
-root-confined handles cannot prove that a remote client implements its side
-correctly. Approved shell commands and external server processes retain host
-privileges even when launched from the confined workspace root.
+runner. Client delegation preserves Ox's validation, permission, output, and
+cancellation requirements. The client owns actual execution; ACP callbacks are
+not an OS sandbox or a cross-filesystem transaction. Local root-confined handles
+cannot prove that a remote client implements its side correctly. Approved shell
+commands and external server processes retain host privileges even when launched
+from the confined workspace root.
 
 ## Testing boundaries
 

@@ -1,0 +1,156 @@
+name: Release
+
+# A stable vMAJOR.MINOR.PATCH tag publishes the archives and checksums that
+# this workflow builds, verifies, and stages. No other event publishes.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build and verify
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out the tagged commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Validate the release tag
+        id: version
+        run: |
+          set -euo pipefail
+          tag="$GITHUB_REF_NAME"
+          pattern='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
+          if ! printf '%s\n' "$tag" | grep -Eq "$pattern"; then
+            echo "::error::$tag is not a stable vMAJOR.MINOR.PATCH tag" >&2
+            exit 1
+          fi
+          printf 'value=%s\n' "${tag#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: Install pinned check tools
+        env:
+          DPRINT_VERSION: 0.57.4
+          STATICCHECK_VERSION: v0.8.1
+        run: |
+          set -euo pipefail
+          tools="$RUNNER_TEMP/tools"
+          archive="dprint-x86_64-unknown-linux-gnu.zip"
+          base="https://github.com/dprint/dprint/releases/download/$DPRINT_VERSION"
+          mkdir -p "$tools"
+          curl -fsSL -o "$RUNNER_TEMP/$archive" "$base/$archive"
+          curl -fsSL -o "$RUNNER_TEMP/SHASUMS256.txt" "$base/SHASUMS256.txt"
+          (cd "$RUNNER_TEMP" &&
+            sha256sum --check --strict --ignore-missing SHASUMS256.txt)
+          unzip -q -o "$RUNNER_TEMP/$archive" -d "$tools"
+          chmod +x "$tools/dprint"
+          go install "honnef.co/go/tools/cmd/staticcheck@$STATICCHECK_VERSION"
+          printf '%s\n%s\n' "$tools" "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+          "$tools/dprint" --version
+          "$(go env GOPATH)/bin/staticcheck" -version
+
+      - name: Run the required gate
+        run: make check
+
+      - name: Build and package every target
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          # The linker addresses the executable's own package as main, not by
+          # its import path.
+          for target in darwin_arm64 darwin_amd64 linux_arm64 linux_amd64; do
+            goos="${target%_*}"
+            goarch="${target##*_}"
+            CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" go build \
+              -trimpath \
+              -ldflags "-s -w -X main.version=$VERSION" \
+              -o dist/ox ./cmd/ox
+            tar -C dist -czf "dist/ox_${VERSION}_${target}.tar.gz" ox
+            rm dist/ox
+          done
+          (cd dist && sha256sum ox_*.tar.gz > SHA256SUMS)
+
+      - name: Verify the archives and checksums
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
+        run: |
+          set -euo pipefail
+          (cd dist && sha256sum --check --strict SHA256SUMS)
+          for target in darwin_arm64 darwin_amd64 linux_arm64 linux_amd64; do
+            archive="dist/ox_${VERSION}_${target}.tar.gz"
+            directory="$(mktemp -d)"
+            tar -xzf "$archive" -C "$directory"
+            contents="$(ls -A "$directory")"
+            if [ "$contents" != "ox" ] || [ ! -x "$directory/ox" ]; then
+              echo "::error::$archive must hold one executable named ox, found: $contents" >&2
+              exit 1
+            fi
+            rm -rf "$directory"
+          done
+
+      - name: Run the released Linux binary
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
+        run: |
+          set -euo pipefail
+          directory="$(mktemp -d)"
+          tar -xzf "dist/ox_${VERSION}_linux_amd64.tar.gz" -C "$directory"
+          "$directory/ox" --version > "$directory/stdout" 2> "$directory/stderr"
+          if [ "$(cat "$directory/stdout")" != "ox $VERSION" ]; then
+            echo "::error::artifact reported $(cat "$directory/stdout")" >&2
+            exit 1
+          fi
+          if [ -s "$directory/stderr" ]; then
+            echo "::error::artifact wrote to stderr: $(cat "$directory/stderr")" >&2
+            exit 1
+          fi
+          rm -rf "$directory"
+
+      - name: Stage the release artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-artifacts
+          path: dist
+          if-no-files-found: error
+
+  publish:
+    name: Publish release
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Fetch the staged artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-artifacts
+          path: dist
+
+      - name: Verify the staged checksums
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum --check --strict SHA256SUMS
+
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          gh release create "$GITHUB_REF_NAME" \
+            --verify-tag \
+            --generate-notes \
+            dist/*

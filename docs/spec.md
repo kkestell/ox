@@ -21,6 +21,11 @@ Ox reads line-delimited JSON-RPC from standard input and writes ACP messages to
 standard output. Logs and command diagnostics never appear on standard output.
 The process exits successfully when standard input closes.
 
+`ox --version` is informational rather than server mode: it writes one
+`ox <version>` line to standard output, writes nothing to standard error, and
+exits successfully without reading configuration, credentials, or standard
+input.
+
 The client initializes the connection before creating or loading a session. Ox
 negotiates ACP v1 capabilities from the client's advertised capabilities. It
 uses client filesystem and terminal methods only when the client advertises
@@ -56,11 +61,9 @@ task and continue its own tool loop while that child runs. A turn may start at
 most eight children and run at most four at once. Names are unique within the
 turn. Children share the turn's frozen model and provider settings, workspace,
 session permission grants, executor selection, skills, memory, and MCP
-activation. They receive their own private conversation and read evidence. Every
-successful file mutation invalidates read evidence held by the primary agent and
-all live children. Tools that are unsafe to overlap are serialized within one
-loop's batch of calls; the primary agent and its children run their tools
-independently of one another.
+activation. They receive their own private conversation. Tools that are unsafe
+to overlap are serialized within one loop's batch of calls; the primary agent
+and its children run their tools independently of one another.
 
 The primary agent can send a message only while a child is running. Messages
 join the child's conversation before its next provider request. When one arrives
@@ -100,19 +103,20 @@ discovery. Naming such a path directly still reads it. Search returns the
 matches it found in a file that later becomes unreadable, and says where the
 scan stopped rather than reporting the file as empty.
 
-Ox requires an earlier read of an existing file before a model may write or edit
-it, and refuses the change when the file has since moved on from what that read
-saw. Evidence is the content the read returned, so discovery alone does not
-establish it. File changes and shell commands require client permission unless
-the turn's mode authorizes them or the session already holds a matching grant. A
-shell approval becomes a reusable grant only when Ox can derive a literal
-command prefix that means what the user read: a command that runs a program of
-its arguments' choosing, or whose words Ox cannot resolve, is approved for that
-call alone. Delegating an operation to a capable ACP client preserves the same
-confinement, evidence, permission, output, and cancellation behavior as local
-execution. Filesystem delegation is all or nothing: a client must offer both the
-read and the write method or neither, because evidence and the change that
-consumes it have to come from one filesystem. Offering one without the other is
+`write_file` creates or replaces a UTF-8 file. `edit_file` reads the current
+content, requires `old_string` to match exactly once unless `replace_all` is
+true, and splices the replacement without rewriting bytes outside the matched
+text. Neither mutation depends on earlier tool history. File changes and shell
+commands require client permission unless the turn's mode authorizes them or the
+session already holds a matching grant. A shell approval becomes a reusable
+grant only when Ox can derive a literal command prefix that means what the user
+read: a command that runs a program of its arguments' choosing, or whose words
+Ox cannot resolve, is approved for that call alone. Delegating an operation to a
+capable ACP client preserves the same confinement, exact-match validation,
+permission, output, and cancellation behavior as local execution. Filesystem
+delegation is all or nothing: a client must offer both the read and the write
+method or neither, because an exact edit must read current content from the same
+filesystem that receives its replacement. Offering one without the other is
 refused at initialization.
 
 ## Authentication
@@ -211,11 +215,11 @@ subagent coordination, form questions, and read-only LSP queries. It excludes
 shell, file mutations, memory writes, and MCP tools whose effects Ox cannot
 enforce. Web fetch retains its permission gate in `code` and `plan`.
 
-Confinement, read evidence, validation, output bounds, executor selection, and
-cancellation are identical in all three modes. Auto authorization belongs to the
-turn that ran under it, not to the session: it is not a grant, so a later `code`
-turn asks about the same call again. Changing mode never grants permissions or
-widens an existing grant.
+Confinement, validation, output bounds, executor selection, and cancellation are
+identical in all three modes. Auto authorization belongs to the turn that ran
+under it, not to the session: it is not a grant, so a later `code` turn asks
+about the same call again. Changing mode never grants permissions or widens an
+existing grant.
 
 `session/set_config_option` validates and persists the entire resulting state
 before responding with the complete option list and emitting
@@ -443,9 +447,6 @@ merge branches, roll back a checkout, or discard it on session deletion. The
 client or user owns that lifecycle. File tools enforce confinement; approved
 shells, language servers, and MCP servers run with host privileges. Ox is not an
 OS sandbox, and worktrees do not isolate network access or shared Git metadata.
-
-The exact-edit tool is the single edit primitive. It never weakens stale-read
-rejection, confinement, permission previews, or preservation of file format.
 
 Workspace memory is explicit and opt-in through memory tools. It stores typed
 facts (`preference`, `decision`, `finding`) with source session, creation time,

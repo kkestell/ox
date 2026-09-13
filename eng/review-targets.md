@@ -69,8 +69,8 @@ output, and spills.
 
 **File and search tools:** `internal/tools/{read,write,edit,glob,grep,text}.go`.
 
-Review read evidence, atomic edits, text preservation, local and delegated
-executor parity, and spill safety.
+Review whole-file writes, exact-match edits, text preservation, local and
+delegated executor parity, and spill safety.
 
 **Shell execution:** `internal/tools/shell.go` and `internal/shellrules/`.
 

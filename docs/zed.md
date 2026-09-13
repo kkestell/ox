@@ -1,31 +1,23 @@
-# Zed Development Setup
+# Zed Setup
 
-Use Zed's custom External Agent support to run the current Ox checkout over ACP.
+Use Zed's custom External Agent support to run Ox over ACP.
 
 ## Prerequisites
 
-Install Go 1.26.4 and a Zed version with External Agent support. Ox also needs
-an OpenRouter model and credential before Zed starts it.
+Install Ox as described in the [installation guide](installation.md), and use a
+Zed version with External Agent support. Ox also needs an OpenRouter model and
+credential before Zed starts it.
 
 ## Setup
 
-1. Install the current checkout:
-
-   ```sh
-   make install
-   ```
-
-   This installs Ox at `$HOME/.local/bin/ox`. Run `make install` again after
-   changing the Ox source.
-
-2. Configure a model as described in the [settings guide](settings.md), then
+1. Configure a model as described in the [settings guide](settings.md), then
    store an OpenRouter credential:
 
    ```sh
-   ~/.local/bin/ox login
+   ox login
    ```
 
-3. In Zed, open **Agent Settings**, select **External Agents**, click **Add
+2. In Zed, open **Agent Settings**, select **External Agents**, click **Add
    Agent**, and choose **Add Custom Agent**. Add an `agent_servers` entry like
    this to the settings file Zed opens:
 
@@ -47,7 +39,7 @@ an OpenRouter model and credential before Zed starts it.
    the keyring, put `"--credential-file"` and its absolute path in `args`; make
    that file readable only by your user.
 
-4. Open the project directory that Ox should use as its workspace, then open
+3. Open the project directory that Ox should use as its workspace, then open
    Zed's Agent Panel. Use the agent selector or new-thread menu to start an
    **Ox** thread. To work on an independent branch, prepare a Git worktree and
    open it as the project directory.

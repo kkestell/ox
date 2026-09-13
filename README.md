@@ -64,12 +64,12 @@ Operations:
 
 ## Getting started
 
-Requirements: a Unix-like system, Go 1.26.4 or later, an ACP client, an
-OpenRouter model ID, and an OpenRouter credential.
+Ox targets Unix-like systems. Install a released binary as described in the
+[installation guide](docs/installation.md), then store an OpenRouter credential
+and configure at least one model:
 
 ```sh
-make install            # installs ox to $HOME/.local/bin/ox
-~/.local/bin/ox login   # verifies and stores an OpenRouter key
+ox login
 ```
 
 Configure your models in `$XDG_CONFIG_HOME/ox/settings.json` and name one with
@@ -78,6 +78,7 @@ client; see the [Zed guide](docs/zed.md) for a worked setup.
 
 ## Documentation
 
+- [Installation](docs/installation.md) — released binaries and upgrades.
 - [Settings](docs/settings.md) — configuration fields and precedence.
 - [Web access](docs/web.md) — fetching and search.
 - [Zed setup](docs/zed.md) — running Ox from an ACP client.
@@ -85,6 +86,9 @@ client; see the [Zed guide](docs/zed.md) for a worked setup.
 
 ## Development
 
+Building from a checkout requires Go 1.26.4 or later.
+
+- `make install` — install the current checkout to `$HOME/.local/bin/ox`.
 - `make check` — formatting, vet, static analysis, and the race-enabled tests.
 - `make test-eval` — the fake-provider evaluation smoke test.
 - `make format` — format Go and Markdown.

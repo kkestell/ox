@@ -22,8 +22,11 @@ import (
 )
 
 var (
-	name    = "ox"
-	version = "0.0.1"
+	name = "ox"
+	// version identifies this build in logs, in the ACP initialization result,
+	// and in --version output. A release replaces it at link time with the tag
+	// it was built from.
+	version = "devel"
 )
 
 const (
@@ -32,7 +35,7 @@ const (
 	// dispatch decides how much runs in parallel. A smaller cap would instead
 	// let long-running requests starve cancellation and client callbacks.
 	handlerConcurrency = 1 << 30
-	usage              = "usage: ox [--log-level level] [--openrouter-base-url url] [--trace path] [--model id] [--credential-file path] [--no-keyring] [login]"
+	usage              = "usage: ox [--log-level level] [--openrouter-base-url url] [--trace path] [--model id] [--credential-file path] [--no-keyring] [--version] [login]"
 )
 
 type optionalString struct {
@@ -54,6 +57,7 @@ type commandOptions struct {
 	model             optionalString
 	credentialFile    optionalString
 	noKeyring         bool
+	version           bool
 	command           string
 }
 
@@ -66,6 +70,13 @@ func run(arguments []string, input *os.File, output io.WriteCloser, errorOutput 
 	if err != nil {
 		fmt.Fprintf(errorOutput, "ox: %v\n%s\n", err, usage)
 		return 2
+	}
+	// An informational command reports before any configuration, credential, or
+	// server work, so asking for the version cannot depend on the environment
+	// the server needs.
+	if options.version {
+		fmt.Fprintf(output, "%s %s\n", name, version)
+		return 0
 	}
 	paths := resolveProcessPaths()
 	_, processConfig, err := settings.LoadGlobal(paths.settings)
@@ -146,6 +157,7 @@ func parseArguments(arguments []string) (commandOptions, error) {
 	flags.Var(&options.model, "model", "model override")
 	flags.Var(&options.credentialFile, "credential-file", "OpenRouter credential file")
 	flags.BoolVar(&options.noKeyring, "no-keyring", false, "disable OS keyring access")
+	flags.BoolVar(&options.version, "version", false, "print the version and exit")
 	if err := flags.Parse(arguments); err != nil {
 		return commandOptions{}, err
 	}
@@ -166,6 +178,9 @@ func parseArguments(arguments []string) (commandOptions, error) {
 	case 1:
 		if rest[0] != "login" {
 			return commandOptions{}, fmt.Errorf("unknown command %q", rest[0])
+		}
+		if options.version {
+			return commandOptions{}, errors.New("--version does not take a command")
 		}
 		options.command = rest[0]
 	default:

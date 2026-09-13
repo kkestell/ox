@@ -48,7 +48,7 @@ func TestInitialize(t *testing.T) {
 			response.AgentCapabilities.PromptCapabilities, wantPromptCapabilities)
 	}
 	if response.AgentInfo == nil ||
-		*response.AgentInfo != (acp.Implementation{Name: "ox", Version: "0.0.1"}) {
+		*response.AgentInfo != (acp.Implementation{Name: "ox", Version: developmentVersion}) {
 		t.Errorf("agentInfo = %#v", response.AgentInfo)
 	}
 	if len(response.AuthMethods) != 1 || response.AuthMethods[0].ID != "openrouter" {
