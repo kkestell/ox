@@ -91,7 +91,7 @@
         portability edges
 - [ ] Address findings in the
       [completion review](reviews/2026-09-13-004-completion-review.md)
-  - [ ] Keep an MCP listing refresh cancellable and confine activation's
+  - [x] Keep an MCP listing refresh cancellable and confine activation's
         ownership of the listing fields
   - [ ] Serve and bound a held model catalog when a refresh fails
   - [ ] Fail an end-to-end test whose repeating model response is never used

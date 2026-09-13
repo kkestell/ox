@@ -632,3 +632,94 @@ func TestCallRejectsUnknownToolsAndNonObjectArguments(t *testing.T) {
 		t.Fatalf("calls = %d, want 1", calls)
 	}
 }
+
+// TestCallCancellationDoesNotWaitOnAnotherListing covers the concurrency the
+// listing window must not introduce. The primary agent and a child may call one
+// server at once, so a refresh that held a lock across its network round trip
+// would keep a cancelled call running until the other call's deadline.
+func TestCallCancellationDoesNotWaitOnAnotherListing(t *testing.T) {
+	server := sdk.NewServer(&sdk.Implementation{Name: "fixture", Version: "1"}, nil)
+	server.AddTool(&sdk.Tool{
+		Name: "tool", InputSchema: json.RawMessage(`{"type":"object"}`),
+	}, func(_ context.Context, _ *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
+		return &sdk.CallToolResult{Content: []sdk.Content{&sdk.TextContent{Text: "called"}}}, nil
+	})
+	var listing atomic.Int32
+	blocked := make(chan struct{})
+	handler := sdk.NewStreamableHTTPHandler(
+		func(*http.Request) *sdk.Server { return server },
+		&sdk.StreamableHTTPOptions{JSONResponse: true, Stateless: true},
+	)
+	httpServer := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		body, err := io.ReadAll(request.Body)
+		if err != nil {
+			t.Errorf("read MCP request: %v", err)
+			return
+		}
+		request.Body = io.NopCloser(bytes.NewReader(body))
+		// Activation's own listing must succeed; every later one blocks until
+		// the test releases it or its caller gives up.
+		if bytes.Contains(body, []byte(`"tools/list"`)) && listing.Add(1) > 1 {
+			select {
+			case <-blocked:
+			case <-request.Context().Done():
+				return
+			}
+		}
+		handler.ServeHTTP(writer, request)
+	}))
+	defer httpServer.Close()
+	defer close(blocked)
+
+	bundle, err := Activate(context.Background(), t.TempDir(), []acp.MCPServer{{
+		HTTP: &acp.MCPHTTPServer{
+			Type: "http", Name: "server", URL: httpServer.URL, Headers: []acp.HTTPHeader{},
+		},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bundle.Close()
+	name := bundle.Tools()[0].Name
+	bundle.servers[0].listedAt = time.Now().Add(-listMaxAge - time.Second)
+
+	holding, stopHolding := context.WithCancel(context.Background())
+	defer stopHolding()
+	held := make(chan struct{})
+	go func() {
+		defer close(held)
+		_, _ = bundle.Call(holding, name, nil)
+	}()
+	// The held call must own the refresh before the cancelled one asks, or this
+	// would pass without the caller-scoped listing.
+	waitForListings(t, &listing, 2)
+
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := bundle.Call(cancelled, name, nil)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("cancelled call succeeded")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("cancelled call waited on another call's listing")
+	}
+	stopHolding()
+	<-held
+}
+
+func waitForListings(t *testing.T, listing *atomic.Int32, want int32) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for listing.Load() < want {
+		if time.Now().After(deadline) {
+			t.Fatalf("listings = %d, want %d", listing.Load(), want)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}

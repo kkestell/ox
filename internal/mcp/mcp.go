@@ -84,19 +84,33 @@ type server struct {
 }
 
 // currentTools returns the server's tool listing, relisting it only once the
-// last one has aged out.
+// last one has aged out. The refresh runs outside the mutex under the caller's
+// own context: a mutex held across a network round trip could not be
+// interrupted, so one call's listing would outlast another call's cancellation.
+// Two callers arriving together after an expiry both list, which costs one
+// extra listing and is what happened before the window existed.
 func (s *server) currentTools(ctx context.Context) (map[string]Descriptor, error) {
 	s.listMu.Lock()
-	defer s.listMu.Unlock()
-	if s.tools != nil && time.Since(s.listedAt) <= listMaxAge {
-		return s.tools, nil
+	tools, listedAt := s.tools, s.listedAt
+	s.listMu.Unlock()
+	if tools != nil && time.Since(listedAt) <= listMaxAge {
+		return tools, nil
 	}
 	fresh, err := discoverTools(ctx, s)
 	if err != nil {
 		return nil, err
 	}
-	s.tools, s.listedAt = fresh, time.Now()
+	s.publishTools(fresh)
 	return fresh, nil
+}
+
+// publishTools records a listing as the one later dispatches validate against.
+// Activation and refresh share it so the fields have no writer outside the
+// mutex.
+func (s *server) publishTools(tools map[string]Descriptor) {
+	s.listMu.Lock()
+	defer s.listMu.Unlock()
+	s.tools, s.listedAt = tools, time.Now()
 }
 
 type identityTransport struct {
@@ -240,12 +254,12 @@ func connectServer(parent context.Context, root string, definition acp.MCPServer
 		return nil, value.redact(fmt.Errorf("connect MCP server %q: %w", value.name, err))
 	}
 	value.session = session
-	value.tools, err = discoverTools(ctx, value)
+	discovered, err := discoverTools(ctx, value)
 	if err != nil {
 		_ = session.Close()
 		return nil, value.redact(fmt.Errorf("discover MCP server %q tools: %w", value.name, err))
 	}
-	value.listedAt = time.Now()
+	value.publishTools(discovered)
 	return value, nil
 }
 
