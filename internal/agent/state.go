@@ -47,17 +47,6 @@ const (
 	interruptedQuestion    = "question interrupted"
 )
 
-const maxQueuedTasks = 32
-
-const (
-	taskPending     = "pending"
-	taskRunning     = "running"
-	taskCompleted   = "completed"
-	taskFailed      = "failed"
-	taskCancelled   = "cancelled"
-	taskInterrupted = "interrupted"
-)
-
 type sessionRecord struct {
 	Version  int             `json:"version"`
 	Sequence uint64          `json:"sequence"`

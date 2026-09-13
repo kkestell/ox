@@ -11,11 +11,6 @@ import (
 	"time"
 )
 
-const (
-	cacheDirectory = "ox"
-	cacheFile      = "models.json"
-)
-
 var cacheWriteSequence atomic.Uint64
 
 // readCatalogCache returns the cached catalog and how long ago it was written.
