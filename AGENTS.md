@@ -89,10 +89,12 @@ Roadmap maintenance does not require a plan. Add, remove, clarify, and reorder
 `eng/todo.md` items directly when requested. Do not create a plan merely to make
 a todo-list change.
 
-Before implementing a todo item, write its plan in `eng/plans/`. Use
-`eng/plans/TEMPLATE.md` as a scaffold, then keep the plan to the smallest useful
-set of source references, implementation tasks, and tests. Do not restate the
-todo list, architecture, repository rules, or standard validation commands.
+Before implementing a session-sized todo task, write one plan for that task in
+`eng/plans/`. A milestone does not need a separate plan when its child tasks
+carry all implementation work. Use `eng/plans/TEMPLATE.md` as a scaffold, then
+keep the plan to the smallest useful set of source references, implementation
+tasks, and tests. Do not restate the todo list, architecture, repository rules,
+or standard validation commands.
 
 Do not review individual plans or run an independent review after each slice.
 After every top-level todo item is complete, run one completeness and
@@ -127,7 +129,12 @@ reader who has never opened the todo list.
 ### Maintaining the todo list
 
 `eng/todo.md` is forward-looking. Keep it as a compact nested checklist and mark
-completed items with `[x]`.
+completed items with `[x]`. Top-level items may group a milestone, while each
+child task should be approximately one focused implementation session in size.
+Group related findings, tests, documentation, and implementation changes when
+they share a contract or code path and fit comfortably in one session. Do not
+turn every review finding or implementation step into a separate task; split
+work only when it is independently sequenced or too large for one session.
 
 ### One home for every fact
 
