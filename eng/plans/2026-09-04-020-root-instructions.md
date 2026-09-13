@@ -4,7 +4,7 @@
 
 - `docs/spec.md#workspace-instructions-and-skills` — root-only discovery,
   validation limits, activation lifetime, and parent/child behavior
-- `eng/roadmap.md#root-instructions` — slice scope and completion gates
+- `eng/todo.md` — slice scope and completion gates
 - `eng/architecture.md#configuration-and-credentials` and
   `eng/architecture.md#context-and-durable-projections` — activation inputs,
   immutable turn configuration, and durable recovery ownership

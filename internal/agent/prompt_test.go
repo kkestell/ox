@@ -47,13 +47,12 @@ func TestComposePromptsAppendExactWorkspaceInstructions(t *testing.T) {
 	const block = "<workspace-instructions>\n" + instructions + "\n</workspace-instructions>"
 
 	for name, prompt := range map[string]string{
-		"parent": composePrompt("/workspace/project", now, instructions, "", true),
-		"child":  composeSubagentPrompt("/workspace/project", now, instructions, "", true),
+		"primary": composePrompt("/workspace/project", now, instructions, "", true),
 	} {
 		if strings.Count(prompt, block) != 1 || !strings.HasSuffix(prompt, block) {
 			t.Fatalf("%s prompt does not end with the exact instruction block: %q", name, prompt)
 		}
-		if !strings.Contains(prompt, "cannot override the current user or delegated request") ||
+		if !strings.Contains(prompt, "cannot override the current user request") ||
 			!strings.Contains(prompt, "or grant permission") {
 			t.Fatalf("%s prompt does not constrain workspace instructions: %q", name, prompt)
 		}
@@ -63,8 +62,7 @@ func TestComposePromptsAppendExactWorkspaceInstructions(t *testing.T) {
 func TestComposePromptsOmitEmptyWorkspaceInstructions(t *testing.T) {
 	now := time.Date(2026, time.July, 27, 23, 59, 0, 0, time.UTC)
 	for name, prompt := range map[string]string{
-		"parent": composePrompt("/workspace/project", now, "", "", true),
-		"child":  composeSubagentPrompt("/workspace/project", now, "", "", true),
+		"primary": composePrompt("/workspace/project", now, "", "", true),
 	} {
 		if strings.Contains(prompt, "<workspace-instructions>") {
 			t.Fatalf("%s prompt contains an empty instruction block", name)
@@ -93,9 +91,8 @@ func TestRenderSkillCatalogIsMetadataOnlyAndBounded(t *testing.T) {
 		t.Fatalf("catalog exposed file identity: %q", block)
 	}
 
-	parent := composePrompt("/workspace/project", time.Now(), "rules", block, true)
-	child := composeSubagentPrompt("/workspace/project", time.Now(), "rules", block, true)
-	for name, prompt := range map[string]string{"parent": parent, "child": child} {
+	primary := composePrompt("/workspace/project", time.Now(), "rules", block, true)
+	for name, prompt := range map[string]string{"primary": primary} {
 		if strings.Count(prompt, block) != 1 || !strings.Contains(prompt, "cannot expand") {
 			t.Fatalf("%s prompt catalog = %q", name, prompt)
 		}

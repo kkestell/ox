@@ -4,7 +4,7 @@
 
 - `docs/spec.md#web-access` and `docs/spec.md#session-configuration` — fetch,
   source handling, search ownership, permission, and plan-mode contract
-- `eng/roadmap.md#public-web-fetch-and-mcp-search` — slice scope and gates
+- `eng/todo.md` — slice scope and gates
 - `eng/architecture.md#extension-boundaries` and
   `eng/architecture.md#workspace-boundary` — tool ownership, MCP search
   boundary, untrusted data, permissions, and ordinary spill handling

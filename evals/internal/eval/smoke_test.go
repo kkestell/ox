@@ -93,7 +93,7 @@ func TestFakeProviderSmoke(t *testing.T) {
 	})
 	output := filepath.Join(t.TempDir(), "artifacts")
 	index, err := Run(context.Background(), Config{
-		OxBinary: relativeOxBinary, OxRevision: "test-revision", Candidate: CandidateExact, TaskPath: taskRoot,
+		OxBinary: relativeOxBinary, OxRevision: "test-revision", TaskPath: taskRoot,
 		OutputDir: output, Model: "test/model", Provider: "fake",
 		Repetitions: 1, Upstream: upstream,
 	})
@@ -193,7 +193,7 @@ func TestSmokeFailureClassifications(t *testing.T) {
 				Success: Success{Files: test.files},
 			})
 			index, err := Run(context.Background(), Config{
-				OxBinary: test.binary, OxRevision: "test", Candidate: CandidateExact, TaskPath: taskRoot,
+				OxBinary: test.binary, OxRevision: "test", TaskPath: taskRoot,
 				OutputDir: filepath.Join(t.TempDir(), "artifacts"), Model: "test/model",
 				Provider: "fake", Repetitions: 1, Upstream: test.upstream,
 			})
@@ -243,7 +243,7 @@ func TestFakeProviderRestart(t *testing.T) {
 	})
 	output := filepath.Join(t.TempDir(), "artifacts")
 	index, err := Run(context.Background(), Config{
-		OxBinary: smokeOxBinary, OxRevision: "test", Candidate: CandidateExact, TaskPath: taskRoot,
+		OxBinary: smokeOxBinary, OxRevision: "test", TaskPath: taskRoot,
 		OutputDir: output, Model: "test/model", Provider: "fake",
 		Repetitions: 1, Upstream: upstream,
 	})
@@ -301,7 +301,7 @@ func TestFakeProviderMutationAndMultiPhaseMetrics(t *testing.T) {
 		responses = responses[1:]
 	})
 	index, err := Run(context.Background(), Config{
-		OxBinary: smokeOxBinary, OxRevision: "test", Candidate: CandidateExact,
+		OxBinary: smokeOxBinary, OxRevision: "test",
 		TaskPath: taskRoot, OutputDir: filepath.Join(t.TempDir(), "artifacts"),
 		Model: "test/model", Provider: "fake", Repetitions: 1, Upstream: upstream,
 	})
@@ -317,7 +317,7 @@ func TestFakeProviderMutationAndMultiPhaseMetrics(t *testing.T) {
 		result.ProviderAttempts != 6 || result.ProviderRetries != 0 || result.FailedEditAttempts != 1 {
 		t.Fatalf("result = %#v, total tokens = %d", result, totalTokens)
 	}
-	if index.Candidate != CandidateExact || !strings.HasPrefix(index.BinaryDigest, "sha256:") || index.PromptDigest == "" {
+	if !strings.HasPrefix(index.BinaryDigest, "sha256:") || index.PromptDigest == "" {
 		t.Fatalf("index identity = %#v", index)
 	}
 }
@@ -363,7 +363,7 @@ func TestFakeProviderRequiresPermissionRejection(t *testing.T) {
 				response++
 			})
 			index, err := Run(context.Background(), Config{
-				OxBinary: smokeOxBinary, Candidate: CandidateExact, TaskPath: taskRoot, OutputDir: filepath.Join(t.TempDir(), "artifacts"),
+				OxBinary: smokeOxBinary, TaskPath: taskRoot, OutputDir: filepath.Join(t.TempDir(), "artifacts"),
 				Model: "test/model", Provider: "fake", Repetitions: 1, Upstream: upstream,
 			})
 			if err != nil {

@@ -339,7 +339,7 @@ does not exist.
 
 ## Documentation updates
 
-- `AGENTS.md`: check off the workspace confinement roadmap item.
+- `AGENTS.md`: check off the workspace confinement todo list item.
 - `AGENTS.md`: add a Workspace section after Configuration stating the current
   contract — a session has one canonical working directory, resolved through
   symlinks and required to be listable; every path a tool takes resolves against

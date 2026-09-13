@@ -5,7 +5,7 @@
 - `docs/spec.md#language-intelligence` — configured servers, lazy lifecycle,
   deadlines, synchronization, positions, diagnostics, and confined-result
   contract
-- `eng/roadmap.md#language-server-context` — slice gates and exclusions
+- `eng/todo.md` — slice gates and exclusions
 - `eng/architecture.md#extension-boundaries` and
   `eng/architecture.md#workspace-boundary` — focused adapter ownership,
   activation resources, selected filesystem authority, and confinement

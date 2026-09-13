@@ -151,7 +151,7 @@ func (a *Agent) runFrom(
 			if compactionUpdate != nil {
 				events <- *compactionUpdate
 			}
-			budgetRequest, err := a.reserveProviderRequest(value, "")
+			budgetRequest, err := a.reserveProviderRequest(value)
 			if errors.Is(err, errTurnRequestLimit) {
 				if finishErr := a.finishTurn(
 					value, active, "request_limit", acp.StopReasonMaxTurnRequests, "", events,
@@ -300,26 +300,6 @@ func (a *Agent) runFrom(
 			return loopOutcome{err: fmt.Errorf("persist tool exchange: %w", err)}
 		}
 		for index, call := range completion.ToolCalls {
-			if results[index].unknown && results[index].delegation != nil {
-				for _, child := range results[index].delegation.Calls {
-					childCall := openrouter.ToolCall{
-						ID: child.CallID, Type: "function",
-						Function: openrouter.ToolCallFunction{
-							Name: child.Name, Arguments: string(child.Arguments),
-						},
-					}
-					events <- a.toolEvent(
-						a.sessionSubagentTools(value), childCall, eventToolPending, call.ID, "", child.Target,
-					)
-					kind := eventToolCompleted
-					if child.Failed {
-						kind = eventToolFailed
-					}
-					events <- a.toolEvent(
-						a.sessionSubagentTools(value), childCall, kind, call.ID, child.Content, child.Target,
-					)
-				}
-			}
 			active.trace.ToolCompleted(
 				call.ID,
 				call.Function.Name,
@@ -340,15 +320,7 @@ func (a *Agent) runFrom(
 				results[index].target,
 			)
 		}
-		usages := []*openrouter.Usage{completion.Usage}
-		for _, result := range results {
-			if result.delegation != nil {
-				for index := range result.delegation.Usage {
-					usages = append(usages, &result.delegation.Usage[index])
-				}
-			}
-		}
-		a.publishUsage(value, combinedUsage(usages...), events)
+		a.publishUsage(value, combinedUsage(completion.Usage), events)
 		suspended = nil
 		reissue = false
 		if batchCancelled || active.cancelledByClient.Load() {
@@ -377,7 +349,7 @@ func (a *Agent) runFrom(
 	panic("unreachable")
 }
 
-func (a *Agent) reserveProviderRequest(value *session, parentCallID string) (int, error) {
+func (a *Agent) reserveProviderRequest(value *session) (int, error) {
 	value.stateMu.Lock()
 	defer value.stateMu.Unlock()
 	if value.state.turnRequests >= maxTurnRequests {
@@ -385,7 +357,7 @@ func (a *Agent) reserveProviderRequest(value *session, parentCallID string) (int
 	}
 	next := value.state.turnRequests + 1
 	if err := a.commitLocked(value, recordProviderStarted, providerRequestStarted{
-		TurnID: value.state.openTurn, ParentCallID: parentCallID, Count: next,
+		TurnID: value.state.openTurn, Count: next,
 	}); err != nil {
 		return 0, err
 	}
@@ -418,16 +390,13 @@ func (a *Agent) publishPendingTools(
 	for _, call := range calls {
 		turn.ToolPending(call.ID, call.Function.Name, "")
 		var kind acp.ToolKind
-		var delegates bool
 		if index, ok := tools.byName[call.Function.Name]; ok {
 			kind = tools.tools[index].Kind
-			delegates = tools.tools[index].Delegates
 		}
 		events <- event{
 			kind: eventToolPending, call: call, toolKind: kind,
-			title:     toolSetTitle(tools, call.Function.Name, json.RawMessage(call.Function.Arguments)),
-			target:    targets[call.ID],
-			delegates: delegates,
+			title:  toolSetTitle(tools, call.Function.Name, json.RawMessage(call.Function.Arguments)),
+			target: targets[call.ID],
 		}
 	}
 }
@@ -615,14 +584,6 @@ func (a *Agent) prefixFingerprint(value *session) string {
 	)
 }
 
-func subagentPrefixFingerprint(configuration requestConfiguration) string {
-	return requestPrefixFingerprint(
-		configuration,
-		configuration.Subagent.SystemPrompt,
-		configuration.Subagent.Tools,
-	)
-}
-
 func requestPrefixFingerprint(
 	configuration requestConfiguration,
 	systemPrompt string,
@@ -802,12 +763,11 @@ type toolGroup struct {
 }
 
 type toolResult struct {
-	content    string
-	failed     bool
-	approval   approvalDecision
-	delegation *delegationRecord
-	target     string
-	unknown    bool
+	content  string
+	failed   bool
+	approval approvalDecision
+	target   string
+	unknown  bool
 }
 
 func (a *Agent) executeSuspendedBatch(
@@ -1040,7 +1000,7 @@ func (a *Agent) permissionRequest(
 			ToolCallID: call.ID, Kind: tool.Kind,
 			Title: toolTitle(tool, arguments), Name: call.Function.Name,
 			Locations: toolLocations(root, target), RawInput: arguments,
-			Meta: toolEventMetadata(parent, false),
+			Meta: toolEventMetadata(parent),
 		},
 		Options: permissionOptions(rule, tool.Suggest != nil),
 	}
@@ -1087,12 +1047,8 @@ func (a *Agent) executeBatchWith(
 	value.stateMu.Lock()
 	configuration := value.state.turnConfiguration()
 	value.stateMu.Unlock()
-	declarations := configuration.Tools
-	if parent != "" {
-		declarations = configuration.Subagent.Tools
-	}
 	if configuration.Mode != "" {
-		tools = constrainedToolSet(tools, declarations)
+		tools = constrainedToolSet(tools, configuration.Tools)
 	}
 	a.logger.Info("tool batch started", "session_id", value.id, "calls", len(calls))
 	value.stateMu.Lock()
@@ -1102,19 +1058,16 @@ func (a *Agent) executeBatchWith(
 	for _, call := range calls {
 		turn.ToolPending(call.ID, call.Function.Name, parent)
 		var kind acp.ToolKind
-		var delegates bool
 		if index, ok := tools.byName[call.Function.Name]; ok {
 			kind = tools.tools[index].Kind
-			delegates = tools.tools[index].Delegates
 		}
 		events <- event{
-			kind:      eventToolPending,
-			call:      call,
-			toolKind:  kind,
-			parent:    parent,
-			title:     toolSetTitle(tools, call.Function.Name, json.RawMessage(call.Function.Arguments)),
-			target:    targets[call.ID],
-			delegates: delegates,
+			kind:     eventToolPending,
+			call:     call,
+			toolKind: kind,
+			parent:   parent,
+			title:    toolSetTitle(tools, call.Function.Name, json.RawMessage(call.Function.Arguments)),
+			target:   targets[call.ID],
 		}
 	}
 
@@ -1299,12 +1252,8 @@ func (a *Agent) dispatchApprovedBatch(
 							return results, fmt.Errorf("persist unknown tool outcome: %w", err)
 						}
 						results[index] = toolResultFromStored(unknown)
-						results[index].delegation = interruptedDelegation(value, calls[index].ID)
 					} else {
 						results[index] = toolResultFromStored(*progress.Result)
-						if progress.Result.Unknown {
-							results[index].delegation = interruptedDelegation(value, calls[index].ID)
-						}
 					}
 					continue
 				}
@@ -1389,7 +1338,6 @@ func storedResult(callID string, result toolResult) storedToolResult {
 		Content:          result.content,
 		Failed:           result.failed,
 		ApprovalDecision: result.approval,
-		Delegation:       result.delegation,
 		Target:           result.target,
 		Unknown:          result.unknown,
 	}
@@ -1398,8 +1346,8 @@ func storedResult(callID string, result toolResult) storedToolResult {
 func toolResultFromStored(result storedToolResult) toolResult {
 	return toolResult{
 		content: result.Content, failed: result.Failed,
-		approval: result.ApprovalDecision, delegation: result.Delegation,
-		target: result.Target, unknown: result.Unknown,
+		approval: result.ApprovalDecision,
+		target:   result.Target, unknown: result.Unknown,
 	}
 }
 
@@ -1447,13 +1395,8 @@ func (a *Agent) executeOne(
 ) (result toolResult) {
 	index, ok := tools.byName[call.Function.Name]
 	if ok && !tools.tools[index].ParallelSafe {
-		if parent == "" && strings.HasPrefix(tools.tools[index].Name, "task_") {
-			value.queueMu.Lock()
-			defer value.queueMu.Unlock()
-		} else {
-			value.exclusiveMu.Lock()
-			defer value.exclusiveMu.Unlock()
-		}
+		value.exclusiveMu.Lock()
+		defer value.exclusiveMu.Unlock()
 		if ctx.Err() != nil {
 			return toolResult{
 				content: "tool call cancelled before start", failed: true, target: target,
@@ -1500,7 +1443,6 @@ func (a *Agent) executeOne(
 	root := value.state.cwd
 	configuration := value.state.turnConfiguration()
 	value.stateMu.Unlock()
-	var delegation *delegationRecord
 	invocation := Invocation{
 		Arguments:  json.RawMessage(call.Function.Arguments),
 		SessionID:  value.id,
@@ -1554,85 +1496,14 @@ func (a *Agent) executeOne(
 			return nil
 		}
 	}
-	if parent == "" {
-		value.stateMu.Lock()
-		turnID := value.state.openTurn
-		value.stateMu.Unlock()
-		switch tool.Name {
-		case taskAddTool:
-			invocation.AddTask = func(description string) (QueuedTask, error) {
-				return a.addQueuedTask(value, turnID, call.ID, description)
-			}
-		case taskListTool:
-			invocation.ListTasks = func() []QueuedTask { return a.queuedTasks(value) }
-		case taskCancelTool:
-			invocation.CancelTask = func(id string) (QueuedTask, error) {
-				return a.cancelQueuedTask(value, turnID, call.ID, id)
-			}
-		case taskRetryTool:
-			invocation.RetryTask = func(id string) (QueuedTask, error) {
-				return a.retryQueuedTask(value, turnID, call.ID, id)
-			}
-		}
-	}
-	if tool.Delegates {
-		delegateCall := func(delegateCtx context.Context, prompt string) (string, error) {
-			var err error
-			var answer string
-			answer, delegation, err = a.delegate(
-				delegateCtx,
-				value,
-				call.ID,
-				prompt,
-				ask,
-				elicit,
-				fileSystem,
-				terminal,
-				events,
-				turn,
-			)
-			return answer, err
-		}
-		if parent == "" && tool.Name == taskRunTool {
-			invocation.RunTask = func(delegateCtx context.Context, id string) (string, error) {
-				value.stateMu.Lock()
-				turnID := value.state.openTurn
-				value.stateMu.Unlock()
-				task, err := a.beginQueuedTask(value, turnID, call.ID, id)
-				if err != nil {
-					return "", err
-				}
-				answer, runErr := delegateCall(delegateCtx, task.Description)
-				state, result := taskCompleted, answer
-				if runErr != nil {
-					state, result = taskFailed, runErr.Error()
-					if delegateCtx.Err() != nil {
-						state, result = taskCancelled, "task cancelled"
-					}
-				}
-				if finishErr := a.finishQueuedTask(
-					value, turnID, call.ID, id, state, result,
-				); finishErr != nil {
-					return "", finishErr
-				}
-				return answer, runErr
-			}
-		} else {
-			invocation.Delegate = delegateCall
-		}
-	}
 	output, err := tool.Execute(ctx, invocation)
 	if err != nil {
 		if ctx.Err() != nil {
-			result := toolResult{
+			return toolResult{
 				content: "tool call cancelled",
 				failed:  true,
 				target:  target,
 			}
-			if delegationHasActivity(delegation) {
-				result.delegation = delegation
-			}
-			return result
 		}
 		a.logger.Info(
 			"tool call refused",
@@ -1644,14 +1515,9 @@ func (a *Agent) executeOne(
 		if failedContent, ok := toolResultContent(err); ok {
 			content = failedContent
 		}
-		return toolResult{
-			content:    content,
-			failed:     true,
-			delegation: delegation,
-			target:     target,
-		}
+		return toolResult{content: content, failed: true, target: target}
 	}
-	return toolResult{content: output, delegation: delegation, target: target}
+	return toolResult{content: output, target: target}
 }
 
 func toolOutcome(result toolResult) string {
@@ -1729,11 +1595,6 @@ func providerOutcome(
 	return "completed"
 }
 
-func delegationHasActivity(value *delegationRecord) bool {
-	return value != nil &&
-		(value.Prompt != "" || len(value.Calls) > 0 || len(value.Usage) > 0 || value.Answer != "")
-}
-
 func (a *Agent) toolEvent(
 	tools toolSet,
 	call openrouter.ToolCall,
@@ -1742,21 +1603,18 @@ func (a *Agent) toolEvent(
 	text string,
 	target string,
 ) event {
-	delegates := false
 	var toolKind acp.ToolKind
 	if index, ok := tools.byName[call.Function.Name]; ok {
-		delegates = tools.tools[index].Delegates
 		toolKind = tools.tools[index].Kind
 	}
 	return event{
-		kind:      kind,
-		call:      call,
-		toolKind:  toolKind,
-		parent:    parent,
-		title:     toolSetTitle(tools, call.Function.Name, json.RawMessage(call.Function.Arguments)),
-		target:    target,
-		delegates: delegates,
-		text:      text,
+		kind:     kind,
+		call:     call,
+		toolKind: toolKind,
+		parent:   parent,
+		title:    toolSetTitle(tools, call.Function.Name, json.RawMessage(call.Function.Arguments)),
+		target:   target,
+		text:     text,
 	}
 }
 
@@ -1780,11 +1638,6 @@ func toolTitle(tool Tool, arguments json.RawMessage) string {
 		}
 	}
 	return tool.Name
-}
-
-func (a *Agent) toolDelegates(name string) bool {
-	index, ok := a.primaryTools.byName[name]
-	return ok && a.primaryTools.tools[index].Delegates
 }
 
 func toolCallPath(arguments string) string {

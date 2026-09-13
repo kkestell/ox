@@ -1,3 +1,0 @@
-job=sync
-job=obsolete
-job=backup

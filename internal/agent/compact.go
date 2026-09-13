@@ -83,63 +83,6 @@ func (a *Agent) admitPrimaryRequest(
 	return admitted.request, a.compactionUsageEvent(value, admitted.occupancy), nil
 }
 
-func (a *Agent) admitChildRequest(
-	ctx context.Context,
-	value *session,
-	parentCallID string,
-	record *delegationRecord,
-	request openrouter.Request,
-	turn diagnostictrace.Turn,
-	requestCount int,
-) (openrouter.Request, error) {
-	value.stateMu.Lock()
-	configuration := value.state.turnConfiguration()
-	value.stateMu.Unlock()
-	planned, err := planRequestAdmission(request, configuration.ContextWindow)
-	if err != nil {
-		return openrouter.Request{}, err
-	}
-	if planned.plan == nil {
-		return planned.request, nil
-	}
-	completion, err := a.summarizeContext(
-		ctx,
-		value.id,
-		configuration,
-		request.Messages[planned.plan.headEnd:planned.plan.tailStart],
-		turn,
-		requestCount,
-		parentCallID,
-	)
-	if err != nil {
-		return openrouter.Request{}, err
-	}
-	admitted, err := compactRequest(
-		request, *planned.plan, completion.Text, configuration.ContextWindow,
-	)
-	if err != nil {
-		return openrouter.Request{}, err
-	}
-	record.History = cloneMessages(admitted.request.Messages[1:])
-	record.Occupancy = admitted.occupancy
-	if completion.Usage != nil {
-		record.Usage = append(record.Usage, *completion.Usage)
-	}
-	value.stateMu.Lock()
-	turnID := value.state.openTurn
-	value.stateMu.Unlock()
-	compaction := &compactionRecord{
-		TurnID: turnID, ParentCallID: parentCallID,
-		HeadEnd: planned.plan.headEnd - 1, TailStart: planned.plan.tailStart - 1,
-		Summary: admitted.request.Messages[planned.plan.headEnd],
-		Usage:   completion.Usage, Occupancy: admitted.occupancy,
-	}
-	if err := a.persistChildContext(value, parentCallID, *record, compaction); err != nil {
-		return openrouter.Request{}, fmt.Errorf("persist child context compaction: %w", err)
-	}
-	return admitted.request, nil
-}
-
 func (a *Agent) summarizeContext(
 	ctx context.Context,
 	sessionID string,

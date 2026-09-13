@@ -36,7 +36,7 @@ the transplant.
   - Behavioral invariants that must survive the transplant.
 - `cmd/ox/`, `internal/acp/`, `internal/agent/`, and `internal/e2e/` - Existing
   Ox boundaries and black-box behavior to preserve.
-- `eng/architecture.md` and `eng/roadmap.md` - Owners of the resulting design,
+- `eng/architecture.md` and `eng/todo.md` - Owners of the resulting design,
   status, and ACP coverage.
 
 ## Test plan
@@ -78,7 +78,7 @@ the transplant.
 - Merge and rebrand the test suites. Delete superseded Ox implementations only
   after their public cases pass against the transplanted core. Run dependency
   cleanup so `go.mod` contains runtime libraries and tools actually used by Ox.
-- Update the architecture, roadmap status and ACP coverage, codebase map,
+- Update the architecture, todo list status and ACP coverage, codebase map,
   commands, settings documentation, and `AGENTS.md` to describe the resulting
   implementation rather than the source project.
 

@@ -122,7 +122,7 @@ makes the model observable.
   — the session-creation gate, `a.credentials.Key() == ""` yielding
   `authRequiredError()`, which `:783-785` defines as
   `jrpc2.Errorf(acp.ErrCodeAuthRequired, ...)`. `:207-233` is the `Authenticate`
-  handler that calls `Set` and `Refresh`; it is the next roadmap item and is
+  handler that calls `Set` and `Refresh`; it is the next todo list item and is
   recorded here only to confirm this store is the shape it needs.
 - `~/src/references/repos/personal/alpha/runtime/internal/credentials/credentials_test.go:117-135`
   — the test that a keyring failure degrades reads, fails writes, and does not
@@ -339,7 +339,7 @@ makes the model observable.
 
 ## Documentation updates
 
-- `AGENTS.md`: check off the credential storage and lookup roadmap item.
+- `AGENTS.md`: check off the credential storage and lookup todo list item.
 - `AGENTS.md` Configuration section: state that the OpenRouter credential comes
   from `OPENROUTER_API_KEY` or from the OS keyring under service `ox` and
   account `openrouter`, that the environment wins, that a configuration file

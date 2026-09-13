@@ -2,8 +2,8 @@
 
 ## Sources
 
-- `eng/roadmap.md#model-context-compaction` — owns the compaction scope and
-  history, restart, usage, and protected-prefix gates.
+- `eng/todo.md` — owns the compaction scope and history, restart, usage, and
+  protected-prefix gates.
 - `eng/architecture.md#session-and-turn-state` and
   `eng/architecture.md#provider-boundary` — own durable history, ACP replay,
   frozen request configuration, and provider translation.
@@ -54,9 +54,9 @@ history while retaining the complete records used for ACP replay.
   — represent context occupancy explicitly. Normal model responses publish and
   persist `PromptTokens`, not completion-inclusive `TotalTokens`; compaction
   publishes its estimated post-splice size and cumulative cost.
-- `eng/architecture.md` and `eng/roadmap.md` — record the durable split between
+- `eng/architecture.md` and `eng/todo.md` — record the durable split between
   full replay records and compacted provider history, then remove the completed
-  slice from the roadmap.
+  slice from the todo list.
 
 ## Tests
 

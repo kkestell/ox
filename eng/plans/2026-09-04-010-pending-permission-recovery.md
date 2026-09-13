@@ -2,8 +2,7 @@
 
 ## Sources
 
-- `eng/roadmap.md#pending-permission-recovery` — owns the recovery scope and
-  process-boundary gates.
+- `eng/todo.md` — owns the recovery scope and process-boundary gates.
 - `eng/architecture.md#session-and-turn-state` — owns load-time continuation,
   stale-generation handling, and the durable-only recovered stop reason.
 - `internal/agent/agent.go`, `internal/agent/loop.go`, and
@@ -56,7 +55,7 @@ provider request or duplicate tool execution.
   not add a private stop-reason field to the load response.
 - `internal/e2e/harness_test.go` — add a focused hard-kill operation that does
   not treat the intentionally lost prompt response as a harness failure.
-- `eng/roadmap.md` — collapse the completed durable-session milestone after its
+- `eng/todo.md` — collapse the completed durable-session milestone after its
   cumulative completeness and simplification review passes, keeping ACP method
   coverage synchronized.
 

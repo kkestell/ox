@@ -67,7 +67,6 @@ type Agent struct {
 	settingsPath         string
 	client               Model
 	primaryTools         toolSet
-	subagentTools        toolSet
 	store                *fileStore
 	memory               *memoryStore
 	trace                diagnostictrace.Trace
@@ -94,26 +93,13 @@ func New(config Config) (*Agent, error) {
 		if (tool.Suggest == nil) != (tool.Covered == nil) {
 			return nil, fmt.Errorf("tool %q must set both Suggest and Covered", tool.Name)
 		}
-		if tool.Delegates && tool.Label == nil {
-			return nil, fmt.Errorf("delegating tool %q must set Label", tool.Name)
-		}
-		if !tool.Delegates && tool.Label != nil {
-			return nil, fmt.Errorf("non-delegating tool %q cannot set Label", tool.Name)
+		if tool.Label != nil {
+			return nil, fmt.Errorf("tool %q cannot set Label", tool.Name)
 		}
 	}
 	primaryTools, err := newToolSet(tools)
 	if err != nil {
 		return nil, err
-	}
-	subagentTools, err := newToolSet(slices.DeleteFunc(
-		append([]Tool(nil), tools...),
-		func(tool Tool) bool { return tool.Delegates || tool.ParentOnly },
-	))
-	if err != nil {
-		return nil, err
-	}
-	if len(primaryTools.tools) > 0 && len(subagentTools.tools) == 0 {
-		return nil, errors.New("subagent tool set is empty")
 	}
 	store, err := newFileStore(config.SessionDir)
 	if err != nil {
@@ -132,7 +118,6 @@ func New(config Config) (*Agent, error) {
 		settingsPath:  config.SettingsPath,
 		client:        config.Client,
 		primaryTools:  primaryTools,
-		subagentTools: subagentTools,
 		store:         store,
 		memory:        memory,
 		trace:         config.Trace,
@@ -338,7 +323,7 @@ func (a *Agent) NewSession(
 	if err != nil {
 		return acp.NewSessionResponse{}, err
 	}
-	bundle, primaryTools, subagentTools, mcpTools, err := a.activateMCP(
+	bundle, primaryTools, mcpTools, err := a.activateMCP(
 		ctx, cwd, request.MCPServers,
 	)
 	if err != nil {
@@ -352,7 +337,7 @@ func (a *Agent) NewSession(
 	}()
 
 	base, models, err := a.resolveActivation(
-		ctx, cwd, sessionSelections{}, primaryTools, subagentTools, mcpTools,
+		ctx, cwd, sessionSelections{}, primaryTools, mcpTools,
 	)
 	if err != nil {
 		return acp.NewSessionResponse{}, err
@@ -385,7 +370,7 @@ func (a *Agent) NewSession(
 	value := &session{
 		id: id, state: state, log: log,
 		activationBase: cloneConfiguration(base), models: cloneModels(models),
-		mcp: bundle, primaryTools: primaryTools, subagentTools: subagentTools,
+		mcp: bundle, primaryTools: primaryTools,
 	}
 	a.sessionsMu.Lock()
 	a.sessions[id] = value
@@ -657,7 +642,7 @@ func (a *Agent) activateSession(
 			"session has a pending permission request; load it before resuming",
 		)
 	}
-	bundle, primaryTools, subagentTools, mcpTools, err := a.activateMCP(
+	bundle, primaryTools, mcpTools, err := a.activateMCP(
 		ctx, canonicalCWD, mcpServers,
 	)
 	if err != nil {
@@ -665,7 +650,6 @@ func (a *Agent) activateSession(
 	}
 	value.mcp = bundle
 	value.primaryTools = primaryTools
-	value.subagentTools = subagentTools
 	defer func() {
 		if !activated {
 			_ = bundle.Close()
@@ -673,7 +657,7 @@ func (a *Agent) activateSession(
 	}()
 	base, models, err := a.resolveActivation(
 		ctx, canonicalCWD, value.state.selections,
-		primaryTools, subagentTools, mcpTools,
+		primaryTools, mcpTools,
 	)
 	if err != nil {
 		return nil, err
@@ -926,7 +910,6 @@ func (a *Agent) validateActivation(
 func (a *Agent) resolveConfiguration(
 	cwd string,
 	primaryTools toolSet,
-	subagentTools toolSet,
 	mcpTools []mcpToolConfiguration,
 ) (requestConfiguration, error) {
 	executorCapabilities := a.negotiatedExecutorCapabilities()
@@ -966,10 +949,6 @@ func (a *Agent) resolveConfiguration(
 		MCPTools:             slices.Clone(mcpTools),
 		Skills:               cloneSkillReferences(skillReferences),
 		ExecutorCapabilities: executorCapabilities,
-		Subagent: subagentConfiguration{
-			SystemPrompt: composeSubagentPrompt(cwd, now, instructions, skillCatalog, a.clientForm),
-			Tools:        cloneTools(subagentTools.modelTools),
-		},
 	}, nil
 }
 
@@ -978,10 +957,9 @@ func (a *Agent) resolveActivation(
 	cwd string,
 	selections sessionSelections,
 	primaryTools toolSet,
-	subagentTools toolSet,
 	mcpTools []mcpToolConfiguration,
 ) (requestConfiguration, []openrouter.Model, error) {
-	configuration, err := a.resolveConfiguration(cwd, primaryTools, subagentTools, mcpTools)
+	configuration, err := a.resolveConfiguration(cwd, primaryTools, mcpTools)
 	if err != nil {
 		return requestConfiguration{}, nil, err
 	}
@@ -1062,14 +1040,14 @@ func configuredPlanTools(tools toolSet) map[string]bool {
 	return result
 }
 
-func (a *Agent) negotiatedToolSets() (toolSet, toolSet) {
+func (a *Agent) negotiatedTools() toolSet {
 	a.clientCapabilitiesMu.RLock()
 	form := a.clientForm
 	a.clientCapabilitiesMu.RUnlock()
 	if form {
-		return a.primaryTools, a.subagentTools
+		return a.primaryTools
 	}
-	return toolsWithoutForm(a.primaryTools), toolsWithoutForm(a.subagentTools)
+	return toolsWithoutForm(a.primaryTools)
 }
 
 func toolsWithoutForm(source toolSet) toolSet {
@@ -1173,9 +1151,6 @@ func (a *Agent) closeUnknownExecutions(value *session) error {
 }
 
 func (a *Agent) interruptOpenTurn(value *session) error {
-	if err := a.interruptRunningTasks(value); err != nil {
-		return fmt.Errorf("persist interrupted queued task: %w", err)
-	}
 	if err := a.closeUnknownExecutions(value); err != nil {
 		return err
 	}
@@ -1189,9 +1164,6 @@ func (a *Agent) interruptOpenTurn(value *session) error {
 			execution, started := toolExecution(value, call.ID)
 			if started && execution.Result != nil {
 				results[index] = cloneStoredToolResult(*execution.Result)
-				if results[index].Unknown {
-					results[index].Delegation = interruptedDelegation(value, call.ID)
-				}
 				continue
 			}
 			decision := approvalDecision("")
@@ -1223,41 +1195,6 @@ func (a *Agent) interruptOpenTurn(value *session) error {
 		return err
 	}
 	return nil
-}
-
-func interruptedDelegation(value *session, parentCallID string) *delegationRecord {
-	value.stateMu.Lock()
-	defer value.stateMu.Unlock()
-	return interruptedDelegationFromState(&value.state, parentCallID)
-}
-
-func interruptedDelegationFromState(state *durableState, parentCallID string) *delegationRecord {
-	child, exists := state.children[parentCallID]
-	if !exists {
-		return nil
-	}
-	record := delegationFromChild(child)
-	seen := make(map[string]struct{}, len(record.Calls))
-	for _, call := range record.Calls {
-		seen[call.CallID] = struct{}{}
-	}
-	for _, execution := range sortedToolExecutions(state.toolExecutions) {
-		if execution.ParentCallID != parentCallID || execution.Result == nil {
-			continue
-		}
-		if _, duplicate := seen[execution.Call.ID]; duplicate {
-			continue
-		}
-		result := execution.Result
-		record.Calls = append(record.Calls, delegatedCall{
-			CallID: execution.Call.ID, Name: execution.Call.Function.Name,
-			Arguments: json.RawMessage(execution.Call.Function.Arguments),
-			Content:   result.Content, Failed: result.Failed,
-			ApprovalDecision: result.ApprovalDecision,
-			Target:           execution.Target, Unknown: result.Unknown,
-		})
-	}
-	return record
 }
 
 func (a *Agent) commitLocked(value *session, kind string, payload any) error {
@@ -1748,7 +1685,6 @@ type session struct {
 	models         []openrouter.Model
 	mcp            *mcp.Bundle
 	primaryTools   toolSet
-	subagentTools  toolSet
 	configMu       sync.Mutex
 	mu             sync.Mutex
 	nextTurn       uint64
@@ -1760,7 +1696,6 @@ type session struct {
 	reads          fileReads
 	approvalMu     sync.Mutex
 	exclusiveMu    sync.Mutex
-	queueMu        sync.Mutex
 	callIDsMu      sync.Mutex
 	callIDs        map[string]struct{}
 	readScopesMu   sync.Mutex

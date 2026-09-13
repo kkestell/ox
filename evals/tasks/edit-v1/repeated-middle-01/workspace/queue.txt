@@ -1,7 +1,0 @@
-alpha
-READY
-beta
-READY
-gamma
-READY
-omega

@@ -1,3 +1,0 @@
-precomposed=café
-combining=café
-target=pending

@@ -246,7 +246,6 @@ func applySelections(
 	if selections.Mode == modePlan {
 		configuration.Mode = modePlan
 		configuration.Tools = planTools(configuration.Tools, configuration.PlanTools)
-		configuration.Subagent.Tools = planTools(configuration.Subagent.Tools, configuration.PlanTools)
 		allowed := make(map[string]acp.ToolKind, len(configuration.Tools))
 		for _, tool := range configuration.Tools {
 			allowed[tool.Function.Name] = configuration.ToolKinds[tool.Function.Name]

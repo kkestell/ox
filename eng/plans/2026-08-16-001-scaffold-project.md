@@ -88,7 +88,7 @@ the four commands the code style requires: `gofmt`, `go vet`, `staticcheck`, and
 
 ## Documentation updates
 
-- Roadmap item completed: "Scaffold project".
+- Todo list item completed: "Scaffold project".
 
 ## Impact assessment
 

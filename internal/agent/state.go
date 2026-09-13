@@ -28,10 +28,8 @@ const (
 	recordConfigChanged   = "request_configuration_changed"
 	recordOptionChanged   = "session_config_option_changed"
 	recordTodoChanged     = "todo_replaced"
-	recordTaskChanged     = "task_changed"
 	recordProviderStarted = "provider_request_started"
 	recordCompaction      = "model_context_compacted"
-	recordChildContext    = "child_context_updated"
 	recordUserMessage     = "user_message"
 	recordExchangePaused  = "suspended_model_exchange"
 	recordPermissionOpen  = "permission_requested"
@@ -77,7 +75,6 @@ type requestConfiguration struct {
 	PlanTools            map[string]bool         `json:"planTools,omitempty"`
 	MCPTools             []mcpToolConfiguration  `json:"mcpTools,omitempty"`
 	Skills               []skills.Reference      `json:"skills,omitempty"`
-	Subagent             subagentConfiguration   `json:"subagent,omitempty"`
 	ExecutorCapabilities executorCapabilities    `json:"executorCapabilities"`
 }
 
@@ -99,11 +96,6 @@ type executorCapabilities struct {
 	FileSystemRead  bool `json:"fileSystemRead"`
 	FileSystemWrite bool `json:"fileSystemWrite"`
 	Terminal        bool `json:"terminal"`
-}
-
-type subagentConfiguration struct {
-	SystemPrompt string            `json:"systemPrompt,omitempty"`
-	Tools        []openrouter.Tool `json:"tools,omitempty"`
 }
 
 type sessionCreated struct {
@@ -129,58 +121,18 @@ type todoChanged struct {
 	Entries []acp.PlanEntry `json:"entries"`
 }
 
-type taskChanged struct {
-	TurnID    string        `json:"turnId"`
-	CallID    string        `json:"callId"`
-	Operation string        `json:"operation"`
-	Task      delegatedTask `json:"task"`
-}
-
 type providerRequestStarted struct {
-	TurnID       string `json:"turnId"`
-	ParentCallID string `json:"parentCallId,omitempty"`
-	Count        int    `json:"count"`
-}
-
-type delegatedTask struct {
-	ID          string                 `json:"id"`
-	Description string                 `json:"description"`
-	Attempts    []delegatedTaskAttempt `json:"attempts"`
-}
-
-type delegatedTaskAttempt struct {
-	Number int    `json:"number"`
-	State  string `json:"state"`
-	TurnID string `json:"turnId,omitempty"`
-	CallID string `json:"callId,omitempty"`
-	Result string `json:"result,omitempty"`
+	TurnID string `json:"turnId"`
+	Count  int    `json:"count"`
 }
 
 type compactionRecord struct {
-	TurnID       string             `json:"turnId"`
-	ParentCallID string             `json:"parentCallId,omitempty"`
-	HeadEnd      int                `json:"headEnd"`
-	TailStart    int                `json:"tailStart"`
-	Summary      openrouter.Message `json:"summary"`
-	Usage        *openrouter.Usage  `json:"usage,omitempty"`
-	Occupancy    int                `json:"occupancy"`
-}
-
-type childContextRecord struct {
-	TurnID     string            `json:"turnId"`
-	Child      childContext      `json:"child"`
-	Compaction *compactionRecord `json:"compaction,omitempty"`
-}
-
-type childContext struct {
-	ParentCallID string               `json:"parentCallId"`
-	Prompt       string               `json:"prompt"`
-	History      []openrouter.Message `json:"history"`
-	Calls        []delegatedCall      `json:"calls,omitempty"`
-	Usage        []openrouter.Usage   `json:"usage,omitempty"`
-	RequestCount int                  `json:"requestCount,omitempty"`
-	Occupancy    int                  `json:"occupancy,omitempty"`
-	Answer       string               `json:"answer,omitempty"`
+	TurnID    string             `json:"turnId"`
+	HeadEnd   int                `json:"headEnd"`
+	TailStart int                `json:"tailStart"`
+	Summary   openrouter.Message `json:"summary"`
+	Usage     *openrouter.Usage  `json:"usage,omitempty"`
+	Occupancy int                `json:"occupancy"`
 }
 
 type userMessageRecord struct {
@@ -191,13 +143,12 @@ type userMessageRecord struct {
 }
 
 type storedToolResult struct {
-	CallID           string            `json:"callId"`
-	Content          string            `json:"content"`
-	Failed           bool              `json:"failed,omitempty"`
-	ApprovalDecision approvalDecision  `json:"approvalDecision,omitempty"`
-	Delegation       *delegationRecord `json:"delegation,omitempty"`
-	Target           string            `json:"target,omitempty"`
-	Unknown          bool              `json:"unknown,omitempty"`
+	CallID           string           `json:"callId"`
+	Content          string           `json:"content"`
+	Failed           bool             `json:"failed,omitempty"`
+	ApprovalDecision approvalDecision `json:"approvalDecision,omitempty"`
+	Target           string           `json:"target,omitempty"`
+	Unknown          bool             `json:"unknown,omitempty"`
 }
 
 type toolStartedRecord struct {
@@ -223,27 +174,6 @@ type durableToolExecution struct {
 	Target           string              `json:"target,omitempty"`
 	StartedSequence  uint64              `json:"startedSequence"`
 	Result           *storedToolResult   `json:"result,omitempty"`
-}
-
-type delegationRecord struct {
-	Prompt       string               `json:"prompt"`
-	Answer       string               `json:"answer,omitempty"`
-	Calls        []delegatedCall      `json:"calls,omitempty"`
-	Usage        []openrouter.Usage   `json:"usage,omitempty"`
-	History      []openrouter.Message `json:"history,omitempty"`
-	RequestCount int                  `json:"requestCount,omitempty"`
-	Occupancy    int                  `json:"occupancy,omitempty"`
-}
-
-type delegatedCall struct {
-	CallID           string           `json:"callId"`
-	Name             string           `json:"name"`
-	Arguments        json.RawMessage  `json:"arguments"`
-	Content          string           `json:"content"`
-	Failed           bool             `json:"failed,omitempty"`
-	ApprovalDecision approvalDecision `json:"approvalDecision,omitempty"`
-	Target           string           `json:"target,omitempty"`
-	Unknown          bool             `json:"unknown,omitempty"`
 }
 
 type modelExchangeRecord struct {
@@ -329,7 +259,6 @@ type checkpointProjection struct {
 	Configuration         requestConfiguration          `json:"configuration"`
 	Selections            sessionSelections             `json:"selections,omitempty"`
 	Todo                  []acp.PlanEntry               `json:"todo"`
-	Tasks                 []delegatedTask               `json:"tasks,omitempty"`
 	TurnRequests          int                           `json:"turnRequests,omitempty"`
 	History               []openrouter.Message          `json:"history,omitempty"`
 	Usage                 checkpointUsage               `json:"usage"`
@@ -342,7 +271,6 @@ type checkpointProjection struct {
 	OpenTurnBase          []openrouter.Message          `json:"openTurnBase,omitempty"`
 	OpenTurnConfiguration *requestConfiguration         `json:"openTurnConfiguration,omitempty"`
 	Suspended             *suspendedModelExchangeRecord `json:"suspended,omitempty"`
-	Children              []childContext                `json:"children,omitempty"`
 	ToolExecutions        []durableToolExecution        `json:"toolExecutions,omitempty"`
 	Title                 string                        `json:"title,omitempty"`
 }
@@ -365,7 +293,6 @@ type durableState struct {
 	configuration         requestConfiguration
 	selections            sessionSelections
 	todo                  []acp.PlanEntry
-	tasks                 []delegatedTask
 	turnRequests          int
 	history               []openrouter.Message
 	usage                 turnUsage
@@ -380,7 +307,6 @@ type durableState struct {
 	openTurnBase          []openrouter.Message
 	openTurnConfiguration requestConfiguration
 	suspended             *suspendedModelExchangeRecord
-	children              map[string]childContext
 	toolExecutions        map[string]durableToolExecution
 	title                 string
 }
@@ -449,7 +375,7 @@ func validateRecordEnvelope(record sessionRecord, previous uint64) error {
 	}
 	switch record.Type {
 	case recordSessionCreated, recordConfigChanged, recordOptionChanged, recordTodoChanged,
-		recordTaskChanged, recordProviderStarted, recordCompaction, recordChildContext, recordUserMessage,
+		recordProviderStarted, recordCompaction, recordUserMessage,
 		recordExchangePaused, recordPermissionOpen, recordPermissionRetry,
 		recordPermissionDone, recordToolStarted, recordToolCompleted,
 		recordModelExchange, recordTurnFinished, recordCheckpoint:
@@ -474,7 +400,6 @@ func newCheckpointRecord(state durableState) (sessionRecord, error) {
 			Configuration: cloneConfiguration(state.configuration),
 			Selections:    cloneSelections(state.selections),
 			Todo:          clonePlanEntries(state.todo),
-			Tasks:         cloneDelegatedTasks(state.tasks),
 			TurnRequests:  state.turnRequests,
 			History:       cloneMessages(state.history),
 			Usage: checkpointUsage{
@@ -494,7 +419,6 @@ func newCheckpointRecord(state durableState) (sessionRecord, error) {
 			OpenTurnBase:          cloneMessages(state.openTurnBase),
 			OpenTurnConfiguration: optionalConfiguration(state.openTurnConfiguration),
 			Suspended:             cloneSuspendedExchange(state.suspended),
-			Children:              sortedChildContexts(state.children),
 			ToolExecutions:        sortedToolExecutions(state.toolExecutions),
 			Title:                 state.title,
 		},
@@ -503,7 +427,7 @@ func newCheckpointRecord(state durableState) (sessionRecord, error) {
 }
 
 func checkpointBoundary(kind string) bool {
-	return kind == recordTurnFinished || kind == recordCompaction || kind == recordChildContext
+	return kind == recordTurnFinished || kind == recordCompaction
 }
 
 func restoreCheckpoint(record, previous sessionRecord) (durableState, error) {
@@ -552,9 +476,6 @@ func restoreCheckpoint(record, previous sessionRecord) (durableState, error) {
 			return durableState{}, fmt.Errorf("checkpoint todo: %w", err)
 		}
 	}
-	if err := validateDelegatedTasks(projection.Tasks); err != nil {
-		return durableState{}, fmt.Errorf("checkpoint task queue: %w", err)
-	}
 	if projection.TurnRequests < 0 || projection.TurnRequests > maxTurnRequests {
 		return durableState{}, errors.New("checkpoint turn request count is invalid")
 	}
@@ -576,10 +497,6 @@ func restoreCheckpoint(record, previous sessionRecord) (durableState, error) {
 	if err != nil {
 		return durableState{}, fmt.Errorf("checkpoint changed files: %w", err)
 	}
-	children, err := childContextMap(projection.Children)
-	if err != nil {
-		return durableState{}, err
-	}
 	toolExecutions, err := toolExecutionMap(projection.ToolExecutions)
 	if err != nil {
 		return durableState{}, err
@@ -593,7 +510,6 @@ func restoreCheckpoint(record, previous sessionRecord) (durableState, error) {
 		configuration: cloneConfiguration(projection.Configuration),
 		selections:    cloneSelections(projection.Selections),
 		todo:          clonePlanEntries(projection.Todo),
-		tasks:         cloneDelegatedTasks(projection.Tasks),
 		turnRequests:  projection.TurnRequests,
 		history:       cloneMessages(projection.History),
 		usage: turnUsage{
@@ -614,7 +530,6 @@ func restoreCheckpoint(record, previous sessionRecord) (durableState, error) {
 		openTurnBase:          cloneMessages(projection.OpenTurnBase),
 		openTurnConfiguration: configurationValue(projection.OpenTurnConfiguration),
 		suspended:             cloneSuspendedExchange(projection.Suspended),
-		children:              children,
 		toolExecutions:        toolExecutions,
 		title:                 projection.Title,
 	}
@@ -622,17 +537,6 @@ func restoreCheckpoint(record, previous sessionRecord) (durableState, error) {
 		return durableState{}, err
 	}
 	return state, nil
-}
-
-func sortedChildContexts(values map[string]childContext) []childContext {
-	result := make([]childContext, 0, len(values))
-	for _, value := range values {
-		result = append(result, cloneChildContext(value))
-	}
-	sort.Slice(result, func(i, j int) bool {
-		return result[i].ParentCallID < result[j].ParentCallID
-	})
-	return result
 }
 
 func sortedToolExecutions(values map[string]durableToolExecution) []durableToolExecution {
@@ -665,31 +569,11 @@ func toolExecutionMap(values []durableToolExecution) (map[string]durableToolExec
 	return result, nil
 }
 
-func childContextMap(values []childContext) (map[string]childContext, error) {
-	if len(values) == 0 {
-		return nil, nil
-	}
-	result := make(map[string]childContext, len(values))
-	for _, value := range values {
-		if value.ParentCallID == "" {
-			return nil, errors.New("checkpoint child context identity is required")
-		}
-		if _, duplicate := result[value.ParentCallID]; duplicate {
-			return nil, fmt.Errorf("checkpoint contains duplicate child context %q", value.ParentCallID)
-		}
-		result[value.ParentCallID] = cloneChildContext(value)
-	}
-	return result, nil
-}
-
 func validateCheckpointTurnState(state durableState) error {
 	if state.openTurn == "" {
 		if len(state.openTurnBase) != 0 || state.openTurnConfiguration.Settings.Model != "" || state.suspended != nil ||
-			len(state.children) != 0 || len(state.toolExecutions) != 0 || state.turnRequests != 0 {
+			len(state.toolExecutions) != 0 || state.turnRequests != 0 {
 			return errors.New("checkpoint has turn state without an open turn")
-		}
-		if hasRunningTask(state.tasks) {
-			return errors.New("checkpoint has a running task without an open turn")
 		}
 		return nil
 	}
@@ -722,8 +606,6 @@ func validateCheckpointTurnState(state durableState) error {
 				return fmt.Errorf("checkpoint pending permission: %w", err)
 			}
 		}
-	} else if len(state.children) != 0 {
-		return errors.New("checkpoint has child context without a suspended exchange")
 	}
 	for _, execution := range state.toolExecutions {
 		copy := state.clone()
@@ -737,22 +619,6 @@ func validateCheckpointTurnState(state durableState) error {
 			if err := validateStoredExecutionResult(execution, *execution.Result); err != nil {
 				return fmt.Errorf("checkpoint tool execution: %w", err)
 			}
-		}
-	}
-	seen := make(map[string]struct{}, len(state.children))
-	for id, child := range state.children {
-		if id == "" || id != child.ParentCallID {
-			return errors.New("checkpoint child context identity is invalid")
-		}
-		if _, duplicate := seen[id]; duplicate {
-			return fmt.Errorf("checkpoint contains duplicate child context %q", id)
-		}
-		seen[id] = struct{}{}
-		if state.suspended.callIndex(id) < 0 {
-			return fmt.Errorf("checkpoint child context %q has no parent tool call", id)
-		}
-		if err := validateChildHistory(child); err != nil {
-			return fmt.Errorf("checkpoint child context %q: %w", id, err)
 		}
 	}
 	return nil
@@ -808,18 +674,8 @@ func (s durableState) clone() durableState {
 	s.configuration = cloneConfiguration(s.configuration)
 	s.selections = cloneSelections(s.selections)
 	s.todo = clonePlanEntries(s.todo)
-	s.tasks = cloneDelegatedTasks(s.tasks)
 	s.openTurnConfiguration = cloneConfiguration(s.openTurnConfiguration)
 	s.suspended = cloneSuspendedExchange(s.suspended)
-	children := s.children
-	if len(children) == 0 {
-		s.children = nil
-	} else {
-		s.children = make(map[string]childContext, len(children))
-		for id, child := range children {
-			s.children[id] = cloneChildContext(child)
-		}
-	}
 	toolExecutions := s.toolExecutions
 	if len(toolExecutions) == 0 {
 		s.toolExecutions = nil
@@ -879,7 +735,6 @@ func (s *durableState) apply(record sessionRecord) error {
 		}
 		s.selections = cloneSelections(value.Selections)
 		s.todo = nil
-		s.tasks = nil
 		s.messageIDs = make(map[string]struct{})
 		s.toolCallIDs = make(map[string]struct{})
 		s.changedFiles = make(map[string]struct{})
@@ -930,14 +785,6 @@ func (s *durableState) apply(record sessionRecord) error {
 			return err
 		}
 		s.todo = clonePlanEntries(value.Entries)
-	case recordTaskChanged:
-		var value taskChanged
-		if err := decodeRecord(record.Data, &value); err != nil {
-			return err
-		}
-		if err := s.applyTaskChange(value); err != nil {
-			return err
-		}
 	case recordProviderStarted:
 		var value providerRequestStarted
 		if err := decodeRecord(record.Data, &value); err != nil {
@@ -946,14 +793,6 @@ func (s *durableState) apply(record sessionRecord) error {
 		if value.TurnID == "" || value.TurnID != s.openTurn ||
 			value.Count != s.turnRequests+1 || value.Count > maxTurnRequests {
 			return errors.New("provider request does not advance the open turn allowance")
-		}
-		if value.ParentCallID != "" {
-			if s.suspended == nil || s.suspended.callIndex(value.ParentCallID) < 0 {
-				return errors.New("child provider request has no delegating parent")
-			}
-			if _, exists := s.children[value.ParentCallID]; !exists {
-				return errors.New("child provider request has no durable child context")
-			}
 		}
 		s.turnRequests = value.Count
 	case recordCompaction:
@@ -974,14 +813,6 @@ func (s *durableState) apply(record sessionRecord) error {
 		s.history = history
 		s.addUsage(value.Usage)
 		s.occupancy = value.Occupancy
-	case recordChildContext:
-		var value childContextRecord
-		if err := decodeRecord(record.Data, &value); err != nil {
-			return err
-		}
-		if err := s.applyChildContext(value); err != nil {
-			return err
-		}
 	case recordUserMessage:
 		if s.suspended != nil {
 			return errors.New("user message arrived while a model exchange was suspended")
@@ -1197,45 +1028,6 @@ func (s *durableState) apply(record sessionRecord) error {
 				if !result.Failed && result.Target != "" {
 					s.changedFiles[result.Target] = struct{}{}
 				}
-				if result.Delegation != nil {
-					child, durableChild := s.children[call.ID]
-					if durableChild {
-						if !value.Interrupted && !delegationMatchesChild(*result.Delegation, child) {
-							return fmt.Errorf("delegation result for tool call %q does not match durable child context", call.ID)
-						}
-						if value.Interrupted && !s.interruptedDelegationExtendsChild(*result.Delegation, child) {
-							return fmt.Errorf("interrupted delegation for tool call %q does not extend durable child context", call.ID)
-						}
-						delete(s.children, call.ID)
-					}
-					for _, child := range result.Delegation.Calls {
-						if child.CallID == "" || child.Name == "" ||
-							!json.Valid(child.Arguments) {
-							return errors.New("delegated tool call identity, name, and JSON arguments are required")
-						}
-						if _, exists := s.toolCallIDs[child.CallID]; exists && !durableChild {
-							return fmt.Errorf("duplicate tool call ID %q", child.CallID)
-						}
-						if child.Target != "" &&
-							(s.turnConfiguration().ToolKinds[child.Name] != acp.ToolKindEdit ||
-								!validStoredTarget(child.Target)) {
-							return fmt.Errorf(
-								"delegated tool call %q has invalid target %q",
-								child.CallID,
-								child.Target,
-							)
-						}
-						s.toolCallIDs[child.CallID] = struct{}{}
-						if !child.Failed && child.Target != "" {
-							s.changedFiles[child.Target] = struct{}{}
-						}
-					}
-					if !durableChild {
-						for index := range result.Delegation.Usage {
-							s.addUsage(&result.Delegation.Usage[index])
-						}
-					}
-				}
 				s.history = append(s.history, openrouter.Message{
 					Role:       openrouter.RoleTool,
 					ToolCallID: call.ID,
@@ -1253,9 +1045,6 @@ func (s *durableState) apply(record sessionRecord) error {
 		s.addUsage(value.Usage)
 		if value.Usage != nil {
 			s.occupancy = value.Usage.PromptTokens
-		}
-		if len(s.children) != 0 {
-			return errors.New("completed model exchange has unfinished child context")
 		}
 		s.suspended = nil
 		s.toolExecutions = nil
@@ -1281,15 +1070,11 @@ func (s *durableState) apply(record sessionRecord) error {
 			}
 			s.messageIDs[value.MessageID] = struct{}{}
 		}
-		if hasRunningTask(s.tasks) {
-			return errors.New("turn finished with a running queued task")
-		}
 		s.openTurn = ""
 		s.openTurnHistory = 0
 		s.openTurnBase = nil
 		s.openTurnConfiguration = requestConfiguration{}
 		s.turnRequests = 0
-		s.children = nil
 		s.toolExecutions = nil
 		if s.suspended != nil {
 			if value.Kind != "cancelled" &&
@@ -1326,7 +1111,7 @@ func (s *durableState) addUsage(current *openrouter.Usage) {
 }
 
 func validateCompaction(state durableState, value compactionRecord) error {
-	if state.openTurn == "" || value.TurnID != state.openTurn || value.ParentCallID != "" {
+	if state.openTurn == "" || value.TurnID != state.openTurn {
 		return errors.New("compaction does not match the open parent turn")
 	}
 	return validateCompactionHistory(state.history, value)
@@ -1372,248 +1157,6 @@ func applyCompaction(history []openrouter.Message, value compactionRecord) []ope
 	return compacted
 }
 
-func (s *durableState) applyChildContext(value childContextRecord) error {
-	if s.openTurn == "" || value.TurnID != s.openTurn || s.suspended == nil {
-		return errors.New("child context has no matching suspended exchange")
-	}
-	child := value.Child
-	if child.ParentCallID == "" || strings.TrimSpace(child.Prompt) == "" ||
-		child.RequestCount < 0 || child.RequestCount > maxTurnRequests || child.Occupancy < 0 {
-		return errors.New("child context identity, prompt, and occupancy are invalid")
-	}
-	parentIndex := s.suspended.callIndex(child.ParentCallID)
-	if parentIndex < 0 {
-		return errors.New("child context names an unknown parent tool call")
-	}
-	configuration := s.turnConfiguration()
-	if !configuredDelegatingTool(configuration, s.suspended.ToolCalls[parentIndex].Function.Name) {
-		return errors.New("child context parent is not a delegating tool")
-	}
-	if err := validateChildHistory(child); err != nil {
-		return err
-	}
-	previous, exists := s.children[child.ParentCallID]
-	if !exists {
-		if value.Compaction != nil || len(child.Calls) != 0 || len(child.Usage) != 0 || child.RequestCount != 0 ||
-			child.Answer != "" || len(child.History) != 1 {
-			return errors.New("new child context must contain only its prompt")
-		}
-	} else {
-		if child.Prompt != previous.Prompt || child.RequestCount < previous.RequestCount ||
-			child.RequestCount > previous.RequestCount+1 || !slicePrefix(previous.Calls, child.Calls) ||
-			!slicePrefix(previous.Usage, child.Usage) {
-			return errors.New("child context does not extend its durable progress")
-		}
-		if value.Compaction == nil {
-			if child.RequestCount != previous.RequestCount+1 {
-				return errors.New("child context request count did not advance")
-			}
-			if !jsonSlicePrefix(previous.History, child.History) {
-				return errors.New("child context rewrote history without a compaction")
-			}
-		} else {
-			if child.RequestCount != previous.RequestCount {
-				return errors.New("child context compaction changed its request count")
-			}
-			if value.Compaction.TurnID != value.TurnID ||
-				value.Compaction.ParentCallID != child.ParentCallID {
-				return errors.New("child context compaction scope is invalid")
-			}
-			if err := validateCompactionHistory(previous.History, *value.Compaction); err != nil {
-				return fmt.Errorf("child context compaction: %w", err)
-			}
-			want := applyCompaction(previous.History, *value.Compaction)
-			if len(want) != len(child.History) || !jsonSlicePrefix(want, child.History) ||
-				child.Occupancy != value.Compaction.Occupancy {
-				return errors.New("child context does not match its compaction")
-			}
-			wantUsage := len(previous.Usage)
-			if value.Compaction.Usage != nil {
-				wantUsage++
-			}
-			if len(child.Usage) != wantUsage || value.Compaction.Usage != nil &&
-				!reflect.DeepEqual(child.Usage[len(child.Usage)-1], *value.Compaction.Usage) {
-				return errors.New("child context compaction usage is invalid")
-			}
-		}
-		for _, current := range child.Calls[len(previous.Calls):] {
-			if current.CallID == "" || current.Name == "" || !json.Valid(current.Arguments) {
-				return errors.New("child tool call identity, name, and arguments are required")
-			}
-			if _, duplicate := s.toolCallIDs[current.CallID]; duplicate {
-				return fmt.Errorf("duplicate tool call ID %q", current.CallID)
-			}
-			if current.Target != "" &&
-				(configuration.ToolKinds[current.Name] != acp.ToolKindEdit || !validStoredTarget(current.Target)) {
-				return fmt.Errorf("child tool call %q has invalid target %q", current.CallID, current.Target)
-			}
-			execution, exists := s.toolExecutions[current.CallID]
-			if !exists && !current.Failed {
-				return fmt.Errorf("successful child tool call %q has no durable dispatch", current.CallID)
-			}
-			if exists && (execution.ParentCallID != child.ParentCallID ||
-				execution.Result == nil || !delegatedCallMatchesExecution(current, execution)) {
-				return fmt.Errorf("child tool call %q has no matching durable completion", current.CallID)
-			}
-			s.toolCallIDs[current.CallID] = struct{}{}
-			if !current.Failed && current.Target != "" {
-				s.changedFiles[current.Target] = struct{}{}
-			}
-		}
-		for index := len(previous.Usage); index < len(child.Usage); index++ {
-			s.addUsage(&child.Usage[index])
-		}
-	}
-	if s.children == nil {
-		s.children = make(map[string]childContext)
-	}
-	s.children[child.ParentCallID] = cloneChildContext(child)
-	return nil
-}
-
-func delegatedCallMatchesExecution(value delegatedCall, execution durableToolExecution) bool {
-	if value.CallID != execution.Call.ID || value.Name != execution.Call.Function.Name ||
-		!sameJSON(value.Arguments, []byte(execution.Call.Function.Arguments)) {
-		return false
-	}
-	result := execution.Result
-	return result != nil && value.Content == result.Content && value.Failed == result.Failed &&
-		value.ApprovalDecision == result.ApprovalDecision && value.Target == result.Target &&
-		value.Unknown == result.Unknown
-}
-
-func validateChildHistory(child childContext) error {
-	if len(child.History) == 0 || child.History[0].Role != openrouter.RoleUser ||
-		len(child.History[0].Content) != 1 || child.History[0].Content[0].Type != "text" ||
-		child.History[0].Content[0].Text != child.Prompt {
-		return errors.New("child history does not begin with its prompt")
-	}
-	for index := 0; index < len(child.History); index++ {
-		message := child.History[index]
-		if message.Role == openrouter.RoleTool {
-			return errors.New("child history contains an orphaned tool result")
-		}
-		if message.Role != openrouter.RoleAssistant || len(message.ToolCalls) == 0 {
-			continue
-		}
-		if index+len(message.ToolCalls) >= len(child.History)+1 {
-			return errors.New("child history contains an unresolved tool group")
-		}
-		for callIndex, call := range message.ToolCalls {
-			resultIndex := index + callIndex + 1
-			if resultIndex >= len(child.History) || child.History[resultIndex].Role != openrouter.RoleTool ||
-				child.History[resultIndex].ToolCallID != call.ID {
-				return errors.New("child history contains an incomplete tool group")
-			}
-		}
-		index += len(message.ToolCalls)
-	}
-	return nil
-}
-
-func slicePrefix[T any](prefix, values []T) bool {
-	if len(prefix) == 0 {
-		return true
-	}
-	return len(prefix) <= len(values) && reflect.DeepEqual(prefix, values[:len(prefix)])
-}
-
-func jsonSlicePrefix[T any](prefix, values []T) bool {
-	if len(prefix) == 0 {
-		return true
-	}
-	if len(prefix) > len(values) {
-		return false
-	}
-	left, err := json.Marshal(prefix)
-	if err != nil {
-		panic(err)
-	}
-	right, err := json.Marshal(values[:len(prefix)])
-	if err != nil {
-		panic(err)
-	}
-	return bytes.Equal(left, right)
-}
-
-func cloneChildContext(value childContext) childContext {
-	data, err := json.Marshal(value)
-	if err != nil {
-		panic(err)
-	}
-	var cloned childContext
-	if err := json.Unmarshal(data, &cloned); err != nil {
-		panic(err)
-	}
-	return cloned
-}
-
-func delegationMatchesChild(value delegationRecord, child childContext) bool {
-	want := delegationRecord{
-		Prompt: child.Prompt, Answer: child.Answer, Calls: child.Calls,
-		Usage: child.Usage, History: child.History, RequestCount: child.RequestCount,
-		Occupancy: child.Occupancy,
-	}
-	gotJSON, err := json.Marshal(value)
-	if err != nil {
-		panic(err)
-	}
-	wantJSON, err := json.Marshal(want)
-	if err != nil {
-		panic(err)
-	}
-	return bytes.Equal(gotJSON, wantJSON)
-}
-
-func (s *durableState) interruptedDelegationExtendsChild(
-	value delegationRecord,
-	child childContext,
-) bool {
-	if value.Prompt != child.Prompt || value.Answer != child.Answer ||
-		!reflect.DeepEqual(value.Usage, child.Usage) ||
-		!reflect.DeepEqual(value.History, child.History) ||
-		value.RequestCount != child.RequestCount || value.Occupancy != child.Occupancy ||
-		!slicePrefix(child.Calls, value.Calls) {
-		return false
-	}
-	for _, call := range value.Calls[len(child.Calls):] {
-		execution, exists := s.toolExecutions[call.CallID]
-		if !exists || execution.ParentCallID != child.ParentCallID ||
-			execution.Result == nil || !delegatedCallMatchesExecution(call, execution) {
-			return false
-		}
-	}
-	return true
-}
-
-func configuredDelegatingTool(configuration requestConfiguration, name string) bool {
-	var primary bool
-	for _, tool := range configuration.Tools {
-		if tool.Function.Name == name {
-			primary = true
-			break
-		}
-	}
-	if !primary {
-		return false
-	}
-	for _, tool := range configuration.Subagent.Tools {
-		if tool.Function.Name == name {
-			return false
-		}
-	}
-	return true
-}
-
-func configuredSubagentTool(configuration requestConfiguration, name string) bool {
-	for _, tool := range configuration.Subagent.Tools {
-		if tool.Function.Name == name {
-			return true
-		}
-	}
-	return false
-}
-
 func (s *durableState) validateToolExecution(value durableToolExecution) error {
 	if s.openTurn == "" || s.suspended == nil || value.TurnID != s.openTurn ||
 		value.Call.ID == "" || value.Call.Function.Name == "" ||
@@ -1626,28 +1169,14 @@ func (s *durableState) validateToolExecution(value durableToolExecution) error {
 	if value.ApprovalDecision != "" && !validApprovalDecision(value.ApprovalDecision) {
 		return fmt.Errorf("tool call %q has an invalid approval decision", value.Call.ID)
 	}
-	if value.ParentCallID == "" {
-		index := s.suspended.callIndex(value.Call.ID)
-		if index < 0 || !sameToolCall(s.suspended.ToolCalls[index], value.Call) ||
-			value.Target != s.suspended.ToolTargets[value.Call.ID] {
-			return errors.New("started tool call does not match the suspended exchange")
-		}
-		if decision := s.suspended.decision(value.Call.ID); decision != nil &&
-			decision.Decision != value.ApprovalDecision {
-			return errors.New("started tool call does not match its permission decision")
-		}
-	} else {
-		if s.suspended.callIndex(value.ParentCallID) < 0 ||
-			!configuredDelegatingTool(
-				s.turnConfiguration(),
-				s.suspended.ToolCalls[s.suspended.callIndex(value.ParentCallID)].Function.Name,
-			) {
-			return errors.New("started child call has no delegating parent")
-		}
-		if _, exists := s.children[value.ParentCallID]; !exists ||
-			!configuredSubagentTool(s.turnConfiguration(), value.Call.Function.Name) {
-			return errors.New("started child call is not part of durable child context")
-		}
+	index := s.suspended.callIndex(value.Call.ID)
+	if index < 0 || !sameToolCall(s.suspended.ToolCalls[index], value.Call) ||
+		value.Target != s.suspended.ToolTargets[value.Call.ID] {
+		return errors.New("started tool call does not match the suspended exchange")
+	}
+	if decision := s.suspended.decision(value.Call.ID); decision != nil &&
+		decision.Decision != value.ApprovalDecision {
+		return errors.New("started tool call does not match its permission decision")
 	}
 	if value.Target != "" &&
 		(s.turnConfiguration().ToolKinds[value.Call.Function.Name] != acp.ToolKindEdit ||
@@ -1668,8 +1197,7 @@ func validateStoredExecutionResult(
 		result.ApprovalDecision != execution.ApprovalDecision {
 		return errors.New("tool completion does not match its started call")
 	}
-	if result.Unknown && (!result.Failed || result.Content != unknownToolOutcome ||
-		result.Delegation != nil) {
+	if result.Unknown && (!result.Failed || result.Content != unknownToolOutcome) {
 		return errors.New("unknown tool completion is invalid")
 	}
 	return nil
@@ -1924,9 +1452,6 @@ func (s *durableState) validateCompletedSuspension(
 		}
 		gotResult := completed.ToolResults[index]
 		wantResult := cloneStoredToolResult(*execution.Result)
-		if wantResult.Unknown {
-			wantResult.Delegation = interruptedDelegationFromState(s, call.ID)
-		}
 		gotResultJSON, err := json.Marshal(gotResult)
 		if err != nil {
 			panic(err)
@@ -2072,50 +1597,11 @@ func (a *Agent) replay(s durableState) ([]any, error) {
 				if result.Failed {
 					status = acp.ToolCallStatusFailed
 				}
-				parentMeta := acp.Metadata(nil)
-				if result.Delegation != nil || a.toolDelegates(call.Function.Name) {
-					parentMeta = acp.Metadata{acp.MetaSubagent: true}
-				}
 				if !suspended {
 					updates = append(
 						updates,
-						replayToolCall(a, call, turnConfiguration, parentMeta, s.cwd, result.Target),
+						replayToolCall(a, call, turnConfiguration, nil, s.cwd, result.Target),
 					)
-				}
-				if result.Delegation != nil {
-					for _, child := range result.Delegation.Calls {
-						childStatus := acp.ToolCallStatusCompleted
-						if child.Failed {
-							childStatus = acp.ToolCallStatusFailed
-						}
-						meta := acp.Metadata{acp.MetaParentToolCallID: call.ID}
-						updates = append(updates,
-							acp.ToolCall{
-								SessionUpdate: "tool_call",
-								ToolCallID:    child.CallID,
-								Title:         a.configuredToolTitle(turnConfiguration, child.Name, child.Arguments),
-								Name:          child.Name,
-								Kind:          turnConfiguration.ToolKinds[child.Name],
-								Status:        acp.ToolCallStatusPending,
-								Locations:     toolLocations(s.cwd, child.Target),
-								RawInput:      append(json.RawMessage(nil), child.Arguments...),
-								Meta:          meta,
-							},
-							acp.ToolCallUpdate{
-								SessionUpdate: "tool_call_update",
-								ToolCallID:    child.CallID,
-								Status:        childStatus,
-								Content: []acp.ToolCallContent{{
-									Type: "content",
-									Content: acp.ContentBlock{
-										Type: "text",
-										Text: outputTail(child.Content),
-									},
-								}},
-								Meta: meta,
-							},
-						)
-					}
 				}
 				updates = append(updates, acp.ToolCallUpdate{
 					SessionUpdate: "tool_call_update",
@@ -2128,21 +1614,11 @@ func (a *Agent) replay(s durableState) ([]any, error) {
 							Text: outputTail(result.Content),
 						},
 					}},
-					Meta: parentMeta,
+					Meta: nil,
 				})
 			}
-			exchangeUsage := value.Usage
-			for _, result := range value.ToolResults {
-				if result.Delegation != nil {
-					usages := []*openrouter.Usage{exchangeUsage}
-					for index := range result.Delegation.Usage {
-						usages = append(usages, &result.Delegation.Usage[index])
-					}
-					exchangeUsage = combinedUsage(usages...)
-				}
-			}
-			if exchangeUsage != nil {
-				cost += exchangeUsage.Cost
+			if value.Usage != nil {
+				cost += value.Usage.Cost
 			}
 			if value.Usage != nil && turnConfiguration.ContextWindow > 0 {
 				updates = append(updates, acp.UsageUpdate{
@@ -2179,13 +1655,9 @@ func (a *Agent) replaySuspendedExchange(
 	}
 	updates := a.replayModelContent(completed)
 	for _, call := range value.ToolCalls {
-		meta := acp.Metadata(nil)
-		if a.toolDelegates(call.Function.Name) {
-			meta = acp.Metadata{acp.MetaSubagent: true}
-		}
 		updates = append(
 			updates,
-			replayToolCall(a, call, configuration, meta, root, value.ToolTargets[call.ID]),
+			replayToolCall(a, call, configuration, nil, root, value.ToolTargets[call.ID]),
 		)
 	}
 	return updates
@@ -2267,7 +1739,6 @@ func decodeRecord(data json.RawMessage, target any) error {
 func cloneConfiguration(value requestConfiguration) requestConfiguration {
 	value.Settings = cloneResolved(value.Settings)
 	value.Tools = cloneTools(value.Tools)
-	value.Subagent.Tools = cloneTools(value.Subagent.Tools)
 	value.ToolKinds = cloneToolKinds(value.ToolKinds)
 	value.PlanTools = cloneBoolMap(value.PlanTools)
 	value.MCPTools = slices.Clone(value.MCPTools)
@@ -2354,205 +1825,6 @@ func validateTodoEntries(entries []acp.PlanEntry) error {
 		return errors.New("todo has more than one in-progress item")
 	}
 	return nil
-}
-
-func (s *durableState) applyTaskChange(value taskChanged) error {
-	if value.TurnID == "" || value.TurnID != s.openTurn || value.CallID == "" {
-		return errors.New("task change has no matching open turn")
-	}
-	execution, exists := s.toolExecutions[value.CallID]
-	if !exists || execution.Result != nil || execution.TurnID != value.TurnID ||
-		execution.ParentCallID != "" {
-		return errors.New("task change has no matching started top-level call")
-	}
-	expectedTool := map[string]string{
-		"add": taskAddTool, "cancel": taskCancelTool, "retry": taskRetryTool,
-		"run": taskRunTool, taskCompleted: taskRunTool, taskFailed: taskRunTool,
-		taskCancelled: taskRunTool, taskInterrupted: taskRunTool,
-	}[value.Operation]
-	if expectedTool == "" || execution.Call.Function.Name != expectedTool {
-		return errors.New("task change operation does not match its tool call")
-	}
-	if err := validateDelegatedTask(value.Task); err != nil {
-		return err
-	}
-	index := delegatedTaskIndex(s.tasks, value.Task.ID)
-	if value.Operation == "add" {
-		if index >= 0 || len(s.tasks) == maxQueuedTasks || len(value.Task.Attempts) != 1 ||
-			value.Task.Attempts[0].State != taskPending {
-			return errors.New("invalid queued task addition")
-		}
-		next := append(cloneDelegatedTasks(s.tasks), cloneDelegatedTask(value.Task))
-		if err := validateDelegatedTasks(next); err != nil {
-			return err
-		}
-		s.tasks = next
-		return nil
-	}
-	if index < 0 {
-		return errors.New("queued task does not exist")
-	}
-	previous := s.tasks[index]
-	if previous.ID != value.Task.ID || previous.Description != value.Task.Description {
-		return errors.New("queued task identity changed")
-	}
-	switch value.Operation {
-	case "cancel":
-		if !sameAttemptPrefix(previous.Attempts, value.Task.Attempts, len(previous.Attempts)-1) ||
-			len(value.Task.Attempts) != len(previous.Attempts) ||
-			lastAttempt(previous).State != taskPending || lastAttempt(value.Task).State != taskCancelled {
-			return errors.New("only a pending task may be cancelled")
-		}
-	case "retry":
-		state := lastAttempt(previous).State
-		if state != taskFailed && state != taskCancelled && state != taskInterrupted {
-			return errors.New("only an unsuccessful task may be retried")
-		}
-		if len(value.Task.Attempts) != len(previous.Attempts)+1 ||
-			!sameAttemptPrefix(previous.Attempts, value.Task.Attempts, len(previous.Attempts)) ||
-			lastAttempt(value.Task).State != taskPending {
-			return errors.New("task retry did not append a pending attempt")
-		}
-	case "run":
-		if len(value.Task.Attempts) != len(previous.Attempts) ||
-			!sameAttemptPrefix(previous.Attempts, value.Task.Attempts, len(previous.Attempts)-1) ||
-			lastAttempt(previous).State != taskPending || lastAttempt(value.Task).State != taskRunning ||
-			lastAttempt(value.Task).TurnID != value.TurnID || lastAttempt(value.Task).CallID != value.CallID {
-			return errors.New("task dispatch did not start its pending attempt")
-		}
-	case taskCompleted, taskFailed, taskCancelled, taskInterrupted:
-		before, after := lastAttempt(previous), lastAttempt(value.Task)
-		if len(value.Task.Attempts) != len(previous.Attempts) ||
-			!sameAttemptPrefix(previous.Attempts, value.Task.Attempts, len(previous.Attempts)-1) ||
-			before.State != taskRunning || after.State != value.Operation ||
-			before.TurnID != after.TurnID || before.CallID != after.CallID || after.Result == "" {
-			return errors.New("task completion does not match its running attempt")
-		}
-	}
-	next := cloneDelegatedTasks(s.tasks)
-	next[index] = cloneDelegatedTask(value.Task)
-	if err := validateDelegatedTasks(next); err != nil {
-		return err
-	}
-	s.tasks = next
-	return nil
-}
-
-const (
-	taskAddTool    = "task_add"
-	taskListTool   = "task_list"
-	taskRunTool    = "task_run"
-	taskCancelTool = "task_cancel"
-	taskRetryTool  = "task_retry"
-)
-
-func validateDelegatedTasks(tasks []delegatedTask) error {
-	if len(tasks) > maxQueuedTasks {
-		return fmt.Errorf("task queue contains %d tasks; maximum is %d", len(tasks), maxQueuedTasks)
-	}
-	seen := make(map[string]struct{}, len(tasks))
-	running := 0
-	for _, task := range tasks {
-		if _, exists := seen[task.ID]; exists {
-			return fmt.Errorf("duplicate queued task %q", task.ID)
-		}
-		seen[task.ID] = struct{}{}
-		if err := validateDelegatedTask(task); err != nil {
-			return err
-		}
-		if lastAttempt(task).State == taskRunning {
-			running++
-		}
-	}
-	if running > 1 {
-		return errors.New("task queue has more than one running child")
-	}
-	return nil
-}
-
-func validateDelegatedTask(task delegatedTask) error {
-	if !validSessionID(task.ID) || strings.TrimSpace(task.Description) == "" || len(task.Attempts) == 0 {
-		return errors.New("queued task identity and description are required")
-	}
-	for index, attempt := range task.Attempts {
-		if attempt.Number != index+1 || !validTaskState(attempt.State) {
-			return errors.New("queued task attempts are invalid")
-		}
-		if index < len(task.Attempts)-1 && !terminalTaskState(attempt.State) {
-			return errors.New("queued task has an unfinished earlier attempt")
-		}
-		switch attempt.State {
-		case taskPending:
-			if attempt.TurnID != "" || attempt.CallID != "" || attempt.Result != "" {
-				return errors.New("pending task attempt has execution state")
-			}
-		case taskRunning:
-			if attempt.TurnID == "" || attempt.CallID == "" || attempt.Result != "" {
-				return errors.New("running task attempt is invalid")
-			}
-		case taskCompleted, taskFailed, taskInterrupted:
-			if attempt.TurnID == "" || attempt.CallID == "" || attempt.Result == "" {
-				return errors.New("terminal task attempt is incomplete")
-			}
-		case taskCancelled:
-			if attempt.Result == "" || (attempt.TurnID == "") != (attempt.CallID == "") {
-				return errors.New("cancelled task attempt is invalid")
-			}
-		}
-	}
-	return nil
-}
-
-func validTaskState(state string) bool {
-	return state == taskPending || state == taskRunning || terminalTaskState(state)
-}
-
-func hasRunningTask(tasks []delegatedTask) bool {
-	for _, task := range tasks {
-		if len(task.Attempts) > 0 && lastAttempt(task).State == taskRunning {
-			return true
-		}
-	}
-	return false
-}
-
-func terminalTaskState(state string) bool {
-	return state == taskCompleted || state == taskFailed ||
-		state == taskCancelled || state == taskInterrupted
-}
-
-func delegatedTaskIndex(tasks []delegatedTask, id string) int {
-	for index := range tasks {
-		if tasks[index].ID == id {
-			return index
-		}
-	}
-	return -1
-}
-
-func lastAttempt(task delegatedTask) delegatedTaskAttempt {
-	return task.Attempts[len(task.Attempts)-1]
-}
-
-func sameAttemptPrefix(left, right []delegatedTaskAttempt, count int) bool {
-	return count >= 0 && len(left) >= count && len(right) >= count &&
-		reflect.DeepEqual(left[:count], right[:count])
-}
-
-func cloneDelegatedTask(value delegatedTask) delegatedTask {
-	value.Attempts = append([]delegatedTaskAttempt(nil), value.Attempts...)
-	return value
-}
-
-func cloneDelegatedTasks(values []delegatedTask) []delegatedTask {
-	if values == nil {
-		return nil
-	}
-	result := make([]delegatedTask, len(values))
-	for index := range values {
-		result[index] = cloneDelegatedTask(values[index])
-	}
-	return result
 }
 
 func validateSelections(value sessionSelections) error {
@@ -2690,17 +1962,6 @@ func validateConfiguration(value requestConfiguration) error {
 			return fmt.Errorf("duplicate configured tool %q", tool.Function.Name)
 		}
 		names[tool.Function.Name] = struct{}{}
-	}
-	subagentNames := make(map[string]struct{}, len(value.Subagent.Tools))
-	for _, tool := range value.Subagent.Tools {
-		if tool.Type != "function" || tool.Function.Name == "" ||
-			(len(tool.Function.Parameters) > 0 && !json.Valid(tool.Function.Parameters)) {
-			return errors.New("configuration contains an invalid subagent tool declaration")
-		}
-		if _, exists := subagentNames[tool.Function.Name]; exists {
-			return fmt.Errorf("duplicate configured subagent tool %q", tool.Function.Name)
-		}
-		subagentNames[tool.Function.Name] = struct{}{}
 	}
 	for name, kind := range value.ToolKinds {
 		if _, exists := names[name]; !exists {

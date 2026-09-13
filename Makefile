@@ -1,4 +1,4 @@
-.PHONY: check check-docs check-go eval-live format format-docs format-go install test test-client test-client-live test-eval
+.PHONY: check check-docs check-go eval-live format format-docs format-go install test test-eval
 
 check: check-docs check-go test
 
@@ -23,20 +23,6 @@ check-docs:
 
 test:
 	go test -race -count=1 ./...
-
-test-client:
-	git submodule update --init --depth 1 internal/e2e/browser/acp-ui
-	npm ci --no-audit --no-fund --prefix internal/e2e/browser
-	npm exec --prefix internal/e2e/browser playwright install chromium
-	npm test --prefix internal/e2e/browser
-
-test-client-live:
-	git submodule update --init --depth 1 internal/e2e/browser/acp-ui
-	npm ci --no-audit --no-fund --prefix internal/e2e/browser
-	npm exec --prefix internal/e2e/browser playwright install chromium
-	set -a; . ./.env; set +a; \
-		test -n "$${OPENROUTER_API_KEY:-}" || (echo "OPENROUTER_API_KEY is required" >&2; exit 1); \
-	npm run test:live --prefix internal/e2e/browser
 
 test-eval:
 	go test -tags=evalsmoke -count=1 ./evals/internal/eval

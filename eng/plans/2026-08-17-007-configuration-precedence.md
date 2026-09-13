@@ -131,8 +131,8 @@ model already records the `model` field of every request it receives.
   to extract into when Ox has more than one caller.
 - `~/src/references/repos/third-party/protocol/agent-client-protocol/docs/protocol/v1/session-config-options.mdx`
   — `configOptions` is how an agent offers a client a live model selector, with
-  `session/set_config_option` to change it. That is a separate roadmap item and
-  this plan does not build toward it beyond the thing it already needs: a
+  `session/set_config_option` to change it. That is a separate todo list item
+  and this plan does not build toward it beyond the thing it already needs: a
   session's configuration is one value, resolved once, owned by the session.
 
 ## Current state
@@ -298,7 +298,7 @@ model already records the `model` field of every request it receives.
 
 ## Documentation updates
 
-- `AGENTS.md`: check off the configuration precedence roadmap item.
+- `AGENTS.md`: check off the configuration precedence todo list item.
 - `AGENTS.md`: add a Configuration section stating the two file paths, the
   precedence order, that `model` is the only key, that an unknown key is an
   error, and that `OX_LOG_LEVEL` and `OX_OPENROUTER_BASE_URL` are
@@ -327,7 +327,7 @@ model already records the `model` field of every request it receives.
   arrives with the work that reads it; writing a configuration file, which needs
   a caller and has none; watching a file for changes, since a session's
   configuration is frozen by design; and exposing the model as an ACP
-  `configOption`, which is its own roadmap item and needs a model catalog to
+  `configOption`, which is its own todo list item and needs a model catalog to
   enumerate values.
 
 ## Validation

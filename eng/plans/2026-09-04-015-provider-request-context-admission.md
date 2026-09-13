@@ -2,8 +2,8 @@
 
 ## Sources
 
-- `eng/roadmap.md#provider-request-context-admission` — owns the parent, tool
-  continuation, child, failure, durability, and replay gates.
+- `eng/todo.md` — owns the parent, tool continuation, child, failure,
+  durability, and replay gates.
 - `docs/spec.md#context-continuity` — owns request budgeting, safe compaction
   boundaries, protected context, persistence atomicity, and bounded failures.
 - `eng/architecture.md#provider-boundary` and
@@ -64,7 +64,7 @@ message-group boundaries while keeping ACP replay lossless.
   compaction and child-projection records invisible to ACP transcript replay.
 - `eng/architecture.md` — replace the idle-only limitation with the implemented
   request-admission and scoped durable-projection boundary.
-- `eng/roadmap.md` — replace the completed summary with the evaluation baseline,
+- `eng/todo.md` — replace the completed summary with the evaluation baseline,
   remove the reviewed context-and-diagnostics and evaluation milestones, and
   remove this slice after its gates pass while leaving interrupted-effect
   recovery as the remaining context-continuity work.
@@ -94,4 +94,4 @@ message-group boundaries while keeping ACP replay lossless.
   leaves the provider default unchanged.
 - This slice persists provider-boundary child progress but does not infer that
   an interrupted external effect is safe to repeat. Dispatch/completion intent
-  and unknown-outcome recovery remain owned by the next roadmap slice.
+  and unknown-outcome recovery remain owned by the next todo list slice.

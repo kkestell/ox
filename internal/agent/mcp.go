@@ -25,12 +25,12 @@ func (a *Agent) activateMCP(
 	ctx context.Context,
 	root string,
 	definitions []acp.MCPServer,
-) (*mcp.Bundle, toolSet, toolSet, []mcpToolConfiguration, error) {
+) (*mcp.Bundle, toolSet, []mcpToolConfiguration, error) {
 	bundle, err := mcp.Activate(ctx, root, definitions)
 	if err != nil {
-		return nil, toolSet{}, toolSet{}, nil, err
+		return nil, toolSet{}, nil, err
 	}
-	primary, subagent := a.negotiatedToolSets()
+	primary := a.negotiatedTools()
 	descriptors := bundle.Tools()
 	dynamic := make([]Tool, 0, len(descriptors))
 	evidence := make([]mcpToolConfiguration, 0, len(descriptors))
@@ -79,14 +79,9 @@ func (a *Agent) activateMCP(
 	primary, err = appendTools(primary, dynamic)
 	if err != nil {
 		_ = bundle.Close()
-		return nil, toolSet{}, toolSet{}, nil, err
+		return nil, toolSet{}, nil, err
 	}
-	subagent, err = appendTools(subagent, dynamic)
-	if err != nil {
-		_ = bundle.Close()
-		return nil, toolSet{}, toolSet{}, nil, err
-	}
-	return bundle, primary, subagent, evidence, nil
+	return bundle, primary, evidence, nil
 }
 
 func appendTools(base toolSet, extra []Tool) (toolSet, error) {

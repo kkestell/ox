@@ -1,1 +1,0 @@
-test ! -e optional.ini

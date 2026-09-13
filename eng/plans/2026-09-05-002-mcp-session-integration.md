@@ -5,8 +5,7 @@
 - `docs/spec.md#mcp-tools`, `docs/spec.md#session-lifecycle-and-recovery`, and
   `docs/spec.md#session-configuration` — session ownership, permission,
   recovery, replay, cancellation, and plan-mode behavior
-- `eng/roadmap.md#mcp-activation-and-dispatch` — slice scope and completion
-  gates
+- `eng/todo.md` — slice scope and completion gates
 - `eng/architecture.md#session-and-turn-state`,
   `eng/architecture.md#context-and-durable-projections`, and
   `eng/architecture.md#extension-boundaries` — activation resources, immutable
@@ -87,7 +86,7 @@ safely without persisting credentials.
 ## Sequence
 
 This is the second of two plans. It requires the transport/catalog adapter from
-the first plan and completes the roadmap's MCP activation and dispatch slice.
+the first plan and completes the todo list's MCP activation and dispatch slice.
 
 ## Decisions
 

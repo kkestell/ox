@@ -2,8 +2,8 @@
 
 ## Sources
 
-- `eng/roadmap.md#delegated-terminal` — required executor selection, terminal
-  lifecycle, cancellation, output, error, fallback, and process-level gates.
+- `eng/todo.md` — required executor selection, terminal lifecycle, cancellation,
+  output, error, fallback, and process-level gates.
 - `eng/architecture.md#workspace-boundary` and
   `eng/architecture.md#testing-boundaries` — ownership of shell safety, client
   delegation, durable results, and interoperability coverage.
@@ -41,7 +41,7 @@ model output, durable tool results, and the existing local fallback in Ox.
   and `internal/agent/subagent.go` — retain the negotiated terminal flag from
   `initialize`, construct cancellable callbacks for the five methods, and pass
   one terminal operation set through primary and subagent invocations. Do not
-  persist the capability in request configuration; the roadmap assigns that to
+  persist the capability in request configuration; the todo list assigns that to
   negotiated-capability recording.
 - `internal/tools/shell.go` — select the client executor only when the complete
   terminal capability is available. Create `/bin/sh -c <command>` in the

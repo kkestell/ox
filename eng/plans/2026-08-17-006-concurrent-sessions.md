@@ -272,7 +272,7 @@ it that is not.
 
 ## Documentation updates
 
-- `AGENTS.md`: check off the concurrent sessions roadmap item. No ACP method
+- `AGENTS.md`: check off the concurrent sessions todo list item. No ACP method
   coverage changes — this adds no methods.
 - `AGENTS.md` Tests section: the paragraph describing the harness names `sse`,
   the `ev*` builders, and `hold`. Add that a queued response may name the prompt

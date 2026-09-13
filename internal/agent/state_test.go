@@ -3,7 +3,6 @@ package agent
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -345,7 +344,7 @@ func TestCompactionAcceptsOpenTurnBoundariesAndRejectsIncompleteToolGroups(t *te
 		t.Fatal(err)
 	}
 	if restored.openTurn != "second" || restored.suspended != nil ||
-		!jsonSlicePrefix(open.history, restored.history) || len(open.history) != len(restored.history) {
+		!reflect.DeepEqual(open.history, restored.history) {
 		t.Fatalf("restored open-turn compaction = %#v", restored)
 	}
 }
@@ -412,136 +411,6 @@ func compactionFixture(t *testing.T) ([]sessionRecord, openrouter.Message) {
 			StopReason: acp.StopReasonMaxTokens,
 		}),
 	}, summary
-}
-
-func TestFoldTracksChangedFilesAcrossCheckpointAndReplaysLocations(t *testing.T) {
-	id := "0123456789abcdef0123456789abcdef"
-	tool := func(id, name, target string) openrouter.ToolCall {
-		return openrouter.ToolCall{
-			ID: id, Type: "function",
-			Function: openrouter.ToolCallFunction{
-				Name: name, Arguments: fmt.Sprintf(`{"path":%q}`, target),
-			},
-		}
-	}
-	configuration := requestConfiguration{
-		Settings: settings.Resolved{Model: "test/model"},
-		Tools: []openrouter.Tool{
-			{Type: "function", Function: openrouter.ToolFunction{Name: "write_file"}},
-			{Type: "function", Function: openrouter.ToolFunction{Name: "edit_file"}},
-			{Type: "function", Function: openrouter.ToolFunction{Name: "task"}},
-		},
-		ToolKinds: map[string]acp.ToolKind{
-			"write_file": acp.ToolKindEdit,
-			"edit_file":  acp.ToolKindEdit,
-			"task":       acp.ToolKindOther,
-		},
-	}
-	firstCalls := []openrouter.ToolCall{
-		tool("write", "write_file", "z.txt"),
-		tool("edit", "edit_file", "z.txt"),
-		tool("failed", "edit_file", "failed.txt"),
-		tool("rejected", "edit_file", "rejected.txt"),
-		tool("parent", "task", ""),
-	}
-	records := []sessionRecord{
-		mustRecord(t, 1, recordSessionCreated, sessionCreated{
-			SessionID: id, CWD: "/workspace", Configuration: configuration,
-		}),
-		mustRecord(t, 2, recordUserMessage, userMessageRecord{
-			TurnID: "first", MessageID: "first-user",
-			Content: []acp.ContentBlock{{Type: "text", Text: "change files"}},
-		}),
-		mustRecord(t, 3, recordModelExchange, modelExchangeRecord{
-			TurnID: "first", AnswerID: "first-answer", ThoughtID: "first-thought",
-			FinishReason: "tool_calls", ToolCalls: firstCalls,
-			ToolResults: []storedToolResult{
-				{CallID: "write", Content: "created", Target: "z.txt"},
-				{CallID: "edit", Content: "edited", Target: "z.txt"},
-				{CallID: "failed", Content: "failed", Failed: true, Target: "failed.txt"},
-				{
-					CallID: "rejected", Content: "rejected", Failed: true,
-					ApprovalDecision: decisionRefused, Target: "rejected.txt",
-				},
-				{CallID: "parent", Content: "delegated", Delegation: &delegationRecord{
-					Prompt: "edit", Answer: "done", Calls: []delegatedCall{
-						{
-							CallID: "child-ok", Name: "edit_file",
-							Arguments: json.RawMessage(`{"path":"a.txt"}`),
-							Content:   "edited", Target: "a.txt",
-						},
-						{
-							CallID: "child-failed", Name: "edit_file",
-							Arguments: json.RawMessage(`{"path":"child-failed.txt"}`),
-							Content:   "failed", Failed: true, Target: "child-failed.txt",
-						},
-					},
-				}},
-			},
-		}),
-		mustRecord(t, 4, recordTurnFinished, turnFinishedRecord{
-			TurnID: "first", Kind: "completed", StopReason: acp.StopReasonEndTurn,
-		}),
-	}
-	prefix := mustFold(t, records)
-	checkpoint, err := newCheckpointRecord(prefix)
-	if err != nil {
-		t.Fatal(err)
-	}
-	records = append(records, checkpoint,
-		mustRecord(t, 6, recordUserMessage, userMessageRecord{
-			TurnID: "second", MessageID: "second-user",
-			Content: []acp.ContentBlock{{Type: "text", Text: "change another"}},
-		}),
-		mustRecord(t, 7, recordModelExchange, modelExchangeRecord{
-			TurnID: "second", AnswerID: "second-answer", ThoughtID: "second-thought",
-			FinishReason: "tool_calls",
-			ToolCalls:    []openrouter.ToolCall{tool("tail", "write_file", "b.txt")},
-			ToolResults:  []storedToolResult{{CallID: "tail", Content: "created", Target: "b.txt"}},
-		}),
-		mustRecord(t, 8, recordTurnFinished, turnFinishedRecord{
-			TurnID: "second", Kind: "completed", StopReason: acp.StopReasonEndTurn,
-		}),
-	)
-	state := mustFold(t, records)
-	if got := sortedIdentitySet(state.changedFiles); !reflect.DeepEqual(got, []string{"a.txt", "b.txt", "z.txt"}) {
-		t.Fatalf("changed files = %v", got)
-	}
-
-	instance, err := New(Config{Tools: []Tool{
-		{Name: "write_file", Kind: acp.ToolKindEdit},
-		{Name: "edit_file", Kind: acp.ToolKindEdit},
-		{
-			Name: "task", Kind: acp.ToolKindOther, Delegates: true,
-			Label: func(json.RawMessage) string { return "task" },
-		},
-	}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	updates, err := instance.replay(state)
-	if err != nil {
-		t.Fatal(err)
-	}
-	wantLocations := map[string]string{
-		"write": "/workspace/z.txt", "edit": "/workspace/z.txt",
-		"failed": "/workspace/failed.txt", "rejected": "/workspace/rejected.txt",
-		"child-ok": "/workspace/a.txt", "child-failed": "/workspace/child-failed.txt",
-		"tail": "/workspace/b.txt",
-	}
-	for _, update := range updates {
-		call, ok := update.(acp.ToolCall)
-		if !ok || wantLocations[call.ToolCallID] == "" {
-			continue
-		}
-		if len(call.Locations) != 1 || call.Locations[0].Path != wantLocations[call.ToolCallID] {
-			t.Fatalf("tool %q locations = %#v", call.ToolCallID, call.Locations)
-		}
-		delete(wantLocations, call.ToolCallID)
-	}
-	if len(wantLocations) != 0 {
-		t.Fatalf("missing replay locations: %v", wantLocations)
-	}
 }
 
 func TestFoldRejectsIncompleteToolGroupAndDuplicateMessage(t *testing.T) {
@@ -943,7 +812,6 @@ func TestExecutorCapabilitiesArePartOfDurableConfiguration(t *testing.T) {
 	}
 	semanticallySame := cloneConfiguration(configuration)
 	semanticallySame.Tools = []openrouter.Tool{}
-	semanticallySame.Subagent.Tools = []openrouter.Tool{}
 	if !sameRequestConfiguration(configuration, semanticallySame) {
 		t.Fatal("configuration equality distinguished omitted empty tool lists")
 	}
@@ -955,131 +823,6 @@ func TestExecutorCapabilitiesArePartOfDurableConfiguration(t *testing.T) {
 	}
 	if state.configuration.ExecutorCapabilities != changed.ExecutorCapabilities {
 		t.Fatalf("changed capabilities = %#v", state.configuration.ExecutorCapabilities)
-	}
-}
-
-func TestFoldKeepsDelegationOutOfHistoryAndReplaysNestedCalls(t *testing.T) {
-	instance, err := New(Config{Tools: []Tool{
-		{
-			Name:      "task",
-			Kind:      acp.ToolKindOther,
-			Delegates: true,
-			Label: func(arguments json.RawMessage) string {
-				var input struct {
-					Description string `json:"description"`
-				}
-				_ = json.Unmarshal(arguments, &input)
-				return input.Description
-			},
-		},
-		{Name: "read", Kind: acp.ToolKindRead},
-	}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	configuration := requestConfiguration{
-		Settings:      settings.Resolved{Model: "test/model"},
-		ContextWindow: 1000,
-		Tools:         cloneTools(instance.primaryTools.modelTools),
-		ToolKinds: map[string]acp.ToolKind{
-			"task": acp.ToolKindOther,
-			"read": acp.ToolKindRead,
-		},
-		Subagent: subagentConfiguration{
-			SystemPrompt: "subagent",
-			Tools:        cloneTools(instance.subagentTools.modelTools),
-		},
-	}
-	records := []sessionRecord{
-		mustRecord(t, 1, recordSessionCreated, sessionCreated{
-			SessionID:     "0123456789abcdef0123456789abcdef",
-			CWD:           "/workspace",
-			Configuration: configuration,
-		}),
-		mustRecord(t, 2, recordUserMessage, userMessageRecord{
-			TurnID: "turn", MessageID: "user",
-			Content: []acp.ContentBlock{{Type: "text", Text: "delegate"}},
-		}),
-		mustRecord(t, 3, recordModelExchange, modelExchangeRecord{
-			TurnID: "turn", AnswerID: "answer", ThoughtID: "thought",
-			FinishReason: "tool_calls",
-			Usage: &openrouter.Usage{
-				PromptTokens: 3, CompletionTokens: 2, TotalTokens: 5, Cost: 0.1,
-			},
-			ToolCalls: []openrouter.ToolCall{{
-				ID: "parent", Type: "function",
-				Function: openrouter.ToolCallFunction{
-					Name: "task", Arguments: `{"description":"Inspect","prompt":"read it"}`,
-				},
-			}},
-			ToolResults: []storedToolResult{{
-				CallID: "parent", Content: "child answer",
-				Delegation: &delegationRecord{
-					Prompt: "read it", Answer: "child answer",
-					Calls: []delegatedCall{{
-						CallID: "child", Name: "read",
-						Arguments: json.RawMessage(`{"path":"a.go"}`),
-						Content:   "contents",
-					}},
-					Usage: []openrouter.Usage{{
-						PromptTokens: 7, CompletionTokens: 4, TotalTokens: 11, Cost: 0.2,
-					}},
-				},
-			}},
-		}),
-		mustRecord(t, 4, recordTurnFinished, turnFinishedRecord{
-			TurnID: "turn", Kind: "completed", StopReason: acp.StopReasonEndTurn,
-		}),
-	}
-	state, err := foldRecords(records)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(state.history) != 3 {
-		t.Fatalf("history = %#v", state.history)
-	}
-	if state.history[2].Role != openrouter.RoleTool ||
-		state.history[2].ToolCallID != "parent" ||
-		state.history[2].Content[0].Text != "child answer" {
-		t.Fatalf("parent tool history = %#v", state.history[2])
-	}
-	if state.usage.input != 10 || state.usage.output != 6 ||
-		state.cost < 0.299 || state.cost > 0.301 {
-		t.Fatalf("usage = %#v, cost = %f", state.usage, state.cost)
-	}
-	updates, err := instance.replay(state)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(updates) != 6 {
-		t.Fatalf("updates = %#v", updates)
-	}
-	parent := updates[1].(acp.ToolCall)
-	child := updates[2].(acp.ToolCall)
-	childResult := updates[3].(acp.ToolCallUpdate)
-	if parent.Title != "Inspect" || parent.Meta[acp.MetaSubagent] != true {
-		t.Fatalf("parent replay = %#v", parent)
-	}
-	if child.Meta[acp.MetaParentToolCallID] != "parent" ||
-		childResult.Meta[acp.MetaParentToolCallID] != "parent" {
-		t.Fatalf("child replay = %#v, %#v", child, childResult)
-	}
-	usage := updates[5].(acp.UsageUpdate)
-	if usage.Used != 3 || usage.Cost == nil ||
-		usage.Cost.Amount < 0.299 || usage.Cost.Amount > 0.301 {
-		t.Fatalf("replayed usage = %#v", usage)
-	}
-
-	duplicate := records[2]
-	var exchange modelExchangeRecord
-	if err := json.Unmarshal(duplicate.Data, &exchange); err != nil {
-		t.Fatal(err)
-	}
-	exchange.ToolResults[0].Delegation.Calls[0].CallID = "parent"
-	records[2] = mustRecord(t, 3, recordModelExchange, exchange)
-	if _, err := foldRecords(records); err == nil ||
-		!strings.Contains(err.Error(), `duplicate tool call ID "parent"`) {
-		t.Fatalf("duplicate delegated ID error = %v", err)
 	}
 }
 
@@ -1355,67 +1098,6 @@ func mustFold(t *testing.T, records []sessionRecord) durableState {
 	return state
 }
 
-func TestTaskQueueTransitionsRetainAttemptsAndRejectInvalidMutation(t *testing.T) {
-	const taskID = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-	state := durableState{openTurn: "turn", toolExecutions: map[string]durableToolExecution{}}
-	started := func(callID, name string) {
-		state.toolExecutions[callID] = durableToolExecution{
-			TurnID: "turn", Call: openrouter.ToolCall{
-				ID: callID, Type: "function",
-				Function: openrouter.ToolCallFunction{Name: name, Arguments: `{}`},
-			}, StartedSequence: 1,
-		}
-	}
-	started("add", taskAddTool)
-	task := delegatedTask{
-		ID: taskID, Description: "inspect",
-		Attempts: []delegatedTaskAttempt{{Number: 1, State: taskPending}},
-	}
-	if err := state.applyTaskChange(taskChanged{
-		TurnID: "turn", CallID: "add", Operation: "add", Task: task,
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	started("run", taskRunTool)
-	running := cloneDelegatedTask(task)
-	running.Attempts[0] = delegatedTaskAttempt{
-		Number: 1, State: taskRunning, TurnID: "turn", CallID: "run",
-	}
-	if err := state.applyTaskChange(taskChanged{
-		TurnID: "turn", CallID: "run", Operation: "run", Task: running,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	failed := cloneDelegatedTask(running)
-	failed.Attempts[0].State = taskFailed
-	failed.Attempts[0].Result = "provider failed"
-	if err := state.applyTaskChange(taskChanged{
-		TurnID: "turn", CallID: "run", Operation: taskFailed, Task: failed,
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	started("retry", taskRetryTool)
-	retried := cloneDelegatedTask(failed)
-	retried.Attempts = append(retried.Attempts, delegatedTaskAttempt{Number: 2, State: taskPending})
-	if err := state.applyTaskChange(taskChanged{
-		TurnID: "turn", CallID: "retry", Operation: "retry", Task: retried,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if got := state.tasks[0]; len(got.Attempts) != 2 || got.Attempts[0].Result != "provider failed" {
-		t.Fatalf("retried task = %#v", got)
-	}
-
-	before := cloneDelegatedTasks(state.tasks)
-	if err := state.applyTaskChange(taskChanged{
-		TurnID: "turn", CallID: "retry", Operation: "retry", Task: retried,
-	}); err == nil || !reflect.DeepEqual(state.tasks, before) {
-		t.Fatalf("invalid retry = %v, queue %#v", err, state.tasks)
-	}
-}
-
 func TestProviderRequestAllowanceIsBoundedAndCloned(t *testing.T) {
 	state := durableState{sequence: 1, openTurn: "turn"}
 	for count := 1; count <= maxTurnRequests; count++ {
@@ -1430,35 +1112,6 @@ func TestProviderRequestAllowanceIsBoundedAndCloned(t *testing.T) {
 		TurnID: "turn", Count: maxTurnRequests + 1,
 	})); err == nil || state.turnRequests != before.turnRequests {
 		t.Fatalf("overflow request = %v, count %d", err, state.turnRequests)
-	}
-}
-
-func TestTaskQueueEnforcesCapacityWithoutMutation(t *testing.T) {
-	state := durableState{openTurn: "turn", toolExecutions: make(map[string]durableToolExecution)}
-	for index := 0; index < maxQueuedTasks+1; index++ {
-		callID := fmt.Sprintf("add-%d", index)
-		state.toolExecutions[callID] = durableToolExecution{
-			TurnID: "turn", Call: openrouter.ToolCall{
-				ID: callID, Type: "function",
-				Function: openrouter.ToolCallFunction{Name: taskAddTool, Arguments: `{}`},
-			}, StartedSequence: uint64(index + 1),
-		}
-		task := delegatedTask{
-			ID: fmt.Sprintf("%032x", index+1), Description: callID,
-			Attempts: []delegatedTaskAttempt{{Number: 1, State: taskPending}},
-		}
-		err := state.applyTaskChange(taskChanged{
-			TurnID: "turn", CallID: callID, Operation: "add", Task: task,
-		})
-		if index < maxQueuedTasks && err != nil {
-			t.Fatal(err)
-		}
-		if index == maxQueuedTasks && err == nil {
-			t.Fatal("task queue accepted a task above capacity")
-		}
-	}
-	if len(state.tasks) != maxQueuedTasks {
-		t.Fatalf("task count = %d", len(state.tasks))
 	}
 }
 

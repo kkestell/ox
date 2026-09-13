@@ -58,6 +58,6 @@ contain one nonempty credential. A file credential cannot be changed by login or
 logout. `--no-keyring` disables keyring reads and writes while leaving an
 explicit credential file available.
 
-Ox does not read `OX_*` or `OPENROUTER_*` variables. Its other process flags are
+Its other process flags are
 `--model`, which overrides the activation model, and the process flags described
 above. Put flags before the optional `login` command.

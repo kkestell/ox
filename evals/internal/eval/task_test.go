@@ -203,7 +203,7 @@ func TestRunRejectsExistingRepetitionDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = Run(context.Background(), Config{
-		OxBinary: executable, Candidate: CandidateExact, TaskPath: taskRoot, OutputDir: output, Model: "test/model",
+		OxBinary: executable, TaskPath: taskRoot, OutputDir: output, Model: "test/model",
 		Repetitions: 1, Upstream: http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}),
 	})
 	if err == nil || !strings.Contains(err.Error(), "fresh repetition directory") {

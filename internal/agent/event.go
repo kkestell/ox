@@ -31,7 +31,6 @@ type event struct {
 	parent           string
 	title            string
 	target           string
-	delegates        bool
 	contextOccupancy int
 	contextWindow    int
 	totalCost        float64

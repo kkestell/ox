@@ -130,7 +130,7 @@ The tool loop arrives with the tools it exists to serve.
   substituted fake.
 - **Modularization:** the model client is its own package because it is a
   self-contained protocol implementation with its own test surface, and because
-  the retry, catalog, and reasoning work already on the roadmap all belong to
+  the retry, catalog, and reasoning work already on the todo list all belong to
   it. Within `internal/agent`, the session registry and the turn go in their own
   files beside `agent.go`.
 - **Encapsulation:** a session's history and cancellation state are unexported
@@ -273,7 +273,7 @@ The tool loop arrives with the tools it exists to serve.
   ACP method coverage list.
 - Note in the Tests section of `AGENTS.md` that a held-open response is how a
   mid-turn cancellation is scripted.
-- Roadmap item completed: the streaming prompt turn.
+- Todo list item completed: the streaming prompt turn.
 
 ## Impact assessment
 
@@ -285,7 +285,7 @@ The tool loop arrives with the tools it exists to serve.
   durability is a later item and nothing here should anticipate it. No
   advertised capability changes.
 - Dependency or API impact: none. The model client is standard library only.
-- Deliberately deferred, each to a named roadmap item, and none of them should
+- Deliberately deferred, each to a named todo list item, and none of them should
   be half-built here: a system prompt, which has nothing to describe until there
   are tools and workspace instructions; the tool loop and its
   `max_turn_requests` stop reason; `usage_update` notifications and cost

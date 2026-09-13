@@ -2,8 +2,8 @@
 
 ## Sources
 
-- `eng/roadmap.md#delegated-filesystem` — required capability selection,
-  confinement, permission, error, fallback, and process-level acceptance gates.
+- `eng/todo.md` — required capability selection, confinement, permission, error,
+  fallback, and process-level acceptance gates.
 - `eng/architecture.md#protocol-boundary` and
   `eng/architecture.md#workspace-boundary` — ownership of negotiated client
   capabilities, workspace safety, read evidence, and tool execution.
@@ -41,7 +41,7 @@ file contents came from the client or the local workspace.
   `initialize` as connection state and construct cancellable
   `jrpc2.Server.Callback` functions for advertised methods during a prompt. Do
   not persist these flags in the session configuration; that is owned by
-  `eng/roadmap.md#negotiated-capabilities-in-the-request-configuration`.
+  `eng/todo.md`.
 - `internal/agent/tool.go` and `internal/agent/loop.go` — pass the available
   client filesystem operations through `Invocation` without teaching the agent
   package file-format mechanics. Capability checks must be per method, and a

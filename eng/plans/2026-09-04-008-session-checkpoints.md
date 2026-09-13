@@ -2,8 +2,7 @@
 
 ## Sources
 
-- `eng/roadmap.md#checkpoints` — owns checkpoint scope and parity, repair, and
-  load-work gates.
+- `eng/todo.md` — owns checkpoint scope and parity, repair, and load-work gates.
 - `eng/architecture.md#session-and-turn-state` and
   `eng/architecture.md#testing-boundaries` — define the authoritative JSONL log,
   persisted-before-live mutation, replay, and test boundaries.
@@ -39,7 +38,7 @@ accounting, identities, or `session/load` replay.
   terminal turn record followed by its checkpoint as one ordered commit. Advance
   live state only after persistence succeeds, while retaining the existing
   poisoned-session behavior for an uncertain write.
-- `eng/roadmap.md` — remove the completed checkpoint slice while leaving the
+- `eng/todo.md` — remove the completed checkpoint slice while leaving the
   remaining durable-session work in order.
 
 ## Tests
@@ -65,4 +64,4 @@ accounting, identities, or `session/load` replay.
 - Port Gamma's last-checkpoint baseline and tail fold, not its Coral journal
   compaction, replay floor, or pending callback state. Ox checkpoints are
   storage-internal records written only after `turn_finished`; they add no ACP
-  method or wire value and need no browser-client case.
+  method or wire value.

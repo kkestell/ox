@@ -2,9 +2,8 @@
 
 ## Sources
 
-- `eng/roadmap.md#negotiated-capabilities-in-the-request-configuration` — owns
-  capability recording, activation-change, replay, executor-identity, and
-  turn-freezing gates.
+- `eng/todo.md` — owns capability recording, activation-change, replay,
+  executor-identity, and turn-freezing gates.
 - `eng/architecture.md#session-and-turn-state` and
   `eng/architecture.md#workspace-boundary` — define activation-frozen request
   configuration and capability-selected local or client execution.
@@ -45,8 +44,8 @@ activation.
   remaining durable behavior and complete replay exactly as before. Remove the
   temporary expectation that capability selection is absent from durable
   records.
-- `eng/roadmap.md` — remove the completed negotiated-capability slice while
-  leaving pending permission recovery as the remaining durable-session work.
+- `eng/todo.md` — remove the completed negotiated-capability slice while leaving
+  pending permission recovery as the remaining durable-session work.
 
 ## Tests
 

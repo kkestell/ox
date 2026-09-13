@@ -70,7 +70,7 @@ func (a *eventAdapter) handle(current event) error {
 		})
 	case eventToolPending:
 		a.outputs[current.call.ID] = &outputState{parent: current.parent}
-		meta := toolEventMetadata(current.parent, current.delegates)
+		meta := toolEventMetadata(current.parent)
 		return a.send(acp.ToolCall{
 			SessionUpdate: "tool_call",
 			ToolCallID:    current.call.ID,
@@ -87,7 +87,7 @@ func (a *eventAdapter) handle(current event) error {
 			SessionUpdate: "tool_call_update",
 			ToolCallID:    current.call.ID,
 			Status:        acp.ToolCallStatusInProgress,
-			Meta:          toolEventMetadata(current.parent, false),
+			Meta:          toolEventMetadata(current.parent),
 		})
 	case eventToolOutput:
 		state := a.outputs[current.call.ID]
@@ -120,7 +120,7 @@ func (a *eventAdapter) handle(current event) error {
 			SessionUpdate: "tool_call_update",
 			ToolCallID:    current.call.ID,
 			Status:        status,
-			Meta:          toolEventMetadata(current.parent, current.delegates),
+			Meta:          toolEventMetadata(current.parent),
 		}); err != nil {
 			return err
 		}
@@ -183,7 +183,7 @@ func (a *eventAdapter) flush(id string) error {
 			Type:    "content",
 			Content: acp.ContentBlock{Type: "text", Text: state.tail},
 		}},
-		Meta: toolEventMetadata(state.parent, false),
+		Meta: toolEventMetadata(state.parent),
 	})
 	if err != nil {
 		return err
@@ -192,18 +192,11 @@ func (a *eventAdapter) flush(id string) error {
 	return nil
 }
 
-func toolEventMetadata(parent string, delegates bool) acp.Metadata {
-	if parent == "" && !delegates {
+func toolEventMetadata(parent string) acp.Metadata {
+	if parent == "" {
 		return nil
 	}
-	meta := make(acp.Metadata, 2)
-	if parent != "" {
-		meta[acp.MetaParentToolCallID] = parent
-	}
-	if delegates {
-		meta[acp.MetaSubagent] = true
-	}
-	return meta
+	return acp.Metadata{acp.MetaParentToolCallID: parent}
 }
 
 func (a *eventAdapter) send(update any) error {

@@ -405,7 +405,7 @@ harness can run the binary as a one-shot command with piped input, which is how
 
 ## Documentation updates
 
-- `AGENTS.md`: check off the `authenticate` roadmap item and name it
+- `AGENTS.md`: check off the `authenticate` todo list item and name it
   `authenticate` and `logout`, since both land together.
 - `AGENTS.md` ACP method coverage: check `authenticate` and add a checked
   `logout` to the requests Ox accepts.

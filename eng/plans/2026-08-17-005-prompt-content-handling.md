@@ -236,7 +236,7 @@ item.
 
 ## Documentation updates
 
-- Roadmap item completed: prompt content handling. No ACP method coverage
+- Todo list item completed: prompt content handling. No ACP method coverage
   changes — this adds no methods.
 
 ## Impact assessment

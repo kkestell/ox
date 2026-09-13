@@ -134,7 +134,7 @@ the client to do.
 
 - Mark `initialize` and `$/cancel_request` as accepted in the ACP method
   coverage list.
-- Roadmap item completed: "ACP stdio server core".
+- Todo list item completed: "ACP stdio server core".
 
 ## Impact assessment
 

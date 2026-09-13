@@ -3,7 +3,7 @@
 This document defines Ox's observable product behavior. It is authoritative for
 the ACP connection, sessions and turns, workspace access, authentication, and
 failure behavior, including the target behavior of planned capabilities.
-`eng/roadmap.md` identifies what remains to be implemented. User guides describe
+`eng/todo.md` identifies what remains to be implemented. User guides describe
 only shipped behavior; `docs/settings.md` owns the shipped settings reference.
 
 Ox is a coding agent that serves one ACP v1 client over standard input and
@@ -143,9 +143,9 @@ content must be usable by the new model; otherwise the change is rejected.
 
 `code` uses the ordinary permission-gated tools. `plan` permits file discovery
 and reads, instructions and skills, todo, form questions, and read-only LSP
-queries. It excludes shell, file mutations, delegation, memory writes, and MCP
-tools whose effects Ox cannot enforce. Web fetch retains its permission gate.
-Changing mode never grants permissions or widens an existing grant.
+queries. It excludes shell, file mutations, memory writes, and MCP tools whose
+effects Ox cannot enforce. Web fetch retains its permission gate. Changing mode
+never grants permissions or widens an existing grant.
 
 `session/set_config_option` validates and persists the entire resulting state
 before responding with the complete option list and emitting
@@ -208,7 +208,7 @@ summary becomes effective only after durable persistence; failure or an empty
 summary preserves the previous context. An oversized protected prefix or
 irreducible recent group produces an actionable context-limit error without an
 unbounded retry loop. Recovery reconstructs the same provider context at the
-same boundary, including within a long turn or delegation.
+same boundary within a long turn.
 
 ## Workspace instructions and skills
 
@@ -356,7 +356,7 @@ not embed a search vendor, scrape search result pages, or acquire another API
 credential. Without a search server, fetch remains available and the agent
 reports that search is unavailable when needed.
 
-## Isolation, memory, and delegated work
+## Isolation and memory
 
 An ACP session uses exactly the working directory supplied by the client.
 Isolation is provided by creating a Git worktree before `session/new` and
@@ -366,10 +366,8 @@ client or user owns that lifecycle. File tools enforce confinement; approved
 shells, language servers, and MCP servers run with host privileges. Ox is not an
 OS sandbox, and worktrees do not isolate network access or shared Git metadata.
 
-The exact-edit tool remains the single edit primitive. Anchored editing is an
-evaluation candidate and replaces exact editing only after the roadmap's
-comparative gate passes. It never weakens stale-read rejection, confinement,
-permission previews, or preservation of file format.
+The exact-edit tool is the single edit primitive. It never weakens stale-read
+rejection, confinement, permission previews, or preservation of file format.
 
 Workspace memory is explicit and opt-in through memory tools. It stores typed
 facts (`preference`, `decision`, `finding`) with source session, creation time,
@@ -389,19 +387,3 @@ tool history. An empty query lists the newest active facts. Deleting a source
 session removes its facts from future retrieval; previous transcripts are
 unchanged. Semantic retrieval is an evaluation candidate, not a dependency of
 this behavior.
-
-Task decomposition uses an explicit durable queue under an active parent turn.
-The parent may add, inspect, cancel, and explicitly retry tasks. Tasks have
-stable IDs, a description, and states `pending`, `running`, `completed`,
-`failed`, `cancelled`, or `interrupted`. At most 32 tasks are retained and one
-child runs at a time. The child has no delegation or queue-management tools; its
-activity is nested under the parent's ACP tool call. Parent and child share the
-turn's permission policy, context limits, and request budget.
-
-A dispatch is durable before execution and completion is durable before being
-reported. Completed tasks are never redispatched. Restart marks running tasks
-interrupted; retry requires an explicit user request and creates a new attempt
-whose earlier effects remain visible. Cancellation stops the active child and
-leaves pending work paused. Nothing runs after the owning ACP request ends; a
-new prompt may explicitly resume pending tasks. The queue promises no
-exactly-once execution of external effects.

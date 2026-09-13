@@ -4,7 +4,7 @@
 
 - `docs/spec.md#diagnostic-trace` — owns trace activation, file lifecycle,
   failure behavior, event coverage, and the privacy allowlist.
-- `eng/roadmap.md#sanitized-trace` — owns the slice scope and completion gates.
+- `eng/todo.md` — owns the slice scope and completion gates.
 - `eng/architecture.md#system-boundary`, `#responsibilities`, and
   `#session-and-turn-state` — own stdout isolation, package boundaries, turn
   concurrency, and recovered-turn behavior.
@@ -56,8 +56,8 @@ content.
   live activity; do not synthesize events while replaying durable history.
 - `internal/e2e/harness_test.go` — let process tests supply command arguments so
   they can start the real binary with a trace path.
-- `AGENTS.md`, `eng/architecture.md`, and `eng/roadmap.md` — add the trace
-  package to the codebase map and dependency ownership, describe the lossy live
+- `AGENTS.md`, `eng/architecture.md`, and `eng/todo.md` — add the trace package
+  to the codebase map and dependency ownership, describe the lossy live
   diagnostic boundary, and collapse the completed context-and-diagnostics
   milestone after its gates pass.
 

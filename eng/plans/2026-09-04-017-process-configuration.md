@@ -5,7 +5,7 @@
 - `docs/spec.md#process-configuration-transition` — process settings, CLI
   precedence, credential input, and environment-removal contract
 - `docs/spec.md#authentication` — credential verification and secrecy contract
-- `eng/roadmap.md#process-configuration` — slice scope and completion gates
+- `eng/todo.md` — slice scope and completion gates
 - `eng/architecture.md#configuration-and-credentials` — ownership of process,
   settings, credential, and activation inputs
 - `cmd/ox/main.go` and `internal/settings/{settings,resolve}.go` — current

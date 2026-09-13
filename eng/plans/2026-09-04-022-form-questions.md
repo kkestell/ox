@@ -5,7 +5,7 @@
 - `docs/spec.md#todo-and-questions` and `docs/spec.md#session-configuration` —
   question behavior, durability, cancellation, capability gating, and plan-mode
   availability
-- `eng/roadmap.md#form-questions` — slice scope and completion gates
+- `eng/todo.md` — slice scope and completion gates
 - `eng/architecture.md#session-and-turn-state` and
   `eng/architecture.md#protocol-boundary` — frozen turn configuration, callback
   cancellation, and durable tool-result ownership

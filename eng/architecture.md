@@ -2,9 +2,9 @@
 
 This document describes Ox's durable design: its process boundaries, component
 responsibilities, dependency direction, state ownership, and the decisions each
-implementation slice must preserve. `eng/roadmap.md` tracks what gets built and
-in what order. `docs/spec.md` owns observable behavior and limits. This design
-also covers planned boundaries; the roadmap identifies implementation status.
+implementation slice must preserve. `eng/todo.md` tracks what gets built and in
+what order. `docs/spec.md` owns observable behavior and limits. This design also
+covers planned boundaries; the todo list identifies implementation status.
 
 ## System boundary
 
@@ -57,8 +57,7 @@ The implemented package layout assigns one owner to each boundary:
   does not own session state or provider translation.
 - `internal/agent` owns ACP method semantics, capability negotiation,
   authentication flow, durable sessions, prompt and tool orchestration,
-  permissions, subagents, replay, streaming updates, stop reasons, and
-  cancellation.
+  permissions, replay, streaming updates, stop reasons, and cancellation.
 - `internal/openrouter` owns the provider vocabulary, HTTP boundary, SSE parser,
   retry policy, model catalog, and assembly of streamed provider responses.
 - `internal/mcp` owns MCP transport lifecycles, protocol negotiation, discovery,
@@ -215,15 +214,14 @@ retries transient failures within a bounded budget only before response content
 has been observed. Raw reasoning details and usage survive provider translation
 when they are needed for continued requests or accounting.
 
-The agent admits every parent and child provider request against the selected
-model's context window. It budgets the complete messages and tool declarations
-plus the configured output reserve before sending. Summarization uses the owning
-turn's frozen model and provider settings. That request has its own system
-prompt and no tools. The ordinary system prompt, tool declarations, first user
-message, and complete recent message groups remain outside the summary. Context
-occupancy is the last measured provider prompt size, or the estimated prompt
-size immediately after a durable compaction; token and cost totals remain
-cumulative.
+The agent admits every provider request against the selected model's context
+window. It budgets the complete messages and tool declarations plus the
+configured output reserve before sending. Summarization uses the owning turn's
+frozen model and provider settings. That request has its own system prompt and
+no tools. The ordinary system prompt, tool declarations, first user message, and
+complete recent message groups remain outside the summary. Context occupancy is
+the last measured provider prompt size, or the estimated prompt size immediately
+after a durable compaction; token and cost totals remain cumulative.
 
 Provider transport failures remain ordinary Go errors. ACP-visible stop reasons,
 refusal behavior, and durable history are decided by the agent, where the client
@@ -257,18 +255,15 @@ must not pass through generic request logging or persistence.
 
 The append-only session log remains authoritative for the transcript and
 session-owned state. Checkpoints are validated projections, not a second store.
-Todo, configuration selections, child histories, queue attempts, and compaction
-boundaries belong in that log. Their live state advances through the same commit
-path, rather than through independently saved sidecar files.
+Todo, configuration selections, and compaction boundaries belong in that log.
+Their live state advances through the same commit path, rather than through
+independently saved sidecar files.
 
-Context admission occurs only at complete model/tool boundaries. Parent and
-child provider projections advance through scoped compaction records and
-open-turn checkpoints; a final child result consumes its durable child
-projection instead of counting its calls or usage again. The original transcript
-and the provider-facing compacted projection have separate purposes; ACP replay
-never substitutes summaries or private child history for recorded output. Static
-instructions and tool catalogs form a stable prefix; transient state is explicit
-context. Prompt caching is an optimization and cannot affect history or request
+Context admission occurs only at complete model/tool boundaries. The original
+transcript and the provider-facing compacted projection have separate purposes;
+ACP replay never substitutes summaries for recorded output. Static instructions
+and tool catalogs form a stable prefix; transient state is explicit context.
+Prompt caching is an optimization and cannot affect history or request
 correctness.
 
 The log cannot commit an external effect atomically. Dispatch intent precedes
@@ -311,11 +306,6 @@ is no secondary vector store or asynchronous extractor. Source-session deletion
 removes corresponding facts before deleting the session; an interrupted delete
 can safely repeat cleanup. Retrieval content enters the session log as a tool
 result so later memory changes cannot alter replay.
-
-The delegated queue is session state, not a scheduler service. The owning ACP
-request drives one child attempt at a time and owns its cancellation and budget.
-Restart preserves outcomes but does not create background execution. Todo
-remains a progress projection independent of executable queue state.
 
 Git worktrees are workspace inputs supplied by the client. Ox neither retargets
 an activated session nor owns merge, rollback, or worktree deletion. This keeps
@@ -362,14 +352,6 @@ tests cover tools, permissions, subagents, replay, and recovery. Protocol-level
 ACP behavior is proved through `internal/e2e`, which builds the real executable
 and drives its process, stdio, environment, working directory, and provider
 connection.
-
-Client interoperability is proved separately through `internal/e2e/browser`.
-Playwright drives a pinned, unmodified ACP UI web release, which connects to the
-real Ox executable through a pinned upstream stdio-to-WebSocket bridge. The
-harness owns browser and process orchestration plus the fake provider; it does
-not implement, translate, or assert ACP messages itself. The canonical ACP
-schema remains the oracle for capabilities that the browser client does not
-exercise.
 
 The mock provider is the normal end-to-end boundary. A real OpenRouter check is
 reserved for explicit provider interoperability work and does not replace the

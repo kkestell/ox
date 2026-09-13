@@ -4,8 +4,7 @@
 
 - `docs/spec.md#session-configuration` — option values, persistence, turn
   isolation, mode policy, and failure behavior
-- `eng/roadmap.md#session-configuration-options` — slice scope and completion
-  gates
+- `eng/todo.md` — slice scope and completion gates
 - `eng/architecture.md#configuration-and-credentials` and
   `eng/architecture.md#session-and-turn-state` — activation, durable selection,
   and immutable-turn ownership

@@ -1,5 +1,0 @@
-MARK
-  item one
-MARK
-  item two
-MARK

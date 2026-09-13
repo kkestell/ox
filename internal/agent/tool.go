@@ -15,7 +15,6 @@ type Tool struct {
 	Kind         acp.ToolKind
 	Approval     Approval
 	ParallelSafe bool
-	Delegates    bool
 	ParentOnly   bool
 	PlanMode     bool
 	RequiresForm bool
@@ -41,13 +40,6 @@ func (a *Agent) sessionPrimaryTools(value *session) toolSet {
 	return a.primaryTools
 }
 
-func (a *Agent) sessionSubagentTools(value *session) toolSet {
-	if value.subagentTools.byName != nil {
-		return value.subagentTools
-	}
-	return a.subagentTools
-}
-
 // Approval is a tool's static gate classification. The zero value asks so a
 // registration that omits the classification fails closed.
 type Approval uint8
@@ -66,12 +58,6 @@ type Invocation struct {
 	FileReads    FileReads
 	FileSystem   ClientFileSystem
 	Terminal     ClientTerminal
-	Delegate     func(context.Context, string) (string, error)
-	AddTask      func(string) (QueuedTask, error)
-	ListTasks    func() []QueuedTask
-	RunTask      func(context.Context, string) (string, error)
-	CancelTask   func(string) (QueuedTask, error)
-	RetryTask    func(string) (QueuedTask, error)
 	ReplaceTodo  func([]acp.PlanEntry) error
 	LoadSkill    func(string) (string, error)
 	SearchMemory func(string) ([]MemoryFact, error)
@@ -80,19 +66,6 @@ type Invocation struct {
 	AskQuestion  func(context.Context, acp.CreateElicitationRequest) (acp.CreateElicitationResponse, error)
 	Emit         func(string)
 	ReportSpill  func(string)
-}
-
-type QueuedTask struct {
-	ID          string              `json:"id"`
-	Description string              `json:"description"`
-	State       string              `json:"state"`
-	Attempts    []QueuedTaskAttempt `json:"attempts"`
-}
-
-type QueuedTaskAttempt struct {
-	Number int    `json:"number"`
-	State  string `json:"state"`
-	Result string `json:"result,omitempty"`
 }
 
 type ClientFileSystem struct {

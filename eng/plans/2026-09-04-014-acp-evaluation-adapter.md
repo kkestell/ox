@@ -2,8 +2,8 @@
 
 ## Sources
 
-- `eng/roadmap.md#acp-evaluation-adapter` — owns the task coverage, run
-  metadata, isolation, budget, artifact, and fake-provider gates.
+- `eng/todo.md` — owns the task coverage, run metadata, isolation, budget,
+  artifact, and fake-provider gates.
 - `docs/spec.md#sessions-and-turns`, `#workspace-operations`, and
   `#session-lifecycle-and-recovery` — own the ACP behavior exercised by the task
   set.

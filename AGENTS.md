@@ -4,8 +4,8 @@ KEEP THIS FILE AND ITS LINKED REFERENCES UP TO DATE AT ALL TIMES.
 
 Ox is a coding agent written in Go that speaks ACP v1 over standard input and
 output. It is ACP-first and works with ACP clients. The durable design lives in
-`eng/architecture.md`, and the build order and ACP method coverage live in
-`eng/roadmap.md`. `docs/spec.md` owns target product behavior.
+`eng/architecture.md`, and the build order lives in `eng/todo.md`.
+`docs/spec.md` owns target product behavior.
 
 ## Tech Stack
 
@@ -20,7 +20,7 @@ output. It is ACP-first and works with ACP clients. The durable design lives in
   `login` command.
 - `internal/acp/` — ACP wire types and protocol-boundary validation.
 - `internal/agent/` — ACP methods, durable sessions, model/tool orchestration,
-  permissions, subagents, replay, authentication, and cancellation.
+  permissions, replay, authentication, and cancellation.
 - `internal/mcp/` — MCP transports, catalog discovery, and bounded tool calls.
 - `internal/openrouter/` — OpenRouter transport, SSE parsing, retry, model
   catalog, and stream assembly.
@@ -41,8 +41,8 @@ output. It is ACP-first and works with ACP clients. The durable design lives in
   Evaluation artifacts and provider runs remain outside the shipped binary.
 - `docs/` — End-user documentation and the target product specification.
 - `eng/` — Development and agent documentation. `eng/architecture.md` owns the
-  design, `eng/roadmap.md` owns build order and status, and `eng/plans/` holds
-  plans for individual roadmap slices.
+  design, `eng/todo.md` owns build order and status, and `eng/plans/` holds
+  plans for individual todo items.
 
 ## Commands
 
@@ -51,35 +51,11 @@ output. It is ACP-first and works with ACP clients. The durable design lives in
 - Check Go formatting, vet, and static analysis: `make check-go`
 - Check documentation formatting: `make check-docs`
 - Run the race-enabled test suite without the test cache: `make test`
-- Run the automated browser-client smoke test: `make test-client`
-- Run the explicitly requested real-provider browser check:
-  `make test-client-live`
 - Run the fake-provider evaluation smoke test: `make test-eval`
 - Run an explicitly requested live evaluation: `make eval-live TASK=<path>`
 - Install the binary: `make install`
 
 ## Project Rules
-
-### Answering
-
-Be short. Say the thing and stop.
-
-A few sentences is the normal length of a reply. Most questions need one or two.
-Never write five paragraphs where one would do. If a reply is running long, cut
-whole points rather than compressing them into denser sentences.
-
-Write plainly. Ordinary words, ordinary sentences, one idea each. Say it the way
-you would say it out loud to someone sitting next to you. No throat-clearing
-before the answer, no summary of what you just did after it, no restating the
-question, no listing the options you considered and rejected.
-
-Do not be clever or cryptic. Do not stack clauses onto a sentence with dashes
-and semicolons; start a new sentence. Do not invent names for things that
-already have names. Prefer the concrete: name the file, function, or value.
-
-When you need a decision, ask one plain question.
-
-This governs replies. Files follow the documentation rules below.
 
 ### Project priorities
 
@@ -97,7 +73,7 @@ Keep the domain rules and protocol semantics precise, and keep the code that
 implements them thin and unsurprising. Treat simplicity as a maintained project
 invariant, not a cleanup activity.
 
-Read `eng/architecture.md` before changing structure and `eng/roadmap.md` before
+Read `eng/architecture.md` before changing structure and `eng/todo.md` before
 planning work. Do not introduce a dependency, abstraction, subsystem, protocol,
 storage format, background process, configuration surface, or significant
 behavior change without consulting the user.
@@ -105,17 +81,17 @@ behavior change without consulting the user.
 Preserve unrelated working-tree changes. Never commit unless the user asks for a
 commit explicitly.
 
-### Planning and milestone review
+### Planning and completion review
 
-Write a plan in `eng/plans/` for every roadmap slice before implementation. Use
+Write a plan in `eng/plans/` for every todo item before implementation. Use
 `eng/plans/TEMPLATE.md` as a scaffold, then keep the plan to the smallest useful
 set of source references, implementation tasks, and tests. Do not restate the
-roadmap, architecture, repository rules, or standard validation commands.
+todo list, architecture, repository rules, or standard validation commands.
 
 Do not review individual plans or run an independent review after each slice.
-After every slice in a milestone is implemented and its gates pass, run one
-completeness and simplification review over the cumulative milestone before
-marking it complete. Fix its findings and rerun affected gates.
+After every top-level todo item is complete, run one completeness and
+simplification review before marking it complete. Fix its findings and rerun
+affected gates.
 
 Use a focused task workflow for small work that does not need a plan or commit.
 
@@ -134,42 +110,33 @@ boundary, or hard-to-reverse decision.
 
 ### Referring to planned work
 
-`eng/roadmap.md` orders milestones and slices by their position in the file. Do
-not number them. Completed work can then be removed without renumbering what
-remains.
+`eng/todo.md` orders work by its position and nesting. Do not number items.
 
 Everywhere else—code comments, commit messages, pull requests, plans, and
 replies—describe the work itself. Write "session replay is not implemented"
 rather than "deferred to a later milestone." Every sentence must make sense to a
-reader who has never opened the roadmap.
+reader who has never opened the todo list.
 
-### Maintaining the roadmap
+### Maintaining the todo list
 
-`eng/roadmap.md` is forward-looking. Keep detailed scope and gates only for work
-that has not been completed. When a milestone is complete, replace its detailed
-section with a concise summary and remove the previous completed summary. The
-roadmap keeps exactly one completed milestone summary.
-
-The summary identifies the completed outcome without restating protocol rules,
-implementation design, or code behavior owned elsewhere.
-
-Keep ACP method coverage in the roadmap synchronized with the implementation.
+`eng/todo.md` is forward-looking. Keep it as a compact nested checklist. Mark
+completed items with `[x]` and add work only after its bounded plan exists.
 
 ### One home for every fact
 
 Every fact lives in exactly one place. `docs/spec.md` defines target product
 behavior. End-user guides describe how to use shipped Ox, `eng/architecture.md`
-defines the implementation design, `eng/roadmap.md` defines what gets built
-next, plans say how one bounded change will be made, and this file defines how
-to work in the repository. Reference a fact that lives elsewhere by naming the
-file that owns it. Do not keep a convenient copy nearby.
+defines the implementation design, `eng/todo.md` defines what gets built next,
+plans say how one bounded change will be made, and this file defines how to work
+in the repository. Reference a fact that lives elsewhere by naming the file that
+owns it. Do not keep a convenient copy nearby.
 
 ### What gets documented
 
 `docs/` holds end-user documentation. Guides describe behavior that exists
-without previewing roadmap work. `docs/spec.md` is the explicit exception: it
-defines target behavior, with implementation status owned by `eng/roadmap.md`.
-Note an omission only when it is an intentional product decision a user must
+without previewing todo list work. `docs/spec.md` is the explicit exception: it
+defines target behavior, with implementation status owned by `eng/todo.md`. Note
+an omission only when it is an intentional product decision a user must
 understand.
 
 `eng/architecture.md` covers process boundaries, component responsibilities,

@@ -1,3 +1,0 @@
-# managed externally
-region=us-east-1
-owner=platform

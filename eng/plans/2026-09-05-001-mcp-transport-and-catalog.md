@@ -4,7 +4,7 @@
 
 - `docs/spec.md#mcp-tools` — transport, protocol, discovery, catalog, call,
   output, secret, and unsupported-feature contract
-- `eng/roadmap.md#mcp-activation-and-dispatch` — slice gates
+- `eng/todo.md` — slice gates
 - `eng/architecture.md#extension-boundaries` and
   `eng/architecture.md#configuration-and-credentials` — adapter ownership,
   selected SDK, lifecycle, and nonsecret identity boundary

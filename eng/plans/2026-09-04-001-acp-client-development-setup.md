@@ -2,8 +2,8 @@
 
 ## Sources
 
-- `eng/roadmap.md#current-milestone-client-interoperability-baseline` — owns the
-  requirement to document launching Ox as a local ACP agent.
+- `eng/todo.md` — owns the requirement to document launching Ox as a local ACP
+  agent.
 - `Makefile` — owns the supported local installation command and binary
   destination.
 - `docs/settings.md` — owns Ox model, credential, and runtime settings.
@@ -29,7 +29,7 @@ diagnostics when startup fails.
   - explain how to start an Ox session and where to inspect ACP logs.
 - Keep provider and model details in `docs/settings.md`; link to that guide
   instead of duplicating its settings schema or precedence rules.
-- Mark only the development-setup item complete in `eng/roadmap.md`. The smoke
+- Mark only the development-setup item complete in `eng/todo.md`. The smoke
   checklist and interoperability verification remain separate slices.
 
 ## Tests

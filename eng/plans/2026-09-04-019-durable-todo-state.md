@@ -5,7 +5,7 @@
 - `docs/spec.md#todo-and-questions` and `docs/spec.md#context-continuity` —
   replacement semantics, validation, ACP projection, durability, and model
   context requirements
-- `eng/roadmap.md#todo-state` — slice scope and completion gates
+- `eng/todo.md` — slice scope and completion gates
 - `eng/architecture.md#context-and-durable-projections` — authoritative log,
   checkpoint, replay, and transient-context ownership
 - `~/src/references/repos/personal/eta/internal/agent/tools/{todo,todo_test}.go`

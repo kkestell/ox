@@ -25,7 +25,6 @@ const ResultSchemaVersion = 2
 type Config struct {
 	OxBinary    string
 	OxRevision  string
-	Candidate   string
 	TaskPath    string
 	OutputDir   string
 	Model       string
@@ -42,7 +41,6 @@ type RunIndex struct {
 	TaskID       string      `json:"task_id"`
 	TaskRevision string      `json:"task_revision"`
 	OxRevision   string      `json:"ox_revision"`
-	Candidate    string      `json:"candidate"`
 	BinaryDigest string      `json:"binary_digest"`
 	PromptDigest string      `json:"prompt_digest"`
 	Model        string      `json:"model"`
@@ -57,7 +55,6 @@ type RunResult struct {
 	TaskID               string   `json:"task_id"`
 	TaskRevision         string   `json:"task_revision"`
 	OxRevision           string   `json:"ox_revision"`
-	Candidate            string   `json:"candidate"`
 	BinaryDigest         string   `json:"binary_digest"`
 	PromptDigest         string   `json:"prompt_digest"`
 	Model                string   `json:"model"`
@@ -89,11 +86,8 @@ type Failure struct {
 }
 
 func Run(ctx context.Context, config Config) (RunIndex, error) {
-	if config.OxBinary == "" || config.TaskPath == "" || config.OutputDir == "" || config.Model == "" || config.Candidate == "" {
-		return RunIndex{}, errors.New("ox binary, candidate, task, output directory, and model are required")
-	}
-	if config.Candidate != CandidateExact && config.Candidate != CandidateAnchored {
-		return RunIndex{}, fmt.Errorf("candidate must be %q or %q", CandidateExact, CandidateAnchored)
+	if config.OxBinary == "" || config.TaskPath == "" || config.OutputDir == "" || config.Model == "" {
+		return RunIndex{}, errors.New("ox binary, task, output directory, and model are required")
 	}
 	if config.Repetitions <= 0 {
 		return RunIndex{}, errors.New("repetitions must be positive")
@@ -124,7 +118,7 @@ func Run(ctx context.Context, config Config) (RunIndex, error) {
 	}
 	index := RunIndex{
 		Schema: ResultSchemaVersion, TaskID: task.ID, TaskRevision: task.revision,
-		OxRevision: config.OxRevision, Candidate: config.Candidate, BinaryDigest: binaryDigest,
+		OxRevision: config.OxRevision, BinaryDigest: binaryDigest,
 		PromptDigest: promptDigest, Model: config.Model, Provider: config.Provider,
 		Budget: task.Budget, Repetitions: config.Repetitions,
 	}
@@ -162,7 +156,7 @@ func runOnce(parent context.Context, config Config, task Task, repetition int, b
 	started := time.Now()
 	result := RunResult{
 		Schema: ResultSchemaVersion, TaskID: task.ID, TaskRevision: task.revision,
-		OxRevision: config.OxRevision, Candidate: config.Candidate,
+		OxRevision:   config.OxRevision,
 		BinaryDigest: binaryDigest, PromptDigest: promptDigest,
 		Model: config.Model, Provider: config.Provider,
 		Budget: task.Budget, Repetitions: config.Repetitions, Repetition: repetition,

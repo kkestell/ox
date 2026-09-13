@@ -2,8 +2,8 @@
 
 ## Sources
 
-- `eng/roadmap.md#changed-file-accounting` — owns the build scope and restart,
-  replay, deduplication, failure, and ACP location gates.
+- `eng/todo.md` — owns the build scope and restart, replay, deduplication,
+  failure, and ACP location gates.
 - `eng/architecture.md#session-and-turn-state` and
   `eng/architecture.md#workspace-boundary` — own durable session state,
   checkpoint recovery, canonical roots, and confined paths.
@@ -45,7 +45,7 @@ locations, both live and during `session/load` replay.
   and validation, and restore it beside the existing usage, cost, and
   context-capacity state. Replay the stored target as an absolute ACP location
   for primary and nested tool calls.
-- `eng/roadmap.md` — remove the completed changed-file-accounting slice while
+- `eng/todo.md` — remove the completed changed-file-accounting slice while
   leaving the remaining context-and-diagnostics work in order.
 
 ## Tests

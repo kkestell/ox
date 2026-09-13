@@ -4,8 +4,7 @@
 
 - `docs/spec.md#session-lifecycle-and-recovery` — owns the unknown-outcome,
   no-redispatch, and persistence-failure behavior.
-- `eng/roadmap.md#interrupted-effect-recovery` — owns this slice and its fault
-  injection gates.
+- `eng/todo.md` — owns this slice and its fault injection gates.
 - `eng/architecture.md#context-and-durable-projections` — owns durable dispatch
   intent, completion ordering, and parent, sibling, and child coverage.
 - `internal/agent/state.go`, `loop.go`, `subagent.go`, and `agent.go` — current

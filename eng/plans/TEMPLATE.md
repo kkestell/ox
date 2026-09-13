@@ -66,7 +66,7 @@ boundaries at stable public interfaces.
 
 - Current-state contract to update when the implementation lands. Omit when no
   owned fact changes.
-- Roadmap item completed or unblocked. Omit when none applies.
+- Todo list item completed or unblocked. Omit when none applies.
 
 ## Impact assessment
 

@@ -5,7 +5,7 @@
 - `docs/spec.md#isolation-memory-and-delegated-work` — fact types, ownership,
   retention, bounds, retrieval order, permission, replay, and session-deletion
   behavior
-- `eng/roadmap.md#workspace-memory` — slice scope and completion gates
+- `eng/todo.md` — slice scope and completion gates
 - `eng/architecture.md#session-and-turn-state` and
   `eng/architecture.md#extension-boundaries` — shared workspace ownership,
   private atomic storage, locking, and durable tool-result boundaries

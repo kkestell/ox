@@ -5,7 +5,7 @@
 - `docs/spec.md#workspace-instructions-and-skills` — discovery root, Agent
   Skills validation, catalog and file bounds, activation lifetime, loading, and
   parent/child behavior
-- `eng/roadmap.md#workspace-skills` — slice scope and completion gates
+- `eng/todo.md` — slice scope and completion gates
 - `eng/architecture.md#configuration-and-credentials` and
   `eng/architecture.md#context-and-durable-projections` — immutable activation
   inputs and recovered-turn ownership

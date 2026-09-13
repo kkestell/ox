@@ -6,7 +6,7 @@
   and `docs/spec.md#isolation-memory-and-delegated-work` — configuration
   authority, tool behavior, plan-mode access, filesystem selection, and
   host-privilege boundary
-- `eng/roadmap.md#language-server-context` — slice scope and completion gates
+- `eng/todo.md` — slice scope and completion gates
 - `eng/architecture.md#session-and-turn-state`,
   `eng/architecture.md#configuration-and-credentials`, and
   `eng/architecture.md#extension-boundaries` — process inputs, per-activation
