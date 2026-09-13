@@ -259,6 +259,55 @@ func TestCatalogExpiresInMemory(t *testing.T) {
 		})
 	}
 
+	// An unreachable provider must not cost a fetch per request, and must not
+	// fail a session the process already holds a catalog for.
+	t.Run("serves the held catalog when the refresh fails", func(t *testing.T) {
+		var requests atomic.Int32
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			requests.Add(1)
+			http.Error(w, "bad request", http.StatusBadRequest)
+		}))
+		t.Cleanup(server.Close)
+
+		client := testClient(server.URL)
+		client.catalog = newCatalog([]Model{{ID: "held/model", ContextLength: 1024}})
+		client.catalogExpires = time.Now().Add(-time.Second)
+
+		catalog, err := client.Catalog(t.Context())
+		if err != nil || catalog.ContextWindow("held/model") != 1024 {
+			t.Fatalf("catalog = %#v, %v", catalog, err)
+		}
+		if requests.Load() != 1 {
+			t.Fatalf("requests = %d, want 1", requests.Load())
+		}
+		again, err := client.Catalog(t.Context())
+		if err != nil || again != catalog {
+			t.Fatalf("second catalog = %#v, %v", again, err)
+		}
+		if requests.Load() != 1 {
+			t.Fatalf("requests after a bounded retry = %d, want 1", requests.Load())
+		}
+	})
+
+	// A caller that gave up gets its own error, not a catalog it no longer
+	// wants.
+	t.Run("propagates cancellation instead of serving the held catalog", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			http.Error(w, "bad request", http.StatusBadRequest)
+		}))
+		t.Cleanup(server.Close)
+
+		client := testClient(server.URL)
+		client.catalog = newCatalog([]Model{{ID: "held/model", ContextLength: 1024}})
+		client.catalogExpires = time.Now().Add(-time.Second)
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+
+		if _, err := client.Catalog(ctx); err == nil {
+			t.Fatal("a cancelled load served the held catalog")
+		}
+	})
+
 	t.Run("reloads once the memory copy expires", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "models.json")
 		if err := writeCatalogCache(path, []Model{
