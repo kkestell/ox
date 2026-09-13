@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"path"
 	"path/filepath"
 	"reflect"
@@ -667,10 +668,14 @@ func validStoredTarget(value string) bool {
 		!strings.HasPrefix(value, "../") && !strings.Contains(value, `\`)
 }
 
+// clone returns the successor a commit mutates, leaving the published state
+// untouched. Records and messages are append-only and never rewritten in place,
+// so their slices are shared: appending writes past the published state's
+// length, which it never reads, and commits are serialized so a shared backing
+// array has one writer. Everything the apply switch mutates in place is copied.
 func (s durableState) clone() durableState {
-	s.history = cloneMessages(s.history)
-	s.openTurnBase = cloneMessages(s.openTurnBase)
-	s.records = append([]sessionRecord(nil), s.records...)
+	s.history = slices.Clone(s.history)
+	s.openTurnBase = slices.Clone(s.openTurnBase)
 	s.configuration = cloneConfiguration(s.configuration)
 	s.selections = cloneSelections(s.selections)
 	s.todo = clonePlanEntries(s.todo)
@@ -1215,28 +1220,18 @@ func sameToolCall(left, right openrouter.ToolCall) bool {
 	return bytes.Equal(leftJSON, rightJSON)
 }
 
+// cloneStoredToolResult copies a tool outcome. Every field is a value, so the
+// copy the parameter already made is the clone.
 func cloneStoredToolResult(value storedToolResult) storedToolResult {
-	data, err := json.Marshal(value)
-	if err != nil {
-		panic(err)
-	}
-	var cloned storedToolResult
-	if err := json.Unmarshal(data, &cloned); err != nil {
-		panic(err)
-	}
-	return cloned
+	return value
 }
 
 func cloneToolExecution(value durableToolExecution) durableToolExecution {
-	data, err := json.Marshal(value)
-	if err != nil {
-		panic(err)
+	if value.Result != nil {
+		result := cloneStoredToolResult(*value.Result)
+		value.Result = &result
 	}
-	var cloned durableToolExecution
-	if err := json.Unmarshal(data, &cloned); err != nil {
-		panic(err)
-	}
-	return cloned
+	return value
 }
 
 func messageGroupBoundary(messages []openrouter.Message, index int) bool {
@@ -1780,13 +1775,10 @@ func cloneConfigOptions(values []acp.SessionConfigOption) []acp.SessionConfigOpt
 	if values == nil {
 		return nil
 	}
-	raw, err := json.Marshal(values)
-	if err != nil {
-		panic(err)
-	}
-	var cloned []acp.SessionConfigOption
-	if err := json.Unmarshal(raw, &cloned); err != nil {
-		panic(err)
+	cloned := slices.Clone(values)
+	for index := range cloned {
+		cloned[index].Options = slices.Clone(cloned[index].Options)
+		cloned[index].Meta = maps.Clone(cloned[index].Meta)
 	}
 	return cloned
 }
@@ -1847,21 +1839,41 @@ func (s durableState) turnConfiguration() requestConfiguration {
 	return cloneConfiguration(s.configuration)
 }
 
+// cloneSuspendedExchange copies the parts of a suspended exchange a caller may
+// append to or overwrite. The recorded provider payload and the pending
+// permission request are never modified after they are written, so the copy
+// shares them.
 func cloneSuspendedExchange(
 	value *suspendedModelExchangeRecord,
 ) *suspendedModelExchangeRecord {
 	if value == nil {
 		return nil
 	}
-	data, err := json.Marshal(value)
-	if err != nil {
-		panic(err)
+	cloned := *value
+	cloned.ReasoningDetails = cloneByteSlices(value.ReasoningDetails)
+	cloned.ToolCalls = slices.Clone(value.ToolCalls)
+	cloned.ToolTargets = maps.Clone(value.ToolTargets)
+	cloned.Decisions = slices.Clone(value.Decisions)
+	if value.Usage != nil {
+		usage := *value.Usage
+		cloned.Usage = &usage
 	}
-	var cloned suspendedModelExchangeRecord
-	if err := json.Unmarshal(data, &cloned); err != nil {
-		panic(err)
+	if value.Pending != nil {
+		pending := *value.Pending
+		cloned.Pending = &pending
 	}
 	return &cloned
+}
+
+func cloneByteSlices(values [][]byte) [][]byte {
+	if values == nil {
+		return nil
+	}
+	cloned := make([][]byte, len(values))
+	for index, value := range values {
+		cloned[index] = slices.Clone(value)
+	}
+	return cloned
 }
 
 func cloneToolKinds(values map[string]acp.ToolKind) map[string]acp.ToolKind {
@@ -1887,15 +1899,43 @@ func cloneBoolMap(values map[string]bool) map[string]bool {
 }
 
 func cloneResolved(value settings.Resolved) settings.Resolved {
-	raw, err := json.Marshal(value)
-	if err != nil {
-		panic(err)
+	if value.MaxTokens != nil {
+		maxTokens := *value.MaxTokens
+		value.MaxTokens = &maxTokens
 	}
-	var cloned settings.Resolved
-	if err := json.Unmarshal(raw, &cloned); err != nil {
-		panic(err)
+	if value.Temperature != nil {
+		temperature := *value.Temperature
+		value.Temperature = &temperature
 	}
-	return cloned
+	if value.Reasoning != nil {
+		reasoning := *value.Reasoning
+		reasoning.Exclude = cloneBool(reasoning.Exclude)
+		reasoning.Enabled = cloneBool(reasoning.Enabled)
+		value.Reasoning = &reasoning
+	}
+	if value.Provider != nil {
+		provider := *value.Provider
+		provider.Order = slices.Clone(provider.Order)
+		provider.Only = slices.Clone(provider.Only)
+		provider.Ignore = slices.Clone(provider.Ignore)
+		provider.Quantizations = slices.Clone(provider.Quantizations)
+		provider.AllowFallbacks = cloneBool(provider.AllowFallbacks)
+		provider.RequireParameters = cloneBool(provider.RequireParameters)
+		if provider.MaxPrice != nil {
+			maxPrice := *provider.MaxPrice
+			provider.MaxPrice = &maxPrice
+		}
+		value.Provider = &provider
+	}
+	return value
+}
+
+func cloneBool(value *bool) *bool {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
 }
 
 func cloneTools(values []openrouter.Tool) []openrouter.Tool {

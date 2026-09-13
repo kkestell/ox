@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -1122,4 +1123,53 @@ func mustRecord(t *testing.T, sequence uint64, kind string, value any) sessionRe
 		t.Fatal(err)
 	}
 	return record
+}
+
+// BenchmarkCommitCopyAtSessionSize measures the copy every durable commit makes
+// before it applies a record. The cost must stay flat as a session accumulates
+// records and history, or the session's total commit work grows with its square.
+func BenchmarkCommitCopyAtSessionSize(b *testing.B) {
+	for _, size := range []int{100, 1_000, 10_000} {
+		b.Run(strconv.Itoa(size), func(b *testing.B) {
+			state := agedState(size)
+			b.ReportAllocs()
+			for b.Loop() {
+				next := state.clone()
+				if len(next.history) != size {
+					b.Fatalf("cloned history = %d, want %d", len(next.history), size)
+				}
+			}
+		})
+	}
+}
+
+func agedState(size int) durableState {
+	state := durableState{
+		id:            "0123456789abcdef0123456789abcdef",
+		cwd:           "/workspace",
+		createdAt:     time.Unix(0, 0).UTC(),
+		updatedAt:     time.Unix(0, 0).UTC(),
+		configuration: requestConfiguration{Settings: settings.Resolved{Model: "test/model"}},
+		messageIDs:    map[string]struct{}{},
+		toolCallIDs:   map[string]struct{}{},
+		changedFiles:  map[string]struct{}{},
+	}
+	for index := range size {
+		state.records = append(state.records, sessionRecord{
+			Version:  recordVersion,
+			Sequence: uint64(index + 1),
+			Type:     recordTurnFinished,
+			At:       time.Unix(int64(index), 0).UTC(),
+			Data:     json.RawMessage(`{"turnId":"t"}`),
+		})
+		state.history = append(state.history, openrouter.Message{
+			Role: openrouter.RoleAssistant,
+			Content: []openrouter.ContentBlock{{
+				Type: "text",
+				Text: strings.Repeat("a recorded sentence of model output. ", 8),
+			}},
+		})
+		state.messageIDs[strconv.Itoa(index)] = struct{}{}
+	}
+	return state
 }
