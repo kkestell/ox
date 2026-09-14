@@ -18,6 +18,7 @@ describe("workspace supervisor", () => {
 
     expect(supervisor.state).toEqual({
       authentication: { logoutAvailable: false, methods: [], status: "required" },
+      busy: false,
       diagnostics: [],
       mcpServerCount: 0,
       name: expect.any(String),
@@ -74,6 +75,7 @@ describe("workspace supervisor", () => {
 
     expect(supervisor.state).toEqual({
       authentication: { logoutAvailable: false, methods: [], status: "unavailable" },
+      busy: false,
       diagnostics: ["Ox did not initialize within 2 seconds"],
       mcpServerCount: 0,
       name: expect.any(String),

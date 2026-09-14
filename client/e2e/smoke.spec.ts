@@ -94,7 +94,9 @@ test("supervises a real Ox process through clean shutdown and unexpected exit", 
     await fixture.stopOx();
     await expect(page.getByRole("alert")).toHaveText("Ox is unavailable. Open support details for diagnostics.");
     await openSupportDetails(page);
-    await expect(page.getByText("unavailable", { exact: true })).toBeVisible();
+    await expect(page.getByRole("list", { name: "Ox processes" })).toContainText(
+      `${basename(fixture.workspace)} — unavailable, idle`,
+    );
     await expect(page.getByRole("list", { name: "Workspace diagnostics" })).toContainText(
       "Ox exited from SIGTERM",
     );
@@ -297,6 +299,48 @@ test("keeps a live prompt running across a browser reload", async ({ page }) => 
   }
 });
 
+test("runs concurrent turns and isolates failure across two workspaces", async ({ page }) => {
+  const fixture = await createFixture({ registerSecondWorkspace: true });
+  const first = basename(fixture.workspace);
+  const second = basename(fixture.workspaceTwo);
+  let host: BrowserHost | undefined;
+  try {
+    host = startBrowserHost(fixture);
+    await assertReady(page, await host.url);
+    await page.getByLabel("Message").fill("hold in the first workspace");
+    await page.getByRole("button", { name: "Send prompt" }).click();
+    await expect(page.getByRole("button", { name: "Cancel prompt" })).toBeVisible();
+
+    await page.getByLabel("Current workspace").selectOption({ label: second });
+    await expect(page.locator("main > header")).toContainText(second);
+    await page.getByLabel("Message").fill("second workspace turn");
+    await page.getByRole("button", { name: "Send prompt" }).click();
+    await expect(page.getByRole("region", { name: "Transcript" })).toContainText("browser smoke");
+
+    await openSupportDetails(page);
+    const processes = page.getByRole("list", { name: "Ox processes" });
+    await expect(processes).toContainText(`${first} — ready, working`);
+    await expect(processes).toContainText(`${second} — ready, idle`);
+
+    fixture.releaseHeldPrompt();
+    await page.getByLabel("Current workspace").selectOption({ label: first });
+    await expect(page.getByRole("region", { name: "Transcript" })).toContainText("held prompt complete");
+
+    await fixture.stopOx(fixture.workspaceTwo);
+    await expect(processes).toContainText(`${second} — unavailable, idle`);
+    await expect(page.getByText("Ox is unavailable. Open support details for diagnostics.")).toHaveCount(0);
+    await page.getByRole("button", { name: "New conversation" }).click();
+    const transcript = page.getByRole("region", { name: "Transcript" });
+    await expect(transcript).not.toContainText("held prompt complete");
+    await page.getByLabel("Message", { exact: true }).fill("the first workspace still works");
+    await page.getByRole("button", { name: "Send prompt" }).click();
+    await expect(transcript).toContainText("browser smoke");
+  } finally {
+    await host?.stop();
+    await fixture.close();
+  }
+});
+
 test("renders a host-owned form elicitation through refresh and answers it", async ({ page }) => {
   const fixture = await createFixture();
   let host: BrowserHost | undefined;
@@ -490,9 +534,10 @@ type Fixture = {
   releaseHeldPrompt(): void;
   requests: number;
   runner: string;
-  stopOx(): Promise<void>;
-  waitForOxExit(): Promise<void>;
+  stopOx(workspace?: string): Promise<void>;
+  waitForOxExit(workspace?: string): Promise<void>;
   workspace: string;
+  workspaceTwo: string;
 };
 
 type MCPFixture = {
@@ -506,11 +551,16 @@ type MCPFixture = {
   stdioSecret: string;
 };
 
-async function createFixture(options: { registerWorkspace?: boolean } = {}): Promise<Fixture> {
+async function createFixture(
+  options: { registerSecondWorkspace?: boolean; registerWorkspace?: boolean } = {},
+): Promise<Fixture> {
   const root = await mkdtemp(join(tmpdir(), "ox-client-smoke-"));
   const workspace = join(root, "workspace");
+  const workspaceTwo = join(root, "workspace-two");
   await mkdir(workspace);
-  const pidFile = join(root, "ox.pid");
+  await mkdir(workspaceTwo);
+  const pidDirectory = join(root, "pids");
+  await mkdir(pidDirectory);
   const binary = join(root, "ox");
   const credential = join(root, "credential");
   const runner = join(root, "run-ox");
@@ -683,14 +733,16 @@ async function createFixture(options: { registerWorkspace?: boolean } = {}): Pro
   }
   const providerURL = `http://127.0.0.1:${address.port}`;
   await seedOxFixture({ binary, credential }, root);
+  // One Ox process runs per workspace, so the runner keys its pid file by the
+  // working directory it was launched in.
   await writeFile(
     runner,
-    `#!/bin/sh\nprintf '%s\\n' "$$" > "$OX_CLIENT_TEST_PID_FILE"\nexec "$@"\n`,
+    `#!/bin/sh\nprintf '%s\\n' "$$" > "$OX_CLIENT_TEST_PID_DIR/$(basename "$(pwd)").pid"\nexec "$@"\n`,
     { mode: 0o700 },
   );
   const environment = {
     ...process.env,
-    OX_CLIENT_TEST_PID_FILE: pidFile,
+    OX_CLIENT_TEST_PID_DIR: pidDirectory,
     HOME: root,
     XDG_CACHE_HOME: join(root, "cache"),
     XDG_CONFIG_HOME: join(root, "config"),
@@ -699,6 +751,9 @@ async function createFixture(options: { registerWorkspace?: boolean } = {}): Pro
   if (options.registerWorkspace !== false) {
     const registry = await WorkspaceRegistry.load(join(root, "config", "ox", "workspaces.json"));
     await registry.register(workspace);
+    if (options.registerSecondWorkspace) {
+      await registry.register(workspaceTwo);
+    }
   }
   return {
     binary,
@@ -722,14 +777,15 @@ async function createFixture(options: { registerWorkspace?: boolean } = {}): Pro
       streamText(response, "held prompt complete");
     },
     runner,
-    async stopOx() {
-      process.kill(await oxPID(pidFile), "SIGTERM");
+    async stopOx(target = workspace) {
+      process.kill(await oxPID(join(pidDirectory, `${basename(target)}.pid`)), "SIGTERM");
     },
-    async waitForOxExit() {
-      const pid = await oxPID(pidFile);
+    async waitForOxExit(target = workspace) {
+      const pid = await oxPID(join(pidDirectory, `${basename(target)}.pid`));
       await expect.poll(() => processExists(pid)).toBe(false);
     },
     workspace,
+    workspaceTwo,
   };
 }
 
@@ -1011,7 +1067,7 @@ async function startNewConversation(page: Page): Promise<void> {
 }
 
 async function oxPID(pidFile: string): Promise<number> {
-  await expect.poll(async () => (await readFile(pidFile, "utf8")).trim()).not.toBe("");
+  await expect.poll(() => readFile(pidFile, "utf8").then((value) => value.trim(), () => "")).not.toBe("");
   return Number.parseInt((await readFile(pidFile, "utf8")).trim(), 10);
 }
 

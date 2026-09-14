@@ -4,7 +4,7 @@
   - [x] Persist a registry of validated server-local workspace roots and add
         browser flows to register, select, and remove them without exposing a
         general filesystem API
-  - [ ] Run and route one independently supervised Ox process per active
+  - [x] Run and route one independently supervised Ox process per active
         workspace, and prove concurrent turns and failure isolation across two
         roots
   - [ ] Complete multi-workspace restart, interaction-routing, and browser

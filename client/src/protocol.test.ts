@@ -1,11 +1,18 @@
 import { describe, expect, test } from "bun:test";
 
-import { initialSnapshot, parseBrowserCommand, snapshotSchema } from "./protocol.ts";
+import { initialSnapshot, parseBrowserCommand, type Snapshot, snapshotSchema } from "./protocol.ts";
 
 const noPromptCapabilities = { audio: false, embeddedContext: false, image: false };
 const workspaceID = "11111111-1111-4111-8111-111111111111";
 const secondWorkspaceID = "22222222-2222-4222-8222-222222222222";
-const registeredWorkspaces = { selectedId: workspaceID, values: [{ id: workspaceID, name: "ox" }] };
+const registeredWorkspaces = {
+  selectedId: workspaceID,
+  values: [{ busy: false, id: workspaceID, name: "ox", status: "ready" as const }],
+};
+
+function workspaceEntry(id: string, name: string) {
+  return { busy: false, id, name, status: "ready" as const };
+}
 
 describe("browser protocol", () => {
   test("accepts a correlated ping", () => {
@@ -26,28 +33,28 @@ describe("browser protocol", () => {
   });
 
   test("accepts write-only authentication commands", () => {
-    expect(parseBrowserCommand({ type: "authenticate", requestId: "request-1", methodId: "stored" })).toEqual({
+    expect(parseBrowserCommand({ type: "authenticate", requestId: "request-1", workspaceId: workspaceID, methodId: "stored" })).toEqual({
       ok: true,
-      value: { type: "authenticate", requestId: "request-1", methodId: "stored" },
+      value: { type: "authenticate", requestId: "request-1", workspaceId: workspaceID, methodId: "stored" },
     });
-    expect(parseBrowserCommand({ type: "login", requestId: "request-2", methodId: "terminal", credential: " key " })).toEqual({
+    expect(parseBrowserCommand({ type: "login", requestId: "request-2", workspaceId: workspaceID, methodId: "terminal", credential: " key " })).toEqual({
       ok: true,
-      value: { type: "login", requestId: "request-2", methodId: "terminal", credential: "key" },
+      value: { type: "login", requestId: "request-2", workspaceId: workspaceID, methodId: "terminal", credential: "key" },
     });
-    expect(parseBrowserCommand({ type: "logout", requestId: "request-3" })).toEqual({
+    expect(parseBrowserCommand({ type: "logout", requestId: "request-3", workspaceId: workspaceID })).toEqual({
       ok: true,
-      value: { type: "logout", requestId: "request-3" },
+      value: { type: "logout", requestId: "request-3", workspaceId: workspaceID },
     });
   });
 
   test("accepts bounded session lifecycle commands", () => {
     for (const command of [
-      { type: "new-conversation", requestId: "request-1" },
-      { type: "refresh-history", requestId: "request-2" },
-      { type: "next-history-page", requestId: "request-3" },
-      { type: "open-conversation", requestId: "request-4", sessionId: "session-1" },
-      { type: "close-conversation", requestId: "request-5", sessionId: "session-1" },
-      { type: "delete-conversation", requestId: "request-6", sessionId: "session-1" },
+      { type: "new-conversation", requestId: "request-1", workspaceId: workspaceID },
+      { type: "refresh-history", requestId: "request-2", workspaceId: workspaceID },
+      { type: "next-history-page", requestId: "request-3", workspaceId: workspaceID },
+      { type: "open-conversation", requestId: "request-4", workspaceId: workspaceID, sessionId: "session-1" },
+      { type: "close-conversation", requestId: "request-5", workspaceId: workspaceID, sessionId: "session-1" },
+      { type: "delete-conversation", requestId: "request-6", workspaceId: workspaceID, sessionId: "session-1" },
     ]) {
       expect(parseBrowserCommand(command).ok).toBe(true);
     }
@@ -58,6 +65,7 @@ describe("browser protocol", () => {
       parseBrowserCommand({
         type: "set-mcp-servers",
         requestId: "request-1",
+        workspaceId: workspaceID,
         mcpServers: [
           {
             transport: "http",
@@ -79,6 +87,7 @@ describe("browser protocol", () => {
       value: {
         type: "set-mcp-servers",
         requestId: "request-1",
+        workspaceId: workspaceID,
         mcpServers: [
           {
             transport: "http",
@@ -112,17 +121,18 @@ describe("browser protocol", () => {
         { transport: "stdio", name: "same", command: "/bin/mcp", args: [], env: [] },
       ],
     ]) {
-      expect(parseBrowserCommand({ type: "set-mcp-servers", requestId: "request-1", mcpServers }).ok).toBe(false);
+      expect(parseBrowserCommand({ type: "set-mcp-servers", requestId: "request-1", workspaceId: workspaceID, mcpServers }).ok).toBe(false);
     }
   });
 
   test("accepts prompting, cancellation, and configuration commands", () => {
     for (const command of [
-      { type: "cancel-prompt", requestId: "request-2", sessionId: "session-1" },
-      { type: "set-config-option", requestId: "request-3", sessionId: "session-1", configId: "mode", value: "plan" },
+      { type: "cancel-prompt", requestId: "request-2", workspaceId: workspaceID, sessionId: "session-1" },
+      { type: "set-config-option", requestId: "request-3", workspaceId: workspaceID, sessionId: "session-1", configId: "mode", value: "plan" },
       {
         type: "prompt",
         requestId: "request-4",
+        workspaceId: workspaceID,
         sessionId: "session-1",
         prompt: [
           { type: "text", text: "hello" },
@@ -139,9 +149,9 @@ describe("browser protocol", () => {
   });
 
   test("accepts correlated interaction answers and keeps their values bounded", () => {
-    expect(parseBrowserCommand({ type: "resolve-permission", requestId: "request-1", sessionId: "session-1", interactionId: "interaction-1", optionId: "allow" }).ok).toBe(true);
-    expect(parseBrowserCommand({ type: "resolve-elicitation", requestId: "request-2", sessionId: "session-1", interactionId: "interaction-1", action: "accept", content: { answer: "yes", count: 2, enabled: true, tags: ["one"] } }).ok).toBe(true);
-    expect(parseBrowserCommand({ type: "resolve-elicitation", requestId: "request-3", sessionId: "session-1", interactionId: "interaction-1", action: "cancel", content: { extra: "must not be needed" } }).ok).toBe(true);
+    expect(parseBrowserCommand({ type: "resolve-permission", requestId: "request-1", workspaceId: workspaceID, sessionId: "session-1", interactionId: "interaction-1", optionId: "allow" }).ok).toBe(true);
+    expect(parseBrowserCommand({ type: "resolve-elicitation", requestId: "request-2", workspaceId: workspaceID, sessionId: "session-1", interactionId: "interaction-1", action: "accept", content: { answer: "yes", count: 2, enabled: true, tags: ["one"] } }).ok).toBe(true);
+    expect(parseBrowserCommand({ type: "resolve-elicitation", requestId: "request-3", workspaceId: workspaceID, sessionId: "session-1", interactionId: "interaction-1", action: "cancel", content: { extra: "must not be needed" } }).ok).toBe(true);
   });
 
   test.each([
@@ -154,18 +164,21 @@ describe("browser protocol", () => {
     { type: "register-workspace", requestId: "request-1", path: "/valid", root: "/leaked" },
     { type: "select-workspace", requestId: "request-1", workspaceId: "not-a-uuid" },
     { type: "remove-workspace", requestId: "request-1", workspaceId: workspaceID, root: "/leaked" },
-    { type: "authenticate", requestId: "request-1" },
-    { type: "login", requestId: "request-1", methodId: "terminal", credential: "   " },
-    { type: "logout", requestId: "" },
-    { type: "new-conversation" },
-    { type: "set-mcp-servers", requestId: "request-1", mcpServers: [{ transport: "http", name: "remote", url: "not a URL", headers: [] }] },
-    { type: "set-mcp-servers", requestId: "request-1", mcpServers: [{ transport: "sse", name: "remote", url: "https://example.test/mcp", headers: [] }] },
-    { type: "open-conversation", requestId: "request-1", sessionId: "" },
-    { type: "prompt", requestId: "request-1", sessionId: "session-1", prompt: [] },
-    { type: "prompt", requestId: "request-1", sessionId: "session-1", prompt: [{ type: "resource", resource: { uri: "attachment://missing" } }] },
-    { type: "set-config-option", requestId: "request-1", sessionId: "session-1", configId: "mode", value: "" },
-    { type: "resolve-permission", requestId: "request-1", sessionId: "session-1", interactionId: "", optionId: "allow" },
-    { type: "resolve-elicitation", requestId: "request-1", sessionId: "session-1", interactionId: "interaction-1", action: "accept", content: { bad: { nested: true } } },
+    { type: "authenticate", requestId: "request-1", workspaceId: workspaceID },
+    { type: "login", requestId: "request-1", workspaceId: workspaceID, methodId: "terminal", credential: "   " },
+    { type: "logout", requestId: "", workspaceId: workspaceID },
+    { type: "logout", requestId: "request-1" },
+    { type: "new-conversation", workspaceId: workspaceID },
+    { type: "new-conversation", requestId: "request-1" },
+    { type: "prompt", requestId: "request-1", workspaceId: "not-a-uuid", sessionId: "session-1", prompt: [{ type: "text", text: "hello" }] },
+    { type: "set-mcp-servers", requestId: "request-1", workspaceId: workspaceID, mcpServers: [{ transport: "http", name: "remote", url: "not a URL", headers: [] }] },
+    { type: "set-mcp-servers", requestId: "request-1", workspaceId: workspaceID, mcpServers: [{ transport: "sse", name: "remote", url: "https://example.test/mcp", headers: [] }] },
+    { type: "open-conversation", requestId: "request-1", workspaceId: workspaceID, sessionId: "" },
+    { type: "prompt", requestId: "request-1", workspaceId: workspaceID, sessionId: "session-1", prompt: [] },
+    { type: "prompt", requestId: "request-1", workspaceId: workspaceID, sessionId: "session-1", prompt: [{ type: "resource", resource: { uri: "attachment://missing" } }] },
+    { type: "set-config-option", requestId: "request-1", workspaceId: workspaceID, sessionId: "session-1", configId: "mode", value: "" },
+    { type: "resolve-permission", requestId: "request-1", workspaceId: workspaceID, sessionId: "session-1", interactionId: "", optionId: "allow" },
+    { type: "resolve-elicitation", requestId: "request-1", workspaceId: workspaceID, sessionId: "session-1", interactionId: "interaction-1", action: "accept", content: { bad: { nested: true } } },
   ])("rejects invalid commands: %#j", (command) => {
     expect(parseBrowserCommand(command)).toEqual({
       ok: false,
@@ -234,10 +247,12 @@ describe("browser protocol", () => {
 
     for (const workspaces of [
       { selectedId: workspaceID, values: [] },
-      { values: [{ id: workspaceID, name: "ox" }] },
-      { selectedId: secondWorkspaceID, values: [{ id: workspaceID, name: "ox" }] },
-      { selectedId: workspaceID, values: [{ id: workspaceID, name: "one" }, { id: workspaceID, name: "two" }] },
-    ]) {
+      { values: [workspaceEntry(workspaceID, "ox")] },
+      { selectedId: secondWorkspaceID, values: [workspaceEntry(workspaceID, "ox")] },
+      { selectedId: workspaceID, values: [workspaceEntry(workspaceID, "one"), workspaceEntry(workspaceID, "two")] },
+      { selectedId: workspaceID, values: [{ id: workspaceID, name: "ox", status: "gone", busy: false }] },
+      { selectedId: workspaceID, values: [{ id: workspaceID, name: "ox", status: "ready" }] },
+    ] as unknown as Snapshot["workspaces"][]) {
       expect(snapshotSchema.safeParse(initialSnapshot(workspaces)).success).toBe(false);
     }
 
@@ -248,7 +263,9 @@ describe("browser protocol", () => {
       promptCapabilities: noPromptCapabilities,
       status: "ready",
     });
-    root.workspaces.values = [{ id: workspaceID, name: "ox", root: "/srv/ox" } as unknown as { id: string; name: string }];
+    root.workspaces.values = [
+      { ...workspaceEntry(workspaceID, "ox"), root: "/srv/ox" } as unknown as (typeof root.workspaces.values)[number],
+    ];
     expect(snapshotSchema.safeParse(root).success).toBe(false);
 
     const arbitrary = initialSnapshot(registeredWorkspaces);

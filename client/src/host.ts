@@ -44,39 +44,54 @@ export async function startHost(options: HostOptions = {}): Promise<StartedHost>
   const registry = options.registryPath
     ? await WorkspaceRegistry.load(options.registryPath)
     : await WorkspaceRegistry.loadDefault();
+  const supervisors = new Map<string, WorkspaceSupervisor>();
+  const unsubscribes = new Map<string, () => void>();
   let visibleRegistry = registry.state;
-  let supervisor = await startSupervisor(registry.selected);
-  let unsubscribe = supervisor?.subscribe(publish);
   let workspaceOperation: Promise<void> = Promise.resolve();
   let revision = 0;
-  let snapshot = snapshotFor(revision, visibleRegistry, supervisor?.state);
+  // The snapshot exists before the first supervisor subscribes, because a
+  // workspace that starts early can publish while another is still starting.
+  let snapshot = snapshotFor(revision, visibleRegistry, supervisors, undefined);
+  await Promise.all(visibleRegistry.workspaces.map(startSupervisor));
+  snapshot = snapshotFor(revision, visibleRegistry, supervisors, selectedState());
+
+  function selectedState(): WorkspaceState | undefined {
+    const selected = visibleRegistry.selectedId;
+    return selected === undefined ? undefined : supervisors.get(selected)?.state;
+  }
 
   function publish(): void {
     revision += 1;
-    snapshot = snapshotFor(revision, visibleRegistry, supervisor?.state);
+    snapshot = snapshotFor(revision, visibleRegistry, supervisors, selectedState());
     for (const socket of sockets) {
       send(socket, snapshot);
     }
   }
 
-  async function startSupervisor(workspace: RegisteredWorkspace | undefined): Promise<WorkspaceSupervisor | undefined> {
-    if (!workspace) {
-      return undefined;
+  // A root that stopped being usable between registry validation and launch
+  // leaves the entry without a supervisor; it reports unavailable and refuses
+  // commands rather than taking the host or the registration down with it.
+  async function startSupervisor(workspace: RegisteredWorkspace): Promise<void> {
+    let supervisor: WorkspaceSupervisor;
+    try {
+      supervisor = await WorkspaceSupervisor.start({
+        arguments: options.oxArguments,
+        command: options.oxCommand,
+        workspace: workspace.root,
+      });
+    } catch {
+      return;
     }
-    return WorkspaceSupervisor.start({
-      arguments: options.oxArguments,
-      command: options.oxCommand,
-      workspace: workspace.root,
-    });
+    supervisors.set(workspace.id, supervisor);
+    unsubscribes.set(workspace.id, supervisor.subscribe(publish));
   }
 
-  async function replaceSupervisor(): Promise<void> {
-    const next = await startSupervisor(registry.selected);
-    const previous = supervisor;
-    unsubscribe?.();
-    supervisor = next;
-    unsubscribe = supervisor?.subscribe(publish);
-    await previous?.stop();
+  async function stopSupervisor(id: string): Promise<void> {
+    const supervisor = supervisors.get(id);
+    unsubscribes.get(id)?.();
+    unsubscribes.delete(id);
+    supervisors.delete(id);
+    await supervisor?.stop();
   }
 
   function serializeWorkspace<T>(operation: () => Promise<T>): Promise<T> {
@@ -93,24 +108,21 @@ export async function startHost(options: HostOptions = {}): Promise<StartedHost>
       switch (command.type) {
         case "register-workspace": {
           const result = await registry.register(command.path);
-          if (result.selectionChanged) {
-            await replaceSupervisor();
-          }
+          // The new entry has to be visible before its supervisor starts
+          // publishing, or its early transitions would name nothing.
+          visibleRegistry = registry.state;
+          await startSupervisor(result.workspace);
           break;
         }
         case "select-workspace":
           if (!(await registry.select(command.workspaceId))) {
             return;
           }
-          await replaceSupervisor();
           break;
-        case "remove-workspace": {
-          const result = await registry.remove(command.workspaceId);
-          if (result.selectionChanged) {
-            await replaceSupervisor();
-          }
+        case "remove-workspace":
+          await registry.remove(command.workspaceId);
+          await stopSupervisor(command.workspaceId);
           break;
-        }
       }
       visibleRegistry = registry.state;
       publish();
@@ -186,17 +198,16 @@ export async function startHost(options: HostOptions = {}): Promise<StartedHost>
           });
           return;
         }
-        void respond(
-          socket,
-          browserCommand.requestId,
-          () => snapshot.revision,
-          () =>
-            isWorkspaceCommand(browserCommand)
-              ? performWorkspace(browserCommand)
-              : supervisor
-                ? perform(supervisor, browserCommand)
-                : undefined,
-        );
+        void respond(socket, browserCommand.requestId, () => snapshot.revision, () => {
+          if (isWorkspaceCommand(browserCommand)) {
+            return performWorkspace(browserCommand);
+          }
+          const supervisor = supervisors.get(browserCommand.workspaceId);
+          if (!supervisor) {
+            return Promise.reject(new Error("workspace is not active"));
+          }
+          return perform(supervisor, browserCommand);
+        });
       },
       close(socket) {
         sockets.delete(socket);
@@ -211,8 +222,7 @@ export async function startHost(options: HostOptions = {}): Promise<StartedHost>
       }
       server.stop(true);
       await workspaceOperation;
-      unsubscribe?.();
-      await supervisor?.stop();
+      await Promise.all([...supervisors.keys()].map(stopSupervisor));
     },
     url: server.url.toString().replace(/\/$/, ""),
   };
@@ -221,11 +231,12 @@ export async function startHost(options: HostOptions = {}): Promise<StartedHost>
 function snapshotFor(
   revision: number,
   registry: WorkspaceRegistryState,
+  supervisors: Map<string, WorkspaceSupervisor>,
   workspace: WorkspaceState | undefined,
 ): Snapshot {
   return {
     ...initialSnapshot(
-      browserWorkspaces(registry),
+      browserWorkspaces(registry, supervisors),
       workspace === undefined ? undefined : browserWorkspace(workspace, registry),
       workspace?.authentication,
       workspace === undefined ? undefined : browserSessions(workspace),
@@ -234,10 +245,16 @@ function snapshotFor(
   };
 }
 
-function browserWorkspaces(registry: WorkspaceRegistryState): Snapshot["workspaces"] {
+function browserWorkspaces(
+  registry: WorkspaceRegistryState,
+  supervisors: Map<string, WorkspaceSupervisor>,
+): Snapshot["workspaces"] {
   return {
     ...(registry.selectedId === undefined ? {} : { selectedId: registry.selectedId }),
-    values: registry.workspaces.map(({ id, name }) => ({ id, name })),
+    values: registry.workspaces.map(({ id, name }) => {
+      const state = supervisors.get(id)?.state;
+      return { busy: state?.busy ?? false, id, name, status: state?.status ?? "unavailable" };
+    }),
   };
 }
 
@@ -282,14 +299,10 @@ async function respond(
   socket: Bun.ServerWebSocket<SocketData>,
   requestId: string,
   revision: () => number,
-  operation: () => Promise<void> | undefined,
+  operation: () => Promise<void>,
 ): Promise<void> {
   try {
-    const running = operation();
-    if (!running) {
-      throw new Error("workspace is not configured");
-    }
-    await running;
+    await operation();
     send(socket, { type: "result", requestId, ok: true, value: { revision: revision() } });
   } catch (error) {
     send(socket, {

@@ -44,8 +44,10 @@ security model.
 - The Bun host is the authority for workspace identity, Ox process state, active
   sessions, pending client callbacks, and the transcript projection. React
   renders host snapshots and submits commands.
-- Browser messages name opaque workspace and session identifiers. Only the host
-  maps a workspace identifier to a canonical server-local path.
+- Browser messages name opaque workspace and session identifiers. Every command
+  that reaches a supervisor names its workspace, so a concurrent selection
+  change cannot redirect it to another Ox process. Only the host maps a
+  workspace identifier to a canonical server-local path.
 - One Ox process serves all active sessions in one workspace. Different sessions
   may run turns concurrently; mutations within one session are serialized where
   ACP requires it.
@@ -170,11 +172,12 @@ browser commands and callbacks. The host may start a fresh connection, but it
 does not claim that interrupted turns survived. Durable sessions are recovered
 only through the standard list, load, and resume methods.
 
-For the later multi-workspace product, the registry stores canonical roots and
-nonsecret launch configuration. Each active entry has an independent supervisor,
-so one process failure cannot corrupt routing or cancel work in another
-workspace. Browser-added roots are server-local absolute paths that the host
-canonicalizes and validates before registration.
+The registry stores canonical roots and nonsecret launch configuration. Every
+registered entry is active and has an independent supervisor, so one process
+failure cannot corrupt routing or cancel work in another workspace. Selecting a
+workspace changes which one the browser sees, not which processes run. Removing
+an entry stops its supervisor. Browser-added roots are server-local absolute
+paths that the host canonicalizes and validates before registration.
 
 ## Session state and concurrency
 

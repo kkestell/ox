@@ -1,9 +1,9 @@
 # Browser client
 
 Ox's first-party browser client is a local conversation and supervision surface
-for registered server-local workspaces. The Bun host starts and supervises Ox
-for the selected workspace, while the browser connects only to that host. A
-browser refresh or a second browser does not cancel running work.
+for registered server-local workspaces. The Bun host starts and supervises one
+Ox process per registered workspace, while the browser connects only to that
+host. A browser refresh or a second browser does not cancel running work.
 
 Install [Bun](https://bun.sh/) and Ox first. From an Ox checkout, install the
 client dependencies and build its browser bundle:
@@ -23,9 +23,12 @@ bun run start
 It prints a loopback URL such as `http://127.0.0.1:3000`; open that URL in a
 browser, then register an absolute server-local workspace path. The host saves
 canonical workspace roots in `$XDG_CONFIG_HOME/ox/workspaces.json`, or
-`$HOME/.config/ox/workspaces.json` when the XDG path is not absolute. Selecting
-a workspace replaces the currently supervised Ox process. Removing a registry
-entry does not delete workspace files or Ox session history.
+`$HOME/.config/ox/workspaces.json` when the XDG path is not absolute. Every
+registered workspace runs its own Ox process, so selecting a workspace changes
+what the browser shows without interrupting work elsewhere, and a failure in one
+workspace leaves the others running. Removing a registry entry stops that
+workspace's Ox process; it does not delete workspace files or Ox session
+history.
 
 The host automatically uses Ox's stored credential when one is available. It
 uses `ox` from `PATH` by default. Use `--ox` to choose an executable, and repeat

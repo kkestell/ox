@@ -32,6 +32,7 @@ export type AuthenticationState = {
 
 export type WorkspaceState = {
   authentication: AuthenticationState;
+  busy: boolean;
   diagnostics: string[];
   mcpServerCount: number;
   name: string;
@@ -94,7 +95,9 @@ export class WorkspaceSupervisor {
   #mcpServers: acp.McpServer[] = [];
   #sessionOperation: Promise<void> = Promise.resolve();
   #sessionCapabilities: SessionCapabilities = { close: false, delete: false, list: false, load: false, resume: false };
-  #state: WorkspaceState = {
+  // Busy is derived from the active prompts rather than stored, so the private
+  // state holds only what a transition actually writes.
+  #state: Omit<WorkspaceState, "busy"> = {
     authentication: unauthenticated,
     diagnostics: [],
     mcpServerCount: 0,
@@ -135,6 +138,7 @@ export class WorkspaceSupervisor {
         ...this.#state.authentication,
         methods: this.#state.authentication.methods.map((method) => ({ ...method })),
       },
+      busy: this.#activePrompts.size > 0,
       diagnostics: [...this.#state.diagnostics],
       mcpServerCount: this.#state.mcpServerCount,
       name: this.#state.name,

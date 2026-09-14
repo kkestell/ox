@@ -17,6 +17,18 @@ import {
   type TranscriptContent,
 } from "./protocol.ts";
 
+// A supervisor-routed command names the workspace it acts on, so the browser
+// stamps the current selection once instead of at every call site.
+type RoutedCommand = Exclude<
+  Extract<BrowserCommand, { workspaceId: string }>,
+  { type: "remove-workspace" | "select-workspace" }
+>;
+type RoutedRequest = RoutedCommand extends infer Command
+  ? Command extends RoutedCommand
+    ? Omit<Command, "workspaceId">
+    : never
+  : never;
+
 function App() {
   const [snapshot, setSnapshot] = useState<Snapshot>();
   const [connection, setConnection] = useState("Connecting");
@@ -96,11 +108,16 @@ function App() {
     return true;
   }
 
+  function sendRouted(request: RoutedRequest): boolean {
+    const workspaceId = snapshot?.workspaces.selectedId;
+    return workspaceId !== undefined && send({ ...request, workspaceId } as RoutedCommand);
+  }
+
   // Session commands report their outcome only through their result, so the
   // browser keeps the latest failure visible until another one succeeds.
-  function submitSessionCommand(command: BrowserCommand): void {
-    if (send(command)) {
-      sessionRequests.current.add(command.requestId);
+  function submitSessionCommand(request: RoutedRequest): void {
+    if (sendRouted(request)) {
+      sessionRequests.current.add(request.requestId);
       return;
     }
     setSessionError("The host connection is not open");
@@ -109,7 +126,7 @@ function App() {
   function terminalLogin(methodId: string): void {
     const value = credential;
     setCredential("");
-    send({ credential: value, methodId, requestId: crypto.randomUUID(), type: "login" });
+    sendRouted({ credential: value, methodId, requestId: crypto.randomUUID(), type: "login" });
   }
 
   function historyCommand(type: "next-history-page" | "refresh-history"): void {
@@ -125,7 +142,7 @@ function App() {
 
   function saveMCPServers(servers: MCPServer[]): void {
     const requestId = crypto.randomUUID();
-    if (!send({ mcpServers: servers, requestId, type: "set-mcp-servers" })) {
+    if (!sendRouted({ mcpServers: servers, requestId, type: "set-mcp-servers" })) {
       setMCPMessage("The host connection is not open");
       return;
     }
@@ -175,7 +192,7 @@ function App() {
         <Authentication
           authentication={snapshot.authentication}
           credential={credential}
-          onAuthenticate={(methodId) => send({ methodId, requestId: crypto.randomUUID(), type: "authenticate" })}
+          onAuthenticate={(methodId) => sendRouted({ methodId, requestId: crypto.randomUUID(), type: "authenticate" })}
           onCredential={setCredential}
           onLogin={terminalLogin}
         />
@@ -241,7 +258,7 @@ function App() {
             credential={credential}
             onCredential={setCredential}
             onLogin={terminalLogin}
-            onLogout={() => send({ requestId: crypto.randomUUID(), type: "logout" })}
+            onLogout={() => sendRouted({ requestId: crypto.randomUUID(), type: "logout" })}
             onRefresh={() => historyCommand("refresh-history")}
             snapshot={snapshot}
             workspace={snapshot.workspace}
@@ -356,10 +373,14 @@ function SupportDetails({ activeSessionId, connection, credential, onCredential,
       <summary>Support details</summary>
       <dl>
         <dt>Browser connection</dt><dd>{connection}</dd>
-        <dt>Ox process</dt><dd>{workspace.status}</dd>
         <dt>Host revision</dt><dd>{snapshot.revision}</dd>
         {activeSessionId ? <><dt>Session ID</dt><dd>{activeSessionId}</dd></> : null}
       </dl>
+      <ul aria-label="Ox processes">
+        {snapshot.workspaces.values.map((entry) => (
+          <li key={entry.id}>{`${entry.name} — ${entry.status}, ${entry.busy ? "working" : "idle"}`}</li>
+        ))}
+      </ul>
       {workspace.diagnostics.length > 0 ? <ul aria-label="Workspace diagnostics">{workspace.diagnostics.map((diagnostic, index) => <li key={`${index}-${diagnostic}`}>{diagnostic}</li>)}</ul> : null}
       <button onClick={onRefresh} type="button">Refresh conversation history</button>
       <details>

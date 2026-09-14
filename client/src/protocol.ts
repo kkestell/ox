@@ -3,6 +3,7 @@ import { z } from "zod";
 const requestID = z.string().min(1).max(128);
 const sessionID = z.string().min(1).max(512);
 const workspaceID = z.string().uuid();
+const workspaceStatus = z.enum(["starting", "ready", "unavailable", "stopped"]);
 
 /** The most sessions a snapshot can carry, and therefore the most the host pages in. */
 export const maximumSessions = 500;
@@ -347,6 +348,7 @@ export const browserCommandSchema = z.discriminatedUnion("type", [
     .object({
       type: z.literal("authenticate"),
       requestId: requestID,
+      workspaceId: workspaceID,
       methodId: z.string().min(1).max(128),
     })
     .strict(),
@@ -354,6 +356,7 @@ export const browserCommandSchema = z.discriminatedUnion("type", [
     .object({
       type: z.literal("login"),
       requestId: requestID,
+      workspaceId: workspaceID,
       methodId: z.string().min(1).max(128),
       credential: z.string().trim().min(1).max(4096),
     })
@@ -362,35 +365,38 @@ export const browserCommandSchema = z.discriminatedUnion("type", [
     .object({
       type: z.literal("logout"),
       requestId: requestID,
+      workspaceId: workspaceID,
     })
     .strict(),
-  z.object({ type: z.literal("new-conversation"), requestId: requestID }).strict(),
-  z.object({ type: z.literal("refresh-history"), requestId: requestID }).strict(),
-  z.object({ type: z.literal("next-history-page"), requestId: requestID }).strict(),
-  z.object({ type: z.literal("open-conversation"), requestId: requestID, sessionId: sessionID }).strict(),
-  z.object({ type: z.literal("close-conversation"), requestId: requestID, sessionId: sessionID }).strict(),
-  z.object({ type: z.literal("delete-conversation"), requestId: requestID, sessionId: sessionID }).strict(),
-  z.object({ type: z.literal("set-mcp-servers"), requestId: requestID, mcpServers }).strict(),
+  z.object({ type: z.literal("new-conversation"), requestId: requestID, workspaceId: workspaceID }).strict(),
+  z.object({ type: z.literal("refresh-history"), requestId: requestID, workspaceId: workspaceID }).strict(),
+  z.object({ type: z.literal("next-history-page"), requestId: requestID, workspaceId: workspaceID }).strict(),
+  z.object({ type: z.literal("open-conversation"), requestId: requestID, workspaceId: workspaceID, sessionId: sessionID }).strict(),
+  z.object({ type: z.literal("close-conversation"), requestId: requestID, workspaceId: workspaceID, sessionId: sessionID }).strict(),
+  z.object({ type: z.literal("delete-conversation"), requestId: requestID, workspaceId: workspaceID, sessionId: sessionID }).strict(),
+  z.object({ type: z.literal("set-mcp-servers"), requestId: requestID, workspaceId: workspaceID, mcpServers }).strict(),
   z
     .object({
       type: z.literal("prompt"),
       requestId: requestID,
+      workspaceId: workspaceID,
       sessionId: sessionID,
       prompt: z.array(promptContentBlockSchema).min(1).max(32),
     })
     .strict(),
-  z.object({ type: z.literal("cancel-prompt"), requestId: requestID, sessionId: sessionID }).strict(),
+  z.object({ type: z.literal("cancel-prompt"), requestId: requestID, workspaceId: workspaceID, sessionId: sessionID }).strict(),
   z
     .object({
       type: z.literal("set-config-option"),
       requestId: requestID,
+      workspaceId: workspaceID,
       sessionId: sessionID,
       configId: z.string().min(1).max(128),
       value: z.string().min(1).max(512),
     })
     .strict(),
-  z.object({ type: z.literal("resolve-permission"), requestId: requestID, sessionId: sessionID, interactionId: interactionID, optionId: optionID }).strict(),
-  z.object({ type: z.literal("resolve-elicitation"), requestId: requestID, sessionId: sessionID, interactionId: interactionID, action: z.enum(["accept", "decline", "cancel"]), content: z.record(z.string().min(1).max(256), formValueSchema).refine((value) => Object.keys(value).length <= 64).optional() }).strict(),
+  z.object({ type: z.literal("resolve-permission"), requestId: requestID, workspaceId: workspaceID, sessionId: sessionID, interactionId: interactionID, optionId: optionID }).strict(),
+  z.object({ type: z.literal("resolve-elicitation"), requestId: requestID, workspaceId: workspaceID, sessionId: sessionID, interactionId: interactionID, action: z.enum(["accept", "decline", "cancel"]), content: z.record(z.string().min(1).max(256), formValueSchema).refine((value) => Object.keys(value).length <= 64).optional() }).strict(),
 ]);
 
 export type BrowserCommand = z.infer<typeof browserCommandSchema>;
@@ -403,7 +409,11 @@ export const snapshotSchema = z
       .object({
         selectedId: workspaceID.optional(),
         values: z
-          .array(z.object({ id: workspaceID, name: z.string().min(1).max(512) }).strict())
+          .array(
+            z
+              .object({ id: workspaceID, name: z.string().min(1).max(512), status: workspaceStatus, busy: z.boolean() })
+              .strict(),
+          )
           .max(1_024),
       })
       .strict()
@@ -420,7 +430,7 @@ export const snapshotSchema = z
       }),
     workspace: z
       .object({
-        status: z.enum(["starting", "ready", "unavailable", "stopped"]),
+        status: workspaceStatus,
         diagnostics: z.array(z.string()).max(16),
         mcpServerCount: z.number().int().nonnegative(),
         name: z.string().min(1).max(512),
