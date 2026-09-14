@@ -1,7 +1,7 @@
 # Session review: tool and harness friction during release implementation
 
 **Scope:** durable session `f8f154c2b21096cbd2e09a3828beaf7f`, which implemented
-`eng/plans/2026-09-13-versioned-binary-releases.md` in the Ox workspace on
+`eng/plans/2026-09-13-031-versioned-binary-releases.md` in the Ox workspace on
 2026-09-13.
 
 **Mode:** model-behavior and developer-experience review.
