@@ -4,6 +4,7 @@ import { realpath, stat } from "node:fs/promises";
 import { Readable, Writable } from "node:stream";
 
 import { maximumSessions } from "./protocol.ts";
+import type { SessionTranscript } from "./protocol.ts";
 import { SessionController } from "./session-controller.ts";
 
 const maximumDiagnostics = 16;
@@ -34,6 +35,7 @@ export type WorkspaceState = {
 };
 
 export type SessionState = {
+  active?: { id: string; transcript: SessionTranscript };
   nextCursor?: string;
   selectedID?: string;
   values: SessionSummary[];
@@ -111,6 +113,7 @@ export class WorkspaceSupervisor {
   }
 
   get state(): WorkspaceState {
+    const active = this.activeSession();
     return {
       authentication: {
         ...this.#state.authentication,
@@ -118,6 +121,7 @@ export class WorkspaceSupervisor {
       },
       diagnostics: [...this.#state.diagnostics],
       sessions: {
+        ...(active === undefined ? {} : { active }),
         ...(this.#state.sessions.nextCursor === undefined ? {} : { nextCursor: this.#state.sessions.nextCursor }),
         ...(this.#state.sessions.selectedID === undefined ? {} : { selectedID: this.#state.sessions.selectedID }),
         values: this.#state.sessions.values.map((session) => ({ ...session })),
@@ -148,9 +152,9 @@ export class WorkspaceSupervisor {
     return this.serializeAuthentication(() => this.logoutImpl());
   }
 
-  /** Updates Ox has routed to an active session, in arrival order. */
-  sessionUpdates(sessionID: string): readonly acp.SessionUpdate[] {
-    return this.#controllers.get(sessionID)?.updates ?? [];
+  /** Browser-safe state Ox has routed to an active session. */
+  sessionTranscript(sessionID: string): SessionTranscript | undefined {
+    return this.#controllers.get(sessionID)?.transcript;
   }
 
   newSession(): Promise<void> {
@@ -374,7 +378,9 @@ export class WorkspaceSupervisor {
       cwd: this.workspace,
       mcpServers: [],
     });
-    this.#controllers.set(response.sessionId, new SessionController(response.sessionId));
+    const controller = new SessionController(response.sessionId);
+    controller.replaceConfiguration(response.configOptions);
+    this.#controllers.set(response.sessionId, controller);
     this.setSessions({ ...this.withSessionStatus(response.sessionId, "active"), selectedID: response.sessionId });
     if (this.#sessionCapabilities.list) {
       await this.refreshSessionsImpl();
@@ -424,9 +430,11 @@ export class WorkspaceSupervisor {
     try {
       const request = { cwd: this.workspace, mcpServers: [], sessionId: sessionID };
       if (operation === "load") {
-        await connection.agent.request(acp.methods.agent.session.load, request);
+        const response = (await connection.agent.request(acp.methods.agent.session.load, request)) as acp.LoadSessionResponse;
+        this.#controllers.get(sessionID)?.replaceConfiguration(response.configOptions);
       } else {
-        await connection.agent.request(acp.methods.agent.session.resume, request);
+        const response = (await connection.agent.request(acp.methods.agent.session.resume, request)) as acp.ResumeSessionResponse;
+        this.#controllers.get(sessionID)?.replaceConfiguration(response.configOptions);
       }
     } catch (error) {
       this.#controllers.delete(sessionID);
@@ -474,7 +482,17 @@ export class WorkspaceSupervisor {
   }
 
   private routeSessionUpdate(notification: acp.SessionNotification): void {
-    this.#controllers.get(notification.sessionId)?.accept(notification.update);
+    const controller = this.#controllers.get(notification.sessionId);
+    if (!controller) return;
+    controller.accept(notification.update);
+    this.publish();
+  }
+
+  private activeSession(): SessionState["active"] {
+    const id = this.#state.sessions.selectedID;
+    if (id === undefined) return undefined;
+    const controller = this.#controllers.get(id);
+    return controller === undefined ? undefined : { id, transcript: controller.transcript };
   }
 
   private mergeActiveSessions(values: SessionSummary[]): SessionSummary[] {

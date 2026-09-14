@@ -121,7 +121,7 @@
   - [x] Add host-owned session listing with cursor pagination, new, load with
         replay, resume, close, and delete, and prove browser refresh and two
         attached browsers preserve one coherent session view
-  - [ ] Fold and render every Ox session update—user and agent content,
+  - [x] Fold and render every Ox session update—user and agent content,
         thoughts, tool calls and output, plans, usage, configuration, and
         terminal outcomes—with reducer tests for chunking, merging, replay, and
         unknown extensible values

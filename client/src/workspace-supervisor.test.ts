@@ -173,8 +173,12 @@ describe("workspace supervisor", () => {
     await supervisor.loadSession("first");
     expect(supervisor.state.sessions.selectedID).toBe("first");
     expect(supervisor.state.sessions.values.find((session) => session.id === "first")?.status).toBe("active");
-    expect(supervisor.sessionUpdates("first")).toEqual([
-      { content: { text: "replayed", type: "text" }, sessionUpdate: "agent_message_chunk" },
+    expect(supervisor.sessionTranscript("first")?.entries).toEqual([
+      {
+        content: [{ text: "replayed", type: "text" }],
+        id: "agent:1",
+        kind: "agent",
+      },
     ]);
 
     await supervisor.closeSession("first");

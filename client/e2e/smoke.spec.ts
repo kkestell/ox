@@ -92,9 +92,15 @@ test("keeps a replayed session coherent across refresh and attached browsers", a
     await expect(sessions).toContainText("smoke");
     await page.getByRole("button", { name: "Load" }).click();
     await expect(page.getByText(`Selected session ${sessionID}`)).toBeVisible();
+    const transcript = page.getByRole("region", { name: "Transcript" });
+    await expect(transcript).toContainText("smoke");
+    await expect(transcript).toContainText("browser smoke");
+    await expect(transcript).toContainText("Usage");
+    await expect(transcript).toContainText("Configuration");
 
     await page.reload();
     await expect(page.getByText(`Selected session ${sessionID}`)).toBeVisible();
+    await expect(page.getByRole("region", { name: "Transcript" })).toContainText("browser smoke");
 
     secondContext = await browser.newContext();
     const second = await secondContext.newPage();

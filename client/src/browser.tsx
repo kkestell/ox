@@ -1,7 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 
-import { type BrowserCommand, browserMessageSchema, type Snapshot } from "./protocol.ts";
+import {
+  type BrowserCommand,
+  browserMessageSchema,
+  type SessionTranscript,
+  type Snapshot,
+  type ToolTranscriptContent,
+  type TranscriptContent,
+} from "./protocol.ts";
 
 function App() {
   const [snapshot, setSnapshot] = useState<Snapshot>();
@@ -232,8 +239,137 @@ function App() {
           ) : null}
         </section>
       ) : null}
+      {snapshot?.sessions.active ? <Transcript transcript={snapshot.sessions.active.transcript} /> : null}
     </main>
   );
+}
+
+function Transcript({ transcript }: { transcript: SessionTranscript }) {
+  return (
+    <section aria-labelledby="transcript-heading">
+      <h2 id="transcript-heading">Transcript</h2>
+      <ol aria-label="Session transcript">
+        {transcript.entries.map((entry) => (
+          <li key={entry.id}>
+            {entry.kind === "tool" ? (
+              <article aria-label={`Tool ${entry.title}`}>
+                <h3>{entry.title}</h3>
+                {entry.name ? <p>{entry.name}</p> : null}
+                {entry.toolKind ? <p>{entry.toolKind}</p> : null}
+                {entry.status ? <p>{entry.status}</p> : null}
+                {entry.locations.length > 0 ? (
+                  <ul aria-label="Tool locations">
+                    {entry.locations.map((location) => (
+                      <li key={`${location.path}:${location.line ?? ""}`}>
+                        {location.path}
+                        {location.line === undefined ? "" : `:${location.line}`}
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+                {entry.content.map((content, index) => (
+                  <ToolOutput content={content} key={index} />
+                ))}
+              </article>
+            ) : entry.kind === "unknown" ? (
+              <p>{entry.label}</p>
+            ) : (
+              <article aria-label={`${entry.kind} message`}>
+                <h3>{entry.kind === "thought" ? "Thought" : entry.kind === "agent" ? "Agent" : "User"}</h3>
+                {entry.content.map((content, index) => (
+                  <Content content={content} key={index} />
+                ))}
+              </article>
+            )}
+          </li>
+        ))}
+      </ol>
+      <section aria-labelledby="plan-heading">
+        <h3 id="plan-heading">Plan</h3>
+        <ol>
+          {transcript.plan.map((entry, index) => (
+            <li key={index}>
+              {entry.content} ({entry.status}, {entry.priority})
+            </li>
+          ))}
+        </ol>
+      </section>
+      {transcript.usage ? (
+        <section aria-labelledby="usage-heading">
+          <h3 id="usage-heading">Usage</h3>
+          <p>{`${transcript.usage.used} of ${transcript.usage.size} context tokens`}</p>
+          {transcript.usage.cost ? <p>{`${transcript.usage.cost.amount} ${transcript.usage.cost.currency}`}</p> : null}
+        </section>
+      ) : null}
+      <section aria-labelledby="configuration-heading">
+        <h3 id="configuration-heading">Configuration</h3>
+        <dl>
+          {transcript.configuration.map((option) => (
+            <div key={option.id}>
+              <dt>{option.name}</dt>
+              <dd>{String(option.currentValue)}</dd>
+              {option.description ? <dd>{option.description}</dd> : null}
+            </div>
+          ))}
+        </dl>
+      </section>
+    </section>
+  );
+}
+
+function ToolOutput({ content }: { content: ToolTranscriptContent }) {
+  switch (content.type) {
+    case "content":
+      return <Content content={content.content} />;
+    case "diff":
+      return <pre>{`${content.path}\n${content.oldText ?? ""}\n${content.newText}`}</pre>;
+    case "terminal":
+      return <p>{`Terminal ${content.terminalId}`}</p>;
+    case "unknown":
+      return <p>{content.label}</p>;
+  }
+}
+
+function Content({ content }: { content: TranscriptContent }) {
+  switch (content.type) {
+    case "text":
+      return <p>{content.text}</p>;
+    case "image":
+      return <img alt={content.uri ?? "Image content"} src={`data:${content.mimeType};base64,${content.data}`} />;
+    case "audio":
+      return <audio controls src={`data:${content.mimeType};base64,${content.data}`} />;
+    case "resource_link": {
+      const href = safeResourceLink(content.uri);
+      const label = content.title ?? content.name;
+      return (
+        <p>
+          {href ? <a href={href}>{label}</a> : <span>{label}</span>}
+          {content.description ? `: ${content.description}` : ""}
+        </p>
+      );
+    }
+    case "resource":
+      return content.text === undefined ? (
+        <a download href={`data:${content.mimeType ?? "application/octet-stream"};base64,${content.blob}`}>
+          {content.uri}
+        </a>
+      ) : (
+        <pre>{content.text}</pre>
+      );
+    case "unknown":
+      return <p>{content.label}</p>;
+  }
+}
+
+// ACP resource links are agent-provided values, so do not let them select an
+// executable browser URL scheme.
+function safeResourceLink(uri: string): string | undefined {
+  try {
+    const url = new URL(uri);
+    return url.protocol === "http:" || url.protocol === "https:" ? url.href : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 const root = document.getElementById("root");

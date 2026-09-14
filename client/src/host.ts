@@ -168,6 +168,14 @@ function snapshotFor(revision: number, workspace: WorkspaceState): Snapshot {
 
 function browserSessions(workspace: WorkspaceState): Snapshot["sessions"] {
   return {
+    ...(workspace.sessions.active === undefined
+      ? {}
+      : {
+          active: {
+            id: workspace.sessions.active.id,
+            transcript: workspace.sessions.active.transcript,
+          },
+        }),
     ...(workspace.sessions.nextCursor === undefined ? {} : { nextCursor: workspace.sessions.nextCursor }),
     ...(workspace.sessions.selectedID === undefined ? {} : { selectedId: workspace.sessions.selectedID }),
     values: workspace.sessions.values.map((session) => ({ ...session })),

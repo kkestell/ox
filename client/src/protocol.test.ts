@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { initialSnapshot, parseBrowserCommand } from "./protocol.ts";
+import { initialSnapshot, parseBrowserCommand, snapshotSchema } from "./protocol.ts";
 
 describe("browser protocol", () => {
   test("accepts a correlated ping", () => {
@@ -66,5 +66,44 @@ describe("browser protocol", () => {
       authentication: { logoutAvailable: false, methods: [], status: "unavailable" },
       sessions: { values: [] },
     });
+  });
+
+  test("accepts a browser-safe active transcript and rejects arbitrary payloads", () => {
+    const snapshot = initialSnapshot({ diagnostics: [], status: "ready" });
+    snapshot.sessions.active = {
+      id: "session-1",
+      transcript: {
+        configuration: [],
+        entries: [{ content: [{ text: "hello", type: "text" }], id: "agent-1", kind: "agent" }],
+        plan: [],
+      },
+    };
+    expect(snapshotSchema.safeParse(snapshot).success).toBe(true);
+
+    snapshot.sessions.active = {
+      id: "session-1",
+      transcript: {
+        configuration: [],
+        entries: [{ id: "unknown-1", kind: "unknown", label: "future", payload: "must not cross the boundary" }],
+        plan: [],
+      },
+    } as unknown as typeof snapshot.sessions.active;
+    expect(snapshotSchema.safeParse(snapshot).success).toBe(false);
+
+    snapshot.sessions.active = {
+      id: "session-1",
+      transcript: {
+        configuration: [],
+        entries: [
+          {
+            content: [{ type: "resource", uri: "file:///missing-content" }],
+            id: "agent-1",
+            kind: "agent",
+          },
+        ],
+        plan: [],
+      },
+    } as unknown as typeof snapshot.sessions.active;
+    expect(snapshotSchema.safeParse(snapshot).success).toBe(false);
   });
 });
