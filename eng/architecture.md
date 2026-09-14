@@ -4,7 +4,10 @@ This document describes Ox's durable design: its process boundaries, component
 responsibilities, dependency direction, state ownership, and the decisions each
 implementation slice must preserve. `eng/todo.md` tracks what gets built and in
 what order. `docs/spec.md` owns observable behavior and limits. This design also
-covers planned boundaries; the todo list identifies implementation status.
+covers planned boundaries; the todo list identifies implementation status. The
+first-party web ACP client's corresponding design lives in
+`eng/client-architecture.md`; it remains an ordinary client of the boundary
+described here.
 
 ## System boundary
 

@@ -32,6 +32,35 @@ uses client filesystem and terminal methods only when the client advertises
 them. Missing capabilities do not silently change an operation that requires the
 client.
 
+## Web client
+
+Ox includes a first-party local web client built with Bun, TypeScript, and
+React. Its Bun host starts Ox, stays running without an attached browser, and
+serves the same live session state to desktop and mobile browsers. It listens on
+loopback by default and accepts an explicit bind address for access over a
+trusted network. It does not provide user authentication or TLS.
+
+The first version takes one server-local workspace when the host starts. It can
+run concurrent sessions in that workspace, and a later browser-managed workspace
+registry can run concurrent sessions across several workspaces. Each workspace
+has one Ox process and one ACP connection; a failure in one workspace does not
+become a session or filesystem operation in another.
+
+The web client supports every ACP v1 feature Ox advertises or requests:
+authentication and logout, the complete session lifecycle, configuration
+options, all supported prompt content, streaming text and thought, tool, plan,
+usage and configuration updates, cancellation, permissions, form elicitation,
+client filesystem and terminal callbacks, and HTTP and stdio MCP activation.
+Refresh and browser disconnection do not cancel active work. A newly attached
+browser receives the Bun host's current state, and a host restart reconstructs
+durable history through ordinary ACP session loading.
+
+The client is a conversation and supervision surface, not a general editor,
+interactive terminal emulator, Git interface, or worktree manager. Filesystem
+and terminal callbacks exist to implement negotiated ACP operations and are not
+exposed as general remote host APIs. `eng/client-architecture.md` owns the
+implementation boundaries and test strategy.
+
 ## Sessions and turns
 
 Creating a session returns a new session identifier and binds the session to one

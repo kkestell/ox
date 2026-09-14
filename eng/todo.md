@@ -103,3 +103,58 @@
         (F01)
   - [x] Preserve validator exit status without model-added output-truncation
         pipelines (F02)
+- [ ] Build the first-party browser ACP client described in
+      [the client architecture](client-architecture.md)
+  - [ ] Establish the `client/` Bun, TypeScript, and React package with the
+        validated same-origin browser protocol, unstyled semantic application
+        shell, unit and type gates, and a Playwright smoke test that drives a
+        real Ox binary through a deterministic fake OpenRouter endpoint
+  - [ ] Supervise and initialize one Ox process for the startup-selected
+        workspace, report bounded diagnostics and connection failure, and prove
+        clean startup, shutdown, and unexpected-exit behavior through the
+        browser harness
+  - [ ] Implement stored-credential authentication, browser-driven terminal
+        login, and logout without putting credentials in ACP, snapshots, URLs,
+        logs, or test artifacts; cover success and failure at the process
+        boundary
+  - [ ] Add host-owned session listing with cursor pagination, new, load with
+        replay, resume, close, and delete, and prove browser refresh and two
+        attached browsers preserve one coherent session view
+  - [ ] Fold and render every Ox session update—user and agent content,
+        thoughts, tool calls and output, plans, usage, configuration, and
+        terminal outcomes—with reducer tests for chunking, merging, replay, and
+        unknown extensible values
+  - [ ] Add prompting and cancellation, all supported prompt block types, and
+        mode, model, and reasoning controls; prove concurrent turns in separate
+        sessions and refusal of a second turn in one busy session
+  - [ ] Handle permission and form-elicitation callbacks as host-owned pending
+        interactions, including exact option/schema rendering, refresh,
+        cancellation, and first-answer-wins races between browsers
+  - [ ] Implement confined ACP read and write callbacks with boundary tests and
+        real Ox tool scenarios for paging, replacement, client-backed edit
+        evidence, invalid paths, and cancellation
+  - [ ] Implement the ACP terminal callback lifecycle with exact argv and
+        environment execution, process-group cancellation, bounded incremental
+        output, exit status, wait, kill, and release conformance tests through
+        real Ox shell calls
+  - [ ] Add HTTP and stdio MCP activation forms with ephemeral secret handling,
+        route definitions consistently through new, load, and resume, and prove
+        tool discovery, calls, failures, and reactivation with local test
+        servers
+  - [ ] Complete the functional ACP and reconnect matrix, integrate focused
+        client gates into the repository checks, document startup and trusted
+        network use, and perform the milestone completeness and simplification
+        review while the client still contains zero CSS
+- [ ] Apply responsive visual design to the feature-complete browser client
+  - [ ] Add the first CSS after the functional gate, preserving semantic control
+        behavior, and verify the complete flow at phone and desktop viewports
+        with focused accessibility and Playwright checks
+- [ ] Add browser-managed multi-workspace operation
+  - [ ] Persist a registry of validated server-local workspace roots and add
+        browser flows to register, select, and remove them without exposing a
+        general filesystem API
+  - [ ] Run and route one independently supervised Ox process per active
+        workspace, and prove concurrent turns and failure isolation across two
+        roots
+  - [ ] Complete multi-workspace restart, interaction-routing, and browser
+        coverage, then run the milestone completeness and simplification review
