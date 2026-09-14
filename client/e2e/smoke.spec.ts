@@ -73,6 +73,43 @@ test("authenticates stored credentials and keeps a browser login secret out of t
   }
 });
 
+test("keeps a replayed session coherent across refresh and attached browsers", async ({ browser, page }) => {
+  const fixture = await createFixture();
+  let host: BrowserHost | undefined;
+  let secondContext: Awaited<ReturnType<typeof browser.newContext>> | undefined;
+  try {
+    const sessionID = await driveOx(fixture);
+    host = startBrowserHost(fixture);
+    const url = await host.url;
+    await assertReady(page, url);
+
+    const sessions = page.getByRole("list", { name: "Sessions" });
+    await expect(sessions).toContainText("smoke");
+    await page.getByRole("button", { name: "Load" }).click();
+    await expect(page.getByText(`Selected session ${sessionID}`)).toBeVisible();
+
+    await page.reload();
+    await expect(page.getByText(`Selected session ${sessionID}`)).toBeVisible();
+
+    secondContext = await browser.newContext();
+    const second = await secondContext.newPage();
+    await second.goto(url);
+    await expect(second.getByText(`Selected session ${sessionID}`)).toBeVisible();
+    await second.getByRole("button", { name: "Close" }).click();
+    await expect(page.getByText("No session selected")).toBeVisible();
+    await expect(sessions.getByText("inactive", { exact: true })).toBeVisible();
+
+    await page.getByRole("button", { name: "Delete" }).click();
+    await expect(sessions).not.toContainText("smoke");
+    await page.getByRole("button", { name: "New session" }).click();
+    await expect(page.getByText(/^Selected session /)).toBeVisible();
+  } finally {
+    await secondContext?.close();
+    await host?.stop();
+    await fixture.close();
+  }
+});
+
 type BrowserHost = {
   stop(): Promise<void>;
   url: Promise<string>;
@@ -255,7 +292,7 @@ async function seedOxFixture(fixture: Pick<Fixture, "binary" | "credential" | "w
   await run("go", ["build", "-o", fixture.binary, "./cmd/ox"], repositoryRoot);
 }
 
-async function driveOx(fixture: Fixture): Promise<void> {
+async function driveOx(fixture: Fixture): Promise<string> {
   const child = spawn(
     fixture.binary,
     [
@@ -278,7 +315,7 @@ async function driveOx(fixture: Fixture): Promise<void> {
     Readable.toWeb(child.stdout) as unknown as ReadableStream<Uint8Array>,
   );
   try {
-    await acp
+    return await acp
       .client({ name: "ox-browser-smoke" })
       .onNotification(acp.methods.client.session.update, () => {})
       .connectWith(stream, async (connection) => {
@@ -296,6 +333,7 @@ async function driveOx(fixture: Fixture): Promise<void> {
           sessionId: session.sessionId,
         });
         expect(result.stopReason).toBe("end_turn");
+        return session.sessionId;
       });
   } finally {
     child.stdin.end();

@@ -18,6 +18,7 @@ describe("workspace supervisor", () => {
     expect(supervisor.state).toEqual({
       authentication: { logoutAvailable: false, methods: [], status: "required" },
       diagnostics: [],
+      sessions: { values: [] },
       status: "ready",
     });
 
@@ -70,6 +71,7 @@ describe("workspace supervisor", () => {
     expect(supervisor.state).toEqual({
       authentication: { logoutAvailable: false, methods: [], status: "unavailable" },
       diagnostics: ["Ox did not initialize within 2 seconds"],
+      sessions: { values: [] },
       status: "unavailable",
     });
 
@@ -144,6 +146,48 @@ describe("workspace supervisor", () => {
     expect(supervisor.state.authentication.logoutAvailable).toBe(false);
     await expect(supervisor.logout()).rejects.toThrow("Ox does not support logout");
 
+    await supervisor.stop();
+  });
+
+  test("owns paginated session lifecycle state", async () => {
+    const supervisor = await WorkspaceSupervisor.start({
+      arguments: ["--eval", lifecycleProgram()],
+      command: process.execPath,
+      workspace: await temporaryWorkspace(),
+    });
+
+    await eventually(() => supervisor.state.sessions.values.length === 1);
+    expect(supervisor.state.sessions).toEqual({
+      nextCursor: "page-2",
+      values: [{ id: "first", status: "inactive", title: "First" }],
+    });
+
+    await supervisor.nextSessionPage();
+    expect(supervisor.state.sessions.values.map((session) => session.id)).toEqual(["first", "second"]);
+
+    await expect(supervisor.loadSession("missing")).rejects.toThrow("unknown session");
+    expect(supervisor.state.sessions.values.map((session) => session.id)).toEqual(["first", "second"]);
+    expect(supervisor.state.sessions.selectedID).toBeUndefined();
+
+    await supervisor.loadSession("first");
+    expect(supervisor.state.sessions.selectedID).toBe("first");
+    expect(supervisor.state.sessions.values.find((session) => session.id === "first")?.status).toBe("active");
+    expect(supervisor.sessionUpdates("first")).toEqual([
+      { content: { text: "replayed", type: "text" }, sessionUpdate: "agent_message_chunk" },
+    ]);
+
+    await supervisor.closeSession("first");
+    await supervisor.resumeSession("second");
+    expect(supervisor.state.sessions.selectedID).toBe("second");
+    expect(supervisor.state.sessions.values.find((session) => session.id === "second")?.status).toBe("active");
+
+    await supervisor.closeSession("second");
+    await supervisor.deleteSession("second");
+    expect(supervisor.state.sessions.values.map((session) => session.id)).toEqual(["first"]);
+
+    await supervisor.newSession();
+    expect(supervisor.state.sessions.selectedID).toBe("created");
+    expect(supervisor.state.sessions.values.find((session) => session.id === "created")?.status).toBe("active");
     await supervisor.stop();
   });
 });
@@ -234,6 +278,71 @@ process.stdin.on('data', (chunk) => {
   }
 });
 }`;
+}
+
+function lifecycleProgram(): string {
+  return `
+process.stdin.setEncoding('utf8');
+let input = '';
+let sessions = [
+  { sessionId: 'first', cwd: process.cwd(), title: 'First' },
+  { sessionId: 'second', cwd: process.cwd(), title: 'Second' },
+];
+function response(id, result) {
+  process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id, result }) + '\\n');
+}
+process.stdin.on('data', (chunk) => {
+  input += chunk;
+  for (;;) {
+    const newline = input.indexOf('\\n');
+    if (newline === -1) break;
+    const request = JSON.parse(input.slice(0, newline));
+    input = input.slice(newline + 1);
+    if (request.method === 'initialize') {
+      response(request.id, { protocolVersion: 1, agentCapabilities: {
+        loadSession: true,
+        sessionCapabilities: { list: {}, delete: {}, resume: {}, close: {} },
+      }, authMethods: [] });
+      continue;
+    }
+    if (request.method === 'session/list') {
+      if (request.params.cursor === 'page-2') {
+        const firstID = sessions.some((session) => session.sessionId === 'created') ? 'created' : 'first';
+        response(request.id, { sessions: sessions.filter((session) => session.sessionId !== firstID) });
+      } else {
+        const firstID = sessions.some((session) => session.sessionId === 'created') ? 'created' : 'first';
+        const first = sessions.find((session) => session.sessionId === firstID);
+        response(request.id, { sessions: first ? [first] : [], nextCursor: sessions.some((session) => session.sessionId === 'second') ? 'page-2' : undefined });
+      }
+      continue;
+    }
+    if (request.method === 'session/new') {
+      sessions.push({ sessionId: 'created', cwd: process.cwd(), title: 'Created' });
+      response(request.id, { sessionId: 'created' });
+      continue;
+    }
+    if (request.method === 'session/load') {
+      if (!sessions.some((session) => session.sessionId === request.params.sessionId)) {
+        process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: request.id, error: { code: -32602, message: 'unknown session' } }) + '\\n');
+        continue;
+      }
+      process.stdout.write(JSON.stringify({ jsonrpc: '2.0', method: 'session/update', params: {
+        sessionId: request.params.sessionId,
+        update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'replayed' } },
+      } }) + '\\n');
+      response(request.id, {});
+      continue;
+    }
+    if (request.method === 'session/resume' || request.method === 'session/close') {
+      response(request.id, {});
+      continue;
+    }
+    if (request.method === 'session/delete') {
+      sessions = sessions.filter((session) => session.sessionId !== request.params.sessionId);
+      response(request.id, {});
+    }
+  }
+});`;
 }
 
 async function temporaryWorkspace(): Promise<string> {

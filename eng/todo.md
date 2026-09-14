@@ -118,7 +118,7 @@
         login, and logout without putting credentials in ACP, snapshots, URLs,
         logs, or test artifacts; cover success and failure at the process
         boundary
-  - [ ] Add host-owned session listing with cursor pagination, new, load with
+  - [x] Add host-owned session listing with cursor pagination, new, load with
         replay, resume, close, and delete, and prove browser refresh and two
         attached browsers preserve one coherent session view
   - [ ] Fold and render every Ox session update—user and agent content,

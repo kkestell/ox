@@ -6,7 +6,7 @@
     "build": "bun build ./src/browser.tsx --outdir ./public --target browser",
     "check": "tsc --noEmit",
     "start": "bun run ./src/host.ts",
-    "test": "bun test ./src/protocol.test.ts ./src/host.test.ts ./src/workspace-supervisor.test.ts",
+    "test": "bun test ./src/protocol.test.ts ./src/host.test.ts ./src/session-controller.test.ts ./src/workspace-supervisor.test.ts",
     "test:e2e": "bun run build && playwright test"
   },
   "dependencies": {

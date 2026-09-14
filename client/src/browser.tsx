@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 
-import { browserMessageSchema, type Snapshot } from "./protocol.ts";
+import { type BrowserCommand, browserMessageSchema, type Snapshot } from "./protocol.ts";
 
 function App() {
   const [snapshot, setSnapshot] = useState<Snapshot>();
@@ -50,7 +50,7 @@ function App() {
     };
   }, []);
 
-  function send(command: Record<string, string>): void {
+  function send(command: BrowserCommand): void {
     if (socket.current?.readyState !== WebSocket.OPEN) {
       return;
     }
@@ -61,6 +61,17 @@ function App() {
     const value = credential;
     setCredential("");
     send({ credential: value, methodId, requestId: crypto.randomUUID(), type: "login" });
+  }
+
+  function catalogCommand(type: "new-session" | "next-session-page" | "refresh-sessions"): void {
+    send({ requestId: crypto.randomUUID(), type });
+  }
+
+  function sessionCommand(
+    type: "close-session" | "delete-session" | "load-session" | "resume-session",
+    sessionId: string,
+  ): void {
+    send({ requestId: crypto.randomUUID(), sessionId, type });
   }
 
   return (
@@ -134,6 +145,51 @@ function App() {
               type="button"
             >
               Log out
+            </button>
+          ) : null}
+        </section>
+      ) : null}
+      {snapshot ? (
+        <section aria-labelledby="sessions-heading">
+          <h2 id="sessions-heading">Sessions</h2>
+          <p aria-live="polite">
+            {snapshot.sessions.selectedId ? `Selected session ${snapshot.sessions.selectedId}` : "No session selected"}
+          </p>
+          <button onClick={() => catalogCommand("new-session")} type="button">
+            New session
+          </button>
+          <button onClick={() => catalogCommand("refresh-sessions")} type="button">
+            Refresh sessions
+          </button>
+          <ul aria-label="Sessions">
+            {snapshot.sessions.values.map((value) => (
+              <li key={value.id}>
+                <p>{value.title ?? value.id}</p>
+                <p>{value.status}</p>
+                {value.updatedAt ? <p>{value.updatedAt}</p> : null}
+                {value.status === "inactive" ? (
+                  <>
+                    <button onClick={() => sessionCommand("load-session", value.id)} type="button">
+                      Load
+                    </button>
+                    <button onClick={() => sessionCommand("resume-session", value.id)} type="button">
+                      Resume
+                    </button>
+                    <button onClick={() => sessionCommand("delete-session", value.id)} type="button">
+                      Delete
+                    </button>
+                  </>
+                ) : (
+                  <button onClick={() => sessionCommand("close-session", value.id)} type="button">
+                    Close
+                  </button>
+                )}
+              </li>
+            ))}
+          </ul>
+          {snapshot.sessions.nextCursor ? (
+            <button onClick={() => catalogCommand("next-session-page")} type="button">
+              More sessions
             </button>
           ) : null}
         </section>

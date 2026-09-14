@@ -3,6 +3,9 @@ import { spawn, type ChildProcess, type ChildProcessWithoutNullStreams } from "n
 import { realpath, stat } from "node:fs/promises";
 import { Readable, Writable } from "node:stream";
 
+import { maximumSessions } from "./protocol.ts";
+import { SessionController } from "./session-controller.ts";
+
 const maximumDiagnostics = 16;
 const maximumDiagnosticLength = 512;
 const initializationTimeoutMilliseconds = 2_000;
@@ -26,12 +29,34 @@ export type AuthenticationState = {
 export type WorkspaceState = {
   authentication: AuthenticationState;
   diagnostics: string[];
+  sessions: SessionState;
   status: WorkspaceStatus;
+};
+
+export type SessionState = {
+  nextCursor?: string;
+  selectedID?: string;
+  values: SessionSummary[];
+};
+
+export type SessionSummary = {
+  id: string;
+  status: "inactive" | "loading" | "active";
+  title?: string;
+  updatedAt?: string;
 };
 
 type TerminalAuthenticationMethod = AuthenticationMethod & {
   arguments: string[];
   environment: Record<string, string>;
+};
+
+type SessionCapabilities = {
+  close: boolean;
+  delete: boolean;
+  list: boolean;
+  load: boolean;
+  resume: boolean;
 };
 
 const unauthenticated: AuthenticationState = { logoutAvailable: false, methods: [], status: "unavailable" };
@@ -48,15 +73,19 @@ export class WorkspaceSupervisor {
 
   #child?: ChildProcessWithoutNullStreams;
   #connection?: acp.ClientConnection;
+  #controllers = new Map<string, SessionController>();
   #diagnosticRemainder = "";
   #childTermination?: Promise<void>;
   #authenticationMethods = new Map<string, AuthenticationMethod | TerminalAuthenticationMethod>();
   #authenticationOperation: Promise<void> = Promise.resolve();
   #launchFailed = false;
   #listeners = new Set<(state: WorkspaceState) => void>();
+  #sessionOperation: Promise<void> = Promise.resolve();
+  #sessionCapabilities: SessionCapabilities = { close: false, delete: false, list: false, load: false, resume: false };
   #state: WorkspaceState = {
     authentication: unauthenticated,
     diagnostics: [],
+    sessions: { values: [] },
     status: "starting",
   };
   #stop?: Promise<void>;
@@ -88,6 +117,11 @@ export class WorkspaceSupervisor {
         methods: this.#state.authentication.methods.map((method) => ({ ...method })),
       },
       diagnostics: [...this.#state.diagnostics],
+      sessions: {
+        ...(this.#state.sessions.nextCursor === undefined ? {} : { nextCursor: this.#state.sessions.nextCursor }),
+        ...(this.#state.sessions.selectedID === undefined ? {} : { selectedID: this.#state.sessions.selectedID }),
+        values: this.#state.sessions.values.map((session) => ({ ...session })),
+      },
       status: this.#state.status,
     };
   }
@@ -114,10 +148,44 @@ export class WorkspaceSupervisor {
     return this.serializeAuthentication(() => this.logoutImpl());
   }
 
+  /** Updates Ox has routed to an active session, in arrival order. */
+  sessionUpdates(sessionID: string): readonly acp.SessionUpdate[] {
+    return this.#controllers.get(sessionID)?.updates ?? [];
+  }
+
+  newSession(): Promise<void> {
+    return this.serializeSessions(() => this.newSessionImpl());
+  }
+
+  refreshSessions(): Promise<void> {
+    return this.serializeSessions(() => this.refreshSessionsImpl());
+  }
+
+  nextSessionPage(): Promise<void> {
+    return this.serializeSessions(() => this.nextSessionPageImpl());
+  }
+
+  loadSession(sessionID: string): Promise<void> {
+    return this.serializeSessions(() => this.activateSession(sessionID, "load"));
+  }
+
+  resumeSession(sessionID: string): Promise<void> {
+    return this.serializeSessions(() => this.activateSession(sessionID, "resume"));
+  }
+
+  closeSession(sessionID: string): Promise<void> {
+    return this.serializeSessions(() => this.closeSessionImpl(sessionID));
+  }
+
+  deleteSession(sessionID: string): Promise<void> {
+    return this.serializeSessions(() => this.deleteSessionImpl(sessionID));
+  }
+
   private async stopImpl(): Promise<void> {
     this.#stopping = true;
     this.#connection?.close();
     await this.terminateChild();
+    this.clearActiveSessions();
     this.setAuthentication(unauthenticated);
     this.setState("stopped");
   }
@@ -155,7 +223,10 @@ export class WorkspaceSupervisor {
       Writable.toWeb(child.stdin),
       Readable.toWeb(child.stdout) as unknown as ReadableStream<Uint8Array>,
     );
-    const connection = acp.client({ name: "ox-browser-client" }).connect(stream);
+    const connection = acp
+      .client({ name: "ox-browser-client" })
+      .onNotification(acp.methods.client.session.update, ({ params }) => this.routeSessionUpdate(params))
+      .connect(stream);
     this.#connection = connection;
     void connection.closed.then(() => {
       if (!this.#stopping && this.#state.status !== "unavailable") {
@@ -198,6 +269,9 @@ export class WorkspaceSupervisor {
     }
     if (initialized && !this.#stopping && this.#state.status !== "unavailable") {
       this.setState("ready");
+      if (this.#sessionCapabilities.list) {
+        void this.refreshSessions().catch((error) => this.recordDiagnostic(`Could not list sessions: ${message(error)}`));
+      }
     }
   }
 
@@ -222,6 +296,7 @@ export class WorkspaceSupervisor {
   private unavailable(diagnostic: string): void {
     this.recordDiagnostic(diagnostic);
     this.setAuthentication(unauthenticated);
+    this.clearActiveSessions();
     this.setState("unavailable");
   }
 
@@ -234,6 +309,15 @@ export class WorkspaceSupervisor {
   }
 
   private recordAuthentication(response: acp.InitializeResponse): void {
+    const capabilities = response.agentCapabilities;
+    const sessionCapabilities = capabilities?.sessionCapabilities;
+    this.#sessionCapabilities = {
+      close: sessionCapabilities?.close != null,
+      delete: sessionCapabilities?.delete != null,
+      list: sessionCapabilities?.list != null,
+      load: capabilities?.loadSession === true,
+      resume: sessionCapabilities?.resume != null,
+    };
     this.#authenticationMethods.clear();
     for (const method of response.authMethods ?? []) {
       if (!method || typeof method.id !== "string" || !method.id || typeof method.name !== "string" || !method.name) {
@@ -277,6 +361,195 @@ export class WorkspaceSupervisor {
     const next = this.#authenticationOperation.then(() => operation());
     this.#authenticationOperation = next.catch(() => {});
     return next;
+  }
+
+  private serializeSessions(operation: () => Promise<void>): Promise<void> {
+    const next = this.#sessionOperation.then(() => operation());
+    this.#sessionOperation = next.catch(() => {});
+    return next;
+  }
+
+  private async newSessionImpl(): Promise<void> {
+    const response = await this.readyConnection().agent.request(acp.methods.agent.session.new, {
+      cwd: this.workspace,
+      mcpServers: [],
+    });
+    this.#controllers.set(response.sessionId, new SessionController(response.sessionId));
+    this.setSessions({ ...this.withSessionStatus(response.sessionId, "active"), selectedID: response.sessionId });
+    if (this.#sessionCapabilities.list) {
+      await this.refreshSessionsImpl();
+    }
+  }
+
+  private async refreshSessionsImpl(): Promise<void> {
+    this.requireSessionCapability("list");
+    const response = await this.readyConnection().agent.request(acp.methods.agent.session.list, { cwd: this.workspace });
+    this.setSessions({
+      nextCursor: response.nextCursor ?? undefined,
+      selectedID: this.#state.sessions.selectedID,
+      values: this.mergeActiveSessions(this.summaries(response.sessions)),
+    });
+  }
+
+  private async nextSessionPageImpl(): Promise<void> {
+    this.requireSessionCapability("list");
+    const cursor = this.#state.sessions.nextCursor;
+    if (!cursor) {
+      throw new Error("there are no more sessions");
+    }
+    const response = await this.readyConnection().agent.request(acp.methods.agent.session.list, {
+      cursor,
+      cwd: this.workspace,
+    });
+    const seen = new Set(this.#state.sessions.values.map((session) => session.id));
+    const added = this.summaries(response.sessions).filter((session) => !seen.has(session.id));
+    const values = [...this.#state.sessions.values, ...added].slice(0, maximumSessions);
+    this.setSessions({
+      // A snapshot cannot carry more than the catalog bound, so stop offering pages once it is full.
+      nextCursor: values.length < maximumSessions ? (response.nextCursor ?? undefined) : undefined,
+      selectedID: this.#state.sessions.selectedID,
+      values,
+    });
+  }
+
+  private async activateSession(sessionID: string, operation: "load" | "resume"): Promise<void> {
+    this.requireSessionCapability(operation);
+    if (this.#controllers.has(sessionID)) {
+      throw new Error("session is already active");
+    }
+    const connection = this.readyConnection();
+    const knownSession = this.#state.sessions.values.some((session) => session.id === sessionID);
+    // Install this route before session/load so replay notifications cannot win
+    // the race with its successful response.
+    this.#controllers.set(sessionID, new SessionController(sessionID));
+    this.setSessions(this.withSessionStatus(sessionID, "loading"));
+    try {
+      const request = { cwd: this.workspace, mcpServers: [], sessionId: sessionID };
+      if (operation === "load") {
+        await connection.agent.request(acp.methods.agent.session.load, request);
+      } else {
+        await connection.agent.request(acp.methods.agent.session.resume, request);
+      }
+    } catch (error) {
+      this.#controllers.delete(sessionID);
+      this.setSessions(knownSession ? this.withoutSession(sessionID) : this.removeSession(sessionID));
+      throw error;
+    }
+    this.setSessions({ ...this.withSessionStatus(sessionID, "active"), selectedID: sessionID });
+    if (this.#sessionCapabilities.list) {
+      await this.refreshSessionsImpl();
+    }
+  }
+
+  private async closeSessionImpl(sessionID: string): Promise<void> {
+    this.requireSessionCapability("close");
+    if (!this.#controllers.has(sessionID)) {
+      throw new Error("session is not active");
+    }
+    await this.readyConnection().agent.request(acp.methods.agent.session.close, { sessionId: sessionID });
+    this.#controllers.delete(sessionID);
+    this.setSessions(this.withoutSession(sessionID));
+    if (this.#sessionCapabilities.list) {
+      await this.refreshSessionsImpl();
+    }
+  }
+
+  private async deleteSessionImpl(sessionID: string): Promise<void> {
+    this.requireSessionCapability("delete");
+    if (this.#controllers.has(sessionID)) {
+      throw new Error("cannot delete an active session");
+    }
+    await this.readyConnection().agent.request(acp.methods.agent.session.delete, { sessionId: sessionID });
+    this.setSessions(this.removeSession(sessionID));
+    if (this.#sessionCapabilities.list) {
+      await this.refreshSessionsImpl();
+    }
+  }
+
+  private summaries(sessions: acp.SessionInfo[]): SessionSummary[] {
+    return sessions.map((session) => ({
+      id: session.sessionId,
+      status: this.#controllers.has(session.sessionId) ? "active" : "inactive",
+      ...(session.title ? { title: session.title } : {}),
+      ...(session.updatedAt ? { updatedAt: session.updatedAt } : {}),
+    }));
+  }
+
+  private routeSessionUpdate(notification: acp.SessionNotification): void {
+    this.#controllers.get(notification.sessionId)?.accept(notification.update);
+  }
+
+  private mergeActiveSessions(values: SessionSummary[]): SessionSummary[] {
+    const seen = new Set(values.map((session) => session.id));
+    for (const session of this.#state.sessions.values) {
+      if (this.#controllers.has(session.id) && !seen.has(session.id)) {
+        values.push({ ...session, status: "active" });
+      }
+    }
+    return values;
+  }
+
+  private clearActiveSessions(): void {
+    if (this.#controllers.size === 0 && this.#state.sessions.selectedID === undefined) {
+      return;
+    }
+    this.#controllers.clear();
+    this.setSessions({
+      ...this.#state.sessions,
+      selectedID: undefined,
+      values: this.#state.sessions.values.map((session) => ({ ...session, status: "inactive" })),
+    });
+  }
+
+  private requireSessionCapability(capability: keyof SessionCapabilities): void {
+    if (!this.#sessionCapabilities[capability]) {
+      throw new Error(`Ox does not support session ${capability}`);
+    }
+  }
+
+  private withSessionStatus(sessionID: string, status: SessionSummary["status"]): SessionState {
+    let found = false;
+    const values = this.#state.sessions.values.map((session) => {
+      if (session.id !== sessionID) {
+        return session;
+      }
+      found = true;
+      return { ...session, status };
+    });
+    if (!found) {
+      values.push({ id: sessionID, status });
+    }
+    return { ...this.#state.sessions, values };
+  }
+
+  private withoutSession(sessionID: string): SessionState {
+    return {
+      ...this.#state.sessions,
+      ...(this.#state.sessions.selectedID === sessionID ? { selectedID: undefined } : {}),
+      values: this.#state.sessions.values.map((session) =>
+        session.id === sessionID ? { ...session, status: "inactive" } : session,
+      ),
+    };
+  }
+
+  private removeSession(sessionID: string): SessionState {
+    return {
+      ...this.#state.sessions,
+      ...(this.#state.sessions.selectedID === sessionID ? { selectedID: undefined } : {}),
+      values: this.#state.sessions.values.filter((session) => session.id !== sessionID),
+    };
+  }
+
+  private setSessions(sessions: SessionState): void {
+    this.#state = {
+      ...this.#state,
+      sessions: {
+        ...(sessions.nextCursor === undefined ? {} : { nextCursor: sessions.nextCursor }),
+        ...(sessions.selectedID === undefined ? {} : { selectedID: sessions.selectedID }),
+        values: sessions.values,
+      },
+    };
+    this.publish();
   }
 
   private async authenticateImpl(methodID: string): Promise<void> {

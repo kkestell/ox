@@ -25,6 +25,20 @@ describe("browser protocol", () => {
     });
   });
 
+  test("accepts bounded session lifecycle commands", () => {
+    for (const command of [
+      { type: "new-session", requestId: "request-1" },
+      { type: "refresh-sessions", requestId: "request-2" },
+      { type: "next-session-page", requestId: "request-3" },
+      { type: "load-session", requestId: "request-4", sessionId: "session-1" },
+      { type: "resume-session", requestId: "request-5", sessionId: "session-1" },
+      { type: "close-session", requestId: "request-6", sessionId: "session-1" },
+      { type: "delete-session", requestId: "request-7", sessionId: "session-1" },
+    ]) {
+      expect(parseBrowserCommand(command).ok).toBe(true);
+    }
+  });
+
   test.each([
     undefined,
     {},
@@ -34,7 +48,8 @@ describe("browser protocol", () => {
     { type: "authenticate", requestId: "request-1" },
     { type: "login", requestId: "request-1", methodId: "terminal", credential: "   " },
     { type: "logout", requestId: "" },
-    { type: "new-session", requestId: "request-1" },
+    { type: "new-session" },
+    { type: "load-session", requestId: "request-1", sessionId: "" },
   ])("rejects invalid commands: %#j", (command) => {
     expect(parseBrowserCommand(command)).toEqual({
       ok: false,
@@ -49,6 +64,7 @@ describe("browser protocol", () => {
       connection: { status: "ready" },
       workspace: { diagnostics: [], status: "ready" },
       authentication: { logoutAvailable: false, methods: [], status: "unavailable" },
+      sessions: { values: [] },
     });
   });
 });

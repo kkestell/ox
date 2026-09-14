@@ -49,6 +49,7 @@ export async function startHost(options: HostOptions = {}): Promise<StartedHost>
       ? { diagnostics: initialState.diagnostics, status: initialState.status }
       : { diagnostics: ["workspace is not configured"], status: "unavailable" },
     initialState?.authentication,
+    initialState ? browserSessions(initialState) : undefined,
   );
   const unsubscribe = supervisor?.subscribe((state) => {
     revision += 1;
@@ -117,29 +118,51 @@ export async function startHost(options: HostOptions = {}): Promise<StartedHost>
           send(socket, { type: "result", requestId, ok: false, error: command.error });
           return;
         }
-        switch (command.value.type) {
+        const browserCommand = command.value;
+        switch (browserCommand.type) {
           case "ping":
             send(socket, {
               type: "result",
-              requestId: command.value.requestId,
+              requestId: browserCommand.requestId,
               ok: true,
               value: { revision: snapshot.revision },
             });
             return;
           case "authenticate":
             {
-              const { methodId, requestId } = command.value;
+              const { methodId, requestId } = browserCommand;
               void respond(socket, requestId, () => snapshot.revision, () => supervisor?.authenticate(methodId));
             }
             return;
           case "login":
             {
-              const { credential, methodId, requestId } = command.value;
+              const { credential, methodId, requestId } = browserCommand;
               void respond(socket, requestId, () => snapshot.revision, () => supervisor?.login(methodId, credential));
             }
             return;
           case "logout":
-            void respond(socket, command.value.requestId, () => snapshot.revision, () => supervisor?.logout());
+            void respond(socket, browserCommand.requestId, () => snapshot.revision, () => supervisor?.logout());
+            return;
+          case "new-session":
+            void respond(socket, browserCommand.requestId, () => snapshot.revision, () => supervisor?.newSession());
+            return;
+          case "refresh-sessions":
+            void respond(socket, browserCommand.requestId, () => snapshot.revision, () => supervisor?.refreshSessions());
+            return;
+          case "next-session-page":
+            void respond(socket, browserCommand.requestId, () => snapshot.revision, () => supervisor?.nextSessionPage());
+            return;
+          case "load-session":
+            void respond(socket, browserCommand.requestId, () => snapshot.revision, () => supervisor?.loadSession(browserCommand.sessionId));
+            return;
+          case "resume-session":
+            void respond(socket, browserCommand.requestId, () => snapshot.revision, () => supervisor?.resumeSession(browserCommand.sessionId));
+            return;
+          case "close-session":
+            void respond(socket, browserCommand.requestId, () => snapshot.revision, () => supervisor?.closeSession(browserCommand.sessionId));
+            return;
+          case "delete-session":
+            void respond(socket, browserCommand.requestId, () => snapshot.revision, () => supervisor?.deleteSession(browserCommand.sessionId));
             return;
         }
       },
@@ -167,8 +190,17 @@ function snapshotFor(revision: number, workspace: WorkspaceState): Snapshot {
     ...initialSnapshot(
       { diagnostics: workspace.diagnostics, status: workspace.status },
       workspace.authentication,
+      browserSessions(workspace),
     ),
     revision,
+  };
+}
+
+function browserSessions(workspace: WorkspaceState): Snapshot["sessions"] {
+  return {
+    ...(workspace.sessions.nextCursor === undefined ? {} : { nextCursor: workspace.sessions.nextCursor }),
+    ...(workspace.sessions.selectedID === undefined ? {} : { selectedId: workspace.sessions.selectedID }),
+    values: workspace.sessions.values.map((session) => ({ ...session })),
   };
 }
 

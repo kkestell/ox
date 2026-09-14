@@ -1,6 +1,10 @@
 import { z } from "zod";
 
 const requestID = z.string().min(1).max(128);
+const sessionID = z.string().min(1).max(512);
+
+/** The most sessions a snapshot can carry, and therefore the most the host pages in. */
+export const maximumSessions = 500;
 
 export const browserCommandSchema = z.discriminatedUnion("type", [
   z
@@ -29,6 +33,21 @@ export const browserCommandSchema = z.discriminatedUnion("type", [
       type: z.literal("logout"),
       requestId: requestID,
     })
+    .strict(),
+  z.object({ type: z.literal("new-session"), requestId: requestID }).strict(),
+  z.object({ type: z.literal("refresh-sessions"), requestId: requestID }).strict(),
+  z.object({ type: z.literal("next-session-page"), requestId: requestID }).strict(),
+  z
+    .object({ type: z.literal("load-session"), requestId: requestID, sessionId: sessionID })
+    .strict(),
+  z
+    .object({ type: z.literal("resume-session"), requestId: requestID, sessionId: sessionID })
+    .strict(),
+  z
+    .object({ type: z.literal("close-session"), requestId: requestID, sessionId: sessionID })
+    .strict(),
+  z
+    .object({ type: z.literal("delete-session"), requestId: requestID, sessionId: sessionID })
     .strict(),
 ]);
 
@@ -64,6 +83,24 @@ export const snapshotSchema = z
           .max(16),
         logoutAvailable: z.boolean(),
         error: z.string().min(1).optional(),
+      })
+      .strict(),
+    sessions: z
+      .object({
+        nextCursor: z.string().min(1).optional(),
+        selectedId: z.string().min(1).optional(),
+        values: z
+          .array(
+            z
+              .object({
+                id: z.string().min(1),
+                status: z.enum(["inactive", "loading", "active"]),
+                title: z.string().min(1).optional(),
+                updatedAt: z.string().min(1).optional(),
+              })
+              .strict(),
+          )
+          .max(maximumSessions),
       })
       .strict(),
   })
@@ -113,6 +150,7 @@ export function initialSnapshot(
     methods: [],
     logoutAvailable: false,
   },
+  sessions: Snapshot["sessions"] = { values: [] },
 ): Snapshot {
   return {
     type: "snapshot",
@@ -120,5 +158,6 @@ export function initialSnapshot(
     connection: { status: workspace.status === "ready" ? "ready" : "unavailable" },
     workspace,
     authentication,
+    sessions,
   };
 }
