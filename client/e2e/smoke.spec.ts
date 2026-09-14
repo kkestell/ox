@@ -5,9 +5,11 @@ import { once } from "node:events";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer, type ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { Readable, Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
+
+import { WorkspaceRegistry } from "../src/workspace-registry.ts";
 
 const clientRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const repositoryRoot = resolve(clientRoot, "..");
@@ -19,6 +21,60 @@ test("independently drives Ox through the deterministic provider", async () => {
     expect(fixture.requests).toBe(1);
   } finally {
     await fixture.close();
+  }
+});
+
+test("registers, selects, persists, and removes server-local workspaces", async ({ page }) => {
+  const fixture = await createFixture({ registerWorkspace: false });
+  const second = await mkdtemp(join(tmpdir(), "ox-client-second-workspace-"));
+  let host: BrowserHost | undefined;
+  try {
+    await writeFile(join(second, "keep.txt"), "keep");
+    host = startBrowserHost(fixture);
+    const url = await host.url;
+    await page.goto(url);
+    await expect(page.getByText("Register a server-local workspace to begin.")).toBeVisible();
+    await expect(page.getByText("Ox is unavailable. Open support details for diagnostics.")).toHaveCount(0);
+
+    await page.getByLabel("Workspace path").fill("/definitely/not/an/ox-workspace");
+    await page.getByRole("button", { name: "Register workspace" }).click();
+    await expect(page.getByRole("alert")).toHaveText("workspace must be a listable directory");
+
+    await page.getByLabel("Workspace path").fill(fixture.workspace);
+    await page.getByRole("button", { name: "Register workspace" }).click();
+    await expect(page.getByRole("navigation", { name: "Conversations" })).toBeVisible();
+    await expect(page.getByRole("region", { name: "Conversation" })).toBeVisible();
+
+    await page.getByLabel("Workspace path").fill(second);
+    await page.getByRole("button", { name: "Register workspace" }).click();
+    await expect(page.getByLabel("Current workspace").getByRole("option")).toHaveCount(2);
+    await page.getByLabel("Current workspace").selectOption({ label: basename(second) });
+    await expect(page.locator("main > header")).toContainText(basename(second));
+
+    await page.reload();
+    await expect(page.locator("main > header")).toContainText(basename(second));
+    const snapshot = await page.evaluate(
+      () =>
+        new Promise<unknown>((resolveSnapshot) => {
+          const socket = new WebSocket(new URL("/socket", window.location.href));
+          socket.addEventListener("message", (event) => {
+            socket.close();
+            resolveSnapshot(JSON.parse(String(event.data)));
+          }, { once: true });
+        }),
+    );
+    expect(JSON.stringify(snapshot)).not.toContain(fixture.workspace);
+    expect(JSON.stringify(snapshot)).not.toContain(second);
+    await expect(page.locator("main")).not.toContainText(fixture.workspace);
+    await expect(page.locator("main")).not.toContainText(second);
+
+    await page.getByRole("button", { name: "Remove workspace" }).click();
+    await expect(page.locator("main > header")).toContainText(basename(fixture.workspace));
+    expect(await readFile(join(second, "keep.txt"), "utf8")).toBe("keep");
+  } finally {
+    await host?.stop();
+    await fixture.close();
+    await rm(second, { force: true, recursive: true });
   }
 });
 
@@ -371,8 +427,6 @@ function startBrowserHost(fixture: Fixture): BrowserHost {
     "./src/host.ts",
     "--port",
     "0",
-    "--workspace",
-    fixture.workspace,
     "--ox",
     fixture.runner,
   ];
@@ -452,12 +506,14 @@ type MCPFixture = {
   stdioSecret: string;
 };
 
-async function createFixture(): Promise<Fixture> {
-  const workspace = await mkdtemp(join(tmpdir(), "ox-client-smoke-"));
-  const pidFile = join(workspace, "ox.pid");
-  const binary = join(workspace, "ox");
-  const credential = join(workspace, "credential");
-  const runner = join(workspace, "run-ox");
+async function createFixture(options: { registerWorkspace?: boolean } = {}): Promise<Fixture> {
+  const root = await mkdtemp(join(tmpdir(), "ox-client-smoke-"));
+  const workspace = join(root, "workspace");
+  await mkdir(workspace);
+  const pidFile = join(root, "ox.pid");
+  const binary = join(root, "ox");
+  const credential = join(root, "credential");
+  const runner = join(root, "run-ox");
   const provider = createServer();
   let requests = 0;
   let filesystemStage = 0;
@@ -626,7 +682,7 @@ async function createFixture(): Promise<Fixture> {
     throw new Error("provider did not bind a TCP address");
   }
   const providerURL = `http://127.0.0.1:${address.port}`;
-  await seedOxFixture({ binary, credential, workspace });
+  await seedOxFixture({ binary, credential }, root);
   await writeFile(
     runner,
     `#!/bin/sh\nprintf '%s\\n' "$$" > "$OX_CLIENT_TEST_PID_FILE"\nexec "$@"\n`,
@@ -635,17 +691,21 @@ async function createFixture(): Promise<Fixture> {
   const environment = {
     ...process.env,
     OX_CLIENT_TEST_PID_FILE: pidFile,
-    HOME: workspace,
-    XDG_CACHE_HOME: join(workspace, "cache"),
-    XDG_CONFIG_HOME: join(workspace, "config"),
-    XDG_DATA_HOME: join(workspace, "data"),
+    HOME: root,
+    XDG_CACHE_HOME: join(root, "cache"),
+    XDG_CONFIG_HOME: join(root, "config"),
+    XDG_DATA_HOME: join(root, "data"),
   };
+  if (options.registerWorkspace !== false) {
+    const registry = await WorkspaceRegistry.load(join(root, "config", "ox", "workspaces.json"));
+    await registry.register(workspace);
+  }
   return {
     binary,
     async close() {
       provider.close();
       await once(provider, "close");
-      await rm(workspace, { force: true, recursive: true });
+      await rm(root, { force: true, recursive: true });
     },
     credential,
     environment,
@@ -844,12 +904,12 @@ async function addStdioMCPServer(
   await server.getByLabel("Variable value").fill(secret);
 }
 
-async function seedOxFixture(fixture: Pick<Fixture, "binary" | "credential" | "workspace">): Promise<void> {
-  await mkdir(join(fixture.workspace, "cache", "ox"), { recursive: true });
-  await mkdir(join(fixture.workspace, "config", "ox"), { recursive: true });
+async function seedOxFixture(fixture: Pick<Fixture, "binary" | "credential">, root: string): Promise<void> {
+  await mkdir(join(root, "cache", "ox"), { recursive: true });
+  await mkdir(join(root, "config", "ox"), { recursive: true });
   await writeFile(fixture.credential, "test-key\n", { mode: 0o600 });
   await writeFile(
-    join(fixture.workspace, "cache", "ox", "models.json"),
+    join(root, "cache", "ox", "models.json"),
     JSON.stringify({
       data: [
         {
@@ -862,7 +922,7 @@ async function seedOxFixture(fixture: Pick<Fixture, "binary" | "credential" | "w
     }),
   );
   await writeFile(
-    join(fixture.workspace, "config", "ox", "settings.json"),
+    join(root, "config", "ox", "settings.json"),
     JSON.stringify({ default_model: "test/model", models: { "test/model": {} } }),
   );
   await run("go", ["build", "-o", fixture.binary, "./cmd/ox"], repositoryRoot);
@@ -919,7 +979,7 @@ async function driveOx(fixture: Fixture): Promise<string> {
 
 async function assertReady(page: Page, url: string): Promise<void> {
   await page.goto(url);
-  await expect(page.getByRole("heading", { name: "Ox" })).toBeVisible();
+  await expect(page.getByRole("heading", { level: 1, name: "Ox" })).toBeVisible();
   const authenticate = page.getByRole("button", { name: "Use configured credential" });
   if (await authenticate.isVisible()) {
     await authenticate.click();

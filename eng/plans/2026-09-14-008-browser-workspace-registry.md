@@ -20,20 +20,19 @@ surface may expose general filesystem access.
 
 ## Decisions
 
-- Store a strict versioned registry at
-  `$XDG_CONFIG_HOME/ox/workspaces.json`, falling back to
-  `$HOME/.config/ox/workspaces.json` only from an absolute base. A missing file
-  is an empty registry; malformed, unsupported, or unusable persisted entries
-  fail startup instead of being discarded.
+- Store a strict versioned registry at `$XDG_CONFIG_HOME/ox/workspaces.json`,
+  falling back to `$HOME/.config/ox/workspaces.json` only from an absolute base.
+  A missing file is an empty registry; malformed, unsupported, or unusable
+  persisted entries fail startup instead of being discarded.
 - Each entry contains a generated stable ID and its canonical root. Canonical
-  roots are unique and must still be absolute, listable directories whenever
-  the registry loads. Snapshots contain only the ID and basename-derived display
+  roots are unique and must still be absolute, listable directories whenever the
+  registry loads. Snapshots contain only the ID and basename-derived display
   name; the path crosses the browser boundary only in the bounded
   `register-workspace` command.
 - Serialize registry mutations and atomically replace the owner-only file before
   publishing their state. The first registration becomes selected; later
-  registrations preserve selection. Removing a workspace never changes its
-  files or Ox session history, and removing the selected entry selects the first
+  registrations preserve selection. Removing a workspace never changes its files
+  or Ox session history, and removing the selected entry selects the first
   remaining entry or returns the host to its empty registration state.
 - Keep one selected `WorkspaceSupervisor` in this slice and replace it when the
   selected registry entry changes. Retaining independently active supervisors,
@@ -43,8 +42,9 @@ surface may expose general filesystem access.
 ## Test plan
 
 - Unit-test registry path resolution, strict/versioned loading, canonical
-  deduplication (including symlink aliases), atomic add/select/remove persistence,
-  mutation failure, and removal without deleting workspace contents.
+  deduplication (including symlink aliases), atomic add/select/remove
+  persistence, mutation failure, and removal without deleting workspace
+  contents.
 - Extend browser-protocol tests for bounded register/select/remove commands and
   browser-safe workspace catalogs that reject roots and arbitrary fields.
 - Exercise an empty registry, invalid registration, two-root selection, selected

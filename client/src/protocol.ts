@@ -2,6 +2,7 @@ import { z } from "zod";
 
 const requestID = z.string().min(1).max(128);
 const sessionID = z.string().min(1).max(512);
+const workspaceID = z.string().uuid();
 
 /** The most sessions a snapshot can carry, and therefore the most the host pages in. */
 export const maximumSessions = 500;
@@ -335,6 +336,15 @@ export const browserCommandSchema = z.discriminatedUnion("type", [
     .strict(),
   z
     .object({
+      type: z.literal("register-workspace"),
+      requestId: requestID,
+      path: z.string().startsWith("/").max(4_096),
+    })
+    .strict(),
+  z.object({ type: z.literal("select-workspace"), requestId: requestID, workspaceId: workspaceID }).strict(),
+  z.object({ type: z.literal("remove-workspace"), requestId: requestID, workspaceId: workspaceID }).strict(),
+  z
+    .object({
       type: z.literal("authenticate"),
       requestId: requestID,
       methodId: z.string().min(1).max(128),
@@ -389,9 +399,25 @@ export const snapshotSchema = z
   .object({
     type: z.literal("snapshot"),
     revision: z.number().int().nonnegative(),
-    connection: z.object({
-      status: z.enum(["ready", "unavailable"]),
-    }),
+    workspaces: z
+      .object({
+        selectedId: workspaceID.optional(),
+        values: z
+          .array(z.object({ id: workspaceID, name: z.string().min(1).max(512) }).strict())
+          .max(1_024),
+      })
+      .strict()
+      .superRefine((workspaces, context) => {
+        const ids = new Set(workspaces.values.map((workspace) => workspace.id));
+        if (ids.size !== workspaces.values.length) {
+          context.addIssue({ code: "custom", message: "workspace IDs must be unique", path: ["values"] });
+        }
+        const selectionRegistered =
+          workspaces.selectedId === undefined ? workspaces.values.length === 0 : ids.has(workspaces.selectedId);
+        if (!selectionRegistered) {
+          context.addIssue({ code: "custom", message: "selected workspace must be registered", path: ["selectedId"] });
+        }
+      }),
     workspace: z
       .object({
         status: z.enum(["starting", "ready", "unavailable", "stopped"]),
@@ -400,7 +426,8 @@ export const snapshotSchema = z
         name: z.string().min(1).max(512),
         promptCapabilities: promptCapabilitiesSchema,
       })
-      .strict(),
+      .strict()
+      .optional(),
     authentication: z
       .object({
         status: z.enum(["required", "working", "authenticated", "unavailable"]),
@@ -483,7 +510,8 @@ export function parseBrowserCommand(value: unknown):
 }
 
 export function initialSnapshot(
-  workspace: Snapshot["workspace"],
+  workspaces: Snapshot["workspaces"],
+  workspace?: Snapshot["workspace"],
   authentication: Snapshot["authentication"] = {
     status: "unavailable",
     methods: [],
@@ -494,8 +522,8 @@ export function initialSnapshot(
   return {
     type: "snapshot",
     revision: 0,
-    connection: { status: workspace.status === "ready" ? "ready" : "unavailable" },
-    workspace,
+    workspaces,
+    ...(workspace === undefined ? {} : { workspace }),
     authentication,
     sessions,
   };

@@ -40,11 +40,10 @@ serves the same live session state to desktop and mobile browsers. It listens on
 loopback by default and accepts an explicit bind address for access over a
 trusted network. It does not provide user authentication or TLS.
 
-The first version takes one server-local workspace when the host starts. It can
-run concurrent sessions in that workspace, and a later browser-managed workspace
-registry can run concurrent sessions across several workspaces. Each workspace
-has one Ox process and one ACP connection; a failure in one workspace does not
-become a session or filesystem operation in another.
+The host persists browser-registered server-local workspace roots behind opaque
+identities and can run concurrent sessions across several workspaces. Each
+workspace has one Ox process and one ACP connection; a failure in one workspace
+does not become a session or filesystem operation in another.
 
 The host automatically tries Ox's configured stored credential at startup. Only
 when that cannot authenticate does the browser ask the user to connect. After

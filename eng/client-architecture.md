@@ -29,11 +29,10 @@ opens arbitrary host paths, handles ACP directly, or becomes authoritative for
 live session state. A browser refresh or a second device attaches to state the
 host already owns.
 
-The first version starts with one workspace selected in the host's command-line
-configuration. The internal workspace boundary is nevertheless plural: a
-workspace supervisor owns one Ox process and one ACP connection for each active
-canonical root. Adding browser-managed workspaces later extends the registry
-feeding that supervisor rather than changing session or transport ownership.
+The host persists browser-managed canonical roots behind opaque workspace
+identities. A workspace supervisor owns one Ox process and one ACP connection
+for each active canonical root. Expanding which registry entries remain active
+does not change session or transport ownership.
 
 The server listens on loopback by default and accepts an explicit bind address
 for use on a trusted network such as Tailscale. It does not provide user

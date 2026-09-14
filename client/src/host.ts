@@ -8,6 +8,11 @@ import {
   type Snapshot,
 } from "./protocol.ts";
 import { WorkspaceSupervisor, type WorkspaceState } from "./workspace-supervisor.ts";
+import {
+  type RegisteredWorkspace,
+  WorkspaceRegistry,
+  type WorkspaceRegistryState,
+} from "./workspace-registry.ts";
 
 export type HostOptions = {
   assetDirectory?: string;
@@ -15,7 +20,7 @@ export type HostOptions = {
   oxArguments?: string[];
   oxCommand?: string;
   port?: number;
-  workspace?: string;
+  registryPath?: string;
 };
 
 export type StartedHost = {
@@ -36,35 +41,81 @@ export async function startHost(options: HostOptions = {}): Promise<StartedHost>
   const hostname = options.hostname ?? "127.0.0.1";
   const port = options.port ?? 0;
   const sockets = new Set<Bun.ServerWebSocket<SocketData>>();
-  const supervisor = options.workspace
-    ? await WorkspaceSupervisor.start({
-        arguments: options.oxArguments,
-        command: options.oxCommand,
-        workspace: options.workspace,
-      })
-    : undefined;
+  const registry = options.registryPath
+    ? await WorkspaceRegistry.load(options.registryPath)
+    : await WorkspaceRegistry.loadDefault();
+  let visibleRegistry = registry.state;
+  let supervisor = await startSupervisor(registry.selected);
+  let unsubscribe = supervisor?.subscribe(publish);
+  let workspaceOperation: Promise<void> = Promise.resolve();
   let revision = 0;
-  const initialState = supervisor?.state;
-  let snapshot = initialSnapshot(
-    initialState
-      ? browserWorkspace(initialState)
-      : {
-          diagnostics: ["workspace is not configured"],
-          mcpServerCount: 0,
-          name: "Workspace",
-          promptCapabilities: { audio: false, embeddedContext: false, image: false },
-          status: "unavailable",
-        },
-    initialState?.authentication,
-    initialState ? browserSessions(initialState) : undefined,
-  );
-  const unsubscribe = supervisor?.subscribe((state) => {
+  let snapshot = snapshotFor(revision, visibleRegistry, supervisor?.state);
+
+  function publish(): void {
     revision += 1;
-    snapshot = snapshotFor(revision, state);
+    snapshot = snapshotFor(revision, visibleRegistry, supervisor?.state);
     for (const socket of sockets) {
       send(socket, snapshot);
     }
-  });
+  }
+
+  async function startSupervisor(workspace: RegisteredWorkspace | undefined): Promise<WorkspaceSupervisor | undefined> {
+    if (!workspace) {
+      return undefined;
+    }
+    return WorkspaceSupervisor.start({
+      arguments: options.oxArguments,
+      command: options.oxCommand,
+      workspace: workspace.root,
+    });
+  }
+
+  async function replaceSupervisor(): Promise<void> {
+    const next = await startSupervisor(registry.selected);
+    const previous = supervisor;
+    unsubscribe?.();
+    supervisor = next;
+    unsubscribe = supervisor?.subscribe(publish);
+    await previous?.stop();
+  }
+
+  function serializeWorkspace<T>(operation: () => Promise<T>): Promise<T> {
+    const running = workspaceOperation.then(operation, operation);
+    workspaceOperation = running.then(
+      () => undefined,
+      () => undefined,
+    );
+    return running;
+  }
+
+  function performWorkspace(command: WorkspaceCommand): Promise<void> {
+    return serializeWorkspace(async () => {
+      switch (command.type) {
+        case "register-workspace": {
+          const result = await registry.register(command.path);
+          if (result.selectionChanged) {
+            await replaceSupervisor();
+          }
+          break;
+        }
+        case "select-workspace":
+          if (!(await registry.select(command.workspaceId))) {
+            return;
+          }
+          await replaceSupervisor();
+          break;
+        case "remove-workspace": {
+          const result = await registry.remove(command.workspaceId);
+          if (result.selectionChanged) {
+            await replaceSupervisor();
+          }
+          break;
+        }
+      }
+      visibleRegistry = registry.state;
+      publish();
+    });
+  }
 
   const server = Bun.serve<SocketData>({
     hostname,
@@ -139,7 +190,12 @@ export async function startHost(options: HostOptions = {}): Promise<StartedHost>
           socket,
           browserCommand.requestId,
           () => snapshot.revision,
-          () => (supervisor ? perform(supervisor, browserCommand) : undefined),
+          () =>
+            isWorkspaceCommand(browserCommand)
+              ? performWorkspace(browserCommand)
+              : supervisor
+                ? perform(supervisor, browserCommand)
+                : undefined,
         );
       },
       close(socket) {
@@ -150,32 +206,58 @@ export async function startHost(options: HostOptions = {}): Promise<StartedHost>
 
   return {
     async stop() {
-      unsubscribe?.();
       for (const socket of sockets) {
         socket.close();
       }
       server.stop(true);
+      await workspaceOperation;
+      unsubscribe?.();
       await supervisor?.stop();
     },
     url: server.url.toString().replace(/\/$/, ""),
   };
 }
 
-function snapshotFor(revision: number, workspace: WorkspaceState): Snapshot {
+function snapshotFor(
+  revision: number,
+  registry: WorkspaceRegistryState,
+  workspace: WorkspaceState | undefined,
+): Snapshot {
   return {
-    ...initialSnapshot(browserWorkspace(workspace), workspace.authentication, browserSessions(workspace)),
+    ...initialSnapshot(
+      browserWorkspaces(registry),
+      workspace === undefined ? undefined : browserWorkspace(workspace, registry),
+      workspace?.authentication,
+      workspace === undefined ? undefined : browserSessions(workspace),
+    ),
     revision,
   };
 }
 
-function browserWorkspace(workspace: WorkspaceState): Snapshot["workspace"] {
+function browserWorkspaces(registry: WorkspaceRegistryState): Snapshot["workspaces"] {
   return {
-    diagnostics: workspace.diagnostics,
+    ...(registry.selectedId === undefined ? {} : { selectedId: registry.selectedId }),
+    values: registry.workspaces.map(({ id, name }) => ({ id, name })),
+  };
+}
+
+function browserWorkspace(
+  workspace: WorkspaceState,
+  registry: WorkspaceRegistryState,
+): NonNullable<Snapshot["workspace"]> {
+  return {
+    diagnostics: workspace.diagnostics.map((diagnostic) => redactWorkspaceRoots(diagnostic, registry)),
     mcpServerCount: workspace.mcpServerCount,
     name: workspace.name,
     promptCapabilities: workspace.promptCapabilities,
     status: workspace.status,
   };
+}
+
+function redactWorkspaceRoots(diagnostic: string, registry: WorkspaceRegistryState): string {
+  return [...registry.workspaces]
+    .sort((left, right) => right.root.length - left.root.length)
+    .reduce((redacted, workspace) => redacted.split(workspace.root).join("[workspace]"), diagnostic);
 }
 
 function browserSessions(workspace: WorkspaceState): Snapshot["sessions"] {
@@ -221,7 +303,7 @@ async function respond(
 
 function perform(
   supervisor: WorkspaceSupervisor,
-  command: Exclude<BrowserCommand, { type: "ping" }>,
+  command: Exclude<BrowserCommand, { type: "ping" } | WorkspaceCommand>,
 ): Promise<void> {
   switch (command.type) {
     case "authenticate":
@@ -257,6 +339,15 @@ function perform(
       supervisor.resolveElicitation(command.sessionId, command.interactionId, command.action, command.content);
       return Promise.resolve();
   }
+}
+
+type WorkspaceCommand = Extract<
+  BrowserCommand,
+  { type: "register-workspace" | "remove-workspace" | "select-workspace" }
+>;
+
+function isWorkspaceCommand(command: BrowserCommand): command is WorkspaceCommand {
+  return command.type === "register-workspace" || command.type === "remove-workspace" || command.type === "select-workspace";
 }
 
 function requestID(value: unknown): string {
@@ -298,17 +389,12 @@ function argumentsFor(name: string): string[] {
 }
 
 async function main(): Promise<void> {
-  const workspace = argument("--workspace");
-  if (!workspace) {
-    throw new Error("--workspace is required");
-  }
   const port = argument("--port");
   const host = await startHost({
     hostname: argument("--host"),
     oxArguments: argumentsFor("--ox-arg"),
     oxCommand: argument("--ox"),
     port: port === undefined ? undefined : Number.parseInt(port, 10),
-    workspace,
   });
   process.stdout.write(`Ox browser host listening at ${host.url}\n`);
   const stop = () => {

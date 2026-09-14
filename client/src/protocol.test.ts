@@ -3,6 +3,9 @@ import { describe, expect, test } from "bun:test";
 import { initialSnapshot, parseBrowserCommand, snapshotSchema } from "./protocol.ts";
 
 const noPromptCapabilities = { audio: false, embeddedContext: false, image: false };
+const workspaceID = "11111111-1111-4111-8111-111111111111";
+const secondWorkspaceID = "22222222-2222-4222-8222-222222222222";
+const registeredWorkspaces = { selectedId: workspaceID, values: [{ id: workspaceID, name: "ox" }] };
 
 describe("browser protocol", () => {
   test("accepts a correlated ping", () => {
@@ -10,6 +13,16 @@ describe("browser protocol", () => {
       ok: true,
       value: { type: "ping", requestId: "request-1" },
     });
+  });
+
+  test("accepts bounded workspace registry commands", () => {
+    for (const command of [
+      { type: "register-workspace", requestId: "request-1", path: "/srv/workspace" },
+      { type: "select-workspace", requestId: "request-2", workspaceId: workspaceID },
+      { type: "remove-workspace", requestId: "request-3", workspaceId: workspaceID },
+    ]) {
+      expect(parseBrowserCommand(command).ok).toBe(true);
+    }
   });
 
   test("accepts write-only authentication commands", () => {
@@ -137,6 +150,10 @@ describe("browser protocol", () => {
     { type: "ping" },
     { type: "ping", requestId: "" },
     { type: "ping", requestId: "request-1", extra: true },
+    { type: "register-workspace", requestId: "request-1", path: "relative" },
+    { type: "register-workspace", requestId: "request-1", path: "/valid", root: "/leaked" },
+    { type: "select-workspace", requestId: "request-1", workspaceId: "not-a-uuid" },
+    { type: "remove-workspace", requestId: "request-1", workspaceId: workspaceID, root: "/leaked" },
     { type: "authenticate", requestId: "request-1" },
     { type: "login", requestId: "request-1", methodId: "terminal", credential: "   " },
     { type: "logout", requestId: "" },
@@ -157,10 +174,10 @@ describe("browser protocol", () => {
   });
 
   test("starts with a complete ready snapshot", () => {
-    expect(initialSnapshot({ diagnostics: [], mcpServerCount: 0, name: "ox", promptCapabilities: noPromptCapabilities, status: "ready" })).toEqual({
+    expect(initialSnapshot(registeredWorkspaces, { diagnostics: [], mcpServerCount: 0, name: "ox", promptCapabilities: noPromptCapabilities, status: "ready" })).toEqual({
       type: "snapshot",
       revision: 0,
-      connection: { status: "ready" },
+      workspaces: registeredWorkspaces,
       workspace: { diagnostics: [], mcpServerCount: 0, name: "ox", promptCapabilities: noPromptCapabilities, status: "ready" },
       authentication: { logoutAvailable: false, methods: [], status: "unavailable" },
       sessions: { values: [] },
@@ -168,7 +185,7 @@ describe("browser protocol", () => {
   });
 
   test("accepts a browser-safe active transcript and rejects arbitrary payloads", () => {
-    const snapshot = initialSnapshot({ diagnostics: [], mcpServerCount: 0, name: "ox", promptCapabilities: noPromptCapabilities, status: "ready" });
+    const snapshot = initialSnapshot(registeredWorkspaces, { diagnostics: [], mcpServerCount: 0, name: "ox", promptCapabilities: noPromptCapabilities, status: "ready" });
     snapshot.sessions.active = {
       busy: false,
       id: "session-1",
@@ -210,5 +227,32 @@ describe("browser protocol", () => {
       },
     } as unknown as typeof snapshot.sessions.active;
     expect(snapshotSchema.safeParse(snapshot).success).toBe(false);
+  });
+
+  test("accepts only browser-safe workspace catalogs", () => {
+    expect(snapshotSchema.safeParse(initialSnapshot({ values: [] })).success).toBe(true);
+
+    for (const workspaces of [
+      { selectedId: workspaceID, values: [] },
+      { values: [{ id: workspaceID, name: "ox" }] },
+      { selectedId: secondWorkspaceID, values: [{ id: workspaceID, name: "ox" }] },
+      { selectedId: workspaceID, values: [{ id: workspaceID, name: "one" }, { id: workspaceID, name: "two" }] },
+    ]) {
+      expect(snapshotSchema.safeParse(initialSnapshot(workspaces)).success).toBe(false);
+    }
+
+    const root = initialSnapshot(registeredWorkspaces, {
+      diagnostics: [],
+      mcpServerCount: 0,
+      name: "ox",
+      promptCapabilities: noPromptCapabilities,
+      status: "ready",
+    });
+    root.workspaces.values = [{ id: workspaceID, name: "ox", root: "/srv/ox" } as unknown as { id: string; name: string }];
+    expect(snapshotSchema.safeParse(root).success).toBe(false);
+
+    const arbitrary = initialSnapshot(registeredWorkspaces);
+    arbitrary.workspaces = { ...arbitrary.workspaces, extra: true } as unknown as typeof arbitrary.workspaces;
+    expect(snapshotSchema.safeParse(arbitrary).success).toBe(false);
   });
 });
