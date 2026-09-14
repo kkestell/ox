@@ -24,7 +24,7 @@ describe("workspace supervisor", () => {
       mcpServerCount: 0,
       name: expect.any(String),
       promptCapabilities: { audio: false, embeddedContext: false, image: false },
-      sessions: { values: [] },
+      sessions: {},
       status: "ready",
     });
 
@@ -82,7 +82,7 @@ describe("workspace supervisor", () => {
       mcpServerCount: 0,
       name: expect.any(String),
       promptCapabilities: { audio: false, embeddedContext: false, image: false },
-      sessions: { values: [] },
+      sessions: {},
       status: "unavailable",
     });
 
@@ -182,22 +182,20 @@ describe("workspace supervisor", () => {
       workspace: await temporaryWorkspace(),
     });
 
-    await eventually(() => supervisor.state.sessions.values.length === 1);
-    expect(supervisor.state.sessions).toEqual({
-      nextCursor: "page-2",
-      values: [{ id: "first", status: "inactive", title: "First" }],
-    });
+    await eventually(() => supervisor.catalog.conversations.length === 1);
+    expect(supervisor.state.sessions).toEqual({ nextCursor: "page-2" });
+    expect(supervisor.catalog.conversations).toEqual([{ id: "first", status: "inactive", title: "First" }]);
 
     await supervisor.nextSessionPage();
-    expect(supervisor.state.sessions.values.map((session) => session.id)).toEqual(["first", "second"]);
+    expect(supervisor.catalog.conversations.map((session) => session.id)).toEqual(["first", "second"]);
 
     await expect(supervisor.loadSession("missing", [])).rejects.toThrow("unknown session");
-    expect(supervisor.state.sessions.values.map((session) => session.id)).toEqual(["first", "second"]);
+    expect(supervisor.catalog.conversations.map((session) => session.id)).toEqual(["first", "second"]);
     expect(supervisor.state.sessions.selectedID).toBeUndefined();
 
     await supervisor.loadSession("first", []);
     expect(supervisor.state.sessions.selectedID).toBe("first");
-    expect(supervisor.state.sessions.values.find((session) => session.id === "first")?.status).toBe("active");
+    expect(supervisor.catalog.conversations.find((session) => session.id === "first")?.status).toBe("active");
     expect(supervisor.sessionTranscript("first")?.entries).toEqual([
       {
         content: [{ text: "replayed", type: "text" }],
@@ -209,15 +207,15 @@ describe("workspace supervisor", () => {
     await supervisor.closeSession("first");
     await supervisor.resumeSession("second", []);
     expect(supervisor.state.sessions.selectedID).toBe("second");
-    expect(supervisor.state.sessions.values.find((session) => session.id === "second")?.status).toBe("active");
+    expect(supervisor.catalog.conversations.find((session) => session.id === "second")?.status).toBe("active");
 
     await supervisor.closeSession("second");
     await supervisor.deleteSession("second");
-    expect(supervisor.state.sessions.values.map((session) => session.id)).toEqual(["first"]);
+    expect(supervisor.catalog.conversations.map((session) => session.id)).toEqual(["first"]);
 
     await supervisor.newSession([]);
     expect(supervisor.state.sessions.selectedID).toBe("created");
-    expect(supervisor.state.sessions.values.find((session) => session.id === "created")?.status).toBe("active");
+    expect(supervisor.catalog.conversations.find((session) => session.id === "created")?.status).toBe("active");
     await supervisor.stop();
   });
 
@@ -254,9 +252,9 @@ describe("workspace supervisor", () => {
       workspace: await temporaryWorkspace(),
     });
 
-    await eventually(() => supervisor.state.sessions.values.length > 0);
+    await eventually(() => supervisor.catalog.conversations.length > 0);
 
-    expect(supervisor.state.sessions.values).toHaveLength(maximumSessions);
+    expect(supervisor.catalog.conversations).toHaveLength(maximumSessions);
     expect(supervisor.state.sessions.nextCursor).toBeUndefined();
     await supervisor.stop();
   });
@@ -324,7 +322,7 @@ describe("workspace supervisor", () => {
 
     expect(supervisor.state.sessions.active?.id).toBe("one");
     expect(supervisor.state.sessions.active?.interactions).toEqual([]);
-    expect(supervisor.state.sessions.values).toEqual([
+    expect(supervisor.catalog.conversations).toEqual([
       { id: "one", status: "active" },
       { awaiting: true, id: "two", status: "active" },
     ]);
@@ -334,7 +332,7 @@ describe("workspace supervisor", () => {
     await turn;
 
     expect(supervisor.state.awaiting).toBe(false);
-    expect(supervisor.state.sessions.values.every((session) => session.awaiting === undefined)).toBe(true);
+    expect(supervisor.catalog.conversations.every((session) => session.awaiting === undefined)).toBe(true);
     expect(() => supervisor.resolvePermission("two", "interaction-1", "allow")).toThrow("no longer pending");
     await supervisor.stop();
   });

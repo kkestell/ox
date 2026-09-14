@@ -1,0 +1,22 @@
+/* Layout only. Color, type, and spacing belong to the client's visual design. */
+
+body {
+  margin: 0;
+}
+
+.layout {
+  display: flex;
+  align-items: stretch;
+  height: 100vh;
+}
+
+.layout > nav {
+  flex: 0 0 18rem;
+  overflow-y: auto;
+}
+
+.layout > main {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-y: auto;
+}

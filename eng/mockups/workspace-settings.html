@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Ox — workspace settings</title>
+    <!-- The settled stylesheet, unchanged: client/public/styles.css owns layout
+         only, and the settings surface needs no new rule. -->
+    <link rel="stylesheet" href="../../client/public/styles.css" />
+  </head>
+  <body>
+    <div class="layout">
+      <nav aria-label="Workspaces and conversations">
+        <h1>Ox</h1>
+        <ul aria-label="Workspaces">
+          <li aria-current="true">
+            <h2>ox</h2>
+            <button type="button" aria-label="New conversation in ox">+</button>
+            <a
+              href="#settings-ox"
+              aria-label="Settings for ox"
+              aria-current="page"
+              >Settings</a
+            >
+            <button type="button" aria-label="Remove ox">Remove</button>
+            <ul aria-label="ox conversations">
+              <li>
+                <a href="#conversation-1">Workspace settings</a>
+                <time datetime="2026-09-14T13:20:00Z">1:20 PM</time>
+              </li>
+            </ul>
+          </li>
+          <li>
+            <h2>notes</h2>
+            <button type="button" aria-label="New conversation in notes">
+              +
+            </button>
+            <a href="#settings-notes" aria-label="Settings for notes"
+              >Settings</a
+            >
+            <button type="button" aria-label="Remove notes">Remove</button>
+            <ul aria-label="notes conversations">
+              <li>
+                <a href="#conversation-3">Weekly summary</a>
+                <time datetime="2026-09-14T11:40:00Z">11:40 AM</time>
+              </li>
+            </ul>
+          </li>
+        </ul>
+        <form>
+          <label>
+            Workspace path
+            <input required value="" />
+          </label>
+          <button type="submit">Register workspace</button>
+        </form>
+      </nav>
+      <!-- Workspace settings replace the conversation while they are shown, so
+           they never compete with the transcript and composer. -->
+      <main>
+        <section aria-label="Workspace settings">
+          <h2>ox</h2>
+
+          <section aria-labelledby="authentication-heading">
+            <h3 id="authentication-heading">Authentication</h3>
+            <p>Connected</p>
+            <form>
+              <label>
+                OpenRouter login credential
+                <input type="password" autocomplete="off" required value="" />
+              </label>
+              <button type="submit">OpenRouter login</button>
+            </form>
+            <button type="button">Log out</button>
+          </section>
+
+          <section aria-labelledby="mcp-heading">
+            <h3 id="mcp-heading">MCP servers</h3>
+            <p>1 configured</p>
+            <form>
+              <button type="button">Add HTTP MCP server</button>
+              <button type="button">Add stdio MCP server</button>
+              <button type="submit">Save MCP servers</button>
+            </form>
+          </section>
+
+          <section aria-labelledby="support-heading">
+            <h3 id="support-heading">Support details</h3>
+            <dl>
+              <dt>Browser connection</dt>
+              <dd>Connected</dd>
+              <dt>Host revision</dt>
+              <dd>42</dd>
+              <dt>Session ID</dt>
+              <dd>01J9…</dd>
+            </dl>
+            <ul aria-label="Ox processes">
+              <li>ox — ready, idle</li>
+              <li>notes — ready, working</li>
+            </ul>
+            <button type="button">Refresh conversation history</button>
+          </section>
+        </section>
+      </main>
+    </div>
+
+    <!-- The conversation column when the workspace has no usable credential: an
+         actionable pointer, not a second authentication surface. -->
+    <div class="layout">
+      <nav aria-label="Workspaces and conversations">
+        <h1>Ox</h1>
+        <ul aria-label="Workspaces">
+          <li aria-current="true">
+            <h2>notes</h2>
+            <button type="button" aria-label="New conversation in notes">
+              +
+            </button>
+            <a href="#settings-notes" aria-label="Settings for notes"
+              >Settings</a
+            >
+            <button type="button" aria-label="Remove notes">Remove</button>
+            <ul aria-label="notes conversations"></ul>
+          </li>
+        </ul>
+      </nav>
+      <main>
+        <p>
+          Ox is not connected. Connect it in
+          <a href="#settings-notes">workspace settings</a>.
+        </p>
+      </main>
+    </div>
+  </body>
+</html>

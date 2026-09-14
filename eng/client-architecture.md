@@ -71,10 +71,10 @@ security model.
 - Credentials and secret MCP fields remain in the Bun process only as long as
   their operation or activation requires. They are not included in browser
   snapshots, logs, URLs, transcript entries, or ACP metadata.
-- No stylesheet, inline style, CSS-in-JS rule, utility CSS framework, or visual
-  component library is introduced until the functional v1 gate is complete.
-  Feature work uses semantic HTML and native controls so behavior and
-  accessibility do not depend on styling.
+- The browser surface is semantic HTML with native controls. Navigating is a
+  link and every state change is a button, and accessible names come from
+  content rather than presentation. A stylesheet carries layout and appearance
+  only, so behavior and accessibility never depend on it.
 - Protocol completeness is a host and test responsibility, not the browser's
   information architecture. An ACP method, identifier, capability, or process
   state does not receive a primary control merely because it is implemented.
@@ -186,9 +186,12 @@ registered entry is active and has an independent supervisor that exists from
 registration until removal, including while it is starting and stopping, which
 is what makes those two statuses observable. One process failure cannot corrupt
 routing or cancel work in another workspace. Selecting a workspace changes which
-one the browser sees, not which processes run. Removing an entry stops its
-supervisor. Browser-added roots are server-local absolute paths that the host
-canonicalizes and validates before registration.
+one the browser sees, not which processes run. Every entry carries its own
+recent conversations, so a conversation is nameable in a workspace the browser
+is not showing, and only the selected workspace's entry carries the complete
+paged list, which is what keeps rebuilding the catalog cheap. Removing an entry
+stops its supervisor. Browser-added roots are server-local absolute paths that
+the host canonicalizes and validates before registration.
 
 ## Session state and concurrency
 
@@ -229,8 +232,10 @@ After authentication, the host opens the most recently updated conversation. A
 workspace with no durable history gets one new selected conversation. New always
 creates and selects a distinct empty Ox session. Choosing history opens the
 conversation with replay when inactive and selects it when already active.
-History refreshes after lifecycle changes, older pages extend the same list, and
-close or delete are secondary actions of the selected conversation.
+Opening or creating a conversation also selects its workspace, and only once Ox
+has accepted it, so a refusal leaves the browser on the workspace it was
+showing. History refreshes after lifecycle changes, older pages extend the same
+list, and close or delete are secondary actions of the selected conversation.
 
 The Bun host owns the workspace's current client-supplied MCP server set and
 uses it for later new and load activations. The browser edits a draft set and
@@ -240,11 +245,18 @@ environment values remain host-only and never appear in snapshots.
 
 ## Product surface
 
-The primary surface is the selected conversation: its transcript, composer,
-pending permission or question, history access, and new-conversation action.
-Authentication replaces that surface only while user action is required, and a
-connection failure appears as an actionable problem rather than a permanent
-status dashboard.
+One navigation region beside the primary column holds workspace registration,
+every registered workspace, and each workspace's recent conversations, new
+conversation, settings, and removal. A workspace with no usable process offers
+its restart there instead of its conversations. There is no workspace-selection
+control, because opening a conversation or a workspace's settings selects that
+workspace.
+
+The primary column holds either the selected conversation or the selected
+workspace's settings. The conversation is its transcript, composer, pending
+permission or question, and the workspace it belongs to. A workspace that cannot
+authenticate or whose process failed says so there, as an actionable problem
+pointing at its settings rather than a permanent status dashboard.
 
 The conversation header contains the session's advertised model, mode, and
 reasoning controls plus read-only context usage. Attachments and resource links
@@ -252,11 +264,14 @@ open from an add-context disclosure in the composer. Plans render only when
 present. Tool details and raw output are disclosed beneath their useful activity
 title. Resource links render as ordinary safe links.
 
-Workspace settings contain MCP servers and support details. MCP is always named
-as MCP; the client introduces no generic integration concept. Host revision, raw
-session identifiers, Ox process state, stderr diagnostics, manual history
-refresh, and authentication management are support information. Resume has no
-user-facing meaning. None of these compete with the transcript or composer.
+Workspace settings contain authentication, MCP servers, and support details.
+Connecting a credential and managing one are the same surface, because the
+agent's advertised methods name their own controls. MCP is always named as MCP;
+the client introduces no generic integration concept. Host revision, raw session
+identifiers, Ox process state, stderr diagnostics, and manual history refresh
+are support information. Resume has no user-facing meaning. Settings take the
+place of the conversation, so none of this competes with the transcript or
+composer.
 
 The client follows negotiated capabilities rather than assuming every ACP agent
 matches Ox. Real-process browser scenarios prove the host covers the complete
@@ -303,5 +318,4 @@ artifacts on failure.
 The functional v1 gate requires type checking, pure tests, and a real-process
 browser matrix covering Ox's complete ACP surface through the product workflows,
 including refresh during a live turn, concurrent sessions, cancellation, denied
-interactions, replay, and Ox failure. Only after that gate passes may visual CSS
-work begin.
+interactions, replay, and Ox failure.

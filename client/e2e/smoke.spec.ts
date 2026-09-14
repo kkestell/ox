@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 import * as acp from "@agentclientprotocol/sdk";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
@@ -34,7 +34,7 @@ test("registers, selects, persists, and removes server-local workspaces", async 
     const url = await host.url;
     await page.goto(url);
     await expect(page.getByText("Register a server-local workspace to begin.")).toBeVisible();
-    await expect(page.getByText("Ox is unavailable. Open support details for diagnostics.")).toHaveCount(0);
+    await expect(page.getByText("Ox is unavailable. Open workspace settings for diagnostics.")).toHaveCount(0);
 
     await page.getByLabel("Workspace path").fill("/definitely/not/an/ox-workspace");
     await page.getByRole("button", { name: "Register workspace" }).click();
@@ -42,17 +42,20 @@ test("registers, selects, persists, and removes server-local workspaces", async 
 
     await page.getByLabel("Workspace path").fill(fixture.workspace);
     await page.getByRole("button", { name: "Register workspace" }).click();
-    await expect(page.getByRole("navigation", { name: "Conversations" })).toBeVisible();
+    await expect(page.getByRole("navigation", { name: "Workspaces and conversations" })).toBeVisible();
     await expect(page.getByRole("region", { name: "Conversation" })).toBeVisible();
+
+    const sidebar = await boundingBox(page.getByRole("navigation", { name: "Workspaces and conversations" }));
+    const primary = await boundingBox(page.locator("main"));
+    expect(sidebar.x + sidebar.width).toBeLessThanOrEqual(primary.x);
 
     await page.getByLabel("Workspace path").fill(second);
     await page.getByRole("button", { name: "Register workspace" }).click();
-    await expect(page.getByLabel("Current workspace").getByRole("option")).toHaveCount(2);
-    await page.getByLabel("Current workspace").selectOption({ label: basename(second) });
-    await expect(page.locator("main > header")).toContainText(basename(second));
+    await expect(page.getByRole("list", { name: "Workspaces" }).getByRole("heading", { level: 2 })).toHaveCount(2);
+    await showWorkspace(page, basename(second));
 
     await page.reload();
-    await expect(page.locator("main > header")).toContainText(basename(second));
+    await assertShowing(page, basename(second));
     const snapshot = await page.evaluate(
       () =>
         new Promise<unknown>((resolveSnapshot) => {
@@ -68,8 +71,8 @@ test("registers, selects, persists, and removes server-local workspaces", async 
     await expect(page.locator("main")).not.toContainText(fixture.workspace);
     await expect(page.locator("main")).not.toContainText(second);
 
-    await page.getByRole("button", { name: "Remove workspace" }).click();
-    await expect(page.locator("main > header")).toContainText(basename(fixture.workspace));
+    await page.getByRole("button", { exact: true, name: `Remove ${basename(second)}` }).click();
+    await assertShowing(page, basename(fixture.workspace));
     expect(await readFile(join(second, "keep.txt"), "utf8")).toBe("keep");
   } finally {
     await host?.stop();
@@ -92,8 +95,8 @@ test("supervises a real Ox process through clean shutdown and unexpected exit", 
     await assertReady(page, await host.url);
 
     await fixture.stopOx();
-    await expect(page.getByRole("alert")).toHaveText("Ox is unavailable. Open support details for diagnostics.");
-    await openSupportDetails(page);
+    await expect(page.getByText("Ox is unavailable. Open workspace settings for diagnostics.")).toBeVisible();
+    await openWorkspaceSettings(page);
     await expect(page.getByRole("list", { name: "Ox processes" })).toContainText(
       `${basename(fixture.workspace)} — unavailable, idle`,
     );
@@ -112,9 +115,9 @@ test("automatically uses stored credentials and keeps a browser login secret out
   try {
     host = startBrowserHost(fixture);
     await assertReady(page, await host.url);
-    await expect(page.getByRole("heading", { name: "Connect OpenRouter" })).toHaveCount(0);
-    await openSupportDetails(page);
-    await page.getByText("Authentication", { exact: true }).click();
+    await expect(page.getByText("Ox is not connected.")).toHaveCount(0);
+    await openWorkspaceSettings(page);
+    await expect(page.getByRole("button", { name: "Use configured credential" })).toHaveCount(0);
 
     const credential = "browser-login-test-secret";
     await page.getByLabel("OpenRouter login credential").fill(credential);
@@ -125,6 +128,31 @@ test("automatically uses stored credentials and keeps a browser login secret out
 
     await page.getByRole("button", { name: "Log out" }).click();
     await expect(page.getByRole("alert")).toHaveText("Logout failed");
+    await conversationList(page).getByRole("link").first().click();
+    await expect(page.getByRole("region", { name: "Conversation" })).toBeVisible();
+  } finally {
+    await host?.stop();
+    await fixture.close();
+  }
+});
+
+test("asks for a credential in workspace settings when the stored one cannot authenticate", async ({ page }) => {
+  const fixture = await createFixture();
+  let host: BrowserHost | undefined;
+  try {
+    fixture.rejectCredential(true);
+    host = startBrowserHost(fixture);
+    await page.goto(await host.url);
+    await expect(page.getByText("Ox is not connected.")).toBeVisible();
+    await expect(page.getByRole("region", { name: "Conversation" })).toHaveCount(0);
+
+    await openWorkspaceSettings(page);
+    await expect(page.getByRole("region", { name: "Authentication" })).toContainText("Not connected");
+
+    fixture.rejectCredential(false);
+    await page.getByRole("button", { name: "Use configured credential" }).click();
+    await expect(page.getByRole("button", { name: "Use configured credential" })).toHaveCount(0);
+    await conversationList(page).getByRole("link").first().click();
     await expect(page.getByRole("region", { name: "Conversation" })).toBeVisible();
   } finally {
     await host?.stop();
@@ -142,7 +170,7 @@ test("keeps a replayed session coherent across refresh and attached browsers", a
     const url = await host.url;
     await assertReady(page, url);
 
-    const sessions = page.getByRole("list", { name: "Conversation history" });
+    const sessions = conversationList(page);
     await expect(sessions).toContainText("smoke");
     await expect(page.getByRole("region", { name: "Conversation" }).getByRole("heading", { name: "smoke" })).toBeVisible();
     const transcript = page.getByRole("region", { name: "Transcript" });
@@ -165,11 +193,11 @@ test("keeps a replayed session coherent across refresh and attached browsers", a
     await second.getByRole("button", { name: "Close conversation" }).click();
     await expect(page.getByText("Choose a conversation or start a new one.")).toBeVisible();
 
-    await sessions.getByRole("button", { name: "smoke" }).click();
+    await sessions.getByRole("link", { name: "smoke" }).click();
     await page.getByText("Conversation actions", { exact: true }).click();
     await page.getByRole("button", { name: "Delete conversation" }).click();
     await expect(sessions).not.toContainText("smoke");
-    await page.getByRole("button", { name: "New conversation" }).click();
+    await newConversation(page).click();
     await expect(page.getByRole("region", { name: "Conversation" })).toBeVisible();
   } finally {
     await secondContext?.close();
@@ -259,14 +287,14 @@ test("runs separate sessions concurrently and cancels the selected live prompt",
     await page.getByRole("button", { name: "Send prompt" }).click();
     await expect(page.getByRole("button", { name: "Cancel prompt" })).toBeVisible();
 
-    await page.getByRole("button", { name: "New conversation" }).click();
+    await newConversation(page).click();
     await page.getByLabel("Message").fill("second session");
     await page.getByRole("button", { name: "Send prompt" }).click();
     await expect.poll(() => fixture.requests).toBe(2);
     await expect(page.getByRole("region", { name: "Transcript" })).toContainText("browser smoke");
 
-    const sessions = page.getByRole("list", { name: "Conversation history" }).getByRole("listitem");
-    await sessions.filter({ hasText: "hold" }).getByRole("button").click();
+    const sessions = conversationList(page).getByRole("listitem");
+    await sessions.filter({ hasText: "hold" }).getByRole("link").click();
     await expect(page.getByRole("button", { name: "Cancel prompt" })).toBeVisible();
     await page.getByRole("button", { name: "Cancel prompt" }).click();
     await expect(page.getByRole("button", { name: "Cancel prompt" })).toBeHidden();
@@ -311,25 +339,27 @@ test("runs concurrent turns and isolates failure across two workspaces", async (
     await page.getByRole("button", { name: "Send prompt" }).click();
     await expect(page.getByRole("button", { name: "Cancel prompt" })).toBeVisible();
 
-    await page.getByLabel("Current workspace").selectOption({ label: second });
-    await expect(page.locator("main > header")).toContainText(second);
+    await showWorkspace(page, second);
     await page.getByLabel("Message").fill("second workspace turn");
     await page.getByRole("button", { name: "Send prompt" }).click();
     await expect(page.getByRole("region", { name: "Transcript" })).toContainText("browser smoke");
 
-    await openSupportDetails(page);
+    // Following another workspace's settings link selects that workspace.
+    await openWorkspaceSettings(page, first);
+    await expect(page.getByRole("region", { name: "Workspace settings" }).getByRole("heading", { level: 2 })).toHaveText(first);
     const processes = page.getByRole("list", { name: "Ox processes" });
     await expect(processes).toContainText(`${first} — ready, working`);
     await expect(processes).toContainText(`${second} — ready, idle`);
 
     fixture.releaseHeldPrompt();
-    await page.getByLabel("Current workspace").selectOption({ label: first });
+    await showWorkspace(page, first);
     await expect(page.getByRole("region", { name: "Transcript" })).toContainText("held prompt complete");
 
     await fixture.stopOx(fixture.workspaceTwo);
+    await openWorkspaceSettings(page, first);
     await expect(processes).toContainText(`${second} — unavailable, idle`);
-    await expect(page.getByText("Ox is unavailable. Open support details for diagnostics.")).toHaveCount(0);
-    await page.getByRole("button", { name: "New conversation" }).click();
+    await expect(page.getByText("Ox is unavailable. Open workspace settings for diagnostics.")).toHaveCount(0);
+    await newConversation(page, first).click();
     const transcript = page.getByRole("region", { name: "Transcript" });
     await expect(transcript).not.toContainText("held prompt complete");
     await page.getByLabel("Message", { exact: true }).fill("the first workspace still works");
@@ -349,25 +379,29 @@ test("restarts a workspace whose Ox stopped and reopens its durable history", as
   try {
     host = startBrowserHost(fixture);
     await assertReady(page, await host.url);
-    await page.getByLabel("Current workspace").selectOption({ label: second });
-    await expect(page.locator("main > header")).toContainText(second);
+    await showWorkspace(page, second);
     await page.getByLabel("Message", { exact: true }).fill("remember this turn");
     await page.getByRole("button", { name: "Send prompt" }).click();
     const transcript = page.getByRole("region", { name: "Transcript" });
     await expect(transcript).toContainText("browser smoke");
 
     await fixture.stopOx(fixture.workspaceTwo);
-    await expect(page.getByRole("alert")).toHaveText("Ox is unavailable. Open support details for diagnostics.");
+    await expect(page.getByText("Ox is unavailable. Open workspace settings for diagnostics.")).toBeVisible();
+    // A workspace with no process offers its restart instead of conversations
+    // it can no longer open.
+    await expect(conversationList(page, second)).toHaveCount(0);
 
-    await page.getByRole("button", { name: "Restart Ox" }).click();
+    await page.getByRole("button", { exact: true, name: `Restart ${second}` }).click();
 
+    // The restart also clears the turn that the exit interrupted.
     await expect(page.getByRole("alert")).toHaveCount(0);
     await expect(transcript).toContainText("remember this turn");
-    await openSupportDetails(page);
+    await openWorkspaceSettings(page, second);
     const processes = page.getByRole("list", { name: "Ox processes" });
     await expect(processes).toContainText(`${second} — ready, idle`);
     await expect(processes).toContainText(`${first} — ready, idle`);
     await expect(page.getByRole("list", { name: "Workspace diagnostics" })).toContainText("Ox exited from SIGTERM");
+    await showWorkspace(page, second);
     await page.getByLabel("Message", { exact: true }).fill("after the restart");
     await page.getByRole("button", { name: "Send prompt" }).click();
     await expect(transcript).toContainText("browser smoke");
@@ -385,21 +419,20 @@ test("routes a pending permission to the workspace the browser is not showing", 
   try {
     host = startBrowserHost(fixture);
     await assertReady(page, await host.url);
-    await page.getByLabel("Current workspace").selectOption({ label: second });
-    await expect(page.locator("main > header")).toContainText(second);
+    await showWorkspace(page, second);
     await page.getByLabel("Message", { exact: true }).fill("request permission");
     await page.getByRole("button", { name: "Send prompt" }).click();
     const permission = page.getByRole("region", { name: "Transcript" }).getByRole("article", { name: /Permission for/ });
     await expect(permission).toContainText("pwd");
-    await expect(page.getByRole("list", { name: "Conversation history" })).toContainText("Waiting for you");
+    await expect(conversationList(page, second)).toContainText("Waiting for you");
 
-    await page.getByLabel("Current workspace").selectOption({ label: first });
-    await expect(page.locator("main > header")).toContainText(first);
+    await showWorkspace(page, first);
     await expect(permission).toBeHidden();
 
-    await page
-      .getByRole("list", { name: "Workspaces waiting for an answer" })
-      .getByRole("button", { name: `${second} is waiting for an answer` })
+    await conversationList(page, second)
+      .getByRole("listitem")
+      .filter({ hasText: "Waiting for you" })
+      .getByRole("link")
       .click();
 
     await expect(permission).toContainText("pwd");
@@ -470,7 +503,7 @@ test("activates HTTP and stdio MCP servers without retaining secrets", async ({ 
   try {
     host = startBrowserHost(fixture);
     await assertReady(page, await host.url);
-    await openMCPSettings(page);
+    await openWorkspaceSettings(page);
 
     await addHTTPMCPServer(page, "http", mcp.httpURL, mcp.httpSecret);
     await saveMCPServers(page);
@@ -493,13 +526,18 @@ test("activates HTTP and stdio MCP servers without retaining secrets", async ({ 
     await page.getByRole("button", { name: "Close conversation" }).click();
     await expect(page.getByText("Choose a conversation or start a new one.")).toBeVisible();
 
+    await openWorkspaceSettings(page);
     await addStdioMCPServer(page, "stdio", mcp.stdioCommand, mcp.stdioArgument, mcp.stdioEnvironmentName, mcp.stdioSecret);
     await saveMCPServers(page);
 
+    // An incomplete draft survives leaving settings and cannot block opening a
+    // conversation.
     await page.getByRole("button", { name: "Add HTTP MCP server" }).click();
-    await page.getByRole("list", { name: "Conversation history" }).getByRole("button").first().click();
+    await conversationList(page).getByRole("link").first().click();
     await expect(page.getByRole("region", { name: "Conversation" })).toBeVisible();
+    await openWorkspaceSettings(page);
     await page.getByRole("group", { name: "HTTP MCP server" }).getByRole("button", { name: "Remove server" }).click();
+    await conversationList(page).getByRole("link").first().click();
     await page.getByRole("textbox", { name: "Message" }).fill("use stdio MCP tool");
     await page.getByRole("button", { name: "Send prompt" }).click();
     await expect(page.getByRole("region", { name: "Transcript" })).toContainText("stdio MCP complete");
@@ -509,12 +547,14 @@ test("activates HTTP and stdio MCP servers without retaining secrets", async ({ 
     await page.getByText("Conversation actions", { exact: true }).click();
     await page.getByRole("button", { name: "Close conversation" }).click();
 
+    await openWorkspaceSettings(page);
     await addHTTPMCPServer(page, "broken", `${mcp.httpURL}/unavailable`, "failed-activation-secret");
     await saveMCPServers(page);
-    await page.getByRole("button", { name: "New conversation" }).click();
+    await newConversation(page).click();
     await expect(page.getByRole("alert")).toContainText("activate MCP servers");
     await expect(page.locator("main")).not.toContainText("failed-activation-secret");
 
+    await openWorkspaceSettings(page);
     await addHTTPMCPServer(page, "reactivated", mcp.httpURL, mcp.httpSecret);
     await saveMCPServers(page);
     await startNewConversation(page);
@@ -602,6 +642,7 @@ type Fixture = {
   environment: NodeJS.ProcessEnv;
   providerURL: string;
   prompts: unknown[];
+  rejectCredential(rejected: boolean): void;
   releaseHeldPrompt(): void;
   requests: number;
   runner: string;
@@ -637,13 +678,14 @@ async function createFixture(
   const runner = join(root, "run-ox");
   const provider = createServer();
   let requests = 0;
+  let credentialRejected = false;
   let filesystemStage = 0;
   const heldPrompts: ServerResponse[] = [];
   let terminalStage = 0;
   const prompts: unknown[] = [];
   provider.on("request", (request, response) => {
     if (request.method === "GET" && request.url === "/api/v1/auth/key") {
-      if (request.headers.authorization === "Bearer test-key") {
+      if (!credentialRejected && request.headers.authorization === "Bearer test-key") {
         response.writeHead(200, { "content-type": "application/json" }).end('{"data":{}}');
       } else {
         response.writeHead(401, { "content-type": "application/json" }).end('{"error":{"message":"rejected"}}');
@@ -840,6 +882,9 @@ async function createFixture(
       return requests;
     },
     prompts,
+    rejectCredential(rejected: boolean) {
+      credentialRejected = rejected;
+    },
     releaseHeldPrompt() {
       const response = heldPrompts.shift();
       if (!response) {
@@ -1104,25 +1149,55 @@ async function driveOx(fixture: Fixture): Promise<string> {
   }
 }
 
+async function boundingBox(locator: Locator): Promise<{ height: number; width: number; x: number; y: number }> {
+  const box = await locator.boundingBox();
+  if (box === null) {
+    throw new Error("element has no layout box");
+  }
+  return box;
+}
+
+function conversationList(page: Page, workspace?: string) {
+  return page.getByRole("list", {
+    exact: workspace !== undefined,
+    name: workspace === undefined ? /conversations$/ : `${workspace} conversations`,
+  });
+}
+
+function newConversation(page: Page, workspace?: string) {
+  return page.getByRole("button", {
+    exact: workspace !== undefined,
+    name: workspace === undefined ? /^New conversation in / : `New conversation in ${workspace}`,
+  });
+}
+
+// Opening one of a workspace's conversations is how the browser switches to it.
+async function showWorkspace(page: Page, workspace: string): Promise<void> {
+  await conversationList(page, workspace).getByRole("link").first().click();
+  await assertShowing(page, workspace);
+}
+
+async function assertShowing(page: Page, workspace: string): Promise<void> {
+  await expect(page.getByRole("region", { name: "Conversation" }).locator("header")).toContainText(workspace);
+}
+
 async function assertReady(page: Page, url: string): Promise<void> {
   await page.goto(url);
   await expect(page.getByRole("heading", { level: 1, name: "Ox" })).toBeVisible();
-  const authenticate = page.getByRole("button", { name: "Use configured credential" });
-  if (await authenticate.isVisible()) {
-    await authenticate.click();
-  }
-  await expect(page.getByRole("navigation", { name: "Conversations" })).toBeVisible();
+  await expect(page.getByRole("navigation", { name: "Workspaces and conversations" })).toBeVisible();
   await expect(page.getByRole("region", { name: "Conversation" })).toBeVisible();
 }
 
-async function openSupportDetails(page: Page): Promise<void> {
-  await page.getByText("Workspace settings", { exact: true }).click();
-  await page.getByText("Support details", { exact: true }).click();
-}
-
-async function openMCPSettings(page: Page): Promise<void> {
-  await page.getByText("Workspace settings", { exact: true }).click();
-  await page.getByText(/^MCP servers — /).click();
+// Workspace settings replace the conversation, so a scenario that reads them
+// navigates there and back.
+async function openWorkspaceSettings(page: Page, workspace?: string): Promise<void> {
+  await page
+    .getByRole("link", {
+      exact: workspace !== undefined,
+      name: workspace === undefined ? /^Settings for / : `Settings for ${workspace}`,
+    })
+    .click();
+  await expect(page.getByRole("region", { name: "Workspace settings" })).toBeVisible();
 }
 
 async function saveMCPServers(page: Page): Promise<void> {
@@ -1131,9 +1206,9 @@ async function saveMCPServers(page: Page): Promise<void> {
 }
 
 async function startNewConversation(page: Page): Promise<void> {
-  const conversations = page.getByRole("list", { name: "Conversation history" }).getByRole("listitem");
+  const conversations = conversationList(page).getByRole("listitem");
   const count = await conversations.count();
-  await page.getByRole("button", { name: "New conversation" }).click();
+  await newConversation(page).click();
   await expect(conversations).toHaveCount(count + 1);
 }
 

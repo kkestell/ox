@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { startHost, type StartedHost } from "./host.ts";
-import type { Snapshot } from "./protocol.ts";
+import { maximumRecentConversations, type Snapshot } from "./protocol.ts";
 
 let host: StartedHost | undefined;
 const temporaryDirectories: string[] = [];
@@ -18,6 +18,7 @@ afterEach(async () => {
 const unregisteredWorkspaceID = "11111111-1111-4111-8111-111111111111";
 const keptWorkspaceID = "22222222-2222-4222-8222-222222222222";
 const goneWorkspaceID = "33333333-3333-4333-8333-333333333333";
+const refusedSessionID = "session-3";
 
 const httpMCPServer = {
   transport: "http",
@@ -61,7 +62,7 @@ describe("browser host", () => {
 
     expect(client.received()).not.toContain(workspace);
     expect(client.snapshot().workspaces.values).toEqual([
-      { awaiting: false, busy: false, id: expect.any(String), name: "private-workspace", status: "unavailable" },
+      { awaiting: false, busy: false, conversations: [], id: expect.any(String), name: "private-workspace", status: "unavailable" },
     ]);
     client.close();
   });
@@ -87,6 +88,58 @@ describe("browser host", () => {
     expect(client.snapshot().workspace?.mcpServerCount).toBe(1);
     await client.request({ type: "select-workspace", workspaceId: one.id });
     expect(client.snapshot().workspace?.mcpServerCount).toBe(0);
+    client.close();
+  });
+
+  test("carries every workspace's conversations and switches to the one a conversation opens in", async () => {
+    const root = await temporaryDirectory();
+    await mkdir(join(root, "one"));
+    await mkdir(join(root, "two"));
+    const listed = maximumRecentConversations + 2;
+    const newest = "session-0";
+    const oldest = `session-${listed - 1}`;
+    host = await startHost({
+      oxArguments: ["--eval", conversationsProgram(listed, refusedSessionID)],
+      oxCommand: process.execPath,
+      registryPath: join(root, "workspaces.json"),
+    });
+    const client = await connect(host);
+    await client.request({ type: "register-workspace", path: join(root, "one") });
+    await client.request({ type: "register-workspace", path: join(root, "two") });
+    const [one, two] = client.snapshot().workspaces.values;
+    if (!one || !two) {
+      throw new Error("both workspaces should be registered");
+    }
+    await eventually(() => entry(client, one.id).conversations.length > 0 && entry(client, two.id).conversations.length > 0);
+
+    // A workspace lists its conversations without being selected; only the
+    // selected workspace carries the whole paged list.
+    expect(entry(client, one.id).conversations).toHaveLength(listed);
+    expect(entry(client, two.id).conversations.map((conversation) => conversation.id)).toEqual(
+      Array.from({ length: maximumRecentConversations }, (unused, index) => `session-${index}`),
+    );
+
+    expect(await client.request({ type: "open-conversation", workspaceId: two.id, sessionId: oldest })).toEqual({
+      ok: true,
+    });
+
+    expect(client.snapshot().workspaces.selectedId).toBe(two.id);
+    expect(client.snapshot().sessions.active?.id).toBe(oldest);
+    expect(client.snapshot().sessions.selectedId).toBe(oldest);
+
+    // A conversation below the recent window stays nameable in a workspace the
+    // browser is not showing.
+    await client.request({ type: "select-workspace", workspaceId: one.id });
+    expect(entry(client, two.id).conversations).toHaveLength(maximumRecentConversations + 1);
+    expect(entry(client, two.id).conversations.filter((conversation) => conversation.status === "active")).toEqual([
+      { id: oldest, status: "active", title: `Conversation ${listed - 1}` },
+    ]);
+
+    expect(
+      await client.request({ type: "open-conversation", workspaceId: two.id, sessionId: refusedSessionID }),
+    ).toEqual({ ok: false, error: expect.any(String) });
+    expect(client.snapshot().workspaces.selectedId).toBe(one.id);
+    expect(entry(client, one.id).conversations[0]?.id).toBe(newest);
     client.close();
   });
 
@@ -136,7 +189,7 @@ describe("browser host", () => {
     expect(after.slice(0, before.length)).toEqual(before);
     expect(after.length).toBeGreaterThan(before.length);
     expect(client.snapshot().workspaces.values).toEqual([
-      { awaiting: false, busy: false, id: entry.id, name: "restarted", status: "unavailable" },
+      { awaiting: false, busy: false, conversations: [], id: entry.id, name: "restarted", status: "unavailable" },
     ]);
     client.close();
   });
@@ -163,8 +216,8 @@ describe("browser host", () => {
     await client.request({ type: "ping" });
 
     expect(client.snapshot().workspaces.values).toEqual([
-      { awaiting: false, busy: false, id: keptWorkspaceID, name: "kept", status: "unavailable" },
-      { awaiting: false, busy: false, id: goneWorkspaceID, name: "gone", status: "unavailable" },
+      { awaiting: false, busy: false, conversations: [], id: keptWorkspaceID, name: "kept", status: "unavailable" },
+      { awaiting: false, busy: false, conversations: [], id: goneWorkspaceID, name: "gone", status: "unavailable" },
     ]);
     expect(client.snapshot().workspace?.diagnostics).toEqual(["workspace must be a listable directory"]);
     expect(await client.request({ type: "set-mcp-servers", workspaceId: keptWorkspaceID, mcpServers: [] })).toEqual({
@@ -262,6 +315,62 @@ describe("browser host", () => {
     expect(response.status).toBe(403);
   });
 });
+
+function entry(client: Client, workspaceId: string): Snapshot["workspaces"]["values"][number] {
+  const value = client.snapshot().workspaces.values.find((workspace) => workspace.id === workspaceId);
+  if (!value) {
+    throw new Error("the workspace should be registered");
+  }
+  return value;
+}
+
+async function eventually(condition: () => boolean): Promise<void> {
+  const deadline = Date.now() + 2_000;
+  while (!condition()) {
+    if (Date.now() >= deadline) {
+      throw new Error("condition was not met");
+    }
+    await Bun.sleep(10);
+  }
+}
+
+// Lists conversations without authenticating, so every workspace's catalog
+// carries a list the browser never asked for.
+function conversationsProgram(sessions: number, refused: string): string {
+  return `
+process.stdin.setEncoding('utf8');
+let input = '';
+function reply(id, body) { process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id, ...body }) + '\\n'); }
+process.stdin.on('data', (chunk) => {
+  input += chunk;
+  for (;;) {
+    const newline = input.indexOf('\\n');
+    if (newline === -1) break;
+    const request = JSON.parse(input.slice(0, newline));
+    input = input.slice(newline + 1);
+    if (request.method === 'initialize') {
+      reply(request.id, { result: {
+        protocolVersion: 1,
+        agentCapabilities: { loadSession: true, sessionCapabilities: { list: {} } },
+        authMethods: [],
+      } });
+    } else if (request.method === 'session/list') {
+      const listed = Array.from({ length: ${sessions} }, (unused, index) => ({
+        sessionId: 'session-' + index,
+        cwd: process.cwd(),
+        title: 'Conversation ' + index,
+      }));
+      reply(request.id, { result: { sessions: listed } });
+    } else if (request.method === 'session/load') {
+      if (request.params.sessionId === ${JSON.stringify(refused)}) {
+        reply(request.id, { error: { code: -32000, message: 'conversation cannot be opened' } });
+      } else {
+        reply(request.id, { result: {} });
+      }
+    }
+  }
+});`;
+}
 
 async function startTestHost(): Promise<StartedHost> {
   const root = await temporaryDirectory();

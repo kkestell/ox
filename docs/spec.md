@@ -46,26 +46,33 @@ workspace has one Ox process and one ACP connection; a failure in one workspace
 does not become a session or filesystem operation in another.
 
 The host automatically tries Ox's configured stored credential at startup. Only
-when that cannot authenticate does the browser ask the user to connect. After
-authentication, the web client opens the most recently updated conversation, or
-creates one when the workspace has no history. New creates and selects a
-distinct empty conversation. Choosing history opens its complete replay; users
-do not choose between ACP load and resume. History refresh and pagination are
-part of the conversation list, while close and delete are secondary actions of
-the selected conversation.
+when that cannot authenticate does the browser ask the user to connect, in that
+workspace's settings. After authentication, the web client opens the most
+recently updated conversation, or creates one when the workspace has no history.
+New creates and selects a distinct empty conversation. Choosing history opens
+its complete replay; users do not choose between ACP load and resume. The client
+shows recent conversations for every registered workspace, not only the one it
+is displaying, and opening or creating a conversation switches to its workspace.
+History refresh and pagination are part of the displayed workspace's
+conversation list, while close and delete are secondary actions of the selected
+conversation.
 
-The primary surface is the selected transcript, its composer, conversation
-history, and any permission or question blocking work. The transcript view also
-contains the session's model, mode, and reasoning controls and read-only context
-usage. Attachments and resource links appear on demand, plans appear when
-present, and technical tool output is disclosed beneath its activity.
+The primary surface is the selected transcript, its composer, and any permission
+or question blocking work. Workspace registration and every workspace's
+conversations sit in one navigation region beside it, along with the actions
+that add, remove, restart, and open the settings of a workspace. The transcript
+view also contains the session's model, mode, and reasoning controls and
+read-only context usage. Attachments and resource links appear on demand, plans
+appear when present, and technical tool output is disclosed beneath its
+activity.
 
-Workspace settings contain client-supplied MCP servers and support details. MCP
-server drafts are applied explicitly and an incomplete draft cannot block
-opening or creating a conversation. Secret MCP values remain in the Bun host and
-are never returned to a browser. Process status, stderr, host revisions, raw
-session identifiers, manual refresh, and authentication management are support
-details rather than primary workflow.
+Workspace settings contain authentication, client-supplied MCP servers, and
+support details. They open in place of the conversation and select the workspace
+they belong to. MCP server drafts are applied explicitly and an incomplete draft
+cannot block opening or creating a conversation. Secret MCP values remain in the
+Bun host and are never returned to a browser. Process status, stderr, host
+revisions, raw session identifiers, and manual refresh are support details
+rather than primary workflow.
 
 The web client supports every ACP v1 feature Ox advertises or requests through
 these product workflows: authentication and logout, the complete session

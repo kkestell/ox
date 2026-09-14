@@ -24,16 +24,17 @@ It prints a loopback URL such as `http://127.0.0.1:3000`; open that URL in a
 browser, then register an absolute server-local workspace path. The host saves
 canonical workspace roots in `$XDG_CONFIG_HOME/ox/workspaces.json`, or
 `$HOME/.config/ox/workspaces.json` when the XDG path is not absolute. Every
-registered workspace runs its own Ox process, so selecting a workspace changes
-what the browser shows without interrupting work elsewhere, and a failure in one
-workspace leaves the others running. Removing a registry entry stops that
-workspace's Ox process; it does not delete workspace files or Ox session
-history.
+registered workspace runs its own Ox process, so opening one of its
+conversations changes what the browser shows without interrupting work
+elsewhere, and a failure in one workspace leaves the others running. Removing a
+registry entry stops that workspace's Ox process; it does not delete workspace
+files or Ox session history.
 
 When a workspace's Ox process fails to start or exits, restart it from the
 browser. A restart starts a replacement process and reopens the workspace's
 stored conversations; it does not resume a turn that was interrupted.
-Diagnostics from the process that stopped stay visible in support details.
+Diagnostics from the process that stopped stay visible in the workspace's
+settings.
 
 The host automatically uses Ox's stored credential when one is available. It
 uses `ox` from `PATH` by default. Use `--ox` to choose an executable, and repeat
@@ -46,10 +47,12 @@ bun run start -- \
   --ox-arg your-provider/model
 ```
 
-The browser presents Ox's conversations, prompts, permissions, forms, file and
-terminal activity, and MCP servers. MCP header and command environment values
-are saved in the Bun host for later conversation activations; they are cleared
-from the page afterward and never appear in host snapshots.
+Every registered workspace and its recent conversations sit in the sidebar
+beside the conversation the browser is showing. Each workspace's settings open
+from there and hold its credential, its MCP servers, and its support details.
+MCP header and command environment values are saved in the Bun host for later
+conversation activations; they are cleared from the page afterward and never
+appear in host snapshots.
 
 ## Trusted-network access
 

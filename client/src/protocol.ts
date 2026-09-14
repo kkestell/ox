@@ -8,6 +8,9 @@ const workspaceStatus = z.enum(["starting", "ready", "unavailable", "stopped"]);
 /** The most sessions a snapshot can carry, and therefore the most the host pages in. */
 export const maximumSessions = 500;
 
+/** The most conversations an unselected workspace's catalog entry carries. */
+export const maximumRecentConversations = 10;
+
 /** The most characters a browser-authored text or embedded text resource can carry. */
 export const maximumPromptText = 1_000_000;
 
@@ -402,6 +405,16 @@ export const browserCommandSchema = z.discriminatedUnion("type", [
 
 export type BrowserCommand = z.infer<typeof browserCommandSchema>;
 
+const conversationSchema = z
+  .object({
+    id: z.string().min(1),
+    status: z.enum(["inactive", "loading", "active"]),
+    awaiting: z.boolean().optional(),
+    title: z.string().min(1).optional(),
+    updatedAt: z.string().min(1).optional(),
+  })
+  .strict();
+
 export const snapshotSchema = z
   .object({
     type: z.literal("snapshot"),
@@ -412,7 +425,14 @@ export const snapshotSchema = z
         values: z
           .array(
             z
-              .object({ id: workspaceID, name: z.string().min(1).max(512), status: workspaceStatus, busy: z.boolean(), awaiting: z.boolean() })
+              .object({
+                id: workspaceID,
+                name: z.string().min(1).max(512),
+                status: workspaceStatus,
+                busy: z.boolean(),
+                awaiting: z.boolean(),
+                conversations: z.array(conversationSchema).max(maximumSessions),
+              })
               .strict(),
           )
           .max(1_024),
@@ -466,25 +486,13 @@ export const snapshotSchema = z
           .optional(),
         nextCursor: z.string().min(1).optional(),
         selectedId: z.string().min(1).optional(),
-        values: z
-          .array(
-            z
-              .object({
-                id: z.string().min(1),
-                status: z.enum(["inactive", "loading", "active"]),
-                awaiting: z.boolean().optional(),
-                title: z.string().min(1).optional(),
-                updatedAt: z.string().min(1).optional(),
-              })
-              .strict(),
-          )
-          .max(maximumSessions),
       })
       .strict(),
   })
   .strict();
 
 export type Snapshot = z.infer<typeof snapshotSchema>;
+export type Conversation = z.infer<typeof conversationSchema>;
 
 const resultSchema = z.union([
   z
@@ -529,7 +537,7 @@ export function initialSnapshot(
     methods: [],
     logoutAvailable: false,
   },
-  sessions: Snapshot["sessions"] = { values: [] },
+  sessions: Snapshot["sessions"] = {},
 ): Snapshot {
   return {
     type: "snapshot",

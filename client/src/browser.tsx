@@ -38,6 +38,7 @@ function App() {
   const [mcpMessage, setMCPMessage] = useState<string>();
   const [sessionError, setSessionError] = useState<string>();
   const [workspacePath, setWorkspacePath] = useState("");
+  const [settings, setSettings] = useState(false);
   const [workspaceMessage, setWorkspaceMessage] = useState<{ error: boolean; text: string }>();
   const sessionRequests = useRef(new Set<string>());
   const mcpRequests = useRef(new Set<string>());
@@ -103,6 +104,17 @@ function App() {
     };
   }, []);
 
+  const selectedWorkspaceId = snapshot?.workspaces.selectedId;
+  // Settings act on whichever workspace is selected, and another browser can
+  // change that selection, so a draft written for one workspace never follows
+  // the browser to the next.
+  useEffect(() => {
+    setCredential("");
+    setMCPServers([]);
+    setMCPMessage(undefined);
+    setSessionError(undefined);
+  }, [selectedWorkspaceId]);
+
   function send(command: BrowserCommand): boolean {
     if (socket.current?.readyState !== WebSocket.OPEN) {
       return false;
@@ -112,9 +124,10 @@ function App() {
   }
 
   // Returns why the command could not be sent, so a missing selection is not
-  // reported as a lost host connection.
-  function sendRouted(request: RoutedRequest): string | undefined {
-    const workspaceId = snapshot?.workspaces.selectedId;
+  // reported as a lost host connection. The sidebar acts on a named workspace,
+  // which is how opening or creating a conversation elsewhere stays one command.
+  function sendRouted(request: RoutedRequest, named?: string): string | undefined {
+    const workspaceId = named ?? snapshot?.workspaces.selectedId;
     if (workspaceId === undefined) {
       return "No workspace is selected";
     }
@@ -123,8 +136,8 @@ function App() {
 
   // Session commands report their outcome only through their result, so the
   // browser keeps the latest failure visible until another one succeeds.
-  function submitSessionCommand(request: RoutedRequest): void {
-    const problem = sendRouted(request);
+  function submitSessionCommand(request: RoutedRequest, named?: string): void {
+    const problem = sendRouted(request, named);
     if (problem !== undefined) {
       setSessionError(problem);
       return;
@@ -169,33 +182,49 @@ function App() {
     setWorkspaceMessage(undefined);
   }
 
-  const selected = snapshot?.sessions.values.find((session) => session.id === snapshot.sessions.selectedId);
-  const title = selected?.title ?? "New conversation";
-  const authenticated = snapshot?.authentication.status === "authenticated";
   // The catalog entry survives a workspace losing its process, so process
   // problems and their recovery read from it rather than from the detail the
   // host only publishes while a supervisor exists.
   const selectedWorkspace = snapshot?.workspaces.values.find((entry) => entry.id === snapshot.workspaces.selectedId);
+  const conversations = selectedWorkspace?.conversations ?? [];
+  const selected = conversations.find((conversation) => conversation.id === snapshot?.sessions.selectedId);
+  const title = selected?.title ?? "New conversation";
+  const authenticated = snapshot?.authentication.status === "authenticated";
   const unavailable =
     connection === "Unavailable" || connection === "Disconnected" || selectedWorkspace?.status === "unavailable";
-  const restartable = selectedWorkspace !== undefined && selectedWorkspace.status !== "ready";
-
   function restartWorkspace(workspaceId: string): void {
+    setSessionError(undefined);
     submitWorkspaceCommand({ requestId: crypto.randomUUID(), type: "restart-workspace", workspaceId });
   }
 
+  // Settings are published for the selected workspace only, so reaching another
+  // workspace's settings selects it. Everything the surface renders comes from
+  // the selection, so a refused change shows the workspace it is still showing
+  // rather than the one that was clicked.
+  function showSettings(workspaceId: string): void {
+    setSettings(true);
+    if (workspaceId === selectedWorkspaceId) {
+      return;
+    }
+    if (!send({ requestId: crypto.randomUUID(), type: "select-workspace", workspaceId })) {
+      setWorkspaceMessage({ error: true, text: "The host connection is not open" });
+    }
+  }
+
   return (
-    <main>
-      <header>
-        <h1>Ox</h1>
-        {snapshot ? <p>{selectedWorkspace?.name ?? "No workspace selected"}</p> : null}
-      </header>
-      {unavailable ? <p role="alert">Ox is unavailable. Open support details for diagnostics.</p> : null}
-      {selectedWorkspace?.status === "stopped" ? <p role="alert">Ox is stopped for this workspace.</p> : null}
-      {restartable ? <button onClick={() => restartWorkspace(selectedWorkspace.id)} type="button">Restart Ox</button> : null}
+    <div className="layout">
       {snapshot ? (
-        <WorkspacePicker
+        <Sidebar
           message={workspaceMessage}
+          onNew={(workspaceId) => {
+            setSettings(false);
+            submitSessionCommand({ requestId: crypto.randomUUID(), type: "new-conversation" }, workspaceId);
+          }}
+          onOlder={() => historyCommand("next-history-page")}
+          onOpen={(workspaceId, sessionId) => {
+            setSettings(false);
+            submitSessionCommand({ requestId: crypto.randomUUID(), sessionId, type: "open-conversation" }, workspaceId);
+          }}
           onPath={setWorkspacePath}
           onRegister={() =>
             submitWorkspaceCommand({ path: workspacePath, requestId: crypto.randomUUID(), type: "register-workspace" })
@@ -203,133 +232,159 @@ function App() {
           onRemove={(workspaceId) =>
             submitWorkspaceCommand({ requestId: crypto.randomUUID(), type: "remove-workspace", workspaceId })
           }
-          onSelect={(workspaceId) =>
-            submitWorkspaceCommand({ requestId: crypto.randomUUID(), type: "select-workspace", workspaceId })
-          }
+          onRestart={restartWorkspace}
+          onSettings={showSettings}
           path={workspacePath}
+          sessions={snapshot.sessions}
+          settings={settings}
           workspaces={snapshot.workspaces}
         />
       ) : null}
-      {snapshot?.workspace && !authenticated ? (
-        <Authentication
-          authentication={snapshot.authentication}
-          credential={credential}
-          onAuthenticate={(methodId) => sendRouted({ methodId, requestId: crypto.randomUUID(), type: "authenticate" })}
-          onCredential={setCredential}
-          onLogin={terminalLogin}
-        />
-      ) : null}
-      {snapshot?.workspace && authenticated ? (
-        <History
-          onNew={() => submitSessionCommand({ requestId: crypto.randomUUID(), type: "new-conversation" })}
-          onOpen={(sessionId) => conversationCommand("open-conversation", sessionId)}
-          onOlder={() => historyCommand("next-history-page")}
-          sessions={snapshot.sessions}
-        />
-      ) : null}
-      {sessionError ? <p role="alert">{sessionError}</p> : null}
-      {snapshot?.workspace && authenticated && active ? (
-        <section aria-label="Conversation">
-          <header>
-            <h2>{title}</h2>
-            <SessionInformation
-              onConfigOption={(configId, value) =>
-                submitSessionCommand({ configId, requestId: crypto.randomUUID(), sessionId: active.id, type: "set-config-option", value })
+      <main>
+        {unavailable ? <p role="alert">Ox is unavailable. Open workspace settings for diagnostics.</p> : null}
+        {sessionError ? <p role="alert">{sessionError}</p> : null}
+        {snapshot?.workspace && settings ? (
+          <section aria-label="Workspace settings">
+            <h2>{snapshot.workspace.name}</h2>
+            <Authentication
+              authentication={snapshot.authentication}
+              credential={credential}
+              onAuthenticate={(methodId) => sendRouted({ methodId, requestId: crypto.randomUUID(), type: "authenticate" })}
+              onCredential={setCredential}
+              onLogin={terminalLogin}
+              onLogout={() => sendRouted({ requestId: crypto.randomUUID(), type: "logout" })}
+            />
+            <section aria-labelledby="mcp-heading">
+              <h3 id="mcp-heading">MCP servers</h3>
+              <p>{`${snapshot.workspace.mcpServerCount} configured`}</p>
+              {mcpMessage ? <p aria-live="polite">{mcpMessage}</p> : null}
+              <MCPActivationForm onSave={saveMCPServers} servers={mcpServers} setServers={setMCPServers} />
+            </section>
+            <SupportDetails
+              activeSessionId={active?.id}
+              connection={connection}
+              onRefresh={() => historyCommand("refresh-history")}
+              snapshot={snapshot}
+              workspace={snapshot.workspace}
+            />
+          </section>
+        ) : snapshot?.workspace && !authenticated && !unavailable ? (
+          <p>
+            {"Ox is not connected. Connect it in "}
+            <a href={`#settings-${selectedWorkspaceId}`} onClick={() => setSettings(true)}>workspace settings</a>.
+          </p>
+        ) : snapshot?.workspace && active ? (
+          <section aria-label="Conversation">
+            <header>
+              <h2>{title}</h2>
+              <p>{selectedWorkspace?.name}</p>
+              <SessionInformation
+                onConfigOption={(configId, value) =>
+                  submitSessionCommand({ configId, requestId: crypto.randomUUID(), sessionId: active.id, type: "set-config-option", value })
+                }
+                transcript={active.transcript}
+              />
+              <details>
+                <summary>Conversation actions</summary>
+                <button onClick={() => conversationCommand("close-conversation", active.id)} type="button">Close conversation</button>
+                <button onClick={() => conversationCommand("delete-conversation", active.id)} type="button">Delete conversation</button>
+              </details>
+            </header>
+            <Transcript
+              interactions={active.interactions}
+              onElicitation={(interactionId, action, content) =>
+                submitSessionCommand({ action, ...(content === undefined ? {} : { content }), interactionId, requestId: crypto.randomUUID(), sessionId: active.id, type: "resolve-elicitation" })
+              }
+              onPermission={(interactionId, optionId) =>
+                submitSessionCommand({ interactionId, optionId, requestId: crypto.randomUUID(), sessionId: active.id, type: "resolve-permission" })
               }
               transcript={active.transcript}
             />
-            <details>
-              <summary>Conversation actions</summary>
-              <button onClick={() => conversationCommand("close-conversation", active.id)} type="button">Close conversation</button>
-              <button onClick={() => conversationCommand("delete-conversation", active.id)} type="button">Delete conversation</button>
-            </details>
-          </header>
-          <Transcript
-            interactions={active.interactions}
-            onElicitation={(interactionId, action, content) =>
-              submitSessionCommand({ action, ...(content === undefined ? {} : { content }), interactionId, requestId: crypto.randomUUID(), sessionId: active.id, type: "resolve-elicitation" })
-            }
-            onPermission={(interactionId, optionId) =>
-              submitSessionCommand({ interactionId, optionId, requestId: crypto.randomUUID(), sessionId: active.id, type: "resolve-permission" })
-            }
-            transcript={active.transcript}
-          />
-          <Composer
-            busy={active.busy}
-            capabilities={snapshot.workspace.promptCapabilities}
-            key={active.id}
-            onCancel={() => submitSessionCommand({ requestId: crypto.randomUUID(), sessionId: active.id, type: "cancel-prompt" })}
-            onError={setSessionError}
-            onSubmit={(prompt) => submitSessionCommand({ prompt, requestId: crypto.randomUUID(), sessionId: active.id, type: "prompt" })}
-          />
-        </section>
-      ) : authenticated ? (
-        <p>Choose a conversation or start a new one.</p>
-      ) : null}
-      {snapshot?.workspace ? (
-        <details>
-          <summary>Workspace settings</summary>
-          <details>
-            <summary>{`MCP servers — ${snapshot.workspace.mcpServerCount} configured`}</summary>
-            {mcpMessage ? <p aria-live="polite">{mcpMessage}</p> : null}
-            <MCPActivationForm onSave={saveMCPServers} servers={mcpServers} setServers={setMCPServers} />
-          </details>
-          <SupportDetails
-            activeSessionId={active?.id}
-            connection={connection}
-            credential={credential}
-            onCredential={setCredential}
-            onLogin={terminalLogin}
-            onLogout={() => sendRouted({ requestId: crypto.randomUUID(), type: "logout" })}
-            onRefresh={() => historyCommand("refresh-history")}
-            onRestart={restartWorkspace}
-            snapshot={snapshot}
-            workspace={snapshot.workspace}
-          />
-        </details>
-      ) : null}
-    </main>
+            <Composer
+              busy={active.busy}
+              capabilities={snapshot.workspace.promptCapabilities}
+              key={active.id}
+              onCancel={() => submitSessionCommand({ requestId: crypto.randomUUID(), sessionId: active.id, type: "cancel-prompt" })}
+              onError={setSessionError}
+              onSubmit={(prompt) => submitSessionCommand({ prompt, requestId: crypto.randomUUID(), sessionId: active.id, type: "prompt" })}
+            />
+          </section>
+        ) : snapshot?.workspace ? (
+          <p>Choose a conversation or start a new one.</p>
+        ) : null}
+      </main>
+    </div>
   );
 }
 
-function WorkspacePicker({ message, onPath, onRegister, onRemove, onSelect, path, workspaces }: {
+// Navigating between conversations is a link, so the sidebar reads as
+// navigation; every control that changes host state stays a button.
+function Sidebar({ message, onNew, onOlder, onOpen, onPath, onRegister, onRemove, onRestart, onSettings, path, sessions, settings, workspaces }: {
   message?: { error: boolean; text: string };
+  onNew: (workspaceId: string) => void;
+  onOlder: () => void;
+  onOpen: (workspaceId: string, sessionId: string) => void;
   onPath: (path: string) => void;
   onRegister: () => void;
   onRemove: (workspaceId: string) => void;
-  onSelect: (workspaceId: string) => void;
+  onRestart: (workspaceId: string) => void;
+  onSettings: (workspaceId: string) => void;
   path: string;
+  sessions: Snapshot["sessions"];
+  settings: boolean;
   workspaces: Snapshot["workspaces"];
 }) {
-  const selectedID = workspaces.selectedId;
-  // The selected workspace shows its own pending interaction, so this routes
-  // only to the ones the browser is not currently displaying.
-  const waiting = workspaces.values.filter((workspace) => workspace.awaiting && workspace.id !== selectedID);
   return (
-    <section aria-labelledby="workspaces-heading">
-      <h2 id="workspaces-heading">Workspaces</h2>
+    <nav aria-label="Workspaces and conversations">
+      <h1>Ox</h1>
       {workspaces.values.length > 0 ? (
-        <>
-          <label>
-            Current workspace
-            <select
-              onChange={(event) => onSelect(event.target.value)}
-              value={selectedID}
-            >
-              {workspaces.values.map((workspace) => <option key={workspace.id} value={workspace.id}>{workspace.name}</option>)}
-            </select>
-          </label>
-          {selectedID ? <button onClick={() => onRemove(selectedID)} type="button">Remove workspace</button> : null}
-          {waiting.length > 0 ? (
-            <ul aria-label="Workspaces waiting for an answer">
-              {waiting.map((workspace) => (
-                <li key={workspace.id}>
-                  <button onClick={() => onSelect(workspace.id)} type="button">{`${workspace.name} is waiting for an answer`}</button>
-                </li>
-              ))}
-            </ul>
-          ) : null}
-        </>
+        <ul aria-label="Workspaces">
+          {workspaces.values.map((workspace) => (
+            <li aria-current={workspaces.selectedId === workspace.id ? "true" : undefined} key={workspace.id}>
+              <h2>{workspace.name}</h2>
+              <button aria-label={`New conversation in ${workspace.name}`} onClick={() => onNew(workspace.id)} type="button">+</button>
+              <a
+                aria-current={settings && workspaces.selectedId === workspace.id ? "page" : undefined}
+                aria-label={`Settings for ${workspace.name}`}
+                href={`#settings-${workspace.id}`}
+                onClick={() => onSettings(workspace.id)}
+              >
+                Settings
+              </a>
+              <button aria-label={`Remove ${workspace.name}`} onClick={() => onRemove(workspace.id)} type="button">Remove</button>
+              {workspace.status === "ready" ? (
+                <>
+                  <ul aria-label={`${workspace.name} conversations`}>
+                    {workspace.conversations.map((conversation) => (
+                      <li key={conversation.id}>
+                        <a
+                          aria-current={!settings && sessions.selectedId === conversation.id ? "page" : undefined}
+                          href={`#${conversation.id}`}
+                          onClick={() => onOpen(workspace.id, conversation.id)}
+                        >
+                          {conversation.title ?? "Untitled conversation"}
+                        </a>
+                        {conversation.status === "loading" ? <span>Opening…</span> : null}
+                        {conversation.awaiting ? <span>Waiting for you</span> : null}
+                        {conversation.updatedAt ? <time dateTime={conversation.updatedAt}>{new Date(conversation.updatedAt).toLocaleString()}</time> : null}
+                      </li>
+                    ))}
+                  </ul>
+                  {workspaces.selectedId === workspace.id && sessions.nextCursor ? (
+                    <button onClick={onOlder} type="button">Show older conversations</button>
+                  ) : null}
+                </>
+              ) : (
+                <p>
+                  {workspace.status === "starting" ? "Ox is starting." : "Ox is not running."}
+                  {workspace.status === "starting" ? null : (
+                    <button aria-label={`Restart ${workspace.name}`} onClick={() => onRestart(workspace.id)} type="button">Restart</button>
+                  )}
+                </p>
+              )}
+            </li>
+          ))}
+        </ul>
       ) : <p>Register a server-local workspace to begin.</p>}
       <form onSubmit={(event) => { event.preventDefault(); onRegister(); }}>
         <label>
@@ -339,75 +394,53 @@ function WorkspacePicker({ message, onPath, onRegister, onRemove, onSelect, path
         <button type="submit">Register workspace</button>
       </form>
       {message ? <p aria-live="polite" role={message.error ? "alert" : undefined}>{message.text}</p> : null}
-    </section>
+    </nav>
   );
 }
 
-function Authentication({ authentication, credential, onAuthenticate, onCredential, onLogin }: {
+// Connecting and managing a credential are the same surface: the methods Ox
+// advertises name their own controls, and a stored credential is worth
+// attempting only while the workspace is unauthenticated.
+function Authentication({ authentication, credential, onAuthenticate, onCredential, onLogin, onLogout }: {
   authentication: Snapshot["authentication"];
   credential: string;
   onAuthenticate: (methodId: string) => void;
   onCredential: (credential: string) => void;
   onLogin: (methodId: string) => void;
+  onLogout: () => void;
 }) {
+  const working = authentication.status === "working";
+  const authenticated = authentication.status === "authenticated";
   return (
     <section aria-labelledby="authentication-heading">
-      <h2 id="authentication-heading">Connect OpenRouter</h2>
+      <h3 id="authentication-heading">Authentication</h3>
       {authentication.error ? <p role="alert">{authentication.error}</p> : null}
+      <p>{authenticated ? "Connected" : "Not connected"}</p>
       {authentication.methods.map((method) => method.type === "agent" ? (
-        <button disabled={authentication.status === "working"} key={method.id} onClick={() => onAuthenticate(method.id)} type="button">Use configured credential</button>
+        authenticated ? null : (
+          <button disabled={working} key={method.id} onClick={() => onAuthenticate(method.id)} type="button">Use configured credential</button>
+        )
       ) : (
         <form key={method.id} onSubmit={(event) => { event.preventDefault(); onLogin(method.id); }}>
-          <label>OpenRouter API key<input autoComplete="off" disabled={authentication.status === "working"} onChange={(event) => onCredential(event.target.value)} required type="password" value={credential} /></label>
-          <button disabled={authentication.status === "working"} type="submit">Save credential</button>
+          <label>{`${method.name} credential`}<input autoComplete="off" disabled={working} onChange={(event) => onCredential(event.target.value)} required type="password" value={credential} /></label>
+          <button disabled={working} type="submit">{method.name}</button>
         </form>
       ))}
+      {authentication.logoutAvailable ? <button disabled={working} onClick={onLogout} type="button">Log out</button> : null}
     </section>
   );
 }
 
-function History({ onNew, onOpen, onOlder, sessions }: {
-  onNew: () => void;
-  onOpen: (sessionId: string) => void;
-  onOlder: () => void;
-  sessions: Snapshot["sessions"];
-}) {
-  return (
-    <nav aria-label="Conversations">
-      <h2>Conversations</h2>
-      <button onClick={onNew} type="button">New conversation</button>
-      <ul aria-label="Conversation history">
-        {sessions.values.map((conversation) => (
-          <li key={conversation.id}>
-            <button aria-current={sessions.selectedId === conversation.id ? "page" : undefined} onClick={() => onOpen(conversation.id)} type="button">
-              {conversation.title ?? "Untitled conversation"}
-            </button>
-            {conversation.status === "loading" ? <span>Opening…</span> : null}
-            {conversation.awaiting ? <span>Waiting for you</span> : null}
-            {conversation.updatedAt ? <time dateTime={conversation.updatedAt}>{new Date(conversation.updatedAt).toLocaleString()}</time> : null}
-          </li>
-        ))}
-      </ul>
-      {sessions.nextCursor ? <button onClick={onOlder} type="button">Show older conversations</button> : null}
-    </nav>
-  );
-}
-
-function SupportDetails({ activeSessionId, connection, credential, onCredential, onLogin, onLogout, onRefresh, onRestart, snapshot, workspace }: {
+function SupportDetails({ activeSessionId, connection, onRefresh, snapshot, workspace }: {
   activeSessionId?: string;
   connection: string;
-  credential: string;
-  onCredential: (credential: string) => void;
-  onLogin: (methodId: string) => void;
-  onLogout: () => void;
   onRefresh: () => void;
-  onRestart: (workspaceId: string) => void;
   snapshot: Snapshot;
   workspace: NonNullable<Snapshot["workspace"]>;
 }) {
   return (
-    <details>
-      <summary>Support details</summary>
+    <section aria-labelledby="support-heading">
+      <h3 id="support-heading">Support details</h3>
       <dl>
         <dt>Browser connection</dt><dd>{connection}</dd>
         <dt>Host revision</dt><dd>{snapshot.revision}</dd>
@@ -417,24 +450,12 @@ function SupportDetails({ activeSessionId, connection, credential, onCredential,
         {snapshot.workspaces.values.map((entry) => (
           <li key={entry.id}>
             {`${entry.name} — ${entry.status}, ${entry.busy ? "working" : "idle"}${entry.awaiting ? ", waiting for an answer" : ""}`}
-            <button onClick={() => onRestart(entry.id)} type="button">{`Restart ${entry.name}`}</button>
           </li>
         ))}
       </ul>
       {workspace.diagnostics.length > 0 ? <ul aria-label="Workspace diagnostics">{workspace.diagnostics.map((diagnostic, index) => <li key={`${index}-${diagnostic}`}>{diagnostic}</li>)}</ul> : null}
       <button onClick={onRefresh} type="button">Refresh conversation history</button>
-      <details>
-        <summary>Authentication</summary>
-        {snapshot.authentication.error ? <p role="alert">{snapshot.authentication.error}</p> : null}
-        {snapshot.authentication.methods.map((method) => method.type === "terminal" ? (
-          <form key={method.id} onSubmit={(event) => { event.preventDefault(); onLogin(method.id); }}>
-            <label>{`${method.name} credential`}<input autoComplete="off" disabled={snapshot.authentication.status === "working"} onChange={(event) => onCredential(event.target.value)} required type="password" value={credential} /></label>
-            <button disabled={snapshot.authentication.status === "working"} type="submit">{method.name}</button>
-          </form>
-        ) : null)}
-        {snapshot.authentication.logoutAvailable ? <button disabled={snapshot.authentication.status === "working"} onClick={onLogout} type="button">Log out</button> : null}
-      </details>
-    </details>
+    </section>
   );
 }
 

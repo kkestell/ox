@@ -38,7 +38,7 @@ export type WorkspaceState = {
   mcpServerCount: number;
   name: string;
   promptCapabilities: PromptCapabilities;
-  sessions: SessionState;
+  sessions: SessionSelection;
   status: WorkspaceStatus;
 };
 
@@ -46,16 +46,24 @@ export type WorkspaceState = {
 export type WorkspaceCatalog = {
   awaiting: boolean;
   busy: boolean;
+  conversations: SessionSummary[];
   name: string;
   status: WorkspaceStatus;
 };
 
-export type SessionState = {
+/** The conversation the workspace is showing; the list itself lives on the catalog. */
+export type SessionSelection = {
   active?: { busy: boolean; id: string; interactions: import("./protocol.ts").PendingInteraction[]; transcript: SessionTranscript };
   nextCursor?: string;
   selectedID?: string;
-  values: SessionSummary[];
 };
+
+type SessionState = SessionSelection & { values: SessionSummary[] };
+
+// Busy and awaiting are derived from the active prompts and the controllers'
+// pending interactions rather than stored, and the conversation list the
+// catalog publishes is stored here rather than on the published selection.
+type SupervisorState = Omit<WorkspaceState, "awaiting" | "busy" | "sessions"> & { sessions: SessionState };
 
 export type SessionSummary = {
   awaiting?: boolean;
@@ -108,10 +116,7 @@ export class WorkspaceSupervisor {
   #mcpServers: acp.McpServer[] = [];
   #sessionOperation: Promise<void> = Promise.resolve();
   #sessionCapabilities: SessionCapabilities = { close: false, delete: false, list: false, load: false, resume: false };
-  // Busy and awaiting are derived from the active prompts and the controllers'
-  // pending interactions rather than stored, so the private state holds only
-  // what a transition actually writes.
-  #state: Omit<WorkspaceState, "awaiting" | "busy"> = {
+  #state: SupervisorState = {
     authentication: unauthenticated,
     diagnostics: [],
     mcpServerCount: 0,
@@ -163,10 +168,6 @@ export class WorkspaceSupervisor {
         ...(active === undefined ? {} : { active }),
         ...(this.#state.sessions.nextCursor === undefined ? {} : { nextCursor: this.#state.sessions.nextCursor }),
         ...(this.#state.sessions.selectedID === undefined ? {} : { selectedID: this.#state.sessions.selectedID }),
-        values: this.#state.sessions.values.map((session) => ({
-          ...session,
-          ...(this.#controllers.get(session.id)?.awaiting ? { awaiting: true } : {}),
-        })),
       },
       status: this.#state.status,
     };
@@ -176,6 +177,10 @@ export class WorkspaceSupervisor {
     return {
       awaiting: [...this.#controllers.values()].some((controller) => controller.awaiting),
       busy: this.#activePrompts.size > 0,
+      conversations: this.#state.sessions.values.map((session) => ({
+        ...session,
+        ...(this.#controllers.get(session.id)?.awaiting ? { awaiting: true } : {}),
+      })),
       name: this.#state.name,
       status: this.#state.status,
     };
@@ -743,7 +748,7 @@ export class WorkspaceSupervisor {
     return controller ? controller.requestElicitation(request, signal, () => this.publish()) : Promise.resolve({ action: "cancel" });
   }
 
-  private activeSession(): SessionState["active"] {
+  private activeSession(): SessionSelection["active"] {
     const id = this.#state.sessions.selectedID;
     if (id === undefined) return undefined;
     const controller = this.#controllers.get(id);

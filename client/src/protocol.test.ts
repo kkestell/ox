@@ -1,17 +1,17 @@
 import { describe, expect, test } from "bun:test";
 
-import { initialSnapshot, parseBrowserCommand, type Snapshot, snapshotSchema } from "./protocol.ts";
+import { type Conversation, initialSnapshot, parseBrowserCommand, type Snapshot, snapshotSchema } from "./protocol.ts";
 
 const noPromptCapabilities = { audio: false, embeddedContext: false, image: false };
 const workspaceID = "11111111-1111-4111-8111-111111111111";
 const secondWorkspaceID = "22222222-2222-4222-8222-222222222222";
 const registeredWorkspaces = {
   selectedId: workspaceID,
-  values: [{ awaiting: false, busy: false, id: workspaceID, name: "ox", status: "ready" as const }],
+  values: [workspaceEntry(workspaceID, "ox")],
 };
 
 function workspaceEntry(id: string, name: string) {
-  return { awaiting: false, busy: false, id, name, status: "ready" as const };
+  return { awaiting: false, busy: false, conversations: [] as Conversation[], id, name, status: "ready" as const };
 }
 
 describe("browser protocol", () => {
@@ -200,7 +200,7 @@ describe("browser protocol", () => {
       workspaces: registeredWorkspaces,
       workspace: { diagnostics: [], mcpServerCount: 0, name: "ox", promptCapabilities: noPromptCapabilities, status: "ready" },
       authentication: { logoutAvailable: false, methods: [], status: "unavailable" },
-      sessions: { values: [] },
+      sessions: {},
     });
   });
 
@@ -249,17 +249,34 @@ describe("browser protocol", () => {
     expect(snapshotSchema.safeParse(snapshot).success).toBe(false);
   });
 
-  test("carries what is waiting for the user on catalogs and conversations", () => {
+  test("carries each workspace's conversations and what is waiting for the user", () => {
+    const entry = { ...workspaceEntry(workspaceID, "ox"), awaiting: true };
     const snapshot = initialSnapshot(
-      { selectedId: workspaceID, values: [{ ...workspaceEntry(workspaceID, "ox"), awaiting: true }] },
+      { selectedId: workspaceID, values: [entry] },
       { diagnostics: [], mcpServerCount: 0, name: "ox", promptCapabilities: noPromptCapabilities, status: "ready" },
     );
-    snapshot.sessions.values = [{ awaiting: true, id: "session-1", status: "active" }];
+    entry.conversations = [
+      { id: "session-1", status: "active", awaiting: true },
+      { id: "session-2", status: "inactive", title: "Yesterday", updatedAt: "2026-09-13T12:00:00Z" },
+    ];
     expect(snapshotSchema.safeParse(snapshot).success).toBe(true);
 
-    snapshot.sessions.values = [
-      { awaiting: "yes", id: "session-1", status: "active" } as unknown as (typeof snapshot.sessions.values)[number],
-    ];
+    entry.conversations = [{ id: "session-1", status: "active", awaiting: "yes" }] as unknown as typeof entry.conversations;
+    expect(snapshotSchema.safeParse(snapshot).success).toBe(false);
+
+    entry.conversations = [{ id: "session-1", status: "reading" }] as unknown as typeof entry.conversations;
+    expect(snapshotSchema.safeParse(snapshot).success).toBe(false);
+  });
+
+  test("rejects a conversation list on the sessions block", () => {
+    const snapshot = initialSnapshot(registeredWorkspaces, {
+      diagnostics: [],
+      mcpServerCount: 0,
+      name: "ox",
+      promptCapabilities: noPromptCapabilities,
+      status: "ready",
+    });
+    snapshot.sessions = { ...snapshot.sessions, values: [] } as unknown as typeof snapshot.sessions;
     expect(snapshotSchema.safeParse(snapshot).success).toBe(false);
   });
 
@@ -271,8 +288,9 @@ describe("browser protocol", () => {
       { values: [workspaceEntry(workspaceID, "ox")] },
       { selectedId: secondWorkspaceID, values: [workspaceEntry(workspaceID, "ox")] },
       { selectedId: workspaceID, values: [workspaceEntry(workspaceID, "one"), workspaceEntry(workspaceID, "two")] },
-      { selectedId: workspaceID, values: [{ id: workspaceID, name: "ox", status: "gone", busy: false, awaiting: false }] },
-      { selectedId: workspaceID, values: [{ id: workspaceID, name: "ox", status: "ready", busy: false }] },
+      { selectedId: workspaceID, values: [{ ...workspaceEntry(workspaceID, "ox"), status: "gone" }] },
+      { selectedId: workspaceID, values: [{ id: workspaceID, name: "ox", status: "ready", busy: false, conversations: [] }] },
+      { selectedId: workspaceID, values: [{ id: workspaceID, name: "ox", status: "ready", busy: false, awaiting: false }] },
     ] as unknown as Snapshot["workspaces"][]) {
       expect(snapshotSchema.safeParse(initialSnapshot(workspaces)).success).toBe(false);
     }

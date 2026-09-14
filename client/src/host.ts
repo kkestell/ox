@@ -3,7 +3,9 @@ import { join } from "node:path";
 import {
   type BrowserCommand,
   type BrowserMessage,
+  type Conversation,
   initialSnapshot,
+  maximumRecentConversations,
   parseBrowserCommand,
   type Snapshot,
 } from "./protocol.ts";
@@ -31,6 +33,7 @@ export type StartedHost = {
 type SocketData = Record<string, never>;
 
 const mimeTypes = new Map([
+  [".css", "text/css; charset=utf-8"],
   [".html", "text/html; charset=utf-8"],
   [".js", "text/javascript; charset=utf-8"],
   [".map", "application/json; charset=utf-8"],
@@ -233,7 +236,15 @@ export async function startHost(options: HostOptions = {}): Promise<StartedHost>
           if (!supervisor) {
             return Promise.reject(new Error("workspace is not active"));
           }
-          return perform(supervisor, browserCommand);
+          const operation = perform(supervisor, browserCommand);
+          // Opening or creating a conversation switches to its workspace, and
+          // only once the supervisor has accepted it, so a refused open leaves
+          // the browser on the workspace it was showing.
+          if (browserCommand.type === "new-conversation" || browserCommand.type === "open-conversation") {
+            const { requestId, workspaceId } = browserCommand;
+            return operation.then(() => performWorkspace({ requestId, type: "select-workspace", workspaceId }));
+          }
+          return operation;
         });
       },
       close(socket) {
@@ -283,12 +294,24 @@ function browserWorkspaces(
       return {
         awaiting: catalog?.awaiting ?? false,
         busy: catalog?.busy ?? false,
+        conversations:
+          id === registry.selectedId ? (catalog?.conversations ?? []) : recentConversations(catalog?.conversations ?? []),
         id,
         name,
         status: catalog?.status ?? "unavailable",
       };
     }),
   };
+}
+
+// Only the workspace the browser is showing pages its whole list. Ox orders a
+// listing by recency and the browser re-lists on lifecycle changes, so a
+// conversation that started waiting since the last listing can sit below the
+// recent window; keeping every conversation the host holds active is what makes
+// a waiting conversation always nameable.
+function recentConversations(conversations: Conversation[]): Conversation[] {
+  const recent = conversations.slice(0, maximumRecentConversations);
+  return [...recent, ...conversations.slice(maximumRecentConversations).filter((entry) => entry.status !== "inactive")];
 }
 
 function browserWorkspace(
@@ -323,7 +346,6 @@ function browserSessions(workspace: WorkspaceState): Snapshot["sessions"] {
         }),
     ...(workspace.sessions.nextCursor === undefined ? {} : { nextCursor: workspace.sessions.nextCursor }),
     ...(workspace.sessions.selectedID === undefined ? {} : { selectedId: workspace.sessions.selectedID }),
-    values: workspace.sessions.values.map((session) => ({ ...session })),
   };
 }
 
