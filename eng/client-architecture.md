@@ -172,6 +172,12 @@ browser commands and callbacks. The host may start a fresh connection, but it
 does not claim that interrupted turns survived. Durable sessions are recovered
 only through the standard list, load, and resume methods.
 
+A workspace that has no usable process, because its launch failed, its Ox
+exited, or the user logged out, is recovered by an explicit restart that
+replaces the supervisor for the same registered root. The replacement carries
+forward the diagnostics that explain why the previous process stopped, and it
+recovers conversations only through that ordinary durable path.
+
 The registry stores canonical roots and nonsecret launch configuration. Every
 registered entry is active and has an independent supervisor, so one process
 failure cannot corrupt routing or cancel work in another workspace. Selecting a
@@ -201,9 +207,12 @@ refused rather than forwarded. Configuration changes are applied through
 
 Pending permission and elicitation requests belong to their session and tool
 call. They remain visible across browser refreshes because the host owns their
-resolvers. Cancellation removes the interaction and lets the ACP request finish
-with the cancellation it received. The host never invents an approval or form
-answer because a browser disappeared.
+resolvers, and the workspace catalog and conversation list report which
+workspace and conversation is waiting, so an interaction raised outside the
+displayed conversation is still reachable and answerable where it belongs.
+Cancellation removes the interaction and lets the ACP request finish with the
+cancellation it received. The host never invents an approval or form answer
+because a browser disappeared.
 
 Ox owns durable conversation history. The web client persists no competing
 transcript. After a Bun restart, the session catalog comes from `session/list`,

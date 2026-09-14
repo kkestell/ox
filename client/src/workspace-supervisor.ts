@@ -32,6 +32,7 @@ export type AuthenticationState = {
 
 export type WorkspaceState = {
   authentication: AuthenticationState;
+  awaiting: boolean;
   busy: boolean;
   diagnostics: string[];
   mcpServerCount: number;
@@ -49,6 +50,7 @@ export type SessionState = {
 };
 
 export type SessionSummary = {
+  awaiting?: boolean;
   id: string;
   status: "inactive" | "loading" | "active";
   title?: string;
@@ -73,6 +75,9 @@ const unauthenticated: AuthenticationState = { logoutAvailable: false, methods: 
 export type WorkspaceSupervisorOptions = {
   arguments?: string[];
   command?: string;
+  // A restart seeds the diagnostics of the supervisor it replaces, so the
+  // reason a workspace stopped survives the recovery that follows it.
+  diagnostics?: string[];
   environment?: NodeJS.ProcessEnv;
   workspace: string;
 };
@@ -95,9 +100,10 @@ export class WorkspaceSupervisor {
   #mcpServers: acp.McpServer[] = [];
   #sessionOperation: Promise<void> = Promise.resolve();
   #sessionCapabilities: SessionCapabilities = { close: false, delete: false, list: false, load: false, resume: false };
-  // Busy is derived from the active prompts rather than stored, so the private
-  // state holds only what a transition actually writes.
-  #state: Omit<WorkspaceState, "busy"> = {
+  // Busy and awaiting are derived from the active prompts and the controllers'
+  // pending interactions rather than stored, so the private state holds only
+  // what a transition actually writes.
+  #state: Omit<WorkspaceState, "awaiting" | "busy"> = {
     authentication: unauthenticated,
     diagnostics: [],
     mcpServerCount: 0,
@@ -112,21 +118,26 @@ export class WorkspaceSupervisor {
 
   private constructor(
     workspace: string,
-    private readonly options: Required<Omit<WorkspaceSupervisorOptions, "workspace">>,
+    private readonly options: Required<Omit<WorkspaceSupervisorOptions, "diagnostics" | "workspace">>,
+    diagnostics: string[],
   ) {
     this.workspace = workspace;
-    this.#state = { ...this.#state, name: basename(workspace) || "Workspace" };
+    this.#state = { ...this.#state, diagnostics, name: basename(workspace) || "Workspace" };
     this.#filesystem = new FilesystemExecutor(workspace, (sessionID) => this.#controllers.has(sessionID));
     this.#terminal = new TerminalExecutor(workspace, (sessionID) => this.#controllers.has(sessionID));
   }
 
   static async start(options: WorkspaceSupervisorOptions): Promise<WorkspaceSupervisor> {
     const workspace = await canonicalWorkspace(options.workspace);
-    const supervisor = new WorkspaceSupervisor(workspace, {
-      arguments: options.arguments ?? [],
-      command: options.command ?? "ox",
-      environment: options.environment ?? process.env,
-    });
+    const supervisor = new WorkspaceSupervisor(
+      workspace,
+      {
+        arguments: options.arguments ?? [],
+        command: options.command ?? "ox",
+        environment: options.environment ?? process.env,
+      },
+      (options.diagnostics ?? []).slice(-maximumDiagnostics),
+    );
     await supervisor.start();
     return supervisor;
   }
@@ -138,6 +149,7 @@ export class WorkspaceSupervisor {
         ...this.#state.authentication,
         methods: this.#state.authentication.methods.map((method) => ({ ...method })),
       },
+      awaiting: [...this.#controllers.values()].some((controller) => controller.awaiting),
       busy: this.#activePrompts.size > 0,
       diagnostics: [...this.#state.diagnostics],
       mcpServerCount: this.#state.mcpServerCount,
@@ -147,7 +159,10 @@ export class WorkspaceSupervisor {
         ...(active === undefined ? {} : { active }),
         ...(this.#state.sessions.nextCursor === undefined ? {} : { nextCursor: this.#state.sessions.nextCursor }),
         ...(this.#state.sessions.selectedID === undefined ? {} : { selectedID: this.#state.sessions.selectedID }),
-        values: this.#state.sessions.values.map((session) => ({ ...session })),
+        values: this.#state.sessions.values.map((session) => ({
+          ...session,
+          ...(this.#controllers.get(session.id)?.awaiting ? { awaiting: true } : {}),
+        })),
       },
       status: this.#state.status,
     };

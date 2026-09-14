@@ -96,6 +96,10 @@ export class SessionController {
     };
   }
 
+  get awaiting(): boolean {
+    return this.#pending.size > 0;
+  }
+
   get interactions(): PendingInteraction[] {
     return [...this.#pending.values()].map(copyInteraction);
   }

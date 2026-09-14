@@ -344,6 +344,7 @@ export const browserCommandSchema = z.discriminatedUnion("type", [
     .strict(),
   z.object({ type: z.literal("select-workspace"), requestId: requestID, workspaceId: workspaceID }).strict(),
   z.object({ type: z.literal("remove-workspace"), requestId: requestID, workspaceId: workspaceID }).strict(),
+  z.object({ type: z.literal("restart-workspace"), requestId: requestID, workspaceId: workspaceID }).strict(),
   z
     .object({
       type: z.literal("authenticate"),
@@ -411,7 +412,7 @@ export const snapshotSchema = z
         values: z
           .array(
             z
-              .object({ id: workspaceID, name: z.string().min(1).max(512), status: workspaceStatus, busy: z.boolean() })
+              .object({ id: workspaceID, name: z.string().min(1).max(512), status: workspaceStatus, busy: z.boolean(), awaiting: z.boolean() })
               .strict(),
           )
           .max(1_024),
@@ -471,6 +472,7 @@ export const snapshotSchema = z
               .object({
                 id: z.string().min(1),
                 status: z.enum(["inactive", "loading", "active"]),
+                awaiting: z.boolean().optional(),
                 title: z.string().min(1).optional(),
                 updatedAt: z.string().min(1).optional(),
               })

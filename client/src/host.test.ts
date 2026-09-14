@@ -59,7 +59,7 @@ describe("browser host", () => {
 
     expect(client.received()).not.toContain(workspace);
     expect(client.snapshot().workspaces.values).toEqual([
-      { busy: false, id: expect.any(String), name: "private-workspace", status: "unavailable" },
+      { awaiting: false, busy: false, id: expect.any(String), name: "private-workspace", status: "unavailable" },
     ]);
     client.close();
   });
@@ -111,6 +111,63 @@ describe("browser host", () => {
       ok: true,
     });
     expect(client.snapshot().workspaces.values.map((workspace) => workspace.id)).toEqual([kept.id]);
+    client.close();
+  });
+
+  test("restarts a workspace, keeping why its last process stopped", async () => {
+    const root = await temporaryDirectory();
+    const workspace = join(root, "restarted");
+    await mkdir(workspace);
+    host = await startHost({ oxCommand: "/definitely/not/ox", registryPath: join(root, "workspaces.json") });
+    const client = await connect(host);
+    await client.request({ type: "register-workspace", path: workspace });
+    const [entry] = client.snapshot().workspaces.values;
+    if (!entry) {
+      throw new Error("the workspace should be registered");
+    }
+    const before = client.snapshot().workspace?.diagnostics ?? [];
+    expect(before.length).toBeGreaterThan(0);
+
+    expect(await client.request({ type: "restart-workspace", workspaceId: entry.id })).toEqual({ ok: true });
+
+    const after = client.snapshot().workspace?.diagnostics ?? [];
+    expect(after.slice(0, before.length)).toEqual(before);
+    expect(after.length).toBeGreaterThan(before.length);
+    expect(client.snapshot().workspaces.values).toEqual([
+      { awaiting: false, busy: false, id: entry.id, name: "restarted", status: "unavailable" },
+    ]);
+    client.close();
+  });
+
+  test("refuses to restart a workspace that is not registered", async () => {
+    host = await startTestHost();
+    const client = await connect(host);
+
+    expect(await client.request({ type: "restart-workspace", workspaceId: unregisteredWorkspaceID })).toEqual({
+      ok: false,
+      error: "workspace is not registered",
+    });
+    client.close();
+  });
+
+  test("leaves the other workspace routing while one restarts", async () => {
+    const root = await temporaryDirectory();
+    await mkdir(join(root, "one"));
+    await mkdir(join(root, "two"));
+    host = await startHost({ oxCommand: "/definitely/not/ox", registryPath: join(root, "workspaces.json") });
+    const client = await connect(host);
+    await client.request({ type: "register-workspace", path: join(root, "one") });
+    await client.request({ type: "register-workspace", path: join(root, "two") });
+    const [one, two] = client.snapshot().workspaces.values;
+    if (!one || !two) {
+      throw new Error("both workspaces should be registered");
+    }
+
+    const restarted = client.request({ type: "restart-workspace", workspaceId: one.id });
+
+    expect(await client.request({ type: "set-mcp-servers", workspaceId: two.id, mcpServers: [] })).toEqual({ ok: true });
+    expect(await restarted).toEqual({ ok: true });
+    expect(await client.request({ type: "set-mcp-servers", workspaceId: one.id, mcpServers: [] })).toEqual({ ok: true });
     client.close();
   });
 

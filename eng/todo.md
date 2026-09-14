@@ -7,7 +7,7 @@
   - [x] Run and route one independently supervised Ox process per active
         workspace, and prove concurrent turns and failure isolation across two
         roots
-  - [ ] Complete multi-workspace restart, interaction-routing, and browser
+  - [x] Complete multi-workspace restart, interaction-routing, and browser
         coverage, then run the milestone completeness and simplification review
 - [ ] Apply responsive visual design to the feature-complete browser client
   - [ ] Add the first CSS after the functional gate, preserving semantic control

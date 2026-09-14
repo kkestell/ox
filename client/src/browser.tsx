@@ -21,7 +21,7 @@ import {
 // stamps the current selection once instead of at every call site.
 type RoutedCommand = Exclude<
   Extract<BrowserCommand, { workspaceId: string }>,
-  { type: "remove-workspace" | "select-workspace" }
+  { type: "remove-workspace" | "restart-workspace" | "select-workspace" }
 >;
 type RoutedRequest = RoutedCommand extends infer Command
   ? Command extends RoutedCommand
@@ -75,7 +75,10 @@ function App() {
           if (workspaceRequest === "register-workspace") {
             setWorkspacePath("");
           }
-          setWorkspaceMessage({ error: false, text: "Workspace registry updated" });
+          setWorkspaceMessage({
+            error: false,
+            text: workspaceRequest === "restart-workspace" ? "Ox restarted" : "Workspace registry updated",
+          });
         } else {
           setWorkspaceMessage({ error: true, text: parsed.data.error });
         }
@@ -162,7 +165,17 @@ function App() {
   const selected = snapshot?.sessions.values.find((session) => session.id === snapshot.sessions.selectedId);
   const title = selected?.title ?? "New conversation";
   const authenticated = snapshot?.authentication.status === "authenticated";
-  const unavailable = connection === "Unavailable" || connection === "Disconnected" || snapshot?.workspace?.status === "unavailable";
+  // The catalog entry survives a workspace losing its process, so process
+  // problems and their recovery read from it rather than from the detail the
+  // host only publishes while a supervisor exists.
+  const selectedWorkspace = snapshot?.workspaces.values.find((entry) => entry.id === snapshot.workspaces.selectedId);
+  const unavailable =
+    connection === "Unavailable" || connection === "Disconnected" || selectedWorkspace?.status === "unavailable";
+  const restartable = selectedWorkspace !== undefined && selectedWorkspace.status !== "ready";
+
+  function restartWorkspace(workspaceId: string): void {
+    submitWorkspaceCommand({ requestId: crypto.randomUUID(), type: "restart-workspace", workspaceId });
+  }
 
   return (
     <main>
@@ -171,6 +184,8 @@ function App() {
         {snapshot ? <p>{snapshot.workspace?.name ?? "No workspace selected"}</p> : null}
       </header>
       {unavailable ? <p role="alert">Ox is unavailable. Open support details for diagnostics.</p> : null}
+      {selectedWorkspace?.status === "stopped" ? <p role="alert">Ox is stopped for this workspace.</p> : null}
+      {restartable ? <button onClick={() => restartWorkspace(selectedWorkspace.id)} type="button">Restart Ox</button> : null}
       {snapshot ? (
         <WorkspacePicker
           message={workspaceMessage}
@@ -260,6 +275,7 @@ function App() {
             onLogin={terminalLogin}
             onLogout={() => sendRouted({ requestId: crypto.randomUUID(), type: "logout" })}
             onRefresh={() => historyCommand("refresh-history")}
+            onRestart={restartWorkspace}
             snapshot={snapshot}
             workspace={snapshot.workspace}
           />
@@ -279,6 +295,9 @@ function WorkspacePicker({ message, onPath, onRegister, onRemove, onSelect, path
   workspaces: Snapshot["workspaces"];
 }) {
   const selectedID = workspaces.selectedId;
+  // The selected workspace shows its own pending interaction, so this routes
+  // only to the ones the browser is not currently displaying.
+  const waiting = workspaces.values.filter((workspace) => workspace.awaiting && workspace.id !== selectedID);
   return (
     <section aria-labelledby="workspaces-heading">
       <h2 id="workspaces-heading">Workspaces</h2>
@@ -294,6 +313,15 @@ function WorkspacePicker({ message, onPath, onRegister, onRemove, onSelect, path
             </select>
           </label>
           {selectedID ? <button onClick={() => onRemove(selectedID)} type="button">Remove workspace</button> : null}
+          {waiting.length > 0 ? (
+            <ul aria-label="Workspaces waiting for an answer">
+              {waiting.map((workspace) => (
+                <li key={workspace.id}>
+                  <button onClick={() => onSelect(workspace.id)} type="button">{`${workspace.name} is waiting for an answer`}</button>
+                </li>
+              ))}
+            </ul>
+          ) : null}
         </>
       ) : <p>Register a server-local workspace to begin.</p>}
       <form onSubmit={(event) => { event.preventDefault(); onRegister(); }}>
@@ -348,6 +376,7 @@ function History({ onNew, onOpen, onOlder, sessions }: {
               {conversation.title ?? "Untitled conversation"}
             </button>
             {conversation.status === "loading" ? <span>Opening…</span> : null}
+            {conversation.awaiting ? <span>Waiting for you</span> : null}
             {conversation.updatedAt ? <time dateTime={conversation.updatedAt}>{new Date(conversation.updatedAt).toLocaleString()}</time> : null}
           </li>
         ))}
@@ -357,7 +386,7 @@ function History({ onNew, onOpen, onOlder, sessions }: {
   );
 }
 
-function SupportDetails({ activeSessionId, connection, credential, onCredential, onLogin, onLogout, onRefresh, snapshot, workspace }: {
+function SupportDetails({ activeSessionId, connection, credential, onCredential, onLogin, onLogout, onRefresh, onRestart, snapshot, workspace }: {
   activeSessionId?: string;
   connection: string;
   credential: string;
@@ -365,6 +394,7 @@ function SupportDetails({ activeSessionId, connection, credential, onCredential,
   onLogin: (methodId: string) => void;
   onLogout: () => void;
   onRefresh: () => void;
+  onRestart: (workspaceId: string) => void;
   snapshot: Snapshot;
   workspace: NonNullable<Snapshot["workspace"]>;
 }) {
@@ -378,7 +408,10 @@ function SupportDetails({ activeSessionId, connection, credential, onCredential,
       </dl>
       <ul aria-label="Ox processes">
         {snapshot.workspaces.values.map((entry) => (
-          <li key={entry.id}>{`${entry.name} — ${entry.status}, ${entry.busy ? "working" : "idle"}`}</li>
+          <li key={entry.id}>
+            {`${entry.name} — ${entry.status}, ${entry.busy ? "working" : "idle"}${entry.awaiting ? ", waiting for an answer" : ""}`}
+            <button onClick={() => onRestart(entry.id)} type="button">{`Restart ${entry.name}`}</button>
+          </li>
         ))}
       </ul>
       {workspace.diagnostics.length > 0 ? <ul aria-label="Workspace diagnostics">{workspace.diagnostics.map((diagnostic, index) => <li key={`${index}-${diagnostic}`}>{diagnostic}</li>)}</ul> : null}

@@ -18,6 +18,7 @@ describe("workspace supervisor", () => {
 
     expect(supervisor.state).toEqual({
       authentication: { logoutAvailable: false, methods: [], status: "required" },
+      awaiting: false,
       busy: false,
       diagnostics: [],
       mcpServerCount: 0,
@@ -75,6 +76,7 @@ describe("workspace supervisor", () => {
 
     expect(supervisor.state).toEqual({
       authentication: { logoutAvailable: false, methods: [], status: "unavailable" },
+      awaiting: false,
       busy: false,
       diagnostics: ["Ox did not initialize within 2 seconds"],
       mcpServerCount: 0,
@@ -303,6 +305,36 @@ describe("workspace supervisor", () => {
       writeTextFile: true,
     });
     expect(JSON.parse(await readFile(join(workspace, "terminal-capability.json"), "utf8"))).toBe(true);
+    await supervisor.stop();
+  });
+
+  test("reports which conversation is waiting for an answer and routes it there", async () => {
+    const supervisor = await WorkspaceSupervisor.start({
+      arguments: ["--eval", waitingProgram()],
+      command: process.execPath,
+      workspace: await temporaryWorkspace(),
+    });
+    await supervisor.newSession([]);
+    await supervisor.newSession([]);
+    supervisor.selectSession("one");
+    const turn = supervisor.prompt("two", [{ text: "ask", type: "text" }]);
+
+    await eventually(() => supervisor.state.awaiting);
+
+    expect(supervisor.state.sessions.active?.id).toBe("one");
+    expect(supervisor.state.sessions.active?.interactions).toEqual([]);
+    expect(supervisor.state.sessions.values).toEqual([
+      { id: "one", status: "active" },
+      { awaiting: true, id: "two", status: "active" },
+    ]);
+    expect(() => supervisor.resolvePermission("missing", "interaction-1", "allow")).toThrow("session is not active");
+
+    supervisor.resolvePermission("two", "interaction-1", "allow");
+    await turn;
+
+    expect(supervisor.state.awaiting).toBe(false);
+    expect(supervisor.state.sessions.values.every((session) => session.awaiting === undefined)).toBe(true);
+    expect(() => supervisor.resolvePermission("two", "interaction-1", "allow")).toThrow("no longer pending");
     await supervisor.stop();
   });
 
@@ -605,6 +637,38 @@ process.stdin.on('data', (chunk) => {
     } else if (request.id === 'read') {
       callback('write', 'fs/write_text_file', { sessionId: 'one', path: path.join(process.cwd(), 'notes.txt'), content: 'after\\n' });
     } else if (request.id === 'write') {
+      response(promptID, { stopReason: 'end_turn' });
+    }
+  }
+});`;
+}
+
+function waitingProgram(): string {
+  return `
+process.stdin.setEncoding('utf8');
+let input = '';
+let created = 0;
+let promptID;
+function response(id, result) { process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id, result }) + '\\n'); }
+process.stdin.on('data', (chunk) => {
+  input += chunk;
+  for (;;) {
+    const newline = input.indexOf('\\n');
+    if (newline === -1) break;
+    const request = JSON.parse(input.slice(0, newline));
+    input = input.slice(newline + 1);
+    if (request.method === 'initialize') {
+      response(request.id, { protocolVersion: 1, agentCapabilities: {}, authMethods: [] });
+    } else if (request.method === 'session/new') {
+      created += 1;
+      response(request.id, { sessionId: created === 1 ? 'one' : 'two' });
+    } else if (request.method === 'session/prompt') {
+      promptID = request.id;
+      process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: 'permission', method: 'session/request_permission', params: {
+        sessionId: request.params.sessionId, toolCall: { toolCallId: 'tool-1', title: 'Run command' },
+        options: [{ optionId: 'allow', name: 'Allow once', kind: 'allow_once' }],
+      } }) + '\\n');
+    } else if (request.id === 'permission') {
       response(promptID, { stopReason: 'end_turn' });
     }
   }

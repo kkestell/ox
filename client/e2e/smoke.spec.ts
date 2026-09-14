@@ -341,6 +341,77 @@ test("runs concurrent turns and isolates failure across two workspaces", async (
   }
 });
 
+test("restarts a workspace whose Ox stopped and reopens its durable history", async ({ page }) => {
+  const fixture = await createFixture({ registerSecondWorkspace: true });
+  const first = basename(fixture.workspace);
+  const second = basename(fixture.workspaceTwo);
+  let host: BrowserHost | undefined;
+  try {
+    host = startBrowserHost(fixture);
+    await assertReady(page, await host.url);
+    await page.getByLabel("Current workspace").selectOption({ label: second });
+    await expect(page.locator("main > header")).toContainText(second);
+    await page.getByLabel("Message", { exact: true }).fill("remember this turn");
+    await page.getByRole("button", { name: "Send prompt" }).click();
+    const transcript = page.getByRole("region", { name: "Transcript" });
+    await expect(transcript).toContainText("browser smoke");
+
+    await fixture.stopOx(fixture.workspaceTwo);
+    await expect(page.getByRole("alert")).toHaveText("Ox is unavailable. Open support details for diagnostics.");
+
+    await page.getByRole("button", { name: "Restart Ox" }).click();
+
+    await expect(page.getByRole("alert")).toHaveCount(0);
+    await expect(transcript).toContainText("remember this turn");
+    await openSupportDetails(page);
+    const processes = page.getByRole("list", { name: "Ox processes" });
+    await expect(processes).toContainText(`${second} — ready, idle`);
+    await expect(processes).toContainText(`${first} — ready, idle`);
+    await expect(page.getByRole("list", { name: "Workspace diagnostics" })).toContainText("Ox exited from SIGTERM");
+    await page.getByLabel("Message", { exact: true }).fill("after the restart");
+    await page.getByRole("button", { name: "Send prompt" }).click();
+    await expect(transcript).toContainText("browser smoke");
+  } finally {
+    await host?.stop();
+    await fixture.close();
+  }
+});
+
+test("routes a pending permission to the workspace the browser is not showing", async ({ page }) => {
+  const fixture = await createFixture({ registerSecondWorkspace: true });
+  const first = basename(fixture.workspace);
+  const second = basename(fixture.workspaceTwo);
+  let host: BrowserHost | undefined;
+  try {
+    host = startBrowserHost(fixture);
+    await assertReady(page, await host.url);
+    await page.getByLabel("Current workspace").selectOption({ label: second });
+    await expect(page.locator("main > header")).toContainText(second);
+    await page.getByLabel("Message", { exact: true }).fill("request permission");
+    await page.getByRole("button", { name: "Send prompt" }).click();
+    const permission = page.getByRole("region", { name: "Transcript" }).getByRole("article", { name: /Permission for/ });
+    await expect(permission).toContainText("pwd");
+    await expect(page.getByRole("list", { name: "Conversation history" })).toContainText("Waiting for you");
+
+    await page.getByLabel("Current workspace").selectOption({ label: first });
+    await expect(page.locator("main > header")).toContainText(first);
+    await expect(permission).toBeHidden();
+
+    await page
+      .getByRole("list", { name: "Workspaces waiting for an answer" })
+      .getByRole("button", { name: `${second} is waiting for an answer` })
+      .click();
+
+    await expect(permission).toContainText("pwd");
+    await page.getByRole("button", { name: "Allow once" }).click();
+    await expect(permission).toBeHidden();
+    await expect.poll(() => fixture.requests).toBe(2);
+  } finally {
+    await host?.stop();
+    await fixture.close();
+  }
+});
+
 test("renders a host-owned form elicitation through refresh and answers it", async ({ page }) => {
   const fixture = await createFixture();
   let host: BrowserHost | undefined;

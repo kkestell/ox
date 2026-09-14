@@ -52,7 +52,7 @@ export async function startHost(options: HostOptions = {}): Promise<StartedHost>
   // The snapshot exists before the first supervisor subscribes, because a
   // workspace that starts early can publish while another is still starting.
   let snapshot = snapshotFor(revision, visibleRegistry, supervisors, undefined);
-  await Promise.all(visibleRegistry.workspaces.map(startSupervisor));
+  await Promise.all(visibleRegistry.workspaces.map(startSupervisorQuietly));
   snapshot = snapshotFor(revision, visibleRegistry, supervisors, selectedState());
 
   function selectedState(): WorkspaceState | undefined {
@@ -68,22 +68,23 @@ export async function startHost(options: HostOptions = {}): Promise<StartedHost>
     }
   }
 
-  // A root that stopped being usable between registry validation and launch
-  // leaves the entry without a supervisor; it reports unavailable and refuses
-  // commands rather than taking the host or the registration down with it.
-  async function startSupervisor(workspace: RegisteredWorkspace): Promise<void> {
-    let supervisor: WorkspaceSupervisor;
-    try {
-      supervisor = await WorkspaceSupervisor.start({
-        arguments: options.oxArguments,
-        command: options.oxCommand,
-        workspace: workspace.root,
-      });
-    } catch {
-      return;
-    }
+  async function startSupervisor(workspace: RegisteredWorkspace, diagnostics: string[] = []): Promise<void> {
+    const supervisor = await WorkspaceSupervisor.start({
+      arguments: options.oxArguments,
+      command: options.oxCommand,
+      diagnostics,
+      workspace: workspace.root,
+    });
     supervisors.set(workspace.id, supervisor);
     unsubscribes.set(workspace.id, supervisor.subscribe(publish));
+  }
+
+  // A root that stopped being usable between registry validation and launch
+  // leaves the entry without a supervisor; it reports unavailable and refuses
+  // commands rather than taking the host or the registration down with it. An
+  // explicit restart is a user request, so it reports its failure instead.
+  async function startSupervisorQuietly(workspace: RegisteredWorkspace): Promise<void> {
+    await startSupervisor(workspace).catch(() => undefined);
   }
 
   async function stopSupervisor(id: string): Promise<void> {
@@ -111,7 +112,18 @@ export async function startHost(options: HostOptions = {}): Promise<StartedHost>
           // The new entry has to be visible before its supervisor starts
           // publishing, or its early transitions would name nothing.
           visibleRegistry = registry.state;
-          await startSupervisor(result.workspace);
+          await startSupervisorQuietly(result.workspace);
+          break;
+        }
+        case "restart-workspace": {
+          const workspace = registry.state.workspaces.find((entry) => entry.id === command.workspaceId);
+          if (!workspace) {
+            throw new Error("workspace is not registered");
+          }
+          const diagnostics = supervisors.get(workspace.id)?.state.diagnostics ?? [];
+          await stopSupervisor(workspace.id);
+          publish();
+          await startSupervisor(workspace, diagnostics);
           break;
         }
         case "select-workspace":
@@ -253,7 +265,7 @@ function browserWorkspaces(
     ...(registry.selectedId === undefined ? {} : { selectedId: registry.selectedId }),
     values: registry.workspaces.map(({ id, name }) => {
       const state = supervisors.get(id)?.state;
-      return { busy: state?.busy ?? false, id, name, status: state?.status ?? "unavailable" };
+      return { awaiting: state?.awaiting ?? false, busy: state?.busy ?? false, id, name, status: state?.status ?? "unavailable" };
     }),
   };
 }
@@ -356,11 +368,13 @@ function perform(
 
 type WorkspaceCommand = Extract<
   BrowserCommand,
-  { type: "register-workspace" | "remove-workspace" | "select-workspace" }
+  { type: "register-workspace" | "remove-workspace" | "restart-workspace" | "select-workspace" }
 >;
 
+const workspaceCommands = new Set(["register-workspace", "remove-workspace", "restart-workspace", "select-workspace"]);
+
 function isWorkspaceCommand(command: BrowserCommand): command is WorkspaceCommand {
-  return command.type === "register-workspace" || command.type === "remove-workspace" || command.type === "select-workspace";
+  return workspaceCommands.has(command.type);
 }
 
 function requestID(value: unknown): string {
