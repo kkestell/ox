@@ -2,10 +2,12 @@
 
 ## Goal
 
-The browser client's appearance is one hand-written layout stylesheet. Adopt
-Tailwind and shadcn in the Bun build behind a single base theme and restyle the
-existing markup with it. The DOM structure, accessible roles, and accessible
-names stay exactly as they are, so the whole Playwright suite passes unchanged.
+The browser client's appearance is one hand-written layout stylesheet. Put
+Tailwind and shadcn into the Bun build behind a single base theme and move the
+existing controls onto shadcn's primitives. The information architecture does
+not change: the same regions, the same controls, and the same accessible names.
+Appearance beyond the theme itself belongs to the shell and conversation styling
+work that follows.
 
 ## Related code
 
@@ -42,15 +44,16 @@ scans exactly the client sources with no `@source` directive.
 `shadcn init` refuses this project — it reports that it cannot detect a
 supported framework, because there is no Next, Vite, or React Router config.
 `shadcn add` works fine against a hand-written `components.json`, so write that
-file by hand and use `add` from then on. Pin `"style": "new-york"` and the Radix
-base; the generated components import `cn` from the `cn` package and `Slot` from
-`radix-ui`, not from a local `@/lib/utils`, so no utils module is vendored.
+file by hand and use `add` from then on. Pin `"style": "new-york-v4"`, the Radix
+style whose generated components import `cn` from the `cn` package and `Slot`
+from `radix-ui` rather than a local `@/lib/utils`, so no utils module is
+vendored even though the strict config schema still requires its alias.
 
-`shadcn add` installs `cn` and `radix-ui` but not `class-variance-authority`,
-which every generated component imports. Add it explicitly. Add nothing else
-shadcn pulls in opportunistically; in particular do not add `lucide-react`,
-because no control in this task gains an icon and an icon is how an accessible
-name gets lost.
+`shadcn add` installs `cn` and `radix-ui` and nothing else, but the generated
+components import `class-variance-authority`, and `select.tsx` imports
+`lucide-react`. Add both explicitly. The icons shadcn ships inside `Select` are
+decorative chevrons and checks within a control whose accessible name comes from
+its trigger, so they do not displace a name.
 
 `@import "shadcn/tailwind.css"` from the `shadcn` dev dependency supplies
 keyframes and the `data-state` custom variants only. It carries no color tokens,
@@ -65,23 +68,46 @@ The dark tokens activate from `prefers-color-scheme: dark`. There is no theme
 toggle and no persisted preference: the client has one base theme that follows
 the operating system.
 
-Adopt only the shadcn components whose rendered element and accessible name are
-identical to what is there now: `Button` (`<button>`), `Input` (`<input>`),
-`Textarea` (`<textarea>`), `Label` (`<label>`), and `Card`. Do not adopt
-`Select` or `Collapsible`. shadcn's `Select` is a Radix combobox and would break
-`selectOption` and `toHaveValue` against the model, mode, and reasoning
-controls; `Collapsible` would break the `<summary>` text clicks. Those controls
-keep their native elements and are styled with utility classes.
+Adopt shadcn's components wherever the client already has a control for them:
+`Button`, `Input`, `Textarea`, `Label`, `Select`, and `Collapsible`. Do not
+vendor presentational components such as `Card`, because deciding what earns a
+surface is a shell-styling decision. Two of them change the accessible role, and
+that is accepted rather than avoided. Radix `Select` replaces the three native
+`<select>` controls for model, mode, and reasoning with a trigger and a
+portalled listbox, so the role becomes `combobox` plus `option`. Radix
+`Collapsible` replaces the seven `<details>`/`<summary>` disclosures, so each
+summary becomes a `button`. Both are accessible implementations, and a native
+`<select>` is barely styleable and would read as unfinished beside the rest of
+the theme.
 
-Everything else is restyling in place: utility classes on the markup that
-already exists. No element is added, removed, reparented, or renamed, and no
-`aria-label` or heading text changes.
+Accessible names still do not change. Every `aria-label`, heading, and label
+text stays as it is, which for `Select` means carrying the existing `aria-label`
+onto `SelectTrigger`.
+
+The file inputs stay native, because shadcn has no file-input component and
+`<input type="file">` is what native file selection requires.
+
+This task is the toolchain, the theme, and the component swap. It is not a
+visual pass. Past the classes that keep the sidebar beside the primary column,
+it chooses no spacing, type scale, density, or arrangement for any region: the
+shell and conversation styling tasks own those, and anything decided here would
+be replaced by them. The expected intermediate state is stock shadcn primitives
+at default density, and it should look unfinished.
 
 ## Test plan
 
-- `client/e2e/smoke.spec.ts` passes unmodified. It is the proof that roles,
-  names, and the sidebar-beside-main geometry survived, and it needs no new
-  assertions for a change that is only appearance.
+- `client/e2e/smoke.spec.ts` keeps every assertion whose control did not change
+  role, including the sidebar-beside-main geometry, the file inputs, and every
+  `getByRole("button")` and `getByLabel` that still resolves.
+- The mode control moves from `getByLabel("Mode").selectOption("plan")` and
+  `toHaveValue` to opening the combobox by its unchanged name and choosing the
+  option by its text. The `"Add context"` and `"Conversation actions"`
+  disclosures move from a text click on a `<summary>` to a click on a button of
+  the same name. These are the only spec edits this change should need; another
+  failure means a name moved, which is a defect rather than a test to update.
+- Radix renders the select listbox in a portal outside `main`, so assertions
+  scoped to `main` or to the conversation region must not expect option text
+  inside them.
 - `tsc --noEmit` covers the vendored components under the client's existing
   `strict` and `noUncheckedIndexedAccess` settings.
 - `bun run build` fails the check when the theme CSS is invalid, which is what
@@ -90,8 +116,8 @@ already exists. No element is added, removed, reparented, or renamed, and no
 ## Implementation plan
 
 - Add `tailwindcss` and `@tailwindcss/cli` as dependencies and `shadcn` plus
-  `tw-animate-css` as dev dependencies. Add `class-variance-authority`; let
-  `shadcn add` bring in `cn` and `radix-ui`.
+  `tw-animate-css` as dev dependencies. Add `class-variance-authority` and
+  `lucide-react`; let `shadcn add` bring in `cn` and `radix-ui`.
 - Add `baseUrl` and a `@/*` → `./src/*` path mapping to `client/tsconfig.json`.
 - Write `client/components.json` by hand with the Radix base, `"tsx": true`,
   `src/styles.css` as the theme file, and the `@/components`, `@/components/ui`,
@@ -104,19 +130,23 @@ already exists. No element is added, removed, reparented, or renamed, and no
 - Change `build` to run `@tailwindcss/cli` from `src/styles.css` to
   `public/styles.css` before `bun build`, and change `check` to run `build`
   before `tsc --noEmit` so a broken theme fails `make check`.
-- Vendor `button`, `input`, `textarea`, `label`, and `card` with `shadcn add`.
-- Restyle `client/src/browser.tsx`: replace the `layout` class with the sidebar
-  and main utility classes that preserve the side-by-side geometry, swap the
-  native elements listed above for their shadcn equivalents where the rendered
-  element is unchanged, and apply utility classes to the remaining markup
-  including the `<select>`, `<details>`, and `<summary>` elements that keep
-  their native implementations.
+- Vendor `button`, `input`, `textarea`, `label`, `select`, and `collapsible`
+  with `shadcn add`.
+- Swap the native controls in `client/src/browser.tsx` for their shadcn
+  equivalents, carrying each existing `aria-label` onto the element that now
+  owns the accessible name. Replace the `layout` class with the utility classes
+  that keep the sidebar beside the primary column, and change nothing else about
+  arrangement.
+- Update the model, mode, and reasoning interactions and the two disclosure
+  interactions in `client/e2e/smoke.spec.ts` to the roles Radix renders.
 
 ## Documentation updates
 
-- `eng/client-architecture.md` — The invariant that "a stylesheet carries layout
-  and appearance only" no longer holds once appearance lives in utility classes
-  and vendored components. Restate what still holds: behavior and accessible
-  names never depend on presentation. Name `src/components/ui` as vendored
-  third-party presentation under the React application's ownership.
+- `eng/client-architecture.md` — Rewrite the browser-surface invariant. Neither
+  "semantic HTML with native controls" nor "a stylesheet carries layout and
+  appearance only" survives a vendored component library. What survives is the
+  part worth keeping durable: navigating is a link, every state change is a
+  button, and accessible names come from content and labels rather than from
+  presentation. Name `src/components/ui` as vendored third-party presentation
+  owned by the React application.
 - `eng/todo.md` — Check this task off.

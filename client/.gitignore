@@ -1,5 +1,6 @@
 node_modules/
 public/browser.js
 public/browser.js.map
+public/styles.css
 playwright-report/
 test-results/

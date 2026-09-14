@@ -13,7 +13,8 @@ output. It is ACP-first and works with ACP clients. The durable design lives in
 - **Language:** Go 1.26.4
 - **Protocol:** ACP v1 over JSON-RPC 2.0 on stdio
 - **Model provider:** OpenRouter Chat Completions over HTTP and SSE
-- **Web client:** Bun, TypeScript, React, and the official ACP TypeScript SDK
+- **Web client:** Bun, TypeScript, React, Tailwind and shadcn, and the official
+  ACP TypeScript SDK
 - **Build and checks:** Make, gofmt, go vet, staticcheck, and go test
 
 ## Codebase Map

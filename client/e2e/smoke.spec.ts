@@ -189,12 +189,12 @@ test("keeps a replayed session coherent across refresh and attached browsers", a
     secondContext = await browser.newContext();
     const second = await secondContext.newPage();
     await assertReady(second, url);
-    await second.getByText("Conversation actions", { exact: true }).click();
+    await second.getByRole("button", { name: "Conversation actions" }).click();
     await second.getByRole("button", { name: "Close conversation" }).click();
     await expect(page.getByText("Choose a conversation or start a new one.")).toBeVisible();
 
     await sessions.getByRole("link", { name: "smoke" }).click();
-    await page.getByText("Conversation actions", { exact: true }).click();
+    await page.getByRole("button", { name: "Conversation actions" }).click();
     await page.getByRole("button", { name: "Delete conversation" }).click();
     await expect(sessions).not.toContainText("smoke");
     await newConversation(page).click();
@@ -212,12 +212,11 @@ test("prompts with controls and every supported browser attachment", async ({ pa
   try {
     host = startBrowserHost(fixture);
     await assertReady(page, await host.url);
-    await expect(page.getByLabel("Mode", { exact: true })).toHaveValue("code");
-    await page.getByLabel("Mode", { exact: true }).selectOption("plan");
-    await expect(page.getByLabel("Mode", { exact: true })).toHaveValue("plan");
+    await expect(page.getByLabel("Mode", { exact: true })).toHaveText("Code");
+    await chooseMode(page, "Plan");
 
     await page.getByLabel("Message").fill("inspect these attachments");
-    await page.getByText("Add context", { exact: true }).click();
+    await page.getByRole("button", { name: "Add context" }).click();
     await page.getByLabel("Attachments", { exact: true }).setInputFiles([
       { name: "picture.png", mimeType: "image/png", buffer: Buffer.from("image") },
       { name: "sound.wav", mimeType: "audio/wav", buffer: Buffer.from("audio") },
@@ -246,7 +245,7 @@ test("runs Ox file tools through the host's confined filesystem callbacks", asyn
     await writeFile(join(fixture.workspace, "browser-file.txt"), "one\ntwo\n");
     host = startBrowserHost(fixture);
     await assertReady(page, await host.url);
-    await page.getByLabel("Mode", { exact: true }).selectOption("auto");
+    await chooseMode(page, "Auto");
     await page.getByLabel("Message").fill("exercise filesystem callbacks");
     await page.getByRole("button", { name: "Send prompt" }).click();
 
@@ -264,7 +263,7 @@ test("runs Ox shell tools through the host's ACP terminal callbacks", async ({ p
   try {
     host = startBrowserHost(fixture);
     await assertReady(page, await host.url);
-    await page.getByLabel("Mode", { exact: true }).selectOption("auto");
+    await chooseMode(page, "Auto");
     await page.getByLabel("Message").fill("exercise terminal callbacks");
     await page.getByRole("button", { name: "Send prompt" }).click();
 
@@ -509,7 +508,7 @@ test("activates HTTP and stdio MCP servers without retaining secrets", async ({ 
     await saveMCPServers(page);
     await startNewConversation(page);
     await expect(page.locator("main")).not.toContainText(mcp.httpSecret);
-    await page.getByLabel("Mode", { exact: true }).selectOption("auto");
+    await chooseMode(page, "Auto");
     await page.getByLabel("Message").fill("use HTTP MCP tool");
     await page.getByRole("button", { name: "Send prompt" }).click();
     await expect(page.getByRole("region", { name: "Transcript" })).toContainText("HTTP MCP complete");
@@ -522,7 +521,7 @@ test("activates HTTP and stdio MCP servers without retaining secrets", async ({ 
     await expect(page.getByRole("region", { name: "Transcript" })).toContainText("HTTP MCP failure complete");
     await page.getByRole("region", { name: "Transcript" }).getByText("Details", { exact: true }).last().click();
     await expect(page.getByRole("region", { name: "Transcript" })).toContainText("HTTP MCP fixture failure");
-    await page.getByText("Conversation actions", { exact: true }).click();
+    await page.getByRole("button", { name: "Conversation actions" }).click();
     await page.getByRole("button", { name: "Close conversation" }).click();
     await expect(page.getByText("Choose a conversation or start a new one.")).toBeVisible();
 
@@ -544,7 +543,7 @@ test("activates HTTP and stdio MCP servers without retaining secrets", async ({ 
     await page.getByRole("region", { name: "Transcript" }).getByText("Details", { exact: true }).last().click();
     await expect(page.getByRole("region", { name: "Transcript" })).toContainText("stdio MCP fixture result");
     await expect(page.locator("main")).not.toContainText(mcp.stdioSecret);
-    await page.getByText("Conversation actions", { exact: true }).click();
+    await page.getByRole("button", { name: "Conversation actions" }).click();
     await page.getByRole("button", { name: "Close conversation" }).click();
 
     await openWorkspaceSettings(page);
@@ -1147,6 +1146,14 @@ async function driveOx(fixture: Fixture): Promise<string> {
     child.stdin.end();
     await once(child, "exit");
   }
+}
+
+// The mode control is a listbox in a portal, so choosing a mode opens it by the
+// name its trigger carries and picks the option by its label.
+async function chooseMode(page: Page, mode: string): Promise<void> {
+  await page.getByLabel("Mode", { exact: true }).click();
+  await page.getByRole("option", { name: mode, exact: true }).click();
+  await expect(page.getByLabel("Mode", { exact: true })).toHaveText(mode);
 }
 
 async function boundingBox(locator: Locator): Promise<{ height: number; width: number; x: number; y: number }> {

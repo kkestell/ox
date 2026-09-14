@@ -71,10 +71,9 @@ security model.
 - Credentials and secret MCP fields remain in the Bun process only as long as
   their operation or activation requires. They are not included in browser
   snapshots, logs, URLs, transcript entries, or ACP metadata.
-- The browser surface is semantic HTML with native controls. Navigating is a
-  link and every state change is a button, and accessible names come from
-  content rather than presentation. A stylesheet carries layout and appearance
-  only, so behavior and accessibility never depend on it.
+- Navigating is a link and every state change is a button. Accessible names come
+  from content, labels, and explicit labelling attributes rather than from
+  presentation, so a control's name never depends on how it is styled.
 - Protocol completeness is a host and test responsibility, not the browser's
   information architecture. An ACP method, identifier, capability, or process
   state does not receive a primary control merely because it is implemented.
@@ -100,7 +99,9 @@ The client is one Bun package under `client/`, with these coarse boundaries:
   Bun, React, process, or ACP transport implementation.
 - The **React application** owns navigation, forms, native file selection, and
   rendering. It does not import server modules or derive domain state that the
-  host would lose on refresh.
+  host would lose on refresh. `src/components/ui` holds vendored third-party
+  presentation the application owns and edits in place, and the Tailwind theme
+  compiles from `src/styles.css` into the served stylesheet.
 - The **browser harness** owns deterministic fake-provider fixtures and launches
   the compiled application, the real Bun host, and the real Ox binary in
   temporary private directories.

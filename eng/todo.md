@@ -1,7 +1,7 @@
 # TODO
 
 - [ ] Apply responsive visual design to the browser client
-  - [ ] Adopt Tailwind and shadcn in the Bun build with one base theme, restyle
+  - [x] Adopt Tailwind and shadcn in the Bun build with one base theme, restyle
         the existing structure without changing it, and keep accessible roles
         and names stable
   - [ ] Style the shell: sidebar, conversation header, workspace settings, and a

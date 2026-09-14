@@ -1,6 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 
+import { Button } from "@/components/ui/button";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Textarea } from "@/components/ui/textarea";
+
 import {
   type BrowserCommand,
   browserMessageSchema,
@@ -212,7 +219,7 @@ function App() {
   }
 
   return (
-    <div className="layout">
+    <div className="flex h-screen items-stretch">
       {snapshot ? (
         <Sidebar
           message={workspaceMessage}
@@ -240,7 +247,7 @@ function App() {
           workspaces={snapshot.workspaces}
         />
       ) : null}
-      <main>
+      <main className="min-w-0 flex-auto overflow-y-auto">
         {unavailable ? <p role="alert">Ox is unavailable. Open workspace settings for diagnostics.</p> : null}
         {sessionError ? <p role="alert">{sessionError}</p> : null}
         {snapshot?.workspace && settings ? (
@@ -284,11 +291,13 @@ function App() {
                 }
                 transcript={active.transcript}
               />
-              <details>
-                <summary>Conversation actions</summary>
-                <button onClick={() => conversationCommand("close-conversation", active.id)} type="button">Close conversation</button>
-                <button onClick={() => conversationCommand("delete-conversation", active.id)} type="button">Delete conversation</button>
-              </details>
+              <Collapsible>
+                <CollapsibleTrigger>Conversation actions</CollapsibleTrigger>
+                <CollapsibleContent>
+                  <Button onClick={() => conversationCommand("close-conversation", active.id)} type="button">Close conversation</Button>
+                  <Button onClick={() => conversationCommand("delete-conversation", active.id)} type="button">Delete conversation</Button>
+                </CollapsibleContent>
+              </Collapsible>
             </header>
             <Transcript
               interactions={active.interactions}
@@ -335,14 +344,14 @@ function Sidebar({ message, onNew, onOlder, onOpen, onPath, onRegister, onRemove
   workspaces: Snapshot["workspaces"];
 }) {
   return (
-    <nav aria-label="Workspaces and conversations">
+    <nav aria-label="Workspaces and conversations" className="w-72 shrink-0 overflow-y-auto">
       <h1>Ox</h1>
       {workspaces.values.length > 0 ? (
         <ul aria-label="Workspaces">
           {workspaces.values.map((workspace) => (
             <li aria-current={workspaces.selectedId === workspace.id ? "true" : undefined} key={workspace.id}>
               <h2>{workspace.name}</h2>
-              <button aria-label={`New conversation in ${workspace.name}`} onClick={() => onNew(workspace.id)} type="button">+</button>
+              <Button aria-label={`New conversation in ${workspace.name}`} onClick={() => onNew(workspace.id)} type="button">+</Button>
               <a
                 aria-current={settings && workspaces.selectedId === workspace.id ? "page" : undefined}
                 aria-label={`Settings for ${workspace.name}`}
@@ -351,7 +360,7 @@ function Sidebar({ message, onNew, onOlder, onOpen, onPath, onRegister, onRemove
               >
                 Settings
               </a>
-              <button aria-label={`Remove ${workspace.name}`} onClick={() => onRemove(workspace.id)} type="button">Remove</button>
+              <Button aria-label={`Remove ${workspace.name}`} onClick={() => onRemove(workspace.id)} type="button">Remove</Button>
               {workspace.status === "ready" ? (
                 <>
                   <ul aria-label={`${workspace.name} conversations`}>
@@ -371,14 +380,14 @@ function Sidebar({ message, onNew, onOlder, onOpen, onPath, onRegister, onRemove
                     ))}
                   </ul>
                   {workspaces.selectedId === workspace.id && sessions.nextCursor ? (
-                    <button onClick={onOlder} type="button">Show older conversations</button>
+                    <Button onClick={onOlder} type="button">Show older conversations</Button>
                   ) : null}
                 </>
               ) : (
                 <p>
                   {workspace.status === "starting" ? "Ox is starting." : "Ox is not running."}
                   {workspace.status === "starting" ? null : (
-                    <button aria-label={`Restart ${workspace.name}`} onClick={() => onRestart(workspace.id)} type="button">Restart</button>
+                    <Button aria-label={`Restart ${workspace.name}`} onClick={() => onRestart(workspace.id)} type="button">Restart</Button>
                   )}
                 </p>
               )}
@@ -387,11 +396,11 @@ function Sidebar({ message, onNew, onOlder, onOpen, onPath, onRegister, onRemove
         </ul>
       ) : <p>Register a server-local workspace to begin.</p>}
       <form onSubmit={(event) => { event.preventDefault(); onRegister(); }}>
-        <label>
+        <Label>
           Workspace path
-          <input onChange={(event) => onPath(event.target.value)} required value={path} />
-        </label>
-        <button type="submit">Register workspace</button>
+          <Input onChange={(event) => onPath(event.target.value)} required value={path} />
+        </Label>
+        <Button type="submit">Register workspace</Button>
       </form>
       {message ? <p aria-live="polite" role={message.error ? "alert" : undefined}>{message.text}</p> : null}
     </nav>
@@ -418,15 +427,15 @@ function Authentication({ authentication, credential, onAuthenticate, onCredenti
       <p>{authenticated ? "Connected" : "Not connected"}</p>
       {authentication.methods.map((method) => method.type === "agent" ? (
         authenticated ? null : (
-          <button disabled={working} key={method.id} onClick={() => onAuthenticate(method.id)} type="button">Use configured credential</button>
+          <Button disabled={working} key={method.id} onClick={() => onAuthenticate(method.id)} type="button">Use configured credential</Button>
         )
       ) : (
         <form key={method.id} onSubmit={(event) => { event.preventDefault(); onLogin(method.id); }}>
-          <label>{`${method.name} credential`}<input autoComplete="off" disabled={working} onChange={(event) => onCredential(event.target.value)} required type="password" value={credential} /></label>
-          <button disabled={working} type="submit">{method.name}</button>
+          <Label>{`${method.name} credential`}<Input autoComplete="off" disabled={working} onChange={(event) => onCredential(event.target.value)} required type="password" value={credential} /></Label>
+          <Button disabled={working} type="submit">{method.name}</Button>
         </form>
       ))}
-      {authentication.logoutAvailable ? <button disabled={working} onClick={onLogout} type="button">Log out</button> : null}
+      {authentication.logoutAvailable ? <Button disabled={working} onClick={onLogout} type="button">Log out</Button> : null}
     </section>
   );
 }
@@ -454,7 +463,7 @@ function SupportDetails({ activeSessionId, connection, onRefresh, snapshot, work
         ))}
       </ul>
       {workspace.diagnostics.length > 0 ? <ul aria-label="Workspace diagnostics">{workspace.diagnostics.map((diagnostic, index) => <li key={`${index}-${diagnostic}`}>{diagnostic}</li>)}</ul> : null}
-      <button onClick={onRefresh} type="button">Refresh conversation history</button>
+      <Button onClick={onRefresh} type="button">Refresh conversation history</Button>
     </section>
   );
 }
@@ -485,37 +494,37 @@ function MCPActivationForm({
         {servers.map((server, index) => (
           <fieldset key={index}>
             <legend>{server.transport === "http" ? "HTTP MCP server" : "Stdio MCP server"}</legend>
-            <button onClick={() => setServers((current) => current.filter((_, currentIndex) => currentIndex !== index))} type="button">
+            <Button onClick={() => setServers((current) => current.filter((_, currentIndex) => currentIndex !== index))} type="button">
               Remove server
-            </button>
-            <label>
+            </Button>
+            <Label>
               Name
-              <input
+              <Input
                 maxLength={512}
                 onChange={(event) => replace(index, { ...server, name: event.target.value })}
                 required
                 value={server.name}
               />
-            </label>
+            </Label>
             {server.transport === "http" ? (
               <>
-                <label>
+                <Label>
                   URL
-                  <input
+                  <Input
                     maxLength={4096}
                     onChange={(event) => replace(index, { ...server, url: event.target.value })}
                     required
                     type="url"
                     value={server.url}
                   />
-                </label>
+                </Label>
                 <fieldset>
                   <legend>HTTP headers</legend>
                   {server.headers.map((header, headerIndex) => (
                     <div key={headerIndex}>
-                      <label>
+                      <Label>
                         Header name
-                        <input
+                        <Input
                           maxLength={256}
                           onChange={(event) =>
                             replace(index, {
@@ -528,10 +537,10 @@ function MCPActivationForm({
                           required
                           value={header.name}
                         />
-                      </label>
-                      <label>
+                      </Label>
+                      <Label>
                         Header value
-                        <input
+                        <Input
                           autoComplete="off"
                           maxLength={16_384}
                           onChange={(event) =>
@@ -545,39 +554,39 @@ function MCPActivationForm({
                           type="password"
                           value={header.value}
                         />
-                      </label>
-                      <button
+                      </Label>
+                      <Button
                         aria-label={`Remove header ${headerIndex + 1}`}
                         onClick={() => replace(index, { ...server, headers: server.headers.filter((_, currentIndex) => currentIndex !== headerIndex) })}
                         type="button"
                       >
                         Remove header
-                      </button>
+                      </Button>
                     </div>
                   ))}
-                  <button onClick={() => replace(index, { ...server, headers: [...server.headers, { name: "", value: "" }] })} type="button">
+                  <Button onClick={() => replace(index, { ...server, headers: [...server.headers, { name: "", value: "" }] })} type="button">
                     Add header
-                  </button>
+                  </Button>
                 </fieldset>
               </>
             ) : (
               <>
-                <label>
+                <Label>
                   Command
-                  <input
+                  <Input
                     maxLength={4096}
                     onChange={(event) => replace(index, { ...server, command: event.target.value })}
                     required
                     value={server.command}
                   />
-                </label>
+                </Label>
                 <fieldset>
                   <legend>Arguments</legend>
                   {server.args.map((argument, argumentIndex) => (
                     <div key={argumentIndex}>
-                      <label>
+                      <Label>
                         Argument {argumentIndex + 1}
-                        <input
+                        <Input
                           maxLength={16_384}
                           onChange={(event) =>
                             replace(index, {
@@ -587,27 +596,27 @@ function MCPActivationForm({
                           }
                           value={argument}
                         />
-                      </label>
-                      <button
+                      </Label>
+                      <Button
                         aria-label={`Remove argument ${argumentIndex + 1}`}
                         onClick={() => replace(index, { ...server, args: server.args.filter((_, currentIndex) => currentIndex !== argumentIndex) })}
                         type="button"
                       >
                         Remove argument
-                      </button>
+                      </Button>
                     </div>
                   ))}
-                  <button onClick={() => replace(index, { ...server, args: [...server.args, ""] })} type="button">
+                  <Button onClick={() => replace(index, { ...server, args: [...server.args, ""] })} type="button">
                     Add argument
-                  </button>
+                  </Button>
                 </fieldset>
                 <fieldset>
                   <legend>Environment</legend>
                   {server.env.map((variable, variableIndex) => (
                     <div key={variableIndex}>
-                      <label>
+                      <Label>
                         Variable name
-                        <input
+                        <Input
                           maxLength={256}
                           onChange={(event) =>
                             replace(index, {
@@ -620,10 +629,10 @@ function MCPActivationForm({
                           required
                           value={variable.name}
                         />
-                      </label>
-                      <label>
+                      </Label>
+                      <Label>
                         Variable value
-                        <input
+                        <Input
                           autoComplete="off"
                           maxLength={16_384}
                           onChange={(event) =>
@@ -637,31 +646,31 @@ function MCPActivationForm({
                           type="password"
                           value={variable.value}
                         />
-                      </label>
-                      <button
+                      </Label>
+                      <Button
                         aria-label={`Remove variable ${variableIndex + 1}`}
                         onClick={() => replace(index, { ...server, env: server.env.filter((_, currentIndex) => currentIndex !== variableIndex) })}
                         type="button"
                       >
                         Remove variable
-                      </button>
+                      </Button>
                     </div>
                   ))}
-                  <button onClick={() => replace(index, { ...server, env: [...server.env, { name: "", value: "" }] })} type="button">
+                  <Button onClick={() => replace(index, { ...server, env: [...server.env, { name: "", value: "" }] })} type="button">
                     Add variable
-                  </button>
+                  </Button>
                 </fieldset>
               </>
             )}
           </fieldset>
         ))}
-        <button onClick={() => setServers((current) => [...current, { transport: "http", name: "", url: "", headers: [] }])} type="button">
+        <Button onClick={() => setServers((current) => [...current, { transport: "http", name: "", url: "", headers: [] }])} type="button">
           Add HTTP MCP server
-        </button>
-        <button onClick={() => setServers((current) => [...current, { transport: "stdio", name: "", command: "", args: [], env: [] }])} type="button">
+        </Button>
+        <Button onClick={() => setServers((current) => [...current, { transport: "stdio", name: "", command: "", args: [], env: [] }])} type="button">
           Add stdio MCP server
-        </button>
-        <button type="submit">Save MCP servers</button>
+        </Button>
+        <Button type="submit">Save MCP servers</Button>
       </fieldset>
     </form>
   );
@@ -720,32 +729,34 @@ function Composer({
           void submit();
         }}
       >
-        <label>
+        <Label>
           Message
-          <textarea disabled={busy} onChange={(event) => setText(event.target.value)} value={text} />
-        </label>
-        <details>
-          <summary>Add context</summary>
-          {acceptsAttachments ? (
-            <label>
-              Attachments
-              <input disabled={busy} multiple onChange={(event) => setAttachments(Array.from(event.target.files ?? []))} ref={files} type="file" />
-            </label>
-          ) : null}
-          {attachments.length > 0 ? <p>{attachments.map((file) => file.name).join(", ")}</p> : null}
-          <fieldset disabled={busy}>
-            <legend>Resource link</legend>
-            <label>Name<input onChange={(event) => setResourceLinkName(event.target.value)} value={resourceLinkName} /></label>
-            <label>URI<input onChange={(event) => setResourceLinkURI(event.target.value)} type="url" value={resourceLinkURI} /></label>
-          </fieldset>
-        </details>
-        <button disabled={busy} type="submit">
+          <Textarea disabled={busy} onChange={(event) => setText(event.target.value)} value={text} />
+        </Label>
+        <Collapsible>
+          <CollapsibleTrigger>Add context</CollapsibleTrigger>
+          <CollapsibleContent>
+            {acceptsAttachments ? (
+              <Label>
+                Attachments
+                <input disabled={busy} multiple onChange={(event) => setAttachments(Array.from(event.target.files ?? []))} ref={files} type="file" />
+              </Label>
+            ) : null}
+            {attachments.length > 0 ? <p>{attachments.map((file) => file.name).join(", ")}</p> : null}
+            <fieldset disabled={busy}>
+              <legend>Resource link</legend>
+              <Label>Name<Input onChange={(event) => setResourceLinkName(event.target.value)} value={resourceLinkName} /></Label>
+              <Label>URI<Input onChange={(event) => setResourceLinkURI(event.target.value)} type="url" value={resourceLinkURI} /></Label>
+            </fieldset>
+          </CollapsibleContent>
+        </Collapsible>
+        <Button disabled={busy} type="submit">
           Send prompt
-        </button>
+        </Button>
         {busy ? (
-          <button onClick={onCancel} type="button">
+          <Button onClick={onCancel} type="button">
             Cancel prompt
-          </button>
+          </Button>
         ) : null}
       </form>
     </section>
@@ -762,9 +773,9 @@ function PermissionInteraction({ interaction, onPermission }: {
       {interaction.tool.name ? <p>{interaction.tool.name}</p> : null}
       {interaction.tool.toolKind ? <p>{interaction.tool.toolKind}</p> : null}
       {interaction.options.map((option) => (
-        <button key={option.id} onClick={() => onPermission(interaction.id, option.id)} type="button">
+        <Button key={option.id} onClick={() => onPermission(interaction.id, option.id)} type="button">
           {option.name}
-        </button>
+        </Button>
       ))}
     </article>
   );
@@ -806,7 +817,7 @@ function ElicitationForm({
         onSubmit(interaction.id, "accept", content);
       }}>
         {interaction.fields.map((field) => (
-          <label key={field.name}>
+          <Label key={field.name}>
             {field.label}
             {field.description ? <span>{field.description}</span> : null}
             {field.type === "boolean" ? (
@@ -821,13 +832,13 @@ function ElicitationForm({
                 {field.choices.map((choice) => <option key={choice.value} value={choice.value}>{choice.label}</option>)}
               </select>
             ) : (
-              <input defaultValue={field.default} max={field.type === "string" ? field.maxLength : field.maximum} min={field.type === "string" ? field.minLength : field.minimum} name={field.name} pattern={field.type === "string" ? field.pattern : undefined} required={field.required} step={field.type === "integer" ? 1 : undefined} type={field.type === "string" ? stringInputType(field.format) : "number"} />
+              <Input defaultValue={field.default} max={field.type === "string" ? field.maxLength : field.maximum} min={field.type === "string" ? field.minLength : field.minimum} name={field.name} pattern={field.type === "string" ? field.pattern : undefined} required={field.required} step={field.type === "integer" ? 1 : undefined} type={field.type === "string" ? stringInputType(field.format) : "number"} />
             )}
-          </label>
+          </Label>
         ))}
-        <button type="submit">Submit answer</button>
-        <button onClick={() => onSubmit(interaction.id, "decline")} type="button">Decline</button>
-        <button onClick={() => onSubmit(interaction.id, "cancel")} type="button">Cancel question</button>
+        <Button type="submit">Submit answer</Button>
+        <Button onClick={() => onSubmit(interaction.id, "decline")} type="button">Decline</Button>
+        <Button onClick={() => onSubmit(interaction.id, "cancel")} type="button">Cancel question</Button>
       </form>
     </article>
   );
@@ -851,12 +862,17 @@ function SessionInformation({ onConfigOption, transcript }: {
   return (
     <section aria-label="Session information">
       {transcript.configuration.map((option) => (
-        <label key={option.id}>
-          {option.name}
-          <select aria-label={option.name} onChange={(event) => onConfigOption(option.id, event.target.value)} value={option.currentValue}>
-            {option.options.map((choice) => <option key={choice.value} value={choice.value}>{choice.name}</option>)}
-          </select>
-        </label>
+        <div key={option.id}>
+          <Label htmlFor={`config-${option.id}`}>{option.name}</Label>
+          <Select onValueChange={(value) => onConfigOption(option.id, value)} value={option.currentValue}>
+            <SelectTrigger aria-label={option.name} id={`config-${option.id}`}>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {option.options.map((choice) => <SelectItem key={choice.value} value={choice.value}>{choice.name}</SelectItem>)}
+            </SelectContent>
+          </Select>
+        </div>
       ))}
       {transcript.usage ? (
         <span>{`Context: ${transcript.usage.used} of ${transcript.usage.size} tokens used`}</span>
@@ -891,22 +907,26 @@ function Transcript({ interactions, onElicitation, onPermission, transcript }: {
               <article aria-label={`Tool ${entry.title}`}>
                 <h3>{entry.title}</h3>
                 {entry.status ? <p>{entry.status}</p> : null}
-                <details>
-                  <summary>Details</summary>
-                  {entry.name ? <p>{entry.name}</p> : null}
-                  {entry.toolKind ? <p>{entry.toolKind}</p> : null}
-                  {entry.locations.length > 0 ? <ul aria-label="Tool locations">{entry.locations.map((location) => <li key={`${location.path}:${location.line ?? ""}`}>{location.path}{location.line === undefined ? "" : `:${location.line}`}</li>)}</ul> : null}
-                  {entry.content.map((content, index) => <ToolOutput content={content} key={index} />)}
-                </details>
+                <Collapsible>
+                  <CollapsibleTrigger>Details</CollapsibleTrigger>
+                  <CollapsibleContent>
+                    {entry.name ? <p>{entry.name}</p> : null}
+                    {entry.toolKind ? <p>{entry.toolKind}</p> : null}
+                    {entry.locations.length > 0 ? <ul aria-label="Tool locations">{entry.locations.map((location) => <li key={`${location.path}:${location.line ?? ""}`}>{location.path}{location.line === undefined ? "" : `:${location.line}`}</li>)}</ul> : null}
+                    {entry.content.map((content, index) => <ToolOutput content={content} key={index} />)}
+                  </CollapsibleContent>
+                </Collapsible>
                 {inlinePermissions(entry).map((interaction) => <PermissionInteraction interaction={interaction} key={interaction.id} onPermission={onPermission} />)}
               </article>
             ) : entry.kind === "unknown" ? (
-              <details><summary>Unsupported transcript item</summary><p>{entry.label}</p></details>
+              <Collapsible><CollapsibleTrigger>Unsupported transcript item</CollapsibleTrigger><CollapsibleContent><p>{entry.label}</p></CollapsibleContent></Collapsible>
             ) : entry.kind === "thought" ? (
-              <details>
-                <summary>Thought</summary>
-                {entry.content.map((content, index) => <Content content={content} key={index} />)}
-              </details>
+              <Collapsible>
+                <CollapsibleTrigger>Thought</CollapsibleTrigger>
+                <CollapsibleContent>
+                  {entry.content.map((content, index) => <Content content={content} key={index} />)}
+                </CollapsibleContent>
+              </Collapsible>
             ) : (
               <article aria-label={`${entry.kind} message`}>
                 <h3>{entry.kind === "agent" ? "Ox" : "You"}</h3>
@@ -926,12 +946,14 @@ function Transcript({ interactions, onElicitation, onPermission, transcript }: {
         ))}
       </ol>
       {transcript.plan.length > 0 ? (
-        <details>
-          <summary>{`Plan — ${transcript.plan.filter((entry) => entry.status === "completed").length} of ${transcript.plan.length} complete`}</summary>
-          <ol>{transcript.plan.map((entry, index) => <li key={index}>{entry.content} ({entry.status})</li>)}</ol>
-        </details>
+        <Collapsible>
+          <CollapsibleTrigger>{`Plan — ${transcript.plan.filter((entry) => entry.status === "completed").length} of ${transcript.plan.length} complete`}</CollapsibleTrigger>
+          <CollapsibleContent>
+            <ol>{transcript.plan.map((entry, index) => <li key={index}>{entry.content} ({entry.status})</li>)}</ol>
+          </CollapsibleContent>
+        </Collapsible>
       ) : null}
-      {transcript.usage?.cost ? <details><summary>Cost</summary><p>{`${transcript.usage.cost.amount} ${transcript.usage.cost.currency}`}</p></details> : null}
+      {transcript.usage?.cost ? <Collapsible><CollapsibleTrigger>Cost</CollapsibleTrigger><CollapsibleContent><p>{`${transcript.usage.cost.amount} ${transcript.usage.cost.currency}`}</p></CollapsibleContent></Collapsible> : null}
     </section>
   );
 }
