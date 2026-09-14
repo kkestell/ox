@@ -99,9 +99,12 @@ The client is one Bun package under `client/`, with these coarse boundaries:
   Bun, React, process, or ACP transport implementation.
 - The **React application** owns navigation, forms, native file selection, and
   rendering. It does not import server modules or derive domain state that the
-  host would lose on refresh. `src/components/ui` holds vendored third-party
-  presentation the application owns and edits in place, and the Tailwind theme
-  compiles from `src/styles.css` into the served stylesheet.
+  host would lose on refresh. `src/browser.tsx` mounts it, one module under
+  `src/components` owns each region, and one hook owns the host socket, the
+  snapshot it publishes, and the routing of each command's result back to its
+  sender. `src/components/ui` holds vendored third-party presentation the
+  application owns and edits in place, and the Tailwind theme compiles from
+  `src/styles.css` into the served stylesheet.
 - The **browser harness** owns deterministic fake-provider fixtures and launches
   the compiled application, the real Bun host, and the real Ox binary in
   temporary private directories.
