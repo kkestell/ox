@@ -227,15 +227,15 @@ function perform(
     case "logout":
       return supervisor.logout();
     case "new-session":
-      return supervisor.newSession();
+      return supervisor.newSession(command.mcpServers);
     case "refresh-sessions":
       return supervisor.refreshSessions();
     case "next-session-page":
       return supervisor.nextSessionPage();
     case "load-session":
-      return supervisor.loadSession(command.sessionId);
+      return supervisor.loadSession(command.sessionId, command.mcpServers);
     case "resume-session":
-      return supervisor.resumeSession(command.sessionId);
+      return supervisor.resumeSession(command.sessionId, command.mcpServers);
     case "close-session":
       return supervisor.closeSession(command.sessionId);
     case "delete-session":

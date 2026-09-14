@@ -168,11 +168,11 @@ describe("workspace supervisor", () => {
     await supervisor.nextSessionPage();
     expect(supervisor.state.sessions.values.map((session) => session.id)).toEqual(["first", "second"]);
 
-    await expect(supervisor.loadSession("missing")).rejects.toThrow("unknown session");
+    await expect(supervisor.loadSession("missing", [])).rejects.toThrow("unknown session");
     expect(supervisor.state.sessions.values.map((session) => session.id)).toEqual(["first", "second"]);
     expect(supervisor.state.sessions.selectedID).toBeUndefined();
 
-    await supervisor.loadSession("first");
+    await supervisor.loadSession("first", []);
     expect(supervisor.state.sessions.selectedID).toBe("first");
     expect(supervisor.state.sessions.values.find((session) => session.id === "first")?.status).toBe("active");
     expect(supervisor.sessionTranscript("first")?.entries).toEqual([
@@ -184,7 +184,7 @@ describe("workspace supervisor", () => {
     ]);
 
     await supervisor.closeSession("first");
-    await supervisor.resumeSession("second");
+    await supervisor.resumeSession("second", []);
     expect(supervisor.state.sessions.selectedID).toBe("second");
     expect(supervisor.state.sessions.values.find((session) => session.id === "second")?.status).toBe("active");
 
@@ -192,9 +192,35 @@ describe("workspace supervisor", () => {
     await supervisor.deleteSession("second");
     expect(supervisor.state.sessions.values.map((session) => session.id)).toEqual(["first"]);
 
-    await supervisor.newSession();
+    await supervisor.newSession([]);
     expect(supervisor.state.sessions.selectedID).toBe("created");
     expect(supervisor.state.sessions.values.find((session) => session.id === "created")?.status).toBe("active");
+    await supervisor.stop();
+  });
+
+  test("forwards transient MCP definitions through new, load, and resume", async () => {
+    const workspace = await temporaryWorkspace();
+    const supervisor = await WorkspaceSupervisor.start({
+      arguments: ["--eval", mcpActivationProgram()],
+      command: process.execPath,
+      workspace,
+    });
+    const http = [{ transport: "http" as const, name: "remote", url: "https://example.test/mcp", headers: [{ name: "Authorization", value: "http-mcp-secret" }] }];
+    const stdio = [{ transport: "stdio" as const, name: "local", command: "/usr/local/bin/mcp", args: ["--serve"], env: [{ name: "MCP_TOKEN", value: "stdio-mcp-secret" }] }];
+
+    await supervisor.newSession(http);
+    await supervisor.closeSession("created");
+    await supervisor.loadSession("saved", stdio);
+    await supervisor.closeSession("saved");
+    await supervisor.resumeSession("saved-again", http);
+
+    expect(JSON.parse(await readFile(join(workspace, "mcp-activation-observations.json"), "utf8"))).toEqual([
+      http.map(({ transport, ...server }) => ({ ...server, type: transport })),
+      stdio.map(({ transport, ...server }) => server),
+      http.map(({ transport, ...server }) => ({ ...server, type: transport })),
+    ]);
+    expect(JSON.stringify(supervisor.state)).not.toContain("http-mcp-secret");
+    expect(JSON.stringify(supervisor.state)).not.toContain("stdio-mcp-secret");
     await supervisor.stop();
   });
 
@@ -219,8 +245,8 @@ describe("workspace supervisor", () => {
       workspace: await temporaryWorkspace(),
     });
 
-    await supervisor.newSession();
-    await supervisor.newSession();
+    await supervisor.newSession([]);
+    await supervisor.newSession([]);
     expect(supervisor.state.promptCapabilities).toEqual({ audio: true, embeddedContext: true, image: true });
     await supervisor.setConfigOption("one", "mode", "plan");
     expect(supervisor.sessionTranscript("one")?.configuration[0]?.currentValue).toBe("plan");
@@ -248,7 +274,7 @@ describe("workspace supervisor", () => {
       workspace,
     });
 
-    await supervisor.newSession();
+    await supervisor.newSession([]);
     await supervisor.prompt("one", [{ text: "use the filesystem", type: "text" }]);
 
     expect(await readFile(path, "utf8")).toBe("after\n");
@@ -266,7 +292,7 @@ describe("workspace supervisor", () => {
       command: process.execPath,
       workspace: await temporaryWorkspace(),
     });
-    await supervisor.newSession();
+    await supervisor.newSession([]);
     void supervisor.prompt("one", [{ text: "ask", type: "text" }]).catch(() => {});
 
     await eventually(() => supervisor.state.sessions.active?.interactions.length === 1);
@@ -423,6 +449,43 @@ process.stdin.on('data', (chunk) => {
     }
     if (request.method === 'session/delete') {
       sessions = sessions.filter((session) => session.sessionId !== request.params.sessionId);
+      response(request.id, {});
+    }
+  }
+});`;
+}
+
+function mcpActivationProgram(): string {
+  return `
+const fs = require('fs');
+const path = require('path');
+process.stdin.setEncoding('utf8');
+let input = '';
+const observations = [];
+function response(id, result) { process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id, result }) + '\\n'); }
+function observe(value) {
+  observations.push(value);
+  fs.writeFileSync(path.join(process.cwd(), 'mcp-activation-observations.json'), JSON.stringify(observations));
+}
+process.stdin.on('data', (chunk) => {
+  input += chunk;
+  for (;;) {
+    const newline = input.indexOf('\\n');
+    if (newline === -1) break;
+    const request = JSON.parse(input.slice(0, newline));
+    input = input.slice(newline + 1);
+    if (request.method === 'initialize') {
+      response(request.id, { protocolVersion: 1, agentCapabilities: {
+        loadSession: true,
+        sessionCapabilities: { close: {}, resume: {} },
+      }, authMethods: [] });
+    } else if (request.method === 'session/new') {
+      observe(request.params.mcpServers);
+      response(request.id, { sessionId: 'created' });
+    } else if (request.method === 'session/load' || request.method === 'session/resume') {
+      observe(request.params.mcpServers);
+      response(request.id, {});
+    } else if (request.method === 'session/close') {
       response(request.id, {});
     }
   }

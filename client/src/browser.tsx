@@ -6,6 +6,7 @@ import {
   browserMessageSchema,
   maximumAttachmentBytes,
   maximumPromptText,
+  type MCPServer,
   type PromptCapabilities,
   type PromptContentBlock,
   type PendingInteraction,
@@ -21,7 +22,9 @@ function App() {
   const [connection, setConnection] = useState("Connecting");
   const socket = useRef<WebSocket | undefined>(undefined);
   const [credential, setCredential] = useState("");
+  const [mcpServers, setMCPServers] = useState<MCPServer[]>([]);
   const [sessionError, setSessionError] = useState<string>();
+  const activationForm = useRef<HTMLFormElement>(null);
   const sessionRequests = useRef(new Set<string>());
   const active = snapshot?.sessions.active;
 
@@ -94,12 +97,25 @@ function App() {
     send({ credential: value, methodId, requestId: crypto.randomUUID(), type: "login" });
   }
 
-  function catalogCommand(type: "new-session" | "next-session-page" | "refresh-sessions"): void {
+  function catalogCommand(type: "next-session-page" | "refresh-sessions"): void {
     submitSessionCommand({ requestId: crypto.randomUUID(), type });
   }
 
+  function activateSession(type: "new-session" | "load-session" | "resume-session", sessionId?: string): void {
+    if (!activationForm.current?.reportValidity()) {
+      return;
+    }
+    const definitions = mcpServers;
+    setMCPServers([]);
+    if (type === "new-session") {
+      submitSessionCommand({ mcpServers: definitions, requestId: crypto.randomUUID(), type });
+      return;
+    }
+    submitSessionCommand({ mcpServers: definitions, requestId: crypto.randomUUID(), sessionId: sessionId!, type });
+  }
+
   function sessionCommand(
-    type: "cancel-prompt" | "close-session" | "delete-session" | "load-session" | "resume-session" | "select-session",
+    type: "cancel-prompt" | "close-session" | "delete-session" | "select-session",
     sessionId: string,
   ): void {
     submitSessionCommand({ requestId: crypto.randomUUID(), sessionId, type });
@@ -187,9 +203,7 @@ function App() {
           <p aria-live="polite">
             {snapshot.sessions.selectedId ? `Selected session ${snapshot.sessions.selectedId}` : "No session selected"}
           </p>
-          <button onClick={() => catalogCommand("new-session")} type="button">
-            New session
-          </button>
+          <MCPActivationForm form={activationForm} onNewSession={() => activateSession("new-session")} servers={mcpServers} setServers={setMCPServers} />
           <button onClick={() => catalogCommand("refresh-sessions")} type="button">
             Refresh sessions
           </button>
@@ -206,14 +220,14 @@ function App() {
                     <>
                       <button
                         aria-label={`Load ${label}`}
-                        onClick={() => sessionCommand("load-session", value.id)}
+                        onClick={() => activateSession("load-session", value.id)}
                         type="button"
                       >
                         Load
                       </button>
                       <button
                         aria-label={`Resume ${label}`}
-                        onClick={() => sessionCommand("resume-session", value.id)}
+                        onClick={() => activateSession("resume-session", value.id)}
                         type="button"
                       >
                         Resume
@@ -291,6 +305,217 @@ function App() {
         </>
       ) : null}
     </main>
+  );
+}
+
+function MCPActivationForm({
+  form,
+  onNewSession,
+  servers,
+  setServers,
+}: {
+  form: React.RefObject<HTMLFormElement | null>;
+  onNewSession: () => void;
+  servers: MCPServer[];
+  setServers: (servers: MCPServer[] | ((current: MCPServer[]) => MCPServer[])) => void;
+}) {
+  function replace(index: number, server: MCPServer): void {
+    setServers((current) => current.map((value, currentIndex) => (currentIndex === index ? server : value)));
+  }
+
+  return (
+    <form
+      ref={form}
+      onSubmit={(event) => {
+        event.preventDefault();
+        onNewSession();
+      }}
+    >
+      <fieldset>
+        <legend>MCP servers</legend>
+        <p>Definitions are used only for this activation. Header and environment values are cleared after submission.</p>
+        {servers.map((server, index) => (
+          <fieldset key={index}>
+            <legend>{server.transport === "http" ? "HTTP MCP server" : "Stdio MCP server"}</legend>
+            <button onClick={() => setServers((current) => current.filter((_, currentIndex) => currentIndex !== index))} type="button">
+              Remove server
+            </button>
+            <label>
+              Name
+              <input
+                maxLength={512}
+                onChange={(event) => replace(index, { ...server, name: event.target.value })}
+                required
+                value={server.name}
+              />
+            </label>
+            {server.transport === "http" ? (
+              <>
+                <label>
+                  URL
+                  <input
+                    maxLength={4096}
+                    onChange={(event) => replace(index, { ...server, url: event.target.value })}
+                    required
+                    type="url"
+                    value={server.url}
+                  />
+                </label>
+                <fieldset>
+                  <legend>HTTP headers</legend>
+                  {server.headers.map((header, headerIndex) => (
+                    <div key={headerIndex}>
+                      <label>
+                        Header name
+                        <input
+                          maxLength={256}
+                          onChange={(event) =>
+                            replace(index, {
+                              ...server,
+                              headers: server.headers.map((value, currentIndex) =>
+                                currentIndex === headerIndex ? { ...value, name: event.target.value } : value,
+                              ),
+                            })
+                          }
+                          required
+                          value={header.name}
+                        />
+                      </label>
+                      <label>
+                        Header value
+                        <input
+                          autoComplete="off"
+                          maxLength={16_384}
+                          onChange={(event) =>
+                            replace(index, {
+                              ...server,
+                              headers: server.headers.map((value, currentIndex) =>
+                                currentIndex === headerIndex ? { ...value, value: event.target.value } : value,
+                              ),
+                            })
+                          }
+                          type="password"
+                          value={header.value}
+                        />
+                      </label>
+                      <button
+                        aria-label={`Remove header ${headerIndex + 1}`}
+                        onClick={() => replace(index, { ...server, headers: server.headers.filter((_, currentIndex) => currentIndex !== headerIndex) })}
+                        type="button"
+                      >
+                        Remove header
+                      </button>
+                    </div>
+                  ))}
+                  <button onClick={() => replace(index, { ...server, headers: [...server.headers, { name: "", value: "" }] })} type="button">
+                    Add header
+                  </button>
+                </fieldset>
+              </>
+            ) : (
+              <>
+                <label>
+                  Command
+                  <input
+                    maxLength={4096}
+                    onChange={(event) => replace(index, { ...server, command: event.target.value })}
+                    required
+                    value={server.command}
+                  />
+                </label>
+                <fieldset>
+                  <legend>Arguments</legend>
+                  {server.args.map((argument, argumentIndex) => (
+                    <div key={argumentIndex}>
+                      <label>
+                        Argument {argumentIndex + 1}
+                        <input
+                          maxLength={16_384}
+                          onChange={(event) =>
+                            replace(index, {
+                              ...server,
+                              args: server.args.map((value, currentIndex) => (currentIndex === argumentIndex ? event.target.value : value)),
+                            })
+                          }
+                          value={argument}
+                        />
+                      </label>
+                      <button
+                        aria-label={`Remove argument ${argumentIndex + 1}`}
+                        onClick={() => replace(index, { ...server, args: server.args.filter((_, currentIndex) => currentIndex !== argumentIndex) })}
+                        type="button"
+                      >
+                        Remove argument
+                      </button>
+                    </div>
+                  ))}
+                  <button onClick={() => replace(index, { ...server, args: [...server.args, ""] })} type="button">
+                    Add argument
+                  </button>
+                </fieldset>
+                <fieldset>
+                  <legend>Environment</legend>
+                  {server.env.map((variable, variableIndex) => (
+                    <div key={variableIndex}>
+                      <label>
+                        Variable name
+                        <input
+                          maxLength={256}
+                          onChange={(event) =>
+                            replace(index, {
+                              ...server,
+                              env: server.env.map((value, currentIndex) =>
+                                currentIndex === variableIndex ? { ...value, name: event.target.value } : value,
+                              ),
+                            })
+                          }
+                          required
+                          value={variable.name}
+                        />
+                      </label>
+                      <label>
+                        Variable value
+                        <input
+                          autoComplete="off"
+                          maxLength={16_384}
+                          onChange={(event) =>
+                            replace(index, {
+                              ...server,
+                              env: server.env.map((value, currentIndex) =>
+                                currentIndex === variableIndex ? { ...value, value: event.target.value } : value,
+                              ),
+                            })
+                          }
+                          type="password"
+                          value={variable.value}
+                        />
+                      </label>
+                      <button
+                        aria-label={`Remove variable ${variableIndex + 1}`}
+                        onClick={() => replace(index, { ...server, env: server.env.filter((_, currentIndex) => currentIndex !== variableIndex) })}
+                        type="button"
+                      >
+                        Remove variable
+                      </button>
+                    </div>
+                  ))}
+                  <button onClick={() => replace(index, { ...server, env: [...server.env, { name: "", value: "" }] })} type="button">
+                    Add variable
+                  </button>
+                </fieldset>
+              </>
+            )}
+          </fieldset>
+        ))}
+        <button onClick={() => setServers((current) => [...current, { transport: "http", name: "", url: "", headers: [] }])} type="button">
+          Add HTTP MCP server
+        </button>
+        <button onClick={() => setServers((current) => [...current, { transport: "stdio", name: "", command: "", args: [], env: [] }])} type="button">
+          Add stdio MCP server
+        </button>
+        <button type="submit">New session</button>
+      </fieldset>
+    </form>
   );
 }
 

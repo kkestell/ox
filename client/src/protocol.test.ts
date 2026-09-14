@@ -29,15 +29,78 @@ describe("browser protocol", () => {
 
   test("accepts bounded session lifecycle commands", () => {
     for (const command of [
-      { type: "new-session", requestId: "request-1" },
+      { type: "new-session", requestId: "request-1", mcpServers: [] },
       { type: "refresh-sessions", requestId: "request-2" },
       { type: "next-session-page", requestId: "request-3" },
-      { type: "load-session", requestId: "request-4", sessionId: "session-1" },
-      { type: "resume-session", requestId: "request-5", sessionId: "session-1" },
+      { type: "load-session", requestId: "request-4", sessionId: "session-1", mcpServers: [] },
+      { type: "resume-session", requestId: "request-5", sessionId: "session-1", mcpServers: [] },
       { type: "close-session", requestId: "request-6", sessionId: "session-1" },
       { type: "delete-session", requestId: "request-7", sessionId: "session-1" },
     ]) {
       expect(parseBrowserCommand(command).ok).toBe(true);
+    }
+  });
+
+  test("accepts bounded HTTP and stdio MCP activation definitions", () => {
+    expect(
+      parseBrowserCommand({
+        type: "new-session",
+        requestId: "request-1",
+        mcpServers: [
+          {
+            transport: "http",
+            name: "remote",
+            url: "https://example.test/mcp",
+            headers: [{ name: "Authorization", value: "browser-mcp-secret" }],
+          },
+          {
+            transport: "stdio",
+            name: "local",
+            command: "/usr/local/bin/mcp",
+            args: ["--serve"],
+            env: [{ name: "MCP_TOKEN", value: "stdio-mcp-secret" }],
+          },
+        ],
+      }),
+    ).toEqual({
+      ok: true,
+      value: {
+        type: "new-session",
+        requestId: "request-1",
+        mcpServers: [
+          {
+            transport: "http",
+            name: "remote",
+            url: "https://example.test/mcp",
+            headers: [{ name: "Authorization", value: "browser-mcp-secret" }],
+          },
+          {
+            transport: "stdio",
+            name: "local",
+            command: "/usr/local/bin/mcp",
+            args: ["--serve"],
+            env: [{ name: "MCP_TOKEN", value: "stdio-mcp-secret" }],
+          },
+        ],
+      },
+    });
+  });
+
+  test("rejects MCP definitions Ox cannot activate", () => {
+    for (const mcpServers of [
+      [{ transport: "http", name: "remote", url: "http://example.test/mcp", headers: [] }],
+      [{ transport: "http", name: "remote", url: "https://user:secret@example.test/mcp", headers: [] }],
+      [{ transport: "http", name: "remote", url: "https://example.test/mcp", headers: [{ name: "Bad Header", value: "value" }] }],
+      [{ transport: "http", name: "remote", url: "https://example.test/mcp", headers: [{ name: "Accept", value: "one" }, { name: "accept", value: "two" }] }],
+      [{ transport: "stdio", name: "local", command: "mcp", args: [], env: [] }],
+      [{ transport: "stdio", name: "local", command: "/bin/mcp", args: [], env: [{ name: "MCP=TOKEN", value: "secret" }] }],
+      [{ transport: "stdio", name: "local", command: "/bin/mcp", args: [], env: [{ name: "MCP_TOKEN", value: "one" }, { name: "MCP_TOKEN", value: "two" }] }],
+      [
+        { transport: "http", name: "same", url: "https://one.example.test/mcp", headers: [] },
+        { transport: "stdio", name: "same", command: "/bin/mcp", args: [], env: [] },
+      ],
+    ]) {
+      expect(parseBrowserCommand({ type: "new-session", requestId: "request-1", mcpServers }).ok).toBe(false);
     }
   });
 
@@ -80,6 +143,8 @@ describe("browser protocol", () => {
     { type: "login", requestId: "request-1", methodId: "terminal", credential: "   " },
     { type: "logout", requestId: "" },
     { type: "new-session" },
+    { type: "new-session", requestId: "request-1", mcpServers: [{ transport: "http", name: "remote", url: "not a URL", headers: [] }] },
+    { type: "new-session", requestId: "request-1", mcpServers: [{ transport: "sse", name: "remote", url: "https://example.test/mcp", headers: [] }] },
     { type: "load-session", requestId: "request-1", sessionId: "" },
     { type: "prompt", requestId: "request-1", sessionId: "session-1", prompt: [] },
     { type: "prompt", requestId: "request-1", sessionId: "session-1", prompt: [{ type: "resource", resource: { uri: "attachment://missing" } }] },

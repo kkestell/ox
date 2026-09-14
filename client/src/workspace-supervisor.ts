@@ -4,7 +4,7 @@ import { realpath, stat } from "node:fs/promises";
 import { Readable, Writable } from "node:stream";
 
 import { maximumSessions } from "./protocol.ts";
-import type { PromptCapabilities, PromptContentBlock, SessionTranscript } from "./protocol.ts";
+import type { MCPServer, PromptCapabilities, PromptContentBlock, SessionTranscript } from "./protocol.ts";
 import { FilesystemExecutor } from "./filesystem-executor.ts";
 import { SessionController } from "./session-controller.ts";
 import { TerminalExecutor } from "./terminal-executor.ts";
@@ -167,8 +167,8 @@ export class WorkspaceSupervisor {
     return this.#controllers.get(sessionID)?.transcript;
   }
 
-  newSession(): Promise<void> {
-    return this.serializeSessions(() => this.newSessionImpl());
+  newSession(mcpServers: MCPServer[]): Promise<void> {
+    return this.serializeSessions(() => this.newSessionImpl(mcpServers));
   }
 
   refreshSessions(): Promise<void> {
@@ -179,12 +179,12 @@ export class WorkspaceSupervisor {
     return this.serializeSessions(() => this.nextSessionPageImpl());
   }
 
-  loadSession(sessionID: string): Promise<void> {
-    return this.serializeSessions(() => this.activateSession(sessionID, "load"));
+  loadSession(sessionID: string, mcpServers: MCPServer[]): Promise<void> {
+    return this.serializeSessions(() => this.activateSession(sessionID, "load", mcpServers));
   }
 
-  resumeSession(sessionID: string): Promise<void> {
-    return this.serializeSessions(() => this.activateSession(sessionID, "resume"));
+  resumeSession(sessionID: string, mcpServers: MCPServer[]): Promise<void> {
+    return this.serializeSessions(() => this.activateSession(sessionID, "resume", mcpServers));
   }
 
   closeSession(sessionID: string): Promise<void> {
@@ -481,10 +481,10 @@ export class WorkspaceSupervisor {
     return next;
   }
 
-  private async newSessionImpl(): Promise<void> {
+  private async newSessionImpl(mcpServers: MCPServer[]): Promise<void> {
     const response = await this.readyConnection().agent.request(acp.methods.agent.session.new, {
       cwd: this.workspace,
-      mcpServers: [],
+      mcpServers: mcpServersForACP(mcpServers),
     });
     const controller = new SessionController(response.sessionId);
     controller.replaceConfiguration(response.configOptions);
@@ -524,7 +524,7 @@ export class WorkspaceSupervisor {
     });
   }
 
-  private async activateSession(sessionID: string, operation: "load" | "resume"): Promise<void> {
+  private async activateSession(sessionID: string, operation: "load" | "resume", mcpServers: MCPServer[]): Promise<void> {
     this.requireSessionCapability(operation);
     if (this.#controllers.has(sessionID)) {
       throw new Error("session is already active");
@@ -536,7 +536,7 @@ export class WorkspaceSupervisor {
     this.#controllers.set(sessionID, new SessionController(sessionID));
     this.setSessions(this.withSessionStatus(sessionID, "loading"));
     try {
-      const request = { cwd: this.workspace, mcpServers: [], sessionId: sessionID };
+      const request = { cwd: this.workspace, mcpServers: mcpServersForACP(mcpServers), sessionId: sessionID };
       if (operation === "load") {
         const response = (await connection.agent.request(acp.methods.agent.session.load, request)) as acp.LoadSessionResponse;
         this.#controllers.get(sessionID)?.replaceConfiguration(response.configOptions);
@@ -850,6 +850,24 @@ function isTerminalAuthenticationMethod(
   method: AuthenticationMethod | TerminalAuthenticationMethod | undefined,
 ): method is TerminalAuthenticationMethod {
   return method?.type === "terminal";
+}
+
+function mcpServersForACP(servers: MCPServer[]): acp.McpServer[] {
+  return servers.map((server) =>
+    server.transport === "http"
+      ? {
+          type: "http",
+          name: server.name,
+          url: server.url,
+          headers: server.headers.map((header) => ({ ...header })),
+        }
+      : {
+          name: server.name,
+          command: server.command,
+          args: [...server.args],
+          env: server.env.map((variable) => ({ ...variable })),
+        },
+  );
 }
 
 async function canonicalWorkspace(path: string): Promise<string> {

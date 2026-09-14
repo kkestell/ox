@@ -16,6 +16,99 @@ const boundedText = z.string().max(maximumPromptText);
 const boundedData = z.string().max((maximumAttachmentBytes / 3) * 4);
 const boundedURI = z.string().min(1).max(4_096);
 const mimeType = z.string().min(1).max(256);
+const mcpServerName = z.string().trim().min(1).max(512);
+const mcpValue = z.string().max(16_384).refine((value) => !value.includes("\0"));
+const mcpHeaderName = z
+  .string()
+  .min(1)
+  .max(256)
+  .refine((value) => /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/.test(value));
+const mcpHeaderValue = mcpValue.refine((value) => [...value].every((character) => character === "\t" || (character >= " " && character !== "\u007f")));
+const mcpEnvironmentName = z
+  .string()
+  .min(1)
+  .max(256)
+  .refine((value) => !value.includes("=") && !value.includes("\0"));
+const mcpHTTPURL = z
+  .string()
+  .url()
+  .max(4_096)
+  .refine(isValidMCPHTTPURL);
+
+const mcpHeaders = z
+  .array(z.object({ name: mcpHeaderName, value: mcpHeaderValue }).strict())
+  .max(128)
+  .superRefine((headers, context) => {
+    const seen = new Set<string>();
+    for (const [index, header] of headers.entries()) {
+      const name = header.name.toLowerCase();
+      if (seen.has(name)) {
+        context.addIssue({ code: "custom", message: "header name must be unique", path: [index, "name"] });
+      }
+      seen.add(name);
+    }
+  });
+
+const mcpEnvironment = z
+  .array(z.object({ name: mcpEnvironmentName, value: mcpValue }).strict())
+  .max(128)
+  .superRefine((variables, context) => {
+    const seen = new Set<string>();
+    for (const [index, variable] of variables.entries()) {
+      if (seen.has(variable.name)) {
+        context.addIssue({ code: "custom", message: "environment name must be unique", path: [index, "name"] });
+      }
+      seen.add(variable.name);
+    }
+  });
+
+const mcpServerSchema = z.discriminatedUnion("transport", [
+  z
+    .object({
+      transport: z.literal("http"),
+      name: mcpServerName,
+      url: mcpHTTPURL,
+      headers: mcpHeaders,
+    })
+    .strict(),
+  z
+    .object({
+      transport: z.literal("stdio"),
+      name: mcpServerName,
+      command: z.string().startsWith("/").max(4_096),
+      args: z.array(mcpValue).max(128),
+      env: mcpEnvironment,
+    })
+    .strict(),
+]);
+
+export type MCPServer = z.infer<typeof mcpServerSchema>;
+const mcpServers = z
+  .array(mcpServerSchema)
+  .max(64)
+  .superRefine((servers, context) => {
+    const seen = new Set<string>();
+    for (const [index, server] of servers.entries()) {
+      if (seen.has(server.name)) {
+        context.addIssue({ code: "custom", message: "server name must be unique", path: [index, "name"] });
+      }
+      seen.add(server.name);
+    }
+  });
+
+function isLocalMCPHost(host: string): boolean {
+  const normalized = host.toLowerCase();
+  return normalized === "localhost" || normalized.endsWith(".localhost") || normalized.startsWith("127.") || normalized === "[::1]";
+}
+
+function isValidMCPHTTPURL(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return !url.username && !url.password && (url.protocol === "https:" || (url.protocol === "http:" && isLocalMCPHost(url.hostname)));
+  } catch {
+    return false;
+  }
+}
 
 const promptContentBlockSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("text"), text: boundedText }).strict(),
@@ -261,14 +354,14 @@ export const browserCommandSchema = z.discriminatedUnion("type", [
       requestId: requestID,
     })
     .strict(),
-  z.object({ type: z.literal("new-session"), requestId: requestID }).strict(),
+  z.object({ type: z.literal("new-session"), requestId: requestID, mcpServers }).strict(),
   z.object({ type: z.literal("refresh-sessions"), requestId: requestID }).strict(),
   z.object({ type: z.literal("next-session-page"), requestId: requestID }).strict(),
   z
-    .object({ type: z.literal("load-session"), requestId: requestID, sessionId: sessionID })
+    .object({ type: z.literal("load-session"), requestId: requestID, sessionId: sessionID, mcpServers })
     .strict(),
   z
-    .object({ type: z.literal("resume-session"), requestId: requestID, sessionId: sessionID })
+    .object({ type: z.literal("resume-session"), requestId: requestID, sessionId: sessionID, mcpServers })
     .strict(),
   z
     .object({ type: z.literal("close-session"), requestId: requestID, sessionId: sessionID })
