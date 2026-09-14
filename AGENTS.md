@@ -106,8 +106,8 @@ or standard validation commands.
 
 Do not review individual plans or run an independent review after each slice.
 After every top-level todo item is complete, run one completeness and
-simplification review before marking it complete. Fix its findings and rerun
-affected gates.
+simplification review before removing its completed subtree. Fix its findings
+and rerun affected gates.
 
 Small work outside the todo list may proceed without a plan. Whether to commit
 is determined only by the user's request.
@@ -136,12 +136,13 @@ reader who has never opened the todo list.
 
 ### Maintaining the todo list
 
-`eng/todo.md` is forward-looking. Keep it as a compact nested checklist and mark
-completed items with `[x]`. Top-level items may group a milestone, while each
-child task should be approximately one focused implementation session in size.
-Group related findings, tests, documentation, and implementation changes when
-they share a contract or code path and fit comfortably in one session. Do not
-turn every review finding or implementation step into a separate task; split
+`eng/todo.md` is forward-looking. Keep it as a compact nested checklist; retain
+checked children only while their unchecked parent shows active milestone
+progress, and remove a completed top-level item with its completed children.
+Each child task should be approximately one focused implementation session in
+size. Group related findings, tests, documentation, and implementation changes
+when they share a contract or code path and fit comfortably in one session. Do
+not turn every review finding or implementation step into a separate task; split
 work only when it is independently sequenced or too large for one session.
 
 ### One home for every fact

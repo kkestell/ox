@@ -1,81 +1,31 @@
-# Plan Title
+# Plan title
 
-Use this template as a scaffold, not a cage. Drop sections that do not apply,
-expand the ones that matter, and add sections when the work needs more
-structure. A plan is a settled work order, not a record of the conversation that
-produced it: resolve material decisions before writing it.
+A plan is a settled work order, not a record of exploration. Keep only the
+sections that communicate an implementation decision, source reference, task, or
+change-specific test. Do not retain empty headings or template prompts.
 
 ## Goal
 
-State the problem this plan solves.
-
-## Desired outcome
-
-State what this plan delivers and how a user will know it worked.
-
-## Summary of approach
-
-Give a concise overview of the implementation's major components and how they
-interact. State the chosen approach without alternatives, rejected options, or
-open questions.
+State the problem and observable outcome.
 
 ## Related code
 
-- `path/to/file` - Why this file or pattern matters.
+- `path/to/file` — Why this file, contract, or established pattern matters.
 
-## Current state
+## Decisions
 
-- Relevant existing behavior:
-- Existing patterns to follow:
-- Constraints from the current implementation:
-
-## Structural considerations
-
-Explain how the change fits Ox's architecture. Address the applicable PHAME
-lenses and how the plan preserves them.
-
-- **Hierarchy:** Does the design preserve ownership and dependency direction?
-- **Abstraction:** Does each responsibility live at the right level?
-- **Modularization:** Does the change keep components focused without creating a
-  catch-all or nano-module?
-- **Encapsulation:** Does it preserve boundaries and avoid exposing internals?
-- **Testability:** Can behavior be verified at stable public interfaces without
-  complex or implementation-coupled setup?
-
-## Refactoring
-
-List preparatory refactors and what each achieves structurally. Sequence them
-before feature work. Omit when none are needed.
+Record only non-obvious choices that implementation must preserve. Include the
+current constraint or architectural fit when it makes a task intelligible.
 
 ## Test plan
 
-Define tests before implementation tasks. Focus on edge cases, error paths, and
-boundaries at stable public interfaces.
-
-- **Key behaviors to verify:**
-- **Test levels:**
-- **Edge cases and failure modes:**
-- **What not to test:**
+- Stable boundary and behavior to prove, including material error paths.
 
 ## Implementation plan
 
 - Concrete task in execution order.
-- Concrete task in execution order.
 
 ## Documentation updates
 
-- Current-state contract to update when the implementation lands. Omit when no
-  owned fact changes.
-- Todo list item completed or unblocked. Omit when none applies.
-
-## Impact assessment
-
-- Code paths affected:
-- Data, protocol, or schema impact:
-- Dependency or API impact:
-
-## Validation
-
-- Tests to write and run:
-- Static checks:
-- Manual verification:
+- Owned current-state documentation or TODO status to update when the work
+  lands. Omit this section when none applies.

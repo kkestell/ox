@@ -86,8 +86,8 @@ The implemented package layout assigns one owner to each boundary:
   and its session, turn, provider, tool, and permission correlation scopes. It
   accepts only allowlisted metadata and never receives event content.
 - `internal/tools` owns the model-facing file, search, edit, shell, todo,
-  question, skill, memory, and web-fetch tool contracts and their
-  implementations.
+  question, skill, memory, web-fetch, language-query, and subagent-coordination
+  tool contracts and their implementations.
 - `internal/shellrules` owns the command grammar used for reusable shell
   permissions.
 - `internal/workspace` owns canonical session roots, confined file access,
@@ -180,12 +180,11 @@ The agent owns a collection of independent active sessions. A session owns its
 canonical workspace, immutable activation inputs and turn configuration,
 model-visible history, permission grants, usage, and at most one active turn.
 Process configuration inputs, credentials, provider transport, logging, and the
-session store are shared across sessions. Planned explicit workspace memory is
-shared only by sessions with the same canonical root and has its own serialized
-owner. MCP and language-server connections belong to individual activations. A
-session serializes its own language queries, because each one updates the
-server's view of open documents; separate sessions hold separate servers and
-stay independent.
+session store are shared across sessions. Explicit workspace memory is shared
+only by sessions with the same canonical root and has its own serialized owner.
+MCP and language-server connections belong to individual activations. A session
+serializes its own language queries, because each one updates the server's view
+of open documents; separate sessions hold separate servers and stay independent.
 
 Each session is an owner-only, versioned JSONL log in the Ox data directory.
 Records are appended and synced before live state or ACP-visible outcomes

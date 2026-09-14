@@ -542,7 +542,7 @@ documents that own the same facts.
 - Check documentation against the code it describes. A comment that was true
   before the diff and is now wrong is worse than no comment.
 - Check that a fact documented here is not also owned by `docs/spec.md`,
-  `eng/architecture.md`, `eng/roadmap.md`, or `AGENTS.md`. Reference the owner
+  `eng/architecture.md`, `eng/todo.md`, or `AGENTS.md`. Reference the owner
   rather than restating it, and confirm the owning document actually says what
   the reference claims.
 - Check `eng/architecture.md` was updated when a responsibility, boundary, or
