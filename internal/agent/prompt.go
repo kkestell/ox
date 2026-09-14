@@ -62,13 +62,16 @@ const subagentToolProse = " Use subagent_start for independent work that can run
 // composePrompt keeps instruction blocks in their canonical order. The result
 // is frozen for the session activation; later instruction sources append after
 // the environment block rather than interleaving with it.
-func composePrompt(cwd string, now time.Time, instructions, skillCatalog string, formQuestions bool) string {
+func composePrompt(
+	cwd string, now time.Time, instructions, skillCatalog string, formQuestions bool,
+	languageExtensions []string,
+) string {
 	toolProse := sharedToolProse
 	if formQuestions {
 		toolProse += questionToolProse
 	}
 	toolProse += webToolProse + memoryToolProse + subagentToolProse
-	prompt := promptPrefix(strings.TrimSpace(basePrompt), cwd, now) + "\n\n" + toolProse
+	prompt := promptPrefix(strings.TrimSpace(basePrompt), cwd, now, languageExtensions) + "\n\n" + toolProse
 	prompt += skillCatalog
 	return appendWorkspaceInstructions(prompt, instructions)
 }
@@ -139,11 +142,20 @@ func appendWorkspaceInstructions(prompt, instructions string) string {
 		"\n</workspace-instructions>"
 }
 
-func promptPrefix(prose, cwd string, now time.Time) string {
+// promptPrefix renders the environment block. The language-server extensions
+// are environment facts the model needs before reaching for a language tool:
+// such a tool picks its server from the queried file's extension, so a call for
+// an extension no server owns can only fail.
+func promptPrefix(prose, cwd string, now time.Time, languageExtensions []string) string {
+	served := "none"
+	if len(languageExtensions) > 0 {
+		served = strings.Join(languageExtensions, ", ")
+	}
 	return prose + "\n\n<environment>\n" +
 		"<workspace-root>" + cwd + "</workspace-root>\n" +
 		"<platform>" + runtime.GOOS + "</platform>\n" +
 		"<current-date>" + now.Format("2006-01-02") + "</current-date>\n" +
+		"<language-server-extensions>" + served + "</language-server-extensions>\n" +
 		"</environment>"
 }
 

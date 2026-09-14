@@ -109,10 +109,12 @@ a command that is missing or fails to start is reported as a failed tool call.
 The language tools are `lsp_definition`, `lsp_references`,
 `lsp_document_symbols`, `lsp_workspace_symbols`, and `lsp_diagnostics`. They are
 always offered to the model, so a query against an unconfigured extension is
-answered with a clear failure rather than a missing tool. Positions are 1-based
-lines and columns counted in Unicode characters, and results are
-workspace-relative. When the client owns the file contents, queries use the
-client's copy of a file rather than what is on disk.
+answered with a clear failure rather than a missing tool. The configured
+extensions are named in the session's environment block, so the model can tell
+which files the tools answer for before calling one. Positions are 1-based lines
+and columns counted in Unicode characters, and results are workspace-relative.
+When the client owns the file contents, queries use the client's copy of a file
+rather than what is on disk.
 
 OpenRouter credentials are separate from settings. Run `ox login` to verify and
 store a key in the operating-system keyring. For a headless process, pass

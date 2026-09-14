@@ -118,6 +118,11 @@ func TestLanguageQueriesThroughShippedBinary(t *testing.T) {
 			t.Fatalf("language tool %q was not offered to the model", name)
 		}
 	}
+	// The extensions are normalized and named in server order, so the model
+	// knows which files the language tools can answer for before calling one.
+	if !requestContainsText(requests[0], "<language-server-extensions>go, py</language-server-extensions>") {
+		t.Fatalf("system prompt did not name the served extensions: %s", requestText(requests[0]))
+	}
 	for index, want := range map[int]string{
 		1: "function main main.go:3:1-3:15",
 		3: "main.go:1:6",

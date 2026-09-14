@@ -32,6 +32,18 @@ func languageDefinitions(configured []settings.ResolvedLanguageServer) []lsp.Def
 	return definitions
 }
 
+// languageExtensions lists every extension a configured language server owns.
+// Definition order is stable, and settings validation already normalizes the
+// extensions and rejects two servers claiming one, so the result is exactly
+// what a session's language tools can answer for.
+func languageExtensions(definitions []lsp.Definition) []string {
+	var extensions []string
+	for _, definition := range definitions {
+		extensions = append(extensions, definition.Extensions...)
+	}
+	return extensions
+}
+
 // activateLanguages builds an activation's language-server manager. It starts
 // no process: a server comes up on the first query for a file it owns.
 func (a *Agent) activateLanguages(root string) (*lsp.Manager, error) {

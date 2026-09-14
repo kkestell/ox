@@ -13,7 +13,7 @@ import (
 
 func TestComposePromptAppendsEnvironmentAfterBasePrompt(t *testing.T) {
 	now := time.Date(2026, time.July, 27, 23, 59, 0, 0, time.FixedZone("test", -6*60*60))
-	prompt := composePrompt("/workspace/project", now, "", "", true)
+	prompt := composePrompt("/workspace/project", now, "", "", true, []string{"go", "rs"})
 
 	base := strings.TrimSpace(basePrompt)
 	if base == "" || !strings.HasPrefix(prompt, base+"\n\n<environment>\n") {
@@ -23,6 +23,7 @@ func TestComposePromptAppendsEnvironmentAfterBasePrompt(t *testing.T) {
 		"<workspace-root>/workspace/project</workspace-root>\n" +
 		"<platform>" + runtime.GOOS + "</platform>\n" +
 		"<current-date>2026-07-27</current-date>\n" +
+		"<language-server-extensions>go, rs</language-server-extensions>\n" +
 		"</environment>"
 	if !strings.Contains(prompt, wantEnvironment+"\n\nFile tools resolve relative paths") {
 		t.Fatalf("prompt = %q, want environment followed by file-tool guidance", prompt)
@@ -40,9 +41,32 @@ func TestComposePromptAppendsEnvironmentAfterBasePrompt(t *testing.T) {
 		!strings.Contains(prompt, "client supplies an MCP search tool") {
 		t.Fatalf("prompt does not constrain web sources: %q", prompt)
 	}
-	withoutQuestions := composePrompt("/workspace/project", now, "", "", false)
+	withoutQuestions := composePrompt("/workspace/project", now, "", "", false, []string{"go"})
 	if strings.Contains(withoutQuestions, "form questions") {
 		t.Fatalf("prompt constrains an unavailable question tool: %q", withoutQuestions)
+	}
+}
+
+func TestComposePromptNamesServedLanguageExtensions(t *testing.T) {
+	now := time.Date(2026, time.July, 27, 23, 59, 0, 0, time.UTC)
+	for name, test := range map[string]struct {
+		extensions []string
+		want       string
+	}{
+		"configured": {
+			extensions: []string{"go", "rs"},
+			want:       "<language-server-extensions>go, rs</language-server-extensions>",
+		},
+		"none configured": {
+			want: "<language-server-extensions>none</language-server-extensions>",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			prompt := composePrompt("/workspace/project", now, "", "", true, test.extensions)
+			if !strings.Contains(prompt, test.want) {
+				t.Fatalf("prompt = %q, want %q", prompt, test.want)
+			}
+		})
 	}
 }
 
@@ -52,7 +76,7 @@ func TestComposePromptsAppendExactWorkspaceInstructions(t *testing.T) {
 	const block = "<workspace-instructions>\n" + instructions + "\n</workspace-instructions>"
 
 	for name, prompt := range map[string]string{
-		"primary": composePrompt("/workspace/project", now, instructions, "", true),
+		"primary": composePrompt("/workspace/project", now, instructions, "", true, nil),
 	} {
 		if strings.Count(prompt, block) != 1 || !strings.HasSuffix(prompt, block) {
 			t.Fatalf("%s prompt does not end with the exact instruction block: %q", name, prompt)
@@ -67,7 +91,7 @@ func TestComposePromptsAppendExactWorkspaceInstructions(t *testing.T) {
 func TestComposePromptsOmitEmptyWorkspaceInstructions(t *testing.T) {
 	now := time.Date(2026, time.July, 27, 23, 59, 0, 0, time.UTC)
 	for name, prompt := range map[string]string{
-		"primary": composePrompt("/workspace/project", now, "", "", true),
+		"primary": composePrompt("/workspace/project", now, "", "", true, nil),
 	} {
 		if strings.Contains(prompt, "<workspace-instructions>") {
 			t.Fatalf("%s prompt contains an empty instruction block", name)
@@ -96,7 +120,7 @@ func TestRenderSkillCatalogIsMetadataOnlyAndBounded(t *testing.T) {
 		t.Fatalf("catalog exposed file identity: %q", block)
 	}
 
-	primary := composePrompt("/workspace/project", time.Now(), "rules", block, true)
+	primary := composePrompt("/workspace/project", time.Now(), "rules", block, true, nil)
 	for name, prompt := range map[string]string{"primary": primary} {
 		if strings.Count(prompt, block) != 1 || !strings.Contains(prompt, "cannot expand") {
 			t.Fatalf("%s prompt catalog = %q", name, prompt)

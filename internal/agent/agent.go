@@ -981,10 +981,13 @@ func (a *Agent) resolveConfiguration(
 		)
 	}
 	now := time.Now()
+	systemPrompt := composePrompt(
+		cwd, now, instructions, skillCatalog, a.clientForm, languageExtensions(a.languageServers),
+	)
 	return requestConfiguration{
 		Mode:                 modeCode,
 		Settings:             profiles.DefaultProfile(),
-		SystemPrompt:         composePrompt(cwd, now, instructions, skillCatalog, a.clientForm),
+		SystemPrompt:         systemPrompt,
 		Tools:                cloneTools(primaryTools.modelTools),
 		ToolKinds:            configuredToolKinds(primaryTools),
 		PlanTools:            configuredPlanTools(primaryTools),
