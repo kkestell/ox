@@ -4,14 +4,14 @@ import { startHost, type StartedHost } from "./host.ts";
 
 let host: StartedHost | undefined;
 
-afterEach(() => {
-  host?.stop();
+afterEach(async () => {
+  await host?.stop();
   host = undefined;
 });
 
 describe("browser host", () => {
   test("serves health without a browser connection", async () => {
-    host = startHost();
+    host = await startHost();
 
     const response = await fetch(`${host.url}/health`);
 
@@ -20,7 +20,7 @@ describe("browser host", () => {
   });
 
   test("rejects a cross-origin WebSocket upgrade", async () => {
-    host = startHost();
+    host = await startHost();
 
     const response = await fetch(`${host.url}/socket`, {
       headers: {

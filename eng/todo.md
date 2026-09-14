@@ -110,7 +110,7 @@
         shell, unit and type gates, and a Playwright shell test alongside an
         independent SDK smoke path through a real Ox binary and deterministic
         fake OpenRouter endpoint
-  - [ ] Supervise and initialize one Ox process for the startup-selected
+  - [x] Supervise and initialize one Ox process for the startup-selected
         workspace, report bounded diagnostics and connection failure, and prove
         clean startup, shutdown, and unexpected-exit behavior through the
         browser harness

@@ -55,6 +55,19 @@ function App() {
         <p aria-live="polite">{connection}</p>
         {snapshot ? <p>Host revision {snapshot.revision}</p> : null}
       </section>
+      {snapshot ? (
+        <section aria-labelledby="workspace-heading">
+          <h2 id="workspace-heading">Workspace process</h2>
+          <p aria-live="polite">{snapshot.workspace.status}</p>
+          {snapshot.workspace.diagnostics.length > 0 ? (
+            <ul aria-label="Workspace diagnostics">
+              {snapshot.workspace.diagnostics.map((diagnostic, index) => (
+                <li key={`${index}-${diagnostic}`}>{diagnostic}</li>
+              ))}
+            </ul>
+          ) : null}
+        </section>
+      ) : null}
     </main>
   );
 }

@@ -20,6 +20,12 @@ export const snapshotSchema = z
     connection: z.object({
       status: z.enum(["ready", "unavailable"]),
     }),
+    workspace: z
+      .object({
+        status: z.enum(["starting", "ready", "unavailable", "stopped"]),
+        diagnostics: z.array(z.string()).max(16),
+      })
+      .strict(),
   })
   .strict();
 
@@ -60,10 +66,11 @@ export function parseBrowserCommand(value: unknown):
   return { ok: false, error: "invalid browser command" };
 }
 
-export function initialSnapshot(): Snapshot {
+export function initialSnapshot(workspace: Snapshot["workspace"]): Snapshot {
   return {
     type: "snapshot",
     revision: 0,
-    connection: { status: "ready" },
+    connection: { status: workspace.status === "ready" ? "ready" : "unavailable" },
+    workspace,
   };
 }

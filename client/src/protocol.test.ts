@@ -25,10 +25,11 @@ describe("browser protocol", () => {
   });
 
   test("starts with a complete ready snapshot", () => {
-    expect(initialSnapshot()).toEqual({
+    expect(initialSnapshot({ diagnostics: [], status: "ready" })).toEqual({
       type: "snapshot",
       revision: 0,
       connection: { status: "ready" },
+      workspace: { diagnostics: [], status: "ready" },
     });
   });
 });

@@ -4,16 +4,21 @@ import {
   type BrowserMessage,
   initialSnapshot,
   parseBrowserCommand,
+  type Snapshot,
 } from "./protocol.ts";
+import { WorkspaceSupervisor, type WorkspaceState } from "./workspace-supervisor.ts";
 
 export type HostOptions = {
   assetDirectory?: string;
   hostname?: string;
+  oxArguments?: string[];
+  oxCommand?: string;
   port?: number;
+  workspace?: string;
 };
 
 export type StartedHost = {
-  stop(): void;
+  stop(): Promise<void>;
   url: string;
 };
 
@@ -25,12 +30,32 @@ const mimeTypes = new Map([
   [".map", "application/json; charset=utf-8"],
 ]);
 
-export function startHost(options: HostOptions = {}): StartedHost {
+export async function startHost(options: HostOptions = {}): Promise<StartedHost> {
   const assetDirectory = options.assetDirectory ?? join(import.meta.dir, "..", "public");
   const hostname = options.hostname ?? "127.0.0.1";
   const port = options.port ?? 0;
   const sockets = new Set<Bun.ServerWebSocket<SocketData>>();
-  const snapshot = initialSnapshot();
+  const supervisor = options.workspace
+    ? await WorkspaceSupervisor.start({
+        arguments: options.oxArguments,
+        command: options.oxCommand,
+        workspace: options.workspace,
+      })
+    : undefined;
+  let revision = 0;
+  let snapshot = initialSnapshot(
+    supervisor?.state ?? {
+      diagnostics: ["workspace is not configured"],
+      status: "unavailable",
+    },
+  );
+  const unsubscribe = supervisor?.subscribe((state) => {
+    revision += 1;
+    snapshot = snapshotFor(revision, state);
+    for (const socket of sockets) {
+      send(socket, snapshot);
+    }
+  });
 
   const server = Bun.serve<SocketData>({
     hostname,
@@ -108,13 +133,22 @@ export function startHost(options: HostOptions = {}): StartedHost {
   });
 
   return {
-    stop() {
+    async stop() {
+      unsubscribe?.();
       for (const socket of sockets) {
         socket.close();
       }
       server.stop(true);
+      await supervisor?.stop();
     },
     url: server.url.toString().replace(/\/$/, ""),
+  };
+}
+
+function snapshotFor(revision: number, workspace: WorkspaceState): Snapshot {
+  return {
+    ...initialSnapshot(workspace),
+    revision,
   };
 }
 
@@ -144,16 +178,35 @@ function send(socket: Bun.ServerWebSocket<SocketData>, message: BrowserMessage):
 }
 
 if (import.meta.main) {
-  const port = argument("--port");
-  const hostname = argument("--host");
-  const host = startHost({
-    hostname: hostname ?? undefined,
-    port: port === undefined ? undefined : Number.parseInt(port, 10),
-  });
-  process.stdout.write(`Ox browser host listening at ${host.url}\n`);
+  void main();
 }
 
 function argument(name: string): string | undefined {
   const index = process.argv.indexOf(name);
   return index === -1 ? undefined : process.argv[index + 1];
+}
+
+function argumentsFor(name: string): string[] {
+  return process.argv.flatMap((argument, index) => (argument === name ? [process.argv[index + 1] ?? ""] : []));
+}
+
+async function main(): Promise<void> {
+  const workspace = argument("--workspace");
+  if (!workspace) {
+    throw new Error("--workspace is required");
+  }
+  const port = argument("--port");
+  const host = await startHost({
+    hostname: argument("--host"),
+    oxArguments: argumentsFor("--ox-arg"),
+    oxCommand: argument("--ox"),
+    port: port === undefined ? undefined : Number.parseInt(port, 10),
+    workspace,
+  });
+  process.stdout.write(`Ox browser host listening at ${host.url}\n`);
+  const stop = () => {
+    void host.stop().finally(() => process.exit());
+  };
+  process.once("SIGINT", stop);
+  process.once("SIGTERM", stop);
 }
