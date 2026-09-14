@@ -134,7 +134,7 @@
   - [x] Implement confined ACP read and write callbacks with boundary tests and
         real Ox tool scenarios for paging, replacement, client-backed edit
         evidence, invalid paths, and cancellation
-  - [ ] Implement the ACP terminal callback lifecycle with exact argv and
+  - [x] Implement the ACP terminal callback lifecycle with exact argv and
         environment execution, process-group cancellation, bounded incremental
         output, exit status, wait, kill, and release conformance tests through
         real Ox shell calls

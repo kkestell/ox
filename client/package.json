@@ -6,7 +6,7 @@
     "build": "bun build ./src/browser.tsx --outdir ./public --target browser",
     "check": "tsc --noEmit",
     "start": "bun run ./src/host.ts",
-    "test": "bun test --path-ignore-patterns 'e2e'",
+    "test": "bun test --path-ignore-patterns 'e2e/**'",
     "test:e2e": "bun run build && playwright test"
   },
   "dependencies": {

@@ -238,7 +238,7 @@ describe("workspace supervisor", () => {
     await supervisor.stop();
   });
 
-  test("advertises and services paired confined filesystem callbacks", async () => {
+  test("advertises completed filesystem and terminal callback capabilities", async () => {
     const workspace = await temporaryWorkspace();
     const path = join(workspace, "notes.txt");
     await writeFile(path, "before\n");
@@ -256,6 +256,7 @@ describe("workspace supervisor", () => {
       readTextFile: true,
       writeTextFile: true,
     });
+    expect(JSON.parse(await readFile(join(workspace, "terminal-capability.json"), "utf8"))).toBe(true);
     await supervisor.stop();
   });
 
@@ -507,6 +508,7 @@ process.stdin.on('data', (chunk) => {
     input = input.slice(newline + 1);
     if (request.method === 'initialize') {
       fs.writeFileSync(path.join(process.cwd(), 'filesystem-capabilities.json'), JSON.stringify(request.params.clientCapabilities.fs));
+      fs.writeFileSync(path.join(process.cwd(), 'terminal-capability.json'), JSON.stringify(request.params.clientCapabilities.terminal));
       response(request.id, { protocolVersion: 1, agentCapabilities: {}, authMethods: [] });
     } else if (request.method === 'session/new') {
       response(request.id, { sessionId: 'one' });

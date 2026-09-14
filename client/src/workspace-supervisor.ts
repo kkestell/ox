@@ -7,6 +7,7 @@ import { maximumSessions } from "./protocol.ts";
 import type { PromptCapabilities, PromptContentBlock, SessionTranscript } from "./protocol.ts";
 import { FilesystemExecutor } from "./filesystem-executor.ts";
 import { SessionController } from "./session-controller.ts";
+import { TerminalExecutor } from "./terminal-executor.ts";
 
 const maximumDiagnostics = 16;
 const maximumDiagnosticLength = 512;
@@ -79,6 +80,7 @@ export class WorkspaceSupervisor {
   #connection?: acp.ClientConnection;
   #controllers = new Map<string, SessionController>();
   #filesystem: FilesystemExecutor;
+  #terminal: TerminalExecutor;
   #activePrompts = new Map<string, Promise<void>>();
   #diagnosticRemainder = "";
   #childTermination?: Promise<void>;
@@ -105,6 +107,7 @@ export class WorkspaceSupervisor {
   ) {
     this.workspace = workspace;
     this.#filesystem = new FilesystemExecutor(workspace, (sessionID) => this.#controllers.has(sessionID));
+    this.#terminal = new TerminalExecutor(workspace, (sessionID) => this.#controllers.has(sessionID));
   }
 
   static async start(options: WorkspaceSupervisorOptions): Promise<WorkspaceSupervisor> {
@@ -268,6 +271,7 @@ export class WorkspaceSupervisor {
     this.#stopping = true;
     this.#connection?.close();
     this.#activePrompts.clear();
+    await this.#terminal.stop();
     await this.terminateChild();
     this.clearActiveSessions();
     this.setAuthentication(unauthenticated);
@@ -314,6 +318,11 @@ export class WorkspaceSupervisor {
       .onRequest(acp.methods.client.elicitation.create, ({ params, signal }) => this.requestElicitation(params, signal))
       .onRequest(acp.methods.client.fs.readTextFile, ({ params, signal }) => this.#filesystem.read(params, signal))
       .onRequest(acp.methods.client.fs.writeTextFile, ({ params, signal }) => this.#filesystem.write(params, signal))
+      .onRequest(acp.methods.client.terminal.create, ({ params, signal }) => this.#terminal.create(params, signal))
+      .onRequest(acp.methods.client.terminal.output, ({ params, signal }) => this.#terminal.output(params, signal))
+      .onRequest(acp.methods.client.terminal.waitForExit, ({ params, signal }) => this.#terminal.wait(params, signal))
+      .onRequest(acp.methods.client.terminal.kill, ({ params, signal }) => this.#terminal.kill(params, signal))
+      .onRequest(acp.methods.client.terminal.release, ({ params, signal }) => this.#terminal.release(params, signal))
       .onNotification(acp.methods.client.session.update, ({ params }) => this.routeSessionUpdate(params))
       .connect(stream);
     this.#connection = connection;
@@ -333,6 +342,7 @@ export class WorkspaceSupervisor {
             auth: { terminal: true },
             elicitation: { form: {} },
             fs: { readTextFile: true, writeTextFile: true },
+            terminal: true,
           },
           clientInfo: { name: "ox-browser-client", version: "0" },
           protocolVersion: acp.PROTOCOL_VERSION,
@@ -551,6 +561,7 @@ export class WorkspaceSupervisor {
       throw new Error("session is not active");
     }
     this.#controllers.get(sessionID)?.cancelInteractions();
+    await this.#terminal.releaseSession(sessionID);
     await this.readyConnection().agent.request(acp.methods.agent.session.close, { sessionId: sessionID });
     this.#controllers.delete(sessionID);
     this.#activePrompts.delete(sessionID);
@@ -642,6 +653,7 @@ export class WorkspaceSupervisor {
       return;
     }
     for (const controller of this.#controllers.values()) controller.cancelInteractions();
+    void this.#terminal.stop().catch((error) => this.recordDiagnostic(`Could not stop delegated terminals: ${message(error)}`));
     this.#controllers.clear();
     this.#activePrompts.clear();
     this.setSessions({

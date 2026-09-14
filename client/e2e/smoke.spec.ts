@@ -174,6 +174,26 @@ test("runs Ox file tools through the host's confined filesystem callbacks", asyn
   }
 });
 
+test("runs Ox shell tools through the host's ACP terminal callbacks", async ({ page }) => {
+  const fixture = await createFixture();
+  let host: BrowserHost | undefined;
+  try {
+    host = startBrowserHost(fixture);
+    await assertReady(page, await host.url);
+    await page.getByRole("button", { name: "New session" }).click();
+    await page.getByLabel("Mode", { exact: true }).selectOption("auto");
+    await page.getByLabel("Message").fill("exercise terminal callbacks");
+    await page.getByRole("button", { name: "Send prompt" }).click();
+
+    const transcript = page.getByRole("region", { name: "Transcript" });
+    await expect(transcript).toContainText("terminal complete");
+    await expect(transcript).toContainText("terminal callback output");
+  } finally {
+    await host?.stop();
+    await fixture.close();
+  }
+});
+
 test("runs separate sessions concurrently and cancels the selected live prompt", async ({ page }) => {
   const fixture = await createFixture();
   let host: BrowserHost | undefined;
@@ -341,6 +361,7 @@ async function createFixture(): Promise<Fixture> {
   const provider = createServer();
   let requests = 0;
   let filesystemStage = 0;
+  let terminalStage = 0;
   const prompts: unknown[] = [];
   provider.on("request", (request, response) => {
     if (request.method === "GET" && request.url === "/api/v1/auth/key") {
@@ -394,6 +415,34 @@ async function createFixture(): Promise<Fixture> {
         response.end(
           [
             'data: {"choices":[{"delta":{"content":"filesystem complete"},"finish_reason":null}]}',
+            "",
+            'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}',
+            "",
+            "data: [DONE]",
+            "",
+          ].join("\n"),
+        );
+        return;
+      }
+      if (body.includes("exercise terminal callbacks")) {
+        if (terminalStage++ === 0) {
+          response.writeHead(200, { "content-type": "text/event-stream" });
+          response.end(
+            [
+              'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"terminal-call","type":"function","function":{"name":"shell","arguments":"{\\"command\\":\\"printf terminal callback output\\"}"}}]},"finish_reason":null}]}',
+              "",
+              'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}',
+              "",
+              "data: [DONE]",
+              "",
+            ].join("\n"),
+          );
+          return;
+        }
+        response.writeHead(200, { "content-type": "text/event-stream" });
+        response.end(
+          [
+            'data: {"choices":[{"delta":{"content":"terminal complete"},"finish_reason":null}]}',
             "",
             'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}',
             "",
