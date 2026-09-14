@@ -131,7 +131,7 @@
   - [x] Handle permission and form-elicitation callbacks as host-owned pending
         interactions, including exact option/schema rendering, refresh,
         cancellation, and first-answer-wins races between browsers
-  - [ ] Implement confined ACP read and write callbacks with boundary tests and
+  - [x] Implement confined ACP read and write callbacks with boundary tests and
         real Ox tool scenarios for paging, replacement, client-backed edit
         evidence, invalid paths, and cancellation
   - [ ] Implement the ACP terminal callback lifecycle with exact argv and

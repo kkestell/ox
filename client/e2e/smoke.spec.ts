@@ -154,6 +154,26 @@ test("prompts with controls and every supported browser attachment", async ({ pa
   }
 });
 
+test("runs Ox file tools through the host's confined filesystem callbacks", async ({ page }) => {
+  const fixture = await createFixture();
+  let host: BrowserHost | undefined;
+  try {
+    await writeFile(join(fixture.workspace, "browser-file.txt"), "one\ntwo\n");
+    host = startBrowserHost(fixture);
+    await assertReady(page, await host.url);
+    await page.getByRole("button", { name: "New session" }).click();
+    await page.getByLabel("Mode", { exact: true }).selectOption("auto");
+    await page.getByLabel("Message").fill("exercise filesystem callbacks");
+    await page.getByRole("button", { name: "Send prompt" }).click();
+
+    await expect(page.getByRole("region", { name: "Transcript" })).toContainText("filesystem complete");
+    expect(await readFile(join(fixture.workspace, "browser-file.txt"), "utf8")).toBe("edited\n");
+  } finally {
+    await host?.stop();
+    await fixture.close();
+  }
+});
+
 test("runs separate sessions concurrently and cancels the selected live prompt", async ({ page }) => {
   const fixture = await createFixture();
   let host: BrowserHost | undefined;
@@ -320,6 +340,7 @@ async function createFixture(): Promise<Fixture> {
   const runner = join(workspace, "run-ox");
   const provider = createServer();
   let requests = 0;
+  let filesystemStage = 0;
   const prompts: unknown[] = [];
   provider.on("request", (request, response) => {
     if (request.method === "GET" && request.url === "/api/v1/auth/key") {
@@ -347,6 +368,39 @@ async function createFixture(): Promise<Fixture> {
         prompts.push(body);
       }
       if (body.includes("hold")) {
+        return;
+      }
+      if (body.includes("exercise filesystem callbacks")) {
+        const tool = [
+          ["browser-read", "read_file", '{\\"path\\":\\"browser-file.txt\\",\\"offset\\":2,\\"limit\\":1}'],
+          ["browser-write", "write_file", '{\\"path\\":\\"browser-file.txt\\",\\"content\\":\\"written\\\\n\\"}'],
+          ["browser-edit", "edit_file", '{\\"path\\":\\"browser-file.txt\\",\\"old_string\\":\\"written\\",\\"new_string\\":\\"edited\\"}'],
+        ][filesystemStage++];
+        if (tool) {
+          response.writeHead(200, { "content-type": "text/event-stream" });
+          response.end(
+            [
+              `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"${tool[0]}","type":"function","function":{"name":"${tool[1]}","arguments":"${tool[2]}"}}]},"finish_reason":null}]}`,
+              "",
+              'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}',
+              "",
+              "data: [DONE]",
+              "",
+            ].join("\n"),
+          );
+          return;
+        }
+        response.writeHead(200, { "content-type": "text/event-stream" });
+        response.end(
+          [
+            'data: {"choices":[{"delta":{"content":"filesystem complete"},"finish_reason":null}]}',
+            "",
+            'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}',
+            "",
+            "data: [DONE]",
+            "",
+          ].join("\n"),
+        );
         return;
       }
       if (body.includes("request permission") && !body.includes('"outcome":"selected"')) {

@@ -238,6 +238,27 @@ describe("workspace supervisor", () => {
     await supervisor.stop();
   });
 
+  test("advertises and services paired confined filesystem callbacks", async () => {
+    const workspace = await temporaryWorkspace();
+    const path = join(workspace, "notes.txt");
+    await writeFile(path, "before\n");
+    const supervisor = await WorkspaceSupervisor.start({
+      arguments: ["--eval", filesystemProgram()],
+      command: process.execPath,
+      workspace,
+    });
+
+    await supervisor.newSession();
+    await supervisor.prompt("one", [{ text: "use the filesystem", type: "text" }]);
+
+    expect(await readFile(path, "utf8")).toBe("after\n");
+    expect(JSON.parse(await readFile(join(workspace, "filesystem-capabilities.json"), "utf8"))).toEqual({
+      readTextFile: true,
+      writeTextFile: true,
+    });
+    await supervisor.stop();
+  });
+
   test("cancels and removes pending interactions when Ox exits", async () => {
     const supervisor = await WorkspaceSupervisor.start({
       arguments: ["--eval", interactionExitProgram()],
@@ -463,6 +484,39 @@ process.stdin.on('data', (chunk) => {
     } else if (request.method === 'session/cancel' && held !== undefined) {
       response(held, { stopReason: 'cancelled' });
       held = undefined;
+    }
+  }
+});`;
+}
+
+function filesystemProgram(): string {
+  return `
+const fs = require('fs');
+const path = require('path');
+process.stdin.setEncoding('utf8');
+let input = '';
+let promptID;
+function response(id, result) { process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id, result }) + '\\n'); }
+function callback(id, method, params) { process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\\n'); }
+process.stdin.on('data', (chunk) => {
+  input += chunk;
+  for (;;) {
+    const newline = input.indexOf('\\n');
+    if (newline === -1) break;
+    const request = JSON.parse(input.slice(0, newline));
+    input = input.slice(newline + 1);
+    if (request.method === 'initialize') {
+      fs.writeFileSync(path.join(process.cwd(), 'filesystem-capabilities.json'), JSON.stringify(request.params.clientCapabilities.fs));
+      response(request.id, { protocolVersion: 1, agentCapabilities: {}, authMethods: [] });
+    } else if (request.method === 'session/new') {
+      response(request.id, { sessionId: 'one' });
+    } else if (request.method === 'session/prompt') {
+      promptID = request.id;
+      callback('read', 'fs/read_text_file', { sessionId: 'one', path: path.join(process.cwd(), 'notes.txt') });
+    } else if (request.id === 'read') {
+      callback('write', 'fs/write_text_file', { sessionId: 'one', path: path.join(process.cwd(), 'notes.txt'), content: 'after\\n' });
+    } else if (request.id === 'write') {
+      response(promptID, { stopReason: 'end_turn' });
     }
   }
 });`;

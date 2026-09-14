@@ -5,6 +5,7 @@ import { Readable, Writable } from "node:stream";
 
 import { maximumSessions } from "./protocol.ts";
 import type { PromptCapabilities, PromptContentBlock, SessionTranscript } from "./protocol.ts";
+import { FilesystemExecutor } from "./filesystem-executor.ts";
 import { SessionController } from "./session-controller.ts";
 
 const maximumDiagnostics = 16;
@@ -77,6 +78,7 @@ export class WorkspaceSupervisor {
   #child?: ChildProcessWithoutNullStreams;
   #connection?: acp.ClientConnection;
   #controllers = new Map<string, SessionController>();
+  #filesystem: FilesystemExecutor;
   #activePrompts = new Map<string, Promise<void>>();
   #diagnosticRemainder = "";
   #childTermination?: Promise<void>;
@@ -102,6 +104,7 @@ export class WorkspaceSupervisor {
     private readonly options: Required<Omit<WorkspaceSupervisorOptions, "workspace">>,
   ) {
     this.workspace = workspace;
+    this.#filesystem = new FilesystemExecutor(workspace, (sessionID) => this.#controllers.has(sessionID));
   }
 
   static async start(options: WorkspaceSupervisorOptions): Promise<WorkspaceSupervisor> {
@@ -309,6 +312,8 @@ export class WorkspaceSupervisor {
       .client({ name: "ox-browser-client" })
       .onRequest(acp.methods.client.session.requestPermission, ({ params, signal }) => this.requestPermission(params, signal))
       .onRequest(acp.methods.client.elicitation.create, ({ params, signal }) => this.requestElicitation(params, signal))
+      .onRequest(acp.methods.client.fs.readTextFile, ({ params, signal }) => this.#filesystem.read(params, signal))
+      .onRequest(acp.methods.client.fs.writeTextFile, ({ params, signal }) => this.#filesystem.write(params, signal))
       .onNotification(acp.methods.client.session.update, ({ params }) => this.routeSessionUpdate(params))
       .connect(stream);
     this.#connection = connection;
@@ -324,7 +329,11 @@ export class WorkspaceSupervisor {
     const initialized = await Promise.race([
       connection.agent
         .request(acp.methods.agent.initialize, {
-          clientCapabilities: { auth: { terminal: true }, elicitation: { form: {} } },
+          clientCapabilities: {
+            auth: { terminal: true },
+            elicitation: { form: {} },
+            fs: { readTextFile: true, writeTextFile: true },
+          },
           clientInfo: { name: "ox-browser-client", version: "0" },
           protocolVersion: acp.PROTOCOL_VERSION,
         })
