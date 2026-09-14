@@ -105,10 +105,11 @@
         pipelines (F02)
 - [ ] Build the first-party browser ACP client described in
       [the client architecture](client-architecture.md)
-  - [ ] Establish the `client/` Bun, TypeScript, and React package with the
+  - [x] Establish the `client/` Bun, TypeScript, and React package with the
         validated same-origin browser protocol, unstyled semantic application
-        shell, unit and type gates, and a Playwright smoke test that drives a
-        real Ox binary through a deterministic fake OpenRouter endpoint
+        shell, unit and type gates, and a Playwright shell test alongside an
+        independent SDK smoke path through a real Ox binary and deterministic
+        fake OpenRouter endpoint
   - [ ] Supervise and initialize one Ox process for the startup-selected
         workspace, report bounded diagnostics and connection failure, and prove
         clean startup, shutdown, and unexpected-exit behavior through the
