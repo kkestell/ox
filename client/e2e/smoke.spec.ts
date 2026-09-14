@@ -37,10 +37,36 @@ test("supervises a real Ox process through clean shutdown and unexpected exit", 
 
     await fixture.stopOx();
     await expect(page.getByText("Unavailable", { exact: true })).toBeVisible();
-    await expect(page.getByText("unavailable", { exact: true })).toBeVisible();
+    await expect(page.getByLabel("Workspace process").getByText("unavailable", { exact: true })).toBeVisible();
     await expect(page.getByRole("list", { name: "Workspace diagnostics" })).toContainText(
       "Ox exited from SIGTERM",
     );
+  } finally {
+    await host?.stop();
+    await fixture.close();
+  }
+});
+
+test("authenticates stored credentials and keeps a browser login secret out of the shell", async ({ page }) => {
+  const fixture = await createFixture();
+  let host: BrowserHost | undefined;
+  try {
+    host = startBrowserHost(fixture);
+    await assertReady(page, await host.url);
+
+    await page.getByRole("button", { name: "OpenRouter API key" }).click();
+    await expect(page.getByText("authenticated", { exact: true })).toBeVisible();
+
+    const credential = "browser-login-test-secret";
+    await page.getByLabel("OpenRouter login credential").fill(credential);
+    await page.getByRole("button", { name: "OpenRouter login" }).click();
+    await expect(page.getByRole("alert")).toHaveText("OpenRouter login failed");
+    await expect(page.getByLabel("OpenRouter login credential")).toHaveValue("");
+    await expect(page.locator("main")).not.toContainText(credential);
+
+    await page.getByRole("button", { name: "Log out" }).click();
+    await expect(page.getByRole("alert")).toHaveText("Logout failed");
+    await expect(page.getByText("authenticated", { exact: true })).toBeVisible();
   } finally {
     await host?.stop();
     await fixture.close();
@@ -135,6 +161,14 @@ async function createFixture(): Promise<Fixture> {
   const provider = createServer();
   let requests = 0;
   provider.on("request", (request, response) => {
+    if (request.method === "GET" && request.url === "/api/v1/auth/key") {
+      if (request.headers.authorization === "Bearer test-key") {
+        response.writeHead(200, { "content-type": "application/json" }).end('{"data":{}}');
+      } else {
+        response.writeHead(401, { "content-type": "application/json" }).end('{"error":{"message":"rejected"}}');
+      }
+      return;
+    }
     if (request.method !== "POST" || request.url !== "/api/v1/chat/completions") {
       response.writeHead(404).end();
       return;

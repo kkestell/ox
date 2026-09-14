@@ -1,5 +1,5 @@
 import * as acp from "@agentclientprotocol/sdk";
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { spawn, type ChildProcess, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { realpath, stat } from "node:fs/promises";
 import { Readable, Writable } from "node:stream";
 
@@ -9,10 +9,32 @@ const initializationTimeoutMilliseconds = 2_000;
 
 export type WorkspaceStatus = "starting" | "ready" | "unavailable" | "stopped";
 
+export type AuthenticationMethod = {
+  description?: string;
+  id: string;
+  name: string;
+  type: "agent" | "terminal";
+};
+
+export type AuthenticationState = {
+  error?: string;
+  logoutAvailable: boolean;
+  methods: AuthenticationMethod[];
+  status: "required" | "working" | "authenticated" | "unavailable";
+};
+
 export type WorkspaceState = {
+  authentication: AuthenticationState;
   diagnostics: string[];
   status: WorkspaceStatus;
 };
+
+type TerminalAuthenticationMethod = AuthenticationMethod & {
+  arguments: string[];
+  environment: Record<string, string>;
+};
+
+const unauthenticated: AuthenticationState = { logoutAvailable: false, methods: [], status: "unavailable" };
 
 export type WorkspaceSupervisorOptions = {
   arguments?: string[];
@@ -28,9 +50,15 @@ export class WorkspaceSupervisor {
   #connection?: acp.ClientConnection;
   #diagnosticRemainder = "";
   #childTermination?: Promise<void>;
+  #authenticationMethods = new Map<string, AuthenticationMethod | TerminalAuthenticationMethod>();
+  #authenticationOperation: Promise<void> = Promise.resolve();
   #launchFailed = false;
   #listeners = new Set<(state: WorkspaceState) => void>();
-  #state: WorkspaceState = { diagnostics: [], status: "starting" };
+  #state: WorkspaceState = {
+    authentication: unauthenticated,
+    diagnostics: [],
+    status: "starting",
+  };
   #stop?: Promise<void>;
   #stopping = false;
   #terminating = false;
@@ -54,7 +82,14 @@ export class WorkspaceSupervisor {
   }
 
   get state(): WorkspaceState {
-    return { diagnostics: [...this.#state.diagnostics], status: this.#state.status };
+    return {
+      authentication: {
+        ...this.#state.authentication,
+        methods: this.#state.authentication.methods.map((method) => ({ ...method })),
+      },
+      diagnostics: [...this.#state.diagnostics],
+      status: this.#state.status,
+    };
   }
 
   subscribe(listener: (state: WorkspaceState) => void): () => void {
@@ -67,10 +102,23 @@ export class WorkspaceSupervisor {
     await this.#stop;
   }
 
+  authenticate(methodID: string): Promise<void> {
+    return this.serializeAuthentication(() => this.authenticateImpl(methodID));
+  }
+
+  login(methodID: string, credential: string): Promise<void> {
+    return this.serializeAuthentication(() => this.loginImpl(methodID, credential));
+  }
+
+  logout(): Promise<void> {
+    return this.serializeAuthentication(() => this.logoutImpl());
+  }
+
   private async stopImpl(): Promise<void> {
     this.#stopping = true;
     this.#connection?.close();
     await this.terminateChild();
+    this.setAuthentication(unauthenticated);
     this.setState("stopped");
   }
 
@@ -97,6 +145,7 @@ export class WorkspaceSupervisor {
       this.#diagnosticRemainder = "";
       if (!this.#stopping && !this.#terminating) {
         this.recordDiagnostic(signal ? `Ox exited from ${signal}` : `Ox exited with code ${code ?? "unknown"}`);
+        this.setAuthentication(unauthenticated);
         this.setState("unavailable");
       }
       childTerminated();
@@ -120,12 +169,15 @@ export class WorkspaceSupervisor {
     const initialized = await Promise.race([
       connection.agent
         .request(acp.methods.agent.initialize, {
-          clientCapabilities: {},
+          clientCapabilities: { auth: { terminal: true } },
           clientInfo: { name: "ox-browser-client", version: "0" },
           protocolVersion: acp.PROTOCOL_VERSION,
         })
         .then(
-          () => true,
+          (response) => {
+            this.recordAuthentication(response);
+            return true;
+          },
           (error) => {
             if (!this.#stopping && !this.#terminating) {
               this.unavailable(`Could not initialize Ox: ${message(error)}`);
@@ -169,6 +221,7 @@ export class WorkspaceSupervisor {
 
   private unavailable(diagnostic: string): void {
     this.recordDiagnostic(diagnostic);
+    this.setAuthentication(unauthenticated);
     this.setState("unavailable");
   }
 
@@ -177,6 +230,144 @@ export class WorkspaceSupervisor {
       return;
     }
     this.#state = { ...this.#state, status };
+    this.publish();
+  }
+
+  private recordAuthentication(response: acp.InitializeResponse): void {
+    this.#authenticationMethods.clear();
+    for (const method of response.authMethods ?? []) {
+      if (!method || typeof method.id !== "string" || !method.id || typeof method.name !== "string" || !method.name) {
+        continue;
+      }
+      if ("type" in method && method.type === "terminal") {
+        const terminal: TerminalAuthenticationMethod = {
+          arguments: method.args ?? [],
+          description: method.description || undefined,
+          environment: method.env ?? {},
+          id: method.id,
+          name: method.name,
+          type: "terminal",
+        };
+        this.#authenticationMethods.set(terminal.id, terminal);
+        continue;
+      }
+      if (!("type" in method)) {
+        const agent: AuthenticationMethod = {
+          description: method.description || undefined,
+          id: method.id,
+          name: method.name,
+          type: "agent",
+        };
+        this.#authenticationMethods.set(agent.id, agent);
+      }
+    }
+    this.setAuthentication({
+      logoutAvailable: response.agentCapabilities?.auth?.logout != null,
+      methods: [...this.#authenticationMethods.values()].map(({ id, name, type, description }) => ({
+        ...(description === undefined ? {} : { description }),
+        id,
+        name,
+        type,
+      })),
+      status: "required",
+    });
+  }
+
+  private serializeAuthentication(operation: () => Promise<void>): Promise<void> {
+    const next = this.#authenticationOperation.then(() => operation());
+    this.#authenticationOperation = next.catch(() => {});
+    return next;
+  }
+
+  private async authenticateImpl(methodID: string): Promise<void> {
+    const method = this.#authenticationMethods.get(methodID);
+    if (!method || method.type !== "agent") {
+      throw new Error("unsupported stored-credential authentication method");
+    }
+    const connection = this.readyConnection();
+    this.setAuthentication({ ...this.#state.authentication, error: undefined, status: "working" });
+    try {
+      await connection.agent.request(acp.methods.agent.authenticate, { methodId: method.id });
+      this.setAuthentication({ ...this.#state.authentication, error: undefined, status: "authenticated" });
+    } catch {
+      this.setAuthentication({ ...this.#state.authentication, error: "Authentication failed", status: "required" });
+      throw new Error("authentication failed");
+    }
+  }
+
+  private async loginImpl(methodID: string, credential: string): Promise<void> {
+    const method = this.#authenticationMethods.get(methodID);
+    if (!isTerminalAuthenticationMethod(method)) {
+      throw new Error("unsupported terminal authentication method");
+    }
+    const storedMethod = [...this.#authenticationMethods.values()].find((candidate) => candidate.type === "agent");
+    if (!storedMethod) {
+      throw new Error("Ox did not advertise stored-credential authentication");
+    }
+    this.readyConnection();
+    const previousStatus = this.#state.authentication.status;
+    this.setAuthentication({ ...this.#state.authentication, error: undefined, status: "working" });
+    try {
+      await this.runLogin(method, credential);
+    } catch {
+      this.setAuthentication({
+        ...this.#state.authentication,
+        error: "OpenRouter login failed",
+        status: previousStatus === "authenticated" ? "authenticated" : "required",
+      });
+      throw new Error("OpenRouter login failed");
+    }
+    await this.authenticateImpl(storedMethod.id);
+  }
+
+  private async logoutImpl(): Promise<void> {
+    if (!this.#state.authentication.logoutAvailable) {
+      throw new Error("Ox does not support logout");
+    }
+    const connection = this.readyConnection();
+    const previousStatus = this.#state.authentication.status;
+    this.setAuthentication({ ...this.#state.authentication, error: undefined, status: "working" });
+    try {
+      await connection.agent.request(acp.methods.agent.logout, {});
+      this.setAuthentication({ ...this.#state.authentication, error: undefined, status: "required" });
+    } catch {
+      const status = previousStatus === "authenticated" ? "authenticated" : "required";
+      this.setAuthentication({ ...this.#state.authentication, error: "Logout failed", status });
+      throw new Error("logout failed");
+    }
+  }
+
+  private readyConnection(): acp.ClientConnection {
+    if (this.#state.status !== "ready" || !this.#connection) {
+      throw new Error("Ox is unavailable");
+    }
+    return this.#connection;
+  }
+
+  private async runLogin(method: TerminalAuthenticationMethod, credential: string): Promise<void> {
+    const child = spawn(this.options.command, [...this.options.arguments, ...method.arguments], {
+      cwd: this.workspace,
+      env: { ...this.options.environment, ...method.environment },
+      stdio: ["pipe", "ignore", "ignore"],
+    });
+    try {
+      // A login that fails before reading the credential closes the pipe, and an
+      // unhandled stdin error would take down the host. The exit code decides.
+      child.stdin.on("error", () => {});
+      child.stdin.end(`${credential}\n`);
+      const code = await exitCode(child);
+      if (code !== 0) {
+        throw new Error("login process exited unsuccessfully");
+      }
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) {
+        child.kill("SIGTERM");
+      }
+    }
+  }
+
+  private setAuthentication(authentication: AuthenticationState): void {
+    this.#state = { ...this.#state, authentication };
     this.publish();
   }
 
@@ -204,6 +395,22 @@ export class WorkspaceSupervisor {
       await exitsWithin(child, 2_000);
     }
   }
+}
+
+function exitCode(child: ChildProcess): Promise<number | null> {
+  if (child.exitCode !== null) {
+    return Promise.resolve(child.exitCode);
+  }
+  return new Promise((resolve, reject) => {
+    child.once("error", reject);
+    child.once("exit", (code) => resolve(code));
+  });
+}
+
+function isTerminalAuthenticationMethod(
+  method: AuthenticationMethod | TerminalAuthenticationMethod | undefined,
+): method is TerminalAuthenticationMethod {
+  return method?.type === "terminal";
 }
 
 async function canonicalWorkspace(path: string): Promise<string> {

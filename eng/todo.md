@@ -114,7 +114,7 @@
         workspace, report bounded diagnostics and connection failure, and prove
         clean startup, shutdown, and unexpected-exit behavior through the
         browser harness
-  - [ ] Implement stored-credential authentication, browser-driven terminal
+  - [x] Implement stored-credential authentication, browser-driven terminal
         login, and logout without putting credentials in ACP, snapshots, URLs,
         logs, or test artifacts; cover success and failure at the process
         boundary

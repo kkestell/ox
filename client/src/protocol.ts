@@ -9,6 +9,27 @@ export const browserCommandSchema = z.discriminatedUnion("type", [
       requestId: requestID,
     })
     .strict(),
+  z
+    .object({
+      type: z.literal("authenticate"),
+      requestId: requestID,
+      methodId: z.string().min(1).max(128),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("login"),
+      requestId: requestID,
+      methodId: z.string().min(1).max(128),
+      credential: z.string().trim().min(1).max(4096),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("logout"),
+      requestId: requestID,
+    })
+    .strict(),
 ]);
 
 export type BrowserCommand = z.infer<typeof browserCommandSchema>;
@@ -24,6 +45,25 @@ export const snapshotSchema = z
       .object({
         status: z.enum(["starting", "ready", "unavailable", "stopped"]),
         diagnostics: z.array(z.string()).max(16),
+      })
+      .strict(),
+    authentication: z
+      .object({
+        status: z.enum(["required", "working", "authenticated", "unavailable"]),
+        methods: z
+          .array(
+            z
+              .object({
+                id: z.string().min(1).max(128),
+                type: z.enum(["agent", "terminal"]),
+                name: z.string().min(1),
+                description: z.string().min(1).optional(),
+              })
+              .strict(),
+          )
+          .max(16),
+        logoutAvailable: z.boolean(),
+        error: z.string().min(1).optional(),
       })
       .strict(),
   })
@@ -66,11 +106,19 @@ export function parseBrowserCommand(value: unknown):
   return { ok: false, error: "invalid browser command" };
 }
 
-export function initialSnapshot(workspace: Snapshot["workspace"]): Snapshot {
+export function initialSnapshot(
+  workspace: Snapshot["workspace"],
+  authentication: Snapshot["authentication"] = {
+    status: "unavailable",
+    methods: [],
+    logoutAvailable: false,
+  },
+): Snapshot {
   return {
     type: "snapshot",
     revision: 0,
     connection: { status: workspace.status === "ready" ? "ready" : "unavailable" },
     workspace,
+    authentication,
   };
 }

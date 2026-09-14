@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -15,7 +15,11 @@ describe("workspace supervisor", () => {
   test("initializes Ox and shuts it down cleanly", async () => {
     const supervisor = await start("agent");
 
-    expect(supervisor.state).toEqual({ diagnostics: [], status: "ready" });
+    expect(supervisor.state).toEqual({
+      authentication: { logoutAvailable: false, methods: [], status: "required" },
+      diagnostics: [],
+      status: "ready",
+    });
 
     await supervisor.stop();
 
@@ -64,6 +68,7 @@ describe("workspace supervisor", () => {
     const supervisor = await start("silent");
 
     expect(supervisor.state).toEqual({
+      authentication: { logoutAvailable: false, methods: [], status: "unavailable" },
       diagnostics: ["Ox did not initialize within 2 seconds"],
       status: "unavailable",
     });
@@ -79,6 +84,67 @@ describe("workspace supervisor", () => {
     await expect(WorkspaceSupervisor.start({ command: "ox", workspace: file })).rejects.toThrow(
       "workspace must be a directory",
     );
+  });
+
+  test("authenticates stored credentials, completes terminal login, and logs out", async () => {
+    const workspace = await temporaryWorkspace();
+    const supervisor = await WorkspaceSupervisor.start({
+      arguments: ["--eval", authenticationProgram(), "primary"],
+      command: process.execPath,
+      workspace,
+    });
+
+    expect(supervisor.state.authentication).toEqual({
+      logoutAvailable: true,
+      methods: [
+        { id: "stored", name: "Stored credential", type: "agent" },
+        { id: "terminal", name: "Terminal login", type: "terminal" },
+      ],
+      status: "required",
+    });
+
+    await expect(supervisor.authenticate("stored")).rejects.toThrow("authentication failed");
+    expect(supervisor.state.authentication).toMatchObject({ error: "Authentication failed", status: "required" });
+
+    await supervisor.login("terminal", "correct-test-credential");
+    expect(supervisor.state.authentication.status).toBe("authenticated");
+    expect(await readFile(join(workspace, "login-observation.json"), "utf8")).toBe(
+      JSON.stringify({ args: ["primary", "login"], environment: "terminal-auth" }),
+    );
+
+    await supervisor.logout();
+    expect(supervisor.state.authentication.status).toBe("required");
+    await expect(supervisor.authenticate("stored")).rejects.toThrow("authentication failed");
+
+    await supervisor.stop();
+  });
+
+  test("does not retain a failed terminal credential", async () => {
+    const workspace = await temporaryWorkspace();
+    const supervisor = await WorkspaceSupervisor.start({
+      arguments: ["--eval", authenticationProgram(), "primary"],
+      command: process.execPath,
+      workspace,
+    });
+
+    await expect(supervisor.login("terminal", "incorrect-test-credential")).rejects.toThrow("OpenRouter login failed");
+
+    expect(supervisor.state.authentication).toMatchObject({ error: "OpenRouter login failed", status: "required" });
+    expect(supervisor.state.diagnostics.join("\n")).not.toContain("incorrect-test-credential");
+    await supervisor.stop();
+  });
+
+  test("treats an unadvertised logout capability as unsupported", async () => {
+    const supervisor = await WorkspaceSupervisor.start({
+      arguments: ["--eval", authenticationProgram("null"), "primary"],
+      command: process.execPath,
+      workspace: await temporaryWorkspace(),
+    });
+
+    expect(supervisor.state.authentication.logoutAvailable).toBe(false);
+    await expect(supervisor.logout()).rejects.toThrow("Ox does not support logout");
+
+    await supervisor.stop();
   });
 });
 
@@ -116,6 +182,58 @@ process.stdin.on('data', (chunk) => {
     }
   }
 });`;
+}
+
+function authenticationProgram(logout = "{}"): string {
+  return `
+const fs = require('fs');
+const path = require('path');
+if (process.argv.includes('login')) {
+  let input = '';
+  process.stdin.setEncoding('utf8');
+  process.stdin.on('data', (chunk) => input += chunk);
+  process.stdin.on('end', () => {
+    if (input.trim() !== 'correct-test-credential') process.exit(1);
+    fs.writeFileSync(path.join(process.cwd(), 'credential-present'), 'yes');
+    fs.writeFileSync(path.join(process.cwd(), 'login-observation.json'), JSON.stringify({ args: process.argv.slice(1), environment: process.env.OX_CLIENT_LOGIN_ENV }));
+    process.exit(0);
+  });
+} else {
+process.stdin.setEncoding('utf8');
+let input = '';
+process.stdin.on('data', (chunk) => {
+  input += chunk;
+  for (;;) {
+    const newline = input.indexOf('\\n');
+    if (newline === -1) break;
+    const request = JSON.parse(input.slice(0, newline));
+    input = input.slice(newline + 1);
+    if (request.method === 'initialize') {
+      process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: request.id, result: {
+        protocolVersion: 1,
+        agentCapabilities: { auth: { logout: ${logout} } },
+        authMethods: [
+          { id: 'stored', name: 'Stored credential' },
+          { id: 'terminal', type: 'terminal', name: 'Terminal login', args: ['login'], env: { OX_CLIENT_LOGIN_ENV: 'terminal-auth' } }
+        ]
+      } }) + '\\n');
+      continue;
+    }
+    if (request.method === 'authenticate') {
+      if (request.params.methodId === 'stored' && fs.existsSync(path.join(process.cwd(), 'credential-present'))) {
+        process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: request.id, result: {} }) + '\\n');
+      } else {
+        process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: request.id, error: { code: -32000, message: 'credential required' } }) + '\\n');
+      }
+      continue;
+    }
+    if (request.method === 'logout') {
+      fs.rmSync(path.join(process.cwd(), 'credential-present'), { force: true });
+      process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: request.id, result: {} }) + '\\n');
+    }
+  }
+});
+}`;
 }
 
 async function temporaryWorkspace(): Promise<string> {

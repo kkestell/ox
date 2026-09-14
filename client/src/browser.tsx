@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 
 import { browserMessageSchema, type Snapshot } from "./protocol.ts";
@@ -6,15 +6,18 @@ import { browserMessageSchema, type Snapshot } from "./protocol.ts";
 function App() {
   const [snapshot, setSnapshot] = useState<Snapshot>();
   const [connection, setConnection] = useState("Connecting");
+  const socket = useRef<WebSocket | undefined>(undefined);
+  const [credential, setCredential] = useState("");
 
   useEffect(() => {
     const url = new URL("/socket", window.location.href);
     url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-    const socket = new WebSocket(url);
-    socket.addEventListener("open", () => {
-      socket.send(JSON.stringify({ type: "ping", requestId: "shell-ready" }));
+    const connectionSocket = new WebSocket(url);
+    socket.current = connectionSocket;
+    connectionSocket.addEventListener("open", () => {
+      connectionSocket.send(JSON.stringify({ type: "ping", requestId: "shell-ready" }));
     });
-    socket.addEventListener("message", (event) => {
+    connectionSocket.addEventListener("message", (event) => {
       if (typeof event.data !== "string") {
         return;
       }
@@ -39,10 +42,26 @@ function App() {
         setConnection(parsed.data.ok ? "Connected" : "Unavailable");
       }
     });
-    socket.addEventListener("close", () => setConnection("Disconnected"));
-    socket.addEventListener("error", () => setConnection("Unavailable"));
-    return () => socket.close();
+    connectionSocket.addEventListener("close", () => setConnection("Disconnected"));
+    connectionSocket.addEventListener("error", () => setConnection("Unavailable"));
+    return () => {
+      socket.current = undefined;
+      connectionSocket.close();
+    };
   }, []);
+
+  function send(command: Record<string, string>): void {
+    if (socket.current?.readyState !== WebSocket.OPEN) {
+      return;
+    }
+    socket.current.send(JSON.stringify(command));
+  }
+
+  function terminalLogin(methodId: string): void {
+    const value = credential;
+    setCredential("");
+    send({ credential: value, methodId, requestId: crypto.randomUUID(), type: "login" });
+  }
 
   return (
     <main>
@@ -65,6 +84,57 @@ function App() {
                 <li key={`${index}-${diagnostic}`}>{diagnostic}</li>
               ))}
             </ul>
+          ) : null}
+        </section>
+      ) : null}
+      {snapshot ? (
+        <section aria-labelledby="authentication-heading">
+          <h2 id="authentication-heading">Authentication</h2>
+          <p aria-live="polite">{snapshot.authentication.status}</p>
+          {snapshot.authentication.error ? <p role="alert">{snapshot.authentication.error}</p> : null}
+          {snapshot.authentication.methods.map((method) =>
+            method.type === "agent" ? (
+              <button
+                key={method.id}
+                disabled={snapshot.authentication.status === "working"}
+                onClick={() => send({ methodId: method.id, requestId: crypto.randomUUID(), type: "authenticate" })}
+                type="button"
+              >
+                {method.name}
+              </button>
+            ) : (
+              <form
+                key={method.id}
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  terminalLogin(method.id);
+                }}
+              >
+                <label>
+                  {`${method.name} credential`}
+                  <input
+                    autoComplete="off"
+                    disabled={snapshot.authentication.status === "working"}
+                    onChange={(event) => setCredential(event.target.value)}
+                    required
+                    type="password"
+                    value={credential}
+                  />
+                </label>
+                <button disabled={snapshot.authentication.status === "working"} type="submit">
+                  {method.name}
+                </button>
+              </form>
+            ),
+          )}
+          {snapshot.authentication.logoutAvailable ? (
+            <button
+              disabled={snapshot.authentication.status === "working"}
+              onClick={() => send({ requestId: crypto.randomUUID(), type: "logout" })}
+              type="button"
+            >
+              Log out
+            </button>
           ) : null}
         </section>
       ) : null}

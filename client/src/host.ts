@@ -43,11 +43,12 @@ export async function startHost(options: HostOptions = {}): Promise<StartedHost>
       })
     : undefined;
   let revision = 0;
+  const initialState = supervisor?.state;
   let snapshot = initialSnapshot(
-    supervisor?.state ?? {
-      diagnostics: ["workspace is not configured"],
-      status: "unavailable",
-    },
+    initialState
+      ? { diagnostics: initialState.diagnostics, status: initialState.status }
+      : { diagnostics: ["workspace is not configured"], status: "unavailable" },
+    initialState?.authentication,
   );
   const unsubscribe = supervisor?.subscribe((state) => {
     revision += 1;
@@ -124,6 +125,22 @@ export async function startHost(options: HostOptions = {}): Promise<StartedHost>
               ok: true,
               value: { revision: snapshot.revision },
             });
+            return;
+          case "authenticate":
+            {
+              const { methodId, requestId } = command.value;
+              void respond(socket, requestId, () => snapshot.revision, () => supervisor?.authenticate(methodId));
+            }
+            return;
+          case "login":
+            {
+              const { credential, methodId, requestId } = command.value;
+              void respond(socket, requestId, () => snapshot.revision, () => supervisor?.login(methodId, credential));
+            }
+            return;
+          case "logout":
+            void respond(socket, command.value.requestId, () => snapshot.revision, () => supervisor?.logout());
+            return;
         }
       },
       close(socket) {
@@ -147,9 +164,35 @@ export async function startHost(options: HostOptions = {}): Promise<StartedHost>
 
 function snapshotFor(revision: number, workspace: WorkspaceState): Snapshot {
   return {
-    ...initialSnapshot(workspace),
+    ...initialSnapshot(
+      { diagnostics: workspace.diagnostics, status: workspace.status },
+      workspace.authentication,
+    ),
     revision,
   };
+}
+
+async function respond(
+  socket: Bun.ServerWebSocket<SocketData>,
+  requestId: string,
+  revision: () => number,
+  operation: () => Promise<void> | undefined,
+): Promise<void> {
+  try {
+    const running = operation();
+    if (!running) {
+      throw new Error("workspace is not configured");
+    }
+    await running;
+    send(socket, { type: "result", requestId, ok: true, value: { revision: revision() } });
+  } catch (error) {
+    send(socket, {
+      type: "result",
+      requestId,
+      ok: false,
+      error: error instanceof Error ? error.message : "request failed",
+    });
+  }
 }
 
 function requestID(value: unknown): string {
