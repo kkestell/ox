@@ -13,8 +13,7 @@ output. It is ACP-first and works with ACP clients. The durable design lives in
 - **Language:** Go 1.26.4
 - **Protocol:** ACP v1 over JSON-RPC 2.0 on stdio
 - **Model provider:** OpenRouter Chat Completions over HTTP and SSE
-- **Planned web client:** Bun, TypeScript, React, and the official ACP
-  TypeScript SDK
+- **Web client:** Bun, TypeScript, React, and the official ACP TypeScript SDK
 - **Build and checks:** Make, gofmt, go vet, staticcheck, and go test
 
 ## Codebase Map
@@ -44,6 +43,8 @@ output. It is ACP-first and works with ACP clients. The durable design lives in
   durable state.
 - `evals/` — Versioned coding tasks and the external ACP evaluation runner.
   Evaluation artifacts and provider runs remain outside the shipped binary.
+- `client/` — The first-party browser ACP client: its Bun host, React surface,
+  and Playwright harness.
 - `docs/` — End-user documentation and the target product specification.
 - `eng/` — Development and agent documentation. `eng/architecture.md` owns the
   agent design, `eng/client-architecture.md` owns the first-party web client

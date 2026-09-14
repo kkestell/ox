@@ -262,9 +262,9 @@ export class WorkspaceSupervisor {
     clearTimeout(timer);
     if (initialized === "timed out" && !this.#stopping) {
       this.unavailable("Ox did not initialize within 2 seconds");
-      const termination = this.terminateChild();
       this.#connection?.close();
-      void termination;
+      // Every caller of stop awaits the same memoized termination.
+      void this.terminateChild();
       return;
     }
     if (initialized && !this.#stopping && this.#state.status !== "unavailable") {
@@ -403,12 +403,10 @@ export class WorkspaceSupervisor {
     });
     const seen = new Set(this.#state.sessions.values.map((session) => session.id));
     const added = this.summaries(response.sessions).filter((session) => !seen.has(session.id));
-    const values = [...this.#state.sessions.values, ...added].slice(0, maximumSessions);
     this.setSessions({
-      // A snapshot cannot carry more than the catalog bound, so stop offering pages once it is full.
-      nextCursor: values.length < maximumSessions ? (response.nextCursor ?? undefined) : undefined,
+      nextCursor: response.nextCursor ?? undefined,
       selectedID: this.#state.sessions.selectedID,
-      values,
+      values: [...this.#state.sessions.values, ...added],
     });
   }
 
@@ -541,12 +539,16 @@ export class WorkspaceSupervisor {
   }
 
   private setSessions(sessions: SessionState): void {
+    // A snapshot carries at most the catalog bound, so the catalog holds no more
+    // than that and stops offering further pages once it is full.
+    const values = sessions.values.slice(0, maximumSessions);
+    const nextCursor = values.length < maximumSessions ? sessions.nextCursor : undefined;
     this.#state = {
       ...this.#state,
       sessions: {
-        ...(sessions.nextCursor === undefined ? {} : { nextCursor: sessions.nextCursor }),
+        ...(nextCursor === undefined ? {} : { nextCursor }),
         ...(sessions.selectedID === undefined ? {} : { selectedID: sessions.selectedID }),
-        values: sessions.values,
+        values,
       },
     };
     this.publish();

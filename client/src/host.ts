@@ -1,6 +1,7 @@
 import { join } from "node:path";
 
 import {
+  type BrowserCommand,
   type BrowserMessage,
   initialSnapshot,
   parseBrowserCommand,
@@ -119,52 +120,21 @@ export async function startHost(options: HostOptions = {}): Promise<StartedHost>
           return;
         }
         const browserCommand = command.value;
-        switch (browserCommand.type) {
-          case "ping":
-            send(socket, {
-              type: "result",
-              requestId: browserCommand.requestId,
-              ok: true,
-              value: { revision: snapshot.revision },
-            });
-            return;
-          case "authenticate":
-            {
-              const { methodId, requestId } = browserCommand;
-              void respond(socket, requestId, () => snapshot.revision, () => supervisor?.authenticate(methodId));
-            }
-            return;
-          case "login":
-            {
-              const { credential, methodId, requestId } = browserCommand;
-              void respond(socket, requestId, () => snapshot.revision, () => supervisor?.login(methodId, credential));
-            }
-            return;
-          case "logout":
-            void respond(socket, browserCommand.requestId, () => snapshot.revision, () => supervisor?.logout());
-            return;
-          case "new-session":
-            void respond(socket, browserCommand.requestId, () => snapshot.revision, () => supervisor?.newSession());
-            return;
-          case "refresh-sessions":
-            void respond(socket, browserCommand.requestId, () => snapshot.revision, () => supervisor?.refreshSessions());
-            return;
-          case "next-session-page":
-            void respond(socket, browserCommand.requestId, () => snapshot.revision, () => supervisor?.nextSessionPage());
-            return;
-          case "load-session":
-            void respond(socket, browserCommand.requestId, () => snapshot.revision, () => supervisor?.loadSession(browserCommand.sessionId));
-            return;
-          case "resume-session":
-            void respond(socket, browserCommand.requestId, () => snapshot.revision, () => supervisor?.resumeSession(browserCommand.sessionId));
-            return;
-          case "close-session":
-            void respond(socket, browserCommand.requestId, () => snapshot.revision, () => supervisor?.closeSession(browserCommand.sessionId));
-            return;
-          case "delete-session":
-            void respond(socket, browserCommand.requestId, () => snapshot.revision, () => supervisor?.deleteSession(browserCommand.sessionId));
-            return;
+        if (browserCommand.type === "ping") {
+          send(socket, {
+            type: "result",
+            requestId: browserCommand.requestId,
+            ok: true,
+            value: { revision: snapshot.revision },
+          });
+          return;
         }
+        void respond(
+          socket,
+          browserCommand.requestId,
+          () => snapshot.revision,
+          () => (supervisor ? perform(supervisor, browserCommand) : undefined),
+        );
       },
       close(socket) {
         sockets.delete(socket);
@@ -222,8 +192,36 @@ async function respond(
       type: "result",
       requestId,
       ok: false,
-      error: error instanceof Error ? error.message : "request failed",
+      error: (error instanceof Error ? error.message : "") || "request failed",
     });
+  }
+}
+
+function perform(
+  supervisor: WorkspaceSupervisor,
+  command: Exclude<BrowserCommand, { type: "ping" }>,
+): Promise<void> {
+  switch (command.type) {
+    case "authenticate":
+      return supervisor.authenticate(command.methodId);
+    case "login":
+      return supervisor.login(command.methodId, command.credential);
+    case "logout":
+      return supervisor.logout();
+    case "new-session":
+      return supervisor.newSession();
+    case "refresh-sessions":
+      return supervisor.refreshSessions();
+    case "next-session-page":
+      return supervisor.nextSessionPage();
+    case "load-session":
+      return supervisor.loadSession(command.sessionId);
+    case "resume-session":
+      return supervisor.resumeSession(command.sessionId);
+    case "close-session":
+      return supervisor.closeSession(command.sessionId);
+    case "delete-session":
+      return supervisor.deleteSession(command.sessionId);
   }
 }
 

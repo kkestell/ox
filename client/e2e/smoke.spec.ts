@@ -41,6 +41,11 @@ test("supervises a real Ox process through clean shutdown and unexpected exit", 
     await expect(page.getByRole("list", { name: "Workspace diagnostics" })).toContainText(
       "Ox exited from SIGTERM",
     );
+
+    await page.getByRole("button", { name: "New session" }).click();
+    await expect(page.getByRole("region", { name: "Sessions" }).getByRole("alert")).toHaveText(
+      "Ox is unavailable",
+    );
   } finally {
     await host?.stop();
     await fixture.close();

@@ -3,6 +3,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { maximumSessions } from "./protocol.ts";
 import { WorkspaceSupervisor } from "./workspace-supervisor.ts";
 
 const workspaces: string[] = [];
@@ -190,6 +191,20 @@ describe("workspace supervisor", () => {
     expect(supervisor.state.sessions.values.find((session) => session.id === "created")?.status).toBe("active");
     await supervisor.stop();
   });
+
+  test("bounds the session catalog a snapshot can carry", async () => {
+    const supervisor = await WorkspaceSupervisor.start({
+      arguments: ["--eval", catalogProgram(maximumSessions + 100)],
+      command: process.execPath,
+      workspace: await temporaryWorkspace(),
+    });
+
+    await eventually(() => supervisor.state.sessions.values.length > 0);
+
+    expect(supervisor.state.sessions.values).toHaveLength(maximumSessions);
+    expect(supervisor.state.sessions.nextCursor).toBeUndefined();
+    await supervisor.stop();
+  });
 });
 
 async function start(mode: "agent" | "diagnostics" | "exit" | "silent"): Promise<WorkspaceSupervisor> {
@@ -340,6 +355,33 @@ process.stdin.on('data', (chunk) => {
     if (request.method === 'session/delete') {
       sessions = sessions.filter((session) => session.sessionId !== request.params.sessionId);
       response(request.id, {});
+    }
+  }
+});`;
+}
+
+function catalogProgram(sessions: number): string {
+  return `
+process.stdin.setEncoding('utf8');
+let input = '';
+process.stdin.on('data', (chunk) => {
+  input += chunk;
+  for (;;) {
+    const newline = input.indexOf('\\n');
+    if (newline === -1) break;
+    const request = JSON.parse(input.slice(0, newline));
+    input = input.slice(newline + 1);
+    if (request.method === 'initialize') {
+      process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: request.id, result: {
+        protocolVersion: 1,
+        agentCapabilities: { sessionCapabilities: { list: {} } },
+        authMethods: [],
+      } }) + '\\n');
+      continue;
+    }
+    if (request.method === 'session/list') {
+      const listed = Array.from({ length: ${sessions} }, (unused, index) => ({ sessionId: 'session-' + index, cwd: process.cwd() }));
+      process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { sessions: listed, nextCursor: 'more' } }) + '\\n');
     }
   }
 });`;

@@ -8,6 +8,8 @@ function App() {
   const [connection, setConnection] = useState("Connecting");
   const socket = useRef<WebSocket | undefined>(undefined);
   const [credential, setCredential] = useState("");
+  const [sessionError, setSessionError] = useState<string>();
+  const sessionRequests = useRef(new Set<string>());
 
   useEffect(() => {
     const url = new URL("/socket", window.location.href);
@@ -40,6 +42,10 @@ function App() {
       }
       if (parsed.data.requestId === "shell-ready") {
         setConnection(parsed.data.ok ? "Connected" : "Unavailable");
+        return;
+      }
+      if (sessionRequests.current.delete(parsed.data.requestId)) {
+        setSessionError(parsed.data.ok ? undefined : parsed.data.error);
       }
     });
     connectionSocket.addEventListener("close", () => setConnection("Disconnected"));
@@ -50,11 +56,22 @@ function App() {
     };
   }, []);
 
-  function send(command: BrowserCommand): void {
+  function send(command: BrowserCommand): boolean {
     if (socket.current?.readyState !== WebSocket.OPEN) {
-      return;
+      return false;
     }
     socket.current.send(JSON.stringify(command));
+    return true;
+  }
+
+  // Session commands report their outcome only through their result, so the
+  // browser keeps the latest failure visible until another one succeeds.
+  function submitSessionCommand(command: BrowserCommand): void {
+    if (send(command)) {
+      sessionRequests.current.add(command.requestId);
+      return;
+    }
+    setSessionError("The host connection is not open");
   }
 
   function terminalLogin(methodId: string): void {
@@ -64,14 +81,14 @@ function App() {
   }
 
   function catalogCommand(type: "new-session" | "next-session-page" | "refresh-sessions"): void {
-    send({ requestId: crypto.randomUUID(), type });
+    submitSessionCommand({ requestId: crypto.randomUUID(), type });
   }
 
   function sessionCommand(
     type: "close-session" | "delete-session" | "load-session" | "resume-session",
     sessionId: string,
   ): void {
-    send({ requestId: crypto.randomUUID(), sessionId, type });
+    submitSessionCommand({ requestId: crypto.randomUUID(), sessionId, type });
   }
 
   return (
@@ -152,6 +169,7 @@ function App() {
       {snapshot ? (
         <section aria-labelledby="sessions-heading">
           <h2 id="sessions-heading">Sessions</h2>
+          {sessionError ? <p role="alert">{sessionError}</p> : null}
           <p aria-live="polite">
             {snapshot.sessions.selectedId ? `Selected session ${snapshot.sessions.selectedId}` : "No session selected"}
           </p>
@@ -162,30 +180,50 @@ function App() {
             Refresh sessions
           </button>
           <ul aria-label="Sessions">
-            {snapshot.sessions.values.map((value) => (
-              <li key={value.id}>
-                <p>{value.title ?? value.id}</p>
-                <p>{value.status}</p>
-                {value.updatedAt ? <p>{value.updatedAt}</p> : null}
-                {value.status === "inactive" ? (
-                  <>
-                    <button onClick={() => sessionCommand("load-session", value.id)} type="button">
-                      Load
+            {snapshot.sessions.values.map((value) => {
+              // Every session repeats the same controls, so each one names its session.
+              const label = value.title ?? value.id;
+              return (
+                <li key={value.id}>
+                  <p>{label}</p>
+                  <p>{value.status}</p>
+                  {value.updatedAt ? <p>{value.updatedAt}</p> : null}
+                  {value.status === "inactive" ? (
+                    <>
+                      <button
+                        aria-label={`Load ${label}`}
+                        onClick={() => sessionCommand("load-session", value.id)}
+                        type="button"
+                      >
+                        Load
+                      </button>
+                      <button
+                        aria-label={`Resume ${label}`}
+                        onClick={() => sessionCommand("resume-session", value.id)}
+                        type="button"
+                      >
+                        Resume
+                      </button>
+                      <button
+                        aria-label={`Delete ${label}`}
+                        onClick={() => sessionCommand("delete-session", value.id)}
+                        type="button"
+                      >
+                        Delete
+                      </button>
+                    </>
+                  ) : (
+                    <button
+                      aria-label={`Close ${label}`}
+                      onClick={() => sessionCommand("close-session", value.id)}
+                      type="button"
+                    >
+                      Close
                     </button>
-                    <button onClick={() => sessionCommand("resume-session", value.id)} type="button">
-                      Resume
-                    </button>
-                    <button onClick={() => sessionCommand("delete-session", value.id)} type="button">
-                      Delete
-                    </button>
-                  </>
-                ) : (
-                  <button onClick={() => sessionCommand("close-session", value.id)} type="button">
-                    Close
-                  </button>
-                )}
-              </li>
-            ))}
+                  )}
+                </li>
+              );
+            })}
           </ul>
           {snapshot.sessions.nextCursor ? (
             <button onClick={() => catalogCommand("next-session-page")} type="button">
