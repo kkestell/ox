@@ -1,6 +1,5 @@
 import * as acp from "@agentclientprotocol/sdk";
 import { spawn, type ChildProcess, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { realpath, stat } from "node:fs/promises";
 import { basename } from "node:path";
 import { Readable, Writable } from "node:stream";
 
@@ -9,6 +8,7 @@ import type { MCPServer, PromptCapabilities, PromptContentBlock, SessionTranscri
 import { FilesystemExecutor } from "./filesystem-executor.ts";
 import { SessionController } from "./session-controller.ts";
 import { TerminalExecutor } from "./terminal-executor.ts";
+import { canonicalWorkspace } from "./workspace-registry.ts";
 
 const maximumDiagnostics = 16;
 const maximumDiagnosticLength = 512;
@@ -39,6 +39,14 @@ export type WorkspaceState = {
   name: string;
   promptCapabilities: PromptCapabilities;
   sessions: SessionState;
+  status: WorkspaceStatus;
+};
+
+/** What the workspace catalog shows without reading a session transcript. */
+export type WorkspaceCatalog = {
+  awaiting: boolean;
+  busy: boolean;
+  name: string;
   status: WorkspaceStatus;
 };
 
@@ -96,7 +104,7 @@ export class WorkspaceSupervisor {
   #authenticationMethods = new Map<string, AuthenticationMethod | TerminalAuthenticationMethod>();
   #authenticationOperation: Promise<void> = Promise.resolve();
   #launchFailed = false;
-  #listeners = new Set<(state: WorkspaceState) => void>();
+  #listeners = new Set<() => void>();
   #mcpServers: acp.McpServer[] = [];
   #sessionOperation: Promise<void> = Promise.resolve();
   #sessionCapabilities: SessionCapabilities = { close: false, delete: false, list: false, load: false, resume: false };
@@ -116,30 +124,26 @@ export class WorkspaceSupervisor {
   #stopping = false;
   #terminating = false;
 
-  private constructor(
-    workspace: string,
-    private readonly options: Required<Omit<WorkspaceSupervisorOptions, "diagnostics" | "workspace">>,
-    diagnostics: string[],
-  ) {
+  readonly #options: Required<Omit<WorkspaceSupervisorOptions, "diagnostics" | "workspace">>;
+
+  // Construction is synchronous so the host can register and subscribe a
+  // supervisor before its process exists, which is what makes the starting and
+  // stopped statuses observable.
+  constructor(options: WorkspaceSupervisorOptions) {
+    const workspace = options.workspace;
     this.workspace = workspace;
-    this.#state = { ...this.#state, diagnostics, name: basename(workspace) || "Workspace" };
+    this.#options = {
+      arguments: options.arguments ?? [],
+      command: options.command ?? "ox",
+      environment: options.environment ?? process.env,
+    };
+    this.#state = {
+      ...this.#state,
+      diagnostics: (options.diagnostics ?? []).slice(-maximumDiagnostics),
+      name: basename(workspace) || "Workspace",
+    };
     this.#filesystem = new FilesystemExecutor(workspace, (sessionID) => this.#controllers.has(sessionID));
     this.#terminal = new TerminalExecutor(workspace, (sessionID) => this.#controllers.has(sessionID));
-  }
-
-  static async start(options: WorkspaceSupervisorOptions): Promise<WorkspaceSupervisor> {
-    const workspace = await canonicalWorkspace(options.workspace);
-    const supervisor = new WorkspaceSupervisor(
-      workspace,
-      {
-        arguments: options.arguments ?? [],
-        command: options.command ?? "ox",
-        environment: options.environment ?? process.env,
-      },
-      (options.diagnostics ?? []).slice(-maximumDiagnostics),
-    );
-    await supervisor.start();
-    return supervisor;
   }
 
   get state(): WorkspaceState {
@@ -168,7 +172,16 @@ export class WorkspaceSupervisor {
     };
   }
 
-  subscribe(listener: (state: WorkspaceState) => void): () => void {
+  get catalog(): WorkspaceCatalog {
+    return {
+      awaiting: [...this.#controllers.values()].some((controller) => controller.awaiting),
+      busy: this.#activePrompts.size > 0,
+      name: this.#state.name,
+      status: this.#state.status,
+    };
+  }
+
+  subscribe(listener: () => void): () => void {
     this.#listeners.add(listener);
     return () => this.#listeners.delete(listener);
   }
@@ -339,10 +352,18 @@ export class WorkspaceSupervisor {
     this.setState("stopped");
   }
 
-  private async start(): Promise<void> {
-    const child = spawn(this.options.command, this.options.arguments, {
+  async start(): Promise<void> {
+    // A spawn into a missing cwd reports ENOENT against the executable path,
+    // which would blame Ox for a directory the user deleted.
+    try {
+      await canonicalWorkspace(this.workspace);
+    } catch (error) {
+      this.unavailable(message(error));
+      return;
+    }
+    const child = spawn(this.#options.command, this.#options.arguments, {
       cwd: this.workspace,
-      env: this.options.environment,
+      env: this.#options.environment,
       stdio: ["pipe", "pipe", "pipe"],
     });
     this.#child = child;
@@ -889,9 +910,9 @@ export class WorkspaceSupervisor {
   }
 
   private async runLogin(method: TerminalAuthenticationMethod, credential: string): Promise<void> {
-    const child = spawn(this.options.command, [...this.options.arguments, ...method.arguments], {
+    const child = spawn(this.#options.command, [...this.#options.arguments, ...method.arguments], {
       cwd: this.workspace,
-      env: { ...this.options.environment, ...method.environment },
+      env: { ...this.#options.environment, ...method.environment },
       stdio: ["pipe", "ignore", "ignore"],
     });
     try {
@@ -916,9 +937,8 @@ export class WorkspaceSupervisor {
   }
 
   private publish(): void {
-    const state = this.state;
     for (const listener of this.#listeners) {
-      listener(state);
+      listener();
     }
   }
 
@@ -973,14 +993,6 @@ function mcpServersForACP(servers: MCPServer[]): acp.McpServer[] {
           env: server.env.map((variable) => ({ ...variable })),
         },
   );
-}
-
-async function canonicalWorkspace(path: string): Promise<string> {
-  const workspace = await realpath(path);
-  if (!(await stat(workspace)).isDirectory()) {
-    throw new Error("workspace must be a directory");
-  }
-  return workspace;
 }
 
 function exitsWithin(child: ChildProcessWithoutNullStreams, milliseconds: number): Promise<boolean> {

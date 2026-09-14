@@ -150,8 +150,10 @@ pagination are history mechanics rather than peer session operations.
 
 ## Workspace and process lifecycle
 
-Startup canonicalizes and validates every configured workspace before exposing
-it. A workspace supervisor then launches the configured Ox executable with its
+Startup exposes every registered entry. A root that stopped being usable since
+it was registered makes that one workspace unavailable rather than failing
+startup, because the browser is where the user removes or restarts it. A
+workspace supervisor then launches the configured Ox executable with its
 configured arguments, connects the official ACP client over newline-delimited
 standard I/O, advertises the supported client capabilities, and initializes the
 connection once. Standard error is captured as bounded operational diagnostics;
@@ -172,18 +174,21 @@ browser commands and callbacks. The host may start a fresh connection, but it
 does not claim that interrupted turns survived. Durable sessions are recovered
 only through the standard list, load, and resume methods.
 
-A workspace that has no usable process, because its launch failed, its Ox
-exited, or the user logged out, is recovered by an explicit restart that
-replaces the supervisor for the same registered root. The replacement carries
-forward the diagnostics that explain why the previous process stopped, and it
-recovers conversations only through that ordinary durable path.
+A workspace that has no usable process, because its launch failed or its Ox
+exited, is recovered by an explicit restart that replaces the supervisor for the
+same registered root. The replacement carries forward the diagnostics that
+explain why the previous process stopped, and it recovers conversations only
+through that ordinary durable path. Logging out leaves the process running and
+clears the stored credential, so it is not a restart case.
 
 The registry stores canonical roots and nonsecret launch configuration. Every
-registered entry is active and has an independent supervisor, so one process
-failure cannot corrupt routing or cancel work in another workspace. Selecting a
-workspace changes which one the browser sees, not which processes run. Removing
-an entry stops its supervisor. Browser-added roots are server-local absolute
-paths that the host canonicalizes and validates before registration.
+registered entry is active and has an independent supervisor that exists from
+registration until removal, including while it is starting and stopping, which
+is what makes those two statuses observable. One process failure cannot corrupt
+routing or cancel work in another workspace. Selecting a workspace changes which
+one the browser sees, not which processes run. Removing an entry stops its
+supervisor. Browser-added roots are server-local absolute paths that the host
+canonicalizes and validates before registration.
 
 ## Session state and concurrency
 

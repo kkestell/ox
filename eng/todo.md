@@ -1,15 +1,24 @@
 # TODO
 
-- [ ] Add browser-managed multi-workspace operation
-  - [x] Persist a registry of validated server-local workspace roots and add
-        browser flows to register, select, and remove them without exposing a
-        general filesystem API
-  - [x] Run and route one independently supervised Ox process per active
-        workspace, and prove concurrent turns and failure isolation across two
-        roots
-  - [x] Complete multi-workspace restart, interaction-routing, and browser
-        coverage, then run the milestone completeness and simplification review
-- [ ] Apply responsive visual design to the feature-complete browser client
-  - [ ] Add the first CSS after the functional gate, preserving semantic control
-        behavior, and verify the complete flow at phone and desktop viewports
-        with focused accessibility and Playwright checks
+- [ ] Restructure the browser client around a workspace and conversation sidebar
+  - [ ] Carry a bounded recent-conversation list for every registered workspace
+        in the host snapshot, so cross-workspace navigation does not require
+        selecting a workspace first
+  - [ ] Move workspace registration, selection, and conversation history into
+        one sidebar navigation region, leave the selected conversation as the
+        only primary content, add the minimal layout stylesheet that places the
+        sidebar beside it, and replace the pre-CSS invariant in
+        `eng/client-architecture.md`
+  - [ ] Move authentication, MCP servers, and support details out of the primary
+        column into a workspace settings surface reached from the sidebar
+- [ ] Apply responsive visual design to the browser client
+  - [ ] Adopt Tailwind and shadcn in the Bun build with one base theme, restyle
+        the existing structure without changing it, and keep accessible roles
+        and names stable
+  - [ ] Style the shell: sidebar, conversation header, workspace settings, and a
+        drawer at phone width
+  - [ ] Style the conversation: a scrolling transcript with a pinned composer,
+        auto-scroll that yields to manual scrollback, and shadcn presentation
+        for tool activity, plans, permissions, and questions
+  - [ ] Verify the complete flow at phone and desktop viewports with focused
+        accessibility and Playwright checks

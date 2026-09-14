@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { maximumSessions } from "./protocol.ts";
-import { WorkspaceSupervisor } from "./workspace-supervisor.ts";
+import { WorkspaceSupervisor, type WorkspaceSupervisorOptions } from "./workspace-supervisor.ts";
 
 const workspaces: string[] = [];
 
@@ -57,7 +57,7 @@ describe("workspace supervisor", () => {
 
   test("reports a launch failure without exposing a ready connection", async () => {
     const started = Date.now();
-    const supervisor = await WorkspaceSupervisor.start({
+    const supervisor = await launch({
       command: "/definitely/not/ox",
       workspace: await temporaryWorkspace(),
     });
@@ -89,19 +89,20 @@ describe("workspace supervisor", () => {
     await supervisor.stop();
   });
 
-  test("rejects a workspace that is not a directory", async () => {
+  test("reports a workspace that is not a directory as unavailable", async () => {
     const workspace = await temporaryWorkspace();
     const file = join(workspace, "not-a-directory");
     await writeFile(file, "nope");
 
-    await expect(WorkspaceSupervisor.start({ command: "ox", workspace: file })).rejects.toThrow(
-      "workspace must be a directory",
-    );
+    const supervisor = await launch({ command: "ox", workspace: file });
+
+    expect(supervisor.state.status).toBe("unavailable");
+    expect(supervisor.state.diagnostics).toEqual(["workspace must be a directory"]);
   });
 
   test("authenticates stored credentials, completes terminal login, and logs out", async () => {
     const workspace = await temporaryWorkspace();
-    const supervisor = await WorkspaceSupervisor.start({
+    const supervisor = await launch({
       arguments: ["--eval", authenticationProgram(), "primary"],
       command: process.execPath,
       workspace,
@@ -135,7 +136,7 @@ describe("workspace supervisor", () => {
   test("automatically authenticates a stored credential at startup", async () => {
     const workspace = await temporaryWorkspace();
     await writeFile(join(workspace, "credential-present"), "yes");
-    const supervisor = await WorkspaceSupervisor.start({
+    const supervisor = await launch({
       arguments: ["--eval", authenticationProgram(), "primary"],
       command: process.execPath,
       workspace,
@@ -148,7 +149,7 @@ describe("workspace supervisor", () => {
 
   test("does not retain a failed terminal credential", async () => {
     const workspace = await temporaryWorkspace();
-    const supervisor = await WorkspaceSupervisor.start({
+    const supervisor = await launch({
       arguments: ["--eval", authenticationProgram(), "primary"],
       command: process.execPath,
       workspace,
@@ -162,7 +163,7 @@ describe("workspace supervisor", () => {
   });
 
   test("treats an unadvertised logout capability as unsupported", async () => {
-    const supervisor = await WorkspaceSupervisor.start({
+    const supervisor = await launch({
       arguments: ["--eval", authenticationProgram("null"), "primary"],
       command: process.execPath,
       workspace: await temporaryWorkspace(),
@@ -175,7 +176,7 @@ describe("workspace supervisor", () => {
   });
 
   test("owns paginated session lifecycle state", async () => {
-    const supervisor = await WorkspaceSupervisor.start({
+    const supervisor = await launch({
       arguments: ["--eval", lifecycleProgram()],
       command: process.execPath,
       workspace: await temporaryWorkspace(),
@@ -222,7 +223,7 @@ describe("workspace supervisor", () => {
 
   test("forwards transient MCP definitions through new, load, and resume", async () => {
     const workspace = await temporaryWorkspace();
-    const supervisor = await WorkspaceSupervisor.start({
+    const supervisor = await launch({
       arguments: ["--eval", mcpActivationProgram()],
       command: process.execPath,
       workspace,
@@ -247,7 +248,7 @@ describe("workspace supervisor", () => {
   });
 
   test("bounds the session catalog a snapshot can carry", async () => {
-    const supervisor = await WorkspaceSupervisor.start({
+    const supervisor = await launch({
       arguments: ["--eval", catalogProgram(maximumSessions + 100)],
       command: process.execPath,
       workspace: await temporaryWorkspace(),
@@ -261,7 +262,7 @@ describe("workspace supervisor", () => {
   });
 
   test("owns independent prompt turns, cancellation, and configuration", async () => {
-    const supervisor = await WorkspaceSupervisor.start({
+    const supervisor = await launch({
       arguments: ["--eval", promptProgram()],
       command: process.execPath,
       workspace: await temporaryWorkspace(),
@@ -290,7 +291,7 @@ describe("workspace supervisor", () => {
     const workspace = await temporaryWorkspace();
     const path = join(workspace, "notes.txt");
     await writeFile(path, "before\n");
-    const supervisor = await WorkspaceSupervisor.start({
+    const supervisor = await launch({
       arguments: ["--eval", filesystemProgram()],
       command: process.execPath,
       workspace,
@@ -309,7 +310,7 @@ describe("workspace supervisor", () => {
   });
 
   test("reports which conversation is waiting for an answer and routes it there", async () => {
-    const supervisor = await WorkspaceSupervisor.start({
+    const supervisor = await launch({
       arguments: ["--eval", waitingProgram()],
       command: process.execPath,
       workspace: await temporaryWorkspace(),
@@ -339,7 +340,7 @@ describe("workspace supervisor", () => {
   });
 
   test("cancels and removes pending interactions when Ox exits", async () => {
-    const supervisor = await WorkspaceSupervisor.start({
+    const supervisor = await launch({
       arguments: ["--eval", interactionExitProgram()],
       command: process.execPath,
       workspace: await temporaryWorkspace(),
@@ -355,7 +356,7 @@ describe("workspace supervisor", () => {
 });
 
 async function start(mode: "agent" | "diagnostics" | "exit" | "silent"): Promise<WorkspaceSupervisor> {
-  return WorkspaceSupervisor.start({
+  return launch({
     arguments: ["--eval", program(mode)],
     command: process.execPath,
     workspace: await temporaryWorkspace(),
@@ -702,10 +703,18 @@ process.stdin.on('data', (chunk) => {
 });`;
 }
 
+// The supervisor no longer resolves the root it is given, and macOS tmpdir is a
+// symlink that would otherwise break filesystem confinement.
 async function temporaryWorkspace(): Promise<string> {
   const workspace = await mkdtemp(join(tmpdir(), "ox-workspace-supervisor-"));
   workspaces.push(workspace);
-  return workspace;
+  return realpath(workspace);
+}
+
+async function launch(options: WorkspaceSupervisorOptions): Promise<WorkspaceSupervisor> {
+  const supervisor = new WorkspaceSupervisor(options);
+  await supervisor.start();
+  return supervisor;
 }
 
 async function eventually(condition: () => boolean): Promise<void> {

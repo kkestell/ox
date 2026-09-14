@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -134,6 +134,41 @@ describe("workspace registry", () => {
     await expect(registry.register("relative")).rejects.toThrow("workspace path must be absolute");
     await expect(registry.register(file)).rejects.toThrow("workspace must be a directory");
     expect(registry.state).toEqual({ workspaces: [] });
+  });
+
+  test("keeps an entry whose root disappeared and rejects a relative persisted root", async () => {
+    const root = await temporaryDirectory();
+    const kept = join(await realpath(root), "kept");
+    const gone = join(root, "gone");
+    const path = join(root, "workspaces.json");
+    await mkdir(kept);
+    await writeFile(
+      path,
+      JSON.stringify({
+        version: 1,
+        selectedId: firstID,
+        workspaces: [
+          { id: firstID, root: kept },
+          { id: secondID, root: gone },
+        ],
+      }),
+    );
+
+    expect((await WorkspaceRegistry.load(path)).state).toEqual({
+      selectedId: firstID,
+      workspaces: [
+        { id: firstID, name: "kept", root: kept },
+        { id: secondID, name: "gone", root: gone },
+      ],
+    });
+
+    await writeFile(
+      path,
+      JSON.stringify({ version: 1, selectedId: firstID, workspaces: [{ id: firstID, root: "relative" }] }),
+    );
+    await expect(WorkspaceRegistry.load(path)).rejects.toThrow(
+      "workspace registry has an unsupported or malformed format",
+    );
   });
 });
 

@@ -60,39 +60,51 @@ export async function startHost(options: HostOptions = {}): Promise<StartedHost>
     return selected === undefined ? undefined : supervisors.get(selected)?.state;
   }
 
-  function publish(): void {
+  // A publish caused by an unselected workspace cannot change the selected
+  // detail, so it rebuilds only the catalog. Every host-driven publish passes no
+  // ID and rebuilds the whole snapshot, which is what keeps registry changes and
+  // redaction correct.
+  function publish(workspaceId?: string): void {
     revision += 1;
-    snapshot = snapshotFor(revision, visibleRegistry, supervisors, selectedState());
+    snapshot =
+      workspaceId !== undefined && workspaceId !== visibleRegistry.selectedId
+        ? { ...snapshot, revision, workspaces: browserWorkspaces(visibleRegistry, supervisors) }
+        : snapshotFor(revision, visibleRegistry, supervisors, selectedState());
     for (const socket of sockets) {
       send(socket, snapshot);
     }
   }
 
+  // The supervisor is registered and subscribed before its process exists, so
+  // the entry reports starting for the whole launch rather than looking
+  // unavailable until the process answers.
   async function startSupervisor(workspace: RegisteredWorkspace, diagnostics: string[] = []): Promise<void> {
-    const supervisor = await WorkspaceSupervisor.start({
+    const supervisor = new WorkspaceSupervisor({
       arguments: options.oxArguments,
       command: options.oxCommand,
       diagnostics,
       workspace: workspace.root,
     });
     supervisors.set(workspace.id, supervisor);
-    unsubscribes.set(workspace.id, supervisor.subscribe(publish));
+    unsubscribes.set(workspace.id, supervisor.subscribe(() => publish(workspace.id)));
+    publish();
+    await supervisor.start();
   }
 
-  // A root that stopped being usable between registry validation and launch
-  // leaves the entry without a supervisor; it reports unavailable and refuses
-  // commands rather than taking the host or the registration down with it. An
-  // explicit restart is a user request, so it reports its failure instead.
+  // A workspace that cannot launch reports unavailable and refuses commands
+  // rather than taking the host or the registration down with it. An explicit
+  // restart is a user request, so it reports its failure instead.
   async function startSupervisorQuietly(workspace: RegisteredWorkspace): Promise<void> {
     await startSupervisor(workspace).catch(() => undefined);
   }
 
+  // The supervisor stays in the map until stop resolves, so the entry reports
+  // stopped rather than jumping straight to unavailable.
   async function stopSupervisor(id: string): Promise<void> {
-    const supervisor = supervisors.get(id);
+    await supervisors.get(id)?.stop();
     unsubscribes.get(id)?.();
     unsubscribes.delete(id);
     supervisors.delete(id);
-    await supervisor?.stop();
   }
 
   function serializeWorkspace<T>(operation: () => Promise<T>): Promise<T> {
@@ -122,7 +134,6 @@ export async function startHost(options: HostOptions = {}): Promise<StartedHost>
           }
           const diagnostics = supervisors.get(workspace.id)?.state.diagnostics ?? [];
           await stopSupervisor(workspace.id);
-          publish();
           await startSupervisor(workspace, diagnostics);
           break;
         }
@@ -211,8 +222,12 @@ export async function startHost(options: HostOptions = {}): Promise<StartedHost>
           return;
         }
         void respond(socket, browserCommand.requestId, () => snapshot.revision, () => {
-          if (isWorkspaceCommand(browserCommand)) {
-            return performWorkspace(browserCommand);
+          switch (browserCommand.type) {
+            case "register-workspace":
+            case "remove-workspace":
+            case "restart-workspace":
+            case "select-workspace":
+              return performWorkspace(browserCommand);
           }
           const supervisor = supervisors.get(browserCommand.workspaceId);
           if (!supervisor) {
@@ -264,8 +279,14 @@ function browserWorkspaces(
   return {
     ...(registry.selectedId === undefined ? {} : { selectedId: registry.selectedId }),
     values: registry.workspaces.map(({ id, name }) => {
-      const state = supervisors.get(id)?.state;
-      return { awaiting: state?.awaiting ?? false, busy: state?.busy ?? false, id, name, status: state?.status ?? "unavailable" };
+      const catalog = supervisors.get(id)?.catalog;
+      return {
+        awaiting: catalog?.awaiting ?? false,
+        busy: catalog?.busy ?? false,
+        id,
+        name,
+        status: catalog?.status ?? "unavailable",
+      };
     }),
   };
 }
@@ -274,8 +295,9 @@ function browserWorkspace(
   workspace: WorkspaceState,
   registry: WorkspaceRegistryState,
 ): NonNullable<Snapshot["workspace"]> {
+  const roots = registry.workspaces.map((entry) => entry.root).sort((left, right) => right.length - left.length);
   return {
-    diagnostics: workspace.diagnostics.map((diagnostic) => redactWorkspaceRoots(diagnostic, registry)),
+    diagnostics: workspace.diagnostics.map((diagnostic) => redactWorkspaceRoots(diagnostic, roots)),
     mcpServerCount: workspace.mcpServerCount,
     name: workspace.name,
     promptCapabilities: workspace.promptCapabilities,
@@ -283,10 +305,8 @@ function browserWorkspace(
   };
 }
 
-function redactWorkspaceRoots(diagnostic: string, registry: WorkspaceRegistryState): string {
-  return [...registry.workspaces]
-    .sort((left, right) => right.root.length - left.root.length)
-    .reduce((redacted, workspace) => redacted.split(workspace.root).join("[workspace]"), diagnostic);
+function redactWorkspaceRoots(diagnostic: string, roots: string[]): string {
+  return roots.reduce((redacted, root) => redacted.split(root).join("[workspace]"), diagnostic);
 }
 
 function browserSessions(workspace: WorkspaceState): Snapshot["sessions"] {
@@ -370,12 +390,6 @@ type WorkspaceCommand = Extract<
   BrowserCommand,
   { type: "register-workspace" | "remove-workspace" | "restart-workspace" | "select-workspace" }
 >;
-
-const workspaceCommands = new Set(["register-workspace", "remove-workspace", "restart-workspace", "select-workspace"]);
-
-function isWorkspaceCommand(command: BrowserCommand): command is WorkspaceCommand {
-  return workspaceCommands.has(command.type);
-}
 
 function requestID(value: unknown): string {
   if (

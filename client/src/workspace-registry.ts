@@ -16,7 +16,7 @@ const persistedRegistrySchema = z
         z
           .object({
             id: z.string().uuid(),
-            root: z.string().min(1),
+            root: z.string().min(1).refine(isAbsolute),
           })
           .strict(),
       )
@@ -176,7 +176,11 @@ async function validatePersistedRegistry(registry: PersistedRegistry): Promise<W
       throw new Error("workspace registry contains a duplicate ID");
     }
     ids.add(entry.id);
-    const root = await canonicalWorkspace(entry.root);
+    // A persisted root was canonical when it was written, so a root that no
+    // longer canonicalizes is a workspace that stopped being usable rather than
+    // a malformed file. Canonicalizing is kept only so a hand-edited file
+    // cannot alias one directory into two supervisors.
+    const root = await canonicalWorkspace(entry.root).catch(() => entry.root);
     if (roots.has(root)) {
       throw new Error("workspace registry contains a duplicate root");
     }
@@ -194,7 +198,7 @@ async function validatePersistedRegistry(registry: PersistedRegistry): Promise<W
 
 // Opening the directory, rather than only inspecting its mode, is what proves
 // the host can actually list the root it is about to hand to an Ox process.
-async function canonicalWorkspace(path: string): Promise<string> {
+export async function canonicalWorkspace(path: string): Promise<string> {
   if (!isAbsolute(path)) {
     throw new Error("workspace path must be absolute");
   }

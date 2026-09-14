@@ -30,11 +30,10 @@ workspace leaves the others running. Removing a registry entry stops that
 workspace's Ox process; it does not delete workspace files or Ox session
 history.
 
-When a workspace's Ox process stops, whether it failed or you logged out of it,
-restart it from the browser. A restart starts a replacement process and reopens
-the workspace's stored conversations; it does not resume a turn that was
-interrupted. Diagnostics from the process that stopped stay visible in support
-details.
+When a workspace's Ox process fails to start or exits, restart it from the
+browser. A restart starts a replacement process and reopens the workspace's
+stored conversations; it does not resume a turn that was interrupted.
+Diagnostics from the process that stopped stay visible in support details.
 
 The host automatically uses Ox's stored credential when one is available. It
 uses `ox` from `PATH` by default. Use `--ox` to choose an executable, and repeat

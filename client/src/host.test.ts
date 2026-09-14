@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -16,6 +16,8 @@ afterEach(async () => {
 });
 
 const unregisteredWorkspaceID = "11111111-1111-4111-8111-111111111111";
+const keptWorkspaceID = "22222222-2222-4222-8222-222222222222";
+const goneWorkspaceID = "33333333-3333-4333-8333-333333333333";
 
 const httpMCPServer = {
   transport: "http",
@@ -139,6 +141,81 @@ describe("browser host", () => {
     client.close();
   });
 
+  test("serves a registry whose root disappeared instead of refusing to start", async () => {
+    const root = await realpath(await temporaryDirectory());
+    const kept = join(root, "kept");
+    await mkdir(kept);
+    const registryPath = join(root, "workspaces.json");
+    await writeFile(
+      registryPath,
+      JSON.stringify({
+        version: 1,
+        selectedId: goneWorkspaceID,
+        workspaces: [
+          { id: keptWorkspaceID, root: kept },
+          { id: goneWorkspaceID, root: join(root, "gone") },
+        ],
+      }),
+    );
+
+    host = await startHost({ oxCommand: "/definitely/not/ox", registryPath });
+    const client = await connect(host);
+    await client.request({ type: "ping" });
+
+    expect(client.snapshot().workspaces.values).toEqual([
+      { awaiting: false, busy: false, id: keptWorkspaceID, name: "kept", status: "unavailable" },
+      { awaiting: false, busy: false, id: goneWorkspaceID, name: "gone", status: "unavailable" },
+    ]);
+    expect(client.snapshot().workspace?.diagnostics).toEqual(["workspace must be a listable directory"]);
+    expect(await client.request({ type: "set-mcp-servers", workspaceId: keptWorkspaceID, mcpServers: [] })).toEqual({
+      ok: true,
+    });
+    client.close();
+  });
+
+  test("reports a restarting workspace as stopped and then starting", async () => {
+    const root = await temporaryDirectory();
+    const workspace = join(root, "restarted");
+    await mkdir(workspace);
+    host = await startHost({ oxCommand: "/definitely/not/ox", registryPath: join(root, "workspaces.json") });
+    const client = await connect(host);
+    await client.request({ type: "register-workspace", path: workspace });
+    const [entry] = client.snapshot().workspaces.values;
+    if (!entry) {
+      throw new Error("the workspace should be registered");
+    }
+
+    expect(await client.request({ type: "restart-workspace", workspaceId: entry.id })).toEqual({ ok: true });
+
+    expect(client.statuses(entry.id)).toEqual(["starting", "unavailable", "stopped", "starting", "unavailable"]);
+    client.close();
+  });
+
+  test("keeps the selected workspace's detail across another workspace's publish", async () => {
+    const root = await temporaryDirectory();
+    await mkdir(join(root, "one"));
+    await mkdir(join(root, "two"));
+    host = await startHost({ oxCommand: "/definitely/not/ox", registryPath: join(root, "workspaces.json") });
+    const client = await connect(host);
+    await client.request({ type: "register-workspace", path: join(root, "one") });
+    await client.request({ type: "register-workspace", path: join(root, "two") });
+    const [one, two] = client.snapshot().workspaces.values;
+    if (!one || !two) {
+      throw new Error("both workspaces should be registered");
+    }
+    await client.request({ type: "set-mcp-servers", workspaceId: one.id, mcpServers: [httpMCPServer] });
+    const before = client.snapshot();
+
+    await client.request({ type: "set-mcp-servers", workspaceId: two.id, mcpServers: [httpMCPServer] });
+
+    const after = client.snapshot();
+    expect(after.revision).toBeGreaterThan(before.revision);
+    expect(after.workspaces.selectedId).toBe(one.id);
+    expect(after.workspace).toEqual(before.workspace);
+    expect(after.workspace?.mcpServerCount).toBe(1);
+    client.close();
+  });
+
   test("refuses to restart a workspace that is not registered", async () => {
     host = await startTestHost();
     const client = await connect(host);
@@ -202,6 +279,7 @@ type Client = {
   received(): string;
   request(command: Record<string, unknown>): Promise<{ ok: boolean; error?: string }>;
   snapshot(): Snapshot;
+  statuses(workspaceId: string): string[];
 };
 
 async function connect(started: StartedHost): Promise<Client> {
@@ -212,6 +290,9 @@ async function connect(started: StartedHost): Promise<Client> {
   });
   const results = new Map<string, (result: { ok: boolean; error?: string }) => void>();
   const received: string[] = [];
+  // Statuses only exist between two snapshots, so a test that asserts a
+  // transition has to keep every snapshot's catalog rather than the latest one.
+  const snapshots: Snapshot[] = [];
   let snapshot: Snapshot | undefined;
   let requests = 0;
   socket.addEventListener("message", (event) => {
@@ -219,6 +300,7 @@ async function connect(started: StartedHost): Promise<Client> {
     const message = JSON.parse(String(event.data));
     if (message.type === "snapshot") {
       snapshot = message;
+      snapshots.push(message);
       return;
     }
     results.get(message.requestId)?.({ ok: message.ok, ...(message.ok ? {} : { error: message.error }) });
@@ -238,6 +320,13 @@ async function connect(started: StartedHost): Promise<Client> {
         throw new Error("the host did not send a snapshot");
       }
       return snapshot;
+    },
+    statuses(workspaceId) {
+      return snapshots.flatMap((value, index) => {
+        const status = value.workspaces.values.find((entry) => entry.id === workspaceId)?.status;
+        const previous = snapshots[index - 1]?.workspaces.values.find((entry) => entry.id === workspaceId)?.status;
+        return status !== undefined && status !== previous ? [status] : [];
+      });
     },
   };
 }

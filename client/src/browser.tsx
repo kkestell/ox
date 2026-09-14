@@ -111,19 +111,25 @@ function App() {
     return true;
   }
 
-  function sendRouted(request: RoutedRequest): boolean {
+  // Returns why the command could not be sent, so a missing selection is not
+  // reported as a lost host connection.
+  function sendRouted(request: RoutedRequest): string | undefined {
     const workspaceId = snapshot?.workspaces.selectedId;
-    return workspaceId !== undefined && send({ ...request, workspaceId } as RoutedCommand);
+    if (workspaceId === undefined) {
+      return "No workspace is selected";
+    }
+    return send({ ...request, workspaceId } as RoutedCommand) ? undefined : "The host connection is not open";
   }
 
   // Session commands report their outcome only through their result, so the
   // browser keeps the latest failure visible until another one succeeds.
   function submitSessionCommand(request: RoutedRequest): void {
-    if (sendRouted(request)) {
-      sessionRequests.current.add(request.requestId);
+    const problem = sendRouted(request);
+    if (problem !== undefined) {
+      setSessionError(problem);
       return;
     }
-    setSessionError("The host connection is not open");
+    sessionRequests.current.add(request.requestId);
   }
 
   function terminalLogin(methodId: string): void {
@@ -145,8 +151,9 @@ function App() {
 
   function saveMCPServers(servers: MCPServer[]): void {
     const requestId = crypto.randomUUID();
-    if (!sendRouted({ mcpServers: servers, requestId, type: "set-mcp-servers" })) {
-      setMCPMessage("The host connection is not open");
+    const problem = sendRouted({ mcpServers: servers, requestId, type: "set-mcp-servers" });
+    if (problem !== undefined) {
+      setMCPMessage(problem);
       return;
     }
     mcpRequests.current.add(requestId);
@@ -181,7 +188,7 @@ function App() {
     <main>
       <header>
         <h1>Ox</h1>
-        {snapshot ? <p>{snapshot.workspace?.name ?? "No workspace selected"}</p> : null}
+        {snapshot ? <p>{selectedWorkspace?.name ?? "No workspace selected"}</p> : null}
       </header>
       {unavailable ? <p role="alert">Ox is unavailable. Open support details for diagnostics.</p> : null}
       {selectedWorkspace?.status === "stopped" ? <p role="alert">Ox is stopped for this workspace.</p> : null}
