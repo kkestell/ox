@@ -36,7 +36,7 @@ export type WorkspaceState = {
 };
 
 export type SessionState = {
-  active?: { busy: boolean; id: string; transcript: SessionTranscript };
+  active?: { busy: boolean; id: string; interactions: import("./protocol.ts").PendingInteraction[]; transcript: SessionTranscript };
   nextCursor?: string;
   selectedID?: string;
   values: SessionSummary[];
@@ -225,7 +225,22 @@ export class WorkspaceSupervisor {
     if (!this.#activePrompts.has(sessionID)) {
       throw new Error("session has no active prompt");
     }
+    this.#controllers.get(sessionID)?.cancelInteractions();
     await this.readyConnection().agent.notify(acp.methods.agent.session.cancel, { sessionId: sessionID });
+  }
+
+  resolvePermission(sessionID: string, interactionID: string, optionID: string): void {
+    const controller = this.#controllers.get(sessionID);
+    if (!controller) throw new Error("session is not active");
+    controller.resolvePermission(interactionID, optionID);
+    this.publish();
+  }
+
+  resolveElicitation(sessionID: string, interactionID: string, action: "accept" | "decline" | "cancel", content?: Record<string, import("./protocol.ts").FormValue>): void {
+    const controller = this.#controllers.get(sessionID);
+    if (!controller) throw new Error("session is not active");
+    controller.resolveElicitation(interactionID, action, content);
+    this.publish();
   }
 
   async setConfigOption(sessionID: string, configID: string, value: string): Promise<void> {
@@ -280,6 +295,7 @@ export class WorkspaceSupervisor {
       if (!this.#stopping && !this.#terminating) {
         this.recordDiagnostic(signal ? `Ox exited from ${signal}` : `Ox exited with code ${code ?? "unknown"}`);
         this.setAuthentication(unauthenticated);
+        this.clearActiveSessions();
         this.setState("unavailable");
       }
       childTerminated();
@@ -291,6 +307,8 @@ export class WorkspaceSupervisor {
     );
     const connection = acp
       .client({ name: "ox-browser-client" })
+      .onRequest(acp.methods.client.session.requestPermission, ({ params, signal }) => this.requestPermission(params, signal))
+      .onRequest(acp.methods.client.elicitation.create, ({ params, signal }) => this.requestElicitation(params, signal))
       .onNotification(acp.methods.client.session.update, ({ params }) => this.routeSessionUpdate(params))
       .connect(stream);
     this.#connection = connection;
@@ -306,7 +324,7 @@ export class WorkspaceSupervisor {
     const initialized = await Promise.race([
       connection.agent
         .request(acp.methods.agent.initialize, {
-          clientCapabilities: { auth: { terminal: true } },
+          clientCapabilities: { auth: { terminal: true }, elicitation: { form: {} } },
           clientInfo: { name: "ox-browser-client", version: "0" },
           protocolVersion: acp.PROTOCOL_VERSION,
         })
@@ -523,6 +541,7 @@ export class WorkspaceSupervisor {
     if (!this.#controllers.has(sessionID)) {
       throw new Error("session is not active");
     }
+    this.#controllers.get(sessionID)?.cancelInteractions();
     await this.readyConnection().agent.request(acp.methods.agent.session.close, { sessionId: sessionID });
     this.#controllers.delete(sessionID);
     this.#activePrompts.delete(sessionID);
@@ -580,12 +599,23 @@ export class WorkspaceSupervisor {
     this.publish();
   }
 
+  private requestPermission(request: acp.RequestPermissionRequest, signal: AbortSignal): Promise<acp.RequestPermissionResponse> {
+    const controller = this.#controllers.get(request.sessionId);
+    return controller ? controller.requestPermission(request, signal, () => this.publish()) : Promise.resolve({ outcome: { outcome: "cancelled" } });
+  }
+
+  private requestElicitation(request: acp.CreateElicitationRequest, signal: AbortSignal): Promise<acp.CreateElicitationResponse> {
+    if (!("sessionId" in request) || typeof request.sessionId !== "string") return Promise.resolve({ action: "cancel" });
+    const controller = this.#controllers.get(request.sessionId);
+    return controller ? controller.requestElicitation(request, signal, () => this.publish()) : Promise.resolve({ action: "cancel" });
+  }
+
   private activeSession(): SessionState["active"] {
     const id = this.#state.sessions.selectedID;
     if (id === undefined) return undefined;
     const controller = this.#controllers.get(id);
     if (controller === undefined) return undefined;
-    return { busy: this.#activePrompts.has(id), id, transcript: controller.transcript };
+    return { busy: this.#activePrompts.has(id), id, interactions: controller.interactions, transcript: controller.transcript };
   }
 
   private mergeActiveSessions(values: SessionSummary[]): SessionSummary[] {
@@ -602,6 +632,7 @@ export class WorkspaceSupervisor {
     if (this.#controllers.size === 0 && this.#state.sessions.selectedID === undefined) {
       return;
     }
+    for (const controller of this.#controllers.values()) controller.cancelInteractions();
     this.#controllers.clear();
     this.#activePrompts.clear();
     this.setSessions({

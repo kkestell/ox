@@ -115,4 +115,112 @@ describe("session controller", () => {
       { id: "unknown:1", kind: "unknown", label: "Unknown session update: future_update" },
     ]);
   });
+
+  test("retains pending interactions until one valid browser answer settles them", async () => {
+    const controller = new SessionController("session-1");
+    const signal = new AbortController();
+    let changed = 0;
+    const permission = controller.requestPermission(
+      {
+        options: [
+          { kind: "allow_once", name: "Allow once", optionId: "once" },
+          { kind: "reject_once", name: "Reject", optionId: "reject" },
+        ],
+        sessionId: "session-1",
+        toolCall: { kind: "execute", name: "shell", title: "Run tests", toolCallId: "tool-1" },
+      },
+      signal.signal,
+      () => changed++,
+    );
+
+    expect(controller.interactions).toEqual([
+      {
+        id: "interaction-1",
+        kind: "permission",
+        options: [
+          { id: "once", kind: "allow_once", name: "Allow once" },
+          { id: "reject", kind: "reject_once", name: "Reject" },
+        ],
+        tool: { id: "tool-1", name: "shell", title: "Run tests", toolKind: "execute" },
+      },
+    ]);
+    expect(() => controller.resolvePermission("interaction-1", "missing")).toThrow("not available");
+    controller.resolvePermission("interaction-1", "once");
+    await expect(permission).resolves.toEqual({ outcome: { optionId: "once", outcome: "selected" } });
+    expect(controller.interactions).toEqual([]);
+    expect(() => controller.resolvePermission("interaction-1", "once")).toThrow("no longer pending");
+    expect(changed).toBe(2);
+  });
+
+  test("projects and validates a form, and cancellation wins no later than the callback abort", async () => {
+    const controller = new SessionController("session-1");
+    const abort = new AbortController();
+    const form = controller.requestElicitation(
+      {
+        message: "Choose a color",
+        mode: "form",
+        requestedSchema: {
+          properties: {
+            answer: { oneOf: [{ const: "red", title: "Red" }, { const: "blue", title: "Blue" }], title: "Color", type: "string" },
+          },
+          required: ["answer"],
+          type: "object",
+        },
+        sessionId: "session-1",
+        toolCallId: "question-1",
+      },
+      abort.signal,
+      () => {},
+    );
+
+    expect(controller.interactions[0]).toMatchObject({
+      fields: [{ choices: [{ label: "Red", value: "red" }, { label: "Blue", value: "blue" }], label: "Color", name: "answer", required: true, type: "string" }],
+      kind: "form",
+      message: "Choose a color",
+    });
+    expect(() => controller.resolveElicitation("interaction-1", "accept", { answer: "green" })).toThrow("invalid");
+    abort.abort();
+    await expect(form).resolves.toEqual({ action: "cancel" });
+    expect(controller.interactions).toEqual([]);
+  });
+
+  test("cancels forms that cannot be faithfully projected and rejects invalid calendar dates", async () => {
+    const controller = new SessionController("session-1");
+    const signal = new AbortController();
+    const unsupported = controller.requestElicitation(
+      {
+        message: "Pick one",
+        mode: "form",
+        requestedSchema: {
+          properties: {
+            answer: { default: "green", enum: ["red", "blue"], type: "string" },
+          },
+          type: "object",
+        },
+        sessionId: "session-1",
+      },
+      signal.signal,
+      () => {},
+    );
+    await expect(unsupported).resolves.toEqual({ action: "cancel" });
+    expect(controller.interactions).toEqual([]);
+
+    const form = controller.requestElicitation(
+      {
+        message: "When?",
+        mode: "form",
+        requestedSchema: {
+          properties: { date: { format: "date", type: "string" } },
+          required: ["date"],
+          type: "object",
+        },
+        sessionId: "session-1",
+      },
+      signal.signal,
+      () => {},
+    );
+    expect(() => controller.resolveElicitation("interaction-2", "accept", { date: "2026-02-29" })).toThrow("invalid");
+    controller.resolveElicitation("interaction-2", "accept", { date: "2028-02-29" });
+    await expect(form).resolves.toEqual({ action: "accept", content: { date: "2028-02-29" } });
+  });
 });

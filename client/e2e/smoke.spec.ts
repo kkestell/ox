@@ -182,6 +182,56 @@ test("runs separate sessions concurrently and cancels the selected live prompt",
   }
 });
 
+test("renders a host-owned form elicitation through refresh and answers it", async ({ page }) => {
+  const fixture = await createFixture();
+  let host: BrowserHost | undefined;
+  try {
+    host = startBrowserHost(fixture);
+    await assertReady(page, await host.url);
+    await page.getByRole("button", { name: "New session" }).click();
+    await page.getByLabel("Message").fill("ask a question");
+    await page.getByRole("button", { name: "Send prompt" }).click();
+    await expect(page.getByRole("region", { name: "Pending interactions" })).toContainText("Choose a color");
+    await expect(page.getByRole("option", { name: "Red" })).toHaveText("Red");
+    await expect(page.getByRole("combobox", { name: "Answer" })).toHaveValue("");
+    await page.reload();
+    await expect(page.getByRole("region", { name: "Pending interactions" })).toContainText("Choose a color");
+    await page.getByRole("combobox", { name: "Answer" }).selectOption("Red");
+    await page.getByRole("button", { name: "Submit answer" }).click();
+    await expect(page.getByRole("region", { name: "Pending interactions" })).toBeHidden();
+    await expect.poll(() => fixture.requests).toBe(2);
+  } finally {
+    await host?.stop();
+    await fixture.close();
+  }
+});
+
+test("renders exact permission options and lets the first browser answer win", async ({ browser, page }) => {
+  const fixture = await createFixture();
+  let host: BrowserHost | undefined;
+  let secondContext: Awaited<ReturnType<typeof browser.newContext>> | undefined;
+  try {
+    host = startBrowserHost(fixture);
+    const url = await host.url;
+    await assertReady(page, url);
+    await page.getByRole("button", { name: "New session" }).click();
+    await page.getByLabel("Message").fill("request permission");
+    await page.getByRole("button", { name: "Send prompt" }).click();
+    await expect(page.getByRole("region", { name: "Pending interactions" })).toContainText("pwd");
+    secondContext = await browser.newContext();
+    const second = await secondContext.newPage();
+    await second.goto(url);
+    await expect(second.getByRole("button", { name: "Allow once" })).toBeVisible();
+    await second.getByRole("button", { name: "Allow once" }).click();
+    await expect(page.getByRole("region", { name: "Pending interactions" })).toBeHidden();
+    await expect.poll(() => fixture.requests).toBe(2);
+  } finally {
+    await secondContext?.close();
+    await host?.stop();
+    await fixture.close();
+  }
+});
+
 type BrowserHost = {
   stop(): Promise<void>;
   url: Promise<string>;
@@ -297,6 +347,34 @@ async function createFixture(): Promise<Fixture> {
         prompts.push(body);
       }
       if (body.includes("hold")) {
+        return;
+      }
+      if (body.includes("request permission") && !body.includes('"outcome":"selected"')) {
+        response.writeHead(200, { "content-type": "text/event-stream" });
+        response.end(
+          [
+            'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"shell-call","type":"function","function":{"name":"shell","arguments":"{\\"command\\":\\"pwd\\"}"}}]},"finish_reason":null}]}',
+            "",
+            'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}',
+            "",
+            "data: [DONE]",
+            "",
+          ].join("\n"),
+        );
+        return;
+      }
+      if (body.includes("ask a question") && !body.includes('"outcome":"accepted"')) {
+        response.writeHead(200, { "content-type": "text/event-stream" });
+        response.end(
+          [
+            'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"question-call","type":"function","function":{"name":"question","arguments":"{\\"question\\":\\"Choose a color\\",\\"options\\":[{\\"label\\":\\"Red\\"},{\\"label\\":\\"Blue\\"}]}"}}]},"finish_reason":null}]}',
+            "",
+            'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}',
+            "",
+            "data: [DONE]",
+            "",
+          ].join("\n"),
+        );
         return;
       }
       response.writeHead(200, { "content-type": "text/event-stream" });

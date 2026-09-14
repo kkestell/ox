@@ -183,6 +183,56 @@ export type TranscriptEntry = z.infer<typeof transcriptEntrySchema>;
 export type TranscriptContent = z.infer<typeof contentBlockSchema>;
 export type ToolTranscriptContent = z.infer<typeof toolContentSchema>;
 
+const interactionID = z.string().min(1).max(128);
+const optionID = z.string().min(1).max(256);
+const interactionText = z.string().min(1).max(16_384);
+const formValueSchema = z.union([z.string().max(maximumPromptText), z.number().finite(), z.boolean(), z.array(z.string().max(4_096)).max(256)]);
+
+const formChoiceSchema = z.object({ description: boundedText.optional(), label: interactionText, value: z.string().min(1).max(4_096) }).strict();
+const formFieldSchema = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("string"), name: z.string().min(1).max(256), label: interactionText, description: boundedText.optional(), required: z.boolean(),
+    minLength: z.number().int().nonnegative().optional(), maxLength: z.number().int().nonnegative().optional(), pattern: z.string().max(4_096).optional(),
+    format: z.enum(["email", "uri", "date", "date-time"]).optional(), default: z.string().max(maximumPromptText).optional(), choices: z.array(formChoiceSchema).min(1).max(256).optional(),
+  }).strict(),
+  z.object({
+    type: z.enum(["number", "integer"]), name: z.string().min(1).max(256), label: interactionText, description: boundedText.optional(), required: z.boolean(),
+    minimum: z.number().finite().optional(), maximum: z.number().finite().optional(), default: z.number().finite().optional(),
+  }).strict(),
+  z.object({ type: z.literal("boolean"), name: z.string().min(1).max(256), label: interactionText, description: boundedText.optional(), required: z.boolean(), default: z.boolean().optional() }).strict(),
+  z.object({
+    type: z.literal("multi-select"), name: z.string().min(1).max(256), label: interactionText, description: boundedText.optional(), required: z.boolean(),
+    minItems: z.number().int().nonnegative().optional(), maxItems: z.number().int().nonnegative().optional(), default: z.array(z.string().min(1).max(4_096)).max(256).optional(), choices: z.array(formChoiceSchema).min(1).max(256),
+  }).strict(),
+]);
+
+const pendingInteractionSchema = z.discriminatedUnion("kind", [
+  z.object({
+    id: interactionID,
+    kind: z.literal("permission"),
+    tool: z.object({ id: z.string().min(1).max(512), title: interactionText, name: z.string().min(1).max(512).optional(), toolKind: z.string().min(1).max(128).optional() }).strict(),
+    options: z.array(z.object({ id: optionID, name: interactionText, kind: z.enum(["allow_once", "allow_always", "reject_once", "reject_always"]) }).strict()).min(1).max(16),
+  }).strict(),
+  z.object({
+    id: interactionID,
+    kind: z.literal("form"),
+    message: interactionText,
+    title: interactionText.optional(),
+    description: boundedText.optional(),
+    fields: z.array(formFieldSchema).min(1).max(64),
+  }).strict(),
+]);
+
+export type PendingInteraction = z.infer<typeof pendingInteractionSchema>;
+export type FormField = z.infer<typeof formFieldSchema>;
+export type FormValue = z.infer<typeof formValueSchema>;
+
+/** Returns only an interaction that is safe to include in a browser snapshot. */
+export function parsePendingInteraction(value: unknown): PendingInteraction | undefined {
+  const parsed = pendingInteractionSchema.safeParse(value);
+  return parsed.success ? parsed.data : undefined;
+}
+
 export const browserCommandSchema = z.discriminatedUnion("type", [
   z
     .object({
@@ -245,6 +295,8 @@ export const browserCommandSchema = z.discriminatedUnion("type", [
       value: z.string().min(1).max(512),
     })
     .strict(),
+  z.object({ type: z.literal("resolve-permission"), requestId: requestID, sessionId: sessionID, interactionId: interactionID, optionId: optionID }).strict(),
+  z.object({ type: z.literal("resolve-elicitation"), requestId: requestID, sessionId: sessionID, interactionId: interactionID, action: z.enum(["accept", "decline", "cancel"]), content: z.record(z.string().min(1).max(256), formValueSchema).refine((value) => Object.keys(value).length <= 64).optional() }).strict(),
 ]);
 
 export type BrowserCommand = z.infer<typeof browserCommandSchema>;
@@ -285,7 +337,7 @@ export const snapshotSchema = z
     sessions: z
       .object({
         active: z
-          .object({ id: z.string().min(1), busy: z.boolean(), transcript: sessionTranscriptSchema })
+          .object({ id: z.string().min(1), busy: z.boolean(), transcript: sessionTranscriptSchema, interactions: z.array(pendingInteractionSchema).max(64) })
           .strict()
           .optional(),
         nextCursor: z.string().min(1).optional(),

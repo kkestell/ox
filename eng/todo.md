@@ -128,7 +128,7 @@
   - [x] Add prompting and cancellation, all supported prompt block types, and
         mode, model, and reasoning controls; prove concurrent turns in separate
         sessions and refusal of a second turn in one busy session
-  - [ ] Handle permission and form-elicitation callbacks as host-owned pending
+  - [x] Handle permission and form-elicitation callbacks as host-owned pending
         interactions, including exact option/schema rendering, refresh,
         cancellation, and first-answer-wins races between browsers
   - [ ] Implement confined ACP read and write callbacks with boundary tests and

@@ -1,8 +1,14 @@
 import type * as acp from "@agentclientprotocol/sdk";
 
-import type { SessionTranscript, ToolTranscriptContent, TranscriptContent, TranscriptEntry } from "./protocol.ts";
+import { parsePendingInteraction, type FormField, type FormValue, type PendingInteraction, type SessionTranscript, type ToolTranscriptContent, type TranscriptContent, type TranscriptEntry } from "./protocol.ts";
 
 type MessageKind = "user" | "agent" | "thought";
+
+type PendingResolver = {
+  changed: () => void;
+  detach: () => void;
+  resolve: (result: acp.RequestPermissionResponse | acp.CreateElicitationResponse) => void;
+};
 
 // This controller is the single host-owned projection for both live updates and
 // session/load replay. It deliberately keeps ACP metadata and raw tool values
@@ -12,7 +18,9 @@ export class SessionController {
   #entries: TranscriptEntry[] = [];
   #indexes = new Map<string, number>();
   #nextLocalID = 1;
+  #nextInteractionID = 1;
   #plan: SessionTranscript["plan"] = [];
+  #pending = new Map<string, PendingInteraction & PendingResolver>();
   #usage: SessionTranscript["usage"];
 
   constructor(readonly id: string) {}
@@ -86,6 +94,99 @@ export class SessionController {
         ? {}
         : { usage: { ...this.#usage, ...(this.#usage.cost === undefined ? {} : { cost: { ...this.#usage.cost } }) } }),
     };
+  }
+
+  get interactions(): PendingInteraction[] {
+    return [...this.#pending.values()].map(copyInteraction);
+  }
+
+  requestPermission(request: acp.RequestPermissionRequest, signal: AbortSignal, changed: () => void): Promise<acp.RequestPermissionResponse> {
+    const tool = request.toolCall;
+    const options = request.options.flatMap((option) => {
+      if (!option.optionId || !option.name || !isPermissionKind(option.kind)) return [];
+      return [{ id: option.optionId, kind: option.kind, name: option.name }];
+    });
+    if (!tool.toolCallId || options.length !== request.options.length || options.length === 0) {
+      return Promise.resolve({ outcome: { outcome: "cancelled" } });
+    }
+    const interaction = parsePendingInteraction({
+      id: this.interactionID(),
+      kind: "permission",
+      options,
+      tool: {
+        id: tool.toolCallId,
+        title: tool.title || "Tool permission",
+        ...(tool.name ? { name: tool.name } : {}),
+        ...(tool.kind ? { toolKind: tool.kind } : {}),
+      },
+    });
+    if (!interaction || interaction.kind !== "permission") {
+      return Promise.resolve({ outcome: { outcome: "cancelled" } });
+    }
+    return this.waitFor(interaction, signal, changed) as Promise<acp.RequestPermissionResponse>;
+  }
+
+  requestElicitation(request: acp.CreateElicitationRequest, signal: AbortSignal, changed: () => void): Promise<acp.CreateElicitationResponse> {
+    const interaction = formInteraction(this.interactionID(), request);
+    if (!interaction) return Promise.resolve({ action: "cancel" });
+    return this.waitFor(interaction, signal, changed) as Promise<acp.CreateElicitationResponse>;
+  }
+
+  resolvePermission(interactionID: string, optionID: string): void {
+    const pending = this.#pending.get(interactionID);
+    if (!pending) throw new Error("interaction is no longer pending");
+    if (pending.kind !== "permission") throw new Error("interaction is not a permission request");
+    if (!pending.options.some((option) => option.id === optionID)) throw new Error("permission option is not available");
+    this.settle(interactionID, { outcome: { optionId: optionID, outcome: "selected" } });
+  }
+
+  resolveElicitation(interactionID: string, action: "accept" | "decline" | "cancel", content?: Record<string, FormValue>): void {
+    const pending = this.#pending.get(interactionID);
+    if (!pending) throw new Error("interaction is no longer pending");
+    if (pending.kind !== "form") throw new Error("interaction is not a form elicitation");
+    if (action !== "accept") {
+      this.settle(interactionID, { action });
+      return;
+    }
+    const checked = validateForm(pending.fields, content);
+    this.settle(interactionID, { action, content: checked });
+  }
+
+  cancelInteractions(): void {
+    for (const [id, interaction] of this.#pending) {
+      this.settle(id, interaction.kind === "permission" ? { outcome: { outcome: "cancelled" } } : { action: "cancel" });
+    }
+  }
+
+  private waitFor(
+    interaction: PendingInteraction,
+    signal: AbortSignal,
+    changed: () => void,
+  ): Promise<acp.RequestPermissionResponse | acp.CreateElicitationResponse> {
+    if (this.#pending.size >= 64) {
+      return Promise.resolve(interaction.kind === "permission" ? { outcome: { outcome: "cancelled" } } : { action: "cancel" });
+    }
+    return new Promise((resolve) => {
+      const abort = () => this.settle(interaction.id, interaction.kind === "permission" ? { outcome: { outcome: "cancelled" } } : { action: "cancel" });
+      const detach = () => signal.removeEventListener("abort", abort);
+      this.#pending.set(interaction.id, { ...interaction, detach, resolve, changed });
+      signal.addEventListener("abort", abort, { once: true });
+      if (signal.aborted) abort();
+      else changed();
+    });
+  }
+
+  private settle(interactionID: string, result: acp.RequestPermissionResponse | acp.CreateElicitationResponse): void {
+    const interaction = this.#pending.get(interactionID);
+    if (!interaction) return;
+    this.#pending.delete(interactionID);
+    interaction.detach();
+    interaction.changed();
+    interaction.resolve(result);
+  }
+
+  private interactionID(): string {
+    return `interaction-${this.#nextInteractionID++}`;
   }
 
   private appendMessage(kind: MessageKind, update: Record<string, unknown> | undefined): void {
@@ -308,4 +409,151 @@ function string(value: unknown): string | undefined {
 
 function number(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
+function isPermissionKind(value: unknown): value is Extract<PendingInteraction, { kind: "permission" }> ["options"][number]["kind"] {
+  return value === "allow_once" || value === "allow_always" || value === "reject_once" || value === "reject_always";
+}
+
+function copyInteraction(interaction: PendingInteraction): PendingInteraction {
+  if (interaction.kind === "permission") {
+    return { id: interaction.id, kind: "permission", options: interaction.options.map((option) => ({ ...option })), tool: { ...interaction.tool } };
+  }
+  return { id: interaction.id, kind: "form", message: interaction.message, ...(interaction.title === undefined ? {} : { title: interaction.title }), ...(interaction.description === undefined ? {} : { description: interaction.description }), fields: interaction.fields.map((field) => ({ ...field, ...(field.type === "multi-select" || field.type === "string" ? { choices: field.choices?.map((choice) => ({ ...choice })) } : {}) })) } as PendingInteraction;
+}
+
+function formInteraction(id: string, request: acp.CreateElicitationRequest): Extract<PendingInteraction, { kind: "form" }> | undefined {
+  if (request.mode !== "form" || !("sessionId" in request) || !request.sessionId || !request.message) return undefined;
+  const schema = record((request as { requestedSchema?: unknown }).requestedSchema);
+  const properties = record(schema?.properties);
+  if (!schema || schema.type !== undefined && schema.type !== "object" || !properties) return undefined;
+  const entries = Object.entries(properties);
+  if (entries.length === 0 || entries.length > 64 || Array.isArray(schema.required) && schema.required.length > entries.length) return undefined;
+  const required = new Set(Array.isArray(schema.required) ? schema.required.filter((name): name is string => typeof name === "string") : []);
+  const fields = entries.flatMap(([name, property]) => formField(name, property, required.has(name)));
+  if (fields.length !== entries.length) return undefined;
+  const title = string(schema.title);
+  const description = string(schema.description);
+  const interaction = parsePendingInteraction({ fields, id, kind: "form", message: request.message, ...(title ? { title } : {}), ...(description ? { description } : {}) });
+  return interaction?.kind === "form" ? interaction : undefined;
+}
+
+function formField(name: string, raw: unknown, required: boolean): FormField[] {
+  const property = record(raw);
+  if (!property || !name || name.length > 256) return [];
+  const title = string(property.title) ?? name;
+  const description = string(property.description);
+  const common = { name, label: title, ...(description ? { description } : {}), required };
+  const minimum = finite(property.minimum);
+  const maximum = finite(property.maximum);
+  if (minimum !== undefined && maximum !== undefined && minimum > maximum) return [];
+  if (property.type === "string") {
+    if (property.oneOf !== undefined && property.enum !== undefined) return [];
+    const choices = choicesFor(property.oneOf, property.enum);
+    const minLength = integer(property.minLength);
+    const maxLength = integer(property.maxLength);
+    const defaultValue = typeof property.default === "string" ? property.default : undefined;
+    const format = property.format === "email" || property.format === "uri" || property.format === "date" || property.format === "date-time" ? property.format : undefined;
+    if (typeof property.pattern === "string") {
+      try {
+        new RegExp(property.pattern);
+      } catch {
+        return [];
+      }
+    }
+    if (choices === undefined && (property.oneOf !== undefined || property.enum !== undefined) || minLength !== undefined && maxLength !== undefined && minLength > maxLength || defaultValue !== undefined && (minLength !== undefined && defaultValue.length < minLength || maxLength !== undefined && defaultValue.length > maxLength || typeof property.pattern === "string" && !new RegExp(property.pattern).test(defaultValue) || !validFormat(defaultValue, format) || choices !== undefined && !choices.some((choice) => choice.value === defaultValue))) return [];
+    return [{ ...common, type: "string", ...(minLength === undefined ? {} : { minLength }), ...(maxLength === undefined ? {} : { maxLength }), ...(typeof property.pattern === "string" ? { pattern: property.pattern } : {}), ...(format === undefined ? {} : { format }), ...(defaultValue === undefined ? {} : { default: defaultValue }), ...(choices === undefined ? {} : { choices }) }];
+  }
+  if (property.type === "number" || property.type === "integer") {
+    const defaultValue = finite(property.default);
+    if (defaultValue !== undefined && (property.type === "integer" && !Number.isInteger(defaultValue) || minimum !== undefined && defaultValue < minimum || maximum !== undefined && defaultValue > maximum)) return [];
+    return [{ ...common, type: property.type, ...(minimum === undefined ? {} : { minimum }), ...(maximum === undefined ? {} : { maximum }), ...(defaultValue === undefined ? {} : { default: defaultValue }) }];
+  }
+  if (property.type === "boolean") return [{ ...common, type: "boolean", ...(typeof property.default === "boolean" ? { default: property.default } : {}) }];
+  if (property.type !== "array") return [];
+  const items = record(property.items);
+  if (items?.anyOf !== undefined && items.enum !== undefined) return [];
+  const choices = items ? choicesFor(items.anyOf, items.enum) : undefined;
+  const minItems = integer(property.minItems);
+  const maxItems = integer(property.maxItems);
+  const defaultValue = Array.isArray(property.default) && property.default.every((value) => typeof value === "string") ? property.default : undefined;
+  if (!choices?.length || minItems !== undefined && maxItems !== undefined && minItems > maxItems || defaultValue !== undefined && (new Set(defaultValue).size !== defaultValue.length || defaultValue.some((value) => !choices.some((choice) => choice.value === value)) || minItems !== undefined && defaultValue.length < minItems || maxItems !== undefined && defaultValue.length > maxItems)) return [];
+  return [{ ...common, type: "multi-select", choices, ...(minItems === undefined ? {} : { minItems }), ...(maxItems === undefined ? {} : { maxItems }), ...(defaultValue === undefined ? {} : { default: defaultValue }) }];
+}
+
+function choicesFor(titled: unknown, plain: unknown): Array<{ description?: string; label: string; value: string }> | undefined {
+  if (Array.isArray(titled)) {
+    if (titled.length === 0 || titled.length > 256) return undefined;
+    const choices = titled.flatMap((item) => {
+      const value = record(item);
+      const label = string(value?.title);
+      const id = string(value?.const);
+      const description = string(value?.description);
+      return label && id ? [{ ...(description ? { description } : {}), label, value: id }] : [];
+    });
+    return choices.length === titled.length && new Set(choices.map((choice) => choice.value)).size === choices.length ? choices : undefined;
+  }
+  if (!Array.isArray(plain) || plain.length === 0 || plain.length > 256 || !plain.every((value) => typeof value === "string" && value.length > 0)) return undefined;
+  return new Set(plain).size === plain.length ? plain.map((value) => ({ label: value, value })) : undefined;
+}
+
+function validateForm(fields: readonly FormField[], supplied: Record<string, FormValue> | undefined): Record<string, FormValue> {
+  const content = supplied ?? {};
+  const expected = new Set(fields.map((field) => field.name));
+  for (const name of Object.keys(content)) if (!expected.has(name)) throw new Error("form contains an unknown field");
+  const result = Object.create(null) as Record<string, FormValue>;
+  for (const field of fields) {
+    const value = content[field.name];
+    if (value === undefined) {
+      if (field.required) throw new Error(`form field ${field.label} is required`);
+      continue;
+    }
+    switch (field.type) {
+      case "string":
+        if (typeof value !== "string" || field.minLength !== undefined && value.length < field.minLength || field.maxLength !== undefined && value.length > field.maxLength || field.pattern !== undefined && !new RegExp(field.pattern).test(value) || !validFormat(value, field.format) || field.choices && !field.choices.some((choice) => choice.value === value)) throw new Error(`form field ${field.label} is invalid`);
+        break;
+      case "number":
+      case "integer":
+        if (typeof value !== "number" || !Number.isFinite(value) || field.type === "integer" && !Number.isInteger(value) || field.minimum !== undefined && value < field.minimum || field.maximum !== undefined && value > field.maximum) throw new Error(`form field ${field.label} is invalid`);
+        break;
+      case "boolean":
+        if (typeof value !== "boolean") throw new Error(`form field ${field.label} is invalid`);
+        break;
+      case "multi-select":
+        if (!Array.isArray(value) || value.some((item) => typeof item !== "string") || new Set(value).size !== value.length || value.some((item) => !field.choices.some((choice) => choice.value === item)) || field.minItems !== undefined && value.length < field.minItems || field.maxItems !== undefined && value.length > field.maxItems) throw new Error(`form field ${field.label} is invalid`);
+        break;
+    }
+    result[field.name] = value;
+  }
+  return result;
+}
+
+function finite(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function integer(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : undefined;
+}
+
+function validFormat(value: string, format: Extract<FormField, { type: "string" }> ["format"]): boolean {
+  switch (format) {
+    case undefined: return true;
+    case "email": return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+    case "uri":
+      try {
+        new URL(value);
+        return true;
+      } catch {
+        return false;
+      }
+    case "date": return validDate(value);
+    case "date-time": return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?(?:Z|[+-]\d{2}:\d{2})?$/.test(value) && validDate(value.slice(0, 10)) && !Number.isNaN(Date.parse(value));
+  }
+}
+
+function validDate(value: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const date = new Date(`${value}T00:00:00.000Z`);
+  return !Number.isNaN(date.valueOf()) && date.toISOString().slice(0, 10) === value;
 }

@@ -64,6 +64,12 @@ describe("browser protocol", () => {
     }
   });
 
+  test("accepts correlated interaction answers and keeps their values bounded", () => {
+    expect(parseBrowserCommand({ type: "resolve-permission", requestId: "request-1", sessionId: "session-1", interactionId: "interaction-1", optionId: "allow" }).ok).toBe(true);
+    expect(parseBrowserCommand({ type: "resolve-elicitation", requestId: "request-2", sessionId: "session-1", interactionId: "interaction-1", action: "accept", content: { answer: "yes", count: 2, enabled: true, tags: ["one"] } }).ok).toBe(true);
+    expect(parseBrowserCommand({ type: "resolve-elicitation", requestId: "request-3", sessionId: "session-1", interactionId: "interaction-1", action: "cancel", content: { extra: "must not be needed" } }).ok).toBe(true);
+  });
+
   test.each([
     undefined,
     {},
@@ -78,6 +84,8 @@ describe("browser protocol", () => {
     { type: "prompt", requestId: "request-1", sessionId: "session-1", prompt: [] },
     { type: "prompt", requestId: "request-1", sessionId: "session-1", prompt: [{ type: "resource", resource: { uri: "attachment://missing" } }] },
     { type: "set-config-option", requestId: "request-1", sessionId: "session-1", configId: "mode", value: "" },
+    { type: "resolve-permission", requestId: "request-1", sessionId: "session-1", interactionId: "", optionId: "allow" },
+    { type: "resolve-elicitation", requestId: "request-1", sessionId: "session-1", interactionId: "interaction-1", action: "accept", content: { bad: { nested: true } } },
   ])("rejects invalid commands: %#j", (command) => {
     expect(parseBrowserCommand(command)).toEqual({
       ok: false,
@@ -101,6 +109,7 @@ describe("browser protocol", () => {
     snapshot.sessions.active = {
       busy: false,
       id: "session-1",
+      interactions: [],
       transcript: {
         configuration: [],
         entries: [{ content: [{ text: "hello", type: "text" }], id: "agent-1", kind: "agent" }],
@@ -112,6 +121,7 @@ describe("browser protocol", () => {
     snapshot.sessions.active = {
       busy: false,
       id: "session-1",
+      interactions: [],
       transcript: {
         configuration: [],
         entries: [{ id: "unknown-1", kind: "unknown", label: "future", payload: "must not cross the boundary" }],
@@ -123,6 +133,7 @@ describe("browser protocol", () => {
     snapshot.sessions.active = {
       busy: false,
       id: "session-1",
+      interactions: [],
       transcript: {
         configuration: [],
         entries: [

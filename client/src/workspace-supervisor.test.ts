@@ -237,6 +237,21 @@ describe("workspace supervisor", () => {
     expect(supervisor.state.sessions.active?.busy).toBe(false);
     await supervisor.stop();
   });
+
+  test("cancels and removes pending interactions when Ox exits", async () => {
+    const supervisor = await WorkspaceSupervisor.start({
+      arguments: ["--eval", interactionExitProgram()],
+      command: process.execPath,
+      workspace: await temporaryWorkspace(),
+    });
+    await supervisor.newSession();
+    void supervisor.prompt("one", [{ text: "ask", type: "text" }]).catch(() => {});
+
+    await eventually(() => supervisor.state.sessions.active?.interactions.length === 1);
+    await eventually(() => supervisor.state.status === "unavailable");
+    expect(supervisor.state.sessions.active).toBeUndefined();
+    await supervisor.stop();
+  });
 });
 
 async function start(mode: "agent" | "diagnostics" | "exit" | "silent"): Promise<WorkspaceSupervisor> {
@@ -448,6 +463,33 @@ process.stdin.on('data', (chunk) => {
     } else if (request.method === 'session/cancel' && held !== undefined) {
       response(held, { stopReason: 'cancelled' });
       held = undefined;
+    }
+  }
+});`;
+}
+
+function interactionExitProgram(): string {
+  return `
+process.stdin.setEncoding('utf8');
+let input = '';
+function response(id, result) { process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id, result }) + '\\n'); }
+process.stdin.on('data', (chunk) => {
+  input += chunk;
+  for (;;) {
+    const newline = input.indexOf('\\n');
+    if (newline === -1) break;
+    const request = JSON.parse(input.slice(0, newline));
+    input = input.slice(newline + 1);
+    if (request.method === 'initialize') {
+      response(request.id, { protocolVersion: 1, agentCapabilities: {}, authMethods: [] });
+    } else if (request.method === 'session/new') {
+      response(request.id, { sessionId: 'one' });
+    } else if (request.method === 'session/prompt') {
+      process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: 'permission', method: 'session/request_permission', params: {
+        sessionId: 'one', toolCall: { toolCallId: 'tool-1', title: 'Run command' },
+        options: [{ optionId: 'allow', name: 'Allow once', kind: 'allow_once' }],
+      } }) + '\\n');
+      setTimeout(() => process.exit(7), 100);
     }
   }
 });`;

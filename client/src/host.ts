@@ -182,6 +182,7 @@ function browserSessions(workspace: WorkspaceState): Snapshot["sessions"] {
           active: {
             busy: workspace.sessions.active.busy,
             id: workspace.sessions.active.id,
+            interactions: workspace.sessions.active.interactions,
             transcript: workspace.sessions.active.transcript,
           },
         }),
@@ -248,6 +249,12 @@ function perform(
       return supervisor.cancelPrompt(command.sessionId);
     case "set-config-option":
       return supervisor.setConfigOption(command.sessionId, command.configId, command.value);
+    case "resolve-permission":
+      supervisor.resolvePermission(command.sessionId, command.interactionId, command.optionId);
+      return Promise.resolve();
+    case "resolve-elicitation":
+      supervisor.resolveElicitation(command.sessionId, command.interactionId, command.action, command.content);
+      return Promise.resolve();
   }
 }
 
