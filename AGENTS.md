@@ -48,8 +48,9 @@ output. It is ACP-first and works with ACP clients. The durable design lives in
 - `docs/` — End-user documentation and the target product specification.
 - `eng/` — Development and agent documentation. `eng/architecture.md` owns the
   agent design, `eng/client-architecture.md` owns the first-party web client
-  design, `eng/todo.md` owns build order and status, and `eng/plans/` holds
-  plans for individual todo items.
+  design, `eng/todo.md` owns build order and status, `eng/plans/` holds plans
+  for individual todo items, and `eng/mockups/` holds static web client design
+  mockups.
 
 ## Commands
 
@@ -103,6 +104,10 @@ carry all implementation work. Use `eng/plans/TEMPLATE.md` as a scaffold, then
 keep the plan to the smallest useful set of source references, implementation
 tasks, and tests. Do not restate the todo list, architecture, repository rules,
 or standard validation commands.
+
+A plan that changes the web client's visual design also produces a static HTML
+mockup in `eng/mockups/`. The mockup is reviewed and settled before
+implementation starts.
 
 Do not review individual plans or run an independent review after each slice.
 After every top-level todo item is complete, run one completeness and

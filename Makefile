@@ -1,4 +1,4 @@
-.PHONY: check check-all check-client check-docs check-go eval-live format format-docs format-go install test test-all test-client test-eval test-race
+.PHONY: check check-all check-client check-docs check-go eval-live format format-docs format-go install run test test-all test-client test-eval test-race
 
 unit_packages = $$(go list ./... | grep -vE '/(internal/e2e|integration)$$')
 
@@ -19,6 +19,9 @@ format-docs:
 
 install:
 	GOBIN="$${HOME:?}/.local/bin" go install ./cmd/ox
+
+run: install
+	cd client && bun run build && bun run start
 
 check-go:
 	test -z "$$(gofmt -l . | tee /dev/stderr)"

@@ -90,6 +90,8 @@ client; see the [Zed guide](docs/zed.md) for a worked setup.
 Building from a checkout requires Go 1.26.4 or later.
 
 - `make install` — install the current checkout to `$HOME/.local/bin/ox`.
+- `make run` — install the current checkout, build the browser client, and start
+  it.
 - `make check` — documentation formatting, Go checks, client type and unit
   checks, and Go unit tests.
 - `make check-all` — every `make check` gate plus race-enabled Go tests and the
