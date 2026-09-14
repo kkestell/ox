@@ -1,10 +1,13 @@
-.PHONY: check check-all check-docs check-go eval-live format format-docs format-go install test test-all test-eval test-race
+.PHONY: check check-all check-client check-docs check-go eval-live format format-docs format-go install test test-all test-client test-eval test-race
 
 unit_packages = $$(go list ./... | grep -vE '/(internal/e2e|integration)$$')
 
-check: check-docs check-go test
+check: check-client check-docs check-go test
 
-check-all: check-docs check-go test-all
+check-all: check-client check-docs check-go test-all test-client
+
+check-client:
+	cd client && bun run check && bun run test
 
 format: format-docs format-go
 
@@ -33,6 +36,9 @@ test-race:
 
 test-all:
 	go test -race -count=1 ./...
+
+test-client:
+	cd client && bun run test:e2e
 
 test-eval:
 	go test -tags=evalsmoke -count=1 ./evals/internal/eval

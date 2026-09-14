@@ -23,9 +23,10 @@ function App() {
   const socket = useRef<WebSocket | undefined>(undefined);
   const [credential, setCredential] = useState("");
   const [mcpServers, setMCPServers] = useState<MCPServer[]>([]);
+  const [mcpMessage, setMCPMessage] = useState<string>();
   const [sessionError, setSessionError] = useState<string>();
-  const activationForm = useRef<HTMLFormElement>(null);
   const sessionRequests = useRef(new Set<string>());
+  const mcpRequests = useRef(new Set<string>());
   const active = snapshot?.sessions.active;
 
   useEffect(() => {
@@ -33,9 +34,7 @@ function App() {
     url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
     const connectionSocket = new WebSocket(url);
     socket.current = connectionSocket;
-    connectionSocket.addEventListener("open", () => {
-      connectionSocket.send(JSON.stringify({ type: "ping", requestId: "shell-ready" }));
-    });
+    connectionSocket.addEventListener("open", () => setConnection("Connected"));
     connectionSocket.addEventListener("message", (event) => {
       if (typeof event.data !== "string") {
         return;
@@ -57,12 +56,16 @@ function App() {
         }
         return;
       }
-      if (parsed.data.requestId === "shell-ready") {
-        setConnection(parsed.data.ok ? "Connected" : "Unavailable");
-        return;
-      }
       if (sessionRequests.current.delete(parsed.data.requestId)) {
         setSessionError(parsed.data.ok ? undefined : parsed.data.error);
+      }
+      if (mcpRequests.current.delete(parsed.data.requestId)) {
+        if (parsed.data.ok) {
+          setMCPServers([]);
+          setMCPMessage("MCP servers saved");
+        } else {
+          setMCPMessage(parsed.data.error);
+        }
       }
     });
     connectionSocket.addEventListener("close", () => setConnection("Disconnected"));
@@ -97,203 +100,74 @@ function App() {
     send({ credential: value, methodId, requestId: crypto.randomUUID(), type: "login" });
   }
 
-  function catalogCommand(type: "next-session-page" | "refresh-sessions"): void {
+  function historyCommand(type: "next-history-page" | "refresh-history"): void {
     submitSessionCommand({ requestId: crypto.randomUUID(), type });
   }
 
-  function activateSession(type: "new-session" | "load-session" | "resume-session", sessionId?: string): void {
-    if (!activationForm.current?.reportValidity()) {
-      return;
-    }
-    const definitions = mcpServers;
-    setMCPServers([]);
-    if (type === "new-session") {
-      submitSessionCommand({ mcpServers: definitions, requestId: crypto.randomUUID(), type });
-      return;
-    }
-    submitSessionCommand({ mcpServers: definitions, requestId: crypto.randomUUID(), sessionId: sessionId!, type });
-  }
-
-  function sessionCommand(
-    type: "cancel-prompt" | "close-session" | "delete-session" | "select-session",
+  function conversationCommand(
+    type: "close-conversation" | "delete-conversation" | "open-conversation",
     sessionId: string,
   ): void {
     submitSessionCommand({ requestId: crypto.randomUUID(), sessionId, type });
   }
 
+  function saveMCPServers(servers: MCPServer[]): void {
+    const requestId = crypto.randomUUID();
+    if (!send({ mcpServers: servers, requestId, type: "set-mcp-servers" })) {
+      setMCPMessage("The host connection is not open");
+      return;
+    }
+    mcpRequests.current.add(requestId);
+    setMCPMessage("Saving MCP servers…");
+  }
+
+  const selected = snapshot?.sessions.values.find((session) => session.id === snapshot.sessions.selectedId);
+  const title = selected?.title ?? "New conversation";
+  const authenticated = snapshot?.authentication.status === "authenticated";
+  const unavailable = connection === "Unavailable" || connection === "Disconnected" || snapshot?.workspace.status === "unavailable";
+
   return (
     <main>
       <header>
         <h1>Ox</h1>
-        <p>Browser ACP client</p>
+        {snapshot ? <p>{snapshot.workspace.name}</p> : null}
       </header>
-      <section aria-labelledby="connection-heading">
-        <h2 id="connection-heading">Connection</h2>
-        <p aria-live="polite">{connection}</p>
-        {snapshot ? <p>Host revision {snapshot.revision}</p> : null}
-      </section>
-      {snapshot ? (
-        <section aria-labelledby="workspace-heading">
-          <h2 id="workspace-heading">Workspace process</h2>
-          <p aria-live="polite">{snapshot.workspace.status}</p>
-          {snapshot.workspace.diagnostics.length > 0 ? (
-            <ul aria-label="Workspace diagnostics">
-              {snapshot.workspace.diagnostics.map((diagnostic, index) => (
-                <li key={`${index}-${diagnostic}`}>{diagnostic}</li>
-              ))}
-            </ul>
-          ) : null}
-        </section>
+      {unavailable ? <p role="alert">Ox is unavailable. Open support details for diagnostics.</p> : null}
+      {snapshot && !authenticated ? (
+        <Authentication
+          authentication={snapshot.authentication}
+          credential={credential}
+          onAuthenticate={(methodId) => send({ methodId, requestId: crypto.randomUUID(), type: "authenticate" })}
+          onCredential={setCredential}
+          onLogin={terminalLogin}
+        />
       ) : null}
-      {snapshot ? (
-        <section aria-labelledby="authentication-heading">
-          <h2 id="authentication-heading">Authentication</h2>
-          <p aria-live="polite">{snapshot.authentication.status}</p>
-          {snapshot.authentication.error ? <p role="alert">{snapshot.authentication.error}</p> : null}
-          {snapshot.authentication.methods.map((method) =>
-            method.type === "agent" ? (
-              <button
-                key={method.id}
-                disabled={snapshot.authentication.status === "working"}
-                onClick={() => send({ methodId: method.id, requestId: crypto.randomUUID(), type: "authenticate" })}
-                type="button"
-              >
-                {method.name}
-              </button>
-            ) : (
-              <form
-                key={method.id}
-                onSubmit={(event) => {
-                  event.preventDefault();
-                  terminalLogin(method.id);
-                }}
-              >
-                <label>
-                  {`${method.name} credential`}
-                  <input
-                    autoComplete="off"
-                    disabled={snapshot.authentication.status === "working"}
-                    onChange={(event) => setCredential(event.target.value)}
-                    required
-                    type="password"
-                    value={credential}
-                  />
-                </label>
-                <button disabled={snapshot.authentication.status === "working"} type="submit">
-                  {method.name}
-                </button>
-              </form>
-            ),
-          )}
-          {snapshot.authentication.logoutAvailable ? (
-            <button
-              disabled={snapshot.authentication.status === "working"}
-              onClick={() => send({ requestId: crypto.randomUUID(), type: "logout" })}
-              type="button"
-            >
-              Log out
-            </button>
-          ) : null}
-        </section>
+      {snapshot && authenticated ? (
+        <History
+          onNew={() => submitSessionCommand({ requestId: crypto.randomUUID(), type: "new-conversation" })}
+          onOpen={(sessionId) => conversationCommand("open-conversation", sessionId)}
+          onOlder={() => historyCommand("next-history-page")}
+          sessions={snapshot.sessions}
+        />
       ) : null}
-      {snapshot ? (
-        <section aria-labelledby="sessions-heading">
-          <h2 id="sessions-heading">Sessions</h2>
-          {sessionError ? <p role="alert">{sessionError}</p> : null}
-          <p aria-live="polite">
-            {snapshot.sessions.selectedId ? `Selected session ${snapshot.sessions.selectedId}` : "No session selected"}
-          </p>
-          <MCPActivationForm form={activationForm} onNewSession={() => activateSession("new-session")} servers={mcpServers} setServers={setMCPServers} />
-          <button onClick={() => catalogCommand("refresh-sessions")} type="button">
-            Refresh sessions
-          </button>
-          <ul aria-label="Sessions">
-            {snapshot.sessions.values.map((value) => {
-              // Every session repeats the same controls, so each one names its session.
-              const label = value.title ?? value.id;
-              return (
-                <li key={value.id}>
-                  <p>{label}</p>
-                  <p>{value.status}</p>
-                  {value.updatedAt ? <p>{value.updatedAt}</p> : null}
-                  {value.status === "inactive" ? (
-                    <>
-                      <button
-                        aria-label={`Load ${label}`}
-                        onClick={() => activateSession("load-session", value.id)}
-                        type="button"
-                      >
-                        Load
-                      </button>
-                      <button
-                        aria-label={`Resume ${label}`}
-                        onClick={() => activateSession("resume-session", value.id)}
-                        type="button"
-                      >
-                        Resume
-                      </button>
-                      <button
-                        aria-label={`Delete ${label}`}
-                        onClick={() => sessionCommand("delete-session", value.id)}
-                        type="button"
-                      >
-                        Delete
-                      </button>
-                    </>
-                  ) : (
-                    <>
-                      <button
-                        aria-label={`Select ${label}`}
-                        onClick={() => sessionCommand("select-session", value.id)}
-                        type="button"
-                      >
-                        Select
-                      </button>
-                      <button
-                        aria-label={`Close ${label}`}
-                        onClick={() => sessionCommand("close-session", value.id)}
-                        type="button"
-                      >
-                        Close
-                      </button>
-                    </>
-                  )}
-                </li>
-              );
-            })}
-          </ul>
-          {snapshot.sessions.nextCursor ? (
-            <button onClick={() => catalogCommand("next-session-page")} type="button">
-              More sessions
-            </button>
-          ) : null}
-        </section>
-      ) : null}
-      {snapshot && active ? (
-        <>
-          <Composer
-            busy={active.busy}
-            capabilities={snapshot.workspace.promptCapabilities}
-            key={active.id}
-            onCancel={() => sessionCommand("cancel-prompt", active.id)}
-            onError={setSessionError}
-            onSubmit={(prompt) =>
-              submitSessionCommand({ prompt, requestId: crypto.randomUUID(), sessionId: active.id, type: "prompt" })
-            }
-          />
+      {sessionError ? <p role="alert">{sessionError}</p> : null}
+      {snapshot && authenticated && active ? (
+        <section aria-label="Conversation">
+          <header>
+            <h2>{title}</h2>
+            <SessionInformation
+              onConfigOption={(configId, value) =>
+                submitSessionCommand({ configId, requestId: crypto.randomUUID(), sessionId: active.id, type: "set-config-option", value })
+              }
+              transcript={active.transcript}
+            />
+            <details>
+              <summary>Conversation actions</summary>
+              <button onClick={() => conversationCommand("close-conversation", active.id)} type="button">Close conversation</button>
+              <button onClick={() => conversationCommand("delete-conversation", active.id)} type="button">Delete conversation</button>
+            </details>
+          </header>
           <Transcript
-            onConfigOption={(configId, value) =>
-              submitSessionCommand({
-                configId,
-                requestId: crypto.randomUUID(),
-                sessionId: active.id,
-                type: "set-config-option",
-                value,
-              })
-            }
-            transcript={active.transcript}
-          />
-          <Interactions
             interactions={active.interactions}
             onElicitation={(interactionId, action, content) =>
               submitSessionCommand({ action, ...(content === undefined ? {} : { content }), interactionId, requestId: crypto.randomUUID(), sessionId: active.id, type: "resolve-elicitation" })
@@ -301,21 +175,135 @@ function App() {
             onPermission={(interactionId, optionId) =>
               submitSessionCommand({ interactionId, optionId, requestId: crypto.randomUUID(), sessionId: active.id, type: "resolve-permission" })
             }
+            transcript={active.transcript}
           />
-        </>
+          <Composer
+            busy={active.busy}
+            capabilities={snapshot.workspace.promptCapabilities}
+            key={active.id}
+            onCancel={() => submitSessionCommand({ requestId: crypto.randomUUID(), sessionId: active.id, type: "cancel-prompt" })}
+            onError={setSessionError}
+            onSubmit={(prompt) => submitSessionCommand({ prompt, requestId: crypto.randomUUID(), sessionId: active.id, type: "prompt" })}
+          />
+        </section>
+      ) : authenticated ? (
+        <p>Choose a conversation or start a new one.</p>
+      ) : null}
+      {snapshot ? (
+        <details>
+          <summary>Workspace settings</summary>
+          <details>
+            <summary>{`MCP servers — ${snapshot.workspace.mcpServerCount} configured`}</summary>
+            {mcpMessage ? <p aria-live="polite">{mcpMessage}</p> : null}
+            <MCPActivationForm onSave={saveMCPServers} servers={mcpServers} setServers={setMCPServers} />
+          </details>
+          <SupportDetails
+            activeSessionId={active?.id}
+            connection={connection}
+            credential={credential}
+            onCredential={setCredential}
+            onLogin={terminalLogin}
+            onLogout={() => send({ requestId: crypto.randomUUID(), type: "logout" })}
+            onRefresh={() => historyCommand("refresh-history")}
+            snapshot={snapshot}
+          />
+        </details>
       ) : null}
     </main>
   );
 }
 
+function Authentication({ authentication, credential, onAuthenticate, onCredential, onLogin }: {
+  authentication: Snapshot["authentication"];
+  credential: string;
+  onAuthenticate: (methodId: string) => void;
+  onCredential: (credential: string) => void;
+  onLogin: (methodId: string) => void;
+}) {
+  return (
+    <section aria-labelledby="authentication-heading">
+      <h2 id="authentication-heading">Connect OpenRouter</h2>
+      {authentication.error ? <p role="alert">{authentication.error}</p> : null}
+      {authentication.methods.map((method) => method.type === "agent" ? (
+        <button disabled={authentication.status === "working"} key={method.id} onClick={() => onAuthenticate(method.id)} type="button">Use configured credential</button>
+      ) : (
+        <form key={method.id} onSubmit={(event) => { event.preventDefault(); onLogin(method.id); }}>
+          <label>OpenRouter API key<input autoComplete="off" disabled={authentication.status === "working"} onChange={(event) => onCredential(event.target.value)} required type="password" value={credential} /></label>
+          <button disabled={authentication.status === "working"} type="submit">Save credential</button>
+        </form>
+      ))}
+    </section>
+  );
+}
+
+function History({ onNew, onOpen, onOlder, sessions }: {
+  onNew: () => void;
+  onOpen: (sessionId: string) => void;
+  onOlder: () => void;
+  sessions: Snapshot["sessions"];
+}) {
+  return (
+    <nav aria-label="Conversations">
+      <h2>Conversations</h2>
+      <button onClick={onNew} type="button">New conversation</button>
+      <ul aria-label="Conversation history">
+        {sessions.values.map((conversation) => (
+          <li key={conversation.id}>
+            <button aria-current={sessions.selectedId === conversation.id ? "page" : undefined} onClick={() => onOpen(conversation.id)} type="button">
+              {conversation.title ?? "Untitled conversation"}
+            </button>
+            {conversation.status === "loading" ? <span>Opening…</span> : null}
+            {conversation.updatedAt ? <time dateTime={conversation.updatedAt}>{new Date(conversation.updatedAt).toLocaleString()}</time> : null}
+          </li>
+        ))}
+      </ul>
+      {sessions.nextCursor ? <button onClick={onOlder} type="button">Show older conversations</button> : null}
+    </nav>
+  );
+}
+
+function SupportDetails({ activeSessionId, connection, credential, onCredential, onLogin, onLogout, onRefresh, snapshot }: {
+  activeSessionId?: string;
+  connection: string;
+  credential: string;
+  onCredential: (credential: string) => void;
+  onLogin: (methodId: string) => void;
+  onLogout: () => void;
+  onRefresh: () => void;
+  snapshot: Snapshot;
+}) {
+  return (
+    <details>
+      <summary>Support details</summary>
+      <dl>
+        <dt>Browser connection</dt><dd>{connection}</dd>
+        <dt>Ox process</dt><dd>{snapshot.workspace.status}</dd>
+        <dt>Host revision</dt><dd>{snapshot.revision}</dd>
+        {activeSessionId ? <><dt>Session ID</dt><dd>{activeSessionId}</dd></> : null}
+      </dl>
+      {snapshot.workspace.diagnostics.length > 0 ? <ul aria-label="Workspace diagnostics">{snapshot.workspace.diagnostics.map((diagnostic, index) => <li key={`${index}-${diagnostic}`}>{diagnostic}</li>)}</ul> : null}
+      <button onClick={onRefresh} type="button">Refresh conversation history</button>
+      <details>
+        <summary>Authentication</summary>
+        {snapshot.authentication.error ? <p role="alert">{snapshot.authentication.error}</p> : null}
+        {snapshot.authentication.methods.map((method) => method.type === "terminal" ? (
+          <form key={method.id} onSubmit={(event) => { event.preventDefault(); onLogin(method.id); }}>
+            <label>{`${method.name} credential`}<input autoComplete="off" disabled={snapshot.authentication.status === "working"} onChange={(event) => onCredential(event.target.value)} required type="password" value={credential} /></label>
+            <button disabled={snapshot.authentication.status === "working"} type="submit">{method.name}</button>
+          </form>
+        ) : null)}
+        {snapshot.authentication.logoutAvailable ? <button disabled={snapshot.authentication.status === "working"} onClick={onLogout} type="button">Log out</button> : null}
+      </details>
+    </details>
+  );
+}
+
 function MCPActivationForm({
-  form,
-  onNewSession,
+  onSave,
   servers,
   setServers,
 }: {
-  form: React.RefObject<HTMLFormElement | null>;
-  onNewSession: () => void;
+  onSave: (servers: MCPServer[]) => void;
   servers: MCPServer[];
   setServers: (servers: MCPServer[] | ((current: MCPServer[]) => MCPServer[])) => void;
 }) {
@@ -325,15 +313,14 @@ function MCPActivationForm({
 
   return (
     <form
-      ref={form}
       onSubmit={(event) => {
         event.preventDefault();
-        onNewSession();
+        onSave(servers);
       }}
     >
       <fieldset>
         <legend>MCP servers</legend>
-        <p>Definitions are used only for this activation. Header and environment values are cleared after submission.</p>
+        <p>Saved definitions are used for later conversation activations. Secret values are never returned to the browser.</p>
         {servers.map((server, index) => (
           <fieldset key={index}>
             <legend>{server.transport === "http" ? "HTTP MCP server" : "Stdio MCP server"}</legend>
@@ -513,7 +500,7 @@ function MCPActivationForm({
         <button onClick={() => setServers((current) => [...current, { transport: "stdio", name: "", command: "", args: [], env: [] }])} type="button">
           Add stdio MCP server
         </button>
-        <button type="submit">New session</button>
+        <button type="submit">Save MCP servers</button>
       </fieldset>
     </form>
   );
@@ -576,30 +563,21 @@ function Composer({
           Message
           <textarea disabled={busy} onChange={(event) => setText(event.target.value)} value={text} />
         </label>
-        {acceptsAttachments ? (
-          <label>
-            Attachments
-            <input
-              disabled={busy}
-              multiple
-              onChange={(event) => setAttachments(Array.from(event.target.files ?? []))}
-              ref={files}
-              type="file"
-            />
-          </label>
-        ) : null}
-        {attachments.length > 0 ? <p>{attachments.map((file) => file.name).join(", ")}</p> : null}
-        <fieldset disabled={busy}>
-          <legend>Resource link</legend>
-          <label>
-            Name
-            <input onChange={(event) => setResourceLinkName(event.target.value)} value={resourceLinkName} />
-          </label>
-          <label>
-            URI
-            <input onChange={(event) => setResourceLinkURI(event.target.value)} type="url" value={resourceLinkURI} />
-          </label>
-        </fieldset>
+        <details>
+          <summary>Add context</summary>
+          {acceptsAttachments ? (
+            <label>
+              Attachments
+              <input disabled={busy} multiple onChange={(event) => setAttachments(Array.from(event.target.files ?? []))} ref={files} type="file" />
+            </label>
+          ) : null}
+          {attachments.length > 0 ? <p>{attachments.map((file) => file.name).join(", ")}</p> : null}
+          <fieldset disabled={busy}>
+            <legend>Resource link</legend>
+            <label>Name<input onChange={(event) => setResourceLinkName(event.target.value)} value={resourceLinkName} /></label>
+            <label>URI<input onChange={(event) => setResourceLinkURI(event.target.value)} type="url" value={resourceLinkURI} /></label>
+          </fieldset>
+        </details>
         <button disabled={busy} type="submit">
           Send prompt
         </button>
@@ -613,36 +591,21 @@ function Composer({
   );
 }
 
-function Interactions({
-  interactions,
-  onElicitation,
-  onPermission,
-}: {
-  interactions: PendingInteraction[];
-  onElicitation: (interactionId: string, action: "accept" | "decline" | "cancel", content?: Record<string, FormValue>) => void;
+function PermissionInteraction({ interaction, onPermission }: {
+  interaction: Extract<PendingInteraction, { kind: "permission" }>;
   onPermission: (interactionId: string, optionId: string) => void;
 }) {
-  if (interactions.length === 0) return null;
   return (
-    <section aria-labelledby="interactions-heading">
-      <h2 id="interactions-heading">Pending interactions</h2>
-      {interactions.map((interaction) =>
-        interaction.kind === "permission" ? (
-          <article aria-label={`Permission for ${interaction.tool.title}`} key={interaction.id}>
-            <h3>{interaction.tool.title}</h3>
-            {interaction.tool.name ? <p>{interaction.tool.name}</p> : null}
-            {interaction.tool.toolKind ? <p>{interaction.tool.toolKind}</p> : null}
-            {interaction.options.map((option) => (
-              <button key={option.id} onClick={() => onPermission(interaction.id, option.id)} type="button">
-                {option.name}
-              </button>
-            ))}
-          </article>
-        ) : (
-          <ElicitationForm interaction={interaction} key={interaction.id} onSubmit={onElicitation} />
-        ),
-      )}
-    </section>
+    <article aria-label={`Permission for ${interaction.tool.title}`}>
+      <h3>{interaction.tool.title}</h3>
+      {interaction.tool.name ? <p>{interaction.tool.name}</p> : null}
+      {interaction.tool.toolKind ? <p>{interaction.tool.toolKind}</p> : null}
+      {interaction.options.map((option) => (
+        <button key={option.id} onClick={() => onPermission(interaction.id, option.id)} type="button">
+          {option.name}
+        </button>
+      ))}
+    </article>
   );
 }
 
@@ -719,13 +682,44 @@ function stringInputType(format: "date" | "date-time" | "email" | "uri" | undefi
   }
 }
 
-function Transcript({
-  onConfigOption,
-  transcript,
-}: {
+function SessionInformation({ onConfigOption, transcript }: {
   onConfigOption: (configId: string, value: string) => void;
   transcript: SessionTranscript;
 }) {
+  if (transcript.configuration.length === 0 && !transcript.usage) return null;
+  return (
+    <section aria-label="Session information">
+      {transcript.configuration.map((option) => (
+        <label key={option.id}>
+          {option.name}
+          <select aria-label={option.name} onChange={(event) => onConfigOption(option.id, event.target.value)} value={option.currentValue}>
+            {option.options.map((choice) => <option key={choice.value} value={choice.value}>{choice.name}</option>)}
+          </select>
+        </label>
+      ))}
+      {transcript.usage ? (
+        <span>{`Context: ${transcript.usage.used} of ${transcript.usage.size} tokens used`}</span>
+      ) : null}
+    </section>
+  );
+}
+
+function Transcript({ interactions, onElicitation, onPermission, transcript }: {
+  interactions: PendingInteraction[];
+  onElicitation: (interactionId: string, action: "accept" | "decline" | "cancel", content?: Record<string, FormValue>) => void;
+  onPermission: (interactionId: string, optionId: string) => void;
+  transcript: SessionTranscript;
+}) {
+  const inlinePermissions = (entry: Extract<SessionTranscript["entries"][number], { kind: "tool" }>) =>
+    interactions.filter((interaction): interaction is Extract<PendingInteraction, { kind: "permission" }> =>
+      interaction.kind === "permission" && entry.id === `tool:${interaction.tool.id}`,
+    );
+  const trailingInteractions = interactions.filter((interaction) =>
+    interaction.kind === "form" || !transcript.entries.some((entry) =>
+      entry.kind === "tool" && entry.id === `tool:${interaction.tool.id}`,
+    ),
+  );
+
   return (
     <section aria-labelledby="transcript-heading">
       <h2 id="transcript-heading">Transcript</h2>
@@ -735,77 +729,48 @@ function Transcript({
             {entry.kind === "tool" ? (
               <article aria-label={`Tool ${entry.title}`}>
                 <h3>{entry.title}</h3>
-                {entry.name ? <p>{entry.name}</p> : null}
-                {entry.toolKind ? <p>{entry.toolKind}</p> : null}
                 {entry.status ? <p>{entry.status}</p> : null}
-                {entry.locations.length > 0 ? (
-                  <ul aria-label="Tool locations">
-                    {entry.locations.map((location) => (
-                      <li key={`${location.path}:${location.line ?? ""}`}>
-                        {location.path}
-                        {location.line === undefined ? "" : `:${location.line}`}
-                      </li>
-                    ))}
-                  </ul>
-                ) : null}
-                {entry.content.map((content, index) => (
-                  <ToolOutput content={content} key={index} />
-                ))}
+                <details>
+                  <summary>Details</summary>
+                  {entry.name ? <p>{entry.name}</p> : null}
+                  {entry.toolKind ? <p>{entry.toolKind}</p> : null}
+                  {entry.locations.length > 0 ? <ul aria-label="Tool locations">{entry.locations.map((location) => <li key={`${location.path}:${location.line ?? ""}`}>{location.path}{location.line === undefined ? "" : `:${location.line}`}</li>)}</ul> : null}
+                  {entry.content.map((content, index) => <ToolOutput content={content} key={index} />)}
+                </details>
+                {inlinePermissions(entry).map((interaction) => <PermissionInteraction interaction={interaction} key={interaction.id} onPermission={onPermission} />)}
               </article>
             ) : entry.kind === "unknown" ? (
-              <p>{entry.label}</p>
+              <details><summary>Unsupported transcript item</summary><p>{entry.label}</p></details>
+            ) : entry.kind === "thought" ? (
+              <details>
+                <summary>Thought</summary>
+                {entry.content.map((content, index) => <Content content={content} key={index} />)}
+              </details>
             ) : (
               <article aria-label={`${entry.kind} message`}>
-                <h3>{entry.kind === "thought" ? "Thought" : entry.kind === "agent" ? "Agent" : "User"}</h3>
-                {entry.content.map((content, index) => (
-                  <Content content={content} key={index} />
-                ))}
+                <h3>{entry.kind === "agent" ? "Ox" : "You"}</h3>
+                {entry.content.map((content, index) => <Content content={content} key={index} />)}
               </article>
             )}
           </li>
         ))}
+        {trailingInteractions.map((interaction) => (
+          <li key={interaction.id}>
+            {interaction.kind === "permission" ? (
+              <PermissionInteraction interaction={interaction} onPermission={onPermission} />
+            ) : (
+              <ElicitationForm interaction={interaction} onSubmit={onElicitation} />
+            )}
+          </li>
+        ))}
       </ol>
-      <section aria-labelledby="plan-heading">
-        <h3 id="plan-heading">Plan</h3>
-        <ol>
-          {transcript.plan.map((entry, index) => (
-            <li key={index}>
-              {entry.content} ({entry.status}, {entry.priority})
-            </li>
-          ))}
-        </ol>
-      </section>
-      {transcript.usage ? (
-        <section aria-labelledby="usage-heading">
-          <h3 id="usage-heading">Usage</h3>
-          <p>{`${transcript.usage.used} of ${transcript.usage.size} context tokens`}</p>
-          {transcript.usage.cost ? <p>{`${transcript.usage.cost.amount} ${transcript.usage.cost.currency}`}</p> : null}
-        </section>
+      {transcript.plan.length > 0 ? (
+        <details>
+          <summary>{`Plan — ${transcript.plan.filter((entry) => entry.status === "completed").length} of ${transcript.plan.length} complete`}</summary>
+          <ol>{transcript.plan.map((entry, index) => <li key={index}>{entry.content} ({entry.status})</li>)}</ol>
+        </details>
       ) : null}
-      <section aria-labelledby="configuration-heading">
-        <h3 id="configuration-heading">Configuration</h3>
-        <dl>
-          {transcript.configuration.map((option) => (
-            <div key={option.id}>
-              <dt>{option.name}</dt>
-              <dd>
-                <select
-                  aria-label={option.name}
-                  onChange={(event) => onConfigOption(option.id, event.target.value)}
-                  value={option.currentValue}
-                >
-                  {option.options.map((choice) => (
-                    <option key={choice.value} value={choice.value}>
-                      {choice.name}
-                    </option>
-                  ))}
-                </select>
-              </dd>
-              {option.description ? <dd>{option.description}</dd> : null}
-            </div>
-          ))}
-        </dl>
-      </section>
+      {transcript.usage?.cost ? <details><summary>Cost</summary><p>{`${transcript.usage.cost.amount} ${transcript.usage.cost.currency}`}</p></details> : null}
     </section>
   );
 }

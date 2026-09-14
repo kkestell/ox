@@ -1,6 +1,7 @@
 import * as acp from "@agentclientprotocol/sdk";
 import { spawn, type ChildProcess, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { realpath, stat } from "node:fs/promises";
+import { basename } from "node:path";
 import { Readable, Writable } from "node:stream";
 
 import { maximumSessions } from "./protocol.ts";
@@ -32,6 +33,8 @@ export type AuthenticationState = {
 export type WorkspaceState = {
   authentication: AuthenticationState;
   diagnostics: string[];
+  mcpServerCount: number;
+  name: string;
   promptCapabilities: PromptCapabilities;
   sessions: SessionState;
   status: WorkspaceStatus;
@@ -88,11 +91,14 @@ export class WorkspaceSupervisor {
   #authenticationOperation: Promise<void> = Promise.resolve();
   #launchFailed = false;
   #listeners = new Set<(state: WorkspaceState) => void>();
+  #mcpServers: acp.McpServer[] = [];
   #sessionOperation: Promise<void> = Promise.resolve();
   #sessionCapabilities: SessionCapabilities = { close: false, delete: false, list: false, load: false, resume: false };
   #state: WorkspaceState = {
     authentication: unauthenticated,
     diagnostics: [],
+    mcpServerCount: 0,
+    name: "Workspace",
     promptCapabilities: { audio: false, embeddedContext: false, image: false },
     sessions: { values: [] },
     status: "starting",
@@ -106,6 +112,7 @@ export class WorkspaceSupervisor {
     private readonly options: Required<Omit<WorkspaceSupervisorOptions, "workspace">>,
   ) {
     this.workspace = workspace;
+    this.#state = { ...this.#state, name: basename(workspace) || "Workspace" };
     this.#filesystem = new FilesystemExecutor(workspace, (sessionID) => this.#controllers.has(sessionID));
     this.#terminal = new TerminalExecutor(workspace, (sessionID) => this.#controllers.has(sessionID));
   }
@@ -129,6 +136,8 @@ export class WorkspaceSupervisor {
         methods: this.#state.authentication.methods.map((method) => ({ ...method })),
       },
       diagnostics: [...this.#state.diagnostics],
+      mcpServerCount: this.#state.mcpServerCount,
+      name: this.#state.name,
       promptCapabilities: { ...this.#state.promptCapabilities },
       sessions: {
         ...(active === undefined ? {} : { active }),
@@ -151,11 +160,17 @@ export class WorkspaceSupervisor {
   }
 
   authenticate(methodID: string): Promise<void> {
-    return this.serializeAuthentication(() => this.authenticateImpl(methodID));
+    return this.serializeAuthentication(async () => {
+      await this.authenticateImpl(methodID);
+      await this.serializeSessions(() => this.ensureDefaultConversation());
+    });
   }
 
   login(methodID: string, credential: string): Promise<void> {
-    return this.serializeAuthentication(() => this.loginImpl(methodID, credential));
+    return this.serializeAuthentication(async () => {
+      await this.loginImpl(methodID, credential);
+      await this.serializeSessions(() => this.ensureDefaultConversation());
+    });
   }
 
   logout(): Promise<void> {
@@ -165,6 +180,10 @@ export class WorkspaceSupervisor {
   /** Browser-safe state Ox has routed to an active session. */
   sessionTranscript(sessionID: string): SessionTranscript | undefined {
     return this.#controllers.get(sessionID)?.transcript;
+  }
+
+  newConversation(): Promise<void> {
+    return this.serializeSessions(() => this.newSessionImpl());
   }
 
   newSession(mcpServers: MCPServer[]): Promise<void> {
@@ -179,10 +198,21 @@ export class WorkspaceSupervisor {
     return this.serializeSessions(() => this.nextSessionPageImpl());
   }
 
+  openConversation(sessionID: string): Promise<void> {
+    return this.serializeSessions(async () => {
+      if (this.#controllers.has(sessionID)) {
+        this.selectSession(sessionID);
+        return;
+      }
+      await this.activateSession(sessionID, "load");
+    });
+  }
+
   loadSession(sessionID: string, mcpServers: MCPServer[]): Promise<void> {
     return this.serializeSessions(() => this.activateSession(sessionID, "load", mcpServers));
   }
 
+  /** Protocol-only coverage; browser navigation always opens with replay. */
   resumeSession(sessionID: string, mcpServers: MCPServer[]): Promise<void> {
     return this.serializeSessions(() => this.activateSession(sessionID, "resume", mcpServers));
   }
@@ -191,8 +221,20 @@ export class WorkspaceSupervisor {
     return this.serializeSessions(() => this.closeSessionImpl(sessionID));
   }
 
+  deleteConversation(sessionID: string): Promise<void> {
+    return this.serializeSessions(() => this.deleteConversationImpl(sessionID));
+  }
+
   deleteSession(sessionID: string): Promise<void> {
     return this.serializeSessions(() => this.deleteSessionImpl(sessionID));
+  }
+
+  setMCPServers(mcpServers: MCPServer[]): Promise<void> {
+    return this.serializeSessions(async () => {
+      this.#mcpServers = mcpServersForACP(mcpServers);
+      this.#state = { ...this.#state, mcpServerCount: this.#mcpServers.length };
+      this.publish();
+    });
   }
 
   selectSession(sessionID: string): void {
@@ -372,7 +414,12 @@ export class WorkspaceSupervisor {
     }
     if (initialized && !this.#stopping && this.#state.status !== "unavailable") {
       this.setState("ready");
-      if (this.#sessionCapabilities.list) {
+      await this.authenticateStoredCredential();
+      if (this.#state.authentication.status === "authenticated") {
+        await this.serializeSessions(() => this.ensureDefaultConversation()).catch((error) => {
+          this.recordDiagnostic(`Could not open the default conversation: ${message(error)}`);
+        });
+      } else if (this.#sessionCapabilities.list) {
         void this.refreshSessions().catch((error) => this.recordDiagnostic(`Could not list sessions: ${message(error)}`));
       }
     }
@@ -481,10 +528,10 @@ export class WorkspaceSupervisor {
     return next;
   }
 
-  private async newSessionImpl(mcpServers: MCPServer[]): Promise<void> {
+  private async newSessionImpl(mcpServers?: MCPServer[]): Promise<void> {
     const response = await this.readyConnection().agent.request(acp.methods.agent.session.new, {
       cwd: this.workspace,
-      mcpServers: mcpServersForACP(mcpServers),
+      mcpServers: mcpServers === undefined ? this.#mcpServers : mcpServersForACP(mcpServers),
     });
     const controller = new SessionController(response.sessionId);
     controller.replaceConfiguration(response.configOptions);
@@ -493,6 +540,21 @@ export class WorkspaceSupervisor {
     if (this.#sessionCapabilities.list) {
       await this.refreshSessionsImpl();
     }
+  }
+
+  private async ensureDefaultConversation(): Promise<void> {
+    if (this.#controllers.size > 0 || this.#state.authentication.status !== "authenticated") {
+      return;
+    }
+    if (this.#sessionCapabilities.list) {
+      await this.refreshSessionsImpl();
+      const newest = this.#state.sessions.values[0];
+      if (newest && this.#sessionCapabilities.load) {
+        await this.activateSession(newest.id, "load");
+        return;
+      }
+    }
+    await this.newSessionImpl();
   }
 
   private async refreshSessionsImpl(): Promise<void> {
@@ -524,7 +586,7 @@ export class WorkspaceSupervisor {
     });
   }
 
-  private async activateSession(sessionID: string, operation: "load" | "resume", mcpServers: MCPServer[]): Promise<void> {
+  private async activateSession(sessionID: string, operation: "load" | "resume", mcpServers?: MCPServer[]): Promise<void> {
     this.requireSessionCapability(operation);
     if (this.#controllers.has(sessionID)) {
       throw new Error("session is already active");
@@ -536,7 +598,11 @@ export class WorkspaceSupervisor {
     this.#controllers.set(sessionID, new SessionController(sessionID));
     this.setSessions(this.withSessionStatus(sessionID, "loading"));
     try {
-      const request = { cwd: this.workspace, mcpServers: mcpServersForACP(mcpServers), sessionId: sessionID };
+      const request = {
+        cwd: this.workspace,
+        mcpServers: mcpServers === undefined ? this.#mcpServers : mcpServersForACP(mcpServers),
+        sessionId: sessionID,
+      };
       if (operation === "load") {
         const response = (await connection.agent.request(acp.methods.agent.session.load, request)) as acp.LoadSessionResponse;
         this.#controllers.get(sessionID)?.replaceConfiguration(response.configOptions);
@@ -581,6 +647,13 @@ export class WorkspaceSupervisor {
     if (this.#sessionCapabilities.list) {
       await this.refreshSessionsImpl();
     }
+  }
+
+  private async deleteConversationImpl(sessionID: string): Promise<void> {
+    if (this.#controllers.has(sessionID)) {
+      await this.closeSessionImpl(sessionID);
+    }
+    await this.deleteSessionImpl(sessionID);
   }
 
   private supportsPromptBlock(block: PromptContentBlock): boolean {
@@ -731,6 +804,19 @@ export class WorkspaceSupervisor {
     } catch {
       this.setAuthentication({ ...this.#state.authentication, error: "Authentication failed", status: "required" });
       throw new Error("authentication failed");
+    }
+  }
+
+  private async authenticateStoredCredential(): Promise<void> {
+    const method = [...this.#authenticationMethods.values()].find((candidate) => candidate.type === "agent");
+    if (!method) return;
+    try {
+      await this.authenticateImpl(method.id);
+    } catch {
+      // A missing or expired keychain credential is ordinary startup state. The
+      // browser should offer manual authentication without surfacing a failed
+      // automatic attempt as an error.
+      this.setAuthentication({ ...this.#state.authentication, error: undefined, status: "required" });
     }
   }
 

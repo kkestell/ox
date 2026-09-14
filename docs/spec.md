@@ -46,14 +46,37 @@ registry can run concurrent sessions across several workspaces. Each workspace
 has one Ox process and one ACP connection; a failure in one workspace does not
 become a session or filesystem operation in another.
 
-The web client supports every ACP v1 feature Ox advertises or requests:
-authentication and logout, the complete session lifecycle, configuration
-options, all supported prompt content, streaming text and thought, tool, plan,
-usage and configuration updates, cancellation, permissions, form elicitation,
-client filesystem and terminal callbacks, and HTTP and stdio MCP activation.
-Refresh and browser disconnection do not cancel active work. A newly attached
-browser receives the Bun host's current state, and a host restart reconstructs
-durable history through ordinary ACP session loading.
+The host automatically tries Ox's configured stored credential at startup. Only
+when that cannot authenticate does the browser ask the user to connect. After
+authentication, the web client opens the most recently updated conversation, or
+creates one when the workspace has no history. New creates and selects a
+distinct empty conversation. Choosing history opens its complete replay; users
+do not choose between ACP load and resume. History refresh and pagination are
+part of the conversation list, while close and delete are secondary actions of
+the selected conversation.
+
+The primary surface is the selected transcript, its composer, conversation
+history, and any permission or question blocking work. The transcript view also
+contains the session's model, mode, and reasoning controls and read-only context
+usage. Attachments and resource links appear on demand, plans appear when
+present, and technical tool output is disclosed beneath its activity.
+
+Workspace settings contain client-supplied MCP servers and support details. MCP
+server drafts are applied explicitly and an incomplete draft cannot block
+opening or creating a conversation. Secret MCP values remain in the Bun host and
+are never returned to a browser. Process status, stderr, host revisions, raw
+session identifiers, manual refresh, and authentication management are support
+details rather than primary workflow.
+
+The web client supports every ACP v1 feature Ox advertises or requests through
+these product workflows: authentication and logout, the complete session
+lifecycle, configuration options, all supported prompt content, streaming text
+and thought, tool, plan, usage and configuration updates, cancellation,
+permissions, form elicitation, client filesystem and terminal callbacks, and
+HTTP and stdio MCP activation. Refresh and browser disconnection do not cancel
+active work. A newly attached browser receives the Bun host's current state, and
+a host restart reconstructs durable history through ordinary ACP session
+loading.
 
 The client is a conversation and supervision surface, not a general editor,
 interactive terminal emulator, Git interface, or worktree manager. Filesystem

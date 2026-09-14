@@ -19,6 +19,8 @@ describe("workspace supervisor", () => {
     expect(supervisor.state).toEqual({
       authentication: { logoutAvailable: false, methods: [], status: "required" },
       diagnostics: [],
+      mcpServerCount: 0,
+      name: expect.any(String),
       promptCapabilities: { audio: false, embeddedContext: false, image: false },
       sessions: { values: [] },
       status: "ready",
@@ -73,6 +75,8 @@ describe("workspace supervisor", () => {
     expect(supervisor.state).toEqual({
       authentication: { logoutAvailable: false, methods: [], status: "unavailable" },
       diagnostics: ["Ox did not initialize within 2 seconds"],
+      mcpServerCount: 0,
+      name: expect.any(String),
       promptCapabilities: { audio: false, embeddedContext: false, image: false },
       sessions: { values: [] },
       status: "unavailable",
@@ -121,6 +125,20 @@ describe("workspace supervisor", () => {
     expect(supervisor.state.authentication.status).toBe("required");
     await expect(supervisor.authenticate("stored")).rejects.toThrow("authentication failed");
 
+    await supervisor.stop();
+  });
+
+  test("automatically authenticates a stored credential at startup", async () => {
+    const workspace = await temporaryWorkspace();
+    await writeFile(join(workspace, "credential-present"), "yes");
+    const supervisor = await WorkspaceSupervisor.start({
+      arguments: ["--eval", authenticationProgram(), "primary"],
+      command: process.execPath,
+      workspace,
+    });
+
+    expect(supervisor.state.authentication.status).toBe("authenticated");
+    expect(supervisor.state.sessions.active?.id).toBe("authenticated-session");
     await supervisor.stop();
   });
 
@@ -379,6 +397,10 @@ process.stdin.on('data', (chunk) => {
       } else {
         process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: request.id, error: { code: -32000, message: 'credential required' } }) + '\\n');
       }
+      continue;
+    }
+    if (request.method === 'session/new') {
+      process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { sessionId: 'authenticated-session' } }) + '\\n');
       continue;
     }
     if (request.method === 'logout') {

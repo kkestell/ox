@@ -74,6 +74,9 @@ security model.
   component library is introduced until the functional v1 gate is complete.
   Feature work uses semantic HTML and native controls so behavior and
   accessibility do not depend on styling.
+- Protocol completeness is a host and test responsibility, not the browser's
+  information architecture. An ACP method, identifier, capability, or process
+  state does not receive a primary control merely because it is implemented.
 
 ## Ownership and dependency direction
 
@@ -139,6 +142,11 @@ entries, pending interactions, and process health. ACP-specific extensibility
 and metadata remain at the ACP boundary unless a field has deliberate product
 meaning.
 
+Browser commands express product intent. Opening a conversation selects it when
+the host already owns its controller and otherwise loads it with replay. The
+browser never asks the user to choose between ACP load and resume. Refresh and
+pagination are history mechanics rather than peer session operations.
+
 ## Workspace and process lifecycle
 
 Startup canonicalizes and validates every configured workspace before exposing
@@ -150,9 +158,12 @@ it is never parsed as protocol state.
 
 The supervisor owns the configured Ox invocation so it can also execute a
 terminal authentication method by appending the method's advertised arguments.
-The browser collects a credential with a password control; the host sends it to
-the login process on standard input and immediately drops it. The credential
-never crosses the ACP connection. A successful login is followed by ordinary ACP
+After initialization, it automatically attempts Ox's configured
+stored-credential authentication method. The browser asks the user to connect
+only when no stored credential is available or that automatic attempt fails. The
+browser collects a credential with a password control; the host sends it to the
+login process on standard input and immediately drops it. The credential never
+crosses the ACP connection. A successful login is followed by ordinary ACP
 authentication on the current or a replacement connection.
 
 An unexpected Ox exit makes the workspace unavailable and fails outstanding
@@ -198,27 +209,44 @@ and opening a session uses `session/load` to reconstruct its display from Ox's
 replay. Browser preferences may be persisted independently, but they cannot be
 treated as session truth.
 
-## ACP feature mapping
+After authentication, the host opens the most recently updated conversation. A
+workspace with no durable history gets one new selected conversation. New always
+creates and selects a distinct empty Ox session. Choosing history opens the
+conversation with replay when inactive and selects it when already active.
+History refreshes after lifecycle changes, older pages extend the same list, and
+close or delete are secondary actions of the selected conversation.
 
-| ACP surface                                             | Host owner                      | Browser presentation                                                     |
-| ------------------------------------------------------- | ------------------------------- | ------------------------------------------------------------------------ |
-| Initialize and capability negotiation                   | Workspace supervisor            | Connection and compatibility status                                      |
-| Authenticate, terminal authentication, and logout       | Workspace supervisor            | Credential/status actions without exposing the key                       |
-| New, list, load, resume, close, and delete              | Session catalog and controllers | Session navigation and explicit lifecycle actions                        |
-| Prompt and cancel                                       | Session controller              | Composer, active-turn state, and cancel action                           |
-| Text, thought, tool, plan, usage, and config updates    | Transcript reducer              | Semantic transcript and session controls                                 |
-| Permission requests                                     | Pending-interaction owner       | Exact agent-provided options and tool context                            |
-| Form elicitation                                        | Pending-interaction owner       | Schema-derived labeled native form controls                              |
-| Read and write callbacks                                | Filesystem executor             | Tool activity through the transcript                                     |
-| Terminal callbacks                                      | Terminal executor               | Tool activity and bounded output through the transcript                  |
-| Text, image, audio, resource, and resource-link prompts | Session controller              | Text area and native attachment controls                                 |
-| HTTP and stdio MCP definitions                          | Activation configuration        | Per-session activation form with secret fields redacted after submission |
+The Bun host owns the workspace's current client-supplied MCP server set and
+uses it for later new and load activations. The browser edits a draft set and
+replaces the host set only through an explicit valid action. An incomplete MCP
+form therefore cannot affect conversation navigation. Secret header and
+environment values remain host-only and never appear in snapshots.
+
+## Product surface
+
+The primary surface is the selected conversation: its transcript, composer,
+pending permission or question, history access, and new-conversation action.
+Authentication replaces that surface only while user action is required, and a
+connection failure appears as an actionable problem rather than a permanent
+status dashboard.
+
+The conversation header contains the session's advertised model, mode, and
+reasoning controls plus read-only context usage. Attachments and resource links
+open from an add-context disclosure in the composer. Plans render only when
+present. Tool details and raw output are disclosed beneath their useful activity
+title. Resource links render as ordinary safe links.
+
+Workspace settings contain MCP servers and support details. MCP is always named
+as MCP; the client introduces no generic integration concept. Host revision, raw
+session identifiers, Ox process state, stderr diagnostics, manual history
+refresh, and authentication management are support information. Resume has no
+user-facing meaning. None of these compete with the transcript or composer.
 
 The client follows negotiated capabilities rather than assuming every ACP agent
-matches Ox. Within the Ox product, every surface in this table is covered by a
-real-process browser scenario before v1 is considered functionally complete. A
-general editor, interactive terminal emulator, Git interface, and worktree
-manager remain outside this client boundary.
+matches Ox. Real-process browser scenarios prove the host covers the complete
+ACP surface even when a capability has no permanent control. A general editor,
+interactive terminal emulator, Git interface, and worktree manager remain
+outside this client boundary.
 
 ## Filesystem and terminal executors
 
@@ -256,7 +284,8 @@ process group. The harness waits on observable events instead of wall-clock
 delays and records useful browser, host, Ox stderr, and provider-request
 artifacts on failure.
 
-The functional v1 gate requires type checking, pure tests, and the real-process
-browser matrix for every row in the ACP feature table, including refresh during
-a live turn, concurrent sessions, cancellation, denied interactions, replay, and
-Ox failure. Only after that gate passes may visual CSS work begin.
+The functional v1 gate requires type checking, pure tests, and a real-process
+browser matrix covering Ox's complete ACP surface through the product workflows,
+including refresh during a live turn, concurrent sessions, cancellation, denied
+interactions, replay, and Ox failure. Only after that gate passes may visual CSS
+work begin.

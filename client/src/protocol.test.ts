@@ -29,13 +29,12 @@ describe("browser protocol", () => {
 
   test("accepts bounded session lifecycle commands", () => {
     for (const command of [
-      { type: "new-session", requestId: "request-1", mcpServers: [] },
-      { type: "refresh-sessions", requestId: "request-2" },
-      { type: "next-session-page", requestId: "request-3" },
-      { type: "load-session", requestId: "request-4", sessionId: "session-1", mcpServers: [] },
-      { type: "resume-session", requestId: "request-5", sessionId: "session-1", mcpServers: [] },
-      { type: "close-session", requestId: "request-6", sessionId: "session-1" },
-      { type: "delete-session", requestId: "request-7", sessionId: "session-1" },
+      { type: "new-conversation", requestId: "request-1" },
+      { type: "refresh-history", requestId: "request-2" },
+      { type: "next-history-page", requestId: "request-3" },
+      { type: "open-conversation", requestId: "request-4", sessionId: "session-1" },
+      { type: "close-conversation", requestId: "request-5", sessionId: "session-1" },
+      { type: "delete-conversation", requestId: "request-6", sessionId: "session-1" },
     ]) {
       expect(parseBrowserCommand(command).ok).toBe(true);
     }
@@ -44,7 +43,7 @@ describe("browser protocol", () => {
   test("accepts bounded HTTP and stdio MCP activation definitions", () => {
     expect(
       parseBrowserCommand({
-        type: "new-session",
+        type: "set-mcp-servers",
         requestId: "request-1",
         mcpServers: [
           {
@@ -65,7 +64,7 @@ describe("browser protocol", () => {
     ).toEqual({
       ok: true,
       value: {
-        type: "new-session",
+        type: "set-mcp-servers",
         requestId: "request-1",
         mcpServers: [
           {
@@ -100,13 +99,12 @@ describe("browser protocol", () => {
         { transport: "stdio", name: "same", command: "/bin/mcp", args: [], env: [] },
       ],
     ]) {
-      expect(parseBrowserCommand({ type: "new-session", requestId: "request-1", mcpServers }).ok).toBe(false);
+      expect(parseBrowserCommand({ type: "set-mcp-servers", requestId: "request-1", mcpServers }).ok).toBe(false);
     }
   });
 
-  test("accepts prompting, cancellation, selection, and configuration commands", () => {
+  test("accepts prompting, cancellation, and configuration commands", () => {
     for (const command of [
-      { type: "select-session", requestId: "request-1", sessionId: "session-1" },
       { type: "cancel-prompt", requestId: "request-2", sessionId: "session-1" },
       { type: "set-config-option", requestId: "request-3", sessionId: "session-1", configId: "mode", value: "plan" },
       {
@@ -142,10 +140,10 @@ describe("browser protocol", () => {
     { type: "authenticate", requestId: "request-1" },
     { type: "login", requestId: "request-1", methodId: "terminal", credential: "   " },
     { type: "logout", requestId: "" },
-    { type: "new-session" },
-    { type: "new-session", requestId: "request-1", mcpServers: [{ transport: "http", name: "remote", url: "not a URL", headers: [] }] },
-    { type: "new-session", requestId: "request-1", mcpServers: [{ transport: "sse", name: "remote", url: "https://example.test/mcp", headers: [] }] },
-    { type: "load-session", requestId: "request-1", sessionId: "" },
+    { type: "new-conversation" },
+    { type: "set-mcp-servers", requestId: "request-1", mcpServers: [{ transport: "http", name: "remote", url: "not a URL", headers: [] }] },
+    { type: "set-mcp-servers", requestId: "request-1", mcpServers: [{ transport: "sse", name: "remote", url: "https://example.test/mcp", headers: [] }] },
+    { type: "open-conversation", requestId: "request-1", sessionId: "" },
     { type: "prompt", requestId: "request-1", sessionId: "session-1", prompt: [] },
     { type: "prompt", requestId: "request-1", sessionId: "session-1", prompt: [{ type: "resource", resource: { uri: "attachment://missing" } }] },
     { type: "set-config-option", requestId: "request-1", sessionId: "session-1", configId: "mode", value: "" },
@@ -159,18 +157,18 @@ describe("browser protocol", () => {
   });
 
   test("starts with a complete ready snapshot", () => {
-    expect(initialSnapshot({ diagnostics: [], promptCapabilities: noPromptCapabilities, status: "ready" })).toEqual({
+    expect(initialSnapshot({ diagnostics: [], mcpServerCount: 0, name: "ox", promptCapabilities: noPromptCapabilities, status: "ready" })).toEqual({
       type: "snapshot",
       revision: 0,
       connection: { status: "ready" },
-      workspace: { diagnostics: [], promptCapabilities: noPromptCapabilities, status: "ready" },
+      workspace: { diagnostics: [], mcpServerCount: 0, name: "ox", promptCapabilities: noPromptCapabilities, status: "ready" },
       authentication: { logoutAvailable: false, methods: [], status: "unavailable" },
       sessions: { values: [] },
     });
   });
 
   test("accepts a browser-safe active transcript and rejects arbitrary payloads", () => {
-    const snapshot = initialSnapshot({ diagnostics: [], promptCapabilities: noPromptCapabilities, status: "ready" });
+    const snapshot = initialSnapshot({ diagnostics: [], mcpServerCount: 0, name: "ox", promptCapabilities: noPromptCapabilities, status: "ready" });
     snapshot.sessions.active = {
       busy: false,
       id: "session-1",

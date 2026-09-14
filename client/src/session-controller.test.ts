@@ -19,8 +19,7 @@ describe("session controller", () => {
     expect(controller.transcript.entries).toEqual([
       {
         content: [
-          { text: "hello ", type: "text" },
-          { text: "world", type: "text" },
+          { text: "hello world", type: "text" },
           { data: "aGVsbG8=", mimeType: "image/png", type: "image", uri: "file:///image.png" },
         ],
         id: "message:agent:agent-1",

@@ -354,21 +354,13 @@ export const browserCommandSchema = z.discriminatedUnion("type", [
       requestId: requestID,
     })
     .strict(),
-  z.object({ type: z.literal("new-session"), requestId: requestID, mcpServers }).strict(),
-  z.object({ type: z.literal("refresh-sessions"), requestId: requestID }).strict(),
-  z.object({ type: z.literal("next-session-page"), requestId: requestID }).strict(),
-  z
-    .object({ type: z.literal("load-session"), requestId: requestID, sessionId: sessionID, mcpServers })
-    .strict(),
-  z
-    .object({ type: z.literal("resume-session"), requestId: requestID, sessionId: sessionID, mcpServers })
-    .strict(),
-  z
-    .object({ type: z.literal("close-session"), requestId: requestID, sessionId: sessionID })
-    .strict(),
-  z
-    .object({ type: z.literal("delete-session"), requestId: requestID, sessionId: sessionID })
-    .strict(),
+  z.object({ type: z.literal("new-conversation"), requestId: requestID }).strict(),
+  z.object({ type: z.literal("refresh-history"), requestId: requestID }).strict(),
+  z.object({ type: z.literal("next-history-page"), requestId: requestID }).strict(),
+  z.object({ type: z.literal("open-conversation"), requestId: requestID, sessionId: sessionID }).strict(),
+  z.object({ type: z.literal("close-conversation"), requestId: requestID, sessionId: sessionID }).strict(),
+  z.object({ type: z.literal("delete-conversation"), requestId: requestID, sessionId: sessionID }).strict(),
+  z.object({ type: z.literal("set-mcp-servers"), requestId: requestID, mcpServers }).strict(),
   z
     .object({
       type: z.literal("prompt"),
@@ -377,7 +369,6 @@ export const browserCommandSchema = z.discriminatedUnion("type", [
       prompt: z.array(promptContentBlockSchema).min(1).max(32),
     })
     .strict(),
-  z.object({ type: z.literal("select-session"), requestId: requestID, sessionId: sessionID }).strict(),
   z.object({ type: z.literal("cancel-prompt"), requestId: requestID, sessionId: sessionID }).strict(),
   z
     .object({
@@ -405,6 +396,8 @@ export const snapshotSchema = z
       .object({
         status: z.enum(["starting", "ready", "unavailable", "stopped"]),
         diagnostics: z.array(z.string()).max(16),
+        mcpServerCount: z.number().int().nonnegative(),
+        name: z.string().min(1).max(512),
         promptCapabilities: promptCapabilitiesSchema,
       })
       .strict(),

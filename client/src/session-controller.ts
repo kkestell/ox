@@ -211,7 +211,7 @@ export class SessionController {
       this.appendUnknown(`Incompatible ${kind} message update`);
       return;
     }
-    this.#entries[index] = { ...current, content: [...current.content, content] };
+    this.#entries[index] = { ...current, content: appendMessageContent(current.content, content) };
   }
 
   private mergeTool(update: Record<string, unknown> | undefined): void {
@@ -283,6 +283,14 @@ export class SessionController {
   private localID(kind: string): string {
     return `${kind}:${this.#nextLocalID++}`;
   }
+}
+
+function appendMessageContent(current: TranscriptContent[], next: TranscriptContent): TranscriptContent[] {
+  const previous = current.at(-1);
+  if (previous?.type !== "text" || next.type !== "text") {
+    return [...current, next];
+  }
+  return [...current.slice(0, -1), { text: previous.text + next.text, type: "text" }];
 }
 
 function emptyTool(id: string): Extract<TranscriptEntry, { kind: "tool" }> {

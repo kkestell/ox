@@ -3,7 +3,7 @@ import * as acp from "@agentclientprotocol/sdk";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { createServer } from "node:http";
+import { createServer, type ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { Readable, Writable } from "node:stream";
@@ -36,15 +36,11 @@ test("supervises a real Ox process through clean shutdown and unexpected exit", 
     await assertReady(page, await host.url);
 
     await fixture.stopOx();
-    await expect(page.getByText("Unavailable", { exact: true })).toBeVisible();
-    await expect(page.getByLabel("Workspace process").getByText("unavailable", { exact: true })).toBeVisible();
+    await expect(page.getByRole("alert")).toHaveText("Ox is unavailable. Open support details for diagnostics.");
+    await openSupportDetails(page);
+    await expect(page.getByText("unavailable", { exact: true })).toBeVisible();
     await expect(page.getByRole("list", { name: "Workspace diagnostics" })).toContainText(
       "Ox exited from SIGTERM",
-    );
-
-    await page.getByRole("button", { name: "New session" }).click();
-    await expect(page.getByRole("region", { name: "Sessions" }).getByRole("alert")).toHaveText(
-      "Ox is unavailable",
     );
   } finally {
     await host?.stop();
@@ -52,15 +48,15 @@ test("supervises a real Ox process through clean shutdown and unexpected exit", 
   }
 });
 
-test("authenticates stored credentials and keeps a browser login secret out of the shell", async ({ page }) => {
+test("automatically uses stored credentials and keeps a browser login secret out of the shell", async ({ page }) => {
   const fixture = await createFixture();
   let host: BrowserHost | undefined;
   try {
     host = startBrowserHost(fixture);
     await assertReady(page, await host.url);
-
-    await page.getByRole("button", { name: "OpenRouter API key" }).click();
-    await expect(page.getByText("authenticated", { exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Connect OpenRouter" })).toHaveCount(0);
+    await openSupportDetails(page);
+    await page.getByText("Authentication", { exact: true }).click();
 
     const credential = "browser-login-test-secret";
     await page.getByLabel("OpenRouter login credential").fill(credential);
@@ -71,7 +67,7 @@ test("authenticates stored credentials and keeps a browser login secret out of t
 
     await page.getByRole("button", { name: "Log out" }).click();
     await expect(page.getByRole("alert")).toHaveText("Logout failed");
-    await expect(page.getByText("authenticated", { exact: true })).toBeVisible();
+    await expect(page.getByRole("region", { name: "Conversation" })).toBeVisible();
   } finally {
     await host?.stop();
     await fixture.close();
@@ -83,37 +79,40 @@ test("keeps a replayed session coherent across refresh and attached browsers", a
   let host: BrowserHost | undefined;
   let secondContext: Awaited<ReturnType<typeof browser.newContext>> | undefined;
   try {
-    const sessionID = await driveOx(fixture);
+    await driveOx(fixture);
     host = startBrowserHost(fixture);
     const url = await host.url;
     await assertReady(page, url);
 
-    const sessions = page.getByRole("list", { name: "Sessions" });
+    const sessions = page.getByRole("list", { name: "Conversation history" });
     await expect(sessions).toContainText("smoke");
-    await page.getByRole("button", { name: "Load" }).click();
-    await expect(page.getByText(`Selected session ${sessionID}`)).toBeVisible();
+    await expect(page.getByRole("region", { name: "Conversation" }).getByRole("heading", { name: "smoke" })).toBeVisible();
     const transcript = page.getByRole("region", { name: "Transcript" });
     await expect(transcript).toContainText("smoke");
     await expect(transcript).toContainText("browser smoke");
-    await expect(transcript).toContainText("Usage");
-    await expect(transcript).toContainText("Configuration");
+    await expect(page.getByRole("region", { name: "Session information" })).toContainText("Context:");
+    await expect(page.getByLabel("Mode", { exact: true })).toBeVisible();
+    await expect(page.getByText("Host revision", { exact: true })).toBeHidden();
+    await expect(page.getByText("Session ID", { exact: true })).toBeHidden();
+    await expect(page.getByRole("button", { name: "Resume", exact: true })).toHaveCount(0);
 
     await page.reload();
-    await expect(page.getByText(`Selected session ${sessionID}`)).toBeVisible();
+    await expect(page.getByRole("region", { name: "Conversation" }).getByRole("heading", { name: "smoke" })).toBeVisible();
     await expect(page.getByRole("region", { name: "Transcript" })).toContainText("browser smoke");
 
     secondContext = await browser.newContext();
     const second = await secondContext.newPage();
-    await second.goto(url);
-    await expect(second.getByText(`Selected session ${sessionID}`)).toBeVisible();
-    await second.getByRole("button", { name: "Close" }).click();
-    await expect(page.getByText("No session selected")).toBeVisible();
-    await expect(sessions.getByText("inactive", { exact: true })).toBeVisible();
+    await assertReady(second, url);
+    await second.getByText("Conversation actions", { exact: true }).click();
+    await second.getByRole("button", { name: "Close conversation" }).click();
+    await expect(page.getByText("Choose a conversation or start a new one.")).toBeVisible();
 
-    await page.getByRole("button", { name: "Delete" }).click();
+    await sessions.getByRole("button", { name: "smoke" }).click();
+    await page.getByText("Conversation actions", { exact: true }).click();
+    await page.getByRole("button", { name: "Delete conversation" }).click();
     await expect(sessions).not.toContainText("smoke");
-    await page.getByRole("button", { name: "New session" }).click();
-    await expect(page.getByText(/^Selected session /)).toBeVisible();
+    await page.getByRole("button", { name: "New conversation" }).click();
+    await expect(page.getByRole("region", { name: "Conversation" })).toBeVisible();
   } finally {
     await secondContext?.close();
     await host?.stop();
@@ -127,12 +126,12 @@ test("prompts with controls and every supported browser attachment", async ({ pa
   try {
     host = startBrowserHost(fixture);
     await assertReady(page, await host.url);
-    await page.getByRole("button", { name: "New session" }).click();
     await expect(page.getByLabel("Mode", { exact: true })).toHaveValue("code");
     await page.getByLabel("Mode", { exact: true }).selectOption("plan");
     await expect(page.getByLabel("Mode", { exact: true })).toHaveValue("plan");
 
     await page.getByLabel("Message").fill("inspect these attachments");
+    await page.getByText("Add context", { exact: true }).click();
     await page.getByLabel("Attachments", { exact: true }).setInputFiles([
       { name: "picture.png", mimeType: "image/png", buffer: Buffer.from("image") },
       { name: "sound.wav", mimeType: "audio/wav", buffer: Buffer.from("audio") },
@@ -161,7 +160,6 @@ test("runs Ox file tools through the host's confined filesystem callbacks", asyn
     await writeFile(join(fixture.workspace, "browser-file.txt"), "one\ntwo\n");
     host = startBrowserHost(fixture);
     await assertReady(page, await host.url);
-    await page.getByRole("button", { name: "New session" }).click();
     await page.getByLabel("Mode", { exact: true }).selectOption("auto");
     await page.getByLabel("Message").fill("exercise filesystem callbacks");
     await page.getByRole("button", { name: "Send prompt" }).click();
@@ -180,7 +178,6 @@ test("runs Ox shell tools through the host's ACP terminal callbacks", async ({ p
   try {
     host = startBrowserHost(fixture);
     await assertReady(page, await host.url);
-    await page.getByRole("button", { name: "New session" }).click();
     await page.getByLabel("Mode", { exact: true }).selectOption("auto");
     await page.getByLabel("Message").fill("exercise terminal callbacks");
     await page.getByRole("button", { name: "Send prompt" }).click();
@@ -200,21 +197,43 @@ test("runs separate sessions concurrently and cancels the selected live prompt",
   try {
     host = startBrowserHost(fixture);
     await assertReady(page, await host.url);
-    await page.getByRole("button", { name: "New session" }).click();
     await page.getByLabel("Message").fill("hold");
     await page.getByRole("button", { name: "Send prompt" }).click();
     await expect(page.getByRole("button", { name: "Cancel prompt" })).toBeVisible();
 
-    await page.getByRole("button", { name: "New session" }).click();
+    await page.getByRole("button", { name: "New conversation" }).click();
     await page.getByLabel("Message").fill("second session");
     await page.getByRole("button", { name: "Send prompt" }).click();
     await expect.poll(() => fixture.requests).toBe(2);
     await expect(page.getByRole("region", { name: "Transcript" })).toContainText("browser smoke");
 
-    const sessions = page.getByRole("list", { name: "Sessions" }).getByRole("listitem");
-    await sessions.filter({ hasText: "hold" }).getByRole("button", { name: "Select" }).click();
+    const sessions = page.getByRole("list", { name: "Conversation history" }).getByRole("listitem");
+    await sessions.filter({ hasText: "hold" }).getByRole("button").click();
     await expect(page.getByRole("button", { name: "Cancel prompt" })).toBeVisible();
     await page.getByRole("button", { name: "Cancel prompt" }).click();
+    await expect(page.getByRole("button", { name: "Cancel prompt" })).toBeHidden();
+  } finally {
+    await host?.stop();
+    await fixture.close();
+  }
+});
+
+test("keeps a live prompt running across a browser reload", async ({ page }) => {
+  const fixture = await createFixture();
+  let host: BrowserHost | undefined;
+  try {
+    host = startBrowserHost(fixture);
+    await assertReady(page, await host.url);
+    await page.getByLabel("Message").fill("hold across reload");
+    await page.getByRole("button", { name: "Send prompt" }).click();
+    await expect(page.getByRole("button", { name: "Cancel prompt" })).toBeVisible();
+
+    await page.reload();
+    await expect(page.getByRole("region", { name: "Conversation" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Cancel prompt" })).toBeVisible();
+
+    fixture.releaseHeldPrompt();
+    await expect(page.getByRole("region", { name: "Transcript" })).toContainText("held prompt complete");
     await expect(page.getByRole("button", { name: "Cancel prompt" })).toBeHidden();
   } finally {
     await host?.stop();
@@ -228,17 +247,18 @@ test("renders a host-owned form elicitation through refresh and answers it", asy
   try {
     host = startBrowserHost(fixture);
     await assertReady(page, await host.url);
-    await page.getByRole("button", { name: "New session" }).click();
     await page.getByLabel("Message").fill("ask a question");
     await page.getByRole("button", { name: "Send prompt" }).click();
-    await expect(page.getByRole("region", { name: "Pending interactions" })).toContainText("Choose a color");
+    const transcript = page.getByRole("region", { name: "Transcript" });
+    await expect(transcript.getByRole("article", { name: "Choose a color", exact: true })).toContainText("Choose a color");
+    await expect(page.getByRole("heading", { name: "Pending interactions" })).toHaveCount(0);
     await expect(page.getByRole("option", { name: "Red" })).toHaveText("Red");
     await expect(page.getByRole("combobox", { name: "Answer" })).toHaveValue("");
     await page.reload();
-    await expect(page.getByRole("region", { name: "Pending interactions" })).toContainText("Choose a color");
+    await expect(transcript.getByRole("article", { name: "Choose a color", exact: true })).toContainText("Choose a color");
     await page.getByRole("combobox", { name: "Answer" }).selectOption("Red");
     await page.getByRole("button", { name: "Submit answer" }).click();
-    await expect(page.getByRole("region", { name: "Pending interactions" })).toBeHidden();
+    await expect(transcript.getByRole("article", { name: "Choose a color", exact: true })).toBeHidden();
     await expect.poll(() => fixture.requests).toBe(2);
   } finally {
     await host?.stop();
@@ -254,20 +274,88 @@ test("renders exact permission options and lets the first browser answer win", a
     host = startBrowserHost(fixture);
     const url = await host.url;
     await assertReady(page, url);
-    await page.getByRole("button", { name: "New session" }).click();
     await page.getByLabel("Message").fill("request permission");
     await page.getByRole("button", { name: "Send prompt" }).click();
-    await expect(page.getByRole("region", { name: "Pending interactions" })).toContainText("pwd");
+    const permission = page.getByRole("region", { name: "Transcript" }).getByRole("article", { name: /Permission for/ });
+    await expect(permission).toContainText("pwd");
     secondContext = await browser.newContext();
     const second = await secondContext.newPage();
     await second.goto(url);
     await expect(second.getByRole("button", { name: "Allow once" })).toBeVisible();
     await second.getByRole("button", { name: "Allow once" }).click();
-    await expect(page.getByRole("region", { name: "Pending interactions" })).toBeHidden();
+    await expect(permission).toBeHidden();
     await expect.poll(() => fixture.requests).toBe(2);
   } finally {
     await secondContext?.close();
     await host?.stop();
+    await fixture.close();
+  }
+});
+
+test("activates HTTP and stdio MCP servers without retaining secrets", async ({ page }) => {
+  const fixture = await createFixture();
+  const mcp = await createMCPFixture(fixture.workspace);
+  let host: BrowserHost | undefined;
+  try {
+    host = startBrowserHost(fixture);
+    await assertReady(page, await host.url);
+    await openMCPSettings(page);
+
+    await addHTTPMCPServer(page, "http", mcp.httpURL, mcp.httpSecret);
+    await saveMCPServers(page);
+    await startNewConversation(page);
+    await expect(page.locator("main")).not.toContainText(mcp.httpSecret);
+    await page.getByLabel("Mode", { exact: true }).selectOption("auto");
+    await page.getByLabel("Message").fill("use HTTP MCP tool");
+    await page.getByRole("button", { name: "Send prompt" }).click();
+    await expect(page.getByRole("region", { name: "Transcript" })).toContainText("HTTP MCP complete");
+    await page.getByRole("region", { name: "Transcript" }).getByText("Details", { exact: true }).last().click();
+    await expect(page.getByRole("region", { name: "Transcript" })).toContainText("HTTP MCP fixture result");
+    expect(mcp.httpAuthorizations).toContain(mcp.httpSecret);
+
+    await page.getByRole("textbox", { name: "Message" }).fill("use HTTP MCP failure");
+    await page.getByRole("button", { name: "Send prompt" }).click();
+    await expect(page.getByRole("region", { name: "Transcript" })).toContainText("HTTP MCP failure complete");
+    await page.getByRole("region", { name: "Transcript" }).getByText("Details", { exact: true }).last().click();
+    await expect(page.getByRole("region", { name: "Transcript" })).toContainText("HTTP MCP fixture failure");
+    await page.getByText("Conversation actions", { exact: true }).click();
+    await page.getByRole("button", { name: "Close conversation" }).click();
+    await expect(page.getByText("Choose a conversation or start a new one.")).toBeVisible();
+
+    await addStdioMCPServer(page, "stdio", mcp.stdioCommand, mcp.stdioArgument, mcp.stdioEnvironmentName, mcp.stdioSecret);
+    await saveMCPServers(page);
+
+    await page.getByRole("button", { name: "Add HTTP MCP server" }).click();
+    await page.getByRole("list", { name: "Conversation history" }).getByRole("button").first().click();
+    await expect(page.getByRole("region", { name: "Conversation" })).toBeVisible();
+    await page.getByRole("group", { name: "HTTP MCP server" }).getByRole("button", { name: "Remove server" }).click();
+    await page.getByRole("textbox", { name: "Message" }).fill("use stdio MCP tool");
+    await page.getByRole("button", { name: "Send prompt" }).click();
+    await expect(page.getByRole("region", { name: "Transcript" })).toContainText("stdio MCP complete");
+    await page.getByRole("region", { name: "Transcript" }).getByText("Details", { exact: true }).last().click();
+    await expect(page.getByRole("region", { name: "Transcript" })).toContainText("stdio MCP fixture result");
+    await expect(page.locator("main")).not.toContainText(mcp.stdioSecret);
+    await page.getByText("Conversation actions", { exact: true }).click();
+    await page.getByRole("button", { name: "Close conversation" }).click();
+
+    await addHTTPMCPServer(page, "broken", `${mcp.httpURL}/unavailable`, "failed-activation-secret");
+    await saveMCPServers(page);
+    await page.getByRole("button", { name: "New conversation" }).click();
+    await expect(page.getByRole("alert")).toContainText("activate MCP servers");
+    await expect(page.locator("main")).not.toContainText("failed-activation-secret");
+
+    await addHTTPMCPServer(page, "reactivated", mcp.httpURL, mcp.httpSecret);
+    await saveMCPServers(page);
+    await startNewConversation(page);
+    await expect(page.getByRole("region", { name: "Conversation" })).toBeVisible();
+    const providerRequests = JSON.stringify(fixture.prompts);
+    expect(providerRequests).toContain("mcp__http__lookup");
+    expect(providerRequests).toContain("mcp__stdio__lookup");
+    expect(providerRequests).not.toContain(mcp.httpSecret);
+    expect(providerRequests).not.toContain(mcp.stdioSecret);
+  } finally {
+    await host?.stop();
+    await mcp.close();
     await fixture.close();
   }
 });
@@ -345,11 +433,23 @@ type Fixture = {
   environment: NodeJS.ProcessEnv;
   providerURL: string;
   prompts: unknown[];
+  releaseHeldPrompt(): void;
   requests: number;
   runner: string;
   stopOx(): Promise<void>;
   waitForOxExit(): Promise<void>;
   workspace: string;
+};
+
+type MCPFixture = {
+  close(): Promise<void>;
+  httpAuthorizations: string[];
+  httpSecret: string;
+  httpURL: string;
+  stdioArgument: string;
+  stdioCommand: string;
+  stdioEnvironmentName: string;
+  stdioSecret: string;
 };
 
 async function createFixture(): Promise<Fixture> {
@@ -361,6 +461,7 @@ async function createFixture(): Promise<Fixture> {
   const provider = createServer();
   let requests = 0;
   let filesystemStage = 0;
+  const heldPrompts: ServerResponse[] = [];
   let terminalStage = 0;
   const prompts: unknown[] = [];
   provider.on("request", (request, response) => {
@@ -389,6 +490,7 @@ async function createFixture(): Promise<Fixture> {
         prompts.push(body);
       }
       if (body.includes("hold")) {
+        heldPrompts.push(response);
         return;
       }
       if (body.includes("exercise filesystem callbacks")) {
@@ -450,6 +552,31 @@ async function createFixture(): Promise<Fixture> {
             "",
           ].join("\n"),
         );
+        return;
+      }
+      const mcpPrompt = latestMCPPrompt(body);
+      if (mcpPrompt === "use HTTP MCP failure") {
+        if (!hasToolResultAfterPrompt(body, "use HTTP MCP failure")) {
+          streamToolCall(response, "http-mcp-failure", "mcp__http__fail");
+          return;
+        }
+        streamText(response, "HTTP MCP failure complete");
+        return;
+      }
+      if (mcpPrompt === "use HTTP MCP tool") {
+        if (!hasToolResultAfterPrompt(body, "use HTTP MCP tool")) {
+          streamToolCall(response, "http-mcp-call", "mcp__http__lookup");
+          return;
+        }
+        streamText(response, "HTTP MCP complete");
+        return;
+      }
+      if (mcpPrompt === "use stdio MCP tool") {
+        if (!hasToolResultAfterPrompt(body, "use stdio MCP tool")) {
+          streamToolCall(response, "stdio-mcp-call", "mcp__stdio__lookup");
+          return;
+        }
+        streamText(response, "stdio MCP complete");
         return;
       }
       if (body.includes("request permission") && !body.includes('"outcome":"selected"')) {
@@ -527,6 +654,13 @@ async function createFixture(): Promise<Fixture> {
       return requests;
     },
     prompts,
+    releaseHeldPrompt() {
+      const response = heldPrompts.shift();
+      if (!response) {
+        throw new Error("no held prompt is waiting for a provider response");
+      }
+      streamText(response, "held prompt complete");
+    },
     runner,
     async stopOx() {
       process.kill(await oxPID(pidFile), "SIGTERM");
@@ -537,6 +671,177 @@ async function createFixture(): Promise<Fixture> {
     },
     workspace,
   };
+}
+
+function hasToolResultAfterPrompt(body: string, prompt: string): boolean {
+  return body.lastIndexOf('"role":"tool"') > body.lastIndexOf(prompt);
+}
+
+function latestMCPPrompt(body: string): string | undefined {
+  return ["use HTTP MCP failure", "use HTTP MCP tool", "use stdio MCP tool"].reduce<string | undefined>(
+    (latest, prompt) => {
+      const index = body.lastIndexOf(prompt);
+      return index === -1 || (latest !== undefined && index <= body.lastIndexOf(latest)) ? latest : prompt;
+    },
+    undefined,
+  );
+}
+
+function streamToolCall(response: import("node:http").ServerResponse, id: string, name: string): void {
+  response.writeHead(200, { "content-type": "text/event-stream" });
+  response.end(
+    [
+      `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"${id}","type":"function","function":{"name":"${name}","arguments":"{}"}}]},"finish_reason":null}]}`,
+      "",
+      'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}',
+      "",
+      "data: [DONE]",
+      "",
+    ].join("\n"),
+  );
+}
+
+function streamText(response: import("node:http").ServerResponse, text: string): void {
+  response.writeHead(200, { "content-type": "text/event-stream" });
+  response.end(
+    [
+      `data: {"choices":[{"delta":{"content":"${text}"},"finish_reason":null}]}`,
+      "",
+      'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}',
+      "",
+      "data: [DONE]",
+      "",
+    ].join("\n"),
+  );
+}
+
+async function createMCPFixture(workspace: string): Promise<MCPFixture> {
+  const httpSecret = "browser-http-mcp-secret";
+  const stdioSecret = "browser-stdio-mcp-secret";
+  const stdioEnvironmentName = "OX_BROWSER_MCP_SECRET";
+  const stdioArgument = join(workspace, "stdio-mcp.js");
+  const httpAuthorizations: string[] = [];
+  const server = createServer(async (request, response) => {
+    if (request.url === "/unavailable") {
+      response.writeHead(503).end("unavailable");
+      return;
+    }
+    if (request.method !== "POST" || request.url !== "/mcp") {
+      response.writeHead(404).end();
+      return;
+    }
+    httpAuthorizations.push(request.headers.authorization ?? "");
+    let body = "";
+    request.setEncoding("utf8");
+    for await (const chunk of request) {
+      body += chunk;
+    }
+    const message = JSON.parse(body) as { id?: string | number; method?: string; params?: { name?: string } };
+    if (message.id === undefined) {
+      response.writeHead(202).end();
+      return;
+    }
+    const result = mcpResult(message.method, message.params?.name);
+    response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ jsonrpc: "2.0", id: message.id, result }));
+  });
+  await new Promise<void>((resolveListen) => server.listen(0, "127.0.0.1", resolveListen));
+  const address = server.address();
+  if (!address || typeof address === "string") {
+    throw new Error("MCP fixture did not bind a TCP address");
+  }
+  await writeFile(stdioArgument, stdioMCPProgram(stdioEnvironmentName, stdioSecret), { mode: 0o600 });
+  return {
+    async close() {
+      server.close();
+      await once(server, "close");
+    },
+    httpAuthorizations,
+    httpSecret,
+    httpURL: `http://127.0.0.1:${address.port}/mcp`,
+    stdioArgument,
+    stdioCommand: process.execPath,
+    stdioEnvironmentName,
+    stdioSecret,
+  };
+}
+
+function mcpResult(method: string | undefined, toolName: string | undefined): unknown {
+  switch (method) {
+    case "initialize":
+      return {
+        capabilities: { tools: {} },
+        protocolVersion: "2026-07-28",
+        serverInfo: { name: "browser-fixture", version: "1" },
+      };
+    case "tools/list":
+      return {
+        tools: [
+          { description: "returns a fixture value", inputSchema: { type: "object" }, name: "lookup" },
+          { description: "reports a fixture failure", inputSchema: { type: "object" }, name: "fail" },
+        ],
+      };
+    case "tools/call":
+      return toolName === "fail"
+        ? { content: [{ text: "HTTP MCP fixture failure", type: "text" }], isError: true }
+        : { content: [{ text: "HTTP MCP fixture result", type: "text" }] };
+    default:
+      return {};
+  }
+}
+
+function stdioMCPProgram(environmentName: string, secret: string): string {
+  return `
+let buffer = "";
+function result(method) {
+  if (method === "initialize") return { capabilities: { tools: {} }, protocolVersion: "2026-07-28", serverInfo: { name: "stdio-browser-fixture", version: "1" } };
+  if (method === "tools/list") return { tools: [{ description: "returns a fixture value", inputSchema: { type: "object" }, name: "lookup" }] };
+  if (method === "tools/call") return { content: [{ text: process.env[${JSON.stringify(environmentName)}] === ${JSON.stringify(secret)} ? "stdio MCP fixture result" : "missing stdio environment", type: "text" }] };
+  return {};
+}
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (chunk) => {
+  buffer += chunk;
+  for (;;) {
+    const newline = buffer.indexOf("\\n");
+    if (newline === -1) return;
+    const line = buffer.slice(0, newline);
+    buffer = buffer.slice(newline + 1);
+    if (!line) continue;
+    const request = JSON.parse(line);
+    if (request.id === undefined) continue;
+    process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: request.id, result: result(request.method) }) + "\\n");
+  }
+});
+`;
+}
+
+async function addHTTPMCPServer(page: Page, name: string, url: string, secret: string): Promise<void> {
+  await page.getByRole("button", { name: "Add HTTP MCP server" }).click();
+  const server = page.getByRole("group", { name: "HTTP MCP server" });
+  await server.getByLabel("Name").fill(name);
+  await server.getByLabel("URL").fill(url);
+  await server.getByRole("button", { name: "Add header" }).click();
+  await server.getByLabel("Header name").fill("Authorization");
+  await server.getByLabel("Header value").fill(secret);
+}
+
+async function addStdioMCPServer(
+  page: Page,
+  name: string,
+  command: string,
+  argument: string,
+  environmentName: string,
+  secret: string,
+): Promise<void> {
+  await page.getByRole("button", { name: "Add stdio MCP server" }).click();
+  const server = page.getByRole("group", { name: "Stdio MCP server" });
+  await server.getByLabel("Name").fill(name);
+  await server.getByLabel("Command").fill(command);
+  await server.getByRole("button", { name: "Add argument" }).click();
+  await server.getByRole("textbox", { name: "Argument" }).fill(argument);
+  await server.getByRole("button", { name: "Add variable" }).click();
+  await server.getByLabel("Variable name").fill(environmentName);
+  await server.getByLabel("Variable value").fill(secret);
 }
 
 async function seedOxFixture(fixture: Pick<Fixture, "binary" | "credential" | "workspace">): Promise<void> {
@@ -615,9 +920,34 @@ async function driveOx(fixture: Fixture): Promise<string> {
 async function assertReady(page: Page, url: string): Promise<void> {
   await page.goto(url);
   await expect(page.getByRole("heading", { name: "Ox" })).toBeVisible();
-  await expect(page.getByText("Browser ACP client")).toBeVisible();
-  await expect(page.getByText("Connected")).toBeVisible();
-  await expect(page.getByText("ready", { exact: true })).toBeVisible();
+  const authenticate = page.getByRole("button", { name: "Use configured credential" });
+  if (await authenticate.isVisible()) {
+    await authenticate.click();
+  }
+  await expect(page.getByRole("navigation", { name: "Conversations" })).toBeVisible();
+  await expect(page.getByRole("region", { name: "Conversation" })).toBeVisible();
+}
+
+async function openSupportDetails(page: Page): Promise<void> {
+  await page.getByText("Workspace settings", { exact: true }).click();
+  await page.getByText("Support details", { exact: true }).click();
+}
+
+async function openMCPSettings(page: Page): Promise<void> {
+  await page.getByText("Workspace settings", { exact: true }).click();
+  await page.getByText(/^MCP servers — /).click();
+}
+
+async function saveMCPServers(page: Page): Promise<void> {
+  await page.getByRole("button", { name: "Save MCP servers" }).click();
+  await expect(page.getByText("MCP servers saved", { exact: true })).toBeVisible();
+}
+
+async function startNewConversation(page: Page): Promise<void> {
+  const conversations = page.getByRole("list", { name: "Conversation history" }).getByRole("listitem");
+  const count = await conversations.count();
+  await page.getByRole("button", { name: "New conversation" }).click();
+  await expect(conversations).toHaveCount(count + 1);
 }
 
 async function oxPID(pidFile: string): Promise<number> {

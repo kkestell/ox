@@ -103,7 +103,7 @@
         (F01)
   - [x] Preserve validator exit status without model-added output-truncation
         pipelines (F02)
-- [ ] Build the first-party browser ACP client described in
+- [x] Build the first-party browser ACP client described in
       [the client architecture](client-architecture.md)
   - [x] Establish the `client/` Bun, TypeScript, and React package with the
         validated same-origin browser protocol, unstyled semantic application
@@ -138,11 +138,15 @@
         environment execution, process-group cancellation, bounded incremental
         output, exit status, wait, kill, and release conformance tests through
         real Ox shell calls
-  - [ ] Add HTTP and stdio MCP activation forms with ephemeral secret handling,
+  - [x] Add HTTP and stdio MCP activation forms with ephemeral secret handling,
         route definitions consistently through new, load, and resume, and prove
         tool discovery, calls, failures, and reactivation with local test
         servers
-  - [ ] Complete the functional ACP and reconnect matrix, integrate focused
+  - [x] Replace the protocol-oriented browser surface with the conversation
+        product: default to the newest conversation, make history and New direct
+        workflows, keep session controls and context on the transcript, isolate
+        MCP drafts in workspace settings, and demote protocol/process details
+  - [x] Complete the functional ACP and reconnect matrix, integrate focused
         client gates into the repository checks, document startup and trusted
         network use, and perform the milestone completeness and simplification
         review while the client still contains zero CSS

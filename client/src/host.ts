@@ -50,6 +50,8 @@ export async function startHost(options: HostOptions = {}): Promise<StartedHost>
       ? browserWorkspace(initialState)
       : {
           diagnostics: ["workspace is not configured"],
+          mcpServerCount: 0,
+          name: "Workspace",
           promptCapabilities: { audio: false, embeddedContext: false, image: false },
           status: "unavailable",
         },
@@ -169,6 +171,8 @@ function snapshotFor(revision: number, workspace: WorkspaceState): Snapshot {
 function browserWorkspace(workspace: WorkspaceState): Snapshot["workspace"] {
   return {
     diagnostics: workspace.diagnostics,
+    mcpServerCount: workspace.mcpServerCount,
+    name: workspace.name,
     promptCapabilities: workspace.promptCapabilities,
     status: workspace.status,
   };
@@ -226,23 +230,20 @@ function perform(
       return supervisor.login(command.methodId, command.credential);
     case "logout":
       return supervisor.logout();
-    case "new-session":
-      return supervisor.newSession(command.mcpServers);
-    case "refresh-sessions":
+    case "new-conversation":
+      return supervisor.newConversation();
+    case "refresh-history":
       return supervisor.refreshSessions();
-    case "next-session-page":
+    case "next-history-page":
       return supervisor.nextSessionPage();
-    case "load-session":
-      return supervisor.loadSession(command.sessionId, command.mcpServers);
-    case "resume-session":
-      return supervisor.resumeSession(command.sessionId, command.mcpServers);
-    case "close-session":
+    case "open-conversation":
+      return supervisor.openConversation(command.sessionId);
+    case "close-conversation":
       return supervisor.closeSession(command.sessionId);
-    case "delete-session":
-      return supervisor.deleteSession(command.sessionId);
-    case "select-session":
-      supervisor.selectSession(command.sessionId);
-      return Promise.resolve();
+    case "delete-conversation":
+      return supervisor.deleteConversation(command.sessionId);
+    case "set-mcp-servers":
+      return supervisor.setMCPServers(command.mcpServers);
     case "prompt":
       return supervisor.prompt(command.sessionId, command.prompt);
     case "cancel-prompt":
