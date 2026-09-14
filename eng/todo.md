@@ -125,7 +125,7 @@
         thoughts, tool calls and output, plans, usage, configuration, and
         terminal outcomes—with reducer tests for chunking, merging, replay, and
         unknown extensible values
-  - [ ] Add prompting and cancellation, all supported prompt block types, and
+  - [x] Add prompting and cancellation, all supported prompt block types, and
         mode, model, and reasoning controls; prove concurrent turns in separate
         sessions and refusal of a second turn in one busy session
   - [ ] Handle permission and form-elicitation callbacks as host-owned pending

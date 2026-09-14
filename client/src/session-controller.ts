@@ -48,17 +48,21 @@ export class SessionController {
     }
   }
 
-  replaceConfiguration(options: readonly acp.SessionConfigOption[] | unknown): void {
-    if (!Array.isArray(options)) return;
-    this.#configuration = options.flatMap((option) => {
+  // Ox exposes only select options. An option the browser could not render as a
+  // faithful select—another type, or a current value missing from its
+  // choices—is dropped rather than projected into a misleading control.
+  replaceConfiguration(configuration: readonly acp.SessionConfigOption[] | unknown): void {
+    if (!Array.isArray(configuration)) return;
+    this.#configuration = configuration.flatMap((option) => {
       const value = record(option);
       const id = string(value?.id);
       const name = string(value?.name);
-      const type = string(value?.type);
       const currentValue = value?.currentValue;
-      if (!id || !name || !type || (typeof currentValue !== "string" && typeof currentValue !== "boolean")) return [];
-      const description = string(value?.description);
-      const category = string(value?.category);
+      if (!id || !name || value?.type !== "select" || typeof currentValue !== "string") return [];
+      const options = choices(value.options);
+      if (!options.some((choice) => choice.value === currentValue)) return [];
+      const description = string(value.description);
+      const category = string(value.category);
       return [
         {
           ...(description ? { description } : {}),
@@ -66,7 +70,8 @@ export class SessionController {
           currentValue,
           id,
           name,
-          type,
+          options,
+          type: "select" as const,
         },
       ];
     });
@@ -279,6 +284,18 @@ function copyEntry(entry: TranscriptEntry): TranscriptEntry {
     };
   }
   return entry.kind === "unknown" ? { ...entry } : { ...entry, content: entry.content.map((content) => ({ ...content })) };
+}
+
+function choices(value: unknown): SessionTranscript["configuration"][number]["options"] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((candidate) => {
+    const choice = record(candidate);
+    const name = string(choice?.name);
+    const choiceValue = string(choice?.value);
+    if (!name || !choiceValue) return [];
+    const description = string(choice?.description);
+    return [{ ...(description ? { description } : {}), name, value: choiceValue }];
+  });
 }
 
 function record(value: unknown): Record<string, unknown> | undefined {

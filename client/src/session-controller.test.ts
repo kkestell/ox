@@ -76,7 +76,7 @@ describe("session controller", () => {
   test("replaces plans, usage, and configuration through live updates and load state", () => {
     const controller = new SessionController("session-1");
     controller.replaceConfiguration([
-      { category: "mode", currentValue: "code", id: "mode", name: "Mode", options: [], type: "select" },
+      { category: "mode", currentValue: "code", id: "mode", name: "Mode", options: [{ name: "Code", value: "code" }], type: "select" },
     ]);
     controller.accept({
       entries: [{ content: "Inspect", priority: "high", status: "in_progress" }],
@@ -88,12 +88,12 @@ describe("session controller", () => {
     });
     controller.accept({ cost: { amount: 0.2, currency: "USD" }, sessionUpdate: "usage_update", size: 100, used: 25 });
     controller.accept({
-      configOptions: [{ currentValue: "plan", id: "mode", name: "Mode", options: [], type: "select" }],
+      configOptions: [{ currentValue: "plan", id: "mode", name: "Mode", options: [{ name: "Plan", value: "plan" }], type: "select" }],
       sessionUpdate: "config_option_update",
     });
 
     expect(controller.transcript).toEqual({
-      configuration: [{ currentValue: "plan", id: "mode", name: "Mode", type: "select" }],
+      configuration: [{ currentValue: "plan", id: "mode", name: "Mode", options: [{ name: "Plan", value: "plan" }], type: "select" }],
       entries: [],
       plan: [{ content: "Finish", priority: "medium", status: "completed" }],
       usage: { cost: { amount: 0.2, currency: "USD" }, size: 100, used: 25 },

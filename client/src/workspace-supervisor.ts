@@ -4,7 +4,7 @@ import { realpath, stat } from "node:fs/promises";
 import { Readable, Writable } from "node:stream";
 
 import { maximumSessions } from "./protocol.ts";
-import type { SessionTranscript } from "./protocol.ts";
+import type { PromptCapabilities, PromptContentBlock, SessionTranscript } from "./protocol.ts";
 import { SessionController } from "./session-controller.ts";
 
 const maximumDiagnostics = 16;
@@ -30,12 +30,13 @@ export type AuthenticationState = {
 export type WorkspaceState = {
   authentication: AuthenticationState;
   diagnostics: string[];
+  promptCapabilities: PromptCapabilities;
   sessions: SessionState;
   status: WorkspaceStatus;
 };
 
 export type SessionState = {
-  active?: { id: string; transcript: SessionTranscript };
+  active?: { busy: boolean; id: string; transcript: SessionTranscript };
   nextCursor?: string;
   selectedID?: string;
   values: SessionSummary[];
@@ -76,6 +77,7 @@ export class WorkspaceSupervisor {
   #child?: ChildProcessWithoutNullStreams;
   #connection?: acp.ClientConnection;
   #controllers = new Map<string, SessionController>();
+  #activePrompts = new Map<string, Promise<void>>();
   #diagnosticRemainder = "";
   #childTermination?: Promise<void>;
   #authenticationMethods = new Map<string, AuthenticationMethod | TerminalAuthenticationMethod>();
@@ -87,6 +89,7 @@ export class WorkspaceSupervisor {
   #state: WorkspaceState = {
     authentication: unauthenticated,
     diagnostics: [],
+    promptCapabilities: { audio: false, embeddedContext: false, image: false },
     sessions: { values: [] },
     status: "starting",
   };
@@ -120,6 +123,7 @@ export class WorkspaceSupervisor {
         methods: this.#state.authentication.methods.map((method) => ({ ...method })),
       },
       diagnostics: [...this.#state.diagnostics],
+      promptCapabilities: { ...this.#state.promptCapabilities },
       sessions: {
         ...(active === undefined ? {} : { active }),
         ...(this.#state.sessions.nextCursor === undefined ? {} : { nextCursor: this.#state.sessions.nextCursor }),
@@ -185,9 +189,67 @@ export class WorkspaceSupervisor {
     return this.serializeSessions(() => this.deleteSessionImpl(sessionID));
   }
 
+  selectSession(sessionID: string): void {
+    if (!this.#controllers.has(sessionID)) {
+      throw new Error("session is not active");
+    }
+    this.setSessions({ ...this.#state.sessions, selectedID: sessionID });
+  }
+
+  // Turn ownership is session-local: the in-flight request is the session's
+  // turn, so a second prompt is refused here while other sessions on the same
+  // connection keep prompting.
+  prompt(sessionID: string, prompt: PromptContentBlock[]): Promise<void> {
+    if (!this.#controllers.has(sessionID)) {
+      return Promise.reject(new Error("session is not active"));
+    }
+    if (this.#activePrompts.has(sessionID)) {
+      return Promise.reject(new Error("session already has an active prompt"));
+    }
+    if (!prompt.every((block) => this.supportsPromptBlock(block))) {
+      return Promise.reject(new Error("Ox does not support one or more prompt blocks"));
+    }
+    const running = this.readyConnection().agent
+      .request(acp.methods.agent.session.prompt, { prompt, sessionId: sessionID })
+      .then(() => undefined);
+    this.#activePrompts.set(sessionID, running);
+    this.publish();
+    void running.then(
+      () => this.finishPrompt(sessionID, running),
+      () => this.finishPrompt(sessionID, running),
+    );
+    return running;
+  }
+
+  async cancelPrompt(sessionID: string): Promise<void> {
+    if (!this.#activePrompts.has(sessionID)) {
+      throw new Error("session has no active prompt");
+    }
+    await this.readyConnection().agent.notify(acp.methods.agent.session.cancel, { sessionId: sessionID });
+  }
+
+  async setConfigOption(sessionID: string, configID: string, value: string): Promise<void> {
+    const configuration = this.#controllers.get(sessionID)?.transcript.configuration ?? [];
+    const option = configuration.find((candidate) => candidate.id === configID);
+    if (!option) {
+      throw new Error("unknown session configuration option");
+    }
+    if (!option.options.some((candidate) => candidate.value === value)) {
+      throw new Error("unsupported session configuration value");
+    }
+    const response = await this.readyConnection().agent.request(acp.methods.agent.session.setConfigOption, {
+      configId: configID,
+      sessionId: sessionID,
+      value,
+    });
+    this.#controllers.get(sessionID)?.replaceConfiguration(response.configOptions);
+    this.publish();
+  }
+
   private async stopImpl(): Promise<void> {
     this.#stopping = true;
     this.#connection?.close();
+    this.#activePrompts.clear();
     await this.terminateChild();
     this.clearActiveSessions();
     this.setAuthentication(unauthenticated);
@@ -314,6 +376,15 @@ export class WorkspaceSupervisor {
 
   private recordAuthentication(response: acp.InitializeResponse): void {
     const capabilities = response.agentCapabilities;
+    const promptCapabilities = capabilities?.promptCapabilities;
+    this.#state = {
+      ...this.#state,
+      promptCapabilities: {
+        audio: promptCapabilities?.audio === true,
+        embeddedContext: promptCapabilities?.embeddedContext === true,
+        image: promptCapabilities?.image === true,
+      },
+    };
     const sessionCapabilities = capabilities?.sessionCapabilities;
     this.#sessionCapabilities = {
       close: sessionCapabilities?.close != null,
@@ -454,6 +525,7 @@ export class WorkspaceSupervisor {
     }
     await this.readyConnection().agent.request(acp.methods.agent.session.close, { sessionId: sessionID });
     this.#controllers.delete(sessionID);
+    this.#activePrompts.delete(sessionID);
     this.setSessions(this.withoutSession(sessionID));
     if (this.#sessionCapabilities.list) {
       await this.refreshSessionsImpl();
@@ -470,6 +542,26 @@ export class WorkspaceSupervisor {
     if (this.#sessionCapabilities.list) {
       await this.refreshSessionsImpl();
     }
+  }
+
+  private supportsPromptBlock(block: PromptContentBlock): boolean {
+    switch (block.type) {
+      case "text":
+      case "resource_link":
+        return true;
+      case "image":
+        return this.#state.promptCapabilities.image;
+      case "audio":
+        return this.#state.promptCapabilities.audio;
+      case "resource":
+        return this.#state.promptCapabilities.embeddedContext;
+    }
+  }
+
+  private finishPrompt(sessionID: string, running: Promise<void>): void {
+    if (this.#activePrompts.get(sessionID) !== running) return;
+    this.#activePrompts.delete(sessionID);
+    this.publish();
   }
 
   private summaries(sessions: acp.SessionInfo[]): SessionSummary[] {
@@ -492,7 +584,8 @@ export class WorkspaceSupervisor {
     const id = this.#state.sessions.selectedID;
     if (id === undefined) return undefined;
     const controller = this.#controllers.get(id);
-    return controller === undefined ? undefined : { id, transcript: controller.transcript };
+    if (controller === undefined) return undefined;
+    return { busy: this.#activePrompts.has(id), id, transcript: controller.transcript };
   }
 
   private mergeActiveSessions(values: SessionSummary[]): SessionSummary[] {
@@ -510,6 +603,7 @@ export class WorkspaceSupervisor {
       return;
     }
     this.#controllers.clear();
+    this.#activePrompts.clear();
     this.setSessions({
       ...this.#state.sessions,
       selectedID: undefined,

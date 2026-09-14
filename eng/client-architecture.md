@@ -83,11 +83,11 @@ The client is one Bun package under `client/`, with these coarse boundaries:
   lifecycles, browser command validation, workspace registration, and graceful
   shutdown.
 - The **workspace supervisor** owns the Ox child process, its stderr status, the
-  initialized ACP connection, session routing, and workspace-scoped client
-  executors.
-- The **session controller** owns one session's lifecycle, active prompt,
-  configuration options, pending interactions, and transcript projection. It
-  reduces both live and replayed ACP updates through the same path.
+  initialized ACP connection, negotiated agent capabilities, session routing,
+  the active turn for each session, and workspace-scoped client executors.
+- The **session controller** owns one session's configuration options, pending
+  interactions, and transcript projection. It reduces both live and replayed ACP
+  updates through the same path.
 - The **filesystem executor** owns confined client-side reads and writes. The
   **terminal executor** owns command processes, output bounds, exit status,
   cancellation, and release. Neither has presentation responsibilities.
@@ -175,10 +175,16 @@ plans and usage replace their current projections; configuration updates replace
 the complete option list. Replaying a session uses the same reducer and must not
 duplicate entries already present in a host snapshot.
 
-One controller owns at most one active prompt request. Other session controllers
-on the same Ox connection may prompt concurrently. Closing, deleting, switching,
-refreshing, and browser disconnects do not share implicit cancellation
-semantics: each invokes only the corresponding explicit ACP or host operation.
+At most one prompt request is active per session, and the host refuses a second
+one before it reaches Ox. Different sessions on the same Ox connection prompt
+concurrently. Closing, deleting, switching, refreshing, and browser disconnects
+do not share implicit cancellation semantics: each invokes only the
+corresponding explicit ACP or host operation.
+
+Browser-authored prompt blocks are bounded and checked against the agent's
+negotiated prompt capabilities, so an attachment the agent cannot accept is
+refused rather than forwarded. Configuration changes are applied through
+`session/set_config_option`, and the response replaces the option projection.
 
 Pending permission and elicitation requests belong to their session and tool
 call. They remain visible across browser refreshes because the host owns their

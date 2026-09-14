@@ -121,6 +121,67 @@ test("keeps a replayed session coherent across refresh and attached browsers", a
   }
 });
 
+test("prompts with controls and every supported browser attachment", async ({ page }) => {
+  const fixture = await createFixture();
+  let host: BrowserHost | undefined;
+  try {
+    host = startBrowserHost(fixture);
+    await assertReady(page, await host.url);
+    await page.getByRole("button", { name: "New session" }).click();
+    await expect(page.getByLabel("Mode", { exact: true })).toHaveValue("code");
+    await page.getByLabel("Mode", { exact: true }).selectOption("plan");
+    await expect(page.getByLabel("Mode", { exact: true })).toHaveValue("plan");
+
+    await page.getByLabel("Message").fill("inspect these attachments");
+    await page.getByLabel("Attachments", { exact: true }).setInputFiles([
+      { name: "picture.png", mimeType: "image/png", buffer: Buffer.from("image") },
+      { name: "sound.wav", mimeType: "audio/wav", buffer: Buffer.from("audio") },
+      { name: "notes.txt", mimeType: "text/plain", buffer: Buffer.from("notes") },
+    ]);
+    await page.getByLabel("Name").fill("Guide");
+    await page.getByLabel("URI").fill("https://example.test/guide");
+    await page.getByRole("button", { name: "Send prompt" }).click();
+    await expect.poll(() => fixture.requests).toBe(1);
+    const prompt = JSON.stringify(fixture.prompts[0]);
+    expect(prompt).toContain("image_url");
+    expect(prompt).toContain("input_audio");
+    expect(prompt).toContain("notes.txt");
+    expect(prompt).toContain("https://example.test/guide");
+    await expect(page.getByRole("region", { name: "Transcript" })).toContainText("browser smoke");
+  } finally {
+    await host?.stop();
+    await fixture.close();
+  }
+});
+
+test("runs separate sessions concurrently and cancels the selected live prompt", async ({ page }) => {
+  const fixture = await createFixture();
+  let host: BrowserHost | undefined;
+  try {
+    host = startBrowserHost(fixture);
+    await assertReady(page, await host.url);
+    await page.getByRole("button", { name: "New session" }).click();
+    await page.getByLabel("Message").fill("hold");
+    await page.getByRole("button", { name: "Send prompt" }).click();
+    await expect(page.getByRole("button", { name: "Cancel prompt" })).toBeVisible();
+
+    await page.getByRole("button", { name: "New session" }).click();
+    await page.getByLabel("Message").fill("second session");
+    await page.getByRole("button", { name: "Send prompt" }).click();
+    await expect.poll(() => fixture.requests).toBe(2);
+    await expect(page.getByRole("region", { name: "Transcript" })).toContainText("browser smoke");
+
+    const sessions = page.getByRole("list", { name: "Sessions" }).getByRole("listitem");
+    await sessions.filter({ hasText: "hold" }).getByRole("button", { name: "Select" }).click();
+    await expect(page.getByRole("button", { name: "Cancel prompt" })).toBeVisible();
+    await page.getByRole("button", { name: "Cancel prompt" }).click();
+    await expect(page.getByRole("button", { name: "Cancel prompt" })).toBeHidden();
+  } finally {
+    await host?.stop();
+    await fixture.close();
+  }
+});
+
 type BrowserHost = {
   stop(): Promise<void>;
   url: Promise<string>;
@@ -193,6 +254,7 @@ type Fixture = {
   credential: string;
   environment: NodeJS.ProcessEnv;
   providerURL: string;
+  prompts: unknown[];
   requests: number;
   runner: string;
   stopOx(): Promise<void>;
@@ -208,6 +270,7 @@ async function createFixture(): Promise<Fixture> {
   const runner = join(workspace, "run-ox");
   const provider = createServer();
   let requests = 0;
+  const prompts: unknown[] = [];
   provider.on("request", (request, response) => {
     if (request.method === "GET" && request.url === "/api/v1/auth/key") {
       if (request.headers.authorization === "Bearer test-key") {
@@ -222,17 +285,32 @@ async function createFixture(): Promise<Fixture> {
       return;
     }
     requests += 1;
-    response.writeHead(200, { "content-type": "text/event-stream" });
-    response.end(
-      [
-        'data: {"choices":[{"delta":{"content":"browser smoke"},"finish_reason":null}]}',
-        "",
-        'data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}',
-        "",
-        "data: [DONE]",
-        "",
-      ].join("\n"),
-    );
+    let body = "";
+    request.setEncoding("utf8");
+    request.on("data", (chunk: string) => {
+      body += chunk;
+    });
+    request.once("end", () => {
+      try {
+        prompts.push(JSON.parse(body));
+      } catch {
+        prompts.push(body);
+      }
+      if (body.includes("hold")) {
+        return;
+      }
+      response.writeHead(200, { "content-type": "text/event-stream" });
+      response.end(
+        [
+          'data: {"choices":[{"delta":{"content":"browser smoke"},"finish_reason":null}]}',
+          "",
+          'data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}',
+          "",
+          "data: [DONE]",
+          "",
+        ].join("\n"),
+      );
+    });
   });
   await new Promise<void>((resolveListen) => provider.listen(0, "127.0.0.1", resolveListen));
   const address = provider.address();
@@ -267,6 +345,7 @@ async function createFixture(): Promise<Fixture> {
     get requests() {
       return requests;
     },
+    prompts,
     runner,
     async stopOx() {
       process.kill(await oxPID(pidFile), "SIGTERM");
@@ -288,7 +367,7 @@ async function seedOxFixture(fixture: Pick<Fixture, "binary" | "credential" | "w
     JSON.stringify({
       data: [
         {
-          architecture: { input_modalities: ["text"] },
+          architecture: { input_modalities: ["text", "image", "audio"] },
           context_length: 128000,
           id: "test/model",
           supported_parameters: ["tools", "temperature", "max_tokens"],

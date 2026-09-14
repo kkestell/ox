@@ -2,6 +2,8 @@ import { describe, expect, test } from "bun:test";
 
 import { initialSnapshot, parseBrowserCommand, snapshotSchema } from "./protocol.ts";
 
+const noPromptCapabilities = { audio: false, embeddedContext: false, image: false };
+
 describe("browser protocol", () => {
   test("accepts a correlated ping", () => {
     expect(parseBrowserCommand({ type: "ping", requestId: "request-1" })).toEqual({
@@ -39,6 +41,29 @@ describe("browser protocol", () => {
     }
   });
 
+  test("accepts prompting, cancellation, selection, and configuration commands", () => {
+    for (const command of [
+      { type: "select-session", requestId: "request-1", sessionId: "session-1" },
+      { type: "cancel-prompt", requestId: "request-2", sessionId: "session-1" },
+      { type: "set-config-option", requestId: "request-3", sessionId: "session-1", configId: "mode", value: "plan" },
+      {
+        type: "prompt",
+        requestId: "request-4",
+        sessionId: "session-1",
+        prompt: [
+          { type: "text", text: "hello" },
+          { type: "image", data: "aGVsbG8=", mimeType: "image/png", uri: "attachment://image" },
+          { type: "audio", data: "aGVsbG8=", mimeType: "audio/wav" },
+          { type: "resource_link", name: "guide", uri: "https://example.test/guide" },
+          { type: "resource", resource: { text: "notes", mimeType: "text/plain", uri: "attachment://notes" } },
+          { type: "resource", resource: { blob: "aGVsbG8=", mimeType: "application/octet-stream", uri: "attachment://blob" } },
+        ],
+      },
+    ]) {
+      expect(parseBrowserCommand(command).ok).toBe(true);
+    }
+  });
+
   test.each([
     undefined,
     {},
@@ -50,6 +75,9 @@ describe("browser protocol", () => {
     { type: "logout", requestId: "" },
     { type: "new-session" },
     { type: "load-session", requestId: "request-1", sessionId: "" },
+    { type: "prompt", requestId: "request-1", sessionId: "session-1", prompt: [] },
+    { type: "prompt", requestId: "request-1", sessionId: "session-1", prompt: [{ type: "resource", resource: { uri: "attachment://missing" } }] },
+    { type: "set-config-option", requestId: "request-1", sessionId: "session-1", configId: "mode", value: "" },
   ])("rejects invalid commands: %#j", (command) => {
     expect(parseBrowserCommand(command)).toEqual({
       ok: false,
@@ -58,19 +86,20 @@ describe("browser protocol", () => {
   });
 
   test("starts with a complete ready snapshot", () => {
-    expect(initialSnapshot({ diagnostics: [], status: "ready" })).toEqual({
+    expect(initialSnapshot({ diagnostics: [], promptCapabilities: noPromptCapabilities, status: "ready" })).toEqual({
       type: "snapshot",
       revision: 0,
       connection: { status: "ready" },
-      workspace: { diagnostics: [], status: "ready" },
+      workspace: { diagnostics: [], promptCapabilities: noPromptCapabilities, status: "ready" },
       authentication: { logoutAvailable: false, methods: [], status: "unavailable" },
       sessions: { values: [] },
     });
   });
 
   test("accepts a browser-safe active transcript and rejects arbitrary payloads", () => {
-    const snapshot = initialSnapshot({ diagnostics: [], status: "ready" });
+    const snapshot = initialSnapshot({ diagnostics: [], promptCapabilities: noPromptCapabilities, status: "ready" });
     snapshot.sessions.active = {
+      busy: false,
       id: "session-1",
       transcript: {
         configuration: [],
@@ -81,6 +110,7 @@ describe("browser protocol", () => {
     expect(snapshotSchema.safeParse(snapshot).success).toBe(true);
 
     snapshot.sessions.active = {
+      busy: false,
       id: "session-1",
       transcript: {
         configuration: [],
@@ -91,6 +121,7 @@ describe("browser protocol", () => {
     expect(snapshotSchema.safeParse(snapshot).success).toBe(false);
 
     snapshot.sessions.active = {
+      busy: false,
       id: "session-1",
       transcript: {
         configuration: [],

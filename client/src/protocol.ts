@@ -6,6 +6,60 @@ const sessionID = z.string().min(1).max(512);
 /** The most sessions a snapshot can carry, and therefore the most the host pages in. */
 export const maximumSessions = 500;
 
+/** The most characters a browser-authored text or embedded text resource can carry. */
+export const maximumPromptText = 1_000_000;
+
+/** The most bytes a browser attachment can carry before base64 expansion. */
+export const maximumAttachmentBytes = 6_000_000;
+
+const boundedText = z.string().max(maximumPromptText);
+const boundedData = z.string().max((maximumAttachmentBytes / 3) * 4);
+const boundedURI = z.string().min(1).max(4_096);
+const mimeType = z.string().min(1).max(256);
+
+const promptContentBlockSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("text"), text: boundedText }).strict(),
+  z
+    .object({ type: z.literal("image"), data: boundedData, mimeType, uri: boundedURI.optional() })
+    .strict(),
+  z.object({ type: z.literal("audio"), data: boundedData, mimeType }).strict(),
+  z
+    .object({
+      type: z.literal("resource_link"),
+      description: boundedText.optional(),
+      mimeType: mimeType.optional(),
+      name: z.string().min(1).max(512),
+      size: z.number().int().nonnegative().optional(),
+      title: z.string().min(1).max(512).optional(),
+      uri: boundedURI,
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("resource"),
+      resource: z
+        .object({
+          mimeType: mimeType.optional(),
+          text: boundedText.optional(),
+          blob: boundedData.optional(),
+          uri: boundedURI,
+        })
+        .strict()
+        .refine((value) => (value.text === undefined) !== (value.blob === undefined), {
+          message: "a resource must carry exactly one of text or blob",
+        }),
+    })
+    .strict(),
+]);
+
+export type PromptContentBlock = z.infer<typeof promptContentBlockSchema>;
+
+const promptCapabilitiesSchema = z
+  .object({ audio: z.boolean(), embeddedContext: z.boolean(), image: z.boolean() })
+  .strict();
+
+export type PromptCapabilities = z.infer<typeof promptCapabilitiesSchema>;
+
 const contentBlockSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("text"), text: z.string() }).strict(),
   z
@@ -104,8 +158,19 @@ const sessionTranscriptSchema = z
             name: z.string().min(1),
             description: z.string().min(1).optional(),
             category: z.string().min(1).optional(),
-            type: z.string().min(1),
-            currentValue: z.union([z.string(), z.boolean()]),
+            type: z.literal("select"),
+            currentValue: z.string(),
+            options: z
+              .array(
+                z
+                  .object({
+                    description: z.string().min(1).optional(),
+                    name: z.string().min(1),
+                    value: z.string().min(1),
+                  })
+                  .strict(),
+              )
+              .max(256),
           })
           .strict(),
       )
@@ -161,6 +226,25 @@ export const browserCommandSchema = z.discriminatedUnion("type", [
   z
     .object({ type: z.literal("delete-session"), requestId: requestID, sessionId: sessionID })
     .strict(),
+  z
+    .object({
+      type: z.literal("prompt"),
+      requestId: requestID,
+      sessionId: sessionID,
+      prompt: z.array(promptContentBlockSchema).min(1).max(32),
+    })
+    .strict(),
+  z.object({ type: z.literal("select-session"), requestId: requestID, sessionId: sessionID }).strict(),
+  z.object({ type: z.literal("cancel-prompt"), requestId: requestID, sessionId: sessionID }).strict(),
+  z
+    .object({
+      type: z.literal("set-config-option"),
+      requestId: requestID,
+      sessionId: sessionID,
+      configId: z.string().min(1).max(128),
+      value: z.string().min(1).max(512),
+    })
+    .strict(),
 ]);
 
 export type BrowserCommand = z.infer<typeof browserCommandSchema>;
@@ -176,6 +260,7 @@ export const snapshotSchema = z
       .object({
         status: z.enum(["starting", "ready", "unavailable", "stopped"]),
         diagnostics: z.array(z.string()).max(16),
+        promptCapabilities: promptCapabilitiesSchema,
       })
       .strict(),
     authentication: z
@@ -200,7 +285,7 @@ export const snapshotSchema = z
     sessions: z
       .object({
         active: z
-          .object({ id: z.string().min(1), transcript: sessionTranscriptSchema })
+          .object({ id: z.string().min(1), busy: z.boolean(), transcript: sessionTranscriptSchema })
           .strict()
           .optional(),
         nextCursor: z.string().min(1).optional(),

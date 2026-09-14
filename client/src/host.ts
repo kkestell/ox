@@ -47,8 +47,12 @@ export async function startHost(options: HostOptions = {}): Promise<StartedHost>
   const initialState = supervisor?.state;
   let snapshot = initialSnapshot(
     initialState
-      ? { diagnostics: initialState.diagnostics, status: initialState.status }
-      : { diagnostics: ["workspace is not configured"], status: "unavailable" },
+      ? browserWorkspace(initialState)
+      : {
+          diagnostics: ["workspace is not configured"],
+          promptCapabilities: { audio: false, embeddedContext: false, image: false },
+          status: "unavailable",
+        },
     initialState?.authentication,
     initialState ? browserSessions(initialState) : undefined,
   );
@@ -157,12 +161,16 @@ export async function startHost(options: HostOptions = {}): Promise<StartedHost>
 
 function snapshotFor(revision: number, workspace: WorkspaceState): Snapshot {
   return {
-    ...initialSnapshot(
-      { diagnostics: workspace.diagnostics, status: workspace.status },
-      workspace.authentication,
-      browserSessions(workspace),
-    ),
+    ...initialSnapshot(browserWorkspace(workspace), workspace.authentication, browserSessions(workspace)),
     revision,
+  };
+}
+
+function browserWorkspace(workspace: WorkspaceState): Snapshot["workspace"] {
+  return {
+    diagnostics: workspace.diagnostics,
+    promptCapabilities: workspace.promptCapabilities,
+    status: workspace.status,
   };
 }
 
@@ -172,6 +180,7 @@ function browserSessions(workspace: WorkspaceState): Snapshot["sessions"] {
       ? {}
       : {
           active: {
+            busy: workspace.sessions.active.busy,
             id: workspace.sessions.active.id,
             transcript: workspace.sessions.active.transcript,
           },
@@ -230,6 +239,15 @@ function perform(
       return supervisor.closeSession(command.sessionId);
     case "delete-session":
       return supervisor.deleteSession(command.sessionId);
+    case "select-session":
+      supervisor.selectSession(command.sessionId);
+      return Promise.resolve();
+    case "prompt":
+      return supervisor.prompt(command.sessionId, command.prompt);
+    case "cancel-prompt":
+      return supervisor.cancelPrompt(command.sessionId);
+    case "set-config-option":
+      return supervisor.setConfigOption(command.sessionId, command.configId, command.value);
   }
 }
 

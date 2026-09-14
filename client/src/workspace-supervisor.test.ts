@@ -19,6 +19,7 @@ describe("workspace supervisor", () => {
     expect(supervisor.state).toEqual({
       authentication: { logoutAvailable: false, methods: [], status: "required" },
       diagnostics: [],
+      promptCapabilities: { audio: false, embeddedContext: false, image: false },
       sessions: { values: [] },
       status: "ready",
     });
@@ -72,6 +73,7 @@ describe("workspace supervisor", () => {
     expect(supervisor.state).toEqual({
       authentication: { logoutAvailable: false, methods: [], status: "unavailable" },
       diagnostics: ["Ox did not initialize within 2 seconds"],
+      promptCapabilities: { audio: false, embeddedContext: false, image: false },
       sessions: { values: [] },
       status: "unavailable",
     });
@@ -207,6 +209,32 @@ describe("workspace supervisor", () => {
 
     expect(supervisor.state.sessions.values).toHaveLength(maximumSessions);
     expect(supervisor.state.sessions.nextCursor).toBeUndefined();
+    await supervisor.stop();
+  });
+
+  test("owns independent prompt turns, cancellation, and configuration", async () => {
+    const supervisor = await WorkspaceSupervisor.start({
+      arguments: ["--eval", promptProgram()],
+      command: process.execPath,
+      workspace: await temporaryWorkspace(),
+    });
+
+    await supervisor.newSession();
+    await supervisor.newSession();
+    expect(supervisor.state.promptCapabilities).toEqual({ audio: true, embeddedContext: true, image: true });
+    await supervisor.setConfigOption("one", "mode", "plan");
+    expect(supervisor.sessionTranscript("one")?.configuration[0]?.currentValue).toBe("plan");
+    supervisor.selectSession("one");
+
+    const held = supervisor.prompt("one", [{ text: "hold", type: "text" }]);
+    await eventually(() => supervisor.state.sessions.active?.busy === true);
+    await expect(supervisor.prompt("one", [{ text: "second", type: "text" }])).rejects.toThrow("active prompt");
+    await supervisor.prompt("two", [{ data: "aGVsbG8=", mimeType: "image/png", type: "image" }]);
+    expect(supervisor.state.sessions.active?.busy).toBe(true);
+
+    await supervisor.cancelPrompt("one");
+    await held;
+    expect(supervisor.state.sessions.active?.busy).toBe(false);
     await supervisor.stop();
   });
 });
@@ -386,6 +414,40 @@ process.stdin.on('data', (chunk) => {
     if (request.method === 'session/list') {
       const listed = Array.from({ length: ${sessions} }, (unused, index) => ({ sessionId: 'session-' + index, cwd: process.cwd() }));
       process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { sessions: listed, nextCursor: 'more' } }) + '\\n');
+    }
+  }
+});`;
+}
+
+function promptProgram(): string {
+  return `
+process.stdin.setEncoding('utf8');
+let input = '';
+let created = 0;
+let held;
+const options = (value) => [{ type: 'select', id: 'mode', name: 'Mode', currentValue: value, options: [{ value: 'code', name: 'Code' }, { value: 'plan', name: 'Plan' }] }];
+function response(id, result) { process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id, result }) + '\\n'); }
+process.stdin.on('data', (chunk) => {
+  input += chunk;
+  for (;;) {
+    const newline = input.indexOf('\\n');
+    if (newline === -1) break;
+    const request = JSON.parse(input.slice(0, newline));
+    input = input.slice(newline + 1);
+    if (request.method === 'initialize') {
+      response(request.id, { protocolVersion: 1, agentCapabilities: { promptCapabilities: { image: true, audio: true, embeddedContext: true } }, authMethods: [] });
+    } else if (request.method === 'session/new') {
+      created += 1;
+      const sessionId = created === 1 ? 'one' : 'two';
+      response(request.id, { sessionId, configOptions: options('code') });
+    } else if (request.method === 'session/set_config_option') {
+      response(request.id, { configOptions: options(request.params.value) });
+    } else if (request.method === 'session/prompt') {
+      if (request.params.sessionId === 'one') held = request.id;
+      else response(request.id, { stopReason: 'end_turn' });
+    } else if (request.method === 'session/cancel' && held !== undefined) {
+      response(held, { stopReason: 'cancelled' });
+      held = undefined;
     }
   }
 });`;
