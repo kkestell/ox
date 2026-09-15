@@ -7,7 +7,6 @@ import {
 } from "../protocol.ts";
 
 import { Disclosure } from "./disclosure.tsx";
-import { toolLabel } from "./tool-label.ts";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
@@ -22,7 +21,7 @@ export function Transcript({ transcript }: { transcript: SessionTranscript }) {
             key={entry.id}
           >
             {entry.kind === "tool" ? (
-              <article aria-label={`Tool ${toolName(entry)}`}>
+              <article aria-label={`Tool ${entry.title}`}>
                 <Disclosure
                   className="min-w-0"
                   contentClassName="min-w-0"
@@ -30,12 +29,28 @@ export function Transcript({ transcript }: { transcript: SessionTranscript }) {
                   label={
                     <span className="min-w-0 flex-1 text-left">
                       <span className="break-words font-medium text-foreground [overflow-wrap:anywhere]">
-                        {toolName(entry)}
+                        {entry.title}
                       </span>
                       <span className="sr-only">{` ${toolStatusLabel(entry.status)}`}</span>
                     </span>
                   }
                 >
+                  {entry.name || entry.toolKind ? (
+                    <dl className="min-w-0 space-y-1 text-xs">
+                      {entry.name ? (
+                        <div className="min-w-0">
+                          <dt className="font-medium text-muted-foreground">Tool name</dt>
+                          <dd className="break-all font-mono">{entry.name}</dd>
+                        </div>
+                      ) : null}
+                      {entry.toolKind ? (
+                        <div>
+                          <dt className="font-medium text-muted-foreground">Tool kind</dt>
+                          <dd>{entry.toolKind}</dd>
+                        </div>
+                      ) : null}
+                    </dl>
+                  ) : null}
                   {entry.locations.length > 0 ? (
                     <div className="min-w-0">
                       <p className="text-xs font-medium text-muted-foreground">Locations</p>
@@ -66,7 +81,7 @@ export function Transcript({ transcript }: { transcript: SessionTranscript }) {
             ) : entry.kind === "user" ? (
               <article
                 aria-label="user message"
-                className="ml-auto w-fit min-w-0 max-w-[36rem] space-y-2 rounded-2xl bg-primary px-4 py-3 text-sm leading-6 text-primary-foreground shadow-sm"
+                className="ml-auto w-fit min-w-0 max-w-[min(36rem,100%)] space-y-2 rounded-2xl bg-primary px-4 py-3 text-sm leading-6 text-primary-foreground shadow-sm"
               >
                 <h3 className="sr-only">You</h3>
                 {entry.content.map((content, contentIndex) => <Content content={content} key={contentIndex} />)}
@@ -121,10 +136,6 @@ export function Transcript({ transcript }: { transcript: SessionTranscript }) {
 function compactWithPrevious(entries: SessionTranscript["entries"], index: number): boolean {
   const previous = entries[index - 1];
   return previous !== undefined && previous.kind === "tool" && entries[index]?.kind === "tool";
-}
-
-function toolName(entry: Extract<SessionTranscript["entries"][number], { kind: "tool" }>): string {
-  return toolLabel(entry);
 }
 
 function ToolIcon({ status }: { status?: string }) {

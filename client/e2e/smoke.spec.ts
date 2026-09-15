@@ -13,6 +13,8 @@ import { WorkspaceRegistry } from "../src/workspace-registry.ts";
 
 const clientRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const repositoryRoot = resolve(clientRoot, "..");
+const responsiveToolName = "inspect_responsive_layout_and_report_overflow";
+const responsiveProviderToolName = `mcp__browser__${responsiveToolName}`;
 
 test("independently drives Ox through the deterministic provider", async () => {
   const fixture = await createFixture();
@@ -558,13 +560,20 @@ test("contains long transcript content across phone and narrow desktop layouts",
   const fixture = await createFixture({
     workspaceName: `workspace-${"unbroken".repeat(16)}`,
   });
+  const mcp = await createMCPFixture(fixture.workspace);
   let host: BrowserHost | undefined;
   try {
     host = startBrowserHost(fixture);
     await assertReady(page, await host.url);
+    await openWorkspaceSettings(page);
+    await addHTTPMCPServer(page, "browser", mcp.httpURL, mcp.httpSecret);
+    await saveMCPServers(page);
+    await startNewConversation(page);
     const prompt = `responsive stress ${"conversation".repeat(20)}`;
     await page.getByLabel("Message", { exact: true }).fill(prompt);
     await sendPrompt(page);
+    await expect(page.getByRole("article", { name: "Permission for Inspect responsive layout" })).toBeVisible();
+    await page.getByRole("button", { name: "Allow once" }).click();
 
     const transcript = page.getByRole("region", { name: "Transcript" });
     await expect(transcript).toContainText("responsive complete");
@@ -572,7 +581,7 @@ test("contains long transcript content across phone and narrow desktop layouts",
     await expect(activity).toBeVisible();
     await activity.click();
     await expect(transcript.getByText("Tool name", { exact: true })).toBeVisible();
-    await expect(transcript).toContainText("mcp__browser__inspect_responsive_layout_and_report_every_overflowing_element");
+    await expect(transcript).toContainText(responsiveProviderToolName);
 
     for (const viewport of [{ height: 844, width: 390 }, { height: 700, width: 800 }]) {
       await page.setViewportSize(viewport);
@@ -594,6 +603,7 @@ test("contains long transcript content across phone and narrow desktop layouts",
     await expectNoHorizontalOverflow(page.locator("main"));
   } finally {
     await host?.stop();
+    await mcp.close();
     await fixture.close();
   }
 });
@@ -1004,7 +1014,7 @@ async function createFixture(
           streamToolCall(
             response,
             "responsive-tool",
-            "mcp__browser__inspect_responsive_layout_and_report_every_overflowing_element",
+            responsiveProviderToolName,
           );
           return;
         }
@@ -1313,6 +1323,7 @@ function mcpResult(method: string | undefined, toolName: string | undefined): un
         tools: [
           { description: "returns a fixture value", inputSchema: { type: "object" }, name: "lookup" },
           { description: "reports a fixture failure", inputSchema: { type: "object" }, name: "fail" },
+          { description: "checks responsive layout", inputSchema: { type: "object" }, name: responsiveToolName, title: "Inspect responsive layout" },
         ],
       };
     case "tools/call":

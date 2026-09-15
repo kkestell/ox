@@ -42,7 +42,7 @@ describe("session controller", () => {
       name: "shell",
       sessionUpdate: "tool_call",
       status: "pending",
-      title: "Run tests",
+      title: "Execute exactly as titled",
       toolCallId: "tool-1",
     });
     controller.accept({
@@ -66,7 +66,7 @@ describe("session controller", () => {
         locations: [],
         name: "shell",
         status: "completed",
-        title: "Run tests",
+        title: "Execute exactly as titled",
         toolKind: "execute",
       },
     ]);
@@ -126,7 +126,7 @@ describe("session controller", () => {
           { kind: "reject_once", name: "Reject", optionId: "reject" },
         ],
         sessionId: "session-1",
-        toolCall: { kind: "execute", name: "shell", title: "Run tests", toolCallId: "tool-1" },
+        toolCall: { kind: "execute", name: "shell", title: "Approve exactly as titled", toolCallId: "tool-1" },
       },
       signal.signal,
       () => changed++,
@@ -140,7 +140,7 @@ describe("session controller", () => {
           { id: "once", kind: "allow_once", name: "Allow once" },
           { id: "reject", kind: "reject_once", name: "Reject" },
         ],
-        tool: { id: "tool-1", name: "shell", title: "Run tests", toolKind: "execute" },
+        tool: { id: "tool-1", name: "shell", title: "Approve exactly as titled", toolKind: "execute" },
       },
     ]);
     expect(() => controller.resolvePermission("interaction-1", "missing")).toThrow("not available");

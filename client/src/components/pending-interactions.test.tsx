@@ -11,7 +11,7 @@ test("stacks every unresolved interaction in its labelled tray", () => {
       id: "permission-1",
       kind: "permission",
       options: [{ id: "allow", kind: "allow_once", name: "Allow once" }],
-      tool: { id: "tool-1", name: "shell", title: "Run tests", toolKind: "execute" },
+      tool: { id: "tool-1", name: "shell", title: "Approve exactly as titled", toolKind: "execute" },
     },
     {
       fields: [{ choices: [{ label: "Red", value: "red" }], label: "Answer", name: "answer", required: true, type: "string" }],
@@ -28,7 +28,8 @@ test("stacks every unresolved interaction in its labelled tray", () => {
 
   expect(html).toContain('aria-label="Pending interactions"');
   expect(html.match(/<article/g)).toHaveLength(2);
-  expect(html.indexOf("Permission for Run tests")).toBeLessThan(html.indexOf("Choose a color"));
+  expect(html.indexOf("Permission for Approve exactly as titled")).toBeLessThan(html.indexOf("Choose a color"));
+  expect(html).not.toContain("Run Approve exactly as titled");
   expect(html).toContain("Allow once");
   expect(html).toContain("Submit answer");
 });

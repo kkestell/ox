@@ -127,7 +127,7 @@ export class SessionController {
       options,
       tool: {
         id: tool.toolCallId,
-        title: tool.title || "Tool permission",
+        title: tool.title,
         ...(tool.name ? { name: tool.name } : {}),
         ...(tool.kind ? { toolKind: tool.kind } : {}),
       },

@@ -52,13 +52,7 @@ func subagentTitle(verb string, id *string, fallback string) string {
 func shellTitle(arguments json.RawMessage) string {
 	var input shellArguments
 	_ = json.Unmarshal(arguments, &input)
-	if input.Command == nil {
-		return "Run a shell command"
-	}
-	if command := titleText(*input.Command); command != "" {
-		return command
-	}
-	return "Run a shell command"
+	return title("Run", input.Command, "Run a shell command")
 }
 
 func readTitle(arguments json.RawMessage) string {

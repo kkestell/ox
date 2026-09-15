@@ -1340,11 +1340,9 @@ func toolSetTitle(tools toolSet, name string, arguments json.RawMessage) string 
 }
 
 func titleOfTool(tool Tool, arguments json.RawMessage) string {
-	for _, title := range []func(json.RawMessage) string{tool.Title, tool.Label} {
-		if title != nil {
-			if value := title(arguments); value != "" {
-				return value
-			}
+	if tool.Title != nil {
+		if value := tool.Title(arguments); value != "" {
+			return value
 		}
 	}
 	return tool.Name

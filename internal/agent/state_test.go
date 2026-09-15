@@ -108,6 +108,31 @@ func TestFoldBuildsExactModelHistoryAndReplay(t *testing.T) {
 	}
 }
 
+func TestReplayUsesFrozenMCPTitleAndRawName(t *testing.T) {
+	configuration := requestConfiguration{MCPTools: []mcpToolConfiguration{
+		{Name: "mcp__issues__create", ServerName: "Issue tracker", ToolName: "create", Title: "Create an issue"},
+		{Name: "mcp__files__lookup", ServerName: "Files", ToolName: "lookup"},
+	}}
+	for _, test := range []struct {
+		name string
+		want string
+	}{
+		{"mcp__issues__create", "Create an issue"},
+		{"mcp__files__lookup", "Files / lookup"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			call := openrouter.ToolCall{
+				ID: "call", Type: "function",
+				Function: openrouter.ToolCallFunction{Name: test.name, Arguments: `{}`},
+			}
+			update := replayToolCall(&Agent{}, call, configuration, "/workspace", "")
+			if update.Title != test.want || update.Name != test.name {
+				t.Fatalf("replayed tool call = %#v", update)
+			}
+		})
+	}
+}
+
 func TestSkillReferencesAreValidatedAndClonedWithConfiguration(t *testing.T) {
 	reference := skills.Reference{
 		Name: "review", Description: "Review work.",
@@ -470,7 +495,7 @@ func TestFoldResumesSuspendedPermissionGenerationAndReplaysOnce(t *testing.T) {
 		SessionID: id,
 		ToolCall: acp.ToolCallUpdate{
 			ToolCallID: call.ID, Name: call.Function.Name,
-			Title: "edit", Kind: acp.ToolKindEdit,
+			Title: "Edit a.go", Kind: acp.ToolKindEdit,
 			Locations: []acp.ToolCallLocation{{Path: "/workspace/a.go"}},
 			RawInput:  json.RawMessage(call.Function.Arguments),
 		},
@@ -504,6 +529,9 @@ func TestFoldResumesSuspendedPermissionGenerationAndReplaysOnce(t *testing.T) {
 	if state.suspended == nil || state.suspended.Pending == nil ||
 		state.suspended.Pending.Generation != 2 || state.suspended.RequestCount != 3 {
 		t.Fatalf("folded suspension = %#v", state.suspended)
+	}
+	if tool := state.suspended.Pending.Request.ToolCall; tool.Title != "Edit a.go" || tool.Name != "edit" {
+		t.Fatalf("recovered permission tool call = %#v", tool)
 	}
 	value := &session{state: state}
 	recorded, err := (&Agent{}).commitPermissionDecision(value, permissionDecidedRecord{

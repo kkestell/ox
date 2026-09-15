@@ -135,8 +135,11 @@ func TestMCPActivationBuildsSessionToolsAndKeepsSecretsOutOfState(t *testing.T) 
 	}
 	tool := value.primaryTools.tools[index]
 	if tool.Approval != ApprovalAsk || tool.ParallelSafe ||
-		toolSetTitle(value.primaryTools, name, nil) != "fixture server / echo (Echo)" {
+		toolSetTitle(value.primaryTools, name, nil) != "Echo" {
 		t.Fatalf("MCP tool = %#v", tool)
+	}
+	if got := toolSetTitle(value.primaryTools, "mcp__fixture_server__fail", nil); got != "fixture server / fail" {
+		t.Fatalf("untitled MCP tool title = %q", got)
 	}
 	if len(value.state.configuration.MCPTools) != 3 ||
 		value.state.configuration.MCPTools[0].Identity == "" {
@@ -350,6 +353,38 @@ func TestNewRejectsDuplicateToolNames(t *testing.T) {
 	_, err := New(Config{Tools: []Tool{{Name: "same"}, {Name: "same"}}})
 	if err == nil || !strings.Contains(err.Error(), "duplicate tool") {
 		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestToolPresentationKeepsOneTitleAndTheRawName(t *testing.T) {
+	tool := Tool{
+		Name: "shell", Kind: acp.ToolKindExecute,
+		Title: func(json.RawMessage) string { return "Run go test ./..." },
+	}
+	tools, err := newToolSet([]Tool{tool})
+	if err != nil {
+		t.Fatal(err)
+	}
+	call := toolCallWithArguments("call", "shell", `{"command":"go test ./..."}`)
+	var notifications []acp.SessionNotification
+	adapter := newAdapter("session", "/workspace", func(notification acp.SessionNotification) error {
+		notifications = append(notifications, notification)
+		return nil
+	})
+	defer adapter.close()
+	if err := adapter.handle((&Agent{}).toolEvent(tools, call, eventToolPending, "", "")); err != nil {
+		t.Fatal(err)
+	}
+	live := notifications[0].Update.(acp.ToolCall)
+	permission := (&Agent{}).permissionRequest("session", "/workspace", tool, call, "", "")
+	if live.Title != "Run go test ./..." || live.Name != "shell" {
+		t.Fatalf("live tool call = %#v", live)
+	}
+	if permission.ToolCall.Title != live.Title || permission.ToolCall.Name != live.Name {
+		t.Fatalf("permission tool call = %#v, live = %#v", permission.ToolCall, live)
+	}
+	if got := toolSetTitle(tools, "unregistered_provider_tool", nil); got != "unregistered_provider_tool" {
+		t.Fatalf("unknown tool title = %q", got)
 	}
 }
 

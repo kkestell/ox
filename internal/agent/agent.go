@@ -99,9 +99,6 @@ func New(config Config) (*Agent, error) {
 		if (tool.Suggest == nil) != (tool.Covered == nil) {
 			return nil, fmt.Errorf("tool %q must set both Suggest and Covered", tool.Name)
 		}
-		if tool.Label != nil {
-			return nil, fmt.Errorf("tool %q cannot set Label", tool.Name)
-		}
 		if tool.Scope > ToolScopeSubagent {
 			return nil, fmt.Errorf("tool %q has an invalid scope", tool.Name)
 		}

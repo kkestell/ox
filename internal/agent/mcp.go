@@ -98,7 +98,7 @@ func appendTools(base toolSet, extra []Tool) (toolSet, error) {
 
 func mcpToolTitle(serverName, toolName, title string) string {
 	if title != "" {
-		return fmt.Sprintf("%s / %s (%s)", serverName, toolName, title)
+		return title
 	}
 	return serverName + " / " + toolName
 }

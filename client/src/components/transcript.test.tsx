@@ -52,3 +52,37 @@ test("renders reasoning without a background surface", () => {
   expect(html).toContain('class="rounded-lg py-1.5"');
   expect(html).not.toContain("bg-muted/35");
 });
+
+test("renders ACP tool titles unchanged", () => {
+  const transcript: SessionTranscript = {
+    configuration: [],
+    entries: [
+      {
+        content: [],
+        id: "tool-1",
+        kind: "tool",
+        locations: [],
+        name: "mcp__browser__inspect_responsive_layout",
+        status: "pending",
+        title: "Inspect the responsive layout",
+        toolKind: "other",
+      },
+      {
+        content: [],
+        id: "tool-2",
+        kind: "tool",
+        locations: [],
+        name: "unknown",
+        status: "pending",
+        title: "mcp__unknown__raw_fallback",
+      },
+    ],
+    plan: [],
+  };
+
+  const html = renderToStaticMarkup(<Transcript transcript={transcript} />);
+
+  expect(html).toContain("Inspect the responsive layout");
+  expect(html).toContain("mcp__unknown__raw_fallback");
+  expect(html).not.toContain("Unknown raw fallback");
+});

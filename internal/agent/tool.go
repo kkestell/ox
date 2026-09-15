@@ -19,7 +19,6 @@ type Tool struct {
 	RequiresForm bool
 	Scope        ToolScope
 	Title        func(json.RawMessage) string
-	Label        func(json.RawMessage) string
 	// Suggest and Covered narrow allow-always grants to tool-defined rules.
 	// A nil pair keeps the default name-scoped grant behavior.
 	Suggest func(json.RawMessage) string

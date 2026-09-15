@@ -182,6 +182,13 @@ method or neither, because an exact edit must read current content from the same
 filesystem that receives its replacement. Offering one without the other is
 refused at initialization.
 
+Every registered built-in and MCP invocation carries a complete, human-readable
+ACP tool-call title for transcripts and permission requests. The provider-facing
+tool name remains unchanged as technical identity. The first-party client
+renders the ACP title unchanged and does not derive presentation text from
+`shell` or namespaced MCP identifiers. An unregistered provider-requested tool
+may use its raw name as its title because it has no presentation contract.
+
 ## Authentication
 
 Ox requires an OpenRouter credential before it creates or loads a session.
@@ -426,6 +433,9 @@ Initialization and discovery have a 30-second deadline per server. Duplicate
 server names, tool-name collisions, invalid schemas, and a combined catalog
 above 256 tools or 256 KiB fail activation. Tool names are deterministic and
 namespaced; the original server and tool identity remain visible in ACP details.
+An MCP tool's discovered title is its ACP activity title. Without one, Ox names
+the server and original tool instead of exposing the generated provider name as
+presentation text.
 
 Every MCP tool call requires permission unless a session grant covers that
 specific server, tool, and unchanged definition. Server annotations are hints,

@@ -1,5 +1,4 @@
 import { type FormValue, type PendingInteraction } from "../protocol.ts";
-import { toolLabel } from "./tool-label.ts";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -31,7 +30,7 @@ export function PermissionInteraction({ interaction, onPermission }: {
   interaction: Extract<PendingInteraction, { kind: "permission" }>;
   onPermission: (interactionId: string, optionId: string) => void;
 }) {
-  const label = toolLabel(interaction.tool);
+  const label = interaction.tool.title;
   return (
     <Card asChild className="w-full py-0 shadow-sm">
       <article aria-label={`Permission for ${label}`}>
