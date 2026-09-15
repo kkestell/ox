@@ -69,7 +69,12 @@ view also contains the session's model, mode, and reasoning controls, read-only
 context usage, and cumulative session cost. Attachments are added beside those
 controls, listed beneath them, and removable until the prompt is sent. Plans
 appear when present, and technical tool output is disclosed beneath its
-activity.
+activity. Ox's responses render as GitHub-flavored Markdown, with single
+newlines breaking lines; user prompts, reasoning, and technical tool output stay
+literal. Rendered Markdown keeps model output inert: raw HTML remains text,
+links resolve only as HTTP or HTTPS, an image displays its alt text or source
+URL instead of loading, and wide code blocks and tables scroll within the
+message rather than widening the transcript.
 
 Workspace settings contain authentication, client-supplied MCP servers, and
 support details. They open in place of the conversation and select the workspace

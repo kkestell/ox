@@ -86,3 +86,19 @@ test("renders ACP tool titles unchanged", () => {
   expect(html).toContain("mcp__unknown__raw_fallback");
   expect(html).not.toContain("Unknown raw fallback");
 });
+
+test("renders agent text as Markdown while preserving user text", () => {
+  const transcript: SessionTranscript = {
+    configuration: [],
+    entries: [
+      { content: [{ text: "## Agent", type: "text" }], id: "agent-1", kind: "agent" },
+      { content: [{ text: "## User", type: "text" }], id: "user-1", kind: "user" },
+    ],
+    plan: [],
+  };
+
+  const html = renderToStaticMarkup(<Transcript transcript={transcript} />);
+
+  expect(html).toContain("<h2>Agent</h2>");
+  expect(html).toContain(">## User</p>");
+});

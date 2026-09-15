@@ -7,6 +7,7 @@ import {
 } from "../protocol.ts";
 
 import { Disclosure } from "./disclosure.tsx";
+import { Markdown } from "./markdown.tsx";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
@@ -89,7 +90,11 @@ export function Transcript({ transcript }: { transcript: SessionTranscript }) {
             ) : (
               <article aria-label={`${entry.kind} message`} className="w-full min-w-0 space-y-2 rounded-2xl border bg-card px-4 py-3 text-sm leading-6 shadow-xs">
                 <h3 className="mb-1 text-xs font-semibold text-muted-foreground">Ox</h3>
-                {entry.content.map((content, contentIndex) => <Content content={content} key={contentIndex} />)}
+                {entry.content.map((content, contentIndex) => (
+                  content.type === "text"
+                    ? <Markdown key={contentIndex} text={content.text} />
+                    : <Content content={content} key={contentIndex} />
+                ))}
               </article>
             )}
           </li>
