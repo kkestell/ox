@@ -72,15 +72,11 @@ export function Transcript({ transcript }: { transcript: SessionTranscript }) {
                 className="ml-auto w-fit min-w-0 max-w-[min(36rem,100%)] space-y-2 rounded-2xl bg-primary px-4 py-3 text-sm leading-6 text-primary-foreground shadow-sm"
               >
                 <h3 className="sr-only">You</h3>
-                {entry.content.map((content, contentIndex) => <Content content={content} key={contentIndex} />)}
+                {entry.content.map((content, contentIndex) => <MessageContent content={content} key={contentIndex} />)}
               </article>
             ) : (
               <article aria-label={`${entry.kind} message`} className="w-full min-w-0 space-y-2 rounded-2xl bg-card px-4 py-3 text-sm leading-6 shadow-xs">
-                {entry.content.map((content, contentIndex) => (
-                  content.type === "text"
-                    ? <Markdown key={contentIndex} text={content.text} />
-                    : <Content content={content} key={contentIndex} />
-                ))}
+                {entry.content.map((content, contentIndex) => <MessageContent content={content} key={contentIndex} />)}
               </article>
             )}
           </li>
@@ -145,7 +141,7 @@ function Thought({ content, initiallyOpen, latestEntryID }: {
   return (
     <Disclosure className="rounded-lg" label="Reasoning" onOpenChange={setOpen} open={open}>
       <div aria-label="Reasoning content" className="h-[7.5rem] overflow-y-auto leading-6" ref={scrollport}>
-        {content.map((item, contentIndex) => <Content content={item} key={contentIndex} />)}
+        {content.map((item, contentIndex) => <MessageContent content={item} key={contentIndex} />)}
       </div>
     </Disclosure>
   );
@@ -183,6 +179,15 @@ function ToolOutput({ content }: { content: ToolTranscriptContent }) {
     case "unknown":
       return <p className="break-words [overflow-wrap:anywhere]">{content.label}</p>;
   }
+}
+
+// Conversational text is Markdown wherever it is written, so a user prompt and
+// the model's reasoning read the same way its answers do. Tool output stays
+// literal.
+function MessageContent({ content }: { content: TranscriptContent }) {
+  return content.type === "text"
+    ? <Markdown text={content.text} />
+    : <Content content={content} />;
 }
 
 function Content({ content }: { content: TranscriptContent }) {

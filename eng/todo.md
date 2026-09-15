@@ -1,8 +1,5 @@
 # TODO
 
-- [ ] Render Markdown in user messages and reasoning, matching the existing
-      Markdown rendering used for assistant responses.
-
 - [ ] Keep the todo list out of the cached request prefix. The serialized todo
       entries sit between the system prompt and all history, so every todo write
       invalidates the provider's prompt cache for the whole conversation. Move

@@ -111,18 +111,21 @@ test("renders structured ACP tool presentation with a code-styled argument", () 
   expect(html).not.toContain("Tool kind");
 });
 
-test("renders agent text as Markdown while preserving user text", () => {
+test("renders message and reasoning text as Markdown", () => {
   const transcript: SessionTranscript = {
     configuration: [],
     entries: [
       { content: [{ text: "## Agent", type: "text" }], id: "agent-1", kind: "agent" },
       { content: [{ text: "## User", type: "text" }], id: "user-1", kind: "user" },
+      { content: [{ text: "## Reasoning", type: "text" }], id: "thought-1", kind: "thought" },
     ],
+    openReasoningID: "thought-1",
     plan: [],
   };
 
   const html = renderToStaticMarkup(<Transcript transcript={transcript} />);
 
   expect(html).toContain("<h2>Agent</h2>");
-  expect(html).toContain(">## User</p>");
+  expect(html).toContain("<h2>User</h2>");
+  expect(html).toContain("<h2>Reasoning</h2>");
 });
