@@ -17,27 +17,17 @@ credential before Zed starts it.
    ox login
    ```
 
-2. In Zed, open **Agent Settings**, select **External Agents**, click **Add
-   Agent**, and choose **Add Custom Agent**. Add an `agent_servers` entry like
-   this to the settings file Zed opens:
+2. In Zed, open **Settings → AI → Configure External Agent → Add Agent**, then
+   set:
 
-   ```json
-   {
-     "agent_servers": {
-       "Ox": {
-         "type": "custom",
-         "command": "/Users/you/.local/bin/ox",
-         "args": []
-       }
-     }
-   }
-   ```
+   - **Agent Name:** `Ox`
+   - **Command:** `/Users/you/.local/bin/ox`
 
    Replace `/Users/you/.local/bin/ox` with the absolute path to your installed
    binary. Do not use `$HOME` or `~` in this value, and do not put the
    OpenRouter credential in Zed's settings. To use a credential file instead of
-   the keyring, put `"--credential-file"` and its absolute path in `args`; make
-   that file readable only by your user.
+   the keyring, pass `--credential-file` and its absolute path to that command;
+   make that file readable only by your user.
 
 3. Open the project directory that Ox should use as its workspace, then open
    Zed's Agent Panel. Use the agent selector or new-thread menu to start an

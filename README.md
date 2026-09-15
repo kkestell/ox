@@ -6,6 +6,29 @@ provider.
 
 Ox ships as a single self-contained 11 MB binary.
 
+## Quick Start
+
+Download the archive for your platform from the
+[releases page](https://github.com/kkestell/ox/releases), then install it and
+sign in:
+
+```sh
+tar -xzf ox_1.0.0_darwin_arm64.tar.gz
+./install.sh
+ox login
+```
+
+`install.sh` puts `ox` in `$HOME/.local/bin` and creates a default
+`$HOME/.config/ox/settings.json`.
+
+In Zed, open **Settings → AI → Configure External Agent → Add Agent**, then set:
+
+- **Agent Name:** `Ox`
+- **Command:** `/Users/you/.local/bin/ox`
+
+The command must be the absolute path to your binary, not `$HOME` or `~`. Open
+your project and start an Ox thread from the Agent Panel.
+
 ## Features
 
 Sessions:
@@ -51,20 +74,6 @@ Configuration and diagnostics:
 - Store credentials in the OS keyring or a private local file with `ox login`.
 - Configure Ox globally or per workspace.
 - Write an optional diagnostic JSONL trace.
-
-## Getting started
-
-Ox targets Unix-like systems. Install a released binary as described in the
-[installation guide](docs/installation.md), then store an OpenRouter credential
-and configure at least one model:
-
-```sh
-ox login
-```
-
-Configure your models in `$XDG_CONFIG_HOME/ox/settings.json` and name one with
-`default_model`, or pass `--model` to pick one of them. Start Ox from your ACP
-client; see the [Zed guide](docs/zed.md) for a worked setup.
 
 ## Documentation
 
