@@ -58,7 +58,9 @@ conversation list, while close and delete are secondary actions of the selected
 conversation.
 
 The primary surface is the selected transcript, its composer, and any permission
-or question blocking work. Workspace registration and every workspace's
+or question blocking work. A live transcript follows new activity until the
+reader scrolls back; a visible action returns to the latest activity without
+changing the conversation. Workspace registration and every workspace's
 conversations sit in one navigation region beside it, along with the actions
 that add, remove, restart, and open the settings of a workspace. The transcript
 view also contains the session's model, mode, and reasoning controls and

@@ -1,19 +1,40 @@
 import { type FormValue, type PendingInteraction } from "../protocol.ts";
 
+export function PendingInteractions({ interactions, onElicitation, onPermission }: {
+  interactions: PendingInteraction[];
+  onElicitation: (interactionId: string, action: "accept" | "decline" | "cancel", content?: Record<string, FormValue>) => void;
+  onPermission: (interactionId: string, optionId: string) => void;
+}) {
+  if (interactions.length === 0) return null;
+  return (
+    <aside aria-label="Pending interactions" className="pending-interactions">
+      {interactions.map((interaction) => interaction.kind === "permission" ? (
+        <PermissionInteraction interaction={interaction} key={interaction.id} onPermission={onPermission} />
+      ) : (
+        <ElicitationForm interaction={interaction} key={interaction.id} onSubmit={onElicitation} />
+      ))}
+    </aside>
+  );
+}
+
 export function PermissionInteraction({ interaction, onPermission }: {
   interaction: Extract<PendingInteraction, { kind: "permission" }>;
   onPermission: (interactionId: string, optionId: string) => void;
 }) {
   return (
-    <article aria-label={`Permission for ${interaction.tool.title}`}>
-      <h3>{interaction.tool.title}</h3>
-      {interaction.tool.name ? <p>{interaction.tool.name}</p> : null}
-      {interaction.tool.toolKind ? <p>{interaction.tool.toolKind}</p> : null}
-      {interaction.options.map((option) => (
-        <button key={option.id} onClick={() => onPermission(interaction.id, option.id)} type="button">
-          {option.name}
-        </button>
-      ))}
+    <article aria-label={`Permission for ${interaction.tool.title}`} className="pending-interaction permission-interaction">
+      <header><h3>{interaction.tool.title}</h3></header>
+      <div className="interaction-body">
+        {interaction.tool.name ? <p>{interaction.tool.name}</p> : null}
+        {interaction.tool.toolKind ? <p>{interaction.tool.toolKind}</p> : null}
+        <div className="interaction-actions">
+          {interaction.options.map((option) => (
+            <button key={option.id} onClick={() => onPermission(interaction.id, option.id)} type="button">
+              {option.name}
+            </button>
+          ))}
+        </div>
+      </div>
     </article>
   );
 }
@@ -26,11 +47,12 @@ export function ElicitationForm({
   onSubmit: (interactionId: string, action: "accept" | "decline" | "cancel", content?: Record<string, FormValue>) => void;
 }) {
   return (
-    <article aria-label={interaction.title ?? interaction.message}>
-      <h3>{interaction.title ?? "Question"}</h3>
+    <article aria-label={interaction.title ?? interaction.message} className="pending-interaction elicitation-interaction">
+      <header><h3>{interaction.title ?? "Question"}</h3></header>
+      <div className="interaction-body">
       <p>{interaction.message}</p>
       {interaction.description ? <p>{interaction.description}</p> : null}
-      <form onSubmit={(event) => {
+      <form className="interaction-form" onSubmit={(event) => {
         event.preventDefault();
         const form = new FormData(event.currentTarget);
         const content = Object.create(null) as Record<string, FormValue>;
@@ -73,10 +95,13 @@ export function ElicitationForm({
             )}
           </label>
         ))}
-        <button type="submit">Submit answer</button>
-        <button onClick={() => onSubmit(interaction.id, "decline")} type="button">Decline</button>
-        <button onClick={() => onSubmit(interaction.id, "cancel")} type="button">Cancel question</button>
+        <div className="interaction-actions">
+          <button type="submit">Submit answer</button>
+          <button onClick={() => onSubmit(interaction.id, "decline")} type="button">Decline</button>
+          <button onClick={() => onSubmit(interaction.id, "cancel")} type="button">Cancel question</button>
+        </div>
       </form>
+      </div>
     </article>
   );
 }

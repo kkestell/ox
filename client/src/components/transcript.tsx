@@ -1,79 +1,60 @@
 import {
-  type FormValue,
-  type PendingInteraction,
   type SessionTranscript,
   type ToolTranscriptContent,
   type TranscriptContent,
 } from "../protocol.ts";
 
 import { Disclosure } from "./disclosure.tsx";
-import { ElicitationForm, PermissionInteraction } from "./pending-interactions.tsx";
 
-export function Transcript({ interactions, onElicitation, onPermission, transcript }: {
-  interactions: PendingInteraction[];
-  onElicitation: (interactionId: string, action: "accept" | "decline" | "cancel", content?: Record<string, FormValue>) => void;
-  onPermission: (interactionId: string, optionId: string) => void;
-  transcript: SessionTranscript;
-}) {
-  const inlinePermissions = (entry: Extract<SessionTranscript["entries"][number], { kind: "tool" }>) =>
-    interactions.filter((interaction): interaction is Extract<PendingInteraction, { kind: "permission" }> =>
-      interaction.kind === "permission" && entry.id === `tool:${interaction.tool.id}`,
-    );
-  const trailingInteractions = interactions.filter((interaction) =>
-    interaction.kind === "form" || !transcript.entries.some((entry) =>
-      entry.kind === "tool" && entry.id === `tool:${interaction.tool.id}`,
-    ),
-  );
-
+export function Transcript({ transcript }: { transcript: SessionTranscript }) {
   return (
-    <section aria-label="Transcript">
-      <ol aria-label="Session transcript">
+    <section aria-label="Transcript" className="transcript">
+      <ol aria-label="Session transcript" className="transcript-entries">
         {transcript.entries.map((entry) => (
-          <li key={entry.id}>
+          <li className={`transcript-entry transcript-${entry.kind}`} data-transcript-kind={entry.kind} key={entry.id}>
             {entry.kind === "tool" ? (
-              <article aria-label={`Tool ${entry.title}`}>
-                <h3>{entry.title}</h3>
-                {entry.status ? <p>{entry.status}</p> : null}
-                <Disclosure label="Details">
+              <article aria-label={`Tool ${toolName(entry)}`} className="transcript-tool">
+                <Disclosure className="tool-disclosure" label={<><code>{toolName(entry)}</code><ToolStatus status={entry.status} /></>}>
                   {entry.name ? <p>{entry.name}</p> : null}
                   {entry.toolKind ? <p>{entry.toolKind}</p> : null}
                   {entry.locations.length > 0 ? <ul aria-label="Tool locations">{entry.locations.map((location) => <li key={`${location.path}:${location.line ?? ""}`}>{location.path}{location.line === undefined ? "" : `:${location.line}`}</li>)}</ul> : null}
                   {entry.content.map((content, index) => <ToolOutput content={content} key={index} />)}
                 </Disclosure>
-                {inlinePermissions(entry).map((interaction) => <PermissionInteraction interaction={interaction} key={interaction.id} onPermission={onPermission} />)}
               </article>
             ) : entry.kind === "unknown" ? (
-              <Disclosure label="Unsupported transcript item"><p>{entry.label}</p></Disclosure>
+              <Disclosure className="unknown-disclosure" label="Unsupported transcript item"><p>{entry.label}</p></Disclosure>
             ) : entry.kind === "thought" ? (
-              <Disclosure label="Thought">
+              <Disclosure className="thought-disclosure" label="Thought">
                 {entry.content.map((content, index) => <Content content={content} key={index} />)}
               </Disclosure>
             ) : (
-              <article aria-label={`${entry.kind} message`}>
+              <article aria-label={`${entry.kind} message`} className="transcript-message">
                 <h3>{entry.kind === "agent" ? "Ox" : "You"}</h3>
                 {entry.content.map((content, index) => <Content content={content} key={index} />)}
               </article>
             )}
           </li>
         ))}
-        {trailingInteractions.map((interaction) => (
-          <li key={interaction.id}>
-            {interaction.kind === "permission" ? (
-              <PermissionInteraction interaction={interaction} onPermission={onPermission} />
-            ) : (
-              <ElicitationForm interaction={interaction} onSubmit={onElicitation} />
-            )}
-          </li>
-        ))}
       </ol>
       {transcript.plan.length > 0 ? (
-        <Disclosure label={`Plan — ${transcript.plan.filter((entry) => entry.status === "completed").length} of ${transcript.plan.length} complete`}>
-          <ol>{transcript.plan.map((entry, index) => <li key={index}>{entry.content} ({entry.status})</li>)}</ol>
-        </Disclosure>
+        <article aria-label="Current plan" className="plan-card">
+          <header><h3>Plan</h3><span>{`${transcript.plan.filter((entry) => entry.status === "completed").length} of ${transcript.plan.length} complete`}</span></header>
+          <ol>{transcript.plan.map((entry, index) => <li className={entry.status === "completed" ? "completed" : undefined} key={index}>{entry.content}</li>)}</ol>
+        </article>
       ) : null}
-      {transcript.usage?.cost ? <Disclosure label="Cost"><p>{`${transcript.usage.cost.amount} ${transcript.usage.cost.currency}`}</p></Disclosure> : null}
+      {transcript.usage?.cost ? <Disclosure className="usage-disclosure" label="Cost"><p>{`${transcript.usage.cost.amount} ${transcript.usage.cost.currency}`}</p></Disclosure> : null}
     </section>
   );
+}
+
+function toolName(entry: Extract<SessionTranscript["entries"][number], { kind: "tool" }>): string {
+  return entry.name ?? entry.title;
+}
+
+function ToolStatus({ status }: { status?: string }) {
+  const label = status === undefined ? "In progress" : status.replaceAll("_", " ");
+  const symbol = status === "completed" ? "✓" : status === "failed" ? "!" : "●";
+  return <span aria-label={label} className={`tool-status ${status === "in_progress" || status === undefined ? "progress" : ""}`} title={label}>{symbol}</span>;
 }
 
 function ToolOutput({ content }: { content: ToolTranscriptContent }) {

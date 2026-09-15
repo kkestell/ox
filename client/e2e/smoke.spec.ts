@@ -357,7 +357,8 @@ test("runs Ox shell tools through the host's ACP terminal callbacks", async ({ p
 
     const transcript = page.getByRole("region", { name: "Transcript" });
     await expect(transcript).toContainText("terminal complete");
-    await expect(transcript).toContainText("terminal callback output");
+    await transcript.getByRole("button", { name: /shell/ }).click();
+    await expect(transcript).toContainText("exit code: 0");
   } finally {
     await host?.stop();
     await fixture.close();
@@ -411,6 +412,47 @@ test("keeps a live prompt running across a browser reload", async ({ page }) => 
     fixture.releaseHeldPrompt();
     await expect(page.getByRole("region", { name: "Transcript" })).toContainText("held prompt complete");
     await expect(message).toBeEnabled();
+  } finally {
+    await host?.stop();
+    await fixture.close();
+  }
+});
+
+test("follows live transcript updates until manual scrollback asks to return", async ({ page }) => {
+  const fixture = await createFixture();
+  let host: BrowserHost | undefined;
+  try {
+    host = startBrowserHost(fixture);
+    await assertReady(page, await host.url);
+    const scrollport = page.getByTestId("transcript-scrollport");
+    await page.getByLabel("Message", { exact: true }).fill("create tall transcript");
+    await sendPrompt(page);
+    await expect(page.getByRole("region", { name: "Transcript" })).toContainText("activity 599");
+    const heldPrompt = "hold";
+
+    await page.getByLabel("Message", { exact: true }).fill(heldPrompt);
+    await sendPrompt(page);
+    await expect.poll(() => fixture.requests).toBe(2);
+    await expect.poll(() => bottomDistance(scrollport)).toBeLessThanOrEqual(1);
+    fixture.releaseHeldPrompt();
+    await expect(page.getByRole("region", { name: "Transcript" })).toContainText("held prompt complete");
+    await expect.poll(() => bottomDistance(scrollport)).toBeLessThanOrEqual(1);
+
+    await page.getByLabel("Message", { exact: true }).fill(`${heldPrompt} again`);
+    await sendPrompt(page);
+    await expect.poll(() => fixture.requests).toBe(3);
+    await expect.poll(() => bottomDistance(scrollport)).toBeLessThanOrEqual(1);
+    await scrollport.evaluate((element) => {
+      element.scrollTop = 0;
+      element.dispatchEvent(new Event("scroll"));
+    });
+    await expect.poll(() => bottomDistance(scrollport)).toBeGreaterThan(40);
+    await expect(page.getByRole("button", { name: "Jump to latest" })).toBeVisible();
+    fixture.releaseHeldPrompt();
+    await expect(page.getByRole("region", { name: "Transcript" })).toContainText("held prompt complete");
+    await expect.poll(() => scrollport.evaluate((element) => element.scrollTop)).toBe(0);
+    await page.getByRole("button", { name: "Jump to latest" }).click();
+    await expect.poll(() => bottomDistance(scrollport)).toBeLessThanOrEqual(1);
   } finally {
     await host?.stop();
     await fixture.close();
@@ -512,8 +554,12 @@ test("routes a pending permission to the workspace the browser is not showing", 
     await showWorkspace(page, second);
     await page.getByLabel("Message", { exact: true }).fill("request permission");
     await sendPrompt(page);
-    const permission = page.getByRole("region", { name: "Transcript" }).getByRole("article", { name: /Permission for/ });
+    const permission = page.getByLabel("Pending interactions").getByRole("article", { name: /Permission for/ });
     await expect(permission).toContainText("pwd");
+    const tray = page.getByLabel("Pending interactions");
+    const trayBox = await boundingBox(tray);
+    const composerBox = await boundingBox(page.getByRole("region", { name: "Prompt" }));
+    expect(trayBox.y + trayBox.height).toBeLessThanOrEqual(composerBox.y + 1);
     await expect(conversationList(page, second)).toContainText("Waiting for you");
 
     await showWorkspace(page, first);
@@ -543,16 +589,18 @@ test("renders a host-owned form elicitation through refresh and answers it", asy
     await assertReady(page, await host.url);
     await page.getByLabel("Message").fill("ask a question");
     await sendPrompt(page);
-    const transcript = page.getByRole("region", { name: "Transcript" });
-    await expect(transcript.getByRole("article", { name: "Choose a color", exact: true })).toContainText("Choose a color");
-    await expect(page.getByRole("heading", { name: "Pending interactions" })).toHaveCount(0);
+    const interactions = page.getByLabel("Pending interactions");
+    await expect(interactions.getByRole("article", { name: "Choose a color", exact: true })).toContainText("Choose a color");
+    const tray = await boundingBox(interactions);
+    const composer = await boundingBox(page.getByRole("region", { name: "Prompt" }));
+    expect(tray.y + tray.height).toBeLessThanOrEqual(composer.y + 1);
     await expect(page.getByRole("option", { name: "Red" })).toHaveText("Red");
     await expect(page.getByRole("combobox", { name: "Answer" })).toHaveValue("");
     await page.reload();
-    await expect(transcript.getByRole("article", { name: "Choose a color", exact: true })).toContainText("Choose a color");
+    await expect(interactions.getByRole("article", { name: "Choose a color", exact: true })).toContainText("Choose a color");
     await page.getByRole("combobox", { name: "Answer" }).selectOption("Red");
     await page.getByRole("button", { name: "Submit answer" }).click();
-    await expect(transcript.getByRole("article", { name: "Choose a color", exact: true })).toBeHidden();
+    await expect(interactions.getByRole("article", { name: "Choose a color", exact: true })).toBeHidden();
     await expect.poll(() => fixture.requests).toBe(2);
   } finally {
     await host?.stop();
@@ -570,7 +618,7 @@ test("renders exact permission options and lets the first browser answer win", a
     await assertReady(page, url);
     await page.getByLabel("Message").fill("request permission");
     await sendPrompt(page);
-    const permission = page.getByRole("region", { name: "Transcript" }).getByRole("article", { name: /Permission for/ });
+    const permission = page.getByLabel("Pending interactions").getByRole("article", { name: /Permission for/ });
     await expect(permission).toContainText("pwd");
     secondContext = await browser.newContext();
     const second = await secondContext.newPage();
@@ -603,14 +651,14 @@ test("activates HTTP and stdio MCP servers without retaining secrets", async ({ 
     await page.getByLabel("Message").fill("use HTTP MCP tool");
     await sendPrompt(page);
     await expect(page.getByRole("region", { name: "Transcript" })).toContainText("HTTP MCP complete");
-    await page.getByRole("region", { name: "Transcript" }).getByRole("button", { name: "Details", exact: true }).last().click();
+    await page.getByRole("region", { name: "Transcript" }).getByRole("button", { name: /mcp__http__lookup/ }).last().click();
     await expect(page.getByRole("region", { name: "Transcript" })).toContainText("HTTP MCP fixture result");
     expect(mcp.httpAuthorizations).toContain(mcp.httpSecret);
 
     await page.getByRole("textbox", { name: "Message" }).fill("use HTTP MCP failure");
     await sendPrompt(page);
     await expect(page.getByRole("region", { name: "Transcript" })).toContainText("HTTP MCP failure complete");
-    await page.getByRole("region", { name: "Transcript" }).getByRole("button", { name: "Details", exact: true }).last().click();
+    await page.getByRole("region", { name: "Transcript" }).getByRole("button", { name: /mcp__http__fail/ }).last().click();
     await expect(page.getByRole("region", { name: "Transcript" })).toContainText("HTTP MCP fixture failure");
     await page.getByRole("button", { name: "Conversation actions" }).click();
     await page.getByRole("button", { name: "Close conversation" }).click();
@@ -631,7 +679,7 @@ test("activates HTTP and stdio MCP servers without retaining secrets", async ({ 
     await page.getByRole("textbox", { name: "Message" }).fill("use stdio MCP tool");
     await sendPrompt(page);
     await expect(page.getByRole("region", { name: "Transcript" })).toContainText("stdio MCP complete");
-    await page.getByRole("region", { name: "Transcript" }).getByRole("button", { name: "Details", exact: true }).last().click();
+    await page.getByRole("region", { name: "Transcript" }).getByRole("button", { name: /mcp__stdio__lookup/ }).last().click();
     await expect(page.getByRole("region", { name: "Transcript" })).toContainText("stdio MCP fixture result");
     await expect(page.locator("main")).not.toContainText(mcp.stdioSecret);
     await page.getByRole("button", { name: "Conversation actions" }).click();
@@ -797,6 +845,10 @@ async function createFixture(
         prompts.push(JSON.parse(body));
       } catch {
         prompts.push(body);
+      }
+      if (body.lastIndexOf("create tall transcript") > body.lastIndexOf("hold")) {
+        streamText(response, Array.from({ length: 600 }, (_, index) => `activity ${index}`).join(" "));
+        return;
       }
       if (body.includes("hold")) {
         heldPrompts.push(response);
@@ -1272,6 +1324,10 @@ async function boundingBox(locator: Locator): Promise<{ height: number; width: n
     throw new Error("element has no layout box");
   }
   return box;
+}
+
+async function bottomDistance(locator: Locator): Promise<number> {
+  return locator.evaluate((element) => element.scrollHeight - element.scrollTop - element.clientHeight);
 }
 
 function conversationList(page: Page, workspace?: string) {

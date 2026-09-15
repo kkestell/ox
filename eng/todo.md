@@ -6,7 +6,7 @@
         changing structure or accessible names
   - [x] Style the shell: sidebar, conversation header, workspace settings, and a
         drawer at phone width
-  - [ ] Style the conversation: a scrolling transcript with a pinned composer,
+  - [x] Style the conversation: a scrolling transcript with a pinned composer,
         auto-scroll that yields to manual scrollback, and a settled presentation
         for tool activity, plans, permissions, and questions
   - [ ] Verify the complete flow at phone and desktop viewports with focused

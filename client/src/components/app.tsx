@@ -1,6 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
-import { type BrowserCommand, type MCPServer } from "../protocol.ts";
+import { type BrowserCommand, type MCPServer, type PendingInteraction, type SessionTranscript } from "../protocol.ts";
 
 import { AddWorkspaceDialog } from "./add-workspace-dialog.tsx";
 import { Authentication } from "./authentication.tsx";
@@ -8,6 +8,7 @@ import { Composer } from "./composer.tsx";
 import { Disclosure } from "./disclosure.tsx";
 import { type CommandResult, useHostConnection } from "./host-connection.ts";
 import { MCPActivationForm } from "./mcp-activation-form.tsx";
+import { PendingInteractions } from "./pending-interactions.tsx";
 import { Sidebar } from "./sidebar.tsx";
 import { SupportDetails } from "./support-details.tsx";
 import { Transcript } from "./transcript.tsx";
@@ -238,20 +239,21 @@ export function App() {
                 <button onClick={() => conversationCommand("delete-conversation", active.id)} type="button">Delete conversation</button>
               </Disclosure>
             </header>
-            <div className="scroll">
-              {unavailable ? <p role="alert">Ox is unavailable. Open workspace settings for diagnostics.</p> : null}
-              {sessionError ? <p role="alert">{sessionError}</p> : null}
-              <Transcript
-                interactions={active.interactions}
-                onElicitation={(interactionId, action, content) =>
-                  submitSessionCommand({ action, ...(content === undefined ? {} : { content }), interactionId, requestId: crypto.randomUUID(), sessionId: active.id, type: "resolve-elicitation" })
-                }
-                onPermission={(interactionId, optionId) =>
-                  submitSessionCommand({ interactionId, optionId, requestId: crypto.randomUUID(), sessionId: active.id, type: "resolve-permission" })
-                }
-                transcript={active.transcript}
-              />
-            </div>
+            <TranscriptScroll
+              sessionId={active.id}
+              sessionError={sessionError}
+              transcript={active.transcript}
+              unavailable={unavailable}
+            />
+            <PendingInteractions
+              interactions={active.interactions}
+              onElicitation={(interactionId, action, content) =>
+                submitSessionCommand({ action, ...(content === undefined ? {} : { content }), interactionId, requestId: crypto.randomUUID(), sessionId: active.id, type: "resolve-elicitation" })
+              }
+              onPermission={(interactionId, optionId) =>
+                submitSessionCommand({ interactionId, optionId, requestId: crypto.randomUUID(), sessionId: active.id, type: "resolve-permission" })
+              }
+            />
             <footer>
               <Composer
                 busy={active.busy}
@@ -283,6 +285,89 @@ export function App() {
         open={addingWorkspace}
         path={workspacePath}
       />
+    </div>
+  );
+}
+
+const followThreshold = 40;
+
+// This is browser-only presentation state. The host continues to own the
+// transcript; selecting a conversation always starts its view at the newest item.
+function TranscriptScroll({
+  sessionError,
+  sessionId,
+  transcript,
+  unavailable,
+}: {
+  sessionError?: string;
+  sessionId: string;
+  transcript: SessionTranscript;
+  unavailable: boolean;
+}) {
+  const scrollport = useRef<HTMLDivElement>(null);
+  const content = useRef<HTMLDivElement>(null);
+  const following = useRef(true);
+  const [showJump, setShowJump] = useState(false);
+
+  function scrollToLatest(): void {
+    const element = scrollport.current;
+    if (!element) return;
+    element.scrollTop = element.scrollHeight;
+  }
+
+  useLayoutEffect(() => {
+    following.current = true;
+    setShowJump(false);
+    scrollToLatest();
+  }, [sessionId]);
+
+  useEffect(() => {
+    const element = scrollport.current;
+    const rendered = content.current;
+    if (!element || !rendered) return;
+    let frame: number | undefined;
+    const stick = () => {
+      if (!following.current) return;
+      cancelAnimationFrame(frame ?? 0);
+      frame = requestAnimationFrame(scrollToLatest);
+    };
+    const mutations = new MutationObserver(stick);
+    const resize = new ResizeObserver(stick);
+    mutations.observe(rendered, { characterData: true, childList: true, subtree: true });
+    resize.observe(element);
+    resize.observe(rendered);
+    stick();
+    return () => {
+      mutations.disconnect();
+      resize.disconnect();
+      if (frame !== undefined) cancelAnimationFrame(frame);
+    };
+  }, [sessionId]);
+
+  function updateFollowing(): void {
+    const element = scrollport.current;
+    if (!element) return;
+    const atLatest = element.scrollHeight - element.scrollTop - element.clientHeight <= followThreshold;
+    following.current = atLatest;
+    setShowJump(!atLatest);
+  }
+
+  return (
+    <div className="scroll transcript-scroll" data-testid="transcript-scrollport" onScroll={updateFollowing} ref={scrollport}>
+      <div className="transcript-content" ref={content}>
+        {unavailable ? <p role="alert">Ox is unavailable. Open workspace settings for diagnostics.</p> : null}
+        {sessionError ? <p role="alert">{sessionError}</p> : null}
+        <Transcript transcript={transcript} />
+      </div>
+      {showJump ? (
+        <button className="jump-to-latest" onClick={() => {
+          following.current = true;
+          setShowJump(false);
+          scrollToLatest();
+        }} type="button">
+          Jump to latest
+        </button>
+      ) : null}
     </div>
   );
 }

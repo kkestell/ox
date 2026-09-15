@@ -633,6 +633,262 @@
     gap: var(--space-snug);
     padding: var(--space-cosy);
     border-block-start: 1px solid var(--line);
+    background: var(--surface);
+  }
+
+  /* The transcript is the only scrolling conversation band. Its reading column
+     stays narrow while its scrollport still uses the whole available pane. */
+  .conversation > .transcript-scroll {
+    position: relative;
+    display: block;
+    padding: 0;
+  }
+
+  .transcript-content {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-roomy);
+    inline-size: min(100%, calc(var(--reading-width) + var(--space-roomy) * 2));
+    min-block-size: 100%;
+    margin-inline: auto;
+    padding: var(--space-roomy) var(--space-roomy) var(--space-loose);
+  }
+
+  .transcript,
+  .transcript-entries {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .transcript-entry + .transcript-entry {
+    margin-block-start: var(--space-roomy);
+  }
+
+  /* Tool activity is a continuous work log. Consecutive calls need a quieter
+     rhythm than the boundary between a message and the work it prompted. */
+  .transcript-tool + .transcript-tool {
+    margin-block-start: var(--space-tight);
+  }
+
+  .transcript-message {
+    max-inline-size: min(100%, 36rem);
+
+    & h3 {
+      margin-block-end: var(--space-tight);
+      color: var(--ink-quiet);
+      font-size: var(--text-small);
+      font-weight: 500;
+    }
+  }
+
+  .transcript-user .transcript-message {
+    align-self: flex-end;
+    padding: var(--space-cosy) var(--space-roomy);
+    border-radius: var(--radius);
+    background: var(--selected);
+
+    & h3 {
+      display: none;
+    }
+  }
+
+  .tool-disclosure,
+  .thought-disclosure,
+  .unknown-disclosure,
+  .usage-disclosure {
+    color: var(--ink-quiet);
+    font-size: var(--text-small);
+  }
+
+  .thought-disclosure > button,
+  .unknown-disclosure > button,
+  .usage-disclosure > button {
+    min-block-size: 0;
+    padding: 0;
+    background: transparent;
+    color: inherit;
+
+    &:hover {
+      color: var(--ink);
+    }
+  }
+
+  .thought-disclosure > button {
+    gap: var(--space-snug);
+
+    &::before {
+      color: var(--ink-quiet);
+      content: "›";
+      font-size: var(--text-title);
+      transition: transform 0.15s ease;
+    }
+
+    &[aria-expanded="true"]::before {
+      transform: rotate(90deg);
+    }
+  }
+
+  .tool-disclosure > button {
+    gap: var(--space-snug);
+    min-block-size: 0;
+    padding: 0;
+    background: transparent;
+    color: inherit;
+
+    &::before {
+      color: var(--ink-quiet);
+      content: "›";
+      font-size: var(--text-title);
+      transition: transform 0.15s ease;
+    }
+
+    &[aria-expanded="true"]::before {
+      transform: rotate(90deg);
+    }
+
+    & code {
+      color: var(--ink);
+      font: inherit;
+      font-family: ui-monospace, monospace;
+    }
+  }
+
+  .tool-status {
+    display: inline-grid;
+    place-items: center;
+    inline-size: 1rem;
+    block-size: 1rem;
+    color: var(--ink-quiet);
+    font-size: var(--text-small);
+
+    &.progress {
+      color: var(--ink);
+    }
+  }
+
+  .tool-disclosure > :not(button) {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-tight);
+    margin-block-start: var(--space-tight);
+    margin-inline-start: var(--space-cosy);
+    padding: var(--space-snug) var(--space-cosy);
+    border-inline-start: 1px solid var(--line);
+
+    & pre {
+      max-block-size: 18rem;
+      overflow: auto;
+      white-space: pre-wrap;
+    }
+  }
+
+  .plan-card {
+    overflow: clip;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    background: var(--surface);
+
+    & header {
+      display: flex;
+      gap: var(--space-snug);
+      align-items: center;
+      padding: var(--space-cosy) var(--space-roomy);
+    }
+
+    & header h3 {
+      flex: 1;
+    }
+
+    & header span,
+    & li {
+      color: var(--ink-quiet);
+      font-size: var(--text-small);
+    }
+
+    & ol {
+      display: grid;
+      gap: var(--space-tight);
+      padding: 0 var(--space-roomy) var(--space-cosy);
+    }
+
+    & li {
+      display: flex;
+      gap: var(--space-snug);
+    }
+
+    & li::before {
+      inline-size: 1rem;
+      color: var(--ink);
+      content: "○";
+    }
+
+    & li.completed {
+      text-decoration: line-through;
+    }
+
+    & li.completed::before {
+      content: "✓";
+    }
+  }
+
+  .pending-interactions {
+    display: grid;
+    gap: var(--space-snug);
+    flex: none;
+    max-block-size: 45%;
+    overflow-y: auto;
+    padding: var(--space-cosy);
+    border-block-start: 1px solid var(--line);
+    background: var(--canvas);
+  }
+
+  .pending-interaction {
+    overflow: clip;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    background: var(--surface);
+
+    & > header {
+      padding: var(--space-cosy) var(--space-roomy);
+      border-block-end: 1px solid var(--line);
+      background: var(--sunken);
+    }
+  }
+
+  .interaction-body {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-snug);
+    padding: var(--space-cosy) var(--space-roomy);
+
+    & p {
+      color: var(--ink-quiet);
+      font-size: var(--text-small);
+    }
+  }
+
+  .interaction-form {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-snug);
+  }
+
+  .interaction-actions {
+    display: flex;
+    gap: var(--space-snug);
+    flex-wrap: wrap;
+    margin-block-start: var(--space-tight);
+  }
+
+  .jump-to-latest {
+    position: sticky;
+    z-index: 1;
+    inset-block-end: var(--space-cosy);
+    display: flex;
+    margin: calc(var(--space-loose) * -2) auto var(--space-cosy);
+    border: 1px solid var(--line);
+    background: var(--surface);
+    box-shadow: 0 0.25rem 0.75rem oklch(0 0 0 / 0.15);
   }
 
   .composer textarea {
@@ -684,6 +940,22 @@
     & li > span {
       flex: 1;
       min-inline-size: 0;
+    }
+  }
+
+  @container (max-width: 30rem) {
+    .transcript-content {
+      padding-inline: var(--space-cosy);
+    }
+
+    .pending-interactions,
+    .conversation > footer {
+      padding-inline: var(--space-cosy);
+    }
+
+    .session-controls .usage {
+      inline-size: 100%;
+      margin-inline-start: 0;
     }
   }
 }
