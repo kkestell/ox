@@ -1,17 +1,13 @@
 import { useRef, useState } from "react";
 
-import { Button } from "@/components/ui/button";
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
-
 import {
   maximumAttachmentBytes,
   maximumPromptText,
   type PromptCapabilities,
   type PromptContentBlock,
 } from "../protocol.ts";
+
+import { Disclosure } from "./disclosure.tsx";
 
 // The composer holds the draft for one session. Mounting it under the session
 // key keeps a draft from following the selection to another session.
@@ -66,34 +62,31 @@ export function Composer({
           void submit();
         }}
       >
-        <Label>
+        <label>
           Message
-          <Textarea disabled={busy} onChange={(event) => setText(event.target.value)} value={text} />
-        </Label>
-        <Collapsible>
-          <CollapsibleTrigger>Add context</CollapsibleTrigger>
-          <CollapsibleContent>
-            {acceptsAttachments ? (
-              <Label>
-                Attachments
-                <input disabled={busy} multiple onChange={(event) => setAttachments(Array.from(event.target.files ?? []))} ref={files} type="file" />
-              </Label>
-            ) : null}
-            {attachments.length > 0 ? <p>{attachments.map((file) => file.name).join(", ")}</p> : null}
-            <fieldset disabled={busy}>
-              <legend>Resource link</legend>
-              <Label>Name<Input onChange={(event) => setResourceLinkName(event.target.value)} value={resourceLinkName} /></Label>
-              <Label>URI<Input onChange={(event) => setResourceLinkURI(event.target.value)} type="url" value={resourceLinkURI} /></Label>
-            </fieldset>
-          </CollapsibleContent>
-        </Collapsible>
-        <Button disabled={busy} type="submit">
+          <textarea disabled={busy} onChange={(event) => setText(event.target.value)} value={text} />
+        </label>
+        <Disclosure label="Add context">
+          {acceptsAttachments ? (
+            <label>
+              Attachments
+              <input disabled={busy} multiple onChange={(event) => setAttachments(Array.from(event.target.files ?? []))} ref={files} type="file" />
+            </label>
+          ) : null}
+          {attachments.length > 0 ? <p>{attachments.map((file) => file.name).join(", ")}</p> : null}
+          <fieldset disabled={busy}>
+            <legend>Resource link</legend>
+            <label>Name<input onChange={(event) => setResourceLinkName(event.target.value)} value={resourceLinkName} /></label>
+            <label>URI<input onChange={(event) => setResourceLinkURI(event.target.value)} type="url" value={resourceLinkURI} /></label>
+          </fieldset>
+        </Disclosure>
+        <button disabled={busy} type="submit">
           Send prompt
-        </Button>
+        </button>
         {busy ? (
-          <Button onClick={onCancel} type="button">
+          <button onClick={onCancel} type="button">
             Cancel prompt
-          </Button>
+          </button>
         ) : null}
       </form>
     </section>

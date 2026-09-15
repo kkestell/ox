@@ -1,12 +1,10 @@
 import { useEffect, useState } from "react";
 
-import { Button } from "@/components/ui/button";
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-
 import { type BrowserCommand, type MCPServer } from "../protocol.ts";
 
 import { Authentication } from "./authentication.tsx";
 import { Composer } from "./composer.tsx";
+import { Disclosure } from "./disclosure.tsx";
 import { type CommandResult, useHostConnection } from "./host-connection.ts";
 import { MCPActivationForm } from "./mcp-activation-form.tsx";
 import { SessionInformation } from "./session-information.tsx";
@@ -154,7 +152,7 @@ export function App() {
   }
 
   return (
-    <div className="flex h-screen items-stretch">
+    <div className="layout">
       {snapshot ? (
         <Sidebar
           message={workspaceMessage}
@@ -182,7 +180,7 @@ export function App() {
           workspaces={snapshot.workspaces}
         />
       ) : null}
-      <main className="min-w-0 flex-auto overflow-y-auto">
+      <main>
         {unavailable ? <p role="alert">Ox is unavailable. Open workspace settings for diagnostics.</p> : null}
         {sessionError ? <p role="alert">{sessionError}</p> : null}
         {snapshot?.workspace && settings ? (
@@ -226,13 +224,10 @@ export function App() {
                 }
                 transcript={active.transcript}
               />
-              <Collapsible>
-                <CollapsibleTrigger>Conversation actions</CollapsibleTrigger>
-                <CollapsibleContent>
-                  <Button onClick={() => conversationCommand("close-conversation", active.id)} type="button">Close conversation</Button>
-                  <Button onClick={() => conversationCommand("delete-conversation", active.id)} type="button">Delete conversation</Button>
-                </CollapsibleContent>
-              </Collapsible>
+              <Disclosure label="Conversation actions">
+                <button onClick={() => conversationCommand("close-conversation", active.id)} type="button">Close conversation</button>
+                <button onClick={() => conversationCommand("delete-conversation", active.id)} type="button">Delete conversation</button>
+              </Disclosure>
             </header>
             <Transcript
               interactions={active.interactions}

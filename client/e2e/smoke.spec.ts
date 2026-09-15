@@ -212,7 +212,7 @@ test("prompts with controls and every supported browser attachment", async ({ pa
   try {
     host = startBrowserHost(fixture);
     await assertReady(page, await host.url);
-    await expect(page.getByLabel("Mode", { exact: true })).toHaveText("Code");
+    await expect(page.getByLabel("Mode", { exact: true }).locator("option:checked")).toHaveText("Code");
     await chooseMode(page, "Plan");
 
     await page.getByLabel("Message").fill("inspect these attachments");
@@ -512,14 +512,14 @@ test("activates HTTP and stdio MCP servers without retaining secrets", async ({ 
     await page.getByLabel("Message").fill("use HTTP MCP tool");
     await page.getByRole("button", { name: "Send prompt" }).click();
     await expect(page.getByRole("region", { name: "Transcript" })).toContainText("HTTP MCP complete");
-    await page.getByRole("region", { name: "Transcript" }).getByText("Details", { exact: true }).last().click();
+    await page.getByRole("region", { name: "Transcript" }).getByRole("button", { name: "Details", exact: true }).last().click();
     await expect(page.getByRole("region", { name: "Transcript" })).toContainText("HTTP MCP fixture result");
     expect(mcp.httpAuthorizations).toContain(mcp.httpSecret);
 
     await page.getByRole("textbox", { name: "Message" }).fill("use HTTP MCP failure");
     await page.getByRole("button", { name: "Send prompt" }).click();
     await expect(page.getByRole("region", { name: "Transcript" })).toContainText("HTTP MCP failure complete");
-    await page.getByRole("region", { name: "Transcript" }).getByText("Details", { exact: true }).last().click();
+    await page.getByRole("region", { name: "Transcript" }).getByRole("button", { name: "Details", exact: true }).last().click();
     await expect(page.getByRole("region", { name: "Transcript" })).toContainText("HTTP MCP fixture failure");
     await page.getByRole("button", { name: "Conversation actions" }).click();
     await page.getByRole("button", { name: "Close conversation" }).click();
@@ -540,7 +540,7 @@ test("activates HTTP and stdio MCP servers without retaining secrets", async ({ 
     await page.getByRole("textbox", { name: "Message" }).fill("use stdio MCP tool");
     await page.getByRole("button", { name: "Send prompt" }).click();
     await expect(page.getByRole("region", { name: "Transcript" })).toContainText("stdio MCP complete");
-    await page.getByRole("region", { name: "Transcript" }).getByText("Details", { exact: true }).last().click();
+    await page.getByRole("region", { name: "Transcript" }).getByRole("button", { name: "Details", exact: true }).last().click();
     await expect(page.getByRole("region", { name: "Transcript" })).toContainText("stdio MCP fixture result");
     await expect(page.locator("main")).not.toContainText(mcp.stdioSecret);
     await page.getByRole("button", { name: "Conversation actions" }).click();
@@ -1148,12 +1148,12 @@ async function driveOx(fixture: Fixture): Promise<string> {
   }
 }
 
-// The mode control is a listbox in a portal, so choosing a mode opens it by the
-// name its trigger carries and picks the option by its label.
+// Modes are named by Ox, so the helper chooses and asserts by the label the
+// agent advertised rather than by the value behind it.
 async function chooseMode(page: Page, mode: string): Promise<void> {
-  await page.getByLabel("Mode", { exact: true }).click();
-  await page.getByRole("option", { name: mode, exact: true }).click();
-  await expect(page.getByLabel("Mode", { exact: true })).toHaveText(mode);
+  const control = page.getByLabel("Mode", { exact: true });
+  await control.selectOption({ label: mode });
+  await expect(control.locator("option:checked")).toHaveText(mode);
 }
 
 async function boundingBox(locator: Locator): Promise<{ height: number; width: number; x: number; y: number }> {

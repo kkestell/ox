@@ -1,7 +1,3 @@
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-
 import { type FormValue, type PendingInteraction } from "../protocol.ts";
 
 export function PermissionInteraction({ interaction, onPermission }: {
@@ -14,9 +10,9 @@ export function PermissionInteraction({ interaction, onPermission }: {
       {interaction.tool.name ? <p>{interaction.tool.name}</p> : null}
       {interaction.tool.toolKind ? <p>{interaction.tool.toolKind}</p> : null}
       {interaction.options.map((option) => (
-        <Button key={option.id} onClick={() => onPermission(interaction.id, option.id)} type="button">
+        <button key={option.id} onClick={() => onPermission(interaction.id, option.id)} type="button">
           {option.name}
-        </Button>
+        </button>
       ))}
     </article>
   );
@@ -58,7 +54,7 @@ export function ElicitationForm({
         onSubmit(interaction.id, "accept", content);
       }}>
         {interaction.fields.map((field) => (
-          <Label key={field.name}>
+          <label key={field.name}>
             {field.label}
             {field.description ? <span>{field.description}</span> : null}
             {field.type === "boolean" ? (
@@ -73,13 +69,13 @@ export function ElicitationForm({
                 {field.choices.map((choice) => <option key={choice.value} value={choice.value}>{choice.label}</option>)}
               </select>
             ) : (
-              <Input defaultValue={field.default} max={field.type === "string" ? field.maxLength : field.maximum} min={field.type === "string" ? field.minLength : field.minimum} name={field.name} pattern={field.type === "string" ? field.pattern : undefined} required={field.required} step={field.type === "integer" ? 1 : undefined} type={field.type === "string" ? stringInputType(field.format) : "number"} />
+              <input defaultValue={field.default} max={field.type === "string" ? field.maxLength : field.maximum} min={field.type === "string" ? field.minLength : field.minimum} name={field.name} pattern={field.type === "string" ? field.pattern : undefined} required={field.required} step={field.type === "integer" ? 1 : undefined} type={field.type === "string" ? stringInputType(field.format) : "number"} />
             )}
-          </Label>
+          </label>
         ))}
-        <Button type="submit">Submit answer</Button>
-        <Button onClick={() => onSubmit(interaction.id, "decline")} type="button">Decline</Button>
-        <Button onClick={() => onSubmit(interaction.id, "cancel")} type="button">Cancel question</Button>
+        <button type="submit">Submit answer</button>
+        <button onClick={() => onSubmit(interaction.id, "decline")} type="button">Decline</button>
+        <button onClick={() => onSubmit(interaction.id, "cancel")} type="button">Cancel question</button>
       </form>
     </article>
   );

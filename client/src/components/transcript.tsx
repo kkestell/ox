@@ -1,5 +1,3 @@
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-
 import {
   type FormValue,
   type PendingInteraction,
@@ -8,6 +6,7 @@ import {
   type TranscriptContent,
 } from "../protocol.ts";
 
+import { Disclosure } from "./disclosure.tsx";
 import { ElicitationForm, PermissionInteraction } from "./pending-interactions.tsx";
 
 export function Transcript({ interactions, onElicitation, onPermission, transcript }: {
@@ -36,26 +35,20 @@ export function Transcript({ interactions, onElicitation, onPermission, transcri
               <article aria-label={`Tool ${entry.title}`}>
                 <h3>{entry.title}</h3>
                 {entry.status ? <p>{entry.status}</p> : null}
-                <Collapsible>
-                  <CollapsibleTrigger>Details</CollapsibleTrigger>
-                  <CollapsibleContent>
-                    {entry.name ? <p>{entry.name}</p> : null}
-                    {entry.toolKind ? <p>{entry.toolKind}</p> : null}
-                    {entry.locations.length > 0 ? <ul aria-label="Tool locations">{entry.locations.map((location) => <li key={`${location.path}:${location.line ?? ""}`}>{location.path}{location.line === undefined ? "" : `:${location.line}`}</li>)}</ul> : null}
-                    {entry.content.map((content, index) => <ToolOutput content={content} key={index} />)}
-                  </CollapsibleContent>
-                </Collapsible>
+                <Disclosure label="Details">
+                  {entry.name ? <p>{entry.name}</p> : null}
+                  {entry.toolKind ? <p>{entry.toolKind}</p> : null}
+                  {entry.locations.length > 0 ? <ul aria-label="Tool locations">{entry.locations.map((location) => <li key={`${location.path}:${location.line ?? ""}`}>{location.path}{location.line === undefined ? "" : `:${location.line}`}</li>)}</ul> : null}
+                  {entry.content.map((content, index) => <ToolOutput content={content} key={index} />)}
+                </Disclosure>
                 {inlinePermissions(entry).map((interaction) => <PermissionInteraction interaction={interaction} key={interaction.id} onPermission={onPermission} />)}
               </article>
             ) : entry.kind === "unknown" ? (
-              <Collapsible><CollapsibleTrigger>Unsupported transcript item</CollapsibleTrigger><CollapsibleContent><p>{entry.label}</p></CollapsibleContent></Collapsible>
+              <Disclosure label="Unsupported transcript item"><p>{entry.label}</p></Disclosure>
             ) : entry.kind === "thought" ? (
-              <Collapsible>
-                <CollapsibleTrigger>Thought</CollapsibleTrigger>
-                <CollapsibleContent>
-                  {entry.content.map((content, index) => <Content content={content} key={index} />)}
-                </CollapsibleContent>
-              </Collapsible>
+              <Disclosure label="Thought">
+                {entry.content.map((content, index) => <Content content={content} key={index} />)}
+              </Disclosure>
             ) : (
               <article aria-label={`${entry.kind} message`}>
                 <h3>{entry.kind === "agent" ? "Ox" : "You"}</h3>
@@ -75,14 +68,11 @@ export function Transcript({ interactions, onElicitation, onPermission, transcri
         ))}
       </ol>
       {transcript.plan.length > 0 ? (
-        <Collapsible>
-          <CollapsibleTrigger>{`Plan — ${transcript.plan.filter((entry) => entry.status === "completed").length} of ${transcript.plan.length} complete`}</CollapsibleTrigger>
-          <CollapsibleContent>
-            <ol>{transcript.plan.map((entry, index) => <li key={index}>{entry.content} ({entry.status})</li>)}</ol>
-          </CollapsibleContent>
-        </Collapsible>
+        <Disclosure label={`Plan — ${transcript.plan.filter((entry) => entry.status === "completed").length} of ${transcript.plan.length} complete`}>
+          <ol>{transcript.plan.map((entry, index) => <li key={index}>{entry.content} ({entry.status})</li>)}</ol>
+        </Disclosure>
       ) : null}
-      {transcript.usage?.cost ? <Collapsible><CollapsibleTrigger>Cost</CollapsibleTrigger><CollapsibleContent><p>{`${transcript.usage.cost.amount} ${transcript.usage.cost.currency}`}</p></CollapsibleContent></Collapsible> : null}
+      {transcript.usage?.cost ? <Disclosure label="Cost"><p>{`${transcript.usage.cost.amount} ${transcript.usage.cost.currency}`}</p></Disclosure> : null}
     </section>
   );
 }

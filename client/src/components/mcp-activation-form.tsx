@@ -1,7 +1,3 @@
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-
 import { type MCPServer } from "../protocol.ts";
 
 export function MCPActivationForm({
@@ -30,37 +26,37 @@ export function MCPActivationForm({
         {servers.map((server, index) => (
           <fieldset key={index}>
             <legend>{server.transport === "http" ? "HTTP MCP server" : "Stdio MCP server"}</legend>
-            <Button onClick={() => setServers((current) => current.filter((_, currentIndex) => currentIndex !== index))} type="button">
+            <button onClick={() => setServers((current) => current.filter((_, currentIndex) => currentIndex !== index))} type="button">
               Remove server
-            </Button>
-            <Label>
+            </button>
+            <label>
               Name
-              <Input
+              <input
                 maxLength={512}
                 onChange={(event) => replace(index, { ...server, name: event.target.value })}
                 required
                 value={server.name}
               />
-            </Label>
+            </label>
             {server.transport === "http" ? (
               <>
-                <Label>
+                <label>
                   URL
-                  <Input
+                  <input
                     maxLength={4096}
                     onChange={(event) => replace(index, { ...server, url: event.target.value })}
                     required
                     type="url"
                     value={server.url}
                   />
-                </Label>
+                </label>
                 <fieldset>
                   <legend>HTTP headers</legend>
                   {server.headers.map((header, headerIndex) => (
                     <div key={headerIndex}>
-                      <Label>
+                      <label>
                         Header name
-                        <Input
+                        <input
                           maxLength={256}
                           onChange={(event) =>
                             replace(index, {
@@ -73,10 +69,10 @@ export function MCPActivationForm({
                           required
                           value={header.name}
                         />
-                      </Label>
-                      <Label>
+                      </label>
+                      <label>
                         Header value
-                        <Input
+                        <input
                           autoComplete="off"
                           maxLength={16_384}
                           onChange={(event) =>
@@ -90,39 +86,39 @@ export function MCPActivationForm({
                           type="password"
                           value={header.value}
                         />
-                      </Label>
-                      <Button
+                      </label>
+                      <button
                         aria-label={`Remove header ${headerIndex + 1}`}
                         onClick={() => replace(index, { ...server, headers: server.headers.filter((_, currentIndex) => currentIndex !== headerIndex) })}
                         type="button"
                       >
                         Remove header
-                      </Button>
+                      </button>
                     </div>
                   ))}
-                  <Button onClick={() => replace(index, { ...server, headers: [...server.headers, { name: "", value: "" }] })} type="button">
+                  <button onClick={() => replace(index, { ...server, headers: [...server.headers, { name: "", value: "" }] })} type="button">
                     Add header
-                  </Button>
+                  </button>
                 </fieldset>
               </>
             ) : (
               <>
-                <Label>
+                <label>
                   Command
-                  <Input
+                  <input
                     maxLength={4096}
                     onChange={(event) => replace(index, { ...server, command: event.target.value })}
                     required
                     value={server.command}
                   />
-                </Label>
+                </label>
                 <fieldset>
                   <legend>Arguments</legend>
                   {server.args.map((argument, argumentIndex) => (
                     <div key={argumentIndex}>
-                      <Label>
+                      <label>
                         Argument {argumentIndex + 1}
-                        <Input
+                        <input
                           maxLength={16_384}
                           onChange={(event) =>
                             replace(index, {
@@ -132,27 +128,27 @@ export function MCPActivationForm({
                           }
                           value={argument}
                         />
-                      </Label>
-                      <Button
+                      </label>
+                      <button
                         aria-label={`Remove argument ${argumentIndex + 1}`}
                         onClick={() => replace(index, { ...server, args: server.args.filter((_, currentIndex) => currentIndex !== argumentIndex) })}
                         type="button"
                       >
                         Remove argument
-                      </Button>
+                      </button>
                     </div>
                   ))}
-                  <Button onClick={() => replace(index, { ...server, args: [...server.args, ""] })} type="button">
+                  <button onClick={() => replace(index, { ...server, args: [...server.args, ""] })} type="button">
                     Add argument
-                  </Button>
+                  </button>
                 </fieldset>
                 <fieldset>
                   <legend>Environment</legend>
                   {server.env.map((variable, variableIndex) => (
                     <div key={variableIndex}>
-                      <Label>
+                      <label>
                         Variable name
-                        <Input
+                        <input
                           maxLength={256}
                           onChange={(event) =>
                             replace(index, {
@@ -165,10 +161,10 @@ export function MCPActivationForm({
                           required
                           value={variable.name}
                         />
-                      </Label>
-                      <Label>
+                      </label>
+                      <label>
                         Variable value
-                        <Input
+                        <input
                           autoComplete="off"
                           maxLength={16_384}
                           onChange={(event) =>
@@ -182,31 +178,31 @@ export function MCPActivationForm({
                           type="password"
                           value={variable.value}
                         />
-                      </Label>
-                      <Button
+                      </label>
+                      <button
                         aria-label={`Remove variable ${variableIndex + 1}`}
                         onClick={() => replace(index, { ...server, env: server.env.filter((_, currentIndex) => currentIndex !== variableIndex) })}
                         type="button"
                       >
                         Remove variable
-                      </Button>
+                      </button>
                     </div>
                   ))}
-                  <Button onClick={() => replace(index, { ...server, env: [...server.env, { name: "", value: "" }] })} type="button">
+                  <button onClick={() => replace(index, { ...server, env: [...server.env, { name: "", value: "" }] })} type="button">
                     Add variable
-                  </Button>
+                  </button>
                 </fieldset>
               </>
             )}
           </fieldset>
         ))}
-        <Button onClick={() => setServers((current) => [...current, { transport: "http", name: "", url: "", headers: [] }])} type="button">
+        <button onClick={() => setServers((current) => [...current, { transport: "http", name: "", url: "", headers: [] }])} type="button">
           Add HTTP MCP server
-        </Button>
-        <Button onClick={() => setServers((current) => [...current, { transport: "stdio", name: "", command: "", args: [], env: [] }])} type="button">
+        </button>
+        <button onClick={() => setServers((current) => [...current, { transport: "stdio", name: "", command: "", args: [], env: [] }])} type="button">
           Add stdio MCP server
-        </Button>
-        <Button type="submit">Save MCP servers</Button>
+        </button>
+        <button type="submit">Save MCP servers</button>
       </fieldset>
     </form>
   );

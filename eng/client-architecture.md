@@ -102,9 +102,9 @@ The client is one Bun package under `client/`, with these coarse boundaries:
   host would lose on refresh. `src/browser.tsx` mounts it, one module under
   `src/components` owns each region, and one hook owns the host socket, the
   snapshot it publishes, and the routing of each command's result back to its
-  sender. `src/components/ui` holds vendored third-party presentation the
-  application owns and edits in place, and the Tailwind theme compiles from
-  `src/styles.css` into the served stylesheet.
+  sender. Appearance is one hand-written stylesheet served as a static asset; no
+  build step generates it, and no component library stands between the
+  application and the platform's own controls.
 - The **browser harness** owns deterministic fake-provider fixtures and launches
   the compiled application, the real Bun host, and the real Ox binary in
   temporary private directories.

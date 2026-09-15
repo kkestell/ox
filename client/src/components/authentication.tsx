@@ -1,7 +1,3 @@
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-
 import { type Snapshot } from "../protocol.ts";
 
 // Connecting and managing a credential are the same surface: the methods Ox
@@ -24,15 +20,15 @@ export function Authentication({ authentication, credential, onAuthenticate, onC
       <p>{authenticated ? "Connected" : "Not connected"}</p>
       {authentication.methods.map((method) => method.type === "agent" ? (
         authenticated ? null : (
-          <Button disabled={working} key={method.id} onClick={() => onAuthenticate(method.id)} type="button">Use configured credential</Button>
+          <button disabled={working} key={method.id} onClick={() => onAuthenticate(method.id)} type="button">Use configured credential</button>
         )
       ) : (
         <form key={method.id} onSubmit={(event) => { event.preventDefault(); onLogin(method.id); }}>
-          <Label>{`${method.name} credential`}<Input autoComplete="off" disabled={working} onChange={(event) => onCredential(event.target.value)} required type="password" value={credential} /></Label>
-          <Button disabled={working} type="submit">{method.name}</Button>
+          <label>{`${method.name} credential`}<input autoComplete="off" disabled={working} onChange={(event) => onCredential(event.target.value)} required type="password" value={credential} /></label>
+          <button disabled={working} type="submit">{method.name}</button>
         </form>
       ))}
-      {authentication.logoutAvailable ? <Button disabled={working} onClick={onLogout} type="button">Log out</Button> : null}
+      {authentication.logoutAvailable ? <button disabled={working} onClick={onLogout} type="button">Log out</button> : null}
     </section>
   );
 }

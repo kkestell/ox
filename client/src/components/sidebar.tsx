@@ -1,7 +1,3 @@
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-
 import { type Snapshot } from "../protocol.ts";
 
 // Navigating between conversations is a link, so the sidebar reads as
@@ -22,14 +18,14 @@ export function Sidebar({ message, onNew, onOlder, onOpen, onPath, onRegister, o
   workspaces: Snapshot["workspaces"];
 }) {
   return (
-    <nav aria-label="Workspaces and conversations" className="w-72 shrink-0 overflow-y-auto">
+    <nav aria-label="Workspaces and conversations">
       <h1>Ox</h1>
       {workspaces.values.length > 0 ? (
         <ul aria-label="Workspaces">
           {workspaces.values.map((workspace) => (
             <li aria-current={workspaces.selectedId === workspace.id ? "true" : undefined} key={workspace.id}>
               <h2>{workspace.name}</h2>
-              <Button aria-label={`New conversation in ${workspace.name}`} onClick={() => onNew(workspace.id)} type="button">+</Button>
+              <button aria-label={`New conversation in ${workspace.name}`} onClick={() => onNew(workspace.id)} type="button">+</button>
               <a
                 aria-current={settings && workspaces.selectedId === workspace.id ? "page" : undefined}
                 aria-label={`Settings for ${workspace.name}`}
@@ -38,7 +34,7 @@ export function Sidebar({ message, onNew, onOlder, onOpen, onPath, onRegister, o
               >
                 Settings
               </a>
-              <Button aria-label={`Remove ${workspace.name}`} onClick={() => onRemove(workspace.id)} type="button">Remove</Button>
+              <button aria-label={`Remove ${workspace.name}`} onClick={() => onRemove(workspace.id)} type="button">Remove</button>
               {workspace.status === "ready" ? (
                 <>
                   <ul aria-label={`${workspace.name} conversations`}>
@@ -58,14 +54,14 @@ export function Sidebar({ message, onNew, onOlder, onOpen, onPath, onRegister, o
                     ))}
                   </ul>
                   {workspaces.selectedId === workspace.id && sessions.nextCursor ? (
-                    <Button onClick={onOlder} type="button">Show older conversations</Button>
+                    <button onClick={onOlder} type="button">Show older conversations</button>
                   ) : null}
                 </>
               ) : (
                 <p>
                   {workspace.status === "starting" ? "Ox is starting." : "Ox is not running."}
                   {workspace.status === "starting" ? null : (
-                    <Button aria-label={`Restart ${workspace.name}`} onClick={() => onRestart(workspace.id)} type="button">Restart</Button>
+                    <button aria-label={`Restart ${workspace.name}`} onClick={() => onRestart(workspace.id)} type="button">Restart</button>
                   )}
                 </p>
               )}
@@ -74,11 +70,11 @@ export function Sidebar({ message, onNew, onOlder, onOpen, onPath, onRegister, o
         </ul>
       ) : <p>Register a server-local workspace to begin.</p>}
       <form onSubmit={(event) => { event.preventDefault(); onRegister(); }}>
-        <Label>
+        <label>
           Workspace path
-          <Input onChange={(event) => onPath(event.target.value)} required value={path} />
-        </Label>
-        <Button type="submit">Register workspace</Button>
+          <input onChange={(event) => onPath(event.target.value)} required value={path} />
+        </label>
+        <button type="submit">Register workspace</button>
       </form>
       {message ? <p aria-live="polite" role={message.error ? "alert" : undefined}>{message.text}</p> : null}
     </nav>

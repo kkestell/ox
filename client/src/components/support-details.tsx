@@ -1,5 +1,3 @@
-import { Button } from "@/components/ui/button";
-
 import { type Snapshot } from "../protocol.ts";
 
 export function SupportDetails({ activeSessionId, connection, onRefresh, snapshot, workspace }: {
@@ -25,7 +23,7 @@ export function SupportDetails({ activeSessionId, connection, onRefresh, snapsho
         ))}
       </ul>
       {workspace.diagnostics.length > 0 ? <ul aria-label="Workspace diagnostics">{workspace.diagnostics.map((diagnostic, index) => <li key={`${index}-${diagnostic}`}>{diagnostic}</li>)}</ul> : null}
-      <Button onClick={onRefresh} type="button">Refresh conversation history</Button>
+      <button onClick={onRefresh} type="button">Refresh conversation history</button>
     </section>
   );
 }
