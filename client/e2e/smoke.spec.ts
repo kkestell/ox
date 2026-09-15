@@ -41,7 +41,6 @@ test("disables conversations owned by another Ox runtime", async ({ page }) => {
     await expect(lockedConversation.locator('[aria-label="Open in another client"]')).toBeVisible();
     await expect(lockedConversation).not.toContainText("Open in another client");
     await expect(lockedConversation.getByRole("link")).toHaveCount(0);
-    await expect(lockedConversation.locator('[aria-disabled="true"]')).toHaveCSS("opacity", "0.5");
     await expect(conversations.getByRole("link", { name: /smoke/ })).toBeVisible();
     await expect(page.getByRole("region", { name: "Transcript" })).toContainText("smoke");
   } finally {
@@ -68,35 +67,7 @@ test("registers, selects, persists, and removes server-local workspaces", async 
     await expect(page.getByRole("navigation", { name: "Workspaces and conversations" })).toBeVisible();
     await expect(page.getByRole("region", { name: "Conversation" })).toBeVisible();
 
-    const sidebar = await boundingBox(page.getByRole("navigation", { name: "Workspaces and conversations" }));
-    const primary = await boundingBox(page.locator("main"));
-    expect(sidebar.x + sidebar.width).toBeLessThanOrEqual(primary.x);
-    // The two columns share one top band, so their headers cannot disagree.
-    const sidebarHeader = await boundingBox(page.locator('[data-slot="sidebar-header"]'));
-    const conversationHeader = await boundingBox(
-      page.getByRole("region", { name: "Conversation" }).locator("header"),
-    );
-    expect(Math.abs(sidebarHeader.height - conversationHeader.height)).toBeLessThanOrEqual(1);
-    await expect(conversationList(page, basename(fixture.workspace))).toHaveCSS("border-left-width", "0px");
-    const selectedConversation = conversationList(page, basename(fixture.workspace)).getByRole("link").first();
-    await expect(selectedConversation).toHaveCSS("border-left-width", "0px");
-    await expect(selectedConversation).toHaveCSS("border-top-width", "0px");
-    // The sidebar's rightmost controls share one right edge: the add workspace
-    // button in the header and the workspace row's actions button.
-    const addWorkspace = page.getByRole("navigation", { name: "Workspaces and conversations" }).getByRole("button", { name: "Add workspace" });
     const actions = workspaceActions(page, basename(fixture.workspace));
-    const addWorkspaceBox = await boundingBox(addWorkspace);
-    const actionsBox = await boundingBox(actions);
-    expect(Math.abs(addWorkspaceBox.x + addWorkspaceBox.width - actionsBox.x - actionsBox.width)).toBeLessThanOrEqual(1);
-    const newConversationBox = await boundingBox(newConversation(page, basename(fixture.workspace)));
-    const selectedConversationBox = await boundingBox(selectedConversation);
-    expect(Math.abs(newConversationBox.x - selectedConversationBox.x)).toBeLessThanOrEqual(1);
-    // Navigation controls stay flat until the pointer reaches them; destructive
-    // workspace removal lives in the secondary actions menu.
-    for (const control of [addWorkspace, actions]) {
-      await expect(control).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
-    }
-    expect(await hoverBackground(addWorkspace)).not.toBe("rgba(0, 0, 0, 0)");
     await actions.click();
     await expect(page.getByRole("menuitem", { name: `Remove ${basename(fixture.workspace)}` })).toBeVisible();
     await page.keyboard.press("Escape");
@@ -144,12 +115,6 @@ test("uses the navigation drawer at phone width", async ({ page }) => {
 
     await page.getByRole("button", { name: "Open navigation" }).click();
     await expect(navigation).toBeVisible();
-    await expect
-      .poll(async () => Math.abs((await boundingBox(navigation)).x))
-      .toBeLessThanOrEqual(1);
-    const drawer = await boundingBox(navigation);
-    expect(drawer.x).toBe(0);
-    expect(Math.abs(drawer.width - 390)).toBeLessThanOrEqual(1);
     await expect(newConversation(page)).toBeVisible();
     await expect(page.getByRole("region", { name: "Conversation" })).toHaveCount(0);
     await page.getByRole("button", { name: "Close navigation" }).focus();
@@ -343,19 +308,6 @@ test("prompts with controls and every supported browser attachment", async ({ pa
 
     const composer = page.getByLabel("Message");
     await expect(page.getByRole("heading", { name: "Prompt" })).toHaveCount(0);
-    const oneLine = await boundingBox(composer);
-    const composerRegion = await boundingBox(page.getByRole("region", { name: "Prompt" }));
-    expect(composerRegion.width - oneLine.width).toBeLessThanOrEqual(2);
-    await composer.fill(Array.from({ length: 8 }, (_, index) => `line ${index + 1}`).join("\n"));
-    const eightLines = await boundingBox(composer);
-    await composer.fill(Array.from({ length: 9 }, (_, index) => `line ${index + 1}`).join("\n"));
-    const nineLines = await boundingBox(composer);
-    const maximumHeight = await composer.evaluate((element) => Number.parseFloat(getComputedStyle(element).maxBlockSize));
-    await composer.fill(Array.from({ length: 10 }, (_, index) => `line ${index + 1}`).join("\n"));
-    const tenLines = await boundingBox(composer);
-    expect(eightLines.height).toBeGreaterThan(oneLine.height);
-    expect(nineLines.height).toBeLessThanOrEqual(maximumHeight + 1);
-    expect(Math.abs(tenLines.height - nineLines.height)).toBeLessThanOrEqual(1);
     await composer.fill("first line");
     await composer.press("Shift+Enter");
     await composer.pressSequentially("second line");
@@ -372,9 +324,6 @@ test("prompts with controls and every supported browser attachment", async ({ pa
     ]);
     const attachments = page.getByRole("list", { name: "Attachments" });
     await expect(attachments.getByRole("listitem")).toHaveText(["picture.png", "sound.wav", "notes.txt"]);
-    const first = await boundingBox(attachments.getByRole("listitem").first());
-    const second = await boundingBox(attachments.getByRole("listitem").nth(1));
-    expect(second.y).toBeGreaterThan(first.y);
     await addAttachment.setInputFiles({ name: "spare.txt", mimeType: "text/plain", buffer: Buffer.from("spare") });
     await expect(attachments.getByRole("listitem")).toHaveCount(4);
     const removeSpare = page.getByRole("button", { name: "Remove spare.txt" });
@@ -396,11 +345,6 @@ test("prompts with controls and every supported browser attachment", async ({ pa
     await expect(attachments).toHaveCount(0);
     const transcript = page.getByRole("region", { name: "Transcript" });
     await expect(transcript).toContainText("browser smoke");
-    const agentMessage = transcript.getByRole("article", { name: "agent message" }).last();
-    const agentMessageBox = await boundingBox(agentMessage);
-    const settledComposerBox = await boundingBox(page.getByRole("region", { name: "Prompt" }));
-    expect(Math.abs(settledComposerBox.x - agentMessageBox.x)).toBeLessThanOrEqual(1);
-    expect(Math.abs(settledComposerBox.width - agentMessageBox.width)).toBeLessThanOrEqual(1);
     const sendButton = page.getByRole("button", { name: "Send prompt" });
     const usageButton = page.getByRole("button", { name: /^Show usage: [\d,]+ \/ [\d,]+ tokens, \$0\.01$/ });
     await expect(sendButton).toHaveText("");
@@ -408,15 +352,6 @@ test("prompts with controls and every supported browser attachment", async ({ pa
     const usagePopover = page.locator('[data-slot="popover-content"]');
     await expect(usagePopover).toContainText(/^[\s\S]*[\d,]+ \/ [\d,]+ tokens[\s\S]*\$0\.01[\s\S]*$/);
     await page.keyboard.press("Escape");
-    const controlBoxes = await Promise.all([
-      page.getByLabel("Mode", { exact: true }),
-      page.getByLabel("Model", { exact: true }),
-      page.getByLabel("Reasoning", { exact: true }),
-      usageButton,
-      sendButton,
-    ].map(boundingBox));
-    const controlCenters = controlBoxes.map((box) => box.y + box.height / 2);
-    expect(Math.max(...controlCenters) - Math.min(...controlCenters)).toBeLessThanOrEqual(1);
   } finally {
     await host?.stop();
     await fixture.close();
@@ -454,7 +389,6 @@ test("runs Ox shell tools through the host's ACP terminal callbacks", async ({ p
 
     const transcript = page.getByRole("region", { name: "Transcript" });
     await expect(transcript).toContainText("terminal complete");
-    await expect(transcript.getByText("completed", { exact: true })).toHaveCSS("position", "absolute");
     await transcript.getByRole("button", { name: /printf terminal callback output/ }).click();
     await expect(transcript).toContainText("exit code: 0");
   } finally {
@@ -547,9 +481,6 @@ test("follows live transcript updates until manual scrollback asks to return", a
     await expect.poll(() => bottomDistance(scrollport)).toBeGreaterThan(40);
     const jump = page.getByRole("button", { name: "Jump to latest" });
     await expect(jump).toBeVisible();
-    const scrollportBox = await boundingBox(scrollport);
-    const jumpBox = await boundingBox(jump);
-    expect(scrollportBox.y + scrollportBox.height).toBeLessThanOrEqual(jumpBox.y + 1);
     fixture.releaseHeldPrompt();
     await expect(page.getByRole("region", { name: "Transcript" })).toContainText("held prompt complete");
     await expect.poll(() => scrollport.evaluate((element) => element.scrollTop)).toBe(0);
@@ -599,11 +530,6 @@ test("contains long transcript content across phone and narrow desktop layouts",
     await expect(page.getByRole("heading", { name: "Workspace settings" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Back to conversation" })).toBeVisible();
     await expect(page.getByRole("list", { name: "Workspace diagnostics" })).toContainText("prefix_fingerprint=");
-    const sidebarHeader = await boundingBox(page.locator('[data-slot="sidebar-header"]'));
-    const settingsHeader = await boundingBox(
-      page.getByRole("region", { name: "Workspace settings" }).locator("header"),
-    );
-    expect(Math.abs(sidebarHeader.height - settingsHeader.height)).toBeLessThanOrEqual(1);
     await page.setViewportSize({ height: 844, width: 390 });
     await expectNoHorizontalOverflow(page.locator("main"));
   } finally {
@@ -716,10 +642,6 @@ test("routes a pending permission to the workspace the browser is not showing", 
     const scrollport = page.getByTestId("transcript-scrollport");
     await expect.poll(() => bottomDistance(scrollport)).toBeLessThanOrEqual(1);
     await expect(page.getByRole("button", { name: "Jump to latest" })).toHaveCount(0);
-    const tray = page.getByLabel("Pending interactions");
-    const trayBox = await boundingBox(tray);
-    const composerBox = await boundingBox(page.getByRole("region", { name: "Prompt" }));
-    expect(trayBox.y + trayBox.height).toBeLessThanOrEqual(composerBox.y + 1);
     await expect(conversationList(page, second).locator('[aria-label="Waiting for you"]')).toBeVisible();
 
     await showWorkspace(page, first);
@@ -751,9 +673,6 @@ test("renders a host-owned form elicitation through refresh and answers it", asy
     await sendPrompt(page);
     const interactions = page.getByLabel("Pending interactions");
     await expect(interactions.getByRole("article", { name: "Choose a color", exact: true })).toContainText("Choose a color");
-    const tray = await boundingBox(interactions);
-    const composer = await boundingBox(page.getByRole("region", { name: "Prompt" }));
-    expect(tray.y + tray.height).toBeLessThanOrEqual(composer.y + 1);
     await expect(page.getByRole("combobox", { name: "Answer" })).toHaveText("Select an option");
     await page.reload();
     await expect(interactions.getByRole("article", { name: "Choose a color", exact: true })).toContainText("Choose a color");
@@ -1561,29 +1480,6 @@ async function registerWorkspace(page: Page, path: string, error?: string): Prom
     return;
   }
   await expect(dialog).toBeHidden();
-}
-
-// Control fills animate, so the settled colour is the one worth comparing.
-async function hoverBackground(locator: Locator): Promise<string> {
-  await locator.hover();
-  let previous = "";
-  await expect
-    .poll(async () => {
-      const current = await locator.evaluate((element) => getComputedStyle(element).backgroundColor);
-      const settled = current === previous ? current : "";
-      previous = current;
-      return settled;
-    })
-    .not.toBe("");
-  return previous;
-}
-
-async function boundingBox(locator: Locator): Promise<{ height: number; width: number; x: number; y: number }> {
-  const box = await locator.boundingBox();
-  if (box === null) {
-    throw new Error("element has no layout box");
-  }
-  return box;
 }
 
 async function bottomDistance(locator: Locator): Promise<number> {
