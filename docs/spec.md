@@ -191,12 +191,14 @@ Every registered built-in and MCP invocation carries a human-readable ACP
 tool-call title for transcripts and permission requests. They also carry the
 namespaced `kkestell.ox/toolDisplayName` and, when relevant,
 `kkestell.ox/toolDisplayArguments` metadata values. The former is the human
-action and the latter is its bounded display subject. The provider-facing tool
-name remains unchanged as technical identity. The first-party client renders the
-two metadata values as an action and a code-styled argument; it falls back to
-the ACP title and does not derive presentation text from `shell` or namespaced
-MCP identifiers. An unregistered provider-requested tool may use its raw name as
-its title because it has no presentation contract.
+action and the latter is its bounded display subject. The ACP title is the two
+joined into one line, because a client that reads only the title must still see
+what the call operates on. The provider-facing tool name remains unchanged as
+technical identity. The first-party client renders the two metadata values as an
+action and a code-styled argument; it falls back to the ACP title and does not
+derive presentation text from `shell` or namespaced MCP identifiers. An
+unregistered provider-requested tool may use its raw name as its title because
+it has no presentation contract.
 
 ## Authentication
 

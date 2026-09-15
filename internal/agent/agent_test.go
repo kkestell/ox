@@ -379,7 +379,7 @@ func TestToolPresentationSeparatesMetadataFromTheRawName(t *testing.T) {
 	}
 	live := notifications[0].Update.(acp.ToolCall)
 	permission := (&Agent{}).permissionRequest("session", "/workspace", tool, call, "", "")
-	if live.Title != "Run" || live.Name != "shell" || live.Meta[acp.MetaToolDisplayName] != "Run" || live.Meta[acp.MetaToolDisplayArguments] != "go test ./..." {
+	if live.Title != "Run go test ./..." || live.Name != "shell" || live.Meta[acp.MetaToolDisplayName] != "Run" || live.Meta[acp.MetaToolDisplayArguments] != "go test ./..." {
 		t.Fatalf("live tool call = %#v", live)
 	}
 	if permission.ToolCall.Title != live.Title || permission.ToolCall.Name != live.Name || permission.ToolCall.Meta[acp.MetaToolDisplayName] != "Run" || permission.ToolCall.Meta[acp.MetaToolDisplayArguments] != "go test ./..." {

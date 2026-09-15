@@ -73,7 +73,7 @@ func (a *eventAdapter) handle(current event) error {
 		return a.send(acp.ToolCall{
 			SessionUpdate: acp.SessionUpdateToolCall,
 			ToolCallID:    current.call.ID,
-			Title:         current.presentation.Name,
+			Title:         current.presentation.Title(),
 			Name:          current.call.Function.Name,
 			Kind:          current.toolKind,
 			Status:        acp.ToolCallStatusPending,

@@ -33,6 +33,16 @@ type ToolPresentation struct {
 	Arguments string
 }
 
+// Title rejoins the two parts for the ACP title field, which clients render as
+// the whole label for a tool call. An action alone reads as a truncated
+// sentence there.
+func (p ToolPresentation) Title() string {
+	if p.Arguments == "" {
+		return p.Name
+	}
+	return p.Name + " " + p.Arguments
+}
+
 // ToolScope limits a tool to one side of subagent coordination. The zero value
 // makes an ordinary tool available to both primary and child agents.
 type ToolScope uint8

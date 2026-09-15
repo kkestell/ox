@@ -87,7 +87,7 @@ func TestMCPSearchToWebFetchThroughShippedBinary(t *testing.T) {
 	}})
 	fetchMessage := child.serverRequest()
 	fetchPermission := permissionRequest(t, fetchMessage, "call-fetch")
-	if fetchPermission.ToolCall.Name != "web_fetch" || fetchPermission.ToolCall.Title != "Fetch" || fetchPermission.ToolCall.Meta[acp.MetaToolDisplayName] != "Fetch" || fetchPermission.ToolCall.Meta[acp.MetaToolDisplayArguments] != pageURL {
+	if fetchPermission.ToolCall.Name != "web_fetch" || fetchPermission.ToolCall.Title != "Fetch "+pageURL || fetchPermission.ToolCall.Meta[acp.MetaToolDisplayName] != "Fetch" || fetchPermission.ToolCall.Meta[acp.MetaToolDisplayArguments] != pageURL {
 		t.Fatalf("fetch permission = %#v", fetchPermission.ToolCall)
 	}
 	child.respond(fetchMessage, acp.RequestPermissionResponse{Outcome: acp.RequestPermissionOutcome{

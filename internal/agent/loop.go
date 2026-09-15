@@ -939,7 +939,7 @@ func (a *Agent) permissionRequest(
 		SessionID: sessionID,
 		ToolCall: acp.ToolCallUpdate{
 			ToolCallID: call.ID, Kind: tool.Kind,
-			Title: presentation.Name, Name: call.Function.Name,
+			Title: presentation.Title(), Name: call.Function.Name,
 			Locations: toolLocations(root, target), RawInput: arguments,
 			Meta: toolPresentationMetadata(presentation),
 		},

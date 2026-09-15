@@ -1765,7 +1765,7 @@ func replayToolCall(
 	return acp.ToolCall{
 		SessionUpdate: acp.SessionUpdateToolCall,
 		ToolCallID:    call.ID,
-		Title:         presentation.Name,
+		Title:         presentation.Title(),
 		Name:          call.Function.Name,
 		Kind:          configuration.ToolKinds[call.Function.Name],
 		Status:        acp.ToolCallStatusPending,
