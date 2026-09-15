@@ -20,7 +20,7 @@ Start the host:
 bun run start
 ```
 
-It prints a loopback URL such as `http://127.0.0.1:3000`; open that URL in a
+It prints a loopback URL such as `http://127.0.0.1:41837`; open that URL in a
 browser, then register an absolute server-local workspace path. The host saves
 canonical workspace roots in `$XDG_CONFIG_HOME/ox/workspaces.json`, or
 `$HOME/.config/ox/workspaces.json` when the XDG path is not absolute. Every
@@ -37,11 +37,13 @@ Diagnostics from the process that stopped stay visible in the workspace's
 settings.
 
 The host automatically uses Ox's stored credential when one is available. It
-uses `ox` from `PATH` by default. Use `--ox` to choose an executable, and repeat
-`--ox-arg` for arguments passed through to Ox:
+uses `ox` from `PATH` by default. Use `--port` to select a different listener
+port, `--ox` to choose an executable, and repeat `--ox-arg` for arguments passed
+through to Ox:
 
 ```sh
 bun run start -- \
+  --port 41838 \
   --ox /path/to/ox \
   --ox-arg --model \
   --ox-arg your-provider/model

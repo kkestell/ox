@@ -43,7 +43,9 @@ const mimeTypes = new Map([
 export async function startHost(options: HostOptions = {}): Promise<StartedHost> {
   const assetDirectory = options.assetDirectory ?? join(import.meta.dir, "..", "public");
   const hostname = options.hostname ?? "127.0.0.1";
-  const port = options.port ?? 0;
+  // Keep the default outside browser-blocked and commonly claimed development
+  // ports. Callers can select a different port with --port.
+  const port = options.port ?? 41837;
   const sockets = new Set<Bun.ServerWebSocket<SocketData>>();
   const registry = options.registryPath
     ? await WorkspaceRegistry.load(options.registryPath)

@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { startHost, type StartedHost } from "./host.ts";
+import { startHost, type HostOptions, type StartedHost } from "./host.ts";
 import { maximumRecentConversations, type Snapshot } from "./protocol.ts";
 
 let host: StartedHost | undefined;
@@ -52,7 +52,7 @@ describe("browser host", () => {
     const root = await temporaryDirectory();
     const workspace = join(root, "private-workspace");
     await mkdir(workspace);
-    host = await startHost({
+    host = await startTestHost({
       oxCommand: "/definitely/not/ox",
       registryPath: join(root, "configuration", "workspaces.json"),
     });
@@ -71,7 +71,7 @@ describe("browser host", () => {
     const root = await temporaryDirectory();
     await mkdir(join(root, "one"));
     await mkdir(join(root, "two"));
-    host = await startHost({ oxCommand: "/definitely/not/ox", registryPath: join(root, "workspaces.json") });
+    host = await startTestHost({ oxCommand: "/definitely/not/ox", registryPath: join(root, "workspaces.json") });
     const client = await connect(host);
     await client.request({ type: "register-workspace", path: join(root, "one") });
     await client.request({ type: "register-workspace", path: join(root, "two") });
@@ -98,7 +98,7 @@ describe("browser host", () => {
     const listed = maximumRecentConversations + 2;
     const newest = "session-0";
     const oldest = `session-${listed - 1}`;
-    host = await startHost({
+    host = await startTestHost({
       oxArguments: ["--eval", conversationsProgram(listed, refusedSessionID)],
       oxCommand: process.execPath,
       registryPath: join(root, "workspaces.json"),
@@ -149,7 +149,7 @@ describe("browser host", () => {
     const root = await temporaryDirectory();
     await mkdir(join(root, "kept"));
     await mkdir(join(root, "removed"));
-    host = await startHost({ oxCommand: "/definitely/not/ox", registryPath: join(root, "workspaces.json") });
+    host = await startTestHost({ oxCommand: "/definitely/not/ox", registryPath: join(root, "workspaces.json") });
     const client = await connect(host);
     await client.request({ type: "register-workspace", path: join(root, "kept") });
     await client.request({ type: "register-workspace", path: join(root, "removed") });
@@ -175,7 +175,7 @@ describe("browser host", () => {
     const root = await temporaryDirectory();
     const workspace = join(root, "restarted");
     await mkdir(workspace);
-    host = await startHost({ oxCommand: "/definitely/not/ox", registryPath: join(root, "workspaces.json") });
+    host = await startTestHost({ oxCommand: "/definitely/not/ox", registryPath: join(root, "workspaces.json") });
     const client = await connect(host);
     await client.request({ type: "register-workspace", path: workspace });
     const [entry] = client.snapshot().workspaces.values;
@@ -213,7 +213,7 @@ describe("browser host", () => {
       }),
     );
 
-    host = await startHost({ oxCommand: "/definitely/not/ox", registryPath });
+    host = await startTestHost({ oxCommand: "/definitely/not/ox", registryPath });
     const client = await connect(host);
     await client.request({ type: "ping" });
 
@@ -232,7 +232,7 @@ describe("browser host", () => {
     const root = await temporaryDirectory();
     const workspace = join(root, "restarted");
     await mkdir(workspace);
-    host = await startHost({ oxCommand: "/definitely/not/ox", registryPath: join(root, "workspaces.json") });
+    host = await startTestHost({ oxCommand: "/definitely/not/ox", registryPath: join(root, "workspaces.json") });
     const client = await connect(host);
     await client.request({ type: "register-workspace", path: workspace });
     const [entry] = client.snapshot().workspaces.values;
@@ -250,7 +250,7 @@ describe("browser host", () => {
     const root = await temporaryDirectory();
     await mkdir(join(root, "one"));
     await mkdir(join(root, "two"));
-    host = await startHost({ oxCommand: "/definitely/not/ox", registryPath: join(root, "workspaces.json") });
+    host = await startTestHost({ oxCommand: "/definitely/not/ox", registryPath: join(root, "workspaces.json") });
     const client = await connect(host);
     await client.request({ type: "register-workspace", path: join(root, "one") });
     await client.request({ type: "register-workspace", path: join(root, "two") });
@@ -286,7 +286,7 @@ describe("browser host", () => {
     const root = await temporaryDirectory();
     await mkdir(join(root, "one"));
     await mkdir(join(root, "two"));
-    host = await startHost({ oxCommand: "/definitely/not/ox", registryPath: join(root, "workspaces.json") });
+    host = await startTestHost({ oxCommand: "/definitely/not/ox", registryPath: join(root, "workspaces.json") });
     const client = await connect(host);
     await client.request({ type: "register-workspace", path: join(root, "one") });
     await client.request({ type: "register-workspace", path: join(root, "two") });
@@ -375,9 +375,9 @@ process.stdin.on('data', (chunk) => {
 });`;
 }
 
-async function startTestHost(): Promise<StartedHost> {
+async function startTestHost(options: Omit<HostOptions, "port"> = {}): Promise<StartedHost> {
   const root = await temporaryDirectory();
-  return startHost({ registryPath: join(root, "workspaces.json") });
+  return startHost({ ...options, port: 0, registryPath: options.registryPath ?? join(root, "workspaces.json") });
 }
 
 async function temporaryDirectory(): Promise<string> {
