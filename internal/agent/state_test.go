@@ -126,7 +126,7 @@ func TestReplayUsesFrozenMCPTitleAndRawName(t *testing.T) {
 				Function: openrouter.ToolCallFunction{Name: test.name, Arguments: `{}`},
 			}
 			update := replayToolCall(&Agent{}, call, configuration, "/workspace", "")
-			if update.Title != test.want || update.Name != test.name {
+			if update.Title != test.want || update.Name != test.name || update.Meta[acp.MetaToolDisplayName] != test.want || update.Meta[acp.MetaToolDisplayArguments] != nil {
 				t.Fatalf("replayed tool call = %#v", update)
 			}
 		})
@@ -495,9 +495,10 @@ func TestFoldResumesSuspendedPermissionGenerationAndReplaysOnce(t *testing.T) {
 		SessionID: id,
 		ToolCall: acp.ToolCallUpdate{
 			ToolCallID: call.ID, Name: call.Function.Name,
-			Title: "Edit a.go", Kind: acp.ToolKindEdit,
+			Title: "Edit", Kind: acp.ToolKindEdit,
 			Locations: []acp.ToolCallLocation{{Path: "/workspace/a.go"}},
 			RawInput:  json.RawMessage(call.Function.Arguments),
+			Meta:      acp.Metadata{acp.MetaToolDisplayName: "Edit", acp.MetaToolDisplayArguments: "a.go"},
 		},
 		Options: permissionOptions("", false),
 	}
@@ -530,7 +531,7 @@ func TestFoldResumesSuspendedPermissionGenerationAndReplaysOnce(t *testing.T) {
 		state.suspended.Pending.Generation != 2 || state.suspended.RequestCount != 3 {
 		t.Fatalf("folded suspension = %#v", state.suspended)
 	}
-	if tool := state.suspended.Pending.Request.ToolCall; tool.Title != "Edit a.go" || tool.Name != "edit" {
+	if tool := state.suspended.Pending.Request.ToolCall; tool.Title != "Edit" || tool.Name != "edit" || tool.Meta[acp.MetaToolDisplayName] != "Edit" || tool.Meta[acp.MetaToolDisplayArguments] != "a.go" {
 		t.Fatalf("recovered permission tool call = %#v", tool)
 	}
 	value := &session{state: state}

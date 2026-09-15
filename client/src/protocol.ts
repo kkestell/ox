@@ -222,6 +222,7 @@ const transcriptEntrySchema = z.discriminatedUnion("kind", [
       id: z.string().min(1),
       kind: z.literal("tool"),
       title: z.string().min(1),
+      arguments: z.string().min(1).optional(),
       name: z.string().min(1).optional(),
       toolKind: z.string().min(1).optional(),
       status: z.string().min(1).optional(),
@@ -235,6 +236,9 @@ const transcriptEntrySchema = z.discriminatedUnion("kind", [
 const sessionTranscriptSchema = z
   .object({
     entries: z.array(transcriptEntrySchema),
+    // This is an ephemeral presentation cue, not durable session state. The
+    // host sets it only for a thought that was created by a live update.
+    openReasoningID: z.string().min(1).optional(),
     plan: z.array(
       z
         .object({ content: z.string(), priority: z.string().min(1), status: z.string().min(1) })
@@ -308,7 +312,7 @@ const pendingInteractionSchema = z.discriminatedUnion("kind", [
   z.object({
     id: interactionID,
     kind: z.literal("permission"),
-    tool: z.object({ id: z.string().min(1).max(512), title: interactionText, name: z.string().min(1).max(512).optional(), toolKind: z.string().min(1).max(128).optional() }).strict(),
+    tool: z.object({ id: z.string().min(1).max(512), title: interactionText, arguments: interactionText.optional(), name: z.string().min(1).max(512).optional(), toolKind: z.string().min(1).max(128).optional() }).strict(),
     options: z.array(z.object({ id: optionID, name: interactionText, kind: z.enum(["allow_once", "allow_always", "reject_once", "reject_always"]) }).strict()).min(1).max(16),
   }).strict(),
   z.object({

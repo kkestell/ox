@@ -73,12 +73,13 @@ func (a *eventAdapter) handle(current event) error {
 		return a.send(acp.ToolCall{
 			SessionUpdate: acp.SessionUpdateToolCall,
 			ToolCallID:    current.call.ID,
-			Title:         current.title,
+			Title:         current.presentation.Name,
 			Name:          current.call.Function.Name,
 			Kind:          current.toolKind,
 			Status:        acp.ToolCallStatusPending,
 			Locations:     toolLocations(a.root, current.target),
 			RawInput:      json.RawMessage(current.call.Function.Arguments),
+			Meta:          toolPresentationMetadata(current.presentation),
 		})
 	case eventToolStarted:
 		return a.send(acp.ToolCallUpdate{

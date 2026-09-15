@@ -28,7 +28,7 @@ type event struct {
 	thoughtID        string
 	call             openrouter.ToolCall
 	toolKind         acp.ToolKind
-	title            string
+	presentation     ToolPresentation
 	target           string
 	contextOccupancy int
 	contextWindow    int

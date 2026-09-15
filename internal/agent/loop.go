@@ -363,8 +363,8 @@ func (a *Agent) publishPendingTools(
 		}
 		events <- event{
 			kind: eventToolPending, call: call, toolKind: kind,
-			title:  toolSetTitle(tools, call.Function.Name, json.RawMessage(call.Function.Arguments)),
-			target: targets[call.ID],
+			presentation: toolSetPresentation(tools, call.Function.Name, json.RawMessage(call.Function.Arguments)),
+			target:       targets[call.ID],
 		}
 	}
 }
@@ -934,12 +934,14 @@ func (a *Agent) permissionRequest(
 	target string,
 ) acp.RequestPermissionRequest {
 	arguments := json.RawMessage(call.Function.Arguments)
+	presentation := presentationOfTool(tool, arguments)
 	return acp.RequestPermissionRequest{
 		SessionID: sessionID,
 		ToolCall: acp.ToolCallUpdate{
 			ToolCallID: call.ID, Kind: tool.Kind,
-			Title: titleOfTool(tool, arguments), Name: call.Function.Name,
+			Title: presentation.Name, Name: call.Function.Name,
 			Locations: toolLocations(root, target), RawInput: arguments,
+			Meta: toolPresentationMetadata(presentation),
 		},
 		Options: permissionOptions(rule, tool.Suggest != nil),
 	}
@@ -1323,29 +1325,40 @@ func (a *Agent) toolEvent(
 		toolKind = tools.tools[index].Kind
 	}
 	return event{
-		kind:     kind,
-		call:     call,
-		toolKind: toolKind,
-		title:    toolSetTitle(tools, call.Function.Name, json.RawMessage(call.Function.Arguments)),
-		target:   target,
-		text:     text,
+		kind:         kind,
+		call:         call,
+		toolKind:     toolKind,
+		presentation: toolSetPresentation(tools, call.Function.Name, json.RawMessage(call.Function.Arguments)),
+		target:       target,
+		text:         text,
 	}
 }
 
-func toolSetTitle(tools toolSet, name string, arguments json.RawMessage) string {
+func toolSetPresentation(tools toolSet, name string, arguments json.RawMessage) ToolPresentation {
 	if index, ok := tools.byName[name]; ok {
-		return titleOfTool(tools.tools[index], arguments)
+		return presentationOfTool(tools.tools[index], arguments)
 	}
-	return name
+	return ToolPresentation{Name: name}
 }
 
-func titleOfTool(tool Tool, arguments json.RawMessage) string {
-	if tool.Title != nil {
-		if value := tool.Title(arguments); value != "" {
+func presentationOfTool(tool Tool, arguments json.RawMessage) ToolPresentation {
+	if tool.Presentation != nil {
+		if value := tool.Presentation(arguments); value.Name != "" {
 			return value
 		}
 	}
-	return tool.Name
+	return ToolPresentation{Name: tool.Name}
+}
+
+func toolPresentationMetadata(presentation ToolPresentation) acp.Metadata {
+	if presentation.Name == "" {
+		return nil
+	}
+	meta := acp.Metadata{acp.MetaToolDisplayName: presentation.Name}
+	if presentation.Arguments != "" {
+		meta[acp.MetaToolDisplayArguments] = presentation.Arguments
+	}
+	return meta
 }
 
 func toolCallPath(arguments string) string {

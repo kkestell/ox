@@ -42,8 +42,8 @@ func (a *Agent) activateMCP(
 			InputSchema: append(json.RawMessage(nil), descriptor.InputSchema...),
 			Kind:        acp.ToolKindOther,
 			Approval:    ApprovalAsk,
-			Title: func(json.RawMessage) string {
-				return mcpToolTitle(descriptor.ServerName, descriptor.ToolName, descriptor.Title)
+			Presentation: func(json.RawMessage) ToolPresentation {
+				return ToolPresentation{Name: mcpToolTitle(descriptor.ServerName, descriptor.ToolName, descriptor.Title)}
 			},
 			Suggest: func(json.RawMessage) string { return descriptor.Identity },
 			Covered: func(rules []string, _ json.RawMessage) bool {
@@ -112,15 +112,15 @@ func configuredMCPTool(configuration requestConfiguration, name string) (mcpTool
 	return mcpToolConfiguration{}, false
 }
 
-func (a *Agent) configuredToolTitle(
+func (a *Agent) configuredToolPresentation(
 	configuration requestConfiguration,
 	name string,
 	arguments json.RawMessage,
-) string {
+) ToolPresentation {
 	if tool, ok := configuredMCPTool(configuration, name); ok {
-		return mcpToolTitle(tool.ServerName, tool.ToolName, tool.Title)
+		return ToolPresentation{Name: mcpToolTitle(tool.ServerName, tool.ToolName, tool.Title)}
 	}
-	return toolSetTitle(a.primaryTools, name, arguments)
+	return toolSetPresentation(a.primaryTools, name, arguments)
 }
 
 func validateRecoveredMCP(

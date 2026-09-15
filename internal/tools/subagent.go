@@ -104,37 +104,37 @@ func subagentTools() []agent.Tool {
 			Name: "subagent_start", Description: subagentStartDescription,
 			InputSchema: json.RawMessage(subagentStartSchema), Kind: acp.ToolKindOther,
 			Approval: agent.ApprovalNone, ParallelSafe: false, PlanMode: true,
-			Scope: agent.ToolScopePrimary, Title: subagentStartTitle, Execute: executeSubagentStart,
+			Scope: agent.ToolScopePrimary, Presentation: subagentStartPresentation, Execute: executeSubagentStart,
 		},
 		{
 			Name: "subagent_send", Description: subagentSendDescription,
 			InputSchema: json.RawMessage(subagentMessageSchema), Kind: acp.ToolKindOther,
 			Approval: agent.ApprovalNone, ParallelSafe: false, PlanMode: true,
-			Scope: agent.ToolScopePrimary, Title: subagentSendTitle, Execute: executeSubagentSend,
+			Scope: agent.ToolScopePrimary, Presentation: subagentSendPresentation, Execute: executeSubagentSend,
 		},
 		{
 			Name: "subagent_stop", Description: subagentStopDescription,
 			InputSchema: json.RawMessage(subagentIDSchema), Kind: acp.ToolKindOther,
 			Approval: agent.ApprovalNone, ParallelSafe: false, PlanMode: true,
-			Scope: agent.ToolScopePrimary, Title: subagentStopTitle, Execute: executeSubagentStop,
+			Scope: agent.ToolScopePrimary, Presentation: subagentStopPresentation, Execute: executeSubagentStop,
 		},
 		{
 			Name: "subagent_list", Description: subagentListDescription,
 			InputSchema: json.RawMessage(subagentListSchema), Kind: acp.ToolKindOther,
 			Approval: agent.ApprovalNone, ParallelSafe: true, PlanMode: true,
-			Scope: agent.ToolScopePrimary, Title: subagentListTitle, Execute: executeSubagentList,
+			Scope: agent.ToolScopePrimary, Presentation: subagentListPresentation, Execute: executeSubagentList,
 		},
 		{
 			Name: "subagent_wait", Description: subagentWaitDescription,
 			InputSchema: json.RawMessage(subagentWaitSchema), Kind: acp.ToolKindOther,
 			Approval: agent.ApprovalNone, ParallelSafe: true, PlanMode: true,
-			Scope: agent.ToolScopePrimary, Title: subagentWaitTitle, Execute: executeSubagentWait,
+			Scope: agent.ToolScopePrimary, Presentation: subagentWaitPresentation, Execute: executeSubagentWait,
 		},
 		{
 			Name: "subagent_report", Description: subagentReportDescription,
 			InputSchema: json.RawMessage(subagentReportSchema), Kind: acp.ToolKindOther,
 			Approval: agent.ApprovalNone, ParallelSafe: true, PlanMode: true,
-			Scope: agent.ToolScopeSubagent, Title: subagentReportTitle, Execute: executeSubagentReport,
+			Scope: agent.ToolScopeSubagent, Presentation: subagentReportPresentation, Execute: executeSubagentReport,
 		},
 	}
 }

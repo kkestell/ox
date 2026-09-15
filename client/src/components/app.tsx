@@ -523,7 +523,7 @@ function TranscriptScroll({
               <AlertDescription>{sessionError}</AlertDescription>
             </Alert>
           ) : null}
-          <Transcript transcript={transcript} />
+          <Transcript key={sessionId} transcript={transcript} />
         </div>
       </div>
       {showJump ? (

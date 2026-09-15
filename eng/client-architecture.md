@@ -206,11 +206,12 @@ The host maintains a controller for every active session. A controller folds
 updates into stable transcript entries keyed by ACP message and tool-call
 identities. Text and thought chunks append in order; tool-call updates merge;
 plans and usage replace their current projections; configuration updates replace
-the complete option list. Tool projection retains the ACP title as display-ready
-text and the raw name only as disclosed technical identity; neither the host nor
-the React surface parses a tool name into presentation text. Permission requests
-use the same projection. Replaying a session uses the same reducer and must not
-duplicate entries already present in a host snapshot.
+the complete option list. Tool projection admits Ox's namespaced display-name
+and display-argument metadata as separate browser-safe fields, and otherwise
+uses the ACP title as a fallback. The raw name remains a disclosed technical
+identity; neither the host nor the React surface parses it into presentation
+text. Permission requests use the same projection. Replaying a session uses the
+same reducer and must not duplicate entries already present in a host snapshot.
 
 At most one prompt request is active per session, and the host refuses a second
 one before it reaches Ox. Different sessions on the same Ox connection prompt

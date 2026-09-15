@@ -1761,15 +1761,17 @@ func replayToolCall(
 	root string,
 	target string,
 ) acp.ToolCall {
+	presentation := a.configuredToolPresentation(configuration, call.Function.Name, json.RawMessage(call.Function.Arguments))
 	return acp.ToolCall{
 		SessionUpdate: acp.SessionUpdateToolCall,
 		ToolCallID:    call.ID,
-		Title:         a.configuredToolTitle(configuration, call.Function.Name, json.RawMessage(call.Function.Arguments)),
+		Title:         presentation.Name,
 		Name:          call.Function.Name,
 		Kind:          configuration.ToolKinds[call.Function.Name],
 		Status:        acp.ToolCallStatusPending,
 		Locations:     toolLocations(root, target),
 		RawInput:      json.RawMessage(call.Function.Arguments),
+		Meta:          toolPresentationMetadata(presentation),
 	}
 }
 

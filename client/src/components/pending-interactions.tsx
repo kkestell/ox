@@ -36,7 +36,10 @@ export function PermissionInteraction({ interaction, onPermission }: {
       <article aria-label={`Permission for ${label}`}>
         <CardContent className="flex flex-wrap items-center gap-3 px-3 py-3">
           <CardTitle asChild>
-            <h3 className="min-w-0 flex-1 break-words text-sm [overflow-wrap:anywhere]">{label}</h3>
+            <h3 className="min-w-0 flex-1 break-words text-sm [overflow-wrap:anywhere]">
+              {label}
+              {interaction.tool.arguments ? <code className="ml-1 font-mono text-xs">{interaction.tool.arguments}</code> : null}
+            </h3>
           </CardTitle>
           <div className="flex flex-wrap gap-2">
             {interaction.options.map((option, index) => (

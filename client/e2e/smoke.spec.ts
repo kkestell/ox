@@ -502,11 +502,31 @@ test("opens reasoning at the latest detail", async ({ page }) => {
     await sendPrompt(page);
 
     const transcript = page.getByRole("region", { name: "Transcript" });
-    await transcript.getByRole("button", { name: "Reasoning" }).click();
     const reasoning = transcript.getByLabel("Reasoning content");
     await expect(reasoning).toContainText("reasoning 599");
     await expect(reasoning).toHaveClass(/h-\[7\.5rem\]/);
     await expect.poll(() => bottomDistance(reasoning)).toBeLessThanOrEqual(1);
+  } finally {
+    await host?.stop();
+    await fixture.close();
+  }
+});
+
+test("closes reasoning when the assistant response follows it", async ({ page }) => {
+  const fixture = await createFixture();
+  let host: BrowserHost | undefined;
+  try {
+    host = startBrowserHost(fixture);
+    await assertReady(page, await host.url);
+    await page.getByLabel("Message", { exact: true }).fill("create reasoning then response");
+    await sendPrompt(page);
+
+    const transcript = page.getByRole("region", { name: "Transcript" });
+    const reasoning = transcript.getByRole("button", { name: "Reasoning" });
+    await expect(reasoning).toHaveAttribute("data-state", "closed");
+    await reasoning.click();
+    await expect(transcript.getByLabel("Reasoning content")).toContainText("intermediate reasoning");
+    await expect(transcript).toContainText("reasoning response complete");
   } finally {
     await host?.stop();
     await fixture.close();
@@ -537,8 +557,7 @@ test("contains long transcript content across phone and narrow desktop layouts",
     const activity = transcript.getByRole("button", { name: /Inspect responsive layout/i });
     await expect(activity).toBeVisible();
     await activity.click();
-    await expect(transcript.getByText("Tool name", { exact: true })).toBeVisible();
-    await expect(transcript).toContainText(responsiveProviderToolName);
+    await expect(transcript.getByText("HTTP MCP fixture result")).toBeVisible();
 
     for (const viewport of [{ height: 844, width: 390 }, { height: 700, width: 800 }]) {
       await page.setViewportSize(viewport);
@@ -954,6 +973,10 @@ async function createFixture(
         streamText(response, Array.from({ length: 600 }, (_, index) => `activity ${index}`).join(" "));
         return;
       }
+      if (body.lastIndexOf("create reasoning then response") > body.lastIndexOf("hold")) {
+        streamReasoning(response, "intermediate reasoning", "reasoning response complete");
+        return;
+      }
       if (body.lastIndexOf("create long reasoning") > body.lastIndexOf("hold")) {
         streamReasoning(response, Array.from({ length: 600 }, (_, index) => `reasoning ${index}`).join(" "));
         return;
@@ -1209,12 +1232,13 @@ function streamText(response: import("node:http").ServerResponse, text: string):
   );
 }
 
-function streamReasoning(response: import("node:http").ServerResponse, reasoning: string): void {
+function streamReasoning(response: import("node:http").ServerResponse, reasoning: string, content?: string): void {
   response.writeHead(200, { "content-type": "text/event-stream" });
   response.end(
     [
       `data: {"choices":[{"delta":{"reasoning":"${reasoning}"},"finish_reason":null}]}`,
       "",
+      ...(content === undefined ? [] : [`data: {"choices":[{"delta":{"content":"${content}"},"finish_reason":null}]}`, ""]),
       'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}',
       "",
       "data: [DONE]",

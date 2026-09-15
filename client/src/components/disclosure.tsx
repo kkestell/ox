@@ -7,20 +7,22 @@ import { cn } from "cn";
 
 // Technical detail is disclosed beneath the activity it belongs to. The content
 // is absent rather than hidden so a collapsed transcript entry costs nothing.
-export function Disclosure({ children, className, contentClassName, icon, label, onOpenChange }: {
+export function Disclosure({ children, className, contentClassName, icon, label, onOpenChange, open: controlledOpen }: {
   children: ReactNode;
   className?: string;
   contentClassName?: string;
   icon?: ReactNode;
   label: ReactNode;
+  open?: boolean;
   onOpenChange?: (open: boolean) => void;
 }) {
-  const [open, setOpen] = useState(false);
+  const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
+  const open = controlledOpen ?? uncontrolledOpen;
   return (
     <Collapsible
       className={className}
       onOpenChange={(nextOpen) => {
-        setOpen(nextOpen);
+        if (controlledOpen === undefined) setUncontrolledOpen(nextOpen);
         onOpenChange?.(nextOpen);
       }}
       open={open}

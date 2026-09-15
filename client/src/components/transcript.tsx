@@ -18,7 +18,7 @@ export function Transcript({ transcript }: { transcript: SessionTranscript }) {
       <ol aria-label="Session transcript" className="flex min-w-0 flex-col">
         {transcript.entries.map((entry, index) => (
           <li
-            className={`${compactWithPrevious(transcript.entries, index) ? "mt-1.5" : "[&:not(:first-child)]:mt-5"} min-w-0`}
+            className={`${compactTranscriptEntry(transcript.entries, index) ? "mt-1.5" : "[&:not(:first-child)]:mt-5"} min-w-0`}
             data-transcript-kind={entry.kind}
             key={entry.id}
           >
@@ -30,29 +30,14 @@ export function Transcript({ transcript }: { transcript: SessionTranscript }) {
                   icon={entry.status === "completed" ? undefined : <ToolIcon status={entry.status} />}
                   label={
                     <span className="min-w-0 flex-1 text-left">
-                      <span className="break-words font-medium text-foreground [overflow-wrap:anywhere]">
+                      <span className="font-medium text-foreground">
                         {entry.title}
                       </span>
+                      {entry.arguments ? <code className="ml-1 break-words font-mono text-xs [overflow-wrap:anywhere]">{entry.arguments}</code> : null}
                       <span className="sr-only">{` ${toolStatusLabel(entry.status)}`}</span>
                     </span>
                   }
                 >
-                  {entry.name || entry.toolKind ? (
-                    <dl className="min-w-0 space-y-1 text-xs">
-                      {entry.name ? (
-                        <div className="min-w-0">
-                          <dt className="font-medium text-muted-foreground">Tool name</dt>
-                          <dd className="break-all font-mono">{entry.name}</dd>
-                        </div>
-                      ) : null}
-                      {entry.toolKind ? (
-                        <div>
-                          <dt className="font-medium text-muted-foreground">Tool kind</dt>
-                          <dd>{entry.toolKind}</dd>
-                        </div>
-                      ) : null}
-                    </dl>
-                  ) : null}
                   {entry.locations.length > 0 ? (
                     <div className="min-w-0">
                       <p className="text-xs font-medium text-muted-foreground">Locations</p>
@@ -67,8 +52,7 @@ export function Transcript({ transcript }: { transcript: SessionTranscript }) {
                     </div>
                   ) : null}
                   {entry.content.length > 0 ? (
-                    <div className="min-w-0 space-y-2 pt-1">
-                      <p className="text-xs font-medium text-muted-foreground">Output</p>
+                    <div className="min-w-0 space-y-2">
                       {entry.content.map((content, contentIndex) => <ToolOutput content={content} key={contentIndex} />)}
                     </div>
                   ) : null}
@@ -77,7 +61,11 @@ export function Transcript({ transcript }: { transcript: SessionTranscript }) {
             ) : entry.kind === "unknown" ? (
               <Disclosure label="Unsupported transcript item"><p>{entry.label}</p></Disclosure>
             ) : entry.kind === "thought" ? (
-              <Thought content={entry.content} />
+              <Thought
+                content={entry.content}
+                initiallyOpen={entry.id === transcript.openReasoningID}
+                latestEntryID={transcript.entries.at(-1)?.id}
+              />
             ) : entry.kind === "user" ? (
               <article
                 aria-label="user message"
@@ -87,8 +75,7 @@ export function Transcript({ transcript }: { transcript: SessionTranscript }) {
                 {entry.content.map((content, contentIndex) => <Content content={content} key={contentIndex} />)}
               </article>
             ) : (
-              <article aria-label={`${entry.kind} message`} className="w-full min-w-0 space-y-2 rounded-2xl border bg-card px-4 py-3 text-sm leading-6 shadow-xs">
-                <h3 className="mb-1 text-xs font-semibold text-muted-foreground">Ox</h3>
+              <article aria-label={`${entry.kind} message`} className="w-full min-w-0 space-y-2 rounded-2xl bg-card px-4 py-3 text-sm leading-6 shadow-xs">
                 {entry.content.map((content, contentIndex) => (
                   content.type === "text"
                     ? <Markdown key={contentIndex} text={content.text} />
@@ -135,9 +122,19 @@ export function Transcript({ transcript }: { transcript: SessionTranscript }) {
   );
 }
 
-function Thought({ content }: { content: TranscriptContent[] }) {
-  const [open, setOpen] = useState(false);
+function Thought({ content, initiallyOpen, latestEntryID }: {
+  content: TranscriptContent[];
+  initiallyOpen: boolean;
+  latestEntryID: string | undefined;
+}) {
+  const [open, setOpen] = useState(initiallyOpen);
+  const priorLatestEntryID = useRef(latestEntryID);
   const scrollport = useRef<HTMLDivElement>(null);
+
+  useLayoutEffect(() => {
+    if (priorLatestEntryID.current !== latestEntryID) setOpen(false);
+    priorLatestEntryID.current = latestEntryID;
+  }, [latestEntryID]);
 
   useLayoutEffect(() => {
     if (open && scrollport.current) {
@@ -146,7 +143,7 @@ function Thought({ content }: { content: TranscriptContent[] }) {
   }, [content, open]);
 
   return (
-    <Disclosure className="rounded-lg py-1.5" label="Reasoning" onOpenChange={setOpen}>
+    <Disclosure className="rounded-lg" label="Reasoning" onOpenChange={setOpen} open={open}>
       <div aria-label="Reasoning content" className="h-[7.5rem] overflow-y-auto leading-6" ref={scrollport}>
         {content.map((item, contentIndex) => <Content content={item} key={contentIndex} />)}
       </div>
@@ -156,9 +153,12 @@ function Thought({ content }: { content: TranscriptContent[] }) {
 
 // Tool activity is a continuous work log, so consecutive calls sit closer than
 // the boundary between a message and the work it prompted.
-function compactWithPrevious(entries: SessionTranscript["entries"], index: number): boolean {
+function compactTranscriptEntry(entries: SessionTranscript["entries"], index: number): boolean {
+  const entry = entries[index];
   const previous = entries[index - 1];
-  return previous !== undefined && previous.kind === "tool" && entries[index]?.kind === "tool";
+  return entry?.kind === "thought"
+    || previous?.kind === "thought"
+    || (previous?.kind === "tool" && entry?.kind === "tool");
 }
 
 function ToolIcon({ status }: { status?: string }) {

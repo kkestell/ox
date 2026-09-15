@@ -202,7 +202,13 @@ describe("workspace supervisor", () => {
         id: "agent:1",
         kind: "agent",
       },
+      {
+        content: [{ text: "replayed reasoning", type: "text" }],
+        id: "thought:2",
+        kind: "thought",
+      },
     ]);
+    expect(supervisor.sessionTranscript("first")?.openReasoningID).toBeUndefined();
 
     await supervisor.closeSession("first");
     await supervisor.resumeSession("second", []);
@@ -494,6 +500,10 @@ process.stdin.on('data', (chunk) => {
       process.stdout.write(JSON.stringify({ jsonrpc: '2.0', method: 'session/update', params: {
         sessionId: request.params.sessionId,
         update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'replayed' } },
+      } }) + '\\n');
+      process.stdout.write(JSON.stringify({ jsonrpc: '2.0', method: 'session/update', params: {
+        sessionId: request.params.sessionId,
+        update: { sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'replayed reasoning' } },
       } }) + '\\n');
       response(request.id, {});
       continue;

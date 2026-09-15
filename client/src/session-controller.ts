@@ -4,6 +4,9 @@ import { parsePendingInteraction, type FormField, type FormValue, type PendingIn
 
 type MessageKind = "user" | "agent" | "thought";
 
+const toolDisplayArgumentsMetadataKey = "kkestell.ox/toolDisplayArguments";
+const toolDisplayNameMetadataKey = "kkestell.ox/toolDisplayName";
+
 type PendingResolver = {
   changed: () => void;
   detach: () => void;
@@ -19,11 +22,16 @@ export class SessionController {
   #indexes = new Map<string, number>();
   #nextLocalID = 1;
   #nextInteractionID = 1;
+  #openReasoningID: string | undefined;
   #plan: SessionTranscript["plan"] = [];
   #pending = new Map<string, PendingInteraction & PendingResolver>();
   #usage: SessionTranscript["usage"];
 
-  constructor(readonly id: string) {}
+  constructor(readonly id: string, private replaying = false) {}
+
+  beginLiveUpdates(): void {
+    this.replaying = false;
+  }
 
   accept(update: acp.SessionUpdate | unknown): void {
     const value = record(update);
@@ -89,6 +97,7 @@ export class SessionController {
     return {
       configuration: this.#configuration.map((option) => ({ ...option })),
       entries: this.#entries.map(copyEntry),
+      ...(this.#openReasoningID === undefined ? {} : { openReasoningID: this.#openReasoningID }),
       plan: this.#plan.map((entry) => ({ ...entry })),
       ...(this.#usage === undefined
         ? {}
@@ -114,6 +123,7 @@ export class SessionController {
 
   requestPermission(request: acp.RequestPermissionRequest, signal: AbortSignal, changed: () => void): Promise<acp.RequestPermissionResponse> {
     const tool = request.toolCall;
+    const presentation = toolPresentation(tool);
     const options = request.options.flatMap((option) => {
       if (!option.optionId || !option.name || !isPermissionKind(option.kind)) return [];
       return [{ id: option.optionId, kind: option.kind, name: option.name }];
@@ -127,7 +137,8 @@ export class SessionController {
       options,
       tool: {
         id: tool.toolCallId,
-        title: tool.title,
+        title: presentation.name ?? tool.title,
+        ...(presentation.arguments ? { arguments: presentation.arguments } : {}),
         ...(tool.name ? { name: tool.name } : {}),
         ...(tool.kind ? { toolKind: tool.kind } : {}),
       },
@@ -236,9 +247,11 @@ export class SessionController {
     const index = this.#indexes.get(key);
     const current = index === undefined ? undefined : this.#entries[index];
     const prior = current?.kind === "tool" ? current : emptyTool(key);
+    const presentation = toolPresentation(update);
     const next: Extract<TranscriptEntry, { kind: "tool" }> = {
       ...prior,
-      ...(string(update?.title) ? { title: string(update?.title) } : {}),
+      ...(presentation.name ? { title: presentation.name } : string(update?.title) ? { title: string(update?.title) } : {}),
+      ...(presentation.arguments ? { arguments: presentation.arguments } : {}),
       ...(string(update?.name) ? { name: string(update?.name) } : {}),
       ...(string(update?.kind) ? { toolKind: string(update?.kind) } : {}),
       ...(string(update?.status) ? { status: string(update?.status) } : {}),
@@ -290,6 +303,9 @@ export class SessionController {
   private append(entry: TranscriptEntry, key?: string): void {
     this.#entries.push(entry);
     if (key) this.#indexes.set(key, this.#entries.length - 1);
+    // A thought opens while it streams. Once another transcript item follows,
+    // it is no longer the active reasoning stream and should collapse.
+    this.#openReasoningID = entry.kind === "thought" && !this.replaying ? entry.id : undefined;
   }
 
   private localID(kind: string): string {
@@ -307,6 +323,15 @@ function appendMessageContent(current: TranscriptContent[], next: TranscriptCont
 
 function emptyTool(id: string): Extract<TranscriptEntry, { kind: "tool" }> {
   return { content: [], id, kind: "tool", locations: [], title: "Tool" };
+}
+
+function toolPresentation(value: unknown): { name?: string; arguments?: string } {
+  const update = record(value);
+  const meta = record(update?._meta);
+  const name = string(meta?.[toolDisplayNameMetadataKey]);
+  if (!name) return {};
+  const displayArguments = string(meta?.[toolDisplayArgumentsMetadataKey]);
+  return { ...(displayArguments ? { arguments: displayArguments } : {}), name };
 }
 
 function contentBlock(value: unknown): TranscriptContent | undefined {

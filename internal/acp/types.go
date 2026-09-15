@@ -11,6 +11,8 @@ const (
 	MetaMessageID                  = "kkestell.ox/messageId"
 	MetaOutcome                    = "kkestell.ox/outcome"
 	MetaSessionLocked              = "kkestell.ox/sessionLocked"
+	MetaToolDisplayArguments       = "kkestell.ox/toolDisplayArguments"
+	MetaToolDisplayName            = "kkestell.ox/toolDisplayName"
 	MethodFSReadTextFile           = "fs/read_text_file"
 	MethodFSWriteTextFile          = "fs/write_text_file"
 	MethodElicitationCreate        = "elicitation/create"

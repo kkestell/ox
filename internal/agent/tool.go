@@ -18,12 +18,19 @@ type Tool struct {
 	PlanMode     bool
 	RequiresForm bool
 	Scope        ToolScope
-	Title        func(json.RawMessage) string
+	Presentation func(json.RawMessage) ToolPresentation
 	// Suggest and Covered narrow allow-always grants to tool-defined rules.
 	// A nil pair keeps the default name-scoped grant behavior.
 	Suggest func(json.RawMessage) string
 	Covered func([]string, json.RawMessage) bool
 	Execute func(context.Context, Invocation) (string, error)
+}
+
+// ToolPresentation separates a human action from its concise invocation
+// subject so ACP clients can give each part appropriate treatment.
+type ToolPresentation struct {
+	Name      string
+	Arguments string
 }
 
 // ToolScope limits a tool to one side of subagent coordination. The zero value

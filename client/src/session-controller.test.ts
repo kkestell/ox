@@ -34,6 +34,28 @@ describe("session controller", () => {
     ]);
   });
 
+  test("opens a live reasoning stream and closes it at the next transcript item", () => {
+    const controller = new SessionController("session-1");
+
+    controller.accept({ content: { text: "thinking", type: "text" }, messageId: "thought-1", sessionUpdate: "agent_thought_chunk" });
+    expect(controller.transcript.openReasoningID).toBe("message:thought:thought-1");
+
+    controller.accept({ content: { text: "answer", type: "text" }, messageId: "agent-1", sessionUpdate: "agent_message_chunk" });
+    expect(controller.transcript.openReasoningID).toBeUndefined();
+  });
+
+  test("keeps replayed reasoning closed", () => {
+    const controller = new SessionController("session-1", true);
+
+    controller.accept({ content: { text: "earlier thinking", type: "text" }, messageId: "thought-1", sessionUpdate: "agent_thought_chunk" });
+
+    expect(controller.transcript.openReasoningID).toBeUndefined();
+
+    controller.beginLiveUpdates();
+    controller.accept({ content: { text: "new thinking", type: "text" }, messageId: "thought-2", sessionUpdate: "agent_thought_chunk" });
+    expect(controller.transcript.openReasoningID).toBe("message:thought:thought-2");
+  });
+
   test("merges tool updates and replaces output with its final terminal outcome", () => {
     const controller = new SessionController("session-1");
 
@@ -42,7 +64,11 @@ describe("session controller", () => {
       name: "shell",
       sessionUpdate: "tool_call",
       status: "pending",
-      title: "Execute exactly as titled",
+      _meta: {
+        "kkestell.ox/toolDisplayArguments": "go test ./...",
+        "kkestell.ox/toolDisplayName": "Run",
+      },
+      title: "Run",
       toolCallId: "tool-1",
     });
     controller.accept({
@@ -61,12 +87,13 @@ describe("session controller", () => {
     expect(controller.transcript.entries).toEqual([
       {
         content: [{ content: { text: "tests passed", type: "text" }, type: "content" }],
+        arguments: "go test ./...",
         id: "tool:tool-1",
         kind: "tool",
         locations: [],
         name: "shell",
         status: "completed",
-        title: "Execute exactly as titled",
+        title: "Run",
         toolKind: "execute",
       },
     ]);
@@ -126,7 +153,16 @@ describe("session controller", () => {
           { kind: "reject_once", name: "Reject", optionId: "reject" },
         ],
         sessionId: "session-1",
-        toolCall: { kind: "execute", name: "shell", title: "Approve exactly as titled", toolCallId: "tool-1" },
+        toolCall: {
+          _meta: {
+            "kkestell.ox/toolDisplayArguments": "go test ./...",
+            "kkestell.ox/toolDisplayName": "Run",
+          },
+          kind: "execute",
+          name: "shell",
+          title: "Run",
+          toolCallId: "tool-1",
+        },
       },
       signal.signal,
       () => changed++,
@@ -140,7 +176,7 @@ describe("session controller", () => {
           { id: "once", kind: "allow_once", name: "Allow once" },
           { id: "reject", kind: "reject_once", name: "Reject" },
         ],
-        tool: { id: "tool-1", name: "shell", title: "Approve exactly as titled", toolKind: "execute" },
+        tool: { arguments: "go test ./...", id: "tool-1", name: "shell", title: "Run", toolKind: "execute" },
       },
     ]);
     expect(() => controller.resolvePermission("interaction-1", "missing")).toThrow("not available");

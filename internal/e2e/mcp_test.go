@@ -134,7 +134,7 @@ func TestMCPDispatchPolicySecretsAndShutdownThroughShippedBinary(t *testing.T) {
 	})
 	permissionMessage := child.serverRequest()
 	permission := permissionRequest(t, permissionMessage, "call-mcp")
-	if permission.ToolCall.Name != toolName || permission.ToolCall.Title != "fixture server / lookup" {
+	if permission.ToolCall.Name != toolName || permission.ToolCall.Title != "fixture server / lookup" || permission.ToolCall.Meta[acp.MetaToolDisplayName] != "fixture server / lookup" || permission.ToolCall.Meta[acp.MetaToolDisplayArguments] != nil {
 		t.Fatalf("MCP permission = %#v", permission.ToolCall)
 	}
 	child.respond(permissionMessage, acp.RequestPermissionResponse{Outcome: acp.RequestPermissionOutcome{
@@ -311,7 +311,7 @@ func TestMCPPendingRecoveryAndReplayThroughShippedBinary(t *testing.T) {
 	})
 	reissuedMessage := second.serverRequest()
 	reissued := permissionRequest(t, reissuedMessage, "call-effect")
-	if reissued.ToolCall.Name != original.ToolCall.Name || reissued.ToolCall.Title != original.ToolCall.Title {
+	if reissued.ToolCall.Name != original.ToolCall.Name || reissued.ToolCall.Title != original.ToolCall.Title || reissued.ToolCall.Meta[acp.MetaToolDisplayName] != original.ToolCall.Meta[acp.MetaToolDisplayName] || reissued.ToolCall.Meta[acp.MetaToolDisplayArguments] != original.ToolCall.Meta[acp.MetaToolDisplayArguments] {
 		t.Fatalf("reissued MCP permission changed: %#v / %#v", original, reissued)
 	}
 	second.respond(reissuedMessage, acp.RequestPermissionResponse{Outcome: acp.RequestPermissionOutcome{

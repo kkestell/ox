@@ -914,8 +914,8 @@ func TestRestartDoesNotRepeatAStartedTool(t *testing.T) {
 	if callID == "" || requested.ToolCall.Name != "shell" {
 		t.Fatalf("permission = %#v", requested)
 	}
-	if requested.ToolCall.Title != "Run printf 'once\\n' >> effect.txt; sleep 1" {
-		t.Fatalf("permission title = %q", requested.ToolCall.Title)
+	if requested.ToolCall.Title != "Run" || requested.ToolCall.Meta[acp.MetaToolDisplayName] != "Run" || requested.ToolCall.Meta[acp.MetaToolDisplayArguments] != "printf 'once\\n' >> effect.txt; sleep 1" {
+		t.Fatalf("permission tool call = %#v", requested.ToolCall)
 	}
 	first.respond(permission, acp.RequestPermissionResponse{
 		Outcome: acp.RequestPermissionOutcome{Outcome: "selected", OptionID: "allow_once"},

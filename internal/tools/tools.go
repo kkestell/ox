@@ -22,7 +22,7 @@ func All() []agent.Tool {
 			ParallelSafe: false,
 			PlanMode:     true,
 			RequiresForm: true,
-			Title:        questionTitle,
+			Presentation: questionPresentation,
 			Execute:      executeQuestion,
 		},
 		{
@@ -33,7 +33,7 @@ func All() []agent.Tool {
 			Approval:     agent.ApprovalNone,
 			ParallelSafe: true,
 			PlanMode:     true,
-			Title:        skillTitle,
+			Presentation: skillPresentation,
 			Execute:      executeSkill,
 		},
 		{
@@ -45,7 +45,7 @@ func All() []agent.Tool {
 			ParallelSafe: false,
 			PlanMode:     true,
 			Scope:        agent.ToolScopePrimary,
-			Title:        todoTitle,
+			Presentation: todoPresentation,
 			Execute:      executeTodo,
 		},
 		{
@@ -56,7 +56,7 @@ func All() []agent.Tool {
 			Approval:     agent.ApprovalNone,
 			ParallelSafe: true,
 			PlanMode:     true,
-			Title:        readTitle,
+			Presentation: readPresentation,
 			Execute:      executeRead,
 		},
 		{
@@ -67,7 +67,7 @@ func All() []agent.Tool {
 			Approval:     agent.ApprovalNone,
 			ParallelSafe: true,
 			PlanMode:     true,
-			Title:        globTitle,
+			Presentation: globPresentation,
 			Execute:      executeGlob,
 		},
 		{
@@ -78,7 +78,7 @@ func All() []agent.Tool {
 			Approval:     agent.ApprovalNone,
 			ParallelSafe: true,
 			PlanMode:     true,
-			Title:        grepTitle,
+			Presentation: grepPresentation,
 			Execute:      executeGrep,
 		},
 		{
@@ -89,7 +89,7 @@ func All() []agent.Tool {
 			Approval:     agent.ApprovalNone,
 			ParallelSafe: true,
 			PlanMode:     true,
-			Title:        lspDefinitionTitle,
+			Presentation: lspDefinitionPresentation,
 			Execute:      executeLSPDefinition,
 		},
 		{
@@ -100,7 +100,7 @@ func All() []agent.Tool {
 			Approval:     agent.ApprovalNone,
 			ParallelSafe: true,
 			PlanMode:     true,
-			Title:        lspReferencesTitle,
+			Presentation: lspReferencesPresentation,
 			Execute:      executeLSPReferences,
 		},
 		{
@@ -111,7 +111,7 @@ func All() []agent.Tool {
 			Approval:     agent.ApprovalNone,
 			ParallelSafe: true,
 			PlanMode:     true,
-			Title:        lspDocumentSymbolsTitle,
+			Presentation: lspDocumentSymbolsPresentation,
 			Execute:      executeLSPDocumentSymbols,
 		},
 		{
@@ -122,7 +122,7 @@ func All() []agent.Tool {
 			Approval:     agent.ApprovalNone,
 			ParallelSafe: true,
 			PlanMode:     true,
-			Title:        lspWorkspaceSymbolsTitle,
+			Presentation: lspWorkspaceSymbolsPresentation,
 			Execute:      executeLSPWorkspaceSymbols,
 		},
 		{
@@ -133,7 +133,7 @@ func All() []agent.Tool {
 			Approval:     agent.ApprovalNone,
 			ParallelSafe: true,
 			PlanMode:     true,
-			Title:        lspDiagnosticsTitle,
+			Presentation: lspDiagnosticsPresentation,
 			Execute:      executeLSPDiagnostics,
 		},
 		{
@@ -144,7 +144,7 @@ func All() []agent.Tool {
 			Approval:     agent.ApprovalAsk,
 			ParallelSafe: true,
 			PlanMode:     true,
-			Title:        webFetchTitle,
+			Presentation: webFetchPresentation,
 			Execute:      executeWebFetch,
 		},
 		{
@@ -155,7 +155,7 @@ func All() []agent.Tool {
 			Approval:     agent.ApprovalNone,
 			ParallelSafe: true,
 			PlanMode:     true,
-			Title:        memorySearchTitle,
+			Presentation: memorySearchPresentation,
 			Execute:      executeMemorySearch,
 		},
 		{
@@ -165,7 +165,7 @@ func All() []agent.Tool {
 			Kind:         acp.ToolKindOther,
 			Approval:     agent.ApprovalAsk,
 			ParallelSafe: false,
-			Title:        memoryWriteTitle,
+			Presentation: memoryWritePresentation,
 			Execute:      executeMemoryWrite,
 		},
 		{
@@ -175,7 +175,7 @@ func All() []agent.Tool {
 			Kind:         acp.ToolKindOther,
 			Approval:     agent.ApprovalAsk,
 			ParallelSafe: false,
-			Title:        memoryDeleteTitle,
+			Presentation: memoryDeletePresentation,
 			Execute:      executeMemoryDelete,
 		},
 		{
@@ -185,7 +185,7 @@ func All() []agent.Tool {
 			Kind:         acp.ToolKindEdit,
 			Approval:     agent.ApprovalAsk,
 			ParallelSafe: false,
-			Title:        writeTitle,
+			Presentation: writePresentation,
 			Execute:      executeWrite,
 		},
 		{
@@ -195,7 +195,7 @@ func All() []agent.Tool {
 			Kind:         acp.ToolKindEdit,
 			Approval:     agent.ApprovalAsk,
 			ParallelSafe: false,
-			Title:        editTitle,
+			Presentation: editPresentation,
 			Execute:      executeEdit,
 		},
 		{
@@ -207,7 +207,7 @@ func All() []agent.Tool {
 			ParallelSafe: false,
 			Suggest:      shellSuggestion,
 			Covered:      shellCovered,
-			Title:        shellTitle,
+			Presentation: shellPresentation,
 			Execute:      executeShell,
 		},
 	}...)

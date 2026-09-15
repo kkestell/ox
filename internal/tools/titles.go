@@ -4,23 +4,22 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/kkestell/ox/internal/agent"
 )
 
-// A title is what an ACP client shows for a tool call, so it names the work
-// rather than the tool. Arguments are decoded for display only: a malformed or
-// incomplete value leaves the field unset and the call keeps a static label.
+// A tool presentation gives clients an action and its display argument
+// separately. Arguments are decoded for display only: malformed or incomplete
+// input leaves the argument unset.
 
 const titleLimit = 80
 
-func title(verb string, subject *string, fallback string) string {
-	if subject == nil {
-		return fallback
+func presentation(name string, subject *string) agent.ToolPresentation {
+	result := agent.ToolPresentation{Name: name}
+	if subject != nil {
+		result.Arguments = titleText(*subject)
 	}
-	text := titleText(*subject)
-	if text == "" {
-		return fallback
-	}
-	return verb + " " + text
+	return result
 }
 
 // titleText reduces an argument to a single short line.
@@ -36,170 +35,170 @@ func titleText(value string) string {
 	return value
 }
 
-// subagentTitle identifies a child by the short form of its ID, which is enough
-// to tell concurrent children apart in a client transcript.
-func subagentTitle(verb string, id *string, fallback string) string {
+// subagentPresentation identifies a child by the short form of its ID, which is
+// enough to tell concurrent children apart in a client transcript.
+func subagentPresentation(name string, id *string) agent.ToolPresentation {
 	if id == nil {
-		return fallback
+		return presentation(name, nil)
 	}
 	value := strings.TrimSpace(*id)
 	if len(value) > 8 {
 		value = value[:8]
 	}
-	return title(verb, &value, fallback)
+	return presentation(name, &value)
 }
 
-func shellTitle(arguments json.RawMessage) string {
+func shellPresentation(arguments json.RawMessage) agent.ToolPresentation {
 	var input shellArguments
 	_ = json.Unmarshal(arguments, &input)
-	return title("Run", input.Command, "Run a shell command")
+	return presentation("Run", input.Command)
 }
 
-func readTitle(arguments json.RawMessage) string {
+func readPresentation(arguments json.RawMessage) agent.ToolPresentation {
 	var input readArguments
 	_ = json.Unmarshal(arguments, &input)
-	return title("Read", input.Path, "Read a file")
+	return presentation("Read", input.Path)
 }
 
-func writeTitle(arguments json.RawMessage) string {
+func writePresentation(arguments json.RawMessage) agent.ToolPresentation {
 	var input writeArguments
 	_ = json.Unmarshal(arguments, &input)
-	return title("Write", input.Path, "Write a file")
+	return presentation("Write", input.Path)
 }
 
-func editTitle(arguments json.RawMessage) string {
+func editPresentation(arguments json.RawMessage) agent.ToolPresentation {
 	var input editArguments
 	_ = json.Unmarshal(arguments, &input)
-	return title("Edit", input.Path, "Edit a file")
+	return presentation("Edit", input.Path)
 }
 
-func globTitle(arguments json.RawMessage) string {
+func globPresentation(arguments json.RawMessage) agent.ToolPresentation {
 	var input globArguments
 	_ = json.Unmarshal(arguments, &input)
-	return title("Find", input.Pattern, "Find files")
+	return presentation("Find", input.Pattern)
 }
 
-func grepTitle(arguments json.RawMessage) string {
+func grepPresentation(arguments json.RawMessage) agent.ToolPresentation {
 	var input grepArguments
 	_ = json.Unmarshal(arguments, &input)
-	return title("Search for", input.Pattern, "Search files")
+	return presentation("Search for", input.Pattern)
 }
 
-func skillTitle(arguments json.RawMessage) string {
+func skillPresentation(arguments json.RawMessage) agent.ToolPresentation {
 	var input skillArguments
 	_ = json.Unmarshal(arguments, &input)
-	return title("Load skill", input.Name, "Load a skill")
+	return presentation("Load skill", input.Name)
 }
 
-func todoTitle(json.RawMessage) string {
-	return "Update the todo list"
+func todoPresentation(json.RawMessage) agent.ToolPresentation {
+	return agent.ToolPresentation{Name: "Update the todo list"}
 }
 
-func questionTitle(arguments json.RawMessage) string {
+func questionPresentation(arguments json.RawMessage) agent.ToolPresentation {
 	var input questionArguments
 	_ = json.Unmarshal(arguments, &input)
-	return title("Ask:", input.Question, "Ask the user a question")
+	return presentation("Ask", input.Question)
 }
 
-func webFetchTitle(arguments json.RawMessage) string {
+func webFetchPresentation(arguments json.RawMessage) agent.ToolPresentation {
 	var input webFetchArguments
 	_ = json.Unmarshal(arguments, &input)
-	return title("Fetch", input.URL, "Fetch web page")
+	return presentation("Fetch", input.URL)
 }
 
-func memorySearchTitle(arguments json.RawMessage) string {
+func memorySearchPresentation(arguments json.RawMessage) agent.ToolPresentation {
 	var input memorySearchArgs
 	_ = json.Unmarshal(arguments, &input)
-	return title("Search memory for", input.Query, "List recent memory")
+	return presentation("Search memory for", input.Query)
 }
 
-func memoryWriteTitle(arguments json.RawMessage) string {
+func memoryWritePresentation(arguments json.RawMessage) agent.ToolPresentation {
 	var input memoryWriteArgs
 	_ = json.Unmarshal(arguments, &input)
-	return title("Remember:", input.Content, "Write workspace memory")
+	return presentation("Remember", input.Content)
 }
 
-func memoryDeleteTitle(arguments json.RawMessage) string {
+func memoryDeletePresentation(arguments json.RawMessage) agent.ToolPresentation {
 	var input memoryDeleteArgs
 	_ = json.Unmarshal(arguments, &input)
-	return title("Delete workspace memory", input.ID, "Delete workspace memory")
+	return presentation("Delete workspace memory", input.ID)
 }
 
-func subagentStartTitle(arguments json.RawMessage) string {
+func subagentStartPresentation(arguments json.RawMessage) agent.ToolPresentation {
 	var input subagentStartArguments
 	_ = json.Unmarshal(arguments, &input)
-	return title("Start subagent", input.Name, "Start a subagent")
+	return presentation("Start subagent", input.Name)
 }
 
-func subagentSendTitle(arguments json.RawMessage) string {
+func subagentSendPresentation(arguments json.RawMessage) agent.ToolPresentation {
 	var input subagentMessageArguments
 	_ = json.Unmarshal(arguments, &input)
-	return subagentTitle("Message subagent", input.ID, "Message a subagent")
+	return subagentPresentation("Message subagent", input.ID)
 }
 
-func subagentStopTitle(arguments json.RawMessage) string {
+func subagentStopPresentation(arguments json.RawMessage) agent.ToolPresentation {
 	var input subagentIDArguments
 	_ = json.Unmarshal(arguments, &input)
-	return subagentTitle("Stop subagent", input.ID, "Stop a subagent")
+	return subagentPresentation("Stop subagent", input.ID)
 }
 
-func subagentListTitle(json.RawMessage) string {
-	return "List subagents"
+func subagentListPresentation(json.RawMessage) agent.ToolPresentation {
+	return agent.ToolPresentation{Name: "List subagents"}
 }
 
-func subagentWaitTitle(arguments json.RawMessage) string {
+func subagentWaitPresentation(arguments json.RawMessage) agent.ToolPresentation {
 	var input subagentWaitArguments
 	_ = json.Unmarshal(arguments, &input)
 	switch len(input.IDs) {
 	case 0:
-		return "Wait for any subagent"
+		return agent.ToolPresentation{Name: "Wait for any subagent"}
 	case 1:
-		return subagentTitle("Wait for subagent", &input.IDs[0], "Wait for any subagent")
+		return subagentPresentation("Wait for subagent", &input.IDs[0])
 	default:
-		return fmt.Sprintf("Wait for %d subagents", len(input.IDs))
+		return agent.ToolPresentation{Name: fmt.Sprintf("Wait for %d subagents", len(input.IDs))}
 	}
 }
 
-func subagentReportTitle(arguments json.RawMessage) string {
+func subagentReportPresentation(arguments json.RawMessage) agent.ToolPresentation {
 	var input subagentReportArguments
 	_ = json.Unmarshal(arguments, &input)
-	return title("Report:", input.Message, "Report to the primary agent")
+	return presentation("Report", input.Message)
 }
 
-// A language-query title names the position it asks about, because the file
-// alone does not say which symbol the model is following.
-func lspPositionTitle(verb string, arguments json.RawMessage, fallback string) string {
+// A language-query presentation names the position it asks about, because the
+// file alone does not say which symbol the model is following.
+func lspPositionPresentation(name string, arguments json.RawMessage) agent.ToolPresentation {
 	var input lspPositionArguments
 	_ = json.Unmarshal(arguments, &input)
 	if input.Path == nil || input.Line == nil || input.Column == nil {
-		return fallback
+		return presentation(name, nil)
 	}
 	where := fmt.Sprintf("%s:%d:%d", *input.Path, *input.Line, *input.Column)
-	return title(verb, &where, fallback)
+	return presentation(name, &where)
 }
 
-func lspDefinitionTitle(arguments json.RawMessage) string {
-	return lspPositionTitle("Find the definition of", arguments, "Find a definition")
+func lspDefinitionPresentation(arguments json.RawMessage) agent.ToolPresentation {
+	return lspPositionPresentation("Find the definition of", arguments)
 }
 
-func lspReferencesTitle(arguments json.RawMessage) string {
-	return lspPositionTitle("Find references to", arguments, "Find references")
+func lspReferencesPresentation(arguments json.RawMessage) agent.ToolPresentation {
+	return lspPositionPresentation("Find references to", arguments)
 }
 
-func lspDocumentSymbolsTitle(arguments json.RawMessage) string {
+func lspDocumentSymbolsPresentation(arguments json.RawMessage) agent.ToolPresentation {
 	var input lspPathArguments
 	_ = json.Unmarshal(arguments, &input)
-	return title("Outline", input.Path, "Outline a file")
+	return presentation("Outline", input.Path)
 }
 
-func lspWorkspaceSymbolsTitle(arguments json.RawMessage) string {
+func lspWorkspaceSymbolsPresentation(arguments json.RawMessage) agent.ToolPresentation {
 	var input lspQueryArguments
 	_ = json.Unmarshal(arguments, &input)
-	return title("Find symbol", input.Query, "Find workspace symbols")
+	return presentation("Find symbol", input.Query)
 }
 
-func lspDiagnosticsTitle(arguments json.RawMessage) string {
+func lspDiagnosticsPresentation(arguments json.RawMessage) agent.ToolPresentation {
 	var input lspPathArguments
 	_ = json.Unmarshal(arguments, &input)
-	return title("Check", input.Path, "Check diagnostics")
+	return presentation("Check", input.Path)
 }
