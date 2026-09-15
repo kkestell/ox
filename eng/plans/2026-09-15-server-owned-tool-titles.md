@@ -13,8 +13,8 @@ permission prompts.
 - `eng/client-architecture.md` — Owns the ACP-to-browser projection boundary.
 - `internal/agent/{tool,loop,adapter,state,mcp}.go` — Defines tool presentation
   data and publishes it for live calls, recovered permissions, and replay.
-- `internal/tools/{tools,titles}.go` — Registers built-in tools and derives their
-  bounded invocation titles.
+- `internal/tools/{tools,titles}.go` — Registers built-in tools and derives
+  their bounded invocation titles.
 - `client/src/{session-controller,protocol}.ts` — Projects ACP titles into
   browser-safe transcript and permission state.
 - `client/src/components/{tool-label,transcript,pending-interactions}.tsx` —
@@ -25,15 +25,15 @@ permission prompts.
 - Use ACP's standard `title` field as the sole display-ready tool-call label.
   Keep `name` as the exact provider-facing identifier and do not add a
   namespaced metadata field that duplicates the standard title.
-- Ox owns title wording at tool registration. Built-in titles include the
-  action as well as the bounded argument-derived subject; in particular, shell
-  calls publish `Run <command>` instead of requiring a client prefix. MCP calls
-  use the discovered human-readable title when available and otherwise an
-  honest server/tool fallback without exposing the generated `mcp__...`
-  provider name as presentation data.
-- Unknown provider-requested tools may retain their raw name as the ACP fallback:
-  they have no registered presentation contract. Client fixtures must not rely
-  on parsing an invalid tool call into a friendly label.
+- Ox owns title wording at tool registration. Built-in titles include the action
+  as well as the bounded argument-derived subject; in particular, shell calls
+  publish `Run <command>` instead of requiring a client prefix. MCP calls use
+  the discovered human-readable title when available and otherwise an honest
+  server/tool fallback without exposing the generated `mcp__...` provider name
+  as presentation data.
+- Unknown provider-requested tools may retain their raw name as the ACP
+  fallback: they have no registered presentation contract. Client fixtures must
+  not rely on parsing an invalid tool call into a friendly label.
 - Remove the unused legacy `Tool.Label` fallback so one server-side title path
   owns live calls, permission requests, recovery, and replay.
 
