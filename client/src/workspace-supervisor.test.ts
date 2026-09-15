@@ -330,7 +330,7 @@ describe("workspace supervisor", () => {
     expect(supervisor.state.sessions.active?.interactions).toEqual([]);
     expect(supervisor.catalog.conversations).toEqual([
       { id: "one", status: "active" },
-      { awaiting: true, id: "two", status: "active" },
+      { awaiting: true, busy: true, id: "two", status: "active" },
     ]);
     expect(() => supervisor.resolvePermission("missing", "interaction-1", "allow")).toThrow("session is not active");
 
@@ -338,7 +338,7 @@ describe("workspace supervisor", () => {
     await turn;
 
     expect(supervisor.state.awaiting).toBe(false);
-    expect(supervisor.catalog.conversations.every((session) => session.awaiting === undefined)).toBe(true);
+    expect(supervisor.catalog.conversations.every((session) => session.awaiting === undefined && session.busy === undefined)).toBe(true);
     expect(() => supervisor.resolvePermission("two", "interaction-1", "allow")).toThrow("no longer pending");
     await supervisor.stop();
   });

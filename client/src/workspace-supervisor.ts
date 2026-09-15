@@ -68,6 +68,7 @@ type SupervisorState = Omit<WorkspaceState, "awaiting" | "busy" | "sessions"> & 
 
 export type SessionSummary = {
   awaiting?: boolean;
+  busy?: boolean;
   id: string;
   status: "inactive" | "locked" | "loading" | "active";
   title?: string;
@@ -181,6 +182,7 @@ export class WorkspaceSupervisor {
       conversations: this.#state.sessions.values.map((session) => ({
         ...session,
         ...(this.#controllers.get(session.id)?.awaiting ? { awaiting: true } : {}),
+        ...(this.#activePrompts.has(session.id) ? { busy: true } : {}),
       })),
       name: this.#state.name,
       status: this.#state.status,

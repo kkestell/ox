@@ -414,6 +414,7 @@ const conversationSchema = z
     id: z.string().min(1),
     status: z.enum(["inactive", "locked", "loading", "active"]),
     awaiting: z.boolean().optional(),
+    busy: z.boolean().optional(),
     title: z.string().min(1).optional(),
     updatedAt: z.string().min(1).optional(),
   })

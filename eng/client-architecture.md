@@ -227,11 +227,11 @@ refused rather than forwarded. Configuration changes are applied through
 Pending permission and elicitation requests belong to their session and tool
 call. They remain visible across browser refreshes because the host owns their
 resolvers, and the workspace catalog and conversation list report which
-workspace and conversation is waiting, so an interaction raised outside the
-displayed conversation is still reachable and answerable where it belongs.
-Cancellation removes the interaction and lets the ACP request finish with the
-cancellation it received. The host never invents an approval or form answer
-because a browser disappeared.
+workspace and conversation is waiting or running a turn, so an interaction
+raised outside the displayed conversation is still reachable and answerable
+where it belongs. Cancellation removes the interaction and lets the ACP request
+finish with the cancellation it received. The host never invents an approval or
+form answer because a browser disappeared.
 
 Ox owns durable conversation history. The web client persists no competing
 transcript. After a Bun restart, the session catalog comes from `session/list`,

@@ -55,9 +55,11 @@ and resume. The client shows recent conversations for every registered
 workspace, not only the one it is displaying, and opening or creating a
 conversation switches to its workspace. History refresh and pagination are part
 of the displayed workspace's conversation list, while close and delete are
-secondary actions of the selected conversation. A durable conversation currently
-open in another Ox client stays visible but is dimmed, identified as open
-elsewhere, and cannot be chosen until that client releases it.
+secondary actions of the selected conversation. The list marks a conversation
+whose turn is running and one that is waiting for an answer, so work outside the
+displayed conversation stays visible. A durable conversation currently open in
+another Ox client stays visible but is dimmed, identified as open elsewhere, and
+cannot be chosen until that client releases it.
 
 The primary surface is the selected transcript, its composer, and any permission
 or question blocking work. A live transcript follows new activity until the

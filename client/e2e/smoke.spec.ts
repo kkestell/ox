@@ -416,6 +416,7 @@ test("runs separate sessions concurrently and cancels the selected live prompt",
     await expect(page.getByRole("region", { name: "Transcript" })).toContainText("browser smoke");
 
     const sessions = conversationList(page).getByRole("listitem");
+    await expect(sessions.filter({ hasText: "hold" }).locator('[aria-label="Working"]')).toBeVisible();
     await sessions.filter({ hasText: "hold" }).getByRole("link").click();
     await expect(message).toBeDisabled();
     await page.keyboard.press("Escape");

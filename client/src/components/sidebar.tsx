@@ -1,5 +1,6 @@
 import {
   CircleIcon,
+  LoaderCircleIcon,
   LockIcon,
   MoreHorizontalIcon,
   PlusIcon,
@@ -155,6 +156,9 @@ export function WorkspaceSidebar({ onAdd, onClose, onNew, onOlder, onOpen, onRem
                                     ) : null}
                                     {conversation.awaiting ? (
                                       <CircleIcon aria-label="Waiting for you" className="size-2 shrink-0 fill-amber-500 text-amber-500" />
+                                    ) : null}
+                                    {conversation.busy ? (
+                                      <LoaderCircleIcon aria-label="Working" className="size-3.5 shrink-0 animate-spin text-muted-foreground" />
                                     ) : null}
                                     <span className="min-w-0 truncate font-medium" title={conversation.title ?? "Untitled conversation"}>
                                       {conversation.title ?? "Untitled conversation"}
