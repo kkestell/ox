@@ -23,7 +23,12 @@ export function SessionInformation({ onConfigOption, transcript }: {
         {transcript.configuration.map((option) => (
           <div className="flex min-w-0" key={option.id}>
             <Select onValueChange={(value) => onConfigOption(option.id, value)} value={option.currentValue}>
-              <SelectTrigger aria-label={option.name} className="max-w-44" id={`config-${option.id}`} size="sm">
+              <SelectTrigger
+                aria-label={option.name}
+                className={`border-0 bg-transparent shadow-none dark:bg-transparent ${option.id === "model" ? "max-w-none" : "max-w-44"}`}
+                id={`config-${option.id}`}
+                size="sm"
+              >
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
