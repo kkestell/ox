@@ -24,6 +24,31 @@ test("independently drives Ox through the deterministic provider", async () => {
   }
 });
 
+test("disables conversations owned by another Ox runtime", async ({ page }) => {
+  const fixture = await createFixture();
+  let locked: Awaited<ReturnType<typeof holdOxSession>> | undefined;
+  let host: BrowserHost | undefined;
+  try {
+    await driveOx(fixture);
+    locked = await holdOxSession(fixture, "locked elsewhere");
+    host = startBrowserHost(fixture);
+    await assertReady(page, await host.url);
+
+    const conversations = conversationList(page, basename(fixture.workspace));
+    const lockedConversation = conversations.getByRole("listitem").filter({ hasText: "locked elsewhere" });
+    await expect(lockedConversation.locator('[aria-label="Open in another client"]')).toBeVisible();
+    await expect(lockedConversation).not.toContainText("Open in another client");
+    await expect(lockedConversation.getByRole("link")).toHaveCount(0);
+    await expect(lockedConversation.locator('[aria-disabled="true"]')).toHaveCSS("opacity", "0.5");
+    await expect(conversations.getByRole("link", { name: /smoke/ })).toBeVisible();
+    await expect(page.getByRole("region", { name: "Transcript" })).toContainText("smoke");
+  } finally {
+    await host?.stop();
+    await locked?.close();
+    await fixture.close();
+  }
+});
+
 test("registers, selects, persists, and removes server-local workspaces", async ({ page }) => {
   const fixture = await createFixture({ registerWorkspace: false });
   const second = await mkdtemp(join(tmpdir(), "ox-client-second-workspace-"));
@@ -33,7 +58,7 @@ test("registers, selects, persists, and removes server-local workspaces", async 
     host = startBrowserHost(fixture);
     const url = await host.url;
     await page.goto(url);
-    await expect(page.getByText("Register a server-local workspace to begin.")).toBeVisible();
+    await expect(page.getByText("No workspace selected")).toBeVisible();
     await expect(page.getByText("Ox is unavailable. Open workspace settings for diagnostics.")).toHaveCount(0);
 
     await registerWorkspace(page, "/definitely/not/an/ox-workspace", "workspace must be a listable directory");
@@ -45,28 +70,29 @@ test("registers, selects, persists, and removes server-local workspaces", async 
     const primary = await boundingBox(page.locator("main"));
     expect(sidebar.x + sidebar.width).toBeLessThanOrEqual(primary.x);
     // The two columns share one top band, so their headers cannot disagree.
-    const sidebarHeader = await boundingBox(page.locator("nav.sidebar > header"));
-    const conversationHeader = await boundingBox(page.locator("section.conversation > header"));
+    const sidebarHeader = await boundingBox(page.locator('[data-slot="sidebar-header"]'));
+    const conversationHeader = await boundingBox(
+      page.getByRole("region", { name: "Conversation" }).locator("header"),
+    );
     expect(Math.abs(sidebarHeader.height - conversationHeader.height)).toBeLessThanOrEqual(1);
-    // The sidebar's own surface is the chip, so an icon control stays flat until
-    // the pointer reaches it, and each keeps its own hover fill.
-    const addWorkspace = page.getByRole("button", { name: "Add workspace" });
-    const removeWorkspace = page.getByRole("button", { exact: true, name: `Remove ${basename(fixture.workspace)}` });
-    for (const control of [addWorkspace, removeWorkspace]) {
+    await expect(conversationList(page, basename(fixture.workspace))).toHaveCSS("border-left-width", "0px");
+    const selectedConversation = conversationList(page, basename(fixture.workspace)).getByRole("link").first();
+    await expect(selectedConversation).toHaveCSS("border-left-width", "0px");
+    await expect(selectedConversation).toHaveCSS("border-top-width", "0px");
+    const newConversationBox = await boundingBox(newConversation(page, basename(fixture.workspace)));
+    const selectedConversationBox = await boundingBox(selectedConversation);
+    expect(Math.abs(newConversationBox.x - selectedConversationBox.x)).toBeLessThanOrEqual(1);
+    // Navigation controls stay flat until the pointer reaches them; destructive
+    // workspace removal lives in the secondary actions menu.
+    const addWorkspace = page.getByRole("navigation", { name: "Workspaces and conversations" }).getByRole("button", { name: "Add workspace" });
+    const actions = workspaceActions(page, basename(fixture.workspace));
+    for (const control of [addWorkspace, actions]) {
       await expect(control).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
     }
-    await addWorkspace.hover();
-    const plainHover = await addWorkspace.evaluate((element) => getComputedStyle(element).backgroundColor);
-    await removeWorkspace.hover();
-    const dangerHover = await removeWorkspace.evaluate((element) => getComputedStyle(element).backgroundColor);
-    expect(plainHover).not.toBe("rgba(0, 0, 0, 0)");
-    expect(dangerHover).not.toBe(plainHover);
-    // Both controls end on the conversation rows' right edge rather than inside it.
-    const rows = await boundingBox(conversationList(page, basename(fixture.workspace)));
-    for (const control of [addWorkspace, removeWorkspace]) {
-      const box = await boundingBox(control);
-      expect(Math.abs(box.x + box.width - (rows.x + rows.width))).toBeLessThanOrEqual(1);
-    }
+    expect(await hoverBackground(addWorkspace)).not.toBe("rgba(0, 0, 0, 0)");
+    await actions.click();
+    await expect(page.getByRole("menuitem", { name: `Remove ${basename(fixture.workspace)}` })).toBeVisible();
+    await page.keyboard.press("Escape");
 
     await registerWorkspace(page, second);
     await expect(page.getByRole("list", { name: "Workspaces" }).getByRole("heading", { level: 2 })).toHaveCount(2);
@@ -89,7 +115,7 @@ test("registers, selects, persists, and removes server-local workspaces", async 
     await expect(page.locator("main")).not.toContainText(fixture.workspace);
     await expect(page.locator("main")).not.toContainText(second);
 
-    await page.getByRole("button", { exact: true, name: `Remove ${basename(second)}` }).click();
+    await removeWorkspace(page, basename(second));
     await assertShowing(page, basename(fixture.workspace));
     expect(await readFile(join(second, "keep.txt"), "utf8")).toBe("keep");
   } finally {
@@ -111,8 +137,14 @@ test("uses the navigation drawer at phone width", async ({ page }) => {
 
     await page.getByRole("button", { name: "Open navigation" }).click();
     await expect(navigation).toBeVisible();
+    await expect
+      .poll(async () => Math.abs((await boundingBox(navigation)).x))
+      .toBeLessThanOrEqual(1);
+    const drawer = await boundingBox(navigation);
+    expect(drawer.x).toBe(0);
+    expect(Math.abs(drawer.width - 390)).toBeLessThanOrEqual(1);
     await expect(newConversation(page)).toBeVisible();
-    await expect(page.locator("main")).toHaveJSProperty("inert", true);
+    await expect(page.getByRole("region", { name: "Conversation" })).toHaveCount(0);
     await page.getByRole("button", { name: "Close navigation" }).focus();
     await page.keyboard.press("Tab");
     expect(await page.evaluate(() => document.activeElement?.closest("main") === null)).toBe(true);
@@ -136,16 +168,31 @@ test("supervises a real Ox process through clean shutdown and unexpected exit", 
   let host: BrowserHost | undefined;
   try {
     host = startBrowserHost(fixture);
-    await assertReady(page, await host.url);
+    const url = await host.url;
+    await assertReady(page, url);
+    await openWorkspaceSettings(page);
+    const support = page.getByRole("region", { name: "Support details" });
 
     await host.stop();
+    host = undefined;
     await fixture.waitForOxExit();
+    await expect(support).toContainText("Disconnected");
 
-    host = startBrowserHost(fixture);
-    await assertReady(page, await host.url);
+    host = startBrowserHost(fixture, Number.parseInt(new URL(url).port, 10));
+    expect(await host.url).toBe(url);
+    await expect(support).toContainText("Connected");
+    await page.setViewportSize({ height: 844, width: 390 });
+    await page.getByRole("button", { name: "Open navigation" }).click();
+    await startNewConversation(page);
+    const transcript = page.getByRole("region", { name: "Transcript" });
+    await page.getByLabel("Message", { exact: true }).fill("after host reconnect");
+    await sendPrompt(page);
+    await expect(transcript).toContainText("after host reconnect");
+    await expect(transcript).toContainText("browser smoke");
 
     await fixture.stopOx();
     await expect(page.getByText("Ox is unavailable. Open workspace settings for diagnostics.")).toBeVisible();
+    await page.getByRole("button", { name: "Open navigation" }).click();
     await openWorkspaceSettings(page);
     await expect(page.getByRole("list", { name: "Ox processes" })).toContainText(
       `${basename(fixture.workspace)} — unavailable, idle`,
@@ -170,9 +217,11 @@ test("automatically uses stored credentials and keeps a browser login secret out
     await expect(page.getByRole("button", { name: "Use configured credential" })).toHaveCount(0);
 
     const credential = "browser-login-test-secret";
+    await page.getByRole("button", { name: "Change credential" }).click();
     await page.getByLabel("OpenRouter API key").fill(credential);
     await page.getByRole("button", { name: "OpenRouter login" }).click();
     await expect(page.getByRole("alert")).toHaveText("OpenRouter login failed");
+    await page.getByRole("button", { name: "Change credential" }).click();
     await expect(page.getByLabel("OpenRouter API key")).toHaveValue("");
     await expect(page.locator("main")).not.toContainText(credential);
 
@@ -193,11 +242,14 @@ test("asks for a credential in workspace settings when the stored one cannot aut
     fixture.rejectCredential(true);
     host = startBrowserHost(fixture);
     await page.goto(await host.url);
-    await expect(page.getByText("Ox is not connected.")).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Connect Ox" })).toBeVisible();
     await expect(page.getByRole("region", { name: "Conversation" })).toHaveCount(0);
 
     await openWorkspaceSettings(page);
     await expect(page.getByRole("region", { name: "Authentication" })).toContainText("Not connected");
+    await page.getByRole("button", { name: "Back to workspace" }).click();
+    await expect(page.getByRole("heading", { name: "Connect Ox" })).toBeVisible();
+    await openWorkspaceSettings(page);
 
     fixture.rejectCredential(false);
     await page.getByRole("button", { name: "Use configured credential" }).click();
@@ -227,7 +279,14 @@ test("keeps a replayed session coherent across refresh and attached browsers", a
     await expect(transcript).toContainText("smoke");
     await expect(transcript).toContainText("browser smoke");
     await expect(page.getByRole("heading", { name: "Transcript" })).toHaveCount(0);
-    await expect(page.getByRole("region", { name: "Prompt" })).toContainText("Context:");
+    const promptRegion = page.getByRole("region", { name: "Prompt" });
+    const usageButton = promptRegion.getByRole("button", { name: "Show usage: 1 / 128,000 tokens, $0.01" });
+    await usageButton.click();
+    const usagePopover = page.locator('[data-slot="popover-content"]');
+    await expect(usagePopover).toContainText("1 / 128,000 tokens");
+    await expect(usagePopover).toContainText("$0.01");
+    await page.keyboard.press("Escape");
+    await expect(transcript.getByRole("button", { name: "Cost" })).toHaveCount(0);
     await expect(page.getByLabel("Mode", { exact: true })).toBeVisible();
     await expect(page.getByText("Host revision", { exact: true })).toBeHidden();
     await expect(page.getByText("Session ID", { exact: true })).toBeHidden();
@@ -237,16 +296,25 @@ test("keeps a replayed session coherent across refresh and attached browsers", a
     await expect(page.getByRole("region", { name: "Conversation" }).getByRole("heading", { name: "smoke" })).toBeVisible();
     await expect(page.getByRole("region", { name: "Transcript" })).toContainText("browser smoke");
 
+    await page.getByLabel("Message", { exact: true }).fill("continue cumulative cost");
+    await sendPrompt(page);
+    const cumulativeUsageButton = promptRegion.getByRole("button", {
+      name: "Show usage: 1 / 128,000 tokens, $0.02",
+    });
+    await cumulativeUsageButton.click();
+    await expect(usagePopover).toContainText("$0.02");
+    await page.keyboard.press("Escape");
+
     secondContext = await browser.newContext();
     const second = await secondContext.newPage();
     await assertReady(second, url);
     await second.getByRole("button", { name: "Conversation actions" }).click();
-    await second.getByRole("button", { name: "Close conversation" }).click();
-    await expect(page.getByText("Choose a conversation or start a new one.")).toBeVisible();
+    await second.getByRole("menuitem", { name: "Close conversation" }).click();
+    await expect(page.getByText("Ready when you are")).toBeVisible();
 
     await sessions.getByRole("link", { name: "smoke" }).click();
     await page.getByRole("button", { name: "Conversation actions" }).click();
-    await page.getByRole("button", { name: "Delete conversation" }).click();
+    await page.getByRole("menuitem", { name: "Delete conversation" }).click();
     await expect(sessions).not.toContainText("smoke");
     await newConversation(page).click();
     await expect(page.getByRole("region", { name: "Conversation" })).toBeVisible();
@@ -263,14 +331,14 @@ test("prompts with controls and every supported browser attachment", async ({ pa
   try {
     host = startBrowserHost(fixture);
     await assertReady(page, await host.url);
-    await expect(page.getByLabel("Mode", { exact: true }).locator("option:checked")).toHaveText("Code");
+    await expect(page.getByLabel("Mode", { exact: true })).toHaveText("Code");
     await chooseMode(page, "Plan");
 
     const composer = page.getByLabel("Message");
     await expect(page.getByRole("heading", { name: "Prompt" })).toHaveCount(0);
     const oneLine = await boundingBox(composer);
     const composerRegion = await boundingBox(page.getByRole("region", { name: "Prompt" }));
-    expect(Math.abs(oneLine.width - composerRegion.width)).toBeLessThanOrEqual(1);
+    expect(composerRegion.width - oneLine.width).toBeLessThanOrEqual(2);
     await composer.fill(Array.from({ length: 8 }, (_, index) => `line ${index + 1}`).join("\n"));
     const eightLines = await boundingBox(composer);
     await composer.fill(Array.from({ length: 9 }, (_, index) => `line ${index + 1}`).join("\n"));
@@ -287,7 +355,7 @@ test("prompts with controls and every supported browser attachment", async ({ pa
     await expect(composer).toHaveValue("first line\nsecond line");
     expect(fixture.requests).toBe(0);
     await composer.fill("inspect these attachments");
-    await expect(page.getByRole("button", { name: "Send prompt" })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Send prompt" })).toBeVisible();
     await expect(page.getByRole("group", { name: "Resource link" })).toHaveCount(0);
     const addAttachment = page.getByLabel("Add attachment");
     await addAttachment.setInputFiles([
@@ -319,7 +387,29 @@ test("prompts with controls and every supported browser attachment", async ({ pa
     expect(prompt).not.toContain("spare.txt");
     expect(prompt).not.toContain("example.test/guide");
     await expect(attachments).toHaveCount(0);
-    await expect(page.getByRole("region", { name: "Transcript" })).toContainText("browser smoke");
+    const transcript = page.getByRole("region", { name: "Transcript" });
+    await expect(transcript).toContainText("browser smoke");
+    const agentMessage = transcript.getByRole("article", { name: "agent message" }).last();
+    const agentMessageBox = await boundingBox(agentMessage);
+    const settledComposerBox = await boundingBox(page.getByRole("region", { name: "Prompt" }));
+    expect(Math.abs(settledComposerBox.x - agentMessageBox.x)).toBeLessThanOrEqual(1);
+    expect(Math.abs(settledComposerBox.width - agentMessageBox.width)).toBeLessThanOrEqual(1);
+    const sendButton = page.getByRole("button", { name: "Send prompt" });
+    const usageButton = page.getByRole("button", { name: /^Show usage: [\d,]+ \/ [\d,]+ tokens, \$0\.01$/ });
+    await expect(sendButton).toHaveText("");
+    await usageButton.click();
+    const usagePopover = page.locator('[data-slot="popover-content"]');
+    await expect(usagePopover).toContainText(/^[\s\S]*[\d,]+ \/ [\d,]+ tokens[\s\S]*\$0\.01[\s\S]*$/);
+    await page.keyboard.press("Escape");
+    const controlBoxes = await Promise.all([
+      page.getByLabel("Mode", { exact: true }),
+      page.getByLabel("Model", { exact: true }),
+      page.getByLabel("Reasoning", { exact: true }),
+      usageButton,
+      sendButton,
+    ].map(boundingBox));
+    const controlCenters = controlBoxes.map((box) => box.y + box.height / 2);
+    expect(Math.max(...controlCenters) - Math.min(...controlCenters)).toBeLessThanOrEqual(1);
   } finally {
     await host?.stop();
     await fixture.close();
@@ -357,7 +447,8 @@ test("runs Ox shell tools through the host's ACP terminal callbacks", async ({ p
 
     const transcript = page.getByRole("region", { name: "Transcript" });
     await expect(transcript).toContainText("terminal complete");
-    await transcript.getByRole("button", { name: /shell/ }).click();
+    await expect(transcript.getByText("completed", { exact: true })).toHaveCSS("position", "absolute");
+    await transcript.getByRole("button", { name: /printf terminal callback output/ }).click();
     await expect(transcript).toContainText("exit code: 0");
   } finally {
     await host?.stop();
@@ -375,7 +466,7 @@ test("runs separate sessions concurrently and cancels the selected live prompt",
     await message.fill("hold");
     await sendPrompt(page);
     await expect(message).toBeDisabled();
-    await expect(page.getByRole("button", { name: "Cancel prompt" })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Stop response" })).toBeVisible();
 
     await newConversation(page).click();
     await message.fill("second session");
@@ -447,12 +538,60 @@ test("follows live transcript updates until manual scrollback asks to return", a
       element.dispatchEvent(new Event("scroll"));
     });
     await expect.poll(() => bottomDistance(scrollport)).toBeGreaterThan(40);
-    await expect(page.getByRole("button", { name: "Jump to latest" })).toBeVisible();
+    const jump = page.getByRole("button", { name: "Jump to latest" });
+    await expect(jump).toBeVisible();
+    const scrollportBox = await boundingBox(scrollport);
+    const jumpBox = await boundingBox(jump);
+    expect(scrollportBox.y + scrollportBox.height).toBeLessThanOrEqual(jumpBox.y + 1);
     fixture.releaseHeldPrompt();
     await expect(page.getByRole("region", { name: "Transcript" })).toContainText("held prompt complete");
     await expect.poll(() => scrollport.evaluate((element) => element.scrollTop)).toBe(0);
-    await page.getByRole("button", { name: "Jump to latest" }).click();
+    await jump.click();
     await expect.poll(() => bottomDistance(scrollport)).toBeLessThanOrEqual(1);
+  } finally {
+    await host?.stop();
+    await fixture.close();
+  }
+});
+
+test("contains long transcript content across phone and narrow desktop layouts", async ({ page }) => {
+  const fixture = await createFixture({
+    workspaceName: `workspace-${"unbroken".repeat(16)}`,
+  });
+  let host: BrowserHost | undefined;
+  try {
+    host = startBrowserHost(fixture);
+    await assertReady(page, await host.url);
+    const prompt = `responsive stress ${"conversation".repeat(20)}`;
+    await page.getByLabel("Message", { exact: true }).fill(prompt);
+    await sendPrompt(page);
+
+    const transcript = page.getByRole("region", { name: "Transcript" });
+    await expect(transcript).toContainText("responsive complete");
+    const activity = transcript.getByRole("button", { name: /Inspect responsive layout/i });
+    await expect(activity).toBeVisible();
+    await activity.click();
+    await expect(transcript.getByText("Tool name", { exact: true })).toBeVisible();
+    await expect(transcript).toContainText("mcp__browser__inspect_responsive_layout_and_report_every_overflowing_element");
+
+    for (const viewport of [{ height: 844, width: 390 }, { height: 700, width: 800 }]) {
+      await page.setViewportSize(viewport);
+      await expectNoHorizontalOverflow(page.locator("main"));
+      await expectNoHorizontalOverflow(page.getByTestId("transcript-scrollport"));
+    }
+
+    await page.setViewportSize({ height: 720, width: 1280 });
+    await openWorkspaceSettings(page);
+    await expect(page.getByRole("heading", { name: "Workspace settings" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Back to conversation" })).toBeVisible();
+    await expect(page.getByRole("list", { name: "Workspace diagnostics" })).toContainText("prefix_fingerprint=");
+    const sidebarHeader = await boundingBox(page.locator('[data-slot="sidebar-header"]'));
+    const settingsHeader = await boundingBox(
+      page.getByRole("region", { name: "Workspace settings" }).locator("header"),
+    );
+    expect(Math.abs(sidebarHeader.height - settingsHeader.height)).toBeLessThanOrEqual(1);
+    await page.setViewportSize({ height: 844, width: 390 });
+    await expectNoHorizontalOverflow(page.locator("main"));
   } finally {
     await host?.stop();
     await fixture.close();
@@ -478,7 +617,7 @@ test("runs concurrent turns and isolates failure across two workspaces", async (
 
     // Following another workspace's settings link selects that workspace.
     await openWorkspaceSettings(page, first);
-    await expect(page.getByRole("region", { name: "Workspace settings" }).getByRole("heading", { level: 2 })).toHaveText(first);
+    await expect(page.getByRole("region", { name: "Workspace settings" }).getByRole("heading", { exact: true, level: 2, name: first })).toBeVisible();
     const processes = page.getByRole("list", { name: "Ox processes" });
     await expect(processes).toContainText(`${first} — ready, working`);
     await expect(processes).toContainText(`${second} — ready, idle`);
@@ -549,29 +688,35 @@ test("routes a pending permission to the workspace the browser is not showing", 
   const second = basename(fixture.workspaceTwo);
   let host: BrowserHost | undefined;
   try {
+    await page.setViewportSize({ height: 360, width: 1280 });
     host = startBrowserHost(fixture);
     await assertReady(page, await host.url);
     await showWorkspace(page, second);
     await page.getByLabel("Message", { exact: true }).fill("request permission");
     await sendPrompt(page);
     const permission = page.getByLabel("Pending interactions").getByRole("article", { name: /Permission for/ });
-    await expect(permission).toContainText("pwd");
+    await expect(permission).toContainText("Run pwd");
+    await expect(permission).not.toContainText("Tool:");
+    await expect(permission).not.toContainText("Kind:");
+    const scrollport = page.getByTestId("transcript-scrollport");
+    await expect.poll(() => bottomDistance(scrollport)).toBeLessThanOrEqual(1);
+    await expect(page.getByRole("button", { name: "Jump to latest" })).toHaveCount(0);
     const tray = page.getByLabel("Pending interactions");
     const trayBox = await boundingBox(tray);
     const composerBox = await boundingBox(page.getByRole("region", { name: "Prompt" }));
     expect(trayBox.y + trayBox.height).toBeLessThanOrEqual(composerBox.y + 1);
-    await expect(conversationList(page, second)).toContainText("Waiting for you");
+    await expect(conversationList(page, second).locator('[aria-label="Waiting for you"]')).toBeVisible();
 
     await showWorkspace(page, first);
     await expect(permission).toBeHidden();
 
     await conversationList(page, second)
       .getByRole("listitem")
-      .filter({ hasText: "Waiting for you" })
+      .filter({ has: page.locator('[aria-label="Waiting for you"]') })
       .getByRole("link")
       .click();
 
-    await expect(permission).toContainText("pwd");
+    await expect(permission).toContainText("Run pwd");
     await page.getByRole("button", { name: "Allow once" }).click();
     await expect(permission).toBeHidden();
     await expect.poll(() => fixture.requests).toBe(2);
@@ -594,11 +739,11 @@ test("renders a host-owned form elicitation through refresh and answers it", asy
     const tray = await boundingBox(interactions);
     const composer = await boundingBox(page.getByRole("region", { name: "Prompt" }));
     expect(tray.y + tray.height).toBeLessThanOrEqual(composer.y + 1);
-    await expect(page.getByRole("option", { name: "Red" })).toHaveText("Red");
-    await expect(page.getByRole("combobox", { name: "Answer" })).toHaveValue("");
+    await expect(page.getByRole("combobox", { name: "Answer" })).toHaveText("Select an option");
     await page.reload();
     await expect(interactions.getByRole("article", { name: "Choose a color", exact: true })).toContainText("Choose a color");
-    await page.getByRole("combobox", { name: "Answer" }).selectOption("Red");
+    await page.getByRole("combobox", { name: "Answer" }).click();
+    await page.getByRole("option", { name: "Red", exact: true }).click();
     await page.getByRole("button", { name: "Submit answer" }).click();
     await expect(interactions.getByRole("article", { name: "Choose a color", exact: true })).toBeHidden();
     await expect.poll(() => fixture.requests).toBe(2);
@@ -651,18 +796,18 @@ test("activates HTTP and stdio MCP servers without retaining secrets", async ({ 
     await page.getByLabel("Message").fill("use HTTP MCP tool");
     await sendPrompt(page);
     await expect(page.getByRole("region", { name: "Transcript" })).toContainText("HTTP MCP complete");
-    await page.getByRole("region", { name: "Transcript" }).getByRole("button", { name: /mcp__http__lookup/ }).last().click();
+    await page.getByRole("region", { name: "Transcript" }).getByRole("button", { name: /lookup/i }).last().click();
     await expect(page.getByRole("region", { name: "Transcript" })).toContainText("HTTP MCP fixture result");
     expect(mcp.httpAuthorizations).toContain(mcp.httpSecret);
 
     await page.getByRole("textbox", { name: "Message" }).fill("use HTTP MCP failure");
     await sendPrompt(page);
     await expect(page.getByRole("region", { name: "Transcript" })).toContainText("HTTP MCP failure complete");
-    await page.getByRole("region", { name: "Transcript" }).getByRole("button", { name: /mcp__http__fail/ }).last().click();
+    await page.getByRole("region", { name: "Transcript" }).getByRole("button", { name: /fail/i }).last().click();
     await expect(page.getByRole("region", { name: "Transcript" })).toContainText("HTTP MCP fixture failure");
     await page.getByRole("button", { name: "Conversation actions" }).click();
-    await page.getByRole("button", { name: "Close conversation" }).click();
-    await expect(page.getByText("Choose a conversation or start a new one.")).toBeVisible();
+    await page.getByRole("menuitem", { name: "Close conversation" }).click();
+    await expect(page.getByText("Ready when you are")).toBeVisible();
 
     await openWorkspaceSettings(page);
     await addStdioMCPServer(page, "stdio", mcp.stdioCommand, mcp.stdioArgument, mcp.stdioEnvironmentName, mcp.stdioSecret);
@@ -679,11 +824,11 @@ test("activates HTTP and stdio MCP servers without retaining secrets", async ({ 
     await page.getByRole("textbox", { name: "Message" }).fill("use stdio MCP tool");
     await sendPrompt(page);
     await expect(page.getByRole("region", { name: "Transcript" })).toContainText("stdio MCP complete");
-    await page.getByRole("region", { name: "Transcript" }).getByRole("button", { name: /mcp__stdio__lookup/ }).last().click();
+    await page.getByRole("region", { name: "Transcript" }).getByRole("button", { name: /lookup/i }).last().click();
     await expect(page.getByRole("region", { name: "Transcript" })).toContainText("stdio MCP fixture result");
     await expect(page.locator("main")).not.toContainText(mcp.stdioSecret);
     await page.getByRole("button", { name: "Conversation actions" }).click();
-    await page.getByRole("button", { name: "Close conversation" }).click();
+    await page.getByRole("menuitem", { name: "Close conversation" }).click();
 
     await openWorkspaceSettings(page);
     await addHTTPMCPServer(page, "broken", `${mcp.httpURL}/unavailable`, "failed-activation-secret");
@@ -714,12 +859,12 @@ type BrowserHost = {
   url: Promise<string>;
 };
 
-function startBrowserHost(fixture: Fixture): BrowserHost {
+function startBrowserHost(fixture: Fixture, port = 0): BrowserHost {
   const arguments_ = [
     "run",
     "./src/host.ts",
     "--port",
-    "0",
+    String(port),
     "--ox",
     fixture.runner,
   ];
@@ -802,10 +947,14 @@ type MCPFixture = {
 };
 
 async function createFixture(
-  options: { registerSecondWorkspace?: boolean; registerWorkspace?: boolean } = {},
+  options: {
+    registerSecondWorkspace?: boolean;
+    registerWorkspace?: boolean;
+    workspaceName?: string;
+  } = {},
 ): Promise<Fixture> {
   const root = await mkdtemp(join(tmpdir(), "ox-client-smoke-"));
-  const workspace = join(root, "workspace");
+  const workspace = join(root, options.workspaceName ?? "workspace");
   const workspaceTwo = join(root, "workspace-two");
   await mkdir(workspace);
   await mkdir(workspaceTwo);
@@ -848,6 +997,18 @@ async function createFixture(
       }
       if (body.lastIndexOf("create tall transcript") > body.lastIndexOf("hold")) {
         streamText(response, Array.from({ length: 600 }, (_, index) => `activity ${index}`).join(" "));
+        return;
+      }
+      if (body.includes("responsive stress")) {
+        if (!hasToolResultAfterPrompt(body, "responsive stress")) {
+          streamToolCall(
+            response,
+            "responsive-tool",
+            "mcp__browser__inspect_responsive_layout_and_report_every_overflowing_element",
+          );
+          return;
+        }
+        streamText(response, `responsive complete ${"unbrokenoutput".repeat(80)}`);
         return;
       }
       if (body.includes("hold")) {
@@ -973,7 +1134,7 @@ async function createFixture(
         [
           'data: {"choices":[{"delta":{"content":"browser smoke"},"finish_reason":null}]}',
           "",
-          'data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}',
+          'data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"cost":0.01}}',
           "",
           "data: [DONE]",
           "",
@@ -1230,6 +1391,7 @@ async function seedOxFixture(fixture: Pick<Fixture, "binary" | "credential">, ro
           architecture: { input_modalities: ["text", "image", "audio"] },
           context_length: 128000,
           id: "test/model",
+          reasoning: { supported_efforts: ["low", "high"] },
           supported_parameters: ["tools", "temperature", "max_tokens"],
         },
       ],
@@ -1291,12 +1453,71 @@ async function driveOx(fixture: Fixture): Promise<string> {
   }
 }
 
+async function holdOxSession(fixture: Fixture, prompt: string): Promise<{ close(): Promise<void> }> {
+  const child = spawn(
+    fixture.binary,
+    [
+      "--credential-file",
+      fixture.credential,
+      "--model",
+      "test/model",
+      "--no-keyring",
+      "--openrouter-base-url",
+      `${fixture.providerURL}/api/v1`,
+    ],
+    {
+      cwd: fixture.workspace,
+      env: fixture.environment,
+      stdio: ["pipe", "pipe", "pipe"],
+    },
+  );
+  const stream = acp.ndJsonStream(
+    Writable.toWeb(child.stdin),
+    Readable.toWeb(child.stdout) as unknown as ReadableStream<Uint8Array>,
+  );
+  const connection = acp
+    .client({ name: "ox-browser-lock-holder" })
+    .onNotification(acp.methods.client.session.update, () => {})
+    .connect(stream);
+  try {
+    await connection.agent.request(acp.methods.agent.initialize, {
+      clientCapabilities: {},
+      clientInfo: { name: "ox-browser-lock-holder", version: "0" },
+      protocolVersion: acp.PROTOCOL_VERSION,
+    });
+    const session = await connection.agent.request(acp.methods.agent.session.new, {
+      cwd: fixture.workspace,
+      mcpServers: [],
+    });
+    const result = await connection.agent.request(acp.methods.agent.session.prompt, {
+      prompt: [{ text: prompt, type: "text" }],
+      sessionId: session.sessionId,
+    });
+    expect(result.stopReason).toBe("end_turn");
+    return {
+      async close() {
+        if (child.exitCode !== null || child.signalCode !== null) return;
+        const exited = once(child, "exit");
+        connection.close();
+        child.stdin.end();
+        await exited;
+      },
+    };
+  } catch (error) {
+    connection.close();
+    child.stdin.end();
+    if (child.exitCode === null && child.signalCode === null) await once(child, "exit");
+    throw error;
+  }
+}
+
 // Modes are named by Ox, so the helper chooses and asserts by the label the
 // agent advertised rather than by the value behind it.
 async function chooseMode(page: Page, mode: string): Promise<void> {
   const control = page.getByLabel("Mode", { exact: true });
-  await control.selectOption({ label: mode });
-  await expect(control.locator("option:checked")).toHaveText(mode);
+  await control.click();
+  await page.getByRole("option", { name: mode, exact: true }).click();
+  await expect(control).toHaveText(mode);
 }
 
 async function sendPrompt(page: Page): Promise<void> {
@@ -1306,7 +1527,15 @@ async function sendPrompt(page: Page): Promise<void> {
 async function registerWorkspace(page: Page, path: string, error?: string): Promise<void> {
   const dialog = page.getByRole("dialog", { name: "Add workspace" });
   if (!await dialog.isVisible()) {
-    await page.getByRole("button", { name: "Add workspace" }).click();
+    const emptyAction = page.getByRole("main").getByRole("button", { name: "Add workspace" });
+    if (await emptyAction.isVisible()) {
+      await emptyAction.click();
+    } else {
+      await page
+        .getByRole("navigation", { name: "Workspaces and conversations" })
+        .getByRole("button", { name: "Add workspace" })
+        .click();
+    }
   }
   await expect(dialog).toBeVisible();
   await dialog.getByLabel("Workspace path").fill(path);
@@ -1316,6 +1545,21 @@ async function registerWorkspace(page: Page, path: string, error?: string): Prom
     return;
   }
   await expect(dialog).toBeHidden();
+}
+
+// Control fills animate, so the settled colour is the one worth comparing.
+async function hoverBackground(locator: Locator): Promise<string> {
+  await locator.hover();
+  let previous = "";
+  await expect
+    .poll(async () => {
+      const current = await locator.evaluate((element) => getComputedStyle(element).backgroundColor);
+      const settled = current === previous ? current : "";
+      previous = current;
+      return settled;
+    })
+    .not.toBe("");
+  return previous;
 }
 
 async function boundingBox(locator: Locator): Promise<{ height: number; width: number; x: number; y: number }> {
@@ -1330,6 +1574,12 @@ async function bottomDistance(locator: Locator): Promise<number> {
   return locator.evaluate((element) => element.scrollHeight - element.scrollTop - element.clientHeight);
 }
 
+async function expectNoHorizontalOverflow(locator: Locator): Promise<void> {
+  await expect
+    .poll(() => locator.evaluate((element) => element.scrollWidth - element.clientWidth))
+    .toBeLessThanOrEqual(1);
+}
+
 function conversationList(page: Page, workspace?: string) {
   return page.getByRole("list", {
     exact: workspace !== undefined,
@@ -1342,6 +1592,18 @@ function newConversation(page: Page, workspace?: string) {
     exact: workspace !== undefined,
     name: workspace === undefined ? /^New conversation in / : `New conversation in ${workspace}`,
   });
+}
+
+function workspaceActions(page: Page, workspace?: string) {
+  return page.getByRole("button", {
+    exact: workspace !== undefined,
+    name: workspace === undefined ? /^Workspace actions for / : `Workspace actions for ${workspace}`,
+  });
+}
+
+async function removeWorkspace(page: Page, workspace: string): Promise<void> {
+  await workspaceActions(page, workspace).click();
+  await page.getByRole("menuitem", { name: `Remove ${workspace}` }).click();
 }
 
 // Opening one of a workspace's conversations is how the browser switches to it.
@@ -1369,12 +1631,11 @@ async function assertReady(page: Page, url: string): Promise<void> {
 // Workspace settings replace the conversation, so a scenario that reads them
 // navigates there and back.
 async function openWorkspaceSettings(page: Page, workspace?: string): Promise<void> {
-  await page
-    .getByRole("link", {
-      exact: workspace !== undefined,
-      name: workspace === undefined ? /^Settings for / : `Settings for ${workspace}`,
-    })
-    .click();
+  await workspaceActions(page, workspace).click();
+  await page.getByRole("menuitem", {
+    exact: workspace !== undefined,
+    name: workspace === undefined ? /^Settings for / : `Settings for ${workspace}`,
+  }).click();
   await expect(page.getByRole("region", { name: "Workspace settings" })).toBeVisible();
 }
 

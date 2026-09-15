@@ -102,9 +102,10 @@ The client is one Bun package under `client/`, with these coarse boundaries:
   host would lose on refresh. `src/browser.tsx` mounts it, one module under
   `src/components` owns each region, and one hook owns the host socket, the
   snapshot it publishes, and the routing of each command's result back to its
-  sender. Appearance is one hand-written stylesheet served as a static asset; no
-  build step generates it, and no component library stands between the
-  application and the platform's own controls.
+  sender. Appearance is Tailwind utilities over one base theme, compiled by the
+  Tailwind CLI ahead of the bundle into the served stylesheet. Controls come
+  from shadcn components vendored under `src/components/ui`, which the
+  application owns and edits like any other source.
 - The **browser harness** owns deterministic fake-provider fixtures and launches
   the compiled application, the real Bun host, and the real Ox binary in
   temporary private directories.
@@ -150,7 +151,9 @@ meaning.
 Browser commands express product intent. Opening a conversation selects it when
 the host already owns its controller and otherwise loads it with replay. The
 browser never asks the user to choose between ACP load and resume. Refresh and
-pagination are history mechanics rather than peer session operations.
+pagination are history mechanics rather than peer session operations. The host
+maps only the exact `true` value of Ox's session-lock metadata to the browser's
+locked conversation status; unknown metadata remains at the ACP boundary.
 
 ## Workspace and process lifecycle
 
@@ -232,14 +235,16 @@ and opening a session uses `session/load` to reconstruct its display from Ox's
 replay. Browser preferences may be persisted independently, but they cannot be
 treated as session truth.
 
-After authentication, the host opens the most recently updated conversation. A
-workspace with no durable history gets one new selected conversation. New always
-creates and selects a distinct empty Ox session. Choosing history opens the
-conversation with replay when inactive and selects it when already active.
-Opening or creating a conversation also selects its workspace, and only once Ox
-has accepted it, so a refusal leaves the browser on the workspace it was
-showing. History refreshes after lifecycle changes, older pages extend the same
-list, and close or delete are secondary actions of the selected conversation.
+After authentication, the host opens the most recently updated unlocked
+conversation. A workspace with no currently available durable history gets one
+new selected conversation. New always creates and selects a distinct empty Ox
+session. Choosing history opens the conversation with replay when inactive and
+selects it when already active. Opening or creating a conversation also selects
+its workspace, and only once Ox has accepted it, so a refusal leaves the browser
+on the workspace it was showing. A failed activation restores the conversation's
+prior catalog status, including an advisory lock status. History refreshes after
+lifecycle changes, older pages extend the same list, and close or delete are
+secondary actions of the selected conversation.
 
 The Bun host owns the workspace's current client-supplied MCP server set and
 uses it for later new and load activations. The browser edits a draft set and
@@ -256,6 +261,9 @@ conversations, new conversation, settings, and removal. Registration opens as a
 dialog from that region. A workspace with no usable process offers its restart
 there instead of its conversations. There is no workspace-selection control,
 because opening a conversation or a workspace's settings selects that workspace.
+Conversations reported as locked by another runtime are visually subdued,
+labelled as open in another client, and rendered without a navigation target or
+open command.
 
 The primary column holds either the selected conversation or the selected
 workspace's settings. The conversation is its transcript, composer, and any
@@ -264,11 +272,11 @@ process failed says so there, as an actionable problem pointing at its settings
 rather than a permanent status dashboard.
 
 The conversation header identifies the conversation. The session's advertised
-model, mode, reasoning controls, and read-only context usage sit with the
-composer. Files are attached from a control at the start of that row and listed
-beneath it until the prompt is sent. Plans render only when present. Tool
-details and raw output are disclosed beneath their useful activity title.
-Resource links render as ordinary safe links.
+model, mode, reasoning controls, read-only context usage, and cumulative cost
+sit with the composer. Files are attached from a control at the start of that
+row and listed beneath it until the prompt is sent. Plans render only when
+present. Tool details and raw output are disclosed beneath their useful activity
+title. Resource links render as ordinary safe links.
 
 Workspace settings contain authentication, MCP servers, and support details.
 Connecting a credential and managing one are the same surface, because the

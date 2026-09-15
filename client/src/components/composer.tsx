@@ -1,4 +1,5 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { PaperclipIcon, SendIcon, SquareIcon, XIcon } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 
 import {
   maximumAttachmentBytes,
@@ -9,6 +10,9 @@ import {
 } from "../protocol.ts";
 
 import { SessionInformation } from "./session-information.tsx";
+
+import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/textarea";
 
 // The composer holds the draft for one session. Mounting it under the session
 // key keeps a draft from following the selection to another session. It also
@@ -34,31 +38,18 @@ export function Composer({
   const [text, setText] = useState("");
   const [attachments, setAttachments] = useState<File[]>([]);
   const files = useRef<HTMLInputElement>(null);
-  const message = useRef<HTMLTextAreaElement>(null);
   const acceptsAttachments = capabilities.audio || capabilities.embeddedContext || capabilities.image;
 
   useEffect(() => {
     if (!busy) return;
     const cancel = (event: KeyboardEvent) => {
-      if (
-        event.key !== "Escape"
-        || document.querySelector('dialog[open], .app[data-navigation="open"]')
-      ) return;
+      if (event.key !== "Escape" || overlayOpen()) return;
       event.preventDefault();
       onCancel();
     };
     window.addEventListener("keydown", cancel);
     return () => window.removeEventListener("keydown", cancel);
   }, [busy, onCancel]);
-
-  useLayoutEffect(() => {
-    const element = message.current;
-    if (!element) return;
-    const maximumHeight = Number.parseFloat(getComputedStyle(element).maxBlockSize);
-    element.style.blockSize = "auto";
-    element.style.blockSize = `${Math.min(element.scrollHeight, maximumHeight)}px`;
-    element.style.overflowY = element.scrollHeight > maximumHeight ? "auto" : "hidden";
-  }, [text]);
 
   async function submit(): Promise<void> {
     let prompt: PromptContentBlock[];
@@ -92,15 +83,17 @@ export function Composer({
   }
 
   return (
-    <section aria-label="Prompt" className="composer">
+    <section aria-label="Prompt">
       <form
+        className="overflow-hidden rounded-xl border bg-card shadow-sm focus-within:border-ring focus-within:ring-[3px] focus-within:ring-ring/20"
         onSubmit={(event) => {
           event.preventDefault();
           void submit();
         }}
       >
-        <textarea
+        <Textarea
           aria-label="Message"
+          className="max-h-[calc(8lh+1.5rem)] min-h-11 resize-none rounded-none border-0 bg-transparent px-3 py-3 leading-6 shadow-none focus-visible:ring-0"
           disabled={busy}
           onChange={(event) => setText(event.target.value)}
           onKeyDown={(event) => {
@@ -108,39 +101,64 @@ export function Composer({
             event.preventDefault();
             void submit();
           }}
-          ref={message}
+          placeholder="Send a message"
           rows={1}
           value={text}
         />
-        <div className="session-controls">
+        <div className="flex min-w-0 flex-nowrap items-center gap-1 px-2 py-2 sm:flex-wrap sm:items-end sm:gap-2">
           {acceptsAttachments ? (
-            <label className="icon">
-              <PaperclipIcon />
-              <input
-                aria-label="Add attachment"
-                multiple
-                onChange={(event) => setAttachments([...attachments, ...Array.from(event.target.files ?? [])])}
-                ref={files}
-                type="file"
-              />
-            </label>
+            <Button asChild size="icon-sm" title="Add attachment" variant="ghost">
+              <label>
+                <PaperclipIcon />
+                <input
+                  aria-label="Add attachment"
+                  className="sr-only"
+                  multiple
+                  onChange={(event) => setAttachments([...attachments, ...Array.from(event.target.files ?? [])])}
+                  ref={files}
+                  type="file"
+                />
+              </label>
+            </Button>
           ) : null}
           <SessionInformation onConfigOption={onConfigOption} transcript={transcript} />
+          {busy ? (
+            <Button
+              aria-label="Stop response"
+              className="ml-auto sm:ml-0 sm:w-auto sm:px-3"
+              onClick={onCancel}
+              size="icon-sm"
+              type="button"
+              variant="outline"
+            >
+              <SquareIcon className="fill-current" />
+              <span className="hidden sm:inline">Stop</span>
+            </Button>
+          ) : (
+            <Button aria-label="Send prompt" className="ml-auto sm:ml-0" size="icon-sm" type="submit">
+              <SendIcon />
+            </Button>
+          )}
         </div>
         {attachments.length > 0 ? (
-          <ul aria-label="Attachments" className="attachments">
+          <ul aria-label="Attachments" className="space-y-1 px-2 py-2">
             {attachments.map((file, index) => (
-              <li key={`${file.name}-${index}`}>
-                <span className="truncate">{file.name}</span>
-                <button
+              <li
+                className="flex items-center gap-2 rounded-md border py-0.5 pl-3 text-sm"
+                key={`${file.name}-${index}`}
+              >
+                <span className="min-w-0 flex-1 truncate">{file.name}</span>
+                <Button
                   aria-label={`Remove ${file.name}`}
-                  className="danger icon"
+                  className="hover:bg-destructive/10 hover:text-destructive"
                   onClick={() => removeAttachment(index)}
+                  size="icon-sm"
                   title={`Remove ${file.name}`}
                   type="button"
+                  variant="ghost"
                 >
-                  <CloseIcon />
-                </button>
+                  <XIcon />
+                </Button>
               </li>
             ))}
           </ul>
@@ -148,6 +166,14 @@ export function Composer({
       </form>
     </section>
   );
+}
+
+// Escape closes whichever layer is on top. A dialog, drawer, menu, popover, or
+// open select owns that key before the running turn does.
+function overlayOpen(): boolean {
+  return document.querySelector(
+    '[data-slot="dialog-content"], [data-slot="sheet-content"], [data-slot="dropdown-menu-content"], [data-slot="popover-content"], [data-slot="select-content"]',
+  ) !== null;
 }
 
 // A browser file becomes the most faithful block the agent advertised support
@@ -191,20 +217,4 @@ async function fileData(file: File): Promise<string> {
     data += String.fromCharCode(...bytes.subarray(index, index + 0x8000));
   }
   return btoa(data);
-}
-
-function PaperclipIcon() {
-  return (
-    <svg aria-hidden="true" fill="none" stroke="currentColor" strokeLinecap="round" strokeWidth="2" viewBox="0 0 24 24">
-      <path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48" />
-    </svg>
-  );
-}
-
-function CloseIcon() {
-  return (
-    <svg aria-hidden="true" fill="none" stroke="currentColor" strokeLinecap="round" strokeWidth="2" viewBox="0 0 24 24">
-      <path d="M18 6 6 18M6 6l12 12" />
-    </svg>
-  );
 }

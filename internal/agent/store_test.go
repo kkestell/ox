@@ -382,6 +382,60 @@ func TestListSessionsPagesAtFiftyAndRejectsBadCursors(t *testing.T) {
 	})
 }
 
+func TestListSessionsMarksSessionsLockedByAnotherRuntime(t *testing.T) {
+	directory := t.TempDir()
+	owner, err := New(Config{Logger: discardLogger(), SessionDir: directory})
+	if err != nil {
+		t.Fatal(err)
+	}
+	listing, err := New(Config{Logger: discardLogger(), SessionDir: directory})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := writeListableSession(t, owner.store, "0123456789abcdef0123456789abcdef", "locked")
+	log, _, _, err := owner.store.open(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	closed := false
+	defer func() {
+		if !closed {
+			log.close()
+		}
+	}()
+
+	response, err := listing.ListSessions(context.Background(), acp.ListSessionsRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Sessions) != 1 || response.Sessions[0].Meta[acp.MetaSessionLocked] != true {
+		t.Fatalf("listed sessions = %#v", response.Sessions)
+	}
+
+	owner.sessionsMu.Lock()
+	owner.sessions[id] = &session{id: id, log: log}
+	owner.sessionsMu.Unlock()
+	response, err = owner.ListSessions(context.Background(), acp.ListSessionsRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Sessions) != 1 || response.Sessions[0].Meta != nil {
+		t.Fatalf("owner listed sessions = %#v", response.Sessions)
+	}
+	owner.sessionsMu.Lock()
+	delete(owner.sessions, id)
+	owner.sessionsMu.Unlock()
+	log.close()
+	closed = true
+	response, err = listing.ListSessions(context.Background(), acp.ListSessionsRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Sessions) != 1 || response.Sessions[0].Meta != nil {
+		t.Fatalf("unlocked listed sessions = %#v", response.Sessions)
+	}
+}
+
 func listTestAgent(t *testing.T, sessions int) *Agent {
 	t.Helper()
 	instance, err := New(Config{Logger: discardLogger(), SessionDir: t.TempDir()})

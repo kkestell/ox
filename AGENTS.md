@@ -108,10 +108,6 @@ keep the plan to the smallest useful set of source references, implementation
 tasks, and tests. Do not restate the todo list, architecture, repository rules,
 or standard validation commands.
 
-A plan that changes the web client's visual design also produces a static HTML
-mockup in `eng/mockups/`. The mockup is reviewed and settled before
-implementation starts.
-
 Do not review individual plans or run an independent review after each slice.
 After every top-level todo item is complete, run one completeness and
 simplification review before removing its completed subtree. Fix its findings

@@ -258,6 +258,7 @@ describe("browser protocol", () => {
     entry.conversations = [
       { id: "session-1", status: "active", awaiting: true },
       { id: "session-2", status: "inactive", title: "Yesterday", updatedAt: "2026-09-13T12:00:00Z" },
+      { id: "session-3", status: "locked", title: "Open elsewhere" },
     ];
     expect(snapshotSchema.safeParse(snapshot).success).toBe(true);
 

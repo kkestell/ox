@@ -13,6 +13,7 @@ import { canonicalWorkspace } from "./workspace-registry.ts";
 const maximumDiagnostics = 16;
 const maximumDiagnosticLength = 512;
 const initializationTimeoutMilliseconds = 2_000;
+const sessionLockedMetadataKey = "kkestell.ox/sessionLocked";
 
 export type WorkspaceStatus = "starting" | "ready" | "unavailable" | "stopped";
 
@@ -68,7 +69,7 @@ type SupervisorState = Omit<WorkspaceState, "awaiting" | "busy" | "sessions"> & 
 export type SessionSummary = {
   awaiting?: boolean;
   id: string;
-  status: "inactive" | "loading" | "active";
+  status: "inactive" | "locked" | "loading" | "active";
   title?: string;
   updatedAt?: string;
 };
@@ -285,7 +286,8 @@ export class WorkspaceSupervisor {
   // turn, so a second prompt is refused here while other sessions on the same
   // connection keep prompting.
   prompt(sessionID: string, prompt: PromptContentBlock[]): Promise<void> {
-    if (!this.#controllers.has(sessionID)) {
+    const controller = this.#controllers.get(sessionID);
+    if (!controller) {
       return Promise.reject(new Error("session is not active"));
     }
     if (this.#activePrompts.has(sessionID)) {
@@ -294,6 +296,7 @@ export class WorkspaceSupervisor {
     if (!prompt.every((block) => this.supportsPromptBlock(block))) {
       return Promise.reject(new Error("Ox does not support one or more prompt blocks"));
     }
+    controller.appendPrompt(prompt);
     const running = this.readyConnection().agent
       .request(acp.methods.agent.session.prompt, { prompt, sessionId: sessionID })
       .then(() => undefined);
@@ -593,7 +596,7 @@ export class WorkspaceSupervisor {
     }
     if (this.#sessionCapabilities.list) {
       await this.refreshSessionsImpl();
-      const newest = this.#state.sessions.values[0];
+      const newest = this.#state.sessions.values.find((session) => session.status !== "locked");
       if (newest && this.#sessionCapabilities.load) {
         await this.activateSession(newest.id, "load");
         return;
@@ -638,6 +641,7 @@ export class WorkspaceSupervisor {
     }
     const connection = this.readyConnection();
     const knownSession = this.#state.sessions.values.some((session) => session.id === sessionID);
+    const previousSessions = this.#state.sessions;
     // Install this route before session/load so replay notifications cannot win
     // the race with its successful response.
     this.#controllers.set(sessionID, new SessionController(sessionID));
@@ -657,7 +661,7 @@ export class WorkspaceSupervisor {
       }
     } catch (error) {
       this.#controllers.delete(sessionID);
-      this.setSessions(knownSession ? this.withoutSession(sessionID) : this.removeSession(sessionID));
+      this.setSessions(knownSession ? previousSessions : this.removeSession(sessionID));
       throw error;
     }
     this.setSessions({ ...this.withSessionStatus(sessionID, "active"), selectedID: sessionID });
@@ -724,7 +728,7 @@ export class WorkspaceSupervisor {
   private summaries(sessions: acp.SessionInfo[]): SessionSummary[] {
     return sessions.map((session) => ({
       id: session.sessionId,
-      status: this.#controllers.has(session.sessionId) ? "active" : "inactive",
+      status: this.#controllers.has(session.sessionId) ? "active" : session._meta?.[sessionLockedMetadataKey] === true ? "locked" : "inactive",
       ...(session.title ? { title: session.title } : {}),
       ...(session.updatedAt ? { updatedAt: session.updatedAt } : {}),
     }));

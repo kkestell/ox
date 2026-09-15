@@ -20,6 +20,18 @@ func tryLock(file *os.File) error {
 	return err
 }
 
+func probeLock(file *os.File) (bool, error) {
+	err := tryLock(file)
+	if errors.Is(err, errSessionLocked) {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	unlock(file)
+	return false, nil
+}
+
 func lock(file *os.File) error {
 	return syscall.Flock(int(file.Fd()), syscall.LOCK_EX)
 }

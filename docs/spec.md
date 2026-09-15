@@ -48,14 +48,16 @@ does not become a session or filesystem operation in another.
 The host automatically tries Ox's configured stored credential at startup. Only
 when that cannot authenticate does the browser ask the user to connect, in that
 workspace's settings. After authentication, the web client opens the most
-recently updated conversation, or creates one when the workspace has no history.
-New creates and selects a distinct empty conversation. Choosing history opens
-its complete replay; users do not choose between ACP load and resume. The client
-shows recent conversations for every registered workspace, not only the one it
-is displaying, and opening or creating a conversation switches to its workspace.
-History refresh and pagination are part of the displayed workspace's
-conversation list, while close and delete are secondary actions of the selected
-conversation.
+recently updated available conversation, or creates one when no history is
+currently available. New creates and selects a distinct empty conversation.
+Choosing history opens its complete replay; users do not choose between ACP load
+and resume. The client shows recent conversations for every registered
+workspace, not only the one it is displaying, and opening or creating a
+conversation switches to its workspace. History refresh and pagination are part
+of the displayed workspace's conversation list, while close and delete are
+secondary actions of the selected conversation. A durable conversation currently
+open in another Ox client stays visible but is dimmed, identified as open
+elsewhere, and cannot be chosen until that client releases it.
 
 The primary surface is the selected transcript, its composer, and any permission
 or question blocking work. A live transcript follows new activity until the
@@ -63,10 +65,11 @@ reader scrolls back; a visible action returns to the latest activity without
 changing the conversation. Workspace registration and every workspace's
 conversations sit in one navigation region beside it, along with the actions
 that add, remove, restart, and open the settings of a workspace. The transcript
-view also contains the session's model, mode, and reasoning controls and
-read-only context usage. Attachments are added beside those controls, listed
-beneath them, and removable until the prompt is sent. Plans appear when present,
-and technical tool output is disclosed beneath its activity.
+view also contains the session's model, mode, and reasoning controls, read-only
+context usage, and cumulative session cost. Attachments are added beside those
+controls, listed beneath them, and removable until the prompt is sent. Plans
+appear when present, and technical tool output is disclosed beneath its
+activity.
 
 Workspace settings contain authentication, client-supplied MCP servers, and
 support details. They open in place of the conversation and select the workspace
@@ -229,6 +232,9 @@ active work, releases activation resources, and preserves history.
 `session/delete` removes an inactive session's history and owned spill
 artifacts; it never deletes workspace files or Git worktrees. Loading an already
 active session and deleting an active session fail rather than racing its owner.
+Listed sessions disclose through namespaced metadata when another runtime holds
+their activation lock; the signal is advisory because ownership can change after
+listing.
 
 A second prompt to a busy session is rejected without accepting its content. To
 redirect work, the client cancels, waits for the prompt response, and sends a

@@ -1,17 +1,28 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { ArrowDownIcon, ArrowLeftIcon, MessageSquarePlusIcon, MoreHorizontalIcon, SettingsIcon } from "lucide-react";
+import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
 
-import { type BrowserCommand, type MCPServer, type PendingInteraction, type SessionTranscript } from "../protocol.ts";
+import { type BrowserCommand, type MCPServer, type SessionTranscript } from "../protocol.ts";
 
 import { AddWorkspaceDialog } from "./add-workspace-dialog.tsx";
 import { Authentication } from "./authentication.tsx";
 import { Composer } from "./composer.tsx";
-import { Disclosure } from "./disclosure.tsx";
 import { type CommandResult, useHostConnection } from "./host-connection.ts";
 import { MCPActivationForm } from "./mcp-activation-form.tsx";
 import { PendingInteractions } from "./pending-interactions.tsx";
-import { Sidebar } from "./sidebar.tsx";
+import { WorkspaceSidebar } from "./sidebar.tsx";
 import { SupportDetails } from "./support-details.tsx";
 import { Transcript } from "./transcript.tsx";
+
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { SidebarInset, SidebarProvider, SidebarTrigger, useSidebar } from "@/components/ui/sidebar";
 
 // A supervisor-routed command names the workspace it acts on, so the browser
 // stamps the current selection once instead of at every call site.
@@ -26,14 +37,22 @@ type RoutedRequest = RoutedCommand extends infer Command
   : never;
 
 export function App() {
+  return (
+    <SidebarProvider className="h-svh overflow-hidden">
+      <Shell />
+    </SidebarProvider>
+  );
+}
+
+function Shell() {
   const { connection, send, snapshot } = useHostConnection();
+  const { setOpenMobile } = useSidebar();
   const [credential, setCredential] = useState("");
   const [mcpServers, setMCPServers] = useState<MCPServer[]>([]);
   const [mcpMessage, setMCPMessage] = useState<string>();
   const [sessionError, setSessionError] = useState<string>();
   const [workspacePath, setWorkspacePath] = useState("");
   const [addingWorkspace, setAddingWorkspace] = useState(false);
-  const [navigationOpen, setNavigationOpen] = useState(false);
   const [settings, setSettings] = useState(false);
   const [workspaceMessage, setWorkspaceMessage] = useState<{ error: boolean; text: string }>();
   const active = snapshot?.sessions.active;
@@ -48,15 +67,6 @@ export function App() {
     setMCPMessage(undefined);
     setSessionError(undefined);
   }, [selectedWorkspaceId]);
-
-  useEffect(() => {
-    if (!navigationOpen) return;
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setNavigationOpen(false);
-    };
-    window.addEventListener("keydown", closeOnEscape);
-    return () => window.removeEventListener("keydown", closeOnEscape);
-  }, [navigationOpen]);
 
   // Returns why the command could not be sent, so a missing selection is not
   // reported as a lost host connection. The sidebar acts on a named workspace,
@@ -147,6 +157,7 @@ export function App() {
   const authenticated = snapshot?.authentication.status === "authenticated";
   const unavailable =
     connection === "Unavailable" || connection === "Disconnected" || selectedWorkspace?.status === "unavailable";
+
   function restartWorkspace(workspaceId: string): void {
     setSessionError(undefined);
     submitWorkspaceCommand({ requestId: crypto.randomUUID(), type: "restart-workspace", workspaceId });
@@ -157,7 +168,7 @@ export function App() {
   // the selection, so a refused change shows the workspace it is still showing
   // rather than the one that was clicked.
   function showSettings(workspaceId: string): void {
-    setNavigationOpen(false);
+    setOpenMobile(false);
     setSettings(true);
     if (workspaceId === selectedWorkspaceId) {
       return;
@@ -168,25 +179,19 @@ export function App() {
   }
 
   return (
-    <div className="app" data-navigation={navigationOpen ? "open" : undefined}>
-      <header className="bar">
-        <button aria-expanded={navigationOpen} aria-label="Open navigation" className="icon" onClick={() => setNavigationOpen(true)} type="button">
-          <MenuIcon />
-        </button>
-        <h1>Ox</h1>
-      </header>
+    <>
       {snapshot ? (
-        <Sidebar
+        <WorkspaceSidebar
           onAdd={() => { setWorkspaceMessage(undefined); setAddingWorkspace(true); }}
-          onClose={() => setNavigationOpen(false)}
+          onClose={() => setOpenMobile(false)}
           onNew={(workspaceId) => {
-            setNavigationOpen(false);
+            setOpenMobile(false);
             setSettings(false);
             submitSessionCommand({ requestId: crypto.randomUUID(), type: "new-conversation" }, workspaceId);
           }}
           onOlder={() => historyCommand("next-history-page")}
           onOpen={(workspaceId, sessionId) => {
-            setNavigationOpen(false);
+            setOpenMobile(false);
             setSettings(false);
             submitSessionCommand({ requestId: crypto.randomUUID(), sessionId, type: "open-conversation" }, workspaceId);
           }}
@@ -198,50 +203,97 @@ export function App() {
           workspaces={snapshot.workspaces}
         />
       ) : null}
-      <main inert={navigationOpen ? true : undefined}>
+      <SidebarInset className="min-w-0 overflow-hidden">
         {snapshot?.workspace && settings ? (
-          <div className="scroll">
-            <section aria-label="Workspace settings" className="settings">
-              <h2>{snapshot.workspace.name}</h2>
-              <Authentication
-                authentication={snapshot.authentication}
-                credential={credential}
-                onAuthenticate={(methodId) => sendRouted({ methodId, requestId: crypto.randomUUID(), type: "authenticate" })}
-                onCredential={setCredential}
-                onLogin={terminalLogin}
-                onLogout={() => sendRouted({ requestId: crypto.randomUUID(), type: "logout" })}
-              />
-              <section aria-labelledby="mcp-heading">
-                <h3 id="mcp-heading">MCP servers</h3>
-                <p>{`${snapshot.workspace.mcpServerCount} configured`}</p>
-                {mcpMessage ? <p aria-live="polite">{mcpMessage}</p> : null}
-                <MCPActivationForm onSave={saveMCPServers} servers={mcpServers} setServers={setMCPServers} />
-              </section>
-              <SupportDetails
-                activeSessionId={active?.id}
-                connection={connection}
-                onRefresh={() => historyCommand("refresh-history")}
-                snapshot={snapshot}
-                workspace={snapshot.workspace}
-              />
-            </section>
-          </div>
+          <section aria-label="Workspace settings" className="flex min-h-0 flex-1 flex-col">
+            <PrimaryHeader title="Workspace settings">
+              <Button
+                aria-label={active ? "Back to conversation" : "Back to workspace"}
+                onClick={() => setSettings(false)}
+                size="sm"
+                variant="ghost"
+              >
+                <ArrowLeftIcon />
+                <span className="hidden sm:inline">{active ? "Back to conversation" : "Back to workspace"}</span>
+                <span className="sm:hidden">Back</span>
+              </Button>
+            </PrimaryHeader>
+            <div className="min-h-0 flex-1 overflow-y-auto">
+              <div className="mx-auto flex max-w-4xl flex-col gap-4 p-4 sm:p-6">
+                <div>
+                  <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Workspace</p>
+                  <h2 className="mt-1 truncate text-xl font-semibold tracking-tight" title={snapshot.workspace.name}>
+                    {snapshot.workspace.name}
+                  </h2>
+                </div>
+                <Authentication
+                  authentication={snapshot.authentication}
+                  credential={credential}
+                  onAuthenticate={(methodId) => sendRouted({ methodId, requestId: crypto.randomUUID(), type: "authenticate" })}
+                  onCredential={setCredential}
+                  onLogin={terminalLogin}
+                  onLogout={() => sendRouted({ requestId: crypto.randomUUID(), type: "logout" })}
+                />
+                <Card asChild className="gap-4 py-4">
+                  <section aria-labelledby="mcp-heading">
+                    <CardHeader className="gap-1 px-4">
+                      <CardTitle asChild>
+                        <h3 id="mcp-heading">MCP servers</h3>
+                      </CardTitle>
+                      <CardDescription>{`${snapshot.workspace.mcpServerCount} configured`}</CardDescription>
+                    </CardHeader>
+                    <CardContent className="space-y-3 px-4">
+                      {mcpMessage ? <p aria-live="polite" className="text-sm text-muted-foreground">{mcpMessage}</p> : null}
+                      <MCPActivationForm onSave={saveMCPServers} servers={mcpServers} setServers={setMCPServers} />
+                    </CardContent>
+                  </section>
+                </Card>
+                <SupportDetails
+                  activeSessionId={active?.id}
+                  connection={connection}
+                  onRefresh={() => historyCommand("refresh-history")}
+                  snapshot={snapshot}
+                  workspace={snapshot.workspace}
+                />
+              </div>
+            </div>
+          </section>
         ) : snapshot?.workspace && !authenticated && !unavailable ? (
-          <div className="scroll">
-            <p>{"Ox is not connected. Connect it in "}<a href={`#settings-${selectedWorkspaceId}`} onClick={() => setSettings(true)}>workspace settings</a>.</p>
-          </div>
+          <section className="flex min-h-0 flex-1 flex-col">
+            <PrimaryHeader title="Ox" />
+            <EmptyState
+              action="Open workspace settings"
+              description="Connect this workspace before starting a conversation."
+              icon={<SettingsIcon />}
+              onAction={() => setSettings(true)}
+              title="Connect Ox"
+            />
+          </section>
         ) : snapshot?.workspace && active ? (
-          <section aria-label="Conversation" className="conversation">
-            <header>
-              <h2 className="truncate">{title}</h2>
-              <Disclosure label="Conversation actions">
-                <button onClick={() => conversationCommand("close-conversation", active.id)} type="button">Close conversation</button>
-                <button onClick={() => conversationCommand("delete-conversation", active.id)} type="button">Delete conversation</button>
-              </Disclosure>
-            </header>
+          <section aria-label="Conversation" className="flex min-h-0 flex-1 flex-col">
+            <PrimaryHeader title={title}>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button aria-label="Conversation actions" size="icon-sm" variant="ghost">
+                    <MoreHorizontalIcon />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem onSelect={() => conversationCommand("close-conversation", active.id)}>
+                    Close conversation
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    onSelect={() => conversationCommand("delete-conversation", active.id)}
+                    variant="destructive"
+                  >
+                    Delete conversation
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </PrimaryHeader>
             <TranscriptScroll
-              sessionId={active.id}
               sessionError={sessionError}
+              sessionId={active.id}
               transcript={active.transcript}
               unavailable={unavailable}
             />
@@ -254,29 +306,61 @@ export function App() {
                 submitSessionCommand({ interactionId, optionId, requestId: crypto.randomUUID(), sessionId: active.id, type: "resolve-permission" })
               }
             />
-            <footer>
-              <Composer
-                busy={active.busy}
-                capabilities={snapshot.workspace.promptCapabilities}
-                key={active.id}
-                onCancel={() => submitSessionCommand({ requestId: crypto.randomUUID(), sessionId: active.id, type: "cancel-prompt" })}
-                onConfigOption={(configId, value) =>
-                  submitSessionCommand({ configId, requestId: crypto.randomUUID(), sessionId: active.id, type: "set-config-option", value })
-                }
-                onError={setSessionError}
-                onSubmit={(prompt) => submitSessionCommand({ prompt, requestId: crypto.randomUUID(), sessionId: active.id, type: "prompt" })}
-                transcript={active.transcript}
-              />
+            <footer className="shrink-0 bg-background">
+              <div className="mx-auto w-full max-w-3xl px-4 py-4">
+                <div className="w-full">
+                  <Composer
+                    busy={active.busy}
+                    capabilities={snapshot.workspace.promptCapabilities}
+                    key={active.id}
+                    onCancel={() => submitSessionCommand({ requestId: crypto.randomUUID(), sessionId: active.id, type: "cancel-prompt" })}
+                    onConfigOption={(configId, value) =>
+                      submitSessionCommand({ configId, requestId: crypto.randomUUID(), sessionId: active.id, type: "set-config-option", value })
+                    }
+                    onError={setSessionError}
+                    onSubmit={(prompt) => submitSessionCommand({ prompt, requestId: crypto.randomUUID(), sessionId: active.id, type: "prompt" })}
+                    transcript={active.transcript}
+                  />
+                </div>
+              </div>
             </footer>
           </section>
         ) : snapshot?.workspace ? (
-          <div className="scroll">
-            {unavailable ? <p role="alert">Ox is unavailable. Open workspace settings for diagnostics.</p> : null}
-            {sessionError ? <p role="alert">{sessionError}</p> : null}
-            <p>Choose a conversation or start a new one.</p>
-          </div>
-        ) : null}
-      </main>
+          <section className="flex min-h-0 flex-1 flex-col">
+            <PrimaryHeader title="Ox" />
+            <div className="flex min-h-0 flex-1 flex-col overflow-y-auto p-4">
+              {unavailable ? (
+                <Alert className="mx-auto mb-4 w-full max-w-2xl" variant="destructive">
+                  <AlertDescription>Ox is unavailable. Open workspace settings for diagnostics.</AlertDescription>
+                </Alert>
+              ) : null}
+              {sessionError ? (
+                <Alert className="mx-auto mb-4 w-full max-w-2xl" variant="destructive">
+                  <AlertDescription>{sessionError}</AlertDescription>
+                </Alert>
+              ) : null}
+              <EmptyState
+                action={unavailable ? "Open workspace settings" : "New conversation"}
+                description={unavailable ? "Review diagnostics or restart Ox for this workspace." : "Start a conversation or choose one from the navigation."}
+                icon={unavailable ? <SettingsIcon /> : <MessageSquarePlusIcon />}
+                onAction={() => unavailable ? setSettings(true) : selectedWorkspaceId && submitSessionCommand({ requestId: crypto.randomUUID(), type: "new-conversation" }, selectedWorkspaceId)}
+                title={unavailable ? "Workspace unavailable" : "Ready when you are"}
+              />
+            </div>
+          </section>
+        ) : (
+          <section className="flex min-h-0 flex-1 flex-col">
+            <PrimaryHeader title="Ox" />
+            <EmptyState
+              action="Add workspace"
+              description="Add a folder on this server to start using Ox."
+              icon={<MessageSquarePlusIcon />}
+              onAction={() => setAddingWorkspace(true)}
+              title="No workspace selected"
+            />
+          </section>
+        )}
+      </SidebarInset>
       <AddWorkspaceDialog
         message={workspaceMessage}
         onClose={() => setAddingWorkspace(false)}
@@ -285,6 +369,39 @@ export function App() {
         open={addingWorkspace}
         path={workspacePath}
       />
+    </>
+  );
+}
+
+function PrimaryHeader({ children, title }: { children?: ReactNode; title: string }) {
+  return (
+    <header className="flex h-14 shrink-0 items-center gap-2 border-b px-3 sm:px-4">
+      <SidebarTrigger aria-label="Open navigation" className="md:hidden" />
+      <h2 className="min-w-0 flex-1 truncate text-base font-semibold tracking-tight" title={title}>
+        {title}
+      </h2>
+      {children}
+    </header>
+  );
+}
+
+function EmptyState({ action, description, icon, onAction, title }: {
+  action: string;
+  description: string;
+  icon: ReactNode;
+  onAction: () => void;
+  title: string;
+}) {
+  return (
+    <div className="flex min-h-64 flex-1 items-center justify-center px-6 py-12 text-center">
+      <div className="max-w-sm">
+        <span className="mx-auto flex size-11 items-center justify-center rounded-xl border bg-card text-muted-foreground shadow-sm [&_svg]:size-5">
+          {icon}
+        </span>
+        <h2 className="mt-4 text-lg font-semibold tracking-tight">{title}</h2>
+        <p className="mt-1 text-sm leading-6 text-muted-foreground">{description}</p>
+        <Button className="mt-5" onClick={onAction}>{action}</Button>
+      </div>
     </div>
   );
 }
@@ -307,6 +424,7 @@ function TranscriptScroll({
   const scrollport = useRef<HTMLDivElement>(null);
   const content = useRef<HTMLDivElement>(null);
   const following = useRef(true);
+  const pointerScrolling = useRef(false);
   const [showJump, setShowJump] = useState(false);
 
   function scrollToLatest(): void {
@@ -320,6 +438,14 @@ function TranscriptScroll({
     setShowJump(false);
     scrollToLatest();
   }, [sessionId]);
+
+  const latestUserEntry = transcript.entries.findLast((entry) => entry.kind === "user");
+  useLayoutEffect(() => {
+    if (!latestUserEntry) return;
+    following.current = true;
+    setShowJump(false);
+    scrollToLatest();
+  }, [latestUserEntry?.id]);
 
   useEffect(() => {
     const element = scrollport.current;
@@ -352,26 +478,70 @@ function TranscriptScroll({
     setShowJump(!atLatest);
   }
 
+  function stopFollowing(): void {
+    following.current = false;
+    setShowJump(true);
+  }
+
   return (
-    <div className="scroll transcript-scroll" data-testid="transcript-scrollport" onScroll={updateFollowing} ref={scrollport}>
-      <div className="transcript-content" ref={content}>
-        {unavailable ? <p role="alert">Ox is unavailable. Open workspace settings for diagnostics.</p> : null}
-        {sessionError ? <p role="alert">{sessionError}</p> : null}
-        <Transcript transcript={transcript} />
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div
+        className="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain"
+        data-testid="transcript-scrollport"
+        onKeyDownCapture={(event) => {
+          if (["ArrowUp", "Home", "PageUp"].includes(event.key)) stopFollowing();
+          if (event.key === "End") {
+            following.current = true;
+            setShowJump(false);
+          }
+        }}
+        onPointerDown={() => {
+          pointerScrolling.current = true;
+        }}
+        onPointerUp={() => {
+          updateFollowing();
+          pointerScrolling.current = false;
+        }}
+        onScroll={() => {
+          if (pointerScrolling.current || !following.current) updateFollowing();
+          else scrollToLatest();
+        }}
+        onWheel={(event) => {
+          if (event.deltaY < 0) stopFollowing();
+          else requestAnimationFrame(updateFollowing);
+        }}
+        ref={scrollport}
+      >
+        <div className="mx-auto flex min-h-full min-w-0 max-w-3xl flex-col gap-4 px-4 py-5" ref={content}>
+          {unavailable ? (
+            <Alert variant="destructive">
+              <AlertDescription>Ox is unavailable. Open workspace settings for diagnostics.</AlertDescription>
+            </Alert>
+          ) : null}
+          {sessionError ? (
+            <Alert variant="destructive">
+              <AlertDescription>{sessionError}</AlertDescription>
+            </Alert>
+          ) : null}
+          <Transcript transcript={transcript} />
+        </div>
       </div>
       {showJump ? (
-        <button className="jump-to-latest" onClick={() => {
-          following.current = true;
-          setShowJump(false);
-          scrollToLatest();
-        }} type="button">
-          Jump to latest
-        </button>
+        <div className="flex shrink-0 justify-center bg-background/95 px-3 py-2 backdrop-blur">
+          <Button
+            onClick={() => {
+              following.current = true;
+              setShowJump(false);
+              scrollToLatest();
+            }}
+            size="sm"
+            variant="outline"
+          >
+            <ArrowDownIcon />
+            Jump to latest
+          </Button>
+        </div>
       ) : null}
     </div>
   );
-}
-
-function MenuIcon() {
-  return <svg aria-hidden="true" fill="none" stroke="currentColor" strokeLinecap="round" strokeWidth="2" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16" /></svg>;
 }

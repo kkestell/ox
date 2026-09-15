@@ -358,6 +358,7 @@ func foldRecords(records []sessionRecord) (durableState, error) {
 type sessionListEntry struct {
 	id        string
 	cwd       string
+	locked    bool
 	title     string
 	updatedAt time.Time
 }

@@ -198,6 +198,11 @@ restart. A checkpoint is a load-time shortcut rather than a durability
 requirement, so one is written only when it is no larger than the records it
 lets a load skip.
 
+Session listing briefly probes each log's activation lock without retaining it
+and publishes an advisory namespaced metadata flag when another runtime owns the
+session. Sessions already active in the listing runtime remain available in its
+own list even though that runtime holds their locks.
+
 The active turn owns an in-memory subagent group. Each child has a private
 conversation, inbox, report stream, and cancellation scope while sharing the
 turn's immutable provider configuration, activation resources, and permission

@@ -118,6 +118,7 @@ describe("browser host", () => {
     expect(entry(client, two.id).conversations.map((conversation) => conversation.id)).toEqual(
       Array.from({ length: maximumRecentConversations }, (unused, index) => `session-${index}`),
     );
+    expect(entry(client, two.id).conversations.find((conversation) => conversation.id === refusedSessionID)?.status).toBe("locked");
 
     expect(await client.request({ type: "open-conversation", workspaceId: two.id, sessionId: oldest })).toEqual({
       ok: true,
@@ -140,6 +141,7 @@ describe("browser host", () => {
     ).toEqual({ ok: false, error: expect.any(String) });
     expect(client.snapshot().workspaces.selectedId).toBe(one.id);
     expect(entry(client, one.id).conversations[0]?.id).toBe(newest);
+    expect(entry(client, two.id).conversations.find((conversation) => conversation.id === refusedSessionID)?.status).toBe("locked");
     client.close();
   });
 
@@ -359,6 +361,7 @@ process.stdin.on('data', (chunk) => {
         sessionId: 'session-' + index,
         cwd: process.cwd(),
         title: 'Conversation ' + index,
+        ...('session-' + index === ${JSON.stringify(refused)} ? { _meta: { 'kkestell.ox/sessionLocked': true } } : {}),
       }));
       reply(request.id, { result: { sessions: listed } });
     } else if (request.method === 'session/load') {

@@ -27,7 +27,7 @@ test("stacks every unresolved interaction in its labelled tray", () => {
   );
 
   expect(html).toContain('aria-label="Pending interactions"');
-  expect(html.match(/class="pending-interaction /g)).toHaveLength(2);
+  expect(html.match(/<article/g)).toHaveLength(2);
   expect(html.indexOf("Permission for Run tests")).toBeLessThan(html.indexOf("Choose a color"));
   expect(html).toContain("Allow once");
   expect(html).toContain("Submit answer");

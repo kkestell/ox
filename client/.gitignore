@@ -3,3 +3,4 @@ public/browser.js
 public/browser.js.map
 playwright-report/
 test-results/
+public/styles.css

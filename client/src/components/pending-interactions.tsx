@@ -1,4 +1,12 @@
 import { type FormValue, type PendingInteraction } from "../protocol.ts";
+import { toolLabel } from "./tool-label.ts";
+
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
 export function PendingInteractions({ interactions, onElicitation, onPermission }: {
   interactions: PendingInteraction[];
@@ -7,12 +15,14 @@ export function PendingInteractions({ interactions, onElicitation, onPermission 
 }) {
   if (interactions.length === 0) return null;
   return (
-    <aside aria-label="Pending interactions" className="pending-interactions">
-      {interactions.map((interaction) => interaction.kind === "permission" ? (
-        <PermissionInteraction interaction={interaction} key={interaction.id} onPermission={onPermission} />
-      ) : (
-        <ElicitationForm interaction={interaction} key={interaction.id} onSubmit={onElicitation} />
-      ))}
+    <aside aria-label="Pending interactions" className="max-h-[35%] shrink-0 overflow-x-hidden overflow-y-auto bg-background py-3">
+      <div className="mx-auto w-full max-w-3xl space-y-2 px-4">
+        {interactions.map((interaction) => interaction.kind === "permission" ? (
+          <PermissionInteraction interaction={interaction} key={interaction.id} onPermission={onPermission} />
+        ) : (
+          <ElicitationForm interaction={interaction} key={interaction.id} onSubmit={onElicitation} />
+        ))}
+      </div>
     </aside>
   );
 }
@@ -21,21 +31,29 @@ export function PermissionInteraction({ interaction, onPermission }: {
   interaction: Extract<PendingInteraction, { kind: "permission" }>;
   onPermission: (interactionId: string, optionId: string) => void;
 }) {
+  const label = toolLabel(interaction.tool);
   return (
-    <article aria-label={`Permission for ${interaction.tool.title}`} className="pending-interaction permission-interaction">
-      <header><h3>{interaction.tool.title}</h3></header>
-      <div className="interaction-body">
-        {interaction.tool.name ? <p>{interaction.tool.name}</p> : null}
-        {interaction.tool.toolKind ? <p>{interaction.tool.toolKind}</p> : null}
-        <div className="interaction-actions">
-          {interaction.options.map((option) => (
-            <button key={option.id} onClick={() => onPermission(interaction.id, option.id)} type="button">
-              {option.name}
-            </button>
-          ))}
-        </div>
-      </div>
-    </article>
+    <Card asChild className="w-full py-0 shadow-sm">
+      <article aria-label={`Permission for ${label}`}>
+        <CardContent className="flex flex-wrap items-center gap-3 px-3 py-3">
+          <CardTitle asChild>
+            <h3 className="min-w-0 flex-1 break-words text-sm [overflow-wrap:anywhere]">{label}</h3>
+          </CardTitle>
+          <div className="flex flex-wrap gap-2">
+            {interaction.options.map((option, index) => (
+              <Button
+                key={option.id}
+                onClick={() => onPermission(interaction.id, option.id)}
+                size="sm"
+                variant={index === 0 ? "default" : "outline"}
+              >
+                {permissionLabel(option.kind, option.name)}
+              </Button>
+            ))}
+          </div>
+        </CardContent>
+      </article>
+    </Card>
   );
 }
 
@@ -47,62 +65,134 @@ export function ElicitationForm({
   onSubmit: (interactionId: string, action: "accept" | "decline" | "cancel", content?: Record<string, FormValue>) => void;
 }) {
   return (
-    <article aria-label={interaction.title ?? interaction.message} className="pending-interaction elicitation-interaction">
-      <header><h3>{interaction.title ?? "Question"}</h3></header>
-      <div className="interaction-body">
-      <p>{interaction.message}</p>
-      {interaction.description ? <p>{interaction.description}</p> : null}
-      <form className="interaction-form" onSubmit={(event) => {
-        event.preventDefault();
-        const form = new FormData(event.currentTarget);
-        const content = Object.create(null) as Record<string, FormValue>;
-        for (const field of interaction.fields) {
-          switch (field.type) {
-            case "string": {
-              const value = form.get(field.name);
-              if (value !== null && (field.required || value !== "")) content[field.name] = String(value);
-              break;
+    <Card asChild className="gap-0 overflow-hidden py-0 shadow-sm">
+      <article aria-label={interaction.title ?? interaction.message}>
+        <CardHeader className="border-b bg-muted/40 px-4 py-3">
+          <CardTitle asChild>
+            <h3 className="text-sm">{interaction.title ?? "Question"}</h3>
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-2 px-4 py-3">
+          <p className="text-sm text-muted-foreground">{interaction.message}</p>
+          {interaction.description ? <p className="text-sm text-muted-foreground">{interaction.description}</p> : null}
+          <form className="space-y-3 pt-1" onSubmit={(event) => {
+            event.preventDefault();
+            const form = new FormData(event.currentTarget);
+            const content = Object.create(null) as Record<string, FormValue>;
+            for (const field of interaction.fields) {
+              switch (field.type) {
+                case "string": {
+                  const value = form.get(field.name);
+                  if (value !== null && (field.required || value !== "")) content[field.name] = String(value);
+                  break;
+                }
+                case "number":
+                case "integer": {
+                  const value = form.get(field.name);
+                  if (value !== null && value !== "") content[field.name] = Number(value);
+                  break;
+                }
+                case "boolean": content[field.name] = form.has(field.name); break;
+                case "multi-select": content[field.name] = form.getAll(field.name).map(String); break;
+              }
             }
-            case "number":
-            case "integer": {
-              const value = form.get(field.name);
-              if (value !== null && value !== "") content[field.name] = Number(value);
-              break;
-            }
-            case "boolean": content[field.name] = form.has(field.name); break;
-            case "multi-select": content[field.name] = form.getAll(field.name).map(String); break;
-          }
-        }
-        onSubmit(interaction.id, "accept", content);
-      }}>
-        {interaction.fields.map((field) => (
-          <label key={field.name}>
-            {field.label}
-            {field.description ? <span>{field.description}</span> : null}
-            {field.type === "boolean" ? (
-              <input defaultChecked={field.default} name={field.name} type="checkbox" />
-            ) : field.type === "multi-select" ? (
-              <select defaultValue={field.default} multiple name={field.name} required={field.required}>
-                {field.choices.map((choice) => <option key={choice.value} value={choice.value}>{choice.label}</option>)}
-              </select>
-            ) : field.type === "string" && field.choices ? (
-              <select defaultValue={field.default ?? ""} name={field.name} required={field.required}>
-                {field.default === undefined ? <option disabled value="">Select an option</option> : null}
-                {field.choices.map((choice) => <option key={choice.value} value={choice.value}>{choice.label}</option>)}
-              </select>
-            ) : (
-              <input defaultValue={field.default} max={field.type === "string" ? field.maxLength : field.maximum} min={field.type === "string" ? field.minLength : field.minimum} name={field.name} pattern={field.type === "string" ? field.pattern : undefined} required={field.required} step={field.type === "integer" ? 1 : undefined} type={field.type === "string" ? stringInputType(field.format) : "number"} />
-            )}
-          </label>
-        ))}
-        <div className="interaction-actions">
-          <button type="submit">Submit answer</button>
-          <button onClick={() => onSubmit(interaction.id, "decline")} type="button">Decline</button>
-          <button onClick={() => onSubmit(interaction.id, "cancel")} type="button">Cancel question</button>
-        </div>
-      </form>
+            onSubmit(interaction.id, "accept", content);
+          }}>
+            {interaction.fields.map((field) => (
+              <Field field={field} key={field.name} />
+            ))}
+            <div className="flex flex-wrap gap-2">
+              <Button size="sm" type="submit">Submit answer</Button>
+              <Button onClick={() => onSubmit(interaction.id, "decline")} size="sm" type="button" variant="outline">
+                Decline
+              </Button>
+              <Button onClick={() => onSubmit(interaction.id, "cancel")} size="sm" type="button" variant="ghost">
+                Cancel question
+              </Button>
+            </div>
+          </form>
+        </CardContent>
+      </article>
+    </Card>
+  );
+}
+
+function permissionLabel(kind: Extract<PendingInteraction, { kind: "permission" }>["options"][number]["kind"], fallback: string): string {
+  switch (kind) {
+    case "allow_once": return "Allow once";
+    case "allow_always": return "Always allow";
+    case "reject_once": return "Reject";
+    case "reject_always": return "Always reject";
+    default: return fallback;
+  }
+}
+
+function Field({ field }: { field: Extract<PendingInteraction, { kind: "form" }>["fields"][number] }) {
+  const id = `field-${field.name}`;
+  const description = field.description ? (
+    <span className="text-xs font-normal text-muted-foreground">{field.description}</span>
+  ) : null;
+
+  if (field.type === "boolean") {
+    return (
+      <div className="flex items-center gap-2">
+        <Checkbox defaultChecked={field.default} id={id} name={field.name} />
+        <Label htmlFor={id}>{field.label}{description}</Label>
       </div>
-    </article>
+    );
+  }
+
+  // Radix has no multiple-selection listbox, so a multi-select field keeps the
+  // platform's own control.
+  if (field.type === "multi-select") {
+    return (
+      <div className="space-y-1.5">
+        <Label htmlFor={id}>{field.label}{description}</Label>
+        <select
+          className="w-full rounded-md border border-input bg-transparent px-3 py-1.5 text-sm shadow-xs outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50"
+          defaultValue={field.default}
+          id={id}
+          multiple
+          name={field.name}
+          required={field.required}
+        >
+          {field.choices.map((choice) => <option key={choice.value} value={choice.value}>{choice.label}</option>)}
+        </select>
+      </div>
+    );
+  }
+
+  if (field.type === "string" && field.choices) {
+    return (
+      <div className="space-y-1.5">
+        <Label htmlFor={id}>{field.label}{description}</Label>
+        <Select defaultValue={field.default} name={field.name} required={field.required}>
+          <SelectTrigger aria-label={field.label} className="w-full" id={id}>
+            <SelectValue placeholder="Select an option" />
+          </SelectTrigger>
+          <SelectContent>
+            {field.choices.map((choice) => <SelectItem key={choice.value} value={choice.value}>{choice.label}</SelectItem>)}
+          </SelectContent>
+        </Select>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-1.5">
+      <Label htmlFor={id}>{field.label}{description}</Label>
+      <Input
+        defaultValue={field.default}
+        id={id}
+        max={field.type === "string" ? field.maxLength : field.maximum}
+        min={field.type === "string" ? field.minLength : field.minimum}
+        name={field.name}
+        pattern={field.type === "string" ? field.pattern : undefined}
+        required={field.required}
+        step={field.type === "integer" ? 1 : undefined}
+        type={field.type === "string" ? stringInputType(field.format) : "number"}
+      />
+    </div>
   );
 }
 

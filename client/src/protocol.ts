@@ -408,7 +408,7 @@ export type BrowserCommand = z.infer<typeof browserCommandSchema>;
 const conversationSchema = z
   .object({
     id: z.string().min(1),
-    status: z.enum(["inactive", "loading", "active"]),
+    status: z.enum(["inactive", "locked", "loading", "active"]),
     awaiting: z.boolean().optional(),
     title: z.string().min(1).optional(),
     updatedAt: z.string().min(1).optional(),

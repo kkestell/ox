@@ -1,6 +1,6 @@
 import type * as acp from "@agentclientprotocol/sdk";
 
-import { parsePendingInteraction, type FormField, type FormValue, type PendingInteraction, type SessionTranscript, type ToolTranscriptContent, type TranscriptContent, type TranscriptEntry } from "./protocol.ts";
+import { parsePendingInteraction, type FormField, type FormValue, type PendingInteraction, type PromptContentBlock, type SessionTranscript, type ToolTranscriptContent, type TranscriptContent, type TranscriptEntry } from "./protocol.ts";
 
 type MessageKind = "user" | "agent" | "thought";
 
@@ -98,6 +98,14 @@ export class SessionController {
 
   get awaiting(): boolean {
     return this.#pending.size > 0;
+  }
+
+  appendPrompt(prompt: PromptContentBlock[]): void {
+    this.append({
+      content: prompt.map(promptTranscriptContent),
+      id: this.localID("user"),
+      kind: "user",
+    });
   }
 
   get interactions(): PendingInteraction[] {
@@ -357,6 +365,11 @@ function contentBlock(value: unknown): TranscriptContent | undefined {
     default:
       return { label: `Unknown content${type ? `: ${type}` : ""}`, type: "unknown" };
   }
+}
+
+function promptTranscriptContent(content: PromptContentBlock): TranscriptContent {
+  if (content.type !== "resource") return { ...content };
+  return { ...content.resource, type: "resource" };
 }
 
 function toolContent(value: unknown): ToolTranscriptContent {

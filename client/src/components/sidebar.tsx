@@ -1,8 +1,39 @@
+import {
+  CircleIcon,
+  LockIcon,
+  MoreHorizontalIcon,
+  PlusIcon,
+  RotateCcwIcon,
+  SettingsIcon,
+  Trash2Icon,
+  XIcon,
+} from "lucide-react";
+
 import { type Snapshot } from "../protocol.ts";
+
+import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
+  Sidebar,
+  SidebarContent,
+  SidebarGroup,
+  SidebarHeader,
+  SidebarMenu,
+  SidebarMenuItem,
+  SidebarMenuSub,
+  SidebarMenuSubButton,
+  SidebarMenuSubItem,
+} from "@/components/ui/sidebar";
 
 // Navigating between conversations is a link, so the sidebar reads as
 // navigation; every control that changes host state stays a button.
-export function Sidebar({ onAdd, onClose, onNew, onOlder, onOpen, onRemove, onRestart, onSettings, sessions, settings, workspaces }: {
+export function WorkspaceSidebar({ onAdd, onClose, onNew, onOlder, onOpen, onRemove, onRestart, onSettings, sessions, settings, workspaces }: {
   onAdd: () => void;
   onClose: () => void;
   onNew: (workspaceId: string) => void;
@@ -16,85 +47,175 @@ export function Sidebar({ onAdd, onClose, onNew, onOlder, onOpen, onRemove, onRe
   workspaces: Snapshot["workspaces"];
 }) {
   return (
-    <nav aria-label="Workspaces and conversations" className="sidebar">
-      <header>
-        <h1>Ox</h1>
-        <button aria-label="Add workspace" className="icon" onClick={onAdd} title="Add workspace" type="button"><PlusIcon /></button>
-        <button aria-label="Close navigation" className="close icon" onClick={onClose} title="Close navigation" type="button"><CloseIcon /></button>
-      </header>
-      <div className="scroll">
-        {workspaces.values.length > 0 ? (
-          <ul aria-label="Workspaces" className="workspaces">
-            {workspaces.values.map((workspace) => (
-              <li aria-current={workspaces.selectedId === workspace.id ? "true" : undefined} className="workspace" key={workspace.id}>
-                <header>
-                  <h2 className="truncate">{workspace.name}</h2>
-                  <button aria-label={`New conversation in ${workspace.name}`} className="icon" onClick={() => onNew(workspace.id)} title="New conversation" type="button"><PlusIcon /></button>
-                  <a
-                    aria-current={settings && workspaces.selectedId === workspace.id ? "page" : undefined}
-                    aria-label={`Settings for ${workspace.name}`}
-                    className="icon"
-                    href={`#settings-${workspace.id}`}
-                    onClick={() => onSettings(workspace.id)}
-                    title="Settings"
-                  ><SettingsIcon /></a>
-                  <button aria-label={`Remove ${workspace.name}`} className="danger icon" onClick={() => onRemove(workspace.id)} title="Remove workspace" type="button"><TrashIcon /></button>
-                </header>
-                {workspace.status === "ready" ? (
-                  <>
-                    <ul aria-label={`${workspace.name} conversations`} className="conversations">
-                      {workspace.conversations.map((conversation) => (
-                        <li key={conversation.id}>
-                          <a
-                            aria-current={!settings && sessions.selectedId === conversation.id ? "page" : undefined}
-                            href={`#${conversation.id}`}
-                            onClick={() => onOpen(workspace.id, conversation.id)}
+    <Sidebar>
+      <nav aria-label="Workspaces and conversations" className="flex h-full min-h-0 flex-col">
+        <SidebarHeader className="h-14 flex-row items-center gap-2 border-b px-3">
+          <h1 className="flex-1 text-base font-semibold tracking-tight">Ox</h1>
+          <Button onClick={onAdd} size="sm" title="Add workspace" variant="ghost">
+            <PlusIcon />
+            Add workspace
+          </Button>
+          <Button
+            aria-label="Close navigation"
+            className="md:hidden"
+            onClick={onClose}
+            size="icon-sm"
+            title="Close navigation"
+            variant="ghost"
+          >
+            <XIcon />
+          </Button>
+        </SidebarHeader>
+        <SidebarContent className="scrollbar-gutter-stable">
+          {workspaces.values.length > 0 ? (
+            <SidebarGroup className="px-2 py-3">
+              <SidebarMenu aria-label="Workspaces" className="gap-6">
+                {workspaces.values.map((workspace) => (
+                  <SidebarMenuItem
+                    aria-current={workspaces.selectedId === workspace.id ? "true" : undefined}
+                    className="min-w-0"
+                    key={workspace.id}
+                  >
+                    <div className="flex min-w-0 items-center gap-1 px-2">
+                      <h2 className="min-w-0 flex-1 truncate text-sm font-semibold" title={workspace.name}>
+                        {workspace.name}
+                      </h2>
+                      {workspace.status === "ready" ? (
+                        <Button
+                          aria-label={`New conversation in ${workspace.name}`}
+                          onClick={() => onNew(workspace.id)}
+                          size="icon-sm"
+                          title="New conversation"
+                          variant="ghost"
+                        >
+                          <PlusIcon />
+                        </Button>
+                      ) : null}
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button
+                            aria-label={`Workspace actions for ${workspace.name}`}
+                            size="icon-sm"
+                            title="Workspace actions"
+                            variant="ghost"
                           >
-                            <span className="truncate">{conversation.title ?? "Untitled conversation"}</span>
-                            {conversation.status === "loading" || conversation.awaiting || conversation.updatedAt ? (
-                              <span className="meta">
-                                {conversation.updatedAt ? <time dateTime={conversation.updatedAt}>{new Date(conversation.updatedAt).toLocaleString()}</time> : null}
-                                {conversation.status === "loading" ? <span>Opening…</span> : null}
-                                {conversation.awaiting ? <span className="waiting">Waiting for you</span> : null}
-                              </span>
-                            ) : null}
-                          </a>
-                        </li>
-                      ))}
-                    </ul>
-                    {workspaces.selectedId === workspace.id && sessions.nextCursor ? <button className="older" onClick={onOlder} type="button">Show older conversations</button> : null}
-                  </>
-                ) : (
-                  <p className="stopped">
-                    {workspace.status === "starting" ? "Ox is starting." : "Ox is not running."}
-                    {workspace.status === "starting" ? null : <button aria-label={`Restart ${workspace.name}`} className="outline" onClick={() => onRestart(workspace.id)} type="button"><RestartIcon />Restart</button>}
-                  </p>
-                )}
-              </li>
-            ))}
-          </ul>
-        ) : <p className="empty">Register a server-local workspace to begin.</p>}
-      </div>
-    </nav>
+                            <MoreHorizontalIcon />
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end">
+                          <DropdownMenuItem asChild>
+                            <a
+                              aria-label={`Settings for ${workspace.name}`}
+                              aria-current={settings && workspaces.selectedId === workspace.id ? "page" : undefined}
+                              href={`#settings-${workspace.id}`}
+                              onClick={() => onSettings(workspace.id)}
+                            >
+                              <SettingsIcon />
+                              Workspace settings
+                            </a>
+                          </DropdownMenuItem>
+                          <DropdownMenuSeparator />
+                          <DropdownMenuItem aria-label={`Remove ${workspace.name}`} onSelect={() => onRemove(workspace.id)} variant="destructive">
+                            <Trash2Icon />
+                            Remove workspace
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    </div>
+                    {workspace.status === "ready" ? (
+                      <>
+                        <SidebarMenuSub
+                          aria-label={`${workspace.name} conversations`}
+                          className="mx-0 mt-1 gap-1 translate-x-0 border-l-0 pr-0 pl-0"
+                        >
+                          {workspace.conversations.map((conversation) => (
+                            <SidebarMenuSubItem key={conversation.id}>
+                              <SidebarMenuSubButton
+                                asChild
+                                className="h-auto min-w-0 flex-col items-start gap-1 rounded-lg px-2 py-2"
+                                isActive={!settings && sessions.selectedId === conversation.id}
+                              >
+                                <a
+                                  aria-disabled={conversation.status === "locked" || undefined}
+                                  aria-current={!settings && sessions.selectedId === conversation.id ? "page" : undefined}
+                                  href={conversation.status === "locked" ? undefined : `#${conversation.id}`}
+                                  onClick={conversation.status === "locked" ? undefined : () => onOpen(workspace.id, conversation.id)}
+                                  title={conversation.status === "locked" ? "Open in another client" : undefined}
+                                >
+                                  <span className="flex w-full min-w-0 items-center gap-1.5">
+                                    {conversation.status === "locked" ? (
+                                      <LockIcon aria-label="Open in another client" className="size-3.5 shrink-0 text-muted-foreground" />
+                                    ) : null}
+                                    {conversation.awaiting ? (
+                                      <CircleIcon aria-label="Waiting for you" className="size-2 shrink-0 fill-amber-500 text-amber-500" />
+                                    ) : null}
+                                    <span className="min-w-0 truncate font-medium" title={conversation.title ?? "Untitled conversation"}>
+                                      {conversation.title ?? "Untitled conversation"}
+                                    </span>
+                                  </span>
+                                  {conversation.status === "loading" || conversation.updatedAt ? (
+                                    <span className="flex w-full min-w-0 items-center gap-2 text-xs text-sidebar-foreground/55">
+                                      {conversation.updatedAt ? (
+                                        <time className="min-w-0 flex-1 truncate" dateTime={conversation.updatedAt}>
+                                          {shortDate(conversation.updatedAt)}
+                                        </time>
+                                      ) : null}
+                                      {conversation.status === "loading" ? <span className="shrink-0">Opening…</span> : null}
+                                    </span>
+                                  ) : null}
+                                </a>
+                              </SidebarMenuSubButton>
+                            </SidebarMenuSubItem>
+                          ))}
+                        </SidebarMenuSub>
+                        {workspaces.selectedId === workspace.id && sessions.nextCursor ? (
+                          <Button
+                            className="mt-1 w-full justify-start text-muted-foreground"
+                            onClick={onOlder}
+                            size="sm"
+                            variant="ghost"
+                          >
+                            Show older conversations
+                          </Button>
+                        ) : null}
+                      </>
+                    ) : (
+                      <div className="mt-2 flex items-center gap-2 rounded-lg border border-dashed bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+                        <span className="min-w-0 flex-1">{workspace.status === "starting" ? "Ox is starting…" : "Ox is not running."}</span>
+                        {workspace.status === "starting" ? null : (
+                          <Button
+                            aria-label={`Restart ${workspace.name}`}
+                            onClick={() => onRestart(workspace.id)}
+                            size="xs"
+                            variant="outline"
+                          >
+                            <RotateCcwIcon />
+                            Restart
+                          </Button>
+                        )}
+                      </div>
+                    )}
+                  </SidebarMenuItem>
+                ))}
+              </SidebarMenu>
+            </SidebarGroup>
+          ) : (
+            <div className="px-4 py-6 text-center">
+              <p className="text-sm font-medium">No workspaces yet</p>
+              <p className="mt-1 text-sm text-muted-foreground">Add a folder on this server to start a conversation.</p>
+            </div>
+          )}
+        </SidebarContent>
+      </nav>
+    </Sidebar>
   );
 }
 
-function PlusIcon() {
-  return <svg aria-hidden="true" fill="none" stroke="currentColor" strokeLinecap="round" strokeWidth="2" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" /></svg>;
-}
-
-function SettingsIcon() {
-  return <svg aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3" /><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1" /></svg>;
-}
-
-function TrashIcon() {
-  return <svg aria-hidden="true" fill="none" stroke="currentColor" strokeLinecap="round" strokeWidth="2" viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3" /></svg>;
-}
-
-function CloseIcon() {
-  return <svg aria-hidden="true" fill="none" stroke="currentColor" strokeLinecap="round" strokeWidth="2" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12" /></svg>;
-}
-
-function RestartIcon() {
-  return <svg aria-hidden="true" fill="none" stroke="currentColor" strokeLinecap="round" strokeWidth="2" viewBox="0 0 24 24"><path d="M21 12a9 9 0 1 1-2.6-6.4M21 3v6h-6" /></svg>;
+function shortDate(value: string): string {
+  return new Date(value).toLocaleString(undefined, {
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    month: "short",
+  });
 }

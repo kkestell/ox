@@ -37,6 +37,7 @@ const mimeTypes = new Map([
   [".html", "text/html; charset=utf-8"],
   [".js", "text/javascript; charset=utf-8"],
   [".map", "application/json; charset=utf-8"],
+  [".svg", "image/svg+xml"],
 ]);
 
 export async function startHost(options: HostOptions = {}): Promise<StartedHost> {

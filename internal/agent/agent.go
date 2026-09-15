@@ -841,12 +841,16 @@ func (a *Agent) ListSessions(
 		Sessions: make([]acp.SessionInfo, 0, end-start),
 	}
 	for _, state := range filtered[start:end] {
-		response.Sessions = append(response.Sessions, acp.SessionInfo{
+		info := acp.SessionInfo{
 			SessionID: state.id,
 			CWD:       state.cwd,
 			Title:     state.title,
 			UpdatedAt: state.updatedAt.Format(time.RFC3339Nano),
-		})
+		}
+		if state.locked && a.findSession(state.id) == nil {
+			info.Meta = acp.Metadata{acp.MetaSessionLocked: true}
+		}
+		response.Sessions = append(response.Sessions, info)
 	}
 	if end < len(filtered) {
 		last := filtered[end-1]

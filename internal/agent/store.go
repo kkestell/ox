@@ -163,11 +163,17 @@ func (s *fileStore) project(name string) (sessionListEntry, error) {
 		return sessionListEntry{}, err
 	}
 	records, _, _, readErr := readRecords(file)
+	locked, lockErr := probeLock(file)
 	closeErr := file.Close()
-	if err := errors.Join(readErr, closeErr); err != nil {
+	if err := errors.Join(readErr, lockErr, closeErr); err != nil {
 		return sessionListEntry{}, err
 	}
-	return foldListProjection(records)
+	projected, err := foldListProjection(records)
+	if err != nil {
+		return sessionListEntry{}, err
+	}
+	projected.locked = locked
+	return projected, nil
 }
 
 func (s *fileStore) skip(name string, err error) {
