@@ -26,8 +26,7 @@ export function Transcript({ interactions, onElicitation, onPermission, transcri
   );
 
   return (
-    <section aria-labelledby="transcript-heading">
-      <h2 id="transcript-heading">Transcript</h2>
+    <section aria-label="Transcript">
       <ol aria-label="Session transcript">
         {transcript.entries.map((entry) => (
           <li key={entry.id}>

@@ -15,14 +15,14 @@ export function SupportDetails({ activeSessionId, connection, onRefresh, snapsho
         <dt>Host revision</dt><dd>{snapshot.revision}</dd>
         {activeSessionId ? <><dt>Session ID</dt><dd>{activeSessionId}</dd></> : null}
       </dl>
-      <ul aria-label="Ox processes">
+      <ul aria-label="Ox processes" className="logs processes">
         {snapshot.workspaces.values.map((entry) => (
           <li key={entry.id}>
             {`${entry.name} — ${entry.status}, ${entry.busy ? "working" : "idle"}${entry.awaiting ? ", waiting for an answer" : ""}`}
           </li>
         ))}
       </ul>
-      {workspace.diagnostics.length > 0 ? <ul aria-label="Workspace diagnostics">{workspace.diagnostics.map((diagnostic, index) => <li key={`${index}-${diagnostic}`}>{diagnostic}</li>)}</ul> : null}
+      {workspace.diagnostics.length > 0 ? <ul aria-label="Workspace diagnostics" className="logs">{workspace.diagnostics.map((diagnostic, index) => <li key={`${index}-${diagnostic}`}>{diagnostic}</li>)}</ul> : null}
       <button onClick={onRefresh} type="button">Refresh conversation history</button>
     </section>
   );

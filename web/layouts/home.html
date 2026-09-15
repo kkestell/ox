@@ -1,0 +1,29 @@
+{{ define "main" }}
+  <section class="hero">
+    <h1>Ox</h1>
+  </section>
+
+  <section class="install">
+    <h2>Install</h2>
+    <div class="tabs">
+      <input type="radio" name="install-tab" id="install-curl" checked>
+      <input type="radio" name="install-tab" id="install-brew">
+      <input type="radio" name="install-tab" id="install-aur">
+      <div class="tabs__labels">
+        <label for="install-curl">curl</label>
+        <label for="install-brew">brew</label>
+        <label for="install-aur">AUR</label>
+      </div>
+      <div class="tabs__panels">
+        <pre class="tabs__panel" data-panel="curl"><code>curl -fsSL https://ox.dev/install | bash</code></pre>
+        <pre class="tabs__panel" data-panel="brew"><code># TODO</code></pre>
+        <pre class="tabs__panel" data-panel="aur"><code># TODO</code></pre>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>About Ox</h2>
+  </section>
+
+{{ end }}

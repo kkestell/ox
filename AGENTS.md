@@ -47,6 +47,8 @@ output. It is ACP-first and works with ACP clients. The durable design lives in
 - `client/` — The first-party browser ACP client: its Bun host, React surface,
   and Playwright harness.
 - `docs/` — End-user documentation and the target product specification.
+- `web/` — The Hugo site for Ox's documentation, built by its own `Makefile`;
+  `web/AGENTS.md` owns how the site is written and built.
 - `eng/` — Development and agent documentation. `eng/architecture.md` owns the
   agent design, `eng/client-architecture.md` owns the first-party web client
   design, `eng/todo.md` owns build order and status, `eng/plans/` holds plans

@@ -1203,7 +1203,11 @@ func (s *durableState) validateModelExchange(value modelExchangeRecord) error {
 
 // applyModelExchange folds a completed exchange into the turn: the assistant
 // message, one tool message per call, and the usage and identities the exchange
-// settles.
+// settles. An exchange that produced only reasoning, which is what cancelling
+// before the first text or tool call leaves behind, contributes its usage and
+// identities but no message: providers reject an assistant message that carries
+// neither content nor tool calls, so keeping one would fail every later request
+// in the session.
 func (s *durableState) applyModelExchange(value modelExchangeRecord) error {
 	if err := s.validateModelExchange(value); err != nil {
 		return err
@@ -1234,7 +1238,7 @@ func (s *durableState) applyModelExchange(value modelExchangeRecord) error {
 				}},
 			})
 		}
-	case stopReason(value.FinishReason) != acp.StopReasonRefusal:
+	case value.Text != "" && stopReason(value.FinishReason) != acp.StopReasonRefusal:
 		s.history = append(s.history, assistant)
 	}
 	s.messageIDs[value.AnswerID] = struct{}{}

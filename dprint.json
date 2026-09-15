@@ -1,6 +1,6 @@
 {
   "includes": ["**/*.md"],
-  "excludes": ["references/**", ".claude/**"],
+  "excludes": ["references/**", ".claude/**", "web/**"],
   "lineWidth": 80,
   "markdown": {
     "textWrap": "always"

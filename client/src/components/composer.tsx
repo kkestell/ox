@@ -1,92 +1,149 @@
-import { useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import {
   maximumAttachmentBytes,
   maximumPromptText,
   type PromptCapabilities,
   type PromptContentBlock,
+  type SessionTranscript,
 } from "../protocol.ts";
 
-import { Disclosure } from "./disclosure.tsx";
+import { SessionInformation } from "./session-information.tsx";
 
 // The composer holds the draft for one session. Mounting it under the session
-// key keeps a draft from following the selection to another session.
+// key keeps a draft from following the selection to another session. It also
+// owns the row of session controls, because the attachment control sits at the
+// start of that row and the chosen files belong below the whole row.
 export function Composer({
   busy,
   capabilities,
   onCancel,
+  onConfigOption,
   onError,
   onSubmit,
+  transcript,
 }: {
   busy: boolean;
   capabilities: PromptCapabilities;
   onCancel: () => void;
+  onConfigOption: (configId: string, value: string) => void;
   onError: (message: string) => void;
   onSubmit: (prompt: PromptContentBlock[]) => void;
+  transcript: SessionTranscript;
 }) {
   const [text, setText] = useState("");
   const [attachments, setAttachments] = useState<File[]>([]);
-  const [resourceLinkName, setResourceLinkName] = useState("");
-  const [resourceLinkURI, setResourceLinkURI] = useState("");
   const files = useRef<HTMLInputElement>(null);
+  const message = useRef<HTMLTextAreaElement>(null);
   const acceptsAttachments = capabilities.audio || capabilities.embeddedContext || capabilities.image;
+
+  useEffect(() => {
+    if (!busy) return;
+    const cancel = (event: KeyboardEvent) => {
+      if (
+        event.key !== "Escape"
+        || document.querySelector('dialog[open], .app[data-navigation="open"]')
+      ) return;
+      event.preventDefault();
+      onCancel();
+    };
+    window.addEventListener("keydown", cancel);
+    return () => window.removeEventListener("keydown", cancel);
+  }, [busy, onCancel]);
+
+  useLayoutEffect(() => {
+    const element = message.current;
+    if (!element) return;
+    const maximumHeight = Number.parseFloat(getComputedStyle(element).maxBlockSize);
+    element.style.blockSize = "auto";
+    element.style.blockSize = `${Math.min(element.scrollHeight, maximumHeight)}px`;
+    element.style.overflowY = element.scrollHeight > maximumHeight ? "auto" : "hidden";
+  }, [text]);
 
   async function submit(): Promise<void> {
     let prompt: PromptContentBlock[];
     try {
-      prompt = await promptBlocks(text, attachments, resourceLinkName, resourceLinkURI, capabilities);
+      prompt = await promptBlocks(text, attachments, capabilities);
     } catch (error) {
       onError(error instanceof Error ? error.message : "Could not read attachment");
       return;
     }
     if (prompt.length === 0) {
-      onError("Enter a prompt, choose an attachment, or add a resource link");
+      onError("Enter a prompt or choose an attachment");
       return;
     }
     onSubmit(prompt);
     setText("");
     setAttachments([]);
-    setResourceLinkName("");
-    setResourceLinkURI("");
+    clearPicker();
+  }
+
+  function removeAttachment(index: number): void {
+    setAttachments(attachments.filter((_, position) => position !== index));
+    // The picker keeps its last selection, so clearing it lets the same file be
+    // chosen again after it was removed.
+    clearPicker();
+  }
+
+  function clearPicker(): void {
     if (files.current) {
       files.current.value = "";
     }
   }
 
   return (
-    <section aria-labelledby="composer-heading">
-      <h2 id="composer-heading">Prompt</h2>
+    <section aria-label="Prompt" className="composer">
       <form
         onSubmit={(event) => {
           event.preventDefault();
           void submit();
         }}
       >
-        <label>
-          Message
-          <textarea disabled={busy} onChange={(event) => setText(event.target.value)} value={text} />
-        </label>
-        <Disclosure label="Add context">
+        <textarea
+          aria-label="Message"
+          disabled={busy}
+          onChange={(event) => setText(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) return;
+            event.preventDefault();
+            void submit();
+          }}
+          ref={message}
+          rows={1}
+          value={text}
+        />
+        <div className="session-controls">
           {acceptsAttachments ? (
-            <label>
-              Attachments
-              <input disabled={busy} multiple onChange={(event) => setAttachments(Array.from(event.target.files ?? []))} ref={files} type="file" />
+            <label className="icon">
+              <PaperclipIcon />
+              <input
+                aria-label="Add attachment"
+                multiple
+                onChange={(event) => setAttachments([...attachments, ...Array.from(event.target.files ?? [])])}
+                ref={files}
+                type="file"
+              />
             </label>
           ) : null}
-          {attachments.length > 0 ? <p>{attachments.map((file) => file.name).join(", ")}</p> : null}
-          <fieldset disabled={busy}>
-            <legend>Resource link</legend>
-            <label>Name<input onChange={(event) => setResourceLinkName(event.target.value)} value={resourceLinkName} /></label>
-            <label>URI<input onChange={(event) => setResourceLinkURI(event.target.value)} type="url" value={resourceLinkURI} /></label>
-          </fieldset>
-        </Disclosure>
-        <button disabled={busy} type="submit">
-          Send prompt
-        </button>
-        {busy ? (
-          <button onClick={onCancel} type="button">
-            Cancel prompt
-          </button>
+          <SessionInformation onConfigOption={onConfigOption} transcript={transcript} />
+        </div>
+        {attachments.length > 0 ? (
+          <ul aria-label="Attachments" className="attachments">
+            {attachments.map((file, index) => (
+              <li key={`${file.name}-${index}`}>
+                <span className="truncate">{file.name}</span>
+                <button
+                  aria-label={`Remove ${file.name}`}
+                  className="danger icon"
+                  onClick={() => removeAttachment(index)}
+                  title={`Remove ${file.name}`}
+                  type="button"
+                >
+                  <CloseIcon />
+                </button>
+              </li>
+            ))}
+          </ul>
         ) : null}
       </form>
     </section>
@@ -98,17 +155,9 @@ export function Composer({
 async function promptBlocks(
   text: string,
   attachments: File[],
-  resourceLinkName: string,
-  resourceLinkURI: string,
   capabilities: PromptCapabilities,
 ): Promise<PromptContentBlock[]> {
   const prompt: PromptContentBlock[] = text ? [{ text, type: "text" }] : [];
-  if (resourceLinkName || resourceLinkURI) {
-    if (!resourceLinkName || !resourceLinkURI) {
-      throw new Error("A resource link needs both a name and URI");
-    }
-    prompt.push({ name: resourceLinkName, type: "resource_link", uri: resourceLinkURI });
-  }
   for (const file of attachments) {
     if (file.size > maximumAttachmentBytes) {
       throw new Error(`${file.name} is too large to attach`);
@@ -142,4 +191,20 @@ async function fileData(file: File): Promise<string> {
     data += String.fromCharCode(...bytes.subarray(index, index + 0x8000));
   }
   return btoa(data);
+}
+
+function PaperclipIcon() {
+  return (
+    <svg aria-hidden="true" fill="none" stroke="currentColor" strokeLinecap="round" strokeWidth="2" viewBox="0 0 24 24">
+      <path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48" />
+    </svg>
+  );
+}
+
+function CloseIcon() {
+  return (
+    <svg aria-hidden="true" fill="none" stroke="currentColor" strokeLinecap="round" strokeWidth="2" viewBox="0 0 24 24">
+      <path d="M18 6 6 18M6 6l12 12" />
+    </svg>
+  );
 }

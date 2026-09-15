@@ -1,14 +1,14 @@
 import { type SessionTranscript } from "../protocol.ts";
 
-// The session's advertised options and its context usage. Each select is named
-// by its option and shows its current value, so the row needs no visible labels.
+// The session's advertised options and its context usage, rendered inside the
+// composer's control row. Each select is named by its option and shows its
+// current value, so the row needs no visible labels.
 export function SessionInformation({ onConfigOption, transcript }: {
   onConfigOption: (configId: string, value: string) => void;
   transcript: SessionTranscript;
 }) {
-  if (transcript.configuration.length === 0 && !transcript.usage) return null;
   return (
-    <section aria-label="Session information">
+    <>
       {transcript.configuration.map((option) => (
         <select
           aria-label={option.name}
@@ -21,8 +21,8 @@ export function SessionInformation({ onConfigOption, transcript }: {
         </select>
       ))}
       {transcript.usage ? (
-        <span>{`Context: ${transcript.usage.used} of ${transcript.usage.size} tokens used`}</span>
+        <span className="usage">{`Context: ${transcript.usage.used} of ${transcript.usage.size} tokens used`}</span>
       ) : null}
-    </section>
+    </>
   );
 }

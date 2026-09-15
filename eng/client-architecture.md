@@ -249,24 +249,26 @@ environment values remain host-only and never appear in snapshots.
 
 ## Product surface
 
-One navigation region beside the primary column holds workspace registration,
-every registered workspace, and each workspace's recent conversations, new
-conversation, settings, and removal. A workspace with no usable process offers
-its restart there instead of its conversations. There is no workspace-selection
-control, because opening a conversation or a workspace's settings selects that
-workspace.
+One navigation region sits beside the primary column when there is room and
+opens as an overlay drawer when there is not. The same rendered region holds
+workspace registration, every registered workspace, and each workspace's recent
+conversations, new conversation, settings, and removal. Registration opens as a
+dialog from that region. A workspace with no usable process offers its restart
+there instead of its conversations. There is no workspace-selection control,
+because opening a conversation or a workspace's settings selects that workspace.
 
 The primary column holds either the selected conversation or the selected
-workspace's settings. The conversation is its transcript, composer, pending
-permission or question, and the workspace it belongs to. A workspace that cannot
-authenticate or whose process failed says so there, as an actionable problem
-pointing at its settings rather than a permanent status dashboard.
+workspace's settings. The conversation is its transcript, composer, and any
+pending permission or question. A workspace that cannot authenticate or whose
+process failed says so there, as an actionable problem pointing at its settings
+rather than a permanent status dashboard.
 
-The conversation header contains the session's advertised model, mode, and
-reasoning controls plus read-only context usage. Attachments and resource links
-open from an add-context disclosure in the composer. Plans render only when
-present. Tool details and raw output are disclosed beneath their useful activity
-title. Resource links render as ordinary safe links.
+The conversation header identifies the conversation. The session's advertised
+model, mode, reasoning controls, and read-only context usage sit with the
+composer. Files are attached from a control at the start of that row and listed
+beneath it until the prompt is sent. Plans render only when present. Tool
+details and raw output are disclosed beneath their useful activity title.
+Resource links render as ordinary safe links.
 
 Workspace settings contain authentication, MCP servers, and support details.
 Connecting a credential and managing one are the same surface, because the

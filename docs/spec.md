@@ -62,9 +62,9 @@ or question blocking work. Workspace registration and every workspace's
 conversations sit in one navigation region beside it, along with the actions
 that add, remove, restart, and open the settings of a workspace. The transcript
 view also contains the session's model, mode, and reasoning controls and
-read-only context usage. Attachments and resource links appear on demand, plans
-appear when present, and technical tool output is disclosed beneath its
-activity.
+read-only context usage. Attachments are added beside those controls, listed
+beneath them, and removable until the prompt is sent. Plans appear when present,
+and technical tool output is disclosed beneath its activity.
 
 Workspace settings contain authentication, client-supplied MCP servers, and
 support details. They open in place of the conversation and select the workspace

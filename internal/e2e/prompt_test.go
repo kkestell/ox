@@ -750,6 +750,44 @@ func TestSessionCancelEndsTheTurnMidStream(t *testing.T) {
 	})
 }
 
+func TestSessionCancelDuringReasoningLeavesNoAssistantMessage(t *testing.T) {
+	model := startModel(t)
+	held := model.hold(frames(evReasoning("thinking")))
+	model.queue(sse(evText("second answer"), evFinishReason("stop")))
+	child, session := startSession(t, withModel(model))
+
+	prompt := child.begin("session/prompt", acp.PromptRequest{
+		SessionID: session,
+		Prompt:    textPrompt("hi"),
+	})
+	held.await(t)
+	// Reading the thought chunk before cancelling makes what the turn streamed,
+	// and so what the history keeps, deterministic.
+	child.notification("session/update")
+	child.notify("session/cancel", acp.CancelNotification{SessionID: session})
+
+	response := promptResponse(t, child.result(child.await(prompt)))
+	if response.StopReason != acp.StopReasonCancelled {
+		t.Fatalf("stopReason = %q, want %q", response.StopReason, acp.StopReasonCancelled)
+	}
+
+	// Reasoning alone is not an assistant message a provider will accept, so the
+	// cancelled turn leaves the next request with the prompts around it.
+	child.request("session/prompt", acp.PromptRequest{
+		SessionID: session,
+		Prompt:    textPrompt("again"),
+	})
+	updates(t, child, session)
+	requests := model.requests()
+	if len(requests) != 2 {
+		t.Fatalf("model received %d requests, want 2", len(requests))
+	}
+	assertConversation(t, requests[1].Messages, []exchange{
+		{role: "user", text: "hi"},
+		{role: "user", text: "again"},
+	})
+}
+
 func TestSessionCancelEndsTheTurnBeforeTheFirstDelta(t *testing.T) {
 	model := startModel(t)
 	held := model.hold("")

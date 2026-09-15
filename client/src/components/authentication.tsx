@@ -24,7 +24,9 @@ export function Authentication({ authentication, credential, onAuthenticate, onC
         )
       ) : (
         <form key={method.id} onSubmit={(event) => { event.preventDefault(); onLogin(method.id); }}>
-          <label>{`${method.name} credential`}<input autoComplete="off" disabled={working} onChange={(event) => onCredential(event.target.value)} required type="password" value={credential} /></label>
+          {/* The method's name is the action its button performs; the field
+              holds the OpenRouter API key it writes. */}
+          <label>{"OpenRouter API key"}<input autoComplete="off" disabled={working} onChange={(event) => onCredential(event.target.value)} required type="password" value={credential} /></label>
           <button disabled={working} type="submit">{method.name}</button>
         </form>
       ))}
