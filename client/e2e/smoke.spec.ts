@@ -492,6 +492,27 @@ test("follows live transcript updates until manual scrollback asks to return", a
   }
 });
 
+test("opens reasoning at the latest detail", async ({ page }) => {
+  const fixture = await createFixture();
+  let host: BrowserHost | undefined;
+  try {
+    host = startBrowserHost(fixture);
+    await assertReady(page, await host.url);
+    await page.getByLabel("Message", { exact: true }).fill("create long reasoning");
+    await sendPrompt(page);
+
+    const transcript = page.getByRole("region", { name: "Transcript" });
+    await transcript.getByRole("button", { name: "Reasoning" }).click();
+    const reasoning = transcript.getByLabel("Reasoning content");
+    await expect(reasoning).toContainText("reasoning 599");
+    await expect(reasoning).toHaveClass(/h-\[7\.5rem\]/);
+    await expect.poll(() => bottomDistance(reasoning)).toBeLessThanOrEqual(1);
+  } finally {
+    await host?.stop();
+    await fixture.close();
+  }
+});
+
 test("contains long transcript content across phone and narrow desktop layouts", async ({ page }) => {
   const fixture = await createFixture({
     workspaceName: `workspace-${"unbroken".repeat(16)}`,
@@ -933,6 +954,10 @@ async function createFixture(
         streamText(response, Array.from({ length: 600 }, (_, index) => `activity ${index}`).join(" "));
         return;
       }
+      if (body.lastIndexOf("create long reasoning") > body.lastIndexOf("hold")) {
+        streamReasoning(response, Array.from({ length: 600 }, (_, index) => `reasoning ${index}`).join(" "));
+        return;
+      }
       if (body.includes("responsive stress")) {
         if (!hasToolResultAfterPrompt(body, "responsive stress")) {
           streamToolCall(
@@ -1175,6 +1200,20 @@ function streamText(response: import("node:http").ServerResponse, text: string):
   response.end(
     [
       `data: {"choices":[{"delta":{"content":"${text}"},"finish_reason":null}]}`,
+      "",
+      'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}',
+      "",
+      "data: [DONE]",
+      "",
+    ].join("\n"),
+  );
+}
+
+function streamReasoning(response: import("node:http").ServerResponse, reasoning: string): void {
+  response.writeHead(200, { "content-type": "text/event-stream" });
+  response.end(
+    [
+      `data: {"choices":[{"delta":{"reasoning":"${reasoning}"},"finish_reason":null}]}`,
       "",
       'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}',
       "",

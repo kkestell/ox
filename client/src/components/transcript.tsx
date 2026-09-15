@@ -1,4 +1,5 @@
 import { CircleIcon, CircleAlertIcon, CircleCheckIcon, LoaderCircleIcon } from "lucide-react";
+import { useLayoutEffect, useRef, useState } from "react";
 
 import {
   type SessionTranscript,
@@ -76,9 +77,7 @@ export function Transcript({ transcript }: { transcript: SessionTranscript }) {
             ) : entry.kind === "unknown" ? (
               <Disclosure label="Unsupported transcript item"><p>{entry.label}</p></Disclosure>
             ) : entry.kind === "thought" ? (
-              <Disclosure className="rounded-lg py-1.5" label="Reasoning">
-                {entry.content.map((content, contentIndex) => <Content content={content} key={contentIndex} />)}
-              </Disclosure>
+              <Thought content={entry.content} />
             ) : entry.kind === "user" ? (
               <article
                 aria-label="user message"
@@ -133,6 +132,25 @@ export function Transcript({ transcript }: { transcript: SessionTranscript }) {
         </Card>
       ) : null}
     </section>
+  );
+}
+
+function Thought({ content }: { content: TranscriptContent[] }) {
+  const [open, setOpen] = useState(false);
+  const scrollport = useRef<HTMLDivElement>(null);
+
+  useLayoutEffect(() => {
+    if (open && scrollport.current) {
+      scrollport.current.scrollTop = scrollport.current.scrollHeight;
+    }
+  }, [content, open]);
+
+  return (
+    <Disclosure className="rounded-lg py-1.5" label="Reasoning" onOpenChange={setOpen}>
+      <div aria-label="Reasoning content" className="h-[7.5rem] overflow-y-auto leading-6" ref={scrollport}>
+        {content.map((item, contentIndex) => <Content content={item} key={contentIndex} />)}
+      </div>
+    </Disclosure>
   );
 }
 
