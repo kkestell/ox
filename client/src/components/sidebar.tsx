@@ -51,9 +51,14 @@ export function WorkspaceSidebar({ onAdd, onClose, onNew, onOlder, onOpen, onRem
       <nav aria-label="Workspaces and conversations" className="flex h-full min-h-0 flex-col">
         <SidebarHeader className="h-14 flex-row items-center gap-2 border-b px-3">
           <h1 className="flex-1 text-base font-semibold tracking-tight">Ox</h1>
-          <Button onClick={onAdd} size="sm" title="Add workspace" variant="ghost">
+          <Button
+            aria-label="Add workspace"
+            onClick={onAdd}
+            size="icon-sm"
+            title="Add workspace"
+            variant="ghost"
+          >
             <PlusIcon />
-            Add workspace
           </Button>
           <Button
             aria-label="Close navigation"
@@ -66,7 +71,7 @@ export function WorkspaceSidebar({ onAdd, onClose, onNew, onOlder, onOpen, onRem
             <XIcon />
           </Button>
         </SidebarHeader>
-        <SidebarContent className="scrollbar-gutter-stable">
+        <SidebarContent>
           {workspaces.values.length > 0 ? (
             <SidebarGroup className="px-2 py-3">
               <SidebarMenu aria-label="Workspaces" className="gap-6">
@@ -76,7 +81,9 @@ export function WorkspaceSidebar({ onAdd, onClose, onNew, onOlder, onOpen, onRem
                     className="min-w-0"
                     key={workspace.id}
                   >
-                    <div className="flex min-w-0 items-center gap-1 px-2">
+                    {/* The trailing controls end where the sidebar header's button does:
+                        the list group's 8px plus this row's 4px make the same 12px inset. */}
+                    <div className="flex min-w-0 items-center gap-1 pl-2 pr-1">
                       <h2 className="min-w-0 flex-1 truncate text-sm font-semibold" title={workspace.name}>
                         {workspace.name}
                       </h2>

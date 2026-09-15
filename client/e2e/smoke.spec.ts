@@ -81,13 +81,18 @@ test("registers, selects, persists, and removes server-local workspaces", async 
     const selectedConversation = conversationList(page, basename(fixture.workspace)).getByRole("link").first();
     await expect(selectedConversation).toHaveCSS("border-left-width", "0px");
     await expect(selectedConversation).toHaveCSS("border-top-width", "0px");
+    // The sidebar's rightmost controls share one right edge: the add workspace
+    // button in the header and the workspace row's actions button.
+    const addWorkspace = page.getByRole("navigation", { name: "Workspaces and conversations" }).getByRole("button", { name: "Add workspace" });
+    const actions = workspaceActions(page, basename(fixture.workspace));
+    const addWorkspaceBox = await boundingBox(addWorkspace);
+    const actionsBox = await boundingBox(actions);
+    expect(Math.abs(addWorkspaceBox.x + addWorkspaceBox.width - actionsBox.x - actionsBox.width)).toBeLessThanOrEqual(1);
     const newConversationBox = await boundingBox(newConversation(page, basename(fixture.workspace)));
     const selectedConversationBox = await boundingBox(selectedConversation);
     expect(Math.abs(newConversationBox.x - selectedConversationBox.x)).toBeLessThanOrEqual(1);
     // Navigation controls stay flat until the pointer reaches them; destructive
     // workspace removal lives in the secondary actions menu.
-    const addWorkspace = page.getByRole("navigation", { name: "Workspaces and conversations" }).getByRole("button", { name: "Add workspace" });
-    const actions = workspaceActions(page, basename(fixture.workspace));
     for (const control of [addWorkspace, actions]) {
       await expect(control).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
     }

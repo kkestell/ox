@@ -142,7 +142,3 @@
     background: transparent;
   }
 }
-
-@utility scrollbar-gutter-stable {
-  scrollbar-gutter: stable;
-}
