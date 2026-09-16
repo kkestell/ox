@@ -2,6 +2,7 @@ import { ArrowDownIcon, ArrowLeftIcon, MessageSquarePlusIcon, MoreHorizontalIcon
 import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import { type BrowserCommand, type MCPServer, type SessionTranscript } from "../protocol.ts";
+import { newRequestID } from "../request-id.ts";
 
 import { AddWorkspaceDialog } from "./add-workspace-dialog.tsx";
 import { Authentication } from "./authentication.tsx";
@@ -95,23 +96,23 @@ function Shell() {
   function terminalLogin(methodId: string): void {
     const value = credential;
     setCredential("");
-    sendRouted({ credential: value, methodId, requestId: crypto.randomUUID(), type: "login" });
+    sendRouted({ credential: value, methodId, requestId: newRequestID(), type: "login" });
   }
 
   function historyCommand(type: "next-history-page" | "refresh-history"): void {
-    submitSessionCommand({ requestId: crypto.randomUUID(), type });
+    submitSessionCommand({ requestId: newRequestID(), type });
   }
 
   function conversationCommand(
     type: "close-conversation" | "delete-conversation" | "open-conversation",
     sessionId: string,
   ): void {
-    submitSessionCommand({ requestId: crypto.randomUUID(), sessionId, type });
+    submitSessionCommand({ requestId: newRequestID(), sessionId, type });
   }
 
   function saveMCPServers(servers: MCPServer[]): void {
     const problem = sendRouted(
-      { mcpServers: servers, requestId: crypto.randomUUID(), type: "set-mcp-servers" },
+      { mcpServers: servers, requestId: newRequestID(), type: "set-mcp-servers" },
       undefined,
       (result) => {
         if (result.ok) {
@@ -160,7 +161,7 @@ function Shell() {
 
   function restartWorkspace(workspaceId: string): void {
     setSessionError(undefined);
-    submitWorkspaceCommand({ requestId: crypto.randomUUID(), type: "restart-workspace", workspaceId });
+    submitWorkspaceCommand({ requestId: newRequestID(), type: "restart-workspace", workspaceId });
   }
 
   // Settings are published for the selected workspace only, so reaching another
@@ -173,7 +174,7 @@ function Shell() {
     if (workspaceId === selectedWorkspaceId) {
       return;
     }
-    if (!send({ requestId: crypto.randomUUID(), type: "select-workspace", workspaceId })) {
+    if (!send({ requestId: newRequestID(), type: "select-workspace", workspaceId })) {
       setWorkspaceMessage({ error: true, text: "The host connection is not open" });
     }
   }
@@ -187,15 +188,15 @@ function Shell() {
           onNew={(workspaceId) => {
             setOpenMobile(false);
             setSettings(false);
-            submitSessionCommand({ requestId: crypto.randomUUID(), type: "new-conversation" }, workspaceId);
+            submitSessionCommand({ requestId: newRequestID(), type: "new-conversation" }, workspaceId);
           }}
           onOlder={() => historyCommand("next-history-page")}
           onOpen={(workspaceId, sessionId) => {
             setOpenMobile(false);
             setSettings(false);
-            submitSessionCommand({ requestId: crypto.randomUUID(), sessionId, type: "open-conversation" }, workspaceId);
+            submitSessionCommand({ requestId: newRequestID(), sessionId, type: "open-conversation" }, workspaceId);
           }}
-          onRemove={(workspaceId) => submitWorkspaceCommand({ requestId: crypto.randomUUID(), type: "remove-workspace", workspaceId })}
+          onRemove={(workspaceId) => submitWorkspaceCommand({ requestId: newRequestID(), type: "remove-workspace", workspaceId })}
           onRestart={restartWorkspace}
           onSettings={showSettings}
           sessions={snapshot.sessions}
@@ -229,10 +230,10 @@ function Shell() {
                 <Authentication
                   authentication={snapshot.authentication}
                   credential={credential}
-                  onAuthenticate={(methodId) => sendRouted({ methodId, requestId: crypto.randomUUID(), type: "authenticate" })}
+                  onAuthenticate={(methodId) => sendRouted({ methodId, requestId: newRequestID(), type: "authenticate" })}
                   onCredential={setCredential}
                   onLogin={terminalLogin}
-                  onLogout={() => sendRouted({ requestId: crypto.randomUUID(), type: "logout" })}
+                  onLogout={() => sendRouted({ requestId: newRequestID(), type: "logout" })}
                 />
                 <Card asChild className="gap-4 py-4">
                   <section aria-labelledby="mcp-heading">
@@ -301,10 +302,10 @@ function Shell() {
             <PendingInteractions
               interactions={active.interactions}
               onElicitation={(interactionId, action, content) =>
-                submitSessionCommand({ action, ...(content === undefined ? {} : { content }), interactionId, requestId: crypto.randomUUID(), sessionId: active.id, type: "resolve-elicitation" })
+                submitSessionCommand({ action, ...(content === undefined ? {} : { content }), interactionId, requestId: newRequestID(), sessionId: active.id, type: "resolve-elicitation" })
               }
               onPermission={(interactionId, optionId) =>
-                submitSessionCommand({ interactionId, optionId, requestId: crypto.randomUUID(), sessionId: active.id, type: "resolve-permission" })
+                submitSessionCommand({ interactionId, optionId, requestId: newRequestID(), sessionId: active.id, type: "resolve-permission" })
               }
             />
             <footer className="shrink-0 bg-background">
@@ -314,12 +315,12 @@ function Shell() {
                     busy={active.busy}
                     capabilities={snapshot.workspace.promptCapabilities}
                     key={active.id}
-                    onCancel={() => submitSessionCommand({ requestId: crypto.randomUUID(), sessionId: active.id, type: "cancel-prompt" })}
+                    onCancel={() => submitSessionCommand({ requestId: newRequestID(), sessionId: active.id, type: "cancel-prompt" })}
                     onConfigOption={(configId, value) =>
-                      submitSessionCommand({ configId, requestId: crypto.randomUUID(), sessionId: active.id, type: "set-config-option", value })
+                      submitSessionCommand({ configId, requestId: newRequestID(), sessionId: active.id, type: "set-config-option", value })
                     }
                     onError={setSessionError}
-                    onSubmit={(prompt) => submitSessionCommand({ prompt, requestId: crypto.randomUUID(), sessionId: active.id, type: "prompt" })}
+                    onSubmit={(prompt) => submitSessionCommand({ prompt, requestId: newRequestID(), sessionId: active.id, type: "prompt" })}
                     transcript={active.transcript}
                   />
                 </div>
@@ -344,7 +345,7 @@ function Shell() {
                 action={unavailable ? "Open workspace settings" : "New conversation"}
                 description={unavailable ? "Review diagnostics or restart Ox for this workspace." : "Start a conversation or choose one from the navigation."}
                 icon={unavailable ? <SettingsIcon /> : <MessageSquarePlusIcon />}
-                onAction={() => unavailable ? setSettings(true) : selectedWorkspaceId && submitSessionCommand({ requestId: crypto.randomUUID(), type: "new-conversation" }, selectedWorkspaceId)}
+                onAction={() => unavailable ? setSettings(true) : selectedWorkspaceId && submitSessionCommand({ requestId: newRequestID(), type: "new-conversation" }, selectedWorkspaceId)}
                 title={unavailable ? "Workspace unavailable" : "Ready when you are"}
               />
             </div>
@@ -366,7 +367,7 @@ function Shell() {
         message={workspaceMessage}
         onClose={() => setAddingWorkspace(false)}
         onPath={setWorkspacePath}
-        onRegister={() => submitWorkspaceCommand({ path: workspacePath, requestId: crypto.randomUUID(), type: "register-workspace" })}
+        onRegister={() => submitWorkspaceCommand({ path: workspacePath, requestId: newRequestID(), type: "register-workspace" })}
         open={addingWorkspace}
         path={workspacePath}
       />
