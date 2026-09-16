@@ -292,6 +292,7 @@ function Shell() {
               </DropdownMenu>
             </PrimaryHeader>
             <TranscriptScroll
+              busy={active.busy}
               sessionError={sessionError}
               sessionId={active.id}
               transcript={active.transcript}
@@ -411,11 +412,13 @@ const followThreshold = 40;
 // This is browser-only presentation state. The host continues to own the
 // transcript; selecting a conversation always starts its view at the newest item.
 function TranscriptScroll({
+  busy,
   sessionError,
   sessionId,
   transcript,
   unavailable,
 }: {
+  busy: boolean;
   sessionError?: string;
   sessionId: string;
   transcript: SessionTranscript;
@@ -523,7 +526,7 @@ function TranscriptScroll({
               <AlertDescription>{sessionError}</AlertDescription>
             </Alert>
           ) : null}
-          <Transcript key={sessionId} transcript={transcript} />
+          <Transcript busy={busy} key={sessionId} transcript={transcript} />
         </div>
       </div>
       {showJump ? (

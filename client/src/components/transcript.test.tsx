@@ -27,7 +27,7 @@ test("wraps unbroken content in every visible transcript variant", () => {
     plan: [{ content: unbroken, priority: "medium", status: "pending" }],
   };
 
-  const html = renderToStaticMarkup(<Transcript transcript={transcript} />);
+  const html = renderToStaticMarkup(<Transcript busy={false} transcript={transcript} />);
 
   expect(html).toContain(`<p class="break-words [overflow-wrap:anywhere]"><a`);
   expect(html).toContain(`<p class="break-words [overflow-wrap:anywhere]">${unbroken}</p>`);
@@ -47,7 +47,7 @@ test("renders reasoning without a background surface", () => {
     plan: [],
   };
 
-  const html = renderToStaticMarkup(<Transcript transcript={transcript} />);
+  const html = renderToStaticMarkup(<Transcript busy={false} transcript={transcript} />);
 
   expect(html).toContain('class="rounded-lg"');
   expect(html).not.toContain("bg-muted/35");
@@ -66,7 +66,7 @@ test("keeps reasoning collapsed", () => {
     plan: [],
   };
 
-  const html = renderToStaticMarkup(<Transcript transcript={transcript} />);
+  const html = renderToStaticMarkup(<Transcript busy={false} transcript={transcript} />);
 
   expect(html).toContain("Thinking");
   expect(html).not.toContain('aria-label="Thinking content"');
@@ -100,7 +100,7 @@ test("renders structured ACP tool presentation with a code-styled argument", () 
     plan: [],
   };
 
-  const html = renderToStaticMarkup(<Transcript transcript={transcript} />);
+  const html = renderToStaticMarkup(<Transcript busy={false} transcript={transcript} />);
 
   expect(html).toContain("Inspect</span><code");
   expect(html).toContain("client/src/components/transcript.tsx</code>");
@@ -120,8 +120,60 @@ test("renders message text as Markdown", () => {
     plan: [],
   };
 
-  const html = renderToStaticMarkup(<Transcript transcript={transcript} />);
+  const html = renderToStaticMarkup(<Transcript busy={false} transcript={transcript} />);
 
   expect(html).toContain("<h2>Agent</h2>");
   expect(html).toContain("<h2>User</h2>");
+});
+
+test("colors the tool dot by status", () => {
+  const tones: Record<string, string> = { completed: "bg-muted-foreground", failed: "bg-destructive", in_progress: "bg-amber-500" };
+
+  for (const [status, tone] of Object.entries(tones)) {
+    const html = renderToStaticMarkup(
+      <Transcript
+        busy={false}
+        transcript={{
+          configuration: [],
+          entries: [{ content: [], id: "tool-1", kind: "tool", locations: [], status, title: "Read" }],
+          plan: [],
+        }}
+      />,
+    );
+
+    expect(html).toContain(`size-2 rounded-full ${tone}`);
+    expect(html).not.toContain("animate-spin");
+  }
+});
+
+test("marks the newest reasoning as working while the turn runs", () => {
+  const thought: SessionTranscript["entries"][number] = {
+    content: [{ text: "reasoning", type: "text" }],
+    id: "thought-1",
+    kind: "thought",
+  };
+
+  const live = renderToStaticMarkup(
+    <Transcript busy transcript={{ configuration: [], entries: [thought], plan: [] }} />,
+  );
+
+  expect(live).toContain("size-2 rounded-full bg-amber-500");
+
+  const settled = renderToStaticMarkup(
+    <Transcript busy={false} transcript={{ configuration: [], entries: [thought], plan: [] }} />,
+  );
+  const superseded = renderToStaticMarkup(
+    <Transcript
+      busy
+      transcript={{
+        configuration: [],
+        entries: [thought, { content: [], id: "tool-1", kind: "tool", locations: [], status: "in_progress", title: "Read" }],
+        plan: [],
+      }}
+    />,
+  );
+
+  expect(settled).toContain("size-2 rounded-full bg-muted-foreground");
+  expect(settled).not.toContain("bg-amber-500");
+  expect(superseded.match(/bg-amber-500/g)).toHaveLength(1);
 });

@@ -1,4 +1,4 @@
-import { CircleIcon, CircleAlertIcon, CircleCheckIcon, LoaderCircleIcon } from "lucide-react";
+import { CircleIcon, CircleCheckIcon } from "lucide-react";
 import { useCallback, useLayoutEffect, useRef } from "react";
 
 import {
@@ -12,7 +12,7 @@ import { Markdown } from "./markdown.tsx";
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
-export function Transcript({ transcript }: { transcript: SessionTranscript }) {
+export function Transcript({ busy, transcript }: { busy: boolean; transcript: SessionTranscript }) {
   return (
     <section aria-label="Transcript" className="flex min-w-0 flex-col gap-5">
       <ol aria-label="Session transcript" className="flex min-w-0 flex-col">
@@ -27,7 +27,7 @@ export function Transcript({ transcript }: { transcript: SessionTranscript }) {
                 <Disclosure
                   className="min-w-0"
                   contentClassName="min-w-0"
-                  icon={entry.status === "completed" ? undefined : <ToolIcon status={entry.status} />}
+                  icon={<StatusDot status={entry.status} />}
                   label={
                     <span className="min-w-0 flex-1 text-left">
                       <span className="block font-medium text-foreground">
@@ -61,7 +61,7 @@ export function Transcript({ transcript }: { transcript: SessionTranscript }) {
             ) : entry.kind === "unknown" ? (
               <Disclosure label="Unsupported transcript item"><p>{entry.label}</p></Disclosure>
             ) : entry.kind === "thought" ? (
-              <Thought content={entry.content} />
+              <Thought active={busy && index === transcript.entries.length - 1} content={entry.content} />
             ) : (
               <article
                 aria-label={`${entry.kind} message`}
@@ -116,7 +116,7 @@ export function Transcript({ transcript }: { transcript: SessionTranscript }) {
 // opens it. Opening it, and every chunk that arrives while it is open, lands on
 // the newest text. The scrollport mounts with the disclosure, so it is measured
 // through a ref callback rather than on first render.
-function Thought({ content }: { content: TranscriptContent[] }) {
+function Thought({ active, content }: { active: boolean; content: TranscriptContent[] }) {
   const scrollport = useRef<HTMLDivElement>(null);
 
   const attach = useCallback((node: HTMLDivElement | null) => {
@@ -131,7 +131,7 @@ function Thought({ content }: { content: TranscriptContent[] }) {
   }, [content]);
 
   return (
-    <Disclosure className="rounded-lg" label="Thinking">
+    <Disclosure className="rounded-lg" icon={<StatusDot status={active ? undefined : "completed"} />} label="Thinking">
       <div aria-label="Thinking content" className="h-[7.5rem] overflow-y-auto leading-6" ref={attach}>
         {content.map((item, contentIndex) => <MessageContent content={item} key={contentIndex} />)}
       </div>
@@ -149,11 +149,16 @@ function compactTranscriptEntry(entries: SessionTranscript["entries"], index: nu
     || (previous?.kind === "tool" && entry?.kind === "tool");
 }
 
-function ToolIcon({ status }: { status?: string }) {
-  if (status === "completed") return null;
-  return status === "failed"
-    ? <CircleAlertIcon aria-hidden className="mt-0.5 size-4 shrink-0 text-destructive" />
-    : <LoaderCircleIcon aria-hidden className="mt-0.5 size-4 shrink-0 animate-spin text-muted-foreground" />;
+// Activity is one dot: amber while the work is outstanding, red when it failed,
+// and gray once it completed. The disclosure's own label carries the status for
+// screen readers.
+function StatusDot({ status }: { status?: string }) {
+  const tone = status === "completed" ? "bg-muted-foreground" : status === "failed" ? "bg-destructive" : "bg-amber-500";
+  return (
+    <span aria-hidden className="mt-0.5 flex size-4 shrink-0 items-center justify-center">
+      <span className={`size-2 rounded-full ${tone}`} />
+    </span>
+  );
 }
 
 function toolStatusLabel(status?: string): string {
