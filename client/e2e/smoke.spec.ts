@@ -103,7 +103,7 @@ test("registers, selects, persists, and removes server-local workspaces", async 
   }
 });
 
-test("uses the navigation drawer at phone width", async ({ page }) => {
+test("uses the standard mobile sidebar without moving the conversation", async ({ page }) => {
   const fixture = await createFixture();
   let host: BrowserHost | undefined;
   try {
@@ -129,6 +129,19 @@ test("uses the navigation drawer at phone width", async ({ page }) => {
     await expect(navigation).toBeVisible();
     await page.keyboard.press("Escape");
     await expect(navigation).toBeHidden();
+
+    const sidebar = page.locator('[data-sidebar="sidebar"][data-mobile="true"]');
+    const conversation = page.locator("main");
+    for (const width of [320, 390, 700]) {
+      await page.setViewportSize({ height: 844, width });
+      await page.getByRole("button", { name: "Open navigation" }).click();
+      await expect(sidebar).toHaveCSS("width", "288px");
+      await expect(conversation).toHaveCSS("transform", "none");
+      await expect(conversation).toHaveCSS("width", `${width}px`);
+      await expect(page.locator('[data-slot="sheet-overlay"]')).toBeVisible();
+      await page.mouse.click(width - 12, 400);
+      await expect(navigation).toBeHidden();
+    }
   } finally {
     await host?.stop();
     await fixture.close();
