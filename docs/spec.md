@@ -32,76 +32,6 @@ uses client filesystem and terminal methods only when the client advertises
 them. Missing capabilities do not silently change an operation that requires the
 client.
 
-## Web client
-
-Ox includes a first-party local web client built with Bun, TypeScript, and
-React. Its Bun host starts Ox, stays running without an attached browser, and
-serves the same live session state to desktop and mobile browsers. It listens on
-loopback by default and accepts an explicit bind address for access over a
-trusted network. It does not provide user authentication or TLS.
-
-The host persists browser-registered server-local workspace roots behind opaque
-identities and can run concurrent sessions across several workspaces. Each
-workspace has one Ox process and one ACP connection; a failure in one workspace
-does not become a session or filesystem operation in another.
-
-The host automatically tries Ox's configured stored credential at startup. Only
-when that cannot authenticate does the browser ask the user to connect, in that
-workspace's settings. After authentication, the web client opens the most
-recently updated available conversation, or creates one when no history is
-currently available. New creates and selects a distinct empty conversation.
-Choosing history opens its complete replay; users do not choose between ACP load
-and resume. The client shows recent conversations for every registered
-workspace, not only the one it is displaying, and opening or creating a
-conversation switches to its workspace. History refresh and pagination are part
-of the displayed workspace's conversation list, while close and delete are
-secondary actions of the selected conversation. The list marks a conversation
-whose turn is running and one that is waiting for an answer, so work outside the
-displayed conversation stays visible. A durable conversation currently open in
-another Ox client stays visible but is dimmed, identified as open elsewhere, and
-cannot be chosen until that client releases it.
-
-The primary surface is the selected transcript, its composer, and any permission
-or question blocking work. A live transcript follows new activity until the
-reader scrolls back; a visible action returns to the latest activity without
-changing the conversation. Workspace registration and every workspace's
-conversations sit in one navigation region beside it, along with the actions
-that add, remove, restart, and open the settings of a workspace. The transcript
-view also contains the session's model, mode, and reasoning controls, read-only
-context usage, and the session's cumulative cost and prompt cache hit rate.
-Attachments are added beside those controls, listed beneath them, and removable
-until the prompt is sent. Plans appear when present, and reasoning and technical
-tool output stay collapsed until they are disclosed beneath their activity.
-Messages and reasoning render as GitHub-flavored Markdown, with single newlines
-breaking lines; technical tool output stays literal. Rendered Markdown keeps
-model output inert: raw HTML remains text, links resolve only as HTTP or HTTPS,
-an image displays its alt text or source URL instead of loading, and wide code
-blocks and tables scroll within the message rather than widening the transcript.
-
-Workspace settings contain authentication, client-supplied MCP servers, and
-support details. They open in place of the conversation and select the workspace
-they belong to. MCP server drafts are applied explicitly and an incomplete draft
-cannot block opening or creating a conversation. Secret MCP values remain in the
-Bun host and are never returned to a browser. Process status, stderr, host
-revisions, raw session identifiers, and manual refresh are support details
-rather than primary workflow.
-
-The web client supports every ACP v1 feature Ox advertises or requests through
-these product workflows: authentication and logout, the complete session
-lifecycle, configuration options, all supported prompt content, streaming text
-and thought, tool, plan, usage and configuration updates, cancellation,
-permissions, form elicitation, client filesystem and terminal callbacks, and
-HTTP and stdio MCP activation. Refresh and browser disconnection do not cancel
-active work. A newly attached browser receives the Bun host's current state, and
-a host restart reconstructs durable history through ordinary ACP session
-loading.
-
-The client is a conversation and supervision surface, not a general editor,
-interactive terminal emulator, Git interface, or worktree manager. Filesystem
-and terminal callbacks exist to implement negotiated ACP operations and are not
-exposed as general remote host APIs. `eng/client-architecture.md` owns the
-implementation boundaries and test strategy.
-
 ## Sessions and turns
 
 Creating a session returns a new session identifier and binds the session to one
@@ -196,11 +126,8 @@ namespaced `kkestell.ox/toolDisplayName` and, when relevant,
 action and the latter is its bounded display subject. The ACP title is the two
 joined into one line, because a client that reads only the title must still see
 what the call operates on. The provider-facing tool name remains unchanged as
-technical identity. The first-party client renders the two metadata values as an
-action and a code-styled argument; it falls back to the ACP title and does not
-derive presentation text from `shell` or namespaced MCP identifiers. An
-unregistered provider-requested tool may use its raw name as its title because
-it has no presentation contract.
+technical identity. An unregistered provider-requested tool may use its raw name
+as its title because it has no presentation contract.
 
 ## Authentication
 

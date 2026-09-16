@@ -27,7 +27,7 @@
     <h2>About Ox</h2>
     <dl class="principles">
       <dt>ACP-first and client-independent</dt>
-      <dd>Ox is a real ACP v1 agent rather than an editor-specific bot. It can run in Zed, its own browser client, or another ACP client. When supported, it delegates filesystem and terminal operations back to the client&mdash;important for unsaved editor buffers&mdash;without changing Ox's validation, permission, or cancellation rules.</dd>
+      <dd>Ox is a real ACP v1 agent rather than an editor-specific bot. It can run in Zed or another ACP client. When supported, it delegates filesystem and terminal operations back to the client&mdash;important for unsaved editor buffers&mdash;without changing Ox's validation, permission, or cancellation rules.</dd>
 
       <dt>Exceptionally strong session recovery</dt>
       <dd>Sessions are append-only, durable logs that preserve exactly what the model saw and what the user saw. Ox can replay a conversation, resume without replay, and even recover a turn paused on a permission request. Crucially, it distinguishes &ldquo;never dispatched&rdquo; from &ldquo;possibly executed,&rdquo; so a crash cannot cause it to blindly repeat a shell command or external mutation.</dd>
@@ -46,9 +46,6 @@
 
       <dt>Deep language-server integration</dt>
       <dd>Definitions, references, symbols, and diagnostics come from explicitly configured LSP servers. Ox synchronizes current document content, handles position encodings, confines returned paths to the workspace, and never presents stale or timed-out diagnostics as a clean result.</dd>
-
-      <dt>A capable first-party browser client</dt>
-      <dd>Its Bun host remains alive without a browser attached, supports multiple workspaces and concurrent conversations, and can be used from desktop or mobile over a trusted network. Refreshing or disconnecting the browser does not cancel active work, and background conversations remain visibly supervised.</dd>
 
       <dt>Explicit, bounded workspace memory</dt>
       <dd>Memory is opt-in rather than silently extracted from transcripts. Facts have types, provenance, expiry, supersession, capacity limits, and workspace scoping. Retrieval is recorded in the session history, so later memory changes cannot rewrite what an old conversation saw.</dd>

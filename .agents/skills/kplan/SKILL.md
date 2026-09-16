@@ -27,8 +27,7 @@ This skill produces an implementation plan. It never implements the plan.
    - If feature work adds scope absent from the TODO, conflicts with its order,
      or no unchecked task exists, stop and identify the decision the user must
      make in `eng/todo.md`. Do not edit the TODO in this skill.
-3. Read the owner documents identified above. Read `eng/client-architecture.md`
-   when the first-party browser client is in scope. Consult
+3. Read the owner documents identified above. Consult
    `~/src/references/index.md` before planning a substantial capability, as
    required by the repository instructions.
 4. Confirm that the source documents settle the work. If observable behavior is

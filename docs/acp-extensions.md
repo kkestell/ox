@@ -78,7 +78,7 @@ user message, and replay returns it as the `messageId` of every
 `user_message_chunk` for the prompt, so a client can match the message it showed
 optimistically against replayed history. Ox rejects a non-string value as an
 invalid request and generates an identifier when the key is absent. Sending the
-key is optional; Ox's browser client does not send it.
+key is optional.
 
 ## Ignored metadata
 

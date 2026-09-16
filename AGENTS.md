@@ -4,8 +4,7 @@ KEEP THIS FILE AND ITS LINKED REFERENCES UP TO DATE AT ALL TIMES.
 
 Ox is a coding agent written in Go that speaks ACP v1 over standard input and
 output. It is ACP-first and works with ACP clients. The durable design lives in
-`eng/architecture.md`, the first-party web client's design lives in
-`eng/client-architecture.md`, and the build order lives in `eng/todo.md`.
+`eng/architecture.md`, and the build order lives in `eng/todo.md`.
 `docs/spec.md` owns target product behavior.
 
 ## Tech Stack
@@ -13,8 +12,6 @@ output. It is ACP-first and works with ACP clients. The durable design lives in
 - **Language:** Go 1.26.4
 - **Protocol:** ACP v1 over JSON-RPC 2.0 on stdio
 - **Model provider:** OpenRouter Chat Completions over HTTP and SSE
-- **Web client:** Bun, TypeScript, React, Tailwind and shadcn, and the official
-  ACP TypeScript SDK
 - **Build and checks:** Make, gofmt, go vet, staticcheck, and go test
 
 ## Codebase Map
@@ -44,16 +41,12 @@ output. It is ACP-first and works with ACP clients. The durable design lives in
   durable state.
 - `evals/` — Versioned coding tasks and the external ACP evaluation runner.
   Evaluation artifacts and provider runs remain outside the shipped binary.
-- `client/` — The first-party browser ACP client: its Bun host, React surface,
-  and Playwright harness.
 - `docs/` — End-user documentation and the target product specification.
 - `web/` — The Hugo site for Ox's documentation, built by its own `Makefile`;
   `web/AGENTS.md` owns how the site is written and built.
 - `eng/` — Development and agent documentation. `eng/architecture.md` owns the
-  agent design, `eng/client-architecture.md` owns the first-party web client
-  design, `eng/todo.md` owns build order and status, `eng/plans/` holds plans
-  for individual todo items, and `eng/mockups/` holds static web client design
-  mockups.
+  agent design, `eng/todo.md` owns build order and status, and `eng/plans/`
+  holds plans for individual todo items.
 
 ## Commands
 
