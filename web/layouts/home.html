@@ -1,6 +1,7 @@
 {{ define "main" }}
   <section class="hero">
     <h1>Ox</h1>
+    <p>Ox is a small, lightweight, ACP-native coding agent.</p>
   </section>
 
   <section class="install">
@@ -24,6 +25,43 @@
 
   <section>
     <h2>About Ox</h2>
+    <dl class="principles">
+      <dt>ACP-first and client-independent</dt>
+      <dd>Ox is a real ACP v1 agent rather than an editor-specific bot. It can run in Zed, its own browser client, or another ACP client. When supported, it delegates filesystem and terminal operations back to the client&mdash;important for unsaved editor buffers&mdash;without changing Ox's validation, permission, or cancellation rules.</dd>
+
+      <dt>Exceptionally strong session recovery</dt>
+      <dd>Sessions are append-only, durable logs that preserve exactly what the model saw and what the user saw. Ox can replay a conversation, resume without replay, and even recover a turn paused on a permission request. Crucially, it distinguishes &ldquo;never dispatched&rdquo; from &ldquo;possibly executed,&rdquo; so a crash cannot cause it to blindly repeat a shell command or external mutation.</dd>
+
+      <dt>Replay and model context are separate</dt>
+      <dd>Long conversations can be compacted for the model while the original transcript remains intact for the client. Summarization preserves the system prompt, first user request, recent tool-call groups, todo state, and configuration. This is considerably more careful than simply replacing old chat messages with a summary.</dd>
+
+      <dt>Genuinely concurrent subagents</dt>
+      <dd>A primary agent can run bounded tasks in parallel, message children while they work, receive interim reports, wait without polling, and cancel them cleanly. Children get private conversations but share the turn's frozen model configuration, workspace, skills, MCP activation, and permission grants. Their private chatter is deliberately excluded from durable transcript history.</dd>
+
+      <dt>Permission semantics designed around actual operations</dt>
+      <dd>Reusable shell approval is derived from parsed command structure, not na&iuml;ve string prefixes. MCP grants are tied to the server, tool, and unchanged definition. Exact file edits must match current content exactly once. Plan mode removes mutating tools at the dispatcher rather than relying on prompt instructions.</dd>
+
+      <dt>Frozen, reproducible activations</dt>
+      <dd>Instructions, skill identities, model profiles, tool schemas, and MCP catalogs are fixed when a session activates. If a skill or MCP tool changes underneath the session, Ox refuses to combine the old authority or metadata with the new implementation. That protects permissions, reproducibility, and provider prompt caching.</dd>
+
+      <dt>Deep language-server integration</dt>
+      <dd>Definitions, references, symbols, and diagnostics come from explicitly configured LSP servers. Ox synchronizes current document content, handles position encodings, confines returned paths to the workspace, and never presents stale or timed-out diagnostics as a clean result.</dd>
+
+      <dt>A capable first-party browser client</dt>
+      <dd>Its Bun host remains alive without a browser attached, supports multiple workspaces and concurrent conversations, and can be used from desktop or mobile over a trusted network. Refreshing or disconnecting the browser does not cancel active work, and background conversations remain visibly supervised.</dd>
+
+      <dt>Explicit, bounded workspace memory</dt>
+      <dd>Memory is opt-in rather than silently extracted from transcripts. Facts have types, provenance, expiry, supersession, capacity limits, and workspace scoping. Retrieval is recorded in the session history, so later memory changes cannot rewrite what an old conversation saw.</dd>
+
+      <dt>Careful external-content handling</dt>
+      <dd>Web pages, MCP results, and stored memories remain untrusted data, never system authority. Web fetch blocks private-network destinations and redirect tricks. Large results are bounded and spilled rather than flooding model context.</dd>
+
+      <dt>Privacy-preserving diagnostics</dt>
+      <dd>Optional JSONL traces record timing, identifiers, sizes, and outcomes&mdash;but intentionally exclude prompts, model text, tool arguments, file contents, shell output, credentials, and raw errors.</dd>
+
+      <dt>Small operational footprint</dt>
+      <dd>Despite all of that, Ox ships as a single self-contained Go binary of roughly 11 MB, backed by deterministic process-level and end-to-end tests.</dd>
+    </dl>
   </section>
 
 {{ end }}
