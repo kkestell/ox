@@ -309,9 +309,9 @@ independently saved sidecar files.
 Context admission occurs only at complete model/tool boundaries. The original
 transcript and the provider-facing compacted projection have separate purposes;
 ACP replay never substitutes summaries for recorded output. Static instructions
-and tool catalogs form a stable prefix; transient state is explicit context.
-Prompt caching is an optimization and cannot affect history or request
-correctness.
+and tool catalogs form a stable prefix; transient state is explicit context that
+trails history, so rewriting it leaves that prefix intact. Prompt caching is an
+optimization and cannot affect history or request correctness.
 
 The log cannot commit an external effect atomically. For the primary loop,
 dispatch intent precedes execution, completion follows it, and a missing

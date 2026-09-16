@@ -163,14 +163,11 @@ func TestTodoPlanPersistsAndReplaysThroughRealProcess(t *testing.T) {
 	if len(requests) != 2 {
 		t.Fatalf("model requests = %d, want 2", len(requests))
 	}
-	var contextSeen bool
-	for _, message := range requests[1].Messages {
-		if message.Role == "system" && strings.Contains(message.text(), `"content":"Keep going"`) {
-			contextSeen = true
-		}
-	}
-	if !contextSeen {
-		t.Fatalf("continuation request omitted todo context: %#v", requests[1].Messages)
+	// The todo message trails history so a todo write leaves the provider's
+	// cached prefix intact.
+	last := requests[1].Messages[len(requests[1].Messages)-1]
+	if last.Role != "system" || !strings.Contains(last.text(), `"content":"Keep going"`) {
+		t.Fatalf("continuation request did not end with todo context: %#v", requests[1].Messages)
 	}
 	first.request("session/close", acp.CloseSessionRequest{SessionID: session})
 	first.stop()

@@ -473,7 +473,10 @@ func (a *Agent) finishTurn(
 	return nil
 }
 
-func (a *Agent) modelRequest(value *session) (openrouter.Request, int) {
+// The todo message trails history rather than joining the prefix, because the
+// prefix is what the provider caches and a todo write changes on every tool
+// call.
+func (a *Agent) modelRequest(value *session) openrouter.Request {
 	value.stateMu.Lock()
 	configuration := value.state.turnConfiguration()
 	history := cloneMessages(value.state.history)
@@ -487,11 +490,10 @@ func (a *Agent) modelRequest(value *session) (openrouter.Request, int) {
 			Text: configuration.SystemPrompt,
 		}},
 	})
+	messages = append(messages, history...)
 	if len(todo) != 0 {
 		messages = append(messages, todoContextMessage(todo))
 	}
-	historyOffset := len(messages)
-	messages = append(messages, history...)
 	return openrouter.Request{
 		Model:        configuration.Settings.Model,
 		Messages:     messages,
@@ -502,7 +504,7 @@ func (a *Agent) modelRequest(value *session) (openrouter.Request, int) {
 		Temperature:  configuration.Settings.Temperature,
 		Reasoning:    configuration.Settings.Reasoning,
 		Provider:     configuration.Settings.Provider,
-	}, historyOffset
+	}
 }
 
 func todoContextMessage(entries []acp.PlanEntry) openrouter.Message {

@@ -14,8 +14,11 @@ import (
 const (
 	compactionThresholdPercent = 80
 	compactionRetainPercent    = 20
-	summaryMessagePrefix       = "Summary of earlier conversation:\n\n"
-	summarizerSystemPrompt     = "You are compacting the transcript of an ongoing tool-using agent session so it can continue with less context. Produce a faithful, detailed summary of the conversation below. Preserve every fact, decision, and result the agent will need to keep working: file paths and their relevant contents, commands run and their outputs, errors encountered, conclusions reached, and any task still in progress. Write prose, not a transcript; add no commentary, and invent nothing that is not present."
+	// The system prompt is the only message a provider request carries ahead of
+	// history, so request indices convert to history indices by one.
+	requestHistoryOffset   = 1
+	summaryMessagePrefix   = "Summary of earlier conversation:\n\n"
+	summarizerSystemPrompt = "You are compacting the transcript of an ongoing tool-using agent session so it can continue with less context. Produce a faithful, detailed summary of the conversation below. Preserve every fact, decision, and result the agent will need to keep working: file paths and their relevant contents, commands run and their outputs, errors encountered, conclusions reached, and any task still in progress. Write prose, not a transcript; add no commentary, and invent nothing that is not present."
 )
 
 type compactionPlan struct {
@@ -38,7 +41,7 @@ func (a *Agent) admitPrimaryRequest(
 	turn diagnostictrace.Turn,
 	requestCount int,
 ) (openrouter.Request, *event, error) {
-	request, historyOffset := a.modelRequest(value)
+	request := a.modelRequest(value)
 	configuration := value.turnConfiguration()
 	planned, err := planRequestAdmission(request, configuration.ContextWindow)
 	if err != nil {
@@ -67,8 +70,8 @@ func (a *Agent) admitPrimaryRequest(
 	turnID := value.openTurn()
 	record := compactionRecord{
 		TurnID:    turnID,
-		HeadEnd:   planned.plan.headEnd - historyOffset,
-		TailStart: planned.plan.tailStart - historyOffset,
+		HeadEnd:   planned.plan.headEnd - requestHistoryOffset,
+		TailStart: planned.plan.tailStart - requestHistoryOffset,
 		Summary:   admitted.request.Messages[planned.plan.headEnd],
 		Usage:     completion.Usage, Occupancy: admitted.occupancy,
 	}
@@ -175,7 +178,7 @@ func planRequestAdmission(
 	}
 
 	plan := planCompaction(request.Messages, contextWindow)
-	latestStart := previousMessageGroup(request.Messages, headEnd, len(request.Messages))
+	latestStart := previousMessageGroup(request.Messages, headEnd, compactableEnd(request.Messages))
 	if plan == nil && budget > contextWindow && latestStart > headEnd {
 		plan = &compactionPlan{headEnd: headEnd, tailStart: latestStart}
 	}
@@ -276,6 +279,18 @@ func compactedMessages(
 	), nil
 }
 
+// compactableEnd is where the conversation a summary can replace stops. Request
+// context such as the todo state is appended after history as a system message,
+// and history itself carries no system message, so a trailing run of them is
+// never part of a splice and never the newest message group.
+func compactableEnd(messages []openrouter.Message) int {
+	end := len(messages)
+	for end > 0 && messages[end-1].Role == openrouter.RoleSystem {
+		end--
+	}
+	return end
+}
+
 func protectedMessageEnd(messages []openrouter.Message) int {
 	for index := range messages {
 		if messages[index].Role == openrouter.RoleUser {
@@ -287,7 +302,7 @@ func protectedMessageEnd(messages []openrouter.Message) int {
 
 func validateCompactionPlan(messages []openrouter.Message, plan compactionPlan) error {
 	if plan.headEnd != protectedMessageEnd(messages) || plan.tailStart <= plan.headEnd ||
-		plan.tailStart >= len(messages) {
+		plan.tailStart >= compactableEnd(messages) {
 		return errors.New("model context compaction splice boundaries are invalid")
 	}
 	if !messageGroupBoundary(messages, plan.headEnd) ||
@@ -394,7 +409,7 @@ func planCompaction(messages []openrouter.Message, contextWindow int) *compactio
 
 	tailBudget := contextWindow/100*compactionRetainPercent +
 		contextWindow%100*compactionRetainPercent/100
-	tailStart := len(messages)
+	tailStart := compactableEnd(messages)
 	tailTokens := 0
 	for tailStart > headEnd {
 		start := previousMessageGroup(messages, headEnd, tailStart)

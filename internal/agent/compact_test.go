@@ -51,31 +51,40 @@ func TestPlanCompactionKeepsFirstUserAndCompleteToolTail(t *testing.T) {
 	}
 }
 
-func TestCompactionPreservesTransientTodoContext(t *testing.T) {
+func TestCompactionKeepsTrailingTodoContextOutOfTheSplice(t *testing.T) {
 	todo := todoContextMessage([]acp.PlanEntry{{
 		Content: "keep this", Priority: acp.PlanEntryPriorityMedium,
 		Status: acp.PlanEntryStatusInProgress,
 	}})
 	messages := []openrouter.Message{
 		textMessage(openrouter.RoleSystem, "instructions"),
-		todo,
 		textMessage(openrouter.RoleUser, "do the task"),
 		textMessage(openrouter.RoleAssistant, strings.Repeat("older ", 1000)),
 		textMessage(openrouter.RoleUser, "continue"),
+		todo,
 	}
 	request := openrouter.Request{Model: "test/model", Messages: messages}
 	plan := planCompaction(messages, 4000)
-	if plan == nil || plan.headEnd != 3 {
-		t.Fatalf("plan = %#v", plan)
+	if plan == nil || plan.headEnd != 2 || plan.tailStart != 3 {
+		t.Fatalf("plan = %#v, want the newest history group retained", plan)
 	}
 	compacted, err := compactRequest(request, *plan, "summary", 4000)
 	if err != nil {
 		t.Fatal(err)
 	}
-	gotTodo := compacted.request.Messages[1]
-	if len(compacted.request.Messages) < 3 || gotTodo.Role != todo.Role ||
-		len(gotTodo.Content) != 1 || gotTodo.Content[0].Text != todo.Content[0].Text {
-		t.Fatalf("todo context was not preserved: %#v", compacted.request.Messages)
+	gotTodo := compacted.request.Messages[len(compacted.request.Messages)-1]
+	if gotTodo.Role != todo.Role || len(gotTodo.Content) != 1 ||
+		gotTodo.Content[0].Text != todo.Content[0].Text {
+		t.Fatalf("todo context did not stay last: %#v", compacted.request.Messages)
+	}
+	retained := compacted.request.Messages[len(compacted.request.Messages)-2]
+	if retained.Content[0].Text != "continue" {
+		t.Fatalf("newest retained message = %#v, want the newest history group", retained)
+	}
+	if _, err := compactRequest(
+		request, compactionPlan{headEnd: 2, tailStart: 4}, "summary", 4000,
+	); err == nil {
+		t.Fatal("compaction retained the todo context in place of history")
 	}
 }
 
