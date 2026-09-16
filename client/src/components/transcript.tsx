@@ -1,5 +1,5 @@
 import { CircleIcon, CircleAlertIcon, CircleCheckIcon, LoaderCircleIcon } from "lucide-react";
-import { useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useLayoutEffect, useRef } from "react";
 
 import {
   type SessionTranscript,
@@ -30,10 +30,10 @@ export function Transcript({ transcript }: { transcript: SessionTranscript }) {
                   icon={entry.status === "completed" ? undefined : <ToolIcon status={entry.status} />}
                   label={
                     <span className="min-w-0 flex-1 text-left">
-                      <span className="font-medium text-foreground">
+                      <span className="block font-medium text-foreground">
                         {entry.title}
                       </span>
-                      {entry.arguments ? <code className="ml-1 break-words font-mono text-xs [overflow-wrap:anywhere]">{entry.arguments}</code> : null}
+                      {entry.arguments ? <code className="mt-0.5 block break-words font-mono text-xs [overflow-wrap:anywhere]">{entry.arguments}</code> : null}
                       <span className="sr-only">{` ${toolStatusLabel(entry.status)}`}</span>
                     </span>
                   }
@@ -52,7 +52,7 @@ export function Transcript({ transcript }: { transcript: SessionTranscript }) {
                     </div>
                   ) : null}
                   {entry.content.length > 0 ? (
-                    <div className="min-w-0 space-y-2">
+                    <div className="min-w-0 space-y-2 font-mono text-xs">
                       {entry.content.map((content, contentIndex) => <ToolOutput content={content} key={contentIndex} />)}
                     </div>
                   ) : null}
@@ -61,11 +61,7 @@ export function Transcript({ transcript }: { transcript: SessionTranscript }) {
             ) : entry.kind === "unknown" ? (
               <Disclosure label="Unsupported transcript item"><p>{entry.label}</p></Disclosure>
             ) : entry.kind === "thought" ? (
-              <Thought
-                content={entry.content}
-                initiallyOpen={entry.id === transcript.openReasoningID}
-                latestEntryID={transcript.entries.at(-1)?.id}
-              />
+              <Thought content={entry.content} />
             ) : (
               <article
                 aria-label={`${entry.kind} message`}
@@ -116,29 +112,27 @@ export function Transcript({ transcript }: { transcript: SessionTranscript }) {
   );
 }
 
-function Thought({ content, initiallyOpen, latestEntryID }: {
-  content: TranscriptContent[];
-  initiallyOpen: boolean;
-  latestEntryID: string | undefined;
-}) {
-  const [open, setOpen] = useState(initiallyOpen);
-  const priorLatestEntryID = useRef(latestEntryID);
+// Reasoning is disclosed on request, so it stays collapsed until the reader
+// opens it. Opening it, and every chunk that arrives while it is open, lands on
+// the newest text. The scrollport mounts with the disclosure, so it is measured
+// through a ref callback rather than on first render.
+function Thought({ content }: { content: TranscriptContent[] }) {
   const scrollport = useRef<HTMLDivElement>(null);
 
-  useLayoutEffect(() => {
-    if (priorLatestEntryID.current !== latestEntryID) setOpen(false);
-    priorLatestEntryID.current = latestEntryID;
-  }, [latestEntryID]);
+  const attach = useCallback((node: HTMLDivElement | null) => {
+    scrollport.current = node;
+    if (node) node.scrollTop = node.scrollHeight;
+  }, []);
 
   useLayoutEffect(() => {
-    if (open && scrollport.current) {
+    if (scrollport.current) {
       scrollport.current.scrollTop = scrollport.current.scrollHeight;
     }
-  }, [content, open]);
+  }, [content]);
 
   return (
-    <Disclosure className="rounded-lg" label="Reasoning" onOpenChange={setOpen} open={open}>
-      <div aria-label="Reasoning content" className="h-[7.5rem] overflow-y-auto leading-6" ref={scrollport}>
+    <Disclosure className="rounded-lg" label="Thinking">
+      <div aria-label="Thinking content" className="h-[7.5rem] overflow-y-auto leading-6" ref={attach}>
         {content.map((item, contentIndex) => <MessageContent content={item} key={contentIndex} />)}
       </div>
     </Disclosure>

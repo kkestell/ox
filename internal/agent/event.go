@@ -32,7 +32,7 @@ type event struct {
 	target           string
 	contextOccupancy int
 	contextWindow    int
-	totalCost        float64
+	totals           usageTotals
 	update           any
 	plan             []acp.PlanEntry
 }

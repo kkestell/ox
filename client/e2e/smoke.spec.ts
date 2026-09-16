@@ -491,7 +491,7 @@ test("follows live transcript updates until manual scrollback asks to return", a
   }
 });
 
-test("opens reasoning at the latest detail", async ({ page }) => {
+test("shows the latest reasoning detail when opened", async ({ page }) => {
   const fixture = await createFixture();
   let host: BrowserHost | undefined;
   try {
@@ -501,7 +501,8 @@ test("opens reasoning at the latest detail", async ({ page }) => {
     await sendPrompt(page);
 
     const transcript = page.getByRole("region", { name: "Transcript" });
-    const reasoning = transcript.getByLabel("Reasoning content");
+    await transcript.getByRole("button", { name: "Thinking" }).click();
+    const reasoning = transcript.getByLabel("Thinking content");
     await expect(reasoning).toContainText("reasoning 599");
     await expect(reasoning).toHaveClass(/h-\[7\.5rem\]/);
     await expect.poll(() => bottomDistance(reasoning)).toBeLessThanOrEqual(1);
@@ -511,7 +512,7 @@ test("opens reasoning at the latest detail", async ({ page }) => {
   }
 });
 
-test("closes reasoning when the assistant response follows it", async ({ page }) => {
+test("keeps reasoning collapsed until it is opened", async ({ page }) => {
   const fixture = await createFixture();
   let host: BrowserHost | undefined;
   try {
@@ -521,10 +522,10 @@ test("closes reasoning when the assistant response follows it", async ({ page })
     await sendPrompt(page);
 
     const transcript = page.getByRole("region", { name: "Transcript" });
-    const reasoning = transcript.getByRole("button", { name: "Reasoning" });
+    const reasoning = transcript.getByRole("button", { name: "Thinking" });
     await expect(reasoning).toHaveAttribute("data-state", "closed");
     await reasoning.click();
-    await expect(transcript.getByLabel("Reasoning content")).toContainText("intermediate reasoning");
+    await expect(transcript.getByLabel("Thinking content")).toContainText("intermediate reasoning");
     await expect(transcript).toContainText("reasoning response complete");
   } finally {
     await host?.stop();

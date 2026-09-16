@@ -23,7 +23,7 @@ import (
 
 const (
 	recordVersion     = 1
-	checkpointVersion = 10
+	checkpointVersion = 11
 
 	recordSessionCreated  = "session_created"
 	recordConfigChanged   = "request_configuration_changed"
@@ -277,6 +277,7 @@ type checkpointUsage struct {
 	Thought     uint64 `json:"thought"`
 	CachedRead  uint64 `json:"cachedRead"`
 	CachedWrite uint64 `json:"cachedWrite"`
+	CacheSeen   bool   `json:"cacheSeen"`
 }
 
 type durableState struct {
@@ -455,6 +456,7 @@ func newCheckpointRecord(state durableState) (sessionRecord, error) {
 				Thought:     state.usage.thought,
 				CachedRead:  state.usage.cachedRead,
 				CachedWrite: state.usage.cachedWrite,
+				CacheSeen:   state.usage.cacheSeen,
 			},
 			Occupancy:             state.occupancy,
 			Cost:                  state.cost,
@@ -565,6 +567,7 @@ func restoreCheckpoint(record, previous sessionRecord) (durableState, error) {
 			thought:     projection.Usage.Thought,
 			cachedRead:  projection.Usage.CachedRead,
 			cachedWrite: projection.Usage.CachedWrite,
+			cacheSeen:   projection.Usage.CacheSeen,
 		},
 		occupancy:             projection.Occupancy,
 		cost:                  projection.Cost,
@@ -1079,16 +1082,7 @@ func (s *durableState) addUsage(current *openrouter.Usage) {
 	if current == nil {
 		return
 	}
-	s.usage.seen = true
-	s.usage.input += uint64(current.PromptTokens)
-	s.usage.output += uint64(current.CompletionTokens)
-	if current.PromptTokensDetails != nil {
-		s.usage.cachedRead += uint64(current.PromptTokensDetails.CachedTokens)
-		s.usage.cachedWrite += uint64(current.PromptTokensDetails.CacheWriteTokens)
-	}
-	if current.CompletionTokensDetails != nil {
-		s.usage.thought += uint64(current.CompletionTokensDetails.ReasoningTokens)
-	}
+	s.usage.add(current)
 	s.cost += current.Cost
 }
 
@@ -1555,6 +1549,7 @@ func combinedUsage(values ...*openrouter.Usage) *openrouter.Usage {
 func (a *Agent) replay(s durableState) ([]any, error) {
 	updates := make([]any, 0, len(s.records))
 	var cost float64
+	var usage turnUsage
 	var configuration requestConfiguration
 	var turnConfiguration requestConfiguration
 	var suspended bool
@@ -1598,18 +1593,16 @@ func (a *Agent) replay(s durableState) ([]any, error) {
 			}
 			if value.Usage != nil {
 				cost += value.Usage.Cost
+				usage.add(value.Usage)
 			}
 			effective := configuration
 			if turnConfiguration.Settings.Model != "" {
 				effective = turnConfiguration
 			}
 			if value.Occupancy > 0 && effective.ContextWindow > 0 {
-				updates = append(updates, acp.UsageUpdate{
-					SessionUpdate: acp.SessionUpdateUsageUpdate,
-					Used:          uint64(value.Occupancy),
-					Size:          uint64(effective.ContextWindow),
-					Cost:          &acp.Cost{Amount: cost, Currency: "USD"},
-				})
+				updates = append(updates, usageUpdate(
+					value.Occupancy, effective.ContextWindow, newUsageTotals(cost, usage),
+				))
 			}
 		case recordCompaction:
 			var value compactionRecord
@@ -1618,18 +1611,16 @@ func (a *Agent) replay(s durableState) ([]any, error) {
 			}
 			if value.Usage != nil {
 				cost += value.Usage.Cost
+				usage.add(value.Usage)
 			}
 			effective := configuration
 			if turnConfiguration.Settings.Model != "" {
 				effective = turnConfiguration
 			}
 			if effective.ContextWindow > 0 {
-				updates = append(updates, acp.UsageUpdate{
-					SessionUpdate: acp.SessionUpdateUsageUpdate,
-					Used:          uint64(value.Occupancy),
-					Size:          uint64(effective.ContextWindow),
-					Cost:          &acp.Cost{Amount: cost, Currency: "USD"},
-				})
+				updates = append(updates, usageUpdate(
+					value.Occupancy, effective.ContextWindow, newUsageTotals(cost, usage),
+				))
 			}
 		case recordUserMessage:
 			var value userMessageRecord
@@ -1691,14 +1682,14 @@ func (a *Agent) replay(s durableState) ([]any, error) {
 			}
 			if value.Usage != nil {
 				cost += value.Usage.Cost
+				usage.add(value.Usage)
 			}
 			if value.Usage != nil && turnConfiguration.ContextWindow > 0 {
-				updates = append(updates, acp.UsageUpdate{
-					SessionUpdate: acp.SessionUpdateUsageUpdate,
-					Used:          uint64(value.Usage.PromptTokens),
-					Size:          uint64(turnConfiguration.ContextWindow),
-					Cost:          &acp.Cost{Amount: cost, Currency: "USD"},
-				})
+				updates = append(updates, usageUpdate(
+					value.Usage.PromptTokens,
+					turnConfiguration.ContextWindow,
+					newUsageTotals(cost, usage),
+				))
 			}
 			suspended = false
 		case recordTurnFinished:

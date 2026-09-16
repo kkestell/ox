@@ -432,7 +432,7 @@ func (a *Agent) runSubagent(
 					group.run.events <- event{
 						kind: eventUsage, contextOccupancy: occupancy,
 						contextWindow: group.configuration.ContextWindow,
-						totalCost:     group.run.session.cost(),
+						totals:        group.run.session.usageTotals(),
 					}
 				}
 			}

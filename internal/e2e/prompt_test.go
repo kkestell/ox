@@ -1223,3 +1223,67 @@ func TestDuplicateToolCallIDFailsOneTurnAndNotTheSession(t *testing.T) {
 		{role: "user", text: "carry on"},
 	})
 }
+
+// TestUnusableToolCallArgumentsFailOneTurnAndNotTheSession covers a provider
+// that ends a long tool call with truncated JSON arguments. The turn fails, and
+// the session still takes the next prompt rather than needing a close and
+// reload.
+func TestUnusableToolCallArgumentsFailOneTurnAndNotTheSession(t *testing.T) {
+	model := startModel(t,
+		sse(
+			evToolCall(0, "truncated", "function", "shell", `{"command":"tru`),
+			evFinishReason("tool_calls"),
+		),
+		sse(evText("recovered"), evFinishReason("stop")),
+	)
+	child, session := startSession(t, withModel(model))
+
+	failure := child.requestError("session/prompt", acp.PromptRequest{
+		SessionID: session,
+		Prompt:    textPrompt("run a command"),
+	})
+	if !strings.Contains(
+		failure.Message,
+		`shell tool call "truncated" has arguments that are not valid JSON`,
+	) {
+		t.Fatalf("error = %#v", failure)
+	}
+	_ = updates(t, child, session)
+
+	prompt(t, child, session, "carry on")
+	_ = updates(t, child, session)
+	requests := model.requests()
+	if len(requests) != 2 {
+		t.Fatalf("model received %d requests, want 2", len(requests))
+	}
+	assertConversation(t, requests[1].Messages, []exchange{
+		{role: "user", text: "run a command"},
+		{role: "user", text: "carry on"},
+	})
+}
+
+// TestArgumentlessToolCallRuns covers a provider that sends no argument
+// fragment at all for a tool that takes no parameters.
+func TestArgumentlessToolCallRuns(t *testing.T) {
+	model := startModel(t,
+		sse(
+			evToolCall(0, "list", "function", "subagent_list", ""),
+			evFinishReason("tool_calls"),
+		),
+		sse(evText("no children"), evFinishReason("stop")),
+	)
+	child, session := startSession(t, withModel(model))
+	setMode(t, child, session, "auto")
+
+	prompt(t, child, session, "list the subagents")
+	_ = updates(t, child, session)
+	requests := model.requests()
+	if len(requests) != 2 {
+		t.Fatalf("model received %d requests, want 2", len(requests))
+	}
+	assertConversation(t, requests[1].Messages, []exchange{
+		{role: "user", text: "list the subagents"},
+		{role: "assistant", text: ""},
+		{role: "tool", text: `{"subagents":[]}`},
+	})
+}

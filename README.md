@@ -82,6 +82,7 @@ Configuration and diagnostics:
 - [Web access](docs/web.md) — fetching and search.
 - [Zed setup](docs/zed.md) — running Ox from an ACP client.
 - [Browser client](docs/browser.md) — starting the local browser client safely.
+- [ACP extensions](docs/acp-extensions.md) — the `_meta` keys clients may see.
 - [Specification](docs/spec.md) — target product behavior and limits.
 
 ## Development

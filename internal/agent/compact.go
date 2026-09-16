@@ -130,10 +130,9 @@ func (a *Agent) summarizeContext(
 
 func (a *Agent) compactionUsageEvent(value *session, occupancy int) *event {
 	configuration := value.turnConfiguration()
-	totalCost := value.cost()
 	return &event{
 		kind: eventUsage, contextOccupancy: occupancy,
-		contextWindow: configuration.ContextWindow, totalCost: totalCost,
+		contextWindow: configuration.ContextWindow, totals: value.usageTotals(),
 	}
 }
 

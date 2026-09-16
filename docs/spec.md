@@ -68,15 +68,15 @@ changing the conversation. Workspace registration and every workspace's
 conversations sit in one navigation region beside it, along with the actions
 that add, remove, restart, and open the settings of a workspace. The transcript
 view also contains the session's model, mode, and reasoning controls, read-only
-context usage, and cumulative session cost. Attachments are added beside those
-controls, listed beneath them, and removable until the prompt is sent. Plans
-appear when present, and technical tool output is disclosed beneath its
-activity. Messages and reasoning render as GitHub-flavored Markdown, with single
-newlines breaking lines; technical tool output stays literal. Rendered Markdown
-keeps model output inert: raw HTML remains text, links resolve only as HTTP or
-HTTPS, an image displays its alt text or source URL instead of loading, and wide
-code blocks and tables scroll within the message rather than widening the
-transcript.
+context usage, and the session's cumulative cost and prompt cache hit rate.
+Attachments are added beside those controls, listed beneath them, and removable
+until the prompt is sent. Plans appear when present, and reasoning and technical
+tool output stay collapsed until they are disclosed beneath their activity.
+Messages and reasoning render as GitHub-flavored Markdown, with single newlines
+breaking lines; technical tool output stays literal. Rendered Markdown keeps
+model output inert: raw HTML remains text, links resolve only as HTTP or HTTPS,
+an image displays its alt text or source URL instead of loading, and wide code
+blocks and tables scroll within the message rather than widening the transcript.
 
 Workspace settings contain authentication, client-supplied MCP servers, and
 support details. They open in place of the conversation and select the workspace

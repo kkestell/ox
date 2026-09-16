@@ -47,7 +47,11 @@ export function SessionInformation({ onConfigOption, transcript }: {
 
 function UsageInformation({ usage }: { usage: NonNullable<SessionTranscript["usage"]> }) {
   const context = `${usage.used.toLocaleString()} / ${usage.size.toLocaleString()}`;
-  const label = usage.cost ? `${context} tokens, ${formatCost(usage.cost)}` : `${context} tokens`;
+  const label = [
+    `${context} tokens`,
+    ...(usage.cost ? [formatCost(usage.cost)] : []),
+    ...(usage.cacheHitRate === undefined ? [] : [`${formatRate(usage.cacheHitRate)} cache hits`]),
+  ].join(", ");
   const progress = usage.size > 0 ? Math.min(Math.max(usage.used / usage.size, 0), 1) : 0;
 
   return (
@@ -75,6 +79,12 @@ function UsageInformation({ usage }: { usage: NonNullable<SessionTranscript["usa
             <p className="text-sm font-medium tabular-nums">{formatCost(usage.cost)}</p>
           </div>
         ) : null}
+        {usage.cacheHitRate === undefined ? null : (
+          <div>
+            <p className="text-xs text-muted-foreground">Cache hits</p>
+            <p className="text-sm font-medium tabular-nums">{formatRate(usage.cacheHitRate)}</p>
+          </div>
+        )}
       </PopoverContent>
     </Popover>
   );
@@ -103,6 +113,10 @@ function UsageRing({ progress }: { progress: number }) {
 }
 
 type ConfigurationOption = SessionTranscript["configuration"][number];
+
+function formatRate(rate: number): string {
+  return new Intl.NumberFormat("en-US", { maximumFractionDigits: 0, style: "percent" }).format(rate);
+}
 
 function formatCost(cost: NonNullable<NonNullable<SessionTranscript["usage"]>["cost"]>): string {
   const subCent = cost.amount > 0 && cost.amount < 0.01;

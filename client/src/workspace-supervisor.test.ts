@@ -208,8 +208,6 @@ describe("workspace supervisor", () => {
         kind: "thought",
       },
     ]);
-    expect(supervisor.sessionTranscript("first")?.openReasoningID).toBeUndefined();
-
     await supervisor.closeSession("first");
     await supervisor.resumeSession("second", []);
     expect(supervisor.state.sessions.selectedID).toBe("second");

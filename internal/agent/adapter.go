@@ -128,15 +128,7 @@ func (a *eventAdapter) handle(current event) error {
 			Entries:       clonePlanEntries(current.plan),
 		})
 	case eventUsage:
-		return a.send(acp.UsageUpdate{
-			SessionUpdate: acp.SessionUpdateUsageUpdate,
-			Used:          uint64(current.contextOccupancy),
-			Size:          uint64(current.contextWindow),
-			Cost: &acp.Cost{
-				Amount:   current.totalCost,
-				Currency: "USD",
-			},
-		})
+		return a.send(usageUpdate(current.contextOccupancy, current.contextWindow, current.totals))
 	case eventOutcome:
 		return a.send(current.update)
 	}

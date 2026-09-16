@@ -36,6 +36,18 @@ type turnUsage struct {
 	thought     uint64
 	cachedRead  uint64
 	cachedWrite uint64
+	cacheSeen   bool
+}
+
+// usageTotals is the cumulative session usage a client sees beside its context
+// occupancy: what every provider request has cost, and the share of input
+// tokens the provider served from its cache. cacheRate means nothing until
+// cacheKnown is true, which separates a provider that reports no cached-token
+// accounting from one that reports no hits.
+type usageTotals struct {
+	cost       float64
+	cacheRate  float64
+	cacheKnown bool
 }
 
 type requestPermission func(
@@ -242,10 +254,9 @@ func (a *Agent) runFrom(ctx context.Context, run turnRun, start turnStart) loopO
 		}
 
 		if suspended == nil {
-			// Tool-call identity is provider output, so rejecting it fails this
-			// turn rather than leaving the session with a turn it can never
-			// close.
-			if err := validateToolCallIDs(value, completion.ToolCalls); err != nil {
+			// A tool call is provider output, so rejecting it fails this turn
+			// rather than leaving the session with a turn it can never close.
+			if err := validateToolCalls(value, completion.ToolCalls); err != nil {
 				return a.finishFailed(
 					value, active, events, fmt.Errorf("validate tool calls: %w", err),
 				)
@@ -369,7 +380,7 @@ func (a *Agent) publishPendingTools(
 	}
 }
 
-func validateToolCallIDs(value *session, calls []openrouter.ToolCall) error {
+func validateToolCalls(value *session, calls []openrouter.ToolCall) error {
 	value.callIDsMu.Lock()
 	defer value.callIDsMu.Unlock()
 	value.stateMu.Lock()
@@ -378,6 +389,16 @@ func validateToolCallIDs(value *session, calls []openrouter.ToolCall) error {
 	for _, call := range calls {
 		if call.ID == "" {
 			return errors.New("tool call ID is required")
+		}
+		if call.Function.Name == "" {
+			return fmt.Errorf("tool call %q has no tool name", call.ID)
+		}
+		if !json.Valid([]byte(call.Function.Arguments)) {
+			return fmt.Errorf(
+				"%s tool call %q has arguments that are not valid JSON",
+				call.Function.Name,
+				call.ID,
+			)
 		}
 		if _, exists := value.state.toolCallIDs[call.ID]; exists {
 			return fmt.Errorf("duplicate tool call ID %q", call.ID)
@@ -1414,14 +1435,14 @@ func (a *Agent) publishUsage(
 		cachedRead = current.PromptTokensDetails.CachedTokens
 		cachedWrite = current.PromptTokensDetails.CacheWriteTokens
 	}
-	cost := value.cost()
+	totals := value.usageTotals()
 	a.logger.Info(
 		"model request completed",
 		"session_id", value.id,
 		"total_tokens", current.TotalTokens,
 		"cache_read_tokens", cachedRead,
 		"cache_write_tokens", cachedWrite,
-		"session_cost", cost,
+		"session_cost", totals.cost,
 	)
 	configuration := value.turnConfiguration()
 	if configuration.ContextWindow > 0 {
@@ -1429,9 +1450,51 @@ func (a *Agent) publishUsage(
 			kind:             eventUsage,
 			contextOccupancy: current.PromptTokens,
 			contextWindow:    configuration.ContextWindow,
-			totalCost:        cost,
+			totals:           totals,
 		}
 	}
+}
+
+func (u *turnUsage) add(current *openrouter.Usage) {
+	u.seen = true
+	u.input += uint64(current.PromptTokens)
+	u.output += uint64(current.CompletionTokens)
+	if current.PromptTokensDetails != nil {
+		u.cacheSeen = true
+		u.cachedRead += uint64(current.PromptTokensDetails.CachedTokens)
+		u.cachedWrite += uint64(current.PromptTokensDetails.CacheWriteTokens)
+	}
+	if current.CompletionTokensDetails != nil {
+		u.thought += uint64(current.CompletionTokensDetails.ReasoningTokens)
+	}
+}
+
+func (u turnUsage) cacheHitRate() (float64, bool) {
+	if !u.cacheSeen || u.input == 0 {
+		return 0, false
+	}
+	return float64(u.cachedRead) / float64(u.input), true
+}
+
+func newUsageTotals(cost float64, usage turnUsage) usageTotals {
+	rate, known := usage.cacheHitRate()
+	return usageTotals{cost: cost, cacheRate: rate, cacheKnown: known}
+}
+
+// usageUpdate reports context occupancy against the model context window, plus
+// the session totals. ACP's usage update has no field for the cache hit rate,
+// so it travels as metadata.
+func usageUpdate(occupancy, window int, totals usageTotals) acp.UsageUpdate {
+	update := acp.UsageUpdate{
+		SessionUpdate: acp.SessionUpdateUsageUpdate,
+		Used:          uint64(occupancy),
+		Size:          uint64(window),
+		Cost:          &acp.Cost{Amount: totals.cost, Currency: "USD"},
+	}
+	if totals.cacheKnown {
+		update.Meta = acp.Metadata{acp.MetaCacheHitRate: totals.cacheRate}
+	}
+	return update
 }
 
 func (u turnUsage) acp() *acp.Usage {

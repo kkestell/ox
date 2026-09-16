@@ -160,3 +160,17 @@ func TestAssemblerReturnsStreamError(t *testing.T) {
 		t.Fatalf("error = %v", err)
 	}
 }
+
+func TestAssemblerGivesAnArgumentlessToolCallAnEmptyObject(t *testing.T) {
+	var assembler streamAssembler
+	event := `{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"subagent_list"}}]},"finish_reason":"tool_calls"}]}`
+	if err := assembler.push([]byte(event), nil); err != nil {
+		t.Fatal(err)
+	}
+	completion := assembler.finish()
+
+	if len(completion.ToolCalls) != 1 ||
+		completion.ToolCalls[0].Function.Arguments != "{}" {
+		t.Fatalf("tool calls = %#v", completion.ToolCalls)
+	}
+}

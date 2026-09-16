@@ -4,6 +4,7 @@ import { parsePendingInteraction, type FormField, type FormValue, type PendingIn
 
 type MessageKind = "user" | "agent" | "thought";
 
+const cacheHitRateMetadataKey = "kkestell.ox/cacheHitRate";
 const toolDisplayArgumentsMetadataKey = "kkestell.ox/toolDisplayArguments";
 const toolDisplayNameMetadataKey = "kkestell.ox/toolDisplayName";
 
@@ -22,16 +23,11 @@ export class SessionController {
   #indexes = new Map<string, number>();
   #nextLocalID = 1;
   #nextInteractionID = 1;
-  #openReasoningID: string | undefined;
   #plan: SessionTranscript["plan"] = [];
   #pending = new Map<string, PendingInteraction & PendingResolver>();
   #usage: SessionTranscript["usage"];
 
-  constructor(readonly id: string, private replaying = false) {}
-
-  beginLiveUpdates(): void {
-    this.replaying = false;
-  }
+  constructor(readonly id: string) {}
 
   accept(update: acp.SessionUpdate | unknown): void {
     const value = record(update);
@@ -97,7 +93,6 @@ export class SessionController {
     return {
       configuration: this.#configuration.map((option) => ({ ...option })),
       entries: this.#entries.map(copyEntry),
-      ...(this.#openReasoningID === undefined ? {} : { openReasoningID: this.#openReasoningID }),
       plan: this.#plan.map((entry) => ({ ...entry })),
       ...(this.#usage === undefined
         ? {}
@@ -289,7 +284,9 @@ export class SessionController {
     const cost = record(update?.cost);
     const amount = cost?.amount;
     const currency = string(cost?.currency);
+    const cacheHitRate = record(update?._meta)?.[cacheHitRateMetadataKey];
     this.#usage = {
+      ...(number(cacheHitRate) && cacheHitRate <= 1 ? { cacheHitRate } : {}),
       ...(typeof amount === "number" && Number.isFinite(amount) && currency ? { cost: { amount, currency } } : {}),
       size,
       used,
@@ -303,9 +300,6 @@ export class SessionController {
   private append(entry: TranscriptEntry, key?: string): void {
     this.#entries.push(entry);
     if (key) this.#indexes.set(key, this.#entries.length - 1);
-    // A thought opens while it streams. Once another transcript item follows,
-    // it is no longer the active reasoning stream and should collapse.
-    this.#openReasoningID = entry.kind === "thought" && !this.replaying ? entry.id : undefined;
   }
 
   private localID(kind: string): string {

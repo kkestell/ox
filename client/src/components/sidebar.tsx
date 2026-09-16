@@ -10,7 +10,7 @@ import {
   XIcon,
 } from "lucide-react";
 
-import { type Snapshot } from "../protocol.ts";
+import { type Conversation, type Snapshot } from "../protocol.ts";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -148,7 +148,7 @@ export function WorkspaceSidebar({ onAdd, onClose, onNew, onOlder, onOpen, onRem
                                   aria-current={!settings && sessions.selectedId === conversation.id ? "page" : undefined}
                                   href={conversation.status === "locked" ? undefined : `#${conversation.id}`}
                                   onClick={conversation.status === "locked" ? undefined : () => onOpen(workspace.id, conversation.id)}
-                                  title={conversation.status === "locked" ? "Open in another client" : undefined}
+                                  title={conversationHint(conversation)}
                                 >
                                   <span className="flex w-full min-w-0 items-center gap-1.5">
                                     {conversation.status === "locked" ? (
@@ -160,19 +160,12 @@ export function WorkspaceSidebar({ onAdd, onClose, onNew, onOlder, onOpen, onRem
                                     {conversation.busy ? (
                                       <LoaderCircleIcon aria-label="Working" className="size-3.5 shrink-0 animate-spin text-muted-foreground" />
                                     ) : null}
-                                    <span className="min-w-0 truncate font-medium" title={conversation.title ?? "Untitled conversation"}>
+                                    <span className="min-w-0 truncate font-medium">
                                       {conversation.title ?? "Untitled conversation"}
                                     </span>
                                   </span>
-                                  {conversation.status === "loading" || conversation.updatedAt ? (
-                                    <span className="flex w-full min-w-0 items-center gap-2 text-xs text-sidebar-foreground/55">
-                                      {conversation.updatedAt ? (
-                                        <time className="min-w-0 flex-1 truncate" dateTime={conversation.updatedAt}>
-                                          {shortDate(conversation.updatedAt)}
-                                        </time>
-                                      ) : null}
-                                      {conversation.status === "loading" ? <span className="shrink-0">Opening…</span> : null}
-                                    </span>
+                                  {conversation.status === "loading" ? (
+                                    <span className="w-full min-w-0 text-xs text-sidebar-foreground/55">Opening…</span>
                                   ) : null}
                                 </a>
                               </SidebarMenuSubButton>
@@ -222,11 +215,21 @@ export function WorkspaceSidebar({ onAdd, onClose, onNew, onOlder, onOpen, onRem
   );
 }
 
-function shortDate(value: string): string {
+// A conversation row shows only its title, so its hover text carries the
+// truncated title in full along with when the conversation was last active.
+function conversationHint(conversation: Conversation): string {
+  const lines = [conversation.title ?? "Untitled conversation"];
+  if (conversation.updatedAt) lines.push(longDate(conversation.updatedAt));
+  if (conversation.status === "locked") lines.push("Open in another client");
+  return lines.join("\n");
+}
+
+function longDate(value: string): string {
   return new Date(value).toLocaleString(undefined, {
     day: "numeric",
     hour: "numeric",
     minute: "2-digit",
     month: "short",
+    year: "numeric",
   });
 }

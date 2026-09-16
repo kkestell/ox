@@ -249,12 +249,18 @@ func (a *streamAssembler) finish() *Completion {
 		if kind == "" {
 			kind = "function"
 		}
+		// A call to a tool that takes no parameters arrives without any
+		// argument fragment, which stands for the empty object.
+		arguments := call.arguments.String()
+		if arguments == "" {
+			arguments = "{}"
+		}
 		a.completion.ToolCalls = append(a.completion.ToolCalls, ToolCall{
 			ID:   call.id,
 			Type: kind,
 			Function: ToolCallFunction{
 				Name:      call.name,
-				Arguments: call.arguments.String(),
+				Arguments: arguments,
 			},
 		})
 	}

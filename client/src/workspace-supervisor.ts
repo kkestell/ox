@@ -298,7 +298,6 @@ export class WorkspaceSupervisor {
     if (!prompt.every((block) => this.supportsPromptBlock(block))) {
       return Promise.reject(new Error("Ox does not support one or more prompt blocks"));
     }
-    controller.beginLiveUpdates();
     controller.appendPrompt(prompt);
     const running = this.readyConnection().agent
       .request(acp.methods.agent.session.prompt, { prompt, sessionId: sessionID })
@@ -647,7 +646,7 @@ export class WorkspaceSupervisor {
     const previousSessions = this.#state.sessions;
     // Install this route before session/load so replay notifications cannot win
     // the race with its successful response.
-    this.#controllers.set(sessionID, new SessionController(sessionID, operation === "load"));
+    this.#controllers.set(sessionID, new SessionController(sessionID));
     this.setSessions(this.withSessionStatus(sessionID, "loading"));
     try {
       const request = {

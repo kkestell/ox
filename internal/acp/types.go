@@ -8,6 +8,7 @@ const (
 	ErrCodeAuthRequired            = -32000
 	ErrCodeRequestCancelled        = -32800
 	MetaBlockIndex                 = "kkestell.ox/blockIndex"
+	MetaCacheHitRate               = "kkestell.ox/cacheHitRate"
 	MetaMessageID                  = "kkestell.ox/messageId"
 	MetaOutcome                    = "kkestell.ox/outcome"
 	MetaSessionLocked              = "kkestell.ox/sessionLocked"

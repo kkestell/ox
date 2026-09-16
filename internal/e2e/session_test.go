@@ -476,6 +476,63 @@ func assertReplayUsage(t *testing.T, replay []sessionNotification, size uint64, 
 	}
 }
 
+func TestUsageUpdatesReportCumulativeCacheHitRate(t *testing.T) {
+	const contextWindow = 9600
+	dataDir := t.TempDir()
+	model := startModel(t,
+		sse(evText("first answer"), evFinishReason("stop"), evUsageCached(100, 5, 105, 0)),
+		sse(evText("second answer"), evFinishReason("stop"), evUsageCached(300, 5, 305, 150)),
+	)
+	options := []startOption{
+		withModel(model),
+		withModelContextWindow(model, contextWindow),
+		withEnvironment("XDG_DATA_HOME", dataDir),
+	}
+
+	first, session := startSession(t, options...)
+	cwd := first.cwd
+	prompt(t, first, session, "first prompt")
+	if rate := lastCacheHitRate(t, updates(t, first, session)); rate != 0 {
+		t.Fatalf("cache hit rate after one request = %v, want 0", rate)
+	}
+	prompt(t, first, session, "second prompt")
+	if rate := lastCacheHitRate(t, updates(t, first, session)); rate != 0.375 {
+		t.Fatalf("cumulative cache hit rate = %v, want 0.375", rate)
+	}
+	first.request("session/close", acp.CloseSessionRequest{SessionID: session})
+	first.stop()
+
+	second := start(t, options...)
+	initialize(t, second)
+	replayStart := len(second.received)
+	loadSession(t, second, session, cwd)
+	replayed := receivedSessionUpdates(t, second, replayStart, session)
+	_ = updates(t, second, session)
+	if rate := lastCacheHitRate(t, replayed); rate != 0.375 {
+		t.Fatalf("replayed cache hit rate = %v, want 0.375", rate)
+	}
+}
+
+func lastCacheHitRate(t *testing.T, notifications []sessionNotification) float64 {
+	t.Helper()
+	var seen bool
+	var rate float64
+	for _, notification := range notifications {
+		if notification.Update.SessionUpdate != "usage_update" {
+			continue
+		}
+		value, ok := notification.Update.Meta[acp.MetaCacheHitRate].(float64)
+		if !ok {
+			t.Fatalf("usage update without a cache hit rate = %#v", notification.Update)
+		}
+		seen, rate = true, value
+	}
+	if !seen {
+		t.Fatal("no usage update reported a cache hit rate")
+	}
+	return rate
+}
+
 func TestChangedFilesAndToolLocationsSurviveProcessRestart(t *testing.T) {
 	dataDir := t.TempDir()
 	model := startModel(t,

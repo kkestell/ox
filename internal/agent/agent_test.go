@@ -701,15 +701,18 @@ func TestToolFailuresEachProduceOneTerminalResult(t *testing.T) {
 	}
 }
 
-func TestValidateToolCallIDsRejectsExistingAndBatchDuplicates(t *testing.T) {
+func TestValidateToolCallsRejectsUnusableProviderOutput(t *testing.T) {
 	value := ephemeralToolSession(t)
 	value.state.toolCallIDs = map[string]struct{}{"existing": {}}
 	for _, calls := range [][]openrouter.ToolCall{
 		{toolCall("existing", "tool")},
 		{toolCall("same", "tool"), toolCall("same", "tool")},
 		{toolCall("", "tool")},
+		{toolCall("nameless", "")},
+		{toolCallWithArguments("truncated", "tool", `{"task":"half`)},
+		{toolCallWithArguments("empty", "tool", "")},
 	} {
-		if err := validateToolCallIDs(value, calls); err == nil {
+		if err := validateToolCalls(value, calls); err == nil {
 			t.Fatalf("tool calls were accepted: %#v", calls)
 		}
 	}

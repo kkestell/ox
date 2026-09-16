@@ -493,6 +493,13 @@ func evUsageCost(promptTokens, completionTokens, totalTokens int, cost float64) 
 	)
 }
 
+func evUsageCached(promptTokens, completionTokens, totalTokens, cachedTokens int) string {
+	return fmt.Sprintf(
+		`{"choices":[],"usage":{"prompt_tokens":%d,"completion_tokens":%d,"total_tokens":%d,"prompt_tokens_details":{"cached_tokens":%d}}}`,
+		promptTokens, completionTokens, totalTokens, cachedTokens,
+	)
+}
+
 func evError(code int, message string) string {
 	return fmt.Sprintf(`{"error":{"code":%d,"message":%s}}`, code, jsonString(message))
 }

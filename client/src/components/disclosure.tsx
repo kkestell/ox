@@ -38,7 +38,7 @@ export function Disclosure({ children, className, contentClassName, icon, label,
         </Button>
       </CollapsibleTrigger>
       {open ? (
-        <CollapsibleContent className={cn("ml-[18px] min-w-0 space-y-3 border-l pl-4 pt-2 text-sm", contentClassName)}>
+        <CollapsibleContent className={cn("ml-[18px] min-w-0 space-y-3 pl-4 pt-2 text-sm", contentClassName)}>
           {children}
         </CollapsibleContent>
       ) : null}

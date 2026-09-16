@@ -34,28 +34,6 @@ describe("session controller", () => {
     ]);
   });
 
-  test("opens a live reasoning stream and closes it at the next transcript item", () => {
-    const controller = new SessionController("session-1");
-
-    controller.accept({ content: { text: "thinking", type: "text" }, messageId: "thought-1", sessionUpdate: "agent_thought_chunk" });
-    expect(controller.transcript.openReasoningID).toBe("message:thought:thought-1");
-
-    controller.accept({ content: { text: "answer", type: "text" }, messageId: "agent-1", sessionUpdate: "agent_message_chunk" });
-    expect(controller.transcript.openReasoningID).toBeUndefined();
-  });
-
-  test("keeps replayed reasoning closed", () => {
-    const controller = new SessionController("session-1", true);
-
-    controller.accept({ content: { text: "earlier thinking", type: "text" }, messageId: "thought-1", sessionUpdate: "agent_thought_chunk" });
-
-    expect(controller.transcript.openReasoningID).toBeUndefined();
-
-    controller.beginLiveUpdates();
-    controller.accept({ content: { text: "new thinking", type: "text" }, messageId: "thought-2", sessionUpdate: "agent_thought_chunk" });
-    expect(controller.transcript.openReasoningID).toBe("message:thought:thought-2");
-  });
-
   test("merges tool updates and replaces output with its final terminal outcome", () => {
     const controller = new SessionController("session-1");
 
@@ -112,7 +90,13 @@ describe("session controller", () => {
       entries: [{ content: "Finish", priority: "medium", status: "completed" }],
       sessionUpdate: "plan",
     });
-    controller.accept({ cost: { amount: 0.2, currency: "USD" }, sessionUpdate: "usage_update", size: 100, used: 25 });
+    controller.accept({
+      _meta: { "kkestell.ox/cacheHitRate": 0.375 },
+      cost: { amount: 0.2, currency: "USD" },
+      sessionUpdate: "usage_update",
+      size: 100,
+      used: 25,
+    });
     controller.accept({
       configOptions: [{ currentValue: "plan", id: "mode", name: "Mode", options: [{ name: "Plan", value: "plan" }], type: "select" }],
       sessionUpdate: "config_option_update",
@@ -122,7 +106,7 @@ describe("session controller", () => {
       configuration: [{ currentValue: "plan", id: "mode", name: "Mode", options: [{ name: "Plan", value: "plan" }], type: "select" }],
       entries: [],
       plan: [{ content: "Finish", priority: "medium", status: "completed" }],
-      usage: { cost: { amount: 0.2, currency: "USD" }, size: 100, used: 25 },
+      usage: { cacheHitRate: 0.375, cost: { amount: 0.2, currency: "USD" }, size: 100, used: 25 },
     });
   });
 

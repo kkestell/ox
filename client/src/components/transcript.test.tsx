@@ -53,7 +53,7 @@ test("renders reasoning without a background surface", () => {
   expect(html).not.toContain("bg-muted/35");
 });
 
-test("opens only the live reasoning stream", () => {
+test("keeps reasoning collapsed", () => {
   const transcript: SessionTranscript = {
     configuration: [],
     entries: [
@@ -63,14 +63,13 @@ test("opens only the live reasoning stream", () => {
         kind: "thought",
       },
     ],
-    openReasoningID: "thought-1",
     plan: [],
   };
 
   const html = renderToStaticMarkup(<Transcript transcript={transcript} />);
 
-  expect(html).toContain('aria-label="Reasoning content"');
-  expect(html).toContain("reasoning");
+  expect(html).toContain("Thinking");
+  expect(html).not.toContain('aria-label="Thinking content"');
 });
 
 test("renders structured ACP tool presentation with a code-styled argument", () => {
@@ -111,15 +110,13 @@ test("renders structured ACP tool presentation with a code-styled argument", () 
   expect(html).not.toContain("Tool kind");
 });
 
-test("renders message and reasoning text as Markdown", () => {
+test("renders message text as Markdown", () => {
   const transcript: SessionTranscript = {
     configuration: [],
     entries: [
       { content: [{ text: "## Agent", type: "text" }], id: "agent-1", kind: "agent" },
       { content: [{ text: "## User", type: "text" }], id: "user-1", kind: "user" },
-      { content: [{ text: "## Reasoning", type: "text" }], id: "thought-1", kind: "thought" },
     ],
-    openReasoningID: "thought-1",
     plan: [],
   };
 
@@ -127,5 +124,4 @@ test("renders message and reasoning text as Markdown", () => {
 
   expect(html).toContain("<h2>Agent</h2>");
   expect(html).toContain("<h2>User</h2>");
-  expect(html).toContain("<h2>Reasoning</h2>");
 });

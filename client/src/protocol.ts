@@ -236,9 +236,6 @@ const transcriptEntrySchema = z.discriminatedUnion("kind", [
 const sessionTranscriptSchema = z
   .object({
     entries: z.array(transcriptEntrySchema),
-    // This is an ephemeral presentation cue, not durable session state. The
-    // host sets it only for a thought that was created by a live update.
-    openReasoningID: z.string().min(1).optional(),
     plan: z.array(
       z
         .object({ content: z.string(), priority: z.string().min(1), status: z.string().min(1) })
@@ -249,6 +246,7 @@ const sessionTranscriptSchema = z
         used: z.number().nonnegative(),
         size: z.number().positive(),
         cost: z.object({ amount: z.number(), currency: z.string().min(1) }).strict().optional(),
+        cacheHitRate: z.number().min(0).max(1).optional(),
       })
       .strict()
       .optional(),

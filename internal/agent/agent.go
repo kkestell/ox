@@ -1855,10 +1855,10 @@ func (s *session) usage() *acp.Usage {
 	return s.state.usage.acp()
 }
 
-func (s *session) cost() float64 {
+func (s *session) usageTotals() usageTotals {
 	s.stateMu.Lock()
 	defer s.stateMu.Unlock()
-	return s.state.cost
+	return newUsageTotals(s.state.cost, s.state.usage)
 }
 
 func (s *session) suspendedExchange() *suspendedModelExchangeRecord {
