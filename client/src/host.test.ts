@@ -303,6 +303,20 @@ describe("browser host", () => {
     client.close();
   });
 
+  test("reports a port it cannot listen on", async () => {
+    host = await startTestHost();
+    const port = Number.parseInt(new URL(host.url).port, 10);
+    const root = await temporaryDirectory();
+
+    const second = startHost({
+      oxCommand: "/definitely/not/ox",
+      port,
+      registryPath: join(root, "workspaces.json"),
+    });
+
+    await expect(second).rejects.toThrow();
+  });
+
   test("rejects a cross-origin WebSocket upgrade", async () => {
     host = await startTestHost();
 

@@ -158,103 +158,111 @@ export async function startHost(options: HostOptions = {}): Promise<StartedHost>
     });
   }
 
-  const server = Bun.serve<SocketData>({
-    hostname,
-    port,
-    async fetch(request, server) {
-      const url = new URL(request.url);
-      if (url.pathname === "/health") {
-        return Response.json({ status: "ok" });
-      }
-      if (url.pathname === "/socket") {
-        if (!sameOrigin(request, url)) {
-          return new Response("WebSocket origin must match the host", { status: 403 });
+  // A host that cannot listen must not leave the Ox processes it started
+  // running, so the port failure reaches the caller with nothing spawned.
+  let server: ReturnType<typeof Bun.serve<SocketData>>;
+  try {
+    server = Bun.serve<SocketData>({
+      hostname,
+      port,
+      async fetch(request, server) {
+        const url = new URL(request.url);
+        if (url.pathname === "/health") {
+          return Response.json({ status: "ok" });
         }
-        if (server.upgrade(request, { data: {} })) {
-          return undefined;
-        }
-        return new Response("WebSocket upgrade required", { status: 426 });
-      }
-      if (request.method !== "GET" && request.method !== "HEAD") {
-        return new Response("Method not allowed", { status: 405 });
-      }
-      const pathname = url.pathname === "/" ? "/index.html" : url.pathname;
-      if (!pathname.startsWith("/") || pathname.includes("..")) {
-        return new Response("Not found", { status: 404 });
-      }
-      const path = join(assetDirectory, pathname);
-      const file = Bun.file(path);
-      if (!(await file.exists())) {
-        return new Response("Not found", { status: 404 });
-      }
-      const extension = pathname.slice(pathname.lastIndexOf("."));
-      const headers = new Headers({
-        "Cache-Control": "no-store",
-        "Content-Type": mimeTypes.get(extension) ?? "application/octet-stream",
-      });
-      return new Response(request.method === "HEAD" ? null : file, { headers });
-    },
-    websocket: {
-      open(socket) {
-        sockets.add(socket);
-        send(socket, snapshot);
-      },
-      message(socket, message) {
-        if (typeof message !== "string") {
-          send(socket, { type: "result", requestId: "unknown", ok: false, error: "invalid browser command" });
-          return;
-        }
-        let value: unknown;
-        try {
-          value = JSON.parse(message);
-        } catch {
-          send(socket, { type: "result", requestId: "unknown", ok: false, error: "invalid browser command" });
-          return;
-        }
-        const command = parseBrowserCommand(value);
-        if (!command.ok) {
-          const requestId = requestID(value);
-          send(socket, { type: "result", requestId, ok: false, error: command.error });
-          return;
-        }
-        const browserCommand = command.value;
-        if (browserCommand.type === "ping") {
-          send(socket, {
-            type: "result",
-            requestId: browserCommand.requestId,
-            ok: true,
-            value: { revision: snapshot.revision },
-          });
-          return;
-        }
-        void respond(socket, browserCommand.requestId, () => snapshot.revision, () => {
-          switch (browserCommand.type) {
-            case "register-workspace":
-            case "remove-workspace":
-            case "restart-workspace":
-            case "select-workspace":
-              return performWorkspace(browserCommand);
+        if (url.pathname === "/socket") {
+          if (!sameOrigin(request, url)) {
+            return new Response("WebSocket origin must match the host", { status: 403 });
           }
-          const supervisor = supervisors.get(browserCommand.workspaceId);
-          if (!supervisor) {
-            return Promise.reject(new Error("workspace is not active"));
+          if (server.upgrade(request, { data: {} })) {
+            return undefined;
           }
-          const operation = perform(supervisor, browserCommand);
-          // Opening or creating a conversation switches to its workspace, and
-          // only once the supervisor has accepted it, so a refused open leaves
-          // the browser on the workspace it was showing.
-          if (browserCommand.type === "new-conversation" || browserCommand.type === "open-conversation") {
-            const { requestId, workspaceId } = browserCommand;
-            return operation.then(() => performWorkspace({ requestId, type: "select-workspace", workspaceId }));
-          }
-          return operation;
+          return new Response("WebSocket upgrade required", { status: 426 });
+        }
+        if (request.method !== "GET" && request.method !== "HEAD") {
+          return new Response("Method not allowed", { status: 405 });
+        }
+        const pathname = url.pathname === "/" ? "/index.html" : url.pathname;
+        if (!pathname.startsWith("/") || pathname.includes("..")) {
+          return new Response("Not found", { status: 404 });
+        }
+        const path = join(assetDirectory, pathname);
+        const file = Bun.file(path);
+        if (!(await file.exists())) {
+          return new Response("Not found", { status: 404 });
+        }
+        const extension = pathname.slice(pathname.lastIndexOf("."));
+        const headers = new Headers({
+          "Cache-Control": "no-store",
+          "Content-Type": mimeTypes.get(extension) ?? "application/octet-stream",
         });
+        return new Response(request.method === "HEAD" ? null : file, { headers });
       },
-      close(socket) {
-        sockets.delete(socket);
+      websocket: {
+        open(socket) {
+          sockets.add(socket);
+          send(socket, snapshot);
+        },
+        message(socket, message) {
+          if (typeof message !== "string") {
+            send(socket, { type: "result", requestId: "unknown", ok: false, error: "invalid browser command" });
+            return;
+          }
+          let value: unknown;
+          try {
+            value = JSON.parse(message);
+          } catch {
+            send(socket, { type: "result", requestId: "unknown", ok: false, error: "invalid browser command" });
+            return;
+          }
+          const command = parseBrowserCommand(value);
+          if (!command.ok) {
+            const requestId = requestID(value);
+            send(socket, { type: "result", requestId, ok: false, error: command.error });
+            return;
+          }
+          const browserCommand = command.value;
+          if (browserCommand.type === "ping") {
+            send(socket, {
+              type: "result",
+              requestId: browserCommand.requestId,
+              ok: true,
+              value: { revision: snapshot.revision },
+            });
+            return;
+          }
+          void respond(socket, browserCommand.requestId, () => snapshot.revision, () => {
+            switch (browserCommand.type) {
+              case "register-workspace":
+              case "remove-workspace":
+              case "restart-workspace":
+              case "select-workspace":
+                return performWorkspace(browserCommand);
+            }
+            const supervisor = supervisors.get(browserCommand.workspaceId);
+            if (!supervisor) {
+              return Promise.reject(new Error("workspace is not active"));
+            }
+            const operation = perform(supervisor, browserCommand);
+            // Opening or creating a conversation switches to its workspace, and
+            // only once the supervisor has accepted it, so a refused open leaves
+            // the browser on the workspace it was showing.
+            if (browserCommand.type === "new-conversation" || browserCommand.type === "open-conversation") {
+              const { requestId, workspaceId } = browserCommand;
+              return operation.then(() => performWorkspace({ requestId, type: "select-workspace", workspaceId }));
+            }
+            return operation;
+          });
+        },
+        close(socket) {
+          sockets.delete(socket);
+        },
       },
-    },
-  });
+    });
+  } catch (error) {
+    await Promise.all([...supervisors.keys()].map(stopSupervisor));
+    throw error;
+  }
 
   return {
     async stop() {
@@ -442,7 +450,10 @@ function send(socket: Bun.ServerWebSocket<SocketData>, message: BrowserMessage):
 }
 
 if (import.meta.main) {
-  void main();
+  main().catch((error: unknown) => {
+    process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+    process.exit(1);
+  });
 }
 
 function argument(name: string): string | undefined {
