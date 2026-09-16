@@ -1,10 +1,9 @@
 # Specification audit
 
 - **Scope:** every claim in `docs/spec.md` (557 lines), verified against the Go
-  and TypeScript sources, the focused tests, and the documents that share its
-  subject (`docs/settings.md`, `docs/browser.md`, `docs/web.md`,
-  `docs/installation.md`, `docs/acp-extensions.md`, `eng/architecture.md`,
-  `eng/client-architecture.md`, `eng/todo.md`).
+  sources, the focused tests, and the documents that share its subject
+  (`docs/settings.md`, `docs/web.md`, `docs/installation.md`,
+  `docs/acp-extensions.md`, `eng/architecture.md`, `eng/todo.md`).
 - **Revision audited:** working tree at commit `a005855` with `docs/spec.md` =
   `c7a8c00e2e7bccd930c583922376786caa4d38f3f8c06bc3e4dcf43ed5e5f6f0` (557 lines,
   uncommitted). All line numbers below refer to that revision and were
@@ -14,11 +13,8 @@
   reasoning and tool output) and `eng/todo.md` was replaced by a bare `# TODO`
   between the first read and the last. Findings below were re-verified against
   the pinned revision, not the earlier one.
-- **Coverage:** all 18 sections, roughly 300 individual claims and claim groups
-  verified line by line in eight passes. 21 findings: one implementation defect
-  where the spec is right and must stay, six P2 problems, thirteen P3 wording or
-  consistency problems, and one precision note. Every other claim checked out;
-  the section table below records where the coverage landed.
+- **Coverage:** ACP-visible agent behavior, checked line by line against source
+  and focused tests. The section table below records the retained coverage.
 
 ## Method
 
@@ -145,38 +141,6 @@ counted as an inaccuracy.
   ends that question call; the client's own control dismisses the form it is
   showing."
 
-### P2 — the web client does not list conversations for a workspace that has no process
-
-- **Spec:** 55-56 — "The client shows recent conversations for every registered
-  workspace, not only the one it is displaying."
-- **Verdict:** inaccurate for a workspace that is not ready.
-- **Evidence:** `client/src/components/sidebar.tsx:133` renders the conversation
-  list only when `workspace.status === "ready"`; otherwise `:186-199` renders
-  "Ox is starting…" / "Ox is not running." with a Restart button. Asserted by
-  `client/e2e/smoke.spec.ts:643-644` and stated in
-  `eng/client-architecture.md:265-266` ("A workspace with no usable process
-  offers its restart there instead of its conversations").
-- **Fix (spec):** "The client shows recent conversations for every registered
-  workspace that has a running Ox process, not only the one it is displaying; a
-  workspace whose process is not running offers its restart in the same place."
-
-### P2 — history refresh contradicts the spec's own support-details rule
-
-- **Spec:** 57-58 — "History refresh and pagination are part of the displayed
-  workspace's conversation list", against 92-93 — "Process status, stderr, host
-  revisions, raw session identifiers, and manual refresh are support details
-  rather than primary workflow."
-- **Verdict:** the two sentences describe the same control differently. Only
-  pagination is in the list.
-- **Evidence:** "Show older conversations" is rendered inside the conversation
-  list (`client/src/components/sidebar.tsx:180-185`); "Refresh conversation
-  history" is a button in support details
-  (`client/src/components/support-details.tsx:56`, wired at
-  `client/src/components/app.tsx:251-255`).
-- **Fix (spec):** "Pagination belongs to the displayed workspace's conversation
-  list, while refresh, close, and delete are secondary actions."
-  `eng/client-architecture.md` is consistent with that wording.
-
 ### P3 — the trace record enumeration is incomplete
 
 - **Spec:** 232-233 — "They include only event kinds, identifiers, timings,
@@ -269,31 +233,6 @@ counted as an inaccuracy.
   by option id. Replay sends the recorded option updates and the load response
   carries the current complete state."
 
-### P3 — a Markdown image with a non-HTTP source renders nothing
-
-- **Spec:** 77-78 — "an image displays its alt text or source URL instead of
-  loading".
-- **Verdict:** true for HTTP(S) sources. `urlTransform` drops anything that is
-  not `http:`/`https:` (`client/src/components/markdown.tsx:26-31`), so a
-  relative or `data:` image with no alt text renders an empty span (`:13`),
-  showing neither alt text nor URL.
-- **Fix (spec):** "an image displays its alt text, or its URL when the source is
-  HTTP or HTTPS, instead of loading."
-
-### P3 — "the complete session lifecycle" overstates the browser workflows
-
-- **Spec:** 88-91 — the enumerated feature list includes "the complete session
-  lifecycle".
-- **Verdict:** `session/resume` is implemented in the host but has no product
-  workflow: the only caller outside tests is
-  `client/src/workspace-supervisor.ts:256-257`, and nothing in
-  `client/src/protocol.ts` or a component invokes it, so opening history always
-  loads. The spec's own next sentence ("users do not choose between ACP load and
-  resume") is accurate.
-- **Fix (spec):** "the complete session lifecycle except ACP resume, which the
-  host supports but no browser workflow selects because opening history always
-  loads".
-
 ### P3 — MCP identity in ACP details is lossy
 
 - **Spec:** 447-448 — "Tool names are deterministic and namespaced; the original
@@ -328,10 +267,10 @@ counted as an inaccuracy.
 
 - **Spec:** 3-5 — "It is authoritative for the ACP connection, sessions and
   turns, workspace access, authentication, and failure behavior..."
-- **Verdict:** the list omits the web client, process configuration, context
-  continuity, workspace instructions and skills, todo and questions, MCP tools,
-  language intelligence, web access, and isolation and memory — all of which the
-  document defines.
+- **Verdict:** the list omits process configuration, context continuity,
+  workspace instructions and skills, todo and questions, MCP tools, language
+  intelligence, web access, and isolation and memory — all of which the document
+  defines.
 - **Fix (spec):** "It is authoritative for Ox's ACP-visible behavior and the
   agent-side rules for configuration, context, tools, web access, and memory..."
 
@@ -377,9 +316,8 @@ These are outside `docs/spec.md` but were found while cross-checking it:
   it.
 - `eng/todo.md` was emptied during this audit. With no roadmap entries, nothing
   in the repository distinguishes shipped behavior from planned behavior for a
-  reader of the spec. The audit independently confirmed the spec's Markdown
-  claim now matches the client, so the emptiness is not currently a false claim,
-  but it removes the check the introduction relies on.
+  reader of the spec. That removes the implementation-status check the
+  introduction relies on.
 
 ## Implemented behavior the spec does not state
 
@@ -419,7 +357,6 @@ durable behavior, or a limitation that only the code documents.
 | Section                           | Claims checked (rounded) | Result                                                                                                                                                                                                                                                                                                            |
 | --------------------------------- | ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Connection                        | 8                        | `--version` output, exit status, and its freedom from configuration, credentials, and stdin; stdin-close exit 0; stdout purity; capability negotiation and the client-method gate                                                                                                                                 |
-| Web client                        | 30                       | host lifecycle, bind and TLS posture, workspace registry and isolation, credential bootstrap, open/new/history behavior, navigation, transcript and disclosure controls, attachments, Markdown inertness, workspace settings and secret handling, ACP feature coverage, reconnect and restart                     |
 | Sessions and turns                | 12                       | canonical cwd binding, activation resolution, one turn per session, client-order prompt content, streaming before the response, load/refusal rules                                                                                                                                                                |
 | Concurrent subagents              | 20                       | 8 per turn and 4 concurrent, name uniqueness, inherited and private state, serialization rules, messaging and continuation, terminal states, child tool exclusion, durability rules, cancellation and no redispatch                                                                                               |
 | Workspace operations              | 23                       | confinement against traversal and symlinks, read window and long-line reporting, ignore and dot-component rules, search diagnostics, exact-match edit and byte preservation, mode-aware permission, shell-grant derivation, filesystem delegation pairing, tool title and display metadata, provider-facing names |
@@ -464,8 +401,7 @@ worth keeping explicit rather than reading as ACP's recommendation.
 - The eight-child and four-concurrent limits and duplicate-name rejection have
   no test at any level; those verdicts rest on reading
   `internal/agent/subagent.go:106-141`.
-- Web client Playwright coverage was not run, and no test proves replay after a
-  host restart. The client unit suite passed (103 tests).
+
 - The subagent and MCP halves of cancellation (`docs/spec.md:123-124`) rest on
   code reading; no test cancels a turn while a subagent streams or an MCP call
   is in flight.
@@ -480,8 +416,7 @@ worth keeping explicit rather than reading as ACP's recommendation.
   no repository file was modified.
 - `go test -count=1 ./internal/tools/ ./internal/agent/` — passed (verification
   pass).
-- `cd client && bun run test` — passed, 103 tests, 0 failures (verification
-  pass).
+
 - No full suite was run: this audit changed no source, and the workspace was
   being edited concurrently, so `make check-all` would not have measured a fixed
   revision.

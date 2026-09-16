@@ -62,9 +62,6 @@ jobs:
           "$tools/dprint" --version
           "$(go env GOPATH)/bin/staticcheck" -version
 
-      # The browser client ships separately from these archives, so the
-      # release gate is the part of `make check` that covers the executable
-      # rather than a second toolchain in the release path.
       - name: Run the documentation, Go, and unit-test gate
         run: make check-docs check-go test
 

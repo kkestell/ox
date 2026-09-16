@@ -12,9 +12,8 @@
   startup wiring and file-based model resolution
 - `internal/credentials/credentials.go` — current cached keyring-backed
   credential boundary
-- `internal/e2e/harness_test.go`, `internal/e2e/browser/harness.ts`, and
-  `evals/internal/eval/client.go` — process harnesses that currently depend on
-  private environment seams
+- `internal/e2e/harness_test.go` and `evals/internal/eval/client.go` — process
+  harnesses that currently depend on private environment seams
 
 ## Goal
 
@@ -52,10 +51,10 @@ uses `OX_*` or `OPENROUTER_*` variables for configuration or authentication.
   private environment configuration to CLI flags and owner-only temporary
   credential files. Keep only platform environment needed for standard path
   lookup and subprocess behavior.
-- `internal/e2e/browser/harness.ts` and `evals/internal/eval` — launch Ox with
-  the same public flags and private credential files used by real clients. The
-  live entry points may read the repository `.env`, but only the harness writes
-  its value to a temporary file before starting Ox.
+- `evals/internal/eval` — launch Ox with the same public flags and private
+  credential files used by real clients. The live entry points may read the
+  repository `.env`, but only the harness writes its value to a temporary file
+  before starting Ox.
 - `docs/settings.md`, `docs/zed.md`, and `evals/README.md` — document the
   shipped process object, flag precedence, secure credential-file/keyring
   workflows, and the harness-owned `.env` handoff.
@@ -71,10 +70,10 @@ uses `OX_*` or `OPENROUTER_*` variables for configuration or authentication.
   unreadable paths, file-over-keyring precedence, keyring-disabled operation,
   login/logout refusal, provider use, and no secret leakage through stderr,
   trace, or durable records.
-- Browser and evaluation smoke tests prove their fake-provider paths use public
-  flags. Focused live-harness tests prove `.env` is consumed outside Ox and
-  converted to a credential file without printing or recording the secret; no
-  real provider request is made.
+- Evaluation smoke tests prove their fake-provider paths use public flags.
+  Focused live-harness tests prove `.env` is consumed outside Ox and converted
+  to a credential file without printing or recording the secret; no real
+  provider request is made.
 
 ## Decisions
 

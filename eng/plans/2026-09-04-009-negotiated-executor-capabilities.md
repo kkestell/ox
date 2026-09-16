@@ -10,9 +10,8 @@
 - `internal/agent/agent.go` and `internal/agent/state.go` — current connection
   capability state, activation configuration changes, prompt executor
   construction, durable configuration, checkpoints, and replay.
-- `internal/e2e/executor_conformance_test.go` and
-  `internal/e2e/browser/lifecycle.spec.ts` — existing local/delegated durability
-  comparison and the pinned browser's local-executor acceptance case.
+- `internal/e2e/executor_conformance_test.go` — existing local/delegated
+  durability comparison.
 - `~/src/references/repos/third-party/protocol/agent-client-protocol@8e3eb8f2:agent-client-protocol-schema/src/v1/client.rs`
   — authoritative filesystem sub-capabilities and all-or-nothing terminal
   capability negotiated at initialization. No personal reference persists this
@@ -58,10 +57,6 @@ activation.
   configuration change precedes the next turn. Prove that turn delegates its
   operations, a same-capability reactivation adds no second change, and replay
   before and after the capability change is identical.
-- Keep the pinned browser's existing read/edit/shell workflow as the acceptance
-  case: its advertised false filesystem flags and absent terminal capability
-  must be recorded as the local executor and must still issue no delegated
-  callback.
 
 ## Decisions
 

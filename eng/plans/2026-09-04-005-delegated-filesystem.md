@@ -75,8 +75,7 @@ file contents came from the client or the local workspace.
   client read error followed by a successful continued model turn.
 - Add a real-process test in `internal/e2e` that advertises both capabilities,
   services read/write callbacks, and proves escape and unread-write failures
-  issue no filesystem request. Keep the browser suite unchanged; its local-path
-  comparison belongs to the executor-conformance slice.
+  issue no filesystem request.
 
 ## Decisions
 

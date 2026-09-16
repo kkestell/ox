@@ -73,10 +73,6 @@ history while retaining the complete records used for ACP replay.
   ordinary system prompt or tools, the next request uses the recorded summary,
   restart does not recompute it, `session/load` remains lossless, and summary
   failure or cancellation does not partly compact the session.
-- `internal/e2e/browser/harness.ts` and `lifecycle.spec.ts` — make the mock
-  model window configurable and prove the pinned client accepts the live
-  compacted `usage_update`; update the existing ordinary usage assertion to
-  prompt-token occupancy.
 
 ## Decisions
 

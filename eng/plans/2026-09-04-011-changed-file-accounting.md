@@ -62,9 +62,6 @@ locations, both live and during `session/load` replay.
   exercise local and delegated create, write, edit, rejection, and failure
   through the real process; restart it and verify the durable set and absolute
   locations without duplicate paths.
-- `internal/e2e/browser/lifecycle.spec.ts` — keep the pinned client's existing
-  visible edit workflow and assert in the traffic monitor that the edit
-  `tool_call` carries the canonical absolute workspace path.
 
 ## Decisions
 

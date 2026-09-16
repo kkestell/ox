@@ -3,8 +3,8 @@
 - **Scope:** Uncommitted Go changes in
   `internal/agent/{agent.go,config_options.go,loop.go,state.go,subagent.go}`,
   their changed tests, `internal/e2e/auto_test.go`, and
-  `integration/agent_loop_test.go`. Unrelated TypeScript, documentation, and web
-  changes were excluded.
+  `integration/agent_loop_test.go`. Unrelated documentation changes were
+  excluded.
 - **Mode:** Specific-topic review.
 - **Topic:** Performance — request frequency, algorithmic work, allocations,
   copies, and streamed/provider I/O.

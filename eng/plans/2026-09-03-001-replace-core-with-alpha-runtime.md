@@ -54,7 +54,7 @@ the transplant.
 - Add black-box Ox cases proving a session created by one process can be loaded
   and continued by another and that cancelling a permission wait or shell call
   leaves replayable state.
-- Do not port extension-host, webview, Playwright, or chat-fixture UI tests.
+- Do not port editor UI tests.
 
 ## Implementation plan
 

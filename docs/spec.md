@@ -287,9 +287,9 @@ leaves credential-file authentication available. `login` reads the credential
 from standard input and verifies it before storing it; credentials are never
 command arguments or ordinary JSON settings.
 
-The process and browser harnesses use these same public flags and temporary
-credential files. An explicitly requested live test reads `.env` in the harness
-and uses the existing repository-mandated model. Ox itself does not load `.env`.
+The process harnesses use these same public flags and temporary credential
+files. An explicitly requested live test reads `.env` in the harness and uses
+the existing repository-mandated model. Ox itself does not load `.env`.
 
 ## Context continuity
 

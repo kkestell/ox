@@ -71,5 +71,4 @@ model output, durable tool results, and the existing local fallback in Ox.
 - Add real-process `internal/e2e` coverage for delegated success and
   cancellation, asserting `create -> wait/output -> release` and
   `create -> kill -> release`, a cancelled durable tool result, and replayable
-  history. The pinned browser advertises no terminal capability, so its existing
-  smoke suite remains the local-fallback acceptance case for this slice.
+  history.
