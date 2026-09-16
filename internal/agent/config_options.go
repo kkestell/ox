@@ -49,8 +49,8 @@ func (a *Agent) SetSessionConfigOption(
 	value.stateMu.Lock()
 	selections := cloneSelections(value.state.selections)
 	mode := value.state.mode()
-	configuration := cloneConfiguration(value.state.configuration)
-	history := cloneMessages(value.state.history)
+	configuration := value.state.configuration
+	history := slices.Clone(value.state.history)
 	value.stateMu.Unlock()
 	current := currentOptionValue(request.ConfigID, mode, configuration, value.models)
 	if current == "" {
@@ -129,7 +129,7 @@ func (a *Agent) SetSessionConfigOption(
 func (a *Agent) configOptions(value *session) []acp.SessionConfigOption {
 	value.stateMu.Lock()
 	mode := value.state.mode()
-	configuration := cloneConfiguration(value.state.configuration)
+	configuration := value.state.configuration
 	value.stateMu.Unlock()
 	return buildConfigOptions(mode, configuration, value.models)
 }
@@ -248,7 +248,7 @@ func applySelections(
 	if err := validateSelections(selections); err != nil {
 		return requestConfiguration{}, err
 	}
-	configuration := cloneConfiguration(base)
+	configuration := base
 	if selections.Model != "" {
 		profile, err := profiles.Select(selections.Model, settings.SourceSession)
 		if err != nil {
@@ -304,7 +304,7 @@ func applyMode(configuration requestConfiguration, mode string) requestConfigura
 }
 
 func planTools(tools []openrouter.Tool, allowed map[string]bool) []openrouter.Tool {
-	return slices.DeleteFunc(cloneTools(tools), func(tool openrouter.Tool) bool {
+	return slices.DeleteFunc(slices.Clone(tools), func(tool openrouter.Tool) bool {
 		return !allowed[tool.Function.Name]
 	})
 }

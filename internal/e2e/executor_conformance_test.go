@@ -180,8 +180,6 @@ func TestExecutorCapabilitiesChangeOnceAcrossReactivation(t *testing.T) {
 	wantCapabilities := []executorCapabilitySnapshot{
 		{},
 		{},
-		{},
-		{FileSystemRead: true, FileSystemWrite: true, Terminal: true},
 		{FileSystemRead: true, FileSystemWrite: true, Terminal: true},
 		{FileSystemRead: true, FileSystemWrite: true, Terminal: true},
 	}
@@ -404,13 +402,6 @@ func removeExecutorCapabilities(t *testing.T, record any) []executorCapabilitySn
 	case "session_created", "request_configuration_changed", "session_config_option_changed", "user_message":
 		configuration, _ := data["configuration"].(map[string]any)
 		configurations = append(configurations, configuration)
-	case "checkpoint":
-		state, _ := data["state"].(map[string]any)
-		configuration, _ := state["configuration"].(map[string]any)
-		configurations = append(configurations, configuration)
-		if open, ok := state["openTurnConfiguration"].(map[string]any); ok {
-			configurations = append(configurations, open)
-		}
 	default:
 		return nil
 	}

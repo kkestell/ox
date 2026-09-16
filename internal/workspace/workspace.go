@@ -344,10 +344,7 @@ func (w *Workspace) atomicReplace(
 	// derived from the target is still taken after a crash, and would then block
 	// every later write to that path at the exclusive open. It stays in the
 	// target's directory so the rename is atomic.
-	temporary, err := temporaryName(name)
-	if err != nil {
-		return false, err
-	}
+	temporary := temporaryName(name)
 	file, err := root.OpenFile(temporary, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
 	if err != nil {
 		return false, err
@@ -380,15 +377,13 @@ func (w *Workspace) atomicReplace(
 	return true, w.syncParent(filepath.Join(root.Name(), filepath.Dir(name)))
 }
 
-func temporaryName(name string) (string, error) {
+func temporaryName(name string) string {
 	var suffix [8]byte
-	if _, err := rand.Read(suffix[:]); err != nil {
-		return "", fmt.Errorf("name temporary file: %w", err)
-	}
+	_, _ = rand.Read(suffix[:])
 	return filepath.Join(
 		filepath.Dir(name),
 		fmt.Sprintf(".%s.%s.ox-tmp", filepath.Base(name), hex.EncodeToString(suffix[:])),
-	), nil
+	)
 }
 
 func resolveExisting(path string) (string, error) {

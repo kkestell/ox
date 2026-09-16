@@ -2,6 +2,7 @@ package tools
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -141,8 +142,7 @@ func scanFile(
 		_ = file.Close()
 	}()
 
-	reader := bufio.NewReader(file)
-	var lineBuffer []byte
+	scanner := newGrepScanner(file)
 	entryBytes := 0
 	lineNumber := 0
 	count := 0
@@ -151,12 +151,15 @@ func scanFile(
 		if lineNumber%scanCheckLines == 0 && ctx.Err() != nil {
 			return entries, "", false
 		}
-		line, readErr := readBoundedLine(reader, &lineBuffer)
-		if readErr != nil {
-			if errors.Is(readErr, io.EOF) {
-				break
+		if !scanner.Scan() {
+			if err := scanner.Err(); err != nil {
+				note = fmt.Sprintf("%s:%d: [scan stopped: %v]", source.Display, lineNumber+1, err)
 			}
-			note = fmt.Sprintf("%s:%d: [scan stopped: %v]", source.Display, lineNumber+1, readErr)
+			break
+		}
+		line := scanner.Bytes()
+		if !utf8.Valid(line) {
+			note = fmt.Sprintf("%s:%d: [scan stopped: %v]", source.Display, lineNumber+1, errInvalidText)
 			break
 		}
 		lineNumber++
@@ -204,44 +207,41 @@ var (
 	errInvalidText = errors.New("line is not valid UTF-8")
 )
 
-func readBoundedLine(reader *bufio.Reader, buffer *[]byte) ([]byte, error) {
-	*buffer = (*buffer)[:0]
-	for {
-		chunk, err := reader.ReadSlice('\n')
-		if len(*buffer)+len(chunk) > maxScanLineBytes {
-			return nil, errLineTooLong
-		}
-		*buffer = append(*buffer, chunk...)
-		switch {
-		case err == nil:
-			line := trimLineEnding(*buffer)
-			if !utf8.Valid(line) {
-				return nil, errInvalidText
-			}
-			return line, nil
-		case errors.Is(err, bufio.ErrBufferFull):
-			continue
-		case errors.Is(err, io.EOF):
-			if len(*buffer) == 0 {
-				return nil, io.EOF
-			}
-			line := trimLineEnding(*buffer)
-			if !utf8.Valid(line) {
-				return nil, errInvalidText
-			}
-			return line, nil
-		default:
-			return nil, err
-		}
+func boundedScanLine(data []byte, atEOF bool) (int, []byte, error) {
+	rawBytes := bytes.IndexByte(data, '\n') + 1
+	if rawBytes == 0 {
+		rawBytes = len(data)
 	}
+	if rawBytes > maxScanLineBytes {
+		return 0, nil, errLineTooLong
+	}
+	return bufio.ScanLines(data, atEOF)
 }
 
-func trimLineEnding(line []byte) []byte {
-	if len(line) > 0 && line[len(line)-1] == '\n' {
-		line = line[:len(line)-1]
+func newGrepScanner(reader io.Reader) *bufio.Scanner {
+	source := &scanReader{Reader: reader}
+	scanner := bufio.NewScanner(source)
+	scanner.Buffer(make([]byte, 64<<10), maxScanLineBytes+1)
+	scanner.Split(func(data []byte, atEOF bool) (int, []byte, error) {
+		// Scanner treats a read error like EOF. An incomplete line from a failed
+		// read is not a complete match, but preceding complete lines still are.
+		if atEOF && source.err != nil && bytes.IndexByte(data, '\n') < 0 {
+			return 0, nil, source.err
+		}
+		return boundedScanLine(data, atEOF)
+	})
+	return scanner
+}
+
+type scanReader struct {
+	io.Reader
+	err error
+}
+
+func (r *scanReader) Read(data []byte) (int, error) {
+	n, err := r.Reader.Read(data)
+	if err != nil && !errors.Is(err, io.EOF) {
+		r.err = err
 	}
-	if len(line) > 0 && line[len(line)-1] == '\r' {
-		line = line[:len(line)-1]
-	}
-	return line
+	return n, err
 }

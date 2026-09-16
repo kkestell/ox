@@ -2,6 +2,7 @@ package lsp
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -34,6 +35,7 @@ func runLSPHelper(input io.Reader, output io.Writer, scenario string) {
 	var rootURI string
 	var text string
 	var version int
+	var lastRequestID json.RawMessage
 	var writeMu sync.Mutex
 	write := func(value any) {
 		writeMu.Lock()
@@ -92,6 +94,9 @@ func runLSPHelper(input io.Reader, output io.Writer, scenario string) {
 			if scenario == "crash" {
 				return
 			}
+			if scenario == "callback" {
+				write(map[string]any{"jsonrpc": "2.0", "id": "unsupported", "method": "workspace/applyEdit", "params": map[string]any{}})
+			}
 		case "textDocument/didOpen":
 			var params struct {
 				TextDocument struct {
@@ -119,6 +124,7 @@ func runLSPHelper(input io.Reader, output io.Writer, scenario string) {
 			recordSync(rootURI, scenario, version, text)
 			publishForScenario(write, scenario, params.TextDocument.URI, version)
 		case "textDocument/definition", "textDocument/references":
+			lastRequestID = message.ID
 			if scenario == "query-timeout" || scenario == "cancel" {
 				continue
 			}
@@ -193,7 +199,23 @@ func runLSPHelper(input io.Reader, output io.Writer, scenario string) {
 				map[string]any{"range": rangeValue(0, 0, 0, 1), "severity": 1, "message": "broken", "source": "fixture", "code": "E1"},
 			}}})
 		case "$/cancelRequest":
-			_ = os.WriteFile(filepath.Join(mustURIPath(rootURI), "cancelled"), []byte("yes"), 0o644)
+			var cancel struct {
+				ID json.RawMessage `json:"id"`
+			}
+			if json.Unmarshal(message.Params, &cancel) == nil && bytes.Equal(cancel.ID, lastRequestID) {
+				_ = os.WriteFile(filepath.Join(mustURIPath(rootURI), "cancelled"), []byte("yes"), 0o644)
+			}
+		case "":
+			if scenario == "callback" && string(message.ID) == `"unsupported"` {
+				var response struct {
+					Error struct {
+						Code int `json:"code"`
+					} `json:"error"`
+				}
+				if json.Unmarshal(raw, &response) == nil && response.Error.Code == -32601 {
+					_ = os.WriteFile(filepath.Join(mustURIPath(rootURI), "unsupported"), []byte("yes"), 0o644)
+				}
+			}
 		case "shutdown":
 			if scenario == "shutdown-hang" {
 				continue
@@ -528,6 +550,14 @@ func TestTimeoutCancellationCrashAndMalformedReply(t *testing.T) {
 func TestConcurrentResponseCorrelation(t *testing.T) {
 	manager, path, reader := fixtureManager(t, "concurrent")
 	defer manager.Close()
+	client, err := manager.servers[0].get(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	text, err := reader(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
 	var wait sync.WaitGroup
 	errors := make(chan error, 4)
 	for column := 1; column <= 4; column++ {
@@ -535,7 +565,12 @@ func TestConcurrentResponseCorrelation(t *testing.T) {
 		wait.Add(1)
 		go func() {
 			defer wait.Done()
-			locations, err := manager.Definition(context.Background(), path, Position{Line: 1, Column: column}, reader)
+			raw, err := client.locations(context.Background(), "textDocument/definition", path, text, Position{Line: 1, Column: column}, false)
+			if err != nil {
+				errors <- err
+				return
+			}
+			locations, err := manager.decodeLocations(context.Background(), raw, reader, client.encoding)
 			if err != nil {
 				errors <- err
 				return
@@ -549,6 +584,53 @@ func TestConcurrentResponseCorrelation(t *testing.T) {
 	close(errors)
 	for err := range errors {
 		t.Error(err)
+	}
+}
+
+func TestLateCancelledReplyDoesNotCompleteAnotherRequest(t *testing.T) {
+	manager, path, reader := fixtureManager(t, "concurrent")
+	defer manager.Close()
+	client, err := manager.servers[0].get(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	text, err := reader(context.Background(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	_, err = client.locations(ctx, "textDocument/definition", path, text, Position{Line: 1, Column: 1}, false)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("cancelled query = %v", err)
+	}
+	for _, column := range []int{2, 3} {
+		raw, err := client.locations(context.Background(), "textDocument/definition", path, text, Position{Line: 1, Column: column}, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		locations, err := manager.decodeLocations(context.Background(), raw, reader, client.encoding)
+		if err != nil || locations.Items[0].Range.Start.Column != column {
+			t.Fatalf("late reply changed column %d: %#v, %v", column, locations, err)
+		}
+	}
+}
+
+func TestUnsupportedServerCallbackReceivesMethodNotFound(t *testing.T) {
+	manager, path, reader := fixtureManager(t, "callback")
+	defer manager.Close()
+	if _, err := manager.Definition(context.Background(), path, Position{Line: 1, Column: 1}, reader); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for {
+		if _, err := os.Stat(filepath.Join(filepath.Dir(path), "unsupported")); err == nil {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("unsupported callback received no method-not-found response")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 

@@ -30,8 +30,8 @@ instructions, skills, and configuration options.
 **Durable session format:** `internal/agent/state.go` through compaction
 application, plus `store.go` and `lock*.go`.
 
-Review JSONL framing, append and sync ordering, checkpoints, corruption
-handling, and session deletion.
+Review JSONL framing, append and sync ordering, authoritative record folding,
+corruption handling, and session deletion.
 
 **Recovery and replay:** `internal/agent/agent.go` and the execution,
 suspended-exchange, and replay sections of `internal/agent/state.go`.

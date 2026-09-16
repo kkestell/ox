@@ -227,8 +227,10 @@ func runOnce(parent context.Context, config Config, task Task, repetition int, b
 				return finishFailed(result, started, gateway, private, "setup", fmt.Errorf("apply fixture mutation: %w", err), stopClient)
 			}
 		case "restart":
+			client.statsMu.Lock()
 			permissionTotal += client.stats.Permissions
 			permissionRejectionTotal += client.stats.PermissionRejections
+			client.statsMu.Unlock()
 			if err := stopClient(); err != nil {
 				return finishFailed(result, started, gateway, private, "process_exit", err, func() error { return nil })
 			}
@@ -360,6 +362,8 @@ func clearUsage(result *RunResult) {
 }
 
 func syncResultStats(result *RunResult, client *processClient, permissionTotal, permissionRejectionTotal int) {
+	client.statsMu.Lock()
+	defer client.statsMu.Unlock()
 	result.CostUSD = client.stats.CostUSD
 	result.Permissions = permissionTotal + client.stats.Permissions
 	result.PermissionRejections = permissionRejectionTotal + client.stats.PermissionRejections

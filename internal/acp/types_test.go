@@ -482,44 +482,6 @@ func TestFilesystemPayloadsUsePinnedWireShapes(t *testing.T) {
 	}
 }
 
-func TestFilesystemRequestsValidateOutboundFields(t *testing.T) {
-	one := 1
-	for _, test := range []struct {
-		name    string
-		request interface{ Validate() error }
-		valid   bool
-	}{
-		{
-			name: "read",
-			request: ReadTextFileRequest{
-				SessionID: "session-1",
-				Path:      "/workspace/file.txt",
-				Line:      &one,
-				Limit:     &one,
-			},
-			valid: true,
-		},
-		{name: "read missing session", request: ReadTextFileRequest{Path: "/workspace/file.txt"}},
-		{name: "read relative path", request: ReadTextFileRequest{SessionID: "session-1", Path: "file.txt"}},
-		{
-			name:    "write empty file",
-			request: WriteTextFileRequest{SessionID: "session-1", Path: "/workspace/file.txt"},
-			valid:   true,
-		},
-		{name: "write missing path", request: WriteTextFileRequest{SessionID: "session-1"}},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			err := test.request.Validate()
-			if test.valid && err != nil {
-				t.Fatal(err)
-			}
-			if !test.valid && err == nil {
-				t.Fatal("request validated unexpectedly")
-			}
-		})
-	}
-}
-
 func TestTerminalPayloadsUsePinnedWireShapes(t *testing.T) {
 	cwd := "/workspace"
 	limit := 10 * 1024 * 1024
@@ -620,73 +582,12 @@ func TestTerminalPayloadsUsePinnedWireShapes(t *testing.T) {
 	}
 }
 
-func TestTerminalRequestsValidateOutboundFields(t *testing.T) {
-	cwd := "/workspace"
-	relative := "workspace"
-	positive, zero := 1, 0
-	tests := []struct {
-		name    string
-		request interface{ Validate() error }
-		valid   bool
-	}{
-		{
-			name: "create",
-			request: CreateTerminalRequest{
-				SessionID:       "session-1",
-				Command:         "/bin/sh",
-				CWD:             &cwd,
-				OutputByteLimit: &positive,
-			},
-			valid: true,
-		},
-		{name: "create missing session", request: CreateTerminalRequest{Command: "true"}},
-		{name: "create missing command", request: CreateTerminalRequest{SessionID: "session-1"}},
-		{
-			name:    "create relative cwd",
-			request: CreateTerminalRequest{SessionID: "session-1", Command: "true", CWD: &relative},
-		},
-		{
-			name: "create zero output limit",
-			request: CreateTerminalRequest{
-				SessionID: "session-1", Command: "true", OutputByteLimit: &zero,
-			},
-		},
-		{
-			name:    "create response",
-			request: CreateTerminalResponse{TerminalID: "terminal-1"},
-			valid:   true,
-		},
-		{name: "create response missing terminal", request: CreateTerminalResponse{}},
-		{
-			name:    "output",
-			request: TerminalOutputRequest{SessionID: "session-1", TerminalID: "terminal-1"},
-			valid:   true,
-		},
-		{
-			name:    "wait missing terminal",
-			request: WaitForTerminalExitRequest{SessionID: "session-1"},
-		},
-		{
-			name:    "kill missing session",
-			request: KillTerminalRequest{TerminalID: "terminal-1"},
-		},
-		{
-			name:    "release",
-			request: ReleaseTerminalRequest{SessionID: "session-1", TerminalID: "terminal-1"},
-			valid:   true,
-		},
+func TestCreateTerminalResponseValidatesClientInput(t *testing.T) {
+	if err := (CreateTerminalResponse{}).Validate(); err == nil {
+		t.Fatal("missing terminal ID accepted")
 	}
-
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			err := test.request.Validate()
-			if test.valid && err != nil {
-				t.Fatal(err)
-			}
-			if !test.valid && err == nil {
-				t.Fatal("request validated unexpectedly")
-			}
-		})
+	if err := (CreateTerminalResponse{TerminalID: "terminal"}).Validate(); err != nil {
+		t.Fatal(err)
 	}
 }
 

@@ -196,6 +196,39 @@ func TestDelegatedTerminalClientErrorFailsToolAndContinues(t *testing.T) {
 	}
 }
 
+func TestDelegatedTerminalRejectsMissingClientTerminalID(t *testing.T) {
+	model := startModel(t, shellToolCallResponse("false"), sse(evText("continued"), evFinishReason("stop")))
+	child := start(t, withModel(model))
+	initializeWithCapabilities(t, child, &acp.ClientCapabilities{Terminal: true})
+	session := newSession(t, child, child.cwd)
+	turn := child.begin("session/prompt", acp.PromptRequest{SessionID: session, Prompt: textPrompt("run a command")})
+	allowPermission(t, child, "call-shell", true)
+	create := child.serverRequest()
+	assertTerminalCreate(t, create, session, child.cwd, "false")
+	child.respond(create, acp.CreateTerminalResponse{})
+	response := promptResponse(t, child.result(child.await(turn)))
+	if response.StopReason != acp.StopReasonEndTurn {
+		t.Fatalf("stop reason = %q", response.StopReason)
+	}
+	requests := model.requests()
+	if len(requests) != 2 {
+		t.Fatalf("requests = %d", len(requests))
+	}
+	result := requests[1].Messages[len(requests[1].Messages)-1].text()
+	if !strings.Contains(result, "terminalId is required") {
+		t.Fatalf("malformed client response result = %q", result)
+	}
+	failed := false
+	for _, notification := range updates(t, child, session) {
+		if notification.Update.ToolCallID == "call-shell" && notification.Update.Status == acp.ToolCallStatusFailed {
+			failed = true
+		}
+	}
+	if !failed {
+		t.Fatal("malformed client response did not fail the tool")
+	}
+}
+
 func TestRestartDoesNotRepeatStartedDelegatedTerminal(t *testing.T) {
 	dataDir := t.TempDir()
 	model := startModel(t, shellToolCallResponse("printf delegated"))

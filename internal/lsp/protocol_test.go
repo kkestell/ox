@@ -1,6 +1,7 @@
 package lsp
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -84,32 +85,39 @@ func TestFileURIsAndWorkspaceConfinement(t *testing.T) {
 	}
 }
 
-func TestDefinitionValidationAndDeterministicRouting(t *testing.T) {
-	root := t.TempDir()
-	if _, err := New(root, []Definition{{Name: "", Command: "x", Extensions: []string{"go"}}}); err == nil {
-		t.Fatal("blank name was accepted")
-	}
-	if _, err := New(root, []Definition{{Name: "x", Command: "", Extensions: []string{"go"}}}); err == nil {
-		t.Fatal("blank command was accepted")
-	}
-	if _, err := New(root, []Definition{{Name: "x", Command: "x"}}); err == nil {
-		t.Fatal("empty extensions were accepted")
-	}
-	if _, err := New(root, []Definition{
-		{Name: "z", Command: "z", Extensions: []string{".GO"}},
+func TestValidatedDefinitionsRouteDeterministically(t *testing.T) {
+	manager, err := New(t.TempDir(), []Definition{
 		{Name: "a", Command: "a", Extensions: []string{"go"}},
-	}); err == nil {
-		t.Fatal("overlapping extensions were accepted")
-	}
-	manager, err := New(root, []Definition{
 		{Name: "z", Command: "z", Extensions: []string{"rs"}},
-		{Name: "a", Command: "a", Extensions: []string{"go"}},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer manager.Close()
-	if manager.servers[0].definition.Name != "a" || manager.byExt["go"] != manager.servers[0] {
-		t.Fatalf("servers not sorted/routed deterministically: %#v", manager.servers)
+	if manager.byExt["go"] != manager.servers[0] || manager.byExt["rs"] != manager.servers[1] {
+		t.Fatal("validated definitions did not retain their routing")
 	}
+}
+
+func TestManagerAdmitsOneQueryAtATime(t *testing.T) {
+	manager, err := New(t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Close()
+	release, err := manager.acquire(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	blocked, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := manager.acquire(blocked); err == nil {
+		t.Fatal("concurrent query admitted")
+	}
+	release()
+	release, err = manager.acquire(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	release()
 }

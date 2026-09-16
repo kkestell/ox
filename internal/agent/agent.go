@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -8,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -59,7 +61,7 @@ type Config struct {
 	Trace     diagnostictrace.Trace
 	// LanguageServers are the process's validated language-server definitions.
 	// Every activation gets its own lazy manager built from them.
-	LanguageServers []settings.ResolvedLanguageServer
+	LanguageServers []lsp.Definition
 }
 
 type Agent struct {
@@ -117,6 +119,11 @@ func New(config Config) (*Agent, error) {
 	if err != nil {
 		return nil, err
 	}
+	languageServers := slices.Clone(config.LanguageServers)
+	for index := range languageServers {
+		languageServers[index].Args = slices.Clone(languageServers[index].Args)
+		languageServers[index].Extensions = slices.Clone(languageServers[index].Extensions)
+	}
 	return &Agent{
 		name:            config.Name,
 		version:         config.Version,
@@ -127,7 +134,7 @@ func New(config Config) (*Agent, error) {
 		client:          config.Client,
 		primaryTools:    primaryTools,
 		subagentTools:   subagentTools,
-		languageServers: languageDefinitions(config.LanguageServers),
+		languageServers: languageServers,
 		store:           store,
 		memory:          memory,
 		trace:           config.Trace,
@@ -156,6 +163,9 @@ func newToolSet(tools []Tool) (toolSet, error) {
 		modelTools: make([]openrouter.Tool, len(tools)),
 	}
 	for index, tool := range result.tools {
+		if tool.Execute == nil {
+			panic(fmt.Sprintf("tool %q has no executor", tool.Name))
+		}
 		if _, exists := result.byName[tool.Name]; exists {
 			return toolSet{}, fmt.Errorf("duplicate tool name %q", tool.Name)
 		}
@@ -375,10 +385,7 @@ func (a *Agent) NewSession(
 		return acp.NewSessionResponse{}, jrpc2.Errorf(jrpc2.InternalError, "%v", err)
 	}
 
-	id, err := randomID()
-	if err != nil {
-		return acp.NewSessionResponse{}, fmt.Errorf("generate session ID: %w", err)
-	}
+	id := randomID()
 	record, err := newRecord(1, recordSessionCreated, sessionCreated{
 		SessionID:     id,
 		CWD:           cwd,
@@ -397,8 +404,8 @@ func (a *Agent) NewSession(
 	}
 	value := &session{
 		id: id, state: state, log: log,
-		activationBase: cloneConfiguration(base), models: models, profiles: profiles,
-		mcp: bundle, languages: newSessionLanguages(languages),
+		activationBase: base, models: models, profiles: profiles,
+		mcp: bundle, languages: languages,
 		primaryTools: primaryTools, subagentTools: subagentTools,
 	}
 	a.sessionsMu.Lock()
@@ -698,7 +705,7 @@ func (a *Agent) activateSession(
 		return nil, jrpc2.Errorf(jrpc2.InternalError, "configure language servers: %v", err)
 	}
 	value.mcp = bundle
-	value.languages = newSessionLanguages(languages)
+	value.languages = languages
 	value.primaryTools = primaryTools
 	value.subagentTools = subagentTools
 	defer func() {
@@ -719,7 +726,7 @@ func (a *Agent) activateSession(
 	if err != nil {
 		return nil, jrpc2.Errorf(jrpc2.InvalidParams, "activate session configuration: %v", err)
 	}
-	value.activationBase = cloneConfiguration(base)
+	value.activationBase = base
 	value.models = models
 	value.profiles = profiles
 	if pendingPermission {
@@ -988,11 +995,11 @@ func (a *Agent) resolveConfiguration(
 	return requestConfiguration{
 		Settings:             profiles.DefaultProfile(),
 		SystemPrompt:         systemPrompt,
-		Tools:                cloneTools(primaryTools.modelTools),
+		Tools:                primaryTools.modelTools,
 		ToolKinds:            configuredToolKinds(primaryTools),
 		PlanTools:            configuredPlanTools(primaryTools),
 		MCPTools:             slices.Clone(mcpTools),
-		Skills:               cloneSkillReferences(skillReferences),
+		Skills:               skillReferences,
 		ExecutorCapabilities: executorCapabilities,
 	}, profiles, nil
 }
@@ -1230,7 +1237,15 @@ func toolExecution(value *session, callID string) (durableToolExecution, bool) {
 	value.stateMu.Lock()
 	defer value.stateMu.Unlock()
 	execution, ok := value.state.toolExecutions[callID]
-	return cloneToolExecution(execution), ok
+	return execution, ok
+}
+
+func sortedToolExecutions(values map[string]durableToolExecution) []durableToolExecution {
+	result := slices.Collect(maps.Values(values))
+	slices.SortFunc(result, func(a, b durableToolExecution) int {
+		return cmp.Compare(a.StartedSequence, b.StartedSequence)
+	})
+	return result
 }
 
 func (a *Agent) closeUnknownExecutions(value *session) error {
@@ -1271,7 +1286,7 @@ func (a *Agent) interruptOpenTurn(value *session) error {
 		for index, call := range suspended.ToolCalls {
 			execution, started := toolExecution(value, call.ID)
 			if started && execution.Result != nil {
-				results[index] = cloneStoredToolResult(*execution.Result)
+				results[index] = *execution.Result
 				continue
 			}
 			decision := approvalDecision("")
@@ -1293,10 +1308,7 @@ func (a *Agent) interruptOpenTurn(value *session) error {
 			return fmt.Errorf("persist interrupted tool exchange: %w", err)
 		}
 	}
-	outcomeID, err := randomID()
-	if err != nil {
-		return err
-	}
+	outcomeID := randomID()
 	if err := a.commit(value, recordTurnFinished, turnFinishedRecord{
 		TurnID: turnID, Kind: "interrupted", MessageID: outcomeID,
 	}); err != nil {
@@ -1319,28 +1331,7 @@ func (a *Agent) commitLocked(value *session, kind string, payload any) error {
 	if err := next.apply(record); err != nil {
 		return fmt.Errorf("validate %s mutation: %w", kind, err)
 	}
-	records := []sessionRecord{record}
-	if checkpointBoundary(kind) {
-		checkpoint, err := newCheckpointRecord(next)
-		if err != nil {
-			return fmt.Errorf("create checkpoint: %w", err)
-		}
-		encoded, err := encodeRecord(checkpoint)
-		if err != nil {
-			return fmt.Errorf("encode checkpoint: %w", err)
-		}
-		// A checkpoint is a load-time shortcut, not a durability requirement:
-		// folding the records it covers rebuilds the same state. Writing one only
-		// when it is no larger than the records it lets a load skip keeps total
-		// checkpoint bytes inside the transcript they summarize, instead of
-		// growing with the square of the session's age.
-		if len(encoded) <= value.log.sinceCheckpoint {
-			next.records = append(next.records, checkpoint)
-			next.sequence = checkpoint.Sequence
-			records = append(records, checkpoint)
-		}
-	}
-	if err := value.log.append(records...); err != nil {
+	if err := value.log.append(record); err != nil {
 		value.poisoned = true
 		return err
 	}
@@ -1464,19 +1455,13 @@ func (a *Agent) Prompt(
 	if len(request.Prompt) > 0 {
 		promptMeta = request.Prompt[0].Meta
 	}
-	turnID, err := randomID()
-	if err != nil {
-		return acp.PromptResponse{}, err
-	}
+	turnID := randomID()
 	messageID, err := metadataString(promptMeta, acp.MetaMessageID)
 	if err != nil {
 		return acp.PromptResponse{}, jrpc2.Errorf(jrpc2.InvalidParams, "%v", err)
 	}
 	if messageID == "" {
-		messageID, err = randomID()
-		if err != nil {
-			return acp.PromptResponse{}, err
-		}
+		messageID = randomID()
 	}
 	runCtx, active, release, err := value.claim(ctx, turnID)
 	if err != nil {
@@ -1510,7 +1495,7 @@ func (a *Agent) Prompt(
 	// configuration is one step against a concurrent configuration change.
 	value.configMu.Lock()
 	value.stateMu.Lock()
-	turnConfiguration := cloneConfiguration(value.state.configuration)
+	turnConfiguration := value.state.configuration
 	value.stateMu.Unlock()
 	err = a.commit(value, recordUserMessage, userMessageRecord{
 		TurnID:        turnID,
@@ -1594,9 +1579,6 @@ func (a *Agent) clientFileSystem(
 				Line:      line,
 				Limit:     limit,
 			}
-			if err := request.Validate(); err != nil {
-				return "", fmt.Errorf("validate %s request: %w", acp.MethodFSReadTextFile, err)
-			}
 			response, err := server.Callback(ctx, acp.MethodFSReadTextFile, request)
 			if err != nil {
 				return "", err
@@ -1614,9 +1596,6 @@ func (a *Agent) clientFileSystem(
 				SessionID: sessionID,
 				Path:      path,
 				Content:   content,
-			}
-			if err := request.Validate(); err != nil {
-				return fmt.Errorf("validate %s request: %w", acp.MethodFSWriteTextFile, err)
 			}
 			response, err := server.Callback(ctx, acp.MethodFSWriteTextFile, request)
 			if err != nil {
@@ -1651,11 +1630,6 @@ func (a *Agent) clientTerminalOperations(
 			request acp.CreateTerminalRequest,
 		) (acp.CreateTerminalResponse, error) {
 			request.SessionID = sessionID
-			if err := request.Validate(); err != nil {
-				return acp.CreateTerminalResponse{}, fmt.Errorf(
-					"validate %s request: %w", acp.MethodTerminalCreate, err,
-				)
-			}
 			var result acp.CreateTerminalResponse
 			if err := callback(ctx, acp.MethodTerminalCreate, request, &result); err != nil {
 				return acp.CreateTerminalResponse{}, err
@@ -1672,11 +1646,6 @@ func (a *Agent) clientTerminalOperations(
 			request acp.TerminalOutputRequest,
 		) (acp.TerminalOutputResponse, error) {
 			request.SessionID = sessionID
-			if err := request.Validate(); err != nil {
-				return acp.TerminalOutputResponse{}, fmt.Errorf(
-					"validate %s request: %w", acp.MethodTerminalOutput, err,
-				)
-			}
 			var result acp.TerminalOutputResponse
 			return result, callback(ctx, acp.MethodTerminalOutput, request, &result)
 		},
@@ -1685,27 +1654,16 @@ func (a *Agent) clientTerminalOperations(
 			request acp.WaitForTerminalExitRequest,
 		) (acp.WaitForTerminalExitResponse, error) {
 			request.SessionID = sessionID
-			if err := request.Validate(); err != nil {
-				return acp.WaitForTerminalExitResponse{}, fmt.Errorf(
-					"validate %s request: %w", acp.MethodTerminalWaitForExit, err,
-				)
-			}
 			var result acp.WaitForTerminalExitResponse
 			return result, callback(ctx, acp.MethodTerminalWaitForExit, request, &result)
 		},
 		Kill: func(ctx context.Context, request acp.KillTerminalRequest) error {
 			request.SessionID = sessionID
-			if err := request.Validate(); err != nil {
-				return fmt.Errorf("validate %s request: %w", acp.MethodTerminalKill, err)
-			}
 			var result acp.KillTerminalResponse
 			return callback(ctx, acp.MethodTerminalKill, request, &result)
 		},
 		Release: func(ctx context.Context, request acp.ReleaseTerminalRequest) error {
 			request.SessionID = sessionID
-			if err := request.Validate(); err != nil {
-				return fmt.Errorf("validate %s request: %w", acp.MethodTerminalRelease, err)
-			}
 			var result acp.ReleaseTerminalResponse
 			return callback(ctx, acp.MethodTerminalRelease, request, &result)
 		},
@@ -1765,12 +1723,10 @@ func (a *Agent) findSession(id string) *session {
 	return a.sessions[id]
 }
 
-func randomID() (string, error) {
+func randomID() string {
 	var data [16]byte
-	if _, err := rand.Read(data[:]); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(data[:]), nil
+	_, _ = rand.Read(data[:])
+	return hex.EncodeToString(data[:])
 }
 
 type session struct {
@@ -1789,7 +1745,7 @@ type session struct {
 	// models holds the catalog entry backing each one, in the same order.
 	profiles      settings.Profiles
 	mcp           *mcp.Bundle
-	languages     *sessionLanguages
+	languages     *lsp.Manager
 	primaryTools  toolSet
 	subagentTools toolSet
 	// configMu serializes a configuration change against the user-message commit
@@ -1798,7 +1754,6 @@ type session struct {
 	configMu sync.Mutex
 	// mu guards the turn lifecycle and grant fields below it.
 	mu            sync.Mutex
-	nextTurn      uint64
 	active        *activeTurn
 	recovering    bool
 	closing       bool
@@ -1904,7 +1859,6 @@ func (s *session) grant(name, rule string) {
 }
 
 type activeTurn struct {
-	id                uint64
 	turnID            string
 	cancel            context.CancelFunc
 	cancelledByClient atomic.Bool
@@ -1926,14 +1880,13 @@ func (s *session) claim(
 		s.mu.Unlock()
 		return nil, nil, nil, errors.New("session already has an active prompt")
 	}
+	return s.startTurnLocked(parent, turnID)
+}
+
+// startTurnLocked publishes a turn and releases the admission lock.
+func (s *session) startTurnLocked(parent context.Context, turnID string) (context.Context, *activeTurn, func() bool, error) {
 	ctx, cancel := context.WithCancel(parent)
-	s.nextTurn++
-	active := &activeTurn{
-		id:     s.nextTurn,
-		turnID: turnID,
-		cancel: cancel,
-		done:   make(chan struct{}),
-	}
+	active := &activeTurn{turnID: turnID, cancel: cancel, done: make(chan struct{})}
 	s.active = active
 	s.mu.Unlock()
 	var releaseOnce sync.Once
@@ -1943,7 +1896,7 @@ func (s *session) claim(
 			cancel()
 			s.mu.Lock()
 			cancelledByClient = active.cancelledByClient.Load()
-			if s.active != nil && s.active.id == active.id {
+			if s.active == active {
 				s.active = nil
 			}
 			close(active.done)
@@ -1980,28 +1933,7 @@ func (s *session) claimRecovery(
 		return nil, nil, nil, errors.New("session is not waiting for recovery")
 	}
 	s.recovering = false
-	ctx, cancel := context.WithCancel(parent)
-	s.nextTurn++
-	active := &activeTurn{
-		id: s.nextTurn, turnID: turnID, cancel: cancel, done: make(chan struct{}),
-	}
-	s.active = active
-	s.mu.Unlock()
-	var releaseOnce sync.Once
-	var cancelledByClient bool
-	return ctx, active, func() bool {
-		releaseOnce.Do(func() {
-			cancel()
-			s.mu.Lock()
-			cancelledByClient = active.cancelledByClient.Load()
-			if s.active != nil && s.active.id == active.id {
-				s.active = nil
-			}
-			close(active.done)
-			s.mu.Unlock()
-		})
-		return cancelledByClient
-	}, nil
+	return s.startTurnLocked(parent, turnID)
 }
 
 func (s *session) close() error {
@@ -2022,7 +1954,7 @@ func (s *session) close() error {
 		closeErr = s.mcp.Close()
 	}
 	if s.languages != nil {
-		closeErr = errors.Join(closeErr, s.languages.manager.Close())
+		closeErr = errors.Join(closeErr, s.languages.Close())
 	}
 	return closeErr
 }

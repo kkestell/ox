@@ -1,7 +1,6 @@
 package eval
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,28 +9,15 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/creachadair/jrpc2"
+	"github.com/creachadair/jrpc2/channel"
+
 	"github.com/kkestell/ox/internal/acp"
 )
-
-type rpcError struct {
-	Code    int    `json:"code"`
-	Message string `json:"message"`
-}
-
-type rpcMessage struct {
-	JSONRPC string          `json:"jsonrpc"`
-	ID      json.RawMessage `json:"id,omitempty"`
-	Method  string          `json:"method,omitempty"`
-	Params  json.RawMessage `json:"params,omitempty"`
-	Result  json.RawMessage `json:"result,omitempty"`
-	Error   *rpcError       `json:"error,omitempty"`
-	raw     json.RawMessage
-}
 
 type protocolStats struct {
 	Answer               strings.Builder
@@ -46,10 +32,11 @@ type processClient struct {
 	stdout              io.ReadCloser
 	stderr              *os.File
 	events              *eventWriter
-	messages            chan rpcMessage
-	readErr             chan error
-	nextID              int
-	writeMu             sync.Mutex
+	transport           *eventChannel
+	rpc                 *jrpc2.Client
+	callMu              sync.Mutex
+	statsMu             sync.Mutex
+	permission          string
 	stats               protocolStats
 	credentialDirectory string
 }
@@ -159,11 +146,13 @@ func startProcess(binary, workspace, private, model, baseURL, credential string,
 	}
 	client := &processClient{
 		command: command, stdin: stdin, stdout: stdout, stderr: stderr,
-		events: &eventWriter{file: eventsFile}, messages: make(chan rpcMessage),
-		readErr: make(chan error, 1), nextID: 1, credentialDirectory: credentialDirectory,
+		events: &eventWriter{file: eventsFile}, credentialDirectory: credentialDirectory,
 	}
 	keepCredential = true
-	go client.readLoop()
+	client.transport = &eventChannel{Channel: channel.Line(stdout, stdin), events: client.events, client: client}
+	client.rpc = jrpc2.NewClient(client.transport, &jrpc2.ClientOptions{
+		OnCallback: client.respondToRequest,
+	})
 	return client, nil
 }
 
@@ -194,39 +183,95 @@ func sanitizedEnvironment() []string {
 	return result
 }
 
-func (c *processClient) readLoop() {
-	reader := bufio.NewReader(c.stdout)
-	for {
-		line, err := reader.ReadBytes('\n')
-		if err != nil {
-			c.readErr <- err
-			return
-		}
-		line = []byte(strings.TrimSpace(string(line)))
-		var message rpcMessage
-		if err := json.Unmarshal(line, &message); err != nil || message.JSONRPC != "2.0" {
-			c.readErr <- fmt.Errorf("invalid JSON-RPC from Ox: %q", line)
-			return
-		}
-		message.raw = append([]byte(nil), line...)
-		c.events.write("received", line)
-		c.messages <- message
+type eventChannel struct {
+	channel.Channel
+	events *eventWriter
+	client *processClient
+	mu     sync.Mutex
+	err    error
+}
+
+func (c *eventChannel) Send(raw []byte) error {
+	c.events.write("sent", raw)
+	err := c.Channel.Send(raw)
+	c.recordError(err)
+	return err
+}
+
+func (c *eventChannel) Recv() ([]byte, error) {
+	raw, err := c.Channel.Recv()
+	c.recordError(err)
+	if err != nil {
+		return nil, err
+	}
+	var envelope struct {
+		JSONRPC string          `json:"jsonrpc"`
+		Method  string          `json:"method"`
+		Params  json.RawMessage `json:"params"`
+	}
+	if err := json.Unmarshal(raw, &envelope); err != nil || envelope.JSONRPC != "2.0" {
+		err := fmt.Errorf("invalid JSON-RPC from Ox: %q", raw)
+		c.recordError(err)
+		return nil, err
+	}
+	c.events.write("received", raw)
+	// jrpc2 dispatches received messages concurrently. Capture updates in wire
+	// order so a prompt response cannot overtake its final answer or cost update.
+	if envelope.Method == "session/update" {
+		c.client.captureUpdate(envelope.Params)
+	}
+	return raw, nil
+}
+
+func (c *eventChannel) recordError(err error) {
+	if err == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.err == nil {
+		c.err = err
 	}
 }
 
+func (c *eventChannel) failure() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.err
+}
+
 func (c *processClient) call(ctx context.Context, method string, params any, permission string, sessionID string, cancelAfter time.Duration) (json.RawMessage, bool, error) {
-	id := c.nextID
-	c.nextID++
-	if err := c.send(struct {
-		JSONRPC string `json:"jsonrpc"`
-		ID      int    `json:"id"`
-		Method  string `json:"method"`
-		Params  any    `json:"params"`
-	}{"2.0", id, method, params}); err != nil {
-		return nil, false, err
+	c.callMu.Lock()
+	defer c.callMu.Unlock()
+	c.statsMu.Lock()
+	c.permission = permission
+	c.statsMu.Unlock()
+	callCtx, cancelCall := context.WithCancel(context.WithoutCancel(ctx))
+	defer cancelCall()
+	type outcome struct {
+		raw json.RawMessage
+		err error
 	}
-	var cancel <-chan time.Time
+	done := make(chan outcome, 1)
+	go func() {
+		response, err := c.rpc.Call(callCtx, method, params)
+		if err != nil && c.transport.failure() != nil {
+			err = c.transport.failure()
+		}
+		var raw json.RawMessage
+		if err == nil {
+			raw = json.RawMessage(response.ResultString())
+			if len(raw) == 0 {
+				err = errors.New("response omitted result")
+			}
+		}
+		if err != nil {
+			err = fmt.Errorf("%s: %w", method, err)
+		}
+		done <- outcome{raw, err}
+	}()
 	var timer *time.Timer
+	var cancel <-chan time.Time
 	if cancelAfter > 0 {
 		timer = time.NewTimer(cancelAfter)
 		cancel = timer.C
@@ -237,26 +282,8 @@ func (c *processClient) call(ctx context.Context, method string, params any, per
 	var grace <-chan time.Time
 	for {
 		select {
-		case message := <-c.messages:
-			if message.Method != "" && len(message.ID) != 0 {
-				if err := c.respondToRequest(message, permission); err != nil {
-					return nil, cancelled, err
-				}
-				continue
-			}
-			if message.Method == "session/update" {
-				c.captureUpdate(message.Params)
-				continue
-			}
-			if string(message.ID) != strconv.Itoa(id) {
-				return nil, cancelled, fmt.Errorf("unexpected response id %s while waiting for %d", message.ID, id)
-			}
-			if message.Error != nil {
-				return nil, cancelled, fmt.Errorf("%s failed (%d): %s", method, message.Error.Code, message.Error.Message)
-			}
-			return message.Result, cancelled, nil
-		case err := <-c.readErr:
-			return nil, cancelled, fmt.Errorf("read Ox output: %w", err)
+		case result := <-done:
+			return result.raw, cancelled, result.err
 		case <-cancel:
 			if !cancelled && sessionID != "" {
 				cancelled = true
@@ -266,42 +293,37 @@ func (c *processClient) call(ctx context.Context, method string, params any, per
 			}
 			cancel = nil
 		case <-deadline:
-			if !cancelled && sessionID != "" {
+			if sessionID == "" {
+				return nil, cancelled, ctx.Err()
+			}
+			if !cancelled {
 				cancelled = true
 				_ = c.notify("session/cancel", acp.CancelNotification{SessionID: sessionID})
-				deadline = nil
-				grace = time.After(2 * time.Second)
-				continue
 			}
-			return nil, cancelled, ctx.Err()
+			deadline = nil
+			grace = time.After(2 * time.Second)
 		case <-grace:
 			return nil, cancelled, ctx.Err()
 		}
 	}
 }
 
-func (c *processClient) respondToRequest(message rpcMessage, permission string) error {
-	if message.Method != "session/request_permission" {
-		return c.send(struct {
-			JSONRPC string          `json:"jsonrpc"`
-			ID      json.RawMessage `json:"id"`
-			Error   rpcError        `json:"error"`
-		}{"2.0", message.ID, rpcError{Code: -32601, Message: "unsupported evaluation client method"}})
+func (c *processClient) respondToRequest(_ context.Context, message *jrpc2.Request) (any, error) {
+	if message.Method() != "session/request_permission" {
+		return nil, jrpc2.Errorf(jrpc2.MethodNotFound, "unsupported evaluation client method")
 	}
 	var request acp.RequestPermissionRequest
-	if err := json.Unmarshal(message.Params, &request); err != nil {
-		return fmt.Errorf("decode permission request: %w", err)
+	if err := message.UnmarshalParams(&request); err != nil {
+		return nil, fmt.Errorf("decode permission request: %w", err)
 	}
-	outcome := permissionOutcome(request.Options, permission)
+	c.statsMu.Lock()
+	defer c.statsMu.Unlock()
+	outcome := permissionOutcome(request.Options, c.permission)
 	c.stats.Permissions++
 	if permissionRejected(request.Options, outcome) {
 		c.stats.PermissionRejections++
 	}
-	return c.send(struct {
-		JSONRPC string                        `json:"jsonrpc"`
-		ID      json.RawMessage               `json:"id"`
-		Result  acp.RequestPermissionResponse `json:"result"`
-	}{"2.0", message.ID, acp.RequestPermissionResponse{Outcome: outcome}})
+	return acp.RequestPermissionResponse{Outcome: outcome}, nil
 }
 
 func permissionRejected(options []acp.PermissionOption, outcome acp.RequestPermissionOutcome) bool {
@@ -334,6 +356,8 @@ func permissionOutcome(options []acp.PermissionOption, permission string) acp.Re
 }
 
 func (c *processClient) captureUpdate(raw json.RawMessage) {
+	c.statsMu.Lock()
+	defer c.statsMu.Unlock()
 	var notification struct {
 		Update json.RawMessage `json:"update"`
 	}
@@ -359,24 +383,8 @@ func (c *processClient) captureUpdate(raw json.RawMessage) {
 	}
 }
 
-func (c *processClient) send(value any) error {
-	raw, err := json.Marshal(value)
-	if err != nil {
-		return err
-	}
-	c.writeMu.Lock()
-	defer c.writeMu.Unlock()
-	c.events.write("sent", raw)
-	_, err = c.stdin.Write(append(raw, '\n'))
-	return err
-}
-
 func (c *processClient) notify(method string, params any) error {
-	return c.send(struct {
-		JSONRPC string `json:"jsonrpc"`
-		Method  string `json:"method"`
-		Params  any    `json:"params"`
-	}{"2.0", method, params})
+	return c.rpc.Notify(context.Background(), method, params)
 }
 
 func (c *processClient) stop() error {
@@ -392,6 +400,7 @@ func (c *processClient) stop() error {
 		waitErr = errors.New("ox did not exit before shutdown deadline")
 	}
 	closeErr := errors.Join(
+		c.rpc.Close(),
 		closeUnlessClosed(c.stdout),
 		closeUnlessClosed(c.stderr),
 		closeUnlessClosed(c.events.file),

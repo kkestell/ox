@@ -3,9 +3,9 @@ package eval
 import (
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httputil"
 	"net/url"
 	"strings"
 	"sync"
@@ -72,33 +72,20 @@ func proxyHandler(rawURL string) (http.Handler, error) {
 	if err != nil || target.Scheme == "" || target.Host == "" {
 		return nil, fmt.Errorf("invalid provider endpoint %q", rawURL)
 	}
-	client := &http.Client{}
-	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		path := request.URL.Path
-		if strings.HasSuffix(target.Path, "/api/v1") {
-			path = strings.TrimPrefix(path, "/api/v1")
-		}
-		destination := *target
-		destination.Path = strings.TrimSuffix(target.Path, "/") + path
-		destination.RawQuery = request.URL.RawQuery
-		upstream, err := http.NewRequestWithContext(request.Context(), request.Method, destination.String(), request.Body)
-		if err != nil {
-			http.Error(writer, "build provider request", http.StatusBadGateway)
-			return
-		}
-		upstream.Header = request.Header.Clone()
-		response, err := client.Do(upstream)
-		if err != nil {
-			http.Error(writer, "provider unavailable", http.StatusBadGateway)
-			return
-		}
-		defer response.Body.Close()
-		for name, values := range response.Header {
-			for _, value := range values {
-				writer.Header().Add(name, value)
+	return &httputil.ReverseProxy{
+		Rewrite: func(proxy *httputil.ProxyRequest) {
+			path := proxy.In.URL.Path
+			if strings.HasSuffix(target.Path, "/api/v1") {
+				path = strings.TrimPrefix(path, "/api/v1")
 			}
-		}
-		writer.WriteHeader(response.StatusCode)
-		_, _ = io.Copy(writer, response.Body)
-	}), nil
+			proxy.SetURL(target)
+			proxy.Out.URL.Path = strings.TrimSuffix(target.Path, "/") + path
+			proxy.Out.URL.RawPath = ""
+			proxy.Out.URL.RawQuery = proxy.In.URL.RawQuery
+		},
+		FlushInterval: -1,
+		ErrorHandler: func(writer http.ResponseWriter, _ *http.Request, _ error) {
+			http.Error(writer, "provider unavailable", http.StatusBadGateway)
+		},
+	}, nil
 }

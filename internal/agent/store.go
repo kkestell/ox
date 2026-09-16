@@ -29,9 +29,6 @@ type fileStore struct {
 
 type sessionLog struct {
 	file *os.File
-	// sinceCheckpoint counts the bytes appended since the log's last checkpoint,
-	// which is what a load would have to fold if no newer checkpoint is written.
-	sinceCheckpoint int
 }
 
 func newFileStore(root string, logger *slog.Logger) (*fileStore, error) {
@@ -92,7 +89,7 @@ func (s *fileStore) open(id string) (*sessionLog, []sessionRecord, bool, error) 
 		_ = file.Close()
 		return nil, nil, false, err
 	}
-	records, truncateAt, sinceCheckpoint, err := readRecords(file)
+	records, truncateAt, err := readRecords(file)
 	if err != nil {
 		unlock(file)
 		_ = file.Close()
@@ -116,7 +113,7 @@ func (s *fileStore) open(id string) (*sessionLog, []sessionRecord, bool, error) 
 		_ = file.Close()
 		return nil, nil, false, fmt.Errorf("seek session log: %w", err)
 	}
-	return &sessionLog{file: file, sinceCheckpoint: sinceCheckpoint}, records, repaired, nil
+	return &sessionLog{file: file}, records, repaired, nil
 }
 
 // list projects every session in the store, newest first. A session whose log
@@ -162,7 +159,7 @@ func (s *fileStore) project(name string) (sessionListEntry, error) {
 	if err != nil {
 		return sessionListEntry{}, err
 	}
-	records, _, _, readErr := readRecords(file)
+	records, _, readErr := readRecords(file)
 	locked, lockErr := probeLock(file)
 	closeErr := file.Close()
 	if err := errors.Join(readErr, lockErr, closeErr); err != nil {
@@ -216,7 +213,7 @@ func (s *fileStore) delete(id string, before func(durableState) error) (err erro
 		}
 	}()
 	if before != nil {
-		records, _, _, readErr := readRecords(file)
+		records, _, readErr := readRecords(file)
 		if readErr != nil {
 			return fmt.Errorf("read session for deletion: %w", readErr)
 		}
@@ -251,8 +248,7 @@ func (s *fileStore) path(id string) (string, error) {
 	return filepath.Join(s.root, id+".jsonl"), nil
 }
 
-// encodeRecord renders one log line, so a caller can measure a record before
-// deciding to append it.
+// encodeRecord renders one bounded log line.
 func encodeRecord(record sessionRecord) ([]byte, error) {
 	encoded, err := json.Marshal(record)
 	if err != nil {
@@ -264,20 +260,10 @@ func encodeRecord(record sessionRecord) ([]byte, error) {
 	return append(encoded, '\n'), nil
 }
 
-func (l *sessionLog) append(records ...sessionRecord) error {
-	var data []byte
-	since := l.sinceCheckpoint
-	for _, record := range records {
-		encoded, err := encodeRecord(record)
-		if err != nil {
-			return err
-		}
-		data = append(data, encoded...)
-		if record.Type == recordCheckpoint {
-			since = 0
-		} else {
-			since += len(encoded)
-		}
+func (l *sessionLog) append(record sessionRecord) error {
+	data, err := encodeRecord(record)
+	if err != nil {
+		return err
 	}
 	for len(data) > 0 {
 		written, err := l.file.Write(data)
@@ -292,7 +278,6 @@ func (l *sessionLog) append(records ...sessionRecord) error {
 	if err := l.file.Sync(); err != nil {
 		return fmt.Errorf("sync session record: %w", err)
 	}
-	l.sinceCheckpoint = since
 	return nil
 }
 
@@ -302,21 +287,21 @@ func (l *sessionLog) close() {
 }
 
 // readRecords returns the log's records, the offset a torn tail must be
-// truncated to or -1, and the bytes that follow the log's last checkpoint.
-func readRecords(file *os.File) ([]sessionRecord, int64, int, error) {
+// truncated to or -1.
+func readRecords(file *os.File) ([]sessionRecord, int64, error) {
 	if _, err := file.Seek(0, io.SeekStart); err != nil {
-		return nil, -1, 0, fmt.Errorf("seek session log: %w", err)
+		return nil, -1, fmt.Errorf("seek session log: %w", err)
 	}
 	info, err := file.Stat()
 	if err != nil {
-		return nil, -1, 0, fmt.Errorf("stat session log: %w", err)
+		return nil, -1, fmt.Errorf("stat session log: %w", err)
 	}
 	if info.Size() > maxSessionBytes {
-		return nil, -1, 0, fmt.Errorf("session log is %d bytes; limit is %d", info.Size(), maxSessionBytes)
+		return nil, -1, fmt.Errorf("session log is %d bytes; limit is %d", info.Size(), maxSessionBytes)
 	}
 	data, err := io.ReadAll(io.LimitReader(file, maxSessionBytes+1))
 	if err != nil {
-		return nil, -1, 0, fmt.Errorf("read session log: %w", err)
+		return nil, -1, fmt.Errorf("read session log: %w", err)
 	}
 	truncateAt := int64(-1)
 	if len(data) > 0 && data[len(data)-1] != '\n' {
@@ -328,30 +313,25 @@ func readRecords(file *os.File) ([]sessionRecord, int64, int, error) {
 	scanner.Buffer(make([]byte, 64*1024), maxRecordBytes+1)
 	var records []sessionRecord
 	line := 0
-	sinceCheckpoint := 0
 	for scanner.Scan() {
 		line++
 		if len(scanner.Bytes()) == 0 {
-			return nil, -1, 0, fmt.Errorf("empty interior record at line %d", line)
+			return nil, -1, fmt.Errorf("empty interior record at line %d", line)
 		}
 		var record sessionRecord
 		if err := json.Unmarshal(scanner.Bytes(), &record); err != nil {
-			return nil, -1, 0, fmt.Errorf("decode record at line %d: %w", line, err)
+			return nil, -1, fmt.Errorf("decode record at line %d: %w", line, err)
 		}
-		if record.Type == recordCheckpoint {
-			sinceCheckpoint = 0
-		} else {
-			sinceCheckpoint += len(scanner.Bytes()) + 1
-		}
+
 		records = append(records, record)
 	}
 	if err := scanner.Err(); err != nil {
-		return nil, -1, 0, fmt.Errorf("scan session log: %w", err)
+		return nil, -1, fmt.Errorf("scan session log: %w", err)
 	}
 	if len(records) == 0 {
-		return nil, -1, 0, errors.New("session log has no creation record")
+		return nil, -1, errors.New("session log has no creation record")
 	}
-	return records, truncateAt, sinceCheckpoint, nil
+	return records, truncateAt, nil
 }
 
 // ValidID reports whether value has the shape of an identifier Ox generated:

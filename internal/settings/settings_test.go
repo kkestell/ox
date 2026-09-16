@@ -6,6 +6,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/kkestell/ox/internal/lsp"
 )
 
 func TestWorkspacePathDoesNotWalkUpwards(t *testing.T) {
@@ -202,7 +204,7 @@ func TestResolveLanguageServers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []ResolvedLanguageServer{
+	want := []lsp.Definition{
 		{Name: "gopls", Command: "gopls", Extensions: []string{"go"}},
 		{
 			Name: "typescript", Command: "typescript-language-server",

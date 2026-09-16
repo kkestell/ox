@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -210,7 +211,8 @@ func TestRecoveredMCPRequiresTheInterruptedDefinition(t *testing.T) {
 	if err := validateRecoveredMCP(required, required, calls); err != nil {
 		t.Fatalf("matching definition: %v", err)
 	}
-	changed := cloneConfiguration(required)
+	changed := required
+	changed.MCPTools = slices.Clone(required.MCPTools)
 	changed.MCPTools[0].Identity = "changed"
 	if err := validateRecoveredMCP(required, changed, calls); err == nil || !strings.Contains(err.Error(), "changed") {
 		t.Fatalf("changed definition error = %v", err)
@@ -349,8 +351,39 @@ func discardLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
+func testToolExecutor(context.Context, Invocation) (string, error) { return "", nil }
+
+func TestToolSetRequiresExecutor(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("missing executor did not panic")
+		}
+	}()
+	_, _ = newToolSet([]Tool{{Name: "broken", Execute: nil}})
+}
+
+func TestExecutorPanicTerminatesDispatch(t *testing.T) {
+	if os.Getenv("OX_TEST_EXECUTOR_PANIC") == "1" {
+		instance, err := New(Config{Logger: discardLogger(), Tools: []Tool{{
+			Name: "panic", Execute: func(context.Context, Invocation) (string, error) { panic("executor invariant") },
+		}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		dispatchBatch(context.Background(), instance, ephemeralToolSession(t),
+			[]openrouter.ToolCall{toolCall("call", "panic")}, make(chan event, 32))
+		t.Fatal("dispatch returned after executor panic")
+	}
+	command := exec.Command(os.Args[0], "-test.run=^TestExecutorPanicTerminatesDispatch$")
+	command.Env = append(os.Environ(), "OX_TEST_EXECUTOR_PANIC=1")
+	output, err := command.CombinedOutput()
+	if err == nil || !strings.Contains(string(output), "panic: executor invariant") {
+		t.Fatalf("panic subprocess = %v, output = %s", err, output)
+	}
+}
+
 func TestNewRejectsDuplicateToolNames(t *testing.T) {
-	_, err := New(Config{Tools: []Tool{{Name: "same"}, {Name: "same"}}})
+	_, err := New(Config{Tools: []Tool{{Name: "same", Execute: testToolExecutor}, {Name: "same", Execute: testToolExecutor}}})
 	if err == nil || !strings.Contains(err.Error(), "duplicate tool") {
 		t.Fatalf("error = %v", err)
 	}
@@ -361,7 +394,7 @@ func TestToolPresentationSeparatesMetadataFromTheRawName(t *testing.T) {
 		Name: "shell", Kind: acp.ToolKindExecute,
 		Presentation: func(json.RawMessage) ToolPresentation {
 			return ToolPresentation{Name: "Run", Arguments: "go test ./..."}
-		},
+		}, Execute: testToolExecutor,
 	}
 	tools, err := newToolSet([]Tool{tool})
 	if err != nil {
@@ -417,8 +450,8 @@ func TestPromptMessageConvertsPromptContent(t *testing.T) {
 
 func TestPartitionUsesExclusiveCallsAsFences(t *testing.T) {
 	instance, err := New(Config{Tools: []Tool{
-		{Name: "parallel", ParallelSafe: true},
-		{Name: "exclusive"},
+		{Name: "parallel", ParallelSafe: true, Execute: testToolExecutor},
+		{Name: "exclusive", Execute: testToolExecutor},
 	}})
 	if err != nil {
 		t.Fatal(err)
@@ -648,16 +681,6 @@ func TestExclusiveToolDoesNotFenceAnotherLoop(t *testing.T) {
 func TestToolFailuresEachProduceOneTerminalResult(t *testing.T) {
 	instance, err := New(Config{Logger: discardLogger(), Tools: []Tool{
 		{
-			Name:     "panic",
-			Approval: ApprovalNone,
-			Execute: func(
-				context.Context,
-				Invocation,
-			) (string, error) {
-				panic("boom")
-			},
-		},
-		{
 			Name:     "error",
 			Approval: ApprovalNone,
 			Execute: func(
@@ -685,13 +708,12 @@ func TestToolFailuresEachProduceOneTerminalResult(t *testing.T) {
 	}()
 	results := dispatchBatch(context.Background(), instance, ephemeralToolSession(t), []openrouter.ToolCall{
 		toolCall("1", "missing"),
-		toolCall("2", "panic"),
 		toolCall("3", "error"),
 	}, events)
 	close(events)
 	wait.Wait()
 
-	if len(results) != 3 || failed != 0 {
+	if len(results) != 2 || failed != 0 {
 		t.Fatalf("results = %d, failed terminal events = %d", len(results), failed)
 	}
 	for index, result := range results {
@@ -731,8 +753,8 @@ func TestEditToolTargetsAreCanonicalAndConfined(t *testing.T) {
 		t.Fatal(err)
 	}
 	instance, err := New(Config{Tools: []Tool{
-		{Name: "write_file", Kind: acp.ToolKindEdit},
-		{Name: "read_file", Kind: acp.ToolKindRead},
+		{Name: "write_file", Kind: acp.ToolKindEdit, Execute: testToolExecutor},
+		{Name: "read_file", Kind: acp.ToolKindRead, Execute: testToolExecutor},
 	}})
 	if err != nil {
 		t.Fatal(err)
@@ -831,8 +853,8 @@ func TestSessionRejectsOverlappingPromptsAndCancelIsIdempotent(t *testing.T) {
 func TestPrefixFingerprintIsStableAndSensitiveToToolOrderAndSettings(t *testing.T) {
 	first, err := New(Config{
 		Tools: []Tool{
-			{Name: "a", InputSchema: json.RawMessage(`{"type":"object"}`)},
-			{Name: "b", InputSchema: json.RawMessage(`{"type":"object"}`)},
+			{Name: "a", InputSchema: json.RawMessage(`{"type":"object"}`), Execute: testToolExecutor},
+			{Name: "b", InputSchema: json.RawMessage(`{"type":"object"}`), Execute: testToolExecutor},
 		},
 	})
 	if err != nil {
@@ -840,8 +862,8 @@ func TestPrefixFingerprintIsStableAndSensitiveToToolOrderAndSettings(t *testing.
 	}
 	second, err := New(Config{
 		Tools: []Tool{
-			{Name: "b", InputSchema: json.RawMessage(`{"type":"object"}`)},
-			{Name: "a", InputSchema: json.RawMessage(`{"type":"object"}`)},
+			{Name: "b", InputSchema: json.RawMessage(`{"type":"object"}`), Execute: testToolExecutor},
+			{Name: "a", InputSchema: json.RawMessage(`{"type":"object"}`), Execute: testToolExecutor},
 		},
 	})
 	if err != nil {
@@ -1601,10 +1623,7 @@ func durableModeTestSession(
 	turnID string,
 ) *session {
 	t.Helper()
-	id, err := randomID()
-	if err != nil {
-		t.Fatal(err)
-	}
+	id := randomID()
 	selections := sessionSelections{}
 	if mode != modeCode {
 		selections.Mode = mode
@@ -1643,7 +1662,7 @@ func durableModeTestSession(
 func testConfiguration(instance *Agent) requestConfiguration {
 	return requestConfiguration{
 		Settings: settings.Resolved{Model: "test/model"},
-		Tools:    cloneTools(instance.primaryTools.modelTools),
+		Tools:    instance.primaryTools.modelTools,
 	}
 }
 
@@ -1799,7 +1818,7 @@ func TestToolDispatchPersistenceFailureSkipsExecutor(t *testing.T) {
 	}
 	configuration := requestConfiguration{
 		Settings: settings.Resolved{Model: "test/model"},
-		Tools:    cloneTools(instance.primaryTools.modelTools),
+		Tools:    instance.primaryTools.modelTools,
 	}
 	value := durableTestSession(t, instance, configuration, "turn")
 	call := toolCall("call", "mutation")
@@ -1843,7 +1862,7 @@ func TestTodoPersistenceFailureEmitsNoPlanOrSuccessfulResult(t *testing.T) {
 					return "updated", nil
 				},
 			},
-			{Name: "read", Kind: acp.ToolKindRead, Approval: ApprovalNone},
+			{Name: "read", Kind: acp.ToolKindRead, Approval: ApprovalNone, Execute: testToolExecutor},
 		},
 	})
 	if err != nil {
@@ -1851,7 +1870,7 @@ func TestTodoPersistenceFailureEmitsNoPlanOrSuccessfulResult(t *testing.T) {
 	}
 	configuration := requestConfiguration{
 		Settings: settings.Resolved{Model: "test/model"},
-		Tools:    cloneTools(instance.primaryTools.modelTools),
+		Tools:    instance.primaryTools.modelTools,
 		ToolKinds: map[string]acp.ToolKind{
 			"todo": acp.ToolKindOther, "read": acp.ToolKindRead,
 		},
@@ -1929,7 +1948,7 @@ func TestToolCompletionPersistenceFailureStopsLaterSibling(t *testing.T) {
 	}
 	configuration := requestConfiguration{
 		Settings: settings.Resolved{Model: "test/model"},
-		Tools:    cloneTools(instance.primaryTools.modelTools),
+		Tools:    instance.primaryTools.modelTools,
 	}
 	value = durableTestSession(t, instance, configuration, "turn")
 	calls := []openrouter.ToolCall{
@@ -1996,7 +2015,7 @@ func TestInterruptedStartedToolBecomesUnknownWithoutExecution(t *testing.T) {
 	}
 	configuration := requestConfiguration{
 		Settings: settings.Resolved{Model: "test/model"},
-		Tools:    cloneTools(instance.primaryTools.modelTools),
+		Tools:    instance.primaryTools.modelTools,
 	}
 	value := durableTestSession(t, instance, configuration, "turn")
 	call := toolCall("call", "mutation")
@@ -2026,7 +2045,7 @@ func TestInterruptedQuestionIsRecordedWithoutReissue(t *testing.T) {
 		Logger: discardLogger(),
 		Tools: []Tool{{
 			Name: "question", InputSchema: json.RawMessage(`{"type":"object"}`),
-			Approval: ApprovalNone, RequiresForm: true,
+			Approval: ApprovalNone, RequiresForm: true, Execute: testToolExecutor,
 		}},
 	})
 	if err != nil {
@@ -2034,7 +2053,7 @@ func TestInterruptedQuestionIsRecordedWithoutReissue(t *testing.T) {
 	}
 	configuration := requestConfiguration{
 		Settings: settings.Resolved{Model: "test/model"},
-		Tools:    cloneTools(instance.primaryTools.modelTools),
+		Tools:    instance.primaryTools.modelTools,
 	}
 	value := durableTestSession(t, instance, configuration, "turn")
 	call := toolCall("question-call", "question")
@@ -2096,7 +2115,7 @@ func TestRecoveredPermissionDoesNotRedispatchStartedSibling(t *testing.T) {
 	}
 	configuration := requestConfiguration{
 		Settings: settings.Resolved{Model: "test/model"},
-		Tools:    cloneTools(instance.primaryTools.modelTools),
+		Tools:    instance.primaryTools.modelTools,
 	}
 	value := durableTestSession(t, instance, configuration, "turn")
 	calls := []openrouter.ToolCall{toolCall("first-call", "first"), toolCall("second-call", "second")}
@@ -2149,9 +2168,9 @@ func TestInterruptedBatchPreservesCompletedAndClassifiesRemainingCalls(t *testin
 	instance, err := New(Config{
 		Logger: discardLogger(),
 		Tools: []Tool{
-			{Name: "completed", InputSchema: json.RawMessage(`{"type":"object"}`), Approval: ApprovalNone},
-			{Name: "started", InputSchema: json.RawMessage(`{"type":"object"}`), Approval: ApprovalNone},
-			{Name: "untouched", InputSchema: json.RawMessage(`{"type":"object"}`), Approval: ApprovalNone},
+			{Name: "completed", InputSchema: json.RawMessage(`{"type":"object"}`), Approval: ApprovalNone, Execute: testToolExecutor},
+			{Name: "started", InputSchema: json.RawMessage(`{"type":"object"}`), Approval: ApprovalNone, Execute: testToolExecutor},
+			{Name: "untouched", InputSchema: json.RawMessage(`{"type":"object"}`), Approval: ApprovalNone, Execute: testToolExecutor},
 		},
 	})
 	if err != nil {
@@ -2159,7 +2178,7 @@ func TestInterruptedBatchPreservesCompletedAndClassifiesRemainingCalls(t *testin
 	}
 	configuration := requestConfiguration{
 		Settings: settings.Resolved{Model: "test/model"},
-		Tools:    cloneTools(instance.primaryTools.modelTools),
+		Tools:    instance.primaryTools.modelTools,
 	}
 	value := durableTestSession(t, instance, configuration, "turn")
 	calls := []openrouter.ToolCall{

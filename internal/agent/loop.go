@@ -126,15 +126,8 @@ func (a *Agent) runFrom(ctx context.Context, run turnRun, start turnStart) loopO
 			thoughtID = suspended.ThoughtID
 			completion = suspended.completion()
 		} else {
-			var err error
-			answerID, err = randomID()
-			if err != nil {
-				return a.finishFailed(value, active, events, err)
-			}
-			thoughtID, err = randomID()
-			if err != nil {
-				return a.finishFailed(value, active, events, err)
-			}
+			answerID = randomID()
+			thoughtID = randomID()
 			events <- event{
 				kind: eventResponseStart, messageID: answerID, thoughtID: thoughtID,
 			}
@@ -473,10 +466,7 @@ func (a *Agent) finishTurn(
 	if active.subagents != nil {
 		active.subagents.close()
 	}
-	messageID, err := randomID()
-	if err != nil {
-		return err
-	}
+	messageID := randomID()
 	outcome := turnFinishedRecord{
 		TurnID:     active.turnID,
 		Kind:       kind,
@@ -500,8 +490,8 @@ func (a *Agent) finishTurn(
 func (a *Agent) modelRequest(value *session) openrouter.Request {
 	value.stateMu.Lock()
 	configuration := applyMode(value.state.turnConfiguration(), value.state.mode())
-	history := cloneMessages(value.state.history)
-	todo := clonePlanEntries(value.state.todo)
+	history := value.state.history
+	todo := value.state.todo
 	value.stateMu.Unlock()
 	messages := make([]openrouter.Message, 0, len(history)+2)
 	messages = append(messages, openrouter.Message{
@@ -518,7 +508,7 @@ func (a *Agent) modelRequest(value *session) openrouter.Request {
 	return openrouter.Request{
 		Model:        configuration.Settings.Model,
 		Messages:     messages,
-		Tools:        cloneTools(configuration.Tools),
+		Tools:        configuration.Tools,
 		CacheControl: &openrouter.CacheControl{Type: "ephemeral"},
 		SessionID:    value.id,
 		MaxTokens:    configuration.Settings.MaxTokens,
@@ -997,7 +987,6 @@ func (a *Agent) dispatchApprovedBatch(
 		groupCtx, cancelGroup := context.WithCancel(ctx)
 		var wait sync.WaitGroup
 		errorsByIndex := make([]error, group.end-group.start)
-		startFailed := false
 		for index := group.start; index < group.end; index++ {
 			if !ready[index] {
 				continue
@@ -1029,7 +1018,6 @@ func (a *Agent) dispatchApprovedBatch(
 					value, turnID, calls[index], results[index].approval,
 					results[index].target,
 				); err != nil {
-					startFailed = true
 					errorsByIndex[index-group.start] = fmt.Errorf("persist tool dispatch: %w", err)
 					cancelGroup()
 					break
@@ -1069,9 +1057,6 @@ func (a *Agent) dispatchApprovedBatch(
 			if err != nil {
 				return results, err
 			}
-		}
-		if startFailed {
-			break
 		}
 	}
 	for index := range calls {
@@ -1152,13 +1137,6 @@ func (a *Agent) executeOne(
 	started := time.Now()
 	path := toolCallPath(call.Function.Arguments)
 	defer func() {
-		if recovered := recover(); recovered != nil {
-			result = toolResult{
-				content: fmt.Sprintf("tool panicked: %v", recovered),
-				failed:  true,
-				target:  target,
-			}
-		}
 		a.logger.Info(
 			"tool call finished",
 			"tool_call_id", call.ID,
@@ -1176,9 +1154,6 @@ func (a *Agent) executeOne(
 		}
 	}
 	tool := tools.tools[index]
-	if tool.Execute == nil {
-		return toolResult{content: "tool has no executor", failed: true, target: target}
-	}
 	root := value.workspaceRoot()
 	catalog := value.turnSkills()
 	invocation := Invocation{
@@ -1532,17 +1507,6 @@ func stopReason(reason string) acp.StopReason {
 	default:
 		return acp.StopReasonEndTurn
 	}
-}
-
-func cloneMessages(messages []openrouter.Message) []openrouter.Message {
-	cloned := make([]openrouter.Message, len(messages))
-	for index, message := range messages {
-		cloned[index] = message
-		cloned[index].Content = append([]openrouter.ContentBlock(nil), message.Content...)
-		cloned[index].ToolCalls = append([]openrouter.ToolCall(nil), message.ToolCalls...)
-		cloned[index].ReasoningDetails = cloneRawMessages(message.ReasoningDetails)
-	}
-	return cloned
 }
 
 func cloneRawMessages(messages []json.RawMessage) []json.RawMessage {

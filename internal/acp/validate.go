@@ -138,82 +138,8 @@ func (r CreateElicitationResponse) Validate(
 	return answer, nil
 }
 
-func (r ReadTextFileRequest) Validate() error {
-	if r.SessionID == "" {
-		return errors.New("sessionId is required")
-	}
-	if r.Path == "" {
-		return errors.New("path is required")
-	}
-	if !filepath.IsAbs(r.Path) {
-		return errors.New("path must be absolute")
-	}
-	if r.Line != nil && *r.Line < 1 {
-		return errors.New("line must be positive")
-	}
-	if r.Limit != nil && *r.Limit < 1 {
-		return errors.New("limit must be positive")
-	}
-	return nil
-}
-
-func (r WriteTextFileRequest) Validate() error {
-	if r.SessionID == "" {
-		return errors.New("sessionId is required")
-	}
-	if r.Path == "" {
-		return errors.New("path is required")
-	}
-	if !filepath.IsAbs(r.Path) {
-		return errors.New("path must be absolute")
-	}
-	return nil
-}
-
-func (r CreateTerminalRequest) Validate() error {
-	if r.SessionID == "" {
-		return errors.New("sessionId is required")
-	}
-	if r.Command == "" {
-		return errors.New("command is required")
-	}
-	if r.CWD != nil && !filepath.IsAbs(*r.CWD) {
-		return errors.New("cwd must be absolute")
-	}
-	if r.OutputByteLimit != nil && *r.OutputByteLimit < 1 {
-		return errors.New("outputByteLimit must be positive")
-	}
-	return nil
-}
-
 func (r CreateTerminalResponse) Validate() error {
 	if r.TerminalID == "" {
-		return errors.New("terminalId is required")
-	}
-	return nil
-}
-
-func (r TerminalOutputRequest) Validate() error {
-	return validateTerminalRequest(r.SessionID, r.TerminalID)
-}
-
-func (r WaitForTerminalExitRequest) Validate() error {
-	return validateTerminalRequest(r.SessionID, r.TerminalID)
-}
-
-func (r KillTerminalRequest) Validate() error {
-	return validateTerminalRequest(r.SessionID, r.TerminalID)
-}
-
-func (r ReleaseTerminalRequest) Validate() error {
-	return validateTerminalRequest(r.SessionID, r.TerminalID)
-}
-
-func validateTerminalRequest(sessionID, terminalID string) error {
-	if sessionID == "" {
-		return errors.New("sessionId is required")
-	}
-	if terminalID == "" {
 		return errors.New("terminalId is required")
 	}
 	return nil

@@ -128,12 +128,9 @@ func (s *memoryStore) write(
 	if supersedes != "" && !validSessionID(supersedes) {
 		return MemoryFact{}, errors.New("invalid superseded memory ID")
 	}
-	id, err := randomID()
-	if err != nil {
-		return MemoryFact{}, fmt.Errorf("generate memory ID: %w", err)
-	}
+	id := randomID()
 	var result MemoryFact
-	err = s.withDocument(workspace, true, func(document *memoryDocument) (bool, error) {
+	err := s.withDocument(workspace, true, func(document *memoryDocument) (bool, error) {
 		if supersedes != "" {
 			index := -1
 			for current := range document.Facts {

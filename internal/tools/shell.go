@@ -174,9 +174,6 @@ func executeDelegatedShell(
 	if err != nil {
 		return "", fmt.Errorf("%s: %w", acp.MethodTerminalCreate, err)
 	}
-	if err := created.Validate(); err != nil {
-		return "", fmt.Errorf("%s: %w", acp.MethodTerminalCreate, err)
-	}
 	terminalID := created.TerminalID
 
 	exit, waitErr := invocation.Terminal.WaitForExit(

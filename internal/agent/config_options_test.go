@@ -32,7 +32,7 @@ func configOptionSession(t *testing.T) (*Agent, *session) {
 		ContextWindow: 1000,
 	}
 	value := durableTestSession(t, instance, configuration, "turn")
-	value.activationBase = cloneConfiguration(configuration)
+	value.activationBase = configuration
 	value.models = models
 	value.profiles = testProfiles(t, "test/model", "plain/model")
 	instance.sessionsMu.Lock()

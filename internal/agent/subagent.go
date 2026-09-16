@@ -115,10 +115,7 @@ func (g *subagentGroup) start(name, task string) (SubagentSnapshot, error) {
 	if len(task) > maxSubagentTask {
 		return SubagentSnapshot{}, fmt.Errorf("subagent task exceeds %d bytes", maxSubagentTask)
 	}
-	id, err := randomID()
-	if err != nil {
-		return SubagentSnapshot{}, err
-	}
+	id := randomID()
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if g.closed {
@@ -194,7 +191,7 @@ func (g *subagentGroup) stop(id string) (SubagentSnapshot, error) {
 func (g *subagentGroup) list() []SubagentSnapshot {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	return g.snapshotsLocked(nil, true)
+	return g.snapshotsLocked(nil)
 }
 
 func (g *subagentGroup) waitFor(ctx context.Context, ids []string) ([]SubagentSnapshot, error) {
@@ -221,7 +218,7 @@ func (g *subagentGroup) waitFor(ctx context.Context, ids []string) ([]SubagentSn
 			}
 		}
 		if ready || allTerminal {
-			result := g.snapshotsLocked(selected, true)
+			result := g.snapshotsLocked(selected)
 			g.mu.Unlock()
 			return result, nil
 		}
@@ -267,7 +264,7 @@ func (g *subagentGroup) drainInbox(id string) []string {
 	if child == nil || len(child.inbox) == 0 {
 		return nil
 	}
-	messages := slices.Clone(child.inbox)
+	messages := child.inbox
 	child.inbox = nil
 	return messages
 }
@@ -332,7 +329,7 @@ func (g *subagentGroup) selectedLocked(ids []string) ([]string, error) {
 	return selected, nil
 }
 
-func (g *subagentGroup) snapshotsLocked(ids []string, observe bool) []SubagentSnapshot {
+func (g *subagentGroup) snapshotsLocked(ids []string) []SubagentSnapshot {
 	if ids == nil {
 		ids = g.order
 	}
@@ -340,10 +337,8 @@ func (g *subagentGroup) snapshotsLocked(ids []string, observe bool) []SubagentSn
 	for _, id := range ids {
 		child := g.children[id]
 		result = append(result, snapshotSubagent(child))
-		if observe {
-			child.observed = len(child.reports)
-			child.terminalObserved = terminalSubagentStatus(child.status)
-		}
+		child.observed = len(child.reports)
+		child.terminalObserved = terminalSubagentStatus(child.status)
 	}
 	return result
 }
@@ -408,7 +403,7 @@ func (a *Agent) runSubagent(
 				return subagentStatusFailed, "", compactErr
 			}
 			request = admitted.request
-			history = cloneMessages(request.Messages[requestHistoryOffset:])
+			history = slices.Clone(request.Messages[requestHistoryOffset:])
 			admissionUsage = summary.Usage
 		}
 		provider := group.run.active.trace.Provider(
@@ -517,10 +512,10 @@ func subagentRequest(
 			Type: "text", Text: configuration.SystemPrompt + subagentPromptSuffix,
 		}},
 	}
-	messages = append(messages, cloneMessages(history)...)
+	messages = append(messages, history...)
 	return openrouter.Request{
 		Model: configuration.Settings.Model, Messages: messages,
-		Tools: cloneTools(tools.modelTools), CacheControl: &openrouter.CacheControl{Type: "ephemeral"},
+		Tools: tools.modelTools, CacheControl: &openrouter.CacheControl{Type: "ephemeral"},
 		SessionID: sessionID, MaxTokens: configuration.Settings.MaxTokens,
 		Temperature: configuration.Settings.Temperature, Reasoning: configuration.Settings.Reasoning,
 		Provider: configuration.Settings.Provider,
@@ -546,10 +541,7 @@ func (a *Agent) executeSubagentCalls(
 ) ([]toolResult, error) {
 	results := make([]toolResult, len(calls))
 	for index, providerCall := range calls {
-		callID, err := allocateToolCallID(run.session)
-		if err != nil {
-			return nil, err
-		}
+		callID := allocateToolCallID(run.session)
 		call := providerCall
 		call.ID = callID
 		target := normalizedToolTargets(run.session.workspaceRoot(), tools, []openrouter.ToolCall{call})[call.ID]
@@ -611,12 +603,9 @@ func (a *Agent) executeSubagentCalls(
 	return results, nil
 }
 
-func allocateToolCallID(value *session) (string, error) {
+func allocateToolCallID(value *session) string {
 	for {
-		id, err := randomID()
-		if err != nil {
-			return "", err
-		}
+		id := randomID()
 		value.callIDsMu.Lock()
 		value.stateMu.Lock()
 		_, durable := value.state.toolCallIDs[id]
@@ -628,7 +617,7 @@ func allocateToolCallID(value *session) (string, error) {
 			}
 			value.callIDs[id] = struct{}{}
 			value.callIDsMu.Unlock()
-			return id, nil
+			return id
 		}
 		value.callIDsMu.Unlock()
 	}

@@ -2,9 +2,11 @@ package e2e
 
 import (
 	"encoding/json"
+	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -386,18 +388,18 @@ func TestSessionCompactionSurvivesRestartWithoutChangingReplay(t *testing.T) {
 	assertConversation(t, requests[4].Messages, wantCompacted)
 }
 
-func TestOpenParentCompactionCheckpointSurvivesCrash(t *testing.T) {
+func TestOpenParentCompactionSurvivesCrash(t *testing.T) {
 	const contextWindow = 13_500
 	dataDir := t.TempDir()
-	oldAnswer := strings.Repeat("old checkpoint detail ", 240)
-	recentAnswer := strings.Repeat("recent checkpoint answer ", 80)
+	oldAnswer := strings.Repeat("old compaction detail ", 240)
+	recentAnswer := strings.Repeat("recent compaction answer ", 80)
 	held := (*modelResponse)(nil)
 	model := startModel(t,
 		sse(evText(oldAnswer), evFinishReason("stop"), evUsageCost(100, 600, 700, 0.1)),
 		sse(evText(recentAnswer), evFinishReason("stop"), evUsageCost(800, 5, 805, 0.2)),
 		sse(evText("folded parent facts"), evFinishReason("stop"), evUsageCost(650, 20, 670, 0.3)),
 	)
-	held = model.holdFor("third checkpoint prompt", "")
+	held = model.holdFor("third compaction prompt", "")
 	model.queue(sse(evText("continued"), evFinishReason("stop"), evUsageCost(90, 3, 93, 0.4)))
 	options := []startOption{
 		withModel(model),
@@ -407,12 +409,12 @@ func TestOpenParentCompactionCheckpointSurvivesCrash(t *testing.T) {
 
 	first, session := startSession(t, options...)
 	cwd := first.cwd
-	prompt(t, first, session, "first checkpoint prompt")
+	prompt(t, first, session, "first compaction prompt")
 	_ = updates(t, first, session)
-	prompt(t, first, session, "second checkpoint prompt")
+	prompt(t, first, session, "second compaction prompt")
 	_ = updates(t, first, session)
 	_ = first.begin("session/prompt", acp.PromptRequest{
-		SessionID: session, Prompt: textPrompt("third checkpoint prompt"),
+		SessionID: session, Prompt: textPrompt("third compaction prompt"),
 	})
 	held.await(t)
 	first.kill()
@@ -433,10 +435,10 @@ func TestOpenParentCompactionCheckpointSurvivesCrash(t *testing.T) {
 	secondReplay := receivedSessionUpdates(t, third, replayStart, session)
 	_ = updates(t, third, session)
 	if !reflect.DeepEqual(secondReplay, firstReplay) {
-		t.Fatalf("parent checkpoint replay changed across reloads:\nsecond = %#v\nfirst = %#v", secondReplay, firstReplay)
+		t.Fatalf("parent compaction replay changed across reloads:\nsecond = %#v\nfirst = %#v", secondReplay, firstReplay)
 	}
 	assertReplayUsage(t, secondReplay, contextWindow, 0.59)
-	prompt(t, third, session, "fourth checkpoint prompt")
+	prompt(t, third, session, "fourth compaction prompt")
 	_ = updates(t, third, session)
 
 	requests := model.requests()
@@ -444,12 +446,12 @@ func TestOpenParentCompactionCheckpointSurvivesCrash(t *testing.T) {
 		t.Fatalf("model requests = %d, want 5", len(requests))
 	}
 	assertConversation(t, requests[4].Messages, []exchange{
-		{role: "user", text: "first checkpoint prompt"},
+		{role: "user", text: "first compaction prompt"},
 		{role: "user", text: "Summary of earlier conversation:\n\nfolded parent facts"},
-		{role: "user", text: "second checkpoint prompt"},
+		{role: "user", text: "second compaction prompt"},
 		{role: "assistant", text: recentAnswer},
-		{role: "user", text: "third checkpoint prompt"},
-		{role: "user", text: "fourth checkpoint prompt"},
+		{role: "user", text: "third compaction prompt"},
+		{role: "user", text: "fourth compaction prompt"},
 	})
 }
 
@@ -573,7 +575,7 @@ func TestChangedFilesAndToolLocationsSurviveProcessRestart(t *testing.T) {
 	first.request("session/close", acp.CloseSessionRequest{SessionID: session})
 	first.stop()
 
-	assertChangedFilesCheckpoint(t, dataDir, session, []string{"a.txt", "nested/b.txt"})
+	assertChangedFilesRecords(t, dataDir, session, []string{"a.txt", "nested/b.txt"})
 	second := start(t, options...)
 	initialize(t, second)
 	loadSession(t, second, session, first.cwd)
@@ -614,31 +616,36 @@ func assertE2EToolLocations(
 	}
 }
 
-func assertChangedFilesCheckpoint(t *testing.T, dataDir, session string, want []string) {
+func assertChangedFilesRecords(t *testing.T, dataDir, session string, want []string) {
 	t.Helper()
 	content, err := os.ReadFile(filepath.Join(dataDir, "ox", "sessions", session+".jsonl"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	var got []string
+	changed := map[string]bool{}
 	for _, line := range strings.Split(strings.TrimSpace(string(content)), "\n") {
 		var record struct {
 			Type string `json:"type"`
 			Data struct {
-				State struct {
-					ChangedFiles []string `json:"changedFiles"`
-				} `json:"state"`
+				Result struct {
+					Target string `json:"target"`
+					Failed bool   `json:"failed"`
+				} `json:"result"`
 			} `json:"data"`
 		}
 		if err := json.Unmarshal([]byte(line), &record); err != nil {
 			t.Fatal(err)
 		}
 		if record.Type == "checkpoint" {
-			got = record.Data.State.ChangedFiles
+			t.Fatal("checkpoint was written")
+		}
+		if record.Type == "tool_completed" && !record.Data.Result.Failed && record.Data.Result.Target != "" {
+			changed[record.Data.Result.Target] = true
 		}
 	}
+	got := slices.Sorted(maps.Keys(changed))
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("checkpoint changed files = %v, want %v", got, want)
+		t.Fatalf("recorded changed files = %v, want %v", got, want)
 	}
 }
 

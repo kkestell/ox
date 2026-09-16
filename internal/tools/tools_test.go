@@ -1,10 +1,12 @@
 package tools
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -20,6 +22,68 @@ import (
 	"github.com/kkestell/ox/internal/agent"
 	"github.com/kkestell/ox/internal/workspace"
 )
+
+func TestGrepScannerExactRawLineBound(t *testing.T) {
+	for _, ending := range []string{"", "\n", "\r\n"} {
+		for _, size := range []int{maxScanLineBytes - 1, maxScanLineBytes, maxScanLineBytes + 1} {
+			t.Run(fmt.Sprintf("%q/%d", ending, size), func(t *testing.T) {
+				scanner := bufio.NewScanner(strings.NewReader(strings.Repeat("x", size-len(ending)) + ending))
+				scanner.Buffer(make([]byte, 64<<10), maxScanLineBytes+1)
+				scanner.Split(boundedScanLine)
+				if size > maxScanLineBytes {
+					if scanner.Scan() || !errors.Is(scanner.Err(), errLineTooLong) {
+						t.Fatalf("overlong line = %v", scanner.Err())
+					}
+					return
+				}
+				if !scanner.Scan() || len(scanner.Bytes()) != size-len(ending) {
+					t.Fatalf("line length = %d, error = %v", len(scanner.Bytes()), scanner.Err())
+				}
+				if scanner.Scan() || scanner.Err() != nil {
+					t.Fatalf("tail = %v", scanner.Err())
+				}
+			})
+		}
+	}
+	scanner := bufio.NewScanner(strings.NewReader("\n\r\nlast\r"))
+	scanner.Split(boundedScanLine)
+	var lines []string
+	for scanner.Scan() {
+		lines = append(lines, scanner.Text())
+	}
+	if !reflect.DeepEqual(lines, []string{"", "", "last"}) || scanner.Err() != nil {
+		t.Fatalf("empty/CR lines = %#v, %v", lines, scanner.Err())
+	}
+}
+
+func TestGrepScannerRetainsCompleteMatchesBeforeReadFailure(t *testing.T) {
+	readErr := errors.New("read failed")
+	scanner := newGrepScanner(&failedScanReader{data: []byte("matched\npartial match"), err: readErr})
+	var lines []string
+	for scanner.Scan() {
+		lines = append(lines, scanner.Text())
+	}
+	if !reflect.DeepEqual(lines, []string{"matched"}) || !errors.Is(scanner.Err(), readErr) {
+		t.Fatalf("matches = %#v, stopped error = %v", lines, scanner.Err())
+	}
+}
+
+type failedScanReader struct {
+	data []byte
+	err  error
+}
+
+func (r *failedScanReader) Read(data []byte) (int, error) {
+	if len(r.data) == 0 {
+		return 0, io.EOF
+	}
+	n := copy(data, r.data)
+	r.data = r.data[n:]
+	if len(r.data) == 0 {
+		return n, r.err
+	}
+	return n, nil
+}
 
 func testInvocation(t *testing.T, arguments string) agent.Invocation {
 	t.Helper()

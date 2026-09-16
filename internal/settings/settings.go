@@ -20,6 +20,8 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+
+	"github.com/kkestell/ox/internal/lsp"
 )
 
 const (
@@ -101,18 +103,7 @@ type ResolvedProcess struct {
 	Trace             string
 	// LanguageServers is ordered by name so a startup log and every session
 	// activation see the same sequence.
-	LanguageServers []ResolvedLanguageServer
-}
-
-// ResolvedLanguageServer is one validated language-server definition. Its
-// extensions are lower-cased and carry no leading dot. The command is not
-// looked up here: a server is started lazily, on the first query for a file it
-// owns, so a missing executable is a query failure rather than a startup one.
-type ResolvedLanguageServer struct {
-	Name       string
-	Command    string
-	Args       []string
-	Extensions []string
+	LanguageServers []lsp.Definition
 }
 
 type Reasoning struct {
@@ -243,13 +234,13 @@ func ResolveProcess(config *Process, overrides ProcessOverrides) (ResolvedProces
 // resolveLanguageServers validates the global language_servers object and
 // returns it as an ordered slice. Two servers cannot claim the same extension,
 // because the file being queried is the only thing that selects a server.
-func resolveLanguageServers(configured map[string]LanguageServer) ([]ResolvedLanguageServer, error) {
+func resolveLanguageServers(configured map[string]LanguageServer) ([]lsp.Definition, error) {
 	if len(configured) == 0 {
 		return nil, nil
 	}
 	names := slices.Sorted(maps.Keys(configured))
 	owner := make(map[string]string, len(configured))
-	resolved := make([]ResolvedLanguageServer, 0, len(configured))
+	resolved := make([]lsp.Definition, 0, len(configured))
 	for _, name := range names {
 		server := configured[name]
 		trimmed := strings.TrimSpace(name)
@@ -289,7 +280,7 @@ func resolveLanguageServers(configured map[string]LanguageServer) ([]ResolvedLan
 			owner[normalized] = trimmed
 			extensions = append(extensions, normalized)
 		}
-		resolved = append(resolved, ResolvedLanguageServer{
+		resolved = append(resolved, lsp.Definition{
 			Name:       trimmed,
 			Command:    command,
 			Args:       slices.Clone(server.Args),

@@ -12,8 +12,9 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
+
+	"github.com/creachadair/jrpc2"
 )
 
 const (
@@ -29,11 +30,6 @@ const (
 	encodingUTF32 encodingKind = "utf-32"
 )
 
-type response struct {
-	result json.RawMessage
-	err    error
-}
-
 type publishedDiagnostics struct {
 	URI         string
 	Version     *int
@@ -48,11 +44,7 @@ type document struct {
 type client struct {
 	name            string
 	cmd             *exec.Cmd
-	stdin           io.WriteCloser
-	writeMu         sync.Mutex
-	nextID          atomic.Int64
-	pendingMu       sync.Mutex
-	pending         map[int64]chan response
+	rpc             *jrpc2.Client
 	documentsMu     sync.Mutex
 	documents       map[string]document
 	publications    chan publishedDiagnostics
@@ -86,13 +78,27 @@ func startClient(ctx context.Context, manager *Manager, definition Definition) (
 		return nil, err
 	}
 	client := &client{
-		name: definition.Name, cmd: command, stdin: stdin,
-		pending: make(map[int64]chan response), documents: make(map[string]document),
+		name: definition.Name, cmd: command,
+		documents:    make(map[string]document),
 		publications: make(chan publishedDiagnostics, 32), encoding: encodingUTF16,
 		queryTimeout: manager.queryTimeout, dead: make(chan struct{}), waitDone: make(chan struct{}),
 	}
 	go func() { _, _ = io.Copy(io.Discard, stderr) }()
-	go client.readLoop(stdout)
+	client.rpc = jrpc2.NewClient(&boundedChannel{
+		reader: bufio.NewReaderSize(stdout, maxHeaderBytes+1), stdout: stdout, stdin: stdin,
+	}, &jrpc2.ClientOptions{
+		OnNotify: client.notification,
+		OnCallback: func(context.Context, *jrpc2.Request) (any, error) {
+			return nil, jrpc2.Errorf(jrpc2.MethodNotFound, "method not supported")
+		},
+		OnCancel: func(rpc *jrpc2.Client, response *jrpc2.Response) {
+			_ = rpc.Notify(context.Background(), "$/cancelRequest", map[string]any{"id": json.RawMessage(response.ID())})
+		},
+		OnStop: func(_ *jrpc2.Client, err error) {
+			client.markDead(err)
+			_ = command.Process.Kill()
+		},
+	})
 	go func() {
 		err := command.Wait()
 		client.markDead(err)
@@ -172,28 +178,36 @@ func boundedContext(parent context.Context, duration time.Duration) (context.Con
 	return context.WithTimeout(parent, duration)
 }
 
-func (c *client) readLoop(reader io.ReadCloser) {
-	defer reader.Close()
-	buffer := bufio.NewReader(reader)
-	for {
-		raw, err := readMessage(buffer)
-		if err != nil {
-			c.markDead(err)
-			return
-		}
-		if err := c.handle(raw); err != nil {
-			c.markDead(err)
-			_ = c.cmd.Process.Kill()
-			return
-		}
+type boundedChannel struct {
+	reader *bufio.Reader
+	stdout io.ReadCloser
+	stdin  io.WriteCloser
+}
+
+func (c *boundedChannel) Recv() ([]byte, error) { return readMessage(c.reader) }
+
+func (c *boundedChannel) Send(body []byte) error {
+	if len(body) > maxMessageBytes {
+		return errors.New("LSP message exceeds limit")
 	}
+	header := fmt.Sprintf("Content-Length: %d\r\n\r\n", len(body))
+	_, err := c.stdin.Write(append([]byte(header), body...))
+	return err
+}
+
+func (c *boundedChannel) Close() error {
+	return errors.Join(c.stdin.Close(), c.stdout.Close())
 }
 
 func readMessage(reader *bufio.Reader) (json.RawMessage, error) {
 	length := -1
 	headerBytes := 0
 	for {
-		line, err := reader.ReadString('\n')
+		raw, err := reader.ReadSlice('\n')
+		if errors.Is(err, bufio.ErrBufferFull) {
+			return nil, errors.New("LSP header exceeds limit")
+		}
+		line := string(raw)
 		if err != nil {
 			return nil, err
 		}
@@ -227,127 +241,49 @@ func readMessage(reader *bufio.Reader) (json.RawMessage, error) {
 	if !json.Valid(body) {
 		return nil, errors.New("invalid LSP JSON message")
 	}
+	var envelope struct {
+		JSONRPC string `json:"jsonrpc"`
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil || envelope.JSONRPC != "2.0" {
+		return nil, errors.New("malformed LSP JSON-RPC envelope")
+	}
 	return body, nil
 }
 
-func (c *client) handle(raw json.RawMessage) error {
-	var envelope struct {
-		JSONRPC string          `json:"jsonrpc"`
-		ID      json.RawMessage `json:"id"`
-		Method  string          `json:"method"`
-		Params  json.RawMessage `json:"params"`
-		Result  json.RawMessage `json:"result"`
-		Error   *struct {
-			Code    int    `json:"code"`
-			Message string `json:"message"`
-		} `json:"error"`
+func (c *client) notification(request *jrpc2.Request) {
+	if request.Method() != "textDocument/publishDiagnostics" {
+		return
 	}
-	if err := json.Unmarshal(raw, &envelope); err != nil || envelope.JSONRPC != "2.0" {
-		return errors.New("malformed LSP JSON-RPC envelope")
+	var value struct {
+		URI         string          `json:"uri"`
+		Version     *int            `json:"version"`
+		Diagnostics json.RawMessage `json:"diagnostics"`
 	}
-	if envelope.Method != "" {
-		if envelope.Method == "textDocument/publishDiagnostics" {
-			var value struct {
-				URI         string          `json:"uri"`
-				Version     *int            `json:"version"`
-				Diagnostics json.RawMessage `json:"diagnostics"`
-			}
-			if err := json.Unmarshal(envelope.Params, &value); err != nil || value.URI == "" || len(value.Diagnostics) == 0 {
-				return errors.New("malformed publishDiagnostics notification")
-			}
-			select {
-			case c.publications <- publishedDiagnostics(value):
-			default:
-			}
-			return nil
-		}
-		if len(envelope.ID) != 0 && string(envelope.ID) != "null" {
-			return c.send(map[string]any{
-				"jsonrpc": "2.0", "id": json.RawMessage(envelope.ID),
-				"error": map[string]any{"code": -32601, "message": "method not supported"},
-			})
-		}
-		return nil
+	if err := request.UnmarshalParams(&value); err != nil || value.URI == "" || len(value.Diagnostics) == 0 {
+		c.markDead(errors.New("malformed publishDiagnostics notification"))
+		_ = c.cmd.Process.Kill()
+		return
 	}
-	var id int64
-	if len(envelope.ID) == 0 || json.Unmarshal(envelope.ID, &id) != nil {
-		return errors.New("malformed LSP response ID")
-	}
-	c.pendingMu.Lock()
-	channel := c.pending[id]
-	delete(c.pending, id)
-	c.pendingMu.Unlock()
-	if channel == nil {
-		return nil
-	}
-	if envelope.Error != nil {
-		channel <- response{err: fmt.Errorf("LSP error %d: %s", envelope.Error.Code, envelope.Error.Message)}
-	} else if envelope.Result == nil {
-		channel <- response{err: errors.New("LSP response omitted result")}
-	} else {
-		channel <- response{result: envelope.Result}
-	}
-	close(channel)
-	return nil
-}
-
-func (c *client) send(message any) error {
-	body, err := json.Marshal(message)
-	if err != nil {
-		return err
-	}
-	c.writeMu.Lock()
-	defer c.writeMu.Unlock()
 	select {
-	case <-c.dead:
-		return c.failure()
+	case c.publications <- publishedDiagnostics(value):
 	default:
 	}
-	// One write keeps a framed message from reaching the server as a header
-	// syscall and a body syscall.
-	framed := make([]byte, 0, len(body)+32)
-	framed = append(framed, "Content-Length: "...)
-	framed = strconv.AppendInt(framed, int64(len(body)), 10)
-	framed = append(framed, "\r\n\r\n"...)
-	framed = append(framed, body...)
-	_, err = c.stdin.Write(framed)
-	return err
 }
 
 func (c *client) notify(method string, params any) error {
-	return c.send(map[string]any{"jsonrpc": "2.0", "method": method, "params": params})
+	return c.rpc.Notify(context.Background(), method, params)
 }
 
 func (c *client) request(ctx context.Context, method string, params any) (json.RawMessage, error) {
-	id := c.nextID.Add(1)
-	channel := make(chan response, 1)
-	c.pendingMu.Lock()
-	c.pending[id] = channel
-	c.pendingMu.Unlock()
-	if err := c.send(map[string]any{"jsonrpc": "2.0", "id": id, "method": method, "params": params}); err != nil {
-		c.removePending(id)
+	response, err := c.rpc.Call(ctx, method, params)
+	if err != nil {
 		return nil, err
 	}
-	select {
-	case response, ok := <-channel:
-		if !ok {
-			return nil, c.failure()
-		}
-		return response.result, response.err
-	case <-ctx.Done():
-		c.removePending(id)
-		_ = c.notify("$/cancelRequest", map[string]any{"id": id})
-		return nil, ctx.Err()
-	case <-c.dead:
-		c.removePending(id)
-		return nil, c.failure()
+	result := json.RawMessage(response.ResultString())
+	if len(result) == 0 {
+		return nil, errors.New("LSP response omitted result")
 	}
-}
-
-func (c *client) removePending(id int64) {
-	c.pendingMu.Lock()
-	delete(c.pending, id)
-	c.pendingMu.Unlock()
+	return result, nil
 }
 
 func (c *client) markDead(err error) {
@@ -359,12 +295,6 @@ func (c *client) markDead(err error) {
 		c.deadErr = err
 		c.deadMu.Unlock()
 		close(c.dead)
-		c.pendingMu.Lock()
-		for id, channel := range c.pending {
-			close(channel)
-			delete(c.pending, id)
-		}
-		c.pendingMu.Unlock()
 	})
 }
 
@@ -506,6 +436,7 @@ func (c *client) diagnostics(ctx context.Context, path, text string) (json.RawMe
 }
 
 func (c *client) close(timeout time.Duration) error {
+	defer c.rpc.Close()
 	select {
 	case <-c.dead:
 		select {
@@ -531,6 +462,7 @@ func (c *client) close(timeout time.Duration) error {
 }
 
 func (c *client) forceClose() error {
+	defer c.rpc.Close()
 	if c.cmd.Process != nil {
 		_ = c.cmd.Process.Kill()
 	}

@@ -70,10 +70,12 @@ The implemented package layout assigns one owner to each boundary:
   catalog identities, and bounded tool calls. It exposes no credentials through
   model-facing descriptors.
 - `internal/lsp` owns language-server process lifecycles, JSON-RPC framing,
-  document synchronization, position translation, and confined query results.
+  query serialization, document synchronization, position translation, and
+  confined query results.
 - `internal/settings` owns global and workspace settings, precedence, and the
-  validation of per-model request profiles. The agent combines those inputs with
-  durable session selections to construct immutable turn configuration.
+  validation of per-model request profiles and process-level language-server
+  definitions. The agent combines those inputs with durable session selections
+  to construct immutable turn configuration.
 - `internal/skills` owns confined workspace-skill discovery, Agent Skills
   metadata validation, and activation-frozen body loading.
 - `internal/credentials` owns credential precedence and mutable access to the OS
@@ -134,6 +136,10 @@ tools
 lsp
     -> workspace
 
+settings
+    -> lsp
+    -> openrouter
+
 skills
     -> workspace
 
@@ -179,9 +185,10 @@ model-visible history, permission grants, usage, and at most one active turn.
 Process configuration inputs, credentials, provider transport, logging, and the
 session store are shared across sessions. Explicit workspace memory is shared
 only by sessions with the same canonical root and has its own serialized owner.
-MCP and language-server connections belong to individual activations. A session
-serializes its own language queries, because each one updates the server's view
-of open documents; separate sessions hold separate servers and stay independent.
+MCP and language-server connections belong to individual activations. Each
+language-server manager serializes its activation's whole queries, because each
+one updates the server's view of open documents; separate sessions hold separate
+managers and stay independent.
 
 Each session is an owner-only, versioned JSONL log in the Ox data directory.
 Records are appended and synced before live state or ACP-visible outcomes
@@ -190,10 +197,8 @@ final record, and rejects concurrent ownership. Loading folds the log back into
 model history and replays the recorded ACP transcript. Compaction records
 replace only the provider-facing middle of that history with a model-produced
 summary. The earlier user, assistant, and tool records remain authoritative for
-ACP replay, while checkpoints project the exact compacted provider history for
-restart. A checkpoint is a load-time shortcut rather than a durability
-requirement, so one is written only when it is no larger than the records it
-lets a load skip.
+ACP replay. Loading validates and applies every record to restore the exact
+compacted provider history; there is no separate checkpoint projection.
 
 Session listing briefly probes each log's activation lock without retaining it
 and publishes an advisory namespaced metadata flag when another runtime owns the
@@ -295,20 +300,19 @@ refused by name instead of reported as unknown. The dispatcher enforces tool
 exclusion; prompt wording and server annotations are not policy enforcement.
 
 Credentials are resolved by the credential boundary and passed to transports in
-memory. Authentication and login own mutation. Neither durable configuration nor
-checkpoint projection contains resolved credentials, MCP header values, or
-server environment values. Reactivation obtains those inputs afresh. Nonsecret
-server/tool identity and schema evidence bind saved permission grants and
-recovered dispatch to the intended operation. Raw secret-bearing client input
-must not pass through generic request logging or persistence.
+memory. Authentication and login own mutation. Durable configuration contains no
+resolved credentials, MCP header values, or server environment values.
+Reactivation obtains those inputs afresh. Nonsecret server/tool identity and
+schema evidence bind saved permission grants and recovered dispatch to the
+intended operation. Raw secret-bearing client input must not pass through
+generic request logging or persistence.
 
 ## Context and durable projections
 
 The append-only session log remains authoritative for the transcript and
-session-owned state. Checkpoints are validated projections, not a second store.
-Todo, configuration selections, and compaction boundaries belong in that log.
-Their live state advances through the same commit path, rather than through
-independently saved sidecar files.
+session-owned state. Todo, configuration selections, and compaction boundaries
+belong in that log. Their live state advances through the same commit path,
+rather than through independently saved sidecar files.
 
 Context admission occurs only at complete model/tool boundaries. The original
 transcript and the provider-facing compacted projection have separate purposes;
@@ -323,8 +327,7 @@ completion means the outcome may be unknown. Recovery may continue a
 never-dispatched permission wait but must not blindly retry a dispatched
 operation. Child conversations and tool activity are deliberately live-only: the
 log records their content-free provider usage but never reconstructs or
-redispatches them. A storage failure stops further session dispatch; a
-checkpoint cannot turn uncertain work into completed work.
+redispatches them. A storage failure stops further session dispatch.
 
 ## Extension boundaries
 
@@ -336,9 +339,11 @@ do not own permission decisions or durable history. MCP uses the
 adapter, initially pinned to stable `v1.7.0`, with explicit framing/output
 bounds and Ox's stricter retry policy. Do not take a prerelease merely to obtain
 new features. Protocol revision follows the embedded SDK's negotiation; enabled
-capabilities remain deliberately restricted to the specification. LSP ports
-Eta's focused client. Neither adapter introduces a general plugin runtime or a
-second agent framework.
+capabilities remain deliberately restricted to the specification. LSP uses the
+pinned jrpc2 client behind bounded framing and lifecycle adapters. Settings
+validates its process definitions once; the manager consumes those immutable
+definitions without reinterpreting configuration. Neither adapter introduces a
+general plugin runtime or a second agent framework.
 
 Workspace context loaders own bounded instruction/skill discovery. They use the
 workspace boundary and return immutable content or metadata to the agent.
@@ -431,6 +436,11 @@ fixtures and artifacts belong to the evaluation harness, not production session
 semantics. Deterministic process tests prove contracts; on-demand model runs
 compare task outcomes under fixed budgets. Neither a benchmark score nor a
 reference implementation substitutes for confinement and recovery tests.
+
+The evaluation client uses jrpc2 for calls and callbacks while its channel
+records raw events and captures updates in wire order before exposing results.
+Its run deadline requests ACP cancellation and permits a bounded grace for the
+prompt result rather than cancelling that RPC immediately.
 
 Every run gets private home, configuration, cache, data, and workspace
 directories. A local provider gateway applies the run's request budget to all Ox

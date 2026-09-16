@@ -74,7 +74,7 @@ func TestFileStorePersistsLocksAndRepairsTornTail(t *testing.T) {
 	}
 }
 
-func TestFileStoreRepairsTornCheckpointAndContinuesSequence(t *testing.T) {
+func TestFileStoreRepairsTornConfigurationAndContinuesSequence(t *testing.T) {
 	store, err := newFileStore(t.TempDir(), discardLogger())
 	if err != nil {
 		t.Fatal(err)
@@ -97,13 +97,11 @@ func TestFileStoreRepairsTornCheckpointAndContinuesSequence(t *testing.T) {
 	finished := mustRecord(t, 3, recordTurnFinished, turnFinishedRecord{
 		TurnID: "turn", Kind: "cancelled",
 	})
-	state := mustFold(t, []sessionRecord{created, user, finished})
-	checkpoint, err := newCheckpointRecord(state)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := log.append(user, finished, checkpoint); err != nil {
-		t.Fatal(err)
+	changedRecord := mustRecord(t, 4, recordConfigChanged, configurationChanged{Configuration: configuration})
+	for _, record := range []sessionRecord{user, finished, changedRecord} {
+		if err := log.append(record); err != nil {
+			t.Fatal(err)
+		}
 	}
 	log.close()
 
@@ -130,7 +128,7 @@ func TestFileStoreRepairsTornCheckpointAndContinuesSequence(t *testing.T) {
 	if restored.openTurn != "" || restored.sequence != 3 {
 		t.Fatalf("restored state = %#v", restored)
 	}
-	changed := cloneConfiguration(configuration)
+	changed := configuration
 	changed.Settings.Model = "test/next"
 	next := mustRecord(t, restored.sequence+1, recordConfigChanged, configurationChanged{
 		Configuration: changed,

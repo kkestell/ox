@@ -3,6 +3,7 @@ package agent
 import (
 	"bytes"
 	"encoding/json"
+	"os"
 	"reflect"
 	"slices"
 	"strconv"
@@ -133,7 +134,7 @@ func TestReplayUsesFrozenMCPTitleAndRawName(t *testing.T) {
 	}
 }
 
-func TestSkillReferencesAreValidatedAndClonedWithConfiguration(t *testing.T) {
+func TestSkillReferencesAreValidatedWithConfiguration(t *testing.T) {
 	reference := skills.Reference{
 		Name: "review", Description: "Review work.",
 		Path: ".agents/skills/review/SKILL.md", Digest: strings.Repeat("0", 64),
@@ -143,11 +144,6 @@ func TestSkillReferencesAreValidatedAndClonedWithConfiguration(t *testing.T) {
 	}
 	if err := validateConfiguration(configuration); err != nil {
 		t.Fatal(err)
-	}
-	cloned := cloneConfiguration(configuration)
-	cloned.Skills[0].Description = "changed"
-	if configuration.Skills[0].Description != reference.Description {
-		t.Fatal("configuration clone shared skill references")
 	}
 	configuration.Skills[0].Digest = "bad"
 	if err := validateConfiguration(configuration); err == nil ||
@@ -199,7 +195,7 @@ func TestCompactionFoldsIntoProviderHistoryWithoutChangingReplay(t *testing.T) {
 	}
 }
 
-func TestTodoReplacementFoldsCheckpointsAndReplays(t *testing.T) {
+func TestTodoReplacementFoldsAndReplays(t *testing.T) {
 	call := openrouter.ToolCall{
 		ID: "todo-call", Type: "function",
 		Function: openrouter.ToolCallFunction{Name: "todo", Arguments: `{"todos":[]}`},
@@ -249,6 +245,7 @@ func TestTodoReplacementFoldsCheckpointsAndReplays(t *testing.T) {
 			TurnID: "turn", Kind: "completed", StopReason: acp.StopReasonEndTurn,
 		}),
 	}
+	assertImmutableTransitions(t, records)
 	state := mustFold(t, records)
 	if !reflect.DeepEqual(state.todo, entries) {
 		t.Fatalf("todo = %#v, want %#v", state.todo, entries)
@@ -265,15 +262,6 @@ func TestTodoReplacementFoldsCheckpointsAndReplays(t *testing.T) {
 	}
 	if len(plans) != 1 || !reflect.DeepEqual(plans[0].Entries, entries) {
 		t.Fatalf("replayed plans = %#v", plans)
-	}
-
-	checkpoint, err := newCheckpointRecord(state)
-	if err != nil {
-		t.Fatal(err)
-	}
-	restored := mustFold(t, append(records, checkpoint))
-	if !reflect.DeepEqual(restored.todo, entries) {
-		t.Fatalf("checkpoint todo = %#v, want %#v", restored.todo, entries)
 	}
 
 	base := mustFold(t, records[:4])
@@ -295,7 +283,7 @@ func TestTodoReplacementFoldsCheckpointsAndReplays(t *testing.T) {
 	}
 }
 
-func TestCompactionSurvivesCheckpointWithoutDoubleCountingUsage(t *testing.T) {
+func TestCompactionSurvivesRestartWithoutDoubleCountingUsage(t *testing.T) {
 	records, summary := compactionFixture(t)
 	state, err := foldRecords(records)
 	if err != nil {
@@ -318,11 +306,7 @@ func TestCompactionSurvivesCheckpointWithoutDoubleCountingUsage(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	checkpoint, err := newCheckpointRecord(state)
-	if err != nil {
-		t.Fatal(err)
-	}
-	restored, err := foldRecords(append(append(records, state.records[8:]...), checkpoint))
+	restored, err := foldRecords(state.records)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -362,11 +346,7 @@ func TestCompactionAcceptsOpenTurnBoundariesAndRejectsIncompleteToolGroups(t *te
 	})); err != nil {
 		t.Fatalf("open-turn compaction error = %v", err)
 	}
-	checkpoint, err := newCheckpointRecord(open)
-	if err != nil {
-		t.Fatal(err)
-	}
-	restored, err := foldRecords(append(open.records, checkpoint))
+	restored, err := foldRecords(open.records)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -574,6 +554,7 @@ func TestFoldResumesSuspendedPermissionGenerationAndReplaysOnce(t *testing.T) {
 			TurnID: "turn", Kind: "completed", StopReason: acp.StopReasonEndTurn,
 		}),
 	)
+	assertImmutableTransitions(t, records)
 	state = mustFold(t, records)
 	if state.suspended != nil || state.openTurn != "" || len(state.history) != 3 {
 		t.Fatalf("completed state = %#v", state)
@@ -581,7 +562,7 @@ func TestFoldResumesSuspendedPermissionGenerationAndReplaysOnce(t *testing.T) {
 	if _, changed := state.changedFiles["a.go"]; !changed {
 		t.Fatal("recovered edit was not recorded as changed")
 	}
-	instance, err := New(Config{Tools: []Tool{{Name: "edit", Kind: acp.ToolKindEdit}}})
+	instance, err := New(Config{Tools: []Tool{{Name: "edit", Kind: acp.ToolKindEdit, Execute: testToolExecutor}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -836,12 +817,12 @@ func TestExecutorCapabilitiesArePartOfDurableConfiguration(t *testing.T) {
 		t.Fatal("clone changed the original executor capabilities")
 	}
 
-	changed := cloneConfiguration(configuration)
+	changed := configuration
 	changed.ExecutorCapabilities = executorCapabilities{FileSystemWrite: true}
 	if sameRequestConfiguration(configuration, changed) {
 		t.Fatal("configuration equality ignored executor capabilities")
 	}
-	semanticallySame := cloneConfiguration(configuration)
+	semanticallySame := configuration
 	semanticallySame.Tools = []openrouter.Tool{}
 	if !sameRequestConfiguration(configuration, semanticallySame) {
 		t.Fatal("configuration equality distinguished omitted empty tool lists")
@@ -857,7 +838,7 @@ func TestExecutorCapabilitiesArePartOfDurableConfiguration(t *testing.T) {
 	}
 }
 
-func TestFoldRestoresLatestCheckpointAndAppliesItsTail(t *testing.T) {
+func TestFoldRestoresConfigurationHistoryUsageAndIdentity(t *testing.T) {
 	baseTime := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
 	configuration := requestConfiguration{
 		Settings:      settings.Resolved{Model: "test/first"},
@@ -904,78 +885,36 @@ func TestFoldRestoresLatestCheckpointAndAppliesItsTail(t *testing.T) {
 			TurnID: "first-turn", Kind: "completed", StopReason: acp.StopReasonEndTurn,
 		}),
 	}
-	prefixState, err := foldRecords(prefix)
-	if err != nil {
-		t.Fatal(err)
-	}
-	checkpoint, err := newCheckpointRecord(prefixState)
-	if err != nil {
-		t.Fatal(err)
-	}
-	checkpoint.At = baseTime.Add(4 * time.Second)
-
-	changed := cloneConfiguration(configuration)
+	changed := configuration
 	changed.Settings.Model = "test/second"
 	changed.SystemPrompt = "second system prompt"
 	changed.ExecutorCapabilities = executorCapabilities{
 		FileSystemWrite: true,
 		Terminal:        true,
 	}
-	withCheckpoint := append(append([]sessionRecord(nil), prefix...), checkpoint)
-	withCheckpoint = append(withCheckpoint,
-		timedRecord(t, baseTime.Add(5*time.Second), 6, recordConfigChanged, configurationChanged{
+	fullRecords := slices.Clone(prefix)
+	fullRecords = append(fullRecords,
+		timedRecord(t, baseTime.Add(5*time.Second), 5, recordConfigChanged, configurationChanged{
 			Configuration: changed,
 		}),
-		timedRecord(t, baseTime.Add(6*time.Second), 7, recordUserMessage, userMessageRecord{
+		timedRecord(t, baseTime.Add(6*time.Second), 6, recordUserMessage, userMessageRecord{
 			TurnID: "second-turn", MessageID: "second-user",
 			Content: []acp.ContentBlock{{Type: "text", Text: "summarize"}},
 		}),
-		timedRecord(t, baseTime.Add(7*time.Second), 8, recordModelExchange, modelExchangeRecord{
+		timedRecord(t, baseTime.Add(7*time.Second), 7, recordModelExchange, modelExchangeRecord{
 			TurnID: "second-turn", AnswerID: "second-answer", ThoughtID: "second-thought",
 			Text: "summary", FinishReason: "stop",
 			Usage: &openrouter.Usage{
 				PromptTokens: 11, CompletionTokens: 4, TotalTokens: 15, Cost: 0.5,
 			},
 		}),
-		timedRecord(t, baseTime.Add(8*time.Second), 9, recordTurnFinished, turnFinishedRecord{
+		timedRecord(t, baseTime.Add(8*time.Second), 8, recordTurnFinished, turnFinishedRecord{
 			TurnID: "second-turn", Kind: "completed", StopReason: acp.StopReasonEndTurn,
 		}),
 	)
 
-	fullRecords := make([]sessionRecord, 0, len(withCheckpoint)-1)
-	for _, record := range withCheckpoint {
-		if record.Type == recordCheckpoint {
-			continue
-		}
-		record.Sequence = uint64(len(fullRecords) + 1)
-		fullRecords = append(fullRecords, record)
-	}
-	full, err := foldRecords(fullRecords)
-	if err != nil {
-		t.Fatal(err)
-	}
-	restored, err := foldRecords(withCheckpoint)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	fullHistory, err := json.Marshal(full.history)
-	if err != nil {
-		t.Fatal(err)
-	}
-	restoredHistory, err := json.Marshal(restored.history)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(restoredHistory, fullHistory) {
-		t.Fatalf("checkpoint history differs:\nrestored = %s\nfull = %s", restoredHistory, fullHistory)
-	}
-	full.sequence, restored.sequence = 0, 0
-	full.records, restored.records = nil, nil
-	full.history, restored.history = nil, nil
-	if !reflect.DeepEqual(restored, full) {
-		t.Fatalf("checkpoint projection differs:\nrestored = %#v\nfull = %#v", restored, full)
-	}
+	assertImmutableTransitions(t, fullRecords)
+	restored := mustFold(t, fullRecords)
 	if restored.configuration.Settings.Model != "test/second" ||
 		restored.configuration.ExecutorCapabilities != changed.ExecutorCapabilities ||
 		restored.usage.input != 18 || restored.usage.output != 9 ||
@@ -985,135 +924,33 @@ func TestFoldRestoresLatestCheckpointAndAppliesItsTail(t *testing.T) {
 		t.Fatalf("restored projection = %#v", restored)
 	}
 	if _, exists := restored.messageIDs["first-answer"]; !exists {
-		t.Fatal("checkpoint omitted a covered message identity")
+		t.Fatal("fold omitted a recorded message identity")
 	}
 	if _, exists := restored.toolCallIDs["first-call"]; !exists {
-		t.Fatal("checkpoint omitted a covered tool-call identity")
+		t.Fatal("fold omitted a recorded tool-call identity")
 	}
 
-	instance, err := New(Config{Tools: []Tool{{Name: "read", Kind: acp.ToolKindRead}}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	fullReplay, err := instance.replay(mustFold(t, fullRecords))
-	if err != nil {
-		t.Fatal(err)
-	}
-	checkpointReplay, err := instance.replay(mustFold(t, withCheckpoint))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(checkpointReplay, fullReplay) {
-		t.Fatalf("checkpoint replay differs:\ncheckpoint = %#v\nfull = %#v", checkpointReplay, fullReplay)
-	}
-	covered := append([]sessionRecord(nil), withCheckpoint...)
+	covered := slices.Clone(fullRecords)
 	covered[1].Data = json.RawMessage(`{}`)
-	if _, err := foldRecords(covered); err != nil {
-		t.Fatalf("checkpoint-covered record was applied again: %v", err)
+	if _, err := foldRecords(covered); err == nil {
+		t.Fatal("invalid authoritative record was skipped")
 	}
 }
 
-func TestFoldRejectsInvalidCheckpoints(t *testing.T) {
-	baseTime := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
-	prefix := []sessionRecord{
-		timedRecord(t, baseTime, 1, recordSessionCreated, sessionCreated{
-			SessionID: "0123456789abcdef0123456789abcdef",
-			CWD:       "/workspace",
-			Configuration: requestConfiguration{
-				Settings: settings.Resolved{Model: "test/model"},
-			},
+func TestFoldRejectsUnsupportedCheckpoint(t *testing.T) {
+	records := []sessionRecord{
+		mustRecord(t, 1, recordSessionCreated, sessionCreated{
+			SessionID: "0123456789abcdef0123456789abcdef", CWD: "/workspace",
+			Configuration: requestConfiguration{Settings: settings.Resolved{Model: "test/model"}},
 		}),
-		timedRecord(t, baseTime.Add(time.Second), 2, recordUserMessage, userMessageRecord{
-			TurnID: "turn", MessageID: "user",
-			Content: []acp.ContentBlock{{Type: "text", Text: "hello"}},
-		}),
-		timedRecord(t, baseTime.Add(2*time.Second), 3, recordTurnFinished, turnFinishedRecord{
-			TurnID: "turn", Kind: "cancelled",
-		}),
+		mustRecord(t, 2, "checkpoint", map[string]any{"version": 11}),
 	}
-	closed := mustFold(t, prefix)
-	checkpoint, err := newCheckpointRecord(closed)
-	if err != nil {
-		t.Fatal(err)
-	}
-	checkpoint.At = baseTime.Add(3 * time.Second)
-
-	mutateCheckpoint := func(t *testing.T, mutate func(*checkpointRecord)) sessionRecord {
-		t.Helper()
-		var value checkpointRecord
-		if err := json.Unmarshal(checkpoint.Data, &value); err != nil {
-			t.Fatal(err)
-		}
-		mutate(&value)
-		return timedRecord(t, checkpoint.At, checkpoint.Sequence, recordCheckpoint, value)
-	}
-	tests := []struct {
-		name    string
-		records []sessionRecord
-	}{
-		{
-			name: "malformed payload",
-			records: append(append([]sessionRecord(nil), prefix...), sessionRecord{
-				Version: recordVersion, Sequence: 4, Type: recordCheckpoint,
-				At: checkpoint.At, Data: json.RawMessage(`{`),
-			}),
-		},
-		{
-			name: "misplaced",
-			records: []sessionRecord{prefix[0], func() sessionRecord {
-				misplaced := checkpoint
-				misplaced.Sequence = 2
-				return misplaced
-			}()},
-		},
-		{
-			name: "sequence-breaking envelope",
-			records: append(append([]sessionRecord(nil), prefix...), func() sessionRecord {
-				broken := checkpoint
-				broken.Sequence++
-				return broken
-			}()),
-		},
-		{
-			name: "sequence-breaking projection",
-			records: append(append([]sessionRecord(nil), prefix...), mutateCheckpoint(t, func(value *checkpointRecord) {
-				value.State.Sequence--
-			})),
-		},
-		{
-			name: "open turn",
-			records: append(append([]sessionRecord(nil), prefix...), mutateCheckpoint(t, func(value *checkpointRecord) {
-				value.State.OpenTurn = "turn"
-			})),
-		},
-		{
-			name: "unsupported version",
-			records: append(append([]sessionRecord(nil), prefix...), mutateCheckpoint(t, func(value *checkpointRecord) {
-				value.Version++
-			})),
-		},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			if _, err := foldRecords(test.records); err == nil {
-				t.Fatal("invalid checkpoint was accepted")
-			}
-		})
-	}
-
-	open := mustFold(t, prefix[:2])
-	if _, err := newCheckpointRecord(open); err == nil {
-		t.Fatal("checkpoint was created during an open turn")
+	if _, err := foldRecords(records); err == nil || !strings.Contains(err.Error(), "unsupported record type") {
+		t.Fatalf("checkpoint = %v", err)
 	}
 }
 
-func timedRecord(
-	t *testing.T,
-	at time.Time,
-	sequence uint64,
-	kind string,
-	value any,
-) sessionRecord {
+func timedRecord(t *testing.T, at time.Time, sequence uint64, kind string, value any) sessionRecord {
 	t.Helper()
 	record := mustRecord(t, sequence, kind, value)
 	record.At = at
@@ -1127,6 +964,81 @@ func mustFold(t *testing.T, records []sessionRecord) durableState {
 		t.Fatal(err)
 	}
 	return state
+}
+
+func assertImmutableTransitions(t *testing.T, records []sessionRecord) {
+	t.Helper()
+	encode := func(s durableState) []byte {
+		data, err := json.Marshal([]any{s.history, s.configuration, s.todo, s.suspended,
+			s.toolExecutions, s.messageIDs, s.toolCallIDs, s.changedFiles, s.openTurnBase, s.records})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return data
+	}
+	var state durableState
+	var held []durableState
+	var snapshots [][]byte
+	for _, record := range records {
+		held = append(held, state)
+		snapshots = append(snapshots, encode(state))
+		next := state.clone()
+		if err := next.apply(record); err != nil {
+			t.Fatal(err)
+		}
+		state = next
+		for index, previous := range held {
+			if !bytes.Equal(encode(previous), snapshots[index]) {
+				t.Fatalf("record %d (%s) rewrote snapshot %d", record.Sequence, record.Type, index)
+			}
+		}
+	}
+}
+
+func TestImmutableHistoryAcrossCompactionAndRefusal(t *testing.T) {
+	records, _ := compactionFixture(t)
+	records = append(records,
+		mustRecord(t, 9, recordUserMessage, userMessageRecord{TurnID: "refused", MessageID: "refused-user", Content: []acp.ContentBlock{{Type: "text", Text: "refuse"}}}),
+		mustRecord(t, 10, recordModelExchange, modelExchangeRecord{TurnID: "refused", AnswerID: "refused-answer", ThoughtID: "refused-thought", Text: "no", FinishReason: "refusal"}),
+		mustRecord(t, 11, recordTurnFinished, turnFinishedRecord{TurnID: "refused", Kind: "refusal"}),
+		mustRecord(t, 12, recordUserMessage, userMessageRecord{TurnID: "next", MessageID: "next-user", Content: []acp.ContentBlock{{Type: "text", Text: "continue"}}}),
+		mustRecord(t, 13, recordModelExchange, modelExchangeRecord{TurnID: "next", AnswerID: "next-answer", ThoughtID: "next-thought", Text: "yes", FinishReason: "stop"}),
+	)
+	assertImmutableTransitions(t, records)
+}
+
+func TestAccumulatedStateDoesNotBoundTurnCompletion(t *testing.T) {
+	instance, err := New(Config{Logger: discardLogger()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	value := durableTestSession(t, instance, testConfiguration(instance), "large")
+	for index := range 9 {
+		id := strconv.Itoa(index)
+		if err := instance.commit(value, recordModelExchange, modelExchangeRecord{
+			TurnID: "large", AnswerID: "answer" + id, ThoughtID: "thought" + id,
+			Text: strings.Repeat("x", 1<<20), FinishReason: "stop",
+			Usage: &openrouter.Usage{PromptTokens: index + 1},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := instance.commit(value, recordTurnFinished, turnFinishedRecord{TurnID: "large", Kind: "completed"}); err != nil {
+		t.Fatal(err)
+	}
+	records, _, err := readRecords(value.log.file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored := mustFold(t, records)
+	if restored.openTurn != "" || len(restored.history) != 10 || restored.occupancy != 9 {
+		t.Fatalf("restored history = %d, open turn = %q, occupancy = %d", len(restored.history), restored.openTurn, restored.occupancy)
+	}
+	for _, record := range records {
+		if record.Type == "checkpoint" {
+			t.Fatal("checkpoint was written")
+		}
+	}
 }
 
 func TestProviderRequestCountAdvancesAndIsCloned(t *testing.T) {
@@ -1190,6 +1102,66 @@ func BenchmarkCommitCopyAtSessionSize(b *testing.B) {
 				next := state.clone()
 				if len(next.history) != size {
 					b.Fatalf("cloned history = %d, want %d", len(next.history), size)
+				}
+			}
+		})
+	}
+}
+
+func BenchmarkLongSessionLoad(b *testing.B) {
+	for _, turns := range []int{100, 1000, 5000} {
+		b.Run(strconv.Itoa(turns), func(b *testing.B) {
+			var state durableState
+			add := func(kind string, payload any) {
+				record, err := newRecord(state.sequence+1, kind, payload)
+				if err != nil {
+					b.Fatal(err)
+				}
+				if err := state.apply(record); err != nil {
+					b.Fatal(err)
+				}
+			}
+			add(recordSessionCreated, sessionCreated{
+				SessionID: "0123456789abcdef0123456789abcdef", CWD: "/workspace",
+				Configuration: requestConfiguration{Settings: settings.Resolved{Model: "test/model"}},
+			})
+			for index := range turns {
+				id := strconv.Itoa(index)
+				add(recordUserMessage, userMessageRecord{
+					TurnID: id, MessageID: "u" + id,
+					Content: []acp.ContentBlock{{Type: "text", Text: "continue"}},
+				})
+				add(recordModelExchange, modelExchangeRecord{
+					TurnID: id, AnswerID: "a" + id, ThoughtID: "r" + id,
+					Text: strings.Repeat("recorded output ", 64), FinishReason: "stop",
+					Usage: &openrouter.Usage{PromptTokens: 100, CompletionTokens: 10},
+				})
+				add(recordTurnFinished, turnFinishedRecord{TurnID: id, Kind: "completed"})
+			}
+			file, err := os.CreateTemp(b.TempDir(), "session")
+			if err != nil {
+				b.Fatal(err)
+			}
+			defer file.Close()
+			for _, record := range state.records {
+				data, err := encodeRecord(record)
+				if err != nil {
+					b.Fatal(err)
+				}
+				if _, err := file.Write(data); err != nil {
+					b.Fatal(err)
+				}
+			}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for b.Loop() {
+				records, _, err := readRecords(file)
+				if err != nil {
+					b.Fatal(err)
+				}
+				restored, err := foldRecords(records)
+				if err != nil || len(restored.history) != turns*2 {
+					b.Fatalf("history = %d, error = %v", len(restored.history), err)
 				}
 			}
 		})
@@ -1299,21 +1271,12 @@ func TestListProjectionAgreesWithAFullFold(t *testing.T) {
 			TurnID: "turn", Kind: "completed", StopReason: "end_turn", MessageID: "outcome",
 		}),
 	}
-	folded, err := foldRecords(records)
-	if err != nil {
-		t.Fatal(err)
-	}
-	checkpoint, err := newCheckpointRecord(folded)
-	if err != nil {
-		t.Fatal(err)
-	}
-
 	for _, test := range []struct {
 		name    string
 		records []sessionRecord
 	}{
-		{name: "without a checkpoint", records: records},
-		{name: "ending in a checkpoint", records: append(slices.Clone(records), checkpoint)},
+		{name: "finished turn", records: records},
+		{name: "open turn", records: records[:2]},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			state, err := foldRecords(test.records)
@@ -1358,7 +1321,7 @@ func TestTurnConfigurationIsSharedButNeverRewritten(t *testing.T) {
 		t.Fatalf("configuration = %#v", held)
 	}
 
-	replacement := cloneConfiguration(configuration)
+	replacement := configuration
 	replacement.Tools = nil
 	replacement.ToolKinds = map[string]acp.ToolKind{}
 	next := state.clone()

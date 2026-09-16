@@ -2,10 +2,8 @@ package agent
 
 import (
 	"context"
-	"slices"
 
 	"github.com/kkestell/ox/internal/lsp"
-	"github.com/kkestell/ox/internal/settings"
 )
 
 // LanguageQueries is an activation's language-server access. It deliberately
@@ -17,19 +15,6 @@ type LanguageQueries interface {
 	DocumentSymbols(context.Context, string, lsp.TextReader) (lsp.Symbols, error)
 	WorkspaceSymbols(context.Context, string, lsp.TextReader) (lsp.Symbols, error)
 	Diagnostics(context.Context, string, lsp.TextReader) (lsp.DiagnosticReport, error)
-}
-
-func languageDefinitions(configured []settings.ResolvedLanguageServer) []lsp.Definition {
-	definitions := make([]lsp.Definition, 0, len(configured))
-	for _, server := range configured {
-		definitions = append(definitions, lsp.Definition{
-			Name:       server.Name,
-			Command:    server.Command,
-			Args:       slices.Clone(server.Args),
-			Extensions: slices.Clone(server.Extensions),
-		})
-	}
-	return definitions
 }
 
 // languageExtensions lists every extension a configured language server owns.
@@ -51,86 +36,6 @@ func (a *Agent) activateLanguages(root string) (*lsp.Manager, error) {
 		return nil, nil
 	}
 	return lsp.New(root, a.languageServers)
-}
-
-// sessionLanguages serializes one session's language queries. A query mutates
-// the server's view of open documents and their versions, so two concurrent
-// queries in one session would interleave those updates; sessions hold separate
-// managers and stay independent.
-type sessionLanguages struct {
-	manager *lsp.Manager
-	turn    chan struct{}
-}
-
-func newSessionLanguages(manager *lsp.Manager) *sessionLanguages {
-	if manager == nil {
-		return nil
-	}
-	return &sessionLanguages{manager: manager, turn: make(chan struct{}, 1)}
-}
-
-func (l *sessionLanguages) acquire(ctx context.Context) (func(), error) {
-	select {
-	case l.turn <- struct{}{}:
-		return func() { <-l.turn }, nil
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	}
-}
-
-func (l *sessionLanguages) Definition(
-	ctx context.Context, path string, position lsp.Position, reader lsp.TextReader,
-) (lsp.Locations, error) {
-	release, err := l.acquire(ctx)
-	if err != nil {
-		return lsp.Locations{}, err
-	}
-	defer release()
-	return l.manager.Definition(ctx, path, position, reader)
-}
-
-func (l *sessionLanguages) References(
-	ctx context.Context, path string, position lsp.Position, includeDeclaration bool, reader lsp.TextReader,
-) (lsp.Locations, error) {
-	release, err := l.acquire(ctx)
-	if err != nil {
-		return lsp.Locations{}, err
-	}
-	defer release()
-	return l.manager.References(ctx, path, position, includeDeclaration, reader)
-}
-
-func (l *sessionLanguages) DocumentSymbols(
-	ctx context.Context, path string, reader lsp.TextReader,
-) (lsp.Symbols, error) {
-	release, err := l.acquire(ctx)
-	if err != nil {
-		return lsp.Symbols{}, err
-	}
-	defer release()
-	return l.manager.DocumentSymbols(ctx, path, reader)
-}
-
-func (l *sessionLanguages) WorkspaceSymbols(
-	ctx context.Context, query string, reader lsp.TextReader,
-) (lsp.Symbols, error) {
-	release, err := l.acquire(ctx)
-	if err != nil {
-		return lsp.Symbols{}, err
-	}
-	defer release()
-	return l.manager.WorkspaceSymbols(ctx, query, reader)
-}
-
-func (l *sessionLanguages) Diagnostics(
-	ctx context.Context, path string, reader lsp.TextReader,
-) (lsp.DiagnosticReport, error) {
-	release, err := l.acquire(ctx)
-	if err != nil {
-		return lsp.DiagnosticReport{}, err
-	}
-	defer release()
-	return l.manager.Diagnostics(ctx, path, reader)
 }
 
 // languagesFor reports the session's query access, or a nil interface when no

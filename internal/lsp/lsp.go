@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
-	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -86,6 +85,7 @@ type DiagnosticReport struct {
 }
 
 type Manager struct {
+	queryGate chan struct{}
 	root      string
 	workspace *workspace.Workspace
 	servers   []*serverState
@@ -120,53 +120,30 @@ func New(root string, definitions []Definition) (*Manager, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 	m := &Manager{
 		root: canonical, workspace: workspace.NewWorkspace(canonical),
-		byExt: make(map[string]*serverState), ctx: ctx, cancel: cancel,
+		queryGate: make(chan struct{}, 1), byExt: make(map[string]*serverState), ctx: ctx, cancel: cancel,
 		initializeTimeout: initializeTimeout, queryTimeout: queryTimeout,
 		shutdownTimeout: shutdownTimeout,
 	}
-	definitions = slices.Clone(definitions)
-	slices.SortFunc(definitions, func(a, b Definition) int { return strings.Compare(a.Name, b.Name) })
 	for _, definition := range definitions {
-		definition.Name = strings.TrimSpace(definition.Name)
-		definition.Command = strings.TrimSpace(definition.Command)
-		definition.Args = slices.Clone(definition.Args)
-		definition.Extensions = slices.Clone(definition.Extensions)
-		if definition.Name == "" {
-			cancel()
-			return nil, errors.New("language server name must not be blank")
-		}
-		if definition.Command == "" {
-			cancel()
-			return nil, fmt.Errorf("language server %q command must not be blank", definition.Name)
-		}
 		state := &serverState{definition: definition, manager: m}
-		seen := make(map[string]bool)
-		for index, extension := range definition.Extensions {
-			extension = normalizeExtension(extension)
-			if extension == "" || strings.ContainsAny(extension, `/\\`) {
-				cancel()
-				return nil, fmt.Errorf("language server %q has invalid extension %q", definition.Name, definition.Extensions[index])
-			}
-			if seen[extension] {
-				cancel()
-				return nil, fmt.Errorf("language server %q repeats extension %q", definition.Name, extension)
-			}
-			seen[extension] = true
-			definition.Extensions[index] = extension
-			if previous := m.byExt[extension]; previous != nil {
-				cancel()
-				return nil, fmt.Errorf("language servers %q and %q both own extension %q", previous.definition.Name, definition.Name, extension)
-			}
+		for _, extension := range definition.Extensions {
 			m.byExt[extension] = state
 		}
-		if len(definition.Extensions) == 0 {
-			cancel()
-			return nil, fmt.Errorf("language server %q must configure at least one extension", definition.Name)
-		}
-		state.definition = definition
 		m.servers = append(m.servers, state)
 	}
 	return m, nil
+}
+
+// acquire serializes whole queries, whose synchronization changes document versions.
+func (m *Manager) acquire(ctx context.Context) (func(), error) {
+	select {
+	case m.queryGate <- struct{}{}:
+		return func() { <-m.queryGate }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-m.ctx.Done():
+		return nil, errors.New("language-server activation is closed")
+	}
 }
 
 func normalizeExtension(extension string) string {
@@ -291,6 +268,11 @@ func (m *Manager) References(ctx context.Context, path string, position Position
 }
 
 func (m *Manager) locations(ctx context.Context, method, path string, position Position, includeDeclaration bool, reader TextReader) (Locations, error) {
+	release, err := m.acquire(ctx)
+	if err != nil {
+		return Locations{}, err
+	}
+	defer release()
 	absolute, text, client, err := m.query(ctx, path, reader)
 	if err != nil {
 		return Locations{}, err
@@ -303,6 +285,11 @@ func (m *Manager) locations(ctx context.Context, method, path string, position P
 }
 
 func (m *Manager) DocumentSymbols(ctx context.Context, path string, reader TextReader) (Symbols, error) {
+	release, err := m.acquire(ctx)
+	if err != nil {
+		return Symbols{}, err
+	}
+	defer release()
 	absolute, text, client, err := m.query(ctx, path, reader)
 	if err != nil {
 		return Symbols{}, err
@@ -315,6 +302,11 @@ func (m *Manager) DocumentSymbols(ctx context.Context, path string, reader TextR
 }
 
 func (m *Manager) WorkspaceSymbols(ctx context.Context, query string, reader TextReader) (Symbols, error) {
+	release, err := m.acquire(ctx)
+	if err != nil {
+		return Symbols{}, err
+	}
+	defer release()
 	if len(m.servers) == 0 {
 		return Symbols{}, errors.New("no language servers are configured")
 	}
@@ -339,6 +331,11 @@ func (m *Manager) WorkspaceSymbols(ctx context.Context, query string, reader Tex
 }
 
 func (m *Manager) Diagnostics(ctx context.Context, path string, reader TextReader) (DiagnosticReport, error) {
+	release, err := m.acquire(ctx)
+	if err != nil {
+		return DiagnosticReport{}, err
+	}
+	defer release()
 	absolute, text, client, err := m.query(ctx, path, reader)
 	if err != nil {
 		return DiagnosticReport{}, err

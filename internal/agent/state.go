@@ -10,7 +10,6 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
-	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -22,8 +21,7 @@ import (
 )
 
 const (
-	recordVersion     = 1
-	checkpointVersion = 11
+	recordVersion = 1
 
 	recordSessionCreated  = "session_created"
 	recordConfigChanged   = "request_configuration_changed"
@@ -41,7 +39,6 @@ const (
 	recordToolCompleted   = "tool_completed"
 	recordModelExchange   = "completed_model_exchange"
 	recordTurnFinished    = "turn_finished"
-	recordCheckpoint      = "checkpoint"
 
 	unknownToolOutcome     = "tool call outcome is unknown after interruption"
 	interruptedBeforeStart = "tool call interrupted before start"
@@ -239,46 +236,6 @@ type turnFinishedRecord struct {
 	Message    string         `json:"message,omitempty"`
 }
 
-type checkpointRecord struct {
-	Version int                  `json:"version"`
-	State   checkpointProjection `json:"state"`
-}
-
-type checkpointProjection struct {
-	SessionID             string                        `json:"sessionId"`
-	CWD                   string                        `json:"cwd"`
-	CreatedAt             time.Time                     `json:"createdAt"`
-	UpdatedAt             time.Time                     `json:"updatedAt"`
-	Sequence              uint64                        `json:"sequence"`
-	Configuration         requestConfiguration          `json:"configuration"`
-	Selections            sessionSelections             `json:"selections,omitempty"`
-	Todo                  []acp.PlanEntry               `json:"todo"`
-	TurnRequests          int                           `json:"turnRequests,omitempty"`
-	History               []openrouter.Message          `json:"history,omitempty"`
-	Usage                 checkpointUsage               `json:"usage"`
-	Occupancy             int                           `json:"occupancy"`
-	Cost                  float64                       `json:"cost"`
-	MessageIDs            []string                      `json:"messageIds,omitempty"`
-	ToolCallIDs           []string                      `json:"toolCallIds,omitempty"`
-	ChangedFiles          []string                      `json:"changedFiles,omitempty"`
-	OpenTurn              string                        `json:"openTurn,omitempty"`
-	OpenTurnBase          []openrouter.Message          `json:"openTurnBase,omitempty"`
-	OpenTurnConfiguration *requestConfiguration         `json:"openTurnConfiguration,omitempty"`
-	Suspended             *suspendedModelExchangeRecord `json:"suspended,omitempty"`
-	ToolExecutions        []durableToolExecution        `json:"toolExecutions,omitempty"`
-	Title                 string                        `json:"title,omitempty"`
-}
-
-type checkpointUsage struct {
-	Seen        bool   `json:"seen"`
-	Input       uint64 `json:"input"`
-	Output      uint64 `json:"output"`
-	Thought     uint64 `json:"thought"`
-	CachedRead  uint64 `json:"cachedRead"`
-	CachedWrite uint64 `json:"cachedWrite"`
-	CacheSeen   bool   `json:"cacheSeen"`
-}
-
 type durableState struct {
 	id                    string
 	cwd                   string
@@ -321,34 +278,12 @@ func newRecord(sequence uint64, kind string, value any) (sessionRecord, error) {
 }
 
 func foldRecords(records []sessionRecord) (durableState, error) {
-	var checkpoint durableState
-	start := 0
-	for index := range records {
-		record := records[index]
-		if err := validateRecordEnvelope(record, uint64(index)); err != nil {
-			return durableState{}, fmt.Errorf("record %d: %w", index+1, err)
-		}
-		if record.Type != recordCheckpoint {
-			continue
-		}
-		if index == 0 || !checkpointBoundary(records[index-1].Type) {
-			return durableState{}, fmt.Errorf("record %d: checkpoint does not follow a durable provider boundary", index+1)
-		}
-		restored, err := restoreCheckpoint(record, records[index-1])
-		if err != nil {
-			return durableState{}, fmt.Errorf("record %d: %w", index+1, err)
-		}
-		checkpoint = restored
-		start = index + 1
-	}
-
-	state := checkpoint
-	for index := start; index < len(records); index++ {
-		if err := state.apply(records[index]); err != nil {
+	var state durableState
+	for index, record := range records {
+		if err := state.apply(record); err != nil {
 			return durableState{}, fmt.Errorf("record %d: %w", index+1, err)
 		}
 	}
-	state.records = append([]sessionRecord(nil), records...)
 	return state, nil
 }
 
@@ -381,14 +316,7 @@ func foldListProjection(records []sessionRecord) (sessionListEntry, error) {
 		return sessionListEntry{}, errors.New("session cwd must be absolute")
 	}
 	entry := sessionListEntry{id: created.SessionID, cwd: created.CWD}
-	// A checkpoint projects the state at the record before it, so folding never
-	// advances the timestamp past a trailing checkpoint either.
-	for index := len(records) - 1; index >= 0; index-- {
-		if records[index].Type != recordCheckpoint {
-			entry.updatedAt = records[index].At
-			break
-		}
-	}
+	entry.updatedAt = records[len(records)-1].At
 	for _, record := range records {
 		if record.Type != recordUserMessage {
 			continue
@@ -424,289 +352,11 @@ func validateRecordEnvelope(record sessionRecord, previous uint64) error {
 		recordProviderStarted, recordSubagentUsage, recordCompaction, recordUserMessage,
 		recordExchangePaused, recordPermissionOpen, recordPermissionRetry,
 		recordPermissionDone, recordToolStarted, recordToolCompleted,
-		recordModelExchange, recordTurnFinished, recordCheckpoint:
+		recordModelExchange, recordTurnFinished:
 		return nil
 	default:
 		return fmt.Errorf("unsupported record type %q", record.Type)
 	}
-}
-
-func newCheckpointRecord(state durableState) (sessionRecord, error) {
-	if len(state.records) == 0 || !checkpointBoundary(state.records[len(state.records)-1].Type) {
-		return sessionRecord{}, errors.New("checkpoint requires a durable provider boundary")
-	}
-	payload := checkpointRecord{
-		Version: checkpointVersion,
-		State: checkpointProjection{
-			SessionID:     state.id,
-			CWD:           state.cwd,
-			CreatedAt:     state.createdAt,
-			UpdatedAt:     state.updatedAt,
-			Sequence:      state.sequence,
-			Configuration: cloneConfiguration(state.configuration),
-			Selections:    cloneSelections(state.selections),
-			Todo:          clonePlanEntries(state.todo),
-			TurnRequests:  state.turnRequests,
-			History:       cloneMessages(state.history),
-			Usage: checkpointUsage{
-				Seen:        state.usage.seen,
-				Input:       state.usage.input,
-				Output:      state.usage.output,
-				Thought:     state.usage.thought,
-				CachedRead:  state.usage.cachedRead,
-				CachedWrite: state.usage.cachedWrite,
-				CacheSeen:   state.usage.cacheSeen,
-			},
-			Occupancy:             state.occupancy,
-			Cost:                  state.cost,
-			MessageIDs:            sortedIdentitySet(state.messageIDs),
-			ToolCallIDs:           sortedIdentitySet(state.toolCallIDs),
-			ChangedFiles:          sortedIdentitySet(state.changedFiles),
-			OpenTurn:              state.openTurn,
-			OpenTurnBase:          cloneMessages(state.openTurnBase),
-			OpenTurnConfiguration: optionalConfiguration(state.openTurnConfiguration),
-			Suspended:             cloneSuspendedExchange(state.suspended),
-			ToolExecutions:        sortedToolExecutions(state.toolExecutions),
-			Title:                 state.title,
-		},
-	}
-	return newRecord(state.sequence+1, recordCheckpoint, payload)
-}
-
-func checkpointBoundary(kind string) bool {
-	return kind == recordTurnFinished || kind == recordCompaction
-}
-
-func restoreCheckpoint(record, previous sessionRecord) (durableState, error) {
-	var value checkpointRecord
-	if err := decodeRecord(record.Data, &value); err != nil {
-		return durableState{}, err
-	}
-	if value.Version != checkpointVersion {
-		return durableState{}, fmt.Errorf("unsupported checkpoint version %d", value.Version)
-	}
-	projection := value.State
-	if previous.Type == recordTurnFinished && projection.OpenTurn != "" {
-		return durableState{}, errors.New("checkpoint after a finished turn is still open")
-	}
-	if previous.Type != recordTurnFinished && projection.OpenTurn == "" {
-		return durableState{}, errors.New("provider-boundary checkpoint has no open turn")
-	}
-	if projection.Sequence != record.Sequence-1 {
-		return durableState{}, fmt.Errorf(
-			"checkpoint sequence %d does not precede record %d",
-			projection.Sequence,
-			record.Sequence,
-		)
-	}
-	if !projection.UpdatedAt.Equal(previous.At) {
-		return durableState{}, errors.New("checkpoint timestamp does not match the preceding record")
-	}
-	if record.At.Before(projection.UpdatedAt) {
-		return durableState{}, errors.New("checkpoint predates its projection")
-	}
-	if !validSessionID(projection.SessionID) {
-		return durableState{}, errors.New("invalid checkpoint session ID")
-	}
-	if !filepath.IsAbs(projection.CWD) {
-		return durableState{}, errors.New("checkpoint cwd must be absolute")
-	}
-	if projection.CreatedAt.IsZero() || projection.UpdatedAt.IsZero() ||
-		projection.UpdatedAt.Before(projection.CreatedAt) {
-		return durableState{}, errors.New("checkpoint timestamps are invalid")
-	}
-	if err := validateConfiguration(projection.Configuration); err != nil {
-		return durableState{}, err
-	}
-	if projection.Todo != nil {
-		if err := validateTodoEntries(projection.Todo); err != nil {
-			return durableState{}, fmt.Errorf("checkpoint todo: %w", err)
-		}
-	}
-	if projection.TurnRequests < 0 {
-		return durableState{}, errors.New("checkpoint turn request count is invalid")
-	}
-	if projection.Occupancy < 0 {
-		return durableState{}, errors.New("checkpoint context occupancy is invalid")
-	}
-	messageIDs, err := identitySet(projection.MessageIDs)
-	if err != nil {
-		return durableState{}, fmt.Errorf("checkpoint message IDs: %w", err)
-	}
-	toolCallIDs, err := identitySet(projection.ToolCallIDs)
-	if err != nil {
-		return durableState{}, fmt.Errorf("checkpoint tool call IDs: %w", err)
-	}
-	if !slices.IsSorted(projection.ChangedFiles) {
-		return durableState{}, errors.New("checkpoint changed files are not sorted")
-	}
-	changedFiles, err := targetSet(projection.ChangedFiles)
-	if err != nil {
-		return durableState{}, fmt.Errorf("checkpoint changed files: %w", err)
-	}
-	toolExecutions, err := toolExecutionMap(projection.ToolExecutions)
-	if err != nil {
-		return durableState{}, err
-	}
-	state := durableState{
-		id:            projection.SessionID,
-		cwd:           projection.CWD,
-		createdAt:     projection.CreatedAt,
-		updatedAt:     projection.UpdatedAt,
-		sequence:      record.Sequence,
-		configuration: cloneConfiguration(projection.Configuration),
-		selections:    cloneSelections(projection.Selections),
-		todo:          clonePlanEntries(projection.Todo),
-		turnRequests:  projection.TurnRequests,
-		history:       cloneMessages(projection.History),
-		usage: turnUsage{
-			seen:        projection.Usage.Seen,
-			input:       projection.Usage.Input,
-			output:      projection.Usage.Output,
-			thought:     projection.Usage.Thought,
-			cachedRead:  projection.Usage.CachedRead,
-			cachedWrite: projection.Usage.CachedWrite,
-			cacheSeen:   projection.Usage.CacheSeen,
-		},
-		occupancy:             projection.Occupancy,
-		cost:                  projection.Cost,
-		messageIDs:            messageIDs,
-		toolCallIDs:           toolCallIDs,
-		changedFiles:          changedFiles,
-		openTurn:              projection.OpenTurn,
-		openTurnHistory:       len(projection.OpenTurnBase),
-		openTurnBase:          cloneMessages(projection.OpenTurnBase),
-		openTurnConfiguration: configurationValue(projection.OpenTurnConfiguration),
-		suspended:             cloneSuspendedExchange(projection.Suspended),
-		toolExecutions:        toolExecutions,
-		title:                 projection.Title,
-	}
-	if err := validateCheckpointTurnState(state); err != nil {
-		return durableState{}, err
-	}
-	return state, nil
-}
-
-func sortedToolExecutions(values map[string]durableToolExecution) []durableToolExecution {
-	result := make([]durableToolExecution, 0, len(values))
-	for _, value := range values {
-		result = append(result, cloneToolExecution(value))
-	}
-	sort.Slice(result, func(i, j int) bool {
-		return result[i].StartedSequence < result[j].StartedSequence
-	})
-	return result
-}
-
-func toolExecutionMap(values []durableToolExecution) (map[string]durableToolExecution, error) {
-	if len(values) == 0 {
-		return nil, nil
-	}
-	result := make(map[string]durableToolExecution, len(values))
-	var previous uint64
-	for _, value := range values {
-		if value.Call.ID == "" || value.StartedSequence == 0 || value.StartedSequence <= previous {
-			return nil, errors.New("checkpoint tool executions are not in durable order")
-		}
-		if _, duplicate := result[value.Call.ID]; duplicate {
-			return nil, fmt.Errorf("checkpoint contains duplicate tool execution %q", value.Call.ID)
-		}
-		result[value.Call.ID] = cloneToolExecution(value)
-		previous = value.StartedSequence
-	}
-	return result, nil
-}
-
-func validateCheckpointTurnState(state durableState) error {
-	if state.openTurn == "" {
-		if len(state.openTurnBase) != 0 || state.openTurnConfiguration.Settings.Model != "" || state.suspended != nil ||
-			len(state.toolExecutions) != 0 || state.turnRequests != 0 {
-			return errors.New("checkpoint has turn state without an open turn")
-		}
-		return nil
-	}
-	if err := validateConfiguration(state.openTurnConfiguration); err != nil {
-		return fmt.Errorf("checkpoint open-turn configuration: %w", err)
-	}
-	if state.suspended != nil {
-		progress := cloneSuspendedExchange(state.suspended)
-		decisions := append([]storedPermissionDecision(nil), progress.Decisions...)
-		pending := progress.Pending
-		progress.Decisions = nil
-		progress.Pending = nil
-		if err := state.validateSuspendedExchange(*progress); err != nil {
-			return fmt.Errorf("checkpoint suspended exchange: %w", err)
-		}
-		progress.Decisions = decisions
-		progress.Pending = pending
-		for index, decision := range decisions {
-			if !validApprovalDecision(decision.Decision) || progress.callIndex(decision.CallID) < 0 {
-				return errors.New("checkpoint contains an invalid permission decision")
-			}
-			if index > 0 && progress.callIndex(decisions[index-1].CallID) >= progress.callIndex(decision.CallID) {
-				return errors.New("checkpoint permission decisions are out of order")
-			}
-		}
-		if pending != nil {
-			candidate := state
-			candidate.suspended = progress
-			if err := candidate.validatePendingPermission(*pending); err != nil {
-				return fmt.Errorf("checkpoint pending permission: %w", err)
-			}
-		}
-	}
-	for _, execution := range state.toolExecutions {
-		candidate := state.clone()
-		delete(candidate.toolExecutions, execution.Call.ID)
-		started := cloneToolExecution(execution)
-		started.Result = nil
-		if err := candidate.validateToolExecution(started); err != nil {
-			return fmt.Errorf("checkpoint tool execution: %w", err)
-		}
-		if execution.Result != nil {
-			if err := validateStoredExecutionResult(execution, *execution.Result); err != nil {
-				return fmt.Errorf("checkpoint tool execution: %w", err)
-			}
-		}
-	}
-	return nil
-}
-
-func sortedIdentitySet(values map[string]struct{}) []string {
-	result := make([]string, 0, len(values))
-	for value := range values {
-		result = append(result, value)
-	}
-	slices.Sort(result)
-	return result
-}
-
-func identitySet(values []string) (map[string]struct{}, error) {
-	result := make(map[string]struct{}, len(values))
-	for _, value := range values {
-		if value == "" {
-			return nil, errors.New("empty identity")
-		}
-		if _, exists := result[value]; exists {
-			return nil, fmt.Errorf("duplicate identity %q", value)
-		}
-		result[value] = struct{}{}
-	}
-	return result, nil
-}
-
-func targetSet(values []string) (map[string]struct{}, error) {
-	result := make(map[string]struct{}, len(values))
-	for _, value := range values {
-		if !validStoredTarget(value) {
-			return nil, fmt.Errorf("invalid target %q", value)
-		}
-		if _, exists := result[value]; exists {
-			return nil, fmt.Errorf("duplicate target %q", value)
-		}
-		result[value] = struct{}{}
-	}
-	return result, nil
 }
 
 func validStoredTarget(value string) bool {
@@ -721,37 +371,11 @@ func validStoredTarget(value string) bool {
 // length, which it never reads, and commits are serialized so a shared backing
 // array has one writer. Everything the apply switch mutates in place is copied.
 func (s durableState) clone() durableState {
-	s.history = slices.Clone(s.history)
-	s.openTurnBase = slices.Clone(s.openTurnBase)
-	s.configuration = cloneConfiguration(s.configuration)
-	s.selections = cloneSelections(s.selections)
-	s.todo = clonePlanEntries(s.todo)
-	s.openTurnConfiguration = cloneConfiguration(s.openTurnConfiguration)
 	s.suspended = cloneSuspendedExchange(s.suspended)
-	toolExecutions := s.toolExecutions
-	if len(toolExecutions) == 0 {
-		s.toolExecutions = nil
-	} else {
-		s.toolExecutions = make(map[string]durableToolExecution, len(toolExecutions))
-		for id, execution := range toolExecutions {
-			s.toolExecutions[id] = cloneToolExecution(execution)
-		}
-	}
-	messageIDs := s.messageIDs
-	s.messageIDs = make(map[string]struct{}, len(messageIDs))
-	for id := range messageIDs {
-		s.messageIDs[id] = struct{}{}
-	}
-	toolCallIDs := s.toolCallIDs
-	s.toolCallIDs = make(map[string]struct{}, len(toolCallIDs))
-	for id := range toolCallIDs {
-		s.toolCallIDs[id] = struct{}{}
-	}
-	changedFiles := s.changedFiles
-	s.changedFiles = make(map[string]struct{}, len(changedFiles))
-	for path := range changedFiles {
-		s.changedFiles[path] = struct{}{}
-	}
+	s.toolExecutions = maps.Clone(s.toolExecutions)
+	s.messageIDs = maps.Clone(s.messageIDs)
+	s.toolCallIDs = maps.Clone(s.toolCallIDs)
+	s.changedFiles = maps.Clone(s.changedFiles)
 	return s
 }
 
@@ -781,7 +405,7 @@ func (s *durableState) apply(record sessionRecord) error {
 		s.id = value.SessionID
 		s.cwd = value.CWD
 		s.createdAt = record.At
-		s.configuration = cloneConfiguration(value.Configuration)
+		s.configuration = value.Configuration
 		if err := validateSelections(value.Selections); err != nil {
 			return err
 		}
@@ -798,7 +422,7 @@ func (s *durableState) apply(record sessionRecord) error {
 		if err := validateConfiguration(value.Configuration); err != nil {
 			return err
 		}
-		s.configuration = cloneConfiguration(value.Configuration)
+		s.configuration = value.Configuration
 	case recordOptionChanged:
 		var value optionChanged
 		if err := decodeRecord(record.Data, &value); err != nil {
@@ -819,7 +443,7 @@ func (s *durableState) apply(record sessionRecord) error {
 			}
 		}
 		s.selections = cloneSelections(value.Selections)
-		s.configuration = cloneConfiguration(value.Configuration)
+		s.configuration = value.Configuration
 	case recordTodoChanged:
 		var value todoChanged
 		if err := decodeRecord(record.Data, &value); err != nil {
@@ -836,7 +460,7 @@ func (s *durableState) apply(record sessionRecord) error {
 		if err := validateTodoEntries(value.Entries); err != nil {
 			return err
 		}
-		s.todo = clonePlanEntries(value.Entries)
+		s.todo = value.Entries
 	case recordProviderStarted:
 		var value providerRequestStarted
 		if err := decodeRecord(record.Data, &value); err != nil {
@@ -896,8 +520,8 @@ func (s *durableState) apply(record sessionRecord) error {
 			s.openTurn = value.TurnID
 			s.turnRequests = 0
 			s.openTurnHistory = len(s.history)
-			s.openTurnBase = cloneMessages(s.history)
-			s.openTurnConfiguration = cloneConfiguration(turnConfiguration)
+			s.openTurnBase = s.history[:len(s.history):len(s.history)]
+			s.openTurnConfiguration = turnConfiguration
 		} else if s.openTurn != value.TurnID {
 			return errors.New("user message belongs to another open turn")
 		} else if !sameRequestConfiguration(s.openTurnConfiguration, turnConfiguration) {
@@ -1018,7 +642,7 @@ func (s *durableState) apply(record sessionRecord) error {
 		if err := validateStoredExecutionResult(execution, value.Result); err != nil {
 			return err
 		}
-		result := cloneStoredToolResult(value.Result)
+		result := value.Result
 		execution.Result = &result
 		s.toolExecutions[value.CallID] = execution
 		if !result.Failed && result.Target != "" {
@@ -1041,7 +665,7 @@ func (s *durableState) apply(record sessionRecord) error {
 			return errors.New("turn outcome has no matching open turn")
 		}
 		if value.Kind == "refusal" {
-			s.history = cloneMessages(s.openTurnBase)
+			s.history = s.openTurnBase
 		}
 		switch value.Kind {
 		case "completed", "cancelled", "interrupted", "failed", "refusal":
@@ -1134,11 +758,9 @@ func spliceCompacted(
 	summary openrouter.Message,
 ) []openrouter.Message {
 	compacted := make([]openrouter.Message, 0, headEnd+1+len(messages)-tailStart)
-	compacted = append(compacted, cloneMessages(messages[:headEnd])...)
-	// The summary is cloned like the rest, so a replayed compaction and a planned
-	// one produce identical messages rather than differing in empty fields.
-	compacted = append(compacted, cloneMessages([]openrouter.Message{summary})...)
-	compacted = append(compacted, cloneMessages(messages[tailStart:])...)
+	compacted = append(compacted, messages[:headEnd]...)
+	compacted = append(compacted, summary)
+	compacted = append(compacted, messages[tailStart:]...)
 	return compacted
 }
 
@@ -1290,20 +912,6 @@ func validateStoredExecutionResult(
 		return errors.New("unknown tool completion is invalid")
 	}
 	return nil
-}
-
-// cloneStoredToolResult copies a tool outcome. Every field is a value, so the
-// copy the parameter already made is the clone.
-func cloneStoredToolResult(value storedToolResult) storedToolResult {
-	return value
-}
-
-func cloneToolExecution(value durableToolExecution) durableToolExecution {
-	if value.Result != nil {
-		result := cloneStoredToolResult(*value.Result)
-		value.Result = &result
-	}
-	return value
 }
 
 func messageGroupBoundary(messages []openrouter.Message, index int) bool {
@@ -1798,38 +1406,6 @@ func decodeRecord(data json.RawMessage, target any) error {
 	return nil
 }
 
-func cloneConfiguration(value requestConfiguration) requestConfiguration {
-	value.Settings = value.Settings.Clone()
-	value.Tools = cloneTools(value.Tools)
-	value.ToolKinds = cloneToolKinds(value.ToolKinds)
-	value.PlanTools = cloneBoolMap(value.PlanTools)
-	value.MCPTools = slices.Clone(value.MCPTools)
-	value.Skills = cloneSkillReferences(value.Skills)
-	return value
-}
-
-func cloneSkillReferences(values []skills.Reference) []skills.Reference {
-	if len(values) == 0 {
-		return nil
-	}
-	return slices.Clone(values)
-}
-
-func optionalConfiguration(value requestConfiguration) *requestConfiguration {
-	if value.Settings.Model == "" {
-		return nil
-	}
-	cloned := cloneConfiguration(value)
-	return &cloned
-}
-
-func configurationValue(value *requestConfiguration) requestConfiguration {
-	if value == nil {
-		return requestConfiguration{}
-	}
-	return cloneConfiguration(*value)
-}
-
 func cloneSelections(value sessionSelections) sessionSelections {
 	if value.Reasoning != nil {
 		reasoning := *value.Reasoning
@@ -1942,63 +1518,12 @@ func cloneSuspendedExchange(
 		return nil
 	}
 	cloned := *value
-	cloned.ReasoningDetails = cloneByteSlices(value.ReasoningDetails)
-	cloned.ToolCalls = slices.Clone(value.ToolCalls)
-	cloned.ToolTargets = maps.Clone(value.ToolTargets)
 	cloned.Decisions = slices.Clone(value.Decisions)
-	if value.Usage != nil {
-		usage := *value.Usage
-		cloned.Usage = &usage
-	}
 	if value.Pending != nil {
 		pending := *value.Pending
 		cloned.Pending = &pending
 	}
 	return &cloned
-}
-
-func cloneByteSlices(values [][]byte) [][]byte {
-	if values == nil {
-		return nil
-	}
-	cloned := make([][]byte, len(values))
-	for index, value := range values {
-		cloned[index] = slices.Clone(value)
-	}
-	return cloned
-}
-
-func cloneToolKinds(values map[string]acp.ToolKind) map[string]acp.ToolKind {
-	if values == nil {
-		return nil
-	}
-	cloned := make(map[string]acp.ToolKind, len(values))
-	for name, kind := range values {
-		cloned[name] = kind
-	}
-	return cloned
-}
-
-func cloneBoolMap(values map[string]bool) map[string]bool {
-	if values == nil {
-		return nil
-	}
-	cloned := make(map[string]bool, len(values))
-	for name, enabled := range values {
-		cloned[name] = enabled
-	}
-	return cloned
-}
-
-func cloneTools(values []openrouter.Tool) []openrouter.Tool {
-	if len(values) == 0 {
-		return nil
-	}
-	cloned := slices.Clone(values)
-	for index := range cloned {
-		cloned[index].Function.Parameters = slices.Clone(cloned[index].Function.Parameters)
-	}
-	return cloned
 }
 
 func opaqueMessages(values []json.RawMessage) [][]byte {

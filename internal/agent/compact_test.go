@@ -3,6 +3,7 @@ package agent
 import (
 	"encoding/json"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -469,7 +470,7 @@ func TestCompactRequestPreservesCompleteRecentToolGroup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := admitted.request.Messages[len(admitted.request.Messages)-2:]; !reflect.DeepEqual(got, cloneMessages(request.Messages[len(request.Messages)-2:])) {
+	if got := admitted.request.Messages[len(admitted.request.Messages)-2:]; !reflect.DeepEqual(got, slices.Clone(request.Messages[len(request.Messages)-2:])) {
 		t.Fatalf("recent tool group changed: %#v", got)
 	}
 	if !messageGroupBoundary(admitted.request.Messages, len(admitted.request.Messages)-2) {

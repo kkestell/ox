@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -1445,12 +1446,9 @@ func assertFailureUpdate(t *testing.T, updates []capturedUpdate, want string) {
 	t.Fatalf("failure update %q was not observed", want)
 }
 
-// TestSessionLogGrowthStaysWithinItsTranscript drives many turns and checks the
-// amortization invariant: a checkpoint is written only when it is no larger than
-// the records appended since the last one, and those spans are disjoint, so
-// checkpoint bytes never exceed the transcript's own bytes no matter how old the
-// session is. The session must still load and replay every turn afterwards.
-func TestSessionLogGrowthStaysWithinItsTranscript(t *testing.T) {
+// TestLongSessionLogsOnlyAuthoritativeRecordsAndReplays preserves exact replay
+// without accumulating load-time state projections beside the transcript.
+func TestLongSessionLogsOnlyAuthoritativeRecordsAndReplays(t *testing.T) {
 	const turns = 24
 	sessionDir := t.TempDir()
 	cwd := t.TempDir()
@@ -1485,7 +1483,7 @@ func TestSessionLogGrowthStaysWithinItsTranscript(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	checkpoints, checkpointBytes, transcriptBytes := 0, 0, 0
+	counts := map[string]int{}
 	for _, line := range bytes.Split(bytes.TrimSpace(logData), []byte{'\n'}) {
 		var envelope struct {
 			Type string `json:"type"`
@@ -1493,19 +1491,14 @@ func TestSessionLogGrowthStaysWithinItsTranscript(t *testing.T) {
 		if err := json.Unmarshal(line, &envelope); err != nil {
 			t.Fatal(err)
 		}
-		if envelope.Type == "checkpoint" {
-			checkpoints++
-			checkpointBytes += len(line) + 1
-			continue
-		}
-		transcriptBytes += len(line) + 1
+		counts[envelope.Type]++
 	}
-	if checkpoints == 0 {
-		t.Fatalf("no checkpoint was written over %d turns", turns)
+	want := map[string]int{
+		"session_created": 1, "user_message": turns, "provider_request_started": turns,
+		"completed_model_exchange": turns, "turn_finished": turns,
 	}
-	if checkpointBytes > transcriptBytes {
-		t.Fatalf("checkpoints are %d bytes over a %d byte transcript",
-			checkpointBytes, transcriptBytes)
+	if !maps.Equal(counts, want) {
+		t.Fatalf("record counts = %v, want %v", counts, want)
 	}
 
 	reloaded := newHarness(t, agent.Config{
@@ -1565,7 +1558,7 @@ func TestSessionRestartLoadsReplayAndContinuesExactHistory(t *testing.T) {
 				messages[0].Content[0].Text != "persist me" ||
 				messages[1].Content[0].Text != "persisted answer" ||
 				messages[2].Content[0].Text != "remember this" {
-				return nil, errors.New("second turn did not receive checkpointed history")
+				return nil, errors.New("second turn did not receive recorded history")
 			}
 			return completion("second persisted answer"), nil
 		},
@@ -1608,8 +1601,6 @@ func TestSessionRestartLoadsReplayAndContinuesExactHistory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var previousType string
-	checkpointCount := 0
 	for _, line := range bytes.Split(bytes.TrimSpace(logData), []byte{'\n'}) {
 		var envelope struct {
 			Type string `json:"type"`
@@ -1618,15 +1609,8 @@ func TestSessionRestartLoadsReplayAndContinuesExactHistory(t *testing.T) {
 			t.Fatal(err)
 		}
 		if envelope.Type == "checkpoint" {
-			checkpointCount++
-			if previousType != "turn_finished" {
-				t.Fatalf("checkpoint follows %q", previousType)
-			}
+			t.Fatal("checkpoint was written")
 		}
-		previousType = envelope.Type
-	}
-	if checkpointCount == 0 {
-		t.Fatal("no checkpoint was written")
 	}
 	baseline := newHarness(t, agent.Config{
 		ModelOverride: "test/model",
