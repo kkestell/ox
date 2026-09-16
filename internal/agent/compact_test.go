@@ -88,6 +88,34 @@ func TestCompactionKeepsTrailingTodoContextOutOfTheSplice(t *testing.T) {
 	}
 }
 
+// A large protected prefix forces the newest-complete-group fallback. The
+// trailing todo context is not a message group, so the fallback retains the
+// newest history group rather than discarding the conversation for it.
+func TestRequestAdmissionFallbackRetainsNewestHistoryGroup(t *testing.T) {
+	todo := todoContextMessage([]acp.PlanEntry{{
+		Content: "keep this", Priority: acp.PlanEntryPriorityMedium,
+		Status: acp.PlanEntryStatusInProgress,
+	}})
+	request := openrouter.Request{
+		Model: "test/model",
+		Messages: []openrouter.Message{
+			textMessage(openrouter.RoleSystem, strings.Repeat("s", 16_400)),
+			textMessage(openrouter.RoleUser, "do the task"),
+			textMessage(openrouter.RoleAssistant, strings.Repeat("a", 5_000)),
+			textMessage(openrouter.RoleUser, strings.Repeat("b", 2_400)),
+			textMessage(openrouter.RoleUser, strings.Repeat("c", 1_400)),
+			todo,
+		},
+	}
+	planned, err := planRequestAdmission(request, 10_000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if planned.plan == nil || planned.plan.headEnd != 2 || planned.plan.tailStart != 4 {
+		t.Fatalf("plan = %#v, want the newest history group retained", planned.plan)
+	}
+}
+
 func TestPlanCompactionKeepsLatestGroupPastBudget(t *testing.T) {
 	messages := []openrouter.Message{
 		textMessage(openrouter.RoleUser, "do the task"),

@@ -164,7 +164,7 @@ func planRequestAdmission(
 		}
 		return result, nil
 	}
-	protected := requestWithMessages(request, request.Messages[:headEnd])
+	protected := requestWithMessages(request, protectedMessages(request.Messages, headEnd))
 	_, protectedBudget, err := estimateProviderRequest(protected)
 	if err != nil {
 		return requestAdmission{}, err
@@ -277,6 +277,15 @@ func compactedMessages(
 	return spliceCompacted(
 		messages, plan.headEnd, plan.tailStart, newSummaryMessage(summary),
 	), nil
+}
+
+// protectedMessages are the messages no summary can replace: the instructions
+// and first request at the head, and the request context at the tail.
+func protectedMessages(messages []openrouter.Message, headEnd int) []openrouter.Message {
+	end := compactableEnd(messages)
+	protected := make([]openrouter.Message, 0, headEnd+len(messages)-end)
+	protected = append(protected, messages[:headEnd]...)
+	return append(protected, messages[end:]...)
 }
 
 // compactableEnd is where the conversation a summary can replace stops. Request

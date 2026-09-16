@@ -402,7 +402,7 @@ func (a *Agent) runSubagent(
 				return subagentStatusFailed, "", compactErr
 			}
 			request = admitted.request
-			history = cloneMessages(request.Messages[1:])
+			history = cloneMessages(request.Messages[requestHistoryOffset:])
 			admissionUsage = summary.Usage
 		}
 		provider := group.run.active.trace.Provider(

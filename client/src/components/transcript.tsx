@@ -66,16 +66,14 @@ export function Transcript({ transcript }: { transcript: SessionTranscript }) {
                 initiallyOpen={entry.id === transcript.openReasoningID}
                 latestEntryID={transcript.entries.at(-1)?.id}
               />
-            ) : entry.kind === "user" ? (
-              <article
-                aria-label="user message"
-                className="ml-auto w-fit min-w-0 max-w-[min(36rem,100%)] space-y-2 rounded-2xl bg-primary px-4 py-3 text-sm leading-6 text-primary-foreground shadow-sm"
-              >
-                <h3 className="sr-only">You</h3>
-                {entry.content.map((content, contentIndex) => <MessageContent content={content} key={contentIndex} />)}
-              </article>
             ) : (
-              <article aria-label={`${entry.kind} message`} className="w-full min-w-0 space-y-2 rounded-2xl bg-card px-4 py-3 text-sm leading-6 shadow-xs">
+              <article
+                aria-label={`${entry.kind} message`}
+                className={entry.kind === "user"
+                  ? "ml-auto w-fit min-w-0 max-w-[min(36rem,100%)] space-y-2 rounded-2xl bg-primary px-4 py-3 text-sm leading-6 text-primary-foreground shadow-sm"
+                  : "w-full min-w-0 space-y-2 rounded-2xl bg-card px-4 py-3 text-sm leading-6 shadow-xs"}
+              >
+                {entry.kind === "user" ? <h3 className="sr-only">You</h3> : null}
                 {entry.content.map((content, contentIndex) => <MessageContent content={content} key={contentIndex} />)}
               </article>
             )}
