@@ -183,7 +183,7 @@ func TestMCPActivationBuildsSessionToolsAndKeepsSecretsOutOfState(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, declaration := range plan.Tools {
+	for _, declaration := range applyMode(plan, modePlan).Tools {
 		if strings.HasPrefix(declaration.Function.Name, "mcp__") {
 			t.Fatalf("plan mode exposed MCP tool %q", declaration.Function.Name)
 		}
@@ -1466,7 +1466,7 @@ func TestResumeReResolvesTheDurableModelSelection(t *testing.T) {
 	}
 	if err := instance.commit(value, recordOptionChanged, optionChanged{
 		Selections: selections, Configuration: next,
-		Options: buildConfigOptions(next, value.models),
+		Options: buildConfigOptions(modeCode, next, value.models),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -1590,14 +1590,30 @@ func durableTestSession(
 	turnID string,
 ) *session {
 	t.Helper()
+	return durableModeTestSession(t, instance, configuration, modeCode, turnID)
+}
+
+func durableModeTestSession(
+	t *testing.T,
+	instance *Agent,
+	configuration requestConfiguration,
+	mode string,
+	turnID string,
+) *session {
+	t.Helper()
 	id, err := randomID()
 	if err != nil {
 		t.Fatal(err)
+	}
+	selections := sessionSelections{}
+	if mode != modeCode {
+		selections.Mode = mode
 	}
 	created, err := newRecord(1, recordSessionCreated, sessionCreated{
 		SessionID:     id,
 		CWD:           t.TempDir(),
 		Configuration: configuration,
+		Selections:    selections,
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -48,10 +48,11 @@ func (a *Agent) SetSessionConfigOption(
 	defer value.configMu.Unlock()
 	value.stateMu.Lock()
 	selections := cloneSelections(value.state.selections)
+	mode := value.state.mode()
 	configuration := cloneConfiguration(value.state.configuration)
 	history := cloneMessages(value.state.history)
 	value.stateMu.Unlock()
-	current := currentOptionValue(request.ConfigID, configuration, value.models)
+	current := currentOptionValue(request.ConfigID, mode, configuration, value.models)
 	if current == "" {
 		return acp.SetSessionConfigOptionResponse{}, jrpc2.Errorf(
 			jrpc2.InvalidParams, "unknown session configuration option %q", request.ConfigID,
@@ -105,7 +106,7 @@ func (a *Agent) SetSessionConfigOption(
 			jrpc2.InvalidParams, "%s: %v", request.ConfigID, err,
 		)
 	}
-	options := buildConfigOptions(next, value.models)
+	options := buildConfigOptions(selectedMode(selections), next, value.models)
 	change := optionChanged{
 		Selections: selections, Configuration: next, Options: options,
 	}
@@ -127,19 +128,24 @@ func (a *Agent) SetSessionConfigOption(
 
 func (a *Agent) configOptions(value *session) []acp.SessionConfigOption {
 	value.stateMu.Lock()
+	mode := value.state.mode()
 	configuration := cloneConfiguration(value.state.configuration)
 	value.stateMu.Unlock()
-	return buildConfigOptions(configuration, value.models)
+	return buildConfigOptions(mode, configuration, value.models)
+}
+
+func selectedMode(selections sessionSelections) string {
+	if selections.Mode == "" {
+		return modeCode
+	}
+	return selections.Mode
 }
 
 func buildConfigOptions(
+	mode string,
 	configuration requestConfiguration,
 	models []openrouter.Model,
 ) []acp.SessionConfigOption {
-	mode := configuration.Mode
-	if mode == "" {
-		mode = modeCode
-	}
 	options := []acp.SessionConfigOption{
 		{
 			Type: acp.SessionConfigOptionTypeSelect, ID: configMode, Name: "Mode",
@@ -198,8 +204,12 @@ func modelOptions(models []openrouter.Model) []acp.SessionConfigSelectOption {
 	return result
 }
 
-func currentOptionValue(id string, configuration requestConfiguration, models []openrouter.Model) string {
-	for _, option := range buildConfigOptions(configuration, models) {
+func currentOptionValue(
+	id, mode string,
+	configuration requestConfiguration,
+	models []openrouter.Model,
+) string {
+	for _, option := range buildConfigOptions(mode, configuration, models) {
 		if option.ID == id {
 			return option.CurrentValue
 		}
@@ -261,20 +271,6 @@ func applySelections(
 		reasoning.Effort = *selections.Reasoning
 		configuration.Settings.Reasoning = reasoning
 	}
-	switch selections.Mode {
-	case modePlan:
-		configuration.Mode = modePlan
-		configuration.Tools = planTools(configuration.Tools, configuration.PlanTools)
-		allowed := make(map[string]acp.ToolKind, len(configuration.Tools))
-		for _, tool := range configuration.Tools {
-			allowed[tool.Function.Name] = configuration.ToolKinds[tool.Function.Name]
-		}
-		configuration.ToolKinds = allowed
-	case modeAuto:
-		configuration.Mode = modeAuto
-	default:
-		configuration.Mode = modeCode
-	}
 	configuration.ContextWindow = entry.ContextWindow()
 	if configuration.ContextWindow <= 0 {
 		return requestConfiguration{}, fmt.Errorf(
@@ -289,6 +285,22 @@ func applySelections(
 		return requestConfiguration{}, err
 	}
 	return configuration, nil
+}
+
+// applyMode narrows a frozen turn configuration to what the session's current
+// mode permits. Only plan changes the declared tool set, so code and auto
+// return the configuration unchanged.
+func applyMode(configuration requestConfiguration, mode string) requestConfiguration {
+	if mode != modePlan {
+		return configuration
+	}
+	configuration.Tools = planTools(configuration.Tools, configuration.PlanTools)
+	kinds := make(map[string]acp.ToolKind, len(configuration.Tools))
+	for _, tool := range configuration.Tools {
+		kinds[tool.Function.Name] = configuration.ToolKinds[tool.Function.Name]
+	}
+	configuration.ToolKinds = kinds
+	return configuration
 }
 
 func planTools(tools []openrouter.Tool, allowed map[string]bool) []openrouter.Tool {

@@ -177,8 +177,8 @@ scan stopped rather than reporting the file as empty.
 content, requires `old_string` to match exactly once unless `replace_all` is
 true, and splices the replacement without rewriting bytes outside the matched
 text. Neither mutation depends on earlier tool history. File changes and shell
-commands require client permission unless the turn's mode authorizes them or the
-session already holds a matching grant. A shell approval becomes a reusable
+commands require client permission unless the session's mode authorizes them or
+the session already holds a matching grant. A shell approval becomes a reusable
 grant only when Ox can derive a literal command prefix that means what the user
 read: a command that runs a program of its arguments' choosing, or whose words
 Ox cannot resolve, is approved for that call alone. Delegating an operation to a
@@ -302,17 +302,27 @@ shell, file mutations, memory writes, and MCP tools whose effects Ox cannot
 enforce. Web fetch retains its permission gate in `code` and `plan`.
 
 Confinement, validation, output bounds, executor selection, and cancellation are
-identical in all three modes. Auto authorization belongs to the turn that ran
-under it, not to the session: it is not a grant, so a later `code` turn asks
-about the same call again. Changing mode never grants permissions or widens an
-existing grant.
+identical in all three modes. Auto authorization belongs to the calls that ran
+under it, not to the session: it is not a grant, so a later `code` call asks
+about the same operation again. Changing mode never grants permissions or widens
+an existing grant.
 
 `session/set_config_option` validates and persists the entire resulting state
 before responding with the complete option list and emitting
-`config_option_update`. Changes accepted during a turn take effect on the next
-turn. Selecting `plan` does not stop an already running `code` turn;
-cancellation is required for that. Concurrent setters are serialized in accepted
-order. Selecting the current value is a no-op.
+`config_option_update`.
+
+Mode is the session's current execution policy rather than a property of a turn.
+A change takes effect at the next authorization decision and the next provider
+request, in the running turn and in its children alike, so a call the new mode
+authorizes runs unasked and a call it excludes is refused with the mode named.
+Narrowing the declared tool set invalidates the provider's cached prefix, which
+is the cost of the change reaching the turn. Selecting `plan` does not stop an
+already running `code` turn; cancellation is required for that.
+
+Model and reasoning changes accepted during a turn take effect on the next turn,
+because a turn's request profile is frozen when it is admitted. Concurrent
+setters are serialized in accepted order. Selecting the current value is a
+no-op.
 
 Explicit selections persist across close, load, and resume and override
 activation defaults. Files are reread on activation; incompatible saved
@@ -320,8 +330,8 @@ selections fail activation with the responsible option named. Replayed option
 history is followed by the current complete state. Tools, instructions, and
 model settings in a recovered permission wait remain those of its original turn;
 a changed required tool definition rejects recovery before dispatch. Selecting
-`auto` does not answer a `code` turn's outstanding permission request, including
-one reissued by `session/load`.
+`auto` does not answer an outstanding permission request, including one reissued
+by `session/load`; it governs the calls that follow the answer.
 
 Ox uses configuration options as its only mode interface. It does not advertise
 legacy `modes` or implement `session/set_mode`. This follows ACP's preferred

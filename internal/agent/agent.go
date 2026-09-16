@@ -986,7 +986,6 @@ func (a *Agent) resolveConfiguration(
 		cwd, now, instructions, skillCatalog, a.clientForm, languageExtensions(a.languageServers),
 	)
 	return requestConfiguration{
-		Mode:                 modeCode,
 		Settings:             profiles.DefaultProfile(),
 		SystemPrompt:         systemPrompt,
 		Tools:                cloneTools(primaryTools.modelTools),
@@ -1841,6 +1840,22 @@ func (s *session) turnSkills() []skills.Reference {
 	s.stateMu.Lock()
 	defer s.stateMu.Unlock()
 	return s.state.turnConfiguration().Skills
+}
+
+// modeConfiguration pairs the turn's frozen request profile with the session's
+// current mode, so a mode change reaches a running turn at its next
+// authorization decision and its next provider request.
+func (s *session) modeConfiguration() (requestConfiguration, string) {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	mode := s.state.mode()
+	return applyMode(s.state.turnConfiguration(), mode), mode
+}
+
+func (s *session) currentMode() string {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	return s.state.mode()
 }
 
 func (s *session) turnConfiguration() requestConfiguration {

@@ -28,7 +28,6 @@ func configOptionSession(t *testing.T) (*Agent, *session) {
 		{ID: "plain/model", Name: "Plain Model", ContextLength: 1000},
 	}
 	configuration := requestConfiguration{
-		Mode:          modeCode,
 		Settings:      settings.Resolved{Model: "test/model"},
 		ContextWindow: 1000,
 	}
@@ -177,7 +176,7 @@ func TestAutoModeIsAdvertisedAndKeepsTheCodeToolSet(t *testing.T) {
 	base.PlanTools = map[string]bool{"read_file": true}
 
 	var offered []string
-	for _, option := range buildConfigOptions(base, models)[0].Options {
+	for _, option := range buildConfigOptions(modeCode, base, models)[0].Options {
 		offered = append(offered, option.Value)
 	}
 	if !reflect.DeepEqual(offered, []string{modeCode, modeAuto, modePlan}) {
@@ -193,7 +192,7 @@ func TestAutoModeIsAdvertisedAndKeepsTheCodeToolSet(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if auto.Mode != modeAuto || !reflect.DeepEqual(auto.Tools, code.Tools) {
+	if !reflect.DeepEqual(applyMode(auto, modeAuto).Tools, code.Tools) {
 		t.Fatalf("auto configuration = %#v, code tools = %#v", auto, code.Tools)
 	}
 	if err := validateSelections(sessionSelections{Mode: modeAuto}); err != nil {
@@ -207,7 +206,8 @@ func TestAutoModeIsAdvertisedAndKeepsTheCodeToolSet(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(plan.Tools) != 1 || plan.Tools[0].Function.Name != "read_file" {
-		t.Fatalf("plan tools = %#v", plan.Tools)
+	narrowed := applyMode(plan, modePlan)
+	if len(narrowed.Tools) != 1 || narrowed.Tools[0].Function.Name != "read_file" {
+		t.Fatalf("plan tools = %#v", narrowed.Tools)
 	}
 }

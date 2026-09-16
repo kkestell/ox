@@ -499,7 +499,7 @@ func (a *Agent) finishTurn(
 // call.
 func (a *Agent) modelRequest(value *session) openrouter.Request {
 	value.stateMu.Lock()
-	configuration := value.state.turnConfiguration()
+	configuration := applyMode(value.state.turnConfiguration(), value.state.mode())
 	history := cloneMessages(value.state.history)
 	todo := clonePlanEntries(value.state.todo)
 	value.stateMu.Unlock()
@@ -541,9 +541,10 @@ func todoContextMessage(entries []acp.PlanEntry) openrouter.Message {
 
 // prefixFingerprint hashes everything a request carries ahead of the messages,
 // so a change that would invalidate the provider's prompt cache is visible in
-// the log. The turn configuration keeps this stable across a tool loop.
+// the log. The turn configuration keeps this stable across a tool loop; a mode
+// change that narrows the declared tools deliberately shows up here.
 func (a *Agent) prefixFingerprint(value *session) string {
-	configuration := value.turnConfiguration()
+	configuration, _ := value.modeConfiguration()
 	return requestPrefixFingerprint(
 		configuration,
 		configuration.SystemPrompt,
@@ -741,11 +742,9 @@ func (a *Agent) executeSuspendedBatch(
 ) ([]toolResult, bool, error) {
 	value := run.session
 	a.logger.Info("suspended tool batch started", "session_id", value.id, "calls", len(calls))
-	configuration := value.turnConfiguration()
-	tools := a.sessionPrimaryTools(value)
-	if configuration.Mode != "" {
-		tools = constrainedToolSet(tools, configuration.Tools)
-	}
+	configuration, mode := value.modeConfiguration()
+	primary := a.sessionPrimaryTools(value)
+	tools := constrainedToolSet(primary, configuration.Tools)
 	results := make([]toolResult, len(calls))
 	ready := make([]bool, len(calls))
 
@@ -792,12 +791,22 @@ func (a *Agent) executeSuspendedBatch(
 
 		toolIndex, known := tools.byName[call.Function.Name]
 		if !known {
+			// A mode change can withdraw a tool after the model has already
+			// asked for it, so the model is told the tool is excluded rather
+			// than that it does not exist.
+			if _, exists := primary.byName[call.Function.Name]; exists {
+				results[index].content = fmt.Sprintf(
+					"tool %q is not available in %s mode", call.Function.Name, mode,
+				)
+				results[index].failed = true
+				continue
+			}
 			ready[index] = true
 			continue
 		}
 		tool := tools.tools[toolIndex]
 		arguments := json.RawMessage(call.Function.Arguments)
-		if authorized(configuration.Mode, value, tool, arguments) {
+		if authorized(mode, value, tool, arguments) {
 			ready[index] = true
 			continue
 		}

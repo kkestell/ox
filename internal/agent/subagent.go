@@ -62,7 +62,6 @@ type subagentGroup struct {
 	cancel        context.CancelFunc
 	run           turnRun
 	configuration requestConfiguration
-	tools         toolSet
 
 	mu       sync.Mutex
 	children map[string]*subagent
@@ -88,19 +87,25 @@ type subagent struct {
 
 func newSubagentGroup(a *Agent, ctx context.Context, run turnRun) *subagentGroup {
 	groupCtx, cancel := context.WithCancel(ctx)
-	configuration := run.session.turnConfiguration()
-	tools := run.session.subagentTools
-	if configuration.Mode == modePlan {
-		allowed := configuredPlanTools(tools)
-		tools = constrainedToolSet(tools, planTools(tools.modelTools, allowed))
-	}
 	group := &subagentGroup{
 		agent: a, ctx: groupCtx, cancel: cancel, run: run,
-		configuration: configuration, tools: tools,
-		children: make(map[string]*subagent), changed: make(chan struct{}),
+		configuration: run.session.turnConfiguration(),
+		children:      make(map[string]*subagent), changed: make(chan struct{}),
 	}
 	group.run.subagents = group
 	return group
+}
+
+// modeTools is the child tool set and execution policy for the session's
+// current mode, read once per child request so a mode change reaches a running
+// child the same way it reaches the primary loop.
+func (g *subagentGroup) modeTools() (toolSet, string) {
+	tools := g.run.session.subagentTools
+	mode := g.run.session.currentMode()
+	if mode == modePlan {
+		tools = constrainedToolSet(tools, planTools(tools.modelTools, configuredPlanTools(tools)))
+	}
+	return tools, mode
 }
 
 func (g *subagentGroup) start(name, task string) (SubagentSnapshot, error) {
@@ -380,7 +385,8 @@ func (a *Agent) runSubagent(
 		if incoming := group.drainInbox(id); len(incoming) > 0 {
 			history = append(history, subagentInboxMessage(incoming))
 		}
-		request := subagentRequest(group.configuration, group.tools, group.run.session.id, history)
+		tools, mode := group.modeTools()
+		request := subagentRequest(group.configuration, tools, group.run.session.id, history)
 		planned, err := planRequestAdmission(request, group.configuration.ContextWindow)
 		if err != nil {
 			return subagentStatusFailed, "", err
@@ -481,7 +487,7 @@ func (a *Agent) runSubagent(
 			providerIDs[call.ID] = struct{}{}
 		}
 		results, err := a.executeSubagentCalls(
-			ctx, run, group.configuration.Mode, group.tools, completion.ToolCalls,
+			ctx, run, mode, tools, completion.ToolCalls,
 		)
 		if err != nil {
 			if ctx.Err() != nil || errors.Is(err, context.Canceled) {

@@ -316,9 +316,7 @@ func TestExecuteBatchRunsGatedToolsWithoutAskingInAutoMode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	configuration := testConfiguration(instance)
-	configuration.Mode = modeAuto
-	value := durableTestSession(t, instance, configuration, "turn")
+	value := durableModeTestSession(t, instance, testConfiguration(instance), modeAuto, "turn")
 
 	results := suspendedBatch(
 		t,

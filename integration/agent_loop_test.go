@@ -843,7 +843,9 @@ func TestPlanModeExposesMemorySearchButRejectsMemoryMutationDispatch(t *testing.
 			if err != nil {
 				return nil, err
 			}
-			if !strings.Contains(messages[len(messages)-1].Content[0].Text, "unknown tool") {
+			if !strings.Contains(
+				messages[len(messages)-1].Content[0].Text, "not available in plan mode",
+			) {
 				return nil, errors.New("excluded memory mutation reached dispatch")
 			}
 			return completion("blocked"), nil
@@ -3424,12 +3426,10 @@ func TestOneSessionRejectsOverlapWhileSeparateSessionsRun(t *testing.T) {
 	}
 }
 
-// TestConfigurationChangeOverlapsALiveTurn holds a turn inside a tool call and
-// changes the session mode while it runs, releasing the tool without waiting for
-// the change so the rest of the turn and the commit that replaces session state
-// stay unordered. The running turn keeps its frozen tool set and the next turn
-// picks the change up.
-func TestConfigurationChangeOverlapsALiveTurn(t *testing.T) {
+// TestModeChangeReachesALiveTurnsNextRequest holds a turn inside a tool call and
+// selects plan while it runs. The rest of that turn, not just the next one, is
+// offered the narrowed tool set.
+func TestModeChangeReachesALiveTurnsNextRequest(t *testing.T) {
 	entered := make(chan struct{})
 	resume := make(chan struct{})
 	tools := []agent.Tool{
@@ -3485,20 +3485,15 @@ func TestConfigurationChangeOverlapsALiveTurn(t *testing.T) {
 	}()
 	<-entered
 
-	changed := make(chan error, 1)
-	go func() {
-		_, err := harness.callSetConfig(sessionID, "mode", "plan")
-		changed <- err
-	}()
+	if _, err := harness.callSetConfig(sessionID, "mode", "plan"); err != nil {
+		t.Fatal(err)
+	}
 	resume <- struct{}{}
 
 	if result := <-held; result.err != nil {
 		t.Fatal(result.err)
 	} else if result.response.StopReason != acp.StopReasonEndTurn {
 		t.Fatalf("stopReason = %q, want %q", result.response.StopReason, acp.StopReasonEndTurn)
-	}
-	if err := <-changed; err != nil {
-		t.Fatal(err)
 	}
 	harness.prompt(t, sessionID, "after the change")
 
@@ -3507,13 +3502,13 @@ func TestConfigurationChangeOverlapsALiveTurn(t *testing.T) {
 	if len(offered) != 3 {
 		t.Fatalf("model requests = %d, want 3", len(offered))
 	}
-	for index, names := range offered[:2] {
-		if !slices.Contains(names, "mutate") {
-			t.Fatalf("request %d tools = %v, want the frozen code-mode tool set", index, names)
-		}
+	if !slices.Contains(offered[0], "mutate") {
+		t.Fatalf("request 0 tools = %v, want the code-mode tool set", offered[0])
 	}
-	if slices.Contains(offered[2], "mutate") {
-		t.Fatalf("request 2 tools = %v, want the plan-mode tool set", offered[2])
+	for index, names := range offered[1:] {
+		if slices.Contains(names, "mutate") {
+			t.Fatalf("request %d tools = %v, want the plan-mode tool set", index+1, names)
+		}
 	}
 }
 
@@ -3645,7 +3640,8 @@ func TestPlanModeHidesAndRejectsEffectfulTools(t *testing.T) {
 				if err != nil {
 					return nil, err
 				}
-				if got := messages[len(messages)-1].Content[0].Text; !strings.Contains(got, "unknown tool") {
+				got := messages[len(messages)-1].Content[0].Text
+				if !strings.Contains(got, "not available in plan mode") {
 					return nil, fmt.Errorf("hidden tool result = %q", got)
 				}
 				return completion("done"), nil

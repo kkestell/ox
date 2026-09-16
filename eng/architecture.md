@@ -286,9 +286,16 @@ selection records a model ID, not a copy of its settings, so every activation
 resolves it against current files. A setter loads the chosen profile, validates
 the resulting complete configuration, commits it, then publishes it. At turn
 admission the agent constructs one immutable configuration used by the provider,
-dispatcher, and children. A running or recovered turn never reads a later
-session selection. The dispatcher enforces tool exclusion; prompt wording and
-server annotations are not policy enforcement.
+dispatcher, and children; a running or recovered turn never reads a later model
+or reasoning selection.
+
+Mode is deliberately outside that configuration. It is the session's current
+execution policy, read afresh at every authorization decision and every provider
+request, so choosing it reaches the turn already running rather than the next
+one. The declared tool set a request carries is derived from the frozen
+configuration under the current mode, which is what lets a withdrawn tool be
+refused by name instead of reported as unknown. The dispatcher enforces tool
+exclusion; prompt wording and server annotations are not policy enforcement.
 
 Credentials are resolved by the credential boundary and passed to transports in
 memory. Authentication and login own mutation. Neither durable configuration nor
@@ -383,12 +390,12 @@ mutations do not depend on session history. Discovery follows Git ignore rules.
 Large tool and shell output is bounded in the conversation and spills to a
 confined session directory.
 
-Mutating file tools and shell commands require ACP permission unless the turn's
-frozen mode authorizes the whole tool set or a previous session grant covers the
-operation. A turn's mode is its execution policy: it decides whether a call
+Mutating file tools and shell commands require ACP permission unless the
+session's mode authorizes the whole tool set or a previous session grant covers
+the operation. Mode is the session's execution policy: it decides whether a call
 proceeds, prompts, or is unavailable before any approval mechanics run, and
 primary and child loops share that decision. Authorization a mode confers is not
-a session grant and outlives nothing but its turn.
+a session grant and outlives nothing but the call it admitted.
 
 Reusable shell grants are derived from a parsed command rather than string
 prefixes. Shell commands run from the session root with a sanitized environment,

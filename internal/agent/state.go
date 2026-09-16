@@ -57,7 +57,6 @@ type sessionRecord struct {
 }
 
 type requestConfiguration struct {
-	Mode                 string                  `json:"mode"`
 	Settings             settings.Resolved       `json:"settings"`
 	ContextWindow        int                     `json:"contextWindow"`
 	SystemPrompt         string                  `json:"systemPrompt,omitempty"`
@@ -1900,6 +1899,17 @@ func validateSelections(value sessionSelections) error {
 	return nil
 }
 
+// mode is the session's current execution policy. It is deliberately not part
+// of requestConfiguration: a turn freezes the request profile it was admitted
+// with, while a mode change reaches the turn already running at its next
+// authorization decision and its next provider request.
+func (s durableState) mode() string {
+	if s.selections.Mode == "" {
+		return modeCode
+	}
+	return s.selections.Mode
+}
+
 // turnConfiguration returns the configuration a running turn is frozen to, or
 // the session's current one between turns. The value is shared rather than
 // copied: durable state is copy-on-write, so a commit builds a successor
@@ -2037,12 +2047,6 @@ func mustMarshal(value any) []byte {
 }
 
 func validateConfiguration(value requestConfiguration) error {
-	if value.Mode == "" {
-		value.Mode = modeCode
-	}
-	if !validMode(value.Mode) {
-		return errors.New("configuration mode is invalid")
-	}
 	if value.Settings.Model == "" {
 		return errors.New("configuration model is required")
 	}
@@ -2083,7 +2087,7 @@ func validateConfiguration(value requestConfiguration) error {
 		if tool.Name == "" || tool.ServerName == "" || tool.ToolName == "" || tool.Identity == "" {
 			return errors.New("configuration contains invalid MCP tool evidence")
 		}
-		if _, exists := names[tool.Name]; !exists && value.Mode != modePlan {
+		if _, exists := names[tool.Name]; !exists {
 			return fmt.Errorf("MCP tool evidence names unknown tool %q", tool.Name)
 		}
 		if _, exists := mcpNames[tool.Name]; exists {
