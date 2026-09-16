@@ -475,10 +475,8 @@ test("follows live transcript updates until manual scrollback asks to return", a
     await sendPrompt(page);
     await expect.poll(() => fixture.requests).toBe(3);
     await expect.poll(() => bottomDistance(scrollport)).toBeLessThanOrEqual(1);
-    await scrollport.evaluate((element) => {
-      element.scrollTop = 0;
-      element.dispatchEvent(new Event("scroll"));
-    });
+    await scrollport.hover();
+    await page.mouse.wheel(0, -5000);
     await expect.poll(() => bottomDistance(scrollport)).toBeGreaterThan(40);
     const jump = page.getByRole("button", { name: "Jump to latest" });
     await expect(jump).toBeVisible();
@@ -677,7 +675,8 @@ test("routes a pending permission to the workspace the browser is not showing", 
     await page.getByLabel("Message", { exact: true }).fill("request permission");
     await sendPrompt(page);
     const permission = page.getByLabel("Pending interactions").getByRole("article", { name: /Permission for/ });
-    await expect(permission).toContainText("Run pwd");
+    await expect(permission).toContainText("Run");
+    await expect(permission.locator("code")).toHaveText("pwd");
     await expect(permission).not.toContainText("Tool:");
     await expect(permission).not.toContainText("Kind:");
     const scrollport = page.getByTestId("transcript-scrollport");
@@ -694,7 +693,7 @@ test("routes a pending permission to the workspace the browser is not showing", 
       .getByRole("link")
       .click();
 
-    await expect(permission).toContainText("Run pwd");
+    await expect(permission.locator("code")).toHaveText("pwd");
     await page.getByRole("button", { name: "Allow once" }).click();
     await expect(permission).toBeHidden();
     await expect.poll(() => fixture.requests).toBe(2);
