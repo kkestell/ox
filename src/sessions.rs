@@ -1,25 +1,8 @@
-//! SQLite-backed session storage.
+//! Session storage, in one SQLite database at `{data}/ox.db`: `$OX_DATA_DIR`,
+//! else `$XDG_DATA_HOME/ox`, else `~/.local/share/ox`.
 //!
-//! Everything lives in one database, `{data}/ox.db`, where `{data}` is
-//! `$XDG_DATA_HOME/ox`, defaulting to `~/.local/share/ox` (`$OX_DATA_DIR`
-//! overrides the data dir, mainly for tests).
-//!
-//! Three tables:
-//!
-//! - `workspaces`, one row per directory a session was started in, so the
-//!   path is stored once however many sessions share it;
-//! - `sessions`, one row per session: its workspace, its title once a prompt
-//!   gives it one, and the creation and last-activity times ACP reports;
-//! - `events`, the conversation transcript, one row per record, ordered by
-//!   its rowid and deleted with its session.
-//!
-//! Timestamps are RFC 3339 UTC strings with millisecond precision, which sort
-//! lexicographically in the order they happened, so `ORDER BY updated_at`
-//! needs no date parsing.
-//!
-//! Session ids go into the database as values rather than into a file name,
-//! so there is nothing to sanitise: a strange id can only ever name a row
-//! that is not there.
+//! Timestamps are RFC 3339 UTC with millisecond precision, so they sort
+//! lexicographically and `ORDER BY updated_at` needs no date parsing.
 
 use std::fs;
 use std::io::{self, ErrorKind};
@@ -29,16 +12,14 @@ use agent_client_protocol::schema::v1::{SessionId, SessionInfo};
 use chrono::{SecondsFormat, Utc};
 use rusqlite::{Connection, OptionalExtension, params};
 
-/// Environment variable overriding the data directory (mainly for tests).
+/// Overrides the data directory, mainly for tests.
 pub const DATA_DIR_ENV: &str = "OX_DATA_DIR";
 
-/// Name of the database file inside the data directory.
 const DATABASE_FILE: &str = "ox.db";
 
 /// Longest title derived from a prompt, in characters.
 const MAX_TITLE_CHARS: usize = 80;
 
-/// Schema, applied on every open; each statement is a no-op once it has run.
 const SCHEMA: &str = "
 PRAGMA foreign_keys = ON;
 PRAGMA journal_mode = WAL;
@@ -70,18 +51,12 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE INDEX IF NOT EXISTS events_by_session ON events (session_id, id);
 ";
 
-/// One record in a session's transcript.
-//
-// Written on every prompt; nothing reads it back yet, which is what
-// `session/load` will do once it replays a session to the client.
+/// One record in a session's transcript, e.g. a `"user_message"`.
 #[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Event {
-    /// RFC 3339 UTC time the record was written.
     pub ts: String,
-    /// What kind of record this is, e.g. `"user_message"`.
     pub kind: String,
-    /// The record itself, as JSON.
     pub data: serde_json::Value,
 }
 
@@ -89,15 +64,10 @@ fn invalid_input(message: impl Into<String>) -> io::Error {
     io::Error::new(ErrorKind::InvalidInput, message.into())
 }
 
-/// The current time as an RFC 3339 UTC string.
-///
-/// Millisecond precision so that sessions created in quick succession still
-/// sort in the order they happened.
 fn now() -> String {
     Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
 }
 
-/// Resolve the path of the database.
 pub fn database_path() -> io::Result<PathBuf> {
     if let Ok(dir) = std::env::var(DATA_DIR_ENV)
         && !dir.is_empty()
@@ -115,7 +85,6 @@ pub fn database_path() -> io::Result<PathBuf> {
         .join(DATABASE_FILE))
 }
 
-/// Open the database, creating it and its directory if they are not there.
 fn open() -> io::Result<Connection> {
     let path = database_path()?;
     if let Some(parent) = path.parent() {
@@ -126,7 +95,6 @@ fn open() -> io::Result<Connection> {
     Ok(connection)
 }
 
-/// The id of the `workspaces` row for `cwd`, inserting it if it is new.
 fn workspace_id(connection: &Connection, cwd: &Path) -> rusqlite::Result<i64> {
     let path = cwd.to_string_lossy();
     connection.execute(
@@ -140,10 +108,8 @@ fn workspace_id(connection: &Connection, cwd: &Path) -> rusqlite::Result<i64> {
     )
 }
 
-/// Record a new session in `cwd`.
-///
-/// Idempotent: re-creating an existing session leaves its row, and so its
-/// title and creation time, alone.
+/// Records a new session in `cwd`. Idempotent: re-creating an existing
+/// session keeps its title and creation time.
 pub fn create_session(cwd: &Path, session_id: &SessionId) -> io::Result<()> {
     create_session_in(&open()?, cwd, session_id).map_err(io::Error::other)
 }
@@ -162,7 +128,6 @@ fn create_session_in(
     Ok(())
 }
 
-/// Check whether `cwd` has a session with this id.
 pub fn session_exists(cwd: &Path, session_id: &SessionId) -> bool {
     open().is_ok_and(|connection| session_exists_in(&connection, cwd, session_id).unwrap_or(false))
 }
@@ -184,8 +149,6 @@ fn session_exists_in(
         .map(|found| found.unwrap_or(false))
 }
 
-/// List sessions, optionally limited to one workspace.
-///
 /// Most recently updated first, ties broken by id so the order is stable.
 pub fn list_sessions(cwd: Option<&Path>) -> io::Result<Vec<SessionInfo>> {
     list_sessions_in(&open()?, cwd).map_err(io::Error::other)
@@ -217,10 +180,8 @@ fn list_sessions_in(
     Ok(sessions)
 }
 
-/// Record activity on a session: bump `updated_at`, and adopt `title` if the
-/// session has not been given one yet.
-///
-/// A session that is not there is left alone rather than resurrected.
+/// Bumps `updated_at`, and adopts `title` if the session is still untitled.
+/// An unknown session is a no-op.
 pub fn record_activity(session_id: &SessionId, title: Option<String>) -> io::Result<()> {
     record_activity_in(&open()?, session_id, title).map_err(io::Error::other)
 }
@@ -239,7 +200,6 @@ fn record_activity_in(
     Ok(())
 }
 
-/// Append a record to a session's transcript.
 pub fn append_event(
     session_id: &SessionId,
     kind: &str,
@@ -261,7 +221,7 @@ fn append_event_in(
     Ok(())
 }
 
-/// Read a session's transcript, oldest record first.
+/// A session's transcript, oldest record first.
 #[allow(dead_code)]
 pub fn events(session_id: &SessionId) -> io::Result<Vec<Event>> {
     events_in(&open()?, session_id).map_err(io::Error::other)
@@ -284,10 +244,8 @@ fn events_in(connection: &Connection, session_id: &SessionId) -> rusqlite::Resul
     Ok(events)
 }
 
-/// Turn the first line of a prompt into a session title.
-///
-/// `None` when there is nothing worth showing, so an empty prompt does not
-/// claim the one chance a session has to be titled.
+/// The first non-blank line of a prompt, truncated. `None` for a blank
+/// prompt, so it does not spend the session's one chance at a title.
 pub fn title_from_prompt(text: &str) -> Option<String> {
     let line = text.lines().find(|line| !line.trim().is_empty())?.trim();
     let mut title: String = line.chars().take(MAX_TITLE_CHARS).collect();
@@ -297,9 +255,7 @@ pub fn title_from_prompt(text: &str) -> Option<String> {
     Some(title)
 }
 
-/// Delete a session and its transcript.
-///
-/// Returns `Ok(true)` if there was a session to delete.
+/// Deletes a session and its transcript, `Ok(true)` if there was one.
 pub fn delete_session(session_id: &SessionId) -> io::Result<bool> {
     delete_session_in(&open()?, session_id).map_err(io::Error::other)
 }
@@ -321,7 +277,6 @@ mod tests {
     const CWD: &str = "/Users/kyle/projects/ox";
     const OTHER_CWD: &str = "/Users/kyle/projects/other";
 
-    /// An empty database with the schema applied.
     fn db() -> Connection {
         let connection = Connection::open_in_memory().unwrap();
         connection.execute_batch(SCHEMA).unwrap();
@@ -343,8 +298,8 @@ mod tests {
             .collect()
     }
 
-    /// Rewrite a session's timestamps rather than sleeping: two creates in the
-    /// same millisecond would otherwise leave the order to the id tie-break.
+    /// Set timestamps rather than sleeping: two creates in the same
+    /// millisecond would leave the order to the id tie-break.
     fn set_updated_at(connection: &Connection, session_id: &SessionId, ts: &str) {
         connection
             .execute(
