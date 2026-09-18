@@ -1,83 +1,88 @@
-//! File-backed session storage.
+//! SQLite-backed session storage.
 //!
-//! Every session is one JSONL file, all of them side by side:
-//! `{data}/sessions/{session_id}.jsonl`
+//! Everything lives in one database, `{data}/ox.db`, where `{data}` is
+//! `$XDG_DATA_HOME/ox`, defaulting to `~/.local/share/ox` (`$OX_DATA_DIR`
+//! overrides the data dir, mainly for tests).
 //!
-//! `{data}` is `$XDG_DATA_HOME/ox`, defaulting to `~/.local/share/ox`
-//! (`$OX_DATA_DIR` overrides the data dir, mainly for tests).
+//! Three tables:
 //!
-//! Each session file opens with a header line naming the workspace it belongs
-//! to and the UTC time it was created:
+//! - `workspaces`, one row per directory a session was started in, so the
+//!   path is stored once however many sessions share it;
+//! - `sessions`, one row per session: its workspace, its title once a prompt
+//!   gives it one, and the creation and last-activity times ACP reports;
+//! - `events`, the conversation transcript, one row per record, ordered by
+//!   its rowid and deleted with its session.
 //!
-//! ```jsonl
-//! {"type":"session","cwd":"/Users/kyle/projects/ox","ts":"2026-09-18T17:04:31.482Z"}
-//! ```
+//! Timestamps are RFC 3339 UTC strings with millisecond precision, which sort
+//! lexicographically in the order they happened, so `ORDER BY updated_at`
+//! needs no date parsing.
 //!
-//! Alongside the session files sits `{data}/sessions/index.json`, a JSON array
-//! with one object per session:
-//!
-//! ```json
-//! [{"sessionId":"...","cwd":"/Users/kyle/projects/ox","title":"Rejigger sessions",
-//!   "createdAt":"2026-09-18T17:04:31.482Z","updatedAt":"2026-09-18T17:09:02.118Z"}]
-//! ```
-//!
-//! The index is what `session/list` answers from, so listing never has to open
-//! a session file; the header line is what lets a session file still say which
-//! workspace it came from on its own, without the index. `createdAt` and
-//! `updatedAt` are the ISO 8601 timestamps ACP reports as last activity.
-//!
-//! The index is rewritten whole, through a temporary file and a rename, so a
-//! crash mid-write leaves the previous index intact. Two ox processes writing
-//! at once is still last-writer-wins; sessions are per-user and that race is
-//! not worth a lock file.
-//!
-//! Beyond the header line this module only manages the files themselves:
-//! create, list, touch and delete. Conversation records are future work.
+//! Session ids go into the database as values rather than into a file name,
+//! so there is nothing to sanitise: a strange id can only ever name a row
+//! that is not there.
 
 use std::fs;
-use std::io::{self, ErrorKind, Write};
+use std::io::{self, ErrorKind};
 use std::path::{Path, PathBuf};
 
 use agent_client_protocol::schema::v1::{SessionId, SessionInfo};
 use chrono::{SecondsFormat, Utc};
-use serde::{Deserialize, Serialize};
+use rusqlite::{Connection, OptionalExtension, params};
 
 /// Environment variable overriding the data directory (mainly for tests).
 pub const DATA_DIR_ENV: &str = "OX_DATA_DIR";
 
-/// Extension for session files.
-const SESSION_EXTENSION: &str = "jsonl";
-
-/// Name of the index file listing every session.
-const INDEX_FILE: &str = "index.json";
-
-/// Name of the temporary file the index is written to before being renamed.
-const INDEX_TEMP_FILE: &str = "index.json.tmp";
+/// Name of the database file inside the data directory.
+const DATABASE_FILE: &str = "ox.db";
 
 /// Longest title derived from a prompt, in characters.
 const MAX_TITLE_CHARS: usize = 80;
 
-/// Header line that opens every session file.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "type", rename = "session")]
-struct SessionHeader {
-    cwd: PathBuf,
-    /// RFC 3339 UTC time this record was written, the `ts` every transcript
-    /// event carries.
-    ts: String,
-}
+/// Schema, applied on every open; each statement is a no-op once it has run.
+const SCHEMA: &str = "
+PRAGMA foreign_keys = ON;
+PRAGMA journal_mode = WAL;
 
-/// One session's entry in `index.json`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct IndexEntry {
-    session_id: String,
-    cwd: PathBuf,
-    /// Human-readable title, absent until a prompt gives the session one.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    title: Option<String>,
-    created_at: String,
-    updated_at: String,
+CREATE TABLE IF NOT EXISTS workspaces (
+    id   INTEGER PRIMARY KEY,
+    path TEXT NOT NULL UNIQUE
+);
+
+CREATE TABLE IF NOT EXISTS sessions (
+    id           TEXT PRIMARY KEY,
+    workspace_id INTEGER NOT NULL REFERENCES workspaces (id),
+    title        TEXT,
+    created_at   TEXT NOT NULL,
+    updated_at   TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS sessions_by_activity
+    ON sessions (updated_at DESC, id);
+
+CREATE TABLE IF NOT EXISTS events (
+    id         INTEGER PRIMARY KEY,
+    session_id TEXT NOT NULL REFERENCES sessions (id) ON DELETE CASCADE,
+    ts         TEXT NOT NULL,
+    kind       TEXT NOT NULL,
+    data       TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS events_by_session ON events (session_id, id);
+";
+
+/// One record in a session's transcript.
+//
+// Written on every prompt; nothing reads it back yet, which is what
+// `session/load` will do once it replays a session to the client.
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Event {
+    /// RFC 3339 UTC time the record was written.
+    pub ts: String,
+    /// What kind of record this is, e.g. `"user_message"`.
+    pub kind: String,
+    /// The record itself, as JSON.
+    pub data: serde_json::Value,
 }
 
 fn invalid_input(message: impl Into<String>) -> io::Error {
@@ -92,194 +97,191 @@ fn now() -> String {
     Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
 }
 
-/// Resolve the directory holding the session files and the index.
-pub fn sessions_root() -> io::Result<PathBuf> {
+/// Resolve the path of the database.
+pub fn database_path() -> io::Result<PathBuf> {
     if let Ok(dir) = std::env::var(DATA_DIR_ENV)
         && !dir.is_empty()
     {
-        return Ok(PathBuf::from(dir).join("sessions"));
+        return Ok(PathBuf::from(dir).join(DATABASE_FILE));
     }
     if let Ok(xdg) = std::env::var("XDG_DATA_HOME")
         && !xdg.is_empty()
     {
-        return Ok(PathBuf::from(xdg).join("ox/sessions"));
+        return Ok(PathBuf::from(xdg).join("ox").join(DATABASE_FILE));
     }
     let home = std::env::var("HOME").map_err(|_| invalid_input("HOME is not set"))?;
-    Ok(PathBuf::from(home).join(".local/share/ox/sessions"))
+    Ok(PathBuf::from(home)
+        .join(".local/share/ox")
+        .join(DATABASE_FILE))
 }
 
-/// Reject session ids that could name something other than a file in the root.
-fn validate_session_id(session_id: &SessionId) -> io::Result<()> {
-    let id = session_id.to_string();
-    if id.is_empty()
-        || id == "."
-        || id == ".."
-        || id.contains('/')
-        || id.contains('\\')
-        || id.contains('\0')
-    {
-        return Err(invalid_input(format!("invalid session id: {id:?}")));
+/// Open the database, creating it and its directory if they are not there.
+fn open() -> io::Result<Connection> {
+    let path = database_path()?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
     }
+    let connection = Connection::open(&path).map_err(io::Error::other)?;
+    connection.execute_batch(SCHEMA).map_err(io::Error::other)?;
+    Ok(connection)
+}
+
+/// The id of the `workspaces` row for `cwd`, inserting it if it is new.
+fn workspace_id(connection: &Connection, cwd: &Path) -> rusqlite::Result<i64> {
+    let path = cwd.to_string_lossy();
+    connection.execute(
+        "INSERT OR IGNORE INTO workspaces (path) VALUES (?1)",
+        params![path],
+    )?;
+    connection.query_row(
+        "SELECT id FROM workspaces WHERE path = ?1",
+        params![path],
+        |row| row.get(0),
+    )
+}
+
+/// Record a new session in `cwd`.
+///
+/// Idempotent: re-creating an existing session leaves its row, and so its
+/// title and creation time, alone.
+pub fn create_session(cwd: &Path, session_id: &SessionId) -> io::Result<()> {
+    create_session_in(&open()?, cwd, session_id).map_err(io::Error::other)
+}
+
+fn create_session_in(
+    connection: &Connection,
+    cwd: &Path,
+    session_id: &SessionId,
+) -> rusqlite::Result<()> {
+    let workspace = workspace_id(connection, cwd)?;
+    connection.execute(
+        "INSERT OR IGNORE INTO sessions (id, workspace_id, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?3)",
+        params![session_id.to_string(), workspace, now()],
+    )?;
     Ok(())
-}
-
-fn session_path(root: &Path, session_id: &SessionId) -> io::Result<PathBuf> {
-    validate_session_id(session_id)?;
-    Ok(root.join(format!("{session_id}.{SESSION_EXTENSION}")))
-}
-
-/// Read `index.json`.
-///
-/// A missing index is an empty one. An unreadable or malformed index is also
-/// treated as empty rather than as an error: `session/list` returning nothing
-/// is recoverable, refusing to start a session is not, and the next write
-/// replaces the damaged file.
-fn read_index(root: &Path) -> Vec<IndexEntry> {
-    let Ok(contents) = fs::read_to_string(root.join(INDEX_FILE)) else {
-        return Vec::new();
-    };
-    serde_json::from_str(&contents).unwrap_or_default()
-}
-
-/// Replace `index.json` with `entries`, through a temporary file and a rename.
-fn write_index(root: &Path, entries: &[IndexEntry]) -> io::Result<()> {
-    fs::create_dir_all(root)?;
-    let json = serde_json::to_string_pretty(entries).map_err(io::Error::other)?;
-    let temp = root.join(INDEX_TEMP_FILE);
-    let mut file = fs::File::create(&temp)?;
-    file.write_all(json.as_bytes())?;
-    file.write_all(b"\n")?;
-    file.sync_all()?;
-    drop(file);
-    fs::rename(&temp, root.join(INDEX_FILE))
-}
-
-/// Create the `{session_id}.jsonl` file for a new session in `cwd`.
-///
-/// The file holds one header line recording `cwd` and the creation time, and
-/// the session gains an index entry. Both steps are idempotent: re-creating an
-/// existing session neither truncates its file nor duplicates its entry.
-pub fn create_session(cwd: &Path, session_id: &SessionId) -> io::Result<PathBuf> {
-    create_session_in(&sessions_root()?, cwd, session_id)
-}
-
-fn create_session_in(root: &Path, cwd: &Path, session_id: &SessionId) -> io::Result<PathBuf> {
-    if cwd.as_os_str().is_empty() {
-        return Err(invalid_input("workspace path is empty"));
-    }
-    let path = session_path(root, session_id)?;
-    fs::create_dir_all(root)?;
-    let ts = now();
-    match fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&path)
-    {
-        Ok(mut file) => write_header(&mut file, cwd, &ts)?,
-        Err(err) if err.kind() == ErrorKind::AlreadyExists => {}
-        Err(err) => return Err(err),
-    }
-
-    let id = session_id.to_string();
-    let mut entries = read_index(root);
-    if !entries.iter().any(|entry| entry.session_id == id) {
-        entries.push(IndexEntry {
-            session_id: id,
-            cwd: cwd.to_path_buf(),
-            title: None,
-            created_at: ts.clone(),
-            updated_at: ts,
-        });
-        write_index(root, &entries)?;
-    }
-    Ok(path)
-}
-
-fn write_header(file: &mut fs::File, cwd: &Path, ts: &str) -> io::Result<()> {
-    let header = SessionHeader {
-        cwd: cwd.to_path_buf(),
-        ts: ts.to_owned(),
-    };
-    let line = serde_json::to_string(&header).map_err(io::Error::other)?;
-    writeln!(file, "{line}")
 }
 
 /// Check whether `cwd` has a session with this id.
 pub fn session_exists(cwd: &Path, session_id: &SessionId) -> bool {
-    let Ok(root) = sessions_root() else {
-        return false;
-    };
-    session_exists_in(&root, cwd, session_id)
+    open().is_ok_and(|connection| session_exists_in(&connection, cwd, session_id).unwrap_or(false))
 }
 
-fn session_exists_in(root: &Path, cwd: &Path, session_id: &SessionId) -> bool {
-    let Ok(path) = session_path(root, session_id) else {
-        return false;
-    };
-    let id = session_id.to_string();
-    read_index(root)
-        .iter()
-        .any(|entry| entry.session_id == id && entry.cwd == cwd)
-        && path.is_file()
+fn session_exists_in(
+    connection: &Connection,
+    cwd: &Path,
+    session_id: &SessionId,
+) -> rusqlite::Result<bool> {
+    connection
+        .query_row(
+            "SELECT 1 FROM sessions
+             JOIN workspaces ON workspaces.id = sessions.workspace_id
+             WHERE sessions.id = ?1 AND workspaces.path = ?2",
+            params![session_id.to_string(), cwd.to_string_lossy()],
+            |_| Ok(true),
+        )
+        .optional()
+        .map(|found| found.unwrap_or(false))
 }
 
-/// List sessions from the index, optionally limited to one workspace.
+/// List sessions, optionally limited to one workspace.
 ///
 /// Most recently updated first, ties broken by id so the order is stable.
-/// Entries whose session file has gone missing are skipped, so everything
-/// listed can also be loaded.
 pub fn list_sessions(cwd: Option<&Path>) -> io::Result<Vec<SessionInfo>> {
-    list_sessions_in(&sessions_root()?, cwd)
+    list_sessions_in(&open()?, cwd).map_err(io::Error::other)
 }
 
-fn list_sessions_in(root: &Path, cwd: Option<&Path>) -> io::Result<Vec<SessionInfo>> {
-    let mut entries: Vec<IndexEntry> = read_index(root)
-        .into_iter()
-        .filter(|entry| cwd.is_none_or(|cwd| entry.cwd == cwd))
-        .filter(|entry| {
-            session_path(root, &SessionId::new(entry.session_id.clone()))
-                .is_ok_and(|path| path.is_file())
-        })
-        .collect();
-    entries.sort_by(|a, b| {
-        b.updated_at
-            .cmp(&a.updated_at)
-            .then_with(|| a.session_id.cmp(&b.session_id))
-    });
-    Ok(entries
-        .into_iter()
-        .map(|entry| {
-            SessionInfo::new(SessionId::new(entry.session_id), entry.cwd)
-                .title(entry.title)
-                .updated_at(entry.updated_at)
-        })
-        .collect())
+fn list_sessions_in(
+    connection: &Connection,
+    cwd: Option<&Path>,
+) -> rusqlite::Result<Vec<SessionInfo>> {
+    let filter = cwd.map(|cwd| cwd.to_string_lossy().into_owned());
+    let mut statement = connection.prepare(
+        "SELECT sessions.id, workspaces.path, sessions.title, sessions.updated_at
+         FROM sessions
+         JOIN workspaces ON workspaces.id = sessions.workspace_id
+         WHERE ?1 IS NULL OR workspaces.path = ?1
+         ORDER BY sessions.updated_at DESC, sessions.id ASC",
+    )?;
+    let sessions = statement
+        .query_map(params![filter], |row| {
+            let id: String = row.get(0)?;
+            let path: String = row.get(1)?;
+            let title: Option<String> = row.get(2)?;
+            let updated_at: String = row.get(3)?;
+            Ok(SessionInfo::new(SessionId::new(id), PathBuf::from(path))
+                .title(title)
+                .updated_at(updated_at))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(sessions)
 }
 
-/// Record activity on a session: bump `updatedAt`, and adopt `title` if the
+/// Record activity on a session: bump `updated_at`, and adopt `title` if the
 /// session has not been given one yet.
 ///
-/// A session missing from the index is left alone rather than resurrected.
+/// A session that is not there is left alone rather than resurrected.
 pub fn record_activity(session_id: &SessionId, title: Option<String>) -> io::Result<()> {
-    record_activity_in(&sessions_root()?, session_id, title)
+    record_activity_in(&open()?, session_id, title).map_err(io::Error::other)
 }
 
 fn record_activity_in(
-    root: &Path,
+    connection: &Connection,
     session_id: &SessionId,
     title: Option<String>,
+) -> rusqlite::Result<()> {
+    connection.execute(
+        "UPDATE sessions
+         SET updated_at = ?2, title = COALESCE(title, ?3)
+         WHERE id = ?1",
+        params![session_id.to_string(), now(), title],
+    )?;
+    Ok(())
+}
+
+/// Append a record to a session's transcript.
+pub fn append_event(
+    session_id: &SessionId,
+    kind: &str,
+    data: &serde_json::Value,
 ) -> io::Result<()> {
-    validate_session_id(session_id)?;
-    let id = session_id.to_string();
-    let mut entries = read_index(root);
-    let Some(entry) = entries.iter_mut().find(|entry| entry.session_id == id) else {
-        return Ok(());
-    };
-    entry.updated_at = now();
-    if entry.title.is_none() {
-        entry.title = title;
-    }
-    write_index(root, &entries)
+    append_event_in(&open()?, session_id, kind, data).map_err(io::Error::other)
+}
+
+fn append_event_in(
+    connection: &Connection,
+    session_id: &SessionId,
+    kind: &str,
+    data: &serde_json::Value,
+) -> rusqlite::Result<()> {
+    connection.execute(
+        "INSERT INTO events (session_id, ts, kind, data) VALUES (?1, ?2, ?3, ?4)",
+        params![session_id.to_string(), now(), kind, data.to_string()],
+    )?;
+    Ok(())
+}
+
+/// Read a session's transcript, oldest record first.
+#[allow(dead_code)]
+pub fn events(session_id: &SessionId) -> io::Result<Vec<Event>> {
+    events_in(&open()?, session_id).map_err(io::Error::other)
+}
+
+#[allow(dead_code)]
+fn events_in(connection: &Connection, session_id: &SessionId) -> rusqlite::Result<Vec<Event>> {
+    let mut statement = connection
+        .prepare("SELECT ts, kind, data FROM events WHERE session_id = ?1 ORDER BY id ASC")?;
+    let events = statement
+        .query_map(params![session_id.to_string()], |row| {
+            let data: String = row.get(2)?;
+            Ok(Event {
+                ts: row.get(0)?,
+                kind: row.get(1)?,
+                data: serde_json::from_str(&data).unwrap_or(serde_json::Value::Null),
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(events)
 }
 
 /// Turn the first line of a prompt into a session title.
@@ -295,48 +297,35 @@ pub fn title_from_prompt(text: &str) -> Option<String> {
     Some(title)
 }
 
-/// Delete a session's file and its index entry.
+/// Delete a session and its transcript.
 ///
-/// Returns `Ok(true)` if either was there to remove.
+/// Returns `Ok(true)` if there was a session to delete.
 pub fn delete_session(session_id: &SessionId) -> io::Result<bool> {
-    delete_session_in(&sessions_root()?, session_id)
+    delete_session_in(&open()?, session_id).map_err(io::Error::other)
 }
 
-fn delete_session_in(root: &Path, session_id: &SessionId) -> io::Result<bool> {
-    let path = session_path(root, session_id)?;
-    let removed_file = match fs::remove_file(&path) {
-        Ok(()) => true,
-        Err(err) if err.kind() == ErrorKind::NotFound => false,
-        Err(err) => return Err(err),
-    };
-
-    let id = session_id.to_string();
-    let mut entries = read_index(root);
-    let before = entries.len();
-    entries.retain(|entry| entry.session_id != id);
-    let removed_entry = entries.len() != before;
-    if removed_entry {
-        write_index(root, &entries)?;
-    }
-    Ok(removed_file || removed_entry)
+fn delete_session_in(connection: &Connection, session_id: &SessionId) -> rusqlite::Result<bool> {
+    let deleted = connection.execute(
+        "DELETE FROM sessions WHERE id = ?1",
+        params![session_id.to_string()],
+    )?;
+    Ok(deleted > 0)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use chrono::DateTime;
+    use serde_json::json;
 
     const CWD: &str = "/Users/kyle/projects/ox";
     const OTHER_CWD: &str = "/Users/kyle/projects/other";
 
-    fn test_root(name: &str) -> PathBuf {
-        std::env::temp_dir().join(format!("ox-sessions-test-{}-{}", std::process::id(), name))
-    }
-
-    fn fresh_root(name: &str) -> PathBuf {
-        let root = test_root(name);
-        let _ = fs::remove_dir_all(&root);
-        root
+    /// An empty database with the schema applied.
+    fn db() -> Connection {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch(SCHEMA).unwrap();
+        connection
     }
 
     fn test_id(id: &str) -> SessionId {
@@ -354,202 +343,150 @@ mod tests {
             .collect()
     }
 
-    #[test]
-    fn session_files_sit_directly_in_the_sessions_root() {
-        let root = fresh_root("flat");
-        let id = test_id("11111111-2222-4333-8444-555555555555");
-
-        let path = create_session_in(&root, cwd(), &id).unwrap();
-        assert_eq!(path, root.join(format!("{id}.jsonl")));
-        assert_eq!(path.parent(), Some(root.as_path()));
-
-        let mut names: Vec<String> = fs::read_dir(&root)
-            .unwrap()
-            .flatten()
-            .map(|entry| entry.file_name().to_string_lossy().into_owned())
-            .collect();
-        names.sort();
-        assert_eq!(names, vec![format!("{id}.jsonl"), INDEX_FILE.to_owned()]);
-        let _ = fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn records_workspace_path_in_session_file() {
-        let root = fresh_root("header");
-        let id = test_id("11111111-2222-4333-8444-555555555555");
-        let path = create_session_in(&root, cwd(), &id).unwrap();
-
-        let contents = fs::read_to_string(&path).unwrap();
-        let (line, rest) = contents
-            .split_once('\n')
-            .expect("one header line, newline-terminated for the records to come");
-        assert!(rest.is_empty());
-        let header: SessionHeader = serde_json::from_str(line).unwrap();
-        assert_eq!(header.cwd, cwd());
-        assert!(
-            DateTime::parse_from_rfc3339(&header.ts).is_ok(),
-            "ts is RFC 3339: {:?}",
-            header.ts
-        );
-        assert!(
-            line.starts_with(&format!("{{\"type\":\"session\",\"cwd\":\"{CWD}\",\"ts\":")),
-            "field order stays readable: {line}"
-        );
-        let _ = fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn index_holds_one_object_per_session() {
-        let root = fresh_root("index");
-        let id = test_id("11111111-2222-4333-8444-555555555555");
-        create_session_in(&root, cwd(), &id).unwrap();
-
-        let raw = fs::read_to_string(root.join(INDEX_FILE)).unwrap();
-        let value: serde_json::Value = serde_json::from_str(&raw).unwrap();
-        let array = value.as_array().expect("index.json is an array");
-        assert_eq!(array.len(), 1);
-        let entry = &array[0];
-        assert_eq!(entry["sessionId"], serde_json::json!(id.to_string()));
-        assert_eq!(entry["cwd"], serde_json::json!(CWD));
-        assert!(entry.get("title").is_none(), "untitled until a prompt");
-        for key in ["createdAt", "updatedAt"] {
-            let ts = entry[key]
-                .as_str()
-                .unwrap_or_else(|| panic!("{key} is a string"));
-            assert!(
-                DateTime::parse_from_rfc3339(ts).is_ok(),
-                "{key} is RFC 3339"
-            );
-        }
-        let _ = fs::remove_dir_all(&root);
+    /// Rewrite a session's timestamps rather than sleeping: two creates in the
+    /// same millisecond would otherwise leave the order to the id tie-break.
+    fn set_updated_at(connection: &Connection, session_id: &SessionId, ts: &str) {
+        connection
+            .execute(
+                "UPDATE sessions SET updated_at = ?2 WHERE id = ?1",
+                params![session_id.to_string(), ts],
+            )
+            .unwrap();
     }
 
     #[test]
     fn create_list_delete_session() {
-        let root = fresh_root("crud");
+        let db = db();
         let id = test_id("11111111-2222-4333-8444-555555555555");
 
-        let path = create_session_in(&root, cwd(), &id).unwrap();
-        assert!(session_exists_in(&root, cwd(), &id));
+        create_session_in(&db, cwd(), &id).unwrap();
+        assert!(session_exists_in(&db, cwd(), &id).unwrap());
 
-        let sessions = list_sessions_in(&root, Some(cwd())).unwrap();
+        let sessions = list_sessions_in(&db, Some(cwd())).unwrap();
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].session_id.to_string(), id.to_string());
         assert_eq!(sessions[0].cwd, cwd());
         assert_eq!(sessions[0].title, None);
+        let updated_at = sessions[0]
+            .updated_at
+            .as_deref()
+            .expect("ACP reports last activity");
         assert!(
-            sessions[0].updated_at.is_some(),
-            "ACP reports last activity"
+            DateTime::parse_from_rfc3339(updated_at).is_ok(),
+            "updated_at is RFC 3339: {updated_at:?}"
         );
 
-        assert!(delete_session_in(&root, &id).unwrap());
-        assert!(!path.exists());
-        assert!(!session_exists_in(&root, cwd(), &id));
-        assert!(list_sessions_in(&root, Some(cwd())).unwrap().is_empty());
-        assert_eq!(read_index(&root), Vec::new(), "the index entry goes too");
+        assert!(delete_session_in(&db, &id).unwrap());
+        assert!(!session_exists_in(&db, cwd(), &id).unwrap());
+        assert!(list_sessions_in(&db, Some(cwd())).unwrap().is_empty());
         assert!(
-            !delete_session_in(&root, &id).unwrap(),
+            !delete_session_in(&db, &id).unwrap(),
             "second delete finds nothing"
         );
-        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_workspace_is_stored_once_however_many_sessions_share_it() {
+        let db = db();
+        create_session_in(&db, cwd(), &test_id("a")).unwrap();
+        create_session_in(&db, cwd(), &test_id("b")).unwrap();
+        create_session_in(&db, Path::new(OTHER_CWD), &test_id("c")).unwrap();
+
+        let workspaces: i64 = db
+            .query_row("SELECT count(*) FROM workspaces", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(workspaces, 2);
     }
 
     #[test]
     fn sessions_are_scoped_per_workspace() {
-        let root = fresh_root("scoped");
+        let db = db();
         let other = Path::new(OTHER_CWD);
         let mine = test_id("aaaaaaaa-0000-4000-8000-000000000001");
         let theirs = test_id("bbbbbbbb-0000-4000-8000-000000000002");
 
-        create_session_in(&root, cwd(), &mine).unwrap();
-        create_session_in(&root, other, &theirs).unwrap();
+        create_session_in(&db, cwd(), &mine).unwrap();
+        create_session_in(&db, other, &theirs).unwrap();
 
-        assert!(session_exists_in(&root, cwd(), &mine));
+        assert!(session_exists_in(&db, cwd(), &mine).unwrap());
         assert!(
-            !session_exists_in(&root, other, &mine),
+            !session_exists_in(&db, other, &mine).unwrap(),
             "a session belongs to the workspace it was created in"
         );
 
         assert_eq!(
-            ids(&list_sessions_in(&root, Some(cwd())).unwrap()),
+            ids(&list_sessions_in(&db, Some(cwd())).unwrap()),
             vec![mine.to_string()]
         );
         assert_eq!(
-            ids(&list_sessions_in(&root, Some(other)).unwrap()),
+            ids(&list_sessions_in(&db, Some(other)).unwrap()),
             vec![theirs.to_string()]
         );
 
-        let all = list_sessions_in(&root, None).unwrap();
+        let all = list_sessions_in(&db, None).unwrap();
         assert_eq!(all.len(), 2, "unfiltered list spans every workspace");
-        assert!(all.iter().any(|s| s.cwd == cwd()));
-        assert!(all.iter().any(|s| s.cwd == other));
+        assert!(all.iter().any(|session| session.cwd == cwd()));
+        assert!(all.iter().any(|session| session.cwd == other));
 
-        assert!(delete_session_in(&root, &theirs).unwrap());
-        assert_eq!(list_sessions_in(&root, None).unwrap().len(), 1);
-        let _ = fs::remove_dir_all(&root);
+        assert!(delete_session_in(&db, &theirs).unwrap());
+        assert_eq!(list_sessions_in(&db, None).unwrap().len(), 1);
     }
 
     #[test]
     fn list_is_most_recently_updated_first() {
-        let root = fresh_root("order");
+        let db = db();
         let first = test_id("aaaaaaaa-0000-4000-8000-000000000001");
         let second = test_id("bbbbbbbb-0000-4000-8000-000000000002");
-        create_session_in(&root, cwd(), &first).unwrap();
-        create_session_in(&root, cwd(), &second).unwrap();
-
-        // Rewrite the timestamps rather than sleeping: two creates in the same
-        // millisecond would otherwise leave the order to the id tie-break.
-        let mut entries = read_index(&root);
-        for entry in &mut entries {
-            entry.updated_at = if entry.session_id == first.to_string() {
-                "2026-09-18T10:00:00.000Z".to_owned()
-            } else {
-                "2026-09-18T09:00:00.000Z".to_owned()
-            };
-        }
-        write_index(&root, &entries).unwrap();
+        create_session_in(&db, cwd(), &first).unwrap();
+        create_session_in(&db, cwd(), &second).unwrap();
+        set_updated_at(&db, &first, "2026-09-18T10:00:00.000Z");
+        set_updated_at(&db, &second, "2026-09-18T09:00:00.000Z");
 
         assert_eq!(
-            ids(&list_sessions_in(&root, None).unwrap()),
+            ids(&list_sessions_in(&db, None).unwrap()),
             vec![first.to_string(), second.to_string()]
         );
 
-        record_activity_in(&root, &second, None).unwrap();
+        record_activity_in(&db, &second, None).unwrap();
         assert_eq!(
-            ids(&list_sessions_in(&root, None).unwrap()),
+            ids(&list_sessions_in(&db, None).unwrap()),
             vec![second.to_string(), first.to_string()],
             "activity moves a session to the front"
         );
-        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
     fn first_prompt_titles_the_session() {
-        let root = fresh_root("title");
+        let db = db();
         let id = test_id("11111111-2222-4333-8444-555555555555");
-        create_session_in(&root, cwd(), &id).unwrap();
-        let created = read_index(&root)[0].created_at.clone();
+        create_session_in(&db, cwd(), &id).unwrap();
+        let created: String = db
+            .query_row("SELECT created_at FROM sessions", [], |row| row.get(0))
+            .unwrap();
 
-        record_activity_in(&root, &id, Some("Rejigger sessions".to_owned())).unwrap();
-        let entry = read_index(&root).remove(0);
-        assert_eq!(entry.title.as_deref(), Some("Rejigger sessions"));
-        assert_eq!(entry.created_at, created, "creation time does not move");
-        assert!(entry.updated_at >= created);
+        record_activity_in(&db, &id, Some("Rejigger sessions".to_owned())).unwrap();
+        let (title, created_now, updated): (Option<String>, String, String) = db
+            .query_row(
+                "SELECT title, created_at, updated_at FROM sessions",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(title.as_deref(), Some("Rejigger sessions"));
+        assert_eq!(created_now, created, "creation time does not move");
+        assert!(updated >= created);
 
-        record_activity_in(&root, &id, Some("Something else".to_owned())).unwrap();
+        record_activity_in(&db, &id, Some("Something else".to_owned())).unwrap();
+        let listed = list_sessions_in(&db, None).unwrap();
         assert_eq!(
-            read_index(&root)[0].title.as_deref(),
+            listed[0].title.as_deref(),
             Some("Rejigger sessions"),
             "a later prompt does not rename the session"
         );
 
-        let listed = list_sessions_in(&root, None).unwrap();
-        assert_eq!(listed[0].title.as_deref(), Some("Rejigger sessions"));
-
-        record_activity_in(&root, &test_id("not-a-session"), None)
+        record_activity_in(&db, &test_id("not-a-session"), None)
             .expect("touching an unknown session is a no-op, not an error");
-        assert_eq!(read_index(&root).len(), 1);
-        let _ = fs::remove_dir_all(&root);
+        assert_eq!(list_sessions_in(&db, None).unwrap().len(), 1);
     }
 
     #[test]
@@ -580,93 +517,72 @@ mod tests {
     }
 
     #[test]
-    fn list_skips_entries_whose_file_is_gone() {
-        let root = fresh_root("orphan");
-        let kept = test_id("aaaaaaaa-0000-4000-8000-000000000001");
-        let orphan = test_id("bbbbbbbb-0000-4000-8000-000000000002");
-        create_session_in(&root, cwd(), &kept).unwrap();
-        create_session_in(&root, cwd(), &orphan).unwrap();
-        fs::remove_file(root.join(format!("{orphan}.jsonl"))).unwrap();
-
-        assert_eq!(
-            ids(&list_sessions_in(&root, None).unwrap()),
-            vec![kept.to_string()],
-            "everything listed can also be loaded"
-        );
-        assert!(!session_exists_in(&root, cwd(), &orphan));
-        assert!(
-            delete_session_in(&root, &orphan).unwrap(),
-            "delete still clears the stale entry"
-        );
-        let _ = fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn unusable_index_reads_as_empty() {
-        let root = fresh_root("damaged");
+    fn events_are_a_transcript_in_the_order_they_happened() {
+        let db = db();
         let id = test_id("11111111-2222-4333-8444-555555555555");
-        create_session_in(&root, cwd(), &id).unwrap();
-        fs::write(root.join(INDEX_FILE), "{not json").unwrap();
+        create_session_in(&db, cwd(), &id).unwrap();
 
-        assert!(list_sessions_in(&root, None).unwrap().is_empty());
-        assert!(!session_exists_in(&root, cwd(), &id));
+        append_event_in(&db, &id, "user_message", &json!({ "text": "hello" })).unwrap();
+        append_event_in(&db, &id, "agent_message", &json!({ "text": "hi" })).unwrap();
 
-        // The next write replaces the damaged file.
-        let other = test_id("bbbbbbbb-0000-4000-8000-000000000002");
-        create_session_in(&root, cwd(), &other).unwrap();
+        let events = events_in(&db, &id).unwrap();
         assert_eq!(
-            ids(&list_sessions_in(&root, None).unwrap()),
-            vec![other.to_string()]
+            events.iter().map(|e| e.kind.as_str()).collect::<Vec<_>>(),
+            vec!["user_message", "agent_message"]
         );
-        let _ = fs::remove_dir_all(&root);
+        assert_eq!(events[0].data, json!({ "text": "hello" }));
+        assert!(DateTime::parse_from_rfc3339(&events[0].ts).is_ok());
+
+        assert!(
+            append_event_in(&db, &test_id("not-a-session"), "user_message", &json!({})).is_err(),
+            "an event belongs to a session"
+        );
     }
 
     #[test]
-    fn list_on_missing_root_is_empty() {
-        let root = test_root("missing").join("does-not-exist");
-        assert!(!root.exists());
-        assert!(list_sessions_in(&root, None).unwrap().is_empty());
-        assert!(list_sessions_in(&root, Some(cwd())).unwrap().is_empty());
-        assert!(!session_exists_in(&root, cwd(), &test_id("some-id")));
-        assert!(!delete_session_in(&root, &test_id("some-id")).unwrap());
-    }
+    fn deleting_a_session_takes_its_events_with_it() {
+        let db = db();
+        let id = test_id("11111111-2222-4333-8444-555555555555");
+        create_session_in(&db, cwd(), &id).unwrap();
+        append_event_in(&db, &id, "user_message", &json!({ "text": "hello" })).unwrap();
 
-    #[test]
-    fn rejects_bad_session_ids() {
-        let root = fresh_root("bad");
-        fs::create_dir_all(&root).unwrap();
-        for bad in ["", ".", "..", "a/b", "a\\b"] {
-            let err = create_session_in(&root, cwd(), &test_id(bad)).unwrap_err();
-            assert_eq!(err.kind(), ErrorKind::InvalidInput, "reject {bad:?}");
-            assert!(!session_exists_in(&root, cwd(), &test_id(bad)));
-            assert!(delete_session_in(&root, &test_id(bad)).is_err());
-            assert!(record_activity_in(&root, &test_id(bad), None).is_err());
-        }
-        assert_eq!(
-            create_session_in(&root, Path::new(""), &test_id("ok"))
-                .unwrap_err()
-                .kind(),
-            ErrorKind::InvalidInput,
-            "a session needs a workspace"
-        );
-        let _ = fs::remove_dir_all(&root);
+        assert!(delete_session_in(&db, &id).unwrap());
+        assert!(events_in(&db, &id).unwrap().is_empty());
+        let orphans: i64 = db
+            .query_row("SELECT count(*) FROM events", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(orphans, 0);
     }
 
     #[test]
     fn create_is_idempotent() {
-        let root = fresh_root("idempotent");
+        let db = db();
         let id = test_id("some-id");
-        let path = create_session_in(&root, cwd(), &id).unwrap();
-        record_activity_in(&root, &id, Some("Keep me".to_owned())).unwrap();
-        let after_first = fs::read_to_string(&path).unwrap();
-        let index_after_first = read_index(&root);
+        create_session_in(&db, cwd(), &id).unwrap();
+        record_activity_in(&db, &id, Some("Keep me".to_owned())).unwrap();
+        let before: (String, Option<String>) = db
+            .query_row("SELECT created_at, title FROM sessions", [], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .unwrap();
 
-        // Second create leaves the existing file alone instead of truncating
-        // it or writing a second header, and does not clear the title.
-        create_session_in(&root, cwd(), &id).unwrap();
-        assert_eq!(fs::read_to_string(&path).unwrap(), after_first);
-        assert_eq!(read_index(&root), index_after_first);
-        assert_eq!(list_sessions_in(&root, Some(cwd())).unwrap().len(), 1);
-        let _ = fs::remove_dir_all(&root);
+        create_session_in(&db, cwd(), &id).unwrap();
+        let after: (String, Option<String>) = db
+            .query_row("SELECT created_at, title FROM sessions", [], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(after, before, "a second create does not reset the session");
+        assert_eq!(list_sessions_in(&db, Some(cwd())).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn empty_database_lists_nothing() {
+        let db = db();
+        assert!(list_sessions_in(&db, None).unwrap().is_empty());
+        assert!(list_sessions_in(&db, Some(cwd())).unwrap().is_empty());
+        assert!(!session_exists_in(&db, cwd(), &test_id("some-id")).unwrap());
+        assert!(!delete_session_in(&db, &test_id("some-id")).unwrap());
+        assert!(events_in(&db, &test_id("some-id")).unwrap().is_empty());
     }
 }

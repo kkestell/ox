@@ -80,13 +80,27 @@ async fn main() -> Result<()> {
                     ContentBlock::Text(text) => sessions::title_from_prompt(&text.text),
                     _ => None,
                 });
-                if let Err(err) = sessions::record_activity(&prompt.session_id, title) {
+                const REPLY: &str = "Hello from ox! This is a hard-coded stub response.";
+                let record = (|| {
+                    sessions::record_activity(&prompt.session_id, title)?;
+                    sessions::append_event(
+                        &prompt.session_id,
+                        "user_message",
+                        &serde_json::json!({ "content": prompt.prompt }),
+                    )?;
+                    sessions::append_event(
+                        &prompt.session_id,
+                        "agent_message",
+                        &serde_json::json!({ "text": REPLY }),
+                    )
+                })();
+                if let Err(err) = record {
                     return responder.respond_with_error(Error::into_internal_error(err));
                 }
                 connection.send_notification(SessionNotification::new(
                     prompt.session_id,
                     SessionUpdate::AgentMessageChunk(ContentChunk::new(ContentBlock::Text(
-                        TextContent::new("Hello from ox! This is a hard-coded stub response."),
+                        TextContent::new(REPLY),
                     ))),
                 ))?;
                 responder.respond(PromptResponse::new(StopReason::EndTurn))
