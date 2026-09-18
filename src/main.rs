@@ -43,12 +43,12 @@ async fn main() -> Result<()> {
         )
         .on_receive_request(
             async move |load_session: LoadSessionRequest, responder, _connection| {
-                if sessions::session_exists(&load_session.cwd, &load_session.session_id) {
-                    responder.respond(LoadSessionResponse::new())
-                } else {
-                    responder.respond_with_error(Error::resource_not_found(Some(
+                match sessions::session_exists(&load_session.cwd, &load_session.session_id) {
+                    Ok(true) => responder.respond(LoadSessionResponse::new()),
+                    Ok(false) => responder.respond_with_error(Error::resource_not_found(Some(
                         load_session.session_id.to_string(),
-                    )))
+                    ))),
+                    Err(err) => responder.respond_with_error(Error::into_internal_error(err)),
                 }
             },
             agent_client_protocol::on_receive_request!(),

@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 use agent_client_protocol::schema::v1::{SessionId, SessionInfo};
 use chrono::{SecondsFormat, Utc};
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, params, types::Type};
 
 /// Overrides the data directory, mainly for tests.
 pub const DATA_DIR_ENV: &str = "OX_DATA_DIR";
@@ -128,8 +128,8 @@ fn create_session_in(
     Ok(())
 }
 
-pub fn session_exists(cwd: &Path, session_id: &SessionId) -> bool {
-    open().is_ok_and(|connection| session_exists_in(&connection, cwd, session_id).unwrap_or(false))
+pub fn session_exists(cwd: &Path, session_id: &SessionId) -> io::Result<bool> {
+    session_exists_in(&open()?, cwd, session_id).map_err(io::Error::other)
 }
 
 fn session_exists_in(
@@ -255,7 +255,9 @@ fn events_in(connection: &Connection, session_id: &SessionId) -> rusqlite::Resul
             Ok(Event {
                 ts: row.get(0)?,
                 kind: row.get(1)?,
-                data: serde_json::from_str(&data).unwrap_or(serde_json::Value::Null),
+                data: serde_json::from_str(&data).map_err(|err| {
+                    rusqlite::Error::FromSqlConversionFailure(2, Type::Text, Box::new(err))
+                })?,
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -591,6 +593,20 @@ mod tests {
             .is_err(),
             "an event belongs to a session"
         );
+    }
+
+    #[test]
+    fn malformed_event_data_is_an_error() {
+        let db = db();
+        let id = test_id("11111111-2222-4333-8444-555555555555");
+        create_session_in(&db, cwd(), &id).unwrap();
+        db.execute(
+            "INSERT INTO events (session_id, ts, kind, data) VALUES (?1, ?2, ?3, ?4)",
+            params![id.to_string(), now(), "user_message", "not JSON"],
+        )
+        .unwrap();
+
+        assert!(events_in(&db, &id).is_err());
     }
 
     #[test]
