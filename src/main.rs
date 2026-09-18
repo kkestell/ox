@@ -81,19 +81,18 @@ async fn main() -> Result<()> {
                     _ => None,
                 });
                 const REPLY: &str = "Hello from ox! This is a hard-coded stub response.";
-                let record = (|| {
-                    sessions::record_activity(&prompt.session_id, title)?;
-                    sessions::append_event(
-                        &prompt.session_id,
-                        "user_message",
-                        &serde_json::json!({ "content": prompt.prompt }),
-                    )?;
-                    sessions::append_event(
-                        &prompt.session_id,
-                        "agent_message",
-                        &serde_json::json!({ "text": REPLY }),
-                    )
-                })();
+                let record = sessions::record_prompt(
+                    &prompt.session_id,
+                    title,
+                    &[
+                        (
+                            "user_message",
+                            serde_json::json!({ "content": prompt.prompt }),
+                        ),
+                        ("agent_message", serde_json::json!({ "text": REPLY })),
+                    ],
+                    &sessions::now(),
+                );
                 if let Err(err) = record {
                     return responder.respond_with_error(Error::into_internal_error(err));
                 }

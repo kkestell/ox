@@ -64,7 +64,7 @@ fn invalid_input(message: impl Into<String>) -> io::Error {
     io::Error::new(ErrorKind::InvalidInput, message.into())
 }
 
-fn now() -> String {
+pub fn now() -> String {
     Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
 }
 
@@ -180,43 +180,61 @@ fn list_sessions_in(
     Ok(sessions)
 }
 
-/// Bumps `updated_at`, and adopts `title` if the session is still untitled.
-/// An unknown session is a no-op.
-pub fn record_activity(session_id: &SessionId, title: Option<String>) -> io::Result<()> {
-    record_activity_in(&open()?, session_id, title).map_err(io::Error::other)
+/// Records one prompt: its activity and the `events` it produced, all timed
+/// `at` and written in a single transaction, so a failure part-way through
+/// leaves the session as it was rather than with a half-written exchange.
+pub fn record_prompt(
+    session_id: &SessionId,
+    title: Option<String>,
+    events: &[(&str, serde_json::Value)],
+    at: &str,
+) -> io::Result<()> {
+    record_prompt_in(&mut open()?, session_id, title, events, at).map_err(io::Error::other)
 }
 
+fn record_prompt_in(
+    connection: &mut Connection,
+    session_id: &SessionId,
+    title: Option<String>,
+    events: &[(&str, serde_json::Value)],
+    at: &str,
+) -> rusqlite::Result<()> {
+    let transaction = connection.transaction()?;
+    record_activity_in(&transaction, session_id, title, at)?;
+    for (kind, data) in events {
+        append_event_in(&transaction, session_id, kind, data, at)?;
+    }
+    transaction.commit()
+}
+
+/// Sets `updated_at` to `at`, and adopts `title` if the session is still
+/// untitled. An unknown session is a no-op.
 fn record_activity_in(
     connection: &Connection,
     session_id: &SessionId,
     title: Option<String>,
+    at: &str,
 ) -> rusqlite::Result<()> {
     connection.execute(
         "UPDATE sessions
          SET updated_at = ?2, title = COALESCE(title, ?3)
          WHERE id = ?1",
-        params![session_id.to_string(), now(), title],
+        params![session_id.to_string(), at, title],
     )?;
     Ok(())
 }
 
-pub fn append_event(
-    session_id: &SessionId,
-    kind: &str,
-    data: &serde_json::Value,
-) -> io::Result<()> {
-    append_event_in(&open()?, session_id, kind, data).map_err(io::Error::other)
-}
-
+/// Appends a record to a session's transcript, timed `at`.
 fn append_event_in(
     connection: &Connection,
     session_id: &SessionId,
     kind: &str,
     data: &serde_json::Value,
+    at: &str,
 ) -> rusqlite::Result<()> {
     connection.execute(
         "INSERT INTO events (session_id, ts, kind, data) VALUES (?1, ?2, ?3, ?4)",
-        params![session_id.to_string(), now(), kind, data.to_string()],
+        params![session_id.to_string(), at, kind, data.to_string()],
     )?;
     Ok(())
 }
@@ -402,7 +420,7 @@ mod tests {
             vec![first.to_string(), second.to_string()]
         );
 
-        record_activity_in(&db, &second, None).unwrap();
+        record_activity_in(&db, &second, None, "2026-09-18T11:00:00.000Z").unwrap();
         assert_eq!(
             ids(&list_sessions_in(&db, None).unwrap()),
             vec![second.to_string(), first.to_string()],
@@ -419,7 +437,7 @@ mod tests {
             .query_row("SELECT created_at FROM sessions", [], |row| row.get(0))
             .unwrap();
 
-        record_activity_in(&db, &id, Some("Rejigger sessions".to_owned())).unwrap();
+        record_activity_in(&db, &id, Some("Rejigger sessions".to_owned()), &now()).unwrap();
         let (title, created_now, updated): (Option<String>, String, String) = db
             .query_row(
                 "SELECT title, created_at, updated_at FROM sessions",
@@ -431,7 +449,7 @@ mod tests {
         assert_eq!(created_now, created, "creation time does not move");
         assert!(updated >= created);
 
-        record_activity_in(&db, &id, Some("Something else".to_owned())).unwrap();
+        record_activity_in(&db, &id, Some("Something else".to_owned()), &now()).unwrap();
         let listed = list_sessions_in(&db, None).unwrap();
         assert_eq!(
             listed[0].title.as_deref(),
@@ -439,7 +457,7 @@ mod tests {
             "a later prompt does not rename the session"
         );
 
-        record_activity_in(&db, &test_id("not-a-session"), None)
+        record_activity_in(&db, &test_id("not-a-session"), None, &now())
             .expect("touching an unknown session is a no-op, not an error");
         assert_eq!(list_sessions_in(&db, None).unwrap().len(), 1);
     }
@@ -472,13 +490,87 @@ mod tests {
     }
 
     #[test]
+    fn a_prompt_and_its_records_share_one_timestamp() {
+        let mut db = db();
+        let id = test_id("11111111-2222-4333-8444-555555555555");
+        create_session_in(&db, cwd(), &id).unwrap();
+        let at = "2026-09-18T12:00:00.000Z";
+
+        record_prompt_in(
+            &mut db,
+            &id,
+            Some("Hello".to_owned()),
+            &[
+                ("user_message", json!({ "text": "hello" })),
+                ("agent_message", json!({ "text": "hi" })),
+            ],
+            at,
+        )
+        .unwrap();
+
+        let updated: String = db
+            .query_row("SELECT updated_at FROM sessions", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(updated, at);
+        assert!(
+            events_in(&db, &id).unwrap().iter().all(|e| e.ts == at),
+            "activity never lands before the records it summarises"
+        );
+    }
+
+    #[test]
+    fn a_failed_prompt_leaves_the_session_as_it_was() {
+        let mut db = db();
+        let id = test_id("11111111-2222-4333-8444-555555555555");
+        create_session_in(&db, cwd(), &id).unwrap();
+        set_updated_at(&db, &id, "2026-09-18T09:00:00.000Z");
+        db.execute_batch(
+            "CREATE TRIGGER refuse_the_reply BEFORE INSERT ON events
+             WHEN NEW.kind = 'agent_message'
+             BEGIN SELECT RAISE(ABORT, 'no reply for you'); END;",
+        )
+        .unwrap();
+
+        let failed = record_prompt_in(
+            &mut db,
+            &id,
+            Some("Hello".to_owned()),
+            &[
+                ("user_message", json!({ "text": "hello" })),
+                ("agent_message", json!({ "text": "hi" })),
+            ],
+            "2026-09-18T12:00:00.000Z",
+        );
+        assert!(failed.is_err());
+
+        assert!(
+            events_in(&db, &id).unwrap().is_empty(),
+            "the user message rolls back with the reply that failed"
+        );
+        let (title, updated): (Option<String>, String) = db
+            .query_row("SELECT title, updated_at FROM sessions", [], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(title, None, "a failed prompt does not title the session");
+        assert_eq!(updated, "2026-09-18T09:00:00.000Z");
+    }
+
+    #[test]
     fn events_are_a_transcript_in_the_order_they_happened() {
         let db = db();
         let id = test_id("11111111-2222-4333-8444-555555555555");
         create_session_in(&db, cwd(), &id).unwrap();
 
-        append_event_in(&db, &id, "user_message", &json!({ "text": "hello" })).unwrap();
-        append_event_in(&db, &id, "agent_message", &json!({ "text": "hi" })).unwrap();
+        append_event_in(
+            &db,
+            &id,
+            "user_message",
+            &json!({ "text": "hello" }),
+            &now(),
+        )
+        .unwrap();
+        append_event_in(&db, &id, "agent_message", &json!({ "text": "hi" }), &now()).unwrap();
 
         let events = events_in(&db, &id).unwrap();
         assert_eq!(
@@ -489,7 +581,14 @@ mod tests {
         assert!(DateTime::parse_from_rfc3339(&events[0].ts).is_ok());
 
         assert!(
-            append_event_in(&db, &test_id("not-a-session"), "user_message", &json!({})).is_err(),
+            append_event_in(
+                &db,
+                &test_id("not-a-session"),
+                "user_message",
+                &json!({}),
+                &now()
+            )
+            .is_err(),
             "an event belongs to a session"
         );
     }
@@ -499,7 +598,14 @@ mod tests {
         let db = db();
         let id = test_id("11111111-2222-4333-8444-555555555555");
         create_session_in(&db, cwd(), &id).unwrap();
-        append_event_in(&db, &id, "user_message", &json!({ "text": "hello" })).unwrap();
+        append_event_in(
+            &db,
+            &id,
+            "user_message",
+            &json!({ "text": "hello" }),
+            &now(),
+        )
+        .unwrap();
 
         assert!(delete_session_in(&db, &id).unwrap());
         assert!(events_in(&db, &id).unwrap().is_empty());
@@ -514,7 +620,7 @@ mod tests {
         let db = db();
         let id = test_id("some-id");
         create_session_in(&db, cwd(), &id).unwrap();
-        record_activity_in(&db, &id, Some("Keep me".to_owned())).unwrap();
+        record_activity_in(&db, &id, Some("Keep me".to_owned()), &now()).unwrap();
         let before: (String, Option<String>) = db
             .query_row("SELECT created_at, title FROM sessions", [], |row| {
                 Ok((row.get(0)?, row.get(1)?))
