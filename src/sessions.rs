@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use agent_client_protocol::schema::v1::{SessionId, SessionInfo};
 use chrono::{SecondsFormat, Utc};
 use rusqlite::{Connection, OptionalExtension, params, types::Type};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 /// Overrides the data directory, mainly for tests.
 pub const DATA_DIR_ENV: &str = "OX_DATA_DIR";
@@ -51,13 +52,153 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE INDEX IF NOT EXISTS events_by_session ON events (session_id, id);
 ";
 
-/// One record in a session's transcript, e.g. a `"user_message"`.
-#[allow(dead_code)]
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// A valid entry in a session transcript.
+#[derive(Debug, Clone, PartialEq)]
+pub enum EventKind {
+    UserMessage(String),
+    AgentThought(String),
+    AgentMessage(String),
+    ToolCall {
+        call_id: String,
+        name: String,
+        arguments: serde_json::Value,
+    },
+    ToolResult {
+        call_id: String,
+        name: String,
+        result: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct MessageData {
+    content: Vec<Content>,
+}
+
+impl MessageData {
+    fn text(text: String) -> Self {
+        Self {
+            content: vec![Content::Text { text }],
+        }
+    }
+
+    fn into_text(self, kind: &str) -> rusqlite::Result<String> {
+        match self.content.as_slice() {
+            [Content::Text { text }] => Ok(text.clone()),
+            _ => Err(invalid_event_data(
+                kind,
+                "must contain exactly one text block",
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum Content {
+    Text { text: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct ToolCallData {
+    call_id: String,
+    name: String,
+    arguments: serde_json::Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct ToolResultData {
+    call_id: String,
+    name: String,
+    content: Vec<Content>,
+}
+
+impl EventKind {
+    fn database_fields(&self) -> (&str, serde_json::Value) {
+        match self {
+            Self::UserMessage(text) => ("user_message", data(MessageData::text(text.clone()))),
+            Self::AgentThought(text) => ("agent_thought", data(MessageData::text(text.clone()))),
+            Self::AgentMessage(text) => ("agent_message", data(MessageData::text(text.clone()))),
+            Self::ToolCall {
+                call_id,
+                name,
+                arguments,
+            } => (
+                "tool_call",
+                data(ToolCallData {
+                    call_id: call_id.clone(),
+                    name: name.clone(),
+                    arguments: arguments.clone(),
+                }),
+            ),
+            Self::ToolResult {
+                call_id,
+                name,
+                result,
+            } => (
+                "tool_result",
+                data(ToolResultData {
+                    call_id: call_id.clone(),
+                    name: name.clone(),
+                    content: MessageData::text(result.clone()).content,
+                }),
+            ),
+        }
+    }
+
+    fn from_database(kind: String, data: String) -> rusqlite::Result<Self> {
+        match kind.as_str() {
+            "user_message" => decode(&kind, &data)
+                .and_then(|data: MessageData| data.into_text(&kind).map(Self::UserMessage)),
+            "agent_thought" => decode(&kind, &data)
+                .and_then(|data: MessageData| data.into_text(&kind).map(Self::AgentThought)),
+            "agent_message" => decode(&kind, &data)
+                .and_then(|data: MessageData| data.into_text(&kind).map(Self::AgentMessage)),
+            "tool_call" => decode(&kind, &data).map(|data: ToolCallData| Self::ToolCall {
+                call_id: data.call_id,
+                name: data.name,
+                arguments: data.arguments,
+            }),
+            "tool_result" => decode(&kind, &data).and_then(|data: ToolResultData| {
+                MessageData {
+                    content: data.content,
+                }
+                .into_text(&kind)
+                .map(|result| Self::ToolResult {
+                    call_id: data.call_id,
+                    name: data.name,
+                    result,
+                })
+            }),
+            _ => Err(invalid_event_data(&kind, "has an unknown kind")),
+        }
+    }
+}
+
+fn data<T: Serialize>(value: T) -> serde_json::Value {
+    serde_json::to_value(value).expect("event DTO serializes")
+}
+
+fn decode<T: DeserializeOwned>(kind: &str, data: &str) -> rusqlite::Result<T> {
+    serde_json::from_str(data).map_err(|err| invalid_event_data(kind, err))
+}
+
+fn invalid_event_data(kind: &str, message: impl std::fmt::Display) -> rusqlite::Error {
+    rusqlite::Error::FromSqlConversionFailure(
+        2,
+        Type::Text,
+        Box::new(io::Error::new(
+            ErrorKind::InvalidData,
+            format!("{kind} event {message}"),
+        )),
+    )
+}
+
+/// One timestamped record in a session's transcript.
+#[derive(Debug, Clone, PartialEq)]
 pub struct Event {
     pub ts: String,
-    pub kind: String,
-    pub data: serde_json::Value,
+    pub kind: EventKind,
 }
 
 fn invalid_input(message: impl Into<String>) -> io::Error {
@@ -132,6 +273,10 @@ pub fn session_exists(cwd: &Path, session_id: &SessionId) -> io::Result<bool> {
     session_exists_in(&open()?, cwd, session_id).map_err(io::Error::other)
 }
 
+pub fn session_exists_anywhere(session_id: &SessionId) -> io::Result<bool> {
+    session_exists_anywhere_in(&open()?, session_id).map_err(io::Error::other)
+}
+
 fn session_exists_in(
     connection: &Connection,
     cwd: &Path,
@@ -143,6 +288,20 @@ fn session_exists_in(
              JOIN workspaces ON workspaces.id = sessions.workspace_id
              WHERE sessions.id = ?1 AND workspaces.path = ?2",
             params![session_id.to_string(), cwd.to_string_lossy()],
+            |_| Ok(true),
+        )
+        .optional()
+        .map(|found| found.unwrap_or(false))
+}
+
+fn session_exists_anywhere_in(
+    connection: &Connection,
+    session_id: &SessionId,
+) -> rusqlite::Result<bool> {
+    connection
+        .query_row(
+            "SELECT 1 FROM sessions WHERE id = ?1",
+            params![session_id.to_string()],
             |_| Ok(true),
         )
         .optional()
@@ -180,29 +339,41 @@ fn list_sessions_in(
     Ok(sessions)
 }
 
-/// Records one prompt: its activity and the `events` it produced, all timed
-/// `at` and written in a single transaction, so a failure part-way through
-/// leaves the session as it was rather than with a half-written exchange.
-pub fn record_prompt(
+/// Appends one event and updates the session's activity in one transaction.
+pub fn append_event(
     session_id: &SessionId,
     title: Option<String>,
-    events: &[(&str, serde_json::Value)],
+    event: &EventKind,
     at: &str,
 ) -> io::Result<()> {
-    record_prompt_in(&mut open()?, session_id, title, events, at).map_err(io::Error::other)
+    append_events(session_id, title, std::slice::from_ref(event), at)
 }
 
-fn record_prompt_in(
+/// Appends one completed assistant iteration and updates session activity in
+/// one transaction. Empty iterations do not change the session.
+pub fn append_events(
+    session_id: &SessionId,
+    title: Option<String>,
+    events: &[EventKind],
+    at: &str,
+) -> io::Result<()> {
+    if events.is_empty() {
+        return Ok(());
+    }
+    append_events_in(&mut open()?, session_id, title, events, at).map_err(io::Error::other)
+}
+
+fn append_events_in(
     connection: &mut Connection,
     session_id: &SessionId,
     title: Option<String>,
-    events: &[(&str, serde_json::Value)],
+    events: &[EventKind],
     at: &str,
 ) -> rusqlite::Result<()> {
     let transaction = connection.transaction()?;
     record_activity_in(&transaction, session_id, title, at)?;
-    for (kind, data) in events {
-        append_event_in(&transaction, session_id, kind, data, at)?;
+    for event in events {
+        insert_event_in(&transaction, session_id, event, at)?;
     }
     transaction.commit()
 }
@@ -224,14 +395,14 @@ fn record_activity_in(
     Ok(())
 }
 
-/// Appends a record to a session's transcript, timed `at`.
-fn append_event_in(
+/// Inserts a transcript record, timed `at`.
+fn insert_event_in(
     connection: &Connection,
     session_id: &SessionId,
-    kind: &str,
-    data: &serde_json::Value,
+    event: &EventKind,
     at: &str,
 ) -> rusqlite::Result<()> {
+    let (kind, data) = event.database_fields();
     connection.execute(
         "INSERT INTO events (session_id, ts, kind, data) VALUES (?1, ?2, ?3, ?4)",
         params![session_id.to_string(), at, kind, data.to_string()],
@@ -240,24 +411,20 @@ fn append_event_in(
 }
 
 /// A session's transcript, oldest record first.
-#[allow(dead_code)]
 pub fn events(session_id: &SessionId) -> io::Result<Vec<Event>> {
     events_in(&open()?, session_id).map_err(io::Error::other)
 }
 
-#[allow(dead_code)]
 fn events_in(connection: &Connection, session_id: &SessionId) -> rusqlite::Result<Vec<Event>> {
     let mut statement = connection
         .prepare("SELECT ts, kind, data FROM events WHERE session_id = ?1 ORDER BY id ASC")?;
     let events = statement
         .query_map(params![session_id.to_string()], |row| {
+            let kind: String = row.get(1)?;
             let data: String = row.get(2)?;
             Ok(Event {
                 ts: row.get(0)?,
-                kind: row.get(1)?,
-                data: serde_json::from_str(&data).map_err(|err| {
-                    rusqlite::Error::FromSqlConversionFailure(2, Type::Text, Box::new(err))
-                })?,
+                kind: EventKind::from_database(kind, data)?,
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -336,6 +503,7 @@ mod tests {
 
         create_session_in(&db, cwd(), &id).unwrap();
         assert!(session_exists_in(&db, cwd(), &id).unwrap());
+        assert!(session_exists_anywhere_in(&db, &id).unwrap());
 
         let sessions = list_sessions_in(&db, Some(cwd())).unwrap();
         assert_eq!(sessions.len(), 1);
@@ -353,6 +521,7 @@ mod tests {
 
         assert!(delete_session_in(&db, &id).unwrap());
         assert!(!session_exists_in(&db, cwd(), &id).unwrap());
+        assert!(!session_exists_anywhere_in(&db, &id).unwrap());
         assert!(list_sessions_in(&db, Some(cwd())).unwrap().is_empty());
         assert!(
             !delete_session_in(&db, &id).unwrap(),
@@ -492,19 +661,19 @@ mod tests {
     }
 
     #[test]
-    fn a_prompt_and_its_records_share_one_timestamp() {
+    fn an_iteration_and_its_events_share_one_timestamp() {
         let mut db = db();
         let id = test_id("11111111-2222-4333-8444-555555555555");
         create_session_in(&db, cwd(), &id).unwrap();
         let at = "2026-09-18T12:00:00.000Z";
 
-        record_prompt_in(
+        append_events_in(
             &mut db,
             &id,
             Some("Hello".to_owned()),
             &[
-                ("user_message", json!({ "text": "hello" })),
-                ("agent_message", json!({ "text": "hi" })),
+                EventKind::UserMessage("hello".to_owned()),
+                EventKind::AgentMessage("hi".to_owned()),
             ],
             at,
         )
@@ -521,7 +690,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_prompt_leaves_the_session_as_it_was() {
+    fn a_failed_iteration_leaves_the_previous_events_intact() {
         let mut db = db();
         let id = test_id("11111111-2222-4333-8444-555555555555");
         create_session_in(&db, cwd(), &id).unwrap();
@@ -533,29 +702,37 @@ mod tests {
         )
         .unwrap();
 
-        let failed = record_prompt_in(
+        append_events_in(
             &mut db,
             &id,
             Some("Hello".to_owned()),
-            &[
-                ("user_message", json!({ "text": "hello" })),
-                ("agent_message", json!({ "text": "hi" })),
-            ],
+            &[EventKind::UserMessage("hello".to_owned())],
+            "2026-09-18T10:00:00.000Z",
+        )
+        .unwrap();
+        let failed = append_events_in(
+            &mut db,
+            &id,
+            None,
+            &[EventKind::AgentMessage("hi".to_owned())],
             "2026-09-18T12:00:00.000Z",
         );
         assert!(failed.is_err());
 
         assert!(
-            events_in(&db, &id).unwrap().is_empty(),
-            "the user message rolls back with the reply that failed"
+            matches!(
+                events_in(&db, &id).unwrap().as_slice(),
+                [Event { kind: EventKind::UserMessage(text), .. }] if text == "hello"
+            ),
+            "the user event survives a failed assistant iteration"
         );
         let (title, updated): (Option<String>, String) = db
             .query_row("SELECT title, updated_at FROM sessions", [], |row| {
                 Ok((row.get(0)?, row.get(1)?))
             })
             .unwrap();
-        assert_eq!(title, None, "a failed prompt does not title the session");
-        assert_eq!(updated, "2026-09-18T09:00:00.000Z");
+        assert_eq!(title.as_deref(), Some("Hello"));
+        assert_eq!(updated, "2026-09-18T10:00:00.000Z");
     }
 
     #[test]
@@ -564,30 +741,30 @@ mod tests {
         let id = test_id("11111111-2222-4333-8444-555555555555");
         create_session_in(&db, cwd(), &id).unwrap();
 
-        append_event_in(
+        insert_event_in(
             &db,
             &id,
-            "user_message",
-            &json!({ "text": "hello" }),
+            &EventKind::UserMessage("hello".to_owned()),
             &now(),
         )
         .unwrap();
-        append_event_in(&db, &id, "agent_message", &json!({ "text": "hi" }), &now()).unwrap();
+        insert_event_in(&db, &id, &EventKind::AgentMessage("hi".to_owned()), &now()).unwrap();
 
         let events = events_in(&db, &id).unwrap();
         assert_eq!(
-            events.iter().map(|e| e.kind.as_str()).collect::<Vec<_>>(),
-            vec!["user_message", "agent_message"]
+            events.iter().map(|e| &e.kind).collect::<Vec<_>>(),
+            vec![
+                &EventKind::UserMessage("hello".to_owned()),
+                &EventKind::AgentMessage("hi".to_owned()),
+            ]
         );
-        assert_eq!(events[0].data, json!({ "text": "hello" }));
         assert!(DateTime::parse_from_rfc3339(&events[0].ts).is_ok());
 
         assert!(
-            append_event_in(
+            insert_event_in(
                 &db,
                 &test_id("not-a-session"),
-                "user_message",
-                &json!({}),
+                &EventKind::UserMessage(String::new()),
                 &now()
             )
             .is_err(),
@@ -596,13 +773,13 @@ mod tests {
     }
 
     #[test]
-    fn malformed_event_data_is_an_error() {
+    fn unknown_event_kind_is_an_error() {
         let db = db();
         let id = test_id("11111111-2222-4333-8444-555555555555");
         create_session_in(&db, cwd(), &id).unwrap();
         db.execute(
             "INSERT INTO events (session_id, ts, kind, data) VALUES (?1, ?2, ?3, ?4)",
-            params![id.to_string(), now(), "user_message", "not JSON"],
+            params![id.to_string(), now(), "not_an_event", "bogus"],
         )
         .unwrap();
 
@@ -610,15 +787,76 @@ mod tests {
     }
 
     #[test]
+    fn tool_events_round_trip() {
+        let mut db = db();
+        let id = test_id("11111111-2222-4333-8444-555555555555");
+        create_session_in(&db, cwd(), &id).unwrap();
+        let events = [
+            EventKind::ToolCall {
+                call_id: "weather-1".to_owned(),
+                name: "get_weather".to_owned(),
+                arguments: json!({ "location": "Chicago" }),
+            },
+            EventKind::ToolResult {
+                call_id: "weather-1".to_owned(),
+                name: "get_weather".to_owned(),
+                result: "The weather in Chicago is warm and sunny.".to_owned(),
+            },
+        ];
+
+        append_events_in(&mut db, &id, None, &events, &now()).unwrap();
+        assert_eq!(
+            events_in(&db, &id)
+                .unwrap()
+                .into_iter()
+                .map(|event| event.kind)
+                .collect::<Vec<_>>(),
+            events
+        );
+
+        let rows = db
+            .prepare("SELECT kind, data FROM events ORDER BY id")
+            .unwrap()
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                (
+                    "tool_call".to_owned(),
+                    json!({
+                        "call_id": "weather-1",
+                        "name": "get_weather",
+                        "arguments": { "location": "Chicago" },
+                    })
+                    .to_string(),
+                ),
+                (
+                    "tool_result".to_owned(),
+                    json!({
+                        "call_id": "weather-1",
+                        "name": "get_weather",
+                        "content": [{ "type": "text", "text": "The weather in Chicago is warm and sunny." }],
+                    })
+                    .to_string(),
+                ),
+            ]
+        );
+    }
+
+    #[test]
     fn deleting_a_session_takes_its_events_with_it() {
         let db = db();
         let id = test_id("11111111-2222-4333-8444-555555555555");
         create_session_in(&db, cwd(), &id).unwrap();
-        append_event_in(
+        insert_event_in(
             &db,
             &id,
-            "user_message",
-            &json!({ "text": "hello" }),
+            &EventKind::UserMessage("hello".to_owned()),
             &now(),
         )
         .unwrap();

@@ -1,4 +1,7 @@
-.PHONY: install
+.PHONY: install release
+
+release:
+	cargo build --release
 
 install:
 	cargo build --release
