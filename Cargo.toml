@@ -6,8 +6,9 @@ edition = "2024"
 [dependencies]
 agent-client-protocol = "2.1.0"
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
-dotenvy = "0.15.7"
 futures = "0.3.31"
+keyring = "4.2.0"
+rpassword = "7.5.4"
 rig = "0.42.0"
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 serde = { version = "1.0.229", features = ["derive"] }

@@ -2,11 +2,11 @@ use rig::{
     agent::{Agent, StreamingResult},
     client::ProviderClientError,
     completion::Message,
-    prelude::{AgentClientExt, ProviderClient, StreamingChat},
+    prelude::{AgentClientExt, StreamingChat, VerifyClient},
     providers::openrouter,
     tool::{Tool, ToolContext},
 };
-use std::convert::Infallible;
+use std::{convert::Infallible, error::Error};
 
 const MODEL: &str = "openai/gpt-5.6-luna";
 const MAX_TURNS: usize = 8;
@@ -53,8 +53,8 @@ impl Tool for GetWeather {
 pub struct OxAgent(Agent);
 
 impl OxAgent {
-    pub fn new() -> Result<Self, ProviderClientError> {
-        let client = openrouter::Client::from_env()?;
+    pub fn new(api_key: &str) -> Result<Self, ProviderClientError> {
+        let client = openrouter::Client::new(api_key)?;
         Ok(Self(client.agent(MODEL).tool(GetWeather).build()))
     }
 
@@ -64,6 +64,11 @@ impl OxAgent {
             .max_turns(MAX_TURNS)
             .await
     }
+}
+
+pub async fn verify_api_key(api_key: &str) -> Result<(), Box<dyn Error>> {
+    openrouter::Client::new(api_key)?.verify().await?;
+    Ok(())
 }
 
 #[cfg(test)]

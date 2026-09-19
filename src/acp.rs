@@ -1,7 +1,8 @@
 use agent_client_protocol::schema::v1::{
-    AgentCapabilities, CancelNotification, ContentBlock, ContentChunk, DeleteSessionRequest,
-    DeleteSessionResponse, InitializeRequest, InitializeResponse, ListSessionsRequest,
-    ListSessionsResponse, LoadSessionRequest, LoadSessionResponse, NewSessionRequest,
+    AgentAuthCapabilities, AgentCapabilities, AuthMethod, AuthMethodTerminal, CancelNotification,
+    ContentBlock, ContentChunk, DeleteSessionRequest, DeleteSessionResponse, InitializeRequest,
+    InitializeResponse, ListSessionsRequest, ListSessionsResponse, LoadSessionRequest,
+    LoadSessionResponse, LogoutCapabilities, LogoutRequest, LogoutResponse, NewSessionRequest,
     NewSessionResponse, PromptRequest, PromptResponse, SessionCapabilities,
     SessionDeleteCapabilities, SessionId, SessionListCapabilities, SessionNotification,
     SessionUpdate, StopReason, TextContent,
@@ -26,7 +27,43 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use crate::{agent, sessions};
+use crate::{agent, auth, sessions};
+
+type AgentState = Arc<Mutex<Option<agent::OxAgent>>>;
+
+fn current_agent(agents: &AgentState) -> Result<agent::OxAgent> {
+    agents
+        .lock()
+        .expect("agent state mutex poisoned")
+        .clone()
+        .ok_or_else(Error::auth_required)
+}
+
+// TODO: Test terminal authentication with the preview version of Zed.
+fn terminal_auth_method() -> AuthMethod {
+    AuthMethod::Terminal(
+        AuthMethodTerminal::new("openrouter", "Log in to OpenRouter")
+            .description("Enter an OpenRouter API key and save it in the system keyring")
+            .args(vec!["auth".to_owned(), "login".to_owned()]),
+    )
+}
+
+fn initialize_response(initialize: &InitializeRequest) -> InitializeResponse {
+    let mut response = InitializeResponse::new(initialize.protocol_version).agent_capabilities(
+        AgentCapabilities::new()
+            .load_session(true)
+            .session_capabilities(
+                SessionCapabilities::new()
+                    .list(SessionListCapabilities::new())
+                    .delete(SessionDeleteCapabilities::new()),
+            )
+            .auth(AgentAuthCapabilities::new().logout(LogoutCapabilities::new())),
+    );
+    if initialize.client_capabilities.auth.terminal {
+        response = response.auth_methods(vec![terminal_auth_method()]);
+    }
+    response
+}
 
 #[derive(Clone)]
 struct PromptCancellation(Arc<PromptCancellationState>);
@@ -240,10 +277,17 @@ fn session_updates(events: Vec<sessions::Event>) -> Result<Vec<SessionUpdate>> {
 }
 
 pub async fn run() -> Result<()> {
-    dotenvy::dotenv().map_err(Error::into_internal_error)?;
-    let agent = agent::OxAgent::new().map_err(Error::into_internal_error)?;
+    let agent = auth::api_key()
+        .map_err(Error::into_internal_error)?
+        .map(|api_key| agent::OxAgent::new(&api_key))
+        .transpose()
+        .map_err(Error::into_internal_error)?;
+    let agents = Arc::new(Mutex::new(agent));
     let in_flight_prompts = InFlightPrompts::default();
-    let prompt_agent = agent.clone();
+    let new_session_agents = agents.clone();
+    let load_session_agents = agents.clone();
+    let logout_agents = agents.clone();
+    let prompt_agents = agents.clone();
     let prompt_cancellations = in_flight_prompts.clone();
 
     Agent
@@ -251,22 +295,15 @@ pub async fn run() -> Result<()> {
         .name("ox")
         .on_receive_request(
             async move |initialize: InitializeRequest, responder, _connection| {
-                responder.respond(
-                    InitializeResponse::new(initialize.protocol_version).agent_capabilities(
-                        AgentCapabilities::new()
-                            .load_session(true)
-                            .session_capabilities(
-                                SessionCapabilities::new()
-                                    .list(SessionListCapabilities::new())
-                                    .delete(SessionDeleteCapabilities::new()),
-                            ),
-                    ),
-                )
+                responder.respond(initialize_response(&initialize))
             },
             agent_client_protocol::on_receive_request!(),
         )
         .on_receive_request(
             async move |new_session: NewSessionRequest, responder, _connection| {
+                if let Err(error) = current_agent(&new_session_agents) {
+                    return responder.respond_with_error(error);
+                }
                 let session_id = SessionId::new(uuid::Uuid::new_v4().to_string());
                 match sessions::create_session(&new_session.cwd, &session_id) {
                     Ok(_) => responder.respond(NewSessionResponse::new(session_id)),
@@ -277,6 +314,9 @@ pub async fn run() -> Result<()> {
         )
         .on_receive_request(
             async move |load_session: LoadSessionRequest, responder, connection| {
+                if let Err(error) = current_agent(&load_session_agents) {
+                    return responder.respond_with_error(error);
+                }
                 match sessions::session_exists(&load_session.cwd, &load_session.session_id) {
                     Ok(true) => {
                         let updates = match sessions::events(&load_session.session_id)
@@ -325,7 +365,25 @@ pub async fn run() -> Result<()> {
             agent_client_protocol::on_receive_request!(),
         )
         .on_receive_request(
+            async move |_logout: LogoutRequest, responder, _connection| match auth::delete_api_key()
+            {
+                Ok(_) => {
+                    logout_agents
+                        .lock()
+                        .expect("agent state mutex poisoned")
+                        .take();
+                    responder.respond(LogoutResponse::new())
+                }
+                Err(err) => responder.respond_with_error(Error::into_internal_error(err)),
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
             async move |prompt: PromptRequest, responder, connection| {
+                let agent = match current_agent(&prompt_agents) {
+                    Ok(agent) => agent,
+                    Err(error) => return responder.respond_with_error(error),
+                };
                 let Some(cancellation) = prompt_cancellations.begin(prompt.session_id.clone())
                 else {
                     return responder.respond_with_error(Error::new(
@@ -334,7 +392,6 @@ pub async fn run() -> Result<()> {
                     ));
                 };
                 let in_flight_prompts = prompt_cancellations.clone();
-                let agent = prompt_agent.clone();
                 let task_connection = connection.clone();
 
                 connection.spawn(async move {
@@ -532,12 +589,45 @@ pub async fn run() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agent_client_protocol::schema::{
+        ProtocolVersion,
+        v1::{AuthCapabilities, ClientCapabilities, ErrorCode},
+    };
 
     fn event(kind: sessions::EventKind) -> sessions::Event {
         sessions::Event {
             ts: "2026-09-18T12:00:00.000Z".to_owned(),
             kind,
         }
+    }
+
+    #[test]
+    fn terminal_login_is_advertised_only_to_supporting_clients() {
+        let response = initialize_response(&InitializeRequest::new(ProtocolVersion::V1));
+        assert!(response.auth_methods.is_empty());
+
+        let initialize = InitializeRequest::new(ProtocolVersion::V1).client_capabilities(
+            ClientCapabilities::new().auth(AuthCapabilities::new().terminal(true)),
+        );
+        let response = initialize_response(&initialize);
+
+        assert!(response.agent_capabilities.auth.logout.is_some());
+        assert!(matches!(
+            &response.auth_methods[..],
+            [AuthMethod::Terminal(method)]
+                if method.id.to_string() == "openrouter"
+                    && method.args == ["auth", "login"]
+        ));
+    }
+
+    #[test]
+    fn missing_credentials_require_authentication() {
+        let agents = Arc::new(Mutex::new(None));
+        let error = match current_agent(&agents) {
+            Ok(_) => panic!("missing credentials should require authentication"),
+            Err(error) => error,
+        };
+        assert_eq!(error.code, ErrorCode::AuthRequired);
     }
 
     #[test]
