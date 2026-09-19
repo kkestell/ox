@@ -2,6 +2,7 @@ mod acp;
 mod agent;
 mod auth;
 mod sessions;
+mod tools;
 
 use std::{env, error::Error, io};
 

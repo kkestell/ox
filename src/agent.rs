@@ -4,66 +4,17 @@ use rig::{
     completion::Message,
     prelude::{AgentClientExt, StreamingChat, VerifyClient},
     providers::openrouter,
-    tool::{Tool, ToolContext},
 };
 use std::{
     collections::HashMap,
-    convert::Infallible,
     error::Error,
     sync::{Arc, Mutex},
 };
 
+use crate::tools::GetWeather;
+
 const MODEL: &str = "openai/gpt-5.6-luna";
 const MAX_TURNS: usize = 8;
-
-#[derive(serde::Deserialize)]
-struct WeatherArgs {
-    location: String,
-}
-
-#[derive(Clone)]
-struct GetWeather;
-
-impl Tool for GetWeather {
-    const NAME: &'static str = "get_weather";
-    type Args = WeatherArgs;
-    type Output = String;
-    type Error = Infallible;
-
-    fn description(&self) -> String {
-        "Get the weather for a location".to_owned()
-    }
-
-    fn parameters(&self) -> serde_json::Value {
-        serde_json::json!({
-            "type": "object",
-            "properties": { "location": { "type": "string" } },
-            "required": ["location"],
-        })
-    }
-
-    async fn call(
-        &self,
-        _context: &mut ToolContext,
-        args: Self::Args,
-    ) -> Result<Self::Output, Self::Error> {
-        Ok(format!(
-            "The weather in {} is warm and sunny.",
-            args.location
-        ))
-    }
-}
-
-pub fn tool_call_title(name: &str, arguments: &serde_json::Value) -> String {
-    match name {
-        GetWeather::NAME => arguments
-            .get("location")
-            .and_then(serde_json::Value::as_str)
-            .map(|location| format!("Weather {location}"))
-            .unwrap_or_else(|| "Weather".to_owned()),
-        _ => name.to_owned(),
-    }
-}
 
 #[derive(Clone)]
 pub struct OxAgent(Agent);
@@ -146,33 +97,6 @@ pub async fn verify_api_key(api_key: &str) -> Result<(), Box<dyn Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn weather_is_canned() {
-        let result = futures::executor::block_on(GetWeather.call(
-            &mut ToolContext::new(),
-            WeatherArgs {
-                location: "Chicago".to_owned(),
-            },
-        ))
-        .unwrap();
-        assert_eq!(result, "The weather in Chicago is warm and sunny.");
-    }
-
-    #[test]
-    fn weather_tool_call_title_includes_the_location() {
-        assert_eq!(
-            tool_call_title(
-                GetWeather::NAME,
-                &serde_json::json!({ "location": "Minneapolis, MN" }),
-            ),
-            "Weather Minneapolis, MN"
-        );
-        assert_eq!(
-            tool_call_title(GetWeather::NAME, &serde_json::json!({})),
-            "Weather"
-        );
-    }
 
     #[test]
     fn tool_outcomes_use_rigs_structured_status() {

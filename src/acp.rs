@@ -28,7 +28,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use crate::{agent, auth, sessions};
+use crate::{agent, auth, sessions, tools};
 
 type AgentState = Arc<Mutex<Option<agent::OxAgent>>>;
 
@@ -268,7 +268,7 @@ fn tool_call_update(
     arguments: serde_json::Value,
 ) -> SessionUpdate {
     let name = name.into();
-    let title = agent::tool_call_title(&name, &arguments);
+    let title = tools::tool_call_title(&name, &arguments);
     SessionUpdate::ToolCall(
         AcpToolCall::new(call_id.into(), title)
             .status(ToolCallStatus::InProgress)
