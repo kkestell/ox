@@ -67,40 +67,37 @@ impl PromptCancellation {
 }
 
 #[derive(Clone, Default)]
-struct InFlightPrompts(Arc<Mutex<HashMap<SessionId, Vec<PromptCancellation>>>>);
+struct InFlightPrompts(Arc<Mutex<HashMap<SessionId, PromptCancellation>>>);
 
 impl InFlightPrompts {
-    fn begin(&self, session_id: SessionId) -> PromptCancellation {
+    fn begin(&self, session_id: SessionId) -> Option<PromptCancellation> {
         let cancellation = PromptCancellation::new();
-        self.0
-            .lock()
-            .expect("in-flight prompts mutex poisoned")
-            .entry(session_id)
-            .or_default()
-            .push(cancellation.clone());
-        cancellation
+        let mut prompts = self.0.lock().expect("in-flight prompts mutex poisoned");
+        if prompts.contains_key(&session_id) {
+            return None;
+        }
+        prompts.insert(session_id, cancellation.clone());
+        Some(cancellation)
     }
 
     fn finish(&self, session_id: &SessionId, cancellation: &PromptCancellation) {
         let mut prompts = self.0.lock().expect("in-flight prompts mutex poisoned");
-        let Some(session_prompts) = prompts.get_mut(session_id) else {
-            return;
-        };
-
-        session_prompts.retain(|candidate| !candidate.is_same(cancellation));
-        if session_prompts.is_empty() {
+        if prompts
+            .get(session_id)
+            .is_some_and(|candidate| candidate.is_same(cancellation))
+        {
             prompts.remove(session_id);
         }
     }
 
     fn cancel(&self, session_id: &SessionId) {
-        let cancellations = self
+        let cancellation = self
             .0
             .lock()
             .expect("in-flight prompts mutex poisoned")
-            .remove(session_id)
-            .unwrap_or_default();
-        for cancellation in cancellations {
+            .get(session_id)
+            .cloned();
+        if let Some(cancellation) = cancellation {
             cancellation.cancel();
         }
     }
@@ -109,10 +106,14 @@ impl InFlightPrompts {
 fn text_content(content: &[ContentBlock]) -> String {
     content
         .iter()
-        .filter_map(|block| match block {
-            ContentBlock::Text(text) => Some(text.text.as_str()),
-            _ => None,
+        .map(|block| match block {
+            ContentBlock::Text(text) => text.text.clone(),
+            ContentBlock::ResourceLink(link) => {
+                format!("Resource link: {}\nURI: {}", link.name, link.uri)
+            }
+            _ => String::new(),
         })
+        .filter(|content| !content.is_empty())
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -325,7 +326,13 @@ pub async fn run() -> Result<()> {
         )
         .on_receive_request(
             async move |prompt: PromptRequest, responder, connection| {
-                let cancellation = prompt_cancellations.begin(prompt.session_id.clone());
+                let Some(cancellation) = prompt_cancellations.begin(prompt.session_id.clone())
+                else {
+                    return responder.respond_with_error(Error::new(
+                        -32600,
+                        "session already has a prompt in progress",
+                    ));
+                };
                 let in_flight_prompts = prompt_cancellations.clone();
                 let agent = prompt_agent.clone();
                 let task_connection = connection.clone();
@@ -534,16 +541,18 @@ mod tests {
     }
 
     #[test]
-    fn cancellation_stops_every_in_flight_prompt_for_a_session() {
+    fn a_second_prompt_for_a_session_is_rejected_until_the_first_finishes() {
         let prompts = InFlightPrompts::default();
         let session_id = SessionId::new("session");
-        let first = prompts.begin(session_id.clone());
-        let second = prompts.begin(session_id.clone());
+        let first = prompts.begin(session_id.clone()).unwrap();
+
+        assert!(prompts.begin(session_id.clone()).is_none());
 
         prompts.cancel(&session_id);
 
         futures::executor::block_on(first.cancelled());
-        futures::executor::block_on(second.cancelled());
+        assert!(prompts.begin(session_id.clone()).is_none());
+        prompts.finish(&session_id, &first);
         assert!(
             prompts
                 .0
@@ -551,6 +560,23 @@ mod tests {
                 .expect("in-flight prompts mutex poisoned")
                 .get(&session_id)
                 .is_none()
+        );
+        assert!(prompts.begin(session_id).is_some());
+    }
+
+    #[test]
+    fn prompt_text_keeps_resource_links() {
+        let content = text_content(&[
+            ContentBlock::Text(TextContent::new("Review this")),
+            ContentBlock::ResourceLink(agent_client_protocol::schema::v1::ResourceLink::new(
+                "src/main.rs",
+                "file:///workspace/src/main.rs",
+            )),
+        ]);
+
+        assert_eq!(
+            content,
+            "Review this\nResource link: src/main.rs\nURI: file:///workspace/src/main.rs"
         );
     }
 

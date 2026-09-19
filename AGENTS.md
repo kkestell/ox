@@ -1,8 +1,9 @@
 # Source Map
 
-- `src/main.rs`: ACP agent entry point; registers initialization, session, prompt, and cancellation handlers over stdio.
-- `src/agent.rs`: OpenRouter-backed Rig agent configuration and streamed turn entry point.
-- `src/sessions.rs`: SQLite-backed session, workspace, and transcript storage; includes unit tests for persistence behavior.
+- `src/main.rs`: Process entry point; starts the ACP server.
+- `src/acp.rs`: ACP protocol implementation: session lifecycle, prompt streaming, cancellation, and conversion between ACP updates, persisted events, and Rig messages.
+- `src/agent.rs`: OpenRouter-backed Rig agent configuration, streaming chat entry point, and the canned weather tool.
+- `src/sessions.rs`: SQLite-backed workspace/session/transcript storage, event serialization, title derivation, and persistence tests.
 
 ## Just Enough Rust
 
