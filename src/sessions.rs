@@ -66,8 +66,24 @@ pub enum EventKind {
     ToolResult {
         call_id: String,
         name: String,
-        result: String,
+        outcome: ToolOutcome,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ToolOutcome {
+    Completed(String),
+    Failed(String),
+    Cancelled,
+}
+
+impl ToolOutcome {
+    pub fn text(&self) -> &str {
+        match self {
+            Self::Completed(result) | Self::Failed(result) => result,
+            Self::Cancelled => "Cancelled",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -110,7 +126,24 @@ struct ToolCallData {
 struct ToolResultData {
     call_id: String,
     name: String,
+    #[serde(default, skip_serializing_if = "ToolResultStatus::is_completed")]
+    status: ToolResultStatus,
     content: Vec<Content>,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ToolResultStatus {
+    #[default]
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+impl ToolResultStatus {
+    fn is_completed(&self) -> bool {
+        matches!(self, Self::Completed)
+    }
 }
 
 impl EventKind {
@@ -134,13 +167,18 @@ impl EventKind {
             Self::ToolResult {
                 call_id,
                 name,
-                result,
+                outcome,
             } => (
                 "tool_result",
                 data(ToolResultData {
                     call_id: call_id.clone(),
                     name: name.clone(),
-                    content: MessageData::text(result.clone()).content,
+                    status: match outcome {
+                        ToolOutcome::Completed(_) => ToolResultStatus::Completed,
+                        ToolOutcome::Failed(_) => ToolResultStatus::Failed,
+                        ToolOutcome::Cancelled => ToolResultStatus::Cancelled,
+                    },
+                    content: MessageData::text(outcome.text().to_owned()).content,
                 }),
             ),
         }
@@ -164,10 +202,17 @@ impl EventKind {
                     content: data.content,
                 }
                 .into_text(&kind)
-                .map(|result| Self::ToolResult {
-                    call_id: data.call_id,
-                    name: data.name,
-                    result,
+                .map(|result| {
+                    let outcome = match data.status {
+                        ToolResultStatus::Completed => ToolOutcome::Completed(result),
+                        ToolResultStatus::Failed => ToolOutcome::Failed(result),
+                        ToolResultStatus::Cancelled => ToolOutcome::Cancelled,
+                    };
+                    Self::ToolResult {
+                        call_id: data.call_id,
+                        name: data.name,
+                        outcome,
+                    }
                 })
             }),
             _ => Err(invalid_event_data(&kind, "has an unknown kind")),
@@ -275,6 +320,24 @@ pub fn session_exists(cwd: &Path, session_id: &SessionId) -> io::Result<bool> {
 
 pub fn session_exists_anywhere(session_id: &SessionId) -> io::Result<bool> {
     session_exists_anywhere_in(&open()?, session_id).map_err(io::Error::other)
+}
+
+pub fn session_title(session_id: &SessionId) -> io::Result<Option<String>> {
+    session_title_in(&open()?, session_id).map_err(io::Error::other)
+}
+
+fn session_title_in(
+    connection: &Connection,
+    session_id: &SessionId,
+) -> rusqlite::Result<Option<String>> {
+    connection
+        .query_row(
+            "SELECT title FROM sessions WHERE id = ?1",
+            params![session_id.to_string()],
+            |row| row.get(0),
+        )
+        .optional()
+        .map(|title| title.flatten())
 }
 
 fn session_exists_in(
@@ -800,7 +863,19 @@ mod tests {
             EventKind::ToolResult {
                 call_id: "weather-1".to_owned(),
                 name: "get_weather".to_owned(),
-                result: "The weather in Chicago is warm and sunny.".to_owned(),
+                outcome: ToolOutcome::Completed(
+                    "The weather in Chicago is warm and sunny.".to_owned(),
+                ),
+            },
+            EventKind::ToolResult {
+                call_id: "weather-2".to_owned(),
+                name: "get_weather".to_owned(),
+                outcome: ToolOutcome::Failed("weather service unavailable".to_owned()),
+            },
+            EventKind::ToolResult {
+                call_id: "weather-3".to_owned(),
+                name: "get_weather".to_owned(),
+                outcome: ToolOutcome::Cancelled,
             },
         ];
 
@@ -841,6 +916,26 @@ mod tests {
                         "call_id": "weather-1",
                         "name": "get_weather",
                         "content": [{ "type": "text", "text": "The weather in Chicago is warm and sunny." }],
+                    })
+                    .to_string(),
+                ),
+                (
+                    "tool_result".to_owned(),
+                    json!({
+                        "call_id": "weather-2",
+                        "name": "get_weather",
+                        "status": "failed",
+                        "content": [{ "type": "text", "text": "weather service unavailable" }],
+                    })
+                    .to_string(),
+                ),
+                (
+                    "tool_result".to_owned(),
+                    json!({
+                        "call_id": "weather-3",
+                        "name": "get_weather",
+                        "status": "cancelled",
+                        "content": [{ "type": "text", "text": "Cancelled" }],
                     })
                     .to_string(),
                 ),

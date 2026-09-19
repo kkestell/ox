@@ -4,8 +4,9 @@ use agent_client_protocol::schema::v1::{
     InitializeResponse, ListSessionsRequest, ListSessionsResponse, LoadSessionRequest,
     LoadSessionResponse, LogoutCapabilities, LogoutRequest, LogoutResponse, NewSessionRequest,
     NewSessionResponse, PromptRequest, PromptResponse, SessionCapabilities,
-    SessionDeleteCapabilities, SessionId, SessionListCapabilities, SessionNotification,
-    SessionUpdate, StopReason, TextContent,
+    SessionDeleteCapabilities, SessionId, SessionInfoUpdate, SessionListCapabilities,
+    SessionNotification, SessionUpdate, StopReason, TextContent, ToolCall as AcpToolCall,
+    ToolCallContent, ToolCallStatus, ToolCallUpdate as AcpToolCallUpdate, ToolCallUpdateFields,
 };
 use agent_client_protocol::{Agent, Error, Result, Stdio};
 use futures::{
@@ -98,6 +99,10 @@ impl PromptCancellation {
         }
     }
 
+    fn is_cancelled(&self) -> bool {
+        self.0.signal_rx.clone().now_or_never().is_some()
+    }
+
     fn is_same(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.0, &other.0)
     }
@@ -137,6 +142,14 @@ impl InFlightPrompts {
         if let Some(cancellation) = cancellation {
             cancellation.cancel();
         }
+    }
+
+    fn delete_if_idle(&self, session_id: &SessionId) -> std::io::Result<Option<bool>> {
+        let prompts = self.0.lock().expect("in-flight prompts mutex poisoned");
+        if prompts.contains_key(session_id) {
+            return Ok(None);
+        }
+        sessions::delete_session(session_id).map(Some)
     }
 }
 
@@ -197,13 +210,13 @@ fn session_history_from_events(events: Vec<sessions::Event>) -> Result<Vec<Messa
             sessions::EventKind::ToolResult {
                 call_id,
                 name,
-                result,
+                outcome,
             } => history.push(Message::User {
                 content: vec![UserContent::ToolResult(ToolResult {
                     call: ToolCallId::new_or_mint(call_id),
                     provider: None,
                     name,
-                    content: vec![ToolResultContent::text(result)],
+                    content: vec![ToolResultContent::text(outcome.text())],
                 })],
             }),
         }
@@ -249,6 +262,80 @@ fn flush_assistant_text(
     }
 }
 
+fn tool_call_update(
+    call_id: impl Into<String>,
+    name: impl Into<String>,
+    arguments: serde_json::Value,
+) -> SessionUpdate {
+    let name = name.into();
+    let title = agent::tool_call_title(&name, &arguments);
+    SessionUpdate::ToolCall(
+        AcpToolCall::new(call_id.into(), title)
+            .status(ToolCallStatus::InProgress)
+            .raw_input(arguments),
+    )
+}
+
+fn tool_result_update(
+    call_id: impl Into<String>,
+    outcome: &sessions::ToolOutcome,
+) -> SessionUpdate {
+    let result = outcome.text().to_owned();
+    let status = match outcome {
+        sessions::ToolOutcome::Completed(_) => ToolCallStatus::Completed,
+        sessions::ToolOutcome::Failed(_) | sessions::ToolOutcome::Cancelled => {
+            ToolCallStatus::Failed
+        }
+    };
+    SessionUpdate::ToolCallUpdate(AcpToolCallUpdate::new(
+        call_id.into(),
+        ToolCallUpdateFields::new()
+            .status(status)
+            .content(vec![ToolCallContent::from(ContentBlock::Text(
+                TextContent::new(&result),
+            ))])
+            .raw_output(serde_json::Value::String(result)),
+    ))
+}
+
+fn unfinished_tool_calls(events: &[sessions::EventKind]) -> Vec<(String, String)> {
+    let mut active = Vec::new();
+
+    for event in events {
+        match event {
+            sessions::EventKind::ToolCall { call_id, name, .. }
+                if !active.iter().any(|(active_id, _)| active_id == call_id) =>
+            {
+                active.push((call_id.clone(), name.clone()));
+            }
+            sessions::EventKind::ToolResult { call_id, .. } => {
+                active.retain(|(active_id, _)| active_id != call_id);
+            }
+            _ => {}
+        }
+    }
+
+    active
+}
+
+fn finish_tool_calls(
+    events: &mut Vec<sessions::EventKind>,
+    outcome: sessions::ToolOutcome,
+) -> Vec<SessionUpdate> {
+    unfinished_tool_calls(events)
+        .into_iter()
+        .map(|(call_id, name)| {
+            let update = tool_result_update(call_id.clone(), &outcome);
+            events.push(sessions::EventKind::ToolResult {
+                call_id,
+                name,
+                outcome: outcome.clone(),
+            });
+            update
+        })
+        .collect()
+}
+
 fn session_updates(events: Vec<sessions::Event>) -> Result<Vec<SessionUpdate>> {
     let mut updates = Vec::new();
 
@@ -269,7 +356,14 @@ fn session_updates(events: Vec<sessions::Event>) -> Result<Vec<SessionUpdate>> {
                     ContentBlock::Text(TextContent::new(text)),
                 )))
             }
-            sessions::EventKind::ToolCall { .. } | sessions::EventKind::ToolResult { .. } => {}
+            sessions::EventKind::ToolCall {
+                call_id,
+                name,
+                arguments,
+            } => updates.push(tool_call_update(call_id, name, arguments)),
+            sessions::EventKind::ToolResult {
+                call_id, outcome, ..
+            } => updates.push(tool_result_update(call_id, &outcome)),
         }
     }
 
@@ -289,6 +383,7 @@ pub async fn run() -> Result<()> {
     let logout_agents = agents.clone();
     let prompt_agents = agents.clone();
     let prompt_cancellations = in_flight_prompts.clone();
+    let delete_prompt_cancellations = in_flight_prompts.clone();
 
     Agent
         .builder()
@@ -345,6 +440,7 @@ pub async fn run() -> Result<()> {
         )
         .on_receive_request(
             async move |list_sessions: ListSessionsRequest, responder, _connection| {
+                // TODO: Honor the request cursor and paginate large session lists.
                 match sessions::list_sessions(list_sessions.cwd.as_deref()) {
                     Ok(sessions) => responder.respond(ListSessionsResponse::new(sessions)),
                     Err(err) => responder.respond_with_error(Error::into_internal_error(err)),
@@ -354,11 +450,10 @@ pub async fn run() -> Result<()> {
         )
         .on_receive_request(
             async move |delete_session: DeleteSessionRequest, responder, _connection| {
-                match sessions::delete_session(&delete_session.session_id) {
-                    Ok(true) => responder.respond(DeleteSessionResponse::new()),
-                    Ok(false) => responder.respond_with_error(Error::resource_not_found(Some(
-                        delete_session.session_id.to_string(),
-                    ))),
+                match delete_prompt_cancellations.delete_if_idle(&delete_session.session_id) {
+                    Ok(Some(_)) => responder.respond(DeleteSessionResponse::new()),
+                    Ok(None) => responder
+                        .respond_with_error(Error::new(-32600, "session has a prompt in progress")),
                     Err(err) => responder.respond_with_error(Error::into_internal_error(err)),
                 }
             },
@@ -412,6 +507,13 @@ pub async fn run() -> Result<()> {
                             Ok(history) => history,
                             Err(err) => return responder.respond_with_error(err),
                         };
+                        let previous_title = match sessions::session_title(&prompt.session_id) {
+                            Ok(title) => title,
+                            Err(err) => {
+                                return responder
+                                    .respond_with_error(Error::into_internal_error(err));
+                            }
+                        };
                         let title = prompt.prompt.iter().find_map(|block| match block {
                             ContentBlock::Text(text) => sessions::title_from_prompt(&text.text),
                             _ => None,
@@ -419,14 +521,25 @@ pub async fn run() -> Result<()> {
 
                         let input = text_content(&prompt.prompt);
                         let user_message = sessions::EventKind::UserMessage(input.clone());
+                        let updated_at = sessions::now();
                         if let Err(err) = sessions::append_event(
                             &prompt.session_id,
-                            title,
+                            title.clone(),
                             &user_message,
-                            &sessions::now(),
+                            &updated_at,
                         ) {
                             return responder.respond_with_error(Error::into_internal_error(err));
                         }
+                        let mut session_info = SessionInfoUpdate::new().updated_at(updated_at);
+                        if previous_title.is_none()
+                            && let Some(title) = title
+                        {
+                            session_info = session_info.title(title);
+                        }
+                        task_connection.send_notification(SessionNotification::new(
+                            prompt.session_id.clone(),
+                            SessionUpdate::SessionInfoUpdate(session_info),
+                        ))?;
                         let stream = tokio::select! {
                             _ = cancellation.cancelled() => None,
                             stream = agent.stream(input.clone(), history) => Some(stream),
@@ -436,7 +549,7 @@ pub async fn run() -> Result<()> {
                         let mut events = Vec::new();
                         let mut completed_iteration = false;
 
-                        let cancelled = if let Some(mut stream) = stream {
+                        let cancelled = if let Some((mut stream, tool_outcomes)) = stream {
                             loop {
                                 let item = tokio::select! {
                                     _ = cancellation.cancelled() => break true,
@@ -488,14 +601,30 @@ pub async fn run() -> Result<()> {
                                             &mut thought,
                                             &mut response,
                                         );
+                                        let call_id = tool_call.id.as_str().to_owned();
+                                        let name = tool_call.function.name;
+                                        let arguments = tool_call.function.arguments;
+                                        task_connection.send_notification(
+                                            SessionNotification::new(
+                                                prompt.session_id.clone(),
+                                                tool_call_update(
+                                                    call_id.clone(),
+                                                    name.clone(),
+                                                    arguments.clone(),
+                                                ),
+                                            ),
+                                        )?;
                                         events.push(sessions::EventKind::ToolCall {
-                                            call_id: tool_call.id.as_str().to_owned(),
-                                            name: tool_call.function.name,
-                                            arguments: tool_call.function.arguments,
+                                            call_id,
+                                            name,
+                                            arguments,
                                         });
                                     }
                                     Ok(MultiTurnStreamItem::StreamUserItem(
-                                        StreamedUserContent::ToolResult { tool_result, .. },
+                                        StreamedUserContent::ToolResult {
+                                            tool_result,
+                                            internal_call_id,
+                                        },
                                     )) => {
                                         let Some(result) = tool_result
                                             .content
@@ -513,10 +642,27 @@ pub async fn run() -> Result<()> {
                                             &mut thought,
                                             &mut response,
                                         );
+                                        let call_id = tool_result.call.as_str().to_owned();
+                                        let name = tool_result.name;
+                                        let result = result.to_owned();
+                                        let outcome = match tool_outcomes.take(&internal_call_id) {
+                                            agent::ToolOutcomeStatus::Completed => {
+                                                sessions::ToolOutcome::Completed(result)
+                                            }
+                                            agent::ToolOutcomeStatus::Failed => {
+                                                sessions::ToolOutcome::Failed(result)
+                                            }
+                                        };
+                                        task_connection.send_notification(
+                                            SessionNotification::new(
+                                                prompt.session_id.clone(),
+                                                tool_result_update(call_id.clone(), &outcome),
+                                            ),
+                                        )?;
                                         events.push(sessions::EventKind::ToolResult {
-                                            call_id: tool_result.call.as_str().to_owned(),
-                                            name: tool_result.name,
-                                            result: result.to_owned(),
+                                            call_id,
+                                            name,
+                                            outcome,
                                         });
                                     }
                                     Ok(MultiTurnStreamItem::FinalResponse(final_response)) => {
@@ -541,7 +687,30 @@ pub async fn run() -> Result<()> {
                                         events.clear();
                                     }
                                     Ok(_) => {}
+                                    Err(_) if cancellation.is_cancelled() => break true,
                                     Err(err) => {
+                                        let updates = finish_tool_calls(
+                                            &mut events,
+                                            sessions::ToolOutcome::Failed(err.to_string()),
+                                        );
+                                        if !updates.is_empty() {
+                                            for update in updates {
+                                                task_connection.send_notification(
+                                                    SessionNotification::new(
+                                                        prompt.session_id.clone(),
+                                                        update,
+                                                    ),
+                                                )?;
+                                            }
+                                            if let Err(storage_err) = record_iteration(
+                                                &prompt.session_id,
+                                                &mut events,
+                                                &mut thought,
+                                                &mut response,
+                                            ) {
+                                                return responder.respond_with_error(storage_err);
+                                            }
+                                        }
                                         return responder
                                             .respond_with_error(Error::into_internal_error(err));
                                     }
@@ -550,6 +719,17 @@ pub async fn run() -> Result<()> {
                         } else {
                             true
                         };
+
+                        if cancelled {
+                            for update in
+                                finish_tool_calls(&mut events, sessions::ToolOutcome::Cancelled)
+                            {
+                                task_connection.send_notification(SessionNotification::new(
+                                    prompt.session_id.clone(),
+                                    update,
+                                ))?;
+                            }
+                        }
 
                         if let Err(err) = record_iteration(
                             &prompt.session_id,
@@ -655,6 +835,17 @@ mod tests {
     }
 
     #[test]
+    fn an_active_session_cannot_be_deleted() {
+        let prompts = InFlightPrompts::default();
+        let session_id = SessionId::new("session");
+        let cancellation = prompts.begin(session_id.clone()).unwrap();
+
+        assert!(matches!(prompts.delete_if_idle(&session_id), Ok(None)));
+
+        prompts.finish(&session_id, &cancellation);
+    }
+
+    #[test]
     fn prompt_text_keeps_resource_links() {
         let content = text_content(&[
             ContentBlock::Text(TextContent::new("Review this")),
@@ -704,16 +895,193 @@ mod tests {
     }
 
     #[test]
+    fn history_preserves_failed_tool_outcomes() {
+        let history = session_history_from_events(vec![
+            event(sessions::EventKind::ToolCall {
+                call_id: "call-1".to_owned(),
+                name: "get_weather".to_owned(),
+                arguments: serde_json::json!({ "location": "Chicago" }),
+            }),
+            event(sessions::EventKind::ToolResult {
+                call_id: "call-1".to_owned(),
+                name: "get_weather".to_owned(),
+                outcome: sessions::ToolOutcome::Failed("weather service unavailable".to_owned()),
+            }),
+        ])
+        .unwrap();
+
+        assert!(matches!(
+            &history[1],
+            Message::User { content }
+                if matches!(
+                    &content[..],
+                    [UserContent::ToolResult(result)]
+                        if matches!(
+                            &result.content[..],
+                            [ToolResultContent::Text(text)]
+                                if text.text == "weather service unavailable"
+                        )
+                )
+        ));
+    }
+
+    #[test]
     fn updates_replay_the_transcript() {
         let updates = session_updates(vec![
             event(sessions::EventKind::UserMessage("Hello".to_owned())),
             event(sessions::EventKind::AgentThought("Thinking".to_owned())),
             event(sessions::EventKind::AgentMessage("Hi".to_owned())),
+            event(sessions::EventKind::ToolCall {
+                call_id: "call-1".to_owned(),
+                name: "get_weather".to_owned(),
+                arguments: serde_json::json!({ "location": "Minneapolis, MN" }),
+            }),
+            event(sessions::EventKind::ToolResult {
+                call_id: "call-1".to_owned(),
+                name: "get_weather".to_owned(),
+                outcome: sessions::ToolOutcome::Completed("warm and sunny".to_owned()),
+            }),
         ])
         .unwrap();
 
         assert!(matches!(updates[0], SessionUpdate::UserMessageChunk(_)));
         assert!(matches!(updates[1], SessionUpdate::AgentThoughtChunk(_)));
         assert!(matches!(updates[2], SessionUpdate::AgentMessageChunk(_)));
+        assert!(matches!(
+            &updates[3],
+            SessionUpdate::ToolCall(tool_call)
+                if tool_call.tool_call_id.to_string() == "call-1"
+                    && tool_call.title == "Weather Minneapolis, MN"
+                    && tool_call.status == ToolCallStatus::InProgress
+                    && tool_call.raw_input
+                        == Some(serde_json::json!({ "location": "Minneapolis, MN" }))
+        ));
+        assert!(matches!(
+            &updates[4],
+            SessionUpdate::ToolCallUpdate(update)
+                if update.tool_call_id.to_string() == "call-1"
+                    && update.fields.status == Some(ToolCallStatus::Completed)
+                    && update.fields.raw_output
+                        == Some(serde_json::Value::String("warm and sunny".to_owned()))
+        ));
+    }
+
+    #[test]
+    fn cancelled_tool_calls_replay_as_terminal_failures() {
+        let updates = session_updates(vec![
+            event(sessions::EventKind::ToolCall {
+                call_id: "call-1".to_owned(),
+                name: "get_weather".to_owned(),
+                arguments: serde_json::json!({ "location": "Chicago" }),
+            }),
+            event(sessions::EventKind::ToolResult {
+                call_id: "call-1".to_owned(),
+                name: "get_weather".to_owned(),
+                outcome: sessions::ToolOutcome::Cancelled,
+            }),
+        ])
+        .unwrap();
+
+        assert!(matches!(
+            &updates[1],
+            SessionUpdate::ToolCallUpdate(update)
+                if update.fields.status == Some(ToolCallStatus::Failed)
+                    && update.fields.raw_output
+                        == Some(serde_json::Value::String("Cancelled".to_owned()))
+        ));
+    }
+
+    #[test]
+    fn failed_tool_calls_replay_the_error() {
+        let updates = session_updates(vec![
+            event(sessions::EventKind::ToolCall {
+                call_id: "call-1".to_owned(),
+                name: "get_weather".to_owned(),
+                arguments: serde_json::json!({ "location": "Chicago" }),
+            }),
+            event(sessions::EventKind::ToolResult {
+                call_id: "call-1".to_owned(),
+                name: "get_weather".to_owned(),
+                outcome: sessions::ToolOutcome::Failed("weather service unavailable".to_owned()),
+            }),
+        ])
+        .unwrap();
+
+        assert!(matches!(
+            &updates[1],
+            SessionUpdate::ToolCallUpdate(update)
+                if update.fields.status == Some(ToolCallStatus::Failed)
+                    && update.fields.raw_output
+                        == Some(serde_json::Value::String(
+                            "weather service unavailable".to_owned()
+                        ))
+        ));
+    }
+
+    #[test]
+    fn unfinished_tool_calls_exclude_completed_calls() {
+        let events = [
+            sessions::EventKind::ToolCall {
+                call_id: "completed".to_owned(),
+                name: "one".to_owned(),
+                arguments: serde_json::Value::Null,
+            },
+            sessions::EventKind::ToolCall {
+                call_id: "cancelled".to_owned(),
+                name: "two".to_owned(),
+                arguments: serde_json::Value::Null,
+            },
+            sessions::EventKind::ToolResult {
+                call_id: "completed".to_owned(),
+                name: "one".to_owned(),
+                outcome: sessions::ToolOutcome::Completed("done".to_owned()),
+            },
+        ];
+
+        assert_eq!(
+            unfinished_tool_calls(&events),
+            [("cancelled".to_owned(), "two".to_owned())]
+        );
+    }
+
+    #[test]
+    fn finishing_tool_calls_records_an_outcome_for_each_unfinished_call() {
+        let mut events = vec![
+            sessions::EventKind::ToolCall {
+                call_id: "first".to_owned(),
+                name: "one".to_owned(),
+                arguments: serde_json::Value::Null,
+            },
+            sessions::EventKind::ToolCall {
+                call_id: "second".to_owned(),
+                name: "two".to_owned(),
+                arguments: serde_json::Value::Null,
+            },
+        ];
+
+        let updates = finish_tool_calls(
+            &mut events,
+            sessions::ToolOutcome::Failed("tool batch failed".to_owned()),
+        );
+
+        assert_eq!(updates.len(), 2);
+        assert!(matches!(
+            &events[2..],
+            [
+                sessions::EventKind::ToolResult {
+                    call_id: first,
+                    outcome: sessions::ToolOutcome::Failed(first_error),
+                    ..
+                },
+                sessions::EventKind::ToolResult {
+                    call_id: second,
+                    outcome: sessions::ToolOutcome::Failed(second_error),
+                    ..
+                }
+            ] if first == "first"
+                && second == "second"
+                && first_error == "tool batch failed"
+                && second_error == "tool batch failed"
+        ));
     }
 }
