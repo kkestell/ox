@@ -1,4 +1,4 @@
-//! Conversation records and the SQLite store that holds them, in one database
+//! Session transcripts and the SQLite store that holds them, in one database
 //! at `{data}/ox.db`: `$OX_DATA_DIR`, else `$XDG_DATA_HOME/ox`, else
 //! `~/.local/share/ox`.
 //!
@@ -62,26 +62,26 @@ PRAGMA user_version = 2;
 COMMIT;
 ";
 
-/// One record of a session transcript. Every transcript opens with the model
+/// One entry in a session transcript. Every transcript opens with the model
 /// its completions use, which does not change within the session. Tool
 /// results follow the assistant message that called them, one per call, in
 /// call order.
 #[derive(Debug, Clone, PartialEq)]
-pub enum TranscriptEvent {
+pub enum TranscriptEntry {
     Model(String),
     UserMessage(String),
     AssistantMessage(AssistantMessage),
     ToolResult(ToolResult),
 }
 
-/// One complete model completion. `reasoning_details` is the provider's
-/// opaque continuation metadata, stored as received and never displayed.
+/// The content of one validated model completion.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AssistantMessage {
     pub text: String,
     pub reasoning: String,
     pub tool_calls: Vec<ToolCall>,
-    pub reasoning_details: Vec<serde_json::Value>,
+    /// OpenRouter's opaque `reasoning_details`, retained for the next request.
+    pub continuation_metadata: Vec<serde_json::Value>,
 }
 
 impl AssistantMessage {
@@ -146,8 +146,8 @@ impl ToolOutcome {
     }
 }
 
-/// One accepted assistant message with a terminal result for each of its
-/// tool calls. This is the unit the store commits atomically.
+/// One validated assistant message with a final result for each tool call.
+/// The store saves this entire value in one transaction.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AssistantBatch {
     pub message: AssistantMessage,
@@ -195,32 +195,32 @@ fn pair_results(calls: &[ToolCall], results: &[&ToolResult]) -> io::Result<()> {
     Ok(())
 }
 
-fn validate_transcript(events: &[TranscriptEvent]) -> io::Result<()> {
-    if !matches!(events.first(), Some(TranscriptEvent::Model(_))) {
+fn validate_transcript(entries: &[TranscriptEntry]) -> io::Result<()> {
+    if !matches!(entries.first(), Some(TranscriptEntry::Model(_))) {
         return Err(invalid_data("transcript does not open with a model"));
     }
     let mut index = 1;
-    while let Some(event) = events.get(index) {
-        match event {
-            TranscriptEvent::Model(_) => {
+    while let Some(entry) = entries.get(index) {
+        match entry {
+            TranscriptEntry::Model(_) => {
                 return Err(invalid_data(
-                    "a model record appears after the transcript opened",
+                    "a model entry appears after the transcript opened",
                 ));
             }
-            TranscriptEvent::UserMessage(_) => index += 1,
-            TranscriptEvent::ToolResult(result) => {
+            TranscriptEntry::UserMessage(_) => index += 1,
+            TranscriptEntry::ToolResult(result) => {
                 return Err(invalid_data(format!(
                     "tool result {} does not follow an assistant message that called it",
                     result.call_id
                 )));
             }
-            TranscriptEvent::AssistantMessage(message) => {
+            TranscriptEntry::AssistantMessage(message) => {
                 message.validate()?;
-                let results = events[index + 1..]
+                let results = entries[index + 1..]
                     .iter()
                     .take(message.tool_calls.len())
-                    .map(|event| match event {
-                        TranscriptEvent::ToolResult(result) => Ok(result),
+                    .map(|entry| match entry {
+                        TranscriptEntry::ToolResult(result) => Ok(result),
                         _ => Err(invalid_data(
                             "an assistant message's tool calls are not all resolved before the next message",
                         )),
@@ -237,7 +237,7 @@ fn validate_transcript(events: &[TranscriptEvent]) -> io::Result<()> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionSummary {
     pub id: SessionId,
-    pub cwd: PathBuf,
+    pub workspace_path: PathBuf,
     pub title: Option<String>,
     pub created_at: String,
     pub updated_at: String,
@@ -246,15 +246,15 @@ pub struct SessionSummary {
 #[derive(Debug, Clone, PartialEq)]
 pub struct StoredSession {
     pub summary: SessionSummary,
-    pub transcript: Vec<TranscriptEvent>,
+    pub transcript: Vec<TranscriptEntry>,
 }
 
 impl StoredSession {
     /// The model every completion in this session uses.
     pub fn model(&self) -> &str {
         match self.transcript.first() {
-            Some(TranscriptEvent::Model(model)) => model,
-            _ => panic!("session {} has no model record", self.summary.id),
+            Some(TranscriptEntry::Model(model)) => model,
+            _ => panic!("session {} has no model entry", self.summary.id),
         }
     }
 }
@@ -320,10 +320,10 @@ impl SessionStore {
         self.0.lock().expect("session store mutex poisoned")
     }
 
-    /// Creates a session whose completions use `model`, recorded as the
-    /// first transcript event.
-    pub fn create(&self, cwd: &Path, model: &str) -> io::Result<SessionSummary> {
-        let path = workspace_path(cwd)?;
+    /// Creates a session whose completions use `model`, recorded as the first
+    /// transcript entry.
+    pub fn create(&self, workspace_path: &Path, model: &str) -> io::Result<SessionSummary> {
+        let path = validate_workspace_path(workspace_path)?;
         let id = SessionId::new(uuid::Uuid::new_v4().to_string());
         let at = now();
         let mut connection = self.lock();
@@ -339,7 +339,7 @@ impl SessionStore {
             params![id.to_string(), path, at],
         )
         .map_err(io::Error::other)?;
-        insert_event(
+        insert_entry(
             &tx,
             &id,
             &at,
@@ -351,15 +351,15 @@ impl SessionStore {
         tx.commit().map_err(io::Error::other)?;
         Ok(SessionSummary {
             id,
-            cwd: cwd.to_path_buf(),
+            workspace_path: workspace_path.to_path_buf(),
             title: None,
             created_at: at.clone(),
             updated_at: at,
         })
     }
 
-    /// `None` for an absent session. A malformed transcript is an error, not
-    /// partial history.
+    /// `None` for an absent session. A malformed transcript is an error; no
+    /// partial transcript is returned.
     pub fn read(&self, id: &SessionId) -> io::Result<Option<StoredSession>> {
         let mut connection = self.lock();
         let tx = connection.transaction().map_err(io::Error::other)?;
@@ -378,7 +378,7 @@ impl SessionStore {
             .map_err(io::Error::other)?;
         let transcript = rows
             .into_iter()
-            .map(|(kind, data)| decode_event(&kind, &data))
+            .map(|(kind, data)| decode_entry(&kind, &data))
             .collect::<io::Result<Vec<_>>>()
             .and_then(|transcript| validate_transcript(&transcript).map(|()| transcript))
             .map_err(|error| {
@@ -391,8 +391,8 @@ impl SessionStore {
     }
 
     /// Most recently active first, ties broken by ID so the order is stable.
-    pub fn list(&self, cwd: Option<&Path>) -> io::Result<Vec<SessionSummary>> {
-        let filter = cwd.map(|cwd| cwd.to_string_lossy().into_owned());
+    pub fn list(&self, workspace_path: Option<&Path>) -> io::Result<Vec<SessionSummary>> {
+        let filter = workspace_path.map(|path| path.to_string_lossy().into_owned());
         let connection = self.lock();
         let mut statement = connection
             .prepare(
@@ -410,14 +410,14 @@ impl SessionStore {
             .map_err(io::Error::other)
     }
 
-    /// Appends the accepted input, titles a still-untitled session from it,
+    /// Appends the user message, titles a still-untitled session from it,
     /// and updates activity in one transaction.
     pub fn append_user(&self, id: &SessionId, text: &str) -> io::Result<SessionSummary> {
         let at = now();
         let mut connection = self.lock();
         let tx = connection.transaction().map_err(io::Error::other)?;
         touch(&tx, id, title_from_prompt(text), &at)?;
-        insert_event(
+        insert_entry(
             &tx,
             id,
             &at,
@@ -440,7 +440,7 @@ impl SessionStore {
         let mut connection = self.lock();
         let tx = connection.transaction().map_err(io::Error::other)?;
         touch(&tx, id, None, &at)?;
-        insert_event(
+        insert_entry(
             &tx,
             id,
             &at,
@@ -448,7 +448,7 @@ impl SessionStore {
             &AssistantMessageRow::from(&batch.message),
         )?;
         for result in &batch.results {
-            insert_event(&tx, id, &at, "tool_result", &ToolResultRow::from(result))?;
+            insert_entry(&tx, id, &at, "tool_result", &ToolResultRow::from(result))?;
         }
         tx.commit().map_err(io::Error::other)
     }
@@ -466,14 +466,17 @@ impl SessionStore {
 }
 
 /// Workspaces are compared as the exact absolute path the client supplied.
-fn workspace_path(cwd: &Path) -> io::Result<String> {
-    if !cwd.is_absolute() {
+fn validate_workspace_path(workspace_path: &Path) -> io::Result<String> {
+    if !workspace_path.is_absolute() {
         return Err(io::Error::new(
             ErrorKind::InvalidInput,
-            format!("workspace path is not absolute: {}", cwd.display()),
+            format!(
+                "workspace path is not absolute: {}",
+                workspace_path.display()
+            ),
         ));
     }
-    Ok(cwd.to_string_lossy().into_owned())
+    Ok(workspace_path.to_string_lossy().into_owned())
 }
 
 fn summary(connection: &Connection, id: &SessionId) -> rusqlite::Result<Option<SessionSummary>> {
@@ -493,7 +496,7 @@ fn summary(connection: &Connection, id: &SessionId) -> rusqlite::Result<Option<S
 fn summary_row(row: &Row<'_>) -> rusqlite::Result<SessionSummary> {
     Ok(SessionSummary {
         id: SessionId::new(row.get::<_, String>(0)?),
-        cwd: PathBuf::from(row.get::<_, String>(1)?),
+        workspace_path: PathBuf::from(row.get::<_, String>(1)?),
         title: row.get(2)?,
         created_at: row.get(3)?,
         updated_at: row.get(4)?,
@@ -518,7 +521,7 @@ fn touch(tx: &Transaction<'_>, id: &SessionId, title: Option<String>, at: &str) 
     Ok(())
 }
 
-fn insert_event<T: Serialize>(
+fn insert_entry<T: Serialize>(
     tx: &Transaction<'_>,
     id: &SessionId,
     at: &str,
@@ -594,7 +597,7 @@ impl From<&AssistantMessage> for AssistantMessageRow {
                     arguments: call.arguments.clone(),
                 })
                 .collect(),
-            reasoning_details: message.reasoning_details.clone(),
+            reasoning_details: message.continuation_metadata.clone(),
         }
     }
 }
@@ -615,13 +618,13 @@ impl From<&ToolResult> for ToolResultRow {
     }
 }
 
-fn decode_event(kind: &str, data: &str) -> io::Result<TranscriptEvent> {
+fn decode_entry(kind: &str, data: &str) -> io::Result<TranscriptEntry> {
     Ok(match kind {
-        "model" => TranscriptEvent::Model(decode::<ModelRow>(kind, data)?.model),
-        "user_message" => TranscriptEvent::UserMessage(decode::<UserMessageRow>(kind, data)?.text),
+        "model" => TranscriptEntry::Model(decode::<ModelRow>(kind, data)?.model),
+        "user_message" => TranscriptEntry::UserMessage(decode::<UserMessageRow>(kind, data)?.text),
         "assistant_message" => {
             let row: AssistantMessageRow = decode(kind, data)?;
-            TranscriptEvent::AssistantMessage(AssistantMessage {
+            TranscriptEntry::AssistantMessage(AssistantMessage {
                 text: row.text,
                 reasoning: row.reasoning,
                 tool_calls: row
@@ -633,7 +636,7 @@ fn decode_event(kind: &str, data: &str) -> io::Result<TranscriptEvent> {
                         arguments: call.arguments,
                     })
                     .collect(),
-                reasoning_details: row.reasoning_details,
+                continuation_metadata: row.reasoning_details,
             })
         }
         "tool_result" => {
@@ -643,7 +646,7 @@ fn decode_event(kind: &str, data: &str) -> io::Result<TranscriptEvent> {
                 ToolResultStatus::Failed => ToolOutcome::Failed(row.content),
                 ToolResultStatus::Cancelled => ToolOutcome::Cancelled(row.content),
             };
-            TranscriptEvent::ToolResult(ToolResult {
+            TranscriptEntry::ToolResult(ToolResult {
                 call_id: row.call_id,
                 name: row.name,
                 outcome,
@@ -651,14 +654,14 @@ fn decode_event(kind: &str, data: &str) -> io::Result<TranscriptEvent> {
         }
         _ => {
             return Err(invalid_data(format!(
-                "unknown transcript event kind {kind:?}"
+                "unknown transcript entry kind {kind:?}"
             )));
         }
     })
 }
 
 fn decode<T: DeserializeOwned>(kind: &str, data: &str) -> io::Result<T> {
-    serde_json::from_str(data).map_err(|error| invalid_data(format!("{kind} event: {error}")))
+    serde_json::from_str(data).map_err(|error| invalid_data(format!("{kind} entry: {error}")))
 }
 
 fn invalid_data(message: impl Into<String>) -> io::Error {
@@ -701,14 +704,14 @@ pub fn database_path() -> io::Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{acp::convert, model};
+    use crate::{acp::convert, openrouter};
     use agent_client_protocol::schema::v1::{SessionUpdate, ToolCallStatus};
     use serde_json::json;
 
-    const CWD: &str = "/Users/kyle/projects/ox";
+    const WORKSPACE_PATH: &str = "/Users/kyle/projects/ox";
 
-    fn cwd() -> &'static Path {
-        Path::new(CWD)
+    fn workspace() -> &'static Path {
+        Path::new(WORKSPACE_PATH)
     }
 
     fn call(id: &str, location: &str) -> ToolCall {
@@ -736,7 +739,7 @@ mod tests {
             text: "Checking both.".to_owned(),
             reasoning: "Two cities.".to_owned(),
             tool_calls,
-            reasoning_details: vec![json!({
+            continuation_metadata: vec![json!({
                 "type": "reasoning.encrypted",
                 "data": "opaque",
                 "id": "rs_1",
@@ -762,7 +765,7 @@ mod tests {
     }
 
     #[test]
-    fn a_batch_survives_reopen_and_projects_to_replay_and_the_next_request() {
+    fn a_saved_batch_can_be_replayed_and_sent_in_the_next_request() {
         let dir = std::env::temp_dir().join(format!("ox-test-{}", uuid::Uuid::new_v4()));
         let path = dir.join(DATABASE_FILE);
         let message = message(vec![call("call-1", "Chicago"), call("call-2", "Denver")]);
@@ -779,7 +782,10 @@ mod tests {
 
         let id = {
             let store = SessionStore::open(&path).unwrap();
-            let id = store.create(cwd(), model::MODEL).unwrap().id;
+            let id = store
+                .create(workspace(), openrouter::DEFAULT_MODEL)
+                .unwrap()
+                .id;
             store
                 .append_user(&id, "Weather in Chicago and Denver?")
                 .unwrap();
@@ -790,25 +796,25 @@ mod tests {
 
         let store = SessionStore::open(&path).unwrap();
         let stored = store.read(&id).unwrap().expect("session persists");
-        assert_eq!(stored.summary.cwd, cwd());
+        assert_eq!(stored.summary.workspace_path, workspace());
         assert_eq!(
             stored.summary.title.as_deref(),
             Some("Weather in Chicago and Denver?")
         );
-        assert_eq!(stored.model(), model::MODEL);
+        assert_eq!(stored.model(), openrouter::DEFAULT_MODEL);
         assert_eq!(
             stored.transcript,
             vec![
-                TranscriptEvent::Model(model::MODEL.to_owned()),
-                TranscriptEvent::UserMessage("Weather in Chicago and Denver?".to_owned()),
-                TranscriptEvent::AssistantMessage(message.clone()),
-                TranscriptEvent::ToolResult(results[0].clone()),
-                TranscriptEvent::ToolResult(results[1].clone()),
+                TranscriptEntry::Model(openrouter::DEFAULT_MODEL.to_owned()),
+                TranscriptEntry::UserMessage("Weather in Chicago and Denver?".to_owned()),
+                TranscriptEntry::AssistantMessage(message.clone()),
+                TranscriptEntry::ToolResult(results[0].clone()),
+                TranscriptEntry::ToolResult(results[1].clone()),
             ]
         );
 
         let mut updates = Vec::new();
-        convert::replay(&stored.transcript, |update| {
+        convert::replay_transcript(&stored.transcript, |update| {
             updates.push(update);
             Ok(())
         })
@@ -834,7 +840,7 @@ mod tests {
                     && call.raw_output == Some(json!("Denver is unavailable."))
         ));
 
-        let messages = model::request_messages(&stored.transcript);
+        let messages = openrouter::chat_messages(&stored.transcript);
         assert_eq!(messages.len(), 4);
         assert_eq!(messages[0]["role"], "user");
         assert_eq!(messages[1]["role"], "assistant");
@@ -843,7 +849,7 @@ mod tests {
         assert_eq!(messages[1]["tool_calls"][1]["id"], "call-2");
         assert_eq!(
             messages[1]["reasoning_details"],
-            json!(message.reasoning_details)
+            json!(message.continuation_metadata)
         );
         assert!(
             messages[1].get("reasoning").is_none(),
@@ -922,7 +928,10 @@ mod tests {
             });
         };
 
-        let orphan = store.create(cwd(), model::MODEL).unwrap().id;
+        let orphan = store
+            .create(workspace(), openrouter::DEFAULT_MODEL)
+            .unwrap()
+            .id;
         store.append_user(&orphan, "hello").unwrap();
         insert(
             &orphan,
@@ -931,7 +940,10 @@ mod tests {
         );
         assert!(store.read(&orphan).is_err());
 
-        let unresolved = store.create(cwd(), model::MODEL).unwrap().id;
+        let unresolved = store
+            .create(workspace(), openrouter::DEFAULT_MODEL)
+            .unwrap()
+            .id;
         let unresolved_message =
             AssistantMessageRow::from(&message(vec![call("call-1", "Chicago")]));
         insert(
@@ -941,19 +953,31 @@ mod tests {
         );
         assert!(store.read(&unresolved).is_err());
 
-        let unknown = store.create(cwd(), model::MODEL).unwrap().id;
+        let unknown = store
+            .create(workspace(), openrouter::DEFAULT_MODEL)
+            .unwrap()
+            .id;
         insert(&unknown, "mystery", "{}");
         assert!(store.read(&unknown).is_err());
 
-        let malformed = store.create(cwd(), model::MODEL).unwrap().id;
+        let malformed = store
+            .create(workspace(), openrouter::DEFAULT_MODEL)
+            .unwrap()
+            .id;
         insert(&malformed, "user_message", r#"{"text":"hi","extra":true}"#);
         assert!(store.read(&malformed).is_err());
 
-        let switched = store.create(cwd(), model::MODEL).unwrap().id;
+        let switched = store
+            .create(workspace(), openrouter::DEFAULT_MODEL)
+            .unwrap()
+            .id;
         insert(&switched, "model", r#"{"model":"other/model"}"#);
         assert!(store.read(&switched).is_err());
 
-        let unmodelled = store.create(cwd(), model::MODEL).unwrap().id;
+        let unmodelled = store
+            .create(workspace(), openrouter::DEFAULT_MODEL)
+            .unwrap()
+            .id;
         store.with_connection(|connection| {
             connection
                 .execute(
@@ -968,7 +992,9 @@ mod tests {
     #[test]
     fn user_append_adopts_a_title_once_and_updates_activity() {
         let store = SessionStore::in_memory();
-        let created = store.create(cwd(), model::MODEL).unwrap();
+        let created = store
+            .create(workspace(), openrouter::DEFAULT_MODEL)
+            .unwrap();
         set_updated_at(&store, &created.id, "2026-09-18T09:00:00.000Z");
 
         let first = store
@@ -982,7 +1008,9 @@ mod tests {
         assert_eq!(second.title.as_deref(), Some("First line"));
         assert!(second.updated_at >= first.updated_at);
 
-        let long = store.create(cwd(), model::MODEL).unwrap();
+        let long = store
+            .create(workspace(), openrouter::DEFAULT_MODEL)
+            .unwrap();
         let title = store
             .append_user(&long.id, &"x".repeat(MAX_TITLE_CHARS + 10))
             .unwrap()
@@ -1006,10 +1034,19 @@ mod tests {
     #[test]
     fn list_orders_by_activity_and_filters_by_workspace() {
         let store = SessionStore::in_memory();
-        let first = store.create(cwd(), model::MODEL).unwrap().id;
-        let second = store.create(cwd(), model::MODEL).unwrap().id;
+        let first = store
+            .create(workspace(), openrouter::DEFAULT_MODEL)
+            .unwrap()
+            .id;
+        let second = store
+            .create(workspace(), openrouter::DEFAULT_MODEL)
+            .unwrap()
+            .id;
         let other = store
-            .create(Path::new("/Users/kyle/projects/other"), model::MODEL)
+            .create(
+                Path::new("/Users/kyle/projects/other"),
+                openrouter::DEFAULT_MODEL,
+            )
             .unwrap()
             .id;
         set_updated_at(&store, &first, "2026-09-18T10:00:00.000Z");
@@ -1021,20 +1058,23 @@ mod tests {
             vec![other.to_string(), first.to_string(), second.to_string()]
         );
         assert_eq!(
-            ids(&store.list(Some(cwd())).unwrap()),
+            ids(&store.list(Some(workspace())).unwrap()),
             vec![first.to_string(), second.to_string()]
         );
         assert!(
             store
-                .create(Path::new("relative/path"), model::MODEL)
+                .create(Path::new("relative/path"), openrouter::DEFAULT_MODEL)
                 .is_err()
         );
     }
 
     #[test]
-    fn deleting_a_session_removes_its_records_and_repeats_successfully() {
+    fn deleting_a_session_removes_its_transcript_entries_and_repeats_successfully() {
         let store = SessionStore::in_memory();
-        let id = store.create(cwd(), model::MODEL).unwrap().id;
+        let id = store
+            .create(workspace(), openrouter::DEFAULT_MODEL)
+            .unwrap()
+            .id;
         store.append_user(&id, "hello").unwrap();
 
         store.delete(&id).unwrap();

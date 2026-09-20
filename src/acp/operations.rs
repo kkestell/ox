@@ -1,5 +1,5 @@
-//! Per-session admission: one prompt, load, or delete at a time, claimed
-//! atomically and released when the guard drops.
+//! Allows at most one prompt, load, or delete per session. An operation starts
+//! only when it acquires a guard and ends when that guard is dropped.
 
 use std::{
     collections::{HashMap, hash_map::Entry},
@@ -28,8 +28,7 @@ struct OperationsState {
     drained: Option<oneshot::Sender<()>>,
 }
 
-/// Membership in the registry. Dropping it releases the session; nothing
-/// else does.
+/// Keeps one session busy. Dropping it makes the session available again.
 pub struct OperationGuard {
     operations: SessionOperations,
     session_id: SessionId,
@@ -41,20 +40,20 @@ impl SessionOperations {
         session_id: &SessionId,
     ) -> Option<(OperationGuard, PromptCancellation)> {
         let cancellation = PromptCancellation::new();
-        self.claim(session_id, Operation::Prompt(cancellation.clone()))
+        self.acquire(session_id, Operation::Prompt(cancellation.clone()))
             .map(|guard| (guard, cancellation))
     }
 
     pub fn try_load(&self, session_id: &SessionId) -> Option<OperationGuard> {
-        self.claim(session_id, Operation::Load)
+        self.acquire(session_id, Operation::Load)
     }
 
     pub fn try_delete(&self, session_id: &SessionId) -> Option<OperationGuard> {
-        self.claim(session_id, Operation::Delete)
+        self.acquire(session_id, Operation::Delete)
     }
 
-    /// Signals the prompt that owns the session. A no-op for idle sessions
-    /// and for sessions owned by a load or delete.
+    /// Signals the active prompt. Does nothing when the session is idle or is
+    /// being loaded or deleted.
     pub fn cancel(&self, session_id: &SessionId) {
         let cancellation = match self.lock().active.get(session_id) {
             Some(Operation::Prompt(cancellation)) => Some(cancellation.clone()),
@@ -66,7 +65,7 @@ impl SessionOperations {
     }
 
     /// Called once after incoming EOF, when no more operations can arrive.
-    /// Keep the connection's executor alive until settlement and replies finish.
+    /// Keep the connection running until active operations send their replies.
     pub async fn shutdown(&self) {
         let (drained_tx, drained_rx) = oneshot::channel();
         {
@@ -82,10 +81,12 @@ impl SessionOperations {
             assert!(state.drained.is_none(), "shutdown is already waiting");
             state.drained = Some(drained_tx);
         }
-        drained_rx.await.expect("the last operation signals shutdown");
+        drained_rx
+            .await
+            .expect("the last operation signals shutdown");
     }
 
-    fn claim(&self, session_id: &SessionId, operation: Operation) -> Option<OperationGuard> {
+    fn acquire(&self, session_id: &SessionId, operation: Operation) -> Option<OperationGuard> {
         match self.lock().active.entry(session_id.clone()) {
             Entry::Occupied(_) => None,
             Entry::Vacant(vacant) => {
@@ -115,8 +116,8 @@ impl Drop for OperationGuard {
     }
 }
 
-/// A latched cancellation signal for one prompt. Clones observe the same
-/// signal; cancelling twice is harmless.
+/// A cancellation signal for one prompt. Once cancelled, every clone continues
+/// to observe cancellation; cancelling twice is harmless.
 #[derive(Clone)]
 pub struct PromptCancellation(Arc<CancellationState>);
 
@@ -164,7 +165,7 @@ mod tests {
     }
 
     #[test]
-    fn a_claimed_session_is_busy_for_every_operation_until_the_guard_drops() {
+    fn a_guard_keeps_the_session_busy_until_it_drops() {
         let operations = SessionOperations::default();
         let session = id("a");
         let claims: [fn(&SessionOperations, &SessionId) -> Option<OperationGuard>; 3] = [
@@ -174,7 +175,7 @@ mod tests {
         ];
 
         for holder in &claims {
-            let guard = holder(&operations, &session).expect("an idle session can be claimed");
+            let guard = holder(&operations, &session).expect("an idle session is available");
             for incoming in &claims {
                 assert!(
                     incoming(&operations, &session).is_none(),
@@ -189,7 +190,7 @@ mod tests {
         }
         assert!(
             operations.try_prompt(&session).is_some(),
-            "the claim was released"
+            "dropping the guard made the session available"
         );
     }
 
@@ -211,7 +212,7 @@ mod tests {
     }
 
     #[test]
-    fn cancel_signals_only_the_prompt_that_owns_that_session() {
+    fn cancel_signals_only_the_active_prompt_for_that_session() {
         let operations = SessionOperations::default();
         let (guard_a, cancel_a) = operations.try_prompt(&id("a")).unwrap();
         let (_guard_b, cancel_b) = operations.try_prompt(&id("b")).unwrap();

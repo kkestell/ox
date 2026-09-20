@@ -1,6 +1,6 @@
 mod acp;
 mod auth;
-mod model;
+mod openrouter;
 mod sessions;
 mod tools;
 
@@ -55,7 +55,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
                 )
                 .into());
             }
-            model::ModelClient::new(api_key.to_owned()).verify().await?;
+            openrouter::Client::new(api_key.to_owned()).verify().await?;
             auth::save_api_key(api_key)?;
             println!("OpenRouter API key saved.");
         }

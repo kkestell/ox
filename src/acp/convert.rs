@@ -1,5 +1,5 @@
-//! Translation between ACP content and transcript records: prompt input to
-//! accepted text, and records to session updates for live delivery and replay.
+//! Converts ACP prompt content into a user message and transcript entries into
+//! ACP updates for live output and session replay.
 
 use agent_client_protocol::{
     Error, Result,
@@ -11,13 +11,13 @@ use agent_client_protocol::{
 use serde_json::Value;
 
 use crate::{
-    sessions::{ToolCall, ToolOutcome, ToolResult, TranscriptEvent},
+    sessions::{ToolCall, ToolOutcome, ToolResult, TranscriptEntry},
     tools,
 };
 
 /// Text blocks and resource links become one text input; a link contributes
 /// its name and URI and is not fetched. Anything else is invalid input.
-pub fn prompt_text(content: &[ContentBlock]) -> Result<String> {
+pub fn prompt_to_user_message(content: &[ContentBlock]) -> Result<String> {
     let mut parts = Vec::new();
     for block in content {
         match block {
@@ -38,15 +38,15 @@ pub fn prompt_text(content: &[ContentBlock]) -> Result<String> {
     Ok(text)
 }
 
-pub fn user_message(text: &str) -> SessionUpdate {
+pub fn user_message_chunk(text: &str) -> SessionUpdate {
     SessionUpdate::UserMessageChunk(text_chunk(text))
 }
 
-pub fn agent_text(text: &str) -> SessionUpdate {
+pub fn agent_message_chunk(text: &str) -> SessionUpdate {
     SessionUpdate::AgentMessageChunk(text_chunk(text))
 }
 
-pub fn agent_reasoning(text: &str) -> SessionUpdate {
+pub fn agent_thought_chunk(text: &str) -> SessionUpdate {
     SessionUpdate::AgentThoughtChunk(text_chunk(text))
 }
 
@@ -55,7 +55,7 @@ fn text_chunk(text: &str) -> ContentChunk {
 }
 
 /// Announces a call the model made, before anything runs.
-pub fn tool_call_pending(call: &ToolCall) -> SessionUpdate {
+pub fn pending_tool_call(call: &ToolCall) -> SessionUpdate {
     SessionUpdate::ToolCall(
         AcpToolCall::new(ToolCallId::new(call.call_id.clone()), tools::title(call))
             .status(ToolCallStatus::Pending)
@@ -63,14 +63,14 @@ pub fn tool_call_pending(call: &ToolCall) -> SessionUpdate {
     )
 }
 
-pub fn tool_call_in_progress(call_id: &str) -> SessionUpdate {
+pub fn in_progress_tool_call_update(call_id: &str) -> SessionUpdate {
     SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
         ToolCallId::new(call_id.to_owned()),
         ToolCallUpdateFields::new().status(ToolCallStatus::InProgress),
     ))
 }
 
-pub fn tool_result(result: &ToolResult) -> SessionUpdate {
+pub fn finished_tool_call_update(result: &ToolResult) -> SessionUpdate {
     SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
         ToolCallId::new(result.call_id.clone()),
         ToolCallUpdateFields::new()
@@ -80,32 +80,32 @@ pub fn tool_result(result: &ToolResult) -> SessionUpdate {
     ))
 }
 
-/// Replays committed history as displayable content and terminal tool states.
+/// Sends the saved transcript as displayable content and final tool states.
 /// The model and continuation metadata are never shown.
-pub fn replay(
-    transcript: &[TranscriptEvent],
-    mut deliver: impl FnMut(SessionUpdate) -> Result<()>,
+pub fn replay_transcript(
+    transcript: &[TranscriptEntry],
+    mut send_update: impl FnMut(SessionUpdate) -> Result<()>,
 ) -> Result<()> {
     let mut calls: &[ToolCall] = &[];
-    for event in transcript {
-        match event {
-            TranscriptEvent::Model(_) => {}
-            TranscriptEvent::UserMessage(text) => deliver(user_message(text))?,
-            TranscriptEvent::AssistantMessage(message) => {
+    for entry in transcript {
+        match entry {
+            TranscriptEntry::Model(_) => {}
+            TranscriptEntry::UserMessage(text) => send_update(user_message_chunk(text))?,
+            TranscriptEntry::AssistantMessage(message) => {
                 if !message.reasoning.is_empty() {
-                    deliver(agent_reasoning(&message.reasoning))?;
+                    send_update(agent_thought_chunk(&message.reasoning))?;
                 }
                 if !message.text.is_empty() {
-                    deliver(agent_text(&message.text))?;
+                    send_update(agent_message_chunk(&message.text))?;
                 }
                 calls = &message.tool_calls;
             }
-            TranscriptEvent::ToolResult(result) => {
+            TranscriptEntry::ToolResult(result) => {
                 let call = calls
                     .iter()
                     .find(|call| call.call_id == result.call_id)
                     .expect("a stored tool result follows the assistant message that called it");
-                deliver(replayed_tool_call(call, result))?;
+                send_update(replayed_tool_call(call, result))?;
             }
         }
     }
@@ -147,8 +147,8 @@ mod tests {
     use agent_client_protocol::schema::v1::{ErrorCode, ImageContent, ResourceLink};
 
     #[test]
-    fn prompt_text_keeps_resource_links_and_rejects_other_or_blank_content() {
-        let text = prompt_text(&[
+    fn prompt_to_user_message_keeps_links_and_rejects_other_or_blank_content() {
+        let text = prompt_to_user_message(&[
             ContentBlock::Text(TextContent::new("Review this")),
             ContentBlock::ResourceLink(ResourceLink::new(
                 "src/main.rs",
@@ -162,12 +162,17 @@ mod tests {
         );
 
         let image =
-            prompt_text(&[ContentBlock::Image(ImageContent::new("", "image/png"))]).unwrap_err();
+            prompt_to_user_message(&[ContentBlock::Image(ImageContent::new("", "image/png"))])
+                .unwrap_err();
         assert_eq!(image.code, ErrorCode::InvalidParams);
 
-        let blank = prompt_text(&[ContentBlock::Text(TextContent::new("  \n\t"))]).unwrap_err();
+        let blank =
+            prompt_to_user_message(&[ContentBlock::Text(TextContent::new("  \n\t"))]).unwrap_err();
         assert_eq!(blank.code, ErrorCode::InvalidParams);
-        assert_eq!(prompt_text(&[]).unwrap_err().code, ErrorCode::InvalidParams);
+        assert_eq!(
+            prompt_to_user_message(&[]).unwrap_err().code,
+            ErrorCode::InvalidParams
+        );
     }
 
     #[test]
@@ -178,7 +183,7 @@ mod tests {
             arguments: "{\"loc".to_owned(),
         };
         assert!(matches!(
-            tool_call_pending(&call),
+            pending_tool_call(&call),
             SessionUpdate::ToolCall(update)
                 if update.status == ToolCallStatus::Pending
                     && update.title == "Weather"
@@ -190,7 +195,7 @@ mod tests {
             outcome: ToolOutcome::Cancelled("Cancelled before this tool was started.".to_owned()),
         };
         assert!(matches!(
-            tool_result(&cancelled),
+            finished_tool_call_update(&cancelled),
             SessionUpdate::ToolCallUpdate(update)
                 if update.fields.status == Some(ToolCallStatus::Failed)
                     && update.fields.raw_output

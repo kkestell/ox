@@ -1,6 +1,6 @@
-//! The agent loop: one model request at a time, tools run in call order, and
-//! every exit after the user message is saved settles through one path that
-//! commits the accepted batch and shapes the response.
+//! Runs one ACP prompt request. It saves the user message, makes model requests,
+//! runs tools in call order, saves each complete assistant batch, and returns
+//! one final ACP response.
 
 use std::{fmt, io};
 
@@ -11,10 +11,10 @@ use agent_client_protocol::{
 
 use super::{convert, operations::PromptCancellation};
 use crate::{
-    model::{ModelClient, ModelCompletion, ModelEvent, ModelStop},
+    openrouter,
     sessions::{
         AssistantBatch, AssistantMessage, SessionStore, SessionSummary, ToolCall, ToolOutcome,
-        ToolResult, TranscriptEvent,
+        ToolResult, TranscriptEntry,
     },
     tools,
 };
@@ -22,83 +22,80 @@ use crate::{
 /// Model requests one prompt may make, including the first. Tools requested
 /// by the final allowed request are not run, because no request remains to
 /// read their results.
-pub const MAX_MODEL_CALLS: usize = 8;
+pub const MAX_MODEL_REQUESTS: usize = 8;
 
 pub async fn run<F>(
     store: SessionStore,
-    client: ModelClient,
+    openrouter: openrouter::Client,
     session_id: SessionId,
-    input: String,
+    user_message: String,
     cancellation: PromptCancellation,
-    deliver: F,
+    send_update: F,
 ) -> Result<PromptResponse>
 where
     F: FnMut(SessionUpdate) -> Result<()>,
 {
-    let mut prompt = Prompt::open(store, client, session_id, cancellation, deliver)?;
-    if !prompt.accept(input)? {
+    let mut run = PromptRun::open(store, openrouter, session_id, cancellation, send_update)?;
+    if !run.save_user_message(user_message)? {
         return Ok(PromptResponse::new(StopReason::Cancelled));
     }
-    let exit = prompt.converse().await;
-    prompt.settle(exit)
+    let outcome = run.run_model_loop().await;
+    run.finish(outcome)
 }
 
-/// Why the loop stopped. Each variant settles differently.
-enum Exit {
+/// Why this prompt run stopped. Each variant requires a different final response.
+enum PromptOutcome {
     Finished,
     Cancelled,
-    ModelCallLimit,
+    ModelRequestLimit,
     TokenLimit,
     Refused,
-    Provider(io::Error),
-    Delivery(Error),
+    OpenRouter(io::Error),
+    AcpUpdate(Error),
     Storage(io::Error),
 }
 
-impl fmt::Display for Exit {
+impl fmt::Display for PromptOutcome {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Finished => write!(f, "the answer finished"),
             Self::Cancelled => write!(f, "the prompt was cancelled"),
-            Self::ModelCallLimit => write!(f, "the model request limit was reached"),
+            Self::ModelRequestLimit => write!(f, "the model request limit was reached"),
             Self::TokenLimit => write!(f, "the model reached its token limit"),
             Self::Refused => write!(f, "the model refused"),
-            Self::Provider(error) => write!(f, "the model request failed: {error}"),
-            Self::Delivery(error) => write!(f, "delivery to the client failed: {error}"),
-            Self::Storage(error) => write!(f, "storing the conversation failed: {error}"),
+            Self::OpenRouter(error) => write!(f, "the model request failed: {error}"),
+            Self::AcpUpdate(error) => write!(f, "sending an ACP update failed: {error}"),
+            Self::Storage(error) => write!(f, "saving the transcript failed: {error}"),
         }
     }
 }
 
-struct Prompt<F> {
+struct PromptRun<F> {
     store: SessionStore,
-    client: ModelClient,
+    openrouter: openrouter::Client,
     model: String,
     summary: SessionSummary,
     cancellation: PromptCancellation,
-    deliver: F,
-    /// Committed history plus the accepted user message; extended only
-    /// after a batch commits.
-    history: Vec<TranscriptEvent>,
-    pending: Option<PendingBatch>,
-    model_calls: usize,
+    send_update: F,
+    /// Saved transcript, extended only after a database transaction succeeds.
+    transcript: Vec<TranscriptEntry>,
+    uncommitted_batch: Option<UncommittedAssistantBatch>,
+    model_requests: usize,
 }
 
-/// An accepted assistant message whose tool calls have not all reached a
-/// terminal result. Each slot fills once; the closed batch lists results in
-/// call order.
-struct PendingBatch {
+/// A validated assistant message whose tool calls do not all have outcomes yet.
+struct UncommittedAssistantBatch {
     message: AssistantMessage,
     outcomes: Vec<Option<ToolOutcome>>,
 }
 
-impl PendingBatch {
+impl UncommittedAssistantBatch {
     fn new(message: AssistantMessage) -> Self {
         let outcomes = vec![None; message.tool_calls.len()];
         Self { message, outcomes }
     }
 
-    fn record(&mut self, index: usize, outcome: ToolOutcome) -> ToolResult {
+    fn record_outcome(&mut self, index: usize, outcome: ToolOutcome) -> ToolResult {
         let call = &self.message.tool_calls[index];
         let slot = &mut self.outcomes[index];
         assert!(
@@ -107,22 +104,22 @@ impl PendingBatch {
             call.call_id
         );
         *slot = Some(outcome.clone());
-        result(call, outcome)
+        tool_result(call, outcome)
     }
 
     /// Fills every empty slot with `outcome` and returns the results filled.
-    fn fill(&mut self, outcome: &ToolOutcome) -> Vec<ToolResult> {
+    fn fill_empty_outcomes(&mut self, outcome: &ToolOutcome) -> Vec<ToolResult> {
         let mut filled = Vec::new();
         for (call, slot) in self.message.tool_calls.iter().zip(&mut self.outcomes) {
             if slot.is_none() {
                 *slot = Some(outcome.clone());
-                filled.push(result(call, outcome.clone()));
+                filled.push(tool_result(call, outcome.clone()));
             }
         }
         filled
     }
 
-    fn closed(&self) -> AssistantBatch {
+    fn complete(&self) -> AssistantBatch {
         let results = self
             .message
             .tool_calls
@@ -131,16 +128,16 @@ impl PendingBatch {
             .map(|(call, outcome)| {
                 let outcome = outcome
                     .clone()
-                    .expect("every tool call has a result before the batch closes");
-                result(call, outcome)
+                    .expect("every tool call has an outcome before the batch is complete");
+                tool_result(call, outcome)
             })
             .collect();
         AssistantBatch::new(self.message.clone(), results)
-            .expect("a pending batch pairs one result with each call")
+            .expect("a complete assistant batch pairs one result with each call")
     }
 }
 
-fn result(call: &ToolCall, outcome: ToolOutcome) -> ToolResult {
+fn tool_result(call: &ToolCall, outcome: ToolOutcome) -> ToolResult {
     ToolResult {
         call_id: call.call_id.clone(),
         name: call.name.clone(),
@@ -148,13 +145,13 @@ fn result(call: &ToolCall, outcome: ToolOutcome) -> ToolResult {
     }
 }
 
-impl<F: FnMut(SessionUpdate) -> Result<()>> Prompt<F> {
+impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
     fn open(
         store: SessionStore,
-        client: ModelClient,
+        openrouter: openrouter::Client,
         session_id: SessionId,
         cancellation: PromptCancellation,
-        deliver: F,
+        send_update: F,
     ) -> Result<Self> {
         let stored = store
             .read(&session_id)
@@ -162,62 +159,63 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> Prompt<F> {
             .ok_or_else(|| Error::resource_not_found(Some(session_id.to_string())))?;
         Ok(Self {
             store,
-            client,
+            openrouter,
             model: stored.model().to_owned(),
             summary: stored.summary,
             cancellation,
-            deliver,
-            history: stored.transcript,
-            pending: None,
-            model_calls: 0,
+            send_update,
+            transcript: stored.transcript,
+            uncommitted_batch: None,
+            model_requests: 0,
         })
     }
 
     /// Saves the user message before any model request and announces the
     /// session update. `false` when cancellation was already observed, in
     /// which case nothing is written.
-    fn accept(&mut self, input: String) -> Result<bool> {
+    fn save_user_message(&mut self, user_message: String) -> Result<bool> {
         if self.cancellation.is_cancelled() {
             return Ok(false);
         }
         let updated = self
             .store
-            .append_user(&self.summary.id, &input)
+            .append_user(&self.summary.id, &user_message)
             .map_err(Error::into_internal_error)?;
-        self.history.push(TranscriptEvent::UserMessage(input));
+        self.transcript
+            .push(TranscriptEntry::UserMessage(user_message));
         let mut info = SessionInfoUpdate::new().updated_at(updated.updated_at);
         if self.summary.title.is_none()
             && let Some(title) = updated.title
         {
             info = info.title(title);
         }
-        (self.deliver)(SessionUpdate::SessionInfoUpdate(info))?;
+        (self.send_update)(SessionUpdate::SessionInfoUpdate(info))?;
         Ok(true)
     }
 
-    async fn converse(&mut self) -> Exit {
+    async fn run_model_loop(&mut self) -> PromptOutcome {
         loop {
             if self.cancellation.is_cancelled() {
-                return Exit::Cancelled;
+                return PromptOutcome::Cancelled;
             }
-            let ModelCompletion { message, stop } = match self.request().await {
+            let openrouter::Completion { message, stop } = match self.request_completion().await {
                 Ok(completion) => completion,
                 Err(exit) => return exit,
             };
             let calls = message.tool_calls.clone();
-            self.pending = Some(PendingBatch::new(message));
+            self.uncommitted_batch = Some(UncommittedAssistantBatch::new(message));
             for call in &calls {
-                if let Err(error) = (self.deliver)(convert::tool_call_pending(call)) {
-                    return Exit::Delivery(error);
+                if let Err(error) = (self.send_update)(convert::pending_tool_call(call)) {
+                    return PromptOutcome::AcpUpdate(error);
                 }
             }
             let ends_with = match stop {
-                ModelStop::Finished => Some(Exit::Finished),
-                ModelStop::TokenLimit => Some(Exit::TokenLimit),
-                ModelStop::Refused => Some(Exit::Refused),
-                ModelStop::ToolCalls => {
-                    if self.model_calls >= MAX_MODEL_CALLS {
-                        return Exit::ModelCallLimit;
+                openrouter::Stop::Finished => Some(PromptOutcome::Finished),
+                openrouter::Stop::TokenLimit => Some(PromptOutcome::TokenLimit),
+                openrouter::Stop::Refused => Some(PromptOutcome::Refused),
+                openrouter::Stop::ToolCalls => {
+                    if self.model_requests >= MAX_MODEL_REQUESTS {
+                        return PromptOutcome::ModelRequestLimit;
                     }
                     if let Err(exit) = self.execute(&calls).await {
                         return exit;
@@ -226,7 +224,7 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> Prompt<F> {
                 }
             };
             if let Err(error) = self.commit() {
-                return Exit::Storage(error);
+                return PromptOutcome::Storage(error);
             }
             if let Some(exit) = ends_with {
                 return exit;
@@ -234,50 +232,54 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> Prompt<F> {
         }
     }
 
-    /// One model request: forwards provisional deltas and returns the single
-    /// accepted completion.
-    async fn request(&mut self) -> std::result::Result<ModelCompletion, Exit> {
-        self.model_calls += 1;
-        let mut request = tokio::select! {
+    /// Makes one model request, forwards live text, and returns its validated
+    /// completion.
+    async fn request_completion(
+        &mut self,
+    ) -> std::result::Result<openrouter::Completion, PromptOutcome> {
+        self.model_requests += 1;
+        let mut stream = tokio::select! {
             biased;
-            () = self.cancellation.cancelled() => return Err(Exit::Cancelled),
-            started = self.client.complete(&self.model, &self.history) => {
-                started.map_err(Exit::Provider)?
+            () = self.cancellation.cancelled() => return Err(PromptOutcome::Cancelled),
+            started = self.openrouter.stream_completion(&self.model, &self.transcript) => {
+                started.map_err(PromptOutcome::OpenRouter)?
             }
         };
         loop {
-            let event = tokio::select! {
+            let item = tokio::select! {
                 biased;
-                () = self.cancellation.cancelled() => return Err(Exit::Cancelled),
-                event = request.next() => event.map_err(Exit::Provider)?,
+                () = self.cancellation.cancelled() => return Err(PromptOutcome::Cancelled),
+                item = stream.next() => item.map_err(PromptOutcome::OpenRouter)?,
             };
-            match event {
-                Some(ModelEvent::TextDelta(text)) => {
-                    (self.deliver)(convert::agent_text(&text)).map_err(Exit::Delivery)?;
+            match item {
+                Some(openrouter::StreamItem::TextDelta(text)) => {
+                    (self.send_update)(convert::agent_message_chunk(&text))
+                        .map_err(PromptOutcome::AcpUpdate)?;
                 }
-                Some(ModelEvent::ReasoningDelta(text)) => {
-                    (self.deliver)(convert::agent_reasoning(&text)).map_err(Exit::Delivery)?;
+                Some(openrouter::StreamItem::ReasoningDelta(text)) => {
+                    (self.send_update)(convert::agent_thought_chunk(&text))
+                        .map_err(PromptOutcome::AcpUpdate)?;
                 }
-                Some(ModelEvent::Completed(completion)) => return Ok(completion),
+                Some(openrouter::StreamItem::Completion(completion)) => return Ok(completion),
                 None => {
-                    return Err(Exit::Provider(io::Error::new(
+                    return Err(PromptOutcome::OpenRouter(io::Error::new(
                         io::ErrorKind::UnexpectedEof,
-                        "model stream ended without a completion",
+                        "OpenRouter stream ended without a completion",
                     )));
                 }
             }
         }
     }
 
-    /// Runs the accepted calls in order. Each result enters the pending batch
-    /// before its update is attempted, so a failed update loses nothing.
-    async fn execute(&mut self, calls: &[ToolCall]) -> std::result::Result<(), Exit> {
+    /// Runs validated calls in order. Each outcome is recorded before its ACP
+    /// update is sent, so an update failure does not erase completed work.
+    async fn execute(&mut self, calls: &[ToolCall]) -> std::result::Result<(), PromptOutcome> {
         for (index, call) in calls.iter().enumerate() {
             if self.cancellation.is_cancelled() {
-                return Err(Exit::Cancelled);
+                return Err(PromptOutcome::Cancelled);
             }
-            (self.deliver)(convert::tool_call_in_progress(&call.call_id))
-                .map_err(Exit::Delivery)?;
+            (self.send_update)(convert::in_progress_tool_call_update(&call.call_id))
+                .map_err(PromptOutcome::AcpUpdate)?;
             let outcome = tokio::select! {
                 biased;
                 outcome = tools::execute(call) => outcome,
@@ -286,82 +288,88 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> Prompt<F> {
                 ),
             };
             let result = self
-                .pending
+                .uncommitted_batch
                 .as_mut()
-                .expect("tools run against a pending batch")
-                .record(index, outcome);
-            (self.deliver)(convert::tool_result(&result)).map_err(Exit::Delivery)?;
+                .expect("tools run against an uncommitted assistant batch")
+                .record_outcome(index, outcome);
+            (self.send_update)(convert::finished_tool_call_update(&result))
+                .map_err(PromptOutcome::AcpUpdate)?;
         }
         Ok(())
     }
 
-    /// Commits the pending batch. History advances and the pending state
-    /// clears only after the transaction succeeds.
+    /// Saves a complete assistant batch. The transcript changes only after the
+    /// database transaction succeeds.
     fn commit(&mut self) -> io::Result<()> {
         let batch = self
-            .pending
+            .uncommitted_batch
             .as_ref()
-            .expect("commit needs a pending batch")
-            .closed();
+            .expect("commit needs an uncommitted assistant batch")
+            .complete();
         self.store.append_batch(&self.summary.id, &batch)?;
-        self.history
-            .push(TranscriptEvent::AssistantMessage(batch.message));
-        self.history
-            .extend(batch.results.into_iter().map(TranscriptEvent::ToolResult));
-        self.pending = None;
+        self.transcript
+            .push(TranscriptEntry::AssistantMessage(batch.message));
+        self.transcript
+            .extend(batch.results.into_iter().map(TranscriptEntry::ToolResult));
+        self.uncommitted_batch = None;
         Ok(())
     }
 
-    /// Closes any accepted batch with explicit outcomes for calls that never
-    /// ran, commits it, sends their terminal updates, and shapes the response.
-    fn settle(&mut self, exit: Exit) -> Result<PromptResponse> {
-        let mut exit = exit;
-        if let Some(pending) = self.pending.as_mut() {
-            let placeholder = match &exit {
-                Exit::Cancelled => {
+    /// Gives every unstarted call an explicit outcome, saves the batch, sends
+    /// the remaining updates, and constructs the final ACP response.
+    fn finish(&mut self, outcome: PromptOutcome) -> Result<PromptResponse> {
+        let mut outcome = outcome;
+        if let Some(batch) = self.uncommitted_batch.as_mut() {
+            let placeholder = match &outcome {
+                PromptOutcome::Cancelled => {
                     ToolOutcome::Cancelled("Cancelled before this tool was started.".to_owned())
                 }
-                Exit::ModelCallLimit => ToolOutcome::Failed(format!(
-                    "Not started: this prompt reached its limit of {MAX_MODEL_CALLS} model \
+                PromptOutcome::ModelRequestLimit => ToolOutcome::Failed(format!(
+                    "Not started: this prompt reached its limit of {MAX_MODEL_REQUESTS} model \
                      requests, so no request remained to read the result."
                 )),
-                Exit::Delivery(_) => ToolOutcome::Failed(
+                PromptOutcome::AcpUpdate(_) => ToolOutcome::Failed(
                     "Not started: the client connection failed before this tool ran.".to_owned(),
                 ),
-                Exit::Storage(_) => ToolOutcome::Failed(
+                PromptOutcome::Storage(_) => ToolOutcome::Failed(
                     "Not started: the conversation could not be stored.".to_owned(),
                 ),
-                Exit::Finished | Exit::TokenLimit | Exit::Refused | Exit::Provider(_) => {
-                    unreachable!("{exit} leaves no pending batch")
+                PromptOutcome::Finished
+                | PromptOutcome::TokenLimit
+                | PromptOutcome::Refused
+                | PromptOutcome::OpenRouter(_) => {
+                    unreachable!("{outcome} leaves no uncommitted batch")
                 }
             };
-            let unexecuted = pending.fill(&placeholder);
-            if !matches!(exit, Exit::Storage(_))
+            let unexecuted = batch.fill_empty_outcomes(&placeholder);
+            if !matches!(outcome, PromptOutcome::Storage(_))
                 && let Err(error) = self.commit()
             {
-                exit = Exit::Storage(io::Error::other(format!(
-                    "{error}; the batch was being settled because {exit}"
+                outcome = PromptOutcome::Storage(io::Error::other(format!(
+                    "{error}; the batch was being completed because {outcome}"
                 )));
             }
-            if !matches!(exit, Exit::Delivery(_)) {
+            if !matches!(outcome, PromptOutcome::AcpUpdate(_)) {
                 for result in &unexecuted {
-                    if let Err(error) = (self.deliver)(convert::tool_result(result)) {
-                        exit = Exit::Delivery(error);
+                    if let Err(error) =
+                        (self.send_update)(convert::finished_tool_call_update(result))
+                    {
+                        outcome = PromptOutcome::AcpUpdate(error);
                         break;
                     }
                 }
             }
         }
-        let stop_reason = match exit {
-            Exit::Finished => StopReason::EndTurn,
-            Exit::Cancelled => StopReason::Cancelled,
-            Exit::ModelCallLimit => StopReason::MaxTurnRequests,
-            Exit::TokenLimit => StopReason::MaxTokens,
-            Exit::Refused => StopReason::Refusal,
-            Exit::Provider(error) | Exit::Storage(error) => {
+        let stop_reason = match outcome {
+            PromptOutcome::Finished => StopReason::EndTurn,
+            PromptOutcome::Cancelled => StopReason::Cancelled,
+            PromptOutcome::ModelRequestLimit => StopReason::MaxTurnRequests,
+            PromptOutcome::TokenLimit => StopReason::MaxTokens,
+            PromptOutcome::Refused => StopReason::Refusal,
+            PromptOutcome::OpenRouter(error) | PromptOutcome::Storage(error) => {
                 return Err(Error::into_internal_error(error));
             }
-            Exit::Delivery(error) => return Err(error),
+            PromptOutcome::AcpUpdate(error) => return Err(error),
         };
         Ok(PromptResponse::new(stop_reason))
     }
@@ -374,8 +382,8 @@ mod tests {
     use agent_client_protocol::schema::v1::ToolCallStatus;
 
     use super::*;
-    use crate::model::{
-        MODEL,
+    use crate::openrouter::{
+        DEFAULT_MODEL,
         fixture::{Reply, Server, delta, text_reply, tool_reply},
     };
 
@@ -393,7 +401,7 @@ mod tests {
         async fn new(replies: Vec<Reply>) -> Self {
             let store = SessionStore::in_memory();
             let session_id = store
-                .create(Path::new("/Users/kyle/projects/ox"), MODEL)
+                .create(Path::new("/Users/kyle/projects/ox"), DEFAULT_MODEL)
                 .unwrap()
                 .id;
             Self {
@@ -405,32 +413,32 @@ mod tests {
             }
         }
 
-        /// Runs the prompt with a delivery closure that records every update
+        /// Runs the prompt with an update closure that records every update
         /// and calls `on_update` before accepting it.
         async fn run(
             &self,
             input: &str,
             mut on_update: impl FnMut(&SessionUpdate) -> Result<()>,
-        ) -> (Result<PromptResponse>, Vec<TranscriptEvent>) {
+        ) -> (Result<PromptResponse>, Vec<TranscriptEntry>) {
             let updates = self.updates.clone();
-            let deliver = move |update: SessionUpdate| {
+            let send_update = move |update: SessionUpdate| {
                 updates.borrow_mut().push(update.clone());
                 on_update(&update)
             };
-            let mut prompt = Prompt::open(
+            let mut prompt = PromptRun::open(
                 self.store.clone(),
                 self.server.client(),
                 self.session_id.clone(),
                 self.cancellation.clone(),
-                deliver,
+                send_update,
             )
             .unwrap();
-            assert!(prompt.accept(input.to_owned()).unwrap());
-            let exit = prompt.converse().await;
-            (prompt.settle(exit), prompt.history)
+            assert!(prompt.save_user_message(input.to_owned()).unwrap());
+            let exit = prompt.run_model_loop().await;
+            (prompt.finish(exit), prompt.transcript)
         }
 
-        fn stored(&self) -> Vec<TranscriptEvent> {
+        fn stored(&self) -> Vec<TranscriptEntry> {
             self.store
                 .read(&self.session_id)
                 .unwrap()
@@ -443,25 +451,25 @@ mod tests {
         }
     }
 
-    fn model() -> TranscriptEvent {
-        TranscriptEvent::Model(MODEL.to_owned())
+    fn model() -> TranscriptEntry {
+        TranscriptEntry::Model(DEFAULT_MODEL.to_owned())
     }
 
-    fn user(text: &str) -> TranscriptEvent {
-        TranscriptEvent::UserMessage(text.to_owned())
+    fn user(text: &str) -> TranscriptEntry {
+        TranscriptEntry::UserMessage(text.to_owned())
     }
 
-    fn answer(text: &str) -> TranscriptEvent {
-        TranscriptEvent::AssistantMessage(AssistantMessage {
+    fn answer(text: &str) -> TranscriptEntry {
+        TranscriptEntry::AssistantMessage(AssistantMessage {
             text: text.to_owned(),
             reasoning: String::new(),
             tool_calls: vec![],
-            reasoning_details: vec![],
+            continuation_metadata: vec![],
         })
     }
 
-    fn calls(calls: &[(&str, &str)]) -> TranscriptEvent {
-        TranscriptEvent::AssistantMessage(AssistantMessage {
+    fn calls(calls: &[(&str, &str)]) -> TranscriptEntry {
+        TranscriptEntry::AssistantMessage(AssistantMessage {
             text: String::new(),
             reasoning: String::new(),
             tool_calls: calls
@@ -472,12 +480,12 @@ mod tests {
                     arguments: serde_json::json!({ "location": location }).to_string(),
                 })
                 .collect(),
-            reasoning_details: vec![],
+            continuation_metadata: vec![],
         })
     }
 
-    fn weather(id: &str, location: &str) -> TranscriptEvent {
-        TranscriptEvent::ToolResult(ToolResult {
+    fn weather(id: &str, location: &str) -> TranscriptEntry {
+        TranscriptEntry::ToolResult(ToolResult {
             call_id: id.to_owned(),
             name: "get_weather".to_owned(),
             outcome: ToolOutcome::Completed(format!(
@@ -516,14 +524,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_text_answer_is_committed_and_advances_history() {
+    async fn a_text_answer_is_saved_in_the_transcript() {
         let harness = Harness::new(vec![text_reply("Hello there.")]).await;
 
-        let (response, history) = harness.run("Hi", |_| Ok(())).await;
+        let (response, transcript) = harness.run("Hi", |_| Ok(())).await;
 
         assert_eq!(response.unwrap().stop_reason, StopReason::EndTurn);
-        assert_eq!(history, vec![model(), user("Hi"), answer("Hello there.")]);
-        assert_eq!(harness.stored(), history);
+        assert_eq!(
+            transcript,
+            vec![model(), user("Hi"), answer("Hello there.")]
+        );
+        assert_eq!(harness.stored(), transcript);
         let updates = harness.updates();
         assert!(matches!(
             &updates[0],
@@ -543,11 +554,11 @@ mod tests {
         ])
         .await;
 
-        let (response, history) = harness.run("Weather?", |_| Ok(())).await;
+        let (response, transcript) = harness.run("Weather?", |_| Ok(())).await;
 
         assert_eq!(response.unwrap().stop_reason, StopReason::EndTurn);
         assert_eq!(
-            history,
+            transcript,
             vec![
                 model(),
                 user("Weather?"),
@@ -557,7 +568,7 @@ mod tests {
                 answer("Both sunny."),
             ]
         );
-        assert_eq!(harness.stored(), history);
+        assert_eq!(harness.stored(), transcript);
         assert_eq!(
             harness.updates().iter().map(describe).collect::<Vec<_>>(),
             vec![
@@ -577,7 +588,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cancellation_during_tools_keeps_observed_results_and_closes_the_rest() {
+    async fn cancellation_during_tools_keeps_completed_results_and_cancels_the_rest() {
         let harness = Harness::new(vec![tool_reply(&[
             ("call-1", "Chicago"),
             ("call-2", "Denver"),
@@ -585,7 +596,7 @@ mod tests {
         .await;
         let cancel = harness.cancellation.clone();
 
-        let (response, history) = harness
+        let (response, transcript) = harness
             .run("Weather?", |update| {
                 if terminal_update_for(update, "call-1") {
                     cancel.cancel();
@@ -596,13 +607,13 @@ mod tests {
 
         assert_eq!(response.unwrap().stop_reason, StopReason::Cancelled);
         assert_eq!(
-            history,
+            transcript,
             vec![
                 model(),
                 user("Weather?"),
                 calls(&[("call-1", "Chicago"), ("call-2", "Denver")]),
                 weather("call-1", "Chicago"),
-                TranscriptEvent::ToolResult(ToolResult {
+                TranscriptEntry::ToolResult(ToolResult {
                     call_id: "call-2".to_owned(),
                     name: "get_weather".to_owned(),
                     outcome: ToolOutcome::Cancelled(
@@ -611,7 +622,7 @@ mod tests {
                 }),
             ]
         );
-        assert_eq!(harness.stored(), history);
+        assert_eq!(harness.stored(), transcript);
         assert_eq!(
             harness.updates().iter().map(describe).collect::<Vec<_>>(),
             vec![
@@ -626,7 +637,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cancellation_during_the_model_stream_discards_provisional_output() {
+    async fn cancellation_during_the_openrouter_stream_discards_provisional_output() {
         let partial = format!(
             "data: {}\n\n",
             delta(
@@ -637,7 +648,7 @@ mod tests {
         let harness = Harness::new(vec![Reply::Hang(partial)]).await;
         let cancel = harness.cancellation.clone();
 
-        let (response, history) = harness
+        let (response, transcript) = harness
             .run("Hi", |update| {
                 if matches!(update, SessionUpdate::AgentMessageChunk(_)) {
                     cancel.cancel();
@@ -647,12 +658,12 @@ mod tests {
             .await;
 
         assert_eq!(response.unwrap().stop_reason, StopReason::Cancelled);
-        assert_eq!(history, vec![model(), user("Hi")]);
-        assert_eq!(harness.stored(), history);
+        assert_eq!(transcript, vec![model(), user("Hi")]);
+        assert_eq!(harness.stored(), transcript);
     }
 
     #[tokio::test]
-    async fn a_failed_batch_append_leaves_accepted_history_unchanged() {
+    async fn a_failed_batch_append_leaves_the_transcript_unchanged() {
         let harness = Harness::new(vec![text_reply("Hello there.")]).await;
         harness.store.with_connection(|connection| {
             connection
@@ -664,25 +675,25 @@ mod tests {
                 .unwrap()
         });
 
-        let (response, history) = harness.run("Hi", |_| Ok(())).await;
+        let (response, transcript) = harness.run("Hi", |_| Ok(())).await;
 
         let error = response.unwrap_err();
         assert!(
             error.to_string().contains("disk full") || format!("{error:?}").contains("disk full")
         );
-        assert_eq!(history, vec![model(), user("Hi")]);
-        assert_eq!(harness.stored(), history);
+        assert_eq!(transcript, vec![model(), user("Hi")]);
+        assert_eq!(harness.stored(), transcript);
     }
 
     #[tokio::test]
-    async fn delivery_failure_after_an_observed_result_still_commits_the_batch() {
+    async fn update_failure_after_an_observed_result_still_commits_the_batch() {
         let harness = Harness::new(vec![tool_reply(&[
             ("call-1", "Chicago"),
             ("call-2", "Denver"),
         ])])
         .await;
 
-        let (response, history) = harness
+        let (response, transcript) = harness
             .run("Weather?", |update| {
                 if terminal_update_for(update, "call-1") {
                     return Err(Error::internal_error().data("connection closed"));
@@ -693,13 +704,13 @@ mod tests {
 
         assert!(response.is_err());
         assert_eq!(
-            history,
+            transcript,
             vec![
                 model(),
                 user("Weather?"),
                 calls(&[("call-1", "Chicago"), ("call-2", "Denver")]),
                 weather("call-1", "Chicago"),
-                TranscriptEvent::ToolResult(ToolResult {
+                TranscriptEntry::ToolResult(ToolResult {
                     call_id: "call-2".to_owned(),
                     name: "get_weather".to_owned(),
                     outcome: ToolOutcome::Failed(
@@ -709,7 +720,7 @@ mod tests {
                 }),
             ]
         );
-        assert_eq!(harness.stored(), history);
+        assert_eq!(harness.stored(), transcript);
         assert_eq!(
             harness.updates().iter().map(describe).collect::<Vec<_>>(),
             vec![
@@ -719,42 +730,42 @@ mod tests {
                 "call-1 running",
                 "call-1 completed",
             ],
-            "nothing more is attempted after delivery fails"
+            "nothing more is attempted after sending an update fails"
         );
     }
 
     #[tokio::test]
     async fn tools_requested_by_the_final_allowed_request_are_not_run() {
-        let replies = (0..MAX_MODEL_CALLS)
+        let replies = (0..MAX_MODEL_REQUESTS)
             .map(|index| tool_reply(&[(&format!("call-{index}"), "Chicago")]))
             .collect();
         let harness = Harness::new(replies).await;
 
-        let (response, history) = harness.run("Weather?", |_| Ok(())).await;
+        let (response, transcript) = harness.run("Weather?", |_| Ok(())).await;
 
         assert_eq!(response.unwrap().stop_reason, StopReason::MaxTurnRequests);
-        assert_eq!(harness.server.requests().len(), MAX_MODEL_CALLS);
-        assert_eq!(history.len(), 2 + 2 * MAX_MODEL_CALLS);
-        let completed = history
+        assert_eq!(harness.server.requests().len(), MAX_MODEL_REQUESTS);
+        assert_eq!(transcript.len(), 2 + 2 * MAX_MODEL_REQUESTS);
+        let completed = transcript
             .iter()
-            .filter(|event| {
+            .filter(|entry| {
                 matches!(
-                    event,
-                    TranscriptEvent::ToolResult(ToolResult {
+                    entry,
+                    TranscriptEntry::ToolResult(ToolResult {
                         outcome: ToolOutcome::Completed(_),
                         ..
                     })
                 )
             })
             .count();
-        assert_eq!(completed, MAX_MODEL_CALLS - 1);
+        assert_eq!(completed, MAX_MODEL_REQUESTS - 1);
         assert!(matches!(
-            history.last(),
-            Some(TranscriptEvent::ToolResult(ToolResult { outcome: ToolOutcome::Failed(reason), .. }))
+            transcript.last(),
+            Some(TranscriptEntry::ToolResult(ToolResult { outcome: ToolOutcome::Failed(reason), .. }))
                 if reason.starts_with("Not started: this prompt reached its limit")
         ));
-        assert_eq!(harness.stored(), history);
-        let last = format!("call-{} failed", MAX_MODEL_CALLS - 1);
+        assert_eq!(harness.stored(), transcript);
+        let last = format!("call-{} failed", MAX_MODEL_REQUESTS - 1);
         assert_eq!(
             harness.updates().last().map(describe).as_deref(),
             Some(last.as_str())

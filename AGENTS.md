@@ -1,13 +1,15 @@
+THIS DOCUMENT MUST BE KEPT UP TO DATE
+
 # Source Map
 
 - `src/main.rs`: Command parsing and process entry; starts the ACP server or runs a credential command.
 - `src/auth.rs`: Environment and operating-system keyring credential storage.
-- `src/model.rs`: Concrete OpenRouter client; one streamed completion at a time, request encoding, and stream assembly.
+- `src/openrouter.rs`: OpenRouter client, request encoding, and streamed-response assembly.
 - `src/tools.rs`: Concrete tool schemas, display titles, and execution of one complete call.
-- `src/sessions.rs`: Transcript types, closed-batch validation, `SessionStore` over one SQLite connection, and the private row codec.
-- `src/acp.rs`: Connection wiring, `ServerState`, lazy model client, and request handlers.
-- `src/acp/operations.rs`: Per-session admission (one prompt, load, or delete at a time) and cancellation signals.
-- `src/acp/prompt.rs`: The agent loop: model requests, sequential tools, pending batch, and terminal settlement.
+- `src/sessions.rs`: Transcript types, assistant-batch validation, `SessionStore` over one SQLite connection, and the private row codec.
+- `src/acp.rs`: Connection wiring, `ServerState`, lazy OpenRouter client, and request handlers.
+- `src/acp/operations.rs`: One active prompt, load, or delete per session, enforced by an operation guard.
+- `src/acp/prompt.rs`: One prompt run: save the user message, request model output, run tools, save complete assistant batches, and respond.
 - `src/acp/convert.rs`: ACP input conversion, session update construction, and transcript replay.
 
 ## Testing
@@ -17,6 +19,29 @@ Use the `OPENROUTER_API_KEY` in `.env` when testing to avoid keychain prompts.
 ## Backwards Compatibility
 
 Currently, there is none. Delete and recreate `~/.local/share/ox/ox.db` rather than introducing migrations, versions, etc.
+
+## Comments and Documentation
+
+- Always describe things directly, clearly, and plainly
+- Follow big idea up front and progressive disclosure
+- Never use jargon, invented terms, or shorthand
+- Never not mix definitions or overload terms
+
+## Naming
+
+- Use transcript for the durable conversation and transcript entry for one
+  element. Do not introduce history, record, or event as domain synonyms.
+- Use model request for one OpenRouter invocation. Reserve completion for the
+  validated result of that request.
+- Qualify client as ACP, OpenRouter, or HTTP whenever the surrounding type does
+  not make it obvious.
+- Describe state changes directly: saved, validated, running, completed,
+  uncommitted, or cancelled. Avoid unqualified accepted, pending, and terminal.
+- Say send an ACP update. Do not imply confirmed delivery or receipt.
+- Say acquire or drop an operation guard. Avoid admission, claim, ownership,
+  membership, and release for this mechanism.
+- Keep external names such as `cwd`, `reasoning_details`, `AgentThoughtChunk`,
+  and `MaxTurnRequests` at their protocol boundaries.
 
 ## Just Enough Rust
 

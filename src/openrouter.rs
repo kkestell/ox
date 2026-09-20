@@ -1,4 +1,5 @@
-//! One OpenRouter chat completion at a time, streamed over server-sent events.
+//! Sends OpenRouter chat-completion requests and assembles their streamed
+//! responses.
 
 use std::{
     collections::{BTreeMap, VecDeque},
@@ -9,45 +10,45 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::{
-    sessions::{AssistantMessage, ToolCall, TranscriptEvent},
+    sessions::{AssistantMessage, ToolCall, TranscriptEntry},
     tools,
 };
 
 /// The model for new sessions. An existing session keeps the model recorded
 /// in its transcript.
-pub const MODEL: &str = "openai/gpt-5.6-luna";
+pub const DEFAULT_MODEL: &str = "openai/gpt-5.6-luna";
 const ENDPOINT: &str = "https://openrouter.ai/api/v1";
 
-/// Immutable credentials and a connection pool; safe to clone per prompt.
+/// OpenRouter credentials and a reusable HTTP connection pool.
 #[derive(Clone)]
-pub struct ModelClient {
+pub struct Client {
     http: reqwest::Client,
     api_key: String,
     endpoint: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum ModelEvent {
+pub enum StreamItem {
     TextDelta(String),
     ReasoningDelta(String),
-    Completed(ModelCompletion),
+    Completion(Completion),
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct ModelCompletion {
+pub struct Completion {
     pub message: AssistantMessage,
-    pub stop: ModelStop,
+    pub stop: Stop,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ModelStop {
+pub enum Stop {
     Finished,
     ToolCalls,
     TokenLimit,
     Refused,
 }
 
-impl ModelClient {
+impl Client {
     pub fn new(api_key: String) -> Self {
         Self::for_endpoint(api_key, ENDPOINT.to_owned())
     }
@@ -81,16 +82,15 @@ impl ModelClient {
         }
     }
 
-    /// Starts one streamed completion by `model` over `history`. Read the
-    /// returned request until it yields a completion.
-    pub async fn complete(
+    /// Starts one streamed completion using `model` and `transcript`.
+    pub async fn stream_completion(
         &self,
         model: &str,
-        history: &[TranscriptEvent],
-    ) -> io::Result<ModelRequest> {
+        transcript: &[TranscriptEntry],
+    ) -> io::Result<CompletionStream> {
         let body = json!({
             "model": model,
-            "messages": request_messages(history),
+            "messages": chat_messages(transcript),
             "tools": tools::schemas(),
             "stream": true,
         });
@@ -110,26 +110,26 @@ impl ModelClient {
                 detail.trim()
             )));
         }
-        Ok(ModelRequest {
+        Ok(CompletionStream {
             response,
             buffer: Vec::new(),
             data: String::new(),
             assembly: Some(Assembly::default()),
-            pending: VecDeque::new(),
+            buffered_items: VecDeque::new(),
         })
     }
 }
 
-/// Encodes accepted history as chat messages. Visible reasoning is sent only
-/// when there is no structured metadata carrying it.
-pub(crate) fn request_messages(history: &[TranscriptEvent]) -> Vec<Value> {
-    history
+/// Encodes the saved transcript as OpenRouter chat messages. Visible reasoning
+/// is sent only when no continuation metadata carries it.
+pub(crate) fn chat_messages(transcript: &[TranscriptEntry]) -> Vec<Value> {
+    transcript
         .iter()
-        .filter_map(|event| {
-            Some(match event {
-                TranscriptEvent::Model(_) => return None,
-                TranscriptEvent::UserMessage(text) => json!({ "role": "user", "content": text }),
-                TranscriptEvent::AssistantMessage(message) => {
+        .filter_map(|entry| {
+            Some(match entry {
+                TranscriptEntry::Model(_) => return None,
+                TranscriptEntry::UserMessage(text) => json!({ "role": "user", "content": text }),
+                TranscriptEntry::AssistantMessage(message) => {
                     let content = if message.text.is_empty() {
                         Value::Null
                     } else {
@@ -149,15 +149,15 @@ pub(crate) fn request_messages(history: &[TranscriptEvent]) -> Vec<Value> {
                             })
                             .collect();
                     }
-                    if !message.reasoning_details.is_empty() {
+                    if !message.continuation_metadata.is_empty() {
                         value["reasoning_details"] =
-                            Value::Array(message.reasoning_details.clone());
+                            Value::Array(message.continuation_metadata.clone());
                     } else if !message.reasoning.is_empty() {
                         value["reasoning"] = Value::String(message.reasoning.clone());
                     }
                     value
                 }
-                TranscriptEvent::ToolResult(result) => json!({
+                TranscriptEntry::ToolResult(result) => json!({
                     "role": "tool",
                     "tool_call_id": result.call_id,
                     "content": result.outcome.text(),
@@ -175,43 +175,42 @@ fn malformed(message: impl Into<String>) -> io::Error {
     io::Error::new(ErrorKind::InvalidData, message.into())
 }
 
-/// An in-flight streamed completion. All assembly state lives here, so
-/// dropping the request stops consumption and discards provisional output.
-pub struct ModelRequest {
+/// One streamed OpenRouter response. Dropping it stops reading and discards
+/// text received before a complete message was validated.
+pub struct CompletionStream {
     response: reqwest::Response,
     buffer: Vec<u8>,
     data: String,
     assembly: Option<Assembly>,
-    pending: VecDeque<ModelEvent>,
+    buffered_items: VecDeque<StreamItem>,
 }
 
-impl ModelRequest {
-    /// The next provisional delta or the single completion. `Ok(None)` is
-    /// the end of a stream that has already delivered its completion; a
-    /// stream ending before that is an error.
-    pub async fn next(&mut self) -> io::Result<Option<ModelEvent>> {
-        while self.pending.is_empty() {
+impl CompletionStream {
+    /// Returns the next live text fragment or the one validated completion.
+    /// `Ok(None)` follows a completion; ending before one is an error.
+    pub async fn next(&mut self) -> io::Result<Option<StreamItem>> {
+        while self.buffered_items.is_empty() {
             if !self.read_chunk().await? {
                 return if self.assembly.is_none() {
                     Ok(None)
                 } else {
                     Err(io::Error::new(
                         ErrorKind::UnexpectedEof,
-                        "model stream ended before the response finished",
+                        "OpenRouter stream ended before the response finished",
                     ))
                 };
             }
         }
-        if matches!(self.pending.front(), Some(ModelEvent::Completed(_))) {
+        if matches!(self.buffered_items.front(), Some(StreamItem::Completion(_))) {
             // The finish chunk is followed by `[DONE]` and a usage chunk. An
             // HTTP/1.1 connection returns to the pool only once its body is
             // read to the end, so read them before yielding the completion.
             while self.read_chunk().await? {}
         }
-        Ok(self.pending.pop_front())
+        Ok(self.buffered_items.pop_front())
     }
 
-    /// Reads one network chunk into events; `false` at the end of the body.
+    /// Reads one network chunk into stream items; `false` at the end of the body.
     async fn read_chunk(&mut self) -> io::Result<bool> {
         let Some(chunk) = self.response.chunk().await.map_err(transport)? else {
             return Ok(false);
@@ -220,7 +219,7 @@ impl ModelRequest {
         while let Some(newline) = self.buffer.iter().position(|&byte| byte == b'\n') {
             let line = self.buffer.drain(..=newline).collect::<Vec<u8>>();
             let line = std::str::from_utf8(&line)
-                .map_err(|_| malformed("model stream is not UTF-8"))?
+                .map_err(|_| malformed("OpenRouter stream is not UTF-8"))?
                 .trim_end_matches(['\r', '\n']);
             self.line(line)?;
         }
@@ -231,7 +230,7 @@ impl ModelRequest {
         if line.is_empty() {
             if !self.data.is_empty() {
                 let data = std::mem::take(&mut self.data);
-                self.event(&data)?;
+                self.process_sse_event(&data)?;
             }
         } else if let Some(data) = line.strip_prefix("data:") {
             if !self.data.is_empty() {
@@ -242,12 +241,12 @@ impl ModelRequest {
         Ok(())
     }
 
-    fn event(&mut self, data: &str) -> io::Result<()> {
+    fn process_sse_event(&mut self, data: &str) -> io::Result<()> {
         if data == "[DONE]" {
             return Ok(());
         }
         let chunk: Chunk = serde_json::from_str(data)
-            .map_err(|error| malformed(format!("malformed model stream chunk: {error}")))?;
+            .map_err(|error| malformed(format!("malformed OpenRouter stream chunk: {error}")))?;
         if let Some(error) = chunk.error {
             return Err(io::Error::other(format!(
                 "OpenRouter reported an error: {} ({})",
@@ -255,7 +254,7 @@ impl ModelRequest {
             )));
         }
         // The usage chunk after the final one repeats the finish reason with
-        // an empty delta; nothing after acceptance changes the message.
+        // an empty delta; it cannot change the validated message.
         let Some(assembly) = self.assembly.as_mut() else {
             return Ok(());
         };
@@ -264,12 +263,12 @@ impl ModelRequest {
         };
         if let Some(text) = choice.delta.content.filter(|text| !text.is_empty()) {
             assembly.text.push_str(&text);
-            self.pending.push_back(ModelEvent::TextDelta(text));
+            self.buffered_items.push_back(StreamItem::TextDelta(text));
         }
         if let Some(reasoning) = choice.delta.reasoning.filter(|text| !text.is_empty()) {
             assembly.reasoning.push_str(&reasoning);
-            self.pending
-                .push_back(ModelEvent::ReasoningDelta(reasoning));
+            self.buffered_items
+                .push_back(StreamItem::ReasoningDelta(reasoning));
         }
         for call in choice.delta.tool_calls.into_iter().flatten() {
             assembly.tool_call(call);
@@ -281,9 +280,9 @@ impl ModelRequest {
             let assembly = self
                 .assembly
                 .take()
-                .expect("assembly is present until acceptance");
-            self.pending
-                .push_back(ModelEvent::Completed(assembly.finish(&reason)?));
+                .expect("assembly is present until the message is validated");
+            self.buffered_items
+                .push_back(StreamItem::Completion(assembly.finish(&reason)?));
         }
         Ok(())
     }
@@ -294,7 +293,7 @@ struct Assembly {
     text: String,
     reasoning: String,
     tool_calls: BTreeMap<u64, PartialCall>,
-    reasoning_details: Vec<Value>,
+    continuation_metadata: Vec<Value>,
 }
 
 #[derive(Default)]
@@ -324,7 +323,7 @@ impl Assembly {
         let kind = detail.get("type").and_then(Value::as_str);
         if matches!(kind, Some("reasoning.text" | "reasoning.summary"))
             && let Some(target) = self
-                .reasoning_details
+                .continuation_metadata
                 .last_mut()
                 .filter(|existing| {
                     existing.get("type").and_then(Value::as_str) == kind
@@ -352,10 +351,10 @@ impl Assembly {
             }
             return;
         }
-        self.reasoning_details.push(detail);
+        self.continuation_metadata.push(detail);
     }
 
-    fn finish(self, reason: &str) -> io::Result<ModelCompletion> {
+    fn finish(self, reason: &str) -> io::Result<Completion> {
         let tool_calls = self
             .tool_calls
             .into_values()
@@ -367,13 +366,13 @@ impl Assembly {
             .collect::<Vec<_>>();
         let has_calls = !tool_calls.is_empty();
         let stop = match (reason, has_calls) {
-            ("stop", false) => ModelStop::Finished,
-            ("stop" | "tool_calls", true) => ModelStop::ToolCalls,
+            ("stop", false) => Stop::Finished,
+            ("stop" | "tool_calls", true) => Stop::ToolCalls,
             ("tool_calls", false) => {
                 return Err(malformed("finish reason tool_calls without any tool call"));
             }
-            ("length", false) => ModelStop::TokenLimit,
-            ("content_filter", false) => ModelStop::Refused,
+            ("length", false) => Stop::TokenLimit,
+            ("content_filter", false) => Stop::Refused,
             ("length" | "content_filter", true) => {
                 return Err(malformed(format!(
                     "finish reason {reason} with tool calls is not supported"
@@ -390,12 +389,12 @@ impl Assembly {
             text: self.text,
             reasoning: self.reasoning,
             tool_calls,
-            reasoning_details: self.reasoning_details,
+            continuation_metadata: self.continuation_metadata,
         };
         message.validate().map_err(|error| {
             malformed(format!("incomplete tool call in model response: {error}"))
         })?;
-        Ok(ModelCompletion { message, stop })
+        Ok(Completion { message, stop })
     }
 }
 
@@ -462,7 +461,7 @@ pub(crate) mod fixture {
         net::{TcpListener, TcpStream},
     };
 
-    use super::{MODEL, ModelClient};
+    use super::{Client, DEFAULT_MODEL};
 
     pub enum Reply {
         /// A complete SSE body, one HTTP chunk per event, then the
@@ -504,8 +503,8 @@ pub(crate) mod fixture {
             }
         }
 
-        pub fn client(&self) -> ModelClient {
-            ModelClient::for_endpoint("test-key".to_owned(), self.url.clone())
+        pub fn client(&self) -> Client {
+            Client::for_endpoint("test-key".to_owned(), self.url.clone())
         }
 
         pub fn requests(&self) -> Vec<Value> {
@@ -595,7 +594,7 @@ pub(crate) mod fixture {
     }
 
     /// A chunked SSE response with each event in its own HTTP chunk, the way
-    /// a provider delivers a stream it is still generating.
+    /// OpenRouter delivers a stream it is still generating.
     fn stream(body: &str) -> String {
         let mut response = String::from(
             "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\
@@ -622,7 +621,7 @@ pub(crate) mod fixture {
         json!({
             "id": "gen-1",
             "object": "chat.completion.chunk",
-            "model": MODEL,
+            "model": DEFAULT_MODEL,
             "choices": [{ "index": 0, "delta": delta, "finish_reason": finish_reason }],
         })
     }
@@ -666,32 +665,35 @@ mod tests {
     };
     use crate::sessions::{ToolOutcome, ToolResult};
 
-    async fn drain(request: &mut ModelRequest) -> io::Result<Vec<ModelEvent>> {
-        let mut events = Vec::new();
-        while let Some(event) = request.next().await? {
-            events.push(event);
+    async fn drain(request: &mut CompletionStream) -> io::Result<Vec<StreamItem>> {
+        let mut items = Vec::new();
+        while let Some(item) = request.next().await? {
+            items.push(item);
         }
-        Ok(events)
+        Ok(items)
     }
 
-    async fn complete_with(chunks: &[Value]) -> io::Result<Vec<ModelEvent>> {
+    async fn complete_with(chunks: &[Value]) -> io::Result<Vec<StreamItem>> {
         let server = Server::start(vec![Reply::Stream(sse(chunks))]).await;
         let mut request = server
             .client()
-            .complete(MODEL, &[TranscriptEvent::UserMessage("hi".to_owned())])
+            .stream_completion(
+                DEFAULT_MODEL,
+                &[TranscriptEntry::UserMessage("hi".to_owned())],
+            )
             .await?;
         drain(&mut request).await
     }
 
-    fn completion(events: &[ModelEvent]) -> ModelCompletion {
-        let completions = events
+    fn completion(items: &[StreamItem]) -> Completion {
+        let completions = items
             .iter()
-            .filter_map(|event| match event {
-                ModelEvent::Completed(completion) => Some(completion.clone()),
+            .filter_map(|item| match item {
+                StreamItem::Completion(completion) => Some(completion.clone()),
                 _ => None,
             })
             .collect::<Vec<_>>();
-        assert_eq!(completions.len(), 1, "exactly one completion is accepted");
+        assert_eq!(completions.len(), 1, "exactly one completion is returned");
         completions.into_iter().next().unwrap()
     }
 
@@ -717,21 +719,21 @@ mod tests {
             "format": "openai-responses-v1",
             "index": 0,
         })];
-        let history = vec![
-            TranscriptEvent::Model("other/model".to_owned()),
-            TranscriptEvent::UserMessage("Weather in Chicago and Denver?".to_owned()),
-            TranscriptEvent::AssistantMessage(AssistantMessage {
+        let transcript = vec![
+            TranscriptEntry::Model("other/model".to_owned()),
+            TranscriptEntry::UserMessage("Weather in Chicago and Denver?".to_owned()),
+            TranscriptEntry::AssistantMessage(AssistantMessage {
                 text: String::new(),
                 reasoning: "Need both cities.".to_owned(),
                 tool_calls: vec![call("call-1", "Chicago"), call("call-2", "Denver")],
-                reasoning_details: details.clone(),
+                continuation_metadata: details.clone(),
             }),
-            TranscriptEvent::ToolResult(ToolResult {
+            TranscriptEntry::ToolResult(ToolResult {
                 call_id: "call-1".to_owned(),
                 name: "get_weather".to_owned(),
                 outcome: ToolOutcome::Completed("Sunny.".to_owned()),
             }),
-            TranscriptEvent::ToolResult(ToolResult {
+            TranscriptEntry::ToolResult(ToolResult {
                 call_id: "call-2".to_owned(),
                 name: "get_weather".to_owned(),
                 outcome: ToolOutcome::Failed("Unavailable.".to_owned()),
@@ -740,11 +742,11 @@ mod tests {
 
         let mut request = server
             .client()
-            .complete("other/model", &history)
+            .stream_completion("other/model", &transcript)
             .await
             .unwrap();
-        let events = drain(&mut request).await.unwrap();
-        assert_eq!(completion(&events).stop, ModelStop::Finished);
+        let items = drain(&mut request).await.unwrap();
+        assert_eq!(completion(&items).stop, Stop::Finished);
 
         let body = &server.requests()[0];
         assert_eq!(body["model"], "other/model");
@@ -779,9 +781,9 @@ mod tests {
             text: "Four.".to_owned(),
             reasoning: "Add them.".to_owned(),
             tool_calls: vec![],
-            reasoning_details: vec![],
+            continuation_metadata: vec![],
         };
-        let messages = request_messages(&[TranscriptEvent::AssistantMessage(plain)]);
+        let messages = chat_messages(&[TranscriptEntry::AssistantMessage(plain)]);
         assert_eq!(messages[0]["reasoning"], "Add them.");
         assert!(messages[0].get("reasoning_details").is_none());
         assert!(messages[0].get("tool_calls").is_none());
@@ -789,7 +791,7 @@ mod tests {
 
     #[tokio::test]
     async fn streams_assemble_text_reasoning_and_fragmented_tool_calls() {
-        let events = complete_with(&[
+        let items = complete_with(&[
             delta(
                 json!({
                     "role": "assistant",
@@ -833,12 +835,12 @@ mod tests {
         .await
         .unwrap();
 
-        let deltas = events
+        let deltas = items
             .iter()
-            .filter_map(|event| match event {
-                ModelEvent::TextDelta(text) => Some(("text", text.as_str())),
-                ModelEvent::ReasoningDelta(text) => Some(("reasoning", text.as_str())),
-                ModelEvent::Completed(_) => None,
+            .filter_map(|item| match item {
+                StreamItem::TextDelta(text) => Some(("text", text.as_str())),
+                StreamItem::ReasoningDelta(text) => Some(("reasoning", text.as_str())),
+                StreamItem::Completion(_) => None,
             })
             .collect::<Vec<_>>();
         assert_eq!(
@@ -850,21 +852,21 @@ mod tests {
                 ("text", "now."),
             ]
         );
-        let completion = completion(&events);
-        assert_eq!(completion.stop, ModelStop::ToolCalls);
+        let completion = completion(&items);
+        assert_eq!(completion.stop, Stop::ToolCalls);
         assert_eq!(
             completion.message,
             AssistantMessage {
                 text: "Checking now.".to_owned(),
                 reasoning: "Let me check.".to_owned(),
                 tool_calls: vec![call("call-1", "Chicago"), call("call-2", "Denver")],
-                reasoning_details: vec![
+                continuation_metadata: vec![
                     json!({ "type": "reasoning.text", "text": "Let me check.", "index": 0, "format": "x", "signature": "sig" }),
                     json!({ "type": "reasoning.encrypted", "data": "blob", "id": "rs_1", "index": 1 }),
                 ],
             }
         );
-        assert!(matches!(events.last(), Some(ModelEvent::Completed(_))));
+        assert!(matches!(items.last(), Some(StreamItem::Completion(_))));
     }
 
     #[tokio::test]
@@ -899,8 +901,8 @@ mod tests {
                     .map(|detail| delta(json!({ "reasoning_details": [detail] }), None))
                     .collect::<Vec<_>>();
                 chunks.push(delta(json!({ "content": "Done." }), Some("stop")));
-                let events = complete_with(&chunks).await.unwrap();
-                let message = completion(&events).message;
+                let items = complete_with(&chunks).await.unwrap();
+                let message = completion(&items).message;
                 let expected = vec![
                     detail(kind, field, "First block."),
                     first_encrypted,
@@ -908,8 +910,8 @@ mod tests {
                     second_encrypted,
                     third_encrypted,
                 ];
-                assert_eq!(message.reasoning_details, expected);
-                let messages = request_messages(&[TranscriptEvent::AssistantMessage(message)]);
+                assert_eq!(message.continuation_metadata, expected);
+                let messages = chat_messages(&[TranscriptEntry::AssistantMessage(message)]);
                 assert_eq!(messages[0]["reasoning_details"], json!(expected));
             }
         }
@@ -930,27 +932,27 @@ mod tests {
                 .map(|detail| delta(json!({ "reasoning_details": [detail] }), None))
                 .collect::<Vec<_>>();
             chunks.push(delta(json!({}), Some("stop")));
-            let events = complete_with(&chunks).await.unwrap();
-            assert_eq!(completion(&events).message.reasoning_details, details);
+            let items = complete_with(&chunks).await.unwrap();
+            assert_eq!(completion(&items).message.continuation_metadata, details);
         }
     }
 
     #[tokio::test]
-    async fn finish_reasons_classify_or_fail_acceptance() {
+    async fn finish_reasons_are_classified_or_rejected() {
         let finished = complete_with(&[delta(json!({ "content": "Done." }), Some("stop"))])
             .await
             .unwrap();
-        assert_eq!(completion(&finished).stop, ModelStop::Finished);
+        assert_eq!(completion(&finished).stop, Stop::Finished);
 
         let limited = complete_with(&[delta(json!({ "content": "Cut" }), Some("length"))])
             .await
             .unwrap();
-        assert_eq!(completion(&limited).stop, ModelStop::TokenLimit);
+        assert_eq!(completion(&limited).stop, Stop::TokenLimit);
 
         let refused = complete_with(&[delta(json!({}), Some("content_filter"))])
             .await
             .unwrap();
-        assert_eq!(completion(&refused).stop, ModelStop::Refused);
+        assert_eq!(completion(&refused).stop, Stop::Refused);
 
         assert!(
             complete_with(&[delta(json!({}), Some("tool_calls"))])
@@ -1007,7 +1009,11 @@ mod tests {
         assert!(error.to_string().contains("Provider disconnected"));
 
         let server = Server::start(vec![Reply::Stream("data: not json\n\n".to_owned())]).await;
-        let mut request = server.client().complete(MODEL, &[]).await.unwrap();
+        let mut request = server
+            .client()
+            .stream_completion(DEFAULT_MODEL, &[])
+            .await
+            .unwrap();
         assert!(drain(&mut request).await.is_err());
 
         let server = Server::start(vec![Reply::Status(
@@ -1017,7 +1023,7 @@ mod tests {
         .await;
         let error = server
             .client()
-            .complete(MODEL, &[])
+            .stream_completion(DEFAULT_MODEL, &[])
             .await
             .err()
             .expect("a failed status is an error");
@@ -1030,12 +1036,15 @@ mod tests {
         let client = server.client();
         for _ in 0..2 {
             let mut request = client
-                .complete(MODEL, &[TranscriptEvent::UserMessage("hi".to_owned())])
+                .stream_completion(
+                    DEFAULT_MODEL,
+                    &[TranscriptEntry::UserMessage("hi".to_owned())],
+                )
                 .await
                 .unwrap();
             while !matches!(
                 request.next().await.unwrap(),
-                Some(ModelEvent::Completed(_))
+                Some(StreamItem::Completion(_))
             ) {}
             drop(request);
             // The pool takes an idle connection back on a background task.

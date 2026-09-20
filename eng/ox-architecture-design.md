@@ -10,9 +10,9 @@ Ox is a local conversational agent exposed through the Agent Client Protocol
 model output, executes a small set of tools, and stores conversations in
 SQLite so that clients can reopen them and the model can continue them.
 
-Ox owns its agent loop. A concrete OpenRouter client performs one model
-completion at a time. The loop decides when to call the model, execute tools,
-commit conversation history, and terminate the prompt. No external runtime
+Ox owns its prompt run. A concrete OpenRouter client performs one model
+request at a time. The run decides when to make model requests, run tools,
+save the transcript, and respond. No external runtime
 owns any of those decisions.
 
 The architecture has these central choices:
@@ -22,24 +22,25 @@ The architecture has these central choices:
   transport libraries.
 - One authoritative SQLite transcript with separate model and ACP projections.
 - One persistent SQLite connection behind a short-held synchronous mutex.
-- One operation registry that excludes overlapping prompt, load, and delete
-  operations for the same session.
-- One prompt task that owns its model request, pending assistant message,
-  tool outcomes, cancellation handling, and terminal settlement.
+- One operation-guard registry that allows at most one prompt, load, or
+  delete per session.
+- One prompt run that saves the user message, makes model requests, runs
+  tools, saves complete assistant batches, and responds.
 - Complete assistant messages in storage, including the continuation metadata
   needed to send them back to the model.
-- Atomic commits of an assistant message together with terminal results for
-  every tool call in that message.
-- Lazy credential loading into a cached, cloneable model client.
-- Concrete functions and closed enums, with a small notification closure for
-  testing delivery behavior.
+- Assistant batches saved atomically: one validated message with final
+  results for every tool call in that message.
+- Lazy credential loading into a cached, cloneable OpenRouter client.
+- Concrete functions and closed enums, with a small update closure for
+  testing update sending.
 
 The design prioritizes correct conversation semantics and code that is cheap
 to change.
 
 The OpenRouter API itself is outside the scope of this document. The adapter
-must implement the documented API; the sections below specify its ownership,
-acceptance boundary, and obligations to the rest of Ox rather than reproducing
+must implement the documented API; the sections below specify its
+responsibilities, validation boundary, and obligations to the rest of Ox
+rather than reproducing
 request fields or streaming wire formats.
 
 ## 2. Scope
@@ -54,7 +55,7 @@ request fields or streaming wire formats.
 - Session creation, listing, loading, prompting, cancellation, and deletion.
 - Persistent conversations and restart followed by replay and continuation.
 - Terminal login, lazy use of newly saved credentials, and logout.
-- Explicit treatment of model limits, malformed input, delivery failure,
+- Explicit treatment of model limits, malformed input, ACP-update failure,
   storage failure, and cancellation.
 
 ### Excluded
@@ -66,12 +67,12 @@ request fields or streaming wire formats.
 - Multiple processes concurrently modifying the same database.
 - Reading databases written by earlier schema versions.
 - Images, audio, other unsupported media, context compaction, and automatic
-  truncation of stored history.
+  truncation of the stored transcript.
 - A general permission system, tool registry framework, repository trait,
   event bus, session actor, or dependency-injection framework.
 
-Tool execution and transcript persistence follow the ownership and commit
-boundaries in section 15.
+Tool execution and transcript persistence follow the persistence contract
+in section 15.
 
 ## 3. Assumed invariants
 
@@ -82,17 +83,17 @@ be revisited rather than patched with an implicit fallback.
 
 | Assumption | What depends on it | When to revisit |
 | --- | --- | --- |
-| One Ox process is the sole application writer to its database. | Process-local session admission is sufficient. | Two agent processes need to share writable conversation storage. |
+| One Ox process is the sole application writer to its database. | Process-local operation guards are sufficient. | Two agent processes need to share writable conversation storage. |
 | Each process serves one ACP connection. | Connection shutdown ends that process's live work; there is no cross-client routing layer. | A daemon or multiple simultaneous clients become a requirement. |
 | SQLite runs on local storage and normal operations are short. | Synchronous operations behind one connection mutex are acceptable initially. | Measurements show storage work delaying streaming or cancellation. |
-| Session transcripts fit comfortably in memory. | Load and prompt read a whole committed transcript. | Real conversations require compaction or bounded-memory replay. |
-| Tool execution is owned by the prompt that accepted the call. | The prompt keeps resource-specific work within its cancellation boundary and settles its observed outcome through the closed batch. | Work must continue independently of the prompt that started it. |
-| Tool futures implement their stated cancellation behavior. | The prompt task can stop work before settling its conversation batch. | A new tool owns resources that require explicit asynchronous cleanup. |
-| The default model and the endpoint are fixed local choices; each session records its model at creation. | A concrete adapter, nearby constants, and one transcript record suffice. | Users need to choose or change a session's model, or another actual provider. |
+| Session transcripts fit comfortably in memory. | Load and prompt read a whole saved transcript. | Real conversations require compaction or bounded-memory replay. |
+| Tool execution is owned by the prompt run that validated the call. | The run keeps resource-specific work within its cancellation boundary and records its observed outcome in the uncommitted batch. | Work must continue independently of the prompt run that started it. |
+| Tool futures implement their stated cancellation behavior. | The prompt run can stop work before saving its assistant batch. | A new tool owns resources that require explicit asynchronous cleanup. |
+| The default model and the endpoint are fixed local choices; each session stores its model at creation. | A concrete adapter, nearby constants, and one transcript entry suffice. | Users need to choose or change a session's model, or another actual provider. |
 | The model's required continuation data can be represented losslessly as stored JSON values. | Structured metadata survives storage and request reconstruction. | A supported feature requires a different representation or byte-level preservation. |
-| The ACP transport preserves enqueue order between updates and responses. | Enqueuing updates before the final response establishes their relative delivery order while the transport remains healthy. | The transport implementation or ordering contract changes. |
+| The ACP transport preserves enqueue order between updates and responses. | Enqueuing updates before the final response establishes their relative send order while the transport remains healthy. | The transport implementation or ordering contract changes. |
 | The transport's outgoing queue is not controlled by Ox's prompt loop. | Ox does not claim bounded outbound buffering or client acknowledgement. | A demonstrated slow-client problem requires a transport-level change. |
-| A client can recover from a busy response and can reload committed history. | Rejecting conflicting operations is an adequate interaction policy. | A client requires live replay handover or queued prompts. |
+| A client can recover from a busy response and can reload the saved transcript. | Rejecting conflicting operations is an adequate interaction policy. | A client requires live replay handover or queued prompts. |
 
 No assumption treats provider output, database contents, tool arguments, or
 client input as trustworthy. Those are validated at their boundaries.
@@ -107,38 +108,41 @@ The following properties are part of Ox's contract and must be supported by
 ownership, validation, transactions, or focused tests:
 
 1. A session has at most one active prompt, load, or delete operation in the
-   process. Admission is an atomic claim, not a check followed by later work.
-2. Each admitted operation has exactly one non-cloneable membership guard.
-   Its lifetime includes settlement and response enqueue.
-3. Every prompt owns its mutable history, pending batch, model-call count,
-   active request, and cancellation state. Another session cannot replace them.
-4. The accepted user message is durable before the first model request.
-5. Tool execution begins only after the adapter has delivered a validated,
-   complete assistant message and the loop has accepted it.
-6. A newly committed assistant batch contains exactly one result for every
+   process. Acquiring its operation guard is atomic, not a check followed by
+   later work.
+2. Each active operation holds exactly one non-cloneable operation guard.
+   Its lifetime includes the finish path and sending the response.
+3. Every prompt run owns its saved transcript, uncommitted batch,
+   model-request count, active completion stream, and cancellation signal.
+   Another session cannot replace them.
+4. The saved user message is durable before the first model request.
+5. Tool execution begins only after the completion stream has yielded a
+   validated, complete assistant message.
+6. A newly saved assistant batch contains exactly one final result for every
    call in that assistant message and no result for an unrelated call.
-7. Observed tool outcomes enter the pending batch before their notifications
-   are attempted. A failed notification cannot erase an observed outcome.
-8. Accepted in-memory history advances only after the corresponding database
-   transaction succeeds. Pending state is not cleared before successful commit.
+7. Observed tool outcomes enter the uncommitted batch before their ACP
+   updates are sent. A failed update cannot erase an observed outcome.
+8. The saved in-memory transcript advances only after the corresponding
+   database transaction succeeds. The uncommitted batch is not cleared
+   before that save.
 9. No database transaction or mutex guard crosses an asynchronous wait.
-10. All ordinary exits after user persistence converge on terminal settlement.
-    A provider, tool, or notification error cannot bypass it through an early
-    return from the loop.
+10. All ordinary exits after user persistence converge on the finish path.
+    An OpenRouter, tool, or ACP-update error cannot bypass it through an
+    early return from the loop.
 11. Synthetic results describe what Ox knows. They do not claim that a tool
     succeeded, that an interrupted operation had no effects, or that work was
     executed when it was not started.
 12. Opaque continuation metadata is stored and reconstructed with its producing
     assistant message. It is never shown as visible reasoning or tool output.
-13. Replay and model continuation are projections of the same committed
+13. Replay and model continuation are projections of the same saved
     transcript. Neither maintains an independent authoritative log.
-14. A successful prompt response is enqueued only after required commits and
-    preceding update enqueues succeed. It is not proof of client receipt.
-15. Ordinary input, provider, tool, and session failures remain request-level
+14. A successful prompt response is sent only after required saves and
+    preceding updates succeed. It is not proof of client receipt.
+15. Ordinary input, OpenRouter, tool, and session failures remain request-level
     outcomes. They do not terminate a healthy connection or poison unrelated
     sessions.
 16. Session recovery reconstructs model context and replay exclusively from
-    committed transcript events.
+    saved transcript entries.
 
 ## 5. Modules and dependency direction
 
@@ -146,43 +150,43 @@ ownership, validation, transactions, or focused tests:
 src/
   main.rs                 command parsing and process entry
   auth.rs                 environment and operating-system credential storage
-  model.rs                concrete OpenRouter client; one model completion
-  tools.rs                concrete tool schemas, execution, and display titles
-  sessions.rs             transcript types, SessionStore, private codec and SQL
+  openrouter.rs           OpenRouter client, request encoding, and streamed-response assembly
+  tools.rs                concrete tool schemas, display titles, and execution of one complete call
+  sessions.rs             transcript types, assistant-batch validation, SessionStore, private codec and SQL
   acp.rs                  connection wiring, ServerState, request handlers
   acp/
-    operations.rs         per-session admission and cancellation signals
-    prompt.rs             model/tool loop and terminal settlement
+    operations.rs         one active prompt, load, or delete per session, via an operation guard
+    prompt.rs             one prompt run: model requests, tools, and the final response
     convert.rs            ACP input conversion, replay, and update construction
 ```
 
 `main.rs` chooses a command. It starts the ACP server or runs a credential
 command. It does not contain conversational behavior.
 
-`model.rs` knows the provider and the transcript types required to encode a
-request. It does not know ACP, SQLite, session admission, or tool execution.
+`openrouter.rs` knows OpenRouter and the transcript types required to encode
+a request. It does not know ACP, SQLite, operation guards, or tool execution.
 
 `tools.rs` defines the available tools and executes one complete call. It does
-not invoke the model, persist conversation history, or send ACP notifications.
+not make model requests, save the transcript, or send ACP updates.
 
-`sessions.rs` owns durable conversation semantics and the concrete store. It
-constructs neither ACP notifications nor HTTP requests. SQL and the private
+`sessions.rs` owns durable transcript semantics and the concrete store. It
+constructs neither ACP updates nor HTTP requests. SQL and the private
 codec stay together with the types they store.
 
-`acp/prompt.rs` owns the only agent loop. Its placement reflects the single
-current frontend. If another frontend is implemented, move this same loop
+`acp/prompt.rs` owns the only prompt run. Its placement reflects the single
+current frontend. If another frontend is implemented, move this same run
 behind the boundary that frontend needs; do not introduce a second loop.
 
-`acp/convert.rs` translates supported ACP input to accepted user text and
-projects transcript records into client updates. It does not perform I/O.
+`acp/convert.rs` converts supported ACP input to a user message and projects
+transcript entries into ACP updates. It does not perform I/O.
 
 The dependency direction is:
 
 ```text
-main -> acp, auth, model
-acp -> auth, model, sessions, operations, prompt, convert
-prompt -> model, tools, sessions, operations, convert
-model -> sessions (conversation types only), tools (schemas only)
+main -> acp, auth, openrouter
+acp -> auth, openrouter, sessions, operations, prompt, convert
+prompt -> openrouter, tools, sessions, operations, convert
+openrouter -> sessions (transcript types only), tools (schemas only)
 tools -> sessions (tool call and outcome types only)
 convert -> sessions, tools (display titles only)
 ```
@@ -204,13 +208,13 @@ The process state is small and concrete:
 #[derive(Clone)]
 struct ServerState {
     store: SessionStore,
-    model: Arc<Mutex<Option<ModelClient>>>,
+    openrouter: Arc<Mutex<Option<openrouter::Client>>>,
     operations: SessionOperations,
 }
 ```
 
 The server itself is not behind a mutex. Cloning `ServerState` clones the
-shared handles; it does not duplicate conversation history or the database.
+shared handles; it does not duplicate the transcript or the database.
 
 ### Startup
 
@@ -230,9 +234,9 @@ The database location is resolved once, using this precedence:
 The database filename is `ox.db`. Failure to resolve a required base directory
 is reported explicitly rather than silently selecting the working directory.
 
-### Lazy model client
+### Lazy OpenRouter client
 
-When an authenticated operation needs the model client:
+When an authenticated operation needs the OpenRouter client:
 
 1. Lock the client slot.
 2. Return a clone if a client is already cached.
@@ -252,12 +256,12 @@ ACP clients run the terminal login as a separate process and then retry the
 original request rather than calling `authenticate`. The empty slot on that
 retry is how a newly saved key is picked up without a process restart.
 
-A prompt holds its own clone of the client. The client contains immutable
-credentials and a reusable HTTP connection pool, not mutable conversation
-state. Each request has its own stream assembly state.
+A prompt run holds its own clone of the client. The client contains immutable
+credentials and a reusable HTTP connection pool, not conversation state.
+Each request has its own stream assembly state.
 
-Explicit login validates the key using the provider's non-generation
-authentication operation before saving it. A successful key check is not a
+Explicit login validates the key using OpenRouter's key endpoint without
+generating, before saving it. A successful key check is not a
 guarantee that every model request will succeed.
 
 ### Logout and credential changes
@@ -278,13 +282,13 @@ or raw credential-bearing request objects.
 ## 7. Conversation model
 
 The transcript represents messages and completed tool exchanges rather than
-transport chunks. Its central distinction is between a complete accepted
+transport chunks. Its central distinction is between a validated, complete
 assistant message and provisional output observed while producing that message.
 
 A representative domain model is:
 
 ```rust
-enum TranscriptEvent {
+enum TranscriptEntry {
     Model(String),
     UserMessage(String),
     AssistantMessage(AssistantMessage),
@@ -295,7 +299,8 @@ struct AssistantMessage {
     text: String,
     reasoning: String,
     tool_calls: Vec<ToolCall>,
-    reasoning_details: Vec<serde_json::Value>,
+    /// OpenRouter's opaque `reasoning_details`, retained for the next request.
+    continuation_metadata: Vec<serde_json::Value>,
 }
 
 struct ToolCall {
@@ -319,43 +324,44 @@ enum ToolOutcome {
 
 ### Message structure
 
-All calls from one assistant completion belong to one assistant message.
+All calls from one model completion belong to one assistant message.
 Associated text and reasoning stay with that message. Multiple calls do not
 become multiple assistant messages, and reasoning does not drift into a later
-answer during history reconstruction.
+answer during transcript reconstruction.
 
-The fields mirror the provider's assistant message: visible answer text,
-visible reasoning text, the tool calls, and the opaque continuation details.
+The fields mirror OpenRouter's assistant message: visible answer text,
+visible reasoning text, the tool calls, and the opaque continuation metadata.
 Empty text or reasoning means the completion produced none. There is no
 interleaving order to preserve. Network arrival order can interleave fragments
-of these fields without defining a semantic message order, and the adapter's
+of these fields without defining a semantic message order, and the client's
 assembled result is what the transcript stores.
 
 Visible reasoning and continuation metadata have different purposes. Visible
-reasoning supports client presentation. Structured provider details support
+reasoning supports client presentation. Structured OpenRouter details support
 model continuation. The encoder must avoid duplicating equivalent reasoning
 fields and must use the representation required for the supported model.
 
-The `reasoning_details` field is deliberately concrete and provider-qualified.
+The `continuation_metadata` field is deliberately concrete and
+provider-qualified: OpenRouter's `reasoning_details` at its wire boundary.
 Preserve its complete JSON values, nested fields, association, and array order
 rather than interpreting opaque elements as display text. JSON formatting and
 object key order are not a byte-preservation contract. Unknown fields inside
 opaque metadata are retained; unknown transcript formats remain errors.
 
 Every transcript opens with the model its completions use. A new session
-records the current default; an existing session continues with its recorded
+stores the current default; an existing session continues with its stored
 model, so continuation data is only ever sent back to the model that produced
 it. The model does not change within a session.
 
 ### Tool calls and results
 
-Call IDs must be nonempty and unique within the accepted assistant message.
+Call IDs must be nonempty and unique within the validated assistant message.
 Each result must match that message's call ID and tool name. Pairing is scoped
 to the assistant batch rather than an unbounded global map of call IDs.
 
 The argument string is the complete string provided by the model. Retaining
 it permits invalid JSON or an invalid typed argument shape to receive an
-ordinary failed tool result after message acceptance. Incomplete transport
+ordinary failed tool result after the message is validated. Incomplete stream
 assembly is a different problem: it cannot become an executable call.
 
 An empty tool name is a malformed envelope. An unknown nonempty name is a
@@ -364,21 +370,21 @@ dispatch failure the model can see and potentially correct on a later call.
 Cancellation results contain a short explanation distinguishing a tool that
 was never started from one interrupted before its result was observed. Failure
 results likewise distinguish validation failure, execution failure, and work
-not started because the model-call budget was exhausted.
+not started because the model-request budget was exhausted.
 
-Results are persisted in original call order even though terminal states may
+Results are persisted in original call order even though final outcomes may
 become known at different times. With sequential execution this ordering is
 straightforward.
 
-### What is not a transcript record
+### What is not a transcript entry
 
-Do not persist individual deltas, connection state, admission ownership,
+Do not persist individual deltas, connection state, operation guards,
 cancellation signals, HTTP payloads, or SDK objects. Usage information is not
 required for conversational correctness and does not earn a second log.
 
 Timestamps remain available in storage and session summaries. Transcript reads
-return conversation records without a timestamp wrapper unless a real
-consumer needs per-record timestamps.
+return transcript entries without a timestamp wrapper unless a real
+consumer needs per-entry timestamps.
 
 ## 8. Store and database contract
 
@@ -388,7 +394,7 @@ struct SessionStore(Arc<Mutex<rusqlite::Connection>>);
 
 struct SessionSummary {
     id: SessionId,
-    cwd: PathBuf,
+    workspace_path: PathBuf,
     title: Option<String>,
     created_at: String,
     updated_at: String,
@@ -396,7 +402,7 @@ struct SessionSummary {
 
 struct StoredSession {
     summary: SessionSummary,
-    transcript: Vec<TranscriptEvent>,
+    transcript: Vec<TranscriptEntry>,
 }
 ```
 
@@ -406,37 +412,37 @@ in-memory connection. There are no duplicate production and test query APIs.
 
 Every store operation acquires the connection mutex only for its synchronous
 database work. All reads as well as writes serialize on this connection.
-Model requests, tool awaits, replay notifications, and credential lookup happen
+Model requests, tool awaits, replay updates, and credential lookup happen
 outside that mutex. Code must not recursively acquire the store lock.
 
 ### Public operations
 
 | Operation | Contract |
 | --- | --- |
-| `create(cwd)` | Generate a session ID and create its workspace association and metadata atomically. Return the new summary. |
+| `create(workspace_path)` | Generate a session ID and create its workspace association and metadata atomically. Return the new summary. |
 | `read(id)` | Return `None` for absence; otherwise return metadata and ordered transcript from one read transaction. |
-| `list(cwd)` | Return owned summaries, optionally filtered by workspace, ordered by descending activity with a stable ID tie-breaker. |
-| `append_user(id, text)` | Append the accepted input, adopt the first usable title when absent, and update activity in one transaction. Return the resulting summary. |
-| `append_batch(id, batch)` | Validate a closed assistant batch, append all its records, and update activity atomically. |
-| `delete(id)` | Remove the session and its dependent records atomically; absence is an idempotent success. |
+| `list(workspace_path)` | Return owned summaries, optionally filtered by workspace, ordered by descending activity with a stable ID tie-breaker. |
+| `append_user(id, text)` | Append the user message, adopt the first usable title when absent, and update activity in one transaction. Return the resulting summary. |
+| `append_batch(id, batch)` | Validate a complete assistant batch, append all its entries, and update activity atomically. |
+| `delete(id)` | Remove the session and its dependent entries atomically; absence is an idempotent success. |
 
-The prompt loop has no unrestricted event append. `read` distinguishes an
+The prompt run has no unrestricted entry append. `read` distinguishes an
 absent session from an existing untitled session. `append_user` and
 `append_batch` fail for an absent session; they never create one implicitly.
 Empty batch writes are not used to change activity.
 
 ### Logical schema
 
-The database contains workspace rows, session rows, and an ordered events
+The database contains workspace rows, session rows, and an ordered `events`
 table. Session rows contain the session ID, workspace association, optional
-title, and creation and activity timestamps. Event rows contain an ordered
+title, and creation and activity timestamps. `events` rows contain an ordered
 integer ID, session ID, timestamp, kind, and serialized payload.
 
-Foreign keys are enabled. Deleting a session cascades to its events. Event
-ordering uses the integer sequence, never timestamps. UTC timestamps use one
-consistent representation; equal timestamps do not imply equal events.
+Foreign keys are enabled. Deleting a session cascades to its `events` rows.
+`events` ordering uses the integer sequence, never timestamps. UTC timestamps
+use one consistent representation; equal timestamps do not imply equal rows.
 
-The first accepted nonblank user input supplies an initial title, limited to
+The first saved nonblank user message supplies an initial title, limited to
 80 Unicode scalar values. Later appends do not overwrite an established title.
 Title derivation does not modify the input sent to the model.
 
@@ -454,24 +460,24 @@ Opening a database whose version differs from the current one is a startup
 error that names the file so the user can delete it. There is no migration
 path and no reader for earlier formats.
 
-Private database DTOs are distinct from both domain structs and HTTP DTOs. A
-provider adapter change must not silently change the meaning of stored
-records.
+Private database DTOs are distinct from both domain structs and HTTP DTOs. An
+OpenRouter client change must not silently change the meaning of stored
+entries.
 
 A batch transaction inserts the assistant message and all paired results,
 then updates session activity. If any step fails, the transaction rolls back.
-The caller retains its pending batch and does not advance accepted history.
+The caller retains its uncommitted batch and does not extend the transcript.
 
 Read validation rejects malformed payloads, unknown kinds, orphan results,
 duplicate results, and unresolved calls. Do not skip unreadable rows or
-substitute empty history.
+substitute an empty transcript.
 
-A committed batch is immutable conversation history. There is no automatic
-rewrite to make a provider accept a previously stored message.
+A saved batch is immutable transcript content. There is no automatic
+rewrite to make OpenRouter accept a previously stored message.
 
 ### Limitations
 
-The database mutex is not session admission. It serializes individual database
+The database mutex is not the operation guard. It serializes individual database
 operations, not a whole conversation turn. Another process is not prevented
 from opening the file by the Rust mutex; single-writer process ownership is an
 operating assumption.
@@ -481,7 +487,7 @@ the initial local workload without promising a latency bound. If measurements
 justify it, introduce a blocking-executor boundary around this concrete store;
 do not preemptively add an actor, pool, or repository abstraction.
 
-## 9. Session admission and cancellation ownership
+## 9. Operation guards and cancellation
 
 ```rust
 enum Operation {
@@ -500,62 +506,62 @@ struct OperationGuard {
 ```
 
 `try_prompt`, `try_load`, and `try_delete` use one atomic insertion helper.
-Failure to claim returns busy immediately. There is no wait queue and no
-check-then-delete API.
+Failure to acquire a guard returns busy immediately. There is no wait queue
+and no check-then-delete API.
 
-| Incoming operation | Idle | Prompt owns session | Load owns session | Delete owns session |
+| Incoming operation | Idle | Prompt holds the guard | Load holds the guard | Delete holds the guard |
 | --- | --- | --- | --- | --- |
-| Prompt | Claim | Busy | Busy | Busy |
-| Load | Claim | Busy | Busy | Busy |
-| Delete | Claim | Busy | Busy | Busy |
+| Prompt | Acquire | Busy | Busy | Busy |
+| Load | Acquire | Busy | Busy | Busy |
+| Delete | Acquire | Busy | Busy | Busy |
 | Cancel | No-op | Signal prompt | No-op | No-op |
-| List | Read committed summaries | Read committed summaries | Read committed summaries | Read committed summaries |
+| List | Read saved summaries | Read saved summaries | Read saved summaries | Read saved summaries |
 
 Session creation chooses a new ID and does not replace existing live state.
 
-The membership guard is private and non-cloneable. Cancellation handles can
-be cloned without duplicating ownership. `Drop` removes the occupied entry
-synchronously; it performs no persistence, notification, or asynchronous
+The operation guard is private and non-cloneable. Cancellation signals can
+be cloned without duplicating the guard. `Drop` removes the occupied entry
+synchronously; it performs no persistence, update sending, or asynchronous
 cleanup.
 
-The prompt handler claims admission before spawning. It moves the guard into
-the task. Failure to spawn must drop the future and its guard. The guard stays
-alive through the response enqueue attempt, including any settlement after an
-execution or delivery failure.
+The prompt handler acquires the guard before spawning. It moves the guard
+into the task. Failure to spawn must drop the future and its guard. The guard
+stays alive until the final response is sent, including the finish path after
+an OpenRouter or update-sending failure.
 
-Load holds its claim through read, validation, replay, and response enqueue.
-Delete holds its claim through the database operation and response enqueue.
-Neither holds the registry mutex while doing that work.
+Load holds its guard through read, validation, replay, and sending the
+response. Delete holds its guard through the database operation and sending
+the response. Neither holds the registry mutex while doing that work.
 
-Cancellation is a latched signal belonging to the admitted prompt. It remains
+Cancellation is a latched signal belonging to the active prompt. It remains
 observable if it arrives before the task begins polling. Repeated cancellation
 is harmless. A cancellation received while idle does not cancel a later prompt.
 
 Only short synchronous map access occurs under the registry mutex. The guard
 never holds that mutex for its entire lifetime.
 
-## 10. Model adapter boundary
+## 10. OpenRouter adapter boundary
 
-`ModelClient` performs one model request. Its inputs are accepted conversation
-history, the fixed model choice, and the concrete tool schemas. Its outputs
-are provisional display deltas followed by at most one accepted completion,
-or a request failure.
+`openrouter::Client` performs one model request. Its inputs are the saved
+transcript, the fixed model choice, and the concrete tool schemas. Its outputs
+are live text and reasoning updates followed by at most one validated
+completion, or a request failure.
 
-A conceptual event set is:
+A conceptual stream item set is:
 
 ```rust
-enum ModelEvent {
+enum StreamItem {
     TextDelta(String),
     ReasoningDelta(String),
-    Completed(ModelCompletion),
+    Completion(Completion),
 }
 
-struct ModelCompletion {
+struct Completion {
     message: AssistantMessage,
-    stop: ModelStop,
+    stop: Stop,
 }
 
-enum ModelStop {
+enum Stop {
     Finished,
     ToolCalls,
     TokenLimit,
@@ -564,37 +570,37 @@ enum ModelStop {
 ```
 
 Keep wire-specific response codes, DTOs, and assembly details private. The
-adapter translates supported provider termination states into this closed
-set. An unknown or contradictory response is a clear adapter error, not an
+client translates supported OpenRouter finish reasons into this closed
+set. An unknown or contradictory response is a clear client error, not an
 implicit normal completion.
 
-The adapter is responsible for:
+The client is responsible for:
 
-- Encoding accepted history without losing message grouping or continuation
-  data.
+- Encoding the saved transcript without losing message grouping or
+  continuation metadata.
 - Assembling a complete response according to the documented streaming
-  protocol, including terminal validation and supported metadata.
+  protocol, including final validation and supported metadata.
 - Keeping all mutable assembly state local to the request.
-- Emitting exactly one completion only after the response meets the adapter's
-  acceptance contract and the stream has been read to its end, so the
+- Yielding exactly one completion only after the response meets the client's
+  validation contract and the stream has been read to its end, so the
   connection returns to the pool.
-- Distinguishing provisional text from accepted message content.
+- Distinguishing provisional text from validated message content.
 - Reporting malformed responses and transport failures without executing
-  tools or changing stored history.
+  tools or changing the saved transcript.
 - Stopping consumption when the owning request is cancelled or dropped.
 
-The completion event means the adapter has finished the protocol work needed
-to accept that response. No later stream event can revise its accepted content.
-End-of-stream without that event is an error.
+The completion item means the client has finished the protocol work needed
+to validate that response. No later stream item can revise its validated
+content. End-of-stream without that item is an error.
 
-Visible deltas are not authoritative history, even when their concatenation
-looks complete. The final assembled message is authoritative for acceptance.
-Opaque data never travels through a visible reasoning delta.
+Visible deltas are not the authoritative transcript, even when their
+concatenation looks complete. The final assembled message is authoritative
+for saving. Opaque data never travels through a visible reasoning delta.
 
 The initial UI does not display partial tool-call arguments. A tool starts
-appearing in the UI after model acceptance, as a pending tool call, when Ox
+appearing in the UI after validation, as a pending tool call, when Ox
 has a complete call to represent. This avoids provisional tool objects that
-need repair if model assembly fails.
+need repair if stream assembly fails.
 
 Use a normal HTTP client and streaming framing library. Do not implement a
 general networking stack, background stream reader, or second event queue.
@@ -604,29 +610,29 @@ nearby implementation constants.
 
 ## 11. Prompt execution
 
-### Admission and preparation
+### Guard acquisition and preparation
 
-The handler converts and validates input before starting execution. It accepts
+The handler converts and validates input before starting the run. It accepts
 text blocks and resource-link descriptions; a resource link contributes its
 name and URI as text and is not fetched automatically. Unsupported content
-causes an invalid-parameters error before any part of the prompt is persisted.
+causes an invalid-parameters error before any part of the prompt is saved.
 The converted input must contain nonblank text.
 
-After obtaining credentials and claiming session admission, the handler spawns
-one prompt task. That task:
+After obtaining credentials and acquiring the operation guard, the handler
+spawns one prompt run. That run:
 
-1. Reads the session summary and committed transcript.
-2. Reconstructs the accepted model conversation.
+1. Reads the session summary and saved transcript.
+2. Reconstructs the model conversation from the saved transcript.
 3. Appends the user message and title/activity update in one transaction.
-4. Adds that same user message to its owned accepted history.
+4. Adds that same user message to its in-memory transcript.
 5. Enqueues the session metadata update. The update carries the title only
    when the summary read in step 1 had none and the append adopted one.
 6. Enters the model/tool loop.
 
 No model request occurs before step 3 succeeds. Preparation failures before
-that point require an error response and guard release but no batch settlement.
-After step 3, every ordinary exit goes through settlement, even when there is
-no accepted assistant batch to commit.
+that point require an error response and dropping the guard, but no batch
+saving. After step 3, every ordinary exit goes through the finish path, even
+when there is no uncommitted assistant batch to save.
 
 If cancellation is already observed before user append begins, return
 cancelled without writing that input. Once user append succeeds, the input
@@ -636,71 +642,69 @@ distinction.
 
 ### Owned prompt state
 
-Each prompt owns:
+Each prompt run owns:
 
-- The operation guard and its cancellation observer.
-- A cloned model client.
-- Accepted history loaded from the store and extended after successful writes.
-- A model-call counter.
-- At most one active model request.
-- At most one pending accepted assistant batch.
-- The terminal execution outcome and any settlement failure.
+- The operation guard and its cancellation signal.
+- A cloned OpenRouter client.
+- The saved transcript loaded from the store and extended after successful writes.
+- A model-request count.
+- At most one active completion stream.
+- At most one uncommitted assistant batch.
+- The final outcome and any finish-path failure.
 
-`PendingBatch` contains one accepted assistant message and one result slot per
-tool call. The slots begin empty and can be filled once. Iterating them in
-message order constructs the closed batch. This state needs neither a global
-outcome map nor a tool callback that runs before some other callback.
+`UncommittedAssistantBatch` contains one validated assistant message and one
+outcome slot per tool call. The slots begin empty and can be filled once.
+Iterating them in message order constructs the complete batch. This state
+needs neither a global outcome map nor a tool callback that runs before some
+other callback.
 
-The pending batch is distinct from accepted history: the model response has
-been accepted from the provider, but it is not durable conversational context
-until its batch is closed and committed.
+The uncommitted batch is distinct from the saved transcript: the assistant
+message has been validated, but it is not durable transcript content until
+its batch is complete and saved.
 
 ### Loop
 
 ```text
-while another model call is allowed:
+while another model request is allowed:
     check cancellation
-    start one request using accepted history; increment model-call count
-    forward supported provisional display deltas
+    make one model request using the transcript; increment the model-request count
+    forward live text and reasoning as ACP updates
     require one validated completion
-    capture its assistant message in a pending batch
-    announce every call in that message as pending
+    capture its assistant message in an uncommitted batch
+    send a pending tool-call update for every call in that message
 
     classify its stop condition
-    if tool calls are allowed:
-        visit calls in order
+    if tool calls need running and a further request remains:
+        run the calls in order
         check cancellation before starting each call
-        mark the call in progress, then execute it or record its validation failure
-        retain the terminal result before attempting its update
-    otherwise:
-        close any accepted calls that will not be executed
+        send the in-progress update, then run the call or record its validation failure
+        record the outcome before sending its finished update
 
-    close and commit the batch
-    extend accepted history only after commit succeeds
-    clear the pending batch
+    save the complete batch; extend the transcript only after the save succeeds
+    clear the uncommitted batch
 
-    if the stop condition ends the prompt:
-        finalize the corresponding response
+    if the stop condition ends the prompt run:
+        build the corresponding final response
         stop
 
-settle any interrupted accepted batch and finalize the terminal outcome
+give every unstarted call an explicit outcome, save the batch, send the
+remaining updates, and build the final response
 ```
 
-The implementation may use early returns inside helpers, but the prompt's
-execution driver catches their ordinary errors and passes through its common
-settlement block. Notification helpers do not escape this structure through
-an unhandled `?`.
+The implementation may use early returns inside helpers, but the prompt run
+catches their ordinary errors and passes through its common finish path.
+Update helpers do not escape this structure through an unhandled `?`.
 
-### Model-call budget
+### Model-request budget
 
-Use one nearby `MAX_MODEL_CALLS` constant, initially 8. Every started model
-request consumes one call. There are no automatic retries that bypass the
+Use one nearby `MAX_MODEL_REQUESTS` constant, initially 8. Every started model
+request consumes one request. There are no automatic retries that bypass the
 counter.
 
-A normal final answer on the last allowed call succeeds. If that completion
-requests tools, do not start tool work when no follow-up model call remains.
+A normal final answer on the last allowed request succeeds. If that completion
+requests tools, do not start tool work when no follow-up model request remains.
 Record explicit failed results stating that those calls were not started
-because the request budget was exhausted, commit the closed batch, and return
+because the request budget was exhausted, save the complete batch, and return
 the ACP model-request-limit stop.
 
 This is a product policy: tools are used as part of a model exchange that Ox
@@ -709,26 +713,27 @@ their results. It does not impose a duration limit on an individual request.
 
 ### Completion classification
 
-- `Finished`: commit a valid message with no outstanding calls and finish.
-- `ToolCalls`: require at least one complete call, execute or settle its batch,
-  then request the next completion if allowed.
-- `TokenLimit`: commit an accepted, structurally valid text response and return
+- `Finished`: save a valid message with no outstanding calls and finish.
+- `ToolCalls`: require at least one complete call, run its tools, then
+  request the next completion if allowed.
+- `TokenLimit`: save a validated, structurally valid text response and return
   the token-limit stop. Never execute an incomplete or truncated call.
-- `Refused`: commit any accepted displayable refusal response and return the
+- `Refused`: save a validated displayable refusal response and return the
   refusal stop.
-- Unknown termination or contradictory message structure: fail acceptance and
-  enter settlement without inventing a valid assistant message.
+- Unknown termination or contradictory message structure: treat it as an
+  OpenRouter failure and enter the finish path without inventing a valid
+  assistant message.
 
 A token-limited answer is distinct from a transport-interrupted answer: the
-former has a valid terminal response from the provider. Unsupported tool-bearing
-limit or refusal responses are adapter errors until their semantics are
+former has a valid final response from OpenRouter. Unsupported tool-bearing
+limit or refusal responses are client errors until their semantics are
 explicitly supported; they do not trigger opportunistic execution.
 
 ## 12. Tools and cancellation
 
-`tools::execute` takes a complete tool call, the session's workspace context,
-and a cancellation observer when needed. It parses arguments into the owned
-input type for the named tool and returns a concrete `ToolOutcome`.
+`tools::execute` takes a complete tool call and the session's workspace
+context. It parses arguments into the owned input type for the named tool and
+returns a concrete `ToolOutcome`.
 
 Dispatch is a small exhaustive name match over the implemented tools. Schemas,
 argument types, display titles, and execution stay together. No plugin registry
@@ -737,121 +742,125 @@ or general tool trait is needed for this set.
 Unknown tool names, invalid argument JSON, and invalid typed arguments produce
 failed results associated with the original call ID. A tool's ordinary runtime
 failure also becomes a failed result. The model may respond to that result on
-the next allowed call. Broken internal invariants remain programming bugs.
+the next allowed request. Broken internal invariants remain programming bugs.
 
 Execute calls sequentially. Successful and failed calls both consume their
 position in the batch; a failure does not erase prior outcomes. Ordinary tool
-failure does not stop later calls unless the prompt is also cancelled or a
-delivery/storage condition requires stopping new execution.
+failure does not stop later calls unless the prompt is also cancelled or an
+update/storage condition requires stopping new execution.
 
-After the loop accepts a complete assistant message, tool handling follows
+After the loop validates a complete assistant message, tool handling follows
 this sequence:
 
-1. Enqueue every tool call in the message as a pending tool-call object, in
+1. Send every tool call in the message as a pending tool-call update, in
    call order.
-2. Check cancellation and the model-call budget.
+2. Check cancellation and the model-request budget.
 3. Execute eligible calls sequentially. Before each call, check cancellation,
-   then move the call to in progress. While it runs, observe cancellation
-   according to that tool's resource lifecycle. As soon as a result is
-   obtained, record it in the pending batch before sending its terminal
+   then send its in-progress update. While it runs, observe cancellation
+   according to that tool's resource lifecycle. As soon as an outcome is
+   obtained, record it in the uncommitted batch before sending its finished
    update or checking whether later work should begin.
-4. Settle every unexecuted call directly from pending to a terminal state.
+4. Give every unexecuted call an explicit outcome and send its finished update.
 
-Announcement finishes before execution or settlement begins, so the client
-holds an object for every call and settlement only ever sends updates. Ox
-tracks no per-call announcement state. If enqueueing fails partway through
-step 1, execute nothing, stop attempting client updates, and settle the entire
-accepted batch to storage. The connection has failed; a later load supplies
-the committed history.
+Sending finishes before execution begins, so the client holds an object for
+every call and the finish path only ever sends updates. Ox tracks no per-call
+announcement state. If sending fails partway through step 1, execute nothing,
+stop attempting client updates, and save the entire uncommitted batch to
+storage. The connection has failed; a later load supplies the saved
+transcript.
 
-The loop must not classify a result it has already obtained as cancelled just
-because cancellation arrives before its notification. An outcome not yet
-observed by Ox cannot be claimed as known success. Cancellation races are
+The loop must not classify an outcome it has already obtained as cancelled
+just because cancellation arrives before its update is sent. An outcome not
+yet observed by Ox cannot be claimed as known success. Cancellation races are
 resolved at these explicit observation boundaries.
 
 Each tool defines a concrete cancellation boundary for the resources it owns.
 Apply patch checks cancellation before synchronous filesystem execution; once
-started, that execution finishes and its observed outcome enters the pending
-batch before the prompt settles. A process-owning tool terminates and reaps its
-process before reporting that it stopped. The session guard remains held while
-owned work can still change the workspace.
+started, that execution finishes and its observed outcome enters the
+uncommitted batch before the prompt run finishes. A process-owning tool
+terminates and reaps its process before reporting that it stopped. The
+operation guard remains held while running work can still change the
+workspace.
 
 Cancellation during a model request stops Ox's consumption and prevents new
 tool execution. It does not establish whether upstream processing or billing
-stopped. Cancellation during tool execution preserves observed results and
-fills all remaining slots with accurate terminal outcomes.
+stopped. Cancellation during tool execution preserves observed outcomes and
+fills all remaining slots with accurate final outcomes.
 
-Once final settlement and commit begin, cancellation does not interrupt the
-commit or rewrite the already selected terminal outcome. A late cancellation
-may therefore race with normal completion and receive the normal completed
-response. It never applies to a subsequent prompt.
+Once the final save begins, cancellation does not interrupt the save or
+rewrite the already recorded outcome. A late cancellation may therefore race
+with normal completion and receive the normal completed response. It never
+applies to a subsequent prompt.
 
-## 13. Settlement and response semantics
+## 13. Finish path and response semantics
 
-The driver uses a small private outcome enum for normal completion,
-cancellation, model-request limit, token limit, refusal, provider failure,
-delivery failure, and storage failure. These distinctions exist because their
-settlement behavior differs; they do not require a public error hierarchy.
+The driver uses a small private `PromptOutcome` enum for normal completion,
+cancellation, model-request limit, token limit, refusal, OpenRouter failure,
+ACP-update failure, and storage failure. These distinctions exist because
+their finish behavior differs; they do not require a public error hierarchy.
 
-Settlement executes in this order:
+The finish path executes in this order:
 
 1. Stop starting new model requests and tools.
-2. Stop or clean up the current owned operation as required.
+2. Stop or clean up the current running work as required.
 3. Preserve every tool outcome already observed.
-4. If an accepted batch exists, fill missing result slots with explicit
-   cancelled, failed, or not-started outcomes appropriate to the exit.
-5. Commit that closed batch, unless a storage failure has already made this
-   append unsuccessful. Do not automatically retry failed writes.
-6. Extend accepted history and clear pending state only after commit succeeds.
-7. Enqueue terminal updates for calls settled without execution, unless
-   delivery has already failed. Every call was announced as pending after
-   acceptance, so settlement sends updates only, never a first announcement.
-8. Enqueue the final response or request error.
-9. Release admission by dropping the guard.
+4. If an uncommitted batch exists, fill empty outcome slots with explicit
+   cancelled, failed, or not-started outcomes appropriate to the outcome.
+5. Save that complete batch, unless a storage failure has already made this
+   write unsuccessful. Do not automatically retry failed writes.
+6. Extend the transcript and clear the uncommitted batch only after the save
+   succeeds.
+7. Send finished updates for calls completed without execution, unless
+   sending an update has already failed. Every call was sent as pending
+   after validation, so the finish path sends updates only, never a first
+   announcement.
+8. Send the final response or request error.
+9. Make the session available by dropping the guard.
 
-Normal live tool updates may have been emitted earlier; settlement does not
-need to re-emit terminal updates that were already enqueued successfully.
+Normal live tool updates may have been sent earlier; the finish path does not
+need to re-send finished updates that were already sent successfully.
 
-| Exit | Persistent effect | Client result |
+| Outcome | Persistent effect | Client result |
 | --- | --- | --- |
-| Normal final answer | Commit accepted final batch. | Successful end-of-turn response. |
-| Ordinary tool failure | Commit failed result with its assistant batch; continue within budget. | Failed tool update, followed by the model's subsequent response. |
-| Model-call budget reached | Close accepted unexecuted calls with budget failures and commit. | Failed updates for the pending calls, then the model-request-limit stop. |
-| Accepted token-limited answer | Commit the valid accepted message. | Token-limit stop. |
-| Accepted refusal | Commit the supported accepted message when present. | Refusal stop. |
-| Cancellation before model acceptance | Retain the user and prior committed batches; discard provisional output. | Cancelled response. |
-| Cancellation after acceptance | Preserve observed results; close remaining calls; commit. | Terminal tool updates where possible, then cancelled response. |
-| Provider failure before acceptance | Retain the user and prior committed batches; discard provisional output. | Request error. |
-| Delivery failure | Stop new execution; settle any accepted batch independently of delivery. | Propagate connection failure after local settlement; receipt is not guaranteed. |
-| Storage failure | Failed transaction contributes no accepted history; retain earlier commits. | Persistence error, with the original exit retained as context where useful. |
+| Normal final answer | Save the final batch. | Successful end-of-turn response. |
+| Ordinary tool failure | Save the failed result with its assistant batch; continue within budget. | Failed tool update, followed by the model's subsequent response. |
+| Model-request budget reached | Give unexecuted calls explicit budget failures and save. | Failed updates for the pending calls, then the model-request-limit stop. |
+| Validated token-limited answer | Save the valid assistant message. | Token-limit stop. |
+| Validated refusal | Save the validated assistant message when present. | Refusal stop. |
+| Cancellation before validation | Keep the user message and prior saved batches; discard provisional output. | Cancelled response. |
+| Cancellation after validation | Preserve observed outcomes; fill remaining slots; save. | Finished tool updates where possible, then cancelled response. |
+| OpenRouter failure before validation | Keep the user message and prior saved batches; discard provisional output. | Request error. |
+| ACP-update failure | Stop new execution; save any validated batch independently of updates. | Propagate connection failure after local saving; receipt is not guaranteed. |
+| Storage failure | The failed write contributes no transcript content; earlier saves remain. | Persistence error, with the original outcome retained as context where useful. |
 
-The closed assistant batch is the persistence boundary for tool results. The
-prompt retains ownership through the commit attempt, stops later work when the
-commit fails, and reports the storage error.
+The complete assistant batch is the persistence boundary for tool results. The
+prompt run keeps the batch through the save attempt, stops later work when the
+save fails, and reports the storage error.
 
-An error response does not imply a successful final commit or successful prior
-delivery. Only the successful response contract asserts the required write
-and enqueue ordering. If the connection fails after commit, a subsequent load
-can recover the committed conversation.
+An error response does not imply a successful final save or successful prior
+updates. Only the successful response contract asserts the required save
+and send ordering. If the connection fails after a save, a subsequent load
+can recover the saved conversation.
 
-Do not mask a storage error with the cancellation or provider failure that
-caused settlement. Preserve the original cause as diagnostic context, but make
-the failed persistence clear to the client whenever delivery remains possible.
+Do not mask a storage error with the cancellation or OpenRouter failure that
+caused the finish path. Preserve the original cause as diagnostic context, but
+make the failed save clear to the client whenever sending updates remains
+possible.
 
 ### Provisional output
 
 Text and visible reasoning may reach the client before the model response is
-accepted. If that response fails or is cancelled, those provisional chunks
+validated. If that response fails or is cancelled, those provisional chunks
 are not stored as an ordinary assistant message. They can disappear on reload.
 
 This behavior is deliberate and must be understood as a UI limitation. Ox
 does not claim live output and replay are byte-for-byte identical. If durable
 interrupted output becomes a product requirement, add an explicit interrupted
-record with defined replay and model-context treatment. Do not silently
+entry with defined replay and model-context treatment. Do not silently
 promote incomplete output to a completed answer.
 
-A saved user message with no assistant reply means the input was accepted and
-saved. It is not an instruction to resume inference automatically after restart.
+A saved user message with no assistant reply means the input was saved.
+It is not an instruction to resume inference automatically after restart.
 
 ## 14. ACP behavior and projections
 
@@ -859,96 +868,98 @@ saved. It is not an instruction to resume inference automatically after restart.
 
 Creation requires credentials, validates the workspace path, creates a durable
 session, and returns its ID. Loading and prompting also require credentials.
-Listing and deletion do not need provider access. Cancellation is always
-available and is a no-op when no prompt owns the session.
+Listing and deletion do not need OpenRouter access. Cancellation is always
+available and is a no-op when no prompt run holds the session.
 
-Load claims the session, reads and validates committed history, verifies the
-requested workspace matches the stored workspace, and replays the transcript.
-Workspace validation precedes replay. The claim remains held until the load
-response is enqueued.
+Load acquires the operation guard, reads and validates the saved transcript,
+verifies the requested workspace matches the stored workspace, and replays
+the transcript. Workspace validation precedes replay. The guard remains held
+until the load response is sent.
 
 Prompt looks up the session's stored workspace for tool context; it never
 uses a process-global current directory as a substitute. Unknown session IDs
 return a resource-not-found error.
 
-List returns committed summaries without waiting for a session operation to
+List returns saved summaries without waiting for a session operation to
 finish. A running session's title or activity can therefore reflect its most
 recent completed write. The initial listing is unpaginated and returns no
 continuation cursor. Unsupported nonempty cursor input is rejected rather than
 silently returning the wrong page.
 
-Delete requires its session claim and atomically removes the stored session
+Delete requires the operation guard and atomically removes the stored session
 and transcript. Deleting an already absent session succeeds. It does not
 cancel an active prompt; it returns busy.
 
 ### Live updates and replay
 
 Use shared constructors for visible text, reasoning, pending tool calls, and
-in-progress and terminal tool states. Live text uses deltas; replay uses
-stored complete segments.
+in-progress and finished tool states. Live text uses deltas; replay uses
+saved complete segments.
 An assistant message projects to several updates (reasoning, text, and one
-per tool call), so the conversion API must not assume one transcript record
+per tool call), so the conversion API must not assume one transcript entry
 equals one ACP update.
 
-Replay emits only displayable content and tool states. Opaque continuation
-data is intentionally omitted. Each tool call replays as one complete
-tool-call object already in its terminal state: completed tools as completed,
-failed and cancelled tools as the protocol's available terminal failure state
+Replay sends only displayable content and tool states. Opaque continuation
+metadata is intentionally omitted. Each tool call replays as one complete
+tool-call object already in its final state: completed tools as completed,
+failed and cancelled tools as the protocol's available final failure state
 with an accurate explanatory message.
 
 Iterate through the loaded transcript during replay rather than building a
-second full vector of notifications. A delivery error ends replay and releases
-the claim after the response attempt. Already committed history is unchanged.
+second full vector of updates. An update error ends replay and drops the
+guard after the response attempt. Already saved transcript content is
+unchanged.
 
 The initial schema does not record standalone stop reasons. Replay recovers
-content and terminal tool states, not an exact reproduction of historical
+content and final tool states, not an exact reproduction of historical
 prompt responses or network timing.
 
-After restart, load restores committed conversation and later prompts rebuild
+After restart, load restores the saved conversation and later prompts rebuild
 model context from that same source. It does not resume an in-flight model
-request, running tool, or undelivered notification.
+request, running tool, or unsent update.
 
-### Delivery and connection lifecycle
+### Sending updates and the connection lifecycle
 
 Sending an update means enqueueing it on the connection. The final response
-is enqueued after the updates and commits required by its outcome. There is
-no acknowledgement that the client received or rendered those updates.
+is sent after the saves and preceding updates required by its outcome. There
+is no acknowledgement that the client received or rendered those updates.
 
 Ox adds no intermediate event queue and makes no bounded-buffering claim.
 Should slow-client memory growth become an observed problem, solve it where
 the outgoing transport queue is owned.
 
 Connection shutdown signals active prompts and keeps the task executor available
-until admitted operations settle and release their guards.
+until active operations finish and drop their guards.
 
-Provider and input failures become request errors on a healthy connection.
+OpenRouter and input failures become request errors on a healthy connection.
 Only actual connection failure escapes at the connection task boundary.
 
 ## 15. Tool execution and persistence
 
 Ox's tool-execution persistence contract is:
 
-1. The accepted user message is committed before the model request begins.
-2. Tool execution begins from a complete, validated assistant message owned by
-   the active prompt.
-3. The prompt owns each tool through its resource-specific cancellation boundary.
+1. The user message is saved before the model request begins.
+2. Tool execution begins from a validated, complete assistant message owned
+   by the active prompt run.
+3. The prompt run owns each tool through its resource-specific cancellation boundary.
    A synchronous mutating operation finishes and yields an observed outcome
-   before the prompt acts on cancellation.
-4. Every observed outcome enters the prompt's in-memory `PendingBatch` before a
-   terminal client update, a later tool call, or another model request.
-5. Once every call has a terminal outcome, the assistant message and all results
+   before the run acts on cancellation.
+4. Every observed outcome enters the run's in-memory `UncommittedAssistantBatch`
+   before a finished update, a later tool call, or another model request.
+5. Once every call has a final outcome, the assistant message and all results
    are appended to the transcript in one transaction.
-6. Accepted in-memory history advances after that transaction commits. The next
-   model request and a successful prompt response follow the same boundary.
-7. A delivery failure stops later calls in the accepted batch and settles their
-   outcomes. A batch storage failure stops the prompt before another model
-   request. The session operation guard remains held through settlement.
-8. Orderly connection shutdown waits for admitted tool work and settlement to
-   finish.
-9. Session load, replay, and model continuation use committed transcript events.
+6. The saved in-memory transcript advances after that transaction commits. The
+   next model request and a successful prompt response follow the same boundary.
+7. An update failure stops later calls in the batch and gives their outcomes
+   explicit results. A batch storage failure stops the prompt run before
+   another model request. The operation guard remains held through the finish
+   path.
+8. Orderly connection shutdown waits for running tool work and the finish path
+   to complete.
+9. Session load, replay, and model continuation use saved transcript entries.
 
-The prompt owner, `PendingBatch`, `SessionStore::append_batch`, and session
-operation guard implement this contract. New tools integrate their concrete
+The prompt run, `UncommittedAssistantBatch`, `SessionStore::append_batch`, and
+the operation guard implement this contract. New tools integrate their concrete
 resource lifecycle with these existing boundaries. This is the complete
 persistence model for prompt-owned tool execution.
 
@@ -968,10 +979,10 @@ recover differently by variant.
 | Unknown session | Resource not found. |
 | Conflicting session operation | Busy; do not enqueue work. |
 | Wrong workspace on load | Explicit mismatch error before replay. |
-| Malformed provider response | Request failure through settlement. |
+| Malformed OpenRouter response | Request failure through the finish path. |
 | Invalid tool arguments or ordinary tool failure | Failed tool result. |
 | Invalid stored transcript | Actionable storage/format error; do not skip data. |
-| Failed transaction | Persistence error; no advancement of accepted history. |
+| Failed transaction | Persistence error; no advancement of the saved transcript. |
 | Broken internal invariant | Loud programming failure through `expect` or panic. |
 
 Diagnostics should identify the session, operation phase, and relevant call ID
@@ -979,25 +990,26 @@ when useful. Avoid raw transcripts, opaque reasoning metadata, credentials,
 and full tool arguments in routine logs. A short error summary usually provides
 enough context without duplicating sensitive conversation data.
 
-No fallback path silently substitutes empty history, a made-up call ID, a
+No fallback path silently substitutes an empty transcript, a made-up call ID, a
 successful tool result, or another provider.
 
 ## 17. Verification strategy
 
 Tests establish behavior at the boundaries the design exists to get right:
-the provider wire, the persisted transcript and its two projections, session
-admission, and delivery. They do not freeze private helper organization, and
+the OpenRouter wire, the persisted transcript and its two projections,
+operation guards, and update sending. They do not freeze private helper
+organization, and
 the list below is the whole initial suite. Add cases when a failure earns
 them.
 
-### Adapter fixtures
+### OpenRouter fixtures
 
 Use a local HTTP server and deterministic stream fixtures. Verify request
 encoding (message grouping, tool schemas, continuation metadata sent back
 without duplicating visible reasoning), stream assembly (text, reasoning,
 several calls, fragmented call arguments), stop classification, a malformed
 or incomplete stream reported as an error, and cancellation mid-stream.
-Assert that partial calls never execute and that completion is accepted at
+Assert that partial calls never execute and that a completion is produced at
 most once. Test credential validation separately from inference. No test
 makes a paid model request.
 
@@ -1007,49 +1019,49 @@ Use an in-memory connection for ordinary operations and one temporary
 database file for the reopen test. Verify:
 
 - A batch with several tool calls, continuation metadata, and paired results
-  survives write, close, reopen with a new store, and read as identical
-  history. From that reopened transcript, both the ACP replay updates and the
+  survives write, close, reopen with a new store, and read as the identical
+  transcript. From that reopened transcript, both the ACP replay updates and the
   next encoded model request are correct: no unresolved call, duplicate
   result, or misplaced reasoning.
 - Orphan, duplicate, and missing results fail batch validation explicitly.
 - User append adopts a title once and updates activity.
-- Deletion removes the session's records and repeated deletion succeeds.
+- Deletion removes the session's entries and repeated deletion succeeds.
 - A database with another `user_version` is rejected at open.
 
 ### Loop
 
 Pass a small `FnMut(SessionUpdate) -> Result<()>` closure to the prompt driver
-for update delivery. Production wraps the connection; tests collect updates
-or fail a chosen enqueue. Drive the real loop against the fixture adapter.
+for sending updates. Production wraps the connection; tests collect updates
+or fail a chosen send. Drive the real loop against the fixture client.
 Cases:
 
-- Normal text answer, with accepted history advanced after commit.
-- Several tool calls in one assistant message with ordered terminal results.
-- Cancellation during a tool, preserving the result already observed and
-  closing the rest as cancelled.
-- Failed batch append, leaving accepted in-memory history unchanged.
-- Delivery failure after an observed tool result, with that result still
-  committed in the settled batch.
-- Final allowed model call requesting tools, with no tool executed and the
+- Normal text answer, with the saved transcript extended after the save.
+- Several tool calls in one assistant message with ordered final results.
+- Cancellation during a tool, preserving the outcome already observed and
+  giving the rest explicit cancelled outcomes.
+- Failed batch save, leaving the saved in-memory transcript unchanged.
+- Update failure after an observed tool result, with that result still
+  saved in the finished batch.
+- Final allowed model request requesting tools, with no tool executed and the
   explicit budget failures persisted.
 
-### Admission
+### Operation guards
 
 One table-driven test over the conflict matrix in section 9: prompt, load,
 and delete arriving while the session is idle, prompting, loading, or
-deleting, plus release of the claim when the guard drops. Cancelling session
+deleting, plus dropping the guard making the session available. Cancelling session
 B does not signal session A's prompt.
 
 ## 18. Implementation sequence
 
-1. Define the structured conversation records and closed-batch validation.
+1. Define the structured transcript entries and assistant-batch validation.
    Implement the persistent store with its schema version check and the
    storage tests.
-2. Implement the concrete one-completion adapter and qualify its boundary with
+2. Implement the concrete OpenRouter client and qualify its boundary with
    local fixtures. Keep it independent of ACP, persistence, and tool execution.
-3. Implement atomic session admission and the unique operation guard.
-4. Implement direct tool dispatch, the owned prompt loop, and common settlement.
-   Connect the adapter, store, and delivery closure without introducing a
+3. Implement atomic operation-guard acquisition and the unique operation guard.
+4. Implement direct tool dispatch, the owned prompt run, and the common finish
+   path. Connect the client, store, and update closure without introducing a
    general runtime abstraction.
 5. Wire ACP handlers, replay conversion, lazy credential loading, and the
    successful response ordering contract.
@@ -1068,18 +1080,18 @@ possible.
 
 | Decision | Accepted cost | Trigger for change |
 | --- | --- | --- |
-| Ox owns the loop and provider adapter. | Ox maintains its request boundary, tool dispatch, and termination behavior. | A concrete unmet provider feature or measured maintenance problem. |
+| Ox owns the prompt run and OpenRouter client. | Ox maintains its request boundary, tool dispatch, and termination behavior. | A concrete unmet OpenRouter feature or measured maintenance problem. |
 | One persistent database connection. | Reads and writes serialize; synchronous calls can block an executor worker. | Measured contention or latency. |
-| Whole-history reads. | Memory and request size grow with conversations. | Actual context-limit or memory pressure, addressed with explicit compaction semantics. |
+| Whole-transcript reads. | Memory and request size grow with conversations. | Actual context-limit or memory pressure, addressed with explicit compaction semantics. |
 | No schema migration. | A schema change requires deleting the local database. | Conversations become valuable enough to carry across schema versions. |
 | Busy instead of queueing. | Clients must retry conflicting operations. | A real requirement for queued or independently arriving work. |
 | Sequential tools. | Independent calls cannot overlap. | A measured latency benefit sufficient to justify concurrency and cancellation complexity. |
-| Closed-batch tool persistence. | Tool results become committed conversation state with their complete assistant batch. | Work that must continue independently of the prompt that started it. |
+| Assistant-batch tool persistence. | Tool results become saved transcript content with their complete assistant batch. | Work that must continue independently of the prompt run that started it. |
 | Provisional output is discarded on interruption. | Some live text disappears on reload. | A product requirement for durable interrupted output. |
 | Concrete provider-qualified continuation metadata. | Storage understands one provider's continuation concept. | A real second provider, addressed without losing existing data semantics. |
-| No independent session actor. | The prompt task handles only work initiated by its prompt. | Background work that must enter a session independently. |
+| No independent session actor. | The prompt run handles only work initiated by its prompt. | Background work that must enter a session independently. |
 | No automatic retry. | Transient failures are visible to the caller. | A specific retryable operation with clear budget, cancellation, and effect semantics. |
 
 The architecture should grow by making these boundaries explicit when their
-assumptions change. Its initial form remains one concrete model client, one
-owned loop, one store, and one authoritative conversation.
+assumptions change. Its initial form remains one concrete OpenRouter client,
+one prompt run, one store, and one authoritative transcript.

@@ -24,8 +24,7 @@ use agent_client_protocol::{
 };
 
 use crate::{
-    auth,
-    model::{self, ModelClient},
+    auth, openrouter,
     sessions::{self, SessionStore, SessionSummary},
 };
 use operations::SessionOperations;
@@ -33,7 +32,7 @@ use operations::SessionOperations;
 #[derive(Clone)]
 struct ServerState {
     store: SessionStore,
-    model: Arc<Mutex<Option<ModelClient>>>,
+    openrouter: Arc<Mutex<Option<openrouter::Client>>>,
     operations: SessionOperations,
 }
 
@@ -41,7 +40,7 @@ impl ServerState {
     fn new(store: SessionStore) -> Self {
         Self {
             store,
-            model: Arc::default(),
+            openrouter: Arc::default(),
             operations: SessionOperations::default(),
         }
     }
@@ -49,24 +48,27 @@ impl ServerState {
     /// Credentials are read on first use, so the process serves listing,
     /// deletion, and terminal login before a key exists, and a key saved by
     /// `ox auth login` is picked up by the next request without a restart.
-    fn model_client(&self) -> Result<ModelClient> {
-        let mut slot = self.model.lock().expect("model client mutex poisoned");
+    fn openrouter_client(&self) -> Result<openrouter::Client> {
+        let mut slot = self
+            .openrouter
+            .lock()
+            .expect("OpenRouter client mutex poisoned");
         if let Some(client) = slot.as_ref() {
             return Ok(client.clone());
         }
         let api_key = auth::api_key()
             .map_err(Error::into_internal_error)?
             .ok_or_else(Error::auth_required)?;
-        let client = ModelClient::new(api_key);
+        let client = openrouter::Client::new(api_key);
         *slot = Some(client.clone());
         Ok(client)
     }
 
     fn new_session(&self, request: &NewSessionRequest) -> Result<NewSessionResponse> {
-        self.model_client()?;
+        self.openrouter_client()?;
         let summary = self
             .store
-            .create(&request.cwd, model::MODEL)
+            .create(&request.cwd, openrouter::DEFAULT_MODEL)
             .map_err(store_error)?;
         Ok(NewSessionResponse::new(summary.id))
     }
@@ -74,23 +76,23 @@ impl ServerState {
     fn load_session(
         &self,
         request: &LoadSessionRequest,
-        deliver: impl FnMut(SessionUpdate) -> Result<()>,
+        send_update: impl FnMut(SessionUpdate) -> Result<()>,
     ) -> Result<LoadSessionResponse> {
-        self.model_client()?;
+        self.openrouter_client()?;
         let stored = self
             .store
             .read(&request.session_id)
             .map_err(Error::into_internal_error)?
             .ok_or_else(|| not_found(&request.session_id))?;
-        if stored.summary.cwd.as_os_str() != request.cwd.as_os_str() {
+        if stored.summary.workspace_path.as_os_str() != request.cwd.as_os_str() {
             return Err(Error::invalid_params().data(format!(
                 "session {} belongs to workspace {}, not {}",
                 request.session_id,
-                stored.summary.cwd.display(),
+                stored.summary.workspace_path.display(),
                 request.cwd.display()
             )));
         }
-        convert::replay(&stored.transcript, deliver)?;
+        convert::replay_transcript(&stored.transcript, send_update)?;
         Ok(LoadSessionResponse::new())
     }
 
@@ -124,9 +126,9 @@ impl ServerState {
     /// and that failure is reported: the key may still load on a later request.
     fn logout(&self) -> Result<LogoutResponse> {
         let removed = auth::delete_api_key();
-        self.model
+        self.openrouter
             .lock()
-            .expect("model client mutex poisoned")
+            .expect("OpenRouter client mutex poisoned")
             .take();
         removed.map_err(Error::into_internal_error)?;
         Ok(LogoutResponse::new())
@@ -149,7 +151,7 @@ fn busy() -> Error {
 }
 
 fn session_info(summary: SessionSummary) -> SessionInfo {
-    SessionInfo::new(summary.id, summary.cwd)
+    SessionInfo::new(summary.id, summary.workspace_path)
         .title(summary.title)
         .updated_at(summary.updated_at)
 }
@@ -262,12 +264,12 @@ async fn serve(state: ServerState, transport: impl ConnectTo<Agent> + 'static) -
         )
         .on_receive_request(
             async move |request: PromptRequest, responder, connection| {
-                let input = match convert::prompt_text(&request.prompt) {
-                    Ok(input) => input,
+                let user_message = match convert::prompt_to_user_message(&request.prompt) {
+                    Ok(user_message) => user_message,
                     Err(error) => return responder.respond_with_error(error),
                 };
-                let model = match prompt_state.model_client() {
-                    Ok(model) => model,
+                let openrouter = match prompt_state.openrouter_client() {
+                    Ok(openrouter) => openrouter,
                     Err(error) => return responder.respond_with_error(error),
                 };
                 let Some((guard, cancellation)) =
@@ -280,17 +282,17 @@ async fn serve(state: ServerState, transport: impl ConnectTo<Agent> + 'static) -
                 let task_connection = connection.clone();
                 connection.spawn(async move {
                     let _guard = guard;
-                    let deliver = |update| {
+                    let send_update = |update| {
                         task_connection
                             .send_notification(SessionNotification::new(session_id.clone(), update))
                     };
                     let result = prompt::run(
                         store,
-                        model,
+                        openrouter,
                         session_id.clone(),
-                        input,
+                        user_message,
                         cancellation,
-                        deliver,
+                        send_update,
                     )
                     .await;
                     reply(responder, result)
@@ -319,7 +321,7 @@ mod tests {
 
     fn state() -> ServerState {
         let state = ServerState::new(SessionStore::in_memory());
-        *state.model.lock().unwrap() = Some(ModelClient::new("test-key".to_owned()));
+        *state.openrouter.lock().unwrap() = Some(openrouter::Client::new("test-key".to_owned()));
         state
     }
 
@@ -353,18 +355,20 @@ mod tests {
     #[test]
     fn load_requires_a_matching_workspace_and_an_existing_session() {
         let state = state();
-        let cwd = Path::new("/Users/kyle/projects/ox");
-        let created = state.new_session(&NewSessionRequest::new(cwd)).unwrap();
+        let workspace_path = Path::new("/Users/kyle/projects/ox");
+        let created = state
+            .new_session(&NewSessionRequest::new(workspace_path))
+            .unwrap();
         let mut updates = Vec::new();
-        let mut deliver = |update| {
+        let mut send_update = |update| {
             updates.push(update);
             Ok(())
         };
 
         let missing = state
             .load_session(
-                &LoadSessionRequest::new(SessionId::new("missing"), cwd),
-                &mut deliver,
+                &LoadSessionRequest::new(SessionId::new("missing"), workspace_path),
+                &mut send_update,
             )
             .unwrap_err();
         assert_eq!(missing.code, ErrorCode::ResourceNotFound);
@@ -372,15 +376,15 @@ mod tests {
         let elsewhere = state
             .load_session(
                 &LoadSessionRequest::new(created.session_id.clone(), Path::new("/elsewhere")),
-                &mut deliver,
+                &mut send_update,
             )
             .unwrap_err();
         assert_eq!(elsewhere.code, ErrorCode::InvalidParams);
 
         state
             .load_session(
-                &LoadSessionRequest::new(created.session_id, cwd),
-                &mut deliver,
+                &LoadSessionRequest::new(created.session_id, workspace_path),
+                &mut send_update,
             )
             .unwrap();
         assert!(updates.is_empty(), "a new session replays nothing");
@@ -397,19 +401,19 @@ mod tests {
             .append_user(&created.session_id, "Hello")
             .unwrap();
 
-        for cwd in ["/workspace/", "/workspace", "/workspace/./", "//workspace/"] {
+        for workspace_path in ["/workspace/", "/workspace", "/workspace/./", "//workspace/"] {
             let mut updates = Vec::new();
             let loaded = state.load_session(
-                &LoadSessionRequest::new(created.session_id.clone(), cwd),
+                &LoadSessionRequest::new(created.session_id.clone(), workspace_path),
                 |update| {
                     updates.push(update);
                     Ok(())
                 },
             );
             let listed = state
-                .list_sessions(&ListSessionsRequest::new().cwd(cwd))
+                .list_sessions(&ListSessionsRequest::new().cwd(workspace_path))
                 .unwrap();
-            if cwd == "/workspace/" {
+            if workspace_path == "/workspace/" {
                 loaded.unwrap();
                 assert_eq!(listed.sessions.len(), 1);
                 assert_eq!(updates.len(), 1);
@@ -427,8 +431,8 @@ mod tests {
         use futures::{SinkExt, StreamExt, channel::mpsc};
         use serde_json::{Value, json};
 
-        use crate::model::fixture::{Reply, Server, delta};
-        use crate::sessions::TranscriptEvent;
+        use crate::openrouter::fixture::{Reply, Server, delta};
+        use crate::sessions::TranscriptEntry;
 
         let prefix = format!(
             "data: {}\n\n",
@@ -436,11 +440,11 @@ mod tests {
         );
         let server = Server::start(vec![Reply::Hang(prefix)]).await;
         let state = state();
-        *state.model.lock().unwrap() = Some(server.client());
+        *state.openrouter.lock().unwrap() = Some(server.client());
         let store = state.store.clone();
         let operations = state.operations.clone();
         let id = store
-            .create(Path::new("/workspace"), model::MODEL)
+            .create(Path::new("/workspace"), openrouter::DEFAULT_MODEL)
             .unwrap()
             .id;
         let (incoming_tx, incoming_rx) = mpsc::unbounded();
@@ -481,12 +485,15 @@ mod tests {
         };
         let (result, ()) = futures::join!(serve(state, transport), client);
         result.unwrap();
-        assert!(operations.try_load(&id).is_some(), "admission was released");
+        assert!(
+            operations.try_load(&id).is_some(),
+            "the session became available"
+        );
         assert_eq!(
             store.read(&id).unwrap().unwrap().transcript,
             vec![
-                TranscriptEvent::Model(model::MODEL.to_owned()),
-                TranscriptEvent::UserMessage("Hello".to_owned())
+                TranscriptEntry::Model(openrouter::DEFAULT_MODEL.to_owned()),
+                TranscriptEntry::UserMessage("Hello".to_owned())
             ],
         );
     }
