@@ -1,7 +1,7 @@
 //! The concrete tool set: schemas sent to the model, display titles, and
 //! execution of one complete call.
 
-use std::path::Path;
+use std::path::{Component, Path, PathBuf};
 
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -9,12 +9,115 @@ use serde_json::{Value, json};
 use crate::sessions::{ToolCall, ToolOutcome};
 
 mod patch;
+mod read;
+mod search;
 
 pub const GET_WEATHER: &str = "get_weather";
 pub const APPLY_PATCH: &str = "apply_patch";
+pub const READ_FILE: &str = "read_file";
+pub const GLOB: &str = "glob";
+pub const GREP: &str = "grep";
+
+const OUTPUT_LIMIT: usize = 16 * 1024;
+// Leave room for line numbers, continuation instructions, and truncation notices.
+const BODY_LIMIT: usize = OUTPUT_LIMIT - 256;
+
+fn truncate(text: &mut String, limit: usize) {
+    let mut end = text.len().min(limit);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text.truncate(end);
+}
+
+fn bounded_result(result: Result<String, String>) -> ToolOutcome {
+    match result {
+        Ok(text) => {
+            assert!(text.len() <= OUTPUT_LIMIT, "tool output exceeds its limit");
+            ToolOutcome::Completed(text)
+        }
+        Err(mut error) => {
+            if error.len() > OUTPUT_LIMIT {
+                truncate(&mut error, BODY_LIMIT);
+                error.push_str("\nError truncated.");
+            }
+            ToolOutcome::Failed(error)
+        }
+    }
+}
+
+async fn existing_path(root: &Path, name: &str) -> Result<PathBuf, String> {
+    if name.is_empty()
+        || Path::new(name)
+            .components()
+            .any(|part| !matches!(part, Component::Normal(_) | Component::CurDir))
+    {
+        return Err("expected a relative path without parent traversal".to_owned());
+    }
+    let root = tokio::fs::canonicalize(root)
+        .await
+        .map_err(|e| e.to_string())?;
+    let path = tokio::fs::canonicalize(root.join(name))
+        .await
+        .map_err(|e| format!("{name}: {e}"))?;
+    if !path.starts_with(&root) {
+        return Err("path resolves outside the workspace".to_owned());
+    }
+    Ok(path)
+}
 
 pub fn schemas() -> Vec<Value> {
     vec![
+        json!({
+            "type": "function",
+            "function": {
+                "name": READ_FILE,
+                "description": "Read a UTF-8 text file inside the workspace. Returns numbered lines, at most 16 KiB, with the next offset when more remains. An oversized line returns a marked prefix; its omitted portion cannot be retrieved through line pagination. Example: {\"path\":\"src/main.rs\",\"offset\":1,\"limit\":100}.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": { "type": "string", "description": "Workspace-relative file path." },
+                        "offset": { "type": "integer", "minimum": 1, "default": 1, "description": "1-based starting line." },
+                        "limit": { "type": "integer", "minimum": 1, "maximum": 1000, "default": 200, "description": "Maximum number of lines to return." }
+                    },
+                    "required": ["path"],
+                    "additionalProperties": false
+                }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": GLOB,
+                "description": "Find files inside the workspace using a ripgrep glob. Returns workspace-relative paths, at most 16 KiB. Narrow the pattern or path if truncated. Uses ripgrep's normal hidden-file and ignore filtering, including glob overrides; does not follow symlinks during traversal. Example: {\"pattern\":\"*.rs\",\"path\":\"src\"}.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "pattern": { "type": "string", "description": "Ripgrep glob, e.g. *.rs or src/**/*.rs." },
+                        "path": { "type": "string", "default": ".", "description": "Workspace-relative directory to search. Globs are relative to the workspace." }
+                    },
+                    "required": ["pattern"],
+                    "additionalProperties": false
+                }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": GREP,
+                "description": "Search workspace text files with a case-sensitive ripgrep regex; use (?i) for case-insensitivity. Returns path:line:content, at most 16 KiB. Narrow the pattern or path if truncated. Uses ripgrep's normal hidden-file and ignore filtering, including explicit-path and glob overrides; does not follow symlinks during traversal. Example: {\"pattern\":\"fn main\",\"path\":\"src\",\"glob\":\"*.rs\"}.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "pattern": { "type": "string", "description": "Ripgrep regular expression." },
+                        "path": { "type": "string", "default": ".", "description": "Workspace-relative file or directory to search." },
+                        "glob": { "type": "string", "description": "Optional filename glob, relative to the workspace, e.g. *.rs." }
+                    },
+                    "required": ["pattern"],
+                    "additionalProperties": false
+                }
+            }
+        }),
         json!({
             "type": "function",
             "function": {
@@ -61,6 +164,9 @@ struct PatchArgs {
 
 pub fn title(call: &ToolCall) -> String {
     match call.name.as_str() {
+        READ_FILE => "Read file".to_owned(),
+        GLOB => "Find files".to_owned(),
+        GREP => "Search file contents".to_owned(),
         APPLY_PATCH => "Apply patch".to_owned(),
         GET_WEATHER => match serde_json::from_str::<WeatherArgs>(&call.arguments) {
             Ok(args) => format!("Weather {}", args.location),
@@ -74,6 +180,10 @@ pub fn title(call: &ToolCall) -> String {
 /// on its next request, not errors that end the prompt.
 pub async fn execute(workspace_path: &Path, call: &ToolCall) -> ToolOutcome {
     match call.name.as_str() {
+        READ_FILE => bounded_result(read::execute(workspace_path, &call.arguments).await),
+        GLOB | GREP => {
+            bounded_result(search::execute(workspace_path, &call.name, &call.arguments).await)
+        }
         APPLY_PATCH => match serde_json::from_str::<PatchArgs>(&call.arguments) {
             Ok(args) => match patch::apply(workspace_path, &args.patch) {
                 Ok(summary) => ToolOutcome::Completed(summary),
@@ -124,6 +234,112 @@ mod tests {
             call_id: "call-1".to_owned(),
             name: name.to_owned(),
             arguments: arguments.to_owned(),
+        }
+    }
+
+    #[tokio::test]
+    async fn read_tools_validate_arguments_paths_and_bound_errors() {
+        let workspace = fixture::Workspace::new();
+        std::fs::write(workspace.0.join("file"), "text").unwrap();
+        for name in [READ_FILE, GLOB, GREP] {
+            for args in [
+                "{",
+                "{}",
+                r#"{"path":2,"pattern":2}"#,
+                r#"{"path":"file","pattern":"*","extra":true}"#,
+            ] {
+                assert!(matches!(
+                    execute(&workspace.0, &call(name, args)).await,
+                    ToolOutcome::Failed(_)
+                ));
+            }
+            for path in ["../file", "/etc/passwd", "", "missing"] {
+                let args = if name == READ_FILE {
+                    json!({"path":path})
+                } else {
+                    json!({"path":path,"pattern":"*"})
+                };
+                assert!(matches!(
+                    execute(&workspace.0, &call(name, &args.to_string())).await,
+                    ToolOutcome::Failed(_)
+                ));
+            }
+            let schema = schemas()
+                .into_iter()
+                .find(|s| s["function"]["name"] == name)
+                .unwrap();
+            assert_eq!(
+                schema["function"]["parameters"]["additionalProperties"],
+                false
+            );
+        }
+        for args in [
+            json!({"path":"file","offset":0}),
+            json!({"path":"file","limit":0}),
+            json!({"path":"file","limit":1001}),
+            json!({"path":"file","offset":-1}),
+            json!({"path":"."}),
+        ] {
+            assert!(matches!(
+                execute(&workspace.0, &call(READ_FILE, &args.to_string())).await,
+                ToolOutcome::Failed(_)
+            ));
+        }
+        assert!(matches!(
+            execute(
+                &workspace.0,
+                &call(GLOB, r#"{"path":"file","pattern":"*"}"#)
+            )
+            .await,
+            ToolOutcome::Failed(_)
+        ));
+        let args = json!({"path":"雪".repeat(OUTPUT_LIMIT)}).to_string();
+        let result = execute(&workspace.0, &call(READ_FILE, &args)).await;
+        assert!(matches!(result, ToolOutcome::Failed(_)));
+        assert!(result.text().len() <= OUTPUT_LIMIT);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn read_tools_contain_symlinks_and_do_not_follow_them_recursively() {
+        use std::os::unix::fs::symlink;
+        let workspace = fixture::Workspace::new();
+        let outside = fixture::Workspace::new();
+        std::fs::write(workspace.0.join("file"), "inside").unwrap();
+        std::fs::write(outside.0.join("file"), "outside").unwrap();
+        symlink(&outside.0, workspace.0.join("escape")).unwrap();
+        symlink(workspace.0.join("file"), workspace.0.join("alias")).unwrap();
+        for name in [READ_FILE, GLOB, GREP] {
+            let args = if name == READ_FILE {
+                json!({"path":"escape/file"})
+            } else {
+                json!({"path":"escape","pattern":"*"})
+            };
+            assert!(matches!(
+                execute(&workspace.0, &call(name, &args.to_string())).await,
+                ToolOutcome::Failed(_)
+            ));
+        }
+        for name in [READ_FILE, GREP] {
+            let args = if name == READ_FILE {
+                json!({"path":"alias"})
+            } else {
+                json!({"path":"alias","pattern":"inside"})
+            };
+            assert!(matches!(
+                execute(&workspace.0, &call(name, &args.to_string())).await,
+                ToolOutcome::Completed(_)
+            ));
+        }
+        for (name, pattern) in [(GLOB, "*"), (GREP, "inside|outside")] {
+            let result = execute(
+                &workspace.0,
+                &call(name, &json!({"pattern":pattern}).to_string()),
+            )
+            .await;
+            assert!(matches!(result, ToolOutcome::Completed(_)));
+            assert!(!result.text().contains("escape"));
+            assert!(!result.text().contains("alias"));
         }
     }
 

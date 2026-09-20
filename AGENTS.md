@@ -6,6 +6,8 @@ THIS DOCUMENT MUST BE KEPT UP TO DATE
 - `src/auth.rs`: Environment and operating-system keyring credential storage.
 - `src/openrouter.rs`: OpenRouter client, request encoding, and streamed-response assembly.
 - `src/tools.rs`: Concrete tool schemas, display titles, and execution of one complete call.
+- `src/tools/read.rs`: Bounded text-file reading with line pagination.
+- `src/tools/search.rs`: Bounded glob and grep searches through ripgrep.
 - `src/tools/patch.rs`: Patch parsing, exact text matching, workspace path validation, and filesystem changes.
 - `src/tools/patch-guide.txt`: The patch format guidance shipped as the `apply_patch` tool description.
 - `src/sessions.rs`: Transcript types, assistant-batch validation, `SessionStore` over one SQLite connection, and the private row codec.

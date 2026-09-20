@@ -751,7 +751,13 @@ mod tests {
         let body = &server.requests()[0];
         assert_eq!(body["model"], "other/model");
         assert_eq!(body["stream"], true);
-        assert_eq!(body["tools"][0]["function"]["name"], "get_weather");
+        assert!(
+            body["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|tool| tool["function"]["name"] == "get_weather")
+        );
         let messages = body["messages"].as_array().unwrap();
         assert_eq!(messages.len(), 4);
         assert_eq!(

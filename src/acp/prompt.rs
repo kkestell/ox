@@ -538,6 +538,73 @@ mod tests {
     const PATCH: &str =
         "*** Begin Patch\n*** Add File: first\n+one\n*** Add File: second\n+two\n*** End Patch";
 
+    #[tokio::test]
+    async fn file_and_search_results_are_saved_and_sent_to_the_next_model_request() {
+        let workspace = Workspace::new();
+        fs::write(workspace.0.join("note.txt"), "first\nneedle\nlast\n").unwrap();
+        let calls: Vec<_> = [
+            ("read_file", json!({"path":"note.txt", "limit":1})),
+            ("glob", json!({"pattern":"*.txt"})),
+            ("grep", json!({"pattern":"needle"})),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(index, (name, args))| {
+            json!({
+                "index":index, "id":format!("read-{index}"), "type":"function",
+                "function":{"name":name,"arguments":args.to_string()}
+            })
+        })
+        .collect();
+        let reply = Reply::Stream(sse(&[delta(
+            json!({"role":"assistant","tool_calls":calls}),
+            Some("tool_calls"),
+        )]));
+        let harness = Harness::in_workspace(vec![reply, text_reply("Done.")], &workspace.0).await;
+        let (response, transcript) = harness.run("Inspect the files", |_| Ok(())).await;
+        assert_eq!(response.unwrap().stop_reason, StopReason::EndTurn);
+        assert_eq!(harness.stored(), transcript);
+        let results: Vec<_> = transcript
+            .iter()
+            .filter_map(|entry| match entry {
+                TranscriptEntry::ToolResult(result) => Some(result),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(results.len(), 3);
+        assert!(results[0].outcome.text().contains("offset=2"));
+        assert!(results[1].outcome.text().contains("note.txt"));
+        assert!(results[2].outcome.text().contains("note.txt:2:needle"));
+        let requests = harness.server.requests();
+        for result in &results {
+            assert!(matches!(result.outcome, ToolOutcome::Completed(_)));
+            assert!(
+                requests[0]["tools"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|tool| tool["function"]["name"] == result.name)
+            );
+            assert!(
+                requests[1]["messages"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|message| message["tool_call_id"] == result.call_id
+                        && message["content"] == result.outcome.text())
+            );
+        }
+        let mut replay = Vec::new();
+        convert::replay_transcript(&harness.stored(), |update| {
+            replay.push(update);
+            Ok(())
+        })
+        .unwrap();
+        for result in results {
+            assert!(replay.iter().any(|update| matches!(update, SessionUpdate::ToolCall(call) if call.raw_output == Some(json!(result.outcome.text())) && call.status == ToolCallStatus::Completed)));
+        }
+    }
+
     const APPLIED: &str = "Applied patch.\nA first\nA second";
 
     /// A prompt whose first reply is one `apply_patch` call adding `first` and
