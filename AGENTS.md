@@ -10,6 +10,14 @@
 - `src/acp/prompt.rs`: The agent loop: model requests, sequential tools, pending batch, and terminal settlement.
 - `src/acp/convert.rs`: ACP input conversion, session update construction, and transcript replay.
 
+## Testing
+
+Use the `OPENROUTER_API_KEY` in `.env` when testing to avoid keychain prompts.
+
+## Backwards Compatibility
+
+Currently, there is none. Delete and recreate `~/.local/share/ox/ox.db` rather than introducing migrations, versions, etc.
+
 ## Just Enough Rust
 
 > Make things as simple as possible, but not simpler.

@@ -81,7 +81,7 @@ pub fn tool_result(result: &ToolResult) -> SessionUpdate {
 }
 
 /// Replays committed history as displayable content and terminal tool states.
-/// Continuation metadata is never shown.
+/// The model and continuation metadata are never shown.
 pub fn replay(
     transcript: &[TranscriptEvent],
     mut deliver: impl FnMut(SessionUpdate) -> Result<()>,
@@ -89,6 +89,7 @@ pub fn replay(
     let mut calls: &[ToolCall] = &[];
     for event in transcript {
         match event {
+            TranscriptEvent::Model(_) => {}
             TranscriptEvent::UserMessage(text) => deliver(user_message(text))?,
             TranscriptEvent::AssistantMessage(message) => {
                 if !message.reasoning.is_empty() {

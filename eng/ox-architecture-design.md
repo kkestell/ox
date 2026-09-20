@@ -92,7 +92,7 @@ be revisited rather than patched with an implicit fallback.
 | Session transcripts fit comfortably in memory. | Load and prompt read a whole committed transcript. | Real conversations require compaction or bounded-memory replay. |
 | The initial tools have no persistent external effects. | Losing an uncommitted tool result on a crash is acceptable. | A tool edits a file, starts a subprocess, or changes external state. |
 | Tool futures implement their stated cancellation behavior. | The prompt task can stop work before settling its conversation batch. | A new tool owns resources that require explicit asynchronous cleanup. |
-| The supported model and endpoint are fixed local choices. | A concrete adapter and nearby constants suffice. | Users need model selection or another actual provider. |
+| The default model and the endpoint are fixed local choices; each session records its model at creation. | A concrete adapter, nearby constants, and one transcript record suffice. | Users need to choose or change a session's model, or another actual provider. |
 | The model's required continuation data can be represented losslessly as stored JSON values. | Structured metadata survives storage and request reconstruction. | A supported feature requires a different representation or byte-level preservation. |
 | The ACP transport preserves enqueue order between updates and responses. | Enqueuing updates before the final response establishes their relative delivery order while the transport remains healthy. | The transport implementation or ordering contract changes. |
 | The transport's outgoing queue is not controlled by Ox's prompt loop. | Ox does not claim bounded outbound buffering or client acknowledgement. | A demonstrated slow-client problem requires a transport-level change. |
@@ -289,13 +289,13 @@ A representative domain model is:
 
 ```rust
 enum TranscriptEvent {
+    Model(String),
     UserMessage(String),
     AssistantMessage(AssistantMessage),
     ToolResult(ToolResult),
 }
 
 struct AssistantMessage {
-    model: String,
     text: String,
     reasoning: String,
     tool_calls: Vec<ToolCall>,
@@ -346,9 +346,10 @@ rather than interpreting opaque elements as display text. JSON formatting and
 object key order are not a byte-preservation contract. Unknown fields inside
 opaque metadata are retained; unknown transcript formats remain errors.
 
-The producing model is retained so a later configuration change cannot
-silently reinterpret incompatible continuation data. Unsupported continuation
-is an actionable error, not a reason to drop metadata or invent replacements.
+Every transcript opens with the model its completions use. A new session
+records the current default; an existing session continues with its recorded
+model, so continuation data is only ever sent back to the model that produced
+it. The model does not change within a session.
 
 ### Tool calls and results
 
@@ -579,7 +580,8 @@ The adapter is responsible for:
   protocol, including terminal validation and supported metadata.
 - Keeping all mutable assembly state local to the request.
 - Emitting exactly one completion only after the response meets the adapter's
-  acceptance contract.
+  acceptance contract and the stream has been read to its end, so the
+  connection returns to the pool.
 - Distinguishing provisional text from accepted message content.
 - Reporting malformed responses and transport failures without executing
   tools or changing stored history.

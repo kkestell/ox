@@ -24,7 +24,7 @@ use agent_client_protocol::{
 
 use crate::{
     auth,
-    model::ModelClient,
+    model::{self, ModelClient},
     sessions::{self, SessionStore, SessionSummary},
 };
 use operations::SessionOperations;
@@ -63,7 +63,10 @@ impl ServerState {
 
     fn new_session(&self, request: &NewSessionRequest) -> Result<NewSessionResponse> {
         self.model_client()?;
-        let summary = self.store.create(&request.cwd).map_err(store_error)?;
+        let summary = self
+            .store
+            .create(&request.cwd, model::MODEL)
+            .map_err(store_error)?;
         Ok(NewSessionResponse::new(summary.id))
     }
 
@@ -381,7 +384,10 @@ mod tests {
         let created = state
             .new_session(&NewSessionRequest::new("/workspace/"))
             .unwrap();
-        state.store.append_user(&created.session_id, "Hello").unwrap();
+        state
+            .store
+            .append_user(&created.session_id, "Hello")
+            .unwrap();
 
         for cwd in ["/workspace/", "/workspace", "/workspace/./", "//workspace/"] {
             let mut updates = Vec::new();
@@ -425,7 +431,10 @@ mod tests {
         *state.model.lock().unwrap() = Some(server.client());
         let store = state.store.clone();
         let operations = state.operations.clone();
-        let id = store.create(Path::new("/workspace")).unwrap().id;
+        let id = store
+            .create(Path::new("/workspace"), model::MODEL)
+            .unwrap()
+            .id;
         let (incoming_tx, incoming_rx) = mpsc::unbounded();
         let (outgoing_tx, mut outgoing_rx) = mpsc::unbounded::<String>();
         let transport = Lines::new(outgoing_tx.sink_map_err(io::Error::other), incoming_rx);
@@ -467,7 +476,10 @@ mod tests {
         assert!(operations.try_load(&id).is_some(), "admission was released");
         assert_eq!(
             store.read(&id).unwrap().unwrap().transcript,
-            vec![TranscriptEvent::UserMessage("Hello".to_owned())],
+            vec![
+                TranscriptEvent::Model(model::MODEL.to_owned()),
+                TranscriptEvent::UserMessage("Hello".to_owned())
+            ],
         );
     }
 

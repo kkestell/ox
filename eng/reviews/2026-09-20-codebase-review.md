@@ -18,52 +18,6 @@ code, so that lens does not apply.
 
 ## Findings
 
-### High: a change to `MODEL` permanently breaks every session holding reasoning metadata
-
-Source: `src/model.rs:127-135`, reached from `src/acp/prompt.rs:181` and
-`src/acp/prompt.rs:242`
-
-`request_messages` returns an `Unsupported` error when a stored assistant
-message carries `reasoning_details` and its `model` differs from the current
-`MODEL` constant. That check runs inside `complete()`, which the agent loop
-reaches only after `accept()` has already committed the user message.
-
-`MODEL` is a hardcoded constant with no configuration layer, so changing it is
-a routine edit. Every pre-existing session whose transcript contains reasoning
-metadata from the previous model then fails on every prompt, and each attempt
-appends another user message that will never receive a reply. The session
-still appears in `session/list` with its title and still replays through
-`session/load`, so nothing distinguishes it from a healthy session until the
-user tries to use it.
-
-Evidence, from a live session against OpenRouter:
-
-```
-RESPONSE: {"error": {"code": -32603, "message": "Internal error",
-  "data": "stored reasoning from model openai/gpt-5.5-luna cannot continue
-           with openai/gpt-5.6-luna"}}
-```
-
-Three consecutive prompts produced three consecutive `user_message` rows with
-no assistant message between them:
-
-| Event rows after three attempts | Kind |
-| --- | --- |
-| 9 | user_message |
-| 10 | user_message |
-| 11 | user_message |
-
-`session/list` still returned the session with its original title, and
-`session/load` replayed it successfully, emitting five user message chunks.
-
-The doc comment above `request_messages` says metadata is "sent back only for
-the model that produced it", which describes omission. Omission is also the
-cheaper behavior: drop `reasoning_details` when `message.model != MODEL` and
-fall back to the plain `reasoning` string that the same function already
-handles. That deletes the error branch, the `Unsupported` kind, and the
-ordering hazard together. If the error must stay, it belongs in
-`Prompt::open`, before anything is written.
-
 ### Medium: a settlement write failure can be followed by misleading updates and then masked
 
 Source: `src/acp/prompt.rs:313-360`
@@ -124,36 +78,6 @@ Remedy: wrap the credential read in `tokio::task::spawn_blocking`. That makes
 Reading the key once at startup is smaller, but gives up picking up a key
 saved by `ox auth login` without a restart, which the doc comment marks as
 deliberate.
-
-### Medium: every model request opens a new TCP and TLS connection
-
-Source: `src/acp/prompt.rs:257`, `src/model.rs:195-219`
-
-`Prompt::request` returns as soon as it sees `ModelEvent::Completed` and drops
-the `ModelRequest`. The finish chunk is never the last thing on the wire: an
-OpenAI-compatible stream always sends at least `data: [DONE]` after it, and
-the comment at `src/model.rs:248` records a trailing usage chunk as well. An
-HTTP/1.1 connection whose body was not read to end cannot return to the pool.
-`reqwest` is configured without the `http2` feature, so there is no multiplexed
-path either.
-
-Measured with a local server reproducing the exact usage, chunked encoding and
-a separate trailing frame:
-
-| Client behavior | Requests | TCP connections |
-| --- | --- | --- |
-| Stop at the completion, then drop | 4 | 4 |
-| Drain the body to EOF | 4 | 1 |
-
-The result was identical whether the trailing frame followed after 120 ms or
-immediately, because it arrives as its own segment either way. A TLS handshake
-to `openrouter.ai` measured 48 to 63 ms against a TCP connect of 20 to 39 ms.
-With `MAX_MODEL_CALLS` at 8, a tool-heavy prompt pays up to roughly 400 ms of
-avoidable handshake latency.
-
-Remedy: after accepting the completion, keep reading until the stream ends.
-The existing `next()` already returns `Ok(None)` once the assembly is taken, so
-the loop is a few lines and needs no new state.
 
 ### Medium: the stream assembler accepts contradictory tool-call fragments
 

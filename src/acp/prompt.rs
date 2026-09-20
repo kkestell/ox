@@ -26,7 +26,7 @@ pub const MAX_MODEL_CALLS: usize = 8;
 
 pub async fn run<F>(
     store: SessionStore,
-    model: ModelClient,
+    client: ModelClient,
     session_id: SessionId,
     input: String,
     cancellation: PromptCancellation,
@@ -35,7 +35,7 @@ pub async fn run<F>(
 where
     F: FnMut(SessionUpdate) -> Result<()>,
 {
-    let mut prompt = Prompt::open(store, model, session_id, cancellation, deliver)?;
+    let mut prompt = Prompt::open(store, client, session_id, cancellation, deliver)?;
     if !prompt.accept(input)? {
         return Ok(PromptResponse::new(StopReason::Cancelled));
     }
@@ -72,7 +72,8 @@ impl fmt::Display for Exit {
 
 struct Prompt<F> {
     store: SessionStore,
-    model: ModelClient,
+    client: ModelClient,
+    model: String,
     summary: SessionSummary,
     cancellation: PromptCancellation,
     deliver: F,
@@ -150,7 +151,7 @@ fn result(call: &ToolCall, outcome: ToolOutcome) -> ToolResult {
 impl<F: FnMut(SessionUpdate) -> Result<()>> Prompt<F> {
     fn open(
         store: SessionStore,
-        model: ModelClient,
+        client: ModelClient,
         session_id: SessionId,
         cancellation: PromptCancellation,
         deliver: F,
@@ -161,7 +162,8 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> Prompt<F> {
             .ok_or_else(|| Error::resource_not_found(Some(session_id.to_string())))?;
         Ok(Self {
             store,
-            model,
+            client,
+            model: stored.model().to_owned(),
             summary: stored.summary,
             cancellation,
             deliver,
@@ -239,7 +241,9 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> Prompt<F> {
         let mut request = tokio::select! {
             biased;
             () = self.cancellation.cancelled() => return Err(Exit::Cancelled),
-            started = self.model.complete(&self.history) => started.map_err(Exit::Provider)?,
+            started = self.client.complete(&self.model, &self.history) => {
+                started.map_err(Exit::Provider)?
+            }
         };
         loop {
             let event = tokio::select! {
@@ -389,7 +393,7 @@ mod tests {
         async fn new(replies: Vec<Reply>) -> Self {
             let store = SessionStore::in_memory();
             let session_id = store
-                .create(Path::new("/Users/kyle/projects/ox"))
+                .create(Path::new("/Users/kyle/projects/ox"), MODEL)
                 .unwrap()
                 .id;
             Self {
@@ -439,13 +443,16 @@ mod tests {
         }
     }
 
+    fn model() -> TranscriptEvent {
+        TranscriptEvent::Model(MODEL.to_owned())
+    }
+
     fn user(text: &str) -> TranscriptEvent {
         TranscriptEvent::UserMessage(text.to_owned())
     }
 
     fn answer(text: &str) -> TranscriptEvent {
         TranscriptEvent::AssistantMessage(AssistantMessage {
-            model: MODEL.to_owned(),
             text: text.to_owned(),
             reasoning: String::new(),
             tool_calls: vec![],
@@ -455,7 +462,6 @@ mod tests {
 
     fn calls(calls: &[(&str, &str)]) -> TranscriptEvent {
         TranscriptEvent::AssistantMessage(AssistantMessage {
-            model: MODEL.to_owned(),
             text: String::new(),
             reasoning: String::new(),
             tool_calls: calls
@@ -516,7 +522,7 @@ mod tests {
         let (response, history) = harness.run("Hi", |_| Ok(())).await;
 
         assert_eq!(response.unwrap().stop_reason, StopReason::EndTurn);
-        assert_eq!(history, vec![user("Hi"), answer("Hello there.")]);
+        assert_eq!(history, vec![model(), user("Hi"), answer("Hello there.")]);
         assert_eq!(harness.stored(), history);
         let updates = harness.updates();
         assert!(matches!(
@@ -543,6 +549,7 @@ mod tests {
         assert_eq!(
             history,
             vec![
+                model(),
                 user("Weather?"),
                 calls(&[("call-1", "Chicago"), ("call-2", "Denver")]),
                 weather("call-1", "Chicago"),
@@ -591,6 +598,7 @@ mod tests {
         assert_eq!(
             history,
             vec![
+                model(),
                 user("Weather?"),
                 calls(&[("call-1", "Chicago"), ("call-2", "Denver")]),
                 weather("call-1", "Chicago"),
@@ -639,7 +647,7 @@ mod tests {
             .await;
 
         assert_eq!(response.unwrap().stop_reason, StopReason::Cancelled);
-        assert_eq!(history, vec![user("Hi")]);
+        assert_eq!(history, vec![model(), user("Hi")]);
         assert_eq!(harness.stored(), history);
     }
 
@@ -662,7 +670,7 @@ mod tests {
         assert!(
             error.to_string().contains("disk full") || format!("{error:?}").contains("disk full")
         );
-        assert_eq!(history, vec![user("Hi")]);
+        assert_eq!(history, vec![model(), user("Hi")]);
         assert_eq!(harness.stored(), history);
     }
 
@@ -687,6 +695,7 @@ mod tests {
         assert_eq!(
             history,
             vec![
+                model(),
                 user("Weather?"),
                 calls(&[("call-1", "Chicago"), ("call-2", "Denver")]),
                 weather("call-1", "Chicago"),
@@ -725,7 +734,7 @@ mod tests {
 
         assert_eq!(response.unwrap().stop_reason, StopReason::MaxTurnRequests);
         assert_eq!(harness.server.requests().len(), MAX_MODEL_CALLS);
-        assert_eq!(history.len(), 1 + 2 * MAX_MODEL_CALLS);
+        assert_eq!(history.len(), 2 + 2 * MAX_MODEL_CALLS);
         let completed = history
             .iter()
             .filter(|event| {

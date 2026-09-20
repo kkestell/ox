@@ -24,7 +24,7 @@ const DATABASE_FILE: &str = "ox.db";
 
 /// Stamped into `PRAGMA user_version`. There is no migration path: a
 /// database with another version is rejected at open.
-const SCHEMA_VERSION: i32 = 1;
+const SCHEMA_VERSION: i32 = 2;
 
 /// Longest title derived from a prompt, in characters.
 const MAX_TITLE_CHARS: usize = 80;
@@ -57,15 +57,18 @@ CREATE TABLE events (
 
 CREATE INDEX events_by_session ON events (session_id, id);
 
-PRAGMA user_version = 1;
+PRAGMA user_version = 2;
 
 COMMIT;
 ";
 
-/// One record of a session transcript. Tool results follow the assistant
-/// message that called them, one per call, in call order.
+/// One record of a session transcript. Every transcript opens with the model
+/// its completions use, which does not change within the session. Tool
+/// results follow the assistant message that called them, one per call, in
+/// call order.
 #[derive(Debug, Clone, PartialEq)]
 pub enum TranscriptEvent {
+    Model(String),
     UserMessage(String),
     AssistantMessage(AssistantMessage),
     ToolResult(ToolResult),
@@ -75,7 +78,6 @@ pub enum TranscriptEvent {
 /// opaque continuation metadata, stored as received and never displayed.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AssistantMessage {
-    pub model: String,
     pub text: String,
     pub reasoning: String,
     pub tool_calls: Vec<ToolCall>,
@@ -194,9 +196,17 @@ fn pair_results(calls: &[ToolCall], results: &[&ToolResult]) -> io::Result<()> {
 }
 
 fn validate_transcript(events: &[TranscriptEvent]) -> io::Result<()> {
-    let mut index = 0;
+    if !matches!(events.first(), Some(TranscriptEvent::Model(_))) {
+        return Err(invalid_data("transcript does not open with a model"));
+    }
+    let mut index = 1;
     while let Some(event) = events.get(index) {
         match event {
+            TranscriptEvent::Model(_) => {
+                return Err(invalid_data(
+                    "a model record appears after the transcript opened",
+                ));
+            }
             TranscriptEvent::UserMessage(_) => index += 1,
             TranscriptEvent::ToolResult(result) => {
                 return Err(invalid_data(format!(
@@ -237,6 +247,16 @@ pub struct SessionSummary {
 pub struct StoredSession {
     pub summary: SessionSummary,
     pub transcript: Vec<TranscriptEvent>,
+}
+
+impl StoredSession {
+    /// The model every completion in this session uses.
+    pub fn model(&self) -> &str {
+        match self.transcript.first() {
+            Some(TranscriptEvent::Model(model)) => model,
+            _ => panic!("session {} has no model record", self.summary.id),
+        }
+    }
 }
 
 /// One connection behind a mutex held only for synchronous database work.
@@ -300,7 +320,9 @@ impl SessionStore {
         self.0.lock().expect("session store mutex poisoned")
     }
 
-    pub fn create(&self, cwd: &Path) -> io::Result<SessionSummary> {
+    /// Creates a session whose completions use `model`, recorded as the
+    /// first transcript event.
+    pub fn create(&self, cwd: &Path, model: &str) -> io::Result<SessionSummary> {
         let path = workspace_path(cwd)?;
         let id = SessionId::new(uuid::Uuid::new_v4().to_string());
         let at = now();
@@ -317,6 +339,15 @@ impl SessionStore {
             params![id.to_string(), path, at],
         )
         .map_err(io::Error::other)?;
+        insert_event(
+            &tx,
+            &id,
+            &at,
+            "model",
+            &ModelRow {
+                model: model.to_owned(),
+            },
+        )?;
         tx.commit().map_err(io::Error::other)?;
         Ok(SessionSummary {
             id,
@@ -505,6 +536,12 @@ fn insert_event<T: Serialize>(
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+struct ModelRow {
+    model: String,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct UserMessageRow {
     text: String,
 }
@@ -512,7 +549,6 @@ struct UserMessageRow {
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AssistantMessageRow {
-    model: String,
     text: String,
     reasoning: String,
     tool_calls: Vec<ToolCallRow>,
@@ -547,7 +583,6 @@ enum ToolResultStatus {
 impl From<&AssistantMessage> for AssistantMessageRow {
     fn from(message: &AssistantMessage) -> Self {
         Self {
-            model: message.model.clone(),
             text: message.text.clone(),
             reasoning: message.reasoning.clone(),
             tool_calls: message
@@ -582,11 +617,11 @@ impl From<&ToolResult> for ToolResultRow {
 
 fn decode_event(kind: &str, data: &str) -> io::Result<TranscriptEvent> {
     Ok(match kind {
+        "model" => TranscriptEvent::Model(decode::<ModelRow>(kind, data)?.model),
         "user_message" => TranscriptEvent::UserMessage(decode::<UserMessageRow>(kind, data)?.text),
         "assistant_message" => {
             let row: AssistantMessageRow = decode(kind, data)?;
             TranscriptEvent::AssistantMessage(AssistantMessage {
-                model: row.model,
                 text: row.text,
                 reasoning: row.reasoning,
                 tool_calls: row
@@ -698,7 +733,6 @@ mod tests {
 
     fn message(tool_calls: Vec<ToolCall>) -> AssistantMessage {
         AssistantMessage {
-            model: model::MODEL.to_owned(),
             text: "Checking both.".to_owned(),
             reasoning: "Two cities.".to_owned(),
             tool_calls,
@@ -745,7 +779,7 @@ mod tests {
 
         let id = {
             let store = SessionStore::open(&path).unwrap();
-            let id = store.create(cwd()).unwrap().id;
+            let id = store.create(cwd(), model::MODEL).unwrap().id;
             store
                 .append_user(&id, "Weather in Chicago and Denver?")
                 .unwrap();
@@ -761,9 +795,11 @@ mod tests {
             stored.summary.title.as_deref(),
             Some("Weather in Chicago and Denver?")
         );
+        assert_eq!(stored.model(), model::MODEL);
         assert_eq!(
             stored.transcript,
             vec![
+                TranscriptEvent::Model(model::MODEL.to_owned()),
                 TranscriptEvent::UserMessage("Weather in Chicago and Denver?".to_owned()),
                 TranscriptEvent::AssistantMessage(message.clone()),
                 TranscriptEvent::ToolResult(results[0].clone()),
@@ -798,7 +834,7 @@ mod tests {
                     && call.raw_output == Some(json!("Denver is unavailable."))
         ));
 
-        let messages = model::request_messages(&stored.transcript).unwrap();
+        let messages = model::request_messages(&stored.transcript);
         assert_eq!(messages.len(), 4);
         assert_eq!(messages[0]["role"], "user");
         assert_eq!(messages[1]["role"], "assistant");
@@ -886,7 +922,7 @@ mod tests {
             });
         };
 
-        let orphan = store.create(cwd()).unwrap().id;
+        let orphan = store.create(cwd(), model::MODEL).unwrap().id;
         store.append_user(&orphan, "hello").unwrap();
         insert(
             &orphan,
@@ -895,7 +931,7 @@ mod tests {
         );
         assert!(store.read(&orphan).is_err());
 
-        let unresolved = store.create(cwd()).unwrap().id;
+        let unresolved = store.create(cwd(), model::MODEL).unwrap().id;
         let unresolved_message =
             AssistantMessageRow::from(&message(vec![call("call-1", "Chicago")]));
         insert(
@@ -905,19 +941,34 @@ mod tests {
         );
         assert!(store.read(&unresolved).is_err());
 
-        let unknown = store.create(cwd()).unwrap().id;
+        let unknown = store.create(cwd(), model::MODEL).unwrap().id;
         insert(&unknown, "mystery", "{}");
         assert!(store.read(&unknown).is_err());
 
-        let malformed = store.create(cwd()).unwrap().id;
+        let malformed = store.create(cwd(), model::MODEL).unwrap().id;
         insert(&malformed, "user_message", r#"{"text":"hi","extra":true}"#);
         assert!(store.read(&malformed).is_err());
+
+        let switched = store.create(cwd(), model::MODEL).unwrap().id;
+        insert(&switched, "model", r#"{"model":"other/model"}"#);
+        assert!(store.read(&switched).is_err());
+
+        let unmodelled = store.create(cwd(), model::MODEL).unwrap().id;
+        store.with_connection(|connection| {
+            connection
+                .execute(
+                    "DELETE FROM events WHERE session_id = ?1",
+                    params![unmodelled.to_string()],
+                )
+                .unwrap()
+        });
+        assert!(store.read(&unmodelled).is_err());
     }
 
     #[test]
     fn user_append_adopts_a_title_once_and_updates_activity() {
         let store = SessionStore::in_memory();
-        let created = store.create(cwd()).unwrap();
+        let created = store.create(cwd(), model::MODEL).unwrap();
         set_updated_at(&store, &created.id, "2026-09-18T09:00:00.000Z");
 
         let first = store
@@ -931,7 +982,7 @@ mod tests {
         assert_eq!(second.title.as_deref(), Some("First line"));
         assert!(second.updated_at >= first.updated_at);
 
-        let long = store.create(cwd()).unwrap();
+        let long = store.create(cwd(), model::MODEL).unwrap();
         let title = store
             .append_user(&long.id, &"x".repeat(MAX_TITLE_CHARS + 10))
             .unwrap()
@@ -955,10 +1006,10 @@ mod tests {
     #[test]
     fn list_orders_by_activity_and_filters_by_workspace() {
         let store = SessionStore::in_memory();
-        let first = store.create(cwd()).unwrap().id;
-        let second = store.create(cwd()).unwrap().id;
+        let first = store.create(cwd(), model::MODEL).unwrap().id;
+        let second = store.create(cwd(), model::MODEL).unwrap().id;
         let other = store
-            .create(Path::new("/Users/kyle/projects/other"))
+            .create(Path::new("/Users/kyle/projects/other"), model::MODEL)
             .unwrap()
             .id;
         set_updated_at(&store, &first, "2026-09-18T10:00:00.000Z");
@@ -973,13 +1024,17 @@ mod tests {
             ids(&store.list(Some(cwd())).unwrap()),
             vec![first.to_string(), second.to_string()]
         );
-        assert!(store.create(Path::new("relative/path")).is_err());
+        assert!(
+            store
+                .create(Path::new("relative/path"), model::MODEL)
+                .is_err()
+        );
     }
 
     #[test]
     fn deleting_a_session_removes_its_records_and_repeats_successfully() {
         let store = SessionStore::in_memory();
-        let id = store.create(cwd()).unwrap().id;
+        let id = store.create(cwd(), model::MODEL).unwrap().id;
         store.append_user(&id, "hello").unwrap();
 
         store.delete(&id).unwrap();

@@ -13,6 +13,8 @@ use crate::{
     tools,
 };
 
+/// The model for new sessions. An existing session keeps the model recorded
+/// in its transcript.
 pub const MODEL: &str = "openai/gpt-5.6-luna";
 const ENDPOINT: &str = "https://openrouter.ai/api/v1";
 
@@ -79,12 +81,16 @@ impl ModelClient {
         }
     }
 
-    /// Starts one streamed completion over `history`. Read the returned
-    /// request until it yields a completion.
-    pub async fn complete(&self, history: &[TranscriptEvent]) -> io::Result<ModelRequest> {
+    /// Starts one streamed completion by `model` over `history`. Read the
+    /// returned request until it yields a completion.
+    pub async fn complete(
+        &self,
+        model: &str,
+        history: &[TranscriptEvent],
+    ) -> io::Result<ModelRequest> {
         let body = json!({
-            "model": MODEL,
-            "messages": request_messages(history)?,
+            "model": model,
+            "messages": request_messages(history),
             "tools": tools::schemas(),
             "stream": true,
         });
@@ -114,25 +120,16 @@ impl ModelClient {
     }
 }
 
-/// Encodes accepted history as chat messages. Continuation metadata is sent
-/// back only for the model that produced it; visible reasoning is sent only
+/// Encodes accepted history as chat messages. Visible reasoning is sent only
 /// when there is no structured metadata carrying it.
-pub(crate) fn request_messages(history: &[TranscriptEvent]) -> io::Result<Vec<Value>> {
+pub(crate) fn request_messages(history: &[TranscriptEvent]) -> Vec<Value> {
     history
         .iter()
-        .map(|event| {
-            Ok(match event {
+        .filter_map(|event| {
+            Some(match event {
+                TranscriptEvent::Model(_) => return None,
                 TranscriptEvent::UserMessage(text) => json!({ "role": "user", "content": text }),
                 TranscriptEvent::AssistantMessage(message) => {
-                    if !message.reasoning_details.is_empty() && message.model != MODEL {
-                        return Err(io::Error::new(
-                            ErrorKind::Unsupported,
-                            format!(
-                                "stored reasoning from model {} cannot continue with {MODEL}",
-                                message.model
-                            ),
-                        ));
-                    }
                     let content = if message.text.is_empty() {
                         Value::Null
                     } else {
@@ -193,11 +190,8 @@ impl ModelRequest {
     /// the end of a stream that has already delivered its completion; a
     /// stream ending before that is an error.
     pub async fn next(&mut self) -> io::Result<Option<ModelEvent>> {
-        loop {
-            if let Some(event) = self.pending.pop_front() {
-                return Ok(Some(event));
-            }
-            let Some(chunk) = self.response.chunk().await.map_err(transport)? else {
+        while self.pending.is_empty() {
+            if !self.read_chunk().await? {
                 return if self.assembly.is_none() {
                     Ok(None)
                 } else {
@@ -206,16 +200,31 @@ impl ModelRequest {
                         "model stream ended before the response finished",
                     ))
                 };
-            };
-            self.buffer.extend_from_slice(&chunk);
-            while let Some(newline) = self.buffer.iter().position(|&byte| byte == b'\n') {
-                let line = self.buffer.drain(..=newline).collect::<Vec<u8>>();
-                let line = std::str::from_utf8(&line)
-                    .map_err(|_| malformed("model stream is not UTF-8"))?
-                    .trim_end_matches(['\r', '\n']);
-                self.line(line)?;
             }
         }
+        if matches!(self.pending.front(), Some(ModelEvent::Completed(_))) {
+            // The finish chunk is followed by `[DONE]` and a usage chunk. An
+            // HTTP/1.1 connection returns to the pool only once its body is
+            // read to the end, so read them before yielding the completion.
+            while self.read_chunk().await? {}
+        }
+        Ok(self.pending.pop_front())
+    }
+
+    /// Reads one network chunk into events; `false` at the end of the body.
+    async fn read_chunk(&mut self) -> io::Result<bool> {
+        let Some(chunk) = self.response.chunk().await.map_err(transport)? else {
+            return Ok(false);
+        };
+        self.buffer.extend_from_slice(&chunk);
+        while let Some(newline) = self.buffer.iter().position(|&byte| byte == b'\n') {
+            let line = self.buffer.drain(..=newline).collect::<Vec<u8>>();
+            let line = std::str::from_utf8(&line)
+                .map_err(|_| malformed("model stream is not UTF-8"))?
+                .trim_end_matches(['\r', '\n']);
+            self.line(line)?;
+        }
+        Ok(true)
     }
 
     fn line(&mut self, line: &str) -> io::Result<()> {
@@ -378,7 +387,6 @@ impl Assembly {
             _ => return Err(malformed(format!("unknown finish reason {reason:?}"))),
         };
         let message = AssistantMessage {
-            model: MODEL.to_owned(),
             text: self.text,
             reasoning: self.reasoning,
             tool_calls,
@@ -440,7 +448,13 @@ struct ApiError {
 /// reply and records the request bodies it received.
 #[cfg(test)]
 pub(crate) mod fixture {
-    use std::sync::{Arc, Mutex};
+    use std::{
+        collections::VecDeque,
+        sync::{
+            Arc, Mutex,
+            atomic::{AtomicUsize, Ordering},
+        },
+    };
 
     use serde_json::{Value, json};
     use tokio::{
@@ -451,7 +465,8 @@ pub(crate) mod fixture {
     use super::{MODEL, ModelClient};
 
     pub enum Reply {
-        /// A complete SSE body, then the connection closes.
+        /// A complete SSE body, one HTTP chunk per event, then the
+        /// connection stays open for the next request.
         Stream(String),
         /// A status code with a JSON body.
         Status(u16, String),
@@ -462,51 +477,31 @@ pub(crate) mod fixture {
     pub struct Server {
         url: String,
         requests: Arc<Mutex<Vec<Value>>>,
+        connections: Arc<AtomicUsize>,
     }
 
     impl Server {
+        /// Serves `replies` in request order, over as many connections as
+        /// the client opens.
         pub async fn start(replies: Vec<Reply>) -> Self {
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
             let url = format!("http://{}", listener.local_addr().unwrap());
             let requests = Arc::new(Mutex::new(Vec::new()));
-            let seen = requests.clone();
+            let connections = Arc::new(AtomicUsize::new(0));
+            let replies = Arc::new(Mutex::new(VecDeque::from(replies)));
+            let (seen, opened) = (requests.clone(), connections.clone());
             tokio::spawn(async move {
-                for reply in replies {
-                    let (mut socket, _) = listener.accept().await.unwrap();
-                    let body = read_request(&mut socket).await;
-                    if !body.is_empty() {
-                        seen.lock()
-                            .unwrap()
-                            .push(serde_json::from_slice(&body).unwrap());
-                    }
-                    match reply {
-                        Reply::Stream(body) => {
-                            socket
-                                .write_all(response(200, "text/event-stream", &body).as_bytes())
-                                .await
-                                .unwrap();
-                        }
-                        Reply::Status(status, body) => {
-                            socket
-                                .write_all(response(status, "application/json", &body).as_bytes())
-                                .await
-                                .unwrap();
-                        }
-                        Reply::Hang(prefix) => {
-                            let head = format!(
-                                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\
-                                 Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n\
-                                 {:x}\r\n{prefix}\r\n",
-                                prefix.len()
-                            );
-                            socket.write_all(head.as_bytes()).await.unwrap();
-                            std::future::pending::<()>().await;
-                        }
-                    }
-                    socket.shutdown().await.ok();
+                loop {
+                    let (socket, _) = listener.accept().await.unwrap();
+                    opened.fetch_add(1, Ordering::SeqCst);
+                    tokio::spawn(serve(socket, replies.clone(), seen.clone()));
                 }
             });
-            Self { url, requests }
+            Self {
+                url,
+                requests,
+                connections,
+            }
         }
 
         pub fn client(&self) -> ModelClient {
@@ -516,15 +511,59 @@ pub(crate) mod fixture {
         pub fn requests(&self) -> Vec<Value> {
             self.requests.lock().unwrap().clone()
         }
+
+        pub fn connections(&self) -> usize {
+            self.connections.load(Ordering::SeqCst)
+        }
     }
 
-    async fn read_request(socket: &mut TcpStream) -> Vec<u8> {
+    async fn serve(
+        mut socket: TcpStream,
+        replies: Arc<Mutex<VecDeque<Reply>>>,
+        seen: Arc<Mutex<Vec<Value>>>,
+    ) {
+        while let Some(body) = read_request(&mut socket).await {
+            if !body.is_empty() {
+                seen.lock()
+                    .unwrap()
+                    .push(serde_json::from_slice(&body).unwrap());
+            }
+            let Some(reply) = replies.lock().unwrap().pop_front() else {
+                break;
+            };
+            match reply {
+                Reply::Stream(body) => {
+                    socket.write_all(stream(&body).as_bytes()).await.unwrap();
+                }
+                Reply::Status(status, body) => {
+                    socket
+                        .write_all(response(status, "application/json", &body).as_bytes())
+                        .await
+                        .unwrap();
+                }
+                Reply::Hang(prefix) => {
+                    let head = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\
+                         Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n\
+                         {:x}\r\n{prefix}\r\n",
+                        prefix.len()
+                    );
+                    socket.write_all(head.as_bytes()).await.unwrap();
+                    std::future::pending::<()>().await;
+                }
+            }
+        }
+        socket.shutdown().await.ok();
+    }
+
+    /// One request body; `None` once the client closes the connection.
+    async fn read_request(socket: &mut TcpStream) -> Option<Vec<u8>> {
         let mut bytes = Vec::new();
         let mut chunk = [0u8; 4096];
         loop {
             let read = socket.read(&mut chunk).await.unwrap();
             if read == 0 {
-                return Vec::new();
+                return None;
             }
             bytes.extend_from_slice(&chunk[..read]);
             let Some(end) = bytes.windows(4).position(|window| window == b"\r\n\r\n") else {
@@ -537,7 +576,7 @@ pub(crate) mod fixture {
                 .map_or(0, |value| value.trim().parse::<usize>().unwrap());
             let body_start = end + 4;
             if bytes.len() >= body_start + length {
-                return bytes[body_start..body_start + length].to_vec();
+                return Some(bytes[body_start..body_start + length].to_vec());
             }
         }
     }
@@ -550,9 +589,23 @@ pub(crate) mod fixture {
         };
         format!(
             "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\n\
-             Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
+             Content-Length: {}\r\n\r\n{body}",
             body.len()
         )
+    }
+
+    /// A chunked SSE response with each event in its own HTTP chunk, the way
+    /// a provider delivers a stream it is still generating.
+    fn stream(body: &str) -> String {
+        let mut response = String::from(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\
+             Transfer-Encoding: chunked\r\n\r\n",
+        );
+        for event in body.split_inclusive("\n\n") {
+            response.push_str(&format!("{:x}\r\n{event}\r\n", event.len()));
+        }
+        response.push_str("0\r\n\r\n");
+        response
     }
 
     /// An SSE body: a keep-alive comment, one data event per chunk, `[DONE]`.
@@ -608,7 +661,7 @@ pub(crate) mod fixture {
 #[cfg(test)]
 mod tests {
     use super::{
-        fixture::{Reply, Server, delta, sse},
+        fixture::{Reply, Server, delta, sse, text_reply},
         *,
     };
     use crate::sessions::{ToolOutcome, ToolResult};
@@ -625,7 +678,7 @@ mod tests {
         let server = Server::start(vec![Reply::Stream(sse(chunks))]).await;
         let mut request = server
             .client()
-            .complete(&[TranscriptEvent::UserMessage("hi".to_owned())])
+            .complete(MODEL, &[TranscriptEvent::UserMessage("hi".to_owned())])
             .await?;
         drain(&mut request).await
     }
@@ -665,9 +718,9 @@ mod tests {
             "index": 0,
         })];
         let history = vec![
+            TranscriptEvent::Model("other/model".to_owned()),
             TranscriptEvent::UserMessage("Weather in Chicago and Denver?".to_owned()),
             TranscriptEvent::AssistantMessage(AssistantMessage {
-                model: MODEL.to_owned(),
                 text: String::new(),
                 reasoning: "Need both cities.".to_owned(),
                 tool_calls: vec![call("call-1", "Chicago"), call("call-2", "Denver")],
@@ -685,12 +738,16 @@ mod tests {
             }),
         ];
 
-        let mut request = server.client().complete(&history).await.unwrap();
+        let mut request = server
+            .client()
+            .complete("other/model", &history)
+            .await
+            .unwrap();
         let events = drain(&mut request).await.unwrap();
         assert_eq!(completion(&events).stop, ModelStop::Finished);
 
         let body = &server.requests()[0];
-        assert_eq!(body["model"], MODEL);
+        assert_eq!(body["model"], "other/model");
         assert_eq!(body["stream"], true);
         assert_eq!(body["tools"][0]["function"]["name"], "get_weather");
         let messages = body["messages"].as_array().unwrap();
@@ -717,27 +774,17 @@ mod tests {
     }
 
     #[test]
-    fn visible_reasoning_is_sent_only_without_metadata_and_only_for_this_model() {
+    fn visible_reasoning_is_sent_only_without_metadata() {
         let plain = AssistantMessage {
-            model: MODEL.to_owned(),
             text: "Four.".to_owned(),
             reasoning: "Add them.".to_owned(),
             tool_calls: vec![],
             reasoning_details: vec![],
         };
-        let messages =
-            request_messages(&[TranscriptEvent::AssistantMessage(plain.clone())]).unwrap();
+        let messages = request_messages(&[TranscriptEvent::AssistantMessage(plain)]);
         assert_eq!(messages[0]["reasoning"], "Add them.");
         assert!(messages[0].get("reasoning_details").is_none());
         assert!(messages[0].get("tool_calls").is_none());
-
-        let foreign = AssistantMessage {
-            model: "other/model".to_owned(),
-            reasoning_details: vec![json!({ "type": "reasoning.encrypted", "data": "x" })],
-            ..plain
-        };
-        let error = request_messages(&[TranscriptEvent::AssistantMessage(foreign)]).unwrap_err();
-        assert_eq!(error.kind(), ErrorKind::Unsupported);
     }
 
     #[tokio::test]
@@ -808,7 +855,6 @@ mod tests {
         assert_eq!(
             completion.message,
             AssistantMessage {
-                model: MODEL.to_owned(),
                 text: "Checking now.".to_owned(),
                 reasoning: "Let me check.".to_owned(),
                 tool_calls: vec![call("call-1", "Chicago"), call("call-2", "Denver")],
@@ -863,8 +909,7 @@ mod tests {
                     third_encrypted,
                 ];
                 assert_eq!(message.reasoning_details, expected);
-                let messages =
-                    request_messages(&[TranscriptEvent::AssistantMessage(message)]).unwrap();
+                let messages = request_messages(&[TranscriptEvent::AssistantMessage(message)]);
                 assert_eq!(messages[0]["reasoning_details"], json!(expected));
             }
         }
@@ -962,7 +1007,7 @@ mod tests {
         assert!(error.to_string().contains("Provider disconnected"));
 
         let server = Server::start(vec![Reply::Stream("data: not json\n\n".to_owned())]).await;
-        let mut request = server.client().complete(&[]).await.unwrap();
+        let mut request = server.client().complete(MODEL, &[]).await.unwrap();
         assert!(drain(&mut request).await.is_err());
 
         let server = Server::start(vec![Reply::Status(
@@ -972,11 +1017,32 @@ mod tests {
         .await;
         let error = server
             .client()
-            .complete(&[])
+            .complete(MODEL, &[])
             .await
             .err()
             .expect("a failed status is an error");
         assert!(error.to_string().contains("429"));
+    }
+
+    #[tokio::test]
+    async fn completed_requests_reuse_one_connection() {
+        let server = Server::start(vec![text_reply("one"), text_reply("two")]).await;
+        let client = server.client();
+        for _ in 0..2 {
+            let mut request = client
+                .complete(MODEL, &[TranscriptEvent::UserMessage("hi".to_owned())])
+                .await
+                .unwrap();
+            while !matches!(
+                request.next().await.unwrap(),
+                Some(ModelEvent::Completed(_))
+            ) {}
+            drop(request);
+            // The pool takes an idle connection back on a background task.
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(server.requests().len(), 2);
+        assert_eq!(server.connections(), 1);
     }
 
     #[tokio::test]
