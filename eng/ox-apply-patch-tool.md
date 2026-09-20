@@ -1,6 +1,6 @@
 # Ox apply_patch tool
 
-Status: proposed implementation design. No implementation is implied.
+Status: implemented.
 
 ## 1. Goal
 
