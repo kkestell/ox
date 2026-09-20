@@ -35,8 +35,7 @@ The architecture has these central choices:
   testing delivery behavior.
 
 The design prioritizes correct conversation semantics and code that is cheap
-to change. It does not aim to be a reusable agent framework, a general model
-SDK, or a durable workflow engine.
+to change.
 
 The OpenRouter API itself is outside the scope of this document. The adapter
 must implement the documented API; the sections below specify its ownership,
@@ -51,6 +50,7 @@ request fields or streaming wire formats.
 - Streaming visible answer text and visible reasoning when available.
 - Complete model messages that can request multiple tools.
 - Sequential execution of the concrete tool set.
+- Local workspace editing through the apply-patch tool.
 - Session creation, listing, loading, prompting, cancellation, and deletion.
 - Persistent conversations and restart followed by replay and continuation.
 - Terminal login, lazy use of newly saved credentials, and logout.
@@ -65,17 +65,13 @@ request fields or streaming wire formats.
   independently scheduled session work.
 - Multiple processes concurrently modifying the same database.
 - Reading databases written by earlier schema versions.
-- Durable execution of tools, automatic resumption of interrupted work, and
-  exactly-once external effects.
-- Mutating tools in the initial implementation.
 - Images, audio, other unsupported media, context compaction, and automatic
   truncation of stored history.
 - A general permission system, tool registry framework, repository trait,
   event bus, session actor, or dependency-injection framework.
 
-The initial tool remains a simple read-only operation. Adding shell execution
-or file editing changes the durability requirements and requires the decision
-described in section 15 before those tools become available.
+Tool execution and transcript persistence follow the ownership and commit
+boundaries in section 15.
 
 ## 3. Assumed invariants
 
@@ -90,7 +86,7 @@ be revisited rather than patched with an implicit fallback.
 | Each process serves one ACP connection. | Connection shutdown ends that process's live work; there is no cross-client routing layer. | A daemon or multiple simultaneous clients become a requirement. |
 | SQLite runs on local storage and normal operations are short. | Synchronous operations behind one connection mutex are acceptable initially. | Measurements show storage work delaying streaming or cancellation. |
 | Session transcripts fit comfortably in memory. | Load and prompt read a whole committed transcript. | Real conversations require compaction or bounded-memory replay. |
-| The initial tools have no persistent external effects. | Losing an uncommitted tool result on a crash is acceptable. | A tool edits a file, starts a subprocess, or changes external state. |
+| Tool execution is owned by the prompt that accepted the call. | The prompt keeps resource-specific work within its cancellation boundary and settles its observed outcome through the closed batch. | Work must continue independently of the prompt that started it. |
 | Tool futures implement their stated cancellation behavior. | The prompt task can stop work before settling its conversation batch. | A new tool owns resources that require explicit asynchronous cleanup. |
 | The default model and the endpoint are fixed local choices; each session records its model at creation. | A concrete adapter, nearby constants, and one transcript record suffice. | Users need to choose or change a session's model, or another actual provider. |
 | The model's required continuation data can be represented losslessly as stored JSON values. | Structured metadata survives storage and request reconstruction. | A supported feature requires a different representation or byte-level preservation. |
@@ -141,8 +137,8 @@ ownership, validation, transactions, or focused tests:
 15. Ordinary input, provider, tool, and session failures remain request-level
     outcomes. They do not terminate a healthy connection or poison unrelated
     sessions.
-16. No recovery path automatically re-executes a tool to reconstruct missing
-    history.
+16. Session recovery reconstructs model context and replay exclusively from
+    committed transcript events.
 
 ## 5. Modules and dependency direction
 
@@ -773,11 +769,12 @@ because cancellation arrives before its notification. An outcome not yet
 observed by Ox cannot be claimed as known success. Cancellation races are
 resolved at these explicit observation boundaries.
 
-For the initial tool, dropping its work is sufficient to stop local execution.
-This rule does not extend automatically to subprocesses or other resources.
-A future process-owning tool must terminate and reap its process before
-claiming it has stopped. Do not detach cleanup and release the session while
-the tool is still changing its workspace.
+Each tool defines a concrete cancellation boundary for the resources it owns.
+Apply patch checks cancellation before synchronous filesystem execution; once
+started, that execution finishes and its observed outcome enters the pending
+batch before the prompt settles. A process-owning tool terminates and reaps its
+process before reporting that it stopped. The session guard remains held while
+owned work can still change the workspace.
 
 Cancellation during a model request stops Ox's consumption and prevents new
 tool execution. It does not establish whether upstream processing or billing
@@ -827,11 +824,10 @@ need to re-emit terminal updates that were already enqueued successfully.
 | Provider failure before acceptance | Retain the user and prior committed batches; discard provisional output. | Request error. |
 | Delivery failure | Stop new execution; settle any accepted batch independently of delivery. | Propagate connection failure after local settlement; receipt is not guaranteed. |
 | Storage failure | Failed transaction contributes no accepted history; retain earlier commits. | Persistence error, with the original exit retained as context where useful. |
-| Unexpected task drop or process termination | Only previously committed data is guaranteed. | No guaranteed terminal response. |
 
-A tool has no special persistence authority: a successful tool result can
-still be lost if its batch cannot be committed. Report that storage failure
-without rerunning the tool or claiming its effects were rolled back.
+The closed assistant batch is the persistence boundary for tool results. The
+prompt retains ownership through the commit attempt, stops later work when the
+commit fails, and reports the storage error.
 
 An error response does not imply a successful final commit or successful prior
 delivery. Only the successful response contract asserts the required write
@@ -922,57 +918,39 @@ Ox adds no intermediate event queue and makes no bounded-buffering claim.
 Should slow-client memory growth become an observed problem, solve it where
 the outgoing transport queue is owned.
 
-Connection shutdown should signal active prompts and allow ordinary settlement
-while the task executor remains available. Unexpected task abortion, process
-exit, or a shutdown deadline can prevent asynchronous settlement; only earlier
-commits are guaranteed in those cases. A drop guard promises admission cleanup
-when dropped, not durable cleanup on every termination path.
+Connection shutdown signals active prompts and keeps the task executor available
+until admitted operations settle and release their guards.
 
 Provider and input failures become request errors on a healthy connection.
 Only actual connection failure escapes at the connection task boundary.
 
-## 15. Durability boundary and future mutating tools
+## 15. Tool execution and persistence
 
-Closed-batch commits establish conversation consistency. They do not establish
-durable execution of external actions.
+Ox's tool-execution persistence contract is:
 
-Consider this sequence:
+1. The accepted user message is committed before the model request begins.
+2. Tool execution begins from a complete, validated assistant message owned by
+   the active prompt.
+3. The prompt owns each tool through its resource-specific cancellation boundary.
+   A synchronous mutating operation finishes and yields an observed outcome
+   before the prompt acts on cancellation.
+4. Every observed outcome enters the prompt's in-memory `PendingBatch` before a
+   terminal client update, a later tool call, or another model request.
+5. Once every call has a terminal outcome, the assistant message and all results
+   are appended to the transcript in one transaction.
+6. Accepted in-memory history advances after that transaction commits. The next
+   model request and a successful prompt response follow the same boundary.
+7. A delivery failure stops later calls in the accepted batch and settles their
+   outcomes. A batch storage failure stops the prompt before another model
+   request. The session operation guard remains held through settlement.
+8. Orderly connection shutdown waits for admitted tool work and settlement to
+   finish.
+9. Session load, replay, and model continuation use committed transcript events.
 
-```text
-accept assistant message containing a tool call
-execute tool
-observe result
-process terminates before the batch commit
-```
-
-After restart, the database contains the earlier committed history and user
-input but may contain neither that assistant message nor the tool result.
-With a read-only tool this loses an observation. With a mutating tool it can
-lose the record of a real external change.
-
-The initial implementation accepts that window only within the read-only tool
-scope. It never infers from missing history that the tool had no effects and
-never automatically retries the prompt or tool after restart.
-
-Before introducing a mutating tool, specify at least:
-
-- What execution intent is committed before starting the effect.
-- How an observed result becomes durable independently of a later model call.
-- How load represents an operation with intent but no known outcome.
-- Which tool-specific resources must be stopped or inspected during recovery.
-- Whether any operation is safe to retry and what concrete evidence establishes
-  that safety.
-- How unresolved execution records are excluded from normal model continuation
-  until they have an explicit terminal or uncertain outcome.
-
-Persisting intent and results at finer boundaries is a likely direction, but
-this document does not prebuild an execution journal or promise exactly-once
-semantics. A local database transaction cannot atomically commit an arbitrary
-external effect. Even a future execution journal must represent uncertainty
-honestly.
-
-This is a scope boundary, not an invitation to add generic workflow machinery
-before any mutating tool exists.
+The prompt owner, `PendingBatch`, `SessionStore::append_batch`, and session
+operation guard implement this contract. New tools integrate their concrete
+resource lifecycle with these existing boundaries. This is the complete
+persistence model for prompt-owned tool execution.
 
 ## 16. Errors and diagnostics
 
@@ -1096,7 +1074,7 @@ possible.
 | No schema migration. | A schema change requires deleting the local database. | Conversations become valuable enough to carry across schema versions. |
 | Busy instead of queueing. | Clients must retry conflicting operations. | A real requirement for queued or independently arriving work. |
 | Sequential tools. | Independent calls cannot overlap. | A measured latency benefit sufficient to justify concurrency and cancellation complexity. |
-| Closed-batch commits. | Uncommitted execution observations can be lost on termination. | Mutating tools; execution durability must be decided before enabling them. |
+| Closed-batch tool persistence. | Tool results become committed conversation state with their complete assistant batch. | Work that must continue independently of the prompt that started it. |
 | Provisional output is discarded on interruption. | Some live text disappears on reload. | A product requirement for durable interrupted output. |
 | Concrete provider-qualified continuation metadata. | Storage understands one provider's continuation concept. | A real second provider, addressed without losing existing data semantics. |
 | No independent session actor. | The prompt task handles only work initiated by its prompt. | Background work that must enter a session independently. |

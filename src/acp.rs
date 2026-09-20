@@ -12,6 +12,7 @@ use std::{
 
 use agent_client_protocol::{
     Agent, ConnectTo, Error, JsonRpcResponse, Responder, Result, Stdio,
+    schema::ProtocolVersion,
     schema::v1::{
         AgentAuthCapabilities, AgentCapabilities, AuthMethod, AuthMethodTerminal,
         CancelNotification, DeleteSessionRequest, DeleteSessionResponse, InitializeRequest,
@@ -169,8 +170,10 @@ fn terminal_auth_method() -> AuthMethod {
     )
 }
 
+/// The agent speaks exactly one protocol version, so the response always
+/// names it; a client that needs a different one disconnects.
 fn initialize_response(initialize: &InitializeRequest) -> InitializeResponse {
-    let mut response = InitializeResponse::new(initialize.protocol_version).agent_capabilities(
+    let mut response = InitializeResponse::new(ProtocolVersion::LATEST).agent_capabilities(
         AgentCapabilities::new()
             .load_session(true)
             .session_capabilities(
@@ -310,10 +313,7 @@ async fn serve(state: ServerState, transport: impl ConnectTo<Agent> + 'static) -
 mod tests {
     use std::path::Path;
 
-    use agent_client_protocol::schema::{
-        ProtocolVersion,
-        v1::{AuthCapabilities, ClientCapabilities, ErrorCode},
-    };
+    use agent_client_protocol::schema::v1::{AuthCapabilities, ClientCapabilities, ErrorCode};
 
     use super::*;
 
@@ -321,6 +321,14 @@ mod tests {
         let state = ServerState::new(SessionStore::in_memory());
         *state.model.lock().unwrap() = Some(ModelClient::new("test-key".to_owned()));
         state
+    }
+
+    #[test]
+    fn initialize_answers_with_the_supported_protocol_version() {
+        let unsupported = ProtocolVersion::from(99);
+        let response = initialize_response(&InitializeRequest::new(unsupported));
+
+        assert_eq!(response.protocol_version, ProtocolVersion::V1);
     }
 
     #[test]

@@ -84,3 +84,13 @@ building speculative hardening around a design that is still moving.
 Harden only after the design has proved itself, and against failures the project
 has actually observed. Then add the abstractions, typed recovery paths, tighter
 lifetimes, configuration, and tests that the stable behavior has earned.
+
+For tools that change files:
+
+- Once a file change starts, let it finish before acting on cancellation.
+- After all tool calls in a model response finish, save the assistant message
+  and tool results together with the existing `SessionStore::append_batch`.
+- Keep the session marked busy until that save attempt and response handling
+  finish.
+- Add no database tables or restart recovery for tool calls without a separate
+  design decision.

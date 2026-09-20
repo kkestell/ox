@@ -343,8 +343,7 @@ rechecks do not establish exclusive filesystem access.
 
 Use ordinary filesystem operations: exclusive creation for Add, in-place writes
 for Update, `remove_file` for Delete, and `rename` for Move. Flush userspace
-buffers/finish writes before reporting success. A successful call does not
-promise power-loss durability or a filesystem/SQLite distributed transaction.
+buffers/finish writes before reporting success.
 
 Stop at the first application error. Earlier effects remain; later operations
 are not attempted. A write can truncate or partially write its target before
@@ -425,88 +424,31 @@ not-started message. A call that completes after a cancellation request keeps
 its actual `Completed` or `Failed` outcome; the enclosing prompt can still end
 as cancelled. Cancellation is not rollback.
 
-## 10. Durable intent, results, and recovery
+## 10. Execution and transcript persistence
 
-This section is the mutating-tool decision required by section 15 of
-[the architecture design](ox-architecture-design.md#15-durability-boundary-and-future-mutating-tools).
-It extends the initial read-only scope. Closed transcript batches remain the
-public history unit; a small private pending-batch record captures execution
-intent and observed results before that batch is closed.
+Apply patch uses the prompt's existing `PendingBatch` and closed-batch storage
+path. Its execution and persistence guarantees are:
 
-Add one optional pending row per session in SQLite, containing the complete
-accepted assistant message and one execution slot per call, in call order.
-Each slot is exactly one of:
+1. The model's complete assistant message is accepted before any patch begins.
+2. Cancellation is checked immediately before synchronous filesystem execution.
+   Once execution begins, the prompt owns it through completion and captures its
+   observed `ToolOutcome` before responding to cancellation.
+3. The outcome enters the in-memory pending batch before its terminal client
+   update, any later tool call, or another model request.
+4. Once every call in the assistant message has a terminal outcome, the message
+   and its results are appended to the transcript in one transaction.
+5. Accepted in-memory history advances only after that transaction succeeds.
+   Another model request and a successful prompt response follow the same
+   boundary.
+6. A delivery failure stops later calls in the accepted batch and settles their
+   outcomes. A batch storage failure stops the prompt before another model
+   request. The session operation guard remains held until settlement finishes.
+7. Orderly connection shutdown waits for admitted prompt work and settlement to
+   finish.
 
-- `NotStarted`.
-- `Running`: execution intent was committed; effects may have occurred.
-- `Finished(ToolOutcome)`: an observed or explicitly synthesized terminal result.
-
-Use a concrete enum and the existing message/result row codecs. The pending
-row is private storage, not a new transcript event type. Its session key is
-unique and references the session with cascading deletion. Store the payload
-as JSON; no general job scheduler, leases, execution IDs beyond existing call
-IDs, or per-file journal is needed. Validate slot count, ordering, call identity,
-and at most one running slot on read. Malformed storage is an error.
-
-For any accepted assistant message with tool calls:
-
-1. Commit its pending row with all slots `NotStarted` before starting any call.
-2. Before invoking a call, commit that slot as `Running`. A failed commit means
-   no execution. Then check cancellation and either execute or settle it as
-   explicitly not started. A crash between these steps may conservatively be
-   reported as uncertain.
-3. After the call, record its observed outcome in memory, then commit it as
-   `Finished` before terminal notification, another tool, or another model call.
-4. When every slot is terminal, atomically append the existing closed assistant
-   batch to `events` and remove its pending row in the same transaction. Advance
-   in-memory accepted history only after that transaction succeeds.
-
-Messages without tools retain their existing closed-batch path. Apply the
-pending protocol consistently to a batch containing both patch and other tools.
-An unknown tool or malformed arguments can finish with an ordinary failed result.
-Cancelled/unattempted calls and calls withheld by the model-call limit receive
-their current explicit terminal results before the batch is finalized.
-
-If notification delivery fails, preserve/persist observed results and settle
-unstarted calls through the pending row. If result persistence fails, stop the
-prompt and start no further work. Settlement may persist the already observed
-result, but must never rerun the tool. If storage stays unavailable, retain
-the last durable row for recovery and return a storage error. Do not claim
-that files reverted because a database write failed.
-
-Before load/replay or a new prompt continues an idle session, resolve its pending
-row under that session's admission guard:
-
-- Keep every `Finished` result unchanged.
-- Convert `Running` to `Failed` with: "Execution was interrupted before its
-  result was saved. Files may have changed. Inspect the workspace before
-  attempting this patch again."
-- Convert `NotStarted` to `Cancelled` with an explicit interrupted-before-start
-  message.
-- Finalize the resulting closed batch transactionally before replay or model
-  request construction. If that fails, fail the request; do not continue with
-  missing or unresolved tool results.
-
-Validate a load request's workspace before recovery. For a new prompt, recover
-before appending its user message, so the recovered batch remains adjacent to
-the conversation that produced it.
-
-Recovery never reads filesystem state to invent success, reexecutes a call,
-or resumes the old prompt automatically. Explicitly deleting an idle session
-may delete its pending record with the conversation; it never undoes files.
-Listing sessions does not resume or settle execution.
-
-The write/result-commit gap remains: the database and filesystem cannot commit
-atomically. The guarantee is durable intent and an honest uncertain outcome,
-not exactly-once editing. Call IDs do not make a patch idempotent. No automatic
-retry is permitted, even when an error sounds transient. A later model request
-can propose a new patch after inspecting current content supplied by the user
-or a future read tool.
-
-Follow `AGENTS.md`'s no-backwards-compatibility policy when implementing the
-new table: recreate the development database for the changed schema. Add no
-migration or versioning framework. Database recreation is an explicit developer
-action, never an automatic side effect of a patch call or failed recovery.
+These guarantees are implemented by the existing prompt owner, in-memory
+pending batch, closed-batch transaction, and session operation guard. Apply
+patch adds its resource-specific execution behavior to those boundaries.
 
 ## 11. Implementation boundaries
 
@@ -515,10 +457,7 @@ action, never an automatic side effect of a patch call or failed recovery.
 | `src/tools.rs` | Add schema/guidance, argument validation, stable title, and dispatch with session workspace context. |
 | `src/tools/patch.rs` | Own patch parsing, text matching, preflight, and filesystem execution using concrete types/functions. |
 | `src/acp.rs` | Own/share one edit mutex; pass it into the prompt's tool context. |
-| `src/acp/prompt.rs` | Supply stored `cwd`; checkpoint execution slots; observe mutations through cancellation; finalize batches. |
-| `src/sessions.rs` | Own pending-row storage, validation, finalization/recovery, and table definition. |
-| `src/acp/convert.rs` | Reuse existing raw-input and text-result projection; preserve replay behavior. |
-| `src/model.rs` | Continue encoding ordinary function calls/results. No new transport or patch-specific stream event. |
+| `src/acp/prompt.rs` | Supply stored `cwd`; keep synchronous patch execution owned through its observed outcome. |
 
 Suggested internal shape: an owned `Patch` with `Vec<FileOperation>`, where
 `FileOperation` is a closed Add/Delete/Update enum and Update carries an optional
@@ -527,14 +466,12 @@ Use existing `io::Error` conventions for ordinary boundary errors. A parser or
 filesystem error from model input must not panic; broken internal state must
 fail loudly. Do not add traits or configuration for hypothetical executors.
 
-Lock ordering must stay simple: storage checkpoints release the SQLite mutex
-before filesystem execution; filesystem execution releases the edit mutex
-before result persistence. Never hold both together. No mutex guard crosses
-an asynchronous wait. Only the prompt owner advances its execution slots.
+The edit mutex is held only through synchronous preflight and filesystem
+execution, then released before the prompt stores the closed batch. No mutex
+guard crosses an asynchronous wait. Only the prompt owner advances result slots.
 
-The tool is available only when the filesystem behavior, cancellation ownership,
-and pending-record protocol are implemented together. Do not advertise a
-mutating tool while still relying on the read-only crash assumptions.
+Advertise the tool after its filesystem behavior, cancellation ownership, and
+closed-batch integration are implemented together.
 
 ## 12. Acceptance tests
 
@@ -582,16 +519,12 @@ specification explicitly differs.
   through the normal function-result loop and can be followed by a new call.
 - Cancellation before execution makes no changes. Cancellation during execution
   retains its observed result and skips remaining calls. Shutdown waits for it.
-- A failed intent commit prevents execution; a failed result commit prevents
-  subsequent calls; failed delivery does not erase observed results.
-- Reopen the store at each durable boundary: all not-started slots, one running
-  slot, saved results with remaining calls, and all results saved before batch
-  finalization. Recovery closes each exactly once without filesystem execution.
-- Replay and the next model request contain the recovered assistant message
-  plus exactly one terminal result per call, including uncertain outcomes.
-  A failed recovery commit blocks both. Malformed pending rows fail explicitly.
-- Session deletion removes its pending row without changing workspace files;
-  storage failures do not trigger automatic database recreation.
+- An observed outcome enters the in-memory pending batch before terminal
+  delivery. Delivery failure still settles the accepted batch through storage.
+- A successful batch commit stores the assistant message and exactly one result
+  per call; replay and the next model request reconstruct that same batch.
+- A failed batch commit prevents another model request and returns a storage
+  error through the existing settlement path.
 
 An optional model evaluation can later compare valid-call rate, patch success,
 unintended edits, retries, and tokens across models. Keep that separate from
