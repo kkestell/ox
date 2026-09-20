@@ -65,14 +65,16 @@ case rather than add a second resolution strategy.
 
 ### 2. One CRLF line converts the whole file to CRLF — `src/tools/patch.rs:131`
 
-`update` selects the output line ending with `source.contains("\r\n")`, so a
-predominantly-LF file containing a single CRLF line is rewritten entirely to
-CRLF. Probe: `update("a\nb\r\nc\n", …)` with a chunk touching only `a` returns
-`"A\r\nb\r\nc\r\n"` — three changed lines for a one-line edit.
+`update` splits into lines and rejoins with a single ending, so a mixed file is
+always normalized. The ending is chosen with `source.contains("\r\n")`, which
+picks CRLF whenever a single CRLF line is present. Probe: `update("a\nb\r\nc\n", …)`
+with a chunk touching only `a` returns `"A\r\nb\r\nc\r\n"` — an otherwise-LF file
+converted wholesale for a one-line edit.
 
-The design says mixed endings are not a goal, which justifies picking one style,
-but not picking the rarer one. Taking the style from the file's first line ending
-is the same amount of code and matches the common case:
+Normalizing is inherent to the line-split design and the design document rules
+mixed endings out of scope, so the defect is the choice of style, not the
+normalization. Taking it from the file's first line ending is the same amount of
+code and keeps the common case on LF:
 
 ```rust
 let ending = match source.split_once('\n') {
@@ -183,3 +185,34 @@ inside the "just enough Rust" budget, and the tests cover the contract rather th
 the internals. Finding 1 is a real data-loss path and should be fixed before this
 lands. Findings 2 and 3 are small corrections with no new machinery. Findings 4
 through 6 are documentation and readability.
+
+## Resolution
+
+All six findings were addressed in the commit that follows this document. Both
+open questions were decided by the author: reject symbolic links as targets for
+every operation, and split the integration test.
+
+1. **Fixed.** `resolve` tracks whether the final path component was a symbolic
+   link and rejects it with `path is a symbolic link`, for Add, Update, Delete,
+   and Move alike. `eng/ox-apply-patch-tool.md` section 5 and
+   `src/tools/patch-guide.txt` carry the rule. The symlink test gained an
+   in-workspace link and asserts its target survives all three operations.
+2. **Fixed.** The output line ending now comes from the file's first line
+   ending. A mixed file is still normalized to one style, which the design
+   document states explicitly; two test cases pin both directions.
+3. **Fixed.** An empty `Move to:` destination is a parse error naming the
+   destination, alongside the existing empty-path check.
+4. **Fixed.** `patch-guide.txt` is listed in the `AGENTS.md` source map and the
+   design document's module table, and section 2 says the shipped description is
+   the whole guide.
+5. **Fixed.** The scenario loop became five tests over three shared fixtures
+   (`patch_harness`, `patch_result`, `assert_replays_patch`), with no branching
+   inside any test and no change in coverage.
+6. **Fixed.** A three-line comment at the second cancellation check explains that
+   a tool changing files runs to completion once started, so the `select!` below
+   cannot observe the cancellation.
+
+Verified after the fixes: `cargo test` 55 passed, `cargo clippy --all-targets`
+clean, `cargo fmt` clean, and one live `ox run` against a scratch workspace and
+`OX_DATA_DIR`, which edited an existing file and created a new one through the
+model.

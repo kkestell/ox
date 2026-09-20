@@ -7,6 +7,7 @@ THIS DOCUMENT MUST BE KEPT UP TO DATE
 - `src/openrouter.rs`: OpenRouter client, request encoding, and streamed-response assembly.
 - `src/tools.rs`: Concrete tool schemas, display titles, and execution of one complete call.
 - `src/tools/patch.rs`: Patch parsing, exact text matching, workspace path validation, and filesystem changes.
+- `src/tools/patch-guide.txt`: The patch format guidance shipped as the `apply_patch` tool description.
 - `src/sessions.rs`: Transcript types, assistant-batch validation, `SessionStore` over one SQLite connection, and the private row codec.
 - `src/acp.rs`: Connection wiring, `ServerState`, lazy OpenRouter client, request handlers, and the headless prompt entry point.
 - `src/acp/operations.rs`: One active prompt, load, or delete per session, enforced by an operation guard.

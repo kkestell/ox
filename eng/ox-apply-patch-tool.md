@@ -42,9 +42,10 @@ Register this function alongside the existing concrete tools:
 }
 ```
 
-The model guidance should include the example and rules in section 3. The tool
-uses the session's stored `cwd`; it does not accept a separate working directory
-or execute shell syntax.
+The shipped `description` is the whole of `src/tools/patch-guide.txt`, which
+opens with the sentence above and continues with the example and rules in
+section 3. The tool uses the session's stored `cwd`; it does not accept a
+separate working directory or execute shell syntax.
 
 Malformed arguments and patch errors produce `ToolOutcome::Failed`. Tool
 execution begins only after Ox validates the model completion and its assistant
@@ -103,9 +104,10 @@ formal error taxonomy.
 
 ## 4. Applying updates
 
-Treat updated files as ordinary UTF-8 text. Support LF and CRLF files, preserve
-an existing file's line-ending style, and use LF for new files. Mixed line
-endings and byte-for-byte compatibility with other patch tools are not goals.
+Treat updated files as ordinary UTF-8 text. Support LF and CRLF files, and use
+LF for new files. Take an updated file's line-ending style from its first line
+ending and write the whole file in that style. Mixed line endings and
+byte-for-byte compatibility with other patch tools are not goals.
 
 Apply chunks in their patch order:
 
@@ -137,8 +139,9 @@ SDK.
 
 All paths are relative to the session workspace. Reject absolute paths, parent
 traversal, the workspace root itself, and any path that resolves outside the
-workspace, including through a symbolic link. Do not expand tildes, variables,
-globs, URLs, or quoted names.
+workspace, including through a symbolic link. Reject a path whose final
+component is a symbolic link, so every operation names the file it changes. Do
+not expand tildes, variables, globs, URLs, or quoted names.
 
 Use these ordinary operation rules:
 
@@ -194,6 +197,7 @@ Suggested module changes:
 | --- | --- |
 | `src/tools.rs` | Add the schema, title, argument parsing, and dispatch. |
 | `src/tools/patch.rs` | Parse and apply patches with concrete owned types. |
+| `src/tools/patch-guide.txt` | Hold the model guidance shipped as the tool description. |
 | `src/acp/prompt.rs` | Pass the session workspace to tool execution. |
 
 An owned `Patch` containing a `Vec<FileOperation>` is sufficient. Keep parsing
@@ -214,8 +218,9 @@ required.
 - Confirm exact forward matching, literal anchors, repeated-context selection,
   and failure on whitespace-only differences.
 - Cover ordinary LF and CRLF files and preservation of the final newline.
-- Reject workspace escapes, symlink escapes, missing sources, existing Add or
-  Move destinations, directories, and duplicate targets.
+- Reject workspace escapes, symlink escapes, symbolic links named as targets,
+  missing sources, existing Add or Move destinations, directories, and duplicate
+  targets.
 - Verify that a preflight failure changes nothing and an application failure
   reports any earlier completed operations without attempting later ones.
 - Verify the schema, stable title, prompt run, cancellation before

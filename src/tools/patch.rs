@@ -61,7 +61,10 @@ impl Patch {
                 let destination = lines
                     .get(index)
                     .and_then(|line| line.strip_prefix("*** Move to: "));
-                if destination.is_some() {
+                if let Some(destination) = destination {
+                    if destination.is_empty() {
+                        return Err(error(index, "move destination is empty"));
+                    }
                     index += 1;
                 }
                 let mut chunks = Vec::new();
@@ -128,10 +131,9 @@ impl Patch {
 }
 
 fn update(source: &str, chunks: &[Chunk]) -> Result<String, String> {
-    let ending = if source.contains("\r\n") {
-        "\r\n"
-    } else {
-        "\n"
+    let ending = match source.split_once('\n') {
+        Some((first, _)) if first.ends_with('\r') => "\r\n",
+        _ => "\n",
     };
     let mut lines: Vec<String> = source.lines().map(str::to_owned).collect();
     let mut cursor = 0;
@@ -171,6 +173,7 @@ fn update(source: &str, chunks: &[Chunk]) -> Result<String, String> {
 fn resolve(root: &Path, name: &str) -> Result<PathBuf, String> {
     let mut path = root.to_path_buf();
     let mut has_name = false;
+    let mut symlink = false;
     for component in Path::new(name).components() {
         let component = match component {
             Component::Normal(component) => component,
@@ -180,8 +183,11 @@ fn resolve(root: &Path, name: &str) -> Result<PathBuf, String> {
         has_name = true;
         path.push(component);
         match fs::symlink_metadata(&path) {
-            Ok(_) => path = path.canonicalize().map_err(|error| error.to_string())?,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Ok(metadata) => {
+                symlink = metadata.is_symlink();
+                path = path.canonicalize().map_err(|error| error.to_string())?;
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => symlink = false,
             Err(error) => return Err(error.to_string()),
         }
         if !path.starts_with(root) {
@@ -190,6 +196,9 @@ fn resolve(root: &Path, name: &str) -> Result<PathBuf, String> {
     }
     if !has_name || path == root {
         return Err("path names the workspace root".to_owned());
+    }
+    if symlink {
+        return Err("path is a symbolic link".to_owned());
     }
     Ok(path)
 }
@@ -493,6 +502,12 @@ mod tests {
                 source.replacen('a', "A", 1)
             );
         }
+        // A mixed file is rewritten in the style of its first line ending.
+        assert_eq!(edit("a\nb\r\nc\n", "@@\n-a\n+A\n").unwrap(), "A\nb\nc\n");
+        assert_eq!(
+            edit("a\r\nb\nc\r\n", "@@\n-a\n+A\n").unwrap(),
+            "A\r\nb\r\nc\r\n"
+        );
         assert_eq!(edit("a\r\n", "@@\n-a\n").unwrap(), "");
         assert_eq!(edit("", "@@\n+new\n").unwrap(), "new");
         assert_eq!(edit("a\n", "@@\n-a\n+\n").unwrap(), "\n");
@@ -511,6 +526,7 @@ mod tests {
             "*** Begin Patch\n*** Add File: first\n+ok\n*** Delete File: x\n-body\n*** End Patch",
             "*** Begin Patch\n*** Update File: x\n*** End Patch",
             "*** Begin Patch\n*** Update File: x\n@@ -1 +1 @@\n*** End Patch",
+            "*** Begin Patch\n*** Update File: x\n*** Move to: \n*** End Patch",
         ] {
             assert!(
                 apply(&workspace.0, input)
@@ -559,7 +575,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn symlinks_cannot_escape_or_hide_duplicate_targets() {
+    fn symlinks_are_never_targets_and_cannot_escape_or_hide_duplicates() {
         use std::os::unix::fs::symlink;
         let workspace = Workspace::new();
         let outside = Workspace::new();
@@ -568,12 +584,17 @@ mod tests {
         symlink(outside.0.join("file"), workspace.0.join("file-link")).unwrap();
         symlink(outside.0.join("missing"), workspace.0.join("dangling")).unwrap();
         symlink(&workspace.0, workspace.0.join("root-link")).unwrap();
+        fs::write(workspace.0.join("inside"), "inside\n").unwrap();
+        symlink(workspace.0.join("inside"), workspace.0.join("inside-link")).unwrap();
         for body in [
             "*** Add File: escape/new/nested\n+x\n",
             "*** Delete File: file-link\n",
             "*** Add File: dangling\n+x\n",
             "*** Delete File: root-link\n",
             "*** Add File: name\n*** Add File: root-link/name\n",
+            "*** Delete File: inside-link\n",
+            "*** Update File: inside-link\n@@\n-inside\n+changed\n",
+            "*** Update File: inside-link\n*** Move to: moved\n",
         ] {
             assert!(
                 apply(&workspace.0, &wrapped(body))
@@ -586,6 +607,11 @@ mod tests {
             "outside"
         );
         assert_eq!(fs::read_dir(&outside.0).unwrap().count(), 1);
+        assert_eq!(
+            fs::read_to_string(workspace.0.join("inside")).unwrap(),
+            "inside\n"
+        );
+        assert!(fs::symlink_metadata(workspace.0.join("inside-link")).is_ok());
     }
 
     #[test]

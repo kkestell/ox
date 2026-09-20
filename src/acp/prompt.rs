@@ -280,6 +280,9 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
             }
             (self.send_update)(convert::in_progress_tool_call_update(&call.call_id))
                 .map_err(PromptOutcome::AcpUpdate)?;
+            // A tool that changes files runs to completion once started, so the
+            // select below never chooses cancellation for it. Check again here
+            // to catch a cancellation that arrived while the update was sent.
             if self.cancellation.is_cancelled() {
                 return Err(PromptOutcome::Cancelled);
             }
@@ -380,14 +383,19 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
 
 #[cfg(test)]
 mod tests {
-    use std::{cell::RefCell, path::Path, rc::Rc};
+    use std::{cell::RefCell, fs, path::Path, rc::Rc};
 
     use agent_client_protocol::schema::v1::ToolCallStatus;
 
     use super::*;
-    use crate::openrouter::{
-        DEFAULT_MODEL,
-        fixture::{Reply, Server, delta, text_reply, tool_reply},
+    use serde_json::json;
+
+    use crate::{
+        openrouter::{
+            DEFAULT_MODEL,
+            fixture::{Reply, Server, delta, sse, text_reply, tool_reply},
+        },
+        tools::fixture::Workspace,
     };
 
     type Updates = Rc<RefCell<Vec<SessionUpdate>>>;
@@ -527,128 +535,180 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn patch_execution_cancellation_saving_and_replay() {
-        use crate::{openrouter::fixture::sse, tools::fixture::Workspace};
-        use serde_json::json;
+    const PATCH: &str =
+        "*** Begin Patch\n*** Add File: first\n+one\n*** Add File: second\n+two\n*** End Patch";
 
-        for scenario in [
-            "complete",
-            "cancel before",
-            "cancel after",
-            "update failure",
-            "invalid completion",
-        ] {
-            let workspace = Workspace::new();
-            let patch = "*** Begin Patch\n*** Add File: first\n+one\n*** Add File: second\n+two\n*** End Patch";
-            let reply = Reply::Stream(sse(&[delta(
-                json!({
-                    "role": "assistant",
-                    "tool_calls": [{
-                        "index": 0,
-                        "id": "patch-1",
-                        "type": "function",
-                        "function": {
-                            "name": "apply_patch",
-                            "arguments": json!({ "patch": patch }).to_string()
-                        }
-                    }]
-                }),
-                Some(if scenario == "invalid completion" {
-                    "unknown"
-                } else {
-                    "tool_calls"
-                }),
-            )]));
-            let harness =
-                Harness::in_workspace(vec![reply, text_reply("Done.")], &workspace.0).await;
-            let cancel = harness.cancellation.clone();
-            let (response, transcript) = harness.run("Apply the patch", |update| {
-                if scenario == "cancel before" && matches!(update,
-                    SessionUpdate::ToolCallUpdate(update) if update.fields.status == Some(ToolCallStatus::InProgress)
-                ) {
+    const APPLIED: &str = "Applied patch.\nA first\nA second";
+
+    /// A prompt whose first reply is one `apply_patch` call adding `first` and
+    /// `second`, followed by a plain answer.
+    async fn patch_harness(workspace: &Path, finish_reason: &str) -> Harness {
+        let call = Reply::Stream(sse(&[delta(
+            json!({
+                "role": "assistant",
+                "tool_calls": [{
+                    "index": 0,
+                    "id": "patch-1",
+                    "type": "function",
+                    "function": {
+                        "name": "apply_patch",
+                        "arguments": json!({ "patch": PATCH }).to_string()
+                    }
+                }]
+            }),
+            Some(finish_reason),
+        )]));
+        Harness::in_workspace(vec![call, text_reply("Done.")], workspace).await
+    }
+
+    fn patch_result(transcript: &[TranscriptEntry]) -> &ToolResult {
+        transcript
+            .iter()
+            .find_map(|entry| match entry {
+                TranscriptEntry::ToolResult(result) => Some(result),
+                _ => None,
+            })
+            .expect("the patch call left one tool result")
+    }
+
+    fn sent_patch_call(harness: &Harness) -> bool {
+        harness.updates().iter().any(
+            |update| matches!(update, SessionUpdate::ToolCall(call) if call.title == "Apply patch"),
+        )
+    }
+
+    fn assert_replays_patch(harness: &Harness, outcome: &ToolOutcome, status: ToolCallStatus) {
+        let mut replay = Vec::new();
+        convert::replay_transcript(&harness.stored(), |update| {
+            replay.push(update);
+            Ok(())
+        })
+        .unwrap();
+        assert!(replay.iter().any(|update| matches!(update,
+            SessionUpdate::ToolCall(call) if call.title == "Apply patch"
+                && call.raw_output == Some(json!(outcome.text()))
+                && call.status == status
+        )));
+    }
+
+    #[tokio::test]
+    async fn a_patch_call_writes_its_files_and_saves_its_summary() {
+        let workspace = Workspace::new();
+        let harness = patch_harness(&workspace.0, "tool_calls").await;
+        let (response, transcript) = harness.run("Apply the patch", |_| Ok(())).await;
+
+        assert_eq!(response.unwrap().stop_reason, StopReason::EndTurn);
+        assert_eq!(
+            fs::read_to_string(workspace.0.join("first")).unwrap(),
+            "one\n"
+        );
+        assert_eq!(
+            fs::read_to_string(workspace.0.join("second")).unwrap(),
+            "two\n"
+        );
+
+        let outcome = &patch_result(&transcript).outcome;
+        assert_eq!(*outcome, ToolOutcome::Completed(APPLIED.to_owned()));
+        assert_eq!(harness.stored(), transcript);
+        assert!(sent_patch_call(&harness));
+        assert_replays_patch(&harness, outcome, ToolCallStatus::Completed);
+
+        let requests = harness.server.requests();
+        assert!(
+            requests[0]["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|tool| tool["function"]["name"] == "apply_patch")
+        );
+        assert_eq!(requests[1]["messages"][2]["content"], outcome.text());
+    }
+
+    #[tokio::test]
+    async fn cancelling_before_execution_leaves_the_workspace_untouched() {
+        let workspace = Workspace::new();
+        let harness = patch_harness(&workspace.0, "tool_calls").await;
+        let cancel = harness.cancellation.clone();
+        let (response, transcript) = harness
+            .run("Apply the patch", |update| {
+                if matches!(update, SessionUpdate::ToolCallUpdate(update)
+                    if update.fields.status == Some(ToolCallStatus::InProgress))
+                {
                     cancel.cancel();
                 }
-                if terminal_update_for(update, "patch-1") {
-                    if scenario == "cancel after" {
-                        cancel.cancel();
-                    }
-                    if scenario == "update failure" {
-                        return Err(Error::internal_error().data("connection closed"));
-                    }
-                }
-                Ok(())
-            }).await;
-            if scenario == "invalid completion" {
-                assert!(response.is_err());
-                assert_eq!(transcript, vec![model(), user("Apply the patch")]);
-                assert_eq!(harness.stored(), transcript);
-                assert_eq!(std::fs::read_dir(&workspace.0).unwrap().count(), 0);
-                continue;
-            }
-            if scenario == "update failure" {
-                assert!(response.is_err());
-            } else {
-                assert_eq!(
-                    response.unwrap().stop_reason,
-                    if scenario == "complete" {
-                        StopReason::EndTurn
-                    } else {
-                        StopReason::Cancelled
-                    }
-                );
-            }
-            assert_eq!(harness.stored(), transcript);
-            let result = transcript
-                .iter()
-                .find_map(|entry| match entry {
-                    TranscriptEntry::ToolResult(result) => Some(result),
-                    _ => None,
-                })
-                .unwrap();
-            if scenario == "cancel before" {
-                assert!(matches!(result.outcome, ToolOutcome::Cancelled(_)));
-                assert_eq!(std::fs::read_dir(&workspace.0).unwrap().count(), 0);
-            } else {
-                assert_eq!(
-                    result.outcome,
-                    ToolOutcome::Completed("Applied patch.\nA first\nA second".to_owned())
-                );
-                assert_eq!(
-                    std::fs::read_to_string(workspace.0.join("first")).unwrap(),
-                    "one\n"
-                );
-                assert_eq!(
-                    std::fs::read_to_string(workspace.0.join("second")).unwrap(),
-                    "two\n"
-                );
-            }
-            assert!(harness.updates().iter().any(|update| matches!(update,
-                SessionUpdate::ToolCall(call) if call.title == "Apply patch"
-            )));
-            let mut replay = Vec::new();
-            convert::replay_transcript(&harness.stored(), |update| {
-                replay.push(update);
                 Ok(())
             })
-            .unwrap();
-            assert!(replay.iter().any(|update| matches!(update,
-                SessionUpdate::ToolCall(call) if call.title == "Apply patch"
-                    && call.raw_output == Some(json!(result.outcome.text()))
-                    && call.status == if scenario == "cancel before" { ToolCallStatus::Failed } else { ToolCallStatus::Completed }
-            )));
-            if scenario == "complete" {
-                let requests = harness.server.requests();
-                assert!(
-                    requests[0]["tools"]
-                        .as_array()
-                        .unwrap()
-                        .iter()
-                        .any(|tool| tool["function"]["name"] == "apply_patch")
-                );
-                assert_eq!(requests[1]["messages"][2]["content"], result.outcome.text());
-            }
-        }
+            .await;
+
+        assert_eq!(response.unwrap().stop_reason, StopReason::Cancelled);
+        assert_eq!(fs::read_dir(&workspace.0).unwrap().count(), 0);
+        let outcome = &patch_result(&transcript).outcome;
+        assert!(matches!(outcome, ToolOutcome::Cancelled(_)));
+        assert_eq!(harness.stored(), transcript);
+        assert!(sent_patch_call(&harness));
+        assert_replays_patch(&harness, outcome, ToolCallStatus::Failed);
+    }
+
+    #[tokio::test]
+    async fn cancelling_after_the_result_keeps_the_applied_patch() {
+        let workspace = Workspace::new();
+        let harness = patch_harness(&workspace.0, "tool_calls").await;
+        let cancel = harness.cancellation.clone();
+        let (response, transcript) = harness
+            .run("Apply the patch", |update| {
+                if terminal_update_for(update, "patch-1") {
+                    cancel.cancel();
+                }
+                Ok(())
+            })
+            .await;
+
+        assert_eq!(response.unwrap().stop_reason, StopReason::Cancelled);
+        assert_eq!(
+            fs::read_to_string(workspace.0.join("first")).unwrap(),
+            "one\n"
+        );
+        let outcome = &patch_result(&transcript).outcome;
+        assert_eq!(*outcome, ToolOutcome::Completed(APPLIED.to_owned()));
+        assert_eq!(harness.stored(), transcript);
+        assert_replays_patch(&harness, outcome, ToolCallStatus::Completed);
+    }
+
+    #[tokio::test]
+    async fn an_update_failure_after_a_patch_still_saves_its_result() {
+        let workspace = Workspace::new();
+        let harness = patch_harness(&workspace.0, "tool_calls").await;
+        let (response, transcript) = harness
+            .run("Apply the patch", |update| {
+                if terminal_update_for(update, "patch-1") {
+                    return Err(Error::internal_error().data("connection closed"));
+                }
+                Ok(())
+            })
+            .await;
+
+        assert!(response.is_err());
+        assert_eq!(
+            fs::read_to_string(workspace.0.join("second")).unwrap(),
+            "two\n"
+        );
+        assert_eq!(
+            patch_result(&transcript).outcome,
+            ToolOutcome::Completed(APPLIED.to_owned())
+        );
+        assert_eq!(harness.stored(), transcript);
+    }
+
+    #[tokio::test]
+    async fn an_invalid_completion_runs_no_patch() {
+        let workspace = Workspace::new();
+        let harness = patch_harness(&workspace.0, "unknown").await;
+        let (response, transcript) = harness.run("Apply the patch", |_| Ok(())).await;
+
+        assert!(response.is_err());
+        assert_eq!(transcript, vec![model(), user("Apply the patch")]);
+        assert_eq!(harness.stored(), transcript);
+        assert_eq!(fs::read_dir(&workspace.0).unwrap().count(), 0);
     }
 
     #[tokio::test]
