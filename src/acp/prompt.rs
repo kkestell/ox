@@ -282,7 +282,7 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
                 .map_err(PromptOutcome::AcpUpdate)?;
             let outcome = tokio::select! {
                 biased;
-                outcome = tools::execute(call) => outcome,
+                outcome = tools::execute(&self.summary.workspace_path, call) => outcome,
                 () = self.cancellation.cancelled() => ToolOutcome::Cancelled(
                     "Cancelled while this tool was running; no result was observed.".to_owned(),
                 ),

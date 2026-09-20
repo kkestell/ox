@@ -1,6 +1,8 @@
 //! The concrete tool set: schemas sent to the model, display titles, and
 //! execution of one complete call.
 
+use std::path::Path;
+
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -40,7 +42,7 @@ pub fn title(call: &ToolCall) -> String {
 
 /// Unknown names and invalid arguments are failed results the model can read
 /// on its next request, not errors that end the prompt.
-pub async fn execute(call: &ToolCall) -> ToolOutcome {
+pub async fn execute(_workspace_path: &Path, call: &ToolCall) -> ToolOutcome {
     match call.name.as_str() {
         GET_WEATHER => match serde_json::from_str::<WeatherArgs>(&call.arguments) {
             Ok(args) => ToolOutcome::Completed(format!(
@@ -70,15 +72,19 @@ mod tests {
     #[tokio::test]
     async fn weather_is_canned_and_bad_calls_fail_as_results() {
         assert_eq!(
-            execute(&call(GET_WEATHER, r#"{"location":"Chicago"}"#)).await,
+            execute(
+                Path::new("/workspace"),
+                &call(GET_WEATHER, r#"{"location":"Chicago"}"#),
+            )
+            .await,
             ToolOutcome::Completed("The weather in Chicago is warm and sunny.".to_owned())
         );
         assert!(matches!(
-            execute(&call(GET_WEATHER, r#"{"loc"#)).await,
+            execute(Path::new("/workspace"), &call(GET_WEATHER, r#"{"loc"#)).await,
             ToolOutcome::Failed(message) if message.starts_with("Invalid arguments for get_weather")
         ));
         assert_eq!(
-            execute(&call("launch", "{}")).await,
+            execute(Path::new("/workspace"), &call("launch", "{}")).await,
             ToolOutcome::Failed("Unknown tool: launch".to_owned())
         );
     }

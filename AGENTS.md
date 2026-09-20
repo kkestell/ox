@@ -2,12 +2,12 @@ THIS DOCUMENT MUST BE KEPT UP TO DATE
 
 # Source Map
 
-- `src/main.rs`: Command parsing and process entry; starts the ACP server or runs a credential command.
+- `src/main.rs`: Command parsing and process entry; starts the ACP server, runs one headless prompt, or runs a credential command.
 - `src/auth.rs`: Environment and operating-system keyring credential storage.
 - `src/openrouter.rs`: OpenRouter client, request encoding, and streamed-response assembly.
 - `src/tools.rs`: Concrete tool schemas, display titles, and execution of one complete call.
 - `src/sessions.rs`: Transcript types, assistant-batch validation, `SessionStore` over one SQLite connection, and the private row codec.
-- `src/acp.rs`: Connection wiring, `ServerState`, lazy OpenRouter client, and request handlers.
+- `src/acp.rs`: Connection wiring, `ServerState`, lazy OpenRouter client, request handlers, and the headless prompt entry point.
 - `src/acp/operations.rs`: One active prompt, load, or delete per session, enforced by an operation guard.
 - `src/acp/prompt.rs`: One prompt run: save the user message, request model output, run tools, save complete assistant batches, and respond.
 - `src/acp/convert.rs`: ACP input conversion, session update construction, and transcript replay.
@@ -15,6 +15,13 @@ THIS DOCUMENT MUST BE KEPT UP TO DATE
 ## Testing
 
 Use the `OPENROUTER_API_KEY` in `.env` when testing to avoid keychain prompts.
+
+Use `ox run [--dir <workspace>] '<prompt>'` for live end-to-end testing when a
+change affects model requests, tool execution, or transcript persistence. It
+creates a new session in `ox.db`, writes no successful output, and reports
+completion through its exit status. Set `OX_DATA_DIR` to a temporary directory
+when the test should not modify the normal database, then inspect that database
+to verify the saved session.
 
 ## Backwards Compatibility
 

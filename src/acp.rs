@@ -7,6 +7,7 @@ mod prompt;
 use std::{
     error::Error as StdError,
     io::{self, ErrorKind},
+    path::Path,
     sync::{Arc, Mutex},
 };
 
@@ -20,6 +21,7 @@ use agent_client_protocol::{
         LoadSessionResponse, LogoutCapabilities, LogoutRequest, LogoutResponse, NewSessionRequest,
         NewSessionResponse, PromptRequest, SessionCapabilities, SessionDeleteCapabilities,
         SessionId, SessionInfo, SessionListCapabilities, SessionNotification, SessionUpdate,
+        StopReason,
     },
 };
 
@@ -27,7 +29,7 @@ use crate::{
     auth, openrouter,
     sessions::{self, SessionStore, SessionSummary},
 };
-use operations::SessionOperations;
+use operations::{PromptCancellation, SessionOperations};
 
 #[derive(Clone)]
 struct ServerState {
@@ -194,6 +196,35 @@ fn initialize_response(initialize: &InitializeRequest) -> InitializeResponse {
 pub async fn run() -> std::result::Result<(), Box<dyn StdError>> {
     let store = SessionStore::open(&sessions::database_path()?)?;
     serve(ServerState::new(store), Stdio::new()).await?;
+    Ok(())
+}
+
+pub async fn run_headless(
+    workspace_path: &Path,
+    user_message: String,
+) -> std::result::Result<(), Box<dyn StdError>> {
+    let api_key = auth::api_key()?.ok_or_else(|| {
+        io::Error::new(
+            ErrorKind::PermissionDenied,
+            "OpenRouter authentication required; run `ox auth login`",
+        )
+    })?;
+    let store = SessionStore::open(&sessions::database_path()?)?;
+    let session = store.create(workspace_path, openrouter::DEFAULT_MODEL)?;
+    let response = prompt::run(
+        store,
+        openrouter::Client::new(api_key),
+        session.id,
+        user_message,
+        PromptCancellation::new(),
+        |_| Ok(()),
+    )
+    .await?;
+    if response.stop_reason != StopReason::EndTurn {
+        return Err(
+            io::Error::other(format!("prompt stopped with {:?}", response.stop_reason)).into(),
+        );
+    }
     Ok(())
 }
 
