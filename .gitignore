@@ -1,4 +1,5 @@
 /target
 /docs/
+/research/
 .env
 .DS_Store

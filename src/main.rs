@@ -1,10 +1,10 @@
 mod acp;
-mod agent;
 mod auth;
+mod model;
 mod sessions;
 mod tools;
 
-use std::{env, error::Error, io};
+use std::{env, error::Error, io, process::ExitCode};
 
 enum Command {
     Serve,
@@ -32,7 +32,17 @@ fn print_help() {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
+async fn main() -> ExitCode {
+    match run().await {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("ox: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+async fn run() -> Result<(), Box<dyn Error>> {
     match command(env::args().skip(1))? {
         Command::Serve => acp::run().await?,
         Command::Login => {
@@ -45,7 +55,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 )
                 .into());
             }
-            agent::verify_api_key(api_key).await?;
+            model::ModelClient::new(api_key.to_owned()).verify().await?;
             auth::save_api_key(api_key)?;
             println!("OpenRouter API key saved.");
         }

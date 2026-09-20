@@ -1,0 +1,237 @@
+//! Per-session admission: one prompt, load, or delete at a time, claimed
+//! atomically and released when the guard drops.
+
+use std::{
+    collections::{HashMap, hash_map::Entry},
+    sync::{Arc, Mutex, MutexGuard},
+};
+
+use agent_client_protocol::schema::v1::SessionId;
+use futures::{
+    FutureExt,
+    channel::oneshot,
+    future::{BoxFuture, Shared},
+};
+
+enum Operation {
+    Prompt(PromptCancellation),
+    Load,
+    Delete,
+}
+
+#[derive(Clone, Default)]
+pub struct SessionOperations(Arc<Mutex<OperationsState>>);
+
+#[derive(Default)]
+struct OperationsState {
+    active: HashMap<SessionId, Operation>,
+    drained: Option<oneshot::Sender<()>>,
+}
+
+/// Membership in the registry. Dropping it releases the session; nothing
+/// else does.
+pub struct OperationGuard {
+    operations: SessionOperations,
+    session_id: SessionId,
+}
+
+impl SessionOperations {
+    pub fn try_prompt(
+        &self,
+        session_id: &SessionId,
+    ) -> Option<(OperationGuard, PromptCancellation)> {
+        let cancellation = PromptCancellation::new();
+        self.claim(session_id, Operation::Prompt(cancellation.clone()))
+            .map(|guard| (guard, cancellation))
+    }
+
+    pub fn try_load(&self, session_id: &SessionId) -> Option<OperationGuard> {
+        self.claim(session_id, Operation::Load)
+    }
+
+    pub fn try_delete(&self, session_id: &SessionId) -> Option<OperationGuard> {
+        self.claim(session_id, Operation::Delete)
+    }
+
+    /// Signals the prompt that owns the session. A no-op for idle sessions
+    /// and for sessions owned by a load or delete.
+    pub fn cancel(&self, session_id: &SessionId) {
+        let cancellation = match self.lock().active.get(session_id) {
+            Some(Operation::Prompt(cancellation)) => Some(cancellation.clone()),
+            Some(Operation::Load | Operation::Delete) | None => None,
+        };
+        if let Some(cancellation) = cancellation {
+            cancellation.cancel();
+        }
+    }
+
+    /// Called once after incoming EOF, when no more operations can arrive.
+    /// Keep the connection's executor alive until settlement and replies finish.
+    pub async fn shutdown(&self) {
+        let (drained_tx, drained_rx) = oneshot::channel();
+        {
+            let mut state = self.lock();
+            if state.active.is_empty() {
+                return;
+            }
+            for operation in state.active.values() {
+                if let Operation::Prompt(cancellation) = operation {
+                    cancellation.cancel();
+                }
+            }
+            assert!(state.drained.is_none(), "shutdown is already waiting");
+            state.drained = Some(drained_tx);
+        }
+        drained_rx.await.expect("the last operation signals shutdown");
+    }
+
+    fn claim(&self, session_id: &SessionId, operation: Operation) -> Option<OperationGuard> {
+        match self.lock().active.entry(session_id.clone()) {
+            Entry::Occupied(_) => None,
+            Entry::Vacant(vacant) => {
+                vacant.insert(operation);
+                Some(OperationGuard {
+                    operations: self.clone(),
+                    session_id: session_id.clone(),
+                })
+            }
+        }
+    }
+
+    fn lock(&self) -> MutexGuard<'_, OperationsState> {
+        self.0.lock().expect("session operations mutex poisoned")
+    }
+}
+
+impl Drop for OperationGuard {
+    fn drop(&mut self) {
+        let mut state = self.operations.lock();
+        state.active.remove(&self.session_id);
+        if state.active.is_empty()
+            && let Some(drained) = state.drained.take()
+        {
+            let _ = drained.send(());
+        }
+    }
+}
+
+/// A latched cancellation signal for one prompt. Clones observe the same
+/// signal; cancelling twice is harmless.
+#[derive(Clone)]
+pub struct PromptCancellation(Arc<CancellationState>);
+
+struct CancellationState {
+    signal_tx: Mutex<Option<oneshot::Sender<()>>>,
+    signal_rx: Shared<BoxFuture<'static, ()>>,
+}
+
+impl PromptCancellation {
+    pub(crate) fn new() -> Self {
+        let (signal_tx, signal_rx) = oneshot::channel();
+        Self(Arc::new(CancellationState {
+            signal_tx: Mutex::new(Some(signal_tx)),
+            signal_rx: signal_rx.map(|_| ()).boxed().shared(),
+        }))
+    }
+
+    pub fn cancelled(&self) -> impl Future<Output = ()> + Send + 'static + use<> {
+        self.0.signal_rx.clone()
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.0.signal_rx.clone().now_or_never().is_some()
+    }
+
+    pub fn cancel(&self) {
+        let signal_tx = self
+            .0
+            .signal_tx
+            .lock()
+            .expect("prompt cancellation mutex poisoned")
+            .take();
+        if let Some(signal_tx) = signal_tx {
+            let _ = signal_tx.send(());
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn id(name: &str) -> SessionId {
+        SessionId::new(name.to_owned())
+    }
+
+    #[test]
+    fn a_claimed_session_is_busy_for_every_operation_until_the_guard_drops() {
+        let operations = SessionOperations::default();
+        let session = id("a");
+        let claims: [fn(&SessionOperations, &SessionId) -> Option<OperationGuard>; 3] = [
+            |operations, session| operations.try_prompt(session).map(|(guard, _)| guard),
+            |operations, session| operations.try_load(session),
+            |operations, session| operations.try_delete(session),
+        ];
+
+        for holder in &claims {
+            let guard = holder(&operations, &session).expect("an idle session can be claimed");
+            for incoming in &claims {
+                assert!(
+                    incoming(&operations, &session).is_none(),
+                    "the session is busy"
+                );
+            }
+            assert!(
+                operations.try_prompt(&id("b")).is_some(),
+                "other sessions are unaffected"
+            );
+            drop(guard);
+        }
+        assert!(
+            operations.try_prompt(&session).is_some(),
+            "the claim was released"
+        );
+    }
+
+    #[test]
+    fn shutdown_cancels_all_prompts_and_waits_for_every_guard() {
+        let operations = SessionOperations::default();
+        let (guard_a, cancel_a) = operations.try_prompt(&id("a")).unwrap();
+        let (guard_b, cancel_b) = operations.try_prompt(&id("b")).unwrap();
+        let mut shutdown = Box::pin(operations.shutdown());
+
+        assert!(shutdown.as_mut().now_or_never().is_none());
+        assert!(cancel_a.is_cancelled());
+        assert!(cancel_b.is_cancelled());
+        assert!(operations.try_load(&id("a")).is_none());
+        drop(guard_a);
+        assert!(shutdown.as_mut().now_or_never().is_none());
+        drop(guard_b);
+        assert!(shutdown.now_or_never().is_some());
+    }
+
+    #[test]
+    fn cancel_signals_only_the_prompt_that_owns_that_session() {
+        let operations = SessionOperations::default();
+        let (guard_a, cancel_a) = operations.try_prompt(&id("a")).unwrap();
+        let (_guard_b, cancel_b) = operations.try_prompt(&id("b")).unwrap();
+        let _load_c = operations.try_load(&id("c")).unwrap();
+
+        operations.cancel(&id("b"));
+        assert!(cancel_b.is_cancelled());
+        assert!(!cancel_a.is_cancelled());
+        futures::executor::block_on(cancel_b.cancelled());
+        operations.cancel(&id("b"));
+
+        operations.cancel(&id("c"));
+        operations.cancel(&id("idle"));
+
+        drop(guard_a);
+        operations.cancel(&id("a"));
+        let (_guard, later) = operations.try_prompt(&id("a")).unwrap();
+        assert!(
+            !later.is_cancelled(),
+            "a stale cancel does not reach a later prompt"
+        );
+    }
+}
