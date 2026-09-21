@@ -442,7 +442,7 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
 
 #[cfg(test)]
 mod tests {
-    use std::{cell::RefCell, fs, path::Path, rc::Rc};
+    use std::{cell::RefCell, fs, rc::Rc};
 
     use agent_client_protocol::schema::v1::ToolCallStatus;
 
@@ -465,22 +465,21 @@ mod tests {
         session_id: SessionId,
         cancellation: PromptCancellation,
         updates: Updates,
+        workspace: Workspace,
     }
 
     impl Harness {
         async fn new(replies: Vec<Reply>) -> Self {
-            Self::in_workspace(replies, Path::new("/Users/kyle/projects/ox")).await
-        }
-
-        async fn in_workspace(replies: Vec<Reply>, workspace: &Path) -> Self {
+            let workspace = Workspace::new();
             let store = SessionStore::in_memory();
-            let session_id = store.create(workspace, DEFAULT_MODEL).unwrap().id;
+            let session_id = store.create(&workspace.0, DEFAULT_MODEL).unwrap().id;
             Self {
                 server: Server::start(replies).await,
                 store,
                 session_id,
                 cancellation: PromptCancellation::new(),
                 updates: Rc::default(),
+                workspace,
             }
         }
 
@@ -546,22 +545,23 @@ mod tests {
             reasoning: String::new(),
             tool_calls: calls
                 .iter()
-                .map(|(id, location)| ToolCall {
+                .map(|(id, command)| ToolCall {
                     call_id: (*id).to_owned(),
-                    name: "get_weather".to_owned(),
-                    arguments: serde_json::json!({ "location": location }).to_string(),
+                    name: tools::SHELL.to_owned(),
+                    arguments: serde_json::json!({ "command": command }).to_string(),
                 })
                 .collect(),
             continuation_metadata: vec![],
         })
     }
 
-    fn weather(id: &str, location: &str) -> TranscriptEntry {
+    /// The completed result of a shell call that printed `text`.
+    fn printed(id: &str, text: &str) -> TranscriptEntry {
         TranscriptEntry::ToolResult(ToolResult {
             call_id: id.to_owned(),
-            name: "get_weather".to_owned(),
+            name: tools::SHELL.to_owned(),
             outcome: ToolOutcome::Completed(format!(
-                "The weather in {location} is warm and sunny."
+                "Exit code: 0\n\nstdout:\n{text}\n\nstderr:\n(empty)"
             )),
         })
     }
@@ -597,17 +597,13 @@ mod tests {
 
     #[tokio::test]
     async fn shell_failures_reach_the_next_model_request_and_replay() {
-        let workspace = Workspace::new();
-        let harness = Harness::in_workspace(
-            vec![
-                crate::openrouter::fixture::shell_reply(&[
-                    ("printf problem >&2; exit 7", 5),
-                    ("printf started; sleep 30", 1),
-                ]),
-                text_reply("Handled both failures."),
-            ],
-            &workspace.0,
-        )
+        let harness = Harness::new(vec![
+            crate::openrouter::fixture::shell_reply(&[
+                ("printf problem >&2; exit 7", 5),
+                ("printf started; sleep 30", 1),
+            ]),
+            text_reply("Handled both failures."),
+        ])
         .await;
         let (response, transcript) = harness.run("Run commands", |_| Ok(())).await;
         assert_eq!(response.unwrap().stop_reason, StopReason::EndTurn);
@@ -646,18 +642,14 @@ mod tests {
 
     #[tokio::test]
     async fn running_shell_cancellation_is_saved_and_skips_later_calls() {
-        let workspace = Workspace::new();
-        let harness = Harness::in_workspace(
-            vec![crate::openrouter::fixture::shell_reply(&[
-                ("printf started; touch ready; sleep 30 & wait", 30),
-                ("touch wrong", 5),
-            ])],
-            &workspace.0,
-        )
+        let harness = Harness::new(vec![crate::openrouter::fixture::shell_reply(&[
+            ("printf started; touch ready; sleep 30 & wait", 30),
+            ("touch wrong", 5),
+        ])])
         .await;
         let cancel = async {
             tokio::time::timeout(std::time::Duration::from_secs(5), async {
-                while !workspace.0.join("ready").exists() {
+                while !harness.workspace.0.join("ready").exists() {
                     tokio::time::sleep(std::time::Duration::from_millis(10)).await;
                 }
             })
@@ -669,7 +661,7 @@ mod tests {
             tokio::join!(harness.run("Run commands", |_| Ok(())), cancel);
         assert_eq!(response.unwrap().stop_reason, StopReason::Cancelled);
         assert_eq!(transcript, harness.stored());
-        assert!(!workspace.0.join("wrong").exists());
+        assert!(!harness.workspace.0.join("wrong").exists());
         let results: Vec<_> = transcript
             .iter()
             .filter_map(|entry| match entry {
@@ -697,14 +689,10 @@ mod tests {
     #[tokio::test]
     async fn shell_result_survives_update_failure_or_late_cancellation() {
         for fail_update in [false, true] {
-            let workspace = Workspace::new();
-            let harness = Harness::in_workspace(
-                vec![crate::openrouter::fixture::shell_reply(&[(
-                    "printf saved > file",
-                    5,
-                )])],
-                &workspace.0,
-            )
+            let harness = Harness::new(vec![crate::openrouter::fixture::shell_reply(&[(
+                "printf saved > file",
+                5,
+            )])])
             .await;
             let (response, transcript) = harness
                 .run("Run command", |update| {
@@ -723,7 +711,7 @@ mod tests {
                 assert_eq!(response.unwrap().stop_reason, StopReason::Cancelled);
             }
             assert_eq!(
-                fs::read_to_string(workspace.0.join("file")).unwrap(),
+                fs::read_to_string(harness.workspace.0.join("file")).unwrap(),
                 "saved"
             );
             assert_eq!(transcript, harness.stored());
@@ -739,8 +727,6 @@ mod tests {
 
     #[tokio::test]
     async fn file_and_search_results_are_saved_and_sent_to_the_next_model_request() {
-        let workspace = Workspace::new();
-        fs::write(workspace.0.join("note.txt"), "first\nneedle\nlast\n").unwrap();
         let calls: Vec<_> = [
             ("read_file", json!({"path":"note.txt", "limit":1})),
             ("glob", json!({"pattern":"*.txt"})),
@@ -759,7 +745,12 @@ mod tests {
             json!({"role":"assistant","tool_calls":calls}),
             Some("tool_calls"),
         )]));
-        let harness = Harness::in_workspace(vec![reply, text_reply("Done.")], &workspace.0).await;
+        let harness = Harness::new(vec![reply, text_reply("Done.")]).await;
+        fs::write(
+            harness.workspace.0.join("note.txt"),
+            "first\nneedle\nlast\n",
+        )
+        .unwrap();
         let (response, transcript) = harness.run("Inspect the files", |_| Ok(())).await;
         assert_eq!(response.unwrap().stop_reason, StopReason::EndTurn);
         assert_eq!(harness.stored(), transcript);
@@ -808,7 +799,7 @@ mod tests {
 
     /// A prompt whose first reply is one `apply_patch` call adding `first` and
     /// `second`, followed by a plain answer.
-    async fn patch_harness(workspace: &Path, finish_reason: &str) -> Harness {
+    async fn patch_harness(finish_reason: &str) -> Harness {
         let call = Reply::Stream(sse(&[delta(
             json!({
                 "role": "assistant",
@@ -824,7 +815,7 @@ mod tests {
             }),
             Some(finish_reason),
         )]));
-        Harness::in_workspace(vec![call, text_reply("Done.")], workspace).await
+        Harness::new(vec![call, text_reply("Done.")]).await
     }
 
     fn patch_result(transcript: &[TranscriptEntry]) -> &ToolResult {
@@ -859,17 +850,16 @@ mod tests {
 
     #[tokio::test]
     async fn a_patch_call_writes_its_files_and_saves_its_summary() {
-        let workspace = Workspace::new();
-        let harness = patch_harness(&workspace.0, "tool_calls").await;
+        let harness = patch_harness("tool_calls").await;
         let (response, transcript) = harness.run("Apply the patch", |_| Ok(())).await;
 
         assert_eq!(response.unwrap().stop_reason, StopReason::EndTurn);
         assert_eq!(
-            fs::read_to_string(workspace.0.join("first")).unwrap(),
+            fs::read_to_string(harness.workspace.0.join("first")).unwrap(),
             "one\n"
         );
         assert_eq!(
-            fs::read_to_string(workspace.0.join("second")).unwrap(),
+            fs::read_to_string(harness.workspace.0.join("second")).unwrap(),
             "two\n"
         );
 
@@ -892,8 +882,7 @@ mod tests {
 
     #[tokio::test]
     async fn cancelling_before_execution_leaves_the_workspace_untouched() {
-        let workspace = Workspace::new();
-        let harness = patch_harness(&workspace.0, "tool_calls").await;
+        let harness = patch_harness("tool_calls").await;
         let cancel = harness.cancellation.clone();
         let (response, transcript) = harness
             .run("Apply the patch", |update| {
@@ -907,7 +896,7 @@ mod tests {
             .await;
 
         assert_eq!(response.unwrap().stop_reason, StopReason::Cancelled);
-        assert_eq!(fs::read_dir(&workspace.0).unwrap().count(), 0);
+        assert_eq!(fs::read_dir(&harness.workspace.0).unwrap().count(), 0);
         let outcome = &patch_result(&transcript).outcome;
         assert!(matches!(outcome, ToolOutcome::Cancelled(_)));
         assert_eq!(harness.stored(), transcript);
@@ -917,8 +906,7 @@ mod tests {
 
     #[tokio::test]
     async fn cancelling_after_the_result_keeps_the_applied_patch() {
-        let workspace = Workspace::new();
-        let harness = patch_harness(&workspace.0, "tool_calls").await;
+        let harness = patch_harness("tool_calls").await;
         let cancel = harness.cancellation.clone();
         let (response, transcript) = harness
             .run("Apply the patch", |update| {
@@ -931,7 +919,7 @@ mod tests {
 
         assert_eq!(response.unwrap().stop_reason, StopReason::Cancelled);
         assert_eq!(
-            fs::read_to_string(workspace.0.join("first")).unwrap(),
+            fs::read_to_string(harness.workspace.0.join("first")).unwrap(),
             "one\n"
         );
         let outcome = &patch_result(&transcript).outcome;
@@ -942,8 +930,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_update_failure_after_a_patch_still_saves_its_result() {
-        let workspace = Workspace::new();
-        let harness = patch_harness(&workspace.0, "tool_calls").await;
+        let harness = patch_harness("tool_calls").await;
         let (response, transcript) = harness
             .run("Apply the patch", |update| {
                 if terminal_update_for(update, "patch-1") {
@@ -955,7 +942,7 @@ mod tests {
 
         assert!(response.is_err());
         assert_eq!(
-            fs::read_to_string(workspace.0.join("second")).unwrap(),
+            fs::read_to_string(harness.workspace.0.join("second")).unwrap(),
             "two\n"
         );
         assert_eq!(
@@ -967,14 +954,13 @@ mod tests {
 
     #[tokio::test]
     async fn an_invalid_completion_runs_no_patch() {
-        let workspace = Workspace::new();
-        let harness = patch_harness(&workspace.0, "unknown").await;
+        let harness = patch_harness("unknown").await;
         let (response, transcript) = harness.run("Apply the patch", |_| Ok(())).await;
 
         assert!(response.is_err());
         assert_eq!(transcript, vec![model(), user("Apply the patch")]);
         assert_eq!(harness.stored(), transcript);
-        assert_eq!(fs::read_dir(&workspace.0).unwrap().count(), 0);
+        assert_eq!(fs::read_dir(&harness.workspace.0).unwrap().count(), 0);
     }
 
     #[tokio::test]
@@ -1003,7 +989,7 @@ mod tests {
     #[tokio::test]
     async fn several_tool_calls_in_one_message_get_ordered_results() {
         let harness = Harness::new(vec![
-            tool_reply(&[("call-1", "Chicago"), ("call-2", "Denver")]),
+            tool_reply(&[("call-1", "printf Chicago"), ("call-2", "printf Denver")]),
             text_reply("Both sunny."),
         ])
         .await;
@@ -1016,9 +1002,9 @@ mod tests {
             vec![
                 model(),
                 user("Weather?"),
-                calls(&[("call-1", "Chicago"), ("call-2", "Denver")]),
-                weather("call-1", "Chicago"),
-                weather("call-2", "Denver"),
+                calls(&[("call-1", "printf Chicago"), ("call-2", "printf Denver")]),
+                printed("call-1", "Chicago"),
+                printed("call-2", "Denver"),
                 answer("Both sunny."),
             ]
         );
@@ -1044,8 +1030,8 @@ mod tests {
     #[tokio::test]
     async fn cancellation_during_tools_keeps_completed_results_and_cancels_the_rest() {
         let harness = Harness::new(vec![tool_reply(&[
-            ("call-1", "Chicago"),
-            ("call-2", "Denver"),
+            ("call-1", "printf Chicago"),
+            ("call-2", "printf Denver"),
         ])])
         .await;
         let cancel = harness.cancellation.clone();
@@ -1065,11 +1051,11 @@ mod tests {
             vec![
                 model(),
                 user("Weather?"),
-                calls(&[("call-1", "Chicago"), ("call-2", "Denver")]),
-                weather("call-1", "Chicago"),
+                calls(&[("call-1", "printf Chicago"), ("call-2", "printf Denver")]),
+                printed("call-1", "Chicago"),
                 TranscriptEntry::ToolResult(ToolResult {
                     call_id: "call-2".to_owned(),
-                    name: "get_weather".to_owned(),
+                    name: tools::SHELL.to_owned(),
                     outcome: ToolOutcome::Cancelled(
                         "Cancelled before this tool was started.".to_owned()
                     ),
@@ -1142,8 +1128,8 @@ mod tests {
     #[tokio::test]
     async fn update_failure_after_an_observed_result_still_commits_the_batch() {
         let harness = Harness::new(vec![tool_reply(&[
-            ("call-1", "Chicago"),
-            ("call-2", "Denver"),
+            ("call-1", "printf Chicago"),
+            ("call-2", "printf Denver"),
         ])])
         .await;
 
@@ -1162,11 +1148,11 @@ mod tests {
             vec![
                 model(),
                 user("Weather?"),
-                calls(&[("call-1", "Chicago"), ("call-2", "Denver")]),
-                weather("call-1", "Chicago"),
+                calls(&[("call-1", "printf Chicago"), ("call-2", "printf Denver")]),
+                printed("call-1", "Chicago"),
                 TranscriptEntry::ToolResult(ToolResult {
                     call_id: "call-2".to_owned(),
-                    name: "get_weather".to_owned(),
+                    name: tools::SHELL.to_owned(),
                     outcome: ToolOutcome::Failed(
                         "Not started: the client connection failed before this tool ran."
                             .to_owned()
@@ -1191,7 +1177,7 @@ mod tests {
     #[tokio::test]
     async fn tools_requested_by_the_final_allowed_request_are_not_run() {
         let replies = (0..MAX_MODEL_REQUESTS)
-            .map(|index| tool_reply(&[(&format!("call-{index}"), "Chicago")]))
+            .map(|index| tool_reply(&[(&format!("call-{index}"), "printf ok")]))
             .collect();
         let harness = Harness::new(replies).await;
 

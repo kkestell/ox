@@ -57,6 +57,7 @@ verdict.
 - `resources` — ownership, borrowing, lifetimes, clones, allocations, and cleanup.
 - `error-handling` — `Result`/`Option`, useful errors, cancellation, and panic behavior.
 - `api-design` — caller contracts, traits, naming, and shared surface.
+- `naming` — invented terms, jargon, vague names, and inconsistent vocabulary.
 - `performance` — repeated work, allocations, and costs at actual input sizes.
 - `testing` — useful behavior coverage and reliable assertions.
 - `readability` — local reasoning, control flow, and naming.

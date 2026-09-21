@@ -258,19 +258,19 @@ mod tests {
     fn tool_updates_carry_titles_terminal_states_and_unparsable_arguments() {
         let call = ToolCall {
             call_id: "call-1".to_owned(),
-            name: "get_weather".to_owned(),
-            arguments: "{\"loc".to_owned(),
+            name: tools::SHELL.to_owned(),
+            arguments: "{\"comm".to_owned(),
         };
         assert!(matches!(
             pending_tool_call(&call),
             SessionUpdate::ToolCall(update)
                 if update.status == ToolCallStatus::Pending
-                    && update.title == "Weather"
-                    && update.raw_input == Some(Value::String("{\"loc".to_owned()))
+                    && update.title == "Run shell command"
+                    && update.raw_input == Some(Value::String("{\"comm".to_owned()))
         ));
         let cancelled = ToolResult {
             call_id: "call-1".to_owned(),
-            name: "get_weather".to_owned(),
+            name: tools::SHELL.to_owned(),
             outcome: ToolOutcome::Cancelled("Cancelled before this tool was started.".to_owned()),
         };
         assert!(matches!(

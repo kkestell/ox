@@ -12,7 +12,7 @@ THIS DOCUMENT MUST BE KEPT UP TO DATE
 - `src/tools/search.rs`: Bounded glob and grep searches through ripgrep.
 - `src/tools/patch.rs`: Patch parsing, exact text matching, workspace path validation, and filesystem changes.
 - `src/tools/patch-guide.txt`: The patch format guidance shipped as the `apply_patch` tool description.
-- `src/sessions.rs`: Transcript types, assistant-batch validation, `SessionStore` over one SQLite connection, and the private row codec.
+- `src/sessions.rs`: Transcript types with their stored JSON encoding, assistant-batch validation, and `SessionStore` over one SQLite connection.
 - `src/acp.rs`: Connection wiring, `ServerState`, lazy OpenRouter client, request handlers, and the headless prompt entry point.
 - `src/acp/operations.rs`: One active prompt, load, or delete per session, enforced by an operation guard.
 - `src/acp/prompt.rs`: One prompt run: save the user message, request model output, request shell approval over ACP, run tools, save complete assistant batches, and respond. Headless runs automatically approve tools.

@@ -54,6 +54,25 @@ lenses or invent a finding for a topic with no defect.
   values change observable behavior. Context and extension storage is a
   lifetime and ownership question, not an automatic defect.
 
+## Naming
+
+- Build the vocabulary from the changed code, its callers, and owning
+  documentation. Flag a name when it makes the concept, responsibility, or
+  behavior harder to identify—not merely because another name would be a
+  matter of taste.
+- Look for terms invented by the change without a clear meaning, unexplained
+  jargon or shorthand, vague names that conceal important distinctions, and
+  multiple names for the same concept. Also check whether one name is being
+  reused for different concepts in ways that force readers to translate.
+- Distinguish genuinely different concepts that happen to be related from
+  accidental synonyms. Prefer the smallest vocabulary change that makes the
+  relevant concept consistent across types, functions, fields, modules,
+  comments, and protocol boundaries.
+- Support findings with the conflicting or unclear occurrences, the concept
+  they actually refer to, and the concrete reader or maintenance consequence.
+  Do not manufacture a naming finding when the vocabulary is clear and
+  consistent.
+
 ## Performance
 
 - Establish actual input size and call frequency before judging cost.

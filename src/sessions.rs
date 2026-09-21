@@ -24,7 +24,7 @@ const DATABASE_FILE: &str = "ox.db";
 
 /// Stamped into `PRAGMA user_version`. There is no migration path: a
 /// database with another version is rejected at open.
-const SCHEMA_VERSION: i32 = 2;
+const SCHEMA_VERSION: i32 = 3;
 
 /// Longest title derived from a prompt, in characters.
 const MAX_TITLE_CHARS: usize = 80;
@@ -57,7 +57,7 @@ CREATE TABLE events (
 
 CREATE INDEX events_by_session ON events (session_id, id);
 
-PRAGMA user_version = 2;
+PRAGMA user_version = 3;
 
 COMMIT;
 ";
@@ -74,8 +74,10 @@ pub enum TranscriptEntry {
     ToolResult(ToolResult),
 }
 
-/// The content of one validated model completion.
-#[derive(Debug, Clone, PartialEq)]
+/// The content of one validated model completion. The serde derives on this
+/// type and its parts define the JSON stored in the `events` table.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AssistantMessage {
     pub text: String,
     pub reasoning: String,
@@ -116,14 +118,16 @@ impl AssistantMessage {
 
 /// `arguments` is the complete string the model produced, kept verbatim so
 /// invalid JSON can still receive an ordinary failed result.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ToolCall {
     pub call_id: String,
     pub name: String,
     pub arguments: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ToolResult {
     pub call_id: String,
     pub name: String,
@@ -131,7 +135,8 @@ pub struct ToolResult {
 }
 
 /// Every variant carries text describing what Ox knows about the call.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", content = "content", rename_all = "snake_case")]
 pub enum ToolOutcome {
     Completed(String),
     Failed(String),
@@ -339,15 +344,7 @@ impl SessionStore {
             params![id.to_string(), path, at],
         )
         .map_err(io::Error::other)?;
-        insert_entry(
-            &tx,
-            &id,
-            &at,
-            "model",
-            &ModelRow {
-                model: model.to_owned(),
-            },
-        )?;
+        insert_entry(&tx, &id, &at, "model", &model)?;
         tx.commit().map_err(io::Error::other)?;
         Ok(SessionSummary {
             id,
@@ -417,15 +414,7 @@ impl SessionStore {
         let mut connection = self.lock();
         let tx = connection.transaction().map_err(io::Error::other)?;
         touch(&tx, id, title_from_prompt(text), &at)?;
-        insert_entry(
-            &tx,
-            id,
-            &at,
-            "user_message",
-            &UserMessageRow {
-                text: text.to_owned(),
-            },
-        )?;
+        insert_entry(&tx, id, &at, "user_message", &text)?;
         let summary = summary(&tx, id)
             .map_err(io::Error::other)?
             .expect("a session that was just updated exists");
@@ -440,15 +429,9 @@ impl SessionStore {
         let mut connection = self.lock();
         let tx = connection.transaction().map_err(io::Error::other)?;
         touch(&tx, id, None, &at)?;
-        insert_entry(
-            &tx,
-            id,
-            &at,
-            "assistant_message",
-            &AssistantMessageRow::from(&batch.message),
-        )?;
+        insert_entry(&tx, id, &at, "assistant_message", &batch.message)?;
         for result in &batch.results {
-            insert_entry(&tx, id, &at, "tool_result", &ToolResultRow::from(result))?;
+            insert_entry(&tx, id, &at, "tool_result", result)?;
         }
         tx.commit().map_err(io::Error::other)
     }
@@ -526,9 +509,9 @@ fn insert_entry<T: Serialize>(
     id: &SessionId,
     at: &str,
     kind: &str,
-    row: &T,
+    payload: &T,
 ) -> io::Result<()> {
-    let data = serde_json::to_string(row).expect("transcript rows serialize");
+    let data = serde_json::to_string(payload).expect("transcript entries serialize");
     tx.execute(
         "INSERT INTO events (session_id, ts, kind, data) VALUES (?1, ?2, ?3, ?4)",
         params![id.to_string(), at, kind, data],
@@ -537,121 +520,12 @@ fn insert_entry<T: Serialize>(
     Ok(())
 }
 
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ModelRow {
-    model: String,
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct UserMessageRow {
-    text: String,
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct AssistantMessageRow {
-    text: String,
-    reasoning: String,
-    tool_calls: Vec<ToolCallRow>,
-    reasoning_details: Vec<serde_json::Value>,
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ToolCallRow {
-    call_id: String,
-    name: String,
-    arguments: String,
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ToolResultRow {
-    call_id: String,
-    name: String,
-    status: ToolResultStatus,
-    content: String,
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum ToolResultStatus {
-    Completed,
-    Failed,
-    Cancelled,
-}
-
-impl From<&AssistantMessage> for AssistantMessageRow {
-    fn from(message: &AssistantMessage) -> Self {
-        Self {
-            text: message.text.clone(),
-            reasoning: message.reasoning.clone(),
-            tool_calls: message
-                .tool_calls
-                .iter()
-                .map(|call| ToolCallRow {
-                    call_id: call.call_id.clone(),
-                    name: call.name.clone(),
-                    arguments: call.arguments.clone(),
-                })
-                .collect(),
-            reasoning_details: message.continuation_metadata.clone(),
-        }
-    }
-}
-
-impl From<&ToolResult> for ToolResultRow {
-    fn from(result: &ToolResult) -> Self {
-        let status = match result.outcome {
-            ToolOutcome::Completed(_) => ToolResultStatus::Completed,
-            ToolOutcome::Failed(_) => ToolResultStatus::Failed,
-            ToolOutcome::Cancelled(_) => ToolResultStatus::Cancelled,
-        };
-        Self {
-            call_id: result.call_id.clone(),
-            name: result.name.clone(),
-            status,
-            content: result.outcome.text().to_owned(),
-        }
-    }
-}
-
 fn decode_entry(kind: &str, data: &str) -> io::Result<TranscriptEntry> {
     Ok(match kind {
-        "model" => TranscriptEntry::Model(decode::<ModelRow>(kind, data)?.model),
-        "user_message" => TranscriptEntry::UserMessage(decode::<UserMessageRow>(kind, data)?.text),
-        "assistant_message" => {
-            let row: AssistantMessageRow = decode(kind, data)?;
-            TranscriptEntry::AssistantMessage(AssistantMessage {
-                text: row.text,
-                reasoning: row.reasoning,
-                tool_calls: row
-                    .tool_calls
-                    .into_iter()
-                    .map(|call| ToolCall {
-                        call_id: call.call_id,
-                        name: call.name,
-                        arguments: call.arguments,
-                    })
-                    .collect(),
-                continuation_metadata: row.reasoning_details,
-            })
-        }
-        "tool_result" => {
-            let row: ToolResultRow = decode(kind, data)?;
-            let outcome = match row.status {
-                ToolResultStatus::Completed => ToolOutcome::Completed(row.content),
-                ToolResultStatus::Failed => ToolOutcome::Failed(row.content),
-                ToolResultStatus::Cancelled => ToolOutcome::Cancelled(row.content),
-            };
-            TranscriptEntry::ToolResult(ToolResult {
-                call_id: row.call_id,
-                name: row.name,
-                outcome,
-            })
-        }
+        "model" => TranscriptEntry::Model(decode(kind, data)?),
+        "user_message" => TranscriptEntry::UserMessage(decode(kind, data)?),
+        "assistant_message" => TranscriptEntry::AssistantMessage(decode(kind, data)?),
+        "tool_result" => TranscriptEntry::ToolResult(decode(kind, data)?),
         _ => {
             return Err(invalid_data(format!(
                 "unknown transcript entry kind {kind:?}"
@@ -704,7 +578,7 @@ pub fn database_path() -> io::Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{acp::convert, openrouter};
+    use crate::{acp::convert, openrouter, tools};
     use agent_client_protocol::schema::v1::{SessionUpdate, ToolCallStatus};
     use serde_json::json;
 
@@ -714,18 +588,18 @@ mod tests {
         Path::new(WORKSPACE_PATH)
     }
 
-    fn call(id: &str, location: &str) -> ToolCall {
+    fn call(id: &str, command: &str) -> ToolCall {
         ToolCall {
             call_id: id.to_owned(),
-            name: "get_weather".to_owned(),
-            arguments: json!({ "location": location }).to_string(),
+            name: tools::SHELL.to_owned(),
+            arguments: json!({ "command": command }).to_string(),
         }
     }
 
     fn result(id: &str, outcome: ToolOutcome) -> ToolResult {
         ToolResult {
             call_id: id.to_owned(),
-            name: "get_weather".to_owned(),
+            name: tools::SHELL.to_owned(),
             outcome,
         }
     }
@@ -768,7 +642,10 @@ mod tests {
     fn a_saved_batch_can_be_replayed_and_sent_in_the_next_request() {
         let dir = std::env::temp_dir().join(format!("ox-test-{}", uuid::Uuid::new_v4()));
         let path = dir.join(DATABASE_FILE);
-        let message = message(vec![call("call-1", "Chicago"), call("call-2", "Denver")]);
+        let message = message(vec![
+            call("call-1", "printf Chicago"),
+            call("call-2", "printf Denver"),
+        ]);
         let results = vec![
             result(
                 "call-1",
@@ -827,9 +704,9 @@ mod tests {
             &updates[3],
             SessionUpdate::ToolCall(call)
                 if call.tool_call_id.to_string() == "call-1"
-                    && call.title == "Weather Chicago"
+                    && call.title == "Run shell command"
                     && call.status == ToolCallStatus::Completed
-                    && call.raw_input == Some(json!({ "location": "Chicago" }))
+                    && call.raw_input == Some(json!({ "command": "printf Chicago" }))
                     && call.raw_output == Some(json!("Sunny in Chicago."))
         ));
         assert!(matches!(
@@ -866,7 +743,10 @@ mod tests {
 
     #[test]
     fn batch_validation_rejects_orphan_duplicate_and_missing_results() {
-        let two_calls = message(vec![call("call-1", "Chicago"), call("call-2", "Denver")]);
+        let two_calls = message(vec![
+            call("call-1", "printf Chicago"),
+            call("call-2", "printf Denver"),
+        ]);
 
         assert!(AssistantBatch::new(two_calls.clone(), vec![completed("call-1")]).is_err());
         assert!(
@@ -903,14 +783,17 @@ mod tests {
             AssistantBatch::new(two_calls, vec![completed("call-1"), completed("call-2")]).is_ok()
         );
 
-        let repeated = message(vec![call("call-1", "Chicago"), call("call-1", "Denver")]);
+        let repeated = message(vec![
+            call("call-1", "printf Chicago"),
+            call("call-1", "printf Denver"),
+        ]);
         assert!(repeated.validate().is_err());
         let unnamed = message(vec![ToolCall {
             name: String::new(),
-            ..call("call-1", "Chicago")
+            ..call("call-1", "printf Chicago")
         }]);
         assert!(unnamed.validate().is_err());
-        let anonymous = message(vec![call("", "Chicago")]);
+        let anonymous = message(vec![call("", "printf Chicago")]);
         assert!(anonymous.validate().is_err());
     }
 
@@ -936,7 +819,7 @@ mod tests {
         insert(
             &orphan,
             "tool_result",
-            r#"{"call_id":"x","name":"get_weather","status":"completed","content":"ok"}"#,
+            r#"{"call_id":"x","name":"shell","outcome":{"status":"completed","content":"ok"}}"#,
         );
         assert!(store.read(&orphan).is_err());
 
@@ -944,8 +827,7 @@ mod tests {
             .create(workspace(), openrouter::DEFAULT_MODEL)
             .unwrap()
             .id;
-        let unresolved_message =
-            AssistantMessageRow::from(&message(vec![call("call-1", "Chicago")]));
+        let unresolved_message = message(vec![call("call-1", "printf Chicago")]);
         insert(
             &unresolved,
             "assistant_message",
@@ -964,14 +846,18 @@ mod tests {
             .create(workspace(), openrouter::DEFAULT_MODEL)
             .unwrap()
             .id;
-        insert(&malformed, "user_message", r#"{"text":"hi","extra":true}"#);
+        insert(
+            &malformed,
+            "assistant_message",
+            r#"{"text":"hi","reasoning":"","tool_calls":[],"continuation_metadata":[],"extra":true}"#,
+        );
         assert!(store.read(&malformed).is_err());
 
         let switched = store
             .create(workspace(), openrouter::DEFAULT_MODEL)
             .unwrap()
             .id;
-        insert(&switched, "model", r#"{"model":"other/model"}"#);
+        insert(&switched, "model", r#""other/model""#);
         assert!(store.read(&switched).is_err());
 
         let unmodelled = store

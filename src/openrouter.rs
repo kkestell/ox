@@ -462,6 +462,7 @@ pub(crate) mod fixture {
     };
 
     use super::{Client, DEFAULT_MODEL};
+    use crate::tools;
 
     pub enum Reply {
         /// A complete SSE body, one HTTP chunk per event, then the
@@ -652,19 +653,19 @@ pub(crate) mod fixture {
         ]))
     }
 
-    /// One assistant message calling `get_weather` once per `(call_id, location)`.
+    /// One assistant message with one shell call per `(call_id, command)`.
     pub fn tool_reply(calls: &[(&str, &str)]) -> Reply {
         let tool_calls = calls
             .iter()
             .enumerate()
-            .map(|(index, (id, location))| {
+            .map(|(index, (id, command))| {
                 json!({
                     "index": index,
                     "id": id,
                     "type": "function",
                     "function": {
-                        "name": "get_weather",
-                        "arguments": json!({ "location": location }).to_string(),
+                        "name": tools::SHELL,
+                        "arguments": json!({ "command": command }).to_string(),
                     },
                 })
             })
@@ -716,11 +717,11 @@ mod tests {
         completions.into_iter().next().unwrap()
     }
 
-    fn call(id: &str, location: &str) -> ToolCall {
+    fn call(id: &str, command: &str) -> ToolCall {
         ToolCall {
             call_id: id.to_owned(),
-            name: "get_weather".to_owned(),
-            arguments: json!({ "location": location }).to_string(),
+            name: tools::SHELL.to_owned(),
+            arguments: json!({ "command": command }).to_string(),
         }
     }
 
@@ -744,17 +745,20 @@ mod tests {
             TranscriptEntry::AssistantMessage(AssistantMessage {
                 text: String::new(),
                 reasoning: "Need both cities.".to_owned(),
-                tool_calls: vec![call("call-1", "Chicago"), call("call-2", "Denver")],
+                tool_calls: vec![
+                    call("call-1", "printf Chicago"),
+                    call("call-2", "printf Denver"),
+                ],
                 continuation_metadata: details.clone(),
             }),
             TranscriptEntry::ToolResult(ToolResult {
                 call_id: "call-1".to_owned(),
-                name: "get_weather".to_owned(),
+                name: tools::SHELL.to_owned(),
                 outcome: ToolOutcome::Completed("Sunny.".to_owned()),
             }),
             TranscriptEntry::ToolResult(ToolResult {
                 call_id: "call-2".to_owned(),
-                name: "get_weather".to_owned(),
+                name: tools::SHELL.to_owned(),
                 outcome: ToolOutcome::Failed("Unavailable.".to_owned()),
             }),
         ];
@@ -775,7 +779,7 @@ mod tests {
                 .as_array()
                 .unwrap()
                 .iter()
-                .any(|tool| tool["function"]["name"] == "get_weather")
+                .any(|tool| tool["function"]["name"] == tools::SHELL)
         );
         let messages = body["messages"].as_array().unwrap();
         assert_eq!(messages.len(), 4);
@@ -788,7 +792,7 @@ mod tests {
         assert_eq!(messages[1]["tool_calls"].as_array().unwrap().len(), 2);
         assert_eq!(
             messages[1]["tool_calls"][0]["function"]["name"],
-            "get_weather"
+            tools::SHELL
         );
         assert_eq!(messages[1]["tool_calls"][1]["id"], "call-2");
         assert_eq!(messages[1]["reasoning_details"], json!(details));
@@ -841,18 +845,18 @@ mod tests {
             delta(json!({ "content": "Checking " }), None),
             delta(json!({ "content": "now." }), None),
             delta(
-                json!({ "tool_calls": [{ "index": 0, "id": "call-1", "type": "function", "function": { "name": "get_weather", "arguments": "{\"loc" } }] }),
+                json!({ "tool_calls": [{ "index": 0, "id": "call-1", "type": "function", "function": { "name": "shell", "arguments": "{\"comm" } }] }),
                 None,
             ),
             delta(
                 json!({ "tool_calls": [
-                    { "index": 0, "function": { "arguments": "ation\":\"Chicago\"}" } },
-                    { "index": 1, "id": "call-2", "type": "function", "function": { "name": "get_weather", "arguments": "" } },
+                    { "index": 0, "function": { "arguments": "and\":\"printf Chicago\"}" } },
+                    { "index": 1, "id": "call-2", "type": "function", "function": { "name": "shell", "arguments": "" } },
                 ] }),
                 None,
             ),
             delta(
-                json!({ "tool_calls": [{ "index": 1, "function": { "arguments": "{\"location\":\"Denver\"}" } }] }),
+                json!({ "tool_calls": [{ "index": 1, "function": { "arguments": "{\"command\":\"printf Denver\"}" } }] }),
                 Some("tool_calls"),
             ),
             delta(json!({ "content": "" }), Some("tool_calls")),
@@ -884,7 +888,10 @@ mod tests {
             AssistantMessage {
                 text: "Checking now.".to_owned(),
                 reasoning: "Let me check.".to_owned(),
-                tool_calls: vec![call("call-1", "Chicago"), call("call-2", "Denver")],
+                tool_calls: vec![
+                    call("call-1", "printf Chicago"),
+                    call("call-2", "printf Denver"),
+                ],
                 continuation_metadata: vec![
                     json!({ "type": "reasoning.text", "text": "Let me check.", "index": 0, "format": "x", "signature": "sig" }),
                     json!({ "type": "reasoning.encrypted", "data": "blob", "id": "rs_1", "index": 1 }),
@@ -984,7 +991,7 @@ mod tests {
                 .await
                 .is_err()
         );
-        let call = json!({ "tool_calls": [{ "index": 0, "id": "call-1", "function": { "name": "get_weather", "arguments": "{" } }] });
+        let call = json!({ "tool_calls": [{ "index": 0, "id": "call-1", "function": { "name": "shell", "arguments": "{" } }] });
         assert!(
             complete_with(&[delta(call.clone(), Some("length"))])
                 .await
@@ -1016,7 +1023,7 @@ mod tests {
                 .is_err()
         );
 
-        let anonymous = json!({ "tool_calls": [{ "index": 0, "function": { "name": "get_weather", "arguments": "{}" } }] });
+        let anonymous = json!({ "tool_calls": [{ "index": 0, "function": { "name": "shell", "arguments": "{}" } }] });
         assert!(
             complete_with(&[delta(anonymous, Some("tool_calls"))])
                 .await

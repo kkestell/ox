@@ -152,7 +152,7 @@ src/
   auth.rs                 environment and operating-system credential storage
   openrouter.rs           OpenRouter client, request encoding, and streamed-response assembly
   tools.rs                concrete tool schemas, display titles, and execution of one complete call
-  sessions.rs             transcript types, assistant-batch validation, SessionStore, private codec and SQL
+  sessions.rs             transcript types and their stored encoding, assistant-batch validation, SessionStore, and SQL
   acp.rs                  connection wiring, ServerState, request handlers
   acp/
     operations.rs         one active prompt, load, or delete per session, via an operation guard
@@ -170,8 +170,8 @@ a request. It does not know ACP, SQLite, operation guards, or tool execution.
 not make model requests, save the transcript, or send ACP updates.
 
 `sessions.rs` owns durable transcript semantics and the concrete store. It
-constructs neither ACP updates nor HTTP requests. SQL and the private
-codec stay together with the types they store.
+constructs neither ACP updates nor HTTP requests. The transcript types derive
+their stored JSON encoding, and the SQL stays with the store.
 
 `acp/prompt.rs` owns the only prompt run. Its placement reflects the single
 current frontend. If another frontend is implemented, move this same run
@@ -452,7 +452,7 @@ equality without resolving symlink aliases. Reject relative workspace paths
 where an absolute workspace is required. Do not silently merge two workspace
 identities that happen to refer to the same directory.
 
-### Schema version, codec, and transactions
+### Schema version, encoding, and transactions
 
 The database records its schema version in `PRAGMA user_version`. A new
 database is stamped with the current version when the schema is created.
@@ -460,9 +460,9 @@ Opening a database whose version differs from the current one is a startup
 error that names the file so the user can delete it. There is no migration
 path and no reader for earlier formats.
 
-Private database DTOs are distinct from both domain structs and HTTP DTOs. An
-OpenRouter client change must not silently change the meaning of stored
-entries.
+Each `events` row stores its kind and the serde-derived JSON of the transcript
+type it holds. OpenRouter request and response shapes are separate structs in
+`openrouter.rs`, so a client change does not alter stored entries.
 
 A batch transaction inserts the assistant message and all paired results,
 then updates session activity. If any step fails, the transaction rolls back.

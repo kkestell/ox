@@ -13,7 +13,6 @@ mod read;
 mod search;
 mod shell;
 
-pub const GET_WEATHER: &str = "get_weather";
 pub const APPLY_PATCH: &str = "apply_patch";
 pub const READ_FILE: &str = "read_file";
 pub const GLOB: &str = "glob";
@@ -150,18 +149,6 @@ pub fn schemas() -> Vec<Value> {
         json!({
             "type": "function",
             "function": {
-                "name": GET_WEATHER,
-                "description": "Get the weather for a location",
-                "parameters": {
-                    "type": "object",
-                    "properties": { "location": { "type": "string" } },
-                    "required": ["location"],
-                },
-            },
-        }),
-        json!({
-            "type": "function",
-            "function": {
                 "name": APPLY_PATCH,
                 "description": include_str!("tools/patch-guide.txt"),
                 "parameters": {
@@ -181,11 +168,6 @@ pub fn schemas() -> Vec<Value> {
 }
 
 #[derive(Deserialize)]
-struct WeatherArgs {
-    location: String,
-}
-
-#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PatchArgs {
     patch: String,
@@ -198,10 +180,6 @@ pub fn title(call: &ToolCall) -> String {
         GLOB => "Find files".to_owned(),
         GREP => "Search file contents".to_owned(),
         APPLY_PATCH => "Apply patch".to_owned(),
-        GET_WEATHER => match serde_json::from_str::<WeatherArgs>(&call.arguments) {
-            Ok(args) => format!("Weather {}", args.location),
-            Err(_) => "Weather".to_owned(),
-        },
         other => other.to_owned(),
     }
 }
@@ -237,15 +215,6 @@ async fn execute_other(workspace_path: &Path, call: &ToolCall) -> ToolOutcome {
                 Err(error) => ToolOutcome::Failed(error),
             },
             Err(error) => ToolOutcome::Failed(format!("arguments: {error}")),
-        },
-        GET_WEATHER => match serde_json::from_str::<WeatherArgs>(&call.arguments) {
-            Ok(args) => ToolOutcome::Completed(format!(
-                "The weather in {} is warm and sunny.",
-                args.location
-            )),
-            Err(error) => {
-                ToolOutcome::Failed(format!("Invalid arguments for {GET_WEATHER}: {error}"))
-            }
         },
         other => ToolOutcome::Failed(format!("Unknown tool: {other}")),
     }
@@ -424,32 +393,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn weather_is_canned_and_bad_calls_fail_as_results() {
-        assert_eq!(
-            execute(
-                Path::new("/workspace"),
-                &call(GET_WEATHER, r#"{"location":"Chicago"}"#),
-            )
-            .await,
-            ToolOutcome::Completed("The weather in Chicago is warm and sunny.".to_owned())
-        );
-        assert!(matches!(
-            execute(Path::new("/workspace"), &call(GET_WEATHER, r#"{"loc"#)).await,
-            ToolOutcome::Failed(message) if message.starts_with("Invalid arguments for get_weather")
-        ));
+    async fn unknown_tools_fail_as_results_and_keep_their_name_as_title() {
         assert_eq!(
             execute(Path::new("/workspace"), &call("launch", "{}")).await,
             ToolOutcome::Failed("Unknown tool: launch".to_owned())
         );
-    }
-
-    #[test]
-    fn weather_title_includes_the_location_when_parsable() {
-        assert_eq!(
-            title(&call(GET_WEATHER, r#"{"location":"Minneapolis, MN"}"#)),
-            "Weather Minneapolis, MN"
-        );
-        assert_eq!(title(&call(GET_WEATHER, "{}")), "Weather");
         assert_eq!(title(&call("launch", "{}")), "launch");
     }
 }
