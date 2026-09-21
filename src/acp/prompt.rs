@@ -618,7 +618,7 @@ mod tests {
                         && message["content"] == result.outcome.text())
             );
             assert!(replay.iter().any(|update| matches!(update, SessionUpdate::ToolCall(call)
-                if call.title == "Run shell command" && call.raw_output == Some(json!(result.outcome.text())) && call.status == ToolCallStatus::Failed)));
+                if call.raw_output == Some(json!(result.outcome.text())) && call.status == ToolCallStatus::Failed)));
         }
     }
 
@@ -812,7 +812,7 @@ mod tests {
 
     fn sent_patch_call(harness: &Harness) -> bool {
         harness.updates().iter().any(
-            |update| matches!(update, SessionUpdate::ToolCall(call) if call.title == "Apply patch"),
+            |update| matches!(update, SessionUpdate::ToolCall(call) if call.title == "Apply patch to 2 files"),
         )
     }
 
@@ -824,7 +824,7 @@ mod tests {
         })
         .unwrap();
         assert!(replay.iter().any(|update| matches!(update,
-            SessionUpdate::ToolCall(call) if call.title == "Apply patch"
+            SessionUpdate::ToolCall(call) if call.title == "Apply patch to 2 files"
                 && call.raw_output == Some(json!(outcome.text()))
                 && call.status == status
         )));

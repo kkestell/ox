@@ -1,10 +1,13 @@
 # ox
 
-Ox is a small, lightweight, [ACP-native](https://agentclientprotocol.com) coding agent.
+Ox is a small, lightweight, [ACP-native](https://agentclientprotocol.com) coding
+agent.
 
 ## Installation
 
-Download the latest release from [GitHub Releases](https://github.com/kkestell/ox/releases) and extract the archive for your platform:
+Download the latest release from
+[GitHub Releases](https://github.com/kkestell/ox/releases) and extract the
+archive for your platform:
 
 ```sh
 tar -xzf ox_VERSION_OS_ARCH.tar.gz
@@ -20,27 +23,27 @@ Install [ripgrep](https://github.com/BurntSushi/ripgrep#installation) and make
 `rg` available on your `PATH` for the `glob` and `grep` tools.
 
 The `read_file`, `glob`, and `grep` tools read only inside the session workspace
-and return at most 16 KiB per result. `read_file` accepts a 1-based line `offset`
-and a line `limit` (default 200, maximum 1,000). Oversized lines return a marked
-preview; their omitted portions cannot be retrieved through line pagination.
-Truncated searches ask the model to narrow the search path or pattern.
+and return at most 16 KiB per result. `read_file` accepts a 1-based line
+`offset` and a line `limit` (default 200, maximum 1,000). Oversized lines return
+a marked preview; their omitted portions cannot be retrieved through line
+pagination. Truncated searches ask the model to narrow the search path or
+pattern.
 
 The `shell` tool runs a fresh, noninteractive `/bin/sh` command on macOS and
-Linux, starting in the session workspace with stdin connected to `/dev/null`.
-It supports builds, tests, Git, package commands, and scripts. Calls time out
-after 120 seconds by default; the model can request 1–600 seconds.
+Linux, starting in the session workspace with stdin connected to `/dev/null`. It
+supports builds, tests, Git, package commands, and scripts. Calls time out after
+120 seconds by default; the model can request 1–600 seconds.
 
 Over ACP, each shell call asks for **Approve** or **Deny** before running.
 Approval applies only to that call. Denial skips the command and returns a
 failed tool result so the model can respond. The ACP client's Stop action
-cancels the whole prompt.
-Other tools run without approval. Headless `ox run` automatically approves
-all tool calls.
+cancels the whole prompt. Other tools run without approval. Headless `ox run`
+automatically approves all tool calls.
 
-Shell results include the exit status and separate stdout and stderr tails,
-at most 16 KiB total. The streams share 14 KiB: 7 KiB each, with unused space
-given to the other stream. Earlier output may be omitted; Ox keeps no full
-hidden log. Redirect long logs to a workspace file for later inspection.
+Shell results include the exit status and separate stdout and stderr tails, at
+most 16 KiB total. The streams share 14 KiB: 7 KiB each, with unused space given
+to the other stream. Earlier output may be omitted; Ox keeps no full hidden log.
+Redirect long logs to a workspace file for later inspection.
 
 Commands run with Ox's permissions and can access paths outside the workspace
 and the network. They inherit Ox's environment, which the model can inspect,
@@ -57,7 +60,8 @@ Cleanup after forced termination or an Ox crash is not guaranteed.
 
 ## Authentication
 
-When prompted, enter your [OpenRouter](https://openrouter.ai) API key. It is saved to the system keyring.
+When prompted, enter your [OpenRouter](https://openrouter.ai) API key. It is
+saved to the system keyring.
 
 ```sh
 ox auth login

@@ -515,15 +515,16 @@ fn now() -> String {
     Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
 }
 
-/// The first nonblank line of a prompt, truncated. `None` for a blank prompt,
-/// so it does not spend the session's one chance at a title.
+/// The first nonblank line of a prompt, at most `MAX_TITLE_CHARS` characters
+/// counting the ellipsis that marks a shortened one. `None` for a blank
+/// prompt, so it does not spend the session's one chance at a title.
 fn title_from_prompt(text: &str) -> Option<String> {
     let line = text.lines().find(|line| !line.trim().is_empty())?.trim();
-    let mut title: String = line.chars().take(MAX_TITLE_CHARS).collect();
-    if line.chars().count() > MAX_TITLE_CHARS {
-        title.push('…');
+    if line.chars().count() <= MAX_TITLE_CHARS {
+        return Some(line.to_owned());
     }
-    Some(title)
+    let kept: String = line.chars().take(MAX_TITLE_CHARS - 1).collect();
+    Some(format!("{kept}…"))
 }
 
 pub fn database_path() -> io::Result<PathBuf> {
@@ -673,7 +674,7 @@ mod tests {
             &updates[3],
             SessionUpdate::ToolCall(call)
                 if call.tool_call_id.to_string() == "call-1"
-                    && call.title == "Run shell command"
+                    && call.title == "printf Chicago"
                     && call.status == ToolCallStatus::Completed
                     && call.raw_input == Some(json!({ "command": "printf Chicago" }))
                     && call.raw_output == Some(json!("Sunny in Chicago."))
@@ -873,8 +874,8 @@ mod tests {
             .unwrap();
         assert_eq!(
             title.chars().count(),
-            MAX_TITLE_CHARS + 1,
-            "plus the ellipsis"
+            MAX_TITLE_CHARS,
+            "the ellipsis counts against the limit"
         );
         assert!(title.ends_with('…'));
 

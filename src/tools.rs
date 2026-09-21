@@ -22,6 +22,8 @@ pub const GREP: &str = "grep";
 const OUTPUT_LIMIT: usize = 16 * 1024;
 // Leave room for line numbers, continuation instructions, and truncation notices.
 const BODY_LIMIT: usize = OUTPUT_LIMIT - 256;
+// Long enough to name a path or pattern, short enough for one display line.
+const TITLE_LIMIT: usize = 80;
 
 fn truncate(text: &mut String, limit: usize) {
     let mut end = text.len().min(limit);
@@ -173,7 +175,17 @@ struct PatchArgs {
     patch: String,
 }
 
+/// What the ACP client shows for one call. Arguments come from the model and
+/// may be missing or malformed, so a call that cannot be described by its
+/// arguments falls back to naming its tool alone.
 pub fn title(call: &ToolCall) -> String {
+    match describe(call) {
+        Some(description) => shorten(&description),
+        None => tool_title(call),
+    }
+}
+
+fn tool_title(call: &ToolCall) -> String {
     match call.name.as_str() {
         SHELL => "Run shell command".to_owned(),
         READ_FILE => "Read file".to_owned(),
@@ -182,6 +194,73 @@ pub fn title(call: &ToolCall) -> String {
         APPLY_PATCH => "Apply patch".to_owned(),
         other => other.to_owned(),
     }
+}
+
+/// What one call does, in the terms its arguments give. Nothing when the
+/// arguments do not parse or omit the part that would name the work.
+fn describe(call: &ToolCall) -> Option<String> {
+    let arguments: Value = serde_json::from_str(&call.arguments).ok()?;
+    let argument = |name: &str| arguments.get(name).and_then(Value::as_str);
+    match call.name.as_str() {
+        SHELL => command_line(argument("command")?),
+        READ_FILE => Some(format!("Read {}", argument("path")?)),
+        GLOB => {
+            let pattern = argument("pattern")?;
+            Some(match searched_path(argument("path")) {
+                Some(path) => format!("Find files matching {pattern} in {path}"),
+                None => format!("Find files matching {pattern}"),
+            })
+        }
+        GREP => {
+            let mut description = format!("Search for {}", argument("pattern")?);
+            if let Some(path) = searched_path(argument("path")) {
+                description.push_str(&format!(" in {path}"));
+            }
+            if let Some(glob) = argument("glob") {
+                description.push_str(&format!(" (files matching {glob})"));
+            }
+            Some(description)
+        }
+        APPLY_PATCH => match patch::changed_paths(argument("patch")?).as_slice() {
+            [] => None,
+            [path] => Some(format!("Apply patch to {path}")),
+            paths => Some(format!("Apply patch to {} files", paths.len())),
+        },
+        _ => None,
+    }
+}
+
+/// The part of the workspace a search covers, or nothing when it covers the
+/// whole workspace and so says nothing useful.
+fn searched_path(path: Option<&str>) -> Option<&str> {
+    match path {
+        None | Some("" | "." | "./") => None,
+        Some(path) => Some(path),
+    }
+}
+
+/// A command's first nonblank line, marked when more of the command follows.
+fn command_line(command: &str) -> Option<String> {
+    let mut lines = command
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty());
+    let first = lines.next()?;
+    Some(if lines.next().is_some() {
+        format!("{first} …")
+    } else {
+        first.to_owned()
+    })
+}
+
+/// A title of at most `TITLE_LIMIT` characters, counting the ellipsis that
+/// marks a shortened one.
+fn shorten(title: &str) -> String {
+    if title.chars().count() <= TITLE_LIMIT {
+        return title.to_owned();
+    }
+    let kept: String = title.chars().take(TITLE_LIMIT - 1).collect();
+    format!("{}…", kept.trim_end())
 }
 
 /// Unknown names and invalid arguments are failed results the model can read
@@ -389,6 +468,60 @@ mod tests {
             assert!(
                 matches!(execute(Path::new("/unused"), &call).await, ToolOutcome::Failed(error) if error.starts_with("arguments:"))
             );
+        }
+    }
+
+    #[test]
+    fn titles_describe_the_call_and_fall_back_to_the_tool_name() {
+        let long_path = "a".repeat(200);
+        for (name, arguments, expected) in [
+            (SHELL, json!({"command":"cargo test"}), "cargo test"),
+            (
+                SHELL,
+                json!({"command":"\n  cargo build\ncargo test\n"}),
+                "cargo build …",
+            ),
+            (SHELL, json!({"command":"  \n"}), "Run shell command"),
+            (SHELL, json!({"timeout_seconds":5}), "Run shell command"),
+            (READ_FILE, json!({"path":"src/main.rs"}), "Read src/main.rs"),
+            (
+                GLOB,
+                json!({"pattern":"*.rs","path":"."}),
+                "Find files matching *.rs",
+            ),
+            (
+                GLOB,
+                json!({"pattern":"*.rs","path":"src"}),
+                "Find files matching *.rs in src",
+            ),
+            (GREP, json!({"pattern":"fn main"}), "Search for fn main"),
+            (
+                GREP,
+                json!({"pattern":"fn main","path":"src","glob":"*.rs"}),
+                "Search for fn main in src (files matching *.rs)",
+            ),
+            (
+                APPLY_PATCH,
+                json!({"patch":"*** Begin Patch\n*** Delete File: src/old.rs\n*** End Patch\n"}),
+                "Apply patch to src/old.rs",
+            ),
+            (
+                APPLY_PATCH,
+                json!({"patch":"*** Begin Patch\n*** Delete File: a\n*** Delete File: b\n*** End Patch\n"}),
+                "Apply patch to 2 files",
+            ),
+            (
+                APPLY_PATCH,
+                json!({"patch":"*** Begin Patch\n"}),
+                "Apply patch",
+            ),
+            (
+                READ_FILE,
+                json!({"path": long_path}),
+                "Read aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa…",
+            ),
+        ] {
+            assert_eq!(title(&call(name, &arguments.to_string())), expected);
         }
     }
 

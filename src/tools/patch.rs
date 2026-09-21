@@ -365,6 +365,15 @@ fn apply_prepared(prepared: &[Prepared]) -> Result<String, String> {
     Ok(summary)
 }
 
+/// The paths a patch names, for display. A patch that does not parse names
+/// none; the failure is reported when the patch runs.
+pub(super) fn changed_paths(input: &str) -> Vec<String> {
+    match Patch::parse(input) {
+        Ok(patch) => patch.0.into_iter().map(|file| file.path).collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
 pub(super) fn apply(workspace: &Path, input: &str) -> Result<String, String> {
     let patch = Patch::parse(input)?;
     let prepared = preflight(workspace, patch).map_err(|error| format!("preflight: {error}"))?;

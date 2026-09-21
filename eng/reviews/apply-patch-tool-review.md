@@ -1,7 +1,6 @@
 # Review: `apply_patch` tool
 
-Date: 2026-09-20
-Reviewer: kreview (general)
+Date: 2026-09-20 Reviewer: kreview (general)
 
 ## Scope
 
@@ -10,7 +9,8 @@ The new patch tool as it stands in the working tree on branch `rust`:
 - `src/tools/patch.rs` (new, 611 lines)
 - `src/tools/patch-guide.txt` (new, shipped as the tool description)
 - `src/tools.rs` (schema, title, dispatch, test workspace fixture)
-- `src/acp/prompt.rs` (cancellation check before tool execution, integration test)
+- `src/acp/prompt.rs` (cancellation check before tool execution, integration
+  test)
 - `AGENTS.md`, `eng/ox-apply-patch-tool.md` (documentation updates)
 
 Measured against `eng/ox-apply-patch-tool.md` as the owning contract.
@@ -67,9 +67,10 @@ case rather than add a second resolution strategy.
 
 `update` splits into lines and rejoins with a single ending, so a mixed file is
 always normalized. The ending is chosen with `source.contains("\r\n")`, which
-picks CRLF whenever a single CRLF line is present. Probe: `update("a\nb\r\nc\n", …)`
-with a chunk touching only `a` returns `"A\r\nb\r\nc\r\n"` — an otherwise-LF file
-converted wholesale for a one-line edit.
+picks CRLF whenever a single CRLF line is present. Probe:
+`update("a\nb\r\nc\n", …)` with a chunk touching only `a` returns
+`"A\r\nb\r\nc\r\n"` — an otherwise-LF file converted wholesale for a one-line
+edit.
 
 Normalizing is inherent to the line-split design and the design document rules
 mixed endings out of scope, so the defect is the choice of style, not the
@@ -85,9 +86,9 @@ let ending = match source.split_once('\n') {
 
 ### 3. An empty `Move to:` destination reports the wrong reason — `src/tools/patch.rs:192`
 
-`Patch::parse` rejects an empty operation-header path at line 118, but a `Move to:`
-destination skips that check. An empty destination reaches `resolve`, whose
-component loop finds nothing, and the model is told:
+`Patch::parse` rejects an empty operation-header path at line 118, but a
+`Move to:` destination skips that check. An empty destination reaches `resolve`,
+whose component loop finds nothing, and the model is told:
 
 ```text
 preflight: f: destination : path names the workspace root
@@ -107,16 +108,17 @@ opens with "THIS DOCUMENT MUST BE KEPT UP TO DATE", add the line.
 
 ### 5. The scenario-string integration test is hard to follow — `src/acp/prompt.rs:530`
 
-`patch_execution_cancellation_saving_and_replay` loops over five scenario strings
-and branches on them at eight points, including two early `continue`/`if` blocks
-that change which assertions run. Reading what "cancel after" actually asserts
-requires tracking the string through the whole 120-line body.
+`patch_execution_cancellation_saving_and_replay` loops over five scenario
+strings and branches on them at eight points, including two early
+`continue`/`if` blocks that change which assertions run. Reading what "cancel
+after" actually asserts requires tracking the string through the whole 120-line
+body.
 
 The scenarios divide cleanly: "invalid completion" shares almost nothing with
-the rest, and "update failure" only changes how the response is checked. Splitting
-out "invalid completion" and keeping the remaining loop over the two cancellation
-points plus the complete case would make each assertion's precondition local,
-without reducing coverage.
+the rest, and "update failure" only changes how the response is checked.
+Splitting out "invalid completion" and keeping the remaining loop over the two
+cancellation points plus the complete case would make each assertion's
+precondition local, without reducing coverage.
 
 ### 6. The two adjacent cancellation checks need a reason — `src/acp/prompt.rs:278`
 
@@ -127,12 +129,12 @@ if self.cancellation.is_cancelled() { … }
 ```
 
 The second check is the new one and looks redundant. It is not: `tools::execute`
-is synchronous for `apply_patch` and completes on its first poll, so the `biased`
-`tokio::select!` below can never choose the cancellation branch, and a cancellation
-arriving during `send_update` would otherwise let the patch write files. That is
-exactly the "cancel before" scenario in the test. The doc comment above `execute`
-describes outcome ordering but not this; one sentence naming the reason would stop
-a later reader from removing the check.
+is synchronous for `apply_patch` and completes on its first poll, so the
+`biased` `tokio::select!` below can never choose the cancellation branch, and a
+cancellation arriving during `send_update` would otherwise let the patch write
+files. That is exactly the "cancel before" scenario in the test. The doc comment
+above `execute` describes outcome ordering but not this; one sentence naming the
+reason would stop a later reader from removing the check.
 
 ## Unresolved suspicions
 
@@ -142,9 +144,9 @@ and 2.
 
 ## Behaviors checked and found correct
 
-- Chunk matching is exact, case-sensitive, forward-only, and anchors are literal;
-  context lines keep their relative position when interleaved with `+` and `-`
-  lines.
+- Chunk matching is exact, case-sensitive, forward-only, and anchors are
+  literal; context lines keep their relative position when interleaved with `+`
+  and `-` lines.
 - The cursor advances past inserted lines, so a later chunk cannot match text an
   earlier chunk inserted.
 - Final-newline and empty-result handling: deleting every line yields an empty
@@ -158,16 +160,17 @@ and 2.
   canonicalized even when the leaf does not exist.
 - `b' '`/`b'-'`/`b'+'` prefixes are ASCII, so `body[1..]` is always on a char
   boundary; non-ASCII leading bytes end the chunk body rather than panicking.
-- Preflight computes all updates before the first write, and every rejection path
-  leaves the workspace untouched.
+- Preflight computes all updates before the first write, and every rejection
+  path leaves the workspace untouched.
 - Error phases match section 6: `arguments:`, `parse: line N:`, `preflight:`,
   `apply:`. Preflight errors carry the operation's path; chunk errors carry the
   chunk number.
 - Application failure reports completed, failed, and unattempted operations.
 - A path component that is a regular file is rejected at preflight with
   `Not a directory (os error 20)` rather than failing mid-apply.
-- Acceptance tests in section 7 are all present, including edited move, move-only
-  byte preservation, no-op update, CRLF, and replay of the saved transcript.
+- Acceptance tests in section 7 are all present, including edited move,
+  move-only byte preservation, no-op update, CRLF, and replay of the saved
+  transcript.
 
 ## Checks run
 
@@ -180,11 +183,11 @@ and 2.
 
 ## Verdict
 
-Sound. The matching rules and path confinement match the design, the module stays
-inside the "just enough Rust" budget, and the tests cover the contract rather than
-the internals. Finding 1 is a real data-loss path and should be fixed before this
-lands. Findings 2 and 3 are small corrections with no new machinery. Findings 4
-through 6 are documentation and readability.
+Sound. The matching rules and path confinement match the design, the module
+stays inside the "just enough Rust" budget, and the tests cover the contract
+rather than the internals. Finding 1 is a real data-loss path and should be
+fixed before this lands. Findings 2 and 3 are small corrections with no new
+machinery. Findings 4 through 6 are documentation and readability.
 
 ## Resolution
 
@@ -208,9 +211,9 @@ every operation, and split the integration test.
 5. **Fixed.** The scenario loop became five tests over three shared fixtures
    (`patch_harness`, `patch_result`, `assert_replays_patch`), with no branching
    inside any test and no change in coverage.
-6. **Fixed.** A three-line comment at the second cancellation check explains that
-   a tool changing files runs to completion once started, so the `select!` below
-   cannot observe the cancellation.
+6. **Fixed.** A three-line comment at the second cancellation check explains
+   that a tool changing files runs to completion once started, so the `select!`
+   below cannot observe the cancellation.
 
 Verified after the fixes: `cargo test` 55 passed, `cargo clippy --all-targets`
 clean, `cargo fmt` clean, and one live `ox run` against a scratch workspace and

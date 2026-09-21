@@ -60,9 +60,21 @@ fn text_chunk(text: &str) -> ContentChunk {
 pub fn pending_tool_call(call: &ToolCall) -> SessionUpdate {
     SessionUpdate::ToolCall(
         AcpToolCall::new(ToolCallId::new(call.call_id.clone()), tools::title(call))
+            .kind(kind(call))
             .status(ToolCallStatus::Pending)
             .raw_input(raw_input(call)),
     )
+}
+
+/// The kind an ACP client uses to pick an icon for a call.
+fn kind(call: &ToolCall) -> ToolKind {
+    match call.name.as_str() {
+        tools::SHELL => ToolKind::Execute,
+        tools::READ_FILE => ToolKind::Read,
+        tools::GLOB | tools::GREP => ToolKind::Search,
+        tools::APPLY_PATCH => ToolKind::Edit,
+        _ => ToolKind::Other,
+    }
 }
 
 pub fn in_progress_tool_call_update(call_id: &str) -> SessionUpdate {
@@ -82,22 +94,26 @@ pub fn shell_permission_request(
         Some(command) => ("Command", command),
         None => ("Arguments", call.arguments.as_str()),
     };
-    // Clients can omit rawInput from the approval UI, so show the command as content too.
-    let indented: String = text
-        .split_inclusive('\n')
-        .map(|line| format!("    {line}"))
-        .collect();
-    let content = format!(
-        "Working directory: {}\n\n{label}:\n\n{indented}",
-        workspace.display(),
-    );
+    let title = tools::title(call);
+    let mut content = format!("Working directory: {}", workspace.display());
+    // The title is one shortened line, so repeat the command as content only
+    // when the title does not already show all of it. Clients can omit
+    // rawInput from the approval UI, so content is the only other place it
+    // appears.
+    if title != text.trim() {
+        let indented: String = text
+            .split_inclusive('\n')
+            .map(|line| format!("    {line}"))
+            .collect();
+        content.push_str(&format!("\n\n{label}:\n\n{indented}"));
+    }
     RequestPermissionRequest::new(
         session_id,
         ToolCallUpdate::new(
             ToolCallId::new(call.call_id.clone()),
             ToolCallUpdateFields::new()
-                .title(tools::title(call))
-                .kind(ToolKind::Execute)
+                .title(title)
+                .kind(kind(call))
                 .status(ToolCallStatus::Pending)
                 .raw_input(input)
                 .content(vec![ToolCallContent::from(ContentBlock::Text(
@@ -156,6 +172,7 @@ pub fn replay_transcript(
 fn replayed_tool_call(call: &ToolCall, result: &ToolResult) -> SessionUpdate {
     SessionUpdate::ToolCall(
         AcpToolCall::new(ToolCallId::new(call.call_id.clone()), tools::title(call))
+            .kind(kind(call))
             .status(status(&result.outcome))
             .raw_input(raw_input(call))
             .content(vec![output_content(&result.outcome)])
@@ -217,7 +234,7 @@ mod tests {
     }
 
     #[test]
-    fn shell_approval_content_shows_the_command_without_relying_on_raw_input() {
+    fn shell_approval_content_shows_a_command_the_title_cannot_show_in_full() {
         let command = "printf '%s\\n' '```'\n  echo \"$HOME\"\n";
         let arguments = serde_json::json!({"command": command, "timeout_seconds": 5});
         let mut call = ToolCall {
@@ -230,9 +247,10 @@ mod tests {
                 arguments.to_string(),
                 "Working directory: /workspace\n\nCommand:\n\n    printf '%s\\n' '```'\n      echo \"$HOME\"\n",
             ),
+            // A one-line command already appears in full as the title.
             (
                 serde_json::json!({"command": "echo hello  \n\n"}).to_string(),
-                "Working directory: /workspace\n\nCommand:\n\n    echo hello  \n    \n",
+                "Working directory: /workspace",
             ),
             (
                 "{bad json".to_owned(),

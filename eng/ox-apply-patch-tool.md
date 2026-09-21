@@ -13,8 +13,8 @@ goal. Ox owns a small format with deliberately simple behavior; upstream edge
 cases do not become requirements merely because another implementation supports
 them.
 
-The implementation should be a concrete Rust parser and filesystem function.
-Do not add an SDK, shell subprocess, provider-specific backend, general tool
+The implementation should be a concrete Rust parser and filesystem function. Do
+not add an SDK, shell subprocess, provider-specific backend, general tool
 registry, or configuration surface.
 
 ## 2. Tool interface
@@ -71,9 +71,9 @@ message.
 *** End Patch
 ```
 
-A patch contains zero or more file operations between the begin and end
-markers. The markers and operation headers must appear exactly as shown at the
-start of a line.
+A patch contains zero or more file operations between the begin and end markers.
+The markers and operation headers must appear exactly as shown at the start of a
+line.
 
 - `*** Add File: path` is followed by zero or more lines beginning with `+`.
   Removing that prefix gives the new file's contents.
@@ -113,15 +113,15 @@ Apply chunks in their patch order:
 
 1. Build the old sequence from context and removed lines.
 2. Starting at the beginning of the file for the first chunk and after the
-   preceding match thereafter, find the first exact occurrence of that
-   sequence. If the chunk has an anchor, first find that exact line and begin
-   the chunk search after it.
+   preceding match thereafter, find the first exact occurrence of that sequence.
+   If the chunk has an anchor, first find that exact line and begin the chunk
+   search after it.
 3. Replace the matched sequence with the context and inserted lines.
 4. Continue searching after the applied chunk.
 
-Matching is exact and case-sensitive. Do not trim whitespace, normalize
-Unicode, calculate edit distance, or add other fuzzy matching. A mismatch is a
-`Failed` outcome; the model can inspect it and try a more accurate patch.
+Matching is exact and case-sensitive. Do not trim whitespace, normalize Unicode,
+calculate edit distance, or add other fuzzy matching. A mismatch is a `Failed`
+outcome; the model can inspect it and try a more accurate patch.
 
 A chunk containing only additions inserts after its anchor or preceding chunk.
 With neither, it appends to the file. Context lines are included in both the old
@@ -145,12 +145,12 @@ not expand tildes, variables, globs, URLs, or quoted names.
 
 Use these ordinary operation rules:
 
-| Operation | Requirement | Effect |
-| --- | --- | --- |
-| Add | Target does not exist | Create parents as needed, then create the file. |
-| Update | Source is an existing regular text file | Replace its contents. |
-| Delete | Source is an existing regular file | Remove it. |
-| Move | Source is an existing regular file and destination does not exist | Create destination parents as needed, then move it, applying chunks first when present. |
+| Operation | Requirement                                                       | Effect                                                                                  |
+| --------- | ----------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| Add       | Target does not exist                                             | Create parents as needed, then create the file.                                         |
+| Update    | Source is an existing regular text file                           | Replace its contents.                                                                   |
+| Delete    | Source is an existing regular file                                | Remove it.                                                                              |
+| Move      | Source is an existing regular file and destination does not exist | Create destination parents as needed, then move it, applying chunks first when present. |
 
 Reject a patch that names the same path for more than one operation, including
 move destinations. This keeps preflight and outcome reporting unambiguous.
@@ -159,8 +159,8 @@ Parse the whole patch, validate its paths, read required sources, and calculate
 updates before the first filesystem change. Apply the resulting operations in
 patch order with ordinary filesystem APIs.
 
-Filesystem application is not transactional. Stop on the first write, remove,
-or rename error. Earlier operations may remain applied and no rollback is
+Filesystem application is not transactional. Stop on the first write, remove, or
+rename error. Earlier operations may remain applied and no rollback is
 attempted. The `Failed` outcome must identify completed operations, the failed
 operation, and operations not attempted. Ox assumes the workspace is not being
 modified concurrently; cross-process race hardening is outside this version.
@@ -183,7 +183,10 @@ phase—arguments, parse, preflight, or apply—and the relevant path or chunk w
 known. It should provide enough context for the model to correct the patch
 without dumping unrelated file contents.
 
-Use the stable ACP title `Apply patch`. The surrounding prompt run continues to
+Title the call with the path it changes, or with the number of paths when it
+changes several. A patch that does not parse names no paths and is titled
+`Apply
+patch`. The tool kind is edit. The surrounding prompt run continues to
 own ACP updates, cancellation, transcript saving, and replay. In particular,
 filesystem execution is synchronous once started. Its observed outcome enters
 the `UncommittedAssistantBatch` before the finished ACP update is sent, and the
@@ -193,12 +196,12 @@ Do not duplicate that machinery inside the patch implementation.
 
 Suggested module changes:
 
-| Module | Change |
-| --- | --- |
-| `src/tools.rs` | Add the schema, title, argument parsing, and dispatch. |
-| `src/tools/patch.rs` | Parse and apply patches with concrete owned types. |
-| `src/tools/patch-guide.txt` | Hold the model guidance shipped as the tool description. |
-| `src/acp/prompt.rs` | Pass the session workspace to tool execution. |
+| Module                      | Change                                                           |
+| --------------------------- | ---------------------------------------------------------------- |
+| `src/tools.rs`              | Add the schema, tool call title, argument parsing, and dispatch. |
+| `src/tools/patch.rs`        | Parse and apply patches with concrete owned types.               |
+| `src/tools/patch-guide.txt` | Hold the model guidance shipped as the tool description.         |
+| `src/acp/prompt.rs`         | Pass the session workspace to tool execution.                    |
 
 An owned `Patch` containing a `Vec<FileOperation>` is sufficient. Keep parsing
 and text transformation separate from filesystem I/O so the important behavior
@@ -223,8 +226,8 @@ required.
   targets.
 - Verify that a preflight failure changes nothing and an application failure
   reports any earlier completed operations without attempting later ones.
-- Verify the schema, stable title, prompt run, cancellation before
-  execution, transcript saving, and replay through focused integration tests.
+- Verify the schema, tool call title, prompt run, cancellation before execution,
+  transcript saving, and replay through focused integration tests.
 
 Model evaluations may later measure patch validity and retry rates. They are not
 part of the deterministic implementation contract.

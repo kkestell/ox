@@ -652,11 +652,13 @@ mod tests {
                             "{decision}"
                         );
                         assert_eq!(
+                            params["toolCall"]["title"],
+                            format!("touch {file}"),
+                            "{decision}"
+                        );
+                        assert_eq!(
                             params["toolCall"]["content"][0]["content"]["text"],
-                            format!(
-                                "Working directory: {}\n\nCommand:\n\n    touch {file}",
-                                workspace.0.display()
-                            ),
+                            format!("Working directory: {}", workspace.0.display()),
                             "{decision}"
                         );
                         assert!(
