@@ -112,8 +112,8 @@ ownership, validation, transactions, or focused tests:
    later work.
 2. Each active operation holds exactly one non-cloneable operation guard.
    Its lifetime includes the finish path and sending the response.
-3. Every prompt run owns its saved transcript, uncommitted batch,
-   model-request count, active completion stream, and cancellation signal.
+3. Every prompt run owns its saved transcript, uncommitted batch, active
+   completion stream, and cancellation signal.
    Another session cannot replace them.
 4. The saved user message is durable before the first model request.
 5. Tool execution begins only after the completion stream has yielded a
@@ -369,8 +369,7 @@ dispatch failure the model can see and potentially correct on a later call.
 
 Cancellation results contain a short explanation distinguishing a tool that
 was never started from one interrupted before its result was observed. Failure
-results likewise distinguish validation failure, execution failure, and work
-not started because the model-request budget was exhausted.
+results likewise distinguish validation failure from execution failure.
 
 Results are persisted in original call order even though final outcomes may
 become known at different times. With sequential execution this ordering is
@@ -647,7 +646,6 @@ Each prompt run owns:
 - The operation guard and its cancellation signal.
 - A cloned OpenRouter client.
 - The saved transcript loaded from the store and extended after successful writes.
-- A model-request count.
 - At most one active completion stream.
 - At most one uncommitted assistant batch.
 - The final outcome and any finish-path failure.
@@ -665,16 +663,16 @@ its batch is complete and saved.
 ### Loop
 
 ```text
-while another model request is allowed:
+loop:
     check cancellation
-    make one model request using the transcript; increment the model-request count
+    make one model request using the transcript
     forward live text and reasoning as ACP updates
     require one validated completion
     capture its assistant message in an uncommitted batch
     send a pending tool-call update for every call in that message
 
     classify its stop condition
-    if tool calls need running and a further request remains:
+    if tool calls need running:
         run the calls in order
         check cancellation before starting each call
         send the in-progress update, then run the call or record its validation failure
@@ -694,22 +692,6 @@ remaining updates, and build the final response
 The implementation may use early returns inside helpers, but the prompt run
 catches their ordinary errors and passes through its common finish path.
 Update helpers do not escape this structure through an unhandled `?`.
-
-### Model-request budget
-
-Use one nearby `MAX_MODEL_REQUESTS` constant, initially 8. Every started model
-request consumes one request. There are no automatic retries that bypass the
-counter.
-
-A normal final answer on the last allowed request succeeds. If that completion
-requests tools, do not start tool work when no follow-up model request remains.
-Record explicit failed results stating that those calls were not started
-because the request budget was exhausted, save the complete batch, and return
-the ACP model-request-limit stop.
-
-This is a product policy: tools are used as part of a model exchange that Ox
-can continue, rather than started after the final opportunity to interpret
-their results. It does not impose a duration limit on an individual request.
 
 ### Completion classification
 
@@ -752,7 +734,7 @@ or general tool trait is needed for this set.
 Unknown tool names, invalid argument JSON, and invalid typed arguments produce
 failed results associated with the original call ID. A tool's ordinary runtime
 failure also becomes a failed result. The model may respond to that result on
-the next allowed request. Broken internal invariants remain programming bugs.
+the next request. Broken internal invariants remain programming bugs.
 
 Execute calls sequentially. Successful and failed calls both consume their
 position in the batch; a failure does not erase prior outcomes. Ordinary tool
@@ -764,7 +746,7 @@ this sequence:
 
 1. Send every tool call in the message as a pending tool-call update, in
    call order.
-2. Check cancellation and the model-request budget.
+2. Check cancellation.
 3. Execute eligible calls sequentially. Before each call, check cancellation
    and request shell approval when using ACP. Send an in-progress update only
    for calls that will run. While a call runs, observe cancellation
@@ -822,8 +804,8 @@ applies to a subsequent prompt.
 ## 13. Finish path and response semantics
 
 The driver uses a small private `PromptOutcome` enum for normal completion,
-cancellation, model-request limit, token limit, refusal, OpenRouter failure,
-ACP-update failure, and storage failure. These distinctions exist because
+cancellation, token limit, refusal, OpenRouter failure, ACP-update failure,
+and storage failure. These distinctions exist because
 their finish behavior differs; they do not require a public error hierarchy.
 
 The finish path executes in this order:
@@ -850,8 +832,7 @@ need to re-send finished updates that were already sent successfully.
 | Outcome | Persistent effect | Client result |
 | --- | --- | --- |
 | Normal final answer | Save the final batch. | Successful end-of-turn response. |
-| Ordinary tool failure | Save the failed result with its assistant batch; continue within budget. | Failed tool update, followed by the model's subsequent response. |
-| Model-request budget reached | Give unexecuted calls explicit budget failures and save. | Failed updates for the pending calls, then the model-request-limit stop. |
+| Ordinary tool failure | Save the failed result with its assistant batch; continue. | Failed tool update, followed by the model's subsequent response. |
 | Validated token-limited answer | Save the valid assistant message. | Token-limit stop. |
 | Validated refusal | Save the validated assistant message when present. | Refusal stop. |
 | Cancellation before validation | Keep the user message and prior saved batches; discard provisional output. | Cancelled response. |
@@ -1069,8 +1050,6 @@ Cases:
 - Failed batch save, leaving the saved in-memory transcript unchanged.
 - Update failure after an observed tool result, with that result still
   saved in the finished batch.
-- Final allowed model request requesting tools, with no tool executed and the
-  explicit budget failures persisted.
 
 ### Operation guards
 

@@ -22,11 +22,6 @@ use crate::{
     tools,
 };
 
-/// Model requests one prompt may make, including the first. Tools requested
-/// by the final allowed request are not run, because no request remains to
-/// read their results.
-pub const MAX_MODEL_REQUESTS: usize = 8;
-
 pub enum ToolPermissions {
     AutoApprove,
     Acp(ConnectionTo<Client>),
@@ -63,7 +58,6 @@ where
 enum PromptOutcome {
     Finished,
     Cancelled,
-    ModelRequestLimit,
     TokenLimit,
     Refused,
     OpenRouter(io::Error),
@@ -77,7 +71,6 @@ impl fmt::Display for PromptOutcome {
         match self {
             Self::Finished => write!(f, "the answer finished"),
             Self::Cancelled => write!(f, "the prompt was cancelled"),
-            Self::ModelRequestLimit => write!(f, "the model request limit was reached"),
             Self::TokenLimit => write!(f, "the model reached its token limit"),
             Self::Refused => write!(f, "the model refused"),
             Self::OpenRouter(error) => write!(f, "the model request failed: {error}"),
@@ -99,7 +92,6 @@ struct PromptRun<F> {
     /// Saved transcript, extended only after a database transaction succeeds.
     transcript: Vec<TranscriptEntry>,
     uncommitted_batch: Option<UncommittedAssistantBatch>,
-    model_requests: usize,
 }
 
 /// A validated assistant message whose tool calls do not all have outcomes yet.
@@ -187,7 +179,6 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
             permissions,
             transcript: stored.transcript,
             uncommitted_batch: None,
-            model_requests: 0,
         })
     }
 
@@ -235,9 +226,6 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
                 openrouter::Stop::TokenLimit => Some(PromptOutcome::TokenLimit),
                 openrouter::Stop::Refused => Some(PromptOutcome::Refused),
                 openrouter::Stop::ToolCalls => {
-                    if self.model_requests >= MAX_MODEL_REQUESTS {
-                        return PromptOutcome::ModelRequestLimit;
-                    }
                     if let Err(outcome) = self.execute(&calls).await {
                         return outcome;
                     }
@@ -258,7 +246,6 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
     async fn request_completion(
         &mut self,
     ) -> std::result::Result<openrouter::Completion, PromptOutcome> {
-        self.model_requests += 1;
         let mut stream = tokio::select! {
             biased;
             () = self.cancellation.cancelled() => return Err(PromptOutcome::Cancelled),
@@ -384,10 +371,6 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
                 PromptOutcome::Cancelled => {
                     ToolOutcome::Cancelled("Cancelled before this tool was started.".to_owned())
                 }
-                PromptOutcome::ModelRequestLimit => ToolOutcome::Failed(format!(
-                    "Not started: this prompt reached its limit of {MAX_MODEL_REQUESTS} model \
-                     requests, so no request remained to read the result."
-                )),
                 PromptOutcome::AcpUpdate(_) => ToolOutcome::Failed(
                     "Not started: the client connection failed before this tool ran.".to_owned(),
                 ),
@@ -426,7 +409,6 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
         let stop_reason = match outcome {
             PromptOutcome::Finished => StopReason::EndTurn,
             PromptOutcome::Cancelled => StopReason::Cancelled,
-            PromptOutcome::ModelRequestLimit => StopReason::MaxTurnRequests,
             PromptOutcome::TokenLimit => StopReason::MaxTokens,
             PromptOutcome::Refused => StopReason::Refusal,
             PromptOutcome::OpenRouter(error) | PromptOutcome::Storage(error) => {
@@ -1171,44 +1153,6 @@ mod tests {
                 "call-1 completed",
             ],
             "nothing more is attempted after sending an update fails"
-        );
-    }
-
-    #[tokio::test]
-    async fn tools_requested_by_the_final_allowed_request_are_not_run() {
-        let replies = (0..MAX_MODEL_REQUESTS)
-            .map(|index| tool_reply(&[(&format!("call-{index}"), "printf ok")]))
-            .collect();
-        let harness = Harness::new(replies).await;
-
-        let (response, transcript) = harness.run("Weather?", |_| Ok(())).await;
-
-        assert_eq!(response.unwrap().stop_reason, StopReason::MaxTurnRequests);
-        assert_eq!(harness.server.requests().len(), MAX_MODEL_REQUESTS);
-        assert_eq!(transcript.len(), 2 + 2 * MAX_MODEL_REQUESTS);
-        let completed = transcript
-            .iter()
-            .filter(|entry| {
-                matches!(
-                    entry,
-                    TranscriptEntry::ToolResult(ToolResult {
-                        outcome: ToolOutcome::Completed(_),
-                        ..
-                    })
-                )
-            })
-            .count();
-        assert_eq!(completed, MAX_MODEL_REQUESTS - 1);
-        assert!(matches!(
-            transcript.last(),
-            Some(TranscriptEntry::ToolResult(ToolResult { outcome: ToolOutcome::Failed(reason), .. }))
-                if reason.starts_with("Not started: this prompt reached its limit")
-        ));
-        assert_eq!(harness.stored(), transcript);
-        let last = format!("call-{} failed", MAX_MODEL_REQUESTS - 1);
-        assert_eq!(
-            harness.updates().last().map(describe).as_deref(),
-            Some(last.as_str())
         );
     }
 }

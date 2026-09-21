@@ -53,8 +53,8 @@ Currently, there is none. Delete and recreate `~/.local/share/ox/ox.db` rather t
 - Say send an ACP update. Do not imply confirmed delivery or receipt.
 - Say acquire or drop an operation guard. Avoid admission, claim, ownership,
   membership, and release for this mechanism.
-- Keep external names such as `cwd`, `reasoning_details`, `AgentThoughtChunk`,
-  and `MaxTurnRequests` at their protocol boundaries.
+- Keep external names such as `cwd`, `reasoning_details`, and
+  `AgentThoughtChunk` at their protocol boundaries.
 
 ## Glossary
 
