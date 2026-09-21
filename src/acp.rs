@@ -540,7 +540,7 @@ mod tests {
                 }
             }
             assert!(incoming_tx.is_none(), "EOF was sent during inference");
-            let response = response.expect("the settled response was drained before shutdown");
+            let response = response.expect("the final response was drained before shutdown");
             assert_eq!(response["result"]["stopReason"], "cancelled");
         };
         let (result, ()) = futures::join!(serve(state, transport), client);

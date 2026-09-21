@@ -44,7 +44,7 @@ Register this function alongside the existing concrete tools:
 
 The shipped `description` is the whole of `src/tools/patch-guide.txt`, which
 opens with the sentence above and continues with the example and rules in
-section 3. The tool uses the session's stored `cwd`; it does not accept a
+section 3. The tool uses the session's workspace path; it does not accept a
 separate working directory or execute shell syntax.
 
 Malformed arguments and patch errors produce `ToolOutcome::Failed`. Tool

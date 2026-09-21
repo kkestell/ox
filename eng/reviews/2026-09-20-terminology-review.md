@@ -19,8 +19,8 @@ The implementation has one fairly small workflow:
 ```text
 receive an ACP prompt request
 save its user message
-make an OpenRouter request
-send live text updates while the response streams
+make a model request
+send live answer and reasoning updates while the response streams
 validate the complete assistant message
 run any tool calls and record their outcomes
 save the assistant message and tool results together
@@ -64,10 +64,13 @@ data or action instead.
 | `PromptOutcome::Provider` | `PromptOutcome::OpenRouter` | The failure now identifies the concrete external boundary. |
 | `convert::prompt_text`, `agent_text`, `tool_result`, and similar helpers | `prompt_to_user_message`, `agent_message_chunk`, `finished_tool_call_update`, and other ACP-shaped names | Conversion names now make their direction or ACP result explicit instead of mixing Ox and ACP vocabulary. |
 | claim/admission/membership wording | acquire/drop an operation guard | Describes the actual mechanism directly. |
-| internal `reasoning_details` | `continuation_metadata` | The values are opaque data retained for a later OpenRouter request. |
+| internal `reasoning_details` | `continuation_metadata` | The values are opaque data retained for a later model request. |
 
-These are terminology changes only. The database still serializes the field as
-`reasoning_details`, so the private row format does not change.
+The terminology changes were followed by a storage simplification. Transcript
+types now derive their stored JSON, including bare strings for model and user
+entries, `continuation_metadata`, and a nested tool `outcome`. That changes the
+private row format, so an existing database from the earlier format must be
+deleted and recreated.
 
 ## Findings after the cleanup
 
@@ -158,11 +161,12 @@ a required API translation rather than inconsistent internal terminology:
 | — | — | `ModelRequestLimit` | `MaxTurnRequests` |
 | — | — | `Cancelled` | `Cancelled` |
 
-### Remaining: one design-document reference uses the superseded workspace term
+### Resolved: follow-up terminology drift
 
-`eng/ox-apply-patch-tool.md` still says that the tool uses the session's stored
-`cwd`. Ox stores a workspace path; `cwd` should remain only at the ACP boundary.
-The architecture design has already been updated to the current terminology.
+A follow-up pass replaced remaining prompt-outcome `exit` locals, operation
+guard `claims`, and acceptance and settlement wording in test comments. The
+apply-patch design now says that the tool uses the session's workspace path;
+`cwd` remains only at the ACP boundary.
 
 ## Glossary
 
@@ -188,7 +192,7 @@ The architecture design has already been updated to the current terminology.
 | Transcript | The ordered, saved conversation used for both session replay and future model requests. |
 | Transcript entry | A model entry, user message, assistant message, or tool result in the transcript. |
 | Model entry | The first transcript entry. It stores the OpenRouter model used for every model request in that session. |
-| OpenRouter client | The concrete client that verifies the API key and sends chat-completion requests. |
+| OpenRouter client | The concrete client that verifies the API key and sends model requests to OpenRouter's chat-completions endpoint. |
 | Model request | One OpenRouter chat-completion HTTP request. A prompt run may make several. |
 | Completion stream | The reader for one streamed OpenRouter response after its HTTP request has succeeded. It yields output deltas followed by one completion. |
 | OpenRouter stream item | An answer-text delta, a reasoning delta, or the one completion yielded by a completion stream. |

@@ -221,7 +221,7 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
             }
             let openrouter::Completion { message, stop } = match self.request_completion().await {
                 Ok(completion) => completion,
-                Err(exit) => return exit,
+                Err(outcome) => return outcome,
             };
             let calls = message.tool_calls.clone();
             self.uncommitted_batch = Some(UncommittedAssistantBatch::new(message));
@@ -230,7 +230,7 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
                     return PromptOutcome::AcpUpdate(error);
                 }
             }
-            let ends_with = match stop {
+            let outcome = match stop {
                 openrouter::Stop::Finished => Some(PromptOutcome::Finished),
                 openrouter::Stop::TokenLimit => Some(PromptOutcome::TokenLimit),
                 openrouter::Stop::Refused => Some(PromptOutcome::Refused),
@@ -238,8 +238,8 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
                     if self.model_requests >= MAX_MODEL_REQUESTS {
                         return PromptOutcome::ModelRequestLimit;
                     }
-                    if let Err(exit) = self.execute(&calls).await {
-                        return exit;
+                    if let Err(outcome) = self.execute(&calls).await {
+                        return outcome;
                     }
                     None
                 }
@@ -247,14 +247,14 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
             if let Err(error) = self.commit() {
                 return PromptOutcome::Storage(error);
             }
-            if let Some(exit) = ends_with {
-                return exit;
+            if let Some(outcome) = outcome {
+                return outcome;
             }
         }
     }
 
-    /// Makes one model request, forwards live text, and returns its validated
-    /// completion.
+    /// Makes one model request, forwards provisional output, and returns its
+    /// validated completion.
     async fn request_completion(
         &mut self,
     ) -> std::result::Result<openrouter::Completion, PromptOutcome> {
@@ -484,7 +484,7 @@ mod tests {
         }
 
         /// Runs the prompt with an update closure that records every update
-        /// and calls `on_update` before accepting it.
+        /// and calls `on_update` before returning its result.
         async fn run(
             &self,
             input: &str,
@@ -505,8 +505,8 @@ mod tests {
             )
             .unwrap();
             assert!(prompt.save_user_message(input.to_owned()).unwrap());
-            let exit = prompt.run_model_loop().await;
-            (prompt.finish(exit), prompt.transcript)
+            let outcome = prompt.run_model_loop().await;
+            (prompt.finish(outcome), prompt.transcript)
         }
 
         fn stored(&self) -> Vec<TranscriptEntry> {

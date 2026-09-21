@@ -168,15 +168,15 @@ mod tests {
     fn a_guard_keeps_the_session_busy_until_it_drops() {
         let operations = SessionOperations::default();
         let session = id("a");
-        let claims: [fn(&SessionOperations, &SessionId) -> Option<OperationGuard>; 3] = [
+        let acquire_guards: [fn(&SessionOperations, &SessionId) -> Option<OperationGuard>; 3] = [
             |operations, session| operations.try_prompt(session).map(|(guard, _)| guard),
             |operations, session| operations.try_load(session),
             |operations, session| operations.try_delete(session),
         ];
 
-        for holder in &claims {
-            let guard = holder(&operations, &session).expect("an idle session is available");
-            for incoming in &claims {
+        for acquire_guard in &acquire_guards {
+            let guard = acquire_guard(&operations, &session).expect("an idle session is available");
+            for incoming in &acquire_guards {
                 assert!(
                     incoming(&operations, &session).is_none(),
                     "the session is busy"

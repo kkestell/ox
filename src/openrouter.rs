@@ -1,5 +1,4 @@
-//! Sends OpenRouter chat-completion requests and assembles their streamed
-//! responses.
+//! Sends model requests to OpenRouter and assembles their streamed responses.
 
 use std::{
     collections::{BTreeMap, VecDeque},
@@ -186,7 +185,7 @@ pub struct CompletionStream {
 }
 
 impl CompletionStream {
-    /// Returns the next live text fragment or the one validated completion.
+    /// Returns the next output delta or the one validated completion.
     /// `Ok(None)` follows a completion; ending before one is an error.
     pub async fn next(&mut self) -> io::Result<Option<StreamItem>> {
         while self.buffered_items.is_empty() {
