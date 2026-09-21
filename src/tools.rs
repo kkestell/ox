@@ -1,4 +1,4 @@
-//! The concrete tool set: schemas sent to the model, display titles, and
+//! The concrete tool set: schemas sent to the model, tool call titles, and
 //! execution of one complete call.
 
 use std::path::{Component, Path, PathBuf};
@@ -23,7 +23,7 @@ const OUTPUT_LIMIT: usize = 16 * 1024;
 // Leave room for line numbers, continuation instructions, and truncation notices.
 const BODY_LIMIT: usize = OUTPUT_LIMIT - 256;
 // Long enough to name a path or pattern, short enough for one display line.
-const TITLE_LIMIT: usize = 80;
+const MAX_TOOL_CALL_TITLE_CHARS: usize = 80;
 
 fn truncate(text: &mut String, limit: usize) {
     let mut end = text.len().min(limit);
@@ -178,14 +178,14 @@ struct PatchArgs {
 /// What the ACP client shows for one call. Arguments come from the model and
 /// may be missing or malformed, so a call that cannot be described by its
 /// arguments falls back to naming its tool alone.
-pub fn title(call: &ToolCall) -> String {
+pub fn tool_call_title(call: &ToolCall) -> String {
     match describe(call) {
         Some(description) => shorten(&description),
-        None => tool_title(call),
+        None => default_tool_call_title(call),
     }
 }
 
-fn tool_title(call: &ToolCall) -> String {
+fn default_tool_call_title(call: &ToolCall) -> String {
     match call.name.as_str() {
         SHELL => "Run shell command".to_owned(),
         READ_FILE => "Read file".to_owned(),
@@ -253,13 +253,16 @@ fn command_line(command: &str) -> Option<String> {
     })
 }
 
-/// A title of at most `TITLE_LIMIT` characters, counting the ellipsis that
-/// marks a shortened one.
-fn shorten(title: &str) -> String {
-    if title.chars().count() <= TITLE_LIMIT {
-        return title.to_owned();
+/// A tool call title of at most `MAX_TOOL_CALL_TITLE_CHARS` characters,
+/// counting the ellipsis that marks a shortened one.
+fn shorten(tool_call_title: &str) -> String {
+    if tool_call_title.chars().count() <= MAX_TOOL_CALL_TITLE_CHARS {
+        return tool_call_title.to_owned();
     }
-    let kept: String = title.chars().take(TITLE_LIMIT - 1).collect();
+    let kept: String = tool_call_title
+        .chars()
+        .take(MAX_TOOL_CALL_TITLE_CHARS - 1)
+        .collect();
     format!("{}…", kept.trim_end())
 }
 
@@ -443,7 +446,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn patch_schema_title_and_argument_errors() {
+    async fn patch_schema_tool_call_title_and_argument_errors() {
         let schema = schemas()
             .into_iter()
             .find(|schema| schema["function"]["name"] == APPLY_PATCH)
@@ -464,7 +467,7 @@ mod tests {
         );
         for arguments in ["{", "{}", r#"{"patch": 1}"#, r#"{"patch": "", "cwd": "/"}"#] {
             let call = call(APPLY_PATCH, arguments);
-            assert_eq!(title(&call), "Apply patch");
+            assert_eq!(tool_call_title(&call), "Apply patch");
             assert!(
                 matches!(execute(Path::new("/unused"), &call).await, ToolOutcome::Failed(error) if error.starts_with("arguments:"))
             );
@@ -472,7 +475,7 @@ mod tests {
     }
 
     #[test]
-    fn titles_describe_the_call_and_fall_back_to_the_tool_name() {
+    fn tool_call_titles_describe_the_call_and_fall_back_to_the_tool_name() {
         let long_path = "a".repeat(200);
         for (name, arguments, expected) in [
             (SHELL, json!({"command":"cargo test"}), "cargo test"),
@@ -521,16 +524,19 @@ mod tests {
                 "Read aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa…",
             ),
         ] {
-            assert_eq!(title(&call(name, &arguments.to_string())), expected);
+            assert_eq!(
+                tool_call_title(&call(name, &arguments.to_string())),
+                expected
+            );
         }
     }
 
     #[tokio::test]
-    async fn unknown_tools_fail_as_results_and_keep_their_name_as_title() {
+    async fn unknown_tools_fail_as_results_and_keep_their_name_as_tool_call_title() {
         assert_eq!(
             execute(Path::new("/workspace"), &call("launch", "{}")).await,
             ToolOutcome::Failed("Unknown tool: launch".to_owned())
         );
-        assert_eq!(title(&call("launch", "{}")), "launch");
+        assert_eq!(tool_call_title(&call("launch", "{}")), "launch");
     }
 }

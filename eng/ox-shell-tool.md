@@ -108,11 +108,10 @@ tool result with an actionable error. Do not fall back to another shell.
 Return one text result using the existing `ToolOutcome` variants and the
 existing in-progress and finished ACP updates. Do not stream subprocess output.
 
-Title the call with the command's first nonblank line, marked with an ellipsis
-when more of the command follows and shortened to one display line. A call whose
-arguments do not parse, or that carries no command, is titled
-`Run shell
-command`. The tool kind is execute.
+Build the tool call title from the command's first nonblank line, marked with an
+ellipsis when more of the command follows and shortened to one display line. A
+call whose arguments do not parse, or that carries no command, uses the tool
+call title `Run shell command`. The tool kind is execute.
 
 An ordinary result has an explicit exit status and labeled streams:
 
@@ -278,8 +277,8 @@ SIGINT signals do not bypass cleanup. A cancelled headless run exits
 unsuccessfully through its existing stop-reason handling. Forced termination and
 crashes remain outside the cleanup guarantee.
 
-Record the observed outcome in the uncommitted assistant batch before sending
-the finished ACP update. After every call has an outcome, save the assistant
+Add the observed outcome to the uncommitted assistant batch before sending the
+finished ACP update. After every call has an outcome, save the assistant
 message and tool results together with `SessionStore::append_batch`. An ACP
 update failure must not erase completed execution or its result.
 

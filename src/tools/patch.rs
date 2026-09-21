@@ -232,10 +232,10 @@ enum Change {
         destination: PathBuf,
         contents: Option<Vec<u8>>,
     },
-    Noop,
+    Unchanged,
 }
 
-fn preflight(root: &Path, patch: Patch) -> Result<Vec<Prepared>, String> {
+fn prepare(root: &Path, patch: Patch) -> Result<Vec<Prepared>, String> {
     let root = root
         .canonicalize()
         .map_err(|error| format!("workspace: {error}"))?;
@@ -243,7 +243,7 @@ fn preflight(root: &Path, patch: Patch) -> Result<Vec<Prepared>, String> {
     let mut prepared = Vec::new();
     for operation in patch.0 {
         let name = operation.path;
-        let prepare = || -> Result<Prepared, String> {
+        let prepare_operation = || -> Result<Prepared, String> {
             let path = target(&root, &name, &mut seen)?;
             if !matches!(&operation.kind, Operation::Add(_))
                 && !fs::metadata(&path)
@@ -256,11 +256,11 @@ fn preflight(root: &Path, patch: Patch) -> Result<Vec<Prepared>, String> {
                 Operation::Add(contents) => {
                     require_absent(&path)?;
                     (
-                        format!("A {name}"),
+                        format!("Added {name}"),
                         Change::Write(path, contents.into_bytes()),
                     )
                 }
-                Operation::Delete => (format!("D {name}"), Change::Delete(path)),
+                Operation::Delete => (format!("Deleted {name}"), Change::Delete(path)),
                 Operation::Update {
                     destination,
                     chunks,
@@ -281,7 +281,7 @@ fn preflight(root: &Path, patch: Patch) -> Result<Vec<Prepared>, String> {
                             })
                             .map_err(|error| format!("destination {destination_name}: {error}"))?;
                         (
-                            format!("R {name} -> {destination_name}"),
+                            format!("Moved {name} -> {destination_name}"),
                             Change::Move {
                                 source: path,
                                 destination,
@@ -289,15 +289,15 @@ fn preflight(root: &Path, patch: Patch) -> Result<Vec<Prepared>, String> {
                             },
                         )
                     } else if let Some(contents) = contents {
-                        (format!("M {name}"), Change::Write(path, contents))
+                        (format!("Modified {name}"), Change::Write(path, contents))
                     } else {
-                        (format!("N {name}"), Change::Noop)
+                        (format!("Unchanged {name}"), Change::Unchanged)
                     }
                 }
             };
             Ok(Prepared { summary, change })
         };
-        prepared.push(prepare().map_err(|error| format!("{name}: {error}"))?);
+        prepared.push(prepare_operation().map_err(|error| format!("{name}: {error}"))?);
     }
     Ok(prepared)
 }
@@ -327,7 +327,7 @@ impl Change {
                     fs::rename(source, destination)
                 }
             }
-            Self::Noop => Ok(()),
+            Self::Unchanged => Ok(()),
         }
     }
 }
@@ -376,7 +376,7 @@ pub(super) fn changed_paths(input: &str) -> Vec<String> {
 
 pub(super) fn apply(workspace: &Path, input: &str) -> Result<String, String> {
     let patch = Patch::parse(input)?;
-    let prepared = preflight(workspace, patch).map_err(|error| format!("preflight: {error}"))?;
+    let prepared = prepare(workspace, patch).map_err(|error| format!("prepare: {error}"))?;
     apply_prepared(&prepared)
 }
 
@@ -417,7 +417,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             apply(&workspace.0, example).unwrap(),
-            "Applied patch.\nA notes.txt\nM src/greeting.rs\nR old-name.txt -> new-name.txt\nD obsolete.txt"
+            "Applied patch.\nAdded notes.txt\nModified src/greeting.rs\nMoved old-name.txt -> new-name.txt\nDeleted obsolete.txt"
         );
         assert_eq!(
             fs::read_to_string(workspace.0.join("notes.txt")).unwrap(),
@@ -436,7 +436,7 @@ mod tests {
     }
 
     #[test]
-    fn empty_files_blank_lines_noops_and_byte_preserving_moves() {
+    fn empty_files_blank_lines_unchanged_updates_and_byte_preserving_moves() {
         let workspace = Workspace::new();
         assert_eq!(apply(&workspace.0, &wrapped("")).unwrap(), "Applied patch.");
         apply(
@@ -455,7 +455,7 @@ mod tests {
                 &wrapped("*** Update File: nested/blank\n@@\n \n *** End Patch\n")
             )
             .unwrap(),
-            "Applied patch.\nN nested/blank"
+            "Applied patch.\nUnchanged nested/blank"
         );
         fs::write(workspace.0.join("bytes"), b"\xff\r\n\x00").unwrap();
         assert_eq!(
@@ -464,7 +464,7 @@ mod tests {
                 &wrapped("*** Update File: bytes\n*** Move to: moved/bytes\n")
             )
             .unwrap(),
-            "Applied patch.\nR bytes -> moved/bytes"
+            "Applied patch.\nMoved bytes -> moved/bytes"
         );
         assert_eq!(
             fs::read(workspace.0.join("moved/bytes")).unwrap(),
@@ -548,7 +548,7 @@ mod tests {
     }
 
     #[test]
-    fn preflight_rejects_invalid_operations_without_changes() {
+    fn preparation_rejects_invalid_operations_without_changes() {
         let workspace = Workspace::new();
         fs::write(workspace.0.join("existing"), "original\n").unwrap();
         fs::write(workspace.0.join("binary"), b"\xff").unwrap();
@@ -572,7 +572,7 @@ mod tests {
         ] {
             let input = wrapped(&format!("*** Add File: first\n+ok\n{body}"));
             let error = apply(&workspace.0, &input).unwrap_err();
-            assert!(error.starts_with("preflight:"), "{error}");
+            assert!(error.starts_with("prepare:"), "{error}");
             assert!(!workspace.0.join("first").exists());
             assert_eq!(
                 fs::read_to_string(workspace.0.join("existing")).unwrap(),
@@ -608,7 +608,7 @@ mod tests {
             assert!(
                 apply(&workspace.0, &wrapped(body))
                     .unwrap_err()
-                    .starts_with("preflight:")
+                    .starts_with("prepare:")
             );
         }
         assert_eq!(
@@ -626,15 +626,15 @@ mod tests {
     #[test]
     fn application_failure_reports_completed_failed_and_unattempted_operations() {
         let workspace = Workspace::new();
-        // Each target is absent at preflight, but the first operation creates a
-        // file where the second operation needs a parent directory.
+        // Each target is absent during preparation, but the first operation
+        // creates a file where the second operation needs a parent directory.
         let error = apply(&workspace.0, &wrapped("*** Add File: parent\n+file\n*** Add File: parent/child\n+child\n*** Add File: later\n+later\n")).unwrap_err();
         assert!(
-            error.starts_with("apply: failed A parent/child:"),
+            error.starts_with("apply: failed Added parent/child:"),
             "{error}"
         );
         assert!(
-            error.contains("Completed:\nA parent\nNot attempted:\nA later"),
+            error.contains("Completed:\nAdded parent\nNot attempted:\nAdded later"),
             "{error}"
         );
         assert_eq!(

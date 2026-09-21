@@ -85,7 +85,7 @@ revisited rather than patched with an implicit fallback.
 | Each process serves one ACP connection.                                                                | Connection shutdown ends that process's live work; there is no cross-client routing layer.                                       | A daemon or multiple simultaneous clients become a requirement.                     |
 | SQLite runs on local storage and normal operations are short.                                          | Synchronous operations behind one connection mutex are acceptable initially.                                                     | Measurements show storage work delaying streaming or cancellation.                  |
 | Session transcripts fit comfortably in memory.                                                         | Load and prompt read a whole saved transcript.                                                                                   | Real conversations require compaction or bounded-memory replay.                     |
-| Tool execution is owned by the prompt run that validated the call.                                     | The run keeps resource-specific work within its cancellation boundary and records its observed outcome in the uncommitted batch. | Work must continue independently of the prompt run that started it.                 |
+| Tool execution is owned by the prompt run that validated the call.                                     | The run keeps resource-specific work within its cancellation boundary and adds its observed outcome to the uncommitted batch.    | Work must continue independently of the prompt run that started it.                 |
 | Tool execution owns its cleanup through the returned outcome.                                          | The prompt awaits shell process-group termination, shell reaping, and bounded output draining before saving its assistant batch. | A tool needs work to survive its prompt run.                                        |
 | The default model and the endpoint are fixed local choices; each session stores its model at creation. | A concrete adapter, nearby constants, and one transcript entry suffice.                                                          | Users need to choose or change a session's model, or another actual provider.       |
 | The model's required continuation data can be represented losslessly as stored JSON values.            | Structured metadata survives storage and request reconstruction.                                                                 | A supported feature requires a different representation or byte-level preservation. |
@@ -392,7 +392,7 @@ struct SessionStore(Arc<Mutex<rusqlite::Connection>>);
 struct SessionSummary {
     id: SessionId,
     workspace_path: PathBuf,
-    title: Option<String>,
+    session_title: Option<String>,
     created_at: String,
     updated_at: String,
 }
@@ -419,7 +419,7 @@ mutex. Code must not recursively acquire the store lock.
 | `create(workspace_path)`  | Generate a session ID and create its workspace association and metadata atomically. Return the new summary.                              |
 | `read(id)`                | Return `None` for absence; otherwise return metadata and ordered transcript from one read transaction.                                   |
 | `list(workspace_path)`    | Return owned summaries, optionally filtered by workspace, ordered by descending activity with a stable ID tie-breaker.                   |
-| `append_user(id, text)`   | Append the user message, adopt the first usable title when absent, and update activity in one transaction. Return the resulting summary. |
+| `append_user(id, text)`   | Append the user message, adopt the first usable session title when absent, and update activity in one transaction. Return the resulting summary. |
 | `append_batch(id, batch)` | Validate a complete assistant batch, append all its entries, and update activity atomically.                                             |
 | `delete(id)`              | Remove the session and its dependent entries atomically; absence is an idempotent success.                                               |
 
@@ -430,19 +430,21 @@ not used to change activity.
 
 ### Logical schema
 
-The database contains workspace rows, session rows, and an ordered `events`
-table. Session rows contain the session ID, workspace association, optional
-title, and creation and activity timestamps. `events` rows contain an ordered
-integer ID, session ID, timestamp, kind, and serialized payload.
+The database contains workspace rows, session rows, and an ordered
+`transcript_entries` table. Session rows contain the session ID, workspace
+association, optional session title, and creation and activity timestamps.
+`transcript_entries` rows contain an ordered integer ID, session ID, timestamp,
+kind, and serialized payload.
 
-Foreign keys are enabled. Deleting a session cascades to its `events` rows.
-`events` ordering uses the integer sequence, never timestamps. UTC timestamps
-use one consistent representation; equal timestamps do not imply equal rows.
+Foreign keys are enabled. Deleting a session cascades to its
+`transcript_entries` rows. Transcript entry ordering uses the integer sequence,
+never timestamps. UTC timestamps use one consistent representation; equal
+timestamps do not imply equal rows.
 
 The first saved nonblank user message supplies an initial session title, limited
 to 80 Unicode scalar values including the ellipsis that marks a shortened one.
-Later appends do not overwrite an established title. Title derivation does not
-modify the input sent to the model.
+Later appends do not overwrite an established session title. Session-title
+derivation does not modify the input sent to the model.
 
 Workspace identity is the supplied absolute path compared using one consistent
 path policy across create, list filtering, and load. Initially use exact path
@@ -456,9 +458,9 @@ Opening a database creates any missing tables and indexes. The database carries
 no schema version, and there is no migration path or reader for earlier formats:
 a schema change means deleting the local database and starting over.
 
-Each `events` row stores its kind and the serde-derived JSON of the transcript
-type it holds. OpenRouter request and response shapes are separate structs in
-`openrouter.rs`, so a client change does not alter stored entries.
+Each `transcript_entries` row stores its kind and the serde-derived JSON of the
+transcript type it holds. OpenRouter request and response shapes are separate
+structs in `openrouter.rs`, so a client change does not alter stored entries.
 
 A batch transaction inserts the assistant message and all paired results, then
 updates session activity. If any step fails, the transaction rolls back. The
@@ -619,10 +621,11 @@ spawns one prompt run. That run:
 
 1. Reads the session summary and saved transcript.
 2. Reconstructs the model conversation from the saved transcript.
-3. Appends the user message and title/activity update in one transaction.
+3. Appends the user message and updates the session title and activity in one
+   transaction.
 4. Adds that same user message to its in-memory transcript.
-5. Enqueues the session metadata update. The update carries the title only when
-   the summary read in step 1 had none and the append adopted one.
+5. Enqueues the session metadata update. The update carries the session title
+   only when the summary read in step 1 had none and the append adopted one.
 6. Enters the model/tool loop.
 
 No model request occurs before step 3 succeeds. Preparation failures before that
@@ -672,8 +675,8 @@ loop:
     if tool calls need running:
         run the calls in order
         check cancellation before starting each call
-        send the in-progress update, then run the call or record its validation failure
-        record the outcome before sending its finished update
+        send the in-progress update, then run the call or set its validation-failure outcome
+        set the outcome before sending its finished update
 
     save the complete batch; extend the transcript only after the save succeeds
     clear the uncommitted batch
@@ -747,8 +750,8 @@ this sequence:
 3. Execute eligible calls sequentially. Before each call, check cancellation and
    request shell approval when using ACP. Send an in-progress update only for
    calls that will run. While a call runs, observe cancellation according to
-   that tool's resource lifecycle. As soon as an outcome is obtained, record it
-   in the uncommitted batch before sending its finished update or checking
+   that tool's resource lifecycle. As soon as an outcome is obtained, add it to
+   the uncommitted batch before sending its finished update or checking
    whether later work should begin.
 4. Give every unexecuted call an explicit outcome and send its finished update.
 
@@ -794,9 +797,9 @@ Cancellation during tool execution preserves observed outcomes and fills all
 remaining slots with accurate final outcomes.
 
 Once the final save begins, cancellation does not interrupt the save or rewrite
-the already recorded outcome. A late cancellation may therefore race with normal
-completion and receive the normal completed response. It never applies to a
-subsequent prompt.
+the outcome already present in the batch. A late cancellation may therefore
+race with normal completion and receive the normal completed response. It never
+applies to a subsequent prompt.
 
 ## 13. Finish path and response semantics
 
@@ -886,10 +889,10 @@ process-global current directory as a substitute. Unknown session IDs return a
 resource-not-found error.
 
 List returns saved summaries without waiting for a session operation to finish.
-A running session's title or activity can therefore reflect its most recent
-completed write. The initial listing is unpaginated and returns no continuation
-cursor. Unsupported nonempty cursor input is rejected rather than silently
-returning the wrong page.
+The session title or activity of a running session can therefore reflect its
+most recent completed write. The initial listing is unpaginated and returns no
+continuation cursor. Unsupported nonempty cursor input is rejected rather than
+silently returning the wrong page.
 
 Delete requires the operation guard and atomically removes the stored session
 and transcript. Deleting an already absent session succeeds. It does not cancel
@@ -913,7 +916,7 @@ Iterate through the loaded transcript during replay rather than building a
 second full vector of updates. An update error ends replay and drops the guard
 after the response attempt. Already saved transcript content is unchanged.
 
-The initial schema does not record standalone stop reasons. Replay recovers
+The initial schema does not save standalone stop reasons. Replay recovers
 content and final tool states, not an exact reproduction of historical prompt
 responses or network timing.
 
@@ -1023,7 +1026,7 @@ file for the reopen test. Verify:
   next encoded model request are correct: no unresolved call, duplicate result,
   or misplaced reasoning.
 - Orphan, duplicate, and missing results fail batch validation explicitly.
-- User append adopts a title once and updates activity.
+- User append adopts a session title once and updates activity.
 - Deletion removes the session's entries and repeated deletion succeeds.
 - Opening a database twice reuses its existing tables.
 

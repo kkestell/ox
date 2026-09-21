@@ -322,7 +322,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn arguments_schema_and_title() {
+    async fn arguments_schema_and_tool_call_title() {
         let workspace = Workspace::new();
         assert_eq!(
             serde_json::from_str::<Args>(r#"{"command":""}"#)
@@ -374,7 +374,7 @@ mod tests {
         .unwrap();
         assert_eq!(schema, specified);
         assert_eq!(
-            tools::title(&crate::sessions::ToolCall {
+            tools::tool_call_title(&crate::sessions::ToolCall {
                 call_id: "1".into(),
                 name: "shell".into(),
                 arguments: "{}".into()

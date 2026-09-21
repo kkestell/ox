@@ -22,8 +22,8 @@ pub const DATA_DIR_ENV: &str = "OX_DATA_DIR";
 
 const DATABASE_FILE: &str = "ox.db";
 
-/// Longest title derived from a prompt, in characters.
-const MAX_TITLE_CHARS: usize = 80;
+/// Longest session title derived from a prompt, in characters.
+const MAX_SESSION_TITLE_CHARS: usize = 80;
 
 const SCHEMA: &str = "
 BEGIN;
@@ -43,7 +43,7 @@ CREATE TABLE IF NOT EXISTS sessions (
 
 CREATE INDEX IF NOT EXISTS sessions_by_activity ON sessions (updated_at DESC, id);
 
-CREATE TABLE IF NOT EXISTS events (
+CREATE TABLE IF NOT EXISTS transcript_entries (
     id         INTEGER PRIMARY KEY,
     session_id TEXT NOT NULL REFERENCES sessions (id) ON DELETE CASCADE,
     ts         TEXT NOT NULL,
@@ -51,7 +51,8 @@ CREATE TABLE IF NOT EXISTS events (
     data       TEXT NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS events_by_session ON events (session_id, id);
+CREATE INDEX IF NOT EXISTS transcript_entries_by_session
+    ON transcript_entries (session_id, id);
 
 COMMIT;
 ";
@@ -129,7 +130,7 @@ pub struct SessionSettingsChange {
 }
 
 /// The content of one validated model completion. The serde derives on this
-/// type and its parts define the JSON stored in the `events` table.
+/// type and its parts define the JSON stored in the `transcript_entries` table.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AssistantMessage {
@@ -311,7 +312,7 @@ fn validate_transcript(entries: &[TranscriptEntry]) -> io::Result<()> {
 pub struct SessionSummary {
     pub id: SessionId,
     pub workspace_path: PathBuf,
-    pub title: Option<String>,
+    pub session_title: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -376,7 +377,7 @@ impl SessionStore {
         self.0.lock().expect("session store mutex poisoned")
     }
 
-    /// Creates an empty session. Its settings are recorded with its first user
+    /// Creates an empty session. Its settings are saved with its first user
     /// message.
     pub fn create(&self, workspace_path: &Path) -> io::Result<SessionSummary> {
         let path = validate_workspace_path(workspace_path)?;
@@ -399,7 +400,7 @@ impl SessionStore {
         Ok(SessionSummary {
             id,
             workspace_path: workspace_path.to_path_buf(),
-            title: None,
+            session_title: None,
             created_at: at.clone(),
             updated_at: at,
         })
@@ -414,7 +415,10 @@ impl SessionStore {
             return Ok(None);
         };
         let rows = tx
-            .prepare("SELECT kind, data FROM events WHERE session_id = ?1 ORDER BY id ASC")
+            .prepare(
+                "SELECT kind, data FROM transcript_entries
+                 WHERE session_id = ?1 ORDER BY id ASC",
+            )
             .and_then(|mut statement| {
                 statement
                     .query_map(params![id.to_string()], |row| {
@@ -457,8 +461,8 @@ impl SessionStore {
             .map_err(io::Error::other)
     }
 
-    /// Appends setting entries and the user message, titles a still-untitled
-    /// session from it, and updates activity in one transaction.
+    /// Appends setting entries and the user message, adopts a session title
+    /// when none has been saved, and updates activity in one transaction.
     pub fn append_user(
         &self,
         id: &SessionId,
@@ -468,7 +472,7 @@ impl SessionStore {
         let at = now();
         let mut connection = self.lock();
         let tx = connection.transaction().map_err(io::Error::other)?;
-        touch(&tx, id, title_from_prompt(text), &at)?;
+        update_activity_and_adopt_session_title(&tx, id, session_title_from_prompt(text), &at)?;
         if let Some(model) = &settings.model {
             insert_entry(&tx, id, &at, "model", model)?;
         }
@@ -489,7 +493,7 @@ impl SessionStore {
         let at = now();
         let mut connection = self.lock();
         let tx = connection.transaction().map_err(io::Error::other)?;
-        touch(&tx, id, None, &at)?;
+        update_activity_and_adopt_session_title(&tx, id, None, &at)?;
         insert_entry(&tx, id, &at, "assistant_message", &batch.message)?;
         for result in &batch.results {
             insert_entry(&tx, id, &at, "tool_result", result)?;
@@ -541,19 +545,24 @@ fn summary_row(row: &Row<'_>) -> rusqlite::Result<SessionSummary> {
     Ok(SessionSummary {
         id: SessionId::new(row.get::<_, String>(0)?),
         workspace_path: PathBuf::from(row.get::<_, String>(1)?),
-        title: row.get(2)?,
+        session_title: row.get(2)?,
         created_at: row.get(3)?,
         updated_at: row.get(4)?,
     })
 }
 
-/// Sets `updated_at`, adopts `title` if the session is still untitled, and
+/// Updates activity, adopts the session title if one has not been saved, and
 /// fails for an absent session rather than creating one.
-fn touch(tx: &Transaction<'_>, id: &SessionId, title: Option<String>, at: &str) -> io::Result<()> {
+fn update_activity_and_adopt_session_title(
+    tx: &Transaction<'_>,
+    id: &SessionId,
+    session_title: Option<String>,
+    at: &str,
+) -> io::Result<()> {
     let changed = tx
         .execute(
             "UPDATE sessions SET updated_at = ?2, title = COALESCE(title, ?3) WHERE id = ?1",
-            params![id.to_string(), at, title],
+            params![id.to_string(), at, session_title],
         )
         .map_err(io::Error::other)?;
     if changed == 0 {
@@ -574,7 +583,8 @@ fn insert_entry<T: Serialize>(
 ) -> io::Result<()> {
     let data = serde_json::to_string(payload).expect("transcript entries serialize");
     tx.execute(
-        "INSERT INTO events (session_id, ts, kind, data) VALUES (?1, ?2, ?3, ?4)",
+        "INSERT INTO transcript_entries (session_id, ts, kind, data)
+         VALUES (?1, ?2, ?3, ?4)",
         params![id.to_string(), at, kind, data],
     )
     .map_err(io::Error::other)?;
@@ -608,15 +618,16 @@ fn now() -> String {
     Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
 }
 
-/// The first nonblank line of a prompt, at most `MAX_TITLE_CHARS` characters
-/// counting the ellipsis that marks a shortened one. `None` for a blank
-/// prompt, so it does not spend the session's one chance at a title.
-fn title_from_prompt(text: &str) -> Option<String> {
+/// The first nonblank line of a prompt, at most `MAX_SESSION_TITLE_CHARS`
+/// characters counting the ellipsis that marks a shortened one. `None` for a
+/// blank prompt, so it does not spend the session's one chance at a session
+/// title.
+fn session_title_from_prompt(text: &str) -> Option<String> {
     let line = text.lines().find(|line| !line.trim().is_empty())?.trim();
-    if line.chars().count() <= MAX_TITLE_CHARS {
+    if line.chars().count() <= MAX_SESSION_TITLE_CHARS {
         return Some(line.to_owned());
     }
-    let kept: String = line.chars().take(MAX_TITLE_CHARS - 1).collect();
+    let kept: String = line.chars().take(MAX_SESSION_TITLE_CHARS - 1).collect();
     Some(format!("{kept}…"))
 }
 
@@ -742,7 +753,7 @@ mod tests {
         let stored = store.read(&id).unwrap().expect("session persists");
         assert_eq!(stored.summary.workspace_path, workspace());
         assert_eq!(
-            stored.summary.title.as_deref(),
+            stored.summary.session_title.as_deref(),
             Some("Weather in Chicago and Denver?")
         );
         assert!(matches!(
@@ -874,7 +885,8 @@ mod tests {
             store.with_connection(|connection| {
                 connection
                     .execute(
-                        "INSERT INTO events (session_id, ts, kind, data) VALUES (?1, ?2, ?3, ?4)",
+                        "INSERT INTO transcript_entries (session_id, ts, kind, data)
+                         VALUES (?1, ?2, ?3, ?4)",
                         params![id.to_string(), now(), kind, data],
                     )
                     .unwrap()
@@ -1010,7 +1022,7 @@ mod tests {
     }
 
     #[test]
-    fn user_append_adopts_a_title_once_and_updates_activity() {
+    fn user_append_adopts_a_session_title_once_and_updates_activity() {
         let store = SessionStore::in_memory();
         let created = store.create(workspace()).unwrap();
         set_updated_at(&store, &created.id, "2026-09-18T09:00:00.000Z");
@@ -1025,7 +1037,7 @@ mod tests {
                 "\n\nFirst line\nsecond line",
             )
             .unwrap();
-        assert_eq!(first.title.as_deref(), Some("First line"));
+        assert_eq!(first.session_title.as_deref(), Some("First line"));
         assert_eq!(first.created_at, created.created_at);
         assert!(first.updated_at.as_str() > "2026-09-18T09:00:00.000Z");
 
@@ -1036,28 +1048,28 @@ mod tests {
                 "Something else",
             )
             .unwrap();
-        assert_eq!(second.title.as_deref(), Some("First line"));
+        assert_eq!(second.session_title.as_deref(), Some("First line"));
         assert!(second.updated_at >= first.updated_at);
 
         let long = store.create(workspace()).unwrap();
-        let title = store
+        let session_title = store
             .append_user(
                 &long.id,
                 &SessionSettingsChange {
                     model: Some(openrouter::DEFAULT_MODEL.to_owned()),
                     effort: None,
                 },
-                &"x".repeat(MAX_TITLE_CHARS + 10),
+                &"x".repeat(MAX_SESSION_TITLE_CHARS + 10),
             )
             .unwrap()
-            .title
+            .session_title
             .unwrap();
         assert_eq!(
-            title.chars().count(),
-            MAX_TITLE_CHARS,
+            session_title.chars().count(),
+            MAX_SESSION_TITLE_CHARS,
             "the ellipsis counts against the limit"
         );
-        assert!(title.ends_with('…'));
+        assert!(session_title.ends_with('…'));
 
         assert!(
             store
@@ -1115,12 +1127,14 @@ mod tests {
 
         store.delete(&id).unwrap();
         assert!(store.read(&id).unwrap().is_none());
-        let events: i64 = store.with_connection(|connection| {
+        let transcript_entries: i64 = store.with_connection(|connection| {
             connection
-                .query_row("SELECT count(*) FROM events", [], |row| row.get(0))
+                .query_row("SELECT count(*) FROM transcript_entries", [], |row| {
+                    row.get(0)
+                })
                 .unwrap()
         });
-        assert_eq!(events, 0);
+        assert_eq!(transcript_entries, 0);
 
         store.delete(&id).unwrap();
     }

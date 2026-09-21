@@ -85,7 +85,7 @@ struct ServerState {
     operations: SessionOperations,
     /// The latest client selections for each session. A prompt copies these
     /// before it starts, so changes during the prompt apply to the next turn.
-    settings: Arc<Mutex<HashMap<SessionId, SessionSettings>>>,
+    selections: Arc<Mutex<HashMap<SessionId, SessionSettings>>>,
 }
 
 impl ServerState {
@@ -94,7 +94,7 @@ impl ServerState {
             store,
             openrouter: Arc::default(),
             operations: SessionOperations::default(),
-            settings: Arc::default(),
+            selections: Arc::default(),
         }
     }
 
@@ -121,9 +121,9 @@ impl ServerState {
         self.openrouter_client()?;
         let summary = self.store.create(&request.cwd).map_err(store_error)?;
         let settings = default_settings();
-        self.settings
+        self.selections
             .lock()
-            .expect("session settings mutex poisoned")
+            .expect("session selections mutex poisoned")
             .insert(summary.id.clone(), settings.clone());
         Ok(NewSessionResponse::new(summary.id).config_options(config_options(&settings, false)))
     }
@@ -136,9 +136,9 @@ impl ServerState {
             return Err(Error::invalid_params().data("every configuration option is a selector"));
         };
         let mut selections = self
-            .settings
+            .selections
             .lock()
-            .expect("session settings mutex poisoned");
+            .expect("session selections mutex poisoned");
         let stored = self
             .store
             .read(&request.session_id)
@@ -206,9 +206,9 @@ impl ServerState {
         let settings = stored.settings(&default_settings());
         validate_settings(&settings)?;
         let model_locked = !stored.transcript.is_empty();
-        self.settings
+        self.selections
             .lock()
-            .expect("session settings mutex poisoned")
+            .expect("session selections mutex poisoned")
             .insert(request.session_id.clone(), settings.clone());
         convert::replay_transcript(&stored.transcript, send_update)?;
         Ok(LoadSessionResponse::new().config_options(config_options(&settings, model_locked)))
@@ -237,18 +237,18 @@ impl ServerState {
         self.store
             .delete(&request.session_id)
             .map_err(Error::into_internal_error)?;
-        self.settings
+        self.selections
             .lock()
-            .expect("session settings mutex poisoned")
+            .expect("session selections mutex poisoned")
             .remove(&request.session_id);
         Ok(DeleteSessionResponse::new())
     }
 
     fn session_settings(&self, session_id: &SessionId) -> Result<SessionSettings> {
         if let Some(settings) = self
-            .settings
+            .selections
             .lock()
-            .expect("session settings mutex poisoned")
+            .expect("session selections mutex poisoned")
             .get(session_id)
             .cloned()
         {
@@ -262,9 +262,9 @@ impl ServerState {
         let settings = stored.settings(&default_settings());
         validate_settings(&settings)?;
         let settings = self
-            .settings
+            .selections
             .lock()
-            .expect("session settings mutex poisoned")
+            .expect("session selections mutex poisoned")
             .entry(session_id.clone())
             .or_insert(settings)
             .clone();
@@ -301,7 +301,7 @@ fn busy() -> Error {
 
 fn session_info(summary: SessionSummary) -> SessionInfo {
     SessionInfo::new(summary.id, summary.workspace_path)
-        .title(summary.title)
+        .title(summary.session_title)
         .updated_at(summary.updated_at)
 }
 

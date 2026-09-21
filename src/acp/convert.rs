@@ -59,10 +59,13 @@ fn text_chunk(text: &str) -> ContentChunk {
 /// Announces a call the model made, before anything runs.
 pub fn pending_tool_call(call: &ToolCall) -> SessionUpdate {
     SessionUpdate::ToolCall(
-        AcpToolCall::new(ToolCallId::new(call.call_id.clone()), tools::title(call))
-            .kind(kind(call))
-            .status(ToolCallStatus::Pending)
-            .raw_input(raw_input(call)),
+        AcpToolCall::new(
+            ToolCallId::new(call.call_id.clone()),
+            tools::tool_call_title(call),
+        )
+        .kind(kind(call))
+        .status(ToolCallStatus::Pending)
+        .raw_input(raw_input(call)),
     )
 }
 
@@ -94,13 +97,13 @@ pub fn shell_permission_request(
         Some(command) => ("Command", command),
         None => ("Arguments", call.arguments.as_str()),
     };
-    let title = tools::title(call);
+    let tool_call_title = tools::tool_call_title(call);
     let mut content = format!("Working directory: {}", workspace.display());
-    // The title is one shortened line, so repeat the command as content only
-    // when the title does not already show all of it. Clients can omit
-    // rawInput from the approval UI, so content is the only other place it
-    // appears.
-    if title != text.trim() {
+    // The tool call title is one shortened line, so repeat the command as
+    // content only when the tool call title does not already show all of it.
+    // Clients can omit rawInput from the approval UI, so content is the only
+    // other place it appears.
+    if tool_call_title != text.trim() {
         let indented: String = text
             .split_inclusive('\n')
             .map(|line| format!("    {line}"))
@@ -112,7 +115,7 @@ pub fn shell_permission_request(
         ToolCallUpdate::new(
             ToolCallId::new(call.call_id.clone()),
             ToolCallUpdateFields::new()
-                .title(title)
+                .title(tool_call_title)
                 .kind(kind(call))
                 .status(ToolCallStatus::Pending)
                 .raw_input(input)
@@ -171,12 +174,15 @@ pub fn replay_transcript(
 
 fn replayed_tool_call(call: &ToolCall, result: &ToolResult) -> SessionUpdate {
     SessionUpdate::ToolCall(
-        AcpToolCall::new(ToolCallId::new(call.call_id.clone()), tools::title(call))
-            .kind(kind(call))
-            .status(status(&result.outcome))
-            .raw_input(raw_input(call))
-            .content(vec![output_content(&result.outcome)])
-            .raw_output(raw_output(&result.outcome)),
+        AcpToolCall::new(
+            ToolCallId::new(call.call_id.clone()),
+            tools::tool_call_title(call),
+        )
+        .kind(kind(call))
+        .status(status(&result.outcome))
+        .raw_input(raw_input(call))
+        .content(vec![output_content(&result.outcome)])
+        .raw_output(raw_output(&result.outcome)),
     )
 }
 
@@ -234,7 +240,7 @@ mod tests {
     }
 
     #[test]
-    fn shell_approval_content_shows_a_command_the_title_cannot_show_in_full() {
+    fn shell_approval_content_shows_a_command_the_tool_call_title_cannot_show_in_full() {
         let command = "printf '%s\\n' '```'\n  echo \"$HOME\"\n";
         let arguments = serde_json::json!({"command": command, "timeout_seconds": 5});
         let mut call = ToolCall {
@@ -247,7 +253,7 @@ mod tests {
                 arguments.to_string(),
                 "Working directory: /workspace\n\nCommand:\n\n    printf '%s\\n' '```'\n      echo \"$HOME\"\n",
             ),
-            // A one-line command already appears in full as the title.
+            // A one-line command already appears in full as the tool call title.
             (
                 serde_json::json!({"command": "echo hello  \n\n"}).to_string(),
                 "Working directory: /workspace",
@@ -273,7 +279,7 @@ mod tests {
     }
 
     #[test]
-    fn tool_updates_carry_titles_terminal_states_and_unparsable_arguments() {
+    fn tool_updates_carry_tool_call_titles_failed_statuses_and_unparsable_arguments() {
         let call = ToolCall {
             call_id: "call-1".to_owned(),
             name: tools::SHELL.to_owned(),

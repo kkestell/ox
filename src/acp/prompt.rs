@@ -116,7 +116,7 @@ impl UncommittedAssistantBatch {
         Self { message, outcomes }
     }
 
-    fn record_outcome(&mut self, index: usize, outcome: ToolOutcome) -> ToolResult {
+    fn set_outcome(&mut self, index: usize, outcome: ToolOutcome) -> ToolResult {
         let call = &self.message.tool_calls[index];
         let slot = &mut self.outcomes[index];
         assert!(
@@ -238,10 +238,10 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
         self.transcript
             .push(TranscriptEntry::UserMessage(user_message));
         let mut info = SessionInfoUpdate::new().updated_at(updated.updated_at);
-        if self.summary.title.is_none()
-            && let Some(title) = updated.title
+        if self.summary.session_title.is_none()
+            && let Some(session_title) = updated.session_title
         {
-            info = info.title(title);
+            info = info.title(session_title);
         }
         (self.send_update)(SessionUpdate::SessionInfoUpdate(info))?;
         Ok(true)
@@ -325,8 +325,9 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
         }
     }
 
-    /// Runs validated calls in order. Each outcome is recorded before its ACP
-    /// update is sent, so an update failure does not erase completed work.
+    /// Runs validated calls in order. Each outcome enters the uncommitted batch
+    /// before its ACP update is sent, so an update failure does not erase
+    /// completed work.
     async fn execute(&mut self, calls: &[ToolCall]) -> std::result::Result<(), PromptOutcome> {
         for (index, call) in calls.iter().enumerate() {
             if self.cancellation.is_cancelled() {
@@ -354,7 +355,7 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
                 .uncommitted_batch
                 .as_mut()
                 .expect("tools run against an uncommitted assistant batch")
-                .record_outcome(index, outcome);
+                .set_outcome(index, outcome);
             (self.send_update)(convert::finished_tool_call_update(&result))
                 .map_err(PromptOutcome::AcpUpdate)?;
         }
@@ -612,7 +613,7 @@ mod tests {
         })
     }
 
-    fn terminal_update_for(update: &SessionUpdate, call_id: &str) -> bool {
+    fn finished_tool_call_update_for(update: &SessionUpdate, call_id: &str) -> bool {
         matches!(
             update,
             SessionUpdate::ToolCallUpdate(update)
@@ -743,7 +744,7 @@ mod tests {
             .await;
             let (response, transcript) = harness
                 .run("Run command", |update| {
-                    if terminal_update_for(update, "shell-0") {
+                    if finished_tool_call_update_for(update, "shell-0") {
                         if fail_update {
                             return Err(Error::internal_error().data("connection closed"));
                         }
@@ -842,7 +843,7 @@ mod tests {
         }
     }
 
-    const APPLIED: &str = "Applied patch.\nA first\nA second";
+    const APPLIED: &str = "Applied patch.\nAdded first\nAdded second";
 
     /// A prompt whose first reply is one `apply_patch` call adding `first` and
     /// `second`, followed by a plain answer.
@@ -957,7 +958,7 @@ mod tests {
         let cancel = harness.cancellation.clone();
         let (response, transcript) = harness
             .run("Apply the patch", |update| {
-                if terminal_update_for(update, "patch-1") {
+                if finished_tool_call_update_for(update, "patch-1") {
                     cancel.cancel();
                 }
                 Ok(())
@@ -980,7 +981,7 @@ mod tests {
         let harness = patch_harness("tool_calls").await;
         let (response, transcript) = harness
             .run("Apply the patch", |update| {
-                if terminal_update_for(update, "patch-1") {
+                if finished_tool_call_update_for(update, "patch-1") {
                     return Err(Error::internal_error().data("connection closed"));
                 }
                 Ok(())
@@ -1045,7 +1046,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn different_efforts_are_recorded_and_sent_for_sequential_turns() {
+    async fn different_efforts_are_saved_and_sent_for_sequential_turns() {
         let harness = Harness::new(vec![text_reply("First"), text_reply("Second")]).await;
         let selected = Rc::new(RefCell::new(EffortLevel::Low));
         let changed = selected.clone();
@@ -1135,7 +1136,7 @@ mod tests {
 
         let (response, transcript) = harness
             .run("Weather?", |update| {
-                if terminal_update_for(update, "call-1") {
+                if finished_tool_call_update_for(update, "call-1") {
                     cancel.cancel();
                 }
                 Ok(())
@@ -1206,7 +1207,7 @@ mod tests {
         harness.store.with_connection(|connection| {
             connection
                 .execute_batch(
-                    "CREATE TRIGGER refuse BEFORE INSERT ON events
+                    "CREATE TRIGGER refuse BEFORE INSERT ON transcript_entries
                      WHEN NEW.kind = 'assistant_message'
                      BEGIN SELECT RAISE(ABORT, 'disk full'); END;",
                 )
@@ -1233,7 +1234,7 @@ mod tests {
 
         let (response, transcript) = harness
             .run("Weather?", |update| {
-                if terminal_update_for(update, "call-1") {
+                if finished_tool_call_update_for(update, "call-1") {
                     return Err(Error::internal_error().data("connection closed"));
                 }
                 Ok(())
