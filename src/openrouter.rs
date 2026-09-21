@@ -473,6 +473,25 @@ pub(crate) mod fixture {
         Hang(String),
     }
 
+    pub fn shell_reply(commands: &[(&str, u64)]) -> Reply {
+        let calls: Vec<_> = commands
+            .iter()
+            .enumerate()
+            .map(|(index, (command, seconds))| {
+                json!({
+                    "index": index, "id": format!("shell-{index}"), "type": "function",
+                    "function": {"name": "shell", "arguments": json!({
+                        "command": command, "timeout_seconds": seconds
+                    }).to_string()}
+                })
+            })
+            .collect();
+        Reply::Stream(sse(&[delta(
+            json!({"role":"assistant", "tool_calls":calls}),
+            Some("tool_calls"),
+        )]))
+    }
+
     pub struct Server {
         url: String,
         requests: Arc<Mutex<Vec<Value>>>,

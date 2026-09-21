@@ -11,11 +11,13 @@ use crate::sessions::{ToolCall, ToolOutcome};
 mod patch;
 mod read;
 mod search;
+mod shell;
 
 pub const GET_WEATHER: &str = "get_weather";
 pub const APPLY_PATCH: &str = "apply_patch";
 pub const READ_FILE: &str = "read_file";
 pub const GLOB: &str = "glob";
+pub const SHELL: &str = "shell";
 pub const GREP: &str = "grep";
 
 const OUTPUT_LIMIT: usize = 16 * 1024;
@@ -68,6 +70,33 @@ async fn existing_path(root: &Path, name: &str) -> Result<PathBuf, String> {
 
 pub fn schemas() -> Vec<Value> {
     vec![
+        json!({
+            "type": "function",
+            "function": {
+                "name": SHELL,
+                "description": "Run a noninteractive /bin/sh command starting in the session workspace. Returns the exit status and tails of stdout and stderr, at most 16 KiB total. Output has a shared 14 KiB budget: 7 KiB per stream, with unused space given to the other stream. Earlier output may be omitted; redirect long logs to a workspace file for later inspection. Each call starts a fresh shell with stdin connected to /dev/null. No interactive input or persistent background processes. Commands run with Ox's permissions and can access paths outside the workspace.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "command": {
+                            "type": "string",
+                            "description": "Shell command or multiline script. Use shell syntax for directory changes, environment overrides, pipelines, and redirection."
+                        },
+                        "timeout_seconds": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 600,
+                            "default": 120,
+                            "description": "Maximum execution time in seconds. Defaults to 120."
+                        }
+                    },
+                    "required": [
+                        "command"
+                    ],
+                    "additionalProperties": false
+                }
+            }
+        }),
         json!({
             "type": "function",
             "function": {
@@ -164,6 +193,7 @@ struct PatchArgs {
 
 pub fn title(call: &ToolCall) -> String {
     match call.name.as_str() {
+        SHELL => "Run shell command".to_owned(),
         READ_FILE => "Read file".to_owned(),
         GLOB => "Find files".to_owned(),
         GREP => "Search file contents".to_owned(),
@@ -178,7 +208,24 @@ pub fn title(call: &ToolCall) -> String {
 
 /// Unknown names and invalid arguments are failed results the model can read
 /// on its next request, not errors that end the prompt.
-pub async fn execute(workspace_path: &Path, call: &ToolCall) -> ToolOutcome {
+pub async fn execute(
+    workspace_path: &Path,
+    call: &ToolCall,
+    cancelled: impl Future<Output = ()>,
+) -> ToolOutcome {
+    if call.name == SHELL {
+        return shell::execute(workspace_path, &call.arguments, cancelled).await;
+    }
+    tokio::select! {
+        biased;
+        outcome = execute_other(workspace_path, call) => outcome,
+        () = cancelled => ToolOutcome::Cancelled(
+            "Cancelled while this tool was running; no result was observed.".to_owned(),
+        ),
+    }
+}
+
+async fn execute_other(workspace_path: &Path, call: &ToolCall) -> ToolOutcome {
     match call.name.as_str() {
         READ_FILE => bounded_result(read::execute(workspace_path, &call.arguments).await),
         GLOB | GREP => {
@@ -228,6 +275,10 @@ pub(crate) mod fixture {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    async fn execute(workspace: &Path, call: &ToolCall) -> ToolOutcome {
+        super::execute(workspace, call, std::future::pending()).await
+    }
 
     fn call(name: &str, arguments: &str) -> ToolCall {
         ToolCall {

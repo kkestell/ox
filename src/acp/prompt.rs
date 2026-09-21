@@ -280,19 +280,17 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
             }
             (self.send_update)(convert::in_progress_tool_call_update(&call.call_id))
                 .map_err(PromptOutcome::AcpUpdate)?;
-            // A tool that changes files runs to completion once started, so the
-            // select below never chooses cancellation for it. Check again here
-            // to catch a cancellation that arrived while the update was sent.
+            // The dispatcher polls tools first, so a synchronous patch can finish
+            // before it observes cancellation that arrived while sending the update.
             if self.cancellation.is_cancelled() {
                 return Err(PromptOutcome::Cancelled);
             }
-            let outcome = tokio::select! {
-                biased;
-                outcome = tools::execute(&self.summary.workspace_path, call) => outcome,
-                () = self.cancellation.cancelled() => ToolOutcome::Cancelled(
-                    "Cancelled while this tool was running; no result was observed.".to_owned(),
-                ),
-            };
+            let outcome = tools::execute(
+                &self.summary.workspace_path,
+                call,
+                self.cancellation.cancelled(),
+            )
+            .await;
             let result = self
                 .uncommitted_batch
                 .as_mut()
@@ -532,6 +530,145 @@ mod tests {
                 }
             ),
             _ => "other".to_owned(),
+        }
+    }
+
+    #[tokio::test]
+    async fn shell_failures_reach_the_next_model_request_and_replay() {
+        let workspace = Workspace::new();
+        let harness = Harness::in_workspace(
+            vec![
+                crate::openrouter::fixture::shell_reply(&[
+                    ("printf problem >&2; exit 7", 5),
+                    ("printf started; sleep 30", 1),
+                ]),
+                text_reply("Handled both failures."),
+            ],
+            &workspace.0,
+        )
+        .await;
+        let (response, transcript) = harness.run("Run commands", |_| Ok(())).await;
+        assert_eq!(response.unwrap().stop_reason, StopReason::EndTurn);
+        assert_eq!(transcript, harness.stored());
+        let requests = harness.server.requests();
+        let results: Vec<_> = transcript
+            .iter()
+            .filter_map(|entry| match entry {
+                TranscriptEntry::ToolResult(result) => Some(result),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(results.len(), 2);
+        assert!(results[0].outcome.text().contains("Exit code: 7"));
+        assert!(results[1].outcome.text().contains("Timed out"));
+        let mut replay = Vec::new();
+        convert::replay_transcript(&transcript, |update| {
+            replay.push(update);
+            Ok(())
+        })
+        .unwrap();
+        for result in results {
+            assert!(matches!(result.outcome, ToolOutcome::Failed(_)));
+            assert!(
+                requests[1]["messages"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|message| message["tool_call_id"] == result.call_id
+                        && message["content"] == result.outcome.text())
+            );
+            assert!(replay.iter().any(|update| matches!(update, SessionUpdate::ToolCall(call)
+                if call.title == "Run shell command" && call.raw_output == Some(json!(result.outcome.text())) && call.status == ToolCallStatus::Failed)));
+        }
+    }
+
+    #[tokio::test]
+    async fn running_shell_cancellation_is_saved_and_skips_later_calls() {
+        let workspace = Workspace::new();
+        let harness = Harness::in_workspace(
+            vec![crate::openrouter::fixture::shell_reply(&[
+                ("printf started; touch ready; sleep 30 & wait", 30),
+                ("touch wrong", 5),
+            ])],
+            &workspace.0,
+        )
+        .await;
+        let cancel = async {
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                while !workspace.0.join("ready").exists() {
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .unwrap();
+            harness.cancellation.cancel();
+        };
+        let ((response, transcript), ()) =
+            tokio::join!(harness.run("Run commands", |_| Ok(())), cancel);
+        assert_eq!(response.unwrap().stop_reason, StopReason::Cancelled);
+        assert_eq!(transcript, harness.stored());
+        assert!(!workspace.0.join("wrong").exists());
+        let results: Vec<_> = transcript
+            .iter()
+            .filter_map(|entry| match entry {
+                TranscriptEntry::ToolResult(result) => Some(result),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(results.len(), 2);
+        assert!(
+            matches!(&results[0].outcome, ToolOutcome::Cancelled(text) if text.contains("started") && text.contains("partial changes"))
+        );
+        assert!(
+            matches!(&results[1].outcome, ToolOutcome::Cancelled(text) if text.contains("before this tool was started"))
+        );
+        assert_eq!(harness.server.requests().len(), 1);
+        let mut replay = Vec::new();
+        convert::replay_transcript(&transcript, |update| {
+            replay.push(update);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(replay.iter().filter(|update| matches!(update, SessionUpdate::ToolCall(call) if call.status == ToolCallStatus::Failed)).count(), 2);
+    }
+
+    #[tokio::test]
+    async fn shell_result_survives_update_failure_or_late_cancellation() {
+        for fail_update in [false, true] {
+            let workspace = Workspace::new();
+            let harness = Harness::in_workspace(
+                vec![crate::openrouter::fixture::shell_reply(&[(
+                    "printf saved > file",
+                    5,
+                )])],
+                &workspace.0,
+            )
+            .await;
+            let (response, transcript) = harness
+                .run("Run command", |update| {
+                    if terminal_update_for(update, "shell-0") {
+                        if fail_update {
+                            return Err(Error::internal_error().data("connection closed"));
+                        }
+                        harness.cancellation.cancel();
+                    }
+                    Ok(())
+                })
+                .await;
+            if fail_update {
+                assert!(response.is_err());
+            } else {
+                assert_eq!(response.unwrap().stop_reason, StopReason::Cancelled);
+            }
+            assert_eq!(
+                fs::read_to_string(workspace.0.join("file")).unwrap(),
+                "saved"
+            );
+            assert_eq!(transcript, harness.stored());
+            assert!(matches!(
+                patch_result(&transcript).outcome,
+                ToolOutcome::Completed(_)
+            ));
         }
     }
 

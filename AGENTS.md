@@ -7,6 +7,7 @@ THIS DOCUMENT MUST BE KEPT UP TO DATE
 - `src/openrouter.rs`: OpenRouter client, request encoding, and streamed-response assembly.
 - `src/tools.rs`: Concrete tool schemas, display titles, and execution of one complete call.
 - `src/tools/read.rs`: Bounded text-file reading with line pagination.
+- `src/tools/shell.rs`: Noninteractive shell execution, bounded output tails, and process-group cleanup on exit, timeout, or cancellation.
 - `src/tools/search.rs`: Bounded glob and grep searches through ripgrep.
 - `src/tools/patch.rs`: Patch parsing, exact text matching, workspace path validation, and filesystem changes.
 - `src/tools/patch-guide.txt`: The patch format guidance shipped as the `apply_patch` tool description.
@@ -123,7 +124,8 @@ lifetimes, configuration, and tests that the stable behavior has earned.
 
 For tools that change files:
 
-- Once a file change starts, let it finish before acting on cancellation.
+- Once `apply_patch` starts changing files, let it finish before acting on cancellation.
+- Shell cancellation terminates the process group, reaps the shell, and finishes bounded output draining before returning; partial changes may remain.
 - After all tool calls in a model response finish, save the assistant message
   and tool results together with the existing `SessionStore::append_batch`.
 - Keep the session marked busy until that save attempt and response handling

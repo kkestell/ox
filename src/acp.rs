@@ -211,15 +211,42 @@ pub async fn run_headless(
     })?;
     let store = SessionStore::open(&sessions::database_path()?)?;
     let session = store.create(workspace_path, openrouter::DEFAULT_MODEL)?;
-    let response = prompt::run(
+    run_headless_prompt(
         store,
         openrouter::Client::new(api_key),
         session.id,
         user_message,
-        PromptCancellation::new(),
-        |_| Ok(()),
     )
-    .await?;
+    .await
+}
+
+async fn run_headless_prompt(
+    store: SessionStore,
+    openrouter: openrouter::Client,
+    session_id: SessionId,
+    user_message: String,
+) -> std::result::Result<(), Box<dyn StdError>> {
+    let mut interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
+    let cancellation = PromptCancellation::new();
+    let run = prompt::run(
+        store,
+        openrouter,
+        session_id,
+        user_message,
+        cancellation.clone(),
+        |_| Ok(()),
+    );
+    tokio::pin!(run);
+    let response = loop {
+        tokio::select! {
+            biased;
+            response = &mut run => break response?,
+            signal = interrupt.recv() => {
+                signal.expect("SIGINT listener remains open");
+                cancellation.cancel();
+            }
+        }
+    };
     if response.stop_reason != StopReason::EndTurn {
         return Err(
             io::Error::other(format!("prompt stopped with {:?}", response.stop_reason)).into(),
@@ -527,6 +554,220 @@ mod tests {
                 TranscriptEntry::UserMessage("Hello".to_owned())
             ],
         );
+    }
+
+    async fn wait_for_file(path: &Path) {
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while !path.exists() {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+
+    async fn assert_process_stopped(path: &Path, reaped: bool) {
+        let pid = std::fs::read_to_string(path).unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            loop {
+                let output = tokio::process::Command::new("ps")
+                    .args(["-o", "stat=", "-p", pid.trim()])
+                    .output()
+                    .await
+                    .unwrap();
+                let state = String::from_utf8(output.stdout).unwrap();
+                if state.trim().is_empty() || (!reaped && state.trim().starts_with('Z')) {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn headless_sigint_cleans_up_and_saves_even_with_repeated_signals() {
+        use crate::openrouter::fixture::{Server, shell_reply};
+        use crate::sessions::{ToolOutcome, TranscriptEntry};
+        use crate::tools::fixture::Workspace;
+        use rustix::process::{Pid, Signal, kill_process, kill_process_group};
+
+        const FLAG: &str = "OX_HEADLESS_SIGNAL_TEST";
+        if let Some(path) = std::env::var_os(FLAG) {
+            let path = Path::new(&path);
+            let store = SessionStore::open(&path.join("ox.db")).unwrap();
+            let session = store.create(path, openrouter::DEFAULT_MODEL).unwrap();
+            let command = "echo $$ > shell; python3 -c 'import subprocess; p = subprocess.Popen([\"sleep\", \"30\"], start_new_session=True); open(\"detached\", \"w\").write(str(p.pid))'; sleep 30 & echo $! > child; printf started; touch ready; wait";
+            let server =
+                Server::start(vec![shell_reply(&[(command, 30), ("touch wrong", 5)])]).await;
+            let response = run_headless_prompt(
+                store.clone(),
+                server.client(),
+                session.id.clone(),
+                "Run commands".into(),
+            )
+            .await;
+            assert!(response.unwrap_err().to_string().contains("Cancelled"));
+            let transcript = store.read(&session.id).unwrap().unwrap().transcript;
+            assert_eq!(transcript.iter().filter(|entry| matches!(entry, TranscriptEntry::ToolResult(result) if matches!(result.outcome, ToolOutcome::Cancelled(_)))).count(), 2);
+            std::fs::write(path.join("saved"), "yes").unwrap();
+            return;
+        }
+        let workspace = Workspace::new();
+        let mut child = tokio::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "acp::tests::headless_sigint_cleans_up_and_saves_even_with_repeated_signals",
+                "--nocapture",
+            ])
+            .env(FLAG, &workspace.0)
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        wait_for_file(&workspace.0.join("ready")).await;
+        let pid = Pid::from_raw(child.id().unwrap() as i32).unwrap();
+        kill_process(pid, Signal::INT).unwrap();
+        assert_process_stopped(&workspace.0.join("shell"), true).await;
+        kill_process(pid, Signal::INT).unwrap();
+        let status = tokio::time::timeout(std::time::Duration::from_secs(5), child.wait()).await;
+        let detached = std::fs::read_to_string(workspace.0.join("detached"))
+            .unwrap()
+            .parse()
+            .unwrap();
+        kill_process_group(Pid::from_raw(detached).unwrap(), Signal::KILL).unwrap();
+        assert!(status.unwrap().unwrap().success());
+        assert_process_stopped(&workspace.0.join("child"), false).await;
+        assert!(workspace.0.join("saved").exists());
+        assert!(!workspace.0.join("wrong").exists());
+        let store = SessionStore::open(&workspace.0.join("ox.db")).unwrap();
+        let session = store.list(None).unwrap().pop().unwrap();
+        assert!(store.read(&session.id).unwrap().unwrap().transcript.iter().any(|entry| matches!(entry,
+            TranscriptEntry::ToolResult(result) if matches!(&result.outcome, ToolOutcome::Cancelled(text) if text.contains("started") && text.contains("partial changes")))));
+    }
+
+    #[tokio::test]
+    async fn acp_shutdown_waits_for_shell_cleanup_saving_and_response() {
+        use crate::openrouter::fixture::{Server, shell_reply};
+        use crate::sessions::{ToolOutcome, TranscriptEntry};
+        use crate::tools::fixture::Workspace;
+        use agent_client_protocol::Lines;
+        use futures::{SinkExt, StreamExt, channel::mpsc};
+        use serde_json::{Value, json};
+
+        let workspace = Workspace::new();
+        let server = Server::start(vec![shell_reply(&[
+            (
+                "echo $$ > shell; sleep 30 & echo $! > child; printf started; touch ready; wait",
+                30,
+            ),
+            ("touch wrong", 5),
+        ])])
+        .await;
+        let state = state();
+        *state.openrouter.lock().unwrap() = Some(server.client());
+        let store = state.store.clone();
+        let operations = state.operations.clone();
+        let id = store
+            .create(&workspace.0, openrouter::DEFAULT_MODEL)
+            .unwrap()
+            .id;
+        let (incoming_tx, incoming_rx) = mpsc::unbounded();
+        let (outgoing_tx, mut outgoing_rx) = mpsc::unbounded::<String>();
+        let transport = Lines::new(outgoing_tx.sink_map_err(io::Error::other), incoming_rx);
+        for message in [
+            json!({"jsonrpc":"2.0", "id":1, "method":"initialize", "params":{"protocolVersion":1,"clientCapabilities":{}}}),
+            json!({"jsonrpc":"2.0", "id":2, "method":"session/prompt", "params":{"sessionId":id,"prompt":[{"type":"text","text":"Run commands"}]}}),
+        ] {
+            incoming_tx.unbounded_send(Ok(message.to_string())).unwrap();
+        }
+        let close = async {
+            wait_for_file(&workspace.0.join("ready")).await;
+            assert!(operations.try_load(&id).is_none());
+            drop(incoming_tx);
+        };
+        let client = async {
+            let mut response = None;
+            while let Some(line) = outgoing_rx.next().await {
+                let message: Value = serde_json::from_str(&line).unwrap();
+                if message["id"] == 2 {
+                    assert!(
+                        store
+                            .read(&id)
+                            .unwrap()
+                            .unwrap()
+                            .transcript
+                            .iter()
+                            .any(|entry| matches!(entry, TranscriptEntry::ToolResult(_))),
+                        "saved before response"
+                    );
+                    response = Some(message);
+                }
+            }
+            assert_eq!(response.unwrap()["result"]["stopReason"], "cancelled");
+        };
+        let (result, (), ()) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            tokio::join!(serve(state, transport), close, client)
+        })
+        .await
+        .unwrap();
+        result.unwrap();
+        assert!(operations.try_load(&id).is_some());
+        assert_process_stopped(&workspace.0.join("shell"), true).await;
+        assert_process_stopped(&workspace.0.join("child"), false).await;
+        assert!(!workspace.0.join("wrong").exists());
+        let transcript = store.read(&id).unwrap().unwrap().transcript;
+        assert_eq!(transcript.iter().filter(|entry| matches!(entry, TranscriptEntry::ToolResult(result) if matches!(result.outcome, ToolOutcome::Cancelled(_)))).count(), 2);
+    }
+
+    #[tokio::test]
+    async fn transport_error_stops_the_shell_process_group() {
+        use crate::openrouter::fixture::{Server, shell_reply};
+        use crate::tools::fixture::Workspace;
+        use agent_client_protocol::Lines;
+        use futures::{SinkExt, StreamExt, channel::mpsc};
+        use serde_json::json;
+
+        let workspace = Workspace::new();
+        let server = Server::start(vec![shell_reply(&[(
+            "echo $$ > shell; sleep 30 & echo $! > child; touch ready; wait",
+            30,
+        )])])
+        .await;
+        let state = state();
+        *state.openrouter.lock().unwrap() = Some(server.client());
+        let store = state.store.clone();
+        let id = store
+            .create(&workspace.0, openrouter::DEFAULT_MODEL)
+            .unwrap()
+            .id;
+        let (incoming_tx, incoming_rx) = mpsc::unbounded();
+        let (outgoing_tx, mut outgoing_rx) = mpsc::unbounded::<String>();
+        let transport = Lines::new(outgoing_tx.sink_map_err(io::Error::other), incoming_rx);
+        for message in [
+            json!({"jsonrpc":"2.0", "id":1, "method":"initialize", "params":{"protocolVersion":1,"clientCapabilities":{}}}),
+            json!({"jsonrpc":"2.0", "id":2, "method":"session/prompt", "params":{"sessionId":id,"prompt":[{"type":"text","text":"Run commands"}]}}),
+        ] {
+            incoming_tx.unbounded_send(Ok(message.to_string())).unwrap();
+        }
+        let fail_transport = async {
+            wait_for_file(&workspace.0.join("ready")).await;
+            incoming_tx
+                .unbounded_send(Err(io::Error::other("broken transport")))
+                .unwrap();
+        };
+        let drain_output = async { while outgoing_rx.next().await.is_some() {} };
+        let (result, (), ()) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            tokio::join!(serve(state, transport), fail_transport, drain_output)
+        })
+        .await
+        .unwrap();
+        assert!(
+            result.is_err(),
+            "the transport error reaches the ACP server"
+        );
+        assert_process_stopped(&workspace.0.join("shell"), false).await;
+        assert_process_stopped(&workspace.0.join("child"), false).await;
     }
 
     #[test]

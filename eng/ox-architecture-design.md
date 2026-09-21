@@ -88,7 +88,7 @@ be revisited rather than patched with an implicit fallback.
 | SQLite runs on local storage and normal operations are short. | Synchronous operations behind one connection mutex are acceptable initially. | Measurements show storage work delaying streaming or cancellation. |
 | Session transcripts fit comfortably in memory. | Load and prompt read a whole saved transcript. | Real conversations require compaction or bounded-memory replay. |
 | Tool execution is owned by the prompt run that validated the call. | The run keeps resource-specific work within its cancellation boundary and records its observed outcome in the uncommitted batch. | Work must continue independently of the prompt run that started it. |
-| Tool futures implement their stated cancellation behavior. | The prompt run can stop work before saving its assistant batch. | A new tool owns resources that require explicit asynchronous cleanup. |
+| Tool execution owns its cleanup through the returned outcome. | The prompt awaits shell process-group termination, shell reaping, and bounded output draining before saving its assistant batch. | A tool needs work to survive its prompt run. |
 | The default model and the endpoint are fixed local choices; each session stores its model at creation. | A concrete adapter, nearby constants, and one transcript entry suffice. | Users need to choose or change a session's model, or another actual provider. |
 | The model's required continuation data can be represented losslessly as stored JSON values. | Structured metadata survives storage and request reconstruction. | A supported feature requires a different representation or byte-level preservation. |
 | The ACP transport preserves enqueue order between updates and responses. | Enqueuing updates before the final response establishes their relative send order while the transport remains healthy. | The transport implementation or ordering contract changes. |
@@ -731,9 +731,9 @@ explicitly supported; they do not trigger opportunistic execution.
 
 ## 12. Tools and cancellation
 
-`tools::execute` takes a complete tool call and the session's workspace
-context. It parses arguments into the owned input type for the named tool and
-returns a concrete `ToolOutcome`.
+`tools::execute` takes a complete tool call, the session's workspace
+context, and a cancellation future. It parses arguments into the owned input
+type for the named tool and returns a concrete `ToolOutcome`.
 
 Dispatch is a small exhaustive name match over the implemented tools. Schemas,
 argument types, display titles, and execution stay together. No plugin registry
@@ -777,10 +777,26 @@ resolved at these explicit observation boundaries.
 Each tool defines a concrete cancellation boundary for the resources it owns.
 Apply patch checks cancellation before synchronous filesystem execution; once
 started, that execution finishes and its observed outcome enters the
-uncommitted batch before the prompt run finishes. A process-owning tool
-terminates and reaps its process before reporting that it stopped. The
-operation guard remains held while running work can still change the
-workspace.
+uncommitted batch before the prompt run finishes. Other existing tools retain
+the dispatcher's tool-first cancellation race. Shell execution receives the
+cancellation future directly; the prompt awaits it without an outer race that
+could drop its cleanup.
+
+Each shell call starts `/bin/sh -c` in a new process group. Exit, timeout,
+cancellation, and output-read failure all lead to SIGKILL of the group and
+reaping of the shell. An already-observed exit takes precedence over timeout or
+cancellation, including during cleanup. Even normal exit stops remaining
+background children. Output draining has a separate one-second deadline so an
+unsupported detached descendant cannot keep an inherited pipe open indefinitely.
+Results retain bounded stdout and stderr tails and report possible partial
+changes after timeout or cancellation. See [the shell tool specification](ox-shell-tool.md)
+for output allocation and the limits of process-group cleanup.
+
+ACP Stop and connection shutdown signal cancellation immediately. Headless
+`ox run` also translates SIGINT into prompt cancellation, including repeated
+signals, while keeping the prompt alive through cleanup and saving. The
+operation guard remains held through cleanup, the batch save attempt, and
+response handling.
 
 Cancellation during a model request stops Ox's consumption and prevents new
 tool execution. It does not establish whether upstream processing or billing
