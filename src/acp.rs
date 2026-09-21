@@ -235,6 +235,7 @@ async fn run_headless_prompt(
         user_message,
         cancellation.clone(),
         |_| Ok(()),
+        prompt::ToolPermissions::AutoApprove,
     );
     tokio::pin!(run);
     let response = loop {
@@ -351,6 +352,7 @@ async fn serve(state: ServerState, transport: impl ConnectTo<Agent> + 'static) -
                         user_message,
                         cancellation,
                         send_update,
+                        prompt::ToolPermissions::Acp(task_connection.clone()),
                     )
                     .await;
                     reply(responder, result)
@@ -566,6 +568,274 @@ mod tests {
         .unwrap();
     }
 
+    #[tokio::test]
+    async fn shell_permissions_control_execution_and_save_results() {
+        use agent_client_protocol::Lines;
+        use futures::{SinkExt, StreamExt, channel::mpsc};
+        use serde_json::{Value, json};
+
+        use crate::openrouter::fixture::{Server, shell_reply, text_reply};
+        use crate::sessions::{ToolOutcome, TranscriptEntry};
+        use crate::tools::fixture::Workspace;
+
+        for decision in [
+            "approve",
+            "deny",
+            "mixed",
+            "cancelled",
+            "cancel",
+            "eof",
+            "unknown",
+            "error",
+        ] {
+            let workspace = Workspace::new();
+            let continues = matches!(decision, "approve" | "deny" | "mixed");
+            let mut replies = vec![shell_reply(&[("touch first", 5), ("touch second", 5)])];
+            if continues {
+                replies.push(text_reply("Done"));
+            }
+            let server = Server::start(replies).await;
+            let state = state();
+            *state.openrouter.lock().unwrap() = Some(server.client());
+            let store = state.store.clone();
+            let operations = state.operations.clone();
+            let id = store
+                .create(&workspace.0, openrouter::DEFAULT_MODEL)
+                .unwrap()
+                .id;
+            let (incoming_tx, incoming_rx) = mpsc::unbounded();
+            let (outgoing_tx, mut outgoing_rx) = mpsc::unbounded::<String>();
+            let transport = Lines::new(outgoing_tx.sink_map_err(io::Error::other), incoming_rx);
+            for message in [
+                json!({"jsonrpc":"2.0", "id":1, "method":"initialize", "params":{"protocolVersion":1,"clientCapabilities":{}}}),
+                json!({"jsonrpc":"2.0", "id":2, "method":"session/prompt", "params":{"sessionId":id,"prompt":[{"type":"text","text":"Run commands"}]}}),
+            ] {
+                incoming_tx.unbounded_send(Ok(message.to_string())).unwrap();
+            }
+            let client = async {
+                let mut incoming_tx = Some(incoming_tx);
+                let mut requested = 0;
+                let mut announced = Vec::new();
+                let mut running = Vec::new();
+                let mut response = None;
+                while let Some(line) = outgoing_rx.next().await {
+                    let message: Value = serde_json::from_str(&line).unwrap();
+                    let update = &message["params"]["update"];
+                    if update["sessionUpdate"] == "tool_call" {
+                        assert!(
+                            update["status"].is_null() || update["status"] == "pending",
+                            "{decision}"
+                        );
+                        announced.push(update["toolCallId"].clone());
+                    }
+                    if update["status"] == "in_progress" {
+                        running.push(update["toolCallId"].clone());
+                    }
+                    if message["method"] == "session/request_permission" {
+                        let params = &message["params"];
+                        assert_eq!(params["sessionId"], id.to_string(), "{decision}");
+                        assert_eq!(
+                            params["toolCall"]["toolCallId"],
+                            format!("shell-{requested}"),
+                            "{decision}"
+                        );
+                        assert!(
+                            announced.contains(&params["toolCall"]["toolCallId"]),
+                            "{decision}"
+                        );
+                        assert_eq!(params["toolCall"]["status"], "pending", "{decision}");
+                        assert_eq!(params["toolCall"]["kind"], "execute", "{decision}");
+                        let file = if requested == 0 { "first" } else { "second" };
+                        assert_eq!(
+                            params["toolCall"]["rawInput"]["command"],
+                            format!("touch {file}"),
+                            "{decision}"
+                        );
+                        assert_eq!(
+                            params["toolCall"]["content"][0]["content"]["text"],
+                            format!(
+                                "Working directory: {}\n\nCommand:\n\n    touch {file}",
+                                workspace.0.display()
+                            ),
+                            "{decision}"
+                        );
+                        assert!(
+                            !workspace.0.join(file).exists(),
+                            "{decision}: shell must await approval"
+                        );
+                        assert_eq!(
+                            params["options"],
+                            json!([
+                                {"optionId":"approve","name":"Approve","kind":"allow_once"},
+                                {"optionId":"deny","name":"Deny","kind":"reject_once"},
+                            ]),
+                            "{decision}"
+                        );
+                        assert!(operations.try_load(&id).is_none(), "{decision}");
+                        assert!(operations.try_delete(&id).is_none(), "{decision}");
+                        assert!(operations.try_prompt(&id).is_none(), "{decision}");
+                        requested += 1;
+                        if decision == "eof" {
+                            drop(incoming_tx.take());
+                            continue;
+                        }
+                        let reply = match decision {
+                            "cancel" => {
+                                json!({"jsonrpc":"2.0","method":"session/cancel","params":{"sessionId":id}})
+                            }
+                            "error" => {
+                                json!({"jsonrpc":"2.0","id":message["id"],"error":{"code":-32603,"message":"Permission UI failed"}})
+                            }
+                            _ => {
+                                let outcome = if decision == "cancelled" {
+                                    json!({"outcome":"cancelled"})
+                                } else {
+                                    let option = if decision == "mixed" {
+                                        if requested == 1 { "deny" } else { "approve" }
+                                    } else {
+                                        decision
+                                    };
+                                    json!({"outcome":"selected","optionId":option})
+                                };
+                                json!({"jsonrpc":"2.0","id":message["id"],"result":{"outcome":outcome}})
+                            }
+                        };
+                        incoming_tx
+                            .as_ref()
+                            .unwrap()
+                            .unbounded_send(Ok(reply.to_string()))
+                            .unwrap();
+                    } else if message["id"] == 2 {
+                        assert_eq!(
+                            store
+                                .read(&id)
+                                .unwrap()
+                                .unwrap()
+                                .transcript
+                                .iter()
+                                .filter(|entry| matches!(entry, TranscriptEntry::ToolResult(_)))
+                                .count(),
+                            2,
+                            "{decision}: batch is saved before responding"
+                        );
+                        response = Some(message);
+                        drop(incoming_tx.take());
+                    }
+                }
+                assert_eq!(requested, if continues { 2 } else { 1 }, "{decision}");
+                assert_eq!(
+                    running.len(),
+                    match decision {
+                        "approve" => 2,
+                        "mixed" => 1,
+                        _ => 0,
+                    },
+                    "{decision}"
+                );
+                let response =
+                    response.unwrap_or_else(|| panic!("{decision}: missing prompt response"));
+                if matches!(decision, "unknown" | "error") {
+                    assert_eq!(response["error"]["code"], -32603, "{decision}");
+                    if decision == "unknown" {
+                        assert_eq!(
+                            response["error"]["data"], "Unknown shell permission option: unknown",
+                            "{decision}"
+                        );
+                    }
+                } else {
+                    assert_eq!(
+                        response["result"]["stopReason"],
+                        if continues { "end_turn" } else { "cancelled" },
+                        "{decision}"
+                    );
+                }
+            };
+            let (result, ()) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                tokio::join!(serve(state, transport), client)
+            })
+            .await
+            .unwrap_or_else(|error| panic!("{decision}: timed out: {error}"));
+            result.unwrap_or_else(|error| panic!("{decision}: ACP connection failed: {error}"));
+            assert!(operations.try_load(&id).is_some(), "{decision}");
+            assert_eq!(
+                workspace.0.join("first").exists(),
+                decision == "approve",
+                "{decision}"
+            );
+            assert_eq!(
+                workspace.0.join("second").exists(),
+                matches!(decision, "approve" | "mixed"),
+                "{decision}"
+            );
+            let transcript = store.read(&id).unwrap().unwrap().transcript;
+            let results: Vec<_> = transcript
+                .iter()
+                .filter_map(|entry| match entry {
+                    TranscriptEntry::ToolResult(result) => Some(result),
+                    _ => None,
+                })
+                .collect();
+            for (index, result) in results.iter().enumerate() {
+                match decision {
+                    "approve" => assert!(
+                        matches!(result.outcome, ToolOutcome::Completed(_)),
+                        "{decision}, result {index}"
+                    ),
+                    "deny" | "mixed" if decision == "deny" || index == 0 => assert_eq!(
+                        result.outcome,
+                        ToolOutcome::Failed(
+                            "User denied permission to run this command.".to_owned()
+                        ),
+                        "{decision}, result {index}"
+                    ),
+                    "mixed" => assert!(
+                        matches!(result.outcome, ToolOutcome::Completed(_)),
+                        "{decision}, result {index}"
+                    ),
+                    "unknown" | "error" => {
+                        assert!(
+                            matches!(result.outcome, ToolOutcome::Failed(_)),
+                            "{decision}, result {index}"
+                        )
+                    }
+                    _ => assert!(
+                        matches!(result.outcome, ToolOutcome::Cancelled(_)),
+                        "{decision}, result {index}"
+                    ),
+                }
+            }
+            if continues {
+                let requests = server.requests();
+                assert_eq!(requests.len(), 2, "{decision}");
+                for result in &results {
+                    assert!(
+                        requests[1]["messages"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .any(|message| message["role"] == "tool"
+                                && message["content"] == result.outcome.text()),
+                        "{decision}"
+                    );
+                }
+            }
+            let mut replay = Vec::new();
+            convert::replay_transcript(&transcript, |update| {
+                replay.push(update);
+                Ok(())
+            })
+            .unwrap();
+            for result in results {
+                assert!(
+                    replay.iter().any(|update| matches!(update,
+                    SessionUpdate::ToolCall(call) if call.tool_call_id.to_string() == result.call_id
+                        && call.raw_output == Some(json!(result.outcome.text())))),
+                    "{decision}"
+                );
+            }
+        }
+    }
+
     async fn assert_process_stopped(path: &Path, reaped: bool) {
         let pid = std::fs::read_to_string(path).unwrap();
         tokio::time::timeout(std::time::Duration::from_secs(3), async {
@@ -681,16 +951,25 @@ mod tests {
         ] {
             incoming_tx.unbounded_send(Ok(message.to_string())).unwrap();
         }
-        let close = async {
-            wait_for_file(&workspace.0.join("ready")).await;
-            assert!(operations.try_load(&id).is_none());
-            drop(incoming_tx);
-        };
         let client = async {
+            let mut incoming_tx = Some(incoming_tx);
             let mut response = None;
             while let Some(line) = outgoing_rx.next().await {
                 let message: Value = serde_json::from_str(&line).unwrap();
-                if message["id"] == 2 {
+                if message["method"] == "session/request_permission" {
+                    incoming_tx
+                        .as_ref()
+                        .unwrap()
+                        .unbounded_send(Ok(json!({
+                            "jsonrpc":"2.0", "id":message["id"],
+                            "result":{"outcome":{"outcome":"selected","optionId":"approve"}}
+                        })
+                        .to_string()))
+                        .unwrap();
+                    wait_for_file(&workspace.0.join("ready")).await;
+                    assert!(operations.try_load(&id).is_none());
+                    drop(incoming_tx.take());
+                } else if message["id"] == 2 {
                     assert!(
                         store
                             .read(&id)
@@ -706,8 +985,8 @@ mod tests {
             }
             assert_eq!(response.unwrap()["result"]["stopReason"], "cancelled");
         };
-        let (result, (), ()) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            tokio::join!(serve(state, transport), close, client)
+        let (result, ()) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            tokio::join!(serve(state, transport), client)
         })
         .await
         .unwrap();
@@ -756,7 +1035,20 @@ mod tests {
                 .unbounded_send(Err(io::Error::other("broken transport")))
                 .unwrap();
         };
-        let drain_output = async { while outgoing_rx.next().await.is_some() {} };
+        let drain_output = async {
+            while let Some(line) = outgoing_rx.next().await {
+                let message: serde_json::Value = serde_json::from_str(&line).unwrap();
+                if message["method"] == "session/request_permission" {
+                    incoming_tx
+                        .unbounded_send(Ok(json!({
+                            "jsonrpc":"2.0", "id":message["id"],
+                            "result":{"outcome":{"outcome":"selected","optionId":"approve"}}
+                        })
+                        .to_string()))
+                        .unwrap();
+                }
+            }
+        };
         let (result, (), ()) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
             tokio::join!(serve(state, transport), fail_transport, drain_output)
         })

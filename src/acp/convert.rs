@@ -4,8 +4,10 @@
 use agent_client_protocol::{
     Error, Result,
     schema::v1::{
-        ContentBlock, ContentChunk, SessionUpdate, TextContent, ToolCall as AcpToolCall,
+        ContentBlock, ContentChunk, PermissionOption, PermissionOptionKind,
+        RequestPermissionRequest, SessionId, SessionUpdate, TextContent, ToolCall as AcpToolCall,
         ToolCallContent, ToolCallId, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields,
+        ToolKind,
     },
 };
 use serde_json::Value;
@@ -68,6 +70,45 @@ pub fn in_progress_tool_call_update(call_id: &str) -> SessionUpdate {
         ToolCallId::new(call_id.to_owned()),
         ToolCallUpdateFields::new().status(ToolCallStatus::InProgress),
     ))
+}
+
+pub fn shell_permission_request(
+    session_id: SessionId,
+    call: &ToolCall,
+    workspace: &std::path::Path,
+) -> RequestPermissionRequest {
+    let input = raw_input(call);
+    let (label, text) = match input.get("command").and_then(Value::as_str) {
+        Some(command) => ("Command", command),
+        None => ("Arguments", call.arguments.as_str()),
+    };
+    // Clients can omit rawInput from the approval UI, so show the command as content too.
+    let indented: String = text
+        .split_inclusive('\n')
+        .map(|line| format!("    {line}"))
+        .collect();
+    let content = format!(
+        "Working directory: {}\n\n{label}:\n\n{indented}",
+        workspace.display(),
+    );
+    RequestPermissionRequest::new(
+        session_id,
+        ToolCallUpdate::new(
+            ToolCallId::new(call.call_id.clone()),
+            ToolCallUpdateFields::new()
+                .title(tools::title(call))
+                .kind(ToolKind::Execute)
+                .status(ToolCallStatus::Pending)
+                .raw_input(input)
+                .content(vec![ToolCallContent::from(ContentBlock::Text(
+                    TextContent::new(content),
+                ))]),
+        ),
+        vec![
+            PermissionOption::new("approve", "Approve", PermissionOptionKind::AllowOnce),
+            PermissionOption::new("deny", "Deny", PermissionOptionKind::RejectOnce),
+        ],
+    )
 }
 
 pub fn finished_tool_call_update(result: &ToolResult) -> SessionUpdate {
@@ -173,6 +214,44 @@ mod tests {
             prompt_to_user_message(&[]).unwrap_err().code,
             ErrorCode::InvalidParams
         );
+    }
+
+    #[test]
+    fn shell_approval_content_shows_the_command_without_relying_on_raw_input() {
+        let command = "printf '%s\\n' '```'\n  echo \"$HOME\"\n";
+        let arguments = serde_json::json!({"command": command, "timeout_seconds": 5});
+        let mut call = ToolCall {
+            call_id: "shell-1".to_owned(),
+            name: tools::SHELL.to_owned(),
+            arguments: arguments.to_string(),
+        };
+        for (input, expected) in [
+            (
+                arguments.to_string(),
+                "Working directory: /workspace\n\nCommand:\n\n    printf '%s\\n' '```'\n      echo \"$HOME\"\n",
+            ),
+            (
+                serde_json::json!({"command": "echo hello  \n\n"}).to_string(),
+                "Working directory: /workspace\n\nCommand:\n\n    echo hello  \n    \n",
+            ),
+            (
+                "{bad json".to_owned(),
+                "Working directory: /workspace\n\nArguments:\n\n    {bad json",
+            ),
+        ] {
+            call.arguments = input;
+            let request = shell_permission_request(
+                SessionId::new("session-1"),
+                &call,
+                std::path::Path::new("/workspace"),
+            );
+            let request = serde_json::to_value(request).unwrap();
+            assert_eq!(
+                request["toolCall"]["content"][0]["content"]["text"],
+                expected
+            );
+            assert_eq!(request["toolCall"]["rawInput"], raw_input(&call));
+        }
     }
 
     #[test]

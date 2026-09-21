@@ -731,6 +731,16 @@ explicitly supported; they do not trigger opportunistic execution.
 
 ## 12. Tools and cancellation
 
+Before running each shell call over ACP, the prompt loop sends
+`session/request_permission` with the command, workspace, and two choices:
+Approve (`allow_once`) and Deny (`reject_once`). The call remains `pending`
+until approved. Denial produces a failed tool result and allows later calls
+and model requests to continue. Cancellation stops the prompt; a permission
+request error or unknown option also prevents execution and ends the prompt
+with an error. The existing finish path saves all tool outcomes together.
+Keep the operation guard while waiting for permission, saving, and responding.
+Headless `ox run` automatically approves all tools. Other tools need no approval.
+
 `tools::execute` takes a complete tool call, the session's workspace
 context, and a cancellation future. It parses arguments into the owned input
 type for the named tool and returns a concrete `ToolOutcome`.
@@ -755,8 +765,9 @@ this sequence:
 1. Send every tool call in the message as a pending tool-call update, in
    call order.
 2. Check cancellation and the model-request budget.
-3. Execute eligible calls sequentially. Before each call, check cancellation,
-   then send its in-progress update. While it runs, observe cancellation
+3. Execute eligible calls sequentially. Before each call, check cancellation
+   and request shell approval when using ACP. Send an in-progress update only
+   for calls that will run. While a call runs, observe cancellation
    according to that tool's resource lifecycle. As soon as an outcome is
    obtained, record it in the uncommitted batch before sending its finished
    update or checking whether later work should begin.

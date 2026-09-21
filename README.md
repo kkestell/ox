@@ -30,6 +30,13 @@ Linux, starting in the session workspace with stdin connected to `/dev/null`.
 It supports builds, tests, Git, package commands, and scripts. Calls time out
 after 120 seconds by default; the model can request 1–600 seconds.
 
+Over ACP, each shell call asks for **Approve** or **Deny** before running.
+Approval applies only to that call. Denial skips the command and returns a
+failed tool result so the model can respond. The ACP client's Stop action
+cancels the whole prompt.
+Other tools run without approval. Headless `ox run` automatically approves
+all tool calls.
+
 Shell results include the exit status and separate stdout and stderr tails,
 at most 16 KiB total. The streams share 14 KiB: 7 KiB each, with unused space
 given to the other stream. Earlier output may be omitted; Ox keeps no full

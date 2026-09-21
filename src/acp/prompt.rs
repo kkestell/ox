@@ -5,8 +5,11 @@
 use std::{fmt, io};
 
 use agent_client_protocol::{
-    Error, Result,
-    schema::v1::{PromptResponse, SessionId, SessionInfoUpdate, SessionUpdate, StopReason},
+    Client, ConnectionTo, Error, Result,
+    schema::v1::{
+        PromptResponse, RequestPermissionOutcome, SessionId, SessionInfoUpdate, SessionUpdate,
+        StopReason,
+    },
 };
 
 use super::{convert, operations::PromptCancellation};
@@ -24,6 +27,11 @@ use crate::{
 /// read their results.
 pub const MAX_MODEL_REQUESTS: usize = 8;
 
+pub enum ToolPermissions {
+    AutoApprove,
+    Acp(ConnectionTo<Client>),
+}
+
 pub async fn run<F>(
     store: SessionStore,
     openrouter: openrouter::Client,
@@ -31,11 +39,19 @@ pub async fn run<F>(
     user_message: String,
     cancellation: PromptCancellation,
     send_update: F,
+    permissions: ToolPermissions,
 ) -> Result<PromptResponse>
 where
     F: FnMut(SessionUpdate) -> Result<()>,
 {
-    let mut run = PromptRun::open(store, openrouter, session_id, cancellation, send_update)?;
+    let mut run = PromptRun::open(
+        store,
+        openrouter,
+        session_id,
+        cancellation,
+        send_update,
+        permissions,
+    )?;
     if !run.save_user_message(user_message)? {
         return Ok(PromptResponse::new(StopReason::Cancelled));
     }
@@ -52,6 +68,7 @@ enum PromptOutcome {
     Refused,
     OpenRouter(io::Error),
     AcpUpdate(Error),
+    Permission(Error),
     Storage(io::Error),
 }
 
@@ -65,6 +82,7 @@ impl fmt::Display for PromptOutcome {
             Self::Refused => write!(f, "the model refused"),
             Self::OpenRouter(error) => write!(f, "the model request failed: {error}"),
             Self::AcpUpdate(error) => write!(f, "sending an ACP update failed: {error}"),
+            Self::Permission(error) => write!(f, "requesting shell permission failed: {error}"),
             Self::Storage(error) => write!(f, "saving the transcript failed: {error}"),
         }
     }
@@ -77,6 +95,7 @@ struct PromptRun<F> {
     summary: SessionSummary,
     cancellation: PromptCancellation,
     send_update: F,
+    permissions: ToolPermissions,
     /// Saved transcript, extended only after a database transaction succeeds.
     transcript: Vec<TranscriptEntry>,
     uncommitted_batch: Option<UncommittedAssistantBatch>,
@@ -152,6 +171,7 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
         session_id: SessionId,
         cancellation: PromptCancellation,
         send_update: F,
+        permissions: ToolPermissions,
     ) -> Result<Self> {
         let stored = store
             .read(&session_id)
@@ -164,6 +184,7 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
             summary: stored.summary,
             cancellation,
             send_update,
+            permissions,
             transcript: stored.transcript,
             uncommitted_batch: None,
             model_requests: 0,
@@ -278,19 +299,24 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
             if self.cancellation.is_cancelled() {
                 return Err(PromptOutcome::Cancelled);
             }
-            (self.send_update)(convert::in_progress_tool_call_update(&call.call_id))
-                .map_err(PromptOutcome::AcpUpdate)?;
-            // The dispatcher polls tools first, so a synchronous patch can finish
-            // before it observes cancellation that arrived while sending the update.
-            if self.cancellation.is_cancelled() {
-                return Err(PromptOutcome::Cancelled);
-            }
-            let outcome = tools::execute(
-                &self.summary.workspace_path,
-                call,
-                self.cancellation.cancelled(),
-            )
-            .await;
+            let approved = self.approve(call).await?;
+            let outcome = if approved {
+                (self.send_update)(convert::in_progress_tool_call_update(&call.call_id))
+                    .map_err(PromptOutcome::AcpUpdate)?;
+                // The dispatcher polls tools first, so a synchronous patch can finish
+                // before it observes cancellation that arrived while sending the update.
+                if self.cancellation.is_cancelled() {
+                    return Err(PromptOutcome::Cancelled);
+                }
+                tools::execute(
+                    &self.summary.workspace_path,
+                    call,
+                    self.cancellation.cancelled(),
+                )
+                .await
+            } else {
+                ToolOutcome::Failed("User denied permission to run this command.".to_owned())
+            };
             let result = self
                 .uncommitted_batch
                 .as_mut()
@@ -300,6 +326,36 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
                 .map_err(PromptOutcome::AcpUpdate)?;
         }
         Ok(())
+    }
+
+    async fn approve(&self, call: &ToolCall) -> std::result::Result<bool, PromptOutcome> {
+        let connection = match &self.permissions {
+            ToolPermissions::AutoApprove => return Ok(true),
+            ToolPermissions::Acp(connection) => connection,
+        };
+        if call.name != tools::SHELL {
+            return Ok(true);
+        }
+        let response = tokio::select! {
+            biased;
+            () = self.cancellation.cancelled() => return Err(PromptOutcome::Cancelled),
+            response = connection.send_request(convert::shell_permission_request(
+                self.summary.id.clone(), call, &self.summary.workspace_path,
+            )).block_task() => response.map_err(PromptOutcome::Permission)?,
+        };
+        match response.outcome {
+            RequestPermissionOutcome::Selected(selected) => match selected.option_id.0.as_ref() {
+                "approve" => Ok(true),
+                "deny" => Ok(false),
+                id => Err(PromptOutcome::Permission(
+                    Error::internal_error().data(format!("Unknown shell permission option: {id}")),
+                )),
+            },
+            RequestPermissionOutcome::Cancelled => Err(PromptOutcome::Cancelled),
+            _ => Err(PromptOutcome::Permission(
+                Error::internal_error().data("Unsupported shell permission outcome"),
+            )),
+        }
     }
 
     /// Saves a complete assistant batch. The transcript changes only after the
@@ -335,6 +391,9 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
                 PromptOutcome::AcpUpdate(_) => ToolOutcome::Failed(
                     "Not started: the client connection failed before this tool ran.".to_owned(),
                 ),
+                PromptOutcome::Permission(error) => ToolOutcome::Failed(format!(
+                    "Not started: requesting shell permission failed: {error}"
+                )),
                 PromptOutcome::Storage(_) => ToolOutcome::Failed(
                     "Not started: the conversation could not be stored.".to_owned(),
                 ),
@@ -373,7 +432,9 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
             PromptOutcome::OpenRouter(error) | PromptOutcome::Storage(error) => {
                 return Err(Error::into_internal_error(error));
             }
-            PromptOutcome::AcpUpdate(error) => return Err(error),
+            PromptOutcome::AcpUpdate(error) | PromptOutcome::Permission(error) => {
+                return Err(error);
+            }
         };
         Ok(PromptResponse::new(stop_reason))
     }
@@ -441,6 +502,7 @@ mod tests {
                 self.session_id.clone(),
                 self.cancellation.clone(),
                 send_update,
+                ToolPermissions::AutoApprove,
             )
             .unwrap();
             assert!(prompt.save_user_message(input.to_owned()).unwrap());

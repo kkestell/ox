@@ -2,6 +2,7 @@ THIS DOCUMENT MUST BE KEPT UP TO DATE
 
 # Source Map
 
+- `scripts/run.py`: Temporary workspace runner for a headless prompt, with optional checkout of a pinned GitHub commit.
 - `src/main.rs`: Command parsing and process entry; starts the ACP server, runs one headless prompt, or runs a credential command.
 - `src/auth.rs`: Environment and operating-system keyring credential storage.
 - `src/openrouter.rs`: OpenRouter client, request encoding, and streamed-response assembly.
@@ -14,7 +15,7 @@ THIS DOCUMENT MUST BE KEPT UP TO DATE
 - `src/sessions.rs`: Transcript types, assistant-batch validation, `SessionStore` over one SQLite connection, and the private row codec.
 - `src/acp.rs`: Connection wiring, `ServerState`, lazy OpenRouter client, request handlers, and the headless prompt entry point.
 - `src/acp/operations.rs`: One active prompt, load, or delete per session, enforced by an operation guard.
-- `src/acp/prompt.rs`: One prompt run: save the user message, request model output, run tools, save complete assistant batches, and respond.
+- `src/acp/prompt.rs`: One prompt run: save the user message, request model output, request shell approval over ACP, run tools, save complete assistant batches, and respond. Headless runs automatically approve tools.
 - `src/acp/convert.rs`: ACP input conversion, session update construction, and transcript replay.
 
 ## Testing

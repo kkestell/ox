@@ -18,6 +18,12 @@ general process framework.
 The initial implementation supports macOS and Linux with `/bin/sh`. Windows
 support and alternate shells are outside this version.
 
+ACP shell calls require per-call approval before execution. Ox presents
+Approve and Deny through `session/request_permission`, including the command
+and workspace. Denial becomes a failed tool result; cancellation stops the
+prompt. Headless `ox run` automatically approves all tools. Session-wide and
+permanent approval choices remain outside this version.
+
 ## 2. Tool interface
 
 Register this function alongside the existing concrete tools:
@@ -300,7 +306,7 @@ Excluded from this version: PTYs, interactive input, live output updates,
 persistent shell state, background jobs, process IDs exposed to the model,
 polling or resume tools, shell selection, separate working-directory and
 environment parameters, command classification, automatic retries, automatic
-log storage, permission prompts, and sandboxing.
+log storage, remembered permissions, and sandboxing.
 
 ## 8. Acceptance tests
 
