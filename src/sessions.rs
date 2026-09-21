@@ -22,22 +22,18 @@ pub const DATA_DIR_ENV: &str = "OX_DATA_DIR";
 
 const DATABASE_FILE: &str = "ox.db";
 
-/// Stamped into `PRAGMA user_version`. There is no migration path: a
-/// database with another version is rejected at open.
-const SCHEMA_VERSION: i32 = 3;
-
 /// Longest title derived from a prompt, in characters.
 const MAX_TITLE_CHARS: usize = 80;
 
 const SCHEMA: &str = "
 BEGIN;
 
-CREATE TABLE workspaces (
+CREATE TABLE IF NOT EXISTS workspaces (
     id   INTEGER PRIMARY KEY,
     path TEXT NOT NULL UNIQUE
 );
 
-CREATE TABLE sessions (
+CREATE TABLE IF NOT EXISTS sessions (
     id           TEXT PRIMARY KEY,
     workspace_id INTEGER NOT NULL REFERENCES workspaces (id),
     title        TEXT,
@@ -45,9 +41,9 @@ CREATE TABLE sessions (
     updated_at   TEXT NOT NULL
 );
 
-CREATE INDEX sessions_by_activity ON sessions (updated_at DESC, id);
+CREATE INDEX IF NOT EXISTS sessions_by_activity ON sessions (updated_at DESC, id);
 
-CREATE TABLE events (
+CREATE TABLE IF NOT EXISTS events (
     id         INTEGER PRIMARY KEY,
     session_id TEXT NOT NULL REFERENCES sessions (id) ON DELETE CASCADE,
     ts         TEXT NOT NULL,
@@ -55,9 +51,7 @@ CREATE TABLE events (
     data       TEXT NOT NULL
 );
 
-CREATE INDEX events_by_session ON events (session_id, id);
-
-PRAGMA user_version = 3;
+CREATE INDEX IF NOT EXISTS events_by_session ON events (session_id, id);
 
 COMMIT;
 ";
@@ -274,33 +268,11 @@ impl SessionStore {
             fs::create_dir_all(parent)?;
         }
         let connection = Connection::open(path).map_err(io::Error::other)?;
-        Self::initialize(connection, &path.display().to_string())
+        Self::initialize(connection)
     }
 
-    fn initialize(connection: Connection, location: &str) -> io::Result<Self> {
-        let version: i32 = connection
-            .query_row("PRAGMA user_version", [], |row| row.get(0))
-            .map_err(io::Error::other)?;
-        let tables: i64 = connection
-            .query_row(
-                "SELECT count(*) FROM sqlite_master WHERE type = 'table'",
-                [],
-                |row| row.get(0),
-            )
-            .map_err(io::Error::other)?;
-        match version {
-            0 if tables == 0 => connection.execute_batch(SCHEMA).map_err(io::Error::other)?,
-            SCHEMA_VERSION => {}
-            _ => {
-                return Err(io::Error::new(
-                    ErrorKind::InvalidData,
-                    format!(
-                        "{location} has schema version {version}; this build of ox uses version \
-                         {SCHEMA_VERSION}. Delete the file to start over."
-                    ),
-                ));
-            }
-        }
+    fn initialize(connection: Connection) -> io::Result<Self> {
+        connection.execute_batch(SCHEMA).map_err(io::Error::other)?;
         connection
             .execute_batch("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;")
             .map_err(io::Error::other)?;
@@ -309,11 +281,8 @@ impl SessionStore {
 
     #[cfg(test)]
     pub(crate) fn in_memory() -> Self {
-        Self::initialize(
-            Connection::open_in_memory().expect("in-memory database opens"),
-            "in-memory database",
-        )
-        .expect("fresh database initializes")
+        Self::initialize(Connection::open_in_memory().expect("in-memory database opens"))
+            .expect("fresh database initializes")
     }
 
     #[cfg(test)]
@@ -973,24 +942,5 @@ mod tests {
         assert_eq!(events, 0);
 
         store.delete(&id).unwrap();
-    }
-
-    #[test]
-    fn a_database_with_another_schema_version_is_rejected() {
-        let connection = Connection::open_in_memory().unwrap();
-        connection
-            .execute_batch("CREATE TABLE legacy (id INTEGER); PRAGMA user_version = 7;")
-            .unwrap();
-        let error = SessionStore::initialize(connection, "/data/ox.db")
-            .err()
-            .expect("another version is rejected");
-        assert!(error.to_string().contains("/data/ox.db"));
-        assert!(error.to_string().contains("version 7"));
-
-        let unversioned = Connection::open_in_memory().unwrap();
-        unversioned
-            .execute_batch("CREATE TABLE legacy (id INTEGER);")
-            .unwrap();
-        assert!(SessionStore::initialize(unversioned, "/data/ox.db").is_err());
     }
 }

@@ -65,7 +65,7 @@ request fields or streaming wire formats.
 - Prompt queues, steering during a running prompt, background wake-ups, or
   independently scheduled session work.
 - Multiple processes concurrently modifying the same database.
-- Reading databases written by earlier schema versions.
+- Reading databases written by an earlier schema.
 - Images, audio, other unsupported media, context compaction, and automatic
   truncation of the stored transcript.
 - A general permission system, tool registry framework, repository trait,
@@ -218,10 +218,9 @@ shared handles; it does not duplicate the transcript or the database.
 
 ### Startup
 
-Resolve the data directory, open the database, check its schema version,
-apply initialization, and construct the operation registry before accepting
-requests. A database that cannot be opened or that carries another schema
-version is a startup error. Credentials are not read at startup: the process
+Resolve the data directory, open the database, apply initialization, and
+construct the operation registry before accepting requests. A database that
+cannot be opened is a startup error. Credentials are not read at startup: the process
 must remain available for terminal authentication, listing, and deletion
 without them.
 
@@ -451,13 +450,12 @@ equality without resolving symlink aliases. Reject relative workspace paths
 where an absolute workspace is required. Do not silently merge two workspace
 identities that happen to refer to the same directory.
 
-### Schema version, encoding, and transactions
+### Schema, encoding, and transactions
 
-The database records its schema version in `PRAGMA user_version`. A new
-database is stamped with the current version when the schema is created.
-Opening a database whose version differs from the current one is a startup
-error that names the file so the user can delete it. There is no migration
-path and no reader for earlier formats.
+Opening a database creates any missing tables and indexes. The database
+carries no schema version, and there is no migration path or reader for
+earlier formats: a schema change means deleting the local database and
+starting over.
 
 Each `events` row stores its kind and the serde-derived JSON of the transcript
 type it holds. OpenRouter request and response shapes are separate structs in
@@ -983,7 +981,6 @@ recover differently by variant.
 | Unsupported or blank prompt content | Invalid parameters; no user append. |
 | Missing credentials | Authentication required; keep process available. |
 | Credential-store failure | Actionable request or command error. |
-| Database from another schema version | Startup error naming the file. |
 | Unknown session | Resource not found. |
 | Conflicting session operation | Busy; do not enqueue work. |
 | Wrong workspace on load | Explicit mismatch error before replay. |
@@ -1034,7 +1031,7 @@ database file for the reopen test. Verify:
 - Orphan, duplicate, and missing results fail batch validation explicitly.
 - User append adopts a title once and updates activity.
 - Deletion removes the session's entries and repeated deletion succeeds.
-- A database with another `user_version` is rejected at open.
+- Opening a database twice reuses its existing tables.
 
 ### Loop
 
@@ -1061,8 +1058,7 @@ B does not signal session A's prompt.
 ## 18. Implementation sequence
 
 1. Define the structured transcript entries and assistant-batch validation.
-   Implement the persistent store with its schema version check and the
-   storage tests.
+   Implement the persistent store and the storage tests.
 2. Implement the concrete OpenRouter client and qualify its boundary with
    local fixtures. Keep it independent of ACP, persistence, and tool execution.
 3. Implement atomic operation-guard acquisition and the unique operation guard.
@@ -1089,7 +1085,7 @@ possible.
 | Ox owns the prompt run and OpenRouter client. | Ox maintains its request boundary, tool dispatch, and termination behavior. | A concrete unmet OpenRouter feature or measured maintenance problem. |
 | One persistent database connection. | Reads and writes serialize; synchronous calls can block an executor worker. | Measured contention or latency. |
 | Whole-transcript reads. | Memory and request size grow with conversations. | Actual context-limit or memory pressure, addressed with explicit compaction semantics. |
-| No schema migration. | A schema change requires deleting the local database. | Conversations become valuable enough to carry across schema versions. |
+| No schema migration or version. | A schema change requires deleting the local database. | Conversations become valuable enough to carry across schema changes. |
 | Busy instead of queueing. | Clients must retry conflicting operations. | A real requirement for queued or independently arriving work. |
 | Sequential tools. | Independent calls cannot overlap. | A measured latency benefit sufficient to justify concurrency and cancellation complexity. |
 | Assistant-batch tool persistence. | Tool results become saved transcript content with their complete assistant batch. | Work that must continue independently of the prompt run that started it. |
