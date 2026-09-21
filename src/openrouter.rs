@@ -9,14 +9,53 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::{
-    sessions::{AssistantMessage, ToolCall, TranscriptEntry},
+    sessions::{AssistantMessage, EffortLevel, ToolCall, TranscriptEntry},
     tools,
 };
 
-/// The model for new sessions. An existing session keeps the model recorded
-/// in its transcript.
-pub const DEFAULT_MODEL: &str = "openai/gpt-5.6-luna";
+pub struct ModelChoice {
+    pub id: &'static str,
+    pub name: &'static str,
+    /// The OpenRouter effort sent for Low, Medium, and High.
+    efforts: [&'static str; 3],
+}
+
+impl ModelChoice {
+    pub fn effort(&self, level: EffortLevel) -> Option<&'static str> {
+        let [low, medium, high] = self.efforts;
+        match level {
+            EffortLevel::Default => None,
+            EffortLevel::Low => Some(low),
+            EffortLevel::Medium => Some(medium),
+            EffortLevel::High => Some(high),
+        }
+    }
+}
+
+pub const MODEL_CHOICES: &[ModelChoice] = &[
+    ModelChoice {
+        id: "deepseek/deepseek-v4.1-flash",
+        name: "DeepSeek V4.1 Flash",
+        efforts: ["low", "high", "max"],
+    },
+    ModelChoice {
+        id: "z-ai/glm-5.3-flash",
+        name: "GLM 5.3 Flash",
+        efforts: ["low", "high", "max"],
+    },
+    ModelChoice {
+        id: "meta/muse-spark-1.3-contributor",
+        name: "Muse Spark 1.3 Contributor",
+        efforts: ["low", "medium", "high"],
+    },
+];
+
+pub const DEFAULT_MODEL: &str = MODEL_CHOICES[0].id;
 const ENDPOINT: &str = "https://openrouter.ai/api/v1";
+
+pub fn model_choice(id: &str) -> Option<&'static ModelChoice> {
+    MODEL_CHOICES.iter().find(|choice| choice.id == id)
+}
 
 /// OpenRouter credentials and a reusable HTTP connection pool.
 #[derive(Clone)]
@@ -85,14 +124,21 @@ impl Client {
     pub async fn stream_completion(
         &self,
         model: &str,
+        effort: EffortLevel,
         transcript: &[TranscriptEntry],
     ) -> io::Result<CompletionStream> {
-        let body = json!({
+        let choice = model_choice(model).ok_or_else(|| {
+            io::Error::new(ErrorKind::InvalidInput, format!("unknown model {model}"))
+        })?;
+        let mut body = json!({
             "model": model,
             "messages": chat_messages(transcript),
             "tools": tools::schemas(),
             "stream": true,
         });
+        if let Some(effort) = choice.effort(effort) {
+            body["reasoning"] = json!({ "effort": effort });
+        }
         let response = self
             .http
             .post(format!("{}/chat/completions", self.endpoint))
@@ -126,7 +172,7 @@ pub(crate) fn chat_messages(transcript: &[TranscriptEntry]) -> Vec<Value> {
         .iter()
         .filter_map(|entry| {
             Some(match entry {
-                TranscriptEntry::Model(_) => return None,
+                TranscriptEntry::Model(_) | TranscriptEntry::Effort(_) => return None,
                 TranscriptEntry::UserMessage(text) => json!({ "role": "user", "content": text }),
                 TranscriptEntry::AssistantMessage(message) => {
                     let content = if message.text.is_empty() {
@@ -698,6 +744,7 @@ mod tests {
             .client()
             .stream_completion(
                 DEFAULT_MODEL,
+                EffortLevel::Default,
                 &[TranscriptEntry::UserMessage("hi".to_owned())],
             )
             .await?;
@@ -739,7 +786,7 @@ mod tests {
             "index": 0,
         })];
         let transcript = vec![
-            TranscriptEntry::Model("other/model".to_owned()),
+            TranscriptEntry::Model(MODEL_CHOICES[2].id.to_owned()),
             TranscriptEntry::UserMessage("Weather in Chicago and Denver?".to_owned()),
             TranscriptEntry::AssistantMessage(AssistantMessage {
                 text: String::new(),
@@ -764,14 +811,14 @@ mod tests {
 
         let mut request = server
             .client()
-            .stream_completion("other/model", &transcript)
+            .stream_completion(MODEL_CHOICES[2].id, EffortLevel::Default, &transcript)
             .await
             .unwrap();
         let items = drain(&mut request).await.unwrap();
         assert_eq!(completion(&items).stop, Stop::Finished);
 
         let body = &server.requests()[0];
-        assert_eq!(body["model"], "other/model");
+        assert_eq!(body["model"], MODEL_CHOICES[2].id);
         assert_eq!(body["stream"], true);
         assert!(
             body["tools"]
@@ -801,6 +848,28 @@ mod tests {
             json!({ "role": "tool", "tool_call_id": "call-1", "content": "Sunny." })
         );
         assert_eq!(messages[3]["tool_call_id"], "call-2");
+    }
+
+    #[tokio::test]
+    async fn requests_map_each_effort_for_each_model() {
+        for model in MODEL_CHOICES {
+            for effort in EffortLevel::ALL {
+                let server = Server::start(vec![text_reply("Done")]).await;
+                let mut stream = server
+                    .client()
+                    .stream_completion(model.id, effort, &[])
+                    .await
+                    .unwrap();
+                drain(&mut stream).await.unwrap();
+                let requests = server.requests();
+                let body = &requests[0];
+                assert_eq!(body["model"], model.id);
+                match model.effort(effort) {
+                    Some(expected) => assert_eq!(body["reasoning"]["effort"], expected),
+                    None => assert!(body.get("reasoning").is_none()),
+                }
+            }
+        }
     }
 
     #[test]
@@ -1042,7 +1111,7 @@ mod tests {
         let server = Server::start(vec![Reply::Stream("data: not json\n\n".to_owned())]).await;
         let mut request = server
             .client()
-            .stream_completion(DEFAULT_MODEL, &[])
+            .stream_completion(DEFAULT_MODEL, EffortLevel::Default, &[])
             .await
             .unwrap();
         assert!(drain(&mut request).await.is_err());
@@ -1054,7 +1123,7 @@ mod tests {
         .await;
         let error = server
             .client()
-            .stream_completion(DEFAULT_MODEL, &[])
+            .stream_completion(DEFAULT_MODEL, EffortLevel::Default, &[])
             .await
             .err()
             .expect("a failed status is an error");
@@ -1069,6 +1138,7 @@ mod tests {
             let mut request = client
                 .stream_completion(
                     DEFAULT_MODEL,
+                    EffortLevel::Default,
                     &[TranscriptEntry::UserMessage("hi".to_owned())],
                 )
                 .await

@@ -2,13 +2,13 @@
 //! runs tools in call order, saves each complete assistant batch, and returns
 //! one final ACP response.
 
-use std::{fmt, io};
+use std::{fmt, future::Future, io};
 
 use agent_client_protocol::{
     Client, ConnectionTo, Error, Result,
     schema::v1::{
-        PromptResponse, RequestPermissionOutcome, SessionId, SessionInfoUpdate, SessionUpdate,
-        StopReason,
+        ConfigOptionUpdate, PromptResponse, RequestPermissionOutcome, SessionId, SessionInfoUpdate,
+        SessionUpdate, StopReason,
     },
 };
 
@@ -16,8 +16,8 @@ use super::{convert, operations::PromptCancellation};
 use crate::{
     openrouter,
     sessions::{
-        AssistantBatch, AssistantMessage, SessionStore, SessionSummary, ToolCall, ToolOutcome,
-        ToolResult, TranscriptEntry,
+        AssistantBatch, AssistantMessage, SessionSettings, SessionSettingsChange, SessionStore,
+        SessionSummary, ToolCall, ToolOutcome, ToolResult, TranscriptEntry,
     },
     tools,
 };
@@ -27,31 +27,40 @@ pub enum ToolPermissions {
     Acp(ConnectionTo<Client>),
 }
 
-pub async fn run<F>(
+pub(super) struct PromptInput {
+    pub session_id: SessionId,
+    pub user_message: String,
+    pub settings: SessionSettings,
+}
+
+pub fn run<F>(
     store: SessionStore,
     openrouter: openrouter::Client,
-    session_id: SessionId,
-    user_message: String,
+    input: PromptInput,
     cancellation: PromptCancellation,
     send_update: F,
     permissions: ToolPermissions,
-) -> Result<PromptResponse>
+) -> Result<impl Future<Output = Result<PromptResponse>>>
 where
     F: FnMut(SessionUpdate) -> Result<()>,
 {
     let mut run = PromptRun::open(
         store,
         openrouter,
-        session_id,
+        input.session_id,
+        input.settings,
         cancellation,
         send_update,
         permissions,
     )?;
-    if !run.save_user_message(user_message)? {
-        return Ok(PromptResponse::new(StopReason::Cancelled));
-    }
-    let outcome = run.run_model_loop().await;
-    run.finish(outcome)
+    let saved = run.save_user_message(input.user_message)?;
+    Ok(async move {
+        if !saved {
+            return Ok(PromptResponse::new(StopReason::Cancelled));
+        }
+        let outcome = run.run_model_loop().await;
+        run.finish(outcome)
+    })
 }
 
 /// Why this prompt run stopped. Each variant requires a different final response.
@@ -84,7 +93,8 @@ impl fmt::Display for PromptOutcome {
 struct PromptRun<F> {
     store: SessionStore,
     openrouter: openrouter::Client,
-    model: String,
+    settings: SessionSettings,
+    settings_change: SessionSettingsChange,
     summary: SessionSummary,
     cancellation: PromptCancellation,
     send_update: F,
@@ -161,6 +171,7 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
         store: SessionStore,
         openrouter: openrouter::Client,
         session_id: SessionId,
+        settings: SessionSettings,
         cancellation: PromptCancellation,
         send_update: F,
         permissions: ToolPermissions,
@@ -169,10 +180,29 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
             .read(&session_id)
             .map_err(Error::into_internal_error)?
             .ok_or_else(|| Error::resource_not_found(Some(session_id.to_string())))?;
+        let current = stored.settings(&super::default_settings());
+        let mut settings = settings;
+        if !stored.transcript.is_empty() {
+            settings.model = current.model.clone();
+        }
+        if openrouter::model_choice(&settings.model).is_none() {
+            return Err(Error::into_internal_error(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "session model {} is not in the model catalog",
+                    settings.model
+                ),
+            )));
+        }
+        let settings_change = SessionSettingsChange {
+            model: stored.transcript.is_empty().then(|| settings.model.clone()),
+            effort: (current.effort != settings.effort).then_some(settings.effort),
+        };
         Ok(Self {
             store,
             openrouter,
-            model: stored.model().to_owned(),
+            settings,
+            settings_change,
             summary: stored.summary,
             cancellation,
             send_update,
@@ -191,8 +221,20 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
         }
         let updated = self
             .store
-            .append_user(&self.summary.id, &user_message)
+            .append_user(&self.summary.id, &self.settings_change, &user_message)
             .map_err(Error::into_internal_error)?;
+        let locks_model = self.settings_change.model.is_some();
+        if let Some(model) = self.settings_change.model.take() {
+            self.transcript.push(TranscriptEntry::Model(model));
+        }
+        if let Some(effort) = self.settings_change.effort.take() {
+            self.transcript.push(TranscriptEntry::Effort(effort));
+        }
+        if locks_model {
+            (self.send_update)(SessionUpdate::ConfigOptionUpdate(ConfigOptionUpdate::new(
+                super::config_options(&self.settings, true),
+            )))?;
+        }
         self.transcript
             .push(TranscriptEntry::UserMessage(user_message));
         let mut info = SessionInfoUpdate::new().updated_at(updated.updated_at);
@@ -249,7 +291,11 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
         let mut stream = tokio::select! {
             biased;
             () = self.cancellation.cancelled() => return Err(PromptOutcome::Cancelled),
-            started = self.openrouter.stream_completion(&self.model, &self.transcript) => {
+            started = self.openrouter.stream_completion(
+                &self.settings.model,
+                self.settings.effort,
+                &self.transcript,
+            ) => {
                 started.map_err(PromptOutcome::OpenRouter)?
             }
         };
@@ -436,6 +482,7 @@ mod tests {
             DEFAULT_MODEL,
             fixture::{Reply, Server, delta, sse, text_reply, tool_reply},
         },
+        sessions::EffortLevel,
         tools::fixture::Workspace,
     };
 
@@ -454,7 +501,7 @@ mod tests {
         async fn new(replies: Vec<Reply>) -> Self {
             let workspace = Workspace::new();
             let store = SessionStore::in_memory();
-            let session_id = store.create(&workspace.0, DEFAULT_MODEL).unwrap().id;
+            let session_id = store.create(&workspace.0).unwrap().id;
             Self {
                 server: Server::start(replies).await,
                 store,
@@ -470,6 +517,20 @@ mod tests {
         async fn run(
             &self,
             input: &str,
+            on_update: impl FnMut(&SessionUpdate) -> Result<()>,
+        ) -> (Result<PromptResponse>, Vec<TranscriptEntry>) {
+            self.run_with_settings(
+                input,
+                SessionSettings::new(DEFAULT_MODEL, EffortLevel::Default),
+                on_update,
+            )
+            .await
+        }
+
+        async fn run_with_settings(
+            &self,
+            input: &str,
+            settings: SessionSettings,
             mut on_update: impl FnMut(&SessionUpdate) -> Result<()>,
         ) -> (Result<PromptResponse>, Vec<TranscriptEntry>) {
             let updates = self.updates.clone();
@@ -477,18 +538,21 @@ mod tests {
                 updates.borrow_mut().push(update.clone());
                 on_update(&update)
             };
-            let mut prompt = PromptRun::open(
+            let prompt = run(
                 self.store.clone(),
                 self.server.client(),
-                self.session_id.clone(),
+                PromptInput {
+                    session_id: self.session_id.clone(),
+                    user_message: input.to_owned(),
+                    settings,
+                },
                 self.cancellation.clone(),
                 send_update,
                 ToolPermissions::AutoApprove,
             )
             .unwrap();
-            assert!(prompt.save_user_message(input.to_owned()).unwrap());
-            let outcome = prompt.run_model_loop().await;
-            (prompt.finish(outcome), prompt.transcript)
+            let response = prompt.await;
+            (response, self.stored())
         }
 
         fn stored(&self) -> Vec<TranscriptEntry> {
@@ -560,6 +624,7 @@ mod tests {
     fn describe(update: &SessionUpdate) -> String {
         match update {
             SessionUpdate::SessionInfoUpdate(_) => "info".to_owned(),
+            SessionUpdate::ConfigOptionUpdate(_) => "config".to_owned(),
             SessionUpdate::AgentMessageChunk(_) => "text".to_owned(),
             SessionUpdate::AgentThoughtChunk(_) => "reasoning".to_owned(),
             SessionUpdate::ToolCall(call) => format!("{} pending", call.tool_call_id),
@@ -958,14 +1023,63 @@ mod tests {
         );
         assert_eq!(harness.stored(), transcript);
         let updates = harness.updates();
+        let SessionUpdate::ConfigOptionUpdate(config) = &updates[0] else {
+            panic!("the first prompt locks the model selector");
+        };
+        let config = serde_json::to_value(config).unwrap();
+        assert_eq!(
+            config["configOptions"][0]["options"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
         assert!(matches!(
-            &updates[0],
+            &updates[1],
             SessionUpdate::SessionInfoUpdate(info) if info.title.contains_value(&"Hi".to_owned())
         ));
         assert_eq!(
             updates.iter().map(describe).collect::<Vec<_>>(),
-            vec!["info", "text"]
+            vec!["config", "info", "text"]
         );
+    }
+
+    #[tokio::test]
+    async fn different_efforts_are_recorded_and_sent_for_sequential_turns() {
+        let harness = Harness::new(vec![text_reply("First"), text_reply("Second")]).await;
+        let selected = Rc::new(RefCell::new(EffortLevel::Low));
+        let changed = selected.clone();
+        let first_settings = SessionSettings::new(DEFAULT_MODEL, *selected.borrow());
+
+        let (first, _) = harness
+            .run_with_settings("one", first_settings, move |update| {
+                if matches!(update, SessionUpdate::SessionInfoUpdate(_)) {
+                    *changed.borrow_mut() = EffortLevel::High;
+                }
+                Ok(())
+            })
+            .await;
+        assert_eq!(first.unwrap().stop_reason, StopReason::EndTurn);
+        let second_settings = SessionSettings::new(DEFAULT_MODEL, *selected.borrow());
+        let (second, transcript) = harness
+            .run_with_settings("two", second_settings, |_| Ok(()))
+            .await;
+        assert_eq!(second.unwrap().stop_reason, StopReason::EndTurn);
+        assert_eq!(
+            transcript,
+            vec![
+                model(),
+                TranscriptEntry::Effort(EffortLevel::Low),
+                user("one"),
+                answer("First"),
+                TranscriptEntry::Effort(EffortLevel::High),
+                user("two"),
+                answer("Second"),
+            ]
+        );
+        let requests = harness.server.requests();
+        assert_eq!(requests[0]["reasoning"]["effort"], "low");
+        assert_eq!(requests[1]["reasoning"]["effort"], "max");
     }
 
     #[tokio::test]
@@ -994,6 +1108,7 @@ mod tests {
         assert_eq!(
             harness.updates().iter().map(describe).collect::<Vec<_>>(),
             vec![
+                "config",
                 "info",
                 "call-1 pending",
                 "call-2 pending",
@@ -1048,6 +1163,7 @@ mod tests {
         assert_eq!(
             harness.updates().iter().map(describe).collect::<Vec<_>>(),
             vec![
+                "config",
                 "info",
                 "call-1 pending",
                 "call-2 pending",
@@ -1146,6 +1262,7 @@ mod tests {
         assert_eq!(
             harness.updates().iter().map(describe).collect::<Vec<_>>(),
             vec![
+                "config",
                 "info",
                 "call-1 pending",
                 "call-2 pending",

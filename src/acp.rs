@@ -5,6 +5,7 @@ mod operations;
 mod prompt;
 
 use std::{
+    collections::HashMap,
     error::Error as StdError,
     io::{self, ErrorKind},
     path::Path,
@@ -19,23 +20,72 @@ use agent_client_protocol::{
         CancelNotification, DeleteSessionRequest, DeleteSessionResponse, InitializeRequest,
         InitializeResponse, ListSessionsRequest, ListSessionsResponse, LoadSessionRequest,
         LoadSessionResponse, LogoutCapabilities, LogoutRequest, LogoutResponse, NewSessionRequest,
-        NewSessionResponse, PromptRequest, SessionCapabilities, SessionDeleteCapabilities,
-        SessionId, SessionInfo, SessionListCapabilities, SessionNotification, SessionUpdate,
-        StopReason,
+        NewSessionResponse, PromptRequest, SessionCapabilities, SessionConfigOption,
+        SessionConfigOptionCategory, SessionConfigOptionValue, SessionConfigSelectOption,
+        SessionDeleteCapabilities, SessionId, SessionInfo, SessionListCapabilities,
+        SessionNotification, SessionUpdate, SetSessionConfigOptionRequest,
+        SetSessionConfigOptionResponse, StopReason,
     },
 };
 
 use crate::{
     auth, openrouter,
-    sessions::{self, SessionStore, SessionSummary},
+    sessions::{self, EffortLevel, SessionSettings, SessionStore, SessionSummary},
 };
 use operations::{PromptCancellation, SessionOperations};
+
+fn default_settings() -> SessionSettings {
+    SessionSettings::new(openrouter::DEFAULT_MODEL, EffortLevel::Default)
+}
+
+fn validate_settings(settings: &SessionSettings) -> Result<()> {
+    if openrouter::model_choice(&settings.model).is_some() {
+        return Ok(());
+    }
+    Err(Error::into_internal_error(io::Error::new(
+        ErrorKind::InvalidData,
+        format!(
+            "session model {} is not in the model catalog",
+            settings.model
+        ),
+    )))
+}
+
+fn config_options(settings: &SessionSettings, model_locked: bool) -> Vec<SessionConfigOption> {
+    let models = if model_locked {
+        let model = openrouter::model_choice(&settings.model)
+            .expect("a session model comes from the model catalog");
+        vec![SessionConfigSelectOption::new(model.id, model.name)]
+    } else {
+        openrouter::MODEL_CHOICES
+            .iter()
+            .map(|model| SessionConfigSelectOption::new(model.id, model.name))
+            .collect()
+    };
+    vec![
+        SessionConfigOption::select("model", "Model", settings.model.clone(), models)
+            .category(SessionConfigOptionCategory::Model),
+        SessionConfigOption::select(
+            "effort",
+            "Effort",
+            settings.effort.id(),
+            EffortLevel::ALL
+                .into_iter()
+                .map(|effort| SessionConfigSelectOption::new(effort.id(), effort.name()))
+                .collect::<Vec<_>>(),
+        )
+        .category(SessionConfigOptionCategory::ThoughtLevel),
+    ]
+}
 
 #[derive(Clone)]
 struct ServerState {
     store: SessionStore,
     openrouter: Arc<Mutex<Option<openrouter::Client>>>,
     operations: SessionOperations,
+    /// The latest client selections for each session. A prompt copies these
+    /// before it starts, so changes during the prompt apply to the next turn.
+    settings: Arc<Mutex<HashMap<SessionId, SessionSettings>>>,
 }
 
 impl ServerState {
@@ -44,6 +94,7 @@ impl ServerState {
             store,
             openrouter: Arc::default(),
             operations: SessionOperations::default(),
+            settings: Arc::default(),
         }
     }
 
@@ -68,11 +119,69 @@ impl ServerState {
 
     fn new_session(&self, request: &NewSessionRequest) -> Result<NewSessionResponse> {
         self.openrouter_client()?;
-        let summary = self
+        let summary = self.store.create(&request.cwd).map_err(store_error)?;
+        let settings = default_settings();
+        self.settings
+            .lock()
+            .expect("session settings mutex poisoned")
+            .insert(summary.id.clone(), settings.clone());
+        Ok(NewSessionResponse::new(summary.id).config_options(config_options(&settings, false)))
+    }
+
+    fn set_config_option(
+        &self,
+        request: &SetSessionConfigOptionRequest,
+    ) -> Result<SetSessionConfigOptionResponse> {
+        let SessionConfigOptionValue::ValueId { value } = &request.value else {
+            return Err(Error::invalid_params().data("every configuration option is a selector"));
+        };
+        let mut selections = self
+            .settings
+            .lock()
+            .expect("session settings mutex poisoned");
+        let stored = self
             .store
-            .create(&request.cwd, openrouter::DEFAULT_MODEL)
-            .map_err(store_error)?;
-        Ok(NewSessionResponse::new(summary.id))
+            .read(&request.session_id)
+            .map_err(Error::into_internal_error)?
+            .ok_or_else(|| not_found(&request.session_id))?;
+        let stored_settings = stored.settings(&default_settings());
+        validate_settings(&stored_settings)?;
+        let model_locked = !stored.transcript.is_empty();
+        let settings = selections
+            .entry(request.session_id.clone())
+            .or_insert_with(|| stored_settings.clone());
+        if model_locked {
+            settings.model.clone_from(&stored_settings.model);
+        }
+        match request.config_id.0.as_ref() {
+            "model" => {
+                if model_locked {
+                    return Err(Error::invalid_params().data("the session model cannot be changed"));
+                }
+                let model = openrouter::model_choice(value.0.as_ref()).ok_or_else(|| {
+                    Error::invalid_params().data(format!(
+                        "{} is not a choice of configuration option {}",
+                        value, request.config_id
+                    ))
+                })?;
+                settings.model = model.id.to_owned();
+            }
+            "effort" => {
+                settings.effort = EffortLevel::from_id(value.0.as_ref()).ok_or_else(|| {
+                    Error::invalid_params().data(format!(
+                        "{} is not a choice of configuration option {}",
+                        value, request.config_id
+                    ))
+                })?;
+            }
+            _ => {
+                return Err(Error::invalid_params()
+                    .data(format!("no configuration option {}", request.config_id)));
+            }
+        }
+        let options = config_options(settings, model_locked);
+        drop(selections);
+        Ok(SetSessionConfigOptionResponse::new(options))
     }
 
     fn load_session(
@@ -94,8 +203,15 @@ impl ServerState {
                 request.cwd.display()
             )));
         }
+        let settings = stored.settings(&default_settings());
+        validate_settings(&settings)?;
+        let model_locked = !stored.transcript.is_empty();
+        self.settings
+            .lock()
+            .expect("session settings mutex poisoned")
+            .insert(request.session_id.clone(), settings.clone());
         convert::replay_transcript(&stored.transcript, send_update)?;
-        Ok(LoadSessionResponse::new())
+        Ok(LoadSessionResponse::new().config_options(config_options(&settings, model_locked)))
     }
 
     fn list_sessions(&self, request: &ListSessionsRequest) -> Result<ListSessionsResponse> {
@@ -121,7 +237,38 @@ impl ServerState {
         self.store
             .delete(&request.session_id)
             .map_err(Error::into_internal_error)?;
+        self.settings
+            .lock()
+            .expect("session settings mutex poisoned")
+            .remove(&request.session_id);
         Ok(DeleteSessionResponse::new())
+    }
+
+    fn session_settings(&self, session_id: &SessionId) -> Result<SessionSettings> {
+        if let Some(settings) = self
+            .settings
+            .lock()
+            .expect("session settings mutex poisoned")
+            .get(session_id)
+            .cloned()
+        {
+            return Ok(settings);
+        }
+        let stored = self
+            .store
+            .read(session_id)
+            .map_err(Error::into_internal_error)?
+            .ok_or_else(|| not_found(session_id))?;
+        let settings = stored.settings(&default_settings());
+        validate_settings(&settings)?;
+        let settings = self
+            .settings
+            .lock()
+            .expect("session settings mutex poisoned")
+            .entry(session_id.clone())
+            .or_insert(settings)
+            .clone();
+        Ok(settings)
     }
 
     /// The cached client is cleared even when removing the saved key fails,
@@ -210,7 +357,7 @@ pub async fn run_headless(
         )
     })?;
     let store = SessionStore::open(&sessions::database_path()?)?;
-    let session = store.create(workspace_path, openrouter::DEFAULT_MODEL)?;
+    let session = store.create(workspace_path)?;
     run_headless_prompt(
         store,
         openrouter::Client::new(api_key),
@@ -231,12 +378,15 @@ async fn run_headless_prompt(
     let run = prompt::run(
         store,
         openrouter,
-        session_id,
-        user_message,
+        prompt::PromptInput {
+            session_id,
+            user_message,
+            settings: default_settings(),
+        },
         cancellation.clone(),
         |_| Ok(()),
         prompt::ToolPermissions::AutoApprove,
-    );
+    )?;
     tokio::pin!(run);
     let response = loop {
         tokio::select! {
@@ -262,6 +412,7 @@ async fn serve(state: ServerState, transport: impl ConnectTo<Agent> + 'static) -
     let load_state = state.clone();
     let list_state = state.clone();
     let delete_state = state.clone();
+    let config_state = state.clone();
     let logout_state = state.clone();
     let prompt_state = state.clone();
     let cancel_state = state;
@@ -316,6 +467,12 @@ async fn serve(state: ServerState, transport: impl ConnectTo<Agent> + 'static) -
             agent_client_protocol::on_receive_request!(),
         )
         .on_receive_request(
+            async move |request: SetSessionConfigOptionRequest, responder, _connection| {
+                reply(responder, config_state.set_config_option(&request))
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
             async move |_request: LogoutRequest, responder, _connection| {
                 reply(responder, logout_state.logout())
             },
@@ -336,25 +493,38 @@ async fn serve(state: ServerState, transport: impl ConnectTo<Agent> + 'static) -
                 else {
                     return responder.respond_with_error(busy());
                 };
-                let store = prompt_state.store.clone();
+                let settings = match prompt_state.session_settings(&request.session_id) {
+                    Ok(settings) => settings,
+                    Err(error) => return responder.respond_with_error(error),
+                };
                 let session_id = request.session_id;
                 let task_connection = connection.clone();
-                connection.spawn(async move {
-                    let _guard = guard;
-                    let send_update = |update| {
+                let send_update = {
+                    let task_connection = task_connection.clone();
+                    let session_id = session_id.clone();
+                    move |update| {
                         task_connection
                             .send_notification(SessionNotification::new(session_id.clone(), update))
-                    };
-                    let result = prompt::run(
-                        store,
-                        openrouter,
-                        session_id.clone(),
+                    }
+                };
+                let run = match prompt::run(
+                    prompt_state.store.clone(),
+                    openrouter,
+                    prompt::PromptInput {
+                        session_id: session_id.clone(),
                         user_message,
-                        cancellation,
-                        send_update,
-                        prompt::ToolPermissions::Acp(task_connection.clone()),
-                    )
-                    .await;
+                        settings,
+                    },
+                    cancellation,
+                    send_update,
+                    prompt::ToolPermissions::Acp(task_connection),
+                ) {
+                    Ok(run) => run,
+                    Err(error) => return responder.respond_with_error(error),
+                };
+                connection.spawn(async move {
+                    let _guard = guard;
+                    let result = run.await;
                     reply(responder, result)
                 })
             },
@@ -458,7 +628,14 @@ mod tests {
             .unwrap();
         state
             .store
-            .append_user(&created.session_id, "Hello")
+            .append_user(
+                &created.session_id,
+                &sessions::SessionSettingsChange {
+                    model: Some(openrouter::DEFAULT_MODEL.to_owned()),
+                    effort: None,
+                },
+                "Hello",
+            )
             .unwrap();
 
         for workspace_path in ["/workspace/", "/workspace", "/workspace/./", "//workspace/"] {
@@ -485,6 +662,191 @@ mod tests {
         }
     }
 
+    #[test]
+    fn loading_a_session_with_a_model_outside_the_catalog_fails_before_replay() {
+        let state = state();
+        let created = state
+            .new_session(&NewSessionRequest::new("/workspace"))
+            .unwrap();
+        state
+            .store
+            .append_user(
+                &created.session_id,
+                &sessions::SessionSettingsChange {
+                    model: Some("retired/model".to_owned()),
+                    effort: None,
+                },
+                "Hello",
+            )
+            .unwrap();
+        let mut updates = Vec::new();
+
+        let error = state
+            .load_session(
+                &LoadSessionRequest::new(created.session_id, "/workspace"),
+                |update| {
+                    updates.push(update);
+                    Ok(())
+                },
+            )
+            .unwrap_err();
+
+        assert_eq!(error.code, ErrorCode::InternalError);
+        assert_eq!(
+            error.data,
+            Some(serde_json::json!(
+                "session model retired/model is not in the model catalog"
+            ))
+        );
+        assert!(updates.is_empty());
+    }
+
+    #[test]
+    fn model_selection_locks_after_the_first_user_message() {
+        let state = state();
+        let workspace_path = Path::new("/workspace");
+        let created = state
+            .new_session(&NewSessionRequest::new(workspace_path))
+            .unwrap();
+        let chosen = openrouter::MODEL_CHOICES[1].id;
+        let response = state
+            .set_config_option(&SetSessionConfigOptionRequest::new(
+                created.session_id.clone(),
+                "model",
+                chosen,
+            ))
+            .unwrap();
+        let response = serde_json::to_value(response).unwrap();
+        assert_eq!(response["configOptions"][0]["currentValue"], chosen);
+        assert_eq!(
+            response["configOptions"][0]["options"]
+                .as_array()
+                .unwrap()
+                .len(),
+            openrouter::MODEL_CHOICES.len()
+        );
+
+        state
+            .store
+            .append_user(
+                &created.session_id,
+                &sessions::SessionSettingsChange {
+                    model: Some(chosen.to_owned()),
+                    effort: None,
+                },
+                "Hello",
+            )
+            .unwrap();
+        let error = state
+            .set_config_option(&SetSessionConfigOptionRequest::new(
+                created.session_id.clone(),
+                "model",
+                openrouter::DEFAULT_MODEL,
+            ))
+            .unwrap_err();
+        assert_eq!(error.code, ErrorCode::InvalidParams);
+
+        let loaded = state
+            .load_session(
+                &LoadSessionRequest::new(created.session_id, workspace_path),
+                |_| Ok(()),
+            )
+            .unwrap();
+        let loaded = serde_json::to_value(loaded).unwrap();
+        assert_eq!(loaded["configOptions"][0]["currentValue"], chosen);
+        assert_eq!(
+            loaded["configOptions"][0]["options"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn effort_changed_during_a_prompt_applies_to_the_next_turn() {
+        use crate::openrouter::fixture::{Reply, Server, text_reply};
+        use crate::sessions::TranscriptEntry;
+
+        let state = state();
+        let created = state
+            .new_session(&NewSessionRequest::new("/workspace"))
+            .unwrap();
+        state
+            .set_config_option(&SetSessionConfigOptionRequest::new(
+                created.session_id.clone(),
+                "effort",
+                "low",
+            ))
+            .unwrap();
+        let server = Server::start(vec![
+            Reply::Hang(": waiting\n\n".to_owned()),
+            text_reply("Done"),
+        ])
+        .await;
+        *state.openrouter.lock().unwrap() = Some(server.client());
+
+        let cancellation = PromptCancellation::new();
+        let first = prompt::run(
+            state.store.clone(),
+            server.client(),
+            prompt::PromptInput {
+                session_id: created.session_id.clone(),
+                user_message: "first".to_owned(),
+                settings: state.session_settings(&created.session_id).unwrap(),
+            },
+            cancellation.clone(),
+            |_| Ok(()),
+            prompt::ToolPermissions::AutoApprove,
+        )
+        .unwrap();
+        let change = async {
+            while server.requests().is_empty() {
+                tokio::task::yield_now().await;
+            }
+            state
+                .set_config_option(&SetSessionConfigOptionRequest::new(
+                    created.session_id.clone(),
+                    "effort",
+                    "high",
+                ))
+                .unwrap();
+            cancellation.cancel();
+        };
+        let (first_response, ()) = futures::join!(first, change);
+        assert_eq!(first_response.unwrap().stop_reason, StopReason::Cancelled);
+
+        let second = prompt::run(
+            state.store.clone(),
+            server.client(),
+            prompt::PromptInput {
+                session_id: created.session_id.clone(),
+                user_message: "second".to_owned(),
+                settings: state.session_settings(&created.session_id).unwrap(),
+            },
+            PromptCancellation::new(),
+            |_| Ok(()),
+            prompt::ToolPermissions::AutoApprove,
+        )
+        .unwrap();
+        assert_eq!(second.await.unwrap().stop_reason, StopReason::EndTurn);
+
+        let stored = state.store.read(&created.session_id).unwrap().unwrap();
+        assert!(matches!(
+            &stored.transcript[..5],
+            [
+                TranscriptEntry::Model(_),
+                TranscriptEntry::Effort(EffortLevel::Low),
+                TranscriptEntry::UserMessage(first),
+                TranscriptEntry::Effort(EffortLevel::High),
+                TranscriptEntry::UserMessage(second),
+            ] if first == "first" && second == "second"
+        ));
+        let requests = server.requests();
+        assert_eq!(requests[0]["reasoning"]["effort"], "low");
+        assert_eq!(requests[1]["reasoning"]["effort"], "max");
+    }
+
     #[tokio::test]
     async fn clean_eof_cancels_the_prompt_and_drains_its_response() {
         use agent_client_protocol::Lines;
@@ -503,10 +865,7 @@ mod tests {
         *state.openrouter.lock().unwrap() = Some(server.client());
         let store = state.store.clone();
         let operations = state.operations.clone();
-        let id = store
-            .create(Path::new("/workspace"), openrouter::DEFAULT_MODEL)
-            .unwrap()
-            .id;
+        let id = store.create(Path::new("/workspace")).unwrap().id;
         let (incoming_tx, incoming_rx) = mpsc::unbounded();
         let (outgoing_tx, mut outgoing_rx) = mpsc::unbounded::<String>();
         let transport = Lines::new(outgoing_tx.sink_map_err(io::Error::other), incoming_rx);
@@ -599,10 +958,7 @@ mod tests {
             *state.openrouter.lock().unwrap() = Some(server.client());
             let store = state.store.clone();
             let operations = state.operations.clone();
-            let id = store
-                .create(&workspace.0, openrouter::DEFAULT_MODEL)
-                .unwrap()
-                .id;
+            let id = store.create(&workspace.0).unwrap().id;
             let (incoming_tx, incoming_rx) = mpsc::unbounded();
             let (outgoing_tx, mut outgoing_rx) = mpsc::unbounded::<String>();
             let transport = Lines::new(outgoing_tx.sink_map_err(io::Error::other), incoming_rx);
@@ -869,7 +1225,7 @@ mod tests {
         if let Some(path) = std::env::var_os(FLAG) {
             let path = Path::new(&path);
             let store = SessionStore::open(&path.join("ox.db")).unwrap();
-            let session = store.create(path, openrouter::DEFAULT_MODEL).unwrap();
+            let session = store.create(path).unwrap();
             let command = "echo $$ > shell; python3 -c 'import subprocess; p = subprocess.Popen([\"sleep\", \"30\"], start_new_session=True); open(\"detached\", \"w\").write(str(p.pid))'; sleep 30 & echo $! > child; printf started; touch ready; wait";
             let server =
                 Server::start(vec![shell_reply(&[(command, 30), ("touch wrong", 5)])]).await;
@@ -940,10 +1296,7 @@ mod tests {
         *state.openrouter.lock().unwrap() = Some(server.client());
         let store = state.store.clone();
         let operations = state.operations.clone();
-        let id = store
-            .create(&workspace.0, openrouter::DEFAULT_MODEL)
-            .unwrap()
-            .id;
+        let id = store.create(&workspace.0).unwrap().id;
         let (incoming_tx, incoming_rx) = mpsc::unbounded();
         let (outgoing_tx, mut outgoing_rx) = mpsc::unbounded::<String>();
         let transport = Lines::new(outgoing_tx.sink_map_err(io::Error::other), incoming_rx);
@@ -1018,10 +1371,7 @@ mod tests {
         let state = state();
         *state.openrouter.lock().unwrap() = Some(server.client());
         let store = state.store.clone();
-        let id = store
-            .create(&workspace.0, openrouter::DEFAULT_MODEL)
-            .unwrap()
-            .id;
+        let id = store.create(&workspace.0).unwrap().id;
         let (incoming_tx, incoming_rx) = mpsc::unbounded();
         let (outgoing_tx, mut outgoing_rx) = mpsc::unbounded::<String>();
         let transport = Lines::new(outgoing_tx.sink_map_err(io::Error::other), incoming_rx);

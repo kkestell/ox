@@ -56,16 +56,76 @@ CREATE INDEX IF NOT EXISTS events_by_session ON events (session_id, id);
 COMMIT;
 ";
 
-/// One entry in a session transcript. Every transcript opens with the model
-/// its completions use, which does not change within the session. Tool
-/// results follow the assistant message that called them, one per call, in
-/// call order.
+/// One entry in a session transcript. Every nonempty transcript opens with
+/// the model its completions use, which does not change within the session.
+/// Effort entries immediately precede the user message where they take
+/// effect. Tool results follow the assistant message that called them, one
+/// per call, in call order.
 #[derive(Debug, Clone, PartialEq)]
 pub enum TranscriptEntry {
     Model(String),
+    Effort(EffortLevel),
     UserMessage(String),
     AssistantMessage(AssistantMessage),
     ToolResult(ToolResult),
+}
+
+/// How much reasoning Ox asks a model to do. `Default` leaves the choice to
+/// the model.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EffortLevel {
+    Default,
+    Low,
+    Medium,
+    High,
+}
+
+impl EffortLevel {
+    pub const ALL: [Self; 4] = [Self::Default, Self::Low, Self::Medium, Self::High];
+
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Default => "Default",
+            Self::Low => "Low",
+            Self::Medium => "Medium",
+            Self::High => "High",
+        }
+    }
+
+    pub fn from_id(id: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|level| level.id() == id)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionSettings {
+    pub model: String,
+    pub effort: EffortLevel,
+}
+
+impl SessionSettings {
+    pub fn new(model: impl Into<String>, effort: EffortLevel) -> Self {
+        Self {
+            model: model.into(),
+            effort,
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct SessionSettingsChange {
+    pub model: Option<String>,
+    pub effort: Option<EffortLevel>,
 }
 
 /// The content of one validated model completion. The serde derives on this
@@ -195,6 +255,9 @@ fn pair_results(calls: &[ToolCall], results: &[&ToolResult]) -> io::Result<()> {
 }
 
 fn validate_transcript(entries: &[TranscriptEntry]) -> io::Result<()> {
+    if entries.is_empty() {
+        return Ok(());
+    }
     if !matches!(entries.first(), Some(TranscriptEntry::Model(_))) {
         return Err(invalid_data("transcript does not open with a model"));
     }
@@ -205,6 +268,17 @@ fn validate_transcript(entries: &[TranscriptEntry]) -> io::Result<()> {
                 return Err(invalid_data(
                     "a model entry appears after the transcript opened",
                 ));
+            }
+            TranscriptEntry::Effort(_) => {
+                if !matches!(
+                    entries.get(index + 1),
+                    Some(TranscriptEntry::UserMessage(_))
+                ) {
+                    return Err(invalid_data(
+                        "an effort entry does not immediately precede a user message",
+                    ));
+                }
+                index += 1;
             }
             TranscriptEntry::UserMessage(_) => index += 1,
             TranscriptEntry::ToolResult(result) => {
@@ -249,12 +323,20 @@ pub struct StoredSession {
 }
 
 impl StoredSession {
-    /// The model every completion in this session uses.
-    pub fn model(&self) -> &str {
-        match self.transcript.first() {
-            Some(TranscriptEntry::Model(model)) => model,
-            _ => panic!("session {} has no model entry", self.summary.id),
+    /// The settings in force after the last transcript entry. An empty
+    /// transcript still uses the supplied defaults.
+    pub fn settings(&self, defaults: &SessionSettings) -> SessionSettings {
+        let mut settings = defaults.clone();
+        for entry in &self.transcript {
+            match entry {
+                TranscriptEntry::Model(model) => settings.model.clone_from(model),
+                TranscriptEntry::Effort(effort) => settings.effort = *effort,
+                TranscriptEntry::UserMessage(_)
+                | TranscriptEntry::AssistantMessage(_)
+                | TranscriptEntry::ToolResult(_) => {}
+            }
         }
+        settings
     }
 }
 
@@ -294,9 +376,9 @@ impl SessionStore {
         self.0.lock().expect("session store mutex poisoned")
     }
 
-    /// Creates a session whose completions use `model`, recorded as the first
-    /// transcript entry.
-    pub fn create(&self, workspace_path: &Path, model: &str) -> io::Result<SessionSummary> {
+    /// Creates an empty session. Its settings are recorded with its first user
+    /// message.
+    pub fn create(&self, workspace_path: &Path) -> io::Result<SessionSummary> {
         let path = validate_workspace_path(workspace_path)?;
         let id = SessionId::new(uuid::Uuid::new_v4().to_string());
         let at = now();
@@ -313,7 +395,6 @@ impl SessionStore {
             params![id.to_string(), path, at],
         )
         .map_err(io::Error::other)?;
-        insert_entry(&tx, &id, &at, "model", &model)?;
         tx.commit().map_err(io::Error::other)?;
         Ok(SessionSummary {
             id,
@@ -376,13 +457,24 @@ impl SessionStore {
             .map_err(io::Error::other)
     }
 
-    /// Appends the user message, titles a still-untitled session from it,
-    /// and updates activity in one transaction.
-    pub fn append_user(&self, id: &SessionId, text: &str) -> io::Result<SessionSummary> {
+    /// Appends setting entries and the user message, titles a still-untitled
+    /// session from it, and updates activity in one transaction.
+    pub fn append_user(
+        &self,
+        id: &SessionId,
+        settings: &SessionSettingsChange,
+        text: &str,
+    ) -> io::Result<SessionSummary> {
         let at = now();
         let mut connection = self.lock();
         let tx = connection.transaction().map_err(io::Error::other)?;
         touch(&tx, id, title_from_prompt(text), &at)?;
+        if let Some(model) = &settings.model {
+            insert_entry(&tx, id, &at, "model", model)?;
+        }
+        if let Some(effort) = settings.effort {
+            insert_entry(&tx, id, &at, "effort", &effort)?;
+        }
         insert_entry(&tx, id, &at, "user_message", &text)?;
         let summary = summary(&tx, id)
             .map_err(io::Error::other)?
@@ -492,6 +584,7 @@ fn insert_entry<T: Serialize>(
 fn decode_entry(kind: &str, data: &str) -> io::Result<TranscriptEntry> {
     Ok(match kind {
         "model" => TranscriptEntry::Model(decode(kind, data)?),
+        "effort" => TranscriptEntry::Effort(decode(kind, data)?),
         "user_message" => TranscriptEntry::UserMessage(decode(kind, data)?),
         "assistant_message" => TranscriptEntry::AssistantMessage(decode(kind, data)?),
         "tool_result" => TranscriptEntry::ToolResult(decode(kind, data)?),
@@ -629,12 +722,16 @@ mod tests {
 
         let id = {
             let store = SessionStore::open(&path).unwrap();
-            let id = store
-                .create(workspace(), openrouter::DEFAULT_MODEL)
-                .unwrap()
-                .id;
+            let id = store.create(workspace()).unwrap().id;
             store
-                .append_user(&id, "Weather in Chicago and Denver?")
+                .append_user(
+                    &id,
+                    &SessionSettingsChange {
+                        model: Some(openrouter::DEFAULT_MODEL.to_owned()),
+                        effort: None,
+                    },
+                    "Weather in Chicago and Denver?",
+                )
                 .unwrap();
             let batch = AssistantBatch::new(message.clone(), results.clone()).unwrap();
             store.append_batch(&id, &batch).unwrap();
@@ -648,7 +745,10 @@ mod tests {
             stored.summary.title.as_deref(),
             Some("Weather in Chicago and Denver?")
         );
-        assert_eq!(stored.model(), openrouter::DEFAULT_MODEL);
+        assert!(matches!(
+            stored.transcript.first(),
+            Some(TranscriptEntry::Model(model)) if model == openrouter::DEFAULT_MODEL
+        ));
         assert_eq!(
             stored.transcript,
             vec![
@@ -781,11 +881,17 @@ mod tests {
             });
         };
 
-        let orphan = store
-            .create(workspace(), openrouter::DEFAULT_MODEL)
-            .unwrap()
-            .id;
-        store.append_user(&orphan, "hello").unwrap();
+        let orphan = store.create(workspace()).unwrap().id;
+        store
+            .append_user(
+                &orphan,
+                &SessionSettingsChange {
+                    model: Some(openrouter::DEFAULT_MODEL.to_owned()),
+                    effort: None,
+                },
+                "hello",
+            )
+            .unwrap();
         insert(
             &orphan,
             "tool_result",
@@ -793,10 +899,12 @@ mod tests {
         );
         assert!(store.read(&orphan).is_err());
 
-        let unresolved = store
-            .create(workspace(), openrouter::DEFAULT_MODEL)
-            .unwrap()
-            .id;
+        let unresolved = store.create(workspace()).unwrap().id;
+        insert(
+            &unresolved,
+            "model",
+            &serde_json::to_string(openrouter::DEFAULT_MODEL).unwrap(),
+        );
         let unresolved_message = message(vec![call("call-1", "printf Chicago")]);
         insert(
             &unresolved,
@@ -805,17 +913,11 @@ mod tests {
         );
         assert!(store.read(&unresolved).is_err());
 
-        let unknown = store
-            .create(workspace(), openrouter::DEFAULT_MODEL)
-            .unwrap()
-            .id;
+        let unknown = store.create(workspace()).unwrap().id;
         insert(&unknown, "mystery", "{}");
         assert!(store.read(&unknown).is_err());
 
-        let malformed = store
-            .create(workspace(), openrouter::DEFAULT_MODEL)
-            .unwrap()
-            .id;
+        let malformed = store.create(workspace()).unwrap().id;
         insert(
             &malformed,
             "assistant_message",
@@ -823,52 +925,130 @@ mod tests {
         );
         assert!(store.read(&malformed).is_err());
 
-        let switched = store
-            .create(workspace(), openrouter::DEFAULT_MODEL)
-            .unwrap()
-            .id;
+        let switched = store.create(workspace()).unwrap().id;
+        insert(
+            &switched,
+            "model",
+            &serde_json::to_string(openrouter::DEFAULT_MODEL).unwrap(),
+        );
         insert(&switched, "model", r#""other/model""#);
         assert!(store.read(&switched).is_err());
 
-        let unmodelled = store
-            .create(workspace(), openrouter::DEFAULT_MODEL)
-            .unwrap()
-            .id;
-        store.with_connection(|connection| {
-            connection
-                .execute(
-                    "DELETE FROM events WHERE session_id = ?1",
-                    params![unmodelled.to_string()],
-                )
-                .unwrap()
-        });
+        let unmodelled = store.create(workspace()).unwrap().id;
+        insert(&unmodelled, "user_message", r#""hello""#);
         assert!(store.read(&unmodelled).is_err());
+
+        let effort_in_batch = store.create(workspace()).unwrap().id;
+        insert(
+            &effort_in_batch,
+            "model",
+            &serde_json::to_string(openrouter::DEFAULT_MODEL).unwrap(),
+        );
+        let called = message(vec![call("call-1", "printf Chicago")]);
+        insert(
+            &effort_in_batch,
+            "assistant_message",
+            &serde_json::to_string(&called).unwrap(),
+        );
+        insert(&effort_in_batch, "effort", r#""high""#);
+        insert(&effort_in_batch, "user_message", r#""next""#);
+        assert!(store.read(&effort_in_batch).is_err());
+    }
+
+    #[test]
+    fn empty_transcripts_are_valid_and_settings_fold_in_order() {
+        assert!(validate_transcript(&[]).is_ok());
+        assert!(
+            validate_transcript(&[
+                TranscriptEntry::UserMessage("first".to_owned()),
+                TranscriptEntry::Model(openrouter::DEFAULT_MODEL.to_owned()),
+            ])
+            .is_err()
+        );
+
+        let store = SessionStore::in_memory();
+        let id = store.create(workspace()).unwrap().id;
+        let empty = store.read(&id).unwrap().unwrap();
+        assert!(empty.transcript.is_empty());
+        let defaults = SessionSettings::new(openrouter::DEFAULT_MODEL, EffortLevel::Default);
+        assert_eq!(empty.settings(&defaults), defaults);
+
+        store
+            .append_user(
+                &id,
+                &SessionSettingsChange {
+                    model: Some(openrouter::MODEL_CHOICES[1].id.to_owned()),
+                    effort: Some(EffortLevel::Low),
+                },
+                "first",
+            )
+            .unwrap();
+        store
+            .append_user(
+                &id,
+                &SessionSettingsChange {
+                    model: None,
+                    effort: Some(EffortLevel::High),
+                },
+                "second",
+            )
+            .unwrap();
+        store
+            .append_user(
+                &id,
+                &SessionSettingsChange {
+                    model: None,
+                    effort: Some(EffortLevel::Medium),
+                },
+                "third",
+            )
+            .unwrap();
+        assert_eq!(
+            store.read(&id).unwrap().unwrap().settings(&defaults),
+            SessionSettings::new(openrouter::MODEL_CHOICES[1].id, EffortLevel::Medium)
+        );
     }
 
     #[test]
     fn user_append_adopts_a_title_once_and_updates_activity() {
         let store = SessionStore::in_memory();
-        let created = store
-            .create(workspace(), openrouter::DEFAULT_MODEL)
-            .unwrap();
+        let created = store.create(workspace()).unwrap();
         set_updated_at(&store, &created.id, "2026-09-18T09:00:00.000Z");
 
         let first = store
-            .append_user(&created.id, "\n\nFirst line\nsecond line")
+            .append_user(
+                &created.id,
+                &SessionSettingsChange {
+                    model: Some(openrouter::DEFAULT_MODEL.to_owned()),
+                    effort: None,
+                },
+                "\n\nFirst line\nsecond line",
+            )
             .unwrap();
         assert_eq!(first.title.as_deref(), Some("First line"));
         assert_eq!(first.created_at, created.created_at);
         assert!(first.updated_at.as_str() > "2026-09-18T09:00:00.000Z");
 
-        let second = store.append_user(&created.id, "Something else").unwrap();
+        let second = store
+            .append_user(
+                &created.id,
+                &SessionSettingsChange::default(),
+                "Something else",
+            )
+            .unwrap();
         assert_eq!(second.title.as_deref(), Some("First line"));
         assert!(second.updated_at >= first.updated_at);
 
-        let long = store
-            .create(workspace(), openrouter::DEFAULT_MODEL)
-            .unwrap();
+        let long = store.create(workspace()).unwrap();
         let title = store
-            .append_user(&long.id, &"x".repeat(MAX_TITLE_CHARS + 10))
+            .append_user(
+                &long.id,
+                &SessionSettingsChange {
+                    model: Some(openrouter::DEFAULT_MODEL.to_owned()),
+                    effort: None,
+                },
+                &"x".repeat(MAX_TITLE_CHARS + 10),
+            )
             .unwrap()
             .title
             .unwrap();
@@ -881,7 +1061,14 @@ mod tests {
 
         assert!(
             store
-                .append_user(&SessionId::new("missing"), "hello")
+                .append_user(
+                    &SessionId::new("missing"),
+                    &SessionSettingsChange {
+                        model: Some(openrouter::DEFAULT_MODEL.to_owned()),
+                        effort: None,
+                    },
+                    "hello",
+                )
                 .is_err(),
             "appending never creates a session"
         );
@@ -890,19 +1077,10 @@ mod tests {
     #[test]
     fn list_orders_by_activity_and_filters_by_workspace() {
         let store = SessionStore::in_memory();
-        let first = store
-            .create(workspace(), openrouter::DEFAULT_MODEL)
-            .unwrap()
-            .id;
-        let second = store
-            .create(workspace(), openrouter::DEFAULT_MODEL)
-            .unwrap()
-            .id;
+        let first = store.create(workspace()).unwrap().id;
+        let second = store.create(workspace()).unwrap().id;
         let other = store
-            .create(
-                Path::new("/Users/kyle/projects/other"),
-                openrouter::DEFAULT_MODEL,
-            )
+            .create(Path::new("/Users/kyle/projects/other"))
             .unwrap()
             .id;
         set_updated_at(&store, &first, "2026-09-18T10:00:00.000Z");
@@ -917,21 +1095,23 @@ mod tests {
             ids(&store.list(Some(workspace())).unwrap()),
             vec![first.to_string(), second.to_string()]
         );
-        assert!(
-            store
-                .create(Path::new("relative/path"), openrouter::DEFAULT_MODEL)
-                .is_err()
-        );
+        assert!(store.create(Path::new("relative/path")).is_err());
     }
 
     #[test]
     fn deleting_a_session_removes_its_transcript_entries_and_repeats_successfully() {
         let store = SessionStore::in_memory();
-        let id = store
-            .create(workspace(), openrouter::DEFAULT_MODEL)
-            .unwrap()
-            .id;
-        store.append_user(&id, "hello").unwrap();
+        let id = store.create(workspace()).unwrap().id;
+        store
+            .append_user(
+                &id,
+                &SessionSettingsChange {
+                    model: Some(openrouter::DEFAULT_MODEL.to_owned()),
+                    effort: None,
+                },
+                "hello",
+            )
+            .unwrap();
 
         store.delete(&id).unwrap();
         assert!(store.read(&id).unwrap().is_none());

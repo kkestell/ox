@@ -2,13 +2,15 @@ THIS DOCUMENT MUST BE KEPT UP TO DATE
 
 # Source Map
 
+- `Makefile`: Fast-by-default and release local installs that replace the Ox
+  binary and delete the disposable local session database.
 - `scripts/run.py`: Temporary workspace runner for a headless prompt, with
   optional checkout of a pinned GitHub commit.
 - `src/main.rs`: Command parsing and process entry; starts the ACP server, runs
   one headless prompt, or runs a credential command.
 - `src/auth.rs`: Environment and operating-system keyring credential storage.
-- `src/openrouter.rs`: OpenRouter client, request encoding, and
-  streamed-response assembly.
+- `src/openrouter.rs`: OpenRouter model catalog and effort mapping, request
+  encoding, client, and streamed-response assembly.
 - `src/tools.rs`: Concrete tool schemas, tool call titles, and execution of one
   complete call.
 - `src/tools/read.rs`: Bounded text-file reading with line pagination.
@@ -19,10 +21,12 @@ THIS DOCUMENT MUST BE KEPT UP TO DATE
   validation, and filesystem changes.
 - `src/tools/patch-guide.txt`: The patch format guidance shipped as the
   `apply_patch` tool description.
-- `src/sessions.rs`: Transcript types with their stored JSON encoding,
-  assistant-batch validation, and `SessionStore` over one SQLite connection.
+- `src/sessions.rs`: Transcript and session-setting types with their stored
+  JSON encoding, transcript validation, and `SessionStore` over one SQLite
+  connection.
 - `src/acp.rs`: Connection wiring, `ServerState`, lazy OpenRouter client,
-  request handlers, and the headless prompt entry point.
+  request handlers, per-session configuration selections, and the headless
+  prompt entry point.
 - `src/acp/operations.rs`: One active prompt, load, or delete per session,
   enforced by an operation guard.
 - `src/acp/prompt.rs`: One prompt run: save the user message, request model
@@ -81,7 +85,10 @@ than introducing migrations, versions, etc.
 | Agent                       | Ox as presented through ACP.                                                                                                                                                                                    |
 | ACP update                  | A `session/update` notification that describes session metadata, model output, or tool state. Sending one does not confirm that the ACP client received or displayed it.                                        |
 | ACP tool status             | The client-facing state of a tool call: pending, in progress, completed, or failed. A cancelled Ox tool outcome is presented as failed because ACP has no separate cancelled tool status.                       |
-| Session                     | A saved conversation and its metadata, identified by a session ID. Its OpenRouter model is fixed when the session is created.                                                                                   |
+| Session                     | A saved conversation and its metadata, identified by a session ID. Its OpenRouter model is fixed when the first turn starts.                                                                                   |
+| Session settings            | The model and effort level in force for a turn.                                                                                                                                                                 |
+| Effort level                | One of Ox's four reasoning levels: Default, Low, Medium, or High.                                                                                                                                                |
+| Effort mapping              | The per-model table that turns an effort level into an OpenRouter effort string, or into no reasoning parameter for Default.                                                                                    |
 | Session title               | The short label a session shows in a client, taken once from the first nonblank line of the first saved user message and shortened to 80 characters.                                                            |
 | Session summary             | A session's ID, workspace path, optional session title, and creation and activity timestamps, without its transcript.                                                                                           |
 | Stored session              | A session summary paired with its validated transcript.                                                                                                                                                         |
@@ -95,7 +102,7 @@ than introducing migrations, versions, etc.
 | Prompt cancellation         | A per-prompt signal that remains cancelled once triggered. It stops new work but does not roll back model or tool effects already observed.                                                                     |
 | User message                | Text produced from the supported ACP content blocks and saved before the first model request.                                                                                                                   |
 | Transcript                  | The ordered, saved conversation used for both session replay and future model requests.                                                                                                                         |
-| Transcript entry            | A model entry, user message, assistant message, or tool result in the transcript.                                                                                                                               |
+| Transcript entry            | A model entry, effort entry, user message, assistant message, or tool result in the transcript.                                                                                                                 |
 | Model entry                 | The first transcript entry. It stores the OpenRouter model used for every model request in that session.                                                                                                        |
 | OpenRouter client           | The concrete client that verifies the API key and sends model requests to OpenRouter's chat-completions endpoint.                                                                                               |
 | Model request               | One OpenRouter chat-completion HTTP request. A prompt run may make several.                                                                                                                                     |
