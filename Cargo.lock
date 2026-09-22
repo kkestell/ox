@@ -1577,6 +1577,7 @@ dependencies = [
  "chrono",
  "futures",
  "keyring",
+ "regex",
  "reqwest",
  "rpassword",
  "rusqlite",

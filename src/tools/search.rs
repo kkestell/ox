@@ -1,15 +1,18 @@
 use std::{
+    ffi::OsStr,
+    os::unix::ffi::OsStrExt,
     path::{Component, Path, PathBuf},
     process::Stdio,
 };
 
+use regex::bytes::Regex;
 use serde::Deserialize;
 use tokio::{
-    io::{AsyncRead, AsyncReadExt},
+    io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, BufReader},
     process::Command,
 };
 
-use super::{BODY_LIMIT, GLOB, truncate, workspace_path_allowing_link_target};
+use super::{BODY_LIMIT, GLOB, truncate, workspace::Workspace};
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -33,40 +36,35 @@ fn default_path() -> String {
 }
 
 pub(super) async fn execute(root: &Path, name: &str, arguments: &str) -> Result<String, String> {
+    let workspace = Workspace::open(root).map_err(|e| e.to_string())?;
     let mut command = Command::new("rg");
-    command.arg("--no-config");
-    let scope = if name == GLOB {
+    command.args(["--no-config", "--files", "--null"]);
+    let (scope, matcher) = if name == GLOB {
         let args: GlobArgs =
             serde_json::from_str(arguments).map_err(|e| format!("arguments: {e}"))?;
-        command.arg("--files").arg("--glob").arg(args.pattern);
-        args.path
+        command.arg("--glob").arg(args.pattern);
+        (args.path, None)
     } else {
         let args: GrepArgs =
             serde_json::from_str(arguments).map_err(|e| format!("arguments: {e}"))?;
-        command.args([
-            "--line-number",
-            "--with-filename",
-            "--no-heading",
-            "--color",
-            "never",
-        ]);
-        command.arg("--regexp").arg(args.pattern);
+        let matcher = Regex::new(&args.pattern).map_err(|e| format!("pattern: {e}"))?;
         if let Some(glob) = args.glob {
             command.arg("--glob").arg(glob);
         }
-        args.path
+        (args.path, Some(matcher))
     };
-    let path = workspace_path_allowing_link_target(root, &scope).await?;
-    let metadata = tokio::fs::metadata(&path)
-        .await
-        .map_err(|e| e.to_string())?;
-    if name == GLOB && !metadata.is_dir() {
+    let path = workspace
+        .resolve_existing(Path::new(&scope))
+        .map_err(|e| format!("{scope}: {e}"))?;
+    let directory = workspace.directory(&path).is_ok();
+    if name == GLOB && !directory {
         return Err("glob path must name a directory".to_owned());
     }
-    if !metadata.is_dir() && !metadata.is_file() {
+    if !directory && workspace.read_file(&path).is_err() {
         return Err("search path must name a regular file or directory".to_owned());
     }
-    // Preserve the supplied path (and therefore explicit-path filtering), after validation.
+    // Ripgrep supplies candidate names and ignore filtering. Ox opens each
+    // candidate through the workspace descriptor before reading or returning it.
     command.current_dir(root).arg("--").arg(
         Path::new(".").join(
             Path::new(&scope)
@@ -75,7 +73,7 @@ pub(super) async fn execute(root: &Path, name: &str, arguments: &str) -> Result<
                 .collect::<PathBuf>(),
         ),
     );
-    run(command).await
+    run(command, &workspace, matcher.as_ref()).await
 }
 
 // Leave room in the output budget for the truncation and diagnostics notices.
@@ -83,7 +81,11 @@ const NOTICE_LIMIT: usize = 1024;
 const MATCH_LIMIT: usize = BODY_LIMIT - NOTICE_LIMIT;
 const DIAGNOSTICS_LIMIT: usize = 512;
 
-async fn run(mut command: Command) -> Result<String, String> {
+async fn run(
+    mut command: Command,
+    workspace: &Workspace,
+    matcher: Option<&Regex>,
+) -> Result<String, String> {
     let mut child = command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -94,43 +96,52 @@ async fn run(mut command: Command) -> Result<String, String> {
     let stdout = child.stdout.take().expect("piped stdout");
     let stderr = child.stderr.take().expect("piped stderr");
     let collect = async {
-        let mut bytes = Vec::new();
-        stdout
-            .take((MATCH_LIMIT + 1) as u64)
-            .read_to_end(&mut bytes)
-            .await?;
-        let truncated = bytes.len() > MATCH_LIMIT;
-        if truncated {
-            child.kill().await?;
+        let mut reader = BufReader::new(stdout);
+        let mut candidate = Vec::new();
+        let mut output = String::new();
+        let mut local_errors = String::new();
+        let mut truncated = false;
+        while reader.read_until(0, &mut candidate).await? != 0 {
+            let name = candidate.strip_suffix(&[0]).unwrap_or(&candidate);
+            let path = Path::new(OsStr::from_bytes(name));
+            if let Ok(relative) = workspace.resolve_existing(path) {
+                if let Some(matcher) = matcher {
+                    match workspace.read_file(&relative) {
+                        Ok(file) => match scan_file(file, path, matcher, &mut output).await {
+                            Ok(done) => truncated = done,
+                            Err(error) if local_errors.len() < DIAGNOSTICS_LIMIT => {
+                                local_errors.push_str(&format!("{}: {error}\n", path.display()));
+                            }
+                            Err(_) => {}
+                        },
+                        Err(error) => {
+                            if local_errors.len() < DIAGNOSTICS_LIMIT {
+                                local_errors.push_str(&format!("{}: {error}\n", path.display()));
+                            }
+                        }
+                    }
+                } else if workspace.regular_file(&relative).unwrap_or(false) {
+                    truncated = append_match(&mut output, &format!("{}\n", path.display()));
+                }
+            }
+            candidate.clear();
+            if truncated {
+                child.kill().await?;
+                break;
+            }
         }
         let status = child.wait().await?;
-        Ok::<_, std::io::Error>((bytes, truncated, status))
+        Ok::<_, std::io::Error>((output, truncated, status, local_errors))
     };
     let (result, errors) =
         tokio::try_join!(collect, drain_errors(stderr)).map_err(|e| e.to_string())?;
-    let (mut bytes, truncated, status) = result;
-    // ripgrep exits with an error status when it cannot read a single path,
-    // even though it still reports every match it did find. Fail only when
-    // there are no matches to return, and describe the unread paths otherwise.
-    if !truncated && !matches!(status.code(), Some(0 | 1)) && bytes.is_empty() {
+    let (mut output, truncated, status, local_errors) = result;
+    if !truncated && !matches!(status.code(), Some(0 | 1)) && output.is_empty() {
         return Err(format!(
-            "rg failed ({status}): {}",
-            String::from_utf8_lossy(&errors)
+            "rg failed ({status}); check the glob or search path"
         ));
     }
     if truncated {
-        bytes.truncate(MATCH_LIMIT);
-        if let Err(error) = std::str::from_utf8(&bytes)
-            && error.error_len().is_none()
-        {
-            bytes.truncate(error.valid_up_to());
-        }
-    }
-    let mut output = String::from_utf8_lossy(&bytes).into_owned();
-    // Lossy decoding can expand bytes, so apply the budget after decoding too.
-    let truncated = truncated || output.len() > MATCH_LIMIT;
-    if truncated {
-        truncate(&mut output, MATCH_LIMIT);
         if !output.ends_with('\n') {
             output.push_str(" [partial line]\n");
         }
@@ -138,8 +149,15 @@ async fn run(mut command: Command) -> Result<String, String> {
     } else if output.is_empty() {
         output.push_str("No matches found.");
     }
-    if !errors.is_empty() {
-        let mut diagnostics = String::from_utf8_lossy(&errors).into_owned();
+    if !errors.is_empty() || !local_errors.is_empty() {
+        // Ripgrep may enumerate a path that changed during traversal. Its raw
+        // diagnostics can name files outside the workspace after such a swap.
+        let mut diagnostics = if errors.is_empty() {
+            String::new()
+        } else {
+            "Ripgrep could not enumerate some paths.\n".to_owned()
+        };
+        diagnostics.push_str(&local_errors);
         truncate(&mut diagnostics, DIAGNOSTICS_LIMIT);
         if !output.ends_with('\n') {
             output.push('\n');
@@ -149,6 +167,43 @@ async fn run(mut command: Command) -> Result<String, String> {
         output.push('\n');
     }
     Ok(output)
+}
+
+fn append_match(output: &mut String, line: &str) -> bool {
+    output.push_str(line);
+    if output.len() > MATCH_LIMIT {
+        truncate(output, MATCH_LIMIT);
+        true
+    } else {
+        false
+    }
+}
+
+async fn scan_file(
+    file: std::fs::File,
+    path: &Path,
+    matcher: &Regex,
+    output: &mut String,
+) -> std::io::Result<bool> {
+    let mut reader = BufReader::new(tokio::fs::File::from_std(file));
+    let mut line = Vec::new();
+    let mut number = 0_u64;
+    while reader.read_until(b'\n', &mut line).await? != 0 {
+        number += 1;
+        let searchable = line.strip_suffix(b"\n").unwrap_or(&line);
+        if !searchable.contains(&0) && matcher.is_match(searchable) {
+            let content = String::from_utf8_lossy(&line);
+            let separator = if line.ends_with(b"\n") { "" } else { "\n" };
+            if append_match(
+                output,
+                &format!("{}:{number}:{content}{separator}", path.display()),
+            ) {
+                return Ok(true);
+            }
+        }
+        line.clear();
+    }
+    Ok(false)
 }
 
 // Keep diagnostics bounded while continuing to drain the pipe to avoid deadlock.
@@ -228,6 +283,16 @@ mod tests {
                 .unwrap(),
             "./-:1:dash\n"
         );
+        assert_eq!(
+            search(
+                &workspace,
+                GREP,
+                json!({"pattern":"^needle$", "path":"src/a.rs"})
+            )
+            .await
+            .unwrap(),
+            "./src/a.rs:2:needle\n"
+        );
         assert!(
             search(
                 &workspace,
@@ -295,44 +360,31 @@ mod tests {
         let output = result.unwrap();
         assert!(output.contains("./a.rs:1:needle"));
         assert!(output.contains("Some paths could not be searched:"));
-        assert!(output.contains("locked"));
+        assert!(output.contains("Ripgrep could not enumerate some paths."));
     }
 
     #[tokio::test]
-    async fn diagnostics_are_drained_but_not_retained_without_limit() {
+    async fn search_subprocess_diagnostics_and_cancellation() {
+        use std::time::Duration;
+
         let bytes = vec![b'x'; 100_000];
         assert_eq!(
             drain_errors(bytes.as_slice()).await.unwrap(),
             vec![b'x'; 4096]
         );
-        let error = run(Command::new("/nonexistent/ox-test-rg"))
+        let workspace = Workspace::new();
+        let pinned = super::Workspace::open(&workspace.0).unwrap();
+        let error = run(Command::new("/nonexistent/ox-test-rg"), &pinned, None)
             .await
             .unwrap_err();
         assert!(error.contains("install ripgrep"));
-    }
 
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn subprocesses_drain_stderr_and_stop_on_truncation_or_cancellation() {
-        use std::time::Duration;
-        let mut command = Command::new("sh");
-        command.args([
-            "-c",
-            "while :; do printf '%01000d' 0 >&2; printf '%01000d' 0; done",
-        ]);
-        let output = tokio::time::timeout(Duration::from_secs(5), run(command))
-            .await
-            .unwrap()
-            .unwrap();
-        assert!(output.contains("Output truncated"));
-
-        let workspace = Workspace::new();
         let pid_path = workspace.0.join("pid");
         let mut command = Command::new("sh");
         command
             .args(["-c", "echo $$ > \"$1\"; exec sleep 60", "sh"])
             .arg(&pid_path);
-        let task = tokio::spawn(run(command));
+        let task = tokio::spawn(async move { run(command, &pinned, None).await });
         let pid = tokio::time::timeout(Duration::from_secs(5), async {
             loop {
                 if let Ok(pid) = tokio::fs::read_to_string(&pid_path).await
@@ -362,5 +414,28 @@ mod tests {
         })
         .await
         .expect("cancelled child was terminated and reaped");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn candidate_paths_are_checked_against_the_workspace() {
+        use std::os::unix::fs::symlink;
+        let workspace = Workspace::new();
+        let outside = Workspace::new();
+        std::fs::write(outside.0.join("secret"), "secret\n").unwrap();
+        std::fs::create_dir(workspace.0.join("link")).unwrap();
+        let pinned = super::Workspace::open(&workspace.0).unwrap();
+        let validated = pinned.resolve_existing(Path::new("link")).unwrap();
+        assert!(pinned.directory(&validated).is_ok());
+        std::fs::remove_dir(workspace.0.join("link")).unwrap();
+        symlink(&outside.0, workspace.0.join("link")).unwrap();
+        for matcher in [None, Some(Regex::new("secret").unwrap())] {
+            let mut command = Command::new("sh");
+            command.args(["-c", "printf 'link/secret\\000'"]);
+            assert_eq!(
+                run(command, &pinned, matcher.as_ref()).await.unwrap(),
+                "No matches found."
+            );
+        }
     }
 }

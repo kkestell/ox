@@ -3,7 +3,7 @@ use std::path::Path;
 use serde::Deserialize;
 use tokio::io::{AsyncBufReadExt, BufReader};
 
-use super::{BODY_LIMIT, truncate, workspace_path_allowing_link_target};
+use super::{BODY_LIMIT, truncate, workspace::Workspace};
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -27,17 +27,11 @@ pub(super) async fn execute(root: &Path, arguments: &str) -> Result<String, Stri
     if args.offset == 0 || !(1..=1000).contains(&args.limit) {
         return Err("offset must be at least 1 and limit must be between 1 and 1000".to_owned());
     }
-    let path = workspace_path_allowing_link_target(root, &args.path).await?;
-    if !tokio::fs::metadata(&path)
-        .await
-        .map_err(|e| e.to_string())?
-        .is_file()
-    {
-        return Err("path must name a regular file".to_owned());
-    }
-    let file = tokio::fs::File::open(path)
-        .await
-        .map_err(|e| e.to_string())?;
+    let workspace = Workspace::open(root).map_err(|e| e.to_string())?;
+    let path = workspace
+        .resolve_existing(Path::new(&args.path))
+        .map_err(|e| format!("{}: {e}", args.path))?;
+    let file = tokio::fs::File::from_std(workspace.read_file(&path).map_err(|e| e.to_string())?);
     let mut reader = BufReader::new(file);
     for _ in 1..args.offset {
         if line(&mut reader, 0).await?.is_none() {

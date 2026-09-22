@@ -1,7 +1,7 @@
 //! The concrete tool set: schemas sent to the model, tool call titles, and
 //! execution of one complete call.
 
-use std::path::{Component, Path, PathBuf};
+use std::path::Path;
 
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -12,6 +12,7 @@ mod patch;
 mod read;
 mod search;
 mod shell;
+mod workspace;
 
 pub const APPLY_PATCH: &str = "apply_patch";
 pub const READ_FILE: &str = "read_file";
@@ -100,29 +101,6 @@ fn bounded_result(result: Result<String, String>) -> ToolOutcome {
     }
 }
 
-/// Resolves a workspace-relative path that must already exist, refusing one
-/// that leaves the workspace. A directly named symbolic link is accepted when
-/// its target stays inside the workspace.
-async fn workspace_path_allowing_link_target(root: &Path, name: &str) -> Result<PathBuf, String> {
-    if name.is_empty()
-        || Path::new(name)
-            .components()
-            .any(|part| !matches!(part, Component::Normal(_) | Component::CurDir))
-    {
-        return Err("expected a relative path without parent traversal".to_owned());
-    }
-    let root = tokio::fs::canonicalize(root)
-        .await
-        .map_err(|e| e.to_string())?;
-    let path = tokio::fs::canonicalize(root.join(name))
-        .await
-        .map_err(|e| format!("{name}: {e}"))?;
-    if !path.starts_with(&root) {
-        return Err("path resolves outside the workspace".to_owned());
-    }
-    Ok(path)
-}
-
 pub fn schemas() -> Vec<Value> {
     vec![
         json!({
@@ -189,7 +167,7 @@ pub fn schemas() -> Vec<Value> {
             "type": "function",
             "function": {
                 "name": GREP,
-                "description": "Search workspace text files with a case-sensitive ripgrep regex; use (?i) for case-insensitivity. Returns path:line:content, at most 16 KiB. Narrow the pattern or path if truncated. Uses ripgrep's normal hidden-file and ignore filtering, including explicit-path and glob overrides; does not follow symlinks during traversal. Example: {\"pattern\":\"fn main\",\"path\":\"src\",\"glob\":\"*.rs\"}.",
+                "description": "Search workspace text files with a case-sensitive Rust regex; use (?i) for case-insensitivity. Returns path:line:content, at most 16 KiB. Narrow the pattern or path if truncated. Uses ripgrep's normal hidden-file and ignore filtering for file discovery, including explicit-path and glob overrides; does not follow symlinks during traversal. Example: {\"pattern\":\"fn main\",\"path\":\"src\",\"glob\":\"*.rs\"}.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -497,6 +475,12 @@ mod tests {
             assert!(!result.text().contains("escape"));
             assert!(!result.text().contains("alias"));
         }
+
+        let pinned = workspace::Workspace::open(&workspace.0).unwrap();
+        let file = pinned.resolve_existing(Path::new("file")).unwrap();
+        std::fs::remove_file(workspace.0.join("file")).unwrap();
+        std::os::unix::fs::symlink(outside.0.join("file"), workspace.0.join("file")).unwrap();
+        assert!(pinned.read_file(&file).is_err());
     }
 
     #[tokio::test]

@@ -1,8 +1,11 @@
 use std::{
     collections::HashSet,
     fs, io,
+    io::Read,
     path::{Component, Path, PathBuf},
 };
+
+use super::workspace::Workspace;
 
 struct Patch(Vec<FileOperation>);
 
@@ -203,8 +206,15 @@ fn workspace_path_rejecting_links(root: &Path, name: &str) -> Result<PathBuf, St
     Ok(path)
 }
 
-fn target(root: &Path, name: &str, seen: &mut HashSet<PathBuf>) -> Result<PathBuf, String> {
-    let path = workspace_path_rejecting_links(root, name)?;
+fn target(
+    workspace: &Workspace,
+    name: &str,
+    seen: &mut HashSet<PathBuf>,
+) -> Result<PathBuf, String> {
+    let path = workspace_path_rejecting_links(workspace.root(), name)?;
+    let path = workspace
+        .relative(&path)
+        .map_err(|error| error.to_string())?;
     if !seen.insert(path.clone()) {
         return Err("duplicate target".to_owned());
     }
@@ -225,7 +235,11 @@ struct Prepared {
 }
 
 enum Change {
-    Write(PathBuf, Vec<u8>),
+    Write {
+        path: PathBuf,
+        contents: Vec<u8>,
+        create: bool,
+    },
     Delete(PathBuf),
     Move {
         source: PathBuf,
@@ -235,29 +249,32 @@ enum Change {
     Unchanged,
 }
 
-fn prepare(root: &Path, patch: Patch) -> Result<Vec<Prepared>, String> {
-    let root = root
-        .canonicalize()
-        .map_err(|error| format!("workspace: {error}"))?;
+fn prepare(root: &Path, patch: Patch) -> Result<(Workspace, Vec<Prepared>), String> {
+    let workspace = Workspace::open(root).map_err(|error| format!("workspace: {error}"))?;
     let mut seen = HashSet::new();
     let mut prepared = Vec::new();
     for operation in patch.0 {
         let name = operation.path;
         let prepare_operation = || -> Result<Prepared, String> {
-            let path = target(&root, &name, &mut seen)?;
-            if !matches!(&operation.kind, Operation::Add(_))
-                && !fs::metadata(&path)
-                    .map_err(|error| error.to_string())?
-                    .is_file()
-            {
-                return Err("source must be a regular file".to_owned());
-            }
+            let path = target(&workspace, &name, &mut seen)?;
+            let mut source_file = match &operation.kind {
+                Operation::Add(_) => None,
+                _ => Some(
+                    workspace
+                        .read_file(&path)
+                        .map_err(|error| error.to_string())?,
+                ),
+            };
             let (summary, change) = match operation.kind {
                 Operation::Add(contents) => {
-                    require_absent(&path)?;
+                    require_absent(&workspace.root().join(&path))?;
                     (
                         format!("Added {name}"),
-                        Change::Write(path, contents.into_bytes()),
+                        Change::Write {
+                            path,
+                            contents: contents.into_bytes(),
+                            create: true,
+                        },
                     )
                 }
                 Operation::Delete => (format!("Deleted {name}"), Change::Delete(path)),
@@ -268,15 +285,19 @@ fn prepare(root: &Path, patch: Patch) -> Result<Vec<Prepared>, String> {
                     let contents = if chunks.is_empty() {
                         None
                     } else {
-                        let source =
-                            fs::read_to_string(&path).map_err(|error| error.to_string())?;
+                        let mut source = String::new();
+                        source_file
+                            .as_mut()
+                            .expect("an update has an opened source file")
+                            .read_to_string(&mut source)
+                            .map_err(|error| error.to_string())?;
                         let contents = update(&source, &chunks)?;
                         (contents != source).then(|| contents.into_bytes())
                     };
                     if let Some(destination_name) = destination {
-                        let destination = target(&root, &destination_name, &mut seen)
+                        let destination = target(&workspace, &destination_name, &mut seen)
                             .and_then(|path| {
-                                require_absent(&path)?;
+                                require_absent(&workspace.root().join(&path))?;
                                 Ok(path)
                             })
                             .map_err(|error| format!("destination {destination_name}: {error}"))?;
@@ -289,7 +310,14 @@ fn prepare(root: &Path, patch: Patch) -> Result<Vec<Prepared>, String> {
                             },
                         )
                     } else if let Some(contents) = contents {
-                        (format!("Modified {name}"), Change::Write(path, contents))
+                        (
+                            format!("Modified {name}"),
+                            Change::Write {
+                                path,
+                                contents,
+                                create: false,
+                            },
+                        )
                     } else {
                         (format!("Unchanged {name}"), Change::Unchanged)
                     }
@@ -299,32 +327,28 @@ fn prepare(root: &Path, patch: Patch) -> Result<Vec<Prepared>, String> {
         };
         prepared.push(prepare_operation().map_err(|error| format!("{name}: {error}"))?);
     }
-    Ok(prepared)
-}
-
-fn create_parents(path: &Path) -> io::Result<()> {
-    fs::create_dir_all(path.parent().expect("resolved file has a parent"))
+    Ok((workspace, prepared))
 }
 
 impl Change {
-    fn apply(&self) -> io::Result<()> {
+    fn apply(&self, workspace: &Workspace) -> io::Result<()> {
         match self {
-            Self::Write(path, contents) => {
-                create_parents(path)?;
-                fs::write(path, contents)
-            }
-            Self::Delete(path) => fs::remove_file(path),
+            Self::Write {
+                path,
+                contents,
+                create,
+            } => workspace.write_file(path, contents, *create),
+            Self::Delete(path) => workspace.remove_file(path),
             Self::Move {
                 source,
                 destination,
                 contents,
             } => {
-                create_parents(destination)?;
                 if let Some(contents) = contents {
-                    fs::write(destination, contents)?;
-                    fs::remove_file(source)
+                    workspace.write_file(destination, contents, true)?;
+                    workspace.remove_file(source)
                 } else {
-                    fs::rename(source, destination)
+                    workspace.move_file(source, destination)
                 }
             }
             Self::Unchanged => Ok(()),
@@ -332,10 +356,10 @@ impl Change {
     }
 }
 
-fn apply_prepared(prepared: &[Prepared]) -> Result<String, String> {
+fn apply_prepared(workspace: &Workspace, prepared: &[Prepared]) -> Result<String, String> {
     let mut completed = Vec::new();
     for (index, operation) in prepared.iter().enumerate() {
-        if let Err(error) = operation.change.apply() {
+        if let Err(error) = operation.change.apply(workspace) {
             let remaining: Vec<_> = prepared[index + 1..]
                 .iter()
                 .map(|op| op.summary.as_str())
@@ -376,8 +400,9 @@ pub(super) fn changed_paths(input: &str) -> Vec<String> {
 
 pub(super) fn apply(workspace: &Path, input: &str) -> Result<String, String> {
     let patch = Patch::parse(input)?;
-    let prepared = prepare(workspace, patch).map_err(|error| format!("prepare: {error}"))?;
-    apply_prepared(&prepared)
+    let (workspace, prepared) =
+        prepare(workspace, patch).map_err(|error| format!("prepare: {error}"))?;
+    apply_prepared(&workspace, &prepared)
 }
 
 #[cfg(test)]
@@ -630,6 +655,17 @@ mod tests {
             "inside\n"
         );
         assert!(fs::symlink_metadata(workspace.0.join("inside-link")).is_ok());
+
+        let patch =
+            Patch::parse(&wrapped("*** Update File: inside\n@@\n-inside\n+changed\n")).unwrap();
+        let (root, prepared) = prepare(&workspace.0, patch).unwrap();
+        fs::remove_file(workspace.0.join("inside")).unwrap();
+        symlink(outside.0.join("file"), workspace.0.join("inside")).unwrap();
+        assert!(apply_prepared(&root, &prepared).is_err());
+        assert_eq!(
+            fs::read_to_string(outside.0.join("file")).unwrap(),
+            "outside"
+        );
     }
 
     #[test]

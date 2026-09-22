@@ -198,8 +198,14 @@ boundaries.
 Read, search, and patch operations are constrained to the session workspace.
 `read_file` and `grep` accept a directly named symbolic link to a file only when
 its target remains inside the workspace; search traversal does not follow
-symbolic links. Patch operations reject a symbolic link as their target. Shell
-starts in the workspace but may access other paths and the network with Ox's
+symbolic links. Patch operations reject a symbolic link as their target. Read
+and patch open files through a workspace directory handle after path validation.
+Search uses ripgrep to discover candidate paths and checks each candidate
+through that handle before returning its name or opening it to search contents.
+Read and patch reject a link swapped into a validated path before use; search
+drops a candidate that no longer resolves inside the workspace and does not
+forward ripgrep's unchecked path diagnostics. Shell starts in the workspace but
+may access other paths and the network with Ox's
 permissions. In Ask mode, every ACP shell call requires a permission request.
 In Auto mode, shell calls run without that request. Headless prompts use and
 save Auto mode. The captured mode is the authorization policy for the whole

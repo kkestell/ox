@@ -24,9 +24,12 @@ THIS DOCUMENT MUST BE KEPT UP TO DATE
 - `src/tools/read.rs`: Bounded text-file reading with line pagination.
 - `src/tools/shell.rs`: Noninteractive shell execution, bounded output tails,
   and process-group cleanup on exit, timeout, or cancellation.
-- `src/tools/search.rs`: Bounded glob and grep searches through ripgrep.
+- `src/tools/search.rs`: Ripgrep file discovery, workspace-checked candidates,
+  and bounded glob and grep results.
 - `src/tools/patch.rs`: Patch parsing, exact text matching, workspace path
   validation, and filesystem changes.
+- `src/tools/workspace.rs`: Descriptor-relative file operations shared by
+  read, search, and patch tools.
 - `src/sessions.rs`: Transcript and durable model, effort, and mode setting
   types, stored JSON encoding, transcript validation, database path selection,
   and `SessionStore` over one SQLite connection.
