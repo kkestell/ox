@@ -54,16 +54,54 @@ COMMIT;
 
 /// One entry in a session transcript. Every nonempty transcript opens with
 /// the model its completions use, which does not change within the session.
-/// Effort entries immediately precede the user message where they take
-/// effect. Tool results follow the assistant message that called them, one
-/// per call, in call order.
+/// Effort and mode entries form a settings block immediately before the user
+/// message where they take effect. Tool results follow the assistant message
+/// that called them, one per call, in call order.
 #[derive(Debug, Clone, PartialEq)]
 pub enum TranscriptEntry {
     Model(String),
     Effort(EffortLevel),
+    Mode(SessionMode),
     UserMessage(String),
     AssistantMessage(AssistantMessage),
     ToolResult(ToolResult),
+}
+
+/// Whether shell calls require approval from the ACP client.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionMode {
+    Ask,
+    Auto,
+}
+
+impl SessionMode {
+    pub const ALL: [Self; 2] = [Self::Ask, Self::Auto];
+
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Ask => "ask",
+            Self::Auto => "auto",
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Ask => "Ask",
+            Self::Auto => "Auto",
+        }
+    }
+
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::Ask => "Ask before running each shell command.",
+            Self::Auto => "Run shell commands without asking.",
+        }
+    }
+
+    pub fn from_id(id: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|mode| mode.id() == id)
+    }
 }
 
 /// How much reasoning Ox asks a model to do. `Default` leaves the choice to
@@ -107,6 +145,7 @@ impl EffortLevel {
 pub struct SessionSettings {
     pub model: String,
     pub effort: EffortLevel,
+    pub mode: SessionMode,
 }
 
 impl SessionSettings {
@@ -114,7 +153,13 @@ impl SessionSettings {
         Self {
             model: model.into(),
             effort,
+            mode: SessionMode::Ask,
         }
+    }
+
+    pub fn with_mode(mut self, mode: SessionMode) -> Self {
+        self.mode = mode;
+        self
     }
 }
 
@@ -122,6 +167,7 @@ impl SessionSettings {
 pub struct SessionSettingsChange {
     pub model: Option<String>,
     pub effort: Option<EffortLevel>,
+    pub mode: Option<SessionMode>,
 }
 
 /// The content of one validated model completion. The serde derives on this
@@ -265,16 +311,32 @@ fn validate_transcript(entries: &[TranscriptEntry]) -> io::Result<()> {
                     "a model entry appears after the transcript opened",
                 ));
             }
-            TranscriptEntry::Effort(_) => {
-                if !matches!(
-                    entries.get(index + 1),
-                    Some(TranscriptEntry::UserMessage(_))
-                ) {
+            TranscriptEntry::Effort(_) | TranscriptEntry::Mode(_) => {
+                let mut saw_effort = false;
+                let mut saw_mode = false;
+                while let Some(setting) = entries.get(index) {
+                    match setting {
+                        TranscriptEntry::Effort(_) if saw_effort => {
+                            return Err(invalid_data(
+                                "a settings block contains more than one effort entry",
+                            ));
+                        }
+                        TranscriptEntry::Effort(_) => saw_effort = true,
+                        TranscriptEntry::Mode(_) if saw_mode => {
+                            return Err(invalid_data(
+                                "a settings block contains more than one mode entry",
+                            ));
+                        }
+                        TranscriptEntry::Mode(_) => saw_mode = true,
+                        _ => break,
+                    }
+                    index += 1;
+                }
+                if !matches!(entries.get(index), Some(TranscriptEntry::UserMessage(_))) {
                     return Err(invalid_data(
-                        "an effort entry does not immediately precede a user message",
+                        "a settings block does not immediately precede a user message",
                     ));
                 }
-                index += 1;
             }
             TranscriptEntry::UserMessage(_) => index += 1,
             TranscriptEntry::ToolResult(result) => {
@@ -327,6 +389,7 @@ impl StoredSession {
             match entry {
                 TranscriptEntry::Model(model) => settings.model.clone_from(model),
                 TranscriptEntry::Effort(effort) => settings.effort = *effort,
+                TranscriptEntry::Mode(mode) => settings.mode = *mode,
                 TranscriptEntry::UserMessage(_)
                 | TranscriptEntry::AssistantMessage(_)
                 | TranscriptEntry::ToolResult(_) => {}
@@ -466,6 +529,9 @@ impl SessionStore {
         if let Some(effort) = settings.effort {
             insert_entry(&tx, id, &at, "effort", &effort)?;
         }
+        if let Some(mode) = settings.mode {
+            insert_entry(&tx, id, &at, "mode", &mode)?;
+        }
         insert_entry(&tx, id, &at, "user_message", &text)?;
         let summary = summary(&tx, id)
             .map_err(io::Error::other)?
@@ -581,6 +647,7 @@ fn decode_entry(kind: &str, data: &str) -> io::Result<TranscriptEntry> {
     Ok(match kind {
         "model" => TranscriptEntry::Model(decode(kind, data)?),
         "effort" => TranscriptEntry::Effort(decode(kind, data)?),
+        "mode" => TranscriptEntry::Mode(decode(kind, data)?),
         "user_message" => TranscriptEntry::UserMessage(decode(kind, data)?),
         "assistant_message" => TranscriptEntry::AssistantMessage(decode(kind, data)?),
         "tool_result" => TranscriptEntry::ToolResult(decode(kind, data)?),
@@ -725,6 +792,7 @@ mod tests {
                     &SessionSettingsChange {
                         model: Some(openrouter::DEFAULT_MODEL.to_owned()),
                         effort: None,
+                        mode: Some(SessionMode::Auto),
                     },
                     "Weather in Chicago and Denver?",
                 )
@@ -749,6 +817,7 @@ mod tests {
             stored.transcript,
             vec![
                 TranscriptEntry::Model(openrouter::DEFAULT_MODEL.to_owned()),
+                TranscriptEntry::Mode(SessionMode::Auto),
                 TranscriptEntry::UserMessage("Weather in Chicago and Denver?".to_owned()),
                 TranscriptEntry::AssistantMessage(message.clone()),
                 TranscriptEntry::ToolResult(results[0].clone()),
@@ -838,6 +907,7 @@ mod tests {
                 &SessionSettingsChange {
                     model: Some(openrouter::DEFAULT_MODEL.to_owned()),
                     effort: None,
+                    mode: None,
                 },
                 "hello",
             )
@@ -903,6 +973,18 @@ mod tests {
         insert(&effort_in_batch, "effort", r#""high""#);
         insert(&effort_in_batch, "user_message", r#""next""#);
         assert!(store.read(&effort_in_batch).is_err());
+
+        let duplicate_settings = store.create(workspace()).unwrap().id;
+        insert(
+            &duplicate_settings,
+            "model",
+            &serde_json::to_string(openrouter::DEFAULT_MODEL).unwrap(),
+        );
+        insert(&duplicate_settings, "mode", r#""ask""#);
+        insert(&duplicate_settings, "effort", r#""low""#);
+        insert(&duplicate_settings, "mode", r#""auto""#);
+        insert(&duplicate_settings, "user_message", r#""next""#);
+        assert!(store.read(&duplicate_settings).is_err());
     }
 
     #[test]
@@ -915,6 +997,48 @@ mod tests {
             ])
             .is_err()
         );
+        for settings in [
+            [
+                TranscriptEntry::Effort(EffortLevel::Low),
+                TranscriptEntry::Mode(SessionMode::Auto),
+            ],
+            [
+                TranscriptEntry::Mode(SessionMode::Auto),
+                TranscriptEntry::Effort(EffortLevel::Low),
+            ],
+        ] {
+            assert!(
+                validate_transcript(&[
+                    TranscriptEntry::Model(openrouter::DEFAULT_MODEL.to_owned()),
+                    settings[0].clone(),
+                    settings[1].clone(),
+                    TranscriptEntry::UserMessage("first".to_owned()),
+                ])
+                .is_ok()
+            );
+        }
+        for duplicate in [
+            TranscriptEntry::Effort(EffortLevel::High),
+            TranscriptEntry::Mode(SessionMode::Ask),
+        ] {
+            assert!(
+                validate_transcript(&[
+                    TranscriptEntry::Model(openrouter::DEFAULT_MODEL.to_owned()),
+                    duplicate.clone(),
+                    duplicate,
+                    TranscriptEntry::UserMessage("first".to_owned()),
+                ])
+                .is_err()
+            );
+        }
+        assert!(
+            validate_transcript(&[
+                TranscriptEntry::Model(openrouter::DEFAULT_MODEL.to_owned()),
+                TranscriptEntry::Mode(SessionMode::Auto),
+                TranscriptEntry::AssistantMessage(message(vec![])),
+            ])
+            .is_err()
+        );
 
         let store = SessionStore::in_memory();
         let id = store.create(workspace()).unwrap().id;
@@ -923,12 +1047,35 @@ mod tests {
         let defaults = SessionSettings::new(openrouter::DEFAULT_MODEL, EffortLevel::Default);
         assert_eq!(empty.saved_settings(&defaults), defaults);
 
+        let without_mode = store.create(workspace()).unwrap().id;
+        store
+            .append_user(
+                &without_mode,
+                &SessionSettingsChange {
+                    model: Some(openrouter::DEFAULT_MODEL.to_owned()),
+                    effort: None,
+                    mode: None,
+                },
+                "old transcript",
+            )
+            .unwrap();
+        assert_eq!(
+            store
+                .read(&without_mode)
+                .unwrap()
+                .unwrap()
+                .saved_settings(&defaults),
+            defaults,
+            "a transcript without a mode entry uses Ask from the defaults"
+        );
+
         store
             .append_user(
                 &id,
                 &SessionSettingsChange {
                     model: Some(openrouter::MODEL_CATALOG[1].id.to_owned()),
                     effort: Some(EffortLevel::Low),
+                    mode: Some(SessionMode::Auto),
                 },
                 "first",
             )
@@ -939,6 +1086,7 @@ mod tests {
                 &SessionSettingsChange {
                     model: None,
                     effort: Some(EffortLevel::High),
+                    mode: None,
                 },
                 "second",
             )
@@ -949,6 +1097,7 @@ mod tests {
                 &SessionSettingsChange {
                     model: None,
                     effort: Some(EffortLevel::Medium),
+                    mode: None,
                 },
                 "third",
             )
@@ -956,7 +1105,17 @@ mod tests {
         assert_eq!(
             store.read(&id).unwrap().unwrap().saved_settings(&defaults),
             SessionSettings::new(openrouter::MODEL_CATALOG[1].id, EffortLevel::Medium)
+                .with_mode(SessionMode::Auto)
         );
+        assert!(matches!(
+            &store.read(&id).unwrap().unwrap().transcript[..4],
+            [
+                TranscriptEntry::Model(_),
+                TranscriptEntry::Effort(EffortLevel::Low),
+                TranscriptEntry::Mode(SessionMode::Auto),
+                TranscriptEntry::UserMessage(_),
+            ]
+        ));
     }
 
     #[test]
@@ -971,6 +1130,7 @@ mod tests {
                 &SessionSettingsChange {
                     model: Some(openrouter::DEFAULT_MODEL.to_owned()),
                     effort: None,
+                    mode: None,
                 },
                 "\n\nFirst line\nsecond line",
             )
@@ -996,6 +1156,7 @@ mod tests {
                 &SessionSettingsChange {
                     model: Some(openrouter::DEFAULT_MODEL.to_owned()),
                     effort: None,
+                    mode: None,
                 },
                 &"x".repeat(MAX_SESSION_TITLE_CHARS + 10),
             )
@@ -1016,6 +1177,7 @@ mod tests {
                     &SessionSettingsChange {
                         model: Some(openrouter::DEFAULT_MODEL.to_owned()),
                         effort: None,
+                        mode: None,
                     },
                     "hello",
                 )
@@ -1058,6 +1220,7 @@ mod tests {
                 &SessionSettingsChange {
                     model: Some(openrouter::DEFAULT_MODEL.to_owned()),
                     effort: None,
+                    mode: None,
                 },
                 "hello",
             )

@@ -16,14 +16,16 @@ use super::{convert, operations::PromptCancellation};
 use crate::{
     openrouter,
     sessions::{
-        AssistantBatch, AssistantMessage, SessionSettings, SessionSettingsChange, SessionStore,
-        SessionSummary, ToolCall, ToolOutcome, ToolResult, TranscriptEntry,
+        AssistantBatch, AssistantMessage, SessionMode, SessionSettings, SessionSettingsChange,
+        SessionStore, SessionSummary, ToolCall, ToolOutcome, ToolResult, TranscriptEntry,
     },
     tools,
 };
 
-pub enum ToolPermissions {
-    AutoApprove,
+/// Transport for Ask mode's ACP permission request. The captured session mode,
+/// not this transport, decides whether shell approval is required.
+pub enum PermissionTransport {
+    None,
     Acp(ConnectionTo<Client>),
 }
 
@@ -41,7 +43,7 @@ pub fn run<F>(
     input: PromptInput,
     cancellation: PromptCancellation,
     send_update: F,
-    permissions: ToolPermissions,
+    permission_transport: PermissionTransport,
 ) -> Result<impl Future<Output = Result<PromptResponse>>>
 where
     F: FnMut(SessionUpdate) -> Result<()>,
@@ -52,7 +54,7 @@ where
         &input,
         cancellation,
         send_update,
-        permissions,
+        permission_transport,
     )?;
     let saved = run.save_user_message(input.user_message)?;
     Ok(async move {
@@ -101,7 +103,7 @@ struct PromptRun<F> {
     summary: SessionSummary,
     cancellation: PromptCancellation,
     send_update: F,
-    permissions: ToolPermissions,
+    permission_transport: PermissionTransport,
     /// Saved transcript, extended only after a database transaction succeeds.
     transcript: Vec<TranscriptEntry>,
     uncommitted_batch: Option<UncommittedAssistantBatch>,
@@ -152,7 +154,7 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
         input: &PromptInput,
         cancellation: PromptCancellation,
         send_update: F,
-        permissions: ToolPermissions,
+        permission_transport: PermissionTransport,
     ) -> Result<Self> {
         let session_id = &input.session_id;
         let stored = store
@@ -179,6 +181,7 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
         let settings_change = SessionSettingsChange {
             model: stored.transcript.is_empty().then(|| settings.model.clone()),
             effort: (saved_settings.effort != settings.effort).then_some(settings.effort),
+            mode: (saved_settings.mode != settings.mode).then_some(settings.mode),
         };
         Ok(Self {
             store,
@@ -189,7 +192,7 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
             summary: stored.summary,
             cancellation,
             send_update,
-            permissions,
+            permission_transport,
             transcript: stored.transcript,
             uncommitted_batch: None,
         })
@@ -212,6 +215,9 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
         }
         if let Some(effort) = self.settings_change.effort.take() {
             self.transcript.push(TranscriptEntry::Effort(effort));
+        }
+        if let Some(mode) = self.settings_change.mode.take() {
+            self.transcript.push(TranscriptEntry::Mode(mode));
         }
         if locks_model {
             (self.send_update)(SessionUpdate::ConfigOptionUpdate(ConfigOptionUpdate::new(
@@ -348,13 +354,15 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
     }
 
     async fn approve(&self, call: &ToolCall) -> std::result::Result<bool, PromptOutcome> {
-        let connection = match &self.permissions {
-            ToolPermissions::AutoApprove => return Ok(true),
-            ToolPermissions::Acp(connection) => connection,
-        };
         if call.name != tools::SHELL {
             return Ok(true);
         }
+        if self.settings.mode == SessionMode::Auto {
+            return Ok(true);
+        }
+        let PermissionTransport::Acp(connection) = &self.permission_transport else {
+            panic!("Ask mode requires an ACP permission-request connection");
+        };
         let response = tokio::select! {
             biased;
             () = self.cancellation.cancelled() => return Err(PromptOutcome::Cancelled),
@@ -508,7 +516,8 @@ mod tests {
         ) -> (Result<PromptResponse>, Vec<TranscriptEntry>) {
             self.run_with_settings(
                 input,
-                SessionSettings::new(DEFAULT_MODEL, EffortLevel::Default),
+                SessionSettings::new(DEFAULT_MODEL, EffortLevel::Default)
+                    .with_mode(SessionMode::Auto),
                 on_update,
             )
             .await
@@ -546,7 +555,7 @@ mod tests {
                 },
                 self.cancellation.clone(),
                 send_update,
-                ToolPermissions::AutoApprove,
+                PermissionTransport::None,
             )
             .unwrap();
             let response = prompt.await;
@@ -568,6 +577,10 @@ mod tests {
 
     fn model() -> TranscriptEntry {
         TranscriptEntry::Model(DEFAULT_MODEL.to_owned())
+    }
+
+    fn auto() -> TranscriptEntry {
+        TranscriptEntry::Mode(SessionMode::Auto)
     }
 
     fn user(text: &str) -> TranscriptEntry {
@@ -780,7 +793,7 @@ mod tests {
         let (response, transcript) = harness.run("Apply the patch", |_| Ok(())).await;
 
         assert!(response.is_err());
-        assert_eq!(transcript, vec![model(), user("Apply the patch")]);
+        assert_eq!(transcript, vec![model(), auto(), user("Apply the patch")]);
         assert_eq!(harness.stored(), transcript);
         assert_eq!(fs::read_dir(&harness.workspace.0).unwrap().count(), 0);
     }
@@ -874,6 +887,7 @@ mod tests {
                 &SessionSettingsChange {
                     model: Some(saved.model.clone()),
                     effort: Some(saved.effort),
+                    mode: None,
                 },
                 "saved turn",
             )
@@ -915,7 +929,7 @@ mod tests {
             },
             PromptCancellation::new(),
             |_| Ok(()),
-            ToolPermissions::AutoApprove,
+            PermissionTransport::None,
         );
         assert!(missing_run.is_err());
 
@@ -926,6 +940,7 @@ mod tests {
                 &SessionSettingsChange {
                     model: Some("retired/model".to_owned()),
                     effort: Some(EffortLevel::High),
+                    mode: None,
                 },
                 "saved turn",
             )
@@ -942,7 +957,7 @@ mod tests {
             },
             PromptCancellation::new(),
             |_| Ok(()),
-            ToolPermissions::AutoApprove,
+            PermissionTransport::None,
         );
         assert!(unknown_run.is_err());
         assert_eq!(store.read(&unknown).unwrap().unwrap().transcript, before);
@@ -964,6 +979,7 @@ mod tests {
             transcript,
             vec![
                 model(),
+                auto(),
                 user("Weather?"),
                 calls(&[("call-1", "printf Chicago"), ("call-2", "printf Denver")]),
                 printed("call-1", "Chicago"),
@@ -1014,6 +1030,7 @@ mod tests {
             transcript,
             vec![
                 model(),
+                auto(),
                 user("Weather?"),
                 calls(&[("call-1", "printf Chicago"), ("call-2", "printf Denver")]),
                 printed("call-1", "Chicago"),
@@ -1063,7 +1080,7 @@ mod tests {
             .await;
 
         assert_eq!(response.unwrap().stop_reason, StopReason::Cancelled);
-        assert_eq!(transcript, vec![model(), user("Hi")]);
+        assert_eq!(transcript, vec![model(), auto(), user("Hi")]);
         assert_eq!(harness.stored(), transcript);
     }
 
@@ -1086,7 +1103,7 @@ mod tests {
         assert!(
             error.to_string().contains("disk full") || format!("{error:?}").contains("disk full")
         );
-        assert_eq!(transcript, vec![model(), user("Hi")]);
+        assert_eq!(transcript, vec![model(), auto(), user("Hi")]);
         assert_eq!(harness.stored(), transcript);
     }
 
@@ -1112,6 +1129,7 @@ mod tests {
             transcript,
             vec![
                 model(),
+                auto(),
                 user("Weather?"),
                 calls(&[("call-1", "printf Chicago"), ("call-2", "printf Denver")]),
                 printed("call-1", "Chicago"),

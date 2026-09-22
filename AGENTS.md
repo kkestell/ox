@@ -24,18 +24,19 @@ THIS DOCUMENT MUST BE KEPT UP TO DATE
 - `src/tools/search.rs`: Bounded glob and grep searches through ripgrep.
 - `src/tools/patch.rs`: Patch parsing, exact text matching, workspace path
   validation, and filesystem changes.
-- `src/sessions.rs`: Transcript and session-setting types, stored JSON encoding,
-  transcript validation, database path selection, and `SessionStore` over one
-  SQLite connection.
+- `src/sessions.rs`: Transcript and durable model, effort, and mode setting
+  types, stored JSON encoding, transcript validation, database path selection,
+  and `SessionStore` over one SQLite connection.
 - `src/acp.rs`: Connection wiring, `ServerState`, lazy OpenRouter client,
-  request handlers, per-session configuration selections, system prompts
-  assembled when a session becomes active, and the headless prompt entry point.
+  request handlers, per-session model, effort, and mode selections, system
+  prompts assembled when a session becomes active, and the automatic headless
+  prompt entry point.
 - `src/acp/operations.rs`: One active prompt, load, or delete per session,
   enforced by an operation guard.
-- `src/acp/prompt.rs`: One prompt run: save the user message, request model
-  output with the captured system prompt, request shell approval over ACP, run
-  tools, save complete assistant batches, and respond. Headless runs
-  automatically approve tools.
+- `src/acp/prompt.rs`: One prompt run: save the user message with its captured
+  settings, request model output with the captured system prompt, apply Ask or
+  Auto shell authorization, run tools, save complete assistant batches, and
+  respond.
 - `src/acp/convert.rs`: ACP input conversion, session update construction
   including each tool call's kind, and transcript replay.
 

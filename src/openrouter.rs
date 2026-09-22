@@ -180,7 +180,9 @@ pub(crate) fn chat_messages(transcript: &[TranscriptEntry]) -> Vec<Value> {
         .iter()
         .filter_map(|entry| {
             Some(match entry {
-                TranscriptEntry::Model(_) | TranscriptEntry::Effort(_) => return None,
+                TranscriptEntry::Model(_)
+                | TranscriptEntry::Effort(_)
+                | TranscriptEntry::Mode(_) => return None,
                 TranscriptEntry::UserMessage(text) => json!({ "role": "user", "content": text }),
                 TranscriptEntry::AssistantMessage(message) => {
                     let content = if message.text.is_empty() {
@@ -736,7 +738,7 @@ mod tests {
         fixture::{Reply, Server, delta, sse, text_reply},
         *,
     };
-    use crate::sessions::{ToolOutcome, ToolResult};
+    use crate::sessions::{SessionMode, ToolOutcome, ToolResult};
 
     const TEST_SYSTEM_PROMPT: &str = "You are Ox.";
 
@@ -798,6 +800,7 @@ mod tests {
         })];
         let transcript = vec![
             TranscriptEntry::Model(MODEL_CATALOG[2].id.to_owned()),
+            TranscriptEntry::Mode(SessionMode::Auto),
             TranscriptEntry::UserMessage("Weather in Chicago and Denver?".to_owned()),
             TranscriptEntry::AssistantMessage(AssistantMessage {
                 text: String::new(),

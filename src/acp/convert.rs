@@ -149,7 +149,7 @@ pub fn replay_transcript(
     let mut calls: &[ToolCall] = &[];
     for entry in transcript {
         match entry {
-            TranscriptEntry::Model(_) | TranscriptEntry::Effort(_) => {}
+            TranscriptEntry::Model(_) | TranscriptEntry::Effort(_) | TranscriptEntry::Mode(_) => {}
             TranscriptEntry::UserMessage(text) => send_update(user_message_chunk(text))?,
             TranscriptEntry::AssistantMessage(message) => {
                 if !message.reasoning.is_empty() {

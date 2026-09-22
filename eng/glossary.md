@@ -20,6 +20,7 @@
 | visible reasoning, request  | —                    | `reasoning`                              |
 | visible reasoning, response | `AgentThoughtChunk`  | `delta.reasoning`                        |
 | effort level                | `effort` option      | `reasoning.effort` (omitted for Default) |
+| session mode                | `mode` option        | —                                        |
 | tool name                   | tool kind            | `function.name`                          |
 | tool outcome `cancelled`    | tool status `failed` | —                                        |
 | prompt outcome              | `stopReason`         | `finish_reason`                          |
@@ -50,7 +51,8 @@
   as the first message of every model request for that session.
 - **Workspace instructions**: The text of `AGENTS.md` at the workspace root,
   appended to the system prompt when a session becomes active.
-- **Session settings**: The model and effort level in force for a turn.
+- **Session settings**: The model, effort level, and session mode in force for
+  a turn.
 - **ACP selections**: The latest session settings selected through ACP for a
   future turn. They are process state, not durable authority.
 - **Saved settings**: The session settings rebuilt by folding a stored
@@ -62,6 +64,12 @@
   High.
 - **Effort mapping**: The per-model table that turns an effort level into an
   OpenRouter effort string, or into no reasoning parameter for Default.
+- **Session mode**: The durable choice that controls shell authorization for a
+  turn: Ask or Auto.
+- **Ask mode**: The session mode that requests ACP client permission before
+  each shell call. It is the default for a new ACP session.
+- **Auto mode**: The session mode that runs shell calls without an ACP
+  permission request. Headless prompts use Auto.
 - **Session title**: The short label a session shows in a client, taken once
   from the first nonblank line of the first saved user message and shortened to
   80 characters.
@@ -91,8 +99,8 @@
   saved before the first model request.
 - **Transcript**: The ordered, saved conversation used for both session replay
   and future model requests.
-- **Transcript entry**: A model entry, effort entry, user message, assistant
-  message, or tool result in the transcript.
+- **Transcript entry**: A model entry, effort entry, mode entry, user message,
+  assistant message, or tool result in the transcript.
 - **Model entry**: The first transcript entry. It stores the OpenRouter model
   used for every model request in that session.
 - **OpenRouter client**: The concrete client that verifies the API key and sends

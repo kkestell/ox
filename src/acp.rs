@@ -30,7 +30,7 @@ use agent_client_protocol::{
 
 use crate::{
     auth, openrouter,
-    sessions::{self, EffortLevel, SessionSettings, SessionStore, SessionSummary},
+    sessions::{self, EffortLevel, SessionMode, SessionSettings, SessionStore, SessionSummary},
     system_prompt,
 };
 use operations::{PromptCancellation, SessionOperations};
@@ -76,6 +76,19 @@ fn config_options(settings: &SessionSettings, model_locked: bool) -> Vec<Session
                 .collect::<Vec<_>>(),
         )
         .category(SessionConfigOptionCategory::ThoughtLevel),
+        SessionConfigOption::select(
+            "mode",
+            "Mode",
+            settings.mode.id(),
+            SessionMode::ALL
+                .into_iter()
+                .map(|mode| {
+                    SessionConfigSelectOption::new(mode.id(), mode.name())
+                        .description(mode.description())
+                })
+                .collect::<Vec<_>>(),
+        )
+        .category(SessionConfigOptionCategory::Mode),
     ]
 }
 
@@ -176,6 +189,14 @@ impl ServerState {
             }
             "effort" => {
                 selections.effort = EffortLevel::from_id(value.0.as_ref()).ok_or_else(|| {
+                    Error::invalid_params().data(format!(
+                        "{} is not a choice of configuration option {}",
+                        value, request.config_id
+                    ))
+                })?;
+            }
+            "mode" => {
+                selections.mode = SessionMode::from_id(value.0.as_ref()).ok_or_else(|| {
                     Error::invalid_params().data(format!(
                         "{} is not a choice of configuration option {}",
                         value, request.config_id
@@ -403,12 +424,15 @@ async fn run_headless_prompt(
         prompt::PromptInput {
             session_id,
             user_message,
-            selected_settings: Some(default_settings()),
+            selected_settings: Some(
+                SessionSettings::new(openrouter::DEFAULT_MODEL, EffortLevel::Default)
+                    .with_mode(SessionMode::Auto),
+            ),
             system_prompt,
         },
         cancellation.clone(),
         |_| Ok(()),
-        prompt::ToolPermissions::AutoApprove,
+        prompt::PermissionTransport::None,
     )?;
     tokio::pin!(run);
     let response = loop {
@@ -540,7 +564,7 @@ async fn serve(state: ServerState, transport: impl ConnectTo<Agent> + 'static) -
                     },
                     cancellation,
                     send_update,
-                    prompt::ToolPermissions::Acp(task_connection),
+                    prompt::PermissionTransport::Acp(task_connection),
                 ) {
                     Ok(run) => run,
                     Err(error) => return responder.respond_with_error(error),
@@ -701,6 +725,7 @@ mod tests {
                 &sessions::SessionSettingsChange {
                     model: Some(openrouter::DEFAULT_MODEL.to_owned()),
                     effort: None,
+                    mode: None,
                 },
                 "Hello",
             )
@@ -743,6 +768,7 @@ mod tests {
                 &sessions::SessionSettingsChange {
                     model: Some("retired/model".to_owned()),
                     effort: None,
+                    mode: None,
                 },
                 "Hello",
             )
@@ -770,12 +796,32 @@ mod tests {
     }
 
     #[test]
-    fn model_selection_locks_after_the_first_user_message() {
+    fn configuration_selections_validate_and_restore_saved_values() {
         let state = state();
         let workspace_path = Path::new("/workspace");
         let created = state
             .new_session(&NewSessionRequest::new(workspace_path))
             .unwrap();
+        let new_options = serde_json::to_value(&created).unwrap();
+        assert_eq!(new_options["configOptions"].as_array().unwrap().len(), 3);
+        assert_eq!(new_options["configOptions"][2]["id"], "mode");
+        assert_eq!(new_options["configOptions"][2]["category"], "mode");
+        assert_eq!(new_options["configOptions"][2]["currentValue"], "ask");
+        assert_eq!(
+            new_options["configOptions"][2]["options"],
+            serde_json::json!([
+                {
+                    "value": "ask",
+                    "name": "Ask",
+                    "description": "Ask before running each shell command."
+                },
+                {
+                    "value": "auto",
+                    "name": "Auto",
+                    "description": "Run shell commands without asking."
+                }
+            ])
+        );
         let chosen = openrouter::MODEL_CATALOG[1].id;
         let response = state
             .set_config_option(&SetSessionConfigOptionRequest::new(
@@ -793,6 +839,28 @@ mod tests {
                 .len(),
             openrouter::MODEL_CATALOG.len()
         );
+        let response = state
+            .set_config_option(&SetSessionConfigOptionRequest::new(
+                created.session_id.clone(),
+                "mode",
+                "auto",
+            ))
+            .unwrap();
+        assert_eq!(
+            serde_json::to_value(response).unwrap()["configOptions"][2]["currentValue"],
+            "auto"
+        );
+        assert_eq!(
+            state
+                .set_config_option(&SetSessionConfigOptionRequest::new(
+                    created.session_id.clone(),
+                    "mode",
+                    "unknown",
+                ))
+                .unwrap_err()
+                .code,
+            ErrorCode::InvalidParams
+        );
 
         state
             .store
@@ -801,6 +869,7 @@ mod tests {
                 &sessions::SessionSettingsChange {
                     model: Some(chosen.to_owned()),
                     effort: None,
+                    mode: Some(SessionMode::Auto),
                 },
                 "Hello",
             )
@@ -814,14 +883,20 @@ mod tests {
             .unwrap_err();
         assert_eq!(error.code, ErrorCode::InvalidParams);
 
+        let mut replayed = Vec::new();
         let loaded = state
             .load_session(
                 &LoadSessionRequest::new(created.session_id, workspace_path),
-                |_| Ok(()),
+                |update| {
+                    replayed.push(update);
+                    Ok(())
+                },
             )
             .unwrap();
         let loaded = serde_json::to_value(loaded).unwrap();
         assert_eq!(loaded["configOptions"][0]["currentValue"], chosen);
+        assert_eq!(loaded["configOptions"][2]["currentValue"], "auto");
+        assert_eq!(replayed.len(), 1, "setting entries are not replayed");
         assert_eq!(
             loaded["configOptions"][0]["options"]
                 .as_array()
@@ -832,7 +907,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn effort_changes_apply_to_the_next_turn_while_the_system_prompt_stays_captured() {
+    async fn setting_changes_apply_to_the_next_turn_while_the_system_prompt_stays_captured() {
         use crate::openrouter::fixture::{Reply, Server, text_reply};
         use crate::sessions::TranscriptEntry;
 
@@ -871,7 +946,7 @@ mod tests {
             input("first"),
             cancellation.clone(),
             |_| Ok(()),
-            prompt::ToolPermissions::AutoApprove,
+            prompt::PermissionTransport::None,
         )
         .unwrap();
         let change = async {
@@ -886,6 +961,13 @@ mod tests {
                     "high",
                 ))
                 .unwrap();
+            state
+                .set_config_option(&SetSessionConfigOptionRequest::new(
+                    id.clone(),
+                    "mode",
+                    "auto",
+                ))
+                .unwrap();
             cancellation.cancel();
         };
         let (first_response, ()) = futures::join!(first, change);
@@ -897,19 +979,20 @@ mod tests {
             input("second"),
             PromptCancellation::new(),
             |_| Ok(()),
-            prompt::ToolPermissions::AutoApprove,
+            prompt::PermissionTransport::None,
         )
         .unwrap();
         assert_eq!(second.await.unwrap().stop_reason, StopReason::EndTurn);
 
         let stored = state.store.read(&id).unwrap().unwrap();
         assert!(matches!(
-            &stored.transcript[..5],
+            &stored.transcript[..6],
             [
                 TranscriptEntry::Model(_),
                 TranscriptEntry::Effort(EffortLevel::Low),
                 TranscriptEntry::UserMessage(first),
                 TranscriptEntry::Effort(EffortLevel::High),
+                TranscriptEntry::Mode(SessionMode::Auto),
                 TranscriptEntry::UserMessage(second),
             ] if first == "first" && second == "second"
         ));
@@ -1040,6 +1123,7 @@ mod tests {
 
         for decision in [
             "approve",
+            "auto",
             "deny",
             "mixed",
             "cancelled",
@@ -1049,7 +1133,7 @@ mod tests {
             "error",
         ] {
             let workspace = Workspace::new();
-            let continues = matches!(decision, "approve" | "deny" | "mixed");
+            let continues = matches!(decision, "approve" | "auto" | "deny" | "mixed");
             let mut replies = vec![shell_reply(&[("touch first", 5), ("touch second", 5)])];
             if continues {
                 replies.push(text_reply("Done"));
@@ -1060,6 +1144,15 @@ mod tests {
             let store = state.store.clone();
             let operations = state.operations.clone();
             let id = create_session(&state, &workspace.0);
+            if decision == "auto" {
+                state
+                    .set_config_option(&SetSessionConfigOptionRequest::new(
+                        id.clone(),
+                        "mode",
+                        "auto",
+                    ))
+                    .unwrap();
+            }
             let (incoming_tx, incoming_rx) = mpsc::unbounded();
             let (outgoing_tx, mut outgoing_rx) = mpsc::unbounded::<String>();
             let transport = Lines::new(outgoing_tx.sink_map_err(io::Error::other), incoming_rx);
@@ -1073,6 +1166,7 @@ mod tests {
                 let mut incoming_tx = Some(incoming_tx);
                 let mut requested = 0;
                 let mut announced = Vec::new();
+                let mut auto_updates = Vec::new();
                 let mut response = None;
                 while let Some(line) = outgoing_rx.next().await {
                     let message: Value = serde_json::from_str(&line).unwrap();
@@ -1083,6 +1177,20 @@ mod tests {
                             "{decision}"
                         );
                         announced.push(update["toolCallId"].clone());
+                    }
+                    if decision == "auto" {
+                        match update["sessionUpdate"].as_str() {
+                            Some("tool_call") => auto_updates.push(format!(
+                                "{} pending",
+                                update["toolCallId"].as_str().unwrap()
+                            )),
+                            Some("tool_call_update") => auto_updates.push(format!(
+                                "{} {}",
+                                update["toolCallId"].as_str().unwrap(),
+                                update["status"].as_str().unwrap()
+                            )),
+                            _ => {}
+                        }
                     }
                     if message["method"] == "session/request_permission" {
                         let params = &message["params"];
@@ -1169,8 +1277,21 @@ mod tests {
                         drop(incoming_tx.take());
                     }
                 }
-                if decision == "approve" {
-                    assert_eq!(requested, 2);
+                if matches!(decision, "approve" | "auto") {
+                    assert_eq!(requested, if decision == "approve" { 2 } else { 0 });
+                }
+                if decision == "auto" {
+                    assert_eq!(
+                        auto_updates,
+                        [
+                            "shell-0 pending",
+                            "shell-1 pending",
+                            "shell-0 in_progress",
+                            "shell-0 completed",
+                            "shell-1 in_progress",
+                            "shell-1 completed",
+                        ]
+                    );
                 }
                 let response =
                     response.unwrap_or_else(|| panic!("{decision}: missing prompt response"));
@@ -1201,12 +1322,12 @@ mod tests {
             }
             assert_eq!(
                 workspace.0.join("first").exists(),
-                decision == "approve",
+                matches!(decision, "approve" | "auto"),
                 "{decision}"
             );
             assert_eq!(
                 workspace.0.join("second").exists(),
-                matches!(decision, "approve" | "mixed"),
+                matches!(decision, "approve" | "auto" | "mixed"),
                 "{decision}"
             );
             let transcript = store.read(&id).unwrap().unwrap().transcript;
@@ -1218,9 +1339,19 @@ mod tests {
                 })
                 .collect();
             assert_eq!(results.len(), 2, "{decision}");
+            if decision == "auto" {
+                assert!(matches!(
+                    &transcript[..3],
+                    [
+                        TranscriptEntry::Model(_),
+                        TranscriptEntry::Mode(SessionMode::Auto),
+                        TranscriptEntry::UserMessage(_),
+                    ]
+                ));
+            }
             for (index, result) in results.iter().enumerate() {
                 match decision {
-                    "approve" => assert!(
+                    "approve" | "auto" => assert!(
                         matches!(result.outcome, ToolOutcome::Completed(_)),
                         "{decision}, result {index}"
                     ),
@@ -1295,6 +1426,14 @@ mod tests {
             .await;
             assert!(response.unwrap_err().to_string().contains("Cancelled"));
             let transcript = store.read(&session.id).unwrap().unwrap().transcript;
+            assert!(matches!(
+                &transcript[..3],
+                [
+                    TranscriptEntry::Model(_),
+                    TranscriptEntry::Mode(SessionMode::Auto),
+                    TranscriptEntry::UserMessage(_),
+                ]
+            ));
             assert_eq!(transcript.iter().filter(|entry| matches!(entry, TranscriptEntry::ToolResult(result) if matches!(result.outcome, ToolOutcome::Cancelled(_)))).count(), 2);
             std::fs::write(path.join("saved"), "yes").unwrap();
             return;

@@ -59,14 +59,16 @@ requests are projections of the same saved transcript; neither has a separate
 authoritative representation.
 
 A transcript may be empty. Every nonempty transcript begins with one model
-entry. Effort entries appear only immediately before the user message where the
-new effort level takes effect. An assistant message is followed immediately by
-one tool result for each tool call it contains, in call order.
+entry. Effort and mode entries form a contiguous settings block immediately
+before the user message where those settings take effect; a block contains at
+most one of each. An assistant message is followed immediately by one tool
+result for each tool call it contains, in call order.
 
 The model entry fixes the OpenRouter model when the first turn starts. The model
-does not change within that session. The current effort level may change between
-turns. Folding the transcript reconstructs the session settings after load or
-restart.
+does not change within that session. The current effort level and session mode
+may change between turns. Folding the transcript reconstructs all session
+settings after load or restart, including Auto mode before another command can
+run.
 
 An assistant message keeps answer text, visible reasoning, tool calls, and
 continuation metadata together. Continuation metadata is durable model context,
@@ -97,8 +99,9 @@ state:
 - the session store holds one SQLite connection.
 
 ACP selections are not a second durable settings store. A prompt run takes a
-settings snapshot at its turn boundary. The transcript remains authoritative for
-the fixed model and last saved effort level.
+model, effort, and mode snapshot at its turn boundary. Changes made while it is
+running apply to the next turn. The transcript remains authoritative for the
+fixed model and last saved effort level and mode.
 
 ### System prompt
 
@@ -187,9 +190,11 @@ Read, search, and patch operations are constrained to the session workspace.
 its target remains inside the workspace; search traversal does not follow
 symbolic links. Patch operations reject a symbolic link as their target. Shell
 starts in the workspace but may access other paths and the network with Ox's
-permissions. Over ACP, every shell call requires a shell permission request;
-headless prompts approve it automatically. Tool effects are not transactional
-and may remain after failure or cancellation.
+permissions. In Ask mode, every ACP shell call requires a permission request.
+In Auto mode, shell calls run without that request. Headless prompts use and
+save Auto mode. The captured mode is the authorization policy for the whole
+turn; the ACP connection only transports Ask requests. Tool effects are not
+transactional and may remain after failure or cancellation.
 
 `AGENTS.md` is user-controlled workspace input appended to the system prompt. A
 file that cannot be read, is not UTF-8, or exceeds 32 KiB fails session
@@ -209,8 +214,8 @@ The implementation enforces these properties:
 2. The saved user message is durable before its turn's first model request.
 3. A nonempty transcript begins with exactly one model entry, and every model
    request in the session uses that model.
-4. An effort entry appears only immediately before the user message where it
-   takes effect.
+4. Effort and mode entries form one nonduplicating settings block immediately
+   before the user message where they take effect.
 5. Tool execution begins only from a validated completion.
 6. A saved assistant message has exactly one matching final tool result for each
    tool call, in call order.
@@ -226,6 +231,8 @@ The implementation enforces these properties:
     healthy ACP connection.
 13. Every model request for an active session sends the same system prompt
     assembled when the session became active before the transcript.
+14. Every shell call uses the session mode captured at the prompt's turn
+    boundary.
 
 ## Deliberate constraints
 
