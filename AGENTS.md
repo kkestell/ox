@@ -11,8 +11,11 @@ THIS DOCUMENT MUST BE KEPT UP TO DATE
 - `src/main.rs`: Command parsing and process entry; starts the ACP server, runs
   one headless prompt, runs a credential command, or prints help.
 - `src/auth.rs`: Environment and operating-system keyring credential storage.
+- `src/instructions.rs`: Bounded reading of the workspace root `AGENTS.md` as
+  workspace instructions.
 - `src/openrouter.rs`: OpenRouter model catalog and effort mapping, request
-  encoding, client, and streamed-response assembly.
+  encoding with workspace instructions before the transcript, client, and
+  streamed-response assembly.
 - `src/tools.rs`: Concrete tool schemas, tool call titles, and execution of one
   complete call.
 - `src/tools/read.rs`: Bounded text-file reading with line pagination.
@@ -25,13 +28,15 @@ THIS DOCUMENT MUST BE KEPT UP TO DATE
   transcript validation, database path selection, and `SessionStore` over one
   SQLite connection.
 - `src/acp.rs`: Connection wiring, `ServerState`, lazy OpenRouter client,
-  request handlers, per-session configuration selections, and the headless
-  prompt entry point.
+  request handlers, per-session configuration selections, workspace
+  instructions captured when a session becomes active, and the headless prompt
+  entry point.
 - `src/acp/operations.rs`: One active prompt, load, or delete per session,
   enforced by an operation guard.
 - `src/acp/prompt.rs`: One prompt run: save the user message, request model
-  output, request shell approval over ACP, run tools, save complete assistant
-  batches, and respond. Headless runs automatically approve tools.
+  output with the captured workspace instructions, request shell approval over
+  ACP, run tools, save complete assistant batches, and respond. Headless runs
+  automatically approve tools.
 - `src/acp/convert.rs`: ACP input conversion, session update construction
   including each tool call's kind, and transcript replay.
 

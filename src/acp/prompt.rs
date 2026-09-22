@@ -31,6 +31,8 @@ pub(super) struct PromptInput {
     pub session_id: SessionId,
     pub user_message: String,
     pub selected_settings: Option<SessionSettings>,
+    /// The workspace instructions captured when the session became active.
+    pub instructions: Option<String>,
 }
 
 pub fn run<F>(
@@ -47,8 +49,7 @@ where
     let mut run = PromptRun::open(
         store,
         openrouter,
-        input.session_id,
-        input.selected_settings,
+        &input,
         cancellation,
         send_update,
         permissions,
@@ -95,6 +96,8 @@ struct PromptRun<F> {
     openrouter: openrouter::Client,
     settings: SessionSettings,
     settings_change: SessionSettingsChange,
+    /// Sent before the transcript on every model request of this run.
+    instructions: Option<String>,
     summary: SessionSummary,
     cancellation: PromptCancellation,
     send_update: F,
@@ -146,18 +149,21 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
     fn open(
         store: SessionStore,
         openrouter: openrouter::Client,
-        session_id: SessionId,
-        selected_settings: Option<SessionSettings>,
+        input: &PromptInput,
         cancellation: PromptCancellation,
         send_update: F,
         permissions: ToolPermissions,
     ) -> Result<Self> {
+        let session_id = &input.session_id;
         let stored = store
-            .read(&session_id)
+            .read(session_id)
             .map_err(Error::into_internal_error)?
             .ok_or_else(|| Error::resource_not_found(Some(session_id.to_string())))?;
         let saved_settings = stored.settings(&super::default_settings());
-        let mut settings = selected_settings.unwrap_or_else(|| saved_settings.clone());
+        let mut settings = input
+            .selected_settings
+            .clone()
+            .unwrap_or_else(|| saved_settings.clone());
         if !stored.transcript.is_empty() {
             settings.model.clone_from(&saved_settings.model);
         }
@@ -179,6 +185,7 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
             openrouter,
             settings,
             settings_change,
+            instructions: input.instructions.clone(),
             summary: stored.summary,
             cancellation,
             send_update,
@@ -270,6 +277,7 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
             started = self.openrouter.stream_completion(
                 &self.settings.model,
                 self.settings.effort,
+                self.instructions.as_deref(),
                 &self.transcript,
             ) => {
                 started.map_err(PromptOutcome::OpenRouter)?
@@ -533,6 +541,7 @@ mod tests {
                     session_id: self.session_id.clone(),
                     user_message: input.to_owned(),
                     selected_settings,
+                    instructions: None,
                 },
                 self.cancellation.clone(),
                 send_update,
@@ -901,6 +910,7 @@ mod tests {
                 session_id: missing,
                 user_message: "not saved".to_owned(),
                 selected_settings: None,
+                instructions: None,
             },
             PromptCancellation::new(),
             |_| Ok(()),
@@ -927,6 +937,7 @@ mod tests {
                 session_id: unknown.clone(),
                 user_message: "not saved".to_owned(),
                 selected_settings: None,
+                instructions: None,
             },
             PromptCancellation::new(),
             |_| Ok(()),

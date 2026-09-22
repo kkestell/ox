@@ -23,6 +23,7 @@
 | tool name                    | tool kind            | `function.name`                          |
 | tool outcome `cancelled`     | tool status `failed` | —                                        |
 | prompt outcome               | `stopReason`         | `finish_reason`                          |
+| workspace instructions       | —                    | first `user` message                     |
 
 ## Terms
 
@@ -41,6 +42,13 @@
   failed because ACP has no separate cancelled tool status.
 - **Session**: A saved conversation and its metadata, identified by a session
   ID. Its OpenRouter model is fixed when the first turn starts.
+- **Active session**: A session created or loaded in the current process. Its
+  workspace instructions are captured when it becomes active, and only an
+  active session can be configured or prompted over ACP.
+- **Workspace instructions**: The text of `AGENTS.md` at the workspace root,
+  captured once when a session becomes active and sent as the first user-role
+  message of every model request for that session. They are process state, not
+  transcript entries, and a user message takes precedence over them.
 - **Session settings**: The model and effort level in force for a turn.
 - **ACP selections**: The latest session settings selected through ACP for a
   future turn. They are process state, not durable authority.

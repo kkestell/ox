@@ -1,5 +1,6 @@
 mod acp;
 mod auth;
+mod instructions;
 mod openrouter;
 mod sessions;
 mod tools;

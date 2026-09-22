@@ -29,7 +29,7 @@ use agent_client_protocol::{
 };
 
 use crate::{
-    auth, openrouter,
+    auth, instructions, openrouter,
     sessions::{self, EffortLevel, SessionSettings, SessionStore, SessionSummary},
 };
 use operations::{PromptCancellation, SessionOperations};
@@ -83,9 +83,21 @@ struct ServerState {
     store: SessionStore,
     openrouter: Arc<Mutex<Option<openrouter::Client>>>,
     operations: SessionOperations,
-    /// The latest client selections for each session. A prompt copies these
-    /// before it starts, so changes during the prompt apply to the next turn.
-    selections: Arc<Mutex<HashMap<SessionId, SessionSettings>>>,
+    /// The sessions created or loaded in this process. Only an active session
+    /// can be configured or prompted.
+    active: Arc<Mutex<HashMap<SessionId, ActiveSession>>>,
+}
+
+/// Process state for one active session.
+#[derive(Clone)]
+struct ActiveSession {
+    /// The latest client selections. A prompt copies these before it starts,
+    /// so changes during the prompt apply to the next turn.
+    settings: SessionSettings,
+    /// The workspace instructions captured when the session became active.
+    /// `None` records a workspace without `AGENTS.md`, so no prompt reads the
+    /// file.
+    instructions: Option<String>,
 }
 
 impl ServerState {
@@ -94,7 +106,7 @@ impl ServerState {
             store,
             openrouter: Arc::default(),
             operations: SessionOperations::default(),
-            selections: Arc::default(),
+            active: Arc::default(),
         }
     }
 
@@ -119,12 +131,10 @@ impl ServerState {
 
     fn new_session(&self, request: &NewSessionRequest) -> Result<NewSessionResponse> {
         self.openrouter_client()?;
+        let instructions = instructions::read(&request.cwd).map_err(Error::into_internal_error)?;
         let summary = self.store.create(&request.cwd).map_err(store_error)?;
         let settings = default_settings();
-        self.selections
-            .lock()
-            .expect("session selections mutex poisoned")
-            .insert(summary.id.clone(), settings.clone());
+        self.activate(summary.id.clone(), settings.clone(), instructions);
         Ok(NewSessionResponse::new(summary.id).config_options(config_options(&settings, false)))
     }
 
@@ -135,10 +145,6 @@ impl ServerState {
         let SessionConfigOptionValue::ValueId { value } = &request.value else {
             return Err(Error::invalid_params().data("every configuration option is a selector"));
         };
-        let mut selections = self
-            .selections
-            .lock()
-            .expect("session selections mutex poisoned");
         let stored = self
             .store
             .read(&request.session_id)
@@ -147,9 +153,11 @@ impl ServerState {
         let stored_settings = stored.settings(&default_settings());
         validate_settings(&stored_settings)?;
         let model_locked = !stored.transcript.is_empty();
-        let settings = selections
-            .entry(request.session_id.clone())
-            .or_insert_with(|| stored_settings.clone());
+        let mut active = self.active.lock().expect("active sessions mutex poisoned");
+        let settings = &mut active
+            .get_mut(&request.session_id)
+            .ok_or_else(|| inactive(&request.session_id))?
+            .settings;
         if model_locked {
             settings.model.clone_from(&stored_settings.model);
         }
@@ -180,7 +188,7 @@ impl ServerState {
             }
         }
         let options = config_options(settings, model_locked);
-        drop(selections);
+        drop(active);
         Ok(SetSessionConfigOptionResponse::new(options))
     }
 
@@ -206,12 +214,43 @@ impl ServerState {
         let settings = stored.settings(&default_settings());
         validate_settings(&settings)?;
         let model_locked = !stored.transcript.is_empty();
-        self.selections
-            .lock()
-            .expect("session selections mutex poisoned")
-            .insert(request.session_id.clone(), settings.clone());
+        // A repeated load keeps the instructions captured by the first, so the
+        // file is read once per active session.
+        let instructions = match self.active_session(&request.session_id) {
+            Some(active) => active.instructions,
+            None => instructions::read(&stored.summary.workspace_path)
+                .map_err(Error::into_internal_error)?,
+        };
+        self.activate(request.session_id.clone(), settings.clone(), instructions);
         convert::replay_transcript(&stored.transcript, send_update)?;
         Ok(LoadSessionResponse::new().config_options(config_options(&settings, model_locked)))
+    }
+
+    fn activate(
+        &self,
+        session_id: SessionId,
+        settings: SessionSettings,
+        instructions: Option<String>,
+    ) {
+        self.active
+            .lock()
+            .expect("active sessions mutex poisoned")
+            .insert(
+                session_id,
+                ActiveSession {
+                    settings,
+                    instructions,
+                },
+            );
+    }
+
+    /// The process state of a session created or loaded in this process.
+    fn active_session(&self, session_id: &SessionId) -> Option<ActiveSession> {
+        self.active
+            .lock()
+            .expect("active sessions mutex poisoned")
+            .get(session_id)
+            .cloned()
     }
 
     fn list_sessions(&self, request: &ListSessionsRequest) -> Result<ListSessionsResponse> {
@@ -237,19 +276,11 @@ impl ServerState {
         self.store
             .delete(&request.session_id)
             .map_err(Error::into_internal_error)?;
-        self.selections
+        self.active
             .lock()
-            .expect("session selections mutex poisoned")
+            .expect("active sessions mutex poisoned")
             .remove(&request.session_id);
         Ok(DeleteSessionResponse::new())
-    }
-
-    fn selected_settings(&self, session_id: &SessionId) -> Option<SessionSettings> {
-        self.selections
-            .lock()
-            .expect("session selections mutex poisoned")
-            .get(session_id)
-            .cloned()
     }
 
     /// The cached client is cleared even when removing the saved key fails,
@@ -278,6 +309,12 @@ fn not_found(session_id: &SessionId) -> Error {
 
 fn busy() -> Error {
     Error::invalid_request().data("session has an operation in progress")
+}
+
+fn inactive(session_id: &SessionId) -> Error {
+    Error::invalid_request().data(format!(
+        "session {session_id} is not active; create or load it first"
+    ))
 }
 
 fn session_info(summary: SessionSummary) -> SessionInfo {
@@ -337,12 +374,14 @@ pub async fn run_headless(
             "OpenRouter authentication required; run `ox auth login`",
         )
     })?;
+    let instructions = instructions::read(workspace_path)?;
     let store = SessionStore::open(&sessions::database_path()?)?;
     let session = store.create(workspace_path)?;
     run_headless_prompt(
         store,
         openrouter::Client::new(api_key),
         session.id,
+        instructions,
         user_message,
     )
     .await
@@ -352,6 +391,7 @@ async fn run_headless_prompt(
     store: SessionStore,
     openrouter: openrouter::Client,
     session_id: SessionId,
+    instructions: Option<String>,
     user_message: String,
 ) -> std::result::Result<(), Box<dyn StdError>> {
     let mut interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
@@ -363,6 +403,7 @@ async fn run_headless_prompt(
             session_id,
             user_message,
             selected_settings: Some(default_settings()),
+            instructions,
         },
         cancellation.clone(),
         |_| Ok(()),
@@ -474,7 +515,9 @@ async fn serve(state: ServerState, transport: impl ConnectTo<Agent> + 'static) -
                 else {
                     return responder.respond_with_error(busy());
                 };
-                let selected_settings = prompt_state.selected_settings(&request.session_id);
+                let Some(active) = prompt_state.active_session(&request.session_id) else {
+                    return responder.respond_with_error(inactive(&request.session_id));
+                };
                 let session_id = request.session_id;
                 let task_connection = connection.clone();
                 let send_update = {
@@ -491,7 +534,8 @@ async fn serve(state: ServerState, transport: impl ConnectTo<Agent> + 'static) -
                     prompt::PromptInput {
                         session_id: session_id.clone(),
                         user_message,
-                        selected_settings,
+                        selected_settings: Some(active.settings),
+                        instructions: active.instructions,
                     },
                     cancellation,
                     send_update,
@@ -521,16 +565,30 @@ async fn serve(state: ServerState, transport: impl ConnectTo<Agent> + 'static) -
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
+    use std::{fs, path::Path};
 
     use agent_client_protocol::schema::v1::{AuthCapabilities, ClientCapabilities, ErrorCode};
 
     use super::*;
+    use crate::tools::fixture::Workspace;
 
     fn state() -> ServerState {
-        let state = ServerState::new(SessionStore::in_memory());
+        state_over(SessionStore::in_memory())
+    }
+
+    /// A server state over `store`, as a later process would open it.
+    fn state_over(store: SessionStore) -> ServerState {
+        let state = ServerState::new(store);
         *state.openrouter.lock().unwrap() = Some(openrouter::Client::new("test-key".to_owned()));
         state
+    }
+
+    /// Creates an active session for `workspace_path` and returns its ID.
+    fn create_session(state: &ServerState, workspace_path: &Path) -> SessionId {
+        state
+            .new_session(&NewSessionRequest::new(workspace_path))
+            .unwrap()
+            .session_id
     }
 
     #[test]
@@ -553,12 +611,14 @@ mod tests {
     }
 
     #[test]
-    fn load_requires_a_matching_workspace_and_an_existing_session() {
+    fn activation_validates_the_session_and_captures_instructions_once() {
+        let workspace = Workspace::new();
+        let agents_md = workspace.0.join("AGENTS.md");
+        fs::write(&agents_md, "Answer in French.\n").unwrap();
         let state = state();
-        let workspace_path = Path::new("/Users/kyle/projects/ox");
-        let created = state
-            .new_session(&NewSessionRequest::new(workspace_path))
-            .unwrap();
+        let id = create_session(&state, &workspace.0);
+        let french = Some("Answer in French.\n".to_owned());
+        assert_eq!(state.active_session(&id).unwrap().instructions, french);
         let mut updates = Vec::new();
         let mut send_update = |update| {
             updates.push(update);
@@ -567,7 +627,7 @@ mod tests {
 
         let missing = state
             .load_session(
-                &LoadSessionRequest::new(SessionId::new("missing"), workspace_path),
+                &LoadSessionRequest::new(SessionId::new("missing"), &workspace.0),
                 &mut send_update,
             )
             .unwrap_err();
@@ -575,19 +635,56 @@ mod tests {
 
         let elsewhere = state
             .load_session(
-                &LoadSessionRequest::new(created.session_id.clone(), Path::new("/elsewhere")),
+                &LoadSessionRequest::new(id.clone(), Path::new("/elsewhere")),
                 &mut send_update,
             )
             .unwrap_err();
         assert_eq!(elsewhere.code, ErrorCode::InvalidParams);
 
+        fs::write(&agents_md, "Answer in German.\n").unwrap();
         state
             .load_session(
-                &LoadSessionRequest::new(created.session_id, workspace_path),
+                &LoadSessionRequest::new(id.clone(), &workspace.0),
                 &mut send_update,
             )
             .unwrap();
         assert!(updates.is_empty(), "a new session replays nothing");
+        assert_eq!(
+            state.active_session(&id).unwrap().instructions,
+            french,
+            "a repeated load keeps the captured instructions"
+        );
+
+        let later = state_over(state.store.clone());
+        later
+            .load_session(&LoadSessionRequest::new(id.clone(), &workspace.0), |_| {
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(
+            later.active_session(&id).unwrap().instructions,
+            Some("Answer in German.\n".to_owned()),
+            "a later process reads the current file on its first load"
+        );
+
+        state
+            .delete_session(&DeleteSessionRequest::new(id.clone()))
+            .unwrap();
+        assert!(
+            state.active_session(&id).is_none(),
+            "delete removes the active session"
+        );
+
+        fs::write(&agents_md, [0xff, 0xfe]).unwrap();
+        let invalid = state
+            .new_session(&NewSessionRequest::new(&workspace.0))
+            .unwrap_err();
+        assert_eq!(
+            invalid.data,
+            Some(serde_json::json!("AGENTS.md: not UTF-8 text"))
+        );
+        assert!(state.store.list(None).unwrap().is_empty());
+        assert!(state.active.lock().unwrap().is_empty());
     }
 
     #[test]
@@ -734,17 +831,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn effort_changed_during_a_prompt_applies_to_the_next_turn() {
+    async fn effort_changes_apply_to_the_next_turn_while_instructions_stay_captured() {
         use crate::openrouter::fixture::{Reply, Server, text_reply};
         use crate::sessions::TranscriptEntry;
 
+        let workspace = Workspace::new();
+        let agents_md = workspace.0.join("AGENTS.md");
+        fs::write(&agents_md, "Answer in French.\n").unwrap();
         let state = state();
-        let created = state
-            .new_session(&NewSessionRequest::new("/workspace"))
-            .unwrap();
+        let id = create_session(&state, &workspace.0);
         state
             .set_config_option(&SetSessionConfigOptionRequest::new(
-                created.session_id.clone(),
+                id.clone(),
                 "effort",
                 "low",
             ))
@@ -755,16 +853,21 @@ mod tests {
         ])
         .await;
         *state.openrouter.lock().unwrap() = Some(server.client());
+        let input = |user_message: &str| {
+            let active = state.active_session(&id).unwrap();
+            prompt::PromptInput {
+                session_id: id.clone(),
+                user_message: user_message.to_owned(),
+                selected_settings: Some(active.settings),
+                instructions: active.instructions,
+            }
+        };
 
         let cancellation = PromptCancellation::new();
         let first = prompt::run(
             state.store.clone(),
             server.client(),
-            prompt::PromptInput {
-                session_id: created.session_id.clone(),
-                user_message: "first".to_owned(),
-                selected_settings: state.selected_settings(&created.session_id),
-            },
+            input("first"),
             cancellation.clone(),
             |_| Ok(()),
             prompt::ToolPermissions::AutoApprove,
@@ -774,9 +877,10 @@ mod tests {
             while server.requests().is_empty() {
                 tokio::task::yield_now().await;
             }
+            fs::write(&agents_md, "Answer in German.\n").unwrap();
             state
                 .set_config_option(&SetSessionConfigOptionRequest::new(
-                    created.session_id.clone(),
+                    id.clone(),
                     "effort",
                     "high",
                 ))
@@ -789,11 +893,7 @@ mod tests {
         let second = prompt::run(
             state.store.clone(),
             server.client(),
-            prompt::PromptInput {
-                session_id: created.session_id.clone(),
-                user_message: "second".to_owned(),
-                selected_settings: state.selected_settings(&created.session_id),
-            },
+            input("second"),
             PromptCancellation::new(),
             |_| Ok(()),
             prompt::ToolPermissions::AutoApprove,
@@ -801,7 +901,7 @@ mod tests {
         .unwrap();
         assert_eq!(second.await.unwrap().stop_reason, StopReason::EndTurn);
 
-        let stored = state.store.read(&created.session_id).unwrap().unwrap();
+        let stored = state.store.read(&id).unwrap().unwrap();
         assert!(matches!(
             &stored.transcript[..5],
             [
@@ -815,6 +915,15 @@ mod tests {
         let requests = server.requests();
         assert_eq!(requests[0]["reasoning"]["effort"], "low");
         assert_eq!(requests[1]["reasoning"]["effort"], "max");
+        for request in &requests {
+            let instructions = request["messages"][0]["content"].as_str().unwrap();
+            assert!(
+                instructions.contains("Answer in French."),
+                "every request uses the instructions captured at activation"
+            );
+        }
+        assert_eq!(requests[1]["messages"][1]["content"], "first");
+        assert_eq!(requests[1]["messages"][2]["content"], "second");
     }
 
     #[tokio::test]
@@ -835,28 +944,32 @@ mod tests {
         *state.openrouter.lock().unwrap() = Some(server.client());
         let store = state.store.clone();
         let operations = state.operations.clone();
-        let id = store.create(Path::new("/workspace")).unwrap().id;
+        let inactive = store.create(Path::new("/workspace")).unwrap().id;
+        let id = create_session(&state, Path::new("/workspace"));
         let (incoming_tx, incoming_rx) = mpsc::unbounded();
         let (outgoing_tx, mut outgoing_rx) = mpsc::unbounded::<String>();
         let transport = Lines::new(outgoing_tx.sink_map_err(io::Error::other), incoming_rx);
 
-        incoming_tx
-            .unbounded_send(Ok(json!({
+        for message in [
+            json!({
                 "jsonrpc": "2.0", "id": 1, "method": "initialize",
                 "params": { "protocolVersion": 1, "clientCapabilities": {} },
-            })
-            .to_string()))
-            .unwrap();
-        incoming_tx
-            .unbounded_send(Ok(json!({
+            }),
+            json!({
                 "jsonrpc": "2.0", "id": 2, "method": "session/prompt",
+                "params": { "sessionId": inactive, "prompt": [{ "type": "text", "text": "Hello" }] },
+            }),
+            json!({
+                "jsonrpc": "2.0", "id": 3, "method": "session/prompt",
                 "params": { "sessionId": id, "prompt": [{ "type": "text", "text": "Hello" }] },
-            })
-            .to_string()))
-            .unwrap();
+            }),
+        ] {
+            incoming_tx.unbounded_send(Ok(message.to_string())).unwrap();
+        }
 
         let client = async {
             let mut incoming_tx = Some(incoming_tx);
+            let mut rejected = None;
             let mut response = None;
             while let Some(line) = outgoing_rx.next().await {
                 let message: Value = serde_json::from_str(&line).unwrap();
@@ -865,10 +978,18 @@ mod tests {
                     drop(incoming_tx.take());
                 }
                 if message["id"] == 2 {
+                    rejected = Some(message);
+                } else if message["id"] == 3 {
                     response = Some(message);
                 }
             }
             assert!(incoming_tx.is_none(), "EOF was sent during inference");
+            let rejected = rejected.expect("the inactive session was answered");
+            assert_eq!(rejected["error"]["code"], -32600);
+            assert_eq!(
+                rejected["error"]["data"],
+                format!("session {inactive} is not active; create or load it first")
+            );
             let response = response.expect("the final response was drained before shutdown");
             assert_eq!(response["result"]["stopReason"], "cancelled");
         };
@@ -877,6 +998,15 @@ mod tests {
         assert!(
             operations.try_load(&id).is_some(),
             "the session became available"
+        );
+        assert!(
+            store
+                .read(&inactive)
+                .unwrap()
+                .unwrap()
+                .transcript
+                .is_empty(),
+            "a rejected prompt saves no user message"
         );
         assert_eq!(
             store.read(&id).unwrap().unwrap().transcript,
@@ -928,7 +1058,7 @@ mod tests {
             *state.openrouter.lock().unwrap() = Some(server.client());
             let store = state.store.clone();
             let operations = state.operations.clone();
-            let id = store.create(&workspace.0).unwrap().id;
+            let id = create_session(&state, &workspace.0);
             let (incoming_tx, incoming_rx) = mpsc::unbounded();
             let (outgoing_tx, mut outgoing_rx) = mpsc::unbounded::<String>();
             let transport = Lines::new(outgoing_tx.sink_map_err(io::Error::other), incoming_rx);
@@ -1158,6 +1288,7 @@ mod tests {
                 store.clone(),
                 server.client(),
                 session.id.clone(),
+                None,
                 "Run commands".into(),
             )
             .await;
@@ -1221,7 +1352,7 @@ mod tests {
         *state.openrouter.lock().unwrap() = Some(server.client());
         let store = state.store.clone();
         let operations = state.operations.clone();
-        let id = store.create(&workspace.0).unwrap().id;
+        let id = create_session(&state, &workspace.0);
         let (incoming_tx, incoming_rx) = mpsc::unbounded();
         let (outgoing_tx, mut outgoing_rx) = mpsc::unbounded::<String>();
         let transport = Lines::new(outgoing_tx.sink_map_err(io::Error::other), incoming_rx);
@@ -1295,8 +1426,7 @@ mod tests {
         .await;
         let state = state();
         *state.openrouter.lock().unwrap() = Some(server.client());
-        let store = state.store.clone();
-        let id = store.create(&workspace.0).unwrap().id;
+        let id = create_session(&state, &workspace.0);
         let (incoming_tx, incoming_rx) = mpsc::unbounded();
         let (outgoing_tx, mut outgoing_rx) = mpsc::unbounded::<String>();
         let transport = Lines::new(outgoing_tx.sink_map_err(io::Error::other), incoming_rx);
