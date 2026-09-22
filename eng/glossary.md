@@ -13,15 +13,16 @@
 
 ## Names across boundaries
 
-| Domain                   | ACP                  | OpenRouter                               |
-| ------------------------ | -------------------- | ---------------------------------------- |
-| continuation metadata    | —                    | `reasoning_details`                      |
-| workspace path           | `cwd`                | —                                        |
-| visible reasoning        | `AgentThoughtChunk`  | reasoning delta                          |
-| effort level             | `effort` option      | `reasoning.effort` (omitted for Default) |
-| tool name                | tool kind            | `function.name`                          |
-| tool outcome `cancelled` | tool status `failed` | —                                        |
-| prompt outcome           | stop reason          | stop reason                              |
+| Domain                       | ACP                  | OpenRouter                               |
+| ---------------------------- | -------------------- | ---------------------------------------- |
+| continuation metadata        | —                    | `reasoning_details`                      |
+| workspace path               | `cwd`                | —                                        |
+| visible reasoning, request   | —                    | `reasoning`                              |
+| visible reasoning, response  | `AgentThoughtChunk`  | `delta.reasoning`                        |
+| effort level                 | `effort` option      | `reasoning.effort` (omitted for Default) |
+| tool name                    | tool kind            | `function.name`                          |
+| tool outcome `cancelled`     | tool status `failed` | —                                        |
+| prompt outcome               | `stopReason`         | `finish_reason`                          |
 
 ## Terms
 
@@ -33,12 +34,18 @@
 - **ACP update**: A `session/update` notification that describes session
   metadata, model output, or tool state. Sending one does not confirm that the
   ACP client received or displayed it.
+- **ACP boundary**: The component that translates ACP input and output, exposes
+  session operations, and owns shared process state.
 - **ACP tool status**: The client-facing state of a tool call: pending, in
   progress, completed, or failed. A cancelled Ox tool outcome is presented as
   failed because ACP has no separate cancelled tool status.
 - **Session**: A saved conversation and its metadata, identified by a session
   ID. Its OpenRouter model is fixed when the first turn starts.
 - **Session settings**: The model and effort level in force for a turn.
+- **ACP selections**: The latest session settings selected through ACP for a
+  future turn. They are process state, not durable authority.
+- **Settings snapshot**: The session settings a prompt run captures at its turn
+  boundary.
 - **Effort level**: One of Ox's four reasoning levels: Default, Low, Medium, or
   High.
 - **Effort mapping**: The per-model table that turns an effort level into an
@@ -60,6 +67,8 @@
 - **Prompt request**: One ACP request containing user content for a session.
 - **Prompt run**: The work caused by one prompt request: save the user message,
   request model output, run tools, save results, and respond.
+- **Headless entry point**: The `ox run` mode, which creates a session and runs
+  one prompt without an ACP client. A prompt run there is headless.
 - **Prompt outcome**: The internal reason a prompt run stopped. It determines
   how unfinished tool calls are completed and whether Ox returns an ACP stop
   reason or an error.
@@ -76,6 +85,8 @@
   used for every model request in that session.
 - **OpenRouter client**: The concrete client that verifies the API key and sends
   model requests to OpenRouter's chat-completions endpoint.
+- **Model catalog**: The OpenRouter models Ox offers, paired with their effort
+  mappings.
 - **Model request**: One OpenRouter chat-completion HTTP request. A prompt run
   may make several.
 - **Completion stream**: The reader for one streamed OpenRouter response after
@@ -96,6 +107,8 @@
 - **Continuation metadata**: Opaque data stored internally as
   `continuation_metadata` and encoded as OpenRouter `reasoning_details` on a
   later model request. It is not displayed as reasoning.
+- **Tool boundary**: The component that defines the concrete tool set and
+  executes one complete tool call.
 - **Tool call**: A model-produced call ID, tool name, and raw argument string.
 - **Tool call title**: The one-line description an ACP client shows for a tool
   call, built from the call's arguments and shortened to 80 characters. A call

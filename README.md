@@ -22,12 +22,30 @@ install ox ~/.local/bin/ox
 Install [ripgrep](https://github.com/BurntSushi/ripgrep#installation) and make
 `rg` available on your `PATH` for the `glob` and `grep` tools.
 
+## Usage
+
+```text
+ox                                      Start the ACP agent
+ox run [--dir <workspace-path>] <prompt>  Run one headless prompt
+ox auth <login|logout>                  Save or remove the API key
+ox --help                               Show command help
+```
+
+Headless `ox run` automatically approves all tool calls.
+
+## Tools
+
 The `read_file`, `glob`, and `grep` tools read only inside the session workspace
 and return at most 16 KiB per result. `read_file` accepts a 1-based line
 `offset` and a line `limit` (default 200, maximum 1,000). Oversized lines return
 a marked preview; their omitted portions cannot be retrieved through line
 pagination. Truncated searches ask the model to narrow the search path or
 pattern.
+
+The `apply_patch` tool adds, updates, moves, and deletes workspace text files.
+It rejects a symbolic link as an operation target, creates missing parent
+directories for added and moved files, and reports an unchanged update as
+`Unchanged <path>`.
 
 The `shell` tool runs a fresh, noninteractive `/bin/sh` command on macOS and
 Linux, starting in the session workspace with stdin connected to `/dev/null`. It
@@ -37,8 +55,7 @@ supports builds, tests, Git, package commands, and scripts. Calls time out after
 Over ACP, each shell call asks for **Approve** or **Deny** before running.
 Approval applies only to that call. Denial skips the command and returns a
 failed tool result so the model can respond. The ACP client's Stop action
-cancels the whole prompt. Other tools run without approval. Headless `ox run`
-automatically approves all tool calls.
+cancels the whole prompt. Other tools run without approval.
 
 Shell results include the exit status and separate stdout and stderr tails, at
 most 16 KiB total. The streams share 14 KiB: 7 KiB each, with unused space given
@@ -60,9 +77,13 @@ Cleanup after forced termination or an Ox crash is not guaranteed.
 
 ## Authentication
 
-When prompted, enter your [OpenRouter](https://openrouter.ai) API key. It is
-saved to the system keyring.
+`ox auth login` prompts for an [OpenRouter](https://openrouter.ai) API key and
+saves it to the system keyring. `ox auth logout` removes the saved key.
 
-```sh
-ox auth login
-```
+## Development
+
+Use `cargo build` to build Ox and `cargo test` to run its in-module Rust tests.
+`make install` installs the fast profile locally; `make install-release` builds
+and installs the release profile. Both install targets recreate the disposable
+session database selected by the environment. See [Testing](eng/testing.md) for
+live testing guidance.

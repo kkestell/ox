@@ -46,14 +46,14 @@ fn command(args: impl Iterator<Item = String>) -> io::Result<Command> {
         [auth, action] if auth == "auth" && action == "logout" => Ok(Command::Logout),
         _ => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "usage: ox [run [--dir <directory>] <prompt> | auth <login|logout>]",
+            "usage: ox [run [--dir <workspace-path>] <prompt> | auth <login|logout>]",
         )),
     }
 }
 
 fn print_help() {
     println!(
-        "Usage: ox [run [--dir <directory>] <prompt> | auth <login|logout>]\n\n\
+        "Usage: ox [run [--dir <workspace-path>] <prompt> | auth <login|logout>]\n\n\
          Run without arguments to start the ACP agent."
     );
 }

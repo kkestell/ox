@@ -73,7 +73,7 @@ empty file; a nonempty Add ends with a newline. A source line that resembles a
 marker remains expressible because it has a context, removal, or addition
 prefix.
 
-Match source lines exactly, including whitespace. Chunks search forward from the preceding match. An anchor is matched literally, and chunk matching starts after it. An additions-only chunk inserts after its anchor or preceding chunk; with neither, it appends. An updated file keeps the line-ending style of its first line and whether it ended with a newline. Add and Move destinations must not exist. Sources must be regular files; updates require UTF-8. Absolute paths, parent traversal, paths reaching outside the workspace, paths naming a symbolic link, and duplicate targets are rejected. All operations are checked before changes start. Filesystem failures may leave earlier operations applied; the result reports completed, failed, and unattempted operations.
+Match source lines exactly, including whitespace. Chunks search forward from the preceding match. An anchor is matched literally, and chunk matching starts after it. An additions-only chunk inserts after its anchor or preceding chunk; with neither, it appends. An updated file keeps the line-ending style of its first line and whether it ended with a newline. Add and Move destinations must not exist; their missing parent directories are created. Sources must be regular files; updates require UTF-8. Absolute paths, parent traversal, paths reaching outside the workspace, paths naming the workspace root or a symbolic link, and duplicate targets are rejected. A no-op Update succeeds and reports `Unchanged path`. All operations are checked before changes start. Filesystem failures may leave earlier operations applied; the result reports completed, failed, and unattempted operations.
 "#;
 
 fn truncate(text: &mut String, limit: usize) {
@@ -170,7 +170,7 @@ pub fn schemas() -> Vec<Value> {
             "type": "function",
             "function": {
                 "name": GLOB,
-                "description": "Find files inside the workspace using a ripgrep glob. Returns workspace-relative paths, at most 16 KiB. Narrow the pattern or path if truncated. Uses ripgrep's normal hidden-file and ignore filtering, including glob overrides; does not follow symlinks during traversal. Example: {\"pattern\":\"*.rs\",\"path\":\"src\"}.",
+                "description": "Find files inside the workspace using a ripgrep glob. Returns `./`-prefixed workspace-relative paths, at most 16 KiB. Narrow the pattern or path if truncated. Uses ripgrep's normal hidden-file and ignore filtering, including glob overrides; does not follow symlinks during traversal. Example: {\"pattern\":\"*.rs\",\"path\":\"src\"}.",
                 "parameters": {
                     "type": "object",
                     "properties": {

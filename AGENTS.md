@@ -4,12 +4,12 @@ THIS DOCUMENT MUST BE KEPT UP TO DATE
 
 ## Code
 
-- `Makefile`: Fast-by-default and release local installs that replace the Ox
-  binary and delete the disposable local session database.
+- `Makefile`: Release builds and fast-by-default or release local installs.
+  Installs replace the Ox binary and delete the disposable session database.
 - `scripts/run.py`: Temporary workspace runner for a headless prompt, with
   optional checkout of a pinned GitHub commit.
 - `src/main.rs`: Command parsing and process entry; starts the ACP server, runs
-  one headless prompt, or runs a credential command.
+  one headless prompt, runs a credential command, or prints help.
 - `src/auth.rs`: Environment and operating-system keyring credential storage.
 - `src/openrouter.rs`: OpenRouter model catalog and effort mapping, request
   encoding, client, and streamed-response assembly.
@@ -21,9 +21,9 @@ THIS DOCUMENT MUST BE KEPT UP TO DATE
 - `src/tools/search.rs`: Bounded glob and grep searches through ripgrep.
 - `src/tools/patch.rs`: Patch parsing, exact text matching, workspace path
   validation, and filesystem changes.
-- `src/sessions.rs`: Transcript and session-setting types with their stored JSON
-  encoding, transcript validation, and `SessionStore` over one SQLite
-  connection.
+- `src/sessions.rs`: Transcript and session-setting types, stored JSON encoding,
+  transcript validation, database path selection, and `SessionStore` over one
+  SQLite connection.
 - `src/acp.rs`: Connection wiring, `ServerState`, lazy OpenRouter client,
   request handlers, per-session configuration selections, and the headless
   prompt entry point.
@@ -51,15 +51,16 @@ Read before planning and changing code:
 
 ## Backwards Compatibility
 
-Currently, there is none. Delete and recreate `~/.local/share/ox/ox.db` rather
-than introducing migrations, versions, etc.
+Currently, there is none. Recreate `ox.db`, `ox.db-shm`, and `ox.db-wal` instead
+of adding migrations or versions. Their directory is `$OX_DATA_DIR`, else
+`$XDG_DATA_HOME/ox`, else `~/.local/share/ox`; local install targets do this.
 
 ## Comments and Documentation and Communication
 
 - Always describe things directly, clearly, and plainly
 - Follow big idea up front and progressive disclosure
 - Never use jargon, invented terms, or shorthand
-- Never not mix definitions or overload terms
+- Never mix definitions or overload terms
 
 ## Testing
 

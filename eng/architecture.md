@@ -163,7 +163,10 @@ stored transcript entries, and ACP input are all treated as untrusted at their
 boundaries.
 
 Read, search, and patch operations are constrained to the session workspace.
-Shell starts there but may access other paths and the network with Ox's
+`read_file` and `grep` accept a directly named symbolic link to a file only when
+its target remains inside the workspace; search traversal does not follow
+symbolic links. Patch operations reject a symbolic link as their target. Shell
+starts in the workspace but may access other paths and the network with Ox's
 permissions. Over ACP, every shell call requires a shell permission request;
 headless prompts approve it automatically. Tool effects are not transactional
 and may remain after failure or cancellation.

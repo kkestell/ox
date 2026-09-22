@@ -1,13 +1,16 @@
 # Testing
 
-Use the `OPENROUTER_API_KEY` in `.env` when testing to avoid keychain prompts.
+Run `cargo test` for the in-module `#[cfg(test)]` suite and `cargo build` for a
+debug build.
 
-Use `ox run [--dir <workspace>] '<prompt>'` for live end-to-end testing when a
-change affects model requests, tool execution, or transcript persistence. It
-creates a new session in `ox.db`, writes no successful output, and reports
-completion through its exit status. Set `OX_DATA_DIR` to a temporary directory
-when the test should not modify the normal database, then inspect that database
-to verify the saved session.
+For live end-to-end testing, prefer
+`scripts/run.py [--keep] [--repo <GitHub-commit-URL>] '<prompt>'`. It reads
+`OPENROUTER_API_KEY` from `.env` and creates a temporary workspace. To use an
+existing workspace, run `ox run [--dir <workspace-path>] '<prompt>'` directly.
+The headless run creates a new session in `ox.db` and reports completion through
+its exit status; `ox run` itself writes no successful output. Set `OX_DATA_DIR`
+to a temporary directory to isolate that database, then inspect it to verify the
+saved session.
 
 ## Test discipline
 
