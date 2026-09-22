@@ -76,6 +76,15 @@ not visible reasoning, and is not included in replay.
 
 The system prompt is not a transcript entry. It is neither stored nor replayed.
 
+### Slash commands
+
+Ox advertises its slash commands through an ACP session update after a session
+is created or loaded. A recognized command is handled at the ACP boundary
+before the user message is saved or a model request begins. `/compact` and
+`/goal` are currently stubs: each ends its prompt turn without changing the
+session. `/init` replaces the command text with Ox's built-in initialization
+prompt and runs it as a normal user message.
+
 ### Session metadata
 
 A session summary holds the session ID, exact workspace path, optional session
@@ -105,12 +114,13 @@ fixed model and last saved effort level and mode.
 
 ### System prompt
 
-Ox's built-in prompt is the editable Markdown file `src/system_prompt.md`. When
-a session becomes active through `session/new`, its first `session/load` in the
-process, or the headless entry point, Ox appends the workspace root `AGENTS.md`
-under a workspace-instructions heading. A blank or missing `AGENTS.md` adds
-nothing. The resulting system prompt is kept in memory for the active session. A
-prompt for a session that is not active fails before saving its user message.
+Ox's built-in prompt is the editable Markdown file
+`src/prompts/system_prompt.md`. When a session becomes active through
+`session/new`, its first `session/load` in the process, or the headless entry
+point, Ox appends the workspace root `AGENTS.md` under a workspace-instructions
+heading. A blank or missing `AGENTS.md` adds nothing. The resulting system
+prompt is kept in memory for the active session. A prompt for a session that is
+not active fails before saving its user message.
 
 Every model request for an active session sends the same system-role message
 before the transcript. This keeps the request prefix stable while the transcript

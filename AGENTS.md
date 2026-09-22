@@ -11,8 +11,10 @@ THIS DOCUMENT MUST BE KEPT UP TO DATE
 - `src/auth.rs`: Environment and operating-system keyring credential storage.
 - `src/system_prompt.rs`: Assembly of Ox's built-in system prompt with bounded
   workspace-root `AGENTS.md` instructions.
-- `src/system_prompt.md`: The editable built-in instructions that define Ox's
-  coding-agent behavior.
+- `src/prompts/system_prompt.md`: The editable built-in instructions that define
+  Ox's coding-agent behavior.
+- `src/prompts/init_prompt.md`: The editable user prompt dispatched by `/init`,
+  including the `AGENTS.md` template.
 - `src/openrouter.rs`: OpenRouter model catalog and effort mapping, request
   encoding with the system prompt before the transcript, client, and streamed
   response assembly.
@@ -28,9 +30,9 @@ THIS DOCUMENT MUST BE KEPT UP TO DATE
   types, stored JSON encoding, transcript validation, database path selection,
   and `SessionStore` over one SQLite connection.
 - `src/acp.rs`: Connection wiring, `ServerState`, lazy OpenRouter client,
-  request handlers, per-session model, effort, and mode selections, system
-  prompts assembled when a session becomes active, and the automatic headless
-  prompt entry point.
+  request handlers, advertised slash commands and their prompt dispatch,
+  per-session model, effort, and mode selections, system prompts assembled when
+  a session becomes active, and the automatic headless prompt entry point.
 - `src/acp/operations.rs`: One active prompt, load, or delete per session,
   enforced by an operation guard.
 - `src/acp/prompt.rs`: One prompt run: save the user message with its captured

@@ -85,6 +85,9 @@
 - **Operation guard**: A value that keeps one session busy for a session
   operation. Dropping it makes the session available.
 - **Prompt request**: One ACP request containing user content for a session.
+- **Slash command**: A named command advertised through an ACP session update
+  and sent by the ACP client as prompt text beginning with `/`. Ox recognizes a
+  slash command before saving a user message or making a model request.
 - **Prompt run**: The work caused by one prompt request: save the user message,
   request model output, run tools, save results, and respond.
 - **Headless entry point**: The `ox run` mode, which creates a session and runs

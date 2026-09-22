@@ -16,15 +16,16 @@ use agent_client_protocol::{
     Agent, ConnectTo, Error, JsonRpcResponse, Responder, Result, Stdio,
     schema::ProtocolVersion,
     schema::v1::{
-        AgentAuthCapabilities, AgentCapabilities, AuthMethod, AuthMethodTerminal,
-        CancelNotification, DeleteSessionRequest, DeleteSessionResponse, InitializeRequest,
-        InitializeResponse, ListSessionsRequest, ListSessionsResponse, LoadSessionRequest,
-        LoadSessionResponse, LogoutCapabilities, LogoutRequest, LogoutResponse, NewSessionRequest,
-        NewSessionResponse, PromptRequest, SessionCapabilities, SessionConfigOption,
-        SessionConfigOptionCategory, SessionConfigOptionValue, SessionConfigSelectOption,
-        SessionDeleteCapabilities, SessionId, SessionInfo, SessionListCapabilities,
-        SessionNotification, SessionUpdate, SetSessionConfigOptionRequest,
-        SetSessionConfigOptionResponse, StopReason,
+        AgentAuthCapabilities, AgentCapabilities, AuthMethod, AuthMethodTerminal, AvailableCommand,
+        AvailableCommandInput, AvailableCommandsUpdate, CancelNotification, DeleteSessionRequest,
+        DeleteSessionResponse, InitializeRequest, InitializeResponse, ListSessionsRequest,
+        ListSessionsResponse, LoadSessionRequest, LoadSessionResponse, LogoutCapabilities,
+        LogoutRequest, LogoutResponse, NewSessionRequest, NewSessionResponse, PromptRequest,
+        PromptResponse, SessionCapabilities, SessionConfigOption, SessionConfigOptionCategory,
+        SessionConfigOptionValue, SessionConfigSelectOption, SessionDeleteCapabilities, SessionId,
+        SessionInfo, SessionListCapabilities, SessionNotification, SessionUpdate,
+        SetSessionConfigOptionRequest, SetSessionConfigOptionResponse, StopReason,
+        UnstructuredCommandInput,
     },
 };
 
@@ -34,6 +35,8 @@ use crate::{
     system_prompt,
 };
 use operations::{PromptCancellation, SessionOperations};
+
+const INIT_PROMPT: &str = include_str!("prompts/init_prompt.md");
 
 fn default_settings() -> SessionSettings {
     SessionSettings::new(openrouter::DEFAULT_MODEL, EffortLevel::Default)
@@ -90,6 +93,26 @@ fn config_options(settings: &SessionSettings, model_locked: bool) -> Vec<Session
         )
         .category(SessionConfigOptionCategory::Mode),
     ]
+}
+
+fn available_commands() -> SessionUpdate {
+    SessionUpdate::AvailableCommandsUpdate(AvailableCommandsUpdate::new(vec![
+        AvailableCommand::new("compact", "Compact the conversation context."),
+        AvailableCommand::new("goal", "Start a goal from a prompt.").input(
+            AvailableCommandInput::Unstructured(UnstructuredCommandInput::new("<prompt>")),
+        ),
+        AvailableCommand::new("init", "Create or update AGENTS.md for the workspace."),
+    ]))
+}
+
+/// Returns the message to send to the model, or `None` for a command that is
+/// still a stub.
+fn prompt_user_message(user_message: String) -> Option<String> {
+    match user_message.trim().split_ascii_whitespace().next() {
+        Some("/compact" | "/goal") => None,
+        Some("/init") => Some(INIT_PROMPT.trim_end().to_owned()),
+        _ => Some(user_message),
+    }
 }
 
 #[derive(Clone)]
@@ -478,8 +501,18 @@ async fn serve(state: ServerState, transport: impl ConnectTo<Agent> + 'static) -
             agent_client_protocol::on_receive_request!(),
         )
         .on_receive_request(
-            async move |request: NewSessionRequest, responder, _connection| {
-                reply(responder, new_state.new_session(&request))
+            async move |request: NewSessionRequest, responder, connection| match new_state
+                .new_session(&request)
+            {
+                Ok(response) => {
+                    let session_id = response.session_id.clone();
+                    responder.respond(response)?;
+                    connection.send_notification(SessionNotification::new(
+                        session_id,
+                        available_commands(),
+                    ))
+                }
+                Err(error) => responder.respond_with_error(error),
             },
             agent_client_protocol::on_receive_request!(),
         )
@@ -494,7 +527,16 @@ async fn serve(state: ServerState, transport: impl ConnectTo<Agent> + 'static) -
                         update,
                     ))
                 });
-                reply(responder, result)
+                match result {
+                    Ok(response) => {
+                        responder.respond(response)?;
+                        connection.send_notification(SessionNotification::new(
+                            request.session_id,
+                            available_commands(),
+                        ))
+                    }
+                    Err(error) => responder.respond_with_error(error),
+                }
             },
             agent_client_protocol::on_receive_request!(),
         )
@@ -531,10 +573,6 @@ async fn serve(state: ServerState, transport: impl ConnectTo<Agent> + 'static) -
                     Ok(user_message) => user_message,
                     Err(error) => return responder.respond_with_error(error),
                 };
-                let openrouter = match prompt_state.openrouter_client() {
-                    Ok(openrouter) => openrouter,
-                    Err(error) => return responder.respond_with_error(error),
-                };
                 let Some((guard, cancellation)) =
                     prompt_state.operations.try_prompt(&request.session_id)
                 else {
@@ -542,6 +580,13 @@ async fn serve(state: ServerState, transport: impl ConnectTo<Agent> + 'static) -
                 };
                 let Some(active) = prompt_state.active_session(&request.session_id) else {
                     return responder.respond_with_error(inactive(&request.session_id));
+                };
+                let Some(user_message) = prompt_user_message(user_message) else {
+                    return responder.respond(PromptResponse::new(StopReason::EndTurn));
+                };
+                let openrouter = match prompt_state.openrouter_client() {
+                    Ok(openrouter) => openrouter,
+                    Err(error) => return responder.respond_with_error(error),
                 };
                 let session_id = request.session_id;
                 let task_connection = connection.clone();
@@ -633,6 +678,45 @@ mod tests {
                 if method.id.to_string() == "openrouter"
                     && method.args == ["auth", "login"]
         ));
+    }
+
+    #[test]
+    fn slash_commands_have_acp_metadata_and_prompt_dispatch() {
+        assert_eq!(
+            serde_json::to_value(available_commands()).unwrap(),
+            serde_json::json!({
+                "sessionUpdate": "available_commands_update",
+                "availableCommands": [
+                    {
+                        "name": "compact",
+                        "description": "Compact the conversation context."
+                    },
+                    {
+                        "name": "goal",
+                        "description": "Start a goal from a prompt.",
+                        "input": { "hint": "<prompt>" }
+                    },
+                    {
+                        "name": "init",
+                        "description": "Create or update AGENTS.md for the workspace."
+                    }
+                ]
+            })
+        );
+        for command in ["/compact", " /goal Fix the tests\n"] {
+            assert_eq!(prompt_user_message(command.to_owned()), None);
+        }
+        for user_message in ["compact", "/compactness", "/"] {
+            assert_eq!(
+                prompt_user_message(user_message.to_owned()).as_deref(),
+                Some(user_message)
+            );
+        }
+        assert_eq!(
+            prompt_user_message(" /init ignored input\n".to_owned()).as_deref(),
+            Some(INIT_PROMPT.trim_end())
+        );
+        assert!(INIT_PROMPT.contains("AGENTS.md"));
     }
 
     #[test]

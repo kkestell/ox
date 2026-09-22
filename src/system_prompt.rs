@@ -9,7 +9,7 @@ use std::{
 
 const FILE_NAME: &str = "AGENTS.md";
 const MAX_BYTES: u64 = 32 * 1024;
-const BUILT_IN_PROMPT: &str = include_str!("system_prompt.md");
+const BUILT_IN_PROMPT: &str = include_str!("prompts/system_prompt.md");
 
 /// Builds the system prompt for a workspace. The result is stable until the
 /// caller chooses to build it for that workspace again.
