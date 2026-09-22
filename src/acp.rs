@@ -1,7 +1,7 @@
 //! The ACP connection: request handlers over one shared process state.
 
 pub(crate) mod convert;
-mod operations;
+pub(crate) mod operations;
 mod prompt;
 
 use std::{
@@ -30,7 +30,7 @@ use agent_client_protocol::{
 };
 
 use crate::{
-    auth, openrouter,
+    auth, compaction, openrouter,
     sessions::{self, EffortLevel, SessionMode, SessionSettings, SessionStore, SessionSummary},
     system_prompt,
 };
@@ -105,8 +105,8 @@ fn available_commands() -> SessionUpdate {
     ]))
 }
 
-/// Returns the message to send to the model, or `None` for a command that is
-/// still a stub.
+/// Returns the message to send to the model. `/compact` is dispatched before
+/// this function; `/goal` is still a stub.
 fn prompt_user_message(user_message: String) -> Option<String> {
     match user_message.trim().split_ascii_whitespace().next() {
         Some("/compact" | "/goal") => None,
@@ -162,6 +162,48 @@ impl ServerState {
         let client = openrouter::Client::new(api_key);
         *slot = Some(client.clone());
         Ok(client)
+    }
+
+    async fn compact_session(
+        &self,
+        session_id: &SessionId,
+        active: ActiveSession,
+        cancellation: &PromptCancellation,
+    ) -> Result<PromptResponse> {
+        let stored = self
+            .store
+            .read(session_id)
+            .map_err(Error::into_internal_error)?
+            .ok_or_else(|| not_found(session_id))?;
+        if !compaction::has_candidate(&stored.transcript) {
+            return Ok(PromptResponse::new(StopReason::EndTurn));
+        }
+        let client = self.openrouter_client()?;
+        let settings = stored.saved_settings(&default_settings());
+        validate_settings(&settings)?;
+        let mut transcript = stored.transcript;
+        match compaction::compact(
+            &self.store,
+            &client,
+            cancellation,
+            session_id,
+            &settings.model,
+            active.selections.effort,
+            &active.system_prompt,
+            &mut transcript,
+        )
+        .await
+        {
+            Ok(_) => Ok(PromptResponse::new(if cancellation.is_cancelled() {
+                StopReason::Cancelled
+            } else {
+                StopReason::EndTurn
+            })),
+            Err(error) if error.kind() == ErrorKind::Interrupted => {
+                Ok(PromptResponse::new(StopReason::Cancelled))
+            }
+            Err(error) => Err(Error::into_internal_error(error)),
+        }
     }
 
     fn new_session(&self, request: &NewSessionRequest) -> Result<NewSessionResponse> {
@@ -582,6 +624,17 @@ async fn serve(state: ServerState, transport: impl ConnectTo<Agent> + 'static) -
                 let Some(active) = prompt_state.active_session(&request.session_id) else {
                     return responder.respond_with_error(inactive(&request.session_id));
                 };
+                if user_message.trim().split_ascii_whitespace().next() == Some("/compact") {
+                    let session_id = request.session_id;
+                    let compact_state = prompt_state.clone();
+                    return connection.spawn(async move {
+                        let _guard = guard;
+                        let result = compact_state
+                            .compact_session(&session_id, active, &cancellation)
+                            .await;
+                        reply(responder, result)
+                    });
+                }
                 let Some(user_message) = prompt_user_message(user_message) else {
                     return responder.respond(PromptResponse::new(StopReason::EndTurn));
                 };
@@ -643,6 +696,76 @@ mod tests {
     use super::*;
     use crate::tools::fixture::Workspace;
 
+    #[tokio::test]
+    async fn manual_compact_command_uses_the_active_prompt_without_saving_a_message() {
+        use crate::{
+            openrouter::fixture::{Server, text_reply},
+            sessions::{AssistantBatch, AssistantMessage, SessionSettingsChange, TranscriptEntry},
+        };
+        let store = SessionStore::in_memory();
+        let state = ServerState::new(store.clone());
+        let id = store.create(Path::new("/workspace")).unwrap().id;
+        let active = ActiveSession {
+            selections: default_settings(),
+            system_prompt: "captured system".to_owned(),
+        };
+        let empty = state
+            .compact_session(&id, active.clone(), &PromptCancellation::new())
+            .await
+            .unwrap();
+        assert_eq!(empty.stop_reason, StopReason::EndTurn);
+        assert!(
+            state.openrouter.lock().unwrap().is_none(),
+            "empty command needs no client"
+        );
+
+        store
+            .append_user(
+                &id,
+                &SessionSettingsChange {
+                    model: Some(openrouter::DEFAULT_MODEL.to_owned()),
+                    effort: None,
+                    mode: None,
+                },
+                &"previous work ".repeat(3000),
+            )
+            .unwrap();
+        store
+            .append_batch(
+                &id,
+                &AssistantBatch::new(
+                    AssistantMessage {
+                        text: "done".to_owned(),
+                        reasoning: String::new(),
+                        tool_calls: vec![],
+                        continuation_metadata: vec![],
+                    },
+                    vec![],
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let before = store.read(&id).unwrap().unwrap().transcript;
+        let server = Server::start(vec![text_reply("Previous work complete.")]).await;
+        *state.openrouter.lock().unwrap() = Some(server.client());
+        let response = state
+            .compact_session(&id, active, &PromptCancellation::new())
+            .await
+            .unwrap();
+        assert_eq!(response.stop_reason, StopReason::EndTurn);
+        let after = store.read(&id).unwrap().unwrap().transcript;
+        assert_eq!(after.len(), before.len() + 1);
+        assert!(matches!(
+            after.last(),
+            Some(TranscriptEntry::CompactionCheckpoint(_))
+        ));
+        assert_eq!(
+            server.requests()[0]["messages"][0]["content"],
+            include_str!("prompts/compaction_prompt.md")
+        );
+        assert!(after.iter().all(|entry| !matches!(entry,
+            TranscriptEntry::UserMessage(text) if text == "/compact")));
+    }
     fn state() -> ServerState {
         state_over(SessionStore::in_memory())
     }

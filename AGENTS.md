@@ -17,8 +17,11 @@ THIS DOCUMENT MUST BE KEPT UP TO DATE
 - `src/prompts/init_prompt.md`: The editable user prompt dispatched by `/init`,
   including the `AGENTS.md` template.
 - `src/openrouter.rs`: OpenRouter model catalog and effort mapping, request
-  encoding with the system prompt before the transcript, client, and streamed
-  response assembly.
+  encoding, context limits, client, streamed response assembly, and explicit
+  input-context overflow errors.
+- `src/compaction.rs`: Request estimates, safe transcript cuts, bounded
+  summarizer input, checkpoint commits, and model-request projection.
+- `src/prompts/compaction_prompt.md`: Dedicated summarizer instructions.
 - `src/tools.rs`: Concrete tool schemas, tool call titles, and execution of one
   complete call.
 - `src/tools/read.rs`: Bounded text-file reading with line pagination.
@@ -31,18 +34,19 @@ THIS DOCUMENT MUST BE KEPT UP TO DATE
 - `src/tools/workspace.rs`: Descriptor-relative file operations shared by
   read, search, and patch tools.
 - `src/sessions.rs`: Transcript and durable model, effort, and mode setting
-  types, stored JSON encoding, transcript validation, database path selection,
-  and `SessionStore` over one SQLite connection.
+  types, compaction checkpoints, stored JSON encoding, transcript validation,
+  database path selection, and `SessionStore` over one SQLite connection.
 - `src/acp.rs`: Connection wiring, `ServerState`, lazy OpenRouter client,
   request handlers, advertised slash commands and their prompt dispatch,
   per-session model, effort, and mode selections, system prompts assembled when
-  a session becomes active, and the automatic headless prompt entry point.
+  a session becomes active, guarded `/compact`, and the automatic headless
+  prompt entry point.
 - `src/acp/operations.rs`: One active prompt, load, or delete per session,
   enforced by an operation guard.
-- `src/acp/prompt.rs`: One prompt run: save the user message with its captured
-  settings, request model output with the captured system prompt, apply Ask or
-  Auto shell authorization, run tools, save complete assistant batches, and
-  respond.
+- `src/acp/prompt.rs`: One prompt run: reject oversized input before saving,
+  save accepted input with captured settings, compact before large model
+  requests, retry explicit input overflow once, run tools, save complete
+  assistant batches, and respond.
 - `src/acp/convert.rs`: ACP input conversion, session update construction
   including each tool call's kind, and transcript replay.
 

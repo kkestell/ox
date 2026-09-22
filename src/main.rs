@@ -1,5 +1,6 @@
 mod acp;
 mod auth;
+mod compaction;
 mod openrouter;
 mod sessions;
 mod system_prompt;

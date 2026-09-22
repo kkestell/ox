@@ -75,6 +75,14 @@
   80 characters.
 - **Session summary**: A session's ID, workspace path, optional session title,
   and creation and activity timestamps, without its transcript.
+- **Compaction summary**: Model-generated text carrying relevant older
+  conversation into later model requests. It is separate from session metadata.
+- **Compaction checkpoint**: A saved transcript entry with a compaction summary
+  and the exclusive index of the completed prefix it covers.
+- **Context limit**: The maximum token budget of one model request and output
+  in the model catalog.
+- **Request estimate**: Ox's heuristic token estimate for a serialized model
+  request, using three bytes per token.
 - **Stored session**: A session summary paired with its validated transcript.
 - **Session store**: The SQLite-backed component that creates, reads, lists,
   updates, and deletes sessions and their transcripts.
@@ -103,7 +111,7 @@
 - **Transcript**: The ordered, saved conversation used for both session replay
   and future model requests.
 - **Transcript entry**: A model entry, effort entry, mode entry, user message,
-  assistant message, or tool result in the transcript.
+  assistant message, tool result, or compaction checkpoint in the transcript.
 - **Model entry**: The first transcript entry. It stores the OpenRouter model
   used for every model request in that session.
 - **OpenRouter client**: The concrete client that verifies the API key and sends

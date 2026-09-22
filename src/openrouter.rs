@@ -16,6 +16,7 @@ use crate::{
 pub struct CatalogModel {
     pub id: &'static str,
     pub name: &'static str,
+    pub context_limit: usize,
     /// The OpenRouter effort sent for Low, Medium, and High.
     openrouter_efforts: [&'static str; 3],
 }
@@ -36,16 +37,19 @@ pub const MODEL_CATALOG: &[CatalogModel] = &[
     CatalogModel {
         id: "deepseek/deepseek-v4.1-flash",
         name: "DeepSeek V4.1 Flash",
+        context_limit: 1_048_576,
         openrouter_efforts: ["low", "high", "max"],
     },
     CatalogModel {
         id: "z-ai/glm-5.3-flash",
         name: "GLM 5.3 Flash",
+        context_limit: 1_310_720,
         openrouter_efforts: ["low", "high", "max"],
     },
     CatalogModel {
         id: "meta/muse-spark-1.3-contributor",
         name: "Muse Spark 1.3 Contributor",
+        context_limit: 1_048_576,
         openrouter_efforts: ["low", "medium", "high"],
     },
 ];
@@ -84,6 +88,64 @@ pub enum Stop {
     ToolCalls,
     TokenLimit,
     Refused,
+}
+
+#[derive(Debug)]
+pub struct InputContextOverflow;
+
+impl std::fmt::Display for InputContextOverflow {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "OpenRouter rejected the input as too large for the model context"
+        )
+    }
+}
+
+impl std::error::Error for InputContextOverflow {}
+
+pub fn is_input_context_overflow(error: &io::Error) -> bool {
+    error
+        .get_ref()
+        .is_some_and(|inner| inner.is::<InputContextOverflow>())
+}
+
+pub(crate) fn ordinary_body(
+    model: &str,
+    effort: EffortLevel,
+    system_prompt: &str,
+    transcript: &[TranscriptEntry],
+) -> io::Result<Value> {
+    let catalog = catalog_model(model)
+        .ok_or_else(|| io::Error::new(ErrorKind::InvalidInput, format!("unknown model {model}")))?;
+    let messages = std::iter::once(json!({ "role": "system", "content": system_prompt }))
+        .chain(chat_messages(transcript))
+        .collect::<Vec<_>>();
+    let mut body = json!({
+        "model": model,
+        "messages": messages,
+        "tools": tools::schemas(),
+        "stream": true,
+    });
+    if let Some(mapped) = catalog.openrouter_effort(effort) {
+        body["reasoning"] = json!({ "effort": mapped });
+    }
+    Ok(body)
+}
+
+pub(crate) fn summary_body(model: &str, previous: &str, piece: &str) -> io::Result<Value> {
+    let catalog = catalog_model(model)
+        .ok_or_else(|| io::Error::new(ErrorKind::InvalidInput, format!("unknown model {model}")))?;
+    Ok(json!({
+        "model": model,
+        "messages": [
+            {"role": "system", "content": include_str!("prompts/compaction_prompt.md")},
+            {"role": "user", "content": format!("Previous summary:\n{previous}\n\nNew conversation material:\n{piece}")},
+        ],
+        "reasoning": {"effort": catalog.openrouter_effort(EffortLevel::Low)},
+        "max_tokens": 4096,
+        "stream": true,
+    }))
 }
 
 impl Client {
@@ -129,24 +191,30 @@ impl Client {
         system_prompt: &str,
         transcript: &[TranscriptEntry],
     ) -> io::Result<CompletionStream> {
-        let catalog_model = catalog_model(model).ok_or_else(|| {
-            io::Error::new(ErrorKind::InvalidInput, format!("unknown model {model}"))
-        })?;
-        let messages = std::iter::once(json!({
-            "role": "system",
-            "content": system_prompt,
-        }))
-        .chain(chat_messages(transcript))
-        .collect::<Vec<_>>();
-        let mut body = json!({
-            "model": model,
-            "messages": messages,
-            "tools": tools::schemas(),
-            "stream": true,
-        });
-        if let Some(openrouter_effort) = catalog_model.openrouter_effort(effort) {
-            body["reasoning"] = json!({ "effort": openrouter_effort });
+        let body = ordinary_body(model, effort, system_prompt, transcript)?;
+        self.stream_body(&body).await
+    }
+
+    pub async fn summarize(&self, model: &str, previous: &str, piece: &str) -> io::Result<String> {
+        let body = summary_body(model, previous, piece)?;
+        let mut stream = self.stream_body(&body).await?;
+        while let Some(item) = stream.next().await? {
+            if let StreamItem::Completion(completion) = item {
+                if completion.stop != Stop::Finished
+                    || !completion.message.tool_calls.is_empty()
+                    || completion.message.text.trim().is_empty()
+                {
+                    return Err(malformed(
+                        "compaction summary was not a finished, nonempty text completion",
+                    ));
+                }
+                return Ok(completion.message.text);
+            }
         }
+        Err(malformed("compaction summary ended without a completion"))
+    }
+
+    async fn stream_body(&self, body: &Value) -> io::Result<CompletionStream> {
         let response = self
             .http
             .post(format!("{}/chat/completions", self.endpoint))
@@ -158,6 +226,9 @@ impl Client {
         let status = response.status();
         if !status.is_success() {
             let detail = response.text().await.map_err(transport)?;
+            if matches!(status.as_u16(), 400 | 413 | 422) && explicit_context_overflow(&detail) {
+                return Err(io::Error::other(InputContextOverflow));
+            }
             return Err(io::Error::other(format!(
                 "OpenRouter returned {status}: {}",
                 detail.trim()
@@ -173,6 +244,21 @@ impl Client {
     }
 }
 
+fn explicit_context_overflow(detail: &str) -> bool {
+    let lower = detail.to_ascii_lowercase();
+    (lower.contains("context") || lower.contains("prompt tokens"))
+        && [
+            "exceed",
+            "too long",
+            "too large",
+            "maximum",
+            "max context",
+            "length",
+        ]
+        .iter()
+        .any(|term| lower.contains(term))
+}
+
 /// Encodes the saved transcript as OpenRouter chat messages. Visible reasoning
 /// is sent only when no continuation metadata carries it.
 pub(crate) fn chat_messages(transcript: &[TranscriptEntry]) -> Vec<Value> {
@@ -182,7 +268,8 @@ pub(crate) fn chat_messages(transcript: &[TranscriptEntry]) -> Vec<Value> {
             Some(match entry {
                 TranscriptEntry::Model(_)
                 | TranscriptEntry::Effort(_)
-                | TranscriptEntry::Mode(_) => return None,
+                | TranscriptEntry::Mode(_)
+                | TranscriptEntry::CompactionCheckpoint(_) => return None,
                 TranscriptEntry::UserMessage(text) => json!({ "role": "user", "content": text }),
                 TranscriptEntry::AssistantMessage(message) => {
                     let content = if message.text.is_empty() {
@@ -874,6 +961,54 @@ mod tests {
             json!({ "role": "tool", "tool_call_id": "call-1", "content": "Sunny." })
         );
         assert_eq!(messages[4]["tool_call_id"], "call-2");
+
+        let mut compacted = transcript.clone();
+        compacted.push(TranscriptEntry::CompactionCheckpoint(
+            crate::sessions::CompactionCheckpoint {
+                summary: "Older summary".to_owned(),
+                covered_prefix: 6,
+            },
+        ));
+        compacted.push(TranscriptEntry::UserMessage("middle".to_owned()));
+        compacted.push(TranscriptEntry::AssistantMessage(AssistantMessage {
+            text: "middle answer".to_owned(),
+            reasoning: String::new(),
+            tool_calls: vec![],
+            continuation_metadata: vec![],
+        }));
+        compacted.push(TranscriptEntry::CompactionCheckpoint(
+            crate::sessions::CompactionCheckpoint {
+                summary: "Current summary".to_owned(),
+                covered_prefix: 9,
+            },
+        ));
+        compacted.push(TranscriptEntry::UserMessage("recent".to_owned()));
+        compacted.push(TranscriptEntry::AssistantMessage(AssistantMessage {
+            text: "recent answer".to_owned(),
+            reasoning: "visible".to_owned(),
+            tool_calls: vec![],
+            continuation_metadata: vec![json!({"type":"reasoning.encrypted", "data":"recent"})],
+        }));
+        let projected = crate::compaction::projection(&compacted);
+        let body = ordinary_body(
+            DEFAULT_MODEL,
+            EffortLevel::Default,
+            TEST_SYSTEM_PROMPT,
+            &projected,
+        )
+        .unwrap();
+        let projected_messages = body["messages"].as_array().unwrap();
+        assert_eq!(projected_messages.len(), 4);
+        assert_eq!(
+            projected_messages[1]["content"],
+            "Compaction summary of earlier conversation:\nCurrent summary"
+        );
+        assert_eq!(projected_messages[2]["content"], "recent");
+        assert_eq!(
+            projected_messages[3]["reasoning_details"][0]["data"],
+            "recent"
+        );
+        assert!(projected_messages[3].get("reasoning").is_none());
     }
 
     #[tokio::test]

@@ -1,0 +1,785 @@
+//! Selects complete transcript prefixes, summarizes them, and projects the
+//! latest checkpoint into ordinary model requests.
+
+use std::{
+    collections::VecDeque,
+    io::{self, ErrorKind},
+};
+
+use agent_client_protocol::schema::v1::SessionId;
+
+use crate::{
+    acp::operations::PromptCancellation,
+    openrouter::{self, Client},
+    sessions::{CompactionCheckpoint, EffortLevel, SessionStore, TranscriptEntry},
+};
+
+const SUMMARY_OUTPUT_TOKENS: usize = 4096;
+const SUMMARY_ALLOWANCE_BYTES: usize = SUMMARY_OUTPUT_TOKENS * 3;
+const SUMMARY_LABEL: &str = "Compaction summary of earlier conversation:\n";
+
+fn tokens(bytes: usize) -> usize {
+    bytes.div_ceil(3)
+}
+
+pub fn budget(model: &str) -> io::Result<(usize, usize, usize)> {
+    let limit = openrouter::catalog_model(model)
+        .ok_or_else(|| io::Error::new(ErrorKind::InvalidInput, "unknown model"))?
+        .context_limit;
+    let admission = limit - 8_000.max(limit / 10);
+    Ok((admission, admission * 80 / 100, admission * 60 / 100))
+}
+
+pub fn request_estimate(
+    model: &str,
+    effort: EffortLevel,
+    system: &str,
+    transcript: &[TranscriptEntry],
+) -> io::Result<usize> {
+    let projected = projection(transcript);
+    let body = openrouter::ordinary_body(model, effort, system, &projected)?;
+    Ok(tokens(
+        serde_json::to_vec(&body)
+            .expect("request body serializes")
+            .len(),
+    ))
+}
+
+fn latest(transcript: &[TranscriptEntry]) -> Option<&CompactionCheckpoint> {
+    transcript.iter().rev().find_map(|entry| match entry {
+        TranscriptEntry::CompactionCheckpoint(checkpoint) => Some(checkpoint),
+        _ => None,
+    })
+}
+
+pub fn projection(transcript: &[TranscriptEntry]) -> Vec<TranscriptEntry> {
+    let mut projected = Vec::new();
+    let start = if let Some(checkpoint) = latest(transcript) {
+        projected.push(TranscriptEntry::UserMessage(format!(
+            "{SUMMARY_LABEL}{}",
+            checkpoint.summary
+        )));
+        checkpoint.covered_prefix
+    } else {
+        0
+    };
+    projected.extend(
+        transcript[start..]
+            .iter()
+            .filter(|entry| !matches!(entry, TranscriptEntry::CompactionCheckpoint(_)))
+            .cloned(),
+    );
+    projected
+}
+
+pub fn has_candidate(transcript: &[TranscriptEntry]) -> bool {
+    !candidates(transcript).is_empty()
+}
+
+pub fn context_error() -> io::Error {
+    io::Error::new(
+        ErrorKind::InvalidInput,
+        "conversation exceeds the model context limit and cannot be compacted further",
+    )
+}
+
+fn projection_at(
+    transcript: &[TranscriptEntry],
+    cut: usize,
+    summary: &str,
+) -> Vec<TranscriptEntry> {
+    let mut projected = vec![TranscriptEntry::UserMessage(format!(
+        "{SUMMARY_LABEL}{summary}"
+    ))];
+    projected.extend(
+        transcript[cut..]
+            .iter()
+            .filter(|entry| !matches!(entry, TranscriptEntry::CompactionCheckpoint(_)))
+            .cloned(),
+    );
+    projected
+}
+
+fn candidates(transcript: &[TranscriptEntry]) -> Vec<usize> {
+    let start = latest(transcript).map_or(0, |checkpoint| checkpoint.covered_prefix);
+    let mut result = Vec::new();
+    let mut index = start;
+    while index < transcript.len() {
+        if let TranscriptEntry::AssistantMessage(message) = &transcript[index] {
+            index += 1 + message.tool_calls.len();
+            if index <= transcript.len() {
+                result.push(index);
+            }
+        } else {
+            index += 1;
+        }
+    }
+    result
+}
+
+fn projected_estimate(
+    model: &str,
+    effort: EffortLevel,
+    system: &str,
+    transcript: &[TranscriptEntry],
+    cut: usize,
+    summary: &str,
+) -> io::Result<usize> {
+    let body = openrouter::ordinary_body(
+        model,
+        effort,
+        system,
+        &projection_at(transcript, cut, summary),
+    )?;
+    Ok(tokens(
+        serde_json::to_vec(&body)
+            .expect("request body serializes")
+            .len(),
+    ))
+}
+
+/// A prospective prompt is rejected only if even the largest complete cut,
+/// with room for a new summary, cannot fit the admission budget.
+pub fn input_fits(
+    model: &str,
+    effort: EffortLevel,
+    system: &str,
+    prospective: &[TranscriptEntry],
+) -> io::Result<bool> {
+    let (admission, _, _) = budget(model)?;
+    if request_estimate(model, effort, system, prospective)? <= admission {
+        return Ok(true);
+    }
+    let Some(cut) = candidates(prospective).last().copied() else {
+        return Ok(false);
+    };
+    projected_estimate(
+        model,
+        effort,
+        system,
+        prospective,
+        cut,
+        &"x".repeat(SUMMARY_ALLOWANCE_BYTES),
+    )
+    .map(|estimate| estimate <= admission)
+}
+
+fn ranked_cuts(
+    model: &str,
+    effort: EffortLevel,
+    system: &str,
+    transcript: &[TranscriptEntry],
+    original: usize,
+) -> io::Result<Vec<usize>> {
+    let (admission, _, target) = budget(model)?;
+    let start = latest(transcript).map_or(0, |checkpoint| checkpoint.covered_prefix);
+    let cuts = candidates(transcript);
+    let allowance = "x".repeat(SUMMARY_ALLOWANCE_BYTES);
+    let base = openrouter::ordinary_body(
+        model,
+        effort,
+        system,
+        &projection_at(transcript, transcript.len(), &allowance),
+    )?;
+    let base_bytes = serde_json::to_vec(&base)
+        .expect("request body serializes")
+        .len();
+    let mut suffix_bytes = vec![0; transcript.len() - start + 1];
+    for index in (start..transcript.len()).rev() {
+        let entry_bytes = openrouter::chat_messages(std::slice::from_ref(&transcript[index]))
+            .into_iter()
+            .map(|message| {
+                serde_json::to_vec(&message)
+                    .expect("chat message serializes")
+                    .len()
+                    + 1
+            })
+            .sum::<usize>();
+        suffix_bytes[index - start] = suffix_bytes[index - start + 1] + entry_bytes;
+    }
+    let mut completed_turn_starts = Vec::new();
+    let mut awaiting_answer = None;
+    for (offset, entry) in transcript[start..].iter().enumerate() {
+        match entry {
+            TranscriptEntry::UserMessage(_) => awaiting_answer = Some(start + offset),
+            TranscriptEntry::AssistantMessage(message) if message.tool_calls.is_empty() => {
+                if let Some(user_index) = awaiting_answer.take() {
+                    completed_turn_starts.push(user_index);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut ranked = Vec::new();
+    let mut completed_before_cut = 0;
+    for cut in cuts {
+        let estimate = tokens(base_bytes + suffix_bytes[cut - start]);
+        if estimate > admission {
+            continue;
+        }
+        while completed_turn_starts
+            .get(completed_before_cut)
+            .is_some_and(|&user_index| user_index < cut)
+        {
+            completed_before_cut += 1;
+        }
+        let retained_turns = completed_turn_starts.len() - completed_before_cut;
+        let rank = (
+            estimate >= original,
+            estimate > target,
+            usize::MAX - retained_turns.min(2),
+            estimate,
+        );
+        ranked.push((cut, rank));
+    }
+    ranked.sort_by_key(|(_, rank)| *rank);
+    Ok(ranked.into_iter().map(|(cut, _)| cut).collect())
+}
+
+fn material(transcript: &[TranscriptEntry], cut: usize) -> VecDeque<(String, String, usize)> {
+    let start = latest(transcript).map_or(0, |checkpoint| checkpoint.covered_prefix);
+    let mut fields = VecDeque::new();
+    for (index, entry) in transcript[start..cut].iter().enumerate() {
+        let source = format!("Entry {}", start + index);
+        match entry {
+            TranscriptEntry::UserMessage(text) => {
+                fields.push_back((format!("{source} user request"), text.clone(), 1))
+            }
+            TranscriptEntry::AssistantMessage(message) => {
+                if !message.text.is_empty() {
+                    fields.push_back((
+                        format!("{source} assistant answer"),
+                        message.text.clone(),
+                        1,
+                    ));
+                }
+                for call in &message.tool_calls {
+                    if !call.arguments.is_empty() {
+                        fields.push_back((
+                            format!("{source} tool {} arguments", call.name),
+                            call.arguments.clone(),
+                            1,
+                        ));
+                    }
+                }
+            }
+            TranscriptEntry::ToolResult(result) => {
+                let status = match result.outcome {
+                    crate::sessions::ToolOutcome::Completed(_) => "completed",
+                    crate::sessions::ToolOutcome::Failed(_) => "failed",
+                    crate::sessions::ToolOutcome::Cancelled(_) => "cancelled",
+                };
+                if !result.outcome.text().is_empty() {
+                    fields.push_back((
+                        format!("{source} tool {} {status} outcome", result.name),
+                        result.outcome.text().chars().take(2000).collect(),
+                        1,
+                    ));
+                }
+            }
+            _ => {}
+        }
+    }
+    fields
+}
+
+fn summary_request_fits(model: &str, previous: &str, piece: &str) -> io::Result<bool> {
+    let limit = openrouter::catalog_model(model)
+        .expect("validated model")
+        .context_limit;
+    let body = openrouter::summary_body(model, previous, piece)?;
+    Ok(tokens(
+        serde_json::to_vec(&body)
+            .expect("summary body serializes")
+            .len(),
+    ) + SUMMARY_OUTPUT_TOKENS
+        <= limit)
+}
+
+fn next_piece(
+    model: &str,
+    previous: &str,
+    fields: &mut VecDeque<(String, String, usize)>,
+) -> io::Result<String> {
+    let mut piece = String::new();
+    while let Some((label, value, part)) = fields.front() {
+        let header = format!("{label}, part {part}:\n");
+        let available = value.len();
+        let mut take = available;
+        loop {
+            while !value.is_char_boundary(take) {
+                take -= 1;
+            }
+            let addition = format!("{header}{}\n", &value[..take]);
+            if summary_request_fits(model, previous, &(piece.clone() + &addition))? {
+                break;
+            }
+            if take == 0 {
+                break;
+            }
+            take /= 2;
+        }
+        if take == 0 {
+            if piece.is_empty() {
+                return Err(io::Error::new(
+                    ErrorKind::InvalidInput,
+                    "summarizer has no room for conversation material",
+                ));
+            }
+            break;
+        }
+        piece.push_str(&header);
+        piece.push_str(&value[..take]);
+        piece.push('\n');
+        if take == available {
+            fields.pop_front();
+        } else {
+            let field = fields.front_mut().expect("field remains");
+            field.1.drain(..take);
+            field.2 += 1;
+        }
+    }
+    Ok(piece)
+}
+
+pub async fn compact(
+    store: &SessionStore,
+    client: &Client,
+    cancellation: &PromptCancellation,
+    id: &SessionId,
+    model: &str,
+    effort: EffortLevel,
+    system: &str,
+    transcript: &mut Vec<TranscriptEntry>,
+) -> io::Result<bool> {
+    let original = request_estimate(model, effort, system, transcript)?;
+    for cut in ranked_cuts(model, effort, system, transcript, original)? {
+        let mut fields = material(transcript, cut);
+        if fields.is_empty() {
+            continue;
+        }
+        let mut summary =
+            latest(transcript).map_or(String::new(), |checkpoint| checkpoint.summary.clone());
+        while !fields.is_empty() {
+            let piece = next_piece(model, &summary, &mut fields)?;
+            summary = tokio::select! {
+                biased;
+                () = cancellation.cancelled() => return Err(io::Error::new(ErrorKind::Interrupted, "compaction cancelled")),
+                result = client.summarize(model, &summary, &piece) => result?,
+            };
+        }
+        if cancellation.is_cancelled() {
+            return Err(io::Error::new(
+                ErrorKind::Interrupted,
+                "compaction cancelled",
+            ));
+        }
+        let actual = projected_estimate(model, effort, system, transcript, cut, &summary)?;
+        if actual >= original || actual > budget(model)?.0 {
+            continue;
+        }
+        let checkpoint = CompactionCheckpoint {
+            summary,
+            covered_prefix: cut,
+        };
+        store.append_checkpoint(id, transcript.len(), &checkpoint)?;
+        transcript.push(TranscriptEntry::CompactionCheckpoint(checkpoint));
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        openrouter::{
+            DEFAULT_MODEL,
+            fixture::{Reply, Server, text_reply},
+        },
+        sessions::{
+            AssistantBatch, AssistantMessage, SessionSettingsChange, ToolCall, ToolOutcome,
+            ToolResult,
+        },
+    };
+
+    fn answer(text: &str) -> AssistantBatch {
+        AssistantBatch::new(
+            AssistantMessage {
+                text: text.to_owned(),
+                reasoning: "private reasoning".to_owned(),
+                tool_calls: vec![],
+                continuation_metadata: vec![serde_json::json!({"opaque": true})],
+            },
+            vec![],
+        )
+        .unwrap()
+    }
+
+    fn tool_batch(id: &str, output: &str) -> AssistantBatch {
+        AssistantBatch::new(
+            AssistantMessage {
+                text: String::new(),
+                reasoning: "private reasoning".to_owned(),
+                tool_calls: vec![ToolCall {
+                    call_id: id.to_owned(),
+                    name: "shell".to_owned(),
+                    arguments: "{\"command\":\"true\"}".to_owned(),
+                }],
+                continuation_metadata: vec![],
+            },
+            vec![ToolResult {
+                call_id: id.to_owned(),
+                name: "shell".to_owned(),
+                outcome: ToolOutcome::Completed(output.to_owned()),
+            }],
+        )
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn manual_compaction_uses_a_summary_and_keeps_the_complete_transcript() {
+        let store = SessionStore::in_memory();
+        let id = store.create(std::path::Path::new("/workspace")).unwrap().id;
+        let older = "old details ".repeat(3000);
+        store
+            .append_user(
+                &id,
+                &SessionSettingsChange {
+                    model: Some(DEFAULT_MODEL.to_owned()),
+                    effort: None,
+                    mode: None,
+                },
+                &older,
+            )
+            .unwrap();
+        store
+            .append_batch(&id, &answer("Initial work complete."))
+            .unwrap();
+        let server = Server::start(vec![
+            text_reply("Initial work complete."),
+            text_reply("Active request carried."),
+            text_reply("Active request carried; next tool complete."),
+        ])
+        .await;
+        let cancellation = PromptCancellation::new();
+        let mut transcript = store.read(&id).unwrap().unwrap().transcript;
+        assert!(
+            request_estimate(DEFAULT_MODEL, EffortLevel::Default, "system", &transcript).unwrap()
+                < budget(DEFAULT_MODEL).unwrap().1,
+            "manual compaction is below the automatic trigger"
+        );
+        assert!(
+            compact(
+                &store,
+                &server.client(),
+                &cancellation,
+                &id,
+                DEFAULT_MODEL,
+                EffortLevel::Default,
+                "system",
+                &mut transcript
+            )
+            .await
+            .unwrap()
+        );
+        let first_cut = transcript.len() - 1;
+        store
+            .append_user(&id, &SessionSettingsChange::default(), "active request")
+            .unwrap();
+        transcript.push(TranscriptEntry::UserMessage("active request".to_owned()));
+        let batch = tool_batch("first", &"new details ".repeat(3000));
+        store.append_batch(&id, &batch).unwrap();
+        transcript.push(TranscriptEntry::AssistantMessage(batch.message));
+        transcript.extend(batch.results.into_iter().map(TranscriptEntry::ToolResult));
+        assert!(
+            compact(
+                &store,
+                &server.client(),
+                &cancellation,
+                &id,
+                DEFAULT_MODEL,
+                EffortLevel::Default,
+                "system",
+                &mut transcript
+            )
+            .await
+            .unwrap()
+        );
+        let batch = tool_batch("second", &"later details ".repeat(3000));
+        store.append_batch(&id, &batch).unwrap();
+        transcript.push(TranscriptEntry::AssistantMessage(batch.message));
+        transcript.extend(batch.results.into_iter().map(TranscriptEntry::ToolResult));
+        assert!(
+            compact(
+                &store,
+                &server.client(),
+                &cancellation,
+                &id,
+                DEFAULT_MODEL,
+                EffortLevel::Default,
+                "system",
+                &mut transcript
+            )
+            .await
+            .unwrap()
+        );
+        assert_eq!(store.read(&id).unwrap().unwrap().transcript, transcript);
+        let checkpoints = transcript
+            .iter()
+            .filter(|entry| matches!(entry, TranscriptEntry::CompactionCheckpoint(_)))
+            .count();
+        assert_eq!(checkpoints, 3);
+        let projected = projection(&transcript);
+        assert_eq!(projected, vec![TranscriptEntry::UserMessage(
+            "Compaction summary of earlier conversation:\nActive request carried; next tool complete.".to_owned())]);
+        let requests = server.requests();
+        assert_eq!(requests.len(), 3);
+        assert!(requests.iter().all(|request| request.get("tools").is_none()
+            && request["reasoning"]["effort"] == "low"
+            && request["max_tokens"] == 4096));
+        assert!(
+            requests[1]["messages"][1]["content"]
+                .as_str()
+                .unwrap()
+                .contains("Initial work complete.")
+        );
+        assert!(
+            requests[1]["messages"][1]["content"]
+                .as_str()
+                .unwrap()
+                .contains("active request")
+        );
+        assert!(
+            requests[2]["messages"][1]["content"]
+                .as_str()
+                .unwrap()
+                .contains("Active request carried.")
+        );
+        assert!(
+            requests[2]["messages"][1]["content"]
+                .as_str()
+                .unwrap()
+                .contains("later details")
+        );
+        assert!(matches!(
+            &transcript[first_cut],
+            TranscriptEntry::CompactionCheckpoint(_)
+        ));
+
+        let store = SessionStore::in_memory();
+        let id = store.create(std::path::Path::new("/workspace")).unwrap().id;
+        store
+            .append_user(
+                &id,
+                &SessionSettingsChange {
+                    model: Some(DEFAULT_MODEL.to_owned()),
+                    effort: None,
+                    mode: None,
+                },
+                &"o".repeat(1_500_000),
+            )
+            .unwrap();
+        store.append_batch(&id, &answer("older work done")).unwrap();
+        store
+            .append_user(
+                &id,
+                &SessionSettingsChange::default(),
+                &"u".repeat(1_800_000),
+            )
+            .unwrap();
+        let mut transcript = store.read(&id).unwrap().unwrap().transcript;
+        let server = Server::start(vec![text_reply("Older work summarized.")]).await;
+        assert!(
+            compact(
+                &store,
+                &server.client(),
+                &PromptCancellation::new(),
+                &id,
+                DEFAULT_MODEL,
+                EffortLevel::Default,
+                "system",
+                &mut transcript
+            )
+            .await
+            .unwrap()
+        );
+        let (admission, _, target) = budget(DEFAULT_MODEL).unwrap();
+        let estimate =
+            request_estimate(DEFAULT_MODEL, EffortLevel::Default, "system", &transcript).unwrap();
+        assert!(
+            estimate > target && estimate <= admission,
+            "a useful reduction is accepted even when the target cannot be reached"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_later_summary_failure_leaves_the_old_checkpoint_active() {
+        let store = SessionStore::in_memory();
+        let id = store.create(std::path::Path::new("/workspace")).unwrap().id;
+        store
+            .append_user(
+                &id,
+                &SessionSettingsChange {
+                    model: Some(DEFAULT_MODEL.to_owned()),
+                    effort: None,
+                    mode: None,
+                },
+                "earlier work",
+            )
+            .unwrap();
+        store.append_batch(&id, &answer("earlier answer")).unwrap();
+        store
+            .append_checkpoint(
+                &id,
+                3,
+                &CompactionCheckpoint {
+                    summary: "Earlier work is complete.".to_owned(),
+                    covered_prefix: 3,
+                },
+            )
+            .unwrap();
+        let large = "x".repeat(3_300_000);
+        store
+            .append_user(&id, &SessionSettingsChange::default(), &large)
+            .unwrap();
+        store.append_batch(&id, &answer("done")).unwrap();
+        let before = store.read(&id).unwrap().unwrap().transcript;
+        let server = Server::start(vec![
+            text_reply("provisional"),
+            Reply::Status(500, "failed".to_owned()),
+        ])
+        .await;
+        let mut transcript = before.clone();
+        assert!(
+            compact(
+                &store,
+                &server.client(),
+                &PromptCancellation::new(),
+                &id,
+                DEFAULT_MODEL,
+                EffortLevel::Default,
+                "system",
+                &mut transcript
+            )
+            .await
+            .is_err()
+        );
+        assert_eq!(
+            server.requests().len(),
+            2,
+            "the oversized field spans two summary requests"
+        );
+        assert_eq!(transcript, before);
+        assert_eq!(store.read(&id).unwrap().unwrap().transcript, before);
+
+        let small_store = SessionStore::in_memory();
+        let small_id = small_store
+            .create(std::path::Path::new("/workspace"))
+            .unwrap()
+            .id;
+        small_store
+            .append_user(
+                &small_id,
+                &SessionSettingsChange {
+                    model: Some(DEFAULT_MODEL.to_owned()),
+                    effort: None,
+                    mode: None,
+                },
+                &"older ".repeat(4000),
+            )
+            .unwrap();
+        small_store
+            .append_batch(&small_id, &answer("done"))
+            .unwrap();
+        let small_before = small_store.read(&small_id).unwrap().unwrap().transcript;
+        for reply in [
+            text_reply(""),
+            Reply::Stream(crate::openrouter::fixture::sse(&[
+                crate::openrouter::fixture::delta(
+                    serde_json::json!({"role":"assistant", "content":"partial"}),
+                    Some("length"),
+                ),
+            ])),
+        ] {
+            let server = Server::start(vec![reply]).await;
+            let mut copy = small_before.clone();
+            assert!(
+                compact(
+                    &small_store,
+                    &server.client(),
+                    &PromptCancellation::new(),
+                    &small_id,
+                    DEFAULT_MODEL,
+                    EffortLevel::Default,
+                    "system",
+                    &mut copy
+                )
+                .await
+                .is_err()
+            );
+            assert_eq!(copy, small_before);
+            assert_eq!(
+                small_store.read(&small_id).unwrap().unwrap().transcript,
+                small_before
+            );
+        }
+        small_store.with_connection(|connection| {
+            connection
+                .execute_batch(
+                    "CREATE TRIGGER refuse_checkpoint BEFORE INSERT ON transcript_entries
+             WHEN NEW.kind = 'compaction_checkpoint'
+             BEGIN SELECT RAISE(ABORT, 'disk full'); END;",
+                )
+                .unwrap()
+        });
+        let server = Server::start(vec![text_reply("Older work done.")]).await;
+        let mut copy = small_before.clone();
+        assert!(
+            compact(
+                &small_store,
+                &server.client(),
+                &PromptCancellation::new(),
+                &small_id,
+                DEFAULT_MODEL,
+                EffortLevel::Default,
+                "system",
+                &mut copy
+            )
+            .await
+            .is_err()
+        );
+        assert_eq!(copy, small_before);
+        assert_eq!(
+            small_store.read(&small_id).unwrap().unwrap().transcript,
+            small_before
+        );
+
+        let hanging = Server::start(vec![Reply::Hang(": ping\n\n".to_owned())]).await;
+        let cancel = PromptCancellation::new();
+        let stop = cancel.clone();
+        let mut copy = small_before.clone();
+        let work = async {
+            compact(
+                &small_store,
+                &hanging.client(),
+                &cancel,
+                &small_id,
+                DEFAULT_MODEL,
+                EffortLevel::Default,
+                "system",
+                &mut copy,
+            )
+            .await
+        };
+        let cancellation = async {
+            while hanging.requests().is_empty() {
+                tokio::task::yield_now().await;
+            }
+            stop.cancel();
+        };
+        let (result, ()) = tokio::join!(work, cancellation);
+        assert_eq!(result.unwrap_err().kind(), ErrorKind::Interrupted);
+        assert_eq!(copy, small_before);
+    }
+}

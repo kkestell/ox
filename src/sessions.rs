@@ -65,6 +65,14 @@ pub enum TranscriptEntry {
     UserMessage(String),
     AssistantMessage(AssistantMessage),
     ToolResult(ToolResult),
+    CompactionCheckpoint(CompactionCheckpoint),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CompactionCheckpoint {
+    pub summary: String,
+    pub covered_prefix: usize,
 }
 
 /// Whether shell calls require approval from the ACP client.
@@ -304,6 +312,8 @@ fn validate_transcript(entries: &[TranscriptEntry]) -> io::Result<()> {
         return Err(invalid_data("transcript does not open with a model"));
     }
     let mut index = 1;
+    let mut previous_prefix = 0;
+    let mut complete_batches = Vec::new();
     while let Some(entry) = entries.get(index) {
         match entry {
             TranscriptEntry::Model(_) => {
@@ -339,6 +349,20 @@ fn validate_transcript(entries: &[TranscriptEntry]) -> io::Result<()> {
                 }
             }
             TranscriptEntry::UserMessage(_) => index += 1,
+            TranscriptEntry::CompactionCheckpoint(checkpoint) => {
+                if checkpoint.summary.trim().is_empty()
+                    || checkpoint.covered_prefix <= previous_prefix
+                    || checkpoint.covered_prefix > index
+                    || !complete_batches.contains(&checkpoint.covered_prefix)
+                {
+                    return Err(invalid_data(
+                        "invalid compaction checkpoint or covered prefix",
+                    ));
+                }
+                // The preceding scan already validated every assistant batch.
+                previous_prefix = checkpoint.covered_prefix;
+                index += 1;
+            }
             TranscriptEntry::ToolResult(result) => {
                 return Err(invalid_data(format!(
                     "tool result {} does not follow an assistant message that called it",
@@ -359,6 +383,7 @@ fn validate_transcript(entries: &[TranscriptEntry]) -> io::Result<()> {
                     .collect::<io::Result<Vec<_>>>()?;
                 pair_results(&message.tool_calls, &results)?;
                 index += 1 + results.len();
+                complete_batches.push(index);
             }
         }
     }
@@ -392,7 +417,8 @@ impl StoredSession {
                 TranscriptEntry::Mode(mode) => settings.mode = *mode,
                 TranscriptEntry::UserMessage(_)
                 | TranscriptEntry::AssistantMessage(_)
-                | TranscriptEntry::ToolResult(_) => {}
+                | TranscriptEntry::ToolResult(_)
+                | TranscriptEntry::CompactionCheckpoint(_) => {}
             }
         }
         settings
@@ -554,6 +580,43 @@ impl SessionStore {
         tx.commit().map_err(io::Error::other)
     }
 
+    /// Appends a checkpoint atomically, after checking the transcript it was
+    /// computed from is still the saved transcript.
+    pub fn append_checkpoint(
+        &self,
+        id: &SessionId,
+        expected_len: usize,
+        checkpoint: &CompactionCheckpoint,
+    ) -> io::Result<()> {
+        let at = now();
+        let mut connection = self.lock();
+        let tx = connection.transaction().map_err(io::Error::other)?;
+        let rows = tx
+            .prepare("SELECT kind, data FROM transcript_entries WHERE session_id = ?1 ORDER BY id")
+            .and_then(|mut statement| {
+                statement
+                    .query_map(params![id.to_string()], |row| {
+                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                    })?
+                    .collect::<rusqlite::Result<Vec<_>>>()
+            })
+            .map_err(io::Error::other)?;
+        if rows.len() != expected_len {
+            return Err(invalid_data(
+                "transcript changed before compaction checkpoint",
+            ));
+        }
+        let mut entries = rows
+            .into_iter()
+            .map(|(kind, data)| decode_entry(&kind, &data))
+            .collect::<io::Result<Vec<_>>>()?;
+        entries.push(TranscriptEntry::CompactionCheckpoint(checkpoint.clone()));
+        validate_transcript(&entries)?;
+        update_activity_and_adopt_session_title(&tx, id, None, &at)?;
+        insert_entry(&tx, id, &at, "compaction_checkpoint", checkpoint)?;
+        tx.commit().map_err(io::Error::other)
+    }
+
     /// Removes the session and its transcript. An absent session is a success.
     pub fn delete(&self, id: &SessionId) -> io::Result<()> {
         self.lock()
@@ -651,6 +714,7 @@ fn decode_entry(kind: &str, data: &str) -> io::Result<TranscriptEntry> {
         "user_message" => TranscriptEntry::UserMessage(decode(kind, data)?),
         "assistant_message" => TranscriptEntry::AssistantMessage(decode(kind, data)?),
         "tool_result" => TranscriptEntry::ToolResult(decode(kind, data)?),
+        "compaction_checkpoint" => TranscriptEntry::CompactionCheckpoint(decode(kind, data)?),
         _ => {
             return Err(invalid_data(format!(
                 "unknown transcript entry kind {kind:?}"
@@ -799,6 +863,16 @@ mod tests {
                 .unwrap();
             let batch = AssistantBatch::new(message.clone(), results.clone()).unwrap();
             store.append_batch(&id, &batch).unwrap();
+            store
+                .append_checkpoint(
+                    &id,
+                    6,
+                    &CompactionCheckpoint {
+                        summary: "Chicago checked; Denver unavailable.".to_owned(),
+                        covered_prefix: 6,
+                    },
+                )
+                .unwrap();
             id
         };
 
@@ -822,7 +896,27 @@ mod tests {
                 TranscriptEntry::AssistantMessage(message.clone()),
                 TranscriptEntry::ToolResult(results[0].clone()),
                 TranscriptEntry::ToolResult(results[1].clone()),
+                TranscriptEntry::CompactionCheckpoint(CompactionCheckpoint {
+                    summary: "Chicago checked; Denver unavailable.".to_owned(),
+                    covered_prefix: 6,
+                }),
             ]
+        );
+        assert_eq!(
+            stored.saved_settings(&SessionSettings::new("other", EffortLevel::High)),
+            SessionSettings::new(openrouter::DEFAULT_MODEL, EffortLevel::High)
+                .with_mode(SessionMode::Auto)
+        );
+        let mut replay = Vec::new();
+        crate::acp::convert::replay_transcript(&stored.transcript, |update| {
+            replay.push(update);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(
+            replay.len(),
+            5,
+            "the checkpoint is hidden but earlier entries replay"
         );
 
         drop(store);
@@ -985,6 +1079,90 @@ mod tests {
         insert(&duplicate_settings, "mode", r#""auto""#);
         insert(&duplicate_settings, "user_message", r#""next""#);
         assert!(store.read(&duplicate_settings).is_err());
+
+        let base = vec![
+            TranscriptEntry::Model(openrouter::DEFAULT_MODEL.to_owned()),
+            TranscriptEntry::UserMessage("first".to_owned()),
+            TranscriptEntry::AssistantMessage(message(vec![call("a", "one"), call("b", "two")])),
+            TranscriptEntry::ToolResult(completed("a")),
+            TranscriptEntry::ToolResult(completed("b")),
+        ];
+        for (first, second) in [
+            (
+                CompactionCheckpoint {
+                    summary: " ".to_owned(),
+                    covered_prefix: 5,
+                },
+                None,
+            ),
+            (
+                CompactionCheckpoint {
+                    summary: "ok".to_owned(),
+                    covered_prefix: 4,
+                },
+                None,
+            ),
+            (
+                CompactionCheckpoint {
+                    summary: "ok".to_owned(),
+                    covered_prefix: 6,
+                },
+                None,
+            ),
+            (
+                CompactionCheckpoint {
+                    summary: "ok".to_owned(),
+                    covered_prefix: 5,
+                },
+                Some(CompactionCheckpoint {
+                    summary: "same".to_owned(),
+                    covered_prefix: 5,
+                }),
+            ),
+            (
+                CompactionCheckpoint {
+                    summary: "ok".to_owned(),
+                    covered_prefix: 5,
+                },
+                Some(CompactionCheckpoint {
+                    summary: "future".to_owned(),
+                    covered_prefix: 7,
+                }),
+            ),
+        ] {
+            let id = store.create(workspace()).unwrap().id;
+            for entry in &base {
+                let (kind, data) = match entry {
+                    TranscriptEntry::Model(value) => {
+                        ("model", serde_json::to_string(value).unwrap())
+                    }
+                    TranscriptEntry::UserMessage(value) => {
+                        ("user_message", serde_json::to_string(value).unwrap())
+                    }
+                    TranscriptEntry::AssistantMessage(value) => {
+                        ("assistant_message", serde_json::to_string(value).unwrap())
+                    }
+                    TranscriptEntry::ToolResult(value) => {
+                        ("tool_result", serde_json::to_string(value).unwrap())
+                    }
+                    _ => unreachable!(),
+                };
+                insert(&id, kind, &data);
+            }
+            insert(
+                &id,
+                "compaction_checkpoint",
+                &serde_json::to_string(&first).unwrap(),
+            );
+            if let Some(second) = second {
+                insert(
+                    &id,
+                    "compaction_checkpoint",
+                    &serde_json::to_string(&second).unwrap(),
+                );
+            }
+            assert!(store.read(&id).is_err());
+        }
     }
 
     #[test]

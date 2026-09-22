@@ -74,15 +74,21 @@ An assistant message keeps answer text, visible reasoning, tool calls, and
 continuation metadata together. Continuation metadata is durable model context,
 not visible reasoning, and is not included in replay.
 
+A compaction checkpoint stores a nonempty summary and the exclusive index of a
+completed transcript prefix. The latest checkpoint controls model requests;
+earlier checkpoints and all covered entries remain saved for replay. Checkpoints
+are omitted from replay. A model request uses the latest summary as a labeled
+user-role message, followed by entries after its covered prefix.
+
 The system prompt is not a transcript entry. It is neither stored nor replayed.
 
 ### Slash commands
 
 Ox advertises its slash commands through an ACP session update after a session
 is created or loaded. A recognized command is handled at the ACP boundary
-before the user message is saved or a model request begins. `/compact` and
-`/goal` are currently stubs: each ends its prompt turn without changing the
-session. `/init` replaces the command text with Ox's built-in initialization
+before the user message is saved or a model request begins. `/compact` runs a
+guarded, cancellable compaction without saving a user message. `/goal` is a stub.
+`/init` replaces the command text with Ox's built-in initialization
 prompt and runs it as a normal user message.
 
 ### Session metadata
@@ -122,12 +128,16 @@ heading. A blank or missing `AGENTS.md` adds nothing. The resulting system
 prompt is kept in memory for the active session. A prompt for a session that is
 not active fails before saving its user message.
 
-Every model request for an active session sends the same system-role message
+Every ordinary model request for an active session sends the same system-role message
 before the transcript. This keeps the request prefix stable while the transcript
 grows. A repeated load in the same process reuses the assembled prompt. A later
 process assembles it again from its built-in prompt and the then-current
 `AGENTS.md`. The system prompt is not written to SQLite, replayed, or used for
 the session title.
+
+Compaction uses the dedicated `src/prompts/compaction_prompt.md` as its system
+prompt, the session model at Low effort, no tools, and a bounded text completion.
+The active session's system prompt remains unchanged for ordinary requests.
 
 ## Lifecycle boundaries
 
@@ -137,9 +147,18 @@ One prompt run owns the state for one turn: its settings snapshot, saved
 transcript copy, cancellation signal, active completion stream, and any
 uncommitted assistant batch.
 
-The user message and any session-setting changes are committed before the first
-model request. Model output remains provisional until the OpenRouter client
-yields a validated completion. Tools run only from that completion.
+An input that cannot fit even after the largest eligible compaction cut is
+rejected before persistence. An accepted user message and any session-setting
+changes are committed before the first model request. Model output remains
+provisional until the OpenRouter client yields a validated completion. Tools run
+only from that completion.
+
+Before each ordinary model request, the prompt run estimates its serialized
+size and compacts when it reaches the automatic threshold. A checkpoint is
+appended in one store transaction and becomes active only after that commit.
+Failed or cancelled summarization leaves the previous model context intact.
+An explicit pre-stream input-context overflow may force one compaction and one
+retry if the request becomes smaller.
 
 When a completion contains tool calls, the prompt run executes them in order and
 builds one assistant batch. The batch is committed before another model request
@@ -254,9 +273,9 @@ The implementation enforces these properties:
 
 The implemented architecture has one OpenRouter provider, one concrete tool set,
 one SQLite connection, sequential tool execution, whole-transcript reads, and
-process-local operation guards. It has no provider fallback, automatic retry,
-prompt queue, context compaction, durable provisional output, background
-continuation, cross-process coordination, or database migration path.
+process-local operation guards. It has no provider fallback, prompt queue,
+durable provisional output, background continuation, cross-process coordination,
+or database migration path.
 
 These are current system constraints, not unimplemented abstractions. Changing
 one requires revisiting the authority or lifecycle boundary that depends on it.
