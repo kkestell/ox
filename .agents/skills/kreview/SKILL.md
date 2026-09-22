@@ -1,74 +1,103 @@
 ---
 name: kreview
-description: "Review a Rust code change through a general, change-directed assessment or one or more focused quality lenses. Use when the user asks for a Rust code review of a diff, branch, commit, or set of files."
-argument-hint: "[general|topic[,topic...]] [review scope]"
+description: "Review code in a diff, branch, commit, or specified files and write findings in `eng/reviews/`. Supports general and language-specific focused code reviews. Do not use for plan critiques or standalone documentation reviews."
+argument-hint: "[general|lens[,lens...]] [review scope]"
 ---
 
 ## Objective
 
-Review the requested Rust change or corpus. Produce findings rather than editing
-implementation, unless the user also requests fixes. Follow repository guidance
-for delegation and completion reviews.
+Review the code the user names. Write findings without changing code unless
+the user also asks for fixes. Follow review and delegation rules in `AGENTS.md`.
 
-## Scope and mode
+This skill and `eng/reviews/` are for code reviews. Plan critiques and standalone
+documentation reviews are outside its scope. Read plans and documentation as
+context for code under review; the documentation lens checks guidance for that
+code.
 
-Resolve `<input_document> $ARGUMENTS </input_document>`. Default to `general`,
-or use the requested comma-separated topic list below. Ask only when an unclear
-scope or topic would materially change the review.
+## Choose what to review
 
-For a diff, branch, or commit, inspect its changes and relevant call paths. For
-explicit files, directories, or the whole codebase, inventory that corpus rather
-than substituting the current diff. For a feature review, include required
-integration even when absent from the diff.
+Read `<input_document> $ARGUMENTS </input_document>`. Use `general` unless the
+user names one or more lenses from the list below. Ask for clarification only
+when the answer would change what you review.
 
-In general mode, select topics that the actual behavior and risks make relevant.
-In focused mode, stay within the requested topics and examine the corpus deeply
-enough to support the requested coverage. Read their sections in
-[references/topics.md](references/topics.md).
+For a diff, branch, or commit, inspect its changes and the code that calls or
+depends on them. For named files, directories, or the whole codebase, review
+that full scope. For a feature review, check other code the feature needs,
+even when it is outside the diff.
+
+For a general review, choose lenses that fit the code and its risks, including
+language-specific lenses when applicable. For a focused review, stay within the
+requested lenses and examine the relevant code closely. Read only the matching
+lens files linked below. Each lens is either general or specific to one
+language.
 
 ## Review
 
-Trace concrete behavior through callers, ownership, borrowing, lifetimes, and
-tests. Judge clones, allocations, `unwrap`/`expect`, traits, macros, async
-machinery, and `unsafe` by their purpose and consequence rather than treating
-them as automatic defects.
+Trace behavior through callers, state changes, resource lifetimes, and tests.
+Judge implementation choices by their purpose and consequence. Do not treat a
+language feature or coding pattern as a defect on its own.
 
-Read the owning contracts, allowing the user's agreed redesign to change them.
-Challenge costly implementation guarantees when they do not serve required user
-behavior. A hypothetical edge case alone does not justify more machinery.
+Read the requirements that define the behavior. If the user has approved a new
+design, review against that design. Flag complex or expensive code that adds no
+required behavior. Do not recommend extra code for a hypothetical edge case
+alone.
 
-Verify suspected defects with the smallest useful source trace, reproduction, or
-check. Choose validation according to `AGENTS.md`; topic selection does not
-require a fixed Cargo command suite, new tests for every failure path, or a
-hardening pass. Do not manufacture findings to fill each topic or call a partial
-scan exhaustive.
+Check suspected bugs by tracing the code, reproducing the behavior, or running
+a focused check. Follow `AGENTS.md` when choosing validation. A lens does not
+require a fixed set of commands, a new test for each error path, or a
+broader review than the requested scope. Report only supported findings, and
+say when you reviewed only part of the code.
 
 ## Report
 
-State the scope, selected topics, and material coverage gaps. Order confirmed
-findings by severity, with precise source, consequence, evidence, and a simpler
-remedy. Separate unresolved suspicions and explain what would settle them.
-Record checks actually run. No findings is a valid result. Give a concise
-verdict.
+Read `eng/reviews/TEMPLATE.md` and use it to write the review in
+`eng/reviews/YYYY-MM-DD-NNN-slug.md`, using the next sequence for the day.
+State the scope, selected lenses, and significant gaps in coverage. Group
+confirmed findings by severity (high, medium, low), then by lens within each
+severity.
+For each finding, give the source location, what can happen, the evidence, and
+a suggested fix. List unconfirmed issues separately and say what would confirm
+them. Record the checks you ran. If there are no findings, say so. End with a
+short verdict.
 
-## Topics
+## General lenses
 
-- `general` — select topics relevant to the requested change.
-- `resources` — ownership, borrowing, lifetimes, clones, allocations, and
-  cleanup.
-- `error-handling` — `Result`/`Option`, useful errors, cancellation, and panic
-  behavior.
-- `api-design` — caller contracts, traits, naming, and shared surface.
-- `naming` — invented terms, jargon, vague names, and inconsistent vocabulary.
-- `performance` — repeated work, allocations, and costs at actual input sizes.
-- `testing` — useful behavior coverage and reliable assertions.
-- `readability` — local reasoning, control flow, and naming.
-- `concurrency` — async tasks, threads, synchronization, cancellation, and
-  lifetime.
-- `security` — trust boundaries, authority, confinement, and secrets.
-- `correctness` — required behavior and reachable state transitions.
-- `unsafe` — unsafe blocks, raw pointers, FFI, and soundness assumptions.
-- `architecture` — responsibility, coupling, and redundant machinery.
-- `dependencies` — replaced machinery, Cargo configuration, and integration
-  costs.
-- `documentation` — useful caller guidance and accurate design documents.
+`general` is the review mode that chooses applicable lenses; it is not a lens.
+
+- [`resources`](references/general/resources.md) — resource ownership, lifetime,
+  and cleanup.
+- [`error-handling`](references/general/error-handling.md) — failures, useful
+  errors, cancellation, and partial effects.
+- [`api-design`](references/general/api-design.md) — caller contracts and shared
+  interfaces.
+- [`naming`](references/general/naming.md) — clear and consistent vocabulary.
+- [`performance`](references/general/performance.md) — material costs for
+  realistic inputs.
+- [`testing`](references/general/testing.md) — behavior coverage and reliable
+  assertions.
+- [`readability`](references/general/readability.md) — clear control flow and
+  local reasoning.
+- [`concurrency`](references/general/concurrency.md) — shared state, task
+  lifetime, and cancellation.
+- [`security`](references/general/security.md) — trust boundaries, permissions,
+  and secrets.
+- [`correctness`](references/general/correctness.md) — required behavior and
+  reachable state changes.
+- [`architecture`](references/general/architecture.md) — responsibilities,
+  dependencies, and needless complexity.
+- [`dependencies`](references/general/dependencies.md) — library choices and
+  integration costs.
+- [`documentation`](references/general/documentation.md) — caller guidance and
+  design documents associated with the code under review.
+
+## Rust lenses
+
+Use these only for Rust code. Future language lenses belong in their own
+language directory, with no language-specific rules in general lenses.
+
+- [`rust-ownership`](references/rust/ownership.md) — borrowing, clones,
+  allocation, and shared ownership.
+- [`rust-idioms`](references/rust/idioms.md) — `Result`/`Option`, traits,
+  generics, macros, and Rust concurrency types.
+- [`rust-cargo`](references/rust/cargo.md) — Cargo manifests, lockfiles,
+  features, and toolchain costs.

@@ -1,40 +1,41 @@
 # Plan title
 
-A plan is a settled work order, not a record of exploration. Keep only the
-sections that communicate an implementation decision, source reference, task, or
-change-specific test. Do not retain empty headings or template prompts.
+Write the plan after making the main decisions. Keep the sections needed to
+explain the change, the relevant code, the tasks, and the tests. Delete unused
+headings and placeholder text.
 
 ## Goal
 
-State the problem and observable outcome.
+State the problem and what should happen when the work is done.
 
 ## Related code
 
-- `path/to/file` — Why this file, contract, or established pattern matters.
+- `path/to/file` — What this code does and why it matters to the change.
 
 ## Decisions
 
-Record only non-obvious choices that implementation must preserve. Include the
-current constraint or architectural fit when it makes a task intelligible.
+Record choices that may not be clear from the tasks. Explain any constraints
+needed to understand them.
 
 ## Naming
 
-List every domain term the plan uses, with its `eng/glossary.md` meaning or
-its new definition. Use glossary terms verbatim in tasks, code names,
-comments, and documentation. Do not introduce synonyms or overload an existing
-term.
+Define each project term used in the plan. Use its definition from
+`eng/glossary.md` if it has one. Use the same term in tasks, code, comments, and
+documentation. Do not use different names for the same thing or give an
+existing term a new meaning.
 
-- `term` — Glossary meaning or new definition, and where the name appears.
+- `term` — Its definition and where the name will appear.
 
 ## Test plan
 
-- Stable boundary and behavior to prove, including material error paths.
+- Expected behavior and relevant error cases. Avoid tests that depend on
+  internal details.
 
 ## Implementation plan
 
-- Concrete task in execution order.
+- Task to complete, listed in the order it should be done.
 
 ## Documentation updates
 
-- Owned current-state documentation to update when the work lands. Omit this
-  section when none applies.
+- Existing documentation to update because of this change. Omit this section
+  if there is none.
