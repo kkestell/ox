@@ -121,22 +121,23 @@ impl Client {
     }
 
     /// Starts one streamed completion using `model` and `transcript`. The
-    /// workspace instructions, when present, precede the transcript.
+    /// system prompt precedes the transcript.
     pub async fn stream_completion(
         &self,
         model: &str,
         effort: EffortLevel,
-        instructions: Option<&str>,
+        system_prompt: &str,
         transcript: &[TranscriptEntry],
     ) -> io::Result<CompletionStream> {
         let choice = model_choice(model).ok_or_else(|| {
             io::Error::new(ErrorKind::InvalidInput, format!("unknown model {model}"))
         })?;
-        let messages = instructions
-            .map(instructions_message)
-            .into_iter()
-            .chain(chat_messages(transcript))
-            .collect::<Vec<_>>();
+        let messages = std::iter::once(json!({
+            "role": "system",
+            "content": system_prompt,
+        }))
+        .chain(chat_messages(transcript))
+        .collect::<Vec<_>>();
         let mut body = json!({
             "model": model,
             "messages": messages,
@@ -170,21 +171,6 @@ impl Client {
             buffered_items: VecDeque::new(),
         })
     }
-}
-
-/// Workspace instructions are sent as a user message, not a system message, so
-/// they cannot outrank the user's own messages.
-fn instructions_message(instructions: &str) -> Value {
-    json!({
-        "role": "user",
-        "content": format!(
-            "# Workspace instructions from AGENTS.md\n\n\
-             Follow these standing workspace instructions unless they conflict with a user\n\
-             message. The user's message takes precedence.\n\n\
-             <INSTRUCTIONS>\n{}\n</INSTRUCTIONS>",
-            instructions.trim_end()
-        ),
-    })
 }
 
 /// Encodes the saved transcript as OpenRouter chat messages. Visible reasoning
@@ -752,6 +738,8 @@ mod tests {
     };
     use crate::sessions::{ToolOutcome, ToolResult};
 
+    const TEST_SYSTEM_PROMPT: &str = "You are Ox.";
+
     async fn drain(request: &mut CompletionStream) -> io::Result<Vec<StreamItem>> {
         let mut items = Vec::new();
         while let Some(item) = request.next().await? {
@@ -767,7 +755,7 @@ mod tests {
             .stream_completion(
                 DEFAULT_MODEL,
                 EffortLevel::Default,
-                None,
+                TEST_SYSTEM_PROMPT,
                 &[TranscriptEntry::UserMessage("hi".to_owned())],
             )
             .await?;
@@ -837,7 +825,7 @@ mod tests {
             .stream_completion(
                 MODEL_CHOICES[2].id,
                 EffortLevel::Default,
-                Some("Answer in French.\n"),
+                "You are Ox.\n\n# Workspace instructions from AGENTS.md\n\nAnswer in French.",
                 &transcript,
             )
             .await
@@ -857,12 +845,13 @@ mod tests {
         );
         let messages = body["messages"].as_array().unwrap();
         assert_eq!(messages.len(), 5);
-        assert_eq!(messages[0]["role"], "user");
-        let instructions = messages[0]["content"].as_str().unwrap();
-        assert!(instructions.starts_with("# Workspace instructions from AGENTS.md\n"));
-        assert!(instructions.contains("unless they conflict with a user\nmessage."));
-        assert!(instructions.contains("The user's message takes precedence."));
-        assert!(instructions.ends_with("<INSTRUCTIONS>\nAnswer in French.\n</INSTRUCTIONS>"));
+        assert_eq!(
+            messages[0],
+            json!({
+                "role": "system",
+                "content": "You are Ox.\n\n# Workspace instructions from AGENTS.md\n\nAnswer in French."
+            })
+        );
         assert_eq!(
             messages[1],
             json!({ "role": "user", "content": "Weather in Chicago and Denver?" })
@@ -891,7 +880,7 @@ mod tests {
                 let server = Server::start(vec![text_reply("Done")]).await;
                 let mut stream = server
                     .client()
-                    .stream_completion(model.id, effort, None, &[])
+                    .stream_completion(model.id, effort, TEST_SYSTEM_PROMPT, &[])
                     .await
                     .unwrap();
                 drain(&mut stream).await.unwrap();
@@ -1145,7 +1134,7 @@ mod tests {
         let server = Server::start(vec![Reply::Stream("data: not json\n\n".to_owned())]).await;
         let mut request = server
             .client()
-            .stream_completion(DEFAULT_MODEL, EffortLevel::Default, None, &[])
+            .stream_completion(DEFAULT_MODEL, EffortLevel::Default, TEST_SYSTEM_PROMPT, &[])
             .await
             .unwrap();
         assert!(drain(&mut request).await.is_err());
@@ -1157,7 +1146,7 @@ mod tests {
         .await;
         let error = server
             .client()
-            .stream_completion(DEFAULT_MODEL, EffortLevel::Default, None, &[])
+            .stream_completion(DEFAULT_MODEL, EffortLevel::Default, TEST_SYSTEM_PROMPT, &[])
             .await
             .err()
             .expect("a failed status is an error");
@@ -1173,7 +1162,7 @@ mod tests {
                 .stream_completion(
                     DEFAULT_MODEL,
                     EffortLevel::Default,
-                    None,
+                    TEST_SYSTEM_PROMPT,
                     &[TranscriptEntry::UserMessage("hi".to_owned())],
                 )
                 .await

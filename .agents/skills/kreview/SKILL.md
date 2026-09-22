@@ -54,17 +54,21 @@ verdict.
 ## Topics
 
 - `general` — select topics relevant to the requested change.
-- `resources` — ownership, borrowing, lifetimes, clones, allocations, and cleanup.
-- `error-handling` — `Result`/`Option`, useful errors, cancellation, and panic behavior.
+- `resources` — ownership, borrowing, lifetimes, clones, allocations, and
+  cleanup.
+- `error-handling` — `Result`/`Option`, useful errors, cancellation, and panic
+  behavior.
 - `api-design` — caller contracts, traits, naming, and shared surface.
 - `naming` — invented terms, jargon, vague names, and inconsistent vocabulary.
 - `performance` — repeated work, allocations, and costs at actual input sizes.
 - `testing` — useful behavior coverage and reliable assertions.
 - `readability` — local reasoning, control flow, and naming.
-- `concurrency` — async tasks, threads, synchronization, cancellation, and lifetime.
+- `concurrency` — async tasks, threads, synchronization, cancellation, and
+  lifetime.
 - `security` — trust boundaries, authority, confinement, and secrets.
 - `correctness` — required behavior and reachable state transitions.
 - `unsafe` — unsafe blocks, raw pointers, FFI, and soundness assumptions.
 - `architecture` — responsibility, coupling, and redundant machinery.
-- `dependencies` — replaced machinery, Cargo configuration, and integration costs.
+- `dependencies` — replaced machinery, Cargo configuration, and integration
+  costs.
 - `documentation` — useful caller guidance and accurate design documents.

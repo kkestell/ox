@@ -94,10 +94,8 @@ struct ActiveSession {
     /// The latest client selections. A prompt copies these before it starts,
     /// so changes during the prompt apply to the next turn.
     settings: SessionSettings,
-    /// The workspace instructions captured when the session became active.
-    /// `None` records a workspace without `AGENTS.md`, so no prompt reads the
-    /// file.
-    instructions: Option<String>,
+    /// The complete system prompt assembled when the session became active.
+    system_prompt: String,
 }
 
 impl ServerState {
@@ -131,10 +129,10 @@ impl ServerState {
 
     fn new_session(&self, request: &NewSessionRequest) -> Result<NewSessionResponse> {
         self.openrouter_client()?;
-        let instructions = instructions::read(&request.cwd).map_err(Error::into_internal_error)?;
+        let system_prompt = instructions::load(&request.cwd).map_err(Error::into_internal_error)?;
         let summary = self.store.create(&request.cwd).map_err(store_error)?;
         let settings = default_settings();
-        self.activate(summary.id.clone(), settings.clone(), instructions);
+        self.activate(summary.id.clone(), settings.clone(), system_prompt);
         Ok(NewSessionResponse::new(summary.id).config_options(config_options(&settings, false)))
     }
 
@@ -214,24 +212,18 @@ impl ServerState {
         let settings = stored.settings(&default_settings());
         validate_settings(&settings)?;
         let model_locked = !stored.transcript.is_empty();
-        // A repeated load keeps the instructions captured by the first, so the
-        // file is read once per active session.
-        let instructions = match self.active_session(&request.session_id) {
-            Some(active) => active.instructions,
-            None => instructions::read(&stored.summary.workspace_path)
+        // A repeated load keeps the same prefix captured by the first load.
+        let system_prompt = match self.active_session(&request.session_id) {
+            Some(active) => active.system_prompt,
+            None => instructions::load(&stored.summary.workspace_path)
                 .map_err(Error::into_internal_error)?,
         };
-        self.activate(request.session_id.clone(), settings.clone(), instructions);
+        self.activate(request.session_id.clone(), settings.clone(), system_prompt);
         convert::replay_transcript(&stored.transcript, send_update)?;
         Ok(LoadSessionResponse::new().config_options(config_options(&settings, model_locked)))
     }
 
-    fn activate(
-        &self,
-        session_id: SessionId,
-        settings: SessionSettings,
-        instructions: Option<String>,
-    ) {
+    fn activate(&self, session_id: SessionId, settings: SessionSettings, system_prompt: String) {
         self.active
             .lock()
             .expect("active sessions mutex poisoned")
@@ -239,7 +231,7 @@ impl ServerState {
                 session_id,
                 ActiveSession {
                     settings,
-                    instructions,
+                    system_prompt,
                 },
             );
     }
@@ -374,14 +366,14 @@ pub async fn run_headless(
             "OpenRouter authentication required; run `ox auth login`",
         )
     })?;
-    let instructions = instructions::read(workspace_path)?;
+    let system_prompt = instructions::load(workspace_path)?;
     let store = SessionStore::open(&sessions::database_path()?)?;
     let session = store.create(workspace_path)?;
     run_headless_prompt(
         store,
         openrouter::Client::new(api_key),
         session.id,
-        instructions,
+        system_prompt,
         user_message,
     )
     .await
@@ -391,7 +383,7 @@ async fn run_headless_prompt(
     store: SessionStore,
     openrouter: openrouter::Client,
     session_id: SessionId,
-    instructions: Option<String>,
+    system_prompt: String,
     user_message: String,
 ) -> std::result::Result<(), Box<dyn StdError>> {
     let mut interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
@@ -403,7 +395,7 @@ async fn run_headless_prompt(
             session_id,
             user_message,
             selected_settings: Some(default_settings()),
-            instructions,
+            system_prompt,
         },
         cancellation.clone(),
         |_| Ok(()),
@@ -535,7 +527,7 @@ async fn serve(state: ServerState, transport: impl ConnectTo<Agent> + 'static) -
                         session_id: session_id.clone(),
                         user_message,
                         selected_settings: Some(active.settings),
-                        instructions: active.instructions,
+                        system_prompt: active.system_prompt,
                     },
                     cancellation,
                     send_update,
@@ -611,14 +603,14 @@ mod tests {
     }
 
     #[test]
-    fn activation_validates_the_session_and_captures_instructions_once() {
+    fn activation_validates_the_session_and_captures_the_system_prompt_once() {
         let workspace = Workspace::new();
         let agents_md = workspace.0.join("AGENTS.md");
         fs::write(&agents_md, "Answer in French.\n").unwrap();
+        let french = instructions::load(&workspace.0).unwrap();
         let state = state();
         let id = create_session(&state, &workspace.0);
-        let french = Some("Answer in French.\n".to_owned());
-        assert_eq!(state.active_session(&id).unwrap().instructions, french);
+        assert_eq!(state.active_session(&id).unwrap().system_prompt, french);
         let mut updates = Vec::new();
         let mut send_update = |update| {
             updates.push(update);
@@ -650,9 +642,9 @@ mod tests {
             .unwrap();
         assert!(updates.is_empty(), "a new session replays nothing");
         assert_eq!(
-            state.active_session(&id).unwrap().instructions,
+            state.active_session(&id).unwrap().system_prompt,
             french,
-            "a repeated load keeps the captured instructions"
+            "a repeated load keeps the captured prompt"
         );
 
         let later = state_over(state.store.clone());
@@ -662,8 +654,8 @@ mod tests {
             })
             .unwrap();
         assert_eq!(
-            later.active_session(&id).unwrap().instructions,
-            Some("Answer in German.\n".to_owned()),
+            later.active_session(&id).unwrap().system_prompt,
+            instructions::load(&workspace.0).unwrap(),
             "a later process reads the current file on its first load"
         );
 
@@ -859,7 +851,7 @@ mod tests {
                 session_id: id.clone(),
                 user_message: user_message.to_owned(),
                 selected_settings: Some(active.settings),
-                instructions: active.instructions,
+                system_prompt: active.system_prompt,
             }
         };
 
@@ -919,7 +911,7 @@ mod tests {
             let instructions = request["messages"][0]["content"].as_str().unwrap();
             assert!(
                 instructions.contains("Answer in French."),
-                "every request uses the instructions captured at activation"
+                "every request uses the system prompt captured at activation"
             );
         }
         assert_eq!(requests[1]["messages"][1]["content"], "first");
@@ -1288,7 +1280,7 @@ mod tests {
                 store.clone(),
                 server.client(),
                 session.id.clone(),
-                None,
+                instructions::load(path).unwrap(),
                 "Run commands".into(),
             )
             .await;

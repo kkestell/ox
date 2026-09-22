@@ -13,17 +13,17 @@
 
 ## Names across boundaries
 
-| Domain                       | ACP                  | OpenRouter                               |
-| ---------------------------- | -------------------- | ---------------------------------------- |
-| continuation metadata        | —                    | `reasoning_details`                      |
-| workspace path               | `cwd`                | —                                        |
-| visible reasoning, request   | —                    | `reasoning`                              |
-| visible reasoning, response  | `AgentThoughtChunk`  | `delta.reasoning`                        |
-| effort level                 | `effort` option      | `reasoning.effort` (omitted for Default) |
-| tool name                    | tool kind            | `function.name`                          |
-| tool outcome `cancelled`     | tool status `failed` | —                                        |
-| prompt outcome               | `stopReason`         | `finish_reason`                          |
-| workspace instructions       | —                    | first `user` message                     |
+| Domain                      | ACP                  | OpenRouter                               |
+| --------------------------- | -------------------- | ---------------------------------------- |
+| continuation metadata       | —                    | `reasoning_details`                      |
+| workspace path              | `cwd`                | —                                        |
+| visible reasoning, request  | —                    | `reasoning`                              |
+| visible reasoning, response | `AgentThoughtChunk`  | `delta.reasoning`                        |
+| effort level                | `effort` option      | `reasoning.effort` (omitted for Default) |
+| tool name                   | tool kind            | `function.name`                          |
+| tool outcome `cancelled`    | tool status `failed` | —                                        |
+| prompt outcome              | `stopReason`         | `finish_reason`                          |
+| system prompt               | —                    | first `system` message                   |
 
 ## Terms
 
@@ -43,12 +43,13 @@
 - **Session**: A saved conversation and its metadata, identified by a session
   ID. Its OpenRouter model is fixed when the first turn starts.
 - **Active session**: A session created or loaded in the current process. Its
-  workspace instructions are captured when it becomes active, and only an
-  active session can be configured or prompted over ACP.
+  system prompt is assembled when it becomes active, and only an active session
+  can be configured or prompted over ACP.
+- **System prompt**: Ox's built-in agent instructions followed, when present, by
+  workspace instructions. It is assembled when a session becomes active and sent
+  as the first message of every model request for that session.
 - **Workspace instructions**: The text of `AGENTS.md` at the workspace root,
-  captured once when a session becomes active and sent as the first user-role
-  message of every model request for that session. They are process state, not
-  transcript entries, and a user message takes precedence over them.
+  appended to the system prompt when a session becomes active.
 - **Session settings**: The model and effort level in force for a turn.
 - **ACP selections**: The latest session settings selected through ACP for a
   future turn. They are process state, not durable authority.

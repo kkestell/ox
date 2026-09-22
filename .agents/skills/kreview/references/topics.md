@@ -47,19 +47,19 @@ lenses or invent a finding for a topic with no defect.
 - Read real call sites. Keep shared surface small, names clear, and argument
   meaning apparent. Types, lifetimes, and trait bounds should express the
   operation rather than add conversions and wrappers without benefit.
-- Traits, generics, and dynamic dispatch need multiple real implementations
-  that make the abstraction clearer than a concrete type. Check whether they
-  improve the actual API or only spread complexity.
+- Traits, generics, and dynamic dispatch need multiple real implementations that
+  make the abstraction clearer than a concrete type. Check whether they improve
+  the actual API or only spread complexity.
 - Check protocol encoding where field presence, default values, or optional
-  values change observable behavior. Context and extension storage is a
-  lifetime and ownership question, not an automatic defect.
+  values change observable behavior. Context and extension storage is a lifetime
+  and ownership question, not an automatic defect.
 
 ## Naming
 
 - Build the vocabulary from the changed code, its callers, and owning
   documentation. Flag a name when it makes the concept, responsibility, or
-  behavior harder to identify—not merely because another name would be a
-  matter of taste.
+  behavior harder to identify—not merely because another name would be a matter
+  of taste.
 - Look for terms invented by the change without a clear meaning, unexplained
   jargon or shorthand, vague names that conceal important distinctions, and
   multiple names for the same concept. Also check whether one name is being
@@ -68,10 +68,9 @@ lenses or invent a finding for a topic with no defect.
   accidental synonyms. Prefer the smallest vocabulary change that makes the
   relevant concept consistent across types, functions, fields, modules,
   comments, and protocol boundaries.
-- Support findings with the conflicting or unclear occurrences, the concept
-  they actually refer to, and the concrete reader or maintenance consequence.
-  Do not manufacture a naming finding when the vocabulary is clear and
-  consistent.
+- Support findings with the conflicting or unclear occurrences, the concept they
+  actually refer to, and the concrete reader or maintenance consequence. Do not
+  manufacture a naming finding when the vocabulary is clear and consistent.
 
 ## Performance
 
@@ -79,8 +78,8 @@ lenses or invent a finding for a topic with no defect.
 - Investigate repeated traversal, cloning, allocation, I/O, serialization, or
   retained output when it can materially affect a session. Prefer eliminating
   work over clever local tuning.
-- Support performance claims with measurements when needed, and label
-  unmeasured concerns. Avoid complexity that buys an irrelevant micro-optimization.
+- Support performance claims with measurements when needed, and label unmeasured
+  concerns. Avoid complexity that buys an irrelevant micro-optimization.
 
 ## Testing
 
@@ -110,11 +109,11 @@ lenses or invent a finding for a topic with no defect.
   decision. Check `Send`/`Sync` bounds and `Arc`/mutex use against the real
   ownership model.
 - Follow threads, async tasks, channels, callbacks, and subprocesses through
-  cancellation and shutdown. Their lifetime should agree with the work that
-  owns them.
+  cancellation and shutdown. Their lifetime should agree with the work that owns
+  them.
 - Check that cancellation can reach relevant waits and that live policy changes
-  have the behavior required by the session contract. Use focused concurrency
-  or interleaving tests when they would settle a concrete concern.
+  have the behavior required by the session contract. Use focused concurrency or
+  interleaving tests when they would settle a concrete concern.
 
 ## Security
 
@@ -127,8 +126,8 @@ lenses or invent a finding for a topic with no defect.
   disclosure rules. Durable conversations and tool results intentionally carry
   content; they are not sanitized traces.
 - Resource limits should address a concrete boundary risk. Unlimited
-  conversation history is not automatically a defect when the product
-  explicitly permits it.
+  conversation history is not automatically a defect when the product explicitly
+  permits it.
 
 ## Correctness
 

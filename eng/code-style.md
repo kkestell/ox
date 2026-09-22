@@ -38,10 +38,10 @@ is still moving.
   needed.
 - Prefer direct functions and data flow. Split a module when the boundary
   clarifies responsibility, not because the file is long.
-- Give each lifecycle one owner. New state for an entity goes into the
-  structure that already tracks that entity, with its callers and tests
-  updated. A separate parallel structure requires a lifecycle the existing one
-  cannot serve.
+- Give each lifecycle one owner. New state for an entity goes into the structure
+  that already tracks that entity, with its callers and tests updated. A
+  separate parallel structure requires a lifecycle the existing one cannot
+  serve.
 
 ## Errors, tests, and comments
 

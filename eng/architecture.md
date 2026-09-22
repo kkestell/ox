@@ -72,8 +72,7 @@ An assistant message keeps answer text, visible reasoning, tool calls, and
 continuation metadata together. Continuation metadata is durable model context,
 not visible reasoning, and is not included in replay.
 
-Workspace instructions are not transcript entries. They are neither stored nor
-replayed.
+The system prompt is not a transcript entry. It is neither stored nor replayed.
 
 ### Session metadata
 
@@ -92,8 +91,8 @@ state:
 
 - operation guards and prompt cancellation coordinate active session operations;
 - active sessions hold, for each session created or loaded in the process, the
-  ACP selections chosen for a future turn and the workspace instructions
-  captured at activation;
+  ACP selections chosen for a future turn and the system prompt assembled at
+  activation;
 - the OpenRouter client cache holds credentials and reusable HTTP state; and
 - the session store holds one SQLite connection.
 
@@ -101,22 +100,21 @@ ACP selections are not a second durable settings store. A prompt run takes a
 settings snapshot at its turn boundary. The transcript remains authoritative for
 the fixed model and last saved effort level.
 
-### Workspace instructions
+### System prompt
 
-Workspace instructions are process-local model context. A session becomes
-active through `session/new`, through its first `session/load` in the process,
-or through the headless entry point. At that moment Ox reads `AGENTS.md` at the
-workspace root once and keeps the text in memory for the session; a blank or
-missing file is kept as no instructions. A prompt for a session that is not
-active fails before saving its user message.
+Ox's built-in prompt is the editable Markdown file `src/system_prompt.md`. When
+a session becomes active through `session/new`, its first `session/load` in the
+process, or the headless entry point, Ox appends the workspace root `AGENTS.md`
+under a workspace-instructions heading. A blank or missing `AGENTS.md` adds
+nothing. The resulting system prompt is kept in memory for the active session. A
+prompt for a session that is not active fails before saving its user message.
 
-Every model request for an active session sends the same captured text as one
-user-role message before the transcript, so each request keeps the previous
-request as a stable prefix while the transcript grows. A repeated load in the
-same process reuses the captured text. A later process reads the file again when
-it first activates the session; editing the file does not change a session that
-is already active. Workspace instructions are never written to SQLite, replayed,
-or used for the session title.
+Every model request for an active session sends the same system-role message
+before the transcript. This keeps the request prefix stable while the transcript
+grows. A repeated load in the same process reuses the assembled prompt. A later
+process assembles it again from its built-in prompt and the then-current
+`AGENTS.md`. The system prompt is not written to SQLite, replayed, or used for
+the session title.
 
 ## Lifecycle boundaries
 
@@ -193,11 +191,9 @@ permissions. Over ACP, every shell call requires a shell permission request;
 headless prompts approve it automatically. Tool effects are not transactional
 and may remain after failure or cancellation.
 
-`AGENTS.md` is user-controlled workspace input supplied to the model as
-guidance that ranks below the user's own messages. It gains no operating-system
-permissions and does not bypass any tool boundary. A file that cannot be read,
-is not UTF-8, or exceeds 32 KiB fails session activation instead of being
-ignored.
+`AGENTS.md` is user-controlled workspace input appended to the system prompt. A
+file that cannot be read, is not UTF-8, or exceeds 32 KiB fails session
+activation instead of being ignored.
 
 Credentials come from `OPENROUTER_API_KEY` or the operating-system keyring and
 are not part of a session or transcript. The OpenRouter client is loaded lazily
@@ -228,9 +224,8 @@ The implementation enforces these properties:
 11. No SQLite transaction or mutex guard crosses an asynchronous wait.
 12. A request-level failure does not poison unrelated sessions or terminate a
     healthy ACP connection.
-13. Every model request for an active session sends the workspace instructions
-    captured when the session became active, before the transcript, and no
-    prompt run reads `AGENTS.md`.
+13. Every model request for an active session sends the same system prompt
+    assembled when the session became active before the transcript.
 
 ## Deliberate constraints
 

@@ -31,8 +31,8 @@ pub(super) struct PromptInput {
     pub session_id: SessionId,
     pub user_message: String,
     pub selected_settings: Option<SessionSettings>,
-    /// The workspace instructions captured when the session became active.
-    pub instructions: Option<String>,
+    /// The complete system prompt captured when the session became active.
+    pub system_prompt: String,
 }
 
 pub fn run<F>(
@@ -97,7 +97,7 @@ struct PromptRun<F> {
     settings: SessionSettings,
     settings_change: SessionSettingsChange,
     /// Sent before the transcript on every model request of this run.
-    instructions: Option<String>,
+    system_prompt: String,
     summary: SessionSummary,
     cancellation: PromptCancellation,
     send_update: F,
@@ -185,7 +185,7 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
             openrouter,
             settings,
             settings_change,
-            instructions: input.instructions.clone(),
+            system_prompt: input.system_prompt.clone(),
             summary: stored.summary,
             cancellation,
             send_update,
@@ -277,7 +277,7 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
             started = self.openrouter.stream_completion(
                 &self.settings.model,
                 self.settings.effort,
-                self.instructions.as_deref(),
+                &self.system_prompt,
                 &self.transcript,
             ) => {
                 started.map_err(PromptOutcome::OpenRouter)?
@@ -464,6 +464,7 @@ mod tests {
     use serde_json::json;
 
     use crate::{
+        instructions,
         openrouter::{
             DEFAULT_MODEL, MODEL_CHOICES,
             fixture::{Reply, Server, delta, sse, text_reply, tool_reply},
@@ -541,7 +542,7 @@ mod tests {
                     session_id: self.session_id.clone(),
                     user_message: input.to_owned(),
                     selected_settings,
-                    instructions: None,
+                    system_prompt: instructions::load(&self.workspace.0).unwrap(),
                 },
                 self.cancellation.clone(),
                 send_update,
@@ -910,7 +911,7 @@ mod tests {
                 session_id: missing,
                 user_message: "not saved".to_owned(),
                 selected_settings: None,
-                instructions: None,
+                system_prompt: instructions::load(&workspace.0).unwrap(),
             },
             PromptCancellation::new(),
             |_| Ok(()),
@@ -937,7 +938,7 @@ mod tests {
                 session_id: unknown.clone(),
                 user_message: "not saved".to_owned(),
                 selected_settings: None,
-                instructions: None,
+                system_prompt: instructions::load(&workspace.0).unwrap(),
             },
             PromptCancellation::new(),
             |_| Ok(()),
@@ -986,8 +987,8 @@ mod tests {
             ]
         );
         let second_request = &harness.server.requests()[1];
-        assert_eq!(second_request["messages"].as_array().unwrap().len(), 4);
-        assert_eq!(second_request["messages"][3]["tool_call_id"], "call-2");
+        assert_eq!(second_request["messages"].as_array().unwrap().len(), 5);
+        assert_eq!(second_request["messages"][4]["tool_call_id"], "call-2");
     }
 
     #[tokio::test]
