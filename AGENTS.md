@@ -5,9 +5,10 @@ THIS DOCUMENT MUST BE KEPT UP TO DATE
 - `Makefile`: Release builds and fast-by-default or release local installs.
   Installs replace the Ox binary and delete the disposable session database.
 - `scripts/run.py`: Temporary workspace runner for a headless prompt, with
-  optional checkout of a pinned GitHub commit.
+  optional model, effort, and checkout of a pinned GitHub commit.
 - `src/main.rs`: Command parsing and process entry; starts the ACP server, runs
-  one headless prompt, runs a credential command, or prints help.
+  one headless prompt with an optional model and effort, runs a credential
+  command, or prints help.
 - `src/auth.rs`: Environment and operating-system keyring credential storage.
 - `src/system_prompt.rs`: Assembly of Ox's built-in system prompt with bounded
   workspace-root `AGENTS.md` instructions.

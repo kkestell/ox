@@ -4,13 +4,15 @@ Run `cargo test` for the in-module `#[cfg(test)]` suite and `cargo build` for a
 debug build.
 
 For live end-to-end testing, prefer
-`scripts/run.py [--keep] [--repo <GitHub-commit-URL>] '<prompt>'`. It reads
-`OPENROUTER_API_KEY` from `.env` and creates a temporary workspace. To use an
-existing workspace, run `ox run [--dir <workspace-path>] '<prompt>'` directly.
-The headless run creates a new session in `ox.db` and reports completion through
-its exit status; `ox run` itself writes no successful output. Set `OX_DATA_DIR`
-to a temporary directory to isolate that database, then inspect it to verify the
-saved session.
+`scripts/run.py [--keep] [--repo <GitHub-commit-URL>] [--model <model-id>] [--effort <default|low|medium|high>] '<prompt>'`.
+It reads `OPENROUTER_API_KEY` from `.env` and creates a temporary workspace. To
+use an existing workspace, run
+`ox run [--dir <workspace-path>] [--model <model-id>] [--effort <default|low|medium|high>] '<prompt>'`
+directly. The model must be in the model catalog; an unset model or effort uses
+the same defaults as a new ACP session. The headless run creates a new session
+in `ox.db` and reports completion through its exit status; `ox run` itself
+writes no successful output. Set `OX_DATA_DIR` to a temporary directory to
+isolate that database, then inspect it to verify the saved session.
 
 ## Test discipline
 

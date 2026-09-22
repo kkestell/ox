@@ -13,10 +13,17 @@ use std::{
     process::ExitCode,
 };
 
+use sessions::EffortLevel;
+
+const USAGE: &str = "ox [run [--dir <workspace-path>] [--model <model-id>] \
+                     [--effort <default|low|medium|high>] <prompt> | auth <login|logout>]";
+
 enum Command {
     Serve,
     Run {
         dir: Option<PathBuf>,
+        model: String,
+        effort: EffortLevel,
         prompt: String,
     },
     Login,
@@ -29,34 +36,71 @@ fn command(args: impl Iterator<Item = String>) -> io::Result<Command> {
     match args.as_slice() {
         [] => Ok(Command::Serve),
         [arg] if arg == "--help" || arg == "-h" => Ok(Command::Help),
-        [run, prompt] if run == "run" && prompt != "--dir" && !prompt.trim().is_empty() => {
-            Ok(Command::Run {
-                dir: None,
-                prompt: prompt.clone(),
-            })
-        }
-        [run, flag, dir, prompt]
-            if run == "run" && flag == "--dir" && !prompt.trim().is_empty() =>
-        {
-            Ok(Command::Run {
-                dir: Some(PathBuf::from(dir)),
-                prompt: prompt.clone(),
-            })
-        }
+        [run, rest @ ..] if run == "run" => run_command(rest),
         [auth, action] if auth == "auth" && action == "login" => Ok(Command::Login),
         [auth, action] if auth == "auth" && action == "logout" => Ok(Command::Logout),
-        _ => Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "usage: ox [run [--dir <workspace-path>] <prompt> | auth <login|logout>]",
-        )),
+        _ => Err(usage_error()),
     }
 }
 
+fn run_command(args: &[String]) -> io::Result<Command> {
+    let mut dir = None;
+    let mut model = None;
+    let mut effort = None;
+    let mut prompt = None;
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--dir" | "--model" | "--effort" => {
+                let value = args.next().ok_or_else(usage_error)?;
+                match arg.as_str() {
+                    "--dir" => dir = Some(PathBuf::from(value)),
+                    "--model" => {
+                        model = Some(openrouter::catalog_model(value).ok_or_else(|| {
+                            invalid_input(format!(
+                                "{value} is not a model; choose one of {}",
+                                openrouter::MODEL_CATALOG
+                                    .iter()
+                                    .map(|model| model.id)
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            ))
+                        })?);
+                    }
+                    _ => {
+                        effort = Some(EffortLevel::from_id(value).ok_or_else(|| {
+                            invalid_input(format!(
+                                "{value} is not an effort level; choose one of {}",
+                                EffortLevel::ALL.map(EffortLevel::id).join(", ")
+                            ))
+                        })?);
+                    }
+                }
+            }
+            _ if prompt.is_none() && !arg.trim().is_empty() => prompt = Some(arg.clone()),
+            _ => return Err(usage_error()),
+        }
+    }
+    Ok(Command::Run {
+        dir,
+        model: model
+            .map_or(openrouter::DEFAULT_MODEL, |model| model.id)
+            .to_owned(),
+        effort: effort.unwrap_or(EffortLevel::Default),
+        prompt: prompt.ok_or_else(usage_error)?,
+    })
+}
+
+fn usage_error() -> io::Error {
+    invalid_input(format!("usage: {USAGE}"))
+}
+
+fn invalid_input(message: String) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidInput, message)
+}
+
 fn print_help() {
-    println!(
-        "Usage: ox [run [--dir <workspace-path>] <prompt> | auth <login|logout>]\n\n\
-         Run without arguments to start the ACP agent."
-    );
+    println!("Usage: {USAGE}\n\nRun without arguments to start the ACP agent.");
 }
 
 fn absolute_dir(dir: Option<&Path>) -> io::Result<PathBuf> {
@@ -83,9 +127,12 @@ async fn main() -> ExitCode {
 async fn run() -> Result<(), Box<dyn Error>> {
     match command(env::args().skip(1))? {
         Command::Serve => acp::serve_stdio().await?,
-        Command::Run { dir, prompt } => {
-            acp::run_headless(&absolute_dir(dir.as_deref())?, prompt).await?
-        }
+        Command::Run {
+            dir,
+            model,
+            effort,
+            prompt,
+        } => acp::run_headless(&absolute_dir(dir.as_deref())?, model, effort, prompt).await?,
         Command::Login => {
             let api_key = rpassword::prompt_password("OpenRouter API key: ")?;
             let api_key = api_key.trim();
@@ -131,31 +178,67 @@ mod tests {
         ));
     }
 
+    fn run(args: &[&str]) -> io::Result<Command> {
+        command(args.iter().map(|arg| (*arg).to_owned()))
+    }
+
     #[test]
     fn parses_run_commands() {
-        let Command::Run { dir, prompt } =
-            command(["run".to_owned(), "Hello".to_owned()].into_iter()).unwrap()
+        let Command::Run {
+            dir,
+            model,
+            effort,
+            prompt,
+        } = run(&["run", "Hello"]).unwrap()
         else {
             panic!("expected run command");
         };
         assert_eq!(dir, None);
+        assert_eq!(model, openrouter::DEFAULT_MODEL);
+        assert_eq!(effort, EffortLevel::Default);
         assert_eq!(prompt, "Hello");
 
-        let Command::Run { dir, prompt } = command(
-            ["run", "--dir", "workspace", "Fix it"]
-                .map(str::to_owned)
-                .into_iter(),
-        )
-        .unwrap() else {
+        let chosen = openrouter::MODEL_CATALOG[1].id;
+        let Command::Run {
+            dir,
+            model,
+            effort,
+            prompt,
+        } = run(&[
+            "run",
+            "--dir",
+            "workspace",
+            "Fix it",
+            "--model",
+            chosen,
+            "--effort",
+            "high",
+        ])
+        .unwrap()
+        else {
             panic!("expected run command");
         };
         assert_eq!(dir.as_deref(), Some(Path::new("workspace")));
+        assert_eq!(model, chosen);
+        assert_eq!(effort, EffortLevel::High);
         assert_eq!(prompt, "Fix it");
     }
 
     #[test]
     fn rejects_unknown_commands() {
-        assert!(command(["login".to_owned()].into_iter()).is_err());
-        assert!(command(["run".to_owned(), "".to_owned()].into_iter()).is_err());
+        assert!(run(&["login"]).is_err());
+        assert!(run(&["run"]).is_err());
+        assert!(run(&["run", ""]).is_err());
+        assert!(run(&["run", "--dir"]).is_err());
+        assert!(run(&["run", "Hello", "again"]).is_err());
+        assert!(error(&["run", "--model", "retired/model", "Hello"]).contains("not a model"));
+        assert!(error(&["run", "--effort", "max", "Hello"]).contains("not an effort level"));
+    }
+
+    fn error(args: &[&str]) -> String {
+        match run(args) {
+            Ok(_) => panic!("expected an error"),
+            Err(error) => error.to_string(),
+        }
     }
 }

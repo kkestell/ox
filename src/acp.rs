@@ -411,6 +411,8 @@ pub async fn serve_stdio() -> std::result::Result<(), Box<dyn StdError>> {
 
 pub async fn run_headless(
     workspace_path: &Path,
+    model: String,
+    effort: EffortLevel,
     user_message: String,
 ) -> std::result::Result<(), Box<dyn StdError>> {
     let api_key = auth::api_key()?.ok_or_else(|| {
@@ -426,6 +428,7 @@ pub async fn run_headless(
         store,
         openrouter::Client::new(api_key),
         session.id,
+        SessionSettings::new(model, effort),
         system_prompt,
         user_message,
     )
@@ -436,6 +439,7 @@ async fn run_headless_prompt(
     store: SessionStore,
     openrouter: openrouter::Client,
     session_id: SessionId,
+    settings: SessionSettings,
     system_prompt: String,
     user_message: String,
 ) -> std::result::Result<(), Box<dyn StdError>> {
@@ -447,10 +451,7 @@ async fn run_headless_prompt(
         prompt::PromptInput {
             session_id,
             user_message,
-            selected_settings: Some(
-                SessionSettings::new(openrouter::DEFAULT_MODEL, EffortLevel::Default)
-                    .with_mode(SessionMode::Auto),
-            ),
+            selected_settings: Some(settings.with_mode(SessionMode::Auto)),
             system_prompt,
         },
         cancellation.clone(),
@@ -1504,20 +1505,22 @@ mod tests {
                 store.clone(),
                 server.client(),
                 session.id.clone(),
+                SessionSettings::new(openrouter::MODEL_CATALOG[1].id, EffortLevel::High),
                 system_prompt::for_workspace(path).unwrap(),
                 "Run commands".into(),
             )
             .await;
             assert!(response.unwrap_err().to_string().contains("Cancelled"));
             let transcript = store.read(&session.id).unwrap().unwrap().transcript;
-            assert!(matches!(
-                &transcript[..3],
+            assert_eq!(
+                &transcript[..4],
                 [
-                    TranscriptEntry::Model(_),
+                    TranscriptEntry::Model(openrouter::MODEL_CATALOG[1].id.to_owned()),
+                    TranscriptEntry::Effort(EffortLevel::High),
                     TranscriptEntry::Mode(SessionMode::Auto),
-                    TranscriptEntry::UserMessage(_),
+                    TranscriptEntry::UserMessage("Run commands".to_owned()),
                 ]
-            ));
+            );
             assert_eq!(transcript.iter().filter(|entry| matches!(entry, TranscriptEntry::ToolResult(result) if matches!(result.outcome, ToolOutcome::Cancelled(_)))).count(), 2);
             std::fs::write(path.join("saved"), "yes").unwrap();
             return;
