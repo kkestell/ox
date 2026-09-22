@@ -136,10 +136,13 @@ while a turn is running. `ServerState` keeps the current selection per session
 in memory and answers the request immediately, so the client's UI never waits
 on a running turn.
 
-Prompt startup folds the transcript once. An existing transcript supplies the
-model because it is the single source of truth; the current selection supplies
-the effort level. Startup appends changed setting entries before saving the
-user message. Three consequences fall out of that single rule:
+Prompt startup takes an optional snapshot of the current selection, reads and
+validates the session, and folds the transcript once. An existing transcript
+supplies the model because it is the single source of truth; when a selection
+is present, it supplies the effort level. Without a selection, saved settings
+supply both values. An empty transcript without a selection uses the defaults.
+Startup appends changed setting entries before saving the user message. Three
+consequences fall out of that single rule:
 
 - A change made mid-turn takes effect on the next turn, never the current one.
 - The marker sits immediately before the first user message it governs, which
@@ -148,14 +151,16 @@ user message. Three consequences fall out of that single rule:
   operation guard keeps doing its existing job unchanged.
 
 The in-memory selection is seeded with the defaults on `session/new` and from
-the transcript fold on `session/load`. A process restart between `session/new`
-and the first prompt loses an unused selection and returns to the defaults;
-nothing has been produced by then, so this is acceptable.
+the transcript fold on `session/load`. A prompt does not seed a missing
+selection. A process restart between `session/new` and the first prompt loses
+an unused selection and returns to the defaults; nothing has been produced by
+then, so this is acceptable. A started session instead falls back to the model
+and last effort saved in its transcript.
 
-`prompt::run` takes the settings snapshot as a parameter. Its synchronous
-start opens the prompt and saves the user message while the ordered ACP handler
-still defines the turn boundary, then it returns the future that runs the model
-loop. Headless `ox run` passes the defaults.
+`prompt::run` takes the optional selection snapshot as a parameter. Its
+synchronous start opens the prompt and saves the user message while the ordered
+ACP handler still defines the turn boundary, then it returns the future that
+runs the model loop. Headless `ox run` explicitly passes the defaults.
 
 ## 7. ACP surface
 

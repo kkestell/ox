@@ -430,9 +430,9 @@ not used to change activity.
 
 ### Logical schema
 
-The database contains workspace rows, session rows, and an ordered
-`transcript_entries` table. Session rows contain the session ID, workspace
-association, optional session title, and creation and activity timestamps.
+The database contains session rows and an ordered `transcript_entries` table.
+Session rows contain the session ID, exact workspace path, optional session
+title, and creation and activity timestamps.
 `transcript_entries` rows contain an ordered integer ID, session ID, timestamp,
 kind, and serialized payload.
 

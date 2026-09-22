@@ -244,31 +244,12 @@ impl ServerState {
         Ok(DeleteSessionResponse::new())
     }
 
-    fn session_settings(&self, session_id: &SessionId) -> Result<SessionSettings> {
-        if let Some(settings) = self
-            .selections
+    fn selected_settings(&self, session_id: &SessionId) -> Option<SessionSettings> {
+        self.selections
             .lock()
             .expect("session selections mutex poisoned")
             .get(session_id)
             .cloned()
-        {
-            return Ok(settings);
-        }
-        let stored = self
-            .store
-            .read(session_id)
-            .map_err(Error::into_internal_error)?
-            .ok_or_else(|| not_found(session_id))?;
-        let settings = stored.settings(&default_settings());
-        validate_settings(&settings)?;
-        let settings = self
-            .selections
-            .lock()
-            .expect("session selections mutex poisoned")
-            .entry(session_id.clone())
-            .or_insert(settings)
-            .clone();
-        Ok(settings)
     }
 
     /// The cached client is cleared even when removing the saved key fails,
@@ -381,7 +362,7 @@ async fn run_headless_prompt(
         prompt::PromptInput {
             session_id,
             user_message,
-            settings: default_settings(),
+            selected_settings: Some(default_settings()),
         },
         cancellation.clone(),
         |_| Ok(()),
@@ -493,10 +474,7 @@ async fn serve(state: ServerState, transport: impl ConnectTo<Agent> + 'static) -
                 else {
                     return responder.respond_with_error(busy());
                 };
-                let settings = match prompt_state.session_settings(&request.session_id) {
-                    Ok(settings) => settings,
-                    Err(error) => return responder.respond_with_error(error),
-                };
+                let selected_settings = prompt_state.selected_settings(&request.session_id);
                 let session_id = request.session_id;
                 let task_connection = connection.clone();
                 let send_update = {
@@ -513,7 +491,7 @@ async fn serve(state: ServerState, transport: impl ConnectTo<Agent> + 'static) -
                     prompt::PromptInput {
                         session_id: session_id.clone(),
                         user_message,
-                        settings,
+                        selected_settings,
                     },
                     cancellation,
                     send_update,
@@ -793,7 +771,7 @@ mod tests {
             prompt::PromptInput {
                 session_id: created.session_id.clone(),
                 user_message: "first".to_owned(),
-                settings: state.session_settings(&created.session_id).unwrap(),
+                selected_settings: state.selected_settings(&created.session_id),
             },
             cancellation.clone(),
             |_| Ok(()),
@@ -822,7 +800,7 @@ mod tests {
             prompt::PromptInput {
                 session_id: created.session_id.clone(),
                 user_message: "second".to_owned(),
-                settings: state.session_settings(&created.session_id).unwrap(),
+                selected_settings: state.selected_settings(&created.session_id),
             },
             PromptCancellation::new(),
             |_| Ok(()),

@@ -28,17 +28,12 @@ const MAX_SESSION_TITLE_CHARS: usize = 80;
 const SCHEMA: &str = "
 BEGIN;
 
-CREATE TABLE IF NOT EXISTS workspaces (
-    id   INTEGER PRIMARY KEY,
-    path TEXT NOT NULL UNIQUE
-);
-
 CREATE TABLE IF NOT EXISTS sessions (
-    id           TEXT PRIMARY KEY,
-    workspace_id INTEGER NOT NULL REFERENCES workspaces (id),
-    title        TEXT,
-    created_at   TEXT NOT NULL,
-    updated_at   TEXT NOT NULL
+    id             TEXT PRIMARY KEY,
+    workspace_path TEXT NOT NULL,
+    title          TEXT,
+    created_at     TEXT NOT NULL,
+    updated_at     TEXT NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS sessions_by_activity ON sessions (updated_at DESC, id);
@@ -383,20 +378,13 @@ impl SessionStore {
         let path = validate_workspace_path(workspace_path)?;
         let id = SessionId::new(uuid::Uuid::new_v4().to_string());
         let at = now();
-        let mut connection = self.lock();
-        let tx = connection.transaction().map_err(io::Error::other)?;
-        tx.execute(
-            "INSERT OR IGNORE INTO workspaces (path) VALUES (?1)",
-            params![path],
-        )
-        .map_err(io::Error::other)?;
-        tx.execute(
-            "INSERT INTO sessions (id, workspace_id, created_at, updated_at)
-             VALUES (?1, (SELECT id FROM workspaces WHERE path = ?2), ?3, ?3)",
-            params![id.to_string(), path, at],
-        )
-        .map_err(io::Error::other)?;
-        tx.commit().map_err(io::Error::other)?;
+        self.lock()
+            .execute(
+                "INSERT INTO sessions (id, workspace_path, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?3)",
+                params![id.to_string(), path, at],
+            )
+            .map_err(io::Error::other)?;
         Ok(SessionSummary {
             id,
             workspace_path: workspace_path.to_path_buf(),
@@ -447,11 +435,10 @@ impl SessionStore {
         let connection = self.lock();
         let mut statement = connection
             .prepare(
-                "SELECT sessions.id, workspaces.path, sessions.title,
+                "SELECT sessions.id, sessions.workspace_path, sessions.title,
                         sessions.created_at, sessions.updated_at
                  FROM sessions
-                 JOIN workspaces ON workspaces.id = sessions.workspace_id
-                 WHERE ?1 IS NULL OR workspaces.path = ?1
+                 WHERE ?1 IS NULL OR sessions.workspace_path = ?1
                  ORDER BY sessions.updated_at DESC, sessions.id ASC",
             )
             .map_err(io::Error::other)?;
@@ -530,10 +517,9 @@ fn validate_workspace_path(workspace_path: &Path) -> io::Result<String> {
 fn summary(connection: &Connection, id: &SessionId) -> rusqlite::Result<Option<SessionSummary>> {
     connection
         .query_row(
-            "SELECT sessions.id, workspaces.path, sessions.title,
+            "SELECT sessions.id, sessions.workspace_path, sessions.title,
                     sessions.created_at, sessions.updated_at
              FROM sessions
-             JOIN workspaces ON workspaces.id = sessions.workspace_id
              WHERE sessions.id = ?1",
             params![id.to_string()],
             summary_row,
@@ -1096,17 +1082,17 @@ mod tests {
             .unwrap()
             .id;
         set_updated_at(&store, &first, "2026-09-18T10:00:00.000Z");
-        set_updated_at(&store, &second, "2026-09-18T09:00:00.000Z");
+        set_updated_at(&store, &second, "2026-09-18T10:00:00.000Z");
         set_updated_at(&store, &other, "2026-09-18T11:00:00.000Z");
+
+        let mut tied = [first.to_string(), second.to_string()];
+        tied.sort();
 
         assert_eq!(
             ids(&store.list(None).unwrap()),
-            vec![other.to_string(), first.to_string(), second.to_string()]
+            vec![other.to_string(), tied[0].clone(), tied[1].clone()]
         );
-        assert_eq!(
-            ids(&store.list(Some(workspace())).unwrap()),
-            vec![first.to_string(), second.to_string()]
-        );
+        assert_eq!(ids(&store.list(Some(workspace())).unwrap()), tied);
         assert!(store.create(Path::new("relative/path")).is_err());
     }
 

@@ -30,7 +30,7 @@ pub enum ToolPermissions {
 pub(super) struct PromptInput {
     pub session_id: SessionId,
     pub user_message: String,
-    pub settings: SessionSettings,
+    pub selected_settings: Option<SessionSettings>,
 }
 
 pub fn run<F>(
@@ -48,7 +48,7 @@ where
         store,
         openrouter,
         input.session_id,
-        input.settings,
+        input.selected_settings,
         cancellation,
         send_update,
         permissions,
@@ -104,56 +104,32 @@ struct PromptRun<F> {
     uncommitted_batch: Option<UncommittedAssistantBatch>,
 }
 
-/// A validated assistant message whose tool calls do not all have outcomes yet.
+/// A validated assistant message whose tool calls do not all have results yet.
 struct UncommittedAssistantBatch {
     message: AssistantMessage,
-    outcomes: Vec<Option<ToolOutcome>>,
+    /// Sequential execution makes observed results a prefix of the tool calls.
+    results: Vec<ToolResult>,
 }
 
 impl UncommittedAssistantBatch {
     fn new(message: AssistantMessage) -> Self {
-        let outcomes = vec![None; message.tool_calls.len()];
-        Self { message, outcomes }
-    }
-
-    fn set_outcome(&mut self, index: usize, outcome: ToolOutcome) -> ToolResult {
-        let call = &self.message.tool_calls[index];
-        let slot = &mut self.outcomes[index];
-        assert!(
-            slot.is_none(),
-            "tool call {} already has a result",
-            call.call_id
-        );
-        *slot = Some(outcome.clone());
-        tool_result(call, outcome)
-    }
-
-    /// Fills every empty slot with `outcome` and returns the results filled.
-    fn fill_empty_outcomes(&mut self, outcome: &ToolOutcome) -> Vec<ToolResult> {
-        let mut filled = Vec::new();
-        for (call, slot) in self.message.tool_calls.iter().zip(&mut self.outcomes) {
-            if slot.is_none() {
-                *slot = Some(outcome.clone());
-                filled.push(tool_result(call, outcome.clone()));
-            }
+        Self {
+            message,
+            results: Vec::new(),
         }
-        filled
+    }
+
+    fn append_remaining_results(&mut self, outcome: &ToolOutcome) -> Vec<ToolResult> {
+        let results = self.message.tool_calls[self.results.len()..]
+            .iter()
+            .map(|call| tool_result(call, outcome.clone()))
+            .collect::<Vec<_>>();
+        self.results.extend(results.iter().cloned());
+        results
     }
 
     fn complete(&self) -> AssistantBatch {
-        let results = self
-            .message
-            .tool_calls
-            .iter()
-            .zip(&self.outcomes)
-            .map(|(call, outcome)| {
-                let outcome = outcome
-                    .clone()
-                    .expect("every tool call has an outcome before the batch is complete");
-                tool_result(call, outcome)
-            })
-            .collect();
-        AssistantBatch::new(self.message.clone(), results)
+        AssistantBatch::new(self.message.clone(), self.results.clone())
             .expect("a complete assistant batch pairs one result with each call")
     }
 }
@@ -171,7 +147,7 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
         store: SessionStore,
         openrouter: openrouter::Client,
         session_id: SessionId,
-        settings: SessionSettings,
+        selected_settings: Option<SessionSettings>,
         cancellation: PromptCancellation,
         send_update: F,
         permissions: ToolPermissions,
@@ -180,10 +156,10 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
             .read(&session_id)
             .map_err(Error::into_internal_error)?
             .ok_or_else(|| Error::resource_not_found(Some(session_id.to_string())))?;
-        let current = stored.settings(&super::default_settings());
-        let mut settings = settings;
+        let saved_settings = stored.settings(&super::default_settings());
+        let mut settings = selected_settings.unwrap_or_else(|| saved_settings.clone());
         if !stored.transcript.is_empty() {
-            settings.model = current.model.clone();
+            settings.model.clone_from(&saved_settings.model);
         }
         if openrouter::model_choice(&settings.model).is_none() {
             return Err(Error::into_internal_error(io::Error::new(
@@ -196,7 +172,7 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
         }
         let settings_change = SessionSettingsChange {
             model: stored.transcript.is_empty().then(|| settings.model.clone()),
-            effort: (current.effort != settings.effort).then_some(settings.effort),
+            effort: (saved_settings.effort != settings.effort).then_some(settings.effort),
         };
         Ok(Self {
             store,
@@ -329,7 +305,7 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
     /// before its ACP update is sent, so an update failure does not erase
     /// completed work.
     async fn execute(&mut self, calls: &[ToolCall]) -> std::result::Result<(), PromptOutcome> {
-        for (index, call) in calls.iter().enumerate() {
+        for call in calls {
             if self.cancellation.is_cancelled() {
                 return Err(PromptOutcome::Cancelled);
             }
@@ -351,11 +327,12 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
             } else {
                 ToolOutcome::Failed("User denied permission to run this command.".to_owned())
             };
-            let result = self
-                .uncommitted_batch
+            let result = tool_result(call, outcome);
+            self.uncommitted_batch
                 .as_mut()
                 .expect("tools run against an uncommitted assistant batch")
-                .set_outcome(index, outcome);
+                .results
+                .push(result.clone());
             (self.send_update)(convert::finished_tool_call_update(&result))
                 .map_err(PromptOutcome::AcpUpdate)?;
         }
@@ -434,7 +411,7 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
                     unreachable!("{outcome} leaves no uncommitted batch")
                 }
             };
-            let unexecuted = batch.fill_empty_outcomes(&placeholder);
+            let unexecuted = batch.append_remaining_results(&placeholder);
             if !matches!(outcome, PromptOutcome::Storage(_))
                 && let Err(error) = self.commit()
             {
@@ -480,7 +457,7 @@ mod tests {
 
     use crate::{
         openrouter::{
-            DEFAULT_MODEL,
+            DEFAULT_MODEL, MODEL_CHOICES,
             fixture::{Reply, Server, delta, sse, text_reply, tool_reply},
         },
         sessions::EffortLevel,
@@ -532,6 +509,16 @@ mod tests {
             &self,
             input: &str,
             settings: SessionSettings,
+            on_update: impl FnMut(&SessionUpdate) -> Result<()>,
+        ) -> (Result<PromptResponse>, Vec<TranscriptEntry>) {
+            self.run_with_selection(input, Some(settings), on_update)
+                .await
+        }
+
+        async fn run_with_selection(
+            &self,
+            input: &str,
+            selected_settings: Option<SessionSettings>,
             mut on_update: impl FnMut(&SessionUpdate) -> Result<()>,
         ) -> (Result<PromptResponse>, Vec<TranscriptEntry>) {
             let updates = self.updates.clone();
@@ -545,7 +532,7 @@ mod tests {
                 PromptInput {
                     session_id: self.session_id.clone(),
                     user_message: input.to_owned(),
-                    settings,
+                    selected_settings,
                 },
                 self.cancellation.clone(),
                 send_update,
@@ -1081,6 +1068,146 @@ mod tests {
         let requests = harness.server.requests();
         assert_eq!(requests[0]["reasoning"]["effort"], "low");
         assert_eq!(requests[1]["reasoning"]["effort"], "max");
+    }
+
+    #[tokio::test]
+    async fn absent_selection_uses_saved_settings_without_duplicate_entries() {
+        let harness = Harness::new(vec![text_reply("Done")]).await;
+        let saved = SessionSettings::new(MODEL_CHOICES[1].id, EffortLevel::High);
+        harness
+            .store
+            .append_user(
+                &harness.session_id,
+                &SessionSettingsChange {
+                    model: Some(saved.model.clone()),
+                    effort: Some(saved.effort),
+                },
+                "saved turn",
+            )
+            .unwrap();
+
+        let (response, transcript) = harness
+            .run_with_selection("next turn", None, |_| Ok(()))
+            .await;
+
+        assert_eq!(response.unwrap().stop_reason, StopReason::EndTurn);
+        assert_eq!(harness.server.requests()[0]["model"], saved.model);
+        assert_eq!(harness.server.requests()[0]["reasoning"]["effort"], "max");
+        assert_eq!(
+            transcript,
+            vec![
+                TranscriptEntry::Model(saved.model),
+                TranscriptEntry::Effort(EffortLevel::High),
+                user("saved turn"),
+                user("next turn"),
+                answer("Done"),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn empty_session_without_a_selection_uses_defaults() {
+        let harness = Harness::new(vec![text_reply("Done")]).await;
+
+        let (response, transcript) = harness
+            .run_with_selection("first turn", None, |_| Ok(()))
+            .await;
+
+        assert_eq!(response.unwrap().stop_reason, StopReason::EndTurn);
+        let request = &harness.server.requests()[0];
+        assert_eq!(request["model"], DEFAULT_MODEL);
+        assert!(request.get("reasoning").is_none());
+        assert_eq!(
+            transcript,
+            vec![model(), user("first turn"), answer("Done")]
+        );
+    }
+
+    #[tokio::test]
+    async fn saved_model_wins_over_selection_while_selected_effort_applies() {
+        let harness = Harness::new(vec![text_reply("Done")]).await;
+        let saved_model = MODEL_CHOICES[1].id;
+        harness
+            .store
+            .append_user(
+                &harness.session_id,
+                &SessionSettingsChange {
+                    model: Some(saved_model.to_owned()),
+                    effort: Some(EffortLevel::High),
+                },
+                "saved turn",
+            )
+            .unwrap();
+        let selected = SessionSettings::new(MODEL_CHOICES[2].id, EffortLevel::Low);
+
+        let (response, transcript) = harness
+            .run_with_selection("next turn", Some(selected), |_| Ok(()))
+            .await;
+
+        assert_eq!(response.unwrap().stop_reason, StopReason::EndTurn);
+        let request = &harness.server.requests()[0];
+        assert_eq!(request["model"], saved_model);
+        assert_eq!(request["reasoning"]["effort"], "low");
+        assert_eq!(
+            transcript,
+            vec![
+                TranscriptEntry::Model(saved_model.to_owned()),
+                TranscriptEntry::Effort(EffortLevel::High),
+                user("saved turn"),
+                TranscriptEntry::Effort(EffortLevel::Low),
+                user("next turn"),
+                answer("Done"),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn invalid_prompt_startup_sends_no_request_or_user_message() {
+        let workspace = Workspace::new();
+        let store = SessionStore::in_memory();
+        let server = Server::start(vec![]).await;
+        let missing = SessionId::new("missing");
+        let missing_run = run(
+            store.clone(),
+            server.client(),
+            PromptInput {
+                session_id: missing,
+                user_message: "not saved".to_owned(),
+                selected_settings: None,
+            },
+            PromptCancellation::new(),
+            |_| Ok(()),
+            ToolPermissions::AutoApprove,
+        );
+        assert!(missing_run.is_err());
+
+        let unknown = store.create(&workspace.0).unwrap().id;
+        store
+            .append_user(
+                &unknown,
+                &SessionSettingsChange {
+                    model: Some("retired/model".to_owned()),
+                    effort: Some(EffortLevel::High),
+                },
+                "saved turn",
+            )
+            .unwrap();
+        let before = store.read(&unknown).unwrap().unwrap().transcript;
+        let unknown_run = run(
+            store.clone(),
+            server.client(),
+            PromptInput {
+                session_id: unknown.clone(),
+                user_message: "not saved".to_owned(),
+                selected_settings: None,
+            },
+            PromptCancellation::new(),
+            |_| Ok(()),
+            ToolPermissions::AutoApprove,
+        );
+        assert!(unknown_run.is_err());
+        assert_eq!(store.read(&unknown).unwrap().unwrap().transcript, before);
+        assert!(server.requests().is_empty());
     }
 
     #[tokio::test]
