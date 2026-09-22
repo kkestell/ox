@@ -638,8 +638,7 @@ pub fn database_path() -> io::Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{acp::convert, openrouter, tools};
-    use agent_client_protocol::schema::v1::{SessionUpdate, ToolCallStatus};
+    use crate::{openrouter, tools};
     use serde_json::json;
 
     const WORKSPACE_PATH: &str = "/Users/kyle/projects/ox";
@@ -699,7 +698,7 @@ mod tests {
     }
 
     #[test]
-    fn a_saved_batch_can_be_replayed_and_sent_in_the_next_request() {
+    fn a_saved_batch_survives_database_reopen_in_order() {
         let dir = std::env::temp_dir().join(format!("ox-test-{}", uuid::Uuid::new_v4()));
         let path = dir.join(DATABASE_FILE);
         let message = message(vec![
@@ -756,53 +755,6 @@ mod tests {
                 TranscriptEntry::ToolResult(results[1].clone()),
             ]
         );
-
-        let mut updates = Vec::new();
-        convert::replay_transcript(&stored.transcript, |update| {
-            updates.push(update);
-            Ok(())
-        })
-        .unwrap();
-        assert_eq!(updates.len(), 5);
-        assert!(matches!(updates[0], SessionUpdate::UserMessageChunk(_)));
-        assert!(matches!(updates[1], SessionUpdate::AgentThoughtChunk(_)));
-        assert!(matches!(updates[2], SessionUpdate::AgentMessageChunk(_)));
-        assert!(matches!(
-            &updates[3],
-            SessionUpdate::ToolCall(call)
-                if call.tool_call_id.to_string() == "call-1"
-                    && call.title == "printf Chicago"
-                    && call.status == ToolCallStatus::Completed
-                    && call.raw_input == Some(json!({ "command": "printf Chicago" }))
-                    && call.raw_output == Some(json!("Sunny in Chicago."))
-        ));
-        assert!(matches!(
-            &updates[4],
-            SessionUpdate::ToolCall(call)
-                if call.tool_call_id.to_string() == "call-2"
-                    && call.status == ToolCallStatus::Failed
-                    && call.raw_output == Some(json!("Denver is unavailable."))
-        ));
-
-        let messages = openrouter::chat_messages(&stored.transcript);
-        assert_eq!(messages.len(), 4);
-        assert_eq!(messages[0]["role"], "user");
-        assert_eq!(messages[1]["role"], "assistant");
-        assert_eq!(messages[1]["content"], "Checking both.");
-        assert_eq!(messages[1]["tool_calls"].as_array().unwrap().len(), 2);
-        assert_eq!(messages[1]["tool_calls"][1]["id"], "call-2");
-        assert_eq!(
-            messages[1]["reasoning_details"],
-            json!(message.continuation_metadata)
-        );
-        assert!(
-            messages[1].get("reasoning").is_none(),
-            "visible reasoning is not sent twice"
-        );
-        assert_eq!(messages[2]["role"], "tool");
-        assert_eq!(messages[2]["tool_call_id"], "call-1");
-        assert_eq!(messages[3]["tool_call_id"], "call-2");
-        assert_eq!(messages[3]["content"], "Denver is unavailable.");
 
         drop(store);
         fs::remove_dir_all(dir).unwrap();

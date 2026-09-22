@@ -398,7 +398,7 @@ mod tests {
     }
 
     #[test]
-    fn example_creates_updates_moves_and_deletes_in_order() {
+    fn creates_updates_moves_and_deletes_in_order() {
         let workspace = Workspace::new();
         fs::create_dir(workspace.0.join("src")).unwrap();
         fs::write(
@@ -408,15 +408,24 @@ mod tests {
         .unwrap();
         fs::write(workspace.0.join("old-name.txt"), "Old text\n").unwrap();
         fs::write(workspace.0.join("obsolete.txt"), "obsolete").unwrap();
-        let example = include_str!("patch-guide.txt")
-            .split("```text\n")
-            .nth(1)
-            .unwrap()
-            .split("```")
-            .next()
-            .unwrap();
+        let patch = "*** Begin Patch
+*** Add File: notes.txt
++New notes.
+*** Update File: src/greeting.rs
+@@ fn greeting() -> &'static str {
+-    \"Hello\"
++    \"Hello, world\"
+ }
+*** Update File: old-name.txt
+*** Move to: new-name.txt
+@@
+-Old text
++New text
+*** Delete File: obsolete.txt
+*** End Patch
+";
         assert_eq!(
-            apply(&workspace.0, example).unwrap(),
+            apply(&workspace.0, patch).unwrap(),
             "Applied patch.\nAdded notes.txt\nModified src/greeting.rs\nMoved old-name.txt -> new-name.txt\nDeleted obsolete.txt"
         );
         assert_eq!(

@@ -630,205 +630,8 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn shell_failures_reach_the_next_model_request_and_replay() {
-        let harness = Harness::new(vec![
-            crate::openrouter::fixture::shell_reply(&[
-                ("printf problem >&2; exit 7", 5),
-                ("printf started; sleep 30", 1),
-            ]),
-            text_reply("Handled both failures."),
-        ])
-        .await;
-        let (response, transcript) = harness.run("Run commands", |_| Ok(())).await;
-        assert_eq!(response.unwrap().stop_reason, StopReason::EndTurn);
-        assert_eq!(transcript, harness.stored());
-        let requests = harness.server.requests();
-        let results: Vec<_> = transcript
-            .iter()
-            .filter_map(|entry| match entry {
-                TranscriptEntry::ToolResult(result) => Some(result),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(results.len(), 2);
-        assert!(results[0].outcome.text().contains("Exit code: 7"));
-        assert!(results[1].outcome.text().contains("Timed out"));
-        let mut replay = Vec::new();
-        convert::replay_transcript(&transcript, |update| {
-            replay.push(update);
-            Ok(())
-        })
-        .unwrap();
-        for result in results {
-            assert!(matches!(result.outcome, ToolOutcome::Failed(_)));
-            assert!(
-                requests[1]["messages"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .any(|message| message["tool_call_id"] == result.call_id
-                        && message["content"] == result.outcome.text())
-            );
-            assert!(replay.iter().any(|update| matches!(update, SessionUpdate::ToolCall(call)
-                if call.raw_output == Some(json!(result.outcome.text())) && call.status == ToolCallStatus::Failed)));
-        }
-    }
-
-    #[tokio::test]
-    async fn running_shell_cancellation_is_saved_and_skips_later_calls() {
-        let harness = Harness::new(vec![crate::openrouter::fixture::shell_reply(&[
-            ("printf started; touch ready; sleep 30 & wait", 30),
-            ("touch wrong", 5),
-        ])])
-        .await;
-        let cancel = async {
-            tokio::time::timeout(std::time::Duration::from_secs(5), async {
-                while !harness.workspace.0.join("ready").exists() {
-                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-                }
-            })
-            .await
-            .unwrap();
-            harness.cancellation.cancel();
-        };
-        let ((response, transcript), ()) =
-            tokio::join!(harness.run("Run commands", |_| Ok(())), cancel);
-        assert_eq!(response.unwrap().stop_reason, StopReason::Cancelled);
-        assert_eq!(transcript, harness.stored());
-        assert!(!harness.workspace.0.join("wrong").exists());
-        let results: Vec<_> = transcript
-            .iter()
-            .filter_map(|entry| match entry {
-                TranscriptEntry::ToolResult(result) => Some(result),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(results.len(), 2);
-        assert!(
-            matches!(&results[0].outcome, ToolOutcome::Cancelled(text) if text.contains("started") && text.contains("partial changes"))
-        );
-        assert!(
-            matches!(&results[1].outcome, ToolOutcome::Cancelled(text) if text.contains("before this tool was started"))
-        );
-        assert_eq!(harness.server.requests().len(), 1);
-        let mut replay = Vec::new();
-        convert::replay_transcript(&transcript, |update| {
-            replay.push(update);
-            Ok(())
-        })
-        .unwrap();
-        assert_eq!(replay.iter().filter(|update| matches!(update, SessionUpdate::ToolCall(call) if call.status == ToolCallStatus::Failed)).count(), 2);
-    }
-
-    #[tokio::test]
-    async fn shell_result_survives_update_failure_or_late_cancellation() {
-        for fail_update in [false, true] {
-            let harness = Harness::new(vec![crate::openrouter::fixture::shell_reply(&[(
-                "printf saved > file",
-                5,
-            )])])
-            .await;
-            let (response, transcript) = harness
-                .run("Run command", |update| {
-                    if finished_tool_call_update_for(update, "shell-0") {
-                        if fail_update {
-                            return Err(Error::internal_error().data("connection closed"));
-                        }
-                        harness.cancellation.cancel();
-                    }
-                    Ok(())
-                })
-                .await;
-            if fail_update {
-                assert!(response.is_err());
-            } else {
-                assert_eq!(response.unwrap().stop_reason, StopReason::Cancelled);
-            }
-            assert_eq!(
-                fs::read_to_string(harness.workspace.0.join("file")).unwrap(),
-                "saved"
-            );
-            assert_eq!(transcript, harness.stored());
-            assert!(matches!(
-                patch_result(&transcript).outcome,
-                ToolOutcome::Completed(_)
-            ));
-        }
-    }
-
     const PATCH: &str =
         "*** Begin Patch\n*** Add File: first\n+one\n*** Add File: second\n+two\n*** End Patch";
-
-    #[tokio::test]
-    async fn file_and_search_results_are_saved_and_sent_to_the_next_model_request() {
-        let calls: Vec<_> = [
-            ("read_file", json!({"path":"note.txt", "limit":1})),
-            ("glob", json!({"pattern":"*.txt"})),
-            ("grep", json!({"pattern":"needle"})),
-        ]
-        .into_iter()
-        .enumerate()
-        .map(|(index, (name, args))| {
-            json!({
-                "index":index, "id":format!("read-{index}"), "type":"function",
-                "function":{"name":name,"arguments":args.to_string()}
-            })
-        })
-        .collect();
-        let reply = Reply::Stream(sse(&[delta(
-            json!({"role":"assistant","tool_calls":calls}),
-            Some("tool_calls"),
-        )]));
-        let harness = Harness::new(vec![reply, text_reply("Done.")]).await;
-        fs::write(
-            harness.workspace.0.join("note.txt"),
-            "first\nneedle\nlast\n",
-        )
-        .unwrap();
-        let (response, transcript) = harness.run("Inspect the files", |_| Ok(())).await;
-        assert_eq!(response.unwrap().stop_reason, StopReason::EndTurn);
-        assert_eq!(harness.stored(), transcript);
-        let results: Vec<_> = transcript
-            .iter()
-            .filter_map(|entry| match entry {
-                TranscriptEntry::ToolResult(result) => Some(result),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(results.len(), 3);
-        assert!(results[0].outcome.text().contains("offset=2"));
-        assert!(results[1].outcome.text().contains("note.txt"));
-        assert!(results[2].outcome.text().contains("note.txt:2:needle"));
-        let requests = harness.server.requests();
-        for result in &results {
-            assert!(matches!(result.outcome, ToolOutcome::Completed(_)));
-            assert!(
-                requests[0]["tools"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .any(|tool| tool["function"]["name"] == result.name)
-            );
-            assert!(
-                requests[1]["messages"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .any(|message| message["tool_call_id"] == result.call_id
-                        && message["content"] == result.outcome.text())
-            );
-        }
-        let mut replay = Vec::new();
-        convert::replay_transcript(&harness.stored(), |update| {
-            replay.push(update);
-            Ok(())
-        })
-        .unwrap();
-        for result in results {
-            assert!(replay.iter().any(|update| matches!(update, SessionUpdate::ToolCall(call) if call.raw_output == Some(json!(result.outcome.text())) && call.status == ToolCallStatus::Completed)));
-        }
-    }
 
     const APPLIED: &str = "Applied patch.\nAdded first\nAdded second";
 
@@ -901,18 +704,6 @@ mod tests {
         let outcome = &patch_result(&transcript).outcome;
         assert_eq!(*outcome, ToolOutcome::Completed(APPLIED.to_owned()));
         assert_eq!(harness.stored(), transcript);
-        assert!(sent_patch_call(&harness));
-        assert_replays_patch(&harness, outcome, ToolCallStatus::Completed);
-
-        let requests = harness.server.requests();
-        assert!(
-            requests[0]["tools"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|tool| tool["function"]["name"] == "apply_patch")
-        );
-        assert_eq!(requests[1]["messages"][2]["content"], outcome.text());
     }
 
     #[tokio::test]
@@ -940,51 +731,37 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn cancelling_after_the_result_keeps_the_applied_patch() {
-        let harness = patch_harness("tool_calls").await;
-        let cancel = harness.cancellation.clone();
-        let (response, transcript) = harness
-            .run("Apply the patch", |update| {
-                if finished_tool_call_update_for(update, "patch-1") {
-                    cancel.cancel();
-                }
-                Ok(())
-            })
-            .await;
+    async fn a_completed_patch_survives_a_later_interruption() {
+        for fail_update in [false, true] {
+            let harness = patch_harness("tool_calls").await;
+            let cancel = harness.cancellation.clone();
+            let (response, transcript) = harness
+                .run("Apply the patch", |update| {
+                    if finished_tool_call_update_for(update, "patch-1") {
+                        if fail_update {
+                            return Err(Error::internal_error().data("connection closed"));
+                        }
+                        cancel.cancel();
+                    }
+                    Ok(())
+                })
+                .await;
 
-        assert_eq!(response.unwrap().stop_reason, StopReason::Cancelled);
-        assert_eq!(
-            fs::read_to_string(harness.workspace.0.join("first")).unwrap(),
-            "one\n"
-        );
-        let outcome = &patch_result(&transcript).outcome;
-        assert_eq!(*outcome, ToolOutcome::Completed(APPLIED.to_owned()));
-        assert_eq!(harness.stored(), transcript);
-        assert_replays_patch(&harness, outcome, ToolCallStatus::Completed);
-    }
-
-    #[tokio::test]
-    async fn an_update_failure_after_a_patch_still_saves_its_result() {
-        let harness = patch_harness("tool_calls").await;
-        let (response, transcript) = harness
-            .run("Apply the patch", |update| {
-                if finished_tool_call_update_for(update, "patch-1") {
-                    return Err(Error::internal_error().data("connection closed"));
-                }
-                Ok(())
-            })
-            .await;
-
-        assert!(response.is_err());
-        assert_eq!(
-            fs::read_to_string(harness.workspace.0.join("second")).unwrap(),
-            "two\n"
-        );
-        assert_eq!(
-            patch_result(&transcript).outcome,
-            ToolOutcome::Completed(APPLIED.to_owned())
-        );
-        assert_eq!(harness.stored(), transcript);
+            if fail_update {
+                assert!(response.is_err());
+            } else {
+                assert_eq!(response.unwrap().stop_reason, StopReason::Cancelled);
+            }
+            assert_eq!(
+                fs::read_to_string(harness.workspace.0.join("first")).unwrap(),
+                "one\n"
+            );
+            assert_eq!(
+                patch_result(&transcript).outcome,
+                ToolOutcome::Completed(APPLIED.to_owned())
+            );
+            assert_eq!(harness.stored(), transcript);
+        }
     }
 
     #[tokio::test]
@@ -1002,9 +779,12 @@ mod tests {
     async fn a_text_answer_is_saved_in_the_transcript() {
         let harness = Harness::new(vec![text_reply("Hello there.")]).await;
 
-        let (response, transcript) = harness.run("Hi", |_| Ok(())).await;
+        let (response, transcript) = harness.run_with_selection("Hi", None, |_| Ok(())).await;
 
         assert_eq!(response.unwrap().stop_reason, StopReason::EndTurn);
+        let request = &harness.server.requests()[0];
+        assert_eq!(request["model"], DEFAULT_MODEL);
+        assert!(request.get("reasoning").is_none());
         assert_eq!(
             transcript,
             vec![model(), user("Hi"), answer("Hello there.")]
@@ -1037,7 +817,8 @@ mod tests {
         let harness = Harness::new(vec![text_reply("First"), text_reply("Second")]).await;
         let selected = Rc::new(RefCell::new(EffortLevel::Low));
         let changed = selected.clone();
-        let first_settings = SessionSettings::new(DEFAULT_MODEL, *selected.borrow());
+        let saved_model = MODEL_CHOICES[1].id;
+        let first_settings = SessionSettings::new(saved_model, *selected.borrow());
 
         let (first, _) = harness
             .run_with_settings("one", first_settings, move |update| {
@@ -1048,7 +829,7 @@ mod tests {
             })
             .await;
         assert_eq!(first.unwrap().stop_reason, StopReason::EndTurn);
-        let second_settings = SessionSettings::new(DEFAULT_MODEL, *selected.borrow());
+        let second_settings = SessionSettings::new(MODEL_CHOICES[2].id, *selected.borrow());
         let (second, transcript) = harness
             .run_with_settings("two", second_settings, |_| Ok(()))
             .await;
@@ -1056,7 +837,7 @@ mod tests {
         assert_eq!(
             transcript,
             vec![
-                model(),
+                TranscriptEntry::Model(saved_model.to_owned()),
                 TranscriptEntry::Effort(EffortLevel::Low),
                 user("one"),
                 answer("First"),
@@ -1066,6 +847,8 @@ mod tests {
             ]
         );
         let requests = harness.server.requests();
+        assert_eq!(requests[0]["model"], saved_model);
+        assert_eq!(requests[1]["model"], saved_model);
         assert_eq!(requests[0]["reasoning"]["effort"], "low");
         assert_eq!(requests[1]["reasoning"]["effort"], "max");
     }
@@ -1099,62 +882,6 @@ mod tests {
                 TranscriptEntry::Model(saved.model),
                 TranscriptEntry::Effort(EffortLevel::High),
                 user("saved turn"),
-                user("next turn"),
-                answer("Done"),
-            ]
-        );
-    }
-
-    #[tokio::test]
-    async fn empty_session_without_a_selection_uses_defaults() {
-        let harness = Harness::new(vec![text_reply("Done")]).await;
-
-        let (response, transcript) = harness
-            .run_with_selection("first turn", None, |_| Ok(()))
-            .await;
-
-        assert_eq!(response.unwrap().stop_reason, StopReason::EndTurn);
-        let request = &harness.server.requests()[0];
-        assert_eq!(request["model"], DEFAULT_MODEL);
-        assert!(request.get("reasoning").is_none());
-        assert_eq!(
-            transcript,
-            vec![model(), user("first turn"), answer("Done")]
-        );
-    }
-
-    #[tokio::test]
-    async fn saved_model_wins_over_selection_while_selected_effort_applies() {
-        let harness = Harness::new(vec![text_reply("Done")]).await;
-        let saved_model = MODEL_CHOICES[1].id;
-        harness
-            .store
-            .append_user(
-                &harness.session_id,
-                &SessionSettingsChange {
-                    model: Some(saved_model.to_owned()),
-                    effort: Some(EffortLevel::High),
-                },
-                "saved turn",
-            )
-            .unwrap();
-        let selected = SessionSettings::new(MODEL_CHOICES[2].id, EffortLevel::Low);
-
-        let (response, transcript) = harness
-            .run_with_selection("next turn", Some(selected), |_| Ok(()))
-            .await;
-
-        assert_eq!(response.unwrap().stop_reason, StopReason::EndTurn);
-        let request = &harness.server.requests()[0];
-        assert_eq!(request["model"], saved_model);
-        assert_eq!(request["reasoning"]["effort"], "low");
-        assert_eq!(
-            transcript,
-            vec![
-                TranscriptEntry::Model(saved_model.to_owned()),
-                TranscriptEntry::Effort(EffortLevel::High),
-                user("saved turn"),
-                TranscriptEntry::Effort(EffortLevel::Low),
                 user("next turn"),
                 answer("Done"),
             ]

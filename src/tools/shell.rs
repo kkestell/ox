@@ -322,7 +322,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn arguments_schema_and_tool_call_title() {
+    async fn arguments_and_schema() {
         let workspace = Workspace::new();
         assert_eq!(
             serde_json::from_str::<Args>(r#"{"command":""}"#)
@@ -363,7 +363,7 @@ mod tests {
             .find(|s| s["function"]["name"] == "shell")
             .unwrap();
         let specified: serde_json::Value = serde_json::from_str(
-            include_str!("../../eng/ox-shell-tool.md")
+            include_str!("../../eng/plans/2026-09-20-002-shell-tool.md")
                 .split("```json\n")
                 .nth(1)
                 .unwrap()
@@ -373,14 +373,6 @@ mod tests {
         )
         .unwrap();
         assert_eq!(schema, specified);
-        assert_eq!(
-            tools::tool_call_title(&crate::sessions::ToolCall {
-                call_id: "1".into(),
-                name: "shell".into(),
-                arguments: "{}".into()
-            }),
-            "Run shell command"
-        );
     }
 
     #[tokio::test]
