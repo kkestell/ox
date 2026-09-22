@@ -42,10 +42,9 @@ Register this function alongside the existing concrete tools:
 }
 ```
 
-The shipped `description` is the whole of `src/tools/patch-guide.txt`, which
-opens with the sentence above and continues with the example and rules in
-section 3. The tool uses the session's workspace path; it does not accept a
-separate working directory or execute shell syntax.
+The description in `src/tools.rs` opens with the sentence above and continues
+with the example and rules in section 3. The tool uses the session's workspace
+path; it does not accept a separate working directory or execute shell syntax.
 
 Malformed arguments and patch errors produce `ToolOutcome::Failed`. Tool
 execution begins only after Ox validates the model completion and its assistant
@@ -187,21 +186,19 @@ Build the tool call title from the path it changes, or from the number of paths
 when it changes several. A patch that does not parse names no paths and uses the
 tool call title `Apply patch`. The tool kind is edit. The surrounding prompt run
 continues to own ACP updates, cancellation, transcript saving, and replay. In
-particular,
-filesystem execution is synchronous once started. Its observed outcome enters
-the `UncommittedAssistantBatch` before the finished ACP update is sent, and the
-complete batch is then appended to the transcript as specified by
+particular, filesystem execution is synchronous once started. Its observed
+outcome enters the `UncommittedAssistantBatch` before the finished ACP update is
+sent, and the complete batch is then appended to the transcript as specified by
 [the architecture design](ox-architecture-design.md#15-tool-execution-and-persistence).
 Do not duplicate that machinery inside the patch implementation.
 
 Suggested module changes:
 
-| Module                      | Change                                                           |
-| --------------------------- | ---------------------------------------------------------------- |
-| `src/tools.rs`              | Add the schema, tool call title, argument parsing, and dispatch. |
-| `src/tools/patch.rs`        | Parse and apply patches with concrete owned types.               |
-| `src/tools/patch-guide.txt` | Hold the model guidance shipped as the tool description.         |
-| `src/acp/prompt.rs`         | Pass the session workspace to tool execution.                    |
+| Module               | Change                                                                           |
+| -------------------- | -------------------------------------------------------------------------------- |
+| `src/tools.rs`       | Add the model guidance, schema, tool call title, argument parsing, and dispatch. |
+| `src/tools/patch.rs` | Parse and apply patches with concrete owned types.                               |
+| `src/acp/prompt.rs`  | Pass the session workspace to tool execution.                                    |
 
 An owned `Patch` containing a `Vec<FileOperation>` is sufficient. Keep parsing
 and text transformation separate from filesystem I/O so the important behavior

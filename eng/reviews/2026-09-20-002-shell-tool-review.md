@@ -14,10 +14,11 @@ The new shell tool as it stands in the working tree on branch `rust`:
 - `Cargo.toml`, `Cargo.lock` (`rustix` with `process`; Tokio `time` and
   `signal`)
 - `AGENTS.md`, `README.md`, `eng/ox-architecture-design.md`,
-  `eng/ox-shell-tool.md`
+  `eng/plans/2026-09-20-002-shell-tool.md`
 
-Measured against `eng/ox-shell-tool.md` as the owning contract, with section 12
-of the architecture document for the cancellation rules.
+Measured against `eng/plans/2026-09-20-002-shell-tool.md` as the owning
+contract, with section 12 of the architecture document for the cancellation
+rules.
 
 ## Topics selected
 
@@ -97,9 +98,9 @@ zombies and returns 0 when any member accepted the signal.
 Remedy: treat `Errno::PERM` the same as `Errno::SRCH` in `kill_group`. Both mean
 no member that Ox can signal remains, which is the end of cleanup; a zombie
 holds no pipe, so draining is unaffected. Update section 5 of
-`eng/ox-shell-tool.md` to name both errnos as successful cleanup. Add a
-deterministic regression test next to the existing empty-group check in
-`normal_exit_stops_background_children_with_and_without_pipes`: spawn
+`eng/plans/2026-09-20-002-shell-tool.md` to name both errnos as successful
+cleanup. Add a deterministic regression test next to the existing empty-group
+check in `normal_exit_stops_background_children_with_and_without_pipes`: spawn
 `/bin/sh -c true` in its own process group, wait about 100 ms without reaping,
 call `kill_group`, then reap. No new machinery is needed.
 
@@ -169,8 +170,9 @@ are visible. None is a defect against the design.
   binary with inherited stdout, so nested libtest lines such as `running 1 test`
   appear inside the outer run's output.
 - `arguments_schema_and_title` compiles the first fenced JSON block of
-  `eng/ox-shell-tool.md` into the test binary. Adding a JSON block above the
-  schema in that document breaks the test with an unrelated-looking error.
+  `eng/plans/2026-09-20-002-shell-tool.md` into the test binary. Adding a JSON
+  block above the schema in that document breaks the test with an
+  unrelated-looking error.
 - `shell_result_survives_update_failure_or_late_cancellation` reads its shell
   result through the `patch_result` helper.
 - `let observed = loop { … }` at line 128 is rebound as

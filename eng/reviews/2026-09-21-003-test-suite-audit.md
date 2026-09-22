@@ -4,40 +4,40 @@ Reviewed the complete Rust test corpus on 2026-09-21, including the four
 uncommitted prompt-settings tests from the simplification pass. The scope was
 all 90 test functions in the 13 Rust source files. The review judged whether
 each test protects distinct observable behavior at a stable boundary, repeats
-coverage already supplied elsewhere, or carries avoidable maintenance cost.
-No separate integration-test directory or non-Rust test suite exists.
+coverage already supplied elsewhere, or carries avoidable maintenance cost. No
+separate integration-test directory or non-Rust test suite exists.
 
 ## Verdict
 
-The suite is not half worthless. Seventy-five tests protect distinct behavior
-at a reasonable boundary. Eight test functions should disappear through
-deletion or consolidation, and seven retained tests should be pruned because
-they repeat assertions owned by another layer.
+The suite is not half worthless. Seventy-five tests protect distinct behavior at
+a reasonable boundary. Eight test functions should disappear through deletion or
+consolidation, and seven retained tests should be pruned because they repeat
+assertions owned by another layer.
 
 The concern is nevertheless real. Test modules contain 4,115 lines while the
 same files contain 4,172 other lines, including test-only fixtures that appear
-before the test modules. `src/acp.rs` and
-`src/acp/prompt.rs` account for 1,848 test-module lines against 969 production
-lines. Most excess coverage is concentrated there: tool execution, transcript
-persistence, model-request encoding, ACP replay, cancellation, and client
-updates are repeatedly asserted in the same scenario.
+before the test modules. `src/acp.rs` and `src/acp/prompt.rs` account for 1,848
+test-module lines against 969 production lines. Most excess coverage is
+concentrated there: tool execution, transcript persistence, model-request
+encoding, ACP replay, cancellation, and client updates are repeatedly asserted
+in the same scenario.
 
-| Module | Tests | Keep as-is | Remove or consolidate | Retain but prune |
-| --- | ---: | ---: | ---: | ---: |
-| `main` | 3 | 3 | 0 | 0 |
-| `auth` | 2 | 2 | 0 | 0 |
-| `openrouter` | 10 | 10 | 0 | 0 |
-| `sessions` | 7 | 6 | 0 | 1 |
-| `tools` | 5 | 4 | 0 | 1 |
-| `tools::patch` | 8 | 8 | 0 | 0 |
-| `tools::read` | 3 | 3 | 0 | 0 |
-| `tools::search` | 5 | 5 | 0 | 0 |
-| `tools::shell` | 8 | 7 | 0 | 1 |
-| `acp::convert` | 3 | 3 | 0 | 0 |
-| `acp::operations` | 3 | 3 | 0 | 0 |
-| `acp::prompt` | 20 | 11 | 7 | 2 |
-| `acp` | 13 | 10 | 1 | 2 |
-| **Total** | **90** | **75** | **8** | **7** |
+| Module            |  Tests | Keep as-is | Remove or consolidate | Retain but prune |
+| ----------------- | -----: | ---------: | --------------------: | ---------------: |
+| `main`            |      3 |          3 |                     0 |                0 |
+| `auth`            |      2 |          2 |                     0 |                0 |
+| `openrouter`      |     10 |         10 |                     0 |                0 |
+| `sessions`        |      7 |          6 |                     0 |                1 |
+| `tools`           |      5 |          4 |                     0 |                1 |
+| `tools::patch`    |      8 |          8 |                     0 |                0 |
+| `tools::read`     |      3 |          3 |                     0 |                0 |
+| `tools::search`   |      5 |          5 |                     0 |                0 |
+| `tools::shell`    |      8 |          7 |                     0 |                1 |
+| `acp::convert`    |      3 |          3 |                     0 |                0 |
+| `acp::operations` |      3 |          3 |                     0 |                0 |
+| `acp::prompt`     |     20 |         11 |                     7 |                2 |
+| `acp`             |     13 |         10 |                     1 |                2 |
+| **Total**         | **90** |     **75** |                 **8** |            **7** |
 
 ## Test functions to remove or consolidate
 
@@ -45,34 +45,34 @@ updates are repeatedly asserted in the same scenario.
 
 `acp::tests::initialize_answers_with_the_supported_protocol_version` calls a
 pure response constructor and checks the protocol-version constant passed by
-that constructor. It protects no conditional behavior and would only fail if
-the implementation and its adjacent constant were edited inconsistently.
+that constructor. It protects no conditional behavior and would only fail if the
+implementation and its adjacent constant were edited inconsistently.
 
 ### Delete four repeated prompt tool integrations
 
-The following `acp::prompt` tests repeat guarantees already covered by the
-tool modules, session encoding tests, the generic ordered-result prompt test,
-and the full ACP permission or shutdown tests:
+The following `acp::prompt` tests repeat guarantees already covered by the tool
+modules, session encoding tests, the generic ordered-result prompt test, and the
+full ACP permission or shutdown tests:
 
 - `shell_failures_reach_the_next_model_request_and_replay`
 - `running_shell_cancellation_is_saved_and_skips_later_calls`
 - `shell_result_survives_update_failure_or_late_cancellation`
 - `file_and_search_results_are_saved_and_sent_to_the_next_model_request`
 
-The shell module owns exit, timeout, cancellation, and process cleanup. The
-tool dispatcher owns each built-in name. The session and OpenRouter tests own
-result persistence, replay conversion, and next-request encoding. The prompt
-suite needs one successful ordered tool loop, one interrupted loop, and one
-failed-update loop; it does not need to rerun those guarantees for every tool
-or outcome type.
+The shell module owns exit, timeout, cancellation, and process cleanup. The tool
+dispatcher owns each built-in name. The session and OpenRouter tests own result
+persistence, replay conversion, and next-request encoding. The prompt suite
+needs one successful ordered tool loop, one interrupted loop, and one
+failed-update loop; it does not need to rerun those guarantees for every tool or
+outcome type.
 
 ### Consolidate one patch interruption test
 
 `cancelling_after_the_result_keeps_the_applied_patch` and
 `an_update_failure_after_a_patch_still_saves_its_result` exercise the same
 boundary: once an effectful patch has returned, a later interruption must not
-erase the observed result. Keep one table-driven test with late cancellation
-and failed-update cases instead of two functions.
+erase the observed result. Keep one table-driven test with late cancellation and
+failed-update cases instead of two functions.
 
 ### Fold two settings tests into existing turn tests
 
@@ -104,8 +104,8 @@ protects the redundant-read path removed by the simplification.
 - `acp::prompt::tests::a_patch_call_writes_its_files_and_saves_its_summary`
   should retain the applied files and saved result, but drop schema presence,
   replay rendering, and next-request assertions owned elsewhere.
-- The retained combined patch-interruption test should assert the applied
-  effect and stored observed result, not replay formatting again.
+- The retained combined patch-interruption test should assert the applied effect
+  and stored observed result, not replay formatting again.
 - `acp::tests::shell_permissions_control_execution_and_save_results` should
   validate permission-request shape and operation-guard behavior in one
   representative case. Its decision table should assert only the differing
@@ -127,10 +127,10 @@ cleanup ordering that lower-level tests cannot establish.
 ## Recommended cleanup result
 
 Applying the removals and consolidations would reduce the suite from 90 to 82
-test functions without dropping a distinct guarantee. Pruning the seven
-retained tests should remove substantial duplicated setup and assertions as
-well. The exact line reduction should be measured from the cleanup diff rather
-than estimated in advance.
+test functions without dropping a distinct guarantee. Pruning the seven retained
+tests should remove substantial duplicated setup and assertions as well. The
+exact line reduction should be measured from the cleanup diff rather than
+estimated in advance.
 
 No production or test code was changed during this audit. The only other
 repository change was the test-discipline guidance added to `AGENTS.md`.
