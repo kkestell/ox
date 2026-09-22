@@ -9,7 +9,7 @@ use tokio::{
     process::Command,
 };
 
-use super::{BODY_LIMIT, GLOB, existing_path, truncate};
+use super::{BODY_LIMIT, GLOB, truncate, workspace_path_allowing_link_target};
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -56,7 +56,7 @@ pub(super) async fn execute(root: &Path, name: &str, arguments: &str) -> Result<
         }
         args.path
     };
-    let path = existing_path(root, &scope).await?;
+    let path = workspace_path_allowing_link_target(root, &scope).await?;
     let metadata = tokio::fs::metadata(&path)
         .await
         .map_err(|e| e.to_string())?;

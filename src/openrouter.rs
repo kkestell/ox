@@ -13,16 +13,16 @@ use crate::{
     tools,
 };
 
-pub struct ModelChoice {
+pub struct CatalogModel {
     pub id: &'static str,
     pub name: &'static str,
     /// The OpenRouter effort sent for Low, Medium, and High.
-    efforts: [&'static str; 3],
+    openrouter_efforts: [&'static str; 3],
 }
 
-impl ModelChoice {
-    pub fn effort(&self, level: EffortLevel) -> Option<&'static str> {
-        let [low, medium, high] = self.efforts;
+impl CatalogModel {
+    pub fn openrouter_effort(&self, level: EffortLevel) -> Option<&'static str> {
+        let [low, medium, high] = self.openrouter_efforts;
         match level {
             EffortLevel::Default => None,
             EffortLevel::Low => Some(low),
@@ -32,29 +32,29 @@ impl ModelChoice {
     }
 }
 
-pub const MODEL_CHOICES: &[ModelChoice] = &[
-    ModelChoice {
+pub const MODEL_CATALOG: &[CatalogModel] = &[
+    CatalogModel {
         id: "deepseek/deepseek-v4.1-flash",
         name: "DeepSeek V4.1 Flash",
-        efforts: ["low", "high", "max"],
+        openrouter_efforts: ["low", "high", "max"],
     },
-    ModelChoice {
+    CatalogModel {
         id: "z-ai/glm-5.3-flash",
         name: "GLM 5.3 Flash",
-        efforts: ["low", "high", "max"],
+        openrouter_efforts: ["low", "high", "max"],
     },
-    ModelChoice {
+    CatalogModel {
         id: "meta/muse-spark-1.3-contributor",
         name: "Muse Spark 1.3 Contributor",
-        efforts: ["low", "medium", "high"],
+        openrouter_efforts: ["low", "medium", "high"],
     },
 ];
 
-pub const DEFAULT_MODEL: &str = MODEL_CHOICES[0].id;
+pub const DEFAULT_MODEL: &str = MODEL_CATALOG[0].id;
 const ENDPOINT: &str = "https://openrouter.ai/api/v1";
 
-pub fn model_choice(id: &str) -> Option<&'static ModelChoice> {
-    MODEL_CHOICES.iter().find(|choice| choice.id == id)
+pub fn catalog_model(id: &str) -> Option<&'static CatalogModel> {
+    MODEL_CATALOG.iter().find(|model| model.id == id)
 }
 
 /// OpenRouter credentials and a reusable HTTP connection pool.
@@ -129,7 +129,7 @@ impl Client {
         system_prompt: &str,
         transcript: &[TranscriptEntry],
     ) -> io::Result<CompletionStream> {
-        let choice = model_choice(model).ok_or_else(|| {
+        let catalog_model = catalog_model(model).ok_or_else(|| {
             io::Error::new(ErrorKind::InvalidInput, format!("unknown model {model}"))
         })?;
         let messages = std::iter::once(json!({
@@ -144,8 +144,8 @@ impl Client {
             "tools": tools::schemas(),
             "stream": true,
         });
-        if let Some(effort) = choice.effort(effort) {
-            body["reasoning"] = json!({ "effort": effort });
+        if let Some(openrouter_effort) = catalog_model.openrouter_effort(effort) {
+            body["reasoning"] = json!({ "effort": openrouter_effort });
         }
         let response = self
             .http
@@ -797,7 +797,7 @@ mod tests {
             "index": 0,
         })];
         let transcript = vec![
-            TranscriptEntry::Model(MODEL_CHOICES[2].id.to_owned()),
+            TranscriptEntry::Model(MODEL_CATALOG[2].id.to_owned()),
             TranscriptEntry::UserMessage("Weather in Chicago and Denver?".to_owned()),
             TranscriptEntry::AssistantMessage(AssistantMessage {
                 text: String::new(),
@@ -823,7 +823,7 @@ mod tests {
         let mut request = server
             .client()
             .stream_completion(
-                MODEL_CHOICES[2].id,
+                MODEL_CATALOG[2].id,
                 EffortLevel::Default,
                 "You are Ox.\n\n# Workspace instructions from AGENTS.md\n\nAnswer in French.",
                 &transcript,
@@ -834,7 +834,7 @@ mod tests {
         assert_eq!(completion(&items).stop, Stop::Finished);
 
         let body = &server.requests()[0];
-        assert_eq!(body["model"], MODEL_CHOICES[2].id);
+        assert_eq!(body["model"], MODEL_CATALOG[2].id);
         assert_eq!(body["stream"], true);
         assert!(
             body["tools"]
@@ -875,7 +875,7 @@ mod tests {
 
     #[tokio::test]
     async fn requests_map_each_effort_for_each_model() {
-        for model in MODEL_CHOICES {
+        for model in MODEL_CATALOG {
             for effort in EffortLevel::ALL {
                 let server = Server::start(vec![text_reply("Done")]).await;
                 let mut stream = server
@@ -887,7 +887,7 @@ mod tests {
                 let requests = server.requests();
                 let body = &requests[0];
                 assert_eq!(body["model"], model.id);
-                match model.effort(effort) {
+                match model.openrouter_effort(effort) {
                     Some(expected) => assert_eq!(body["reasoning"]["effort"], expected),
                     None => assert!(body.get("reasoning").is_none()),
                 }

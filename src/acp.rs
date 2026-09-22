@@ -29,8 +29,9 @@ use agent_client_protocol::{
 };
 
 use crate::{
-    auth, instructions, openrouter,
+    auth, openrouter,
     sessions::{self, EffortLevel, SessionSettings, SessionStore, SessionSummary},
+    system_prompt,
 };
 use operations::{PromptCancellation, SessionOperations};
 
@@ -39,7 +40,7 @@ fn default_settings() -> SessionSettings {
 }
 
 fn validate_settings(settings: &SessionSettings) -> Result<()> {
-    if openrouter::model_choice(&settings.model).is_some() {
+    if openrouter::catalog_model(&settings.model).is_some() {
         return Ok(());
     }
     Err(Error::into_internal_error(io::Error::new(
@@ -53,11 +54,11 @@ fn validate_settings(settings: &SessionSettings) -> Result<()> {
 
 fn config_options(settings: &SessionSettings, model_locked: bool) -> Vec<SessionConfigOption> {
     let models = if model_locked {
-        let model = openrouter::model_choice(&settings.model)
+        let model = openrouter::catalog_model(&settings.model)
             .expect("a session model comes from the model catalog");
         vec![SessionConfigSelectOption::new(model.id, model.name)]
     } else {
-        openrouter::MODEL_CHOICES
+        openrouter::MODEL_CATALOG
             .iter()
             .map(|model| SessionConfigSelectOption::new(model.id, model.name))
             .collect()
@@ -91,9 +92,9 @@ struct ServerState {
 /// Process state for one active session.
 #[derive(Clone)]
 struct ActiveSession {
-    /// The latest client selections. A prompt copies these before it starts,
-    /// so changes during the prompt apply to the next turn.
-    settings: SessionSettings,
+    /// The latest ACP selections. A prompt copies these before it starts, so
+    /// changes during the prompt apply to the next turn.
+    selections: SessionSettings,
     /// The complete system prompt assembled when the session became active.
     system_prompt: String,
 }
@@ -129,7 +130,8 @@ impl ServerState {
 
     fn new_session(&self, request: &NewSessionRequest) -> Result<NewSessionResponse> {
         self.openrouter_client()?;
-        let system_prompt = instructions::load(&request.cwd).map_err(Error::into_internal_error)?;
+        let system_prompt =
+            system_prompt::for_workspace(&request.cwd).map_err(Error::into_internal_error)?;
         let summary = self.store.create(&request.cwd).map_err(store_error)?;
         let settings = default_settings();
         self.activate(summary.id.clone(), settings.clone(), system_prompt);
@@ -148,32 +150,32 @@ impl ServerState {
             .read(&request.session_id)
             .map_err(Error::into_internal_error)?
             .ok_or_else(|| not_found(&request.session_id))?;
-        let stored_settings = stored.settings(&default_settings());
-        validate_settings(&stored_settings)?;
+        let saved_settings = stored.saved_settings(&default_settings());
+        validate_settings(&saved_settings)?;
         let model_locked = !stored.transcript.is_empty();
         let mut active = self.active.lock().expect("active sessions mutex poisoned");
-        let settings = &mut active
+        let selections = &mut active
             .get_mut(&request.session_id)
             .ok_or_else(|| inactive(&request.session_id))?
-            .settings;
+            .selections;
         if model_locked {
-            settings.model.clone_from(&stored_settings.model);
+            selections.model.clone_from(&saved_settings.model);
         }
         match request.config_id.0.as_ref() {
             "model" => {
                 if model_locked {
                     return Err(Error::invalid_params().data("the session model cannot be changed"));
                 }
-                let model = openrouter::model_choice(value.0.as_ref()).ok_or_else(|| {
+                let model = openrouter::catalog_model(value.0.as_ref()).ok_or_else(|| {
                     Error::invalid_params().data(format!(
                         "{} is not a choice of configuration option {}",
                         value, request.config_id
                     ))
                 })?;
-                settings.model = model.id.to_owned();
+                selections.model = model.id.to_owned();
             }
             "effort" => {
-                settings.effort = EffortLevel::from_id(value.0.as_ref()).ok_or_else(|| {
+                selections.effort = EffortLevel::from_id(value.0.as_ref()).ok_or_else(|| {
                     Error::invalid_params().data(format!(
                         "{} is not a choice of configuration option {}",
                         value, request.config_id
@@ -185,7 +187,7 @@ impl ServerState {
                     .data(format!("no configuration option {}", request.config_id)));
             }
         }
-        let options = config_options(settings, model_locked);
+        let options = config_options(selections, model_locked);
         drop(active);
         Ok(SetSessionConfigOptionResponse::new(options))
     }
@@ -209,28 +211,35 @@ impl ServerState {
                 request.cwd.display()
             )));
         }
-        let settings = stored.settings(&default_settings());
-        validate_settings(&settings)?;
+        let saved_settings = stored.saved_settings(&default_settings());
+        validate_settings(&saved_settings)?;
         let model_locked = !stored.transcript.is_empty();
         // A repeated load keeps the same prefix captured by the first load.
         let system_prompt = match self.active_session(&request.session_id) {
             Some(active) => active.system_prompt,
-            None => instructions::load(&stored.summary.workspace_path)
+            None => system_prompt::for_workspace(&stored.summary.workspace_path)
                 .map_err(Error::into_internal_error)?,
         };
-        self.activate(request.session_id.clone(), settings.clone(), system_prompt);
+        self.activate(
+            request.session_id.clone(),
+            saved_settings.clone(),
+            system_prompt,
+        );
         convert::replay_transcript(&stored.transcript, send_update)?;
-        Ok(LoadSessionResponse::new().config_options(config_options(&settings, model_locked)))
+        Ok(
+            LoadSessionResponse::new()
+                .config_options(config_options(&saved_settings, model_locked)),
+        )
     }
 
-    fn activate(&self, session_id: SessionId, settings: SessionSettings, system_prompt: String) {
+    fn activate(&self, session_id: SessionId, selections: SessionSettings, system_prompt: String) {
         self.active
             .lock()
             .expect("active sessions mutex poisoned")
             .insert(
                 session_id,
                 ActiveSession {
-                    settings,
+                    selections,
                     system_prompt,
                 },
             );
@@ -350,7 +359,7 @@ fn initialize_response(initialize: &InitializeRequest) -> InitializeResponse {
     response
 }
 
-pub async fn run() -> std::result::Result<(), Box<dyn StdError>> {
+pub async fn serve_stdio() -> std::result::Result<(), Box<dyn StdError>> {
     let store = SessionStore::open(&sessions::database_path()?)?;
     serve(ServerState::new(store), Stdio::new()).await?;
     Ok(())
@@ -366,7 +375,7 @@ pub async fn run_headless(
             "OpenRouter authentication required; run `ox auth login`",
         )
     })?;
-    let system_prompt = instructions::load(workspace_path)?;
+    let system_prompt = system_prompt::for_workspace(workspace_path)?;
     let store = SessionStore::open(&sessions::database_path()?)?;
     let session = store.create(workspace_path)?;
     run_headless_prompt(
@@ -526,7 +535,7 @@ async fn serve(state: ServerState, transport: impl ConnectTo<Agent> + 'static) -
                     prompt::PromptInput {
                         session_id: session_id.clone(),
                         user_message,
-                        selected_settings: Some(active.settings),
+                        selected_settings: Some(active.selections),
                         system_prompt: active.system_prompt,
                     },
                     cancellation,
@@ -607,7 +616,7 @@ mod tests {
         let workspace = Workspace::new();
         let agents_md = workspace.0.join("AGENTS.md");
         fs::write(&agents_md, "Answer in French.\n").unwrap();
-        let french = instructions::load(&workspace.0).unwrap();
+        let french = system_prompt::for_workspace(&workspace.0).unwrap();
         let state = state();
         let id = create_session(&state, &workspace.0);
         assert_eq!(state.active_session(&id).unwrap().system_prompt, french);
@@ -655,7 +664,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             later.active_session(&id).unwrap().system_prompt,
-            instructions::load(&workspace.0).unwrap(),
+            system_prompt::for_workspace(&workspace.0).unwrap(),
             "a later process reads the current file on its first load"
         );
 
@@ -767,7 +776,7 @@ mod tests {
         let created = state
             .new_session(&NewSessionRequest::new(workspace_path))
             .unwrap();
-        let chosen = openrouter::MODEL_CHOICES[1].id;
+        let chosen = openrouter::MODEL_CATALOG[1].id;
         let response = state
             .set_config_option(&SetSessionConfigOptionRequest::new(
                 created.session_id.clone(),
@@ -782,7 +791,7 @@ mod tests {
                 .as_array()
                 .unwrap()
                 .len(),
-            openrouter::MODEL_CHOICES.len()
+            openrouter::MODEL_CATALOG.len()
         );
 
         state
@@ -823,7 +832,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn effort_changes_apply_to_the_next_turn_while_instructions_stay_captured() {
+    async fn effort_changes_apply_to_the_next_turn_while_the_system_prompt_stays_captured() {
         use crate::openrouter::fixture::{Reply, Server, text_reply};
         use crate::sessions::TranscriptEntry;
 
@@ -850,7 +859,7 @@ mod tests {
             prompt::PromptInput {
                 session_id: id.clone(),
                 user_message: user_message.to_owned(),
-                selected_settings: Some(active.settings),
+                selected_settings: Some(active.selections),
                 system_prompt: active.system_prompt,
             }
         };
@@ -908,9 +917,9 @@ mod tests {
         assert_eq!(requests[0]["reasoning"]["effort"], "low");
         assert_eq!(requests[1]["reasoning"]["effort"], "max");
         for request in &requests {
-            let instructions = request["messages"][0]["content"].as_str().unwrap();
+            let prompt = request["messages"][0]["content"].as_str().unwrap();
             assert!(
-                instructions.contains("Answer in French."),
+                prompt.contains("Answer in French."),
                 "every request uses the system prompt captured at activation"
             );
         }
@@ -1280,7 +1289,7 @@ mod tests {
                 store.clone(),
                 server.client(),
                 session.id.clone(),
-                instructions::load(path).unwrap(),
+                system_prompt::for_workspace(path).unwrap(),
                 "Run commands".into(),
             )
             .await;

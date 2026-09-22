@@ -159,7 +159,7 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
             .read(session_id)
             .map_err(Error::into_internal_error)?
             .ok_or_else(|| Error::resource_not_found(Some(session_id.to_string())))?;
-        let saved_settings = stored.settings(&super::default_settings());
+        let saved_settings = stored.saved_settings(&super::default_settings());
         let mut settings = input
             .selected_settings
             .clone()
@@ -167,7 +167,7 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
         if !stored.transcript.is_empty() {
             settings.model.clone_from(&saved_settings.model);
         }
-        if openrouter::model_choice(&settings.model).is_none() {
+        if openrouter::catalog_model(&settings.model).is_none() {
             return Err(Error::into_internal_error(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!(
@@ -464,12 +464,12 @@ mod tests {
     use serde_json::json;
 
     use crate::{
-        instructions,
         openrouter::{
-            DEFAULT_MODEL, MODEL_CHOICES,
+            DEFAULT_MODEL, MODEL_CATALOG,
             fixture::{Reply, Server, delta, sse, text_reply, tool_reply},
         },
         sessions::EffortLevel,
+        system_prompt,
         tools::fixture::Workspace,
     };
 
@@ -542,7 +542,7 @@ mod tests {
                     session_id: self.session_id.clone(),
                     user_message: input.to_owned(),
                     selected_settings,
-                    system_prompt: instructions::load(&self.workspace.0).unwrap(),
+                    system_prompt: system_prompt::for_workspace(&self.workspace.0).unwrap(),
                 },
                 self.cancellation.clone(),
                 send_update,
@@ -827,7 +827,7 @@ mod tests {
         let harness = Harness::new(vec![text_reply("First"), text_reply("Second")]).await;
         let selected = Rc::new(RefCell::new(EffortLevel::Low));
         let changed = selected.clone();
-        let saved_model = MODEL_CHOICES[1].id;
+        let saved_model = MODEL_CATALOG[1].id;
         let first_settings = SessionSettings::new(saved_model, *selected.borrow());
 
         let (first, _) = harness
@@ -839,7 +839,7 @@ mod tests {
             })
             .await;
         assert_eq!(first.unwrap().stop_reason, StopReason::EndTurn);
-        let second_settings = SessionSettings::new(MODEL_CHOICES[2].id, *selected.borrow());
+        let second_settings = SessionSettings::new(MODEL_CATALOG[2].id, *selected.borrow());
         let (second, transcript) = harness
             .run_with_settings("two", second_settings, |_| Ok(()))
             .await;
@@ -866,7 +866,7 @@ mod tests {
     #[tokio::test]
     async fn absent_selection_uses_saved_settings_without_duplicate_entries() {
         let harness = Harness::new(vec![text_reply("Done")]).await;
-        let saved = SessionSettings::new(MODEL_CHOICES[1].id, EffortLevel::High);
+        let saved = SessionSettings::new(MODEL_CATALOG[1].id, EffortLevel::High);
         harness
             .store
             .append_user(
@@ -911,7 +911,7 @@ mod tests {
                 session_id: missing,
                 user_message: "not saved".to_owned(),
                 selected_settings: None,
-                system_prompt: instructions::load(&workspace.0).unwrap(),
+                system_prompt: system_prompt::for_workspace(&workspace.0).unwrap(),
             },
             PromptCancellation::new(),
             |_| Ok(()),
@@ -938,7 +938,7 @@ mod tests {
                 session_id: unknown.clone(),
                 user_message: "not saved".to_owned(),
                 selected_settings: None,
-                system_prompt: instructions::load(&workspace.0).unwrap(),
+                system_prompt: system_prompt::for_workspace(&workspace.0).unwrap(),
             },
             PromptCancellation::new(),
             |_| Ok(()),

@@ -53,6 +53,9 @@
 - **Session settings**: The model and effort level in force for a turn.
 - **ACP selections**: The latest session settings selected through ACP for a
   future turn. They are process state, not durable authority.
+- **Saved settings**: The session settings rebuilt by folding a stored
+  transcript. They are the durable authority for the session model and the
+  fallback when there are no ACP selections.
 - **Settings snapshot**: The session settings a prompt run captures at its turn
   boundary.
 - **Effort level**: One of Ox's four reasoning levels: Default, Low, Medium, or

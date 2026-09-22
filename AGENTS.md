@@ -9,7 +9,7 @@ THIS DOCUMENT MUST BE KEPT UP TO DATE
 - `src/main.rs`: Command parsing and process entry; starts the ACP server, runs
   one headless prompt, runs a credential command, or prints help.
 - `src/auth.rs`: Environment and operating-system keyring credential storage.
-- `src/instructions.rs`: Assembly of Ox's built-in system prompt with bounded
+- `src/system_prompt.rs`: Assembly of Ox's built-in system prompt with bounded
   workspace-root `AGENTS.md` instructions.
 - `src/system_prompt.md`: The editable built-in instructions that define Ox's
   coding-agent behavior.

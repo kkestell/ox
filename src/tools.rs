@@ -100,7 +100,10 @@ fn bounded_result(result: Result<String, String>) -> ToolOutcome {
     }
 }
 
-async fn existing_path(root: &Path, name: &str) -> Result<PathBuf, String> {
+/// Resolves a workspace-relative path that must already exist, refusing one
+/// that leaves the workspace. A directly named symbolic link is accepted when
+/// its target stays inside the workspace.
+async fn workspace_path_allowing_link_target(root: &Path, name: &str) -> Result<PathBuf, String> {
     if name.is_empty()
         || Path::new(name)
             .components()

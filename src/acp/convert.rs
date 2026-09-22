@@ -63,14 +63,14 @@ pub fn pending_tool_call(call: &ToolCall) -> SessionUpdate {
             ToolCallId::new(call.call_id.clone()),
             tools::tool_call_title(call),
         )
-        .kind(kind(call))
+        .kind(tool_kind(call))
         .status(ToolCallStatus::Pending)
         .raw_input(raw_input(call)),
     )
 }
 
 /// The kind an ACP client uses to pick an icon for a call.
-fn kind(call: &ToolCall) -> ToolKind {
+fn tool_kind(call: &ToolCall) -> ToolKind {
     match call.name.as_str() {
         tools::SHELL => ToolKind::Execute,
         tools::READ_FILE => ToolKind::Read,
@@ -116,7 +116,7 @@ pub fn shell_permission_request(
             ToolCallId::new(call.call_id.clone()),
             ToolCallUpdateFields::new()
                 .title(tool_call_title)
-                .kind(kind(call))
+                .kind(tool_kind(call))
                 .status(ToolCallStatus::Pending)
                 .raw_input(input)
                 .content(vec![ToolCallContent::from(ContentBlock::Text(
@@ -178,7 +178,7 @@ fn replayed_tool_call(call: &ToolCall, result: &ToolResult) -> SessionUpdate {
             ToolCallId::new(call.call_id.clone()),
             tools::tool_call_title(call),
         )
-        .kind(kind(call))
+        .kind(tool_kind(call))
         .status(status(&result.outcome))
         .raw_input(raw_input(call))
         .content(vec![output_content(&result.outcome)])

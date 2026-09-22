@@ -1,4 +1,5 @@
-//! Builds Ox's system prompt from its built-in prompt and workspace guidance.
+//! Builds Ox's system prompt from its built-in prompt and workspace
+//! instructions.
 
 use std::{
     fs::File,
@@ -11,8 +12,8 @@ const MAX_BYTES: u64 = 32 * 1024;
 const BUILT_IN_PROMPT: &str = include_str!("system_prompt.md");
 
 /// Builds the system prompt for a workspace. The result is stable until the
-/// caller chooses to load the workspace again.
-pub fn load(workspace_path: &Path) -> io::Result<String> {
+/// caller chooses to build it for that workspace again.
+pub fn for_workspace(workspace_path: &Path) -> io::Result<String> {
     let workspace = read_workspace(workspace_path)?;
     let mut prompt = BUILT_IN_PROMPT.trim_end().to_owned();
     if let Some(workspace) = workspace {
@@ -22,9 +23,9 @@ pub fn load(workspace_path: &Path) -> io::Result<String> {
     Ok(prompt)
 }
 
-/// Reads `<workspace>/AGENTS.md` as text. `None` when the file is missing or
-/// blank. A file that cannot be read, is not UTF-8, or exceeds the limit is an
-/// error rather than a silently ignored file.
+/// Reads the workspace instructions in `<workspace>/AGENTS.md`. `None` when the
+/// file is missing or blank. A file that cannot be read, is not UTF-8, or
+/// exceeds the limit is an error rather than a silently ignored file.
 fn read_workspace(workspace_path: &Path) -> io::Result<Option<String>> {
     match read_text(&workspace_path.join(FILE_NAME)) {
         Ok(text) if text.trim().is_empty() => Ok(None),
@@ -63,7 +64,10 @@ mod tests {
     fn builds_a_prompt_from_bounded_utf8_workspace_instructions() {
         let workspace = Workspace::new();
         let path = workspace.0.join(FILE_NAME);
-        assert_eq!(load(&workspace.0).unwrap(), BUILT_IN_PROMPT.trim_end());
+        assert_eq!(
+            for_workspace(&workspace.0).unwrap(),
+            BUILT_IN_PROMPT.trim_end()
+        );
         let limit = usize::try_from(MAX_BYTES).unwrap();
         let full = "a".repeat(limit);
         let cases = [
@@ -93,7 +97,7 @@ mod tests {
         }
 
         fs::write(&path, "Answer in French.\n").unwrap();
-        let prompt = load(&workspace.0).unwrap();
+        let prompt = for_workspace(&workspace.0).unwrap();
         assert!(prompt.starts_with("You are Ox, a coding agent"));
         assert!(prompt.ends_with("# Workspace instructions from AGENTS.md\n\nAnswer in French."));
     }

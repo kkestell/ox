@@ -1,8 +1,8 @@
 mod acp;
 mod auth;
-mod instructions;
 mod openrouter;
 mod sessions;
+mod system_prompt;
 mod tools;
 
 use std::{
@@ -82,7 +82,7 @@ async fn main() -> ExitCode {
 
 async fn run() -> Result<(), Box<dyn Error>> {
     match command(env::args().skip(1))? {
-        Command::Serve => acp::run().await?,
+        Command::Serve => acp::serve_stdio().await?,
         Command::Run { dir, prompt } => {
             acp::run_headless(&absolute_dir(dir.as_deref())?, prompt).await?
         }

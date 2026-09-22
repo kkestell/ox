@@ -170,7 +170,7 @@ fn update(source: &str, chunks: &[Chunk]) -> Result<String, String> {
 
 // Resolve existing components individually so even a symlink followed by a
 // nonexistent child cannot lead outside the workspace.
-fn resolve(root: &Path, name: &str) -> Result<PathBuf, String> {
+fn workspace_path_rejecting_links(root: &Path, name: &str) -> Result<PathBuf, String> {
     let mut path = root.to_path_buf();
     let mut has_name = false;
     let mut symlink = false;
@@ -204,7 +204,7 @@ fn resolve(root: &Path, name: &str) -> Result<PathBuf, String> {
 }
 
 fn target(root: &Path, name: &str, seen: &mut HashSet<PathBuf>) -> Result<PathBuf, String> {
-    let path = resolve(root, name)?;
+    let path = workspace_path_rejecting_links(root, name)?;
     if !seen.insert(path.clone()) {
         return Err("duplicate target".to_owned());
     }

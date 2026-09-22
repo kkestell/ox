@@ -319,9 +319,9 @@ pub struct StoredSession {
 }
 
 impl StoredSession {
-    /// The settings in force after the last transcript entry. An empty
+    /// The session settings in force after the last transcript entry. An empty
     /// transcript still uses the supplied defaults.
-    pub fn settings(&self, defaults: &SessionSettings) -> SessionSettings {
+    pub fn saved_settings(&self, defaults: &SessionSettings) -> SessionSettings {
         let mut settings = defaults.clone();
         for entry in &self.transcript {
             match entry {
@@ -921,13 +921,13 @@ mod tests {
         let empty = store.read(&id).unwrap().unwrap();
         assert!(empty.transcript.is_empty());
         let defaults = SessionSettings::new(openrouter::DEFAULT_MODEL, EffortLevel::Default);
-        assert_eq!(empty.settings(&defaults), defaults);
+        assert_eq!(empty.saved_settings(&defaults), defaults);
 
         store
             .append_user(
                 &id,
                 &SessionSettingsChange {
-                    model: Some(openrouter::MODEL_CHOICES[1].id.to_owned()),
+                    model: Some(openrouter::MODEL_CATALOG[1].id.to_owned()),
                     effort: Some(EffortLevel::Low),
                 },
                 "first",
@@ -954,8 +954,8 @@ mod tests {
             )
             .unwrap();
         assert_eq!(
-            store.read(&id).unwrap().unwrap().settings(&defaults),
-            SessionSettings::new(openrouter::MODEL_CHOICES[1].id, EffortLevel::Medium)
+            store.read(&id).unwrap().unwrap().saved_settings(&defaults),
+            SessionSettings::new(openrouter::MODEL_CATALOG[1].id, EffortLevel::Medium)
         );
     }
 
