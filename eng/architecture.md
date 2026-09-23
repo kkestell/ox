@@ -20,12 +20,13 @@ ACP client
     |
     v
 ACP boundary --> prompt run --> OpenRouter
-                    |
-                    +--------> tools --> workspace and child processes
-                    |
-                    +--------> hooks --> child processes
-                    |
-                    +--------> session store --> SQLite
+      |              |  \
+      |              |   +--> compaction --> OpenRouter
+      |              |                         |
+      |              |                         +--> session store --> SQLite
+      |              +--> tools --> workspace and child processes
+      |              +--> hooks --> child processes
+      +---------------------------------------> session store
 ```
 
 OpenRouter, the ACP client, the workspace, workspace skill definitions, child
@@ -34,13 +35,15 @@ translated before it becomes Ox domain state.
 
 ## Components and dependencies
 
-Ox has five architectural components:
+Ox has six architectural components:
 
 - The **ACP boundary** owns the connection, translates ACP input, sends ACP
   updates, exposes session operations, and holds shared process state.
-- The **prompt run** coordinates one turn. It is the only component that
-  sequences model requests, tool execution, hook runs, transcript commits, and
-  the final response.
+- The **prompt run** coordinates one turn: ordinary model requests, tool
+  execution, hook runs, transcript commits, and the final response.
+- The **compaction workflow** owns summarizer requests and checkpoint commits.
+  It serves both automatic compaction during a prompt run and the cancellable
+  `/compact` session operation.
 - The **OpenRouter client** encodes model requests and turns one streamed
   response into provisional output followed by one validated completion.
 - The **tool boundary** defines the concrete tool set and executes one complete
@@ -50,9 +53,10 @@ Ox has five architectural components:
 
 The process entry, credential code, skill catalog loading, hook protocol, and
 child-process execution support these components but do not participate in
-prompt orchestration. Dependencies point from the ACP boundary
-and prompt run toward the concrete OpenRouter client, tool boundary, and session
-store. None of those lower components can start or continue a prompt run.
+prompt orchestration. Dependencies point from the ACP boundary, prompt run, and
+compaction workflow toward the concrete OpenRouter client and session store;
+the prompt run also depends on the tool boundary. The cancellation signal lives
+below the ACP layer so both prompt and compaction workflows can use it.
 
 ## Sources of authority
 
@@ -108,8 +112,9 @@ Ox advertises its slash commands through an ACP session update after a session
 is created or loaded: the built-in `/compact` and one command for each skill in
 the session's skill catalog. A skill's argument hint becomes the command's
 input hint. A recognized command is handled at the ACP boundary before anything
-is saved or a model request begins. `/compact` runs a guarded, cancellable
-compaction without saving a user message.
+is saved or a model request begins. `/compact` acquires the session operation
+guard and runs cancellable compaction without saving a user message. Prompt,
+load, delete, and compaction operations cannot overlap for one session.
 
 A skill is `.agents/skills/<name>/SKILL.md` directly under the session
 workspace: YAML frontmatter with a name, description, optional argument hint,
@@ -121,12 +126,10 @@ skills directory means no skills.
 
 A skill declares at most one command for each hook kind: `before_run`,
 `before_tool`, `after_tools`, `before_stop`, and `after_run`. Each definition
-has a nonblank `command` and no unknown fields. `before_tool` and `after_tools`
-may add `tools`, a nonempty list of distinct names from the concrete tool set;
-without it they match every tool, and a tool name outside the set never
-matches. Ox ignores unknown top-level frontmatter keys and unknown hook kinds,
-so skills can share a directory with other agents. An empty `hooks` map
-declares no hook.
+has a nonblank `command` and no unknown fields. Tool hooks inspect their input
+to decide which calls matter. Ox ignores unknown top-level frontmatter keys and
+unknown hook kinds, so skills can share a directory with other agents. An
+empty `hooks` map declares no hook.
 
 A prompt whose first word is `/<name>` for a catalog skill invokes it. The rest
 of the text, trimmed, is its arguments. The prompt run saves a skill invocation
@@ -152,7 +155,8 @@ replace it.
 Process state is either live coordination state or a cache of reconstructible
 state:
 
-- operation guards and prompt cancellation coordinate active session operations;
+- operation guards and cancellation signals coordinate active session
+  operations;
 - active sessions hold, for each session created or loaded in the process, the
   ACP selections chosen for a future turn and the system prompt and skill
   catalog captured at activation;
@@ -204,11 +208,19 @@ provisional until the OpenRouter client yields a validated completion. Tools run
 only from that completion.
 
 Before each ordinary model request, the prompt run estimates its serialized
-size and compacts when it reaches the automatic threshold. A checkpoint is
-appended in one store transaction and becomes active only after that commit.
-Failed or cancelled summarization leaves the previous model context intact.
-An explicit pre-stream input-context overflow may force one compaction and one
-retry if the request becomes smaller.
+size and asks the compaction workflow to compact when it reaches the automatic
+threshold. An explicit pre-stream input-context overflow may force one
+compaction and one retry if the request becomes smaller.
+
+### Compaction operation
+
+The compaction workflow owns summarizer requests, validates the projected
+request size, and appends a checkpoint in one store transaction. A checkpoint
+becomes active only after that commit. Failed or cancelled summarization leaves
+the previous model context intact. Automatic compaction runs within a prompt
+operation before an ordinary model request. The `/compact` command acquires the
+same per-session operation guard and cancellation signal, reads the saved
+transcript, and commits a checkpoint without adding a turn start.
 
 When a completion contains tool calls, the prompt run executes them in order and
 builds one assistant batch. The batch is committed before another model request
@@ -220,13 +232,13 @@ fixed points in the turn:
 1. `before_run` runs once, after the skill invocation is saved and announced
    and before the first model request. Compaction, request retries, and hook
    continuations do not rerun it.
-2. `before_tool` runs before each matching tool call, before the Ask mode
+2. `before_tool` runs before each tool call, before the Ask mode
    permission request. A denial skips the permission request and execution and
    gives the call a failed tool result that carries the reason. Later calls in
    the batch proceed. A tool decision saves no hook feedback and cannot change
    the call's arguments.
-3. `after_tools` runs once for each tool-bearing assistant batch with a matching
-   call, after the batch commits and before the next model request.
+3. `after_tools` runs once for each tool-bearing assistant batch, after the
+   batch commits and before the next model request.
 4. `before_stop` runs on each committed assistant message with a finished
    OpenRouter stop. A `continue` decision saves the hook feedback and makes
    another model request in the same prompt run; a `stop` decision saves the
@@ -269,7 +281,7 @@ error is the only hook error that stops a batch before it completes; the current
 call and every later call get a failed `Not started` result.
 
 `after_tools` runs only after the whole batch commits, so it sees the workspace
-after every call in the batch. Its input lists every matching call in call
+after every call in the batch. Its input lists every call in call
 order with its saved result, including failed and denied calls. It does not run
 for a batch the turn stopped before completing. After an `after_tools` error,
 the committed batch stays saved and the hook's effects are not undone.
@@ -291,10 +303,10 @@ save a validated uncommitted assistant batch.
 
 ## Concurrency and cancellation
 
-Prompt, load, and delete are session operations. Each must acquire an operation
-guard, so at most one of them runs for a session at a time. Different sessions
-may run concurrently. Listing and changing ACP selections do not acquire an
-operation guard.
+Prompt, load, delete, and `/compact` are session operations. Each must acquire
+an operation guard, so at most one of them runs for a session at a time.
+Different sessions may run concurrently. Listing and changing ACP selections
+do not acquire an operation guard.
 
 The operation guard remains held through cleanup, save attempts, replay, and
 response sending. The SQLite mutex is separate and covers only a synchronous

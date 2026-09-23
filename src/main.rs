@@ -1,5 +1,6 @@
 mod acp;
 mod auth;
+mod cancellation;
 mod compaction;
 mod hooks;
 mod openrouter;

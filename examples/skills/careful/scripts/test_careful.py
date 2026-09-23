@@ -83,15 +83,20 @@ class CarefulTest(unittest.TestCase):
                 self.assertEqual("message" in output, decision == "deny")
         malformed = {"call_id": "call-1", "name": "shell", "arguments": '{"comm'}
         self.assertEqual(self.output("before_tool", tool=malformed), {"decision": "allow"})
+        patch = {"call_id": "call-2", "name": "apply_patch", "arguments": "rm -rf build"}
+        self.assertEqual(self.output("before_tool", tool=patch), {"decision": "allow"})
 
     def test_after_tools_reports_whitespace_errors_and_fails_outside_git(self):
-        self.assertEqual(self.output("after_tools", tools=[]), {})
+        shell = {"call_id": "call-1", "name": "shell"}
+        patch = {"call_id": "call-2", "name": "apply_patch"}
+        self.assertEqual(self.output("after_tools", tools=[shell]), {})
         (self.workspace / "notes.txt").write_text("one \n")
-        message = self.output("after_tools", tools=[])["message"]
+        self.assertEqual(self.output("after_tools", tools=[shell]), {})
+        message = self.output("after_tools", tools=[shell, patch])["message"]
         self.assertIn("notes.txt:1: trailing whitespace.", message)
         outside = self.directory / "outside"
         outside.mkdir()
-        result = self.run_hook("after_tools", workspace=outside, tools=[])
+        result = self.run_hook("after_tools", workspace=outside, tools=[patch])
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(result.stdout, "")
         self.assertIn("git diff --check failed", result.stderr)

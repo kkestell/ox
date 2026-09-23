@@ -420,6 +420,7 @@ fn validate_transcript(entries: &[TranscriptEntry]) -> io::Result<()> {
     let mut index = 1;
     let mut previous_prefix = 0;
     let mut complete_batches = Vec::new();
+    let mut current_skill: Option<&str> = None;
     while let Some(entry) = entries.get(index) {
         match entry {
             TranscriptEntry::Model(_) => {
@@ -457,8 +458,20 @@ fn validate_transcript(entries: &[TranscriptEntry]) -> io::Result<()> {
                     ));
                 }
             }
-            TranscriptEntry::UserMessage(_) | TranscriptEntry::SkillInvocation(_) => index += 1,
+            TranscriptEntry::UserMessage(_) => {
+                current_skill = None;
+                index += 1;
+            }
+            TranscriptEntry::SkillInvocation(invocation) => {
+                current_skill = Some(&invocation.name);
+                index += 1;
+            }
             TranscriptEntry::HookFeedback(feedback) => {
+                if current_skill != Some(feedback.skill.as_str()) {
+                    return Err(invalid_data(
+                        "hook feedback does not belong to the current skill invocation",
+                    ));
+                }
                 let previous = &entries[index - 1];
                 let (placed, place) = match feedback.content {
                     HookFeedbackContent::BeforeRun { .. } => (
@@ -487,7 +500,9 @@ fn validate_transcript(entries: &[TranscriptEntry]) -> io::Result<()> {
                 if checkpoint.summary.trim().is_empty()
                     || checkpoint.covered_prefix <= previous_prefix
                     || checkpoint.covered_prefix > index
-                    || !complete_batches.contains(&checkpoint.covered_prefix)
+                    || complete_batches
+                        .binary_search(&checkpoint.covered_prefix)
+                        .is_err()
                 {
                     return Err(invalid_data(
                         "invalid compaction checkpoint or covered prefix",
@@ -1063,12 +1078,9 @@ mod tests {
             let batch = AssistantBatch::new(message.clone(), results.clone()).unwrap();
             store.append_batch(&id, &batch).unwrap();
             store
-                .append_hook_feedback(&id, &after_tools_feedback())
-                .unwrap();
-            store
                 .append_checkpoint(
                     &id,
-                    7,
+                    6,
                     &CompactionCheckpoint {
                         summary: "Chicago checked; Denver unavailable.".to_owned(),
                         covered_prefix: 6,
@@ -1116,7 +1128,6 @@ mod tests {
                 TranscriptEntry::AssistantMessage(message.clone()),
                 TranscriptEntry::ToolResult(results[0].clone()),
                 TranscriptEntry::ToolResult(results[1].clone()),
-                TranscriptEntry::HookFeedback(after_tools_feedback()),
                 TranscriptEntry::CompactionCheckpoint(CompactionCheckpoint {
                     summary: "Chicago checked; Denver unavailable.".to_owned(),
                     covered_prefix: 6,
@@ -1141,7 +1152,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             replay.len(),
-            11,
+            10,
             "the checkpoint is hidden but the other entries replay"
         );
 
@@ -1322,6 +1333,10 @@ mod tests {
             (before_run_feedback(), vec![skill.clone(), answer.clone()]),
             (after_tools_feedback(), vec![user.clone(), answer.clone()]),
             (after_tools_feedback(), vec![skill.clone()]),
+            (
+                after_tools_feedback(),
+                [vec![user.clone()], called.to_vec()].concat(),
+            ),
             (stop_feedback(), vec![user.clone()]),
             (
                 stop_feedback(),

@@ -35,6 +35,8 @@ def before_run(hook):
 
 
 def before_tool(hook):
+    if hook["tool"]["name"] != "shell":
+        return {"decision": "allow"}
     try:
         command = json.loads(hook["tool"]["arguments"])["command"]
     except (ValueError, TypeError, KeyError):
@@ -50,6 +52,8 @@ def before_tool(hook):
 
 
 def after_tools(hook):
+    if not any(tool["name"] == "apply_patch" for tool in hook["tools"]):
+        return {}
     check = git(hook["workspace"], "diff", "--check")
     if check.returncode == 0:
         return {}

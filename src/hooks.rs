@@ -148,7 +148,15 @@ pub trait Output: DeserializeOwned {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Feedback {
+    #[serde(default, deserialize_with = "deserialize_present_string")]
     pub message: Option<String>,
+}
+
+fn deserialize_present_string<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    String::deserialize(deserializer).map(Some)
 }
 
 impl Output for Feedback {
@@ -289,7 +297,16 @@ pub async fn run<T: Output>(
 }
 
 fn parse<T: Output>(kind: HookKind, stdout: &str) -> Result<T, String> {
-    let output: T = serde_json::from_str(stdout).map_err(|error| {
+    let value: serde_json::Value = serde_json::from_str(stdout).map_err(|error| {
+        format!(
+            "output is not one valid {} response object: {error}",
+            kind.id()
+        )
+    })?;
+    if !value.is_object() {
+        return Err("output must be a JSON object".to_owned());
+    }
+    let output: T = serde_json::from_value(value).map_err(|error| {
         format!(
             "output is not one valid {} response object: {error}",
             kind.id()

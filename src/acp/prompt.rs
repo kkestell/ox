@@ -13,7 +13,8 @@ use agent_client_protocol::{
     },
 };
 
-use super::{convert, operations::PromptCancellation};
+use super::convert;
+use crate::cancellation::PromptCancellation;
 use crate::{
     compaction,
     hooks::{self, SkillHooks},
@@ -446,17 +447,16 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
         }
     }
 
-    /// Runs the `before_tool` hook on a call its filter matches. `Some` holds
-    /// the message of a denial.
+    /// Runs the `before_tool` hook on a call. `Some` holds the message of a denial.
     async fn run_before_tool(
         &mut self,
         call: &ToolCall,
     ) -> std::result::Result<Option<String>, PromptOutcome> {
-        if !self
+        if self
             .hooks
             .as_ref()
             .and_then(|hooks| hooks.hooks.before_tool.as_ref())
-            .is_some_and(|hook| hook.matches(&call.name))
+            .is_none()
         {
             return Ok(None);
         }
@@ -473,32 +473,28 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
         .await
     }
 
-    /// Runs the `after_tools` hook on the batch just committed when its filter
-    /// matches any of the batch's calls.
+    /// Runs the `after_tools` hook on the batch just committed.
     async fn run_after_tools(
         &mut self,
         calls: &[ToolCall],
     ) -> std::result::Result<(), PromptOutcome> {
-        let Some(hook) = self
+        if self
             .hooks
             .as_ref()
             .and_then(|hooks| hooks.hooks.after_tools.as_ref())
-        else {
+            .is_none()
+        {
             return Ok(());
-        };
+        }
         let results = &self.transcript[self.transcript.len() - calls.len()..];
         let tools: Vec<_> = calls
             .iter()
             .zip(results)
-            .filter(|(call, _)| hook.matches(&call.name))
             .map(|(call, entry)| match entry {
                 TranscriptEntry::ToolResult(result) => hooks::ToolReport::new(call, result),
                 _ => unreachable!("a committed batch ends with its tool results"),
             })
             .collect();
-        if tools.is_empty() {
-            return Ok(());
-        }
         self.run_hook(
             hooks::Event::AfterTools { tools },
             |run, output: hooks::Feedback| {
@@ -1054,13 +1050,6 @@ mod tests {
     fn command(command: &str) -> Option<skills::HookCommand> {
         Some(skills::HookCommand {
             command: command.to_owned(),
-        })
-    }
-
-    fn tool_command(command: &str, tools: Option<&[&str]>) -> Option<skills::ToolHookCommand> {
-        Some(skills::ToolHookCommand {
-            command: command.to_owned(),
-            tools: tools.map(|tools| tools.iter().map(|&tool| tool.to_owned()).collect()),
         })
     }
 
@@ -1628,11 +1617,10 @@ mod tests {
             before_run: command(
                 r#"cat >> before_run.json; echo >> before_run.json; echo '{"message":"The tests live in tests/."}'"#,
             ),
-            before_tool: tool_command(DENY_REMOVAL, Some(&[tools::SHELL])),
+            before_tool: command(DENY_REMOVAL),
             // Runs after the whole batch, so it sees both patches.
-            after_tools: tool_command(
+            after_tools: command(
                 r#"cat > after_tools.json; test -e first && test -e second && echo '{"message":"Both files exist."}'"#,
-                None,
             ),
             before_stop: command(CONTINUE_THEN_STOP),
             after_run: command(r#"cat > after_run.json; echo '{}'"#),
@@ -1693,10 +1681,17 @@ mod tests {
         let after_run = hook_inputs(&harness, "after_run.json");
         assert_eq!(
             (before_run.len(), before_tool.len(), before_stop.len()),
-            (1, 2, 2)
+            (1, 4, 2)
         );
         assert_eq!(
-            before_tool[0]["tool"],
+            before_tool
+                .iter()
+                .map(|input| input["tool"]["name"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["apply_patch", "shell", "apply_patch", "shell"]
+        );
+        assert_eq!(
+            before_tool[1]["tool"],
             json!({ "call_id": "shell-1", "name": "shell", "arguments": r#"{"command":"exit 3"}"# })
         );
         let reported = after_tools[0]["tools"].as_array().unwrap();
@@ -1723,7 +1718,7 @@ mod tests {
         let run_id = &before_run[0]["run_id"];
         for (input, kind) in [
             (&before_run[0], "before_run"),
-            (&before_tool[1], "before_tool"),
+            (&before_tool[3], "before_tool"),
             (&after_tools[0], "after_tools"),
             (&before_stop[1], "before_stop"),
             (&after_run[0], "after_run"),
@@ -1738,6 +1733,8 @@ mod tests {
             hook_titles(&harness),
             [
                 "goal before_run hook",
+                "goal before_tool hook",
+                "goal before_tool hook",
                 "goal before_tool hook",
                 "goal before_tool hook",
                 "goal after_tools hook",
@@ -1865,7 +1862,7 @@ mod tests {
         for (hooks, results, expected) in [
             (
                 skills::Hooks {
-                    before_tool: tool_command("exit 5", None),
+                    before_tool: command("exit 5"),
                     ..skills::Hooks::default()
                 },
                 vec![not_started("call-1"), not_started("call-2")],
@@ -1873,7 +1870,7 @@ mod tests {
             ),
             (
                 skills::Hooks {
-                    after_tools: tool_command("exit 6", None),
+                    after_tools: command("exit 6"),
                     ..skills::Hooks::default()
                 },
                 vec![printed("call-1", "one"), printed("call-2", "two")],

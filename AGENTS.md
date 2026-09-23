@@ -10,13 +10,14 @@ THIS DOCUMENT MUST BE KEPT UP TO DATE
   one headless prompt with an optional model and effort and prints its final
   answer, runs a credential command, or prints help.
 - `src/auth.rs`: Environment and operating-system keyring credential storage.
+- `src/cancellation.rs`: Shared cancellation signal for active session
+  operations.
 - `src/system_prompt.rs`: Assembly of Ox's built-in system prompt with bounded
   workspace-root `AGENTS.md` instructions.
 - `src/prompts/system_prompt.md`: The editable built-in instructions that define
   Ox's coding-agent behavior.
 - `src/skills.rs`: Workspace skill definitions in `.agents/skills/`, frontmatter
-  parsing, hook definitions with their tool filters, validation, and skill
-  catalog loading.
+  parsing, hook validation, and skill catalog loading.
 - `src/hooks.rs`: The hook protocol for every hook kind: JSON input on stdin
   with the fields every hook shares, one response object per kind on stdout,
   deadlines, limits, and hook errors.
@@ -27,8 +28,9 @@ THIS DOCUMENT MUST BE KEPT UP TO DATE
   encoding, context limits, client, streamed response assembly, and explicit
   input-context overflow errors.
 - `src/compaction.rs`: Request estimates, safe transcript cuts, bounded
-  summarizer input, checkpoint commits, and model-request projection, which
-  repeats a covered skill invocation after the summary.
+  summarizer input with explicit tool-result excerpts, checkpoint commits, and
+  model-request projection, which repeats a covered skill invocation after the
+  summary.
 - `src/prompts/compaction_prompt.md`: Dedicated summarizer instructions.
 - `src/tools.rs`: Concrete tool names and schemas, tool call titles, and
   execution of one complete call.
@@ -50,12 +52,12 @@ THIS DOCUMENT MUST BE KEPT UP TO DATE
   per-session model, effort, and mode selections, system prompts and skill
   catalogs loaded when a session becomes active, guarded `/compact`, and the
   automatic headless prompt entry point.
-- `src/acp/operations.rs`: One active prompt, load, or delete per session,
-  enforced by an operation guard.
+- `src/acp/operations.rs`: One active prompt, load, delete, or compaction per
+  session, enforced by an operation guard.
 - `src/acp/prompt.rs`: One prompt run: reject oversized input before saving,
   save accepted input with captured settings, announce it and run the invoked
   skill's `before_run` hook, compact before large model requests, retry
-  explicit input overflow once, run `before_tool` before each matching tool
+  explicit input overflow once, run `before_tool` before each tool
   call, run tools, save complete assistant batches, run `after_tools` after each
   batch and `before_stop` on each finished answer, run `after_run` on the
   result, and return the stop reason and final answer.
@@ -71,6 +73,16 @@ THIS DOCUMENT MUST BE KEPT UP TO DATE
   `scripts/careful.py`, supply the Git status, deny destructive shell commands,
   check each patch batch, and log each run outcome, with its test and a README
   describing every hook kind, batch timing, and hook errors.
+
+## Validation
+
+For changes affecting behavior, interfaces, artifacts, or builds, run full
+validation: `cargo fmt --all -- --check`,
+`cargo test --all-targets --all-features`, `cargo build --all-features`,
+`cargo clippy --all-targets --all-features -- -D warnings`, and both example
+test commands in `eng/testing.md`. Report any skipped or failed check; do not
+call partial validation complete. For documentation-only, comment-only, and
+filename-only changes, use focused searches and diff inspection.
 
 ## Documentation
 

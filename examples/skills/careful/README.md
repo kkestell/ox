@@ -36,19 +36,16 @@ hooks:
     command: python3 scripts/careful.py
   before_tool:
     command: python3 scripts/careful.py
-    tools: [shell]
   after_tools:
     command: python3 scripts/careful.py
-    tools: [apply_patch]
   after_run:
     command: python3 scripts/careful.py
 ```
 
 Each definition has a nonblank `command`, run with `/bin/sh -c` in the skill
-directory. `before_tool` and `after_tools` may add `tools`, a nonempty list of
-distinct tool names: `shell`, `read_file`, `glob`, `grep`, or `apply_patch`.
-Without `tools`, the hook matches every tool. No other fields are allowed. The
-[goal skill](../goal/README.md) shows `before_stop`.
+directory. No other fields are allowed. The script checks tool names to apply
+its shell and patch rules. The [goal skill](../goal/README.md) shows
+`before_stop`.
 
 Hooks run only in the prompt run that invoked their skill. Invoking the skill
 approves all of its hook commands in both Ask and Auto mode. Hooks never run for
@@ -80,8 +77,8 @@ zero and prints one JSON object to stdout:
 | Hook          | When it runs                                                   | Added input                                                             | Stdout                                                         | Deadline |
 | ------------- | -------------------------------------------------------------- | ----------------------------------------------------------------------- | -------------------------------------------------------------- | -------- |
 | `before_run`  | Once, after the skill invocation is saved                      | None                                                                    | `{}` or `{"message": "..."}`                                   | 30 s     |
-| `before_tool` | Before each matching tool call and its permission request      | `tool`: `call_id`, `name`, raw `arguments` string                       | `{"decision": "allow"}` or `{"decision": "deny", "message": "..."}` | 10 s     |
-| `after_tools` | Once per batch with a matching call, after the batch is saved  | `tools`: list of `call_id`, `name`, `arguments`, `outcome`, `text`      | `{}` or `{"message": "..."}`                                   | 60 s     |
+| `before_tool` | Before each tool call and its permission request               | `tool`: `call_id`, `name`, raw `arguments` string                       | `{"decision": "allow"}` or `{"decision": "deny", "message": "..."}` | 10 s     |
+| `after_tools` | Once per tool batch, after the batch is saved                  | `tools`: list of `call_id`, `name`, `arguments`, `outcome`, `text`      | `{}` or `{"message": "..."}`                                   | 60 s     |
 | `before_stop` | After each finished answer                                     | `answer`                                                                | `{"decision": "continue" or "stop", "message": "..."}`         | 600 s    |
 | `after_run`   | Once, after the prompt run's result is known                   | `outcome`, `answer` or null, `error` or null                            | `{}`                                                           | 5 s      |
 
@@ -108,7 +105,7 @@ A model response can contain several tool calls, which Ox runs in order as one
 batch. `after_tools` runs once, after every call in the batch has a result and
 the batch is saved, and before the next model request. It sees the workspace
 after the whole batch, so a check cannot disturb a patch still waiting to run.
-Its `tools` input lists every matching call in call order with its result,
+Its `tools` input lists every call in call order with its result,
 including failed and denied calls. It carries tool arguments and result text,
 not changed paths, so this skill inspects the workspace with `git diff --check`.
 `after_tools` does not run for a batch the prompt run stopped before

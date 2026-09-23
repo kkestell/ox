@@ -7,10 +7,8 @@ hooks:
     command: python3 scripts/careful.py
   before_tool:
     command: python3 scripts/careful.py
-    tools: [shell]
   after_tools:
     command: python3 scripts/careful.py
-    tools: [apply_patch]
   after_run:
     command: python3 scripts/careful.py
 ---

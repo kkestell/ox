@@ -9,7 +9,7 @@ use std::{
 
 use serde::Deserialize;
 
-use crate::{sessions::HookKind, system_prompt, tools};
+use crate::{sessions::HookKind, system_prompt};
 
 const SKILLS_DIR: &str = ".agents/skills";
 const FILE_NAME: &str = "SKILL.md";
@@ -32,8 +32,8 @@ pub struct Skill {
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 pub struct Hooks {
     pub before_run: Option<HookCommand>,
-    pub before_tool: Option<ToolHookCommand>,
-    pub after_tools: Option<ToolHookCommand>,
+    pub before_tool: Option<HookCommand>,
+    pub after_tools: Option<HookCommand>,
     pub before_stop: Option<HookCommand>,
     pub after_run: Option<HookCommand>,
 }
@@ -43,26 +43,6 @@ pub struct Hooks {
 #[serde(deny_unknown_fields)]
 pub struct HookCommand {
     pub command: String,
-}
-
-/// A hook command for tool calls, optionally limited to some tools.
-#[derive(Debug, Clone, PartialEq, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ToolHookCommand {
-    pub command: String,
-    /// Distinct names from the concrete tool set. `None` matches every tool.
-    pub tools: Option<Vec<String>>,
-}
-
-impl ToolHookCommand {
-    /// A tool name outside the concrete tool set never matches.
-    pub fn matches(&self, name: &str) -> bool {
-        tools::NAMES.contains(&name)
-            && self
-                .tools
-                .as_ref()
-                .is_none_or(|tools| tools.iter().any(|tool| tool == name))
-    }
 }
 
 impl Hooks {
@@ -83,26 +63,6 @@ impl Hooks {
                 .is_some_and(|command| command.trim().is_empty())
             {
                 return Err(invalid(format!("{} hook command is blank", kind.id())));
-            }
-        }
-        for (kind, hook) in [
-            (HookKind::BeforeTool, &self.before_tool),
-            (HookKind::AfterTools, &self.after_tools),
-        ] {
-            let Some(names) = hook.as_ref().and_then(|hook| hook.tools.as_ref()) else {
-                continue;
-            };
-            let kind = kind.id();
-            if names.is_empty() {
-                return Err(invalid(format!("{kind} hook tools list is empty")));
-            }
-            for (index, name) in names.iter().enumerate() {
-                if !tools::NAMES.contains(&name.as_str()) {
-                    return Err(invalid(format!("{kind} hook tool {name:?} is unknown")));
-                }
-                if names[..index].contains(name) {
-                    return Err(invalid(format!("{kind} hook tool {name:?} is repeated")));
-                }
             }
         }
         Ok(())

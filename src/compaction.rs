@@ -9,7 +9,7 @@ use std::{
 use agent_client_protocol::schema::v1::SessionId;
 
 use crate::{
-    acp::operations::PromptCancellation,
+    cancellation::PromptCancellation,
     openrouter::{self, Client},
     sessions::{
         CompactionCheckpoint, EffortLevel, HookDecision, HookFeedbackContent, SessionSettings,
@@ -20,6 +20,7 @@ use crate::{
 const SUMMARY_OUTPUT_TOKENS: usize = 4096;
 const SUMMARY_ALLOWANCE_BYTES: usize = SUMMARY_OUTPUT_TOKENS * 3;
 const SUMMARY_LABEL: &str = "Compaction summary of earlier conversation:\n";
+const TOOL_RESULT_EXCERPT_CHARS: usize = 2_000;
 
 fn tokens(bytes: usize) -> usize {
     bytes.div_ceil(3)
@@ -203,23 +204,7 @@ fn ranked_cuts(
     // Every cut past the latest skill invocation repeats it after the summary.
     let repeated = repeated_invocation(transcript, transcript.len())
         .map(|index| (index, message_bytes(&transcript[index])));
-    let mut completed_turn_starts = Vec::new();
-    let mut awaiting_answer = None;
-    for (offset, entry) in transcript[start..].iter().enumerate() {
-        match entry {
-            TranscriptEntry::UserMessage(_) | TranscriptEntry::SkillInvocation(_) => {
-                awaiting_answer = Some(start + offset)
-            }
-            TranscriptEntry::AssistantMessage(message) if message.tool_calls.is_empty() => {
-                if let Some(user_index) = awaiting_answer.take() {
-                    completed_turn_starts.push(user_index);
-                }
-            }
-            _ => {}
-        }
-    }
     let mut ranked = Vec::new();
-    let mut completed_before_cut = 0;
     for cut in cuts {
         let repeated_bytes = repeated
             .filter(|&(index, _)| index < cut)
@@ -228,19 +213,7 @@ fn ranked_cuts(
         if estimate > admission {
             continue;
         }
-        while completed_turn_starts
-            .get(completed_before_cut)
-            .is_some_and(|&user_index| user_index < cut)
-        {
-            completed_before_cut += 1;
-        }
-        let retained_turns = completed_turn_starts.len() - completed_before_cut;
-        let rank = (
-            estimate >= original,
-            estimate > target,
-            usize::MAX - retained_turns.min(2),
-            estimate,
-        );
+        let rank = (estimate >= original, estimate > target, estimate);
         ranked.push((cut, rank));
     }
     ranked.sort_by_key(|(_, rank)| *rank);
@@ -259,6 +232,18 @@ fn message_bytes(entry: &TranscriptEntry) -> usize {
                 + 1
         })
         .sum()
+}
+
+fn tool_result_excerpt(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    if chars.len() <= TOOL_RESULT_EXCERPT_CHARS {
+        return text.to_owned();
+    }
+    let edge = TOOL_RESULT_EXCERPT_CHARS / 2;
+    let head: String = chars[..edge].iter().collect();
+    let tail: String = chars[chars.len() - edge..].iter().collect();
+    let omitted = chars.len() - TOOL_RESULT_EXCERPT_CHARS;
+    format!("{head}\n[... {omitted} characters omitted from tool result ...]\n{tail}")
 }
 
 fn material(transcript: &[TranscriptEntry], cut: usize) -> VecDeque<(String, String, usize)> {
@@ -325,7 +310,7 @@ fn material(transcript: &[TranscriptEntry], cut: usize) -> VecDeque<(String, Str
                 if !result.outcome.text().is_empty() {
                     fields.push_back((
                         format!("{source} tool {} {status} outcome", result.name),
-                        result.outcome.text().chars().take(2000).collect(),
+                        tool_result_excerpt(result.outcome.text()),
                         1,
                     ));
                 }
@@ -576,11 +561,6 @@ mod tests {
         store.append_batch(&id, &batch).unwrap();
         transcript.push(TranscriptEntry::AssistantMessage(batch.message));
         transcript.extend(batch.results.into_iter().map(TranscriptEntry::ToolResult));
-        let formatted = feedback(HookFeedbackContent::AfterTools {
-            message: "Formatting is clean.".to_owned(),
-        });
-        store.append_hook_feedback(&id, &formatted).unwrap();
-        transcript.push(TranscriptEntry::HookFeedback(formatted));
         assert!(
             compact(
                 &store,
@@ -638,10 +618,6 @@ mod tests {
         assert!(
             material(1)
                 .contains("Entry 4 goal before_stop hook stop feedback, part 1:\nObjective met.")
-        );
-        assert!(
-            material(2)
-                .contains("Entry 9 goal after_tools hook feedback, part 1:\nFormatting is clean.")
         );
         assert!(
             requests[1]["messages"][1]["content"]

@@ -19,9 +19,6 @@ pub const READ_FILE: &str = "read_file";
 pub const GLOB: &str = "glob";
 pub const SHELL: &str = "shell";
 pub const GREP: &str = "grep";
-/// Every tool name in the concrete tool set.
-pub const NAMES: [&str; 5] = [SHELL, READ_FILE, GLOB, GREP, APPLY_PATCH];
-
 const OUTPUT_LIMIT: usize = 16 * 1024;
 // Leave room for line numbers, continuation instructions, and truncation notices.
 const BODY_LIMIT: usize = OUTPUT_LIMIT - 256;

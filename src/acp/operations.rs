@@ -1,5 +1,6 @@
-//! Allows at most one prompt, load, or delete per session. An operation starts
-//! only when it acquires a guard and ends when that guard is dropped.
+//! Allows at most one prompt, load, delete, or compaction per session. An
+//! operation starts only when it acquires a guard and ends when that guard is
+//! dropped.
 
 use std::{
     collections::{HashMap, hash_map::Entry},
@@ -7,11 +8,9 @@ use std::{
 };
 
 use agent_client_protocol::schema::v1::SessionId;
-use futures::{
-    FutureExt,
-    channel::oneshot,
-    future::{BoxFuture, Shared},
-};
+use futures::channel::oneshot;
+
+use crate::cancellation::PromptCancellation;
 
 enum Operation {
     Prompt(PromptCancellation),
@@ -116,49 +115,10 @@ impl Drop for OperationGuard {
     }
 }
 
-/// A cancellation signal for one prompt. Once cancelled, every clone continues
-/// to observe cancellation; cancelling twice is harmless.
-#[derive(Clone)]
-pub struct PromptCancellation(Arc<CancellationState>);
-
-struct CancellationState {
-    signal_tx: Mutex<Option<oneshot::Sender<()>>>,
-    signal_rx: Shared<BoxFuture<'static, ()>>,
-}
-
-impl PromptCancellation {
-    pub(crate) fn new() -> Self {
-        let (signal_tx, signal_rx) = oneshot::channel();
-        Self(Arc::new(CancellationState {
-            signal_tx: Mutex::new(Some(signal_tx)),
-            signal_rx: signal_rx.map(|_| ()).boxed().shared(),
-        }))
-    }
-
-    pub fn cancelled(&self) -> impl Future<Output = ()> + Send + 'static + use<> {
-        self.0.signal_rx.clone()
-    }
-
-    pub fn is_cancelled(&self) -> bool {
-        self.0.signal_rx.clone().now_or_never().is_some()
-    }
-
-    pub fn cancel(&self) {
-        let signal_tx = self
-            .0
-            .signal_tx
-            .lock()
-            .expect("prompt cancellation mutex poisoned")
-            .take();
-        if let Some(signal_tx) = signal_tx {
-            let _ = signal_tx.send(());
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures::FutureExt;
 
     fn id(name: &str) -> SessionId {
         SessionId::new(name.to_owned())

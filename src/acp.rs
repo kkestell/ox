@@ -30,7 +30,9 @@ use agent_client_protocol::{
 };
 
 use crate::{
-    auth, compaction, hooks, openrouter,
+    auth,
+    cancellation::PromptCancellation,
+    compaction, hooks, openrouter,
     sessions::{
         self, EffortLevel, SessionMode, SessionSettings, SessionStore, SessionSummary,
         SkillInvocation, TranscriptEntry,
@@ -38,7 +40,7 @@ use crate::{
     skills::{self, Skill},
     system_prompt,
 };
-use operations::{PromptCancellation, SessionOperations};
+use operations::SessionOperations;
 
 fn default_settings() -> SessionSettings {
     SessionSettings::new(openrouter::DEFAULT_MODEL, EffortLevel::Default)
@@ -117,10 +119,6 @@ fn available_commands(skills: &[Skill]) -> SessionUpdate {
 
 /// What a prompt request asks for.
 #[derive(Debug, PartialEq)]
-#[expect(
-    clippy::large_enum_variant,
-    reason = "a dispatch result is consumed right after it is made"
-)]
 enum Dispatch {
     Compact,
     Skill {
@@ -989,7 +987,7 @@ mod tests {
         };
         write_skill(
             "goal",
-            "---\nname: goal\ndescription: \"Work toward an objective: verify it.\"\nargument-hint: \"<objective>\"\nallowed-tools: [shell]\nmetadata:\n  owner: ox\nhooks:\n  PreToolUse: [{matcher: shell}]\n  before_run:\n    command: python3 scripts/context.py\n  before_tool:\n    command: python3 scripts/check_call.py\n    tools: [shell, apply_patch]\n  after_tools:\n    command: python3 scripts/format.py\n  before_stop:\n    command: python3 scripts/check.py\n  after_run:\n    command: python3 scripts/report.py\n---\n\nWork toward the objective.\n",
+            "---\nname: goal\ndescription: \"Work toward an objective: verify it.\"\nargument-hint: \"<objective>\"\nallowed-tools: [shell]\nmetadata:\n  owner: ox\nhooks:\n  PreToolUse: [{matcher: shell}]\n  before_run:\n    command: python3 scripts/context.py\n  before_tool:\n    command: python3 scripts/check_call.py\n  after_tools:\n    command: python3 scripts/format.py\n  before_stop:\n    command: python3 scripts/check.py\n  after_run:\n    command: python3 scripts/report.py\n---\n\nWork toward the objective.\n",
         );
         fs::write(skills_dir.join(".DS_Store"), "").unwrap();
         let goal = Skill {
@@ -1002,13 +1000,11 @@ mod tests {
                 before_run: Some(skills::HookCommand {
                     command: "python3 scripts/context.py".to_owned(),
                 }),
-                before_tool: Some(skills::ToolHookCommand {
+                before_tool: Some(skills::HookCommand {
                     command: "python3 scripts/check_call.py".to_owned(),
-                    tools: Some(vec!["shell".to_owned(), "apply_patch".to_owned()]),
                 }),
-                after_tools: Some(skills::ToolHookCommand {
+                after_tools: Some(skills::HookCommand {
                     command: "python3 scripts/format.py".to_owned(),
-                    tools: None,
                 }),
                 before_stop: Some(skills::HookCommand {
                     command: "python3 scripts/check.py".to_owned(),
@@ -1160,24 +1156,9 @@ mod tests {
                 "after_run hook command is blank",
             ),
             (
-                "filtered",
-                "---\nname: filtered\ndescription: Filtered.\nhooks:\n  before_run:\n    command: 'true'\n    tools: [shell]\n---\nBody\n",
+                "extra",
+                "---\nname: extra\ndescription: Extra.\nhooks:\n  before_tool:\n    command: 'true'\n    tools: [shell]\n---\nBody\n",
                 "unknown field `tools`",
-            ),
-            (
-                "unfiltered",
-                "---\nname: unfiltered\ndescription: Unfiltered.\nhooks:\n  before_tool:\n    command: 'true'\n    tools: []\n---\nBody\n",
-                "before_tool hook tools list is empty",
-            ),
-            (
-                "repeated",
-                "---\nname: repeated\ndescription: Repeated.\nhooks:\n  after_tools:\n    command: 'true'\n    tools: [shell, shell]\n---\nBody\n",
-                "after_tools hook tool \"shell\" is repeated",
-            ),
-            (
-                "unknown",
-                "---\nname: unknown\ndescription: Unknown.\nhooks:\n  before_tool:\n    command: 'true'\n    tools: [edit]\n---\nBody\n",
-                "before_tool hook tool \"edit\" is unknown",
             ),
             ("missing", "", "No such file or directory"),
         ] {
@@ -1655,7 +1636,6 @@ description: Check each shell call.
 hooks:
   before_tool:
     command: "case \"$(cat)\" in *'touch first'*) echo '{\"decision\":\"deny\",\"message\":\"Leave first alone.\"}';; *) echo '{\"decision\":\"allow\"}';; esac"
-    tools: [shell]
 ---
 Run the commands.
 "#,
