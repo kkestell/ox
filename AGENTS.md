@@ -39,15 +39,18 @@ THIS DOCUMENT MUST BE KEPT UP TO DATE
   model-request projection, which repeats a covered skill invocation after the
   summary.
 - `src/prompts/compaction_prompt.md`: Dedicated summarizer instructions.
-- `src/tools.rs`: Concrete tool names and schemas, tool call titles, and
-  execution of one complete call.
-- `src/tools/read.rs`: Bounded text-file reading with line pagination.
-- `src/tools/shell.rs`: Shell tool arguments, API-key removal, and rendering of
-  one process run as a tool outcome.
-- `src/tools/search.rs`: Ripgrep file discovery, workspace-checked candidates,
-  and bounded glob and grep results.
-- `src/tools/patch.rs`: Patch parsing, exact text matching, workspace path
-  validation, and filesystem changes.
+- `src/tools.rs`: Concrete tool names, the ordered list of tool schemas sent to
+  the model, tool call titles, and execution of one complete call. Each tool
+  module owns its own schema; this module only collects them.
+- `src/tools/read.rs`: The `read_file` schema and bounded text-file reading with
+  line pagination.
+- `src/tools/shell.rs`: The `shell` schema, shell tool arguments, API-key
+  removal, and rendering of one process run as a tool outcome.
+- `src/tools/search.rs`: The `glob` and `grep` schemas, ripgrep file discovery,
+  workspace-checked candidates, and bounded glob and grep results.
+- `src/tools/patch.rs`: The `apply_patch` schema with its patch-language
+  description, patch parsing, exact text matching, workspace path validation,
+  and filesystem changes.
 - `src/tools/workspace.rs`: Descriptor-relative file operations shared by
   read, search, and patch tools.
 - `src/sessions.rs`: Transcript and durable model, effort, and mode setting

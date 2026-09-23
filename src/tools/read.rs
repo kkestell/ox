@@ -1,9 +1,10 @@
 use std::path::Path;
 
 use serde::Deserialize;
+use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, BufReader};
 
-use super::{BODY_LIMIT, truncate, workspace::Workspace};
+use super::{BODY_LIMIT, READ_FILE, truncate, workspace::Workspace};
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -20,6 +21,26 @@ fn default_offset() -> u64 {
 }
 fn default_limit() -> usize {
     200
+}
+
+pub(super) fn schema() -> Value {
+    json!({
+        "type": "function",
+        "function": {
+            "name": READ_FILE,
+            "description": "Read a UTF-8 text file inside the workspace. Returns numbered lines, at most 16 KiB, with the next offset when more remains. An oversized line returns a marked prefix; its omitted portion cannot be retrieved through line pagination. Example: {\"path\":\"src/main.rs\",\"offset\":1,\"limit\":100}.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string", "description": "Workspace-relative file path." },
+                    "offset": { "type": "integer", "minimum": 1, "default": 1, "description": "1-based starting line." },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 1000, "default": 200, "description": "Maximum number of lines to return." }
+                },
+                "required": ["path"],
+                "additionalProperties": false
+            }
+        }
+    })
 }
 
 pub(super) async fn execute(root: &Path, arguments: &str) -> Result<String, String> {

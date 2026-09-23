@@ -4,7 +4,7 @@
 use std::path::Path;
 
 use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::Value;
 
 use crate::sessions::{ToolCall, ToolOutcome};
 
@@ -24,57 +24,6 @@ const OUTPUT_LIMIT: usize = 16 * 1024;
 const BODY_LIMIT: usize = OUTPUT_LIMIT - 256;
 // Long enough to name a path or pattern, short enough for one display line.
 const MAX_TOOL_CALL_TITLE_CHARS: usize = 80;
-
-const APPLY_PATCH_DESCRIPTION: &str = r#"Apply a text patch to files in the session workspace. Paths are relative to the workspace. Supports Add File, Update File, Delete File, and Move to.
-
-```text
-*** Begin Patch
-*** Add File: notes.txt
-+New notes.
-*** Update File: src/greeting.rs
-@@ fn greeting() -> &'static str {
--    "Hello"
-+    "Hello, world"
- }
-*** Update File: old-name.txt
-*** Move to: new-name.txt
-@@
--Old text
-+New text
-*** Delete File: obsolete.txt
-*** End Patch
-```
-
-A patch contains zero or more file operations between the begin and end
-markers. The markers and operation headers must appear exactly as shown at the
-start of a line.
-
-- `*** Add File: path` is followed by zero or more lines beginning with `+`.
-  Removing that prefix gives the new file's contents.
-- `*** Delete File: path` has no body.
-- `*** Update File: path` is followed by one or more chunks. A move-only update
-  may omit the chunks.
-- `*** Move to: path` may appear immediately after an Update header. The update
-  is written at the destination and the source is removed.
-- A chunk starts with `@@` or `@@ anchor`. An anchor is a literal source line
-  used to begin the search for the chunk; it is not a line number or regular
-  expression.
-- Within a chunk, a leading space is unchanged context, `-` removes a line, and
-  `+` inserts a line. The prefix is syntax and is not part of the file content.
-- Another operation header, chunk header, or the final marker ends the current
-  body. Text outside the patch and unrecognized lines are errors.
-
-Paths and payloads are literal. There is no quoting, escaping, heredoc support,
-or standard unified-diff syntax inside the patch string. JSON escaping is
-handled once by argument decoding and is not part of the patch language.
-
-An empty patch succeeds without changing files. An Add with no body creates an
-empty file; a nonempty Add ends with a newline. A source line that resembles a
-marker remains expressible because it has a context, removal, or addition
-prefix.
-
-Match source lines exactly, including whitespace. Chunks search forward from the preceding match. An anchor is matched literally, and chunk matching starts after it. An additions-only chunk inserts after its anchor or preceding chunk; with neither, it appends. An updated file keeps the line-ending style of its first line and whether it ended with a newline. Add and Move destinations must not exist; their missing parent directories are created. Sources must be regular files; updates require UTF-8. Absolute paths, parent traversal, paths reaching outside the workspace, paths naming the workspace root or a symbolic link, and duplicate targets are rejected. A no-op Update succeeds and reports `Unchanged path`. All operations are checked before changes start. Filesystem failures may leave earlier operations applied; the result reports completed, failed, and unattempted operations.
-"#;
 
 fn truncate(text: &mut String, limit: usize) {
     let mut end = text.len().min(limit);
@@ -100,103 +49,14 @@ fn bounded_result(result: Result<String, String>) -> ToolOutcome {
     }
 }
 
+/// Every tool definition sent to OpenRouter, each owned by its tool's module.
 pub fn schemas() -> Vec<Value> {
     vec![
-        json!({
-            "type": "function",
-            "function": {
-                "name": SHELL,
-                "description": "Run a noninteractive /bin/sh command starting in the session workspace. Returns the exit status and tails of stdout and stderr, at most 16 KiB total. Output has a shared 14 KiB budget: 7 KiB per stream, with unused space given to the other stream. Earlier output may be omitted; redirect long logs to a workspace file for later inspection. Each call starts a fresh shell with stdin connected to /dev/null. No interactive input or persistent background processes. Commands run with Ox's permissions and can access paths outside the workspace.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "command": {
-                            "type": "string",
-                            "description": "Shell command or multiline script. Use shell syntax for directory changes, environment overrides, pipelines, and redirection."
-                        },
-                        "timeout_seconds": {
-                            "type": "integer",
-                            "minimum": 1,
-                            "maximum": 600,
-                            "default": 120,
-                            "description": "Maximum execution time in seconds. Defaults to 120."
-                        }
-                    },
-                    "required": [
-                        "command"
-                    ],
-                    "additionalProperties": false
-                }
-            }
-        }),
-        json!({
-            "type": "function",
-            "function": {
-                "name": READ_FILE,
-                "description": "Read a UTF-8 text file inside the workspace. Returns numbered lines, at most 16 KiB, with the next offset when more remains. An oversized line returns a marked prefix; its omitted portion cannot be retrieved through line pagination. Example: {\"path\":\"src/main.rs\",\"offset\":1,\"limit\":100}.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "path": { "type": "string", "description": "Workspace-relative file path." },
-                        "offset": { "type": "integer", "minimum": 1, "default": 1, "description": "1-based starting line." },
-                        "limit": { "type": "integer", "minimum": 1, "maximum": 1000, "default": 200, "description": "Maximum number of lines to return." }
-                    },
-                    "required": ["path"],
-                    "additionalProperties": false
-                }
-            }
-        }),
-        json!({
-            "type": "function",
-            "function": {
-                "name": GLOB,
-                "description": "Find files inside the workspace using a ripgrep glob. Returns `./`-prefixed workspace-relative paths, at most 16 KiB. Narrow the pattern or path if truncated. Uses ripgrep's normal hidden-file and ignore filtering, including glob overrides; does not follow symlinks during traversal. Example: {\"pattern\":\"*.rs\",\"path\":\"src\"}.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "pattern": { "type": "string", "description": "Ripgrep glob, e.g. *.rs or src/**/*.rs." },
-                        "path": { "type": "string", "default": ".", "description": "Workspace-relative directory to search. Globs are relative to the workspace." }
-                    },
-                    "required": ["pattern"],
-                    "additionalProperties": false
-                }
-            }
-        }),
-        json!({
-            "type": "function",
-            "function": {
-                "name": GREP,
-                "description": "Search workspace text files with a case-sensitive Rust regex; use (?i) for case-insensitivity. Returns path:line:content, at most 16 KiB. Narrow the pattern or path if truncated. Uses ripgrep's normal hidden-file and ignore filtering for file discovery, including explicit-path and glob overrides; does not follow symlinks during traversal. Example: {\"pattern\":\"fn main\",\"path\":\"src\",\"glob\":\"*.rs\"}.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "pattern": { "type": "string", "description": "Ripgrep regular expression." },
-                        "path": { "type": "string", "default": ".", "description": "Workspace-relative file or directory to search." },
-                        "glob": { "type": "string", "description": "Optional filename glob, relative to the workspace, e.g. *.rs." }
-                    },
-                    "required": ["pattern"],
-                    "additionalProperties": false
-                }
-            }
-        }),
-        json!({
-            "type": "function",
-            "function": {
-                "name": APPLY_PATCH,
-                "description": APPLY_PATCH_DESCRIPTION,
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "patch": {
-                            "type": "string",
-                            "description": "A patch beginning with *** Begin Patch and ending with *** End Patch."
-                        }
-                    },
-                    "required": ["patch"],
-                    "additionalProperties": false
-                }
-            }
-        }),
+        shell::schema(),
+        read::schema(),
+        search::glob_schema(),
+        search::grep_schema(),
+        patch::schema(),
     ]
 }
 
@@ -356,6 +216,8 @@ pub(crate) mod fixture {
 
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
+
     use super::*;
 
     async fn execute(workspace: &Path, call: &ToolCall) -> ToolOutcome {
@@ -485,9 +347,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn patch_schema_and_argument_errors() {
-        let schema = schemas()
-            .into_iter()
+    async fn tool_schemas_and_patch_argument_errors() {
+        let schemas = schemas();
+        assert_eq!(
+            schemas
+                .iter()
+                .map(|schema| schema["function"]["name"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            [SHELL, READ_FILE, GLOB, GREP, APPLY_PATCH]
+        );
+        let schema = schemas
+            .iter()
             .find(|schema| schema["function"]["name"] == APPLY_PATCH)
             .unwrap();
         assert_eq!(

@@ -7,12 +7,13 @@ use std::{
 
 use regex::bytes::Regex;
 use serde::Deserialize;
+use serde_json::{Value, json};
 use tokio::{
     io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, BufReader},
     process::Command,
 };
 
-use super::{BODY_LIMIT, GLOB, truncate, workspace::Workspace};
+use super::{BODY_LIMIT, GLOB, GREP, truncate, workspace::Workspace};
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -33,6 +34,45 @@ struct GrepArgs {
 
 fn default_path() -> String {
     ".".to_owned()
+}
+
+pub(super) fn glob_schema() -> Value {
+    json!({
+        "type": "function",
+        "function": {
+            "name": GLOB,
+            "description": "Find files inside the workspace using a ripgrep glob. Returns `./`-prefixed workspace-relative paths, at most 16 KiB. Narrow the pattern or path if truncated. Uses ripgrep's normal hidden-file and ignore filtering, including glob overrides; does not follow symlinks during traversal. Example: {\"pattern\":\"*.rs\",\"path\":\"src\"}.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "pattern": { "type": "string", "description": "Ripgrep glob, e.g. *.rs or src/**/*.rs." },
+                    "path": { "type": "string", "default": ".", "description": "Workspace-relative directory to search. Globs are relative to the workspace." }
+                },
+                "required": ["pattern"],
+                "additionalProperties": false
+            }
+        }
+    })
+}
+
+pub(super) fn grep_schema() -> Value {
+    json!({
+        "type": "function",
+        "function": {
+            "name": GREP,
+            "description": "Search workspace text files with a case-sensitive Rust regex; use (?i) for case-insensitivity. Returns path:line:content, at most 16 KiB. Narrow the pattern or path if truncated. Uses ripgrep's normal hidden-file and ignore filtering for file discovery, including explicit-path and glob overrides; does not follow symlinks during traversal. Example: {\"pattern\":\"fn main\",\"path\":\"src\",\"glob\":\"*.rs\"}.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "pattern": { "type": "string", "description": "Ripgrep regular expression." },
+                    "path": { "type": "string", "default": ".", "description": "Workspace-relative file or directory to search." },
+                    "glob": { "type": "string", "description": "Optional filename glob, relative to the workspace, e.g. *.rs." }
+                },
+                "required": ["pattern"],
+                "additionalProperties": false
+            }
+        }
+    })
 }
 
 pub(super) async fn execute(root: &Path, name: &str, arguments: &str) -> Result<String, String> {

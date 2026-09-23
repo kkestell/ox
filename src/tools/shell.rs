@@ -2,12 +2,15 @@ use std::{os::unix::process::ExitStatusExt, path::Path, time::Duration};
 
 use futures::FutureExt;
 use serde::Deserialize;
+use serde_json::{Value, json};
 use tokio::process::Command;
 
 use crate::{
     process::{self, Capture, Limits, Observed},
     sessions::ToolOutcome,
 };
+
+use super::SHELL;
 
 const OUTPUT_BODY_LIMIT: usize = 14 * 1024;
 
@@ -21,6 +24,36 @@ struct Args {
 
 fn default_timeout() -> u64 {
     120
+}
+
+pub(super) fn schema() -> Value {
+    json!({
+        "type": "function",
+        "function": {
+            "name": SHELL,
+            "description": "Run a noninteractive /bin/sh command starting in the session workspace. Returns the exit status and tails of stdout and stderr, at most 16 KiB total. Output has a shared 14 KiB budget: 7 KiB per stream, with unused space given to the other stream. Earlier output may be omitted; redirect long logs to a workspace file for later inspection. Each call starts a fresh shell with stdin connected to /dev/null. No interactive input or persistent background processes. Commands run with Ox's permissions and can access paths outside the workspace.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "command": {
+                        "type": "string",
+                        "description": "Shell command or multiline script. Use shell syntax for directory changes, environment overrides, pipelines, and redirection."
+                    },
+                    "timeout_seconds": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 600,
+                        "default": 120,
+                        "description": "Maximum execution time in seconds. Defaults to 120."
+                    }
+                },
+                "required": [
+                    "command"
+                ],
+                "additionalProperties": false
+            }
+        }
+    })
 }
 
 pub(super) async fn execute(

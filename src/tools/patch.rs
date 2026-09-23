@@ -5,7 +5,81 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
-use super::workspace::Workspace;
+use serde_json::{Value, json};
+
+use super::{APPLY_PATCH, workspace::Workspace};
+
+const DESCRIPTION: &str = r#"Apply a text patch to files in the session workspace. Paths are relative to the workspace. Supports Add File, Update File, Delete File, and Move to.
+
+```text
+*** Begin Patch
+*** Add File: notes.txt
++New notes.
+*** Update File: src/greeting.rs
+@@ fn greeting() -> &'static str {
+-    "Hello"
++    "Hello, world"
+ }
+*** Update File: old-name.txt
+*** Move to: new-name.txt
+@@
+-Old text
++New text
+*** Delete File: obsolete.txt
+*** End Patch
+```
+
+A patch contains zero or more file operations between the begin and end
+markers. The markers and operation headers must appear exactly as shown at the
+start of a line.
+
+- `*** Add File: path` is followed by zero or more lines beginning with `+`.
+  Removing that prefix gives the new file's contents.
+- `*** Delete File: path` has no body.
+- `*** Update File: path` is followed by one or more chunks. A move-only update
+  may omit the chunks.
+- `*** Move to: path` may appear immediately after an Update header. The update
+  is written at the destination and the source is removed.
+- A chunk starts with `@@` or `@@ anchor`. An anchor is a literal source line
+  used to begin the search for the chunk; it is not a line number or regular
+  expression.
+- Within a chunk, a leading space is unchanged context, `-` removes a line, and
+  `+` inserts a line. The prefix is syntax and is not part of the file content.
+- Another operation header, chunk header, or the final marker ends the current
+  body. Text outside the patch and unrecognized lines are errors.
+
+Paths and payloads are literal. There is no quoting, escaping, heredoc support,
+or standard unified-diff syntax inside the patch string. JSON escaping is
+handled once by argument decoding and is not part of the patch language.
+
+An empty patch succeeds without changing files. An Add with no body creates an
+empty file; a nonempty Add ends with a newline. A source line that resembles a
+marker remains expressible because it has a context, removal, or addition
+prefix.
+
+Match source lines exactly, including whitespace. Chunks search forward from the preceding match. An anchor is matched literally, and chunk matching starts after it. An additions-only chunk inserts after its anchor or preceding chunk; with neither, it appends. An updated file keeps the line-ending style of its first line and whether it ended with a newline. Add and Move destinations must not exist; their missing parent directories are created. Sources must be regular files; updates require UTF-8. Absolute paths, parent traversal, paths reaching outside the workspace, paths naming the workspace root or a symbolic link, and duplicate targets are rejected. A no-op Update succeeds and reports `Unchanged path`. All operations are checked before changes start. Filesystem failures may leave earlier operations applied; the result reports completed, failed, and unattempted operations.
+"#;
+
+pub(super) fn schema() -> Value {
+    json!({
+        "type": "function",
+        "function": {
+            "name": APPLY_PATCH,
+            "description": DESCRIPTION,
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "patch": {
+                        "type": "string",
+                        "description": "A patch beginning with *** Begin Patch and ending with *** End Patch."
+                    }
+                },
+                "required": ["patch"],
+                "additionalProperties": false
+            }
+        }
+    })
+}
 
 struct Patch(Vec<FileOperation>);
 
