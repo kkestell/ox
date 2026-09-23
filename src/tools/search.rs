@@ -2,7 +2,7 @@ use std::{
     ffi::OsStr,
     os::unix::ffi::OsStrExt,
     path::{Component, Path, PathBuf},
-    process::Stdio,
+    process::{ExitStatus, Stdio},
 };
 
 use regex::bytes::Regex;
@@ -98,75 +98,110 @@ async fn run(
     let collect = async {
         let mut reader = BufReader::new(stdout);
         let mut candidate = Vec::new();
-        let mut output = String::new();
-        let mut local_errors = String::new();
-        let mut truncated = false;
-        while reader.read_until(0, &mut candidate).await? != 0 {
+        let mut output = SearchOutput::default();
+        while !output.truncated && reader.read_until(0, &mut candidate).await? != 0 {
             let name = candidate.strip_suffix(&[0]).unwrap_or(&candidate);
-            let path = Path::new(OsStr::from_bytes(name));
-            if let Ok(relative) = workspace.resolve_allowing_link_target(path) {
-                if let Some(matcher) = matcher {
-                    match workspace.read_file(&relative) {
-                        Ok(file) => match scan_file(file, path, matcher, &mut output).await {
-                            Ok(done) => truncated = done,
-                            Err(error) if local_errors.len() < DIAGNOSTICS_LIMIT => {
-                                local_errors.push_str(&format!("{}: {error}\n", path.display()));
-                            }
-                            Err(_) => {}
-                        },
-                        Err(error) => {
-                            if local_errors.len() < DIAGNOSTICS_LIMIT {
-                                local_errors.push_str(&format!("{}: {error}\n", path.display()));
-                            }
-                        }
-                    }
-                } else if workspace.regular_file(&relative).unwrap_or(false) {
-                    truncated = append_match(&mut output, &format!("{}\n", path.display()));
-                }
-            }
+            output
+                .add_candidate(workspace, Path::new(OsStr::from_bytes(name)), matcher)
+                .await;
             candidate.clear();
-            if truncated {
-                child.kill().await?;
-                break;
-            }
+        }
+        if output.truncated {
+            child.kill().await?;
         }
         let status = child.wait().await?;
-        Ok::<_, std::io::Error>((output, truncated, status, local_errors))
+        Ok::<_, std::io::Error>((output, status))
     };
-    let (result, errors) =
+    let ((output, status), errors) =
         tokio::try_join!(collect, drain_errors(stderr)).map_err(|e| e.to_string())?;
-    let (mut output, truncated, status, local_errors) = result;
-    if !truncated && !matches!(status.code(), Some(0 | 1)) && output.is_empty() {
-        return Err(format!(
-            "rg failed ({status}); check the glob or search path"
-        ));
-    }
-    if truncated {
-        if !output.ends_with('\n') {
-            output.push_str(" [partial line]\n");
-        }
-        output.push_str("Output truncated. Narrow the search path or pattern.");
-    } else if output.is_empty() {
-        output.push_str("No matches found.");
-    }
-    if !errors.is_empty() || !local_errors.is_empty() {
-        // Ripgrep may enumerate a path that changed during traversal. Its raw
-        // diagnostics can name files outside the workspace after such a swap.
-        let mut diagnostics = if errors.is_empty() {
-            String::new()
-        } else {
-            "Ripgrep could not enumerate some paths.\n".to_owned()
+    output.finish(status, !errors.is_empty())
+}
+
+#[derive(Default)]
+struct SearchOutput {
+    output: String,
+    truncated: bool,
+    local_errors: String,
+}
+
+impl SearchOutput {
+    async fn add_candidate(&mut self, workspace: &Workspace, path: &Path, matcher: Option<&Regex>) {
+        let Ok(relative) = workspace.resolve_allowing_link_target(path) else {
+            return;
         };
-        diagnostics.push_str(&local_errors);
-        truncate(&mut diagnostics, DIAGNOSTICS_LIMIT);
-        if !output.ends_with('\n') {
-            output.push('\n');
+        match matcher {
+            Some(matcher) => self.grep_file(workspace, &relative, path, matcher).await,
+            None => {
+                if workspace.regular_file(&relative).unwrap_or(false) {
+                    self.truncated =
+                        append_match(&mut self.output, &format!("{}\n", path.display()));
+                }
+            }
         }
-        output.push_str("Some paths could not be searched:\n");
-        output.push_str(diagnostics.trim_end());
+    }
+
+    async fn grep_file(
+        &mut self,
+        workspace: &Workspace,
+        relative: &Path,
+        path: &Path,
+        matcher: &Regex,
+    ) {
+        let scanned = match workspace.read_file(relative) {
+            Ok(file) => scan_file(file, path, matcher, &mut self.output).await,
+            Err(error) => Err(error),
+        };
+        match scanned {
+            Ok(truncated) => self.truncated = truncated,
+            Err(error) => self.record_error(path, &error),
+        }
+    }
+
+    fn record_error(&mut self, path: &Path, error: &std::io::Error) {
+        if self.local_errors.len() < DIAGNOSTICS_LIMIT {
+            self.local_errors
+                .push_str(&format!("{}: {error}\n", path.display()));
+        }
+    }
+
+    fn finish(mut self, status: ExitStatus, enumeration_failed: bool) -> Result<String, String> {
+        if !self.truncated && !matches!(status.code(), Some(0 | 1)) && self.output.is_empty() {
+            return Err(format!(
+                "rg failed ({status}); check the glob or search path"
+            ));
+        }
+        if self.truncated {
+            if !self.output.ends_with('\n') {
+                self.output.push_str(" [partial line]\n");
+            }
+            self.output
+                .push_str("Output truncated. Narrow the search path or pattern.");
+        } else if self.output.is_empty() {
+            self.output.push_str("No matches found.");
+        }
+        if enumeration_failed || !self.local_errors.is_empty() {
+            append_diagnostics(&mut self.output, enumeration_failed, &self.local_errors);
+        }
+        Ok(self.output)
+    }
+}
+
+fn append_diagnostics(output: &mut String, enumeration_failed: bool, local_errors: &str) {
+    // Ripgrep may enumerate a path that changed during traversal. Its raw
+    // diagnostics can name files outside the workspace after such a swap.
+    let mut diagnostics = if enumeration_failed {
+        "Ripgrep could not enumerate some paths.\n".to_owned()
+    } else {
+        String::new()
+    };
+    diagnostics.push_str(local_errors);
+    truncate(&mut diagnostics, DIAGNOSTICS_LIMIT);
+    if !output.ends_with('\n') {
         output.push('\n');
     }
-    Ok(output)
+    output.push_str("Some paths could not be searched:\n");
+    output.push_str(diagnostics.trim_end());
+    output.push('\n');
 }
 
 fn append_match(output: &mut String, line: &str) -> bool {
@@ -351,6 +386,9 @@ mod tests {
         use std::{fs::Permissions, os::unix::fs::PermissionsExt};
         let workspace = Workspace::new();
         std::fs::write(workspace.0.join("a.rs"), "needle\n").unwrap();
+        let unreadable = workspace.0.join("c.rs");
+        std::fs::write(&unreadable, "needle\n").unwrap();
+        std::fs::set_permissions(&unreadable, Permissions::from_mode(0o000)).unwrap();
         let locked = workspace.0.join("locked");
         std::fs::create_dir(&locked).unwrap();
         std::fs::write(locked.join("b.rs"), "needle\n").unwrap();
@@ -359,6 +397,7 @@ mod tests {
         std::fs::set_permissions(&locked, Permissions::from_mode(0o755)).unwrap();
         let output = result.unwrap();
         assert!(output.contains("./a.rs:1:needle"));
+        assert!(output.contains("./c.rs: "));
         assert!(output.contains("Some paths could not be searched:"));
         assert!(output.contains("Ripgrep could not enumerate some paths."));
     }

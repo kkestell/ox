@@ -482,100 +482,32 @@ fn validate_transcript(entries: &[TranscriptEntry]) -> io::Result<()> {
     let mut complete_batches = Vec::new();
     let mut current_skill: Option<&str> = None;
     while let Some(entry) = entries.get(index) {
-        match entry {
+        index = match entry {
             TranscriptEntry::Model(_) => {
                 return Err(invalid_data(
                     "a model entry appears after the transcript opened",
                 ));
             }
             TranscriptEntry::Effort(_) | TranscriptEntry::Mode(_) => {
-                let mut saw_effort = false;
-                let mut saw_mode = false;
-                while let Some(setting) = entries.get(index) {
-                    match setting {
-                        TranscriptEntry::Effort(_) if saw_effort => {
-                            return Err(invalid_data(
-                                "a settings block contains more than one effort entry",
-                            ));
-                        }
-                        TranscriptEntry::Effort(_) => saw_effort = true,
-                        TranscriptEntry::Mode(_) if saw_mode => {
-                            return Err(invalid_data(
-                                "a settings block contains more than one mode entry",
-                            ));
-                        }
-                        TranscriptEntry::Mode(_) => saw_mode = true,
-                        _ => break,
-                    }
-                    index += 1;
-                }
-                if !matches!(
-                    entries.get(index),
-                    Some(TranscriptEntry::UserMessage(_) | TranscriptEntry::SkillInvocation(_))
-                ) {
-                    return Err(invalid_data(
-                        "a settings block does not immediately precede a user message or skill invocation",
-                    ));
-                }
+                settings_block_end(entries, index)?
             }
             TranscriptEntry::UserMessage(_) => {
                 current_skill = None;
-                index += 1;
+                index + 1
             }
             TranscriptEntry::SkillInvocation(invocation) => {
                 current_skill = Some(&invocation.name);
-                index += 1;
+                index + 1
             }
             TranscriptEntry::HookFeedback(feedback) => {
-                if feedback.skill.is_some() && current_skill != feedback.skill.as_deref() {
-                    return Err(invalid_data(
-                        "hook feedback does not belong to the current skill invocation",
-                    ));
-                }
-                let previous = entries[..index].iter().rev().find(|entry| {
-                    !matches!(entry, TranscriptEntry::HookFeedback(prior) if prior.kind() == feedback.kind())
-                }).expect("a transcript begins with a model entry");
-                let (placed, place) = match feedback.content {
-                    HookFeedbackContent::BeforeRun { .. } => (
-                        matches!(
-                            previous,
-                            TranscriptEntry::UserMessage(_) | TranscriptEntry::SkillInvocation(_)
-                        ),
-                        "a user message or skill invocation",
-                    ),
-                    HookFeedbackContent::AfterTools { .. } => (
-                        matches!(previous, TranscriptEntry::ToolResult(_)),
-                        "the tool results of an assistant batch",
-                    ),
-                    HookFeedbackContent::BeforeStop { .. } => (
-                        matches!(previous,
-                            TranscriptEntry::AssistantMessage(message) if message.tool_calls.is_empty()),
-                        "an assistant message without tool calls",
-                    ),
-                };
-                if !placed {
-                    return Err(invalid_data(format!(
-                        "{} hook feedback does not follow {place}",
-                        feedback.kind().id()
-                    )));
-                }
-                index += 1;
+                check_hook_feedback_skill(feedback, current_skill)?;
+                check_hook_feedback_placement(entries, index, feedback)?;
+                index + 1
             }
             TranscriptEntry::CompactionCheckpoint(checkpoint) => {
-                if checkpoint.summary.trim().is_empty()
-                    || checkpoint.covered_prefix <= previous_prefix
-                    || checkpoint.covered_prefix > index
-                    || complete_batches
-                        .binary_search(&checkpoint.covered_prefix)
-                        .is_err()
-                {
-                    return Err(invalid_data(
-                        "invalid compaction checkpoint or covered prefix",
-                    ));
-                }
-                // The preceding scan already validated every assistant batch.
+                check_compaction_checkpoint(checkpoint, index, previous_prefix, &complete_batches)?;
                 previous_prefix = checkpoint.covered_prefix;
-                index += 1;
+                index + 1
             }
             TranscriptEntry::ToolResult(result) => {
                 return Err(invalid_data(format!(
@@ -584,24 +516,137 @@ fn validate_transcript(entries: &[TranscriptEntry]) -> io::Result<()> {
                 )));
             }
             TranscriptEntry::AssistantMessage(message) => {
-                message.validate()?;
-                let results = entries[index + 1..]
-                    .iter()
-                    .take(message.tool_calls.len())
-                    .map(|entry| match entry {
-                        TranscriptEntry::ToolResult(result) => Ok(result),
-                        _ => Err(invalid_data(
-                            "an assistant message's tool calls are not all resolved before the next message",
-                        )),
-                    })
-                    .collect::<io::Result<Vec<_>>>()?;
-                pair_results(&message.tool_calls, &results)?;
-                index += 1 + results.len();
-                complete_batches.push(index);
+                let end = assistant_batch_end(entries, index, message)?;
+                complete_batches.push(end);
+                end
             }
-        }
+        };
     }
     Ok(())
+}
+
+/// Returns the index of the turn start that follows the settings block at
+/// `start`.
+fn settings_block_end(entries: &[TranscriptEntry], start: usize) -> io::Result<usize> {
+    let mut index = start;
+    let mut saw_effort = false;
+    let mut saw_mode = false;
+    while let Some(setting) = entries.get(index) {
+        match setting {
+            TranscriptEntry::Effort(_) if saw_effort => {
+                return Err(invalid_data(
+                    "a settings block contains more than one effort entry",
+                ));
+            }
+            TranscriptEntry::Effort(_) => saw_effort = true,
+            TranscriptEntry::Mode(_) if saw_mode => {
+                return Err(invalid_data(
+                    "a settings block contains more than one mode entry",
+                ));
+            }
+            TranscriptEntry::Mode(_) => saw_mode = true,
+            _ => break,
+        }
+        index += 1;
+    }
+    if !matches!(
+        entries.get(index),
+        Some(TranscriptEntry::UserMessage(_) | TranscriptEntry::SkillInvocation(_))
+    ) {
+        return Err(invalid_data(
+            "a settings block does not immediately precede a user message or skill invocation",
+        ));
+    }
+    Ok(index)
+}
+
+fn check_hook_feedback_skill(
+    feedback: &HookFeedback,
+    current_skill: Option<&str>,
+) -> io::Result<()> {
+    if feedback.skill.is_some() && current_skill != feedback.skill.as_deref() {
+        return Err(invalid_data(
+            "hook feedback does not belong to the current skill invocation",
+        ));
+    }
+    Ok(())
+}
+
+fn check_hook_feedback_placement(
+    entries: &[TranscriptEntry],
+    index: usize,
+    feedback: &HookFeedback,
+) -> io::Result<()> {
+    let previous = entries[..index].iter().rev().find(|entry| {
+        !matches!(entry, TranscriptEntry::HookFeedback(prior) if prior.kind() == feedback.kind())
+    }).expect("a transcript begins with a model entry");
+    let (placed, place) = match feedback.content {
+        HookFeedbackContent::BeforeRun { .. } => (
+            matches!(
+                previous,
+                TranscriptEntry::UserMessage(_) | TranscriptEntry::SkillInvocation(_)
+            ),
+            "a user message or skill invocation",
+        ),
+        HookFeedbackContent::AfterTools { .. } => (
+            matches!(previous, TranscriptEntry::ToolResult(_)),
+            "the tool results of an assistant batch",
+        ),
+        HookFeedbackContent::BeforeStop { .. } => (
+            matches!(previous,
+                TranscriptEntry::AssistantMessage(message) if message.tool_calls.is_empty()),
+            "an assistant message without tool calls",
+        ),
+    };
+    if !placed {
+        return Err(invalid_data(format!(
+            "{} hook feedback does not follow {place}",
+            feedback.kind().id()
+        )));
+    }
+    Ok(())
+}
+
+fn check_compaction_checkpoint(
+    checkpoint: &CompactionCheckpoint,
+    index: usize,
+    previous_prefix: usize,
+    complete_batches: &[usize],
+) -> io::Result<()> {
+    // The preceding scan already validated every assistant batch.
+    if checkpoint.summary.trim().is_empty()
+        || checkpoint.covered_prefix <= previous_prefix
+        || checkpoint.covered_prefix > index
+        || complete_batches
+            .binary_search(&checkpoint.covered_prefix)
+            .is_err()
+    {
+        return Err(invalid_data(
+            "invalid compaction checkpoint or covered prefix",
+        ));
+    }
+    Ok(())
+}
+
+/// Returns the index after the assistant batch that starts at `index`.
+fn assistant_batch_end(
+    entries: &[TranscriptEntry],
+    index: usize,
+    message: &AssistantMessage,
+) -> io::Result<usize> {
+    message.validate()?;
+    let results = entries[index + 1..]
+        .iter()
+        .take(message.tool_calls.len())
+        .map(|entry| match entry {
+            TranscriptEntry::ToolResult(result) => Ok(result),
+            _ => Err(invalid_data(
+                "an assistant message's tool calls are not all resolved before the next message",
+            )),
+        })
+        .collect::<io::Result<Vec<_>>>()?;
+    pair_results(&message.tool_calls, &results)?;
+    Ok(index + 1 + results.len())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1325,6 +1370,10 @@ mod tests {
                     .unwrap()
             });
         };
+        let rejects = |id: &SessionId, expected: &str| {
+            let error = store.read(id).unwrap_err().to_string();
+            assert!(error.ends_with(expected), "{error}");
+        };
 
         let orphan = store.create(workspace()).unwrap().id;
         store
@@ -1343,7 +1392,10 @@ mod tests {
             "tool_result",
             r#"{"call_id":"x","name":"shell","outcome":{"status":"completed","content":"ok"}}"#,
         );
-        assert!(store.read(&orphan).is_err());
+        rejects(
+            &orphan,
+            "tool result x does not follow an assistant message that called it",
+        );
 
         let unresolved = store.create(workspace()).unwrap().id;
         insert(
@@ -1357,7 +1409,7 @@ mod tests {
             "assistant_message",
             &serde_json::to_string(&unresolved_message).unwrap(),
         );
-        assert!(store.read(&unresolved).is_err());
+        rejects(&unresolved, "tool call call-1 has no result");
 
         let unknown = store.create(workspace()).unwrap().id;
         insert(&unknown, "mystery", "{}");
@@ -1378,11 +1430,14 @@ mod tests {
             &serde_json::to_string(openrouter::default_model()).unwrap(),
         );
         insert(&switched, "model", r#""other/model""#);
-        assert!(store.read(&switched).is_err());
+        rejects(
+            &switched,
+            "a model entry appears after the transcript opened",
+        );
 
         let unmodelled = store.create(workspace()).unwrap().id;
         insert(&unmodelled, "user_message", r#""hello""#);
-        assert!(store.read(&unmodelled).is_err());
+        rejects(&unmodelled, "transcript does not open with a model");
 
         let effort_in_batch = store.create(workspace()).unwrap().id;
         insert(
@@ -1398,7 +1453,10 @@ mod tests {
         );
         insert(&effort_in_batch, "effort", r#""high""#);
         insert(&effort_in_batch, "user_message", r#""next""#);
-        assert!(store.read(&effort_in_batch).is_err());
+        rejects(
+            &effort_in_batch,
+            "an assistant message's tool calls are not all resolved before the next message",
+        );
 
         let user = ("user_message", r#""hello""#.to_owned());
         let skill = (
@@ -1427,34 +1485,67 @@ mod tests {
             skill: None,
             ..feedback
         };
-        for (feedback, preceding) in [
+        for (feedback, preceding, expected) in [
             (
                 global(before_run_feedback()),
                 vec![user.clone(), answer.clone()],
+                "before_run hook feedback does not follow a user message or skill invocation",
             ),
-            (global(after_tools_feedback()), vec![user.clone()]),
+            (
+                global(after_tools_feedback()),
+                vec![user.clone()],
+                "after_tools hook feedback does not follow the tool results of an assistant batch",
+            ),
             (
                 global(stop_feedback()),
                 [vec![user.clone()], called.to_vec()].concat(),
+                "before_stop hook feedback does not follow an assistant message without tool calls",
             ),
             (
                 global(before_run_feedback()),
                 vec![skill.clone(), answer.clone(), stopped.clone()],
+                "before_run hook feedback does not follow a user message or skill invocation",
             ),
-            (before_run_feedback(), vec![user.clone()]),
-            (before_run_feedback(), vec![skill.clone(), answer.clone()]),
-            (after_tools_feedback(), vec![user.clone(), answer.clone()]),
-            (after_tools_feedback(), vec![skill.clone()]),
+            (
+                before_run_feedback(),
+                vec![user.clone()],
+                "hook feedback does not belong to the current skill invocation",
+            ),
+            (
+                before_run_feedback(),
+                vec![skill.clone(), answer.clone()],
+                "before_run hook feedback does not follow a user message or skill invocation",
+            ),
+            (
+                after_tools_feedback(),
+                vec![user.clone(), answer.clone()],
+                "hook feedback does not belong to the current skill invocation",
+            ),
+            (
+                after_tools_feedback(),
+                vec![skill.clone()],
+                "after_tools hook feedback does not follow the tool results of an assistant batch",
+            ),
             (
                 after_tools_feedback(),
                 [vec![user.clone()], called.to_vec()].concat(),
+                "hook feedback does not belong to the current skill invocation",
             ),
-            (stop_feedback(), vec![user.clone()]),
+            (
+                stop_feedback(),
+                vec![user.clone()],
+                "hook feedback does not belong to the current skill invocation",
+            ),
             (
                 stop_feedback(),
                 [vec![user.clone()], called.to_vec()].concat(),
+                "hook feedback does not belong to the current skill invocation",
             ),
-            (stop_feedback(), vec![user.clone(), answer.clone(), stopped]),
+            (
+                stop_feedback(),
+                vec![user.clone(), answer.clone(), stopped],
+                "hook feedback does not belong to the current skill invocation",
+            ),
         ] {
             let misplaced = store.create(workspace()).unwrap().id;
             insert(
@@ -1470,12 +1561,7 @@ mod tests {
                 "hook_feedback",
                 &serde_json::to_string(&feedback).unwrap(),
             );
-            assert!(
-                store.read(&misplaced).is_err(),
-                "{} hook feedback after {:?}",
-                feedback.kind().id(),
-                preceding.last().unwrap().0
-            );
+            rejects(&misplaced, expected);
         }
 
         let duplicate_settings = store.create(workspace()).unwrap().id;
@@ -1488,7 +1574,10 @@ mod tests {
         insert(&duplicate_settings, "effort", r#""low""#);
         insert(&duplicate_settings, "mode", r#""auto""#);
         insert(&duplicate_settings, "user_message", r#""next""#);
-        assert!(store.read(&duplicate_settings).is_err());
+        rejects(
+            &duplicate_settings,
+            "a settings block contains more than one mode entry",
+        );
 
         let base = vec![
             TranscriptEntry::Model(openrouter::default_model().to_owned()),
@@ -1578,19 +1667,21 @@ mod tests {
                     &serde_json::to_string(&second).unwrap(),
                 );
             }
-            assert!(store.read(&id).is_err());
+            rejects(&id, "invalid compaction checkpoint or covered prefix");
         }
     }
 
     #[test]
     fn empty_transcripts_are_valid_and_settings_fold_in_order() {
         assert!(validate_transcript(&[]).is_ok());
-        assert!(
+        assert_eq!(
             validate_transcript(&[
                 TranscriptEntry::UserMessage("first".to_owned()),
                 TranscriptEntry::Model(openrouter::default_model().to_owned()),
             ])
-            .is_err()
+            .unwrap_err()
+            .to_string(),
+            "transcript does not open with a model"
         );
         for settings in [
             [
@@ -1612,27 +1703,37 @@ mod tests {
                 .is_ok()
             );
         }
-        for duplicate in [
-            TranscriptEntry::Effort(EffortLevel::High),
-            TranscriptEntry::Mode(SessionMode::Ask),
+        for (duplicate, expected) in [
+            (
+                TranscriptEntry::Effort(EffortLevel::High),
+                "a settings block contains more than one effort entry",
+            ),
+            (
+                TranscriptEntry::Mode(SessionMode::Ask),
+                "a settings block contains more than one mode entry",
+            ),
         ] {
-            assert!(
+            assert_eq!(
                 validate_transcript(&[
                     TranscriptEntry::Model(openrouter::default_model().to_owned()),
                     duplicate.clone(),
                     duplicate,
                     TranscriptEntry::UserMessage("first".to_owned()),
                 ])
-                .is_err()
+                .unwrap_err()
+                .to_string(),
+                expected
             );
         }
-        assert!(
+        assert_eq!(
             validate_transcript(&[
                 TranscriptEntry::Model(openrouter::default_model().to_owned()),
                 TranscriptEntry::Mode(SessionMode::Auto),
                 TranscriptEntry::AssistantMessage(message(vec![])),
             ])
-            .is_err()
+            .unwrap_err()
+            .to_string(),
+            "a settings block does not immediately precede a user message or skill invocation"
         );
         assert!(
             validate_transcript(&[
