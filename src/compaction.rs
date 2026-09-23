@@ -11,7 +11,7 @@ use agent_client_protocol::schema::v1::SessionId;
 use crate::{
     acp::operations::PromptCancellation,
     openrouter::{self, Client},
-    sessions::{CompactionCheckpoint, EffortLevel, SessionStore, TranscriptEntry},
+    sessions::{CompactionCheckpoint, EffortLevel, HookDecision, SessionStore, TranscriptEntry},
 };
 
 const SUMMARY_OUTPUT_TOKENS: usize = 4096;
@@ -53,23 +53,30 @@ fn latest(transcript: &[TranscriptEntry]) -> Option<&CompactionCheckpoint> {
 }
 
 pub fn projection(transcript: &[TranscriptEntry]) -> Vec<TranscriptEntry> {
-    let mut projected = Vec::new();
-    let start = if let Some(checkpoint) = latest(transcript) {
-        projected.push(TranscriptEntry::UserMessage(format!(
-            "{SUMMARY_LABEL}{}",
-            checkpoint.summary
-        )));
-        checkpoint.covered_prefix
-    } else {
-        0
-    };
-    projected.extend(
-        transcript[start..]
+    match latest(transcript) {
+        Some(checkpoint) => {
+            projection_at(transcript, checkpoint.covered_prefix, &checkpoint.summary)
+        }
+        None => transcript
             .iter()
             .filter(|entry| !matches!(entry, TranscriptEntry::CompactionCheckpoint(_)))
-            .cloned(),
-    );
-    projected
+            .cloned()
+            .collect(),
+    }
+}
+
+/// The index of the skill invocation to repeat after a summary covering
+/// `[..cut]`: the latest turn start, when it is a covered skill invocation. A
+/// long hook-driven run keeps its instructions and arguments this way until a
+/// later turn begins.
+fn repeated_invocation(transcript: &[TranscriptEntry], cut: usize) -> Option<usize> {
+    let (index, entry) = transcript.iter().enumerate().rev().find(|(_, entry)| {
+        matches!(
+            entry,
+            TranscriptEntry::UserMessage(_) | TranscriptEntry::SkillInvocation(_)
+        )
+    })?;
+    (index < cut && matches!(entry, TranscriptEntry::SkillInvocation(_))).then_some(index)
 }
 
 pub fn has_candidate(transcript: &[TranscriptEntry]) -> bool {
@@ -91,6 +98,9 @@ fn projection_at(
     let mut projected = vec![TranscriptEntry::UserMessage(format!(
         "{SUMMARY_LABEL}{summary}"
     ))];
+    if let Some(index) = repeated_invocation(transcript, cut) {
+        projected.push(transcript[index].clone());
+    }
     projected.extend(
         transcript[cut..]
             .iter()
@@ -174,34 +184,29 @@ fn ranked_cuts(
     let (admission, _, target) = budget(model)?;
     let start = latest(transcript).map_or(0, |checkpoint| checkpoint.covered_prefix);
     let cuts = candidates(transcript);
-    let allowance = "x".repeat(SUMMARY_ALLOWANCE_BYTES);
-    let base = openrouter::ordinary_body(
-        model,
-        effort,
-        system,
-        &projection_at(transcript, transcript.len(), &allowance),
-    )?;
+    let summary = TranscriptEntry::UserMessage(format!(
+        "{SUMMARY_LABEL}{}",
+        "x".repeat(SUMMARY_ALLOWANCE_BYTES)
+    ));
+    let base = openrouter::ordinary_body(model, effort, system, std::slice::from_ref(&summary))?;
     let base_bytes = serde_json::to_vec(&base)
         .expect("request body serializes")
         .len();
     let mut suffix_bytes = vec![0; transcript.len() - start + 1];
     for index in (start..transcript.len()).rev() {
-        let entry_bytes = openrouter::chat_messages(std::slice::from_ref(&transcript[index]))
-            .into_iter()
-            .map(|message| {
-                serde_json::to_vec(&message)
-                    .expect("chat message serializes")
-                    .len()
-                    + 1
-            })
-            .sum::<usize>();
-        suffix_bytes[index - start] = suffix_bytes[index - start + 1] + entry_bytes;
+        suffix_bytes[index - start] =
+            suffix_bytes[index - start + 1] + message_bytes(&transcript[index]);
     }
+    // Every cut past the latest skill invocation repeats it after the summary.
+    let repeated = repeated_invocation(transcript, transcript.len())
+        .map(|index| (index, message_bytes(&transcript[index])));
     let mut completed_turn_starts = Vec::new();
     let mut awaiting_answer = None;
     for (offset, entry) in transcript[start..].iter().enumerate() {
         match entry {
-            TranscriptEntry::UserMessage(_) => awaiting_answer = Some(start + offset),
+            TranscriptEntry::UserMessage(_) | TranscriptEntry::SkillInvocation(_) => {
+                awaiting_answer = Some(start + offset)
+            }
             TranscriptEntry::AssistantMessage(message) if message.tool_calls.is_empty() => {
                 if let Some(user_index) = awaiting_answer.take() {
                     completed_turn_starts.push(user_index);
@@ -213,7 +218,10 @@ fn ranked_cuts(
     let mut ranked = Vec::new();
     let mut completed_before_cut = 0;
     for cut in cuts {
-        let estimate = tokens(base_bytes + suffix_bytes[cut - start]);
+        let repeated_bytes = repeated
+            .filter(|&(index, _)| index < cut)
+            .map_or(0, |(_, bytes)| bytes);
+        let estimate = tokens(base_bytes + suffix_bytes[cut - start] + repeated_bytes);
         if estimate > admission {
             continue;
         }
@@ -236,6 +244,20 @@ fn ranked_cuts(
     Ok(ranked.into_iter().map(|(cut, _)| cut).collect())
 }
 
+/// The serialized size an entry adds to a request body, counting the comma that
+/// separates it from the previous message.
+fn message_bytes(entry: &TranscriptEntry) -> usize {
+    openrouter::chat_messages(std::slice::from_ref(entry))
+        .into_iter()
+        .map(|message| {
+            serde_json::to_vec(&message)
+                .expect("chat message serializes")
+                .len()
+                + 1
+        })
+        .sum()
+}
+
 fn material(transcript: &[TranscriptEntry], cut: usize) -> VecDeque<(String, String, usize)> {
     let start = latest(transcript).map_or(0, |checkpoint| checkpoint.covered_prefix);
     let mut fields = VecDeque::new();
@@ -244,6 +266,25 @@ fn material(transcript: &[TranscriptEntry], cut: usize) -> VecDeque<(String, Str
         match entry {
             TranscriptEntry::UserMessage(text) => {
                 fields.push_back((format!("{source} user request"), text.clone(), 1))
+            }
+            TranscriptEntry::SkillInvocation(invocation) => fields.push_back((
+                format!("{source} user request"),
+                openrouter::skill_invocation_text(invocation),
+                1,
+            )),
+            TranscriptEntry::HookFeedback(feedback) => {
+                let decision = match feedback.decision {
+                    HookDecision::Continue => "continue",
+                    HookDecision::Stop => "stop",
+                };
+                fields.push_back((
+                    format!(
+                        "{source} {} before_stop hook {decision} feedback",
+                        feedback.skill
+                    ),
+                    feedback.message.clone(),
+                    1,
+                ))
             }
             TranscriptEntry::AssistantMessage(message) => {
                 if !message.text.is_empty() {
@@ -398,8 +439,8 @@ mod tests {
             fixture::{Reply, Server, text_reply},
         },
         sessions::{
-            AssistantBatch, AssistantMessage, SessionSettingsChange, ToolCall, ToolOutcome,
-            ToolResult,
+            AssistantBatch, AssistantMessage, HookFeedback, SessionSettingsChange, SkillInvocation,
+            ToolCall, ToolOutcome, ToolResult,
         },
     };
 
@@ -441,7 +482,6 @@ mod tests {
     async fn manual_compaction_uses_a_summary_and_keeps_the_complete_transcript() {
         let store = SessionStore::in_memory();
         let id = store.create(std::path::Path::new("/workspace")).unwrap().id;
-        let older = "old details ".repeat(3000);
         store
             .append_user(
                 &id,
@@ -450,11 +490,28 @@ mod tests {
                     effort: None,
                     mode: None,
                 },
-                &older,
+                &TranscriptEntry::SkillInvocation(SkillInvocation {
+                    name: "goal".to_owned(),
+                    arguments: "Record the old details.".to_owned(),
+                    instructions: "Work until the hook stops you.".to_owned(),
+                }),
             )
             .unwrap();
         store
-            .append_batch(&id, &answer("Initial work complete."))
+            .append_batch(
+                &id,
+                &answer(&format!("Recorded {}", "old details ".repeat(3000))),
+            )
+            .unwrap();
+        store
+            .append_hook_feedback(
+                &id,
+                &HookFeedback {
+                    skill: "goal".to_owned(),
+                    decision: HookDecision::Stop,
+                    message: "Objective met.".to_owned(),
+                },
+            )
             .unwrap();
         let server = Server::start(vec![
             text_reply("Initial work complete."),
@@ -485,7 +542,11 @@ mod tests {
         );
         let first_cut = transcript.len() - 1;
         store
-            .append_user(&id, &SessionSettingsChange::default(), "active request")
+            .append_user(
+                &id,
+                &SessionSettingsChange::default(),
+                &TranscriptEntry::UserMessage("active request".to_owned()),
+            )
             .unwrap();
         transcript.push(TranscriptEntry::UserMessage("active request".to_owned()));
         let batch = tool_batch("first", &"new details ".repeat(3000));
@@ -538,6 +599,17 @@ mod tests {
         assert!(requests.iter().all(|request| request.get("tools").is_none()
             && request["reasoning"]["effort"] == "low"
             && request["max_tokens"] == 4096));
+        let material = |index: usize| {
+            requests[index]["messages"][1]["content"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        };
+        assert!(material(0).contains("Entry 1 user request, part 1:\nSkill /goal invoked."));
+        assert!(
+            material(1)
+                .contains("Entry 3 goal before_stop hook stop feedback, part 1:\nObjective met.")
+        );
         assert!(
             requests[1]["messages"][1]["content"]
                 .as_str()
@@ -577,7 +649,7 @@ mod tests {
                     effort: None,
                     mode: None,
                 },
-                &"o".repeat(1_500_000),
+                &TranscriptEntry::UserMessage("o".repeat(1_500_000)),
             )
             .unwrap();
         store.append_batch(&id, &answer("older work done")).unwrap();
@@ -585,7 +657,7 @@ mod tests {
             .append_user(
                 &id,
                 &SessionSettingsChange::default(),
-                &"u".repeat(1_800_000),
+                &TranscriptEntry::UserMessage("u".repeat(1_800_000)),
             )
             .unwrap();
         let mut transcript = store.read(&id).unwrap().unwrap().transcript;
@@ -625,7 +697,7 @@ mod tests {
                     effort: None,
                     mode: None,
                 },
-                "earlier work",
+                &TranscriptEntry::UserMessage("earlier work".to_owned()),
             )
             .unwrap();
         store.append_batch(&id, &answer("earlier answer")).unwrap();
@@ -641,7 +713,11 @@ mod tests {
             .unwrap();
         let large = "x".repeat(3_300_000);
         store
-            .append_user(&id, &SessionSettingsChange::default(), &large)
+            .append_user(
+                &id,
+                &SessionSettingsChange::default(),
+                &TranscriptEntry::UserMessage(large.clone()),
+            )
             .unwrap();
         store.append_batch(&id, &answer("done")).unwrap();
         let before = store.read(&id).unwrap().unwrap().transcript;
@@ -686,7 +762,7 @@ mod tests {
                     effort: None,
                     mode: None,
                 },
-                &"older ".repeat(4000),
+                &TranscriptEntry::UserMessage("older ".repeat(4000)),
             )
             .unwrap();
         small_store

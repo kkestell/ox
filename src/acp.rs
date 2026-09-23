@@ -13,7 +13,7 @@ use std::{
 };
 
 use agent_client_protocol::{
-    Agent, ConnectTo, Error, JsonRpcResponse, Responder, Result, Stdio,
+    Agent, Client, ConnectTo, ConnectionTo, Error, JsonRpcResponse, Responder, Result, Stdio,
     schema::ProtocolVersion,
     schema::v1::{
         AgentAuthCapabilities, AgentCapabilities, AuthMethod, AuthMethodTerminal, AvailableCommand,
@@ -30,13 +30,15 @@ use agent_client_protocol::{
 };
 
 use crate::{
-    auth, compaction, openrouter,
-    sessions::{self, EffortLevel, SessionMode, SessionSettings, SessionStore, SessionSummary},
+    auth, compaction, hooks, openrouter,
+    sessions::{
+        self, EffortLevel, SessionMode, SessionSettings, SessionStore, SessionSummary,
+        SkillInvocation, TranscriptEntry,
+    },
+    skills::{self, Skill},
     system_prompt,
 };
 use operations::{PromptCancellation, SessionOperations};
-
-const INIT_PROMPT: &str = include_str!("prompts/init_prompt.md");
 
 fn default_settings() -> SessionSettings {
     SessionSettings::new(openrouter::DEFAULT_MODEL, EffortLevel::Default)
@@ -95,23 +97,61 @@ fn config_options(settings: &SessionSettings, model_locked: bool) -> Vec<Session
     ]
 }
 
-fn available_commands() -> SessionUpdate {
-    SessionUpdate::AvailableCommandsUpdate(AvailableCommandsUpdate::new(vec![
-        AvailableCommand::new("compact", "Compact the conversation context."),
-        AvailableCommand::new("goal", "Start a goal from a prompt.").input(
-            AvailableCommandInput::Unstructured(UnstructuredCommandInput::new("<prompt>")),
-        ),
-        AvailableCommand::new("init", "Create or update AGENTS.md for the workspace."),
-    ]))
+/// The built-in `/compact` followed by every skill in the catalog.
+fn available_commands(skills: &[Skill]) -> SessionUpdate {
+    let mut commands = vec![AvailableCommand::new(
+        "compact",
+        "Compact the conversation context.",
+    )];
+    commands.extend(skills.iter().map(|skill| {
+        let command = AvailableCommand::new(skill.name.clone(), skill.description.clone());
+        match &skill.argument_hint {
+            Some(hint) => command.input(AvailableCommandInput::Unstructured(
+                UnstructuredCommandInput::new(hint.clone()),
+            )),
+            None => command,
+        }
+    }));
+    SessionUpdate::AvailableCommandsUpdate(AvailableCommandsUpdate::new(commands))
 }
 
-/// Returns the message to send to the model. `/compact` is dispatched before
-/// this function; `/goal` is still a stub.
-fn prompt_user_message(user_message: String) -> Option<String> {
-    match user_message.trim().split_ascii_whitespace().next() {
-        Some("/compact" | "/goal") => None,
-        Some("/init") => Some(INIT_PROMPT.trim_end().to_owned()),
-        _ => Some(user_message),
+/// What a prompt request asks for.
+#[derive(Debug, PartialEq)]
+enum Dispatch {
+    Compact,
+    Skill {
+        invocation: SkillInvocation,
+        hook: Option<hooks::Hook>,
+    },
+    UserMessage(String),
+}
+
+/// A prompt whose first word is `/compact` or `/<name>` for a catalog skill is
+/// a command; the rest of its text, trimmed, is literal skill arguments. Any
+/// other text is a user message.
+fn dispatch(user_message: String, skills: &[Skill]) -> Dispatch {
+    let text = user_message.trim();
+    let (word, rest) = text.split_once(char::is_whitespace).unwrap_or((text, ""));
+    if word == "/compact" {
+        return Dispatch::Compact;
+    }
+    let Some(skill) = word
+        .strip_prefix('/')
+        .and_then(|name| skills.iter().find(|skill| skill.name == name))
+    else {
+        return Dispatch::UserMessage(user_message);
+    };
+    let arguments = rest.trim().to_owned();
+    Dispatch::Skill {
+        hook: skill.before_stop.clone().map(|command| hooks::Hook {
+            command,
+            directory: skill.directory.clone(),
+        }),
+        invocation: SkillInvocation {
+            name: skill.name.clone(),
+            arguments,
+            instructions: skill.instructions.clone(),
+        },
     }
 }
 
@@ -133,6 +173,8 @@ struct ActiveSession {
     selections: SessionSettings,
     /// The complete system prompt assembled when the session became active.
     system_prompt: String,
+    /// The skill catalog loaded when the session became active.
+    skills: Vec<Skill>,
 }
 
 impl ServerState {
@@ -210,9 +252,17 @@ impl ServerState {
         self.openrouter_client()?;
         let system_prompt =
             system_prompt::for_workspace(&request.cwd).map_err(Error::into_internal_error)?;
+        let skills = skills::load(&request.cwd).map_err(Error::into_internal_error)?;
         let summary = self.store.create(&request.cwd).map_err(store_error)?;
         let settings = default_settings();
-        self.activate(summary.id.clone(), settings.clone(), system_prompt);
+        self.activate(
+            summary.id.clone(),
+            ActiveSession {
+                selections: settings.clone(),
+                system_prompt,
+                skills,
+            },
+        );
         Ok(NewSessionResponse::new(summary.id).config_options(config_options(&settings, false)))
     }
 
@@ -300,16 +350,23 @@ impl ServerState {
         let saved_settings = stored.saved_settings(&default_settings());
         validate_settings(&saved_settings)?;
         let model_locked = !stored.transcript.is_empty();
-        // A repeated load keeps the same prefix captured by the first load.
-        let system_prompt = match self.active_session(&request.session_id) {
-            Some(active) => active.system_prompt,
-            None => system_prompt::for_workspace(&stored.summary.workspace_path)
-                .map_err(Error::into_internal_error)?,
+        // A repeated load keeps the prefix and skill catalog captured by the
+        // first load.
+        let (system_prompt, skills) = match self.active_session(&request.session_id) {
+            Some(active) => (active.system_prompt, active.skills),
+            None => (
+                system_prompt::for_workspace(&stored.summary.workspace_path)
+                    .map_err(Error::into_internal_error)?,
+                skills::load(&stored.summary.workspace_path).map_err(Error::into_internal_error)?,
+            ),
         };
         self.activate(
             request.session_id.clone(),
-            saved_settings.clone(),
-            system_prompt,
+            ActiveSession {
+                selections: saved_settings.clone(),
+                system_prompt,
+                skills,
+            },
         );
         convert::replay_transcript(&stored.transcript, send_update)?;
         Ok(
@@ -318,17 +375,27 @@ impl ServerState {
         )
     }
 
-    fn activate(&self, session_id: SessionId, selections: SessionSettings, system_prompt: String) {
+    fn activate(&self, session_id: SessionId, active: ActiveSession) {
         self.active
             .lock()
             .expect("active sessions mutex poisoned")
-            .insert(
-                session_id,
-                ActiveSession {
-                    selections,
-                    system_prompt,
-                },
-            );
+            .insert(session_id, active);
+    }
+
+    /// Advertises `/compact` and the session's skill catalog. A session
+    /// deleted after activation has nothing to advertise.
+    fn send_available_commands(
+        &self,
+        connection: &ConnectionTo<Client>,
+        session_id: SessionId,
+    ) -> Result<()> {
+        let Some(active) = self.active_session(&session_id) else {
+            return Ok(());
+        };
+        connection.send_notification(SessionNotification::new(
+            session_id,
+            available_commands(&active.skills),
+        ))
     }
 
     /// The process state of a session created or loaded in this process.
@@ -451,12 +518,14 @@ pub async fn serve_stdio() -> std::result::Result<(), Box<dyn StdError>> {
     Ok(())
 }
 
+/// Runs one prompt in a new session and returns the final answer. Skills are
+/// not invoked.
 pub async fn run_headless(
     workspace_path: &Path,
     model: String,
     effort: EffortLevel,
     user_message: String,
-) -> std::result::Result<(), Box<dyn StdError>> {
+) -> std::result::Result<String, Box<dyn StdError>> {
     let api_key = auth::api_key()?.ok_or_else(|| {
         io::Error::new(
             ErrorKind::PermissionDenied,
@@ -484,15 +553,18 @@ async fn run_headless_prompt(
     settings: SessionSettings,
     system_prompt: String,
     user_message: String,
-) -> std::result::Result<(), Box<dyn StdError>> {
-    let mut interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())?;
+) -> std::result::Result<String, Box<dyn StdError>> {
+    use tokio::signal::unix::{SignalKind, signal};
+    let mut interrupt = signal(SignalKind::interrupt())?;
+    let mut terminate = signal(SignalKind::terminate())?;
     let cancellation = PromptCancellation::new();
     let run = prompt::run(
         store,
         openrouter,
         prompt::PromptInput {
             session_id,
-            user_message,
+            turn_start: TranscriptEntry::UserMessage(user_message),
+            hook: None,
             selected_settings: Some(settings.with_mode(SessionMode::Auto)),
             system_prompt,
         },
@@ -501,22 +573,26 @@ async fn run_headless_prompt(
         prompt::PermissionTransport::None,
     )?;
     tokio::pin!(run);
-    let response = loop {
+    let output = loop {
         tokio::select! {
             biased;
-            response = &mut run => break response?,
+            output = &mut run => break output?,
             signal = interrupt.recv() => {
                 signal.expect("SIGINT listener remains open");
                 cancellation.cancel();
             }
+            signal = terminate.recv() => {
+                signal.expect("SIGTERM listener remains open");
+                cancellation.cancel();
+            }
         }
     };
-    if response.stop_reason != StopReason::EndTurn {
-        return Err(
-            io::Error::other(format!("prompt stopped with {:?}", response.stop_reason)).into(),
-        );
+    match output.answer {
+        Some(answer) => Ok(answer),
+        None => {
+            Err(io::Error::other(format!("prompt stopped with {:?}", output.stop_reason)).into())
+        }
     }
-    Ok(())
 }
 
 async fn serve(state: ServerState, transport: impl ConnectTo<Agent> + 'static) -> Result<()> {
@@ -550,10 +626,7 @@ async fn serve(state: ServerState, transport: impl ConnectTo<Agent> + 'static) -
                 Ok(response) => {
                     let session_id = response.session_id.clone();
                     responder.respond(response)?;
-                    connection.send_notification(SessionNotification::new(
-                        session_id,
-                        available_commands(),
-                    ))
+                    new_state.send_available_commands(&connection, session_id)
                 }
                 Err(error) => responder.respond_with_error(error),
             },
@@ -573,10 +646,7 @@ async fn serve(state: ServerState, transport: impl ConnectTo<Agent> + 'static) -
                 match result {
                     Ok(response) => {
                         responder.respond(response)?;
-                        connection.send_notification(SessionNotification::new(
-                            request.session_id,
-                            available_commands(),
-                        ))
+                        load_state.send_available_commands(&connection, request.session_id)
                     }
                     Err(error) => responder.respond_with_error(error),
                 }
@@ -624,19 +694,22 @@ async fn serve(state: ServerState, transport: impl ConnectTo<Agent> + 'static) -
                 let Some(active) = prompt_state.active_session(&request.session_id) else {
                     return responder.respond_with_error(inactive(&request.session_id));
                 };
-                if user_message.trim().split_ascii_whitespace().next() == Some("/compact") {
-                    let session_id = request.session_id;
-                    let compact_state = prompt_state.clone();
-                    return connection.spawn(async move {
-                        let _guard = guard;
-                        let result = compact_state
-                            .compact_session(&session_id, active, &cancellation)
-                            .await;
-                        reply(responder, result)
-                    });
-                }
-                let Some(user_message) = prompt_user_message(user_message) else {
-                    return responder.respond(PromptResponse::new(StopReason::EndTurn));
+                let (turn_start, hook) = match dispatch(user_message, &active.skills) {
+                    Dispatch::Compact => {
+                        let session_id = request.session_id;
+                        let compact_state = prompt_state.clone();
+                        return connection.spawn(async move {
+                            let _guard = guard;
+                            let result = compact_state
+                                .compact_session(&session_id, active, &cancellation)
+                                .await;
+                            reply(responder, result)
+                        });
+                    }
+                    Dispatch::Skill { invocation, hook } => {
+                        (TranscriptEntry::SkillInvocation(invocation), hook)
+                    }
+                    Dispatch::UserMessage(text) => (TranscriptEntry::UserMessage(text), None),
                 };
                 let openrouter = match prompt_state.openrouter_client() {
                     Ok(openrouter) => openrouter,
@@ -657,7 +730,8 @@ async fn serve(state: ServerState, transport: impl ConnectTo<Agent> + 'static) -
                     openrouter,
                     prompt::PromptInput {
                         session_id: session_id.clone(),
-                        user_message,
+                        turn_start,
+                        hook,
                         selected_settings: Some(active.selections),
                         system_prompt: active.system_prompt,
                     },
@@ -671,7 +745,10 @@ async fn serve(state: ServerState, transport: impl ConnectTo<Agent> + 'static) -
                 connection.spawn(async move {
                     let _guard = guard;
                     let result = run.await;
-                    reply(responder, result)
+                    reply(
+                        responder,
+                        result.map(|output| PromptResponse::new(output.stop_reason)),
+                    )
                 })
             },
             agent_client_protocol::on_receive_request!(),
@@ -708,6 +785,7 @@ mod tests {
         let active = ActiveSession {
             selections: default_settings(),
             system_prompt: "captured system".to_owned(),
+            skills: vec![],
         };
         let empty = state
             .compact_session(&id, active.clone(), &PromptCancellation::new())
@@ -727,7 +805,7 @@ mod tests {
                     effort: None,
                     mode: None,
                 },
-                &"previous work ".repeat(3000),
+                &TranscriptEntry::UserMessage("previous work ".repeat(3000)),
             )
             .unwrap();
         store
@@ -806,8 +884,24 @@ mod tests {
 
     #[test]
     fn slash_commands_have_acp_metadata_and_prompt_dispatch() {
+        let skill = |name: &str, argument_hint: Option<&str>, before_stop: Option<&str>| Skill {
+            name: name.to_owned(),
+            description: format!("The {name} skill."),
+            argument_hint: argument_hint.map(str::to_owned),
+            instructions: format!("Follow the {name} steps."),
+            directory: Path::new("/workspace/.agents/skills").join(name),
+            before_stop: before_stop.map(str::to_owned),
+        };
+        let skills = [
+            skill(
+                "goal",
+                Some("<objective>"),
+                Some("python3 scripts/check.py"),
+            ),
+            skill("init", None, None),
+        ];
         assert_eq!(
-            serde_json::to_value(available_commands()).unwrap(),
+            serde_json::to_value(available_commands(&skills)).unwrap(),
             serde_json::json!({
                 "sessionUpdate": "available_commands_update",
                 "availableCommands": [
@@ -817,30 +911,58 @@ mod tests {
                     },
                     {
                         "name": "goal",
-                        "description": "Start a goal from a prompt.",
-                        "input": { "hint": "<prompt>" }
+                        "description": "The goal skill.",
+                        "input": { "hint": "<objective>" }
                     },
                     {
                         "name": "init",
-                        "description": "Create or update AGENTS.md for the workspace."
+                        "description": "The init skill."
                     }
                 ]
             })
         );
-        for command in ["/compact", " /goal Fix the tests\n"] {
-            assert_eq!(prompt_user_message(command.to_owned()), None);
+        for command in ["/compact", " /compact now\n"] {
+            assert_eq!(dispatch(command.to_owned(), &skills), Dispatch::Compact);
         }
-        for user_message in ["compact", "/compactness", "/"] {
+        let arguments = "Fix the \"tests\" in $HOME\n  and more";
+        assert_eq!(
+            dispatch(format!(" /goal\t{arguments} \n"), &skills),
+            Dispatch::Skill {
+                invocation: SkillInvocation {
+                    name: "goal".to_owned(),
+                    arguments: arguments.to_owned(),
+                    instructions: "Follow the goal steps.".to_owned(),
+                },
+                hook: Some(hooks::Hook {
+                    command: "python3 scripts/check.py".to_owned(),
+                    directory: skills[0].directory.clone(),
+                }),
+            }
+        );
+        assert_eq!(
+            dispatch("/init".to_owned(), &skills),
+            Dispatch::Skill {
+                invocation: SkillInvocation {
+                    name: "init".to_owned(),
+                    arguments: String::new(),
+                    instructions: "Follow the init steps.".to_owned(),
+                },
+                hook: None,
+            }
+        );
+        for user_message in [
+            "compact",
+            "/compactness",
+            "/",
+            "/goals now",
+            "/review it",
+            "do /goal",
+        ] {
             assert_eq!(
-                prompt_user_message(user_message.to_owned()).as_deref(),
-                Some(user_message)
+                dispatch(user_message.to_owned(), &skills),
+                Dispatch::UserMessage(user_message.to_owned())
             );
         }
-        assert_eq!(
-            prompt_user_message(" /init ignored input\n".to_owned()).as_deref(),
-            Some(INIT_PROMPT.trim_end())
-        );
-        assert!(INIT_PROMPT.contains("AGENTS.md"));
     }
 
     #[test]
@@ -848,10 +970,34 @@ mod tests {
         let workspace = Workspace::new();
         let agents_md = workspace.0.join("AGENTS.md");
         fs::write(&agents_md, "Answer in French.\n").unwrap();
+        let skills_dir = workspace.0.join(".agents/skills");
+        let write_skill = |name: &str, text: &str| {
+            fs::create_dir_all(skills_dir.join(name)).unwrap();
+            fs::write(skills_dir.join(name).join("SKILL.md"), text).unwrap();
+        };
+        write_skill(
+            "goal",
+            "---\nname: goal\ndescription: \"Work toward an objective: verify it.\"\nargument-hint: \"<objective>\"\nallowed-tools: [shell]\nmetadata:\n  owner: ox\nhooks:\n  PreToolUse: [{matcher: shell}]\n  before_stop:\n    command: python3 scripts/check.py\n---\n\nWork toward the objective.\n",
+        );
+        fs::write(skills_dir.join(".DS_Store"), "").unwrap();
+        let goal = Skill {
+            name: "goal".to_owned(),
+            description: "Work toward an objective: verify it.".to_owned(),
+            argument_hint: Some("<objective>".to_owned()),
+            instructions: "Work toward the objective.".to_owned(),
+            directory: skills_dir.join("goal"),
+            before_stop: Some("python3 scripts/check.py".to_owned()),
+        };
         let french = system_prompt::for_workspace(&workspace.0).unwrap();
         let state = state();
         let id = create_session(&state, &workspace.0);
         assert_eq!(state.active_session(&id).unwrap().system_prompt, french);
+        assert_eq!(
+            state.active_session(&id).unwrap().skills,
+            std::slice::from_ref(&goal)
+        );
+        let repository = skills::load(Path::new(env!("CARGO_MANIFEST_DIR"))).unwrap();
+        assert!(repository.iter().any(|skill| skill.name == "init"));
         let mut updates = Vec::new();
         let mut send_update = |update| {
             updates.push(update);
@@ -875,6 +1021,7 @@ mod tests {
         assert_eq!(elsewhere.code, ErrorCode::InvalidParams);
 
         fs::write(&agents_md, "Answer in German.\n").unwrap();
+        fs::remove_dir_all(skills_dir.join("goal")).unwrap();
         state
             .load_session(
                 &LoadSessionRequest::new(id.clone(), &workspace.0),
@@ -887,6 +1034,7 @@ mod tests {
             french,
             "a repeated load keeps the captured prompt"
         );
+        assert_eq!(state.active_session(&id).unwrap().skills, [goal]);
 
         let later = state_over(state.store.clone());
         later
@@ -899,6 +1047,7 @@ mod tests {
             system_prompt::for_workspace(&workspace.0).unwrap(),
             "a later process reads the current file on its first load"
         );
+        assert!(later.active_session(&id).unwrap().skills.is_empty());
 
         state
             .delete_session(&DeleteSessionRequest::new(id.clone()))
@@ -907,6 +1056,100 @@ mod tests {
             state.active_session(&id).is_none(),
             "delete removes the active session"
         );
+
+        for hooks in ["{}", "{PreToolUse: [{matcher: shell}]}"] {
+            write_skill(
+                "shared",
+                &format!("---\nname: shared\ndescription: Shared.\nhooks: {hooks}\n---\nBody\n"),
+            );
+            let id = create_session(&state, &workspace.0);
+            assert!(
+                state.active_session(&id).unwrap().skills[0]
+                    .before_stop
+                    .is_none()
+            );
+            let later = state_over(state.store.clone());
+            later
+                .load_session(&LoadSessionRequest::new(id.clone(), &workspace.0), |_| {
+                    Ok(())
+                })
+                .unwrap();
+            assert!(
+                later.active_session(&id).unwrap().skills[0]
+                    .before_stop
+                    .is_none()
+            );
+            state
+                .delete_session(&DeleteSessionRequest::new(id))
+                .unwrap();
+            fs::remove_dir_all(skills_dir.join("shared")).unwrap();
+        }
+
+        for (name, text, error) in [
+            (
+                "compact",
+                "---\nname: compact\ndescription: Shadow.\n---\nBody\n",
+                "compact is the built-in /compact command",
+            ),
+            (
+                "Goal",
+                "---\nname: Goal\ndescription: Goal.\n---\nBody\n",
+                "may contain only lowercase letters, digits, and hyphens",
+            ),
+            (
+                "other",
+                "---\nname: goal\ndescription: Goal.\n---\nBody\n",
+                "does not match its directory",
+            ),
+            (
+                "blank",
+                "---\nname: blank\ndescription: \" \"\n---\nBody\n",
+                "description is blank",
+            ),
+            (
+                "empty",
+                "---\nname: empty\ndescription: Empty.\n---\n\n",
+                "instructions are blank",
+            ),
+            (
+                "plain",
+                "No frontmatter.\n",
+                "does not begin with --- delimited YAML",
+            ),
+            (
+                "hooked",
+                "---\nname: hooked\ndescription: Hooked.\nhooks:\n  before_stop:\n    command: 'true'\n    extra: true\n---\nBody\n",
+                "unknown field `extra`",
+            ),
+            (
+                "incomplete",
+                "---\nname: incomplete\ndescription: Incomplete.\nhooks:\n  before_stop: {}\n---\nBody\n",
+                "missing field `command`",
+            ),
+            (
+                "unhooked",
+                "---\nname: unhooked\ndescription: Unhooked.\nhooks:\n  before_stop:\n    command: \" \"\n---\nBody\n",
+                "before_stop hook command is blank",
+            ),
+            ("missing", "", "No such file or directory"),
+        ] {
+            if text.is_empty() {
+                fs::create_dir_all(skills_dir.join(name)).unwrap();
+            } else {
+                write_skill(name, text);
+            }
+            let invalid = state
+                .new_session(&NewSessionRequest::new(&workspace.0))
+                .unwrap_err();
+            let data = invalid.data.unwrap();
+            let data = data.as_str().unwrap();
+            assert!(
+                data.starts_with(&format!(".agents/skills/{name}/SKILL.md: "))
+                    && data.contains(error),
+                "{name}: {data}"
+            );
+            fs::remove_dir_all(skills_dir.join(name)).unwrap();
+        }
 
         fs::write(&agents_md, [0xff, 0xfe]).unwrap();
         let invalid = state
@@ -935,7 +1178,7 @@ mod tests {
                     effort: None,
                     mode: None,
                 },
-                "Hello",
+                &TranscriptEntry::UserMessage("Hello".to_owned()),
             )
             .unwrap();
 
@@ -978,7 +1221,7 @@ mod tests {
                     effort: None,
                     mode: None,
                 },
-                "Hello",
+                &TranscriptEntry::UserMessage("Hello".to_owned()),
             )
             .unwrap();
         let mut updates = Vec::new();
@@ -1079,7 +1322,7 @@ mod tests {
                     effort: None,
                     mode: Some(SessionMode::Auto),
                 },
-                "Hello",
+                &TranscriptEntry::UserMessage("Hello".to_owned()),
             )
             .unwrap();
         let error = state
@@ -1117,7 +1360,6 @@ mod tests {
     #[tokio::test]
     async fn setting_changes_apply_to_the_next_turn_while_the_system_prompt_stays_captured() {
         use crate::openrouter::fixture::{Reply, Server, text_reply};
-        use crate::sessions::TranscriptEntry;
 
         let workspace = Workspace::new();
         let agents_md = workspace.0.join("AGENTS.md");
@@ -1141,7 +1383,8 @@ mod tests {
             let active = state.active_session(&id).unwrap();
             prompt::PromptInput {
                 session_id: id.clone(),
-                user_message: user_message.to_owned(),
+                turn_start: TranscriptEntry::UserMessage(user_message.to_owned()),
+                hook: None,
                 selected_settings: Some(active.selections),
                 system_prompt: active.system_prompt,
             }
@@ -1610,8 +1853,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn headless_sigint_cleans_up_and_saves_even_with_repeated_signals() {
-        use crate::openrouter::fixture::{Server, shell_reply};
+    async fn headless_signals_clean_up_and_save_even_when_repeated() {
+        use crate::openrouter::fixture::{Server, shell_reply, text_reply};
         use crate::sessions::{ToolOutcome, TranscriptEntry};
         use crate::tools::fixture::Workspace;
         use rustix::process::{Pid, Signal, kill_process, kill_process_group};
@@ -1620,10 +1863,25 @@ mod tests {
         if let Some(path) = std::env::var_os(FLAG) {
             let path = Path::new(&path);
             let store = SessionStore::open(&path.join("ox.db")).unwrap();
-            let session = store.create(path).unwrap();
             let command = "echo $$ > shell; python3 -c 'import subprocess; p = subprocess.Popen([\"sleep\", \"30\"], start_new_session=True); open(\"detached\", \"w\").write(str(p.pid))'; sleep 30 & echo $! > child; printf started; touch ready; wait";
-            let server =
-                Server::start(vec![shell_reply(&[(command, 30), ("touch wrong", 5)])]).await;
+            let server = Server::start(vec![
+                text_reply("Finished answer."),
+                shell_reply(&[(command, 30), ("touch wrong", 5)]),
+            ])
+            .await;
+            let answered = store.create(path).unwrap();
+            let answer = run_headless_prompt(
+                store.clone(),
+                server.client(),
+                answered.id,
+                SessionSettings::new(openrouter::DEFAULT_MODEL, EffortLevel::Default),
+                system_prompt::for_workspace(path).unwrap(),
+                "Answer".into(),
+            )
+            .await
+            .unwrap();
+            assert_eq!(answer, "Finished answer.", "ox run prints this answer");
+            let session = store.create(path).unwrap();
             let response = run_headless_prompt(
                 store.clone(),
                 server.client(),
@@ -1633,7 +1891,10 @@ mod tests {
                 "Run commands".into(),
             )
             .await;
-            assert!(response.unwrap_err().to_string().contains("Cancelled"));
+            assert!(
+                response.unwrap_err().to_string().contains("Cancelled"),
+                "ox run prints no answer"
+            );
             let transcript = store.read(&session.id).unwrap().unwrap().transcript;
             assert_eq!(
                 &transcript[..4],
@@ -1652,7 +1913,7 @@ mod tests {
         let mut child = tokio::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
-                "acp::tests::headless_sigint_cleans_up_and_saves_even_with_repeated_signals",
+                "acp::tests::headless_signals_clean_up_and_save_even_when_repeated",
                 "--nocapture",
             ])
             .env(FLAG, &workspace.0)
@@ -1661,7 +1922,7 @@ mod tests {
             .unwrap();
         wait_for_file(&workspace.0.join("ready")).await;
         let pid = Pid::from_raw(child.id().unwrap() as i32).unwrap();
-        kill_process(pid, Signal::INT).unwrap();
+        kill_process(pid, Signal::TERM).unwrap();
         assert_process_stopped(&workspace.0.join("shell"), true).await;
         kill_process(pid, Signal::INT).unwrap();
         let status = tokio::time::timeout(std::time::Duration::from_secs(5), child.wait()).await;
@@ -1675,9 +1936,8 @@ mod tests {
         assert!(workspace.0.join("saved").exists());
         assert!(!workspace.0.join("wrong").exists());
         let store = SessionStore::open(&workspace.0.join("ox.db")).unwrap();
-        let session = store.list(None).unwrap().pop().unwrap();
-        assert!(store.read(&session.id).unwrap().unwrap().transcript.iter().any(|entry| matches!(entry,
-            TranscriptEntry::ToolResult(result) if matches!(&result.outcome, ToolOutcome::Cancelled(text) if text.contains("started") && text.contains("partial changes")))));
+        assert!(store.list(None).unwrap().iter().any(|session| store.read(&session.id).unwrap().unwrap().transcript.iter().any(|entry| matches!(entry,
+            TranscriptEntry::ToolResult(result) if matches!(&result.outcome, ToolOutcome::Cancelled(text) if text.contains("started") && text.contains("partial changes"))))));
     }
 
     #[tokio::test]

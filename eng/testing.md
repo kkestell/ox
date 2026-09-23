@@ -10,9 +10,16 @@ use an existing workspace, run
 `ox run [--dir <workspace-path>] [--model <model-id>] [--effort <default|low|medium|high>] '<prompt>'`
 directly. The model must be in the model catalog; an unset model or effort uses
 the same defaults as a new ACP session. The headless run creates a new session
-in `ox.db` and reports completion through its exit status; `ox run` itself
-writes no successful output. Set `OX_DATA_DIR` to a temporary directory to
-isolate that database, then inspect it to verify the saved session.
+in `ox.db`, prints the final answer to stdout when the prompt ends normally, and
+otherwise prints nothing to stdout and exits with a failure status. Set
+`OX_DATA_DIR` to a temporary directory to isolate that database, then inspect it
+to verify the saved session.
+
+Test the example goal skill's hook script with
+`python3 -m unittest discover -s examples/skills/goal/scripts`. It uses a fake
+`ox` executable and needs no OpenRouter key. To try the skill live, copy
+`examples/skills/goal` into a workspace's `.agents/skills/goal` and invoke
+`/goal <objective>` from an ACP client; headless runs never invoke skills.
 
 ## Test discipline
 

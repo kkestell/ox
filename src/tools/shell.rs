@@ -1,25 +1,15 @@
-use std::{
-    collections::VecDeque,
-    io,
-    os::unix::process::ExitStatusExt,
-    path::Path,
-    process::{ExitStatus, Stdio},
-    time::Duration,
-};
+use std::{os::unix::process::ExitStatusExt, path::Path, time::Duration};
 
 use futures::FutureExt;
-use rustix::process::{Pid, Signal, kill_process_group};
 use serde::Deserialize;
-use tokio::{
-    io::{AsyncRead, AsyncReadExt},
-    process::Command,
-    time::{Instant, sleep_until, timeout},
+use tokio::process::Command;
+
+use crate::{
+    process::{self, Capture, Limits, Observed},
+    sessions::ToolOutcome,
 };
 
-use crate::sessions::ToolOutcome;
-
 const OUTPUT_BODY_LIMIT: usize = 14 * 1024;
-const OUTPUT_DRAIN_TIMEOUT: Duration = Duration::from_secs(1);
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -31,76 +21,6 @@ struct Args {
 
 fn default_timeout() -> u64 {
     120
-}
-
-#[derive(Default)]
-struct Capture {
-    bytes: VecDeque<u8>,
-    omitted: bool,
-    done: bool,
-    error: Option<String>,
-}
-
-impl Capture {
-    async fn read(&mut self, pipe: &mut (impl AsyncRead + Unpin)) -> io::Result<()> {
-        let mut buffer = [0; 8192];
-        let read = match pipe.read(&mut buffer).await {
-            Ok(read) => read,
-            Err(error) => {
-                self.done = true;
-                self.error = Some(error.to_string());
-                return Err(error);
-            }
-        };
-        self.done = read == 0;
-        let excess = (self.bytes.len() + read).saturating_sub(OUTPUT_BODY_LIMIT);
-        self.omitted |= excess > 0;
-        self.bytes.drain(..excess);
-        self.bytes.extend(&buffer[..read]);
-        Ok(())
-    }
-
-    async fn drain(&mut self, pipe: &mut (impl AsyncRead + Unpin)) -> io::Result<()> {
-        while !self.done {
-            self.read(pipe).await?;
-        }
-        Ok(())
-    }
-
-    fn decode(&mut self) -> String {
-        String::from_utf8_lossy(self.bytes.make_contiguous()).into_owned()
-    }
-}
-
-enum Observed {
-    Exit(ExitStatus),
-    Timeout(u64),
-    Cancelled,
-    Failed(String),
-}
-
-fn kill_group(group: Pid) {
-    match kill_process_group(group, Signal::KILL) {
-        Ok(()) | Err(rustix::io::Errno::SRCH | rustix::io::Errno::PERM) => {}
-        Err(error) => panic!("failed to terminate owned shell process group: {error}"),
-    }
-}
-
-/// Stops the group if the tool future is dropped before its normal cleanup runs.
-struct ProcessGroup(Option<Pid>);
-
-impl ProcessGroup {
-    fn terminate(&mut self) {
-        kill_group(self.0.take().expect("process group is terminated once"));
-    }
-}
-
-impl Drop for ProcessGroup {
-    fn drop(&mut self) {
-        if let Some(group) = self.0 {
-            let _ = kill_process_group(group, Signal::KILL);
-        }
-    }
 }
 
 pub(super) async fn execute(
@@ -117,89 +37,37 @@ pub(super) async fn execute(
     if cancelled.as_mut().now_or_never().is_some() {
         return ToolOutcome::Cancelled("Cancelled before this tool was started.".into());
     }
-    let mut child = match Command::new("/bin/sh")
+    let mut command = Command::new("/bin/sh");
+    command
         .arg("-c")
         .arg(&args.command)
         .current_dir(workspace)
-        .env_remove("OPENROUTER_API_KEY")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .process_group(0)
-        .spawn()
-    {
-        Ok(child) => child,
-        Err(error) => {
-            return failure(format!(
-                "Could not start /bin/sh in {}: {error}",
-                workspace.display()
-            ));
-        }
+        .env_remove("OPENROUTER_API_KEY");
+    let limits = Limits {
+        stdout: OUTPUT_BODY_LIMIT,
+        stderr: OUTPUT_BODY_LIMIT,
+        deadline: Duration::from_secs(args.timeout_seconds),
+        grace: Duration::ZERO,
     };
-    let deadline = Instant::now() + Duration::from_secs(args.timeout_seconds);
-    let mut group = ProcessGroup(Some(
-        Pid::from_raw(child.id().expect("spawned shell has a PID") as i32)
-            .expect("spawned shell has a positive PID"),
-    ));
-    let mut stdout = child.stdout.take().expect("stdout was piped");
-    let mut stderr = child.stderr.take().expect("stderr was piped");
-    let mut out = Capture::default();
-    let mut err = Capture::default();
-    let observed = loop {
-        tokio::select! {
-            biased;
-            status = child.wait() => break Observed::Exit(status.expect("reap owned shell")),
-            () = sleep_until(deadline) => break Observed::Timeout(args.timeout_seconds),
-            () = &mut cancelled => break Observed::Cancelled,
-            (name, result) = async {
-                tokio::select! {
-                    result = out.read(&mut stdout), if !out.done => ("stdout", result),
-                    result = err.read(&mut stderr), if !err.done => ("stderr", result),
-                }
-            }, if !out.done || !err.done => {
-                if let Err(error) = result {
-                    break Observed::Failed(format!("Reading {name} failed: {error}"));
-                }
-            }
-        }
-    };
-    // Even a successful shell may leave background children, with or without pipes.
-    group.terminate();
-    let drain = timeout(OUTPUT_DRAIN_TIMEOUT, async {
-        // Own the pipes here so the drain deadline closes them even while reaping waits.
-        let mut stdout = stdout;
-        let mut stderr = stderr;
-        tokio::join!(out.drain(&mut stdout), err.drain(&mut stderr))
-    });
-    let (status, drained) = tokio::join!(child.wait(), drain);
-    status.expect("reap owned shell after process group cleanup");
-    let mut diagnostics = String::new();
-    let mut observed = observed;
-    if drained.is_err() {
-        diagnostics
-            .push_str("Output capture stopped before EOF; additional output may be missing.");
+    match process::run(command, None, limits, cancelled).await {
+        Ok(finished) => render(
+            finished.observed,
+            finished.stdout,
+            finished.stderr,
+            finished.diagnostics,
+        ),
+        Err(error) => failure(format!(
+            "Could not start /bin/sh in {}: {error}",
+            workspace.display()
+        )),
     }
-    for (name, error) in [("stdout", &out.error), ("stderr", &err.error)] {
-        if let Some(error) = error {
-            let message = format!("Reading {name} failed: {error}");
-            if matches!(observed, Observed::Exit(_)) {
-                observed = Observed::Failed(message);
-            } else if !matches!(observed, Observed::Failed(_)) {
-                if !diagnostics.is_empty() {
-                    diagnostics.push('\n');
-                }
-                diagnostics.push_str(&message);
-            }
-        }
-    }
-    render(observed, out, err, diagnostics)
 }
 
 fn failure(message: String) -> ToolOutcome {
     render(
         Observed::Failed(message),
-        Capture::default(),
-        Capture::default(),
+        Capture::new(OUTPUT_BODY_LIMIT),
+        Capture::new(OUTPUT_BODY_LIMIT),
         String::new(),
     )
 }
@@ -230,9 +98,10 @@ fn render(
                 status.signal().expect("Unix signal exit")
             ),
         },
-        Observed::Timeout(seconds) => {
-            format!("Timed out after {seconds} seconds; partial changes may remain.")
-        }
+        Observed::Timeout(deadline) => format!(
+            "Timed out after {} seconds; partial changes may remain.",
+            deadline.as_secs()
+        ),
         Observed::Cancelled => "Cancelled during execution; partial changes may remain.".into(),
         Observed::Failed(error) => error.clone(),
     };
@@ -276,8 +145,15 @@ fn render(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tools::{self, fixture::Workspace};
+    use crate::{
+        hooks,
+        process::{OUTPUT_DRAIN_TIMEOUT, kill_group},
+        sessions::{EffortLevel, HookDecision, HookFeedback, SkillInvocation},
+        tools::{self, fixture::Workspace},
+    };
+    use rustix::process::Pid;
     use serde_json::json;
+    use tokio::time::{Instant, timeout};
 
     async fn run(workspace: &Path, command: &str) -> ToolOutcome {
         execute(
@@ -421,6 +297,50 @@ mod tests {
             )
             .await;
             assert!(matches!(outcome, ToolOutcome::Completed(_)), "{outcome:?}");
+            // A hook inherits the key and reads its input from stdin.
+            let hook = hooks::Hook {
+                command: r#"test "$OPENROUTER_API_KEY" = dummy-key && cat > input.json && printf '{"decision":"stop","message":"Key present."}'"#.to_owned(),
+                directory: workspace.0.clone(),
+            };
+            let feedback = hooks::run(
+                &hook,
+                &SkillInvocation {
+                    name: "goal".to_owned(),
+                    arguments: "Check the key.".to_owned(),
+                    instructions: "Check the environment.".to_owned(),
+                },
+                Path::new("/workspace"),
+                "test/model",
+                EffortLevel::Low,
+                "The answer.",
+                std::future::pending(),
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                feedback,
+                HookFeedback {
+                    skill: "goal".to_owned(),
+                    decision: HookDecision::Stop,
+                    message: "Key present.".to_owned(),
+                }
+            );
+            let input: serde_json::Value = serde_json::from_str(
+                &std::fs::read_to_string(workspace.0.join("input.json")).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(
+                input,
+                json!({
+                    "skill": "goal",
+                    "arguments": "Check the key.",
+                    "workspace": "/workspace",
+                    "ox": std::env::current_exe().unwrap(),
+                    "model": "test/model",
+                    "effort": "low",
+                    "answer": "The answer.",
+                })
+            );
             return;
         }
         let status = Command::new(std::env::current_exe().unwrap())
@@ -457,14 +377,8 @@ mod tests {
             (1000, 20000, 1000, OUTPUT_BODY_LIMIT - 1000),
             (20000, 20000, OUTPUT_BODY_LIMIT / 2, OUTPUT_BODY_LIMIT / 2),
         ] {
-            let out = Capture {
-                bytes: vec![b'X'; out_len].into(),
-                ..Capture::default()
-            };
-            let err = Capture {
-                bytes: vec![b'Y'; err_len].into(),
-                ..Capture::default()
-            };
+            let out = capture(vec![b'X'; out_len]);
+            let err = capture(vec![b'Y'; err_len]);
             let result = render(Observed::Failed("error".into()), out, err, String::new());
             assert_eq!(result.text().matches('X').count(), expected_out);
             assert_eq!(result.text().matches('Y').count(), expected_err);
@@ -475,16 +389,19 @@ mod tests {
         for observed in [
             Observed::Failed("雪".repeat(10000)),
             Observed::Cancelled,
-            Observed::Timeout(600),
+            Observed::Timeout(Duration::from_secs(600)),
         ] {
-            let capture = || Capture {
-                bytes: vec![0xff; OUTPUT_BODY_LIMIT].into(),
-                ..Capture::default()
-            };
-            let result = render(observed, capture(), capture(), "雪".repeat(10000));
+            let invalid = || capture(vec![0xff; OUTPUT_BODY_LIMIT]);
+            let result = render(observed, invalid(), invalid(), "雪".repeat(10000));
             assert!(result.text().len() <= tools::OUTPUT_LIMIT);
             assert_eq!(result.text().matches("earlier output omitted").count(), 2);
         }
+    }
+
+    fn capture(bytes: Vec<u8>) -> Capture {
+        let mut capture = Capture::new(OUTPUT_BODY_LIMIT);
+        capture.bytes = bytes.into();
+        capture
     }
 
     const CHILD: &str =
@@ -517,6 +434,36 @@ mod tests {
         let result = execute(&workspace.0, r#"{"command":"touch wrong"}"#, async {}).await;
         assert!(matches!(result, ToolOutcome::Cancelled(_)));
         assert!(!workspace.0.join("wrong").exists());
+
+        // With a grace period, a group that exits on SIGTERM is not killed,
+        // and one that ignores SIGTERM is killed when the period ends.
+        let grace = Duration::from_millis(500);
+        for (trap, exits_on_term) in [("touch terminated; exit 0", true), ("", false)] {
+            std::fs::remove_file(workspace.0.join("ready")).unwrap();
+            let mut command = Command::new("/bin/sh");
+            command
+                .arg("-c")
+                .arg(format!("trap '{trap}' TERM; {CHILD}"))
+                .current_dir(&workspace.0);
+            let limits = Limits {
+                stdout: 64,
+                stderr: 64,
+                deadline: Duration::from_secs(5),
+                grace,
+            };
+            let start = Instant::now();
+            let finished =
+                process::run(command, None, limits, wait_file(&workspace.0.join("ready")))
+                    .await
+                    .unwrap();
+            assert!(matches!(finished.observed, Observed::Cancelled));
+            assert_eq!(start.elapsed() >= grace, !exits_on_term, "{trap}");
+            assert_eq!(
+                std::fs::remove_file(workspace.0.join("terminated")).is_ok(),
+                exits_on_term
+            );
+            assert_stopped(&workspace.0).await;
+        }
     }
 
     #[tokio::test]

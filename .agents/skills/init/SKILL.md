@@ -1,3 +1,8 @@
+---
+name: init
+description: Create or update AGENTS.md for the workspace.
+---
+
 Create or update `AGENTS.md` at the repository root.
 
 Inspect the repository first. Read the existing `AGENTS.md`, if present, along

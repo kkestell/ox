@@ -9,7 +9,9 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::{
-    sessions::{AssistantMessage, EffortLevel, ToolCall, TranscriptEntry},
+    sessions::{
+        AssistantMessage, EffortLevel, HookFeedback, SkillInvocation, ToolCall, TranscriptEntry,
+    },
     tools,
 };
 
@@ -259,6 +261,22 @@ fn explicit_context_overflow(detail: &str) -> bool {
         .any(|term| lower.contains(term))
 }
 
+/// The user-role text that gives the model a skill invocation.
+pub(crate) fn skill_invocation_text(invocation: &SkillInvocation) -> String {
+    format!(
+        "Skill /{} invoked.\n\nInstructions:\n{}\n\nArguments:\n{}",
+        invocation.name, invocation.instructions, invocation.arguments
+    )
+}
+
+/// The user-role text that gives the model a hook's feedback.
+pub(crate) fn hook_feedback_text(feedback: &HookFeedback) -> String {
+    format!(
+        "Feedback from the {} before_stop hook:\n{}",
+        feedback.skill, feedback.message
+    )
+}
+
 /// Encodes the saved transcript as OpenRouter chat messages. Visible reasoning
 /// is sent only when no continuation metadata carries it.
 pub(crate) fn chat_messages(transcript: &[TranscriptEntry]) -> Vec<Value> {
@@ -271,6 +289,12 @@ pub(crate) fn chat_messages(transcript: &[TranscriptEntry]) -> Vec<Value> {
                 | TranscriptEntry::Mode(_)
                 | TranscriptEntry::CompactionCheckpoint(_) => return None,
                 TranscriptEntry::UserMessage(text) => json!({ "role": "user", "content": text }),
+                TranscriptEntry::SkillInvocation(invocation) => {
+                    json!({ "role": "user", "content": skill_invocation_text(invocation) })
+                }
+                TranscriptEntry::HookFeedback(feedback) => {
+                    json!({ "role": "user", "content": hook_feedback_text(feedback) })
+                }
                 TranscriptEntry::AssistantMessage(message) => {
                     let content = if message.text.is_empty() {
                         Value::Null

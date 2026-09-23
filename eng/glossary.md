@@ -23,6 +23,7 @@
 | session mode                | `mode` option        | —                                        |
 | tool name                   | tool kind            | `function.name`                          |
 | tool outcome `cancelled`    | tool status `failed` | —                                        |
+| hook run                    | tool kind execute    | —                                        |
 | prompt outcome              | `stopReason`         | `finish_reason`                          |
 | system prompt               | —                    | first `system` message                   |
 
@@ -44,8 +45,8 @@
 - **Session**: A saved conversation and its metadata, identified by a session
   ID. Its OpenRouter model is fixed when the first turn starts.
 - **Active session**: A session created or loaded in the current process. Its
-  system prompt is assembled when it becomes active, and only an active session
-  can be configured or prompted over ACP.
+  system prompt is assembled and its skill catalog loaded when it becomes
+  active, and only an active session can be configured or prompted over ACP.
 - **System prompt**: Ox's built-in agent instructions followed, when present, by
   workspace instructions. It is assembled when a session becomes active and sent
   as the first message of every model request for that session.
@@ -71,8 +72,9 @@
 - **Auto mode**: The session mode that runs shell calls without an ACP
   permission request. Headless prompts use Auto.
 - **Session title**: The short label a session shows in a client, taken once
-  from the first nonblank line of the first saved user message and shortened to
-  80 characters.
+  from the first nonblank line of the first saved user message or skill
+  invocation and shortened to 80 characters. A skill invocation contributes
+  `/<name> <arguments>`.
 - **Session summary**: A session's ID, workspace path, optional session title,
   and creation and activity timestamps, without its transcript.
 - **Compaction summary**: Model-generated text carrying relevant older
@@ -94,12 +96,33 @@
   operation. Dropping it makes the session available.
 - **Prompt request**: One ACP request containing user content for a session.
 - **Slash command**: A named command advertised through an ACP session update
-  and sent by the ACP client as prompt text beginning with `/`. Ox recognizes a
-  slash command before saving a user message or making a model request.
-- **Prompt run**: The work caused by one prompt request: save the user message,
-  request model output, run tools, save results, and respond.
-- **Headless entry point**: The `ox run` mode, which creates a session and runs
-  one prompt without an ACP client. A prompt run there is headless.
+  and sent by the ACP client as prompt text beginning with `/`: the built-in
+  `/compact` or a skill in the skill catalog. Ox recognizes a slash command
+  before saving anything or making a model request.
+- **Skill**: A `SKILL.md` definition and its directory in the workspace's
+  `.agents/skills/`. It has a name, description, optional argument hint,
+  instructions, and an optional hook.
+- **Skill catalog**: The skills available to an active session, loaded when it
+  becomes active.
+- **Skill invocation**: A transcript entry holding a skill's name, arguments,
+  and instructions, saved in place of the user message for that turn.
+- **Hook**: An external command a skill declares for `before_stop`, the point
+  after an assistant message with a finished OpenRouter stop is committed. It
+  runs only in the prompt run that invoked its skill.
+- **Hook decision**: `continue` or `stop`. It is distinct from an OpenRouter
+  stop.
+- **Hook feedback**: A transcript entry holding a hook's skill, decision, and
+  message. It is neither a user message nor a tool result.
+- **Hook continuation**: A model request in the same prompt run caused by a
+  `continue` decision.
+- **Prompt run**: The work caused by one prompt request: save the user message
+  or skill invocation, request model output, run tools and any hook, save
+  results, and respond.
+- **Final answer**: The text of the assistant message committed with the
+  finished OpenRouter stop that ended a prompt run.
+- **Headless entry point**: The `ox run` mode, which creates a session, runs
+  one prompt without an ACP client, and prints the final answer. A prompt run
+  there is headless and never invokes a skill.
 - **Prompt outcome**: The internal reason a prompt run stopped. It determines
   how unfinished tool calls are completed and whether Ox returns an ACP stop
   reason or an error.
@@ -111,7 +134,8 @@
 - **Transcript**: The ordered, saved conversation used for both session replay
   and future model requests.
 - **Transcript entry**: A model entry, effort entry, mode entry, user message,
-  assistant message, tool result, or compaction checkpoint in the transcript.
+  skill invocation, assistant message, tool result, hook feedback, or
+  compaction checkpoint in the transcript.
 - **Model entry**: The first transcript entry. It stores the OpenRouter model
   used for every model request in that session.
 - **OpenRouter client**: The concrete client that verifies the API key and sends

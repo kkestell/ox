@@ -7,26 +7,32 @@ THIS DOCUMENT MUST BE KEPT UP TO DATE
 - `scripts/run.py`: Temporary workspace runner for a headless prompt, with
   optional model, effort, and checkout of a pinned GitHub commit.
 - `src/main.rs`: Command parsing and process entry; starts the ACP server, runs
-  one headless prompt with an optional model and effort, runs a credential
-  command, or prints help.
+  one headless prompt with an optional model and effort and prints its final
+  answer, runs a credential command, or prints help.
 - `src/auth.rs`: Environment and operating-system keyring credential storage.
 - `src/system_prompt.rs`: Assembly of Ox's built-in system prompt with bounded
   workspace-root `AGENTS.md` instructions.
 - `src/prompts/system_prompt.md`: The editable built-in instructions that define
   Ox's coding-agent behavior.
-- `src/prompts/init_prompt.md`: The editable user prompt dispatched by `/init`,
-  including the `AGENTS.md` template.
+- `src/skills.rs`: Workspace skill definitions in `.agents/skills/`, frontmatter
+  parsing, validation, and skill catalog loading.
+- `src/hooks.rs`: The `before_stop` hook protocol: JSON input on stdin, one
+  decision object on stdout, limits, and hook errors.
+- `src/process.rs`: Child processes in a new process group with optional
+  stdin, bounded output tails, a deadline, cancellation, and group cleanup with
+  an optional SIGTERM grace period.
 - `src/openrouter.rs`: OpenRouter model catalog and effort mapping, request
   encoding, context limits, client, streamed response assembly, and explicit
   input-context overflow errors.
 - `src/compaction.rs`: Request estimates, safe transcript cuts, bounded
-  summarizer input, checkpoint commits, and model-request projection.
+  summarizer input, checkpoint commits, and model-request projection, which
+  repeats a covered skill invocation after the summary.
 - `src/prompts/compaction_prompt.md`: Dedicated summarizer instructions.
 - `src/tools.rs`: Concrete tool schemas, tool call titles, and execution of one
   complete call.
 - `src/tools/read.rs`: Bounded text-file reading with line pagination.
-- `src/tools/shell.rs`: Noninteractive shell execution, bounded output tails,
-  and process-group cleanup on exit, timeout, or cancellation.
+- `src/tools/shell.rs`: Shell tool arguments, API-key removal, and rendering of
+  one process run as a tool outcome.
 - `src/tools/search.rs`: Ripgrep file discovery, workspace-checked candidates,
   and bounded glob and grep results.
 - `src/tools/patch.rs`: Patch parsing, exact text matching, workspace path
@@ -34,21 +40,28 @@ THIS DOCUMENT MUST BE KEPT UP TO DATE
 - `src/tools/workspace.rs`: Descriptor-relative file operations shared by
   read, search, and patch tools.
 - `src/sessions.rs`: Transcript and durable model, effort, and mode setting
-  types, compaction checkpoints, stored JSON encoding, transcript validation,
-  database path selection, and `SessionStore` over one SQLite connection.
+  types, skill invocations, hook feedback, compaction checkpoints, stored JSON
+  encoding, transcript validation, database path selection, and `SessionStore`
+  over one SQLite connection.
 - `src/acp.rs`: Connection wiring, `ServerState`, lazy OpenRouter client,
   request handlers, advertised slash commands and their prompt dispatch,
-  per-session model, effort, and mode selections, system prompts assembled when
-  a session becomes active, guarded `/compact`, and the automatic headless
-  prompt entry point.
+  per-session model, effort, and mode selections, system prompts and skill
+  catalogs loaded when a session becomes active, guarded `/compact`, and the
+  automatic headless prompt entry point.
 - `src/acp/operations.rs`: One active prompt, load, or delete per session,
   enforced by an operation guard.
 - `src/acp/prompt.rs`: One prompt run: reject oversized input before saving,
   save accepted input with captured settings, compact before large model
   requests, retry explicit input overflow once, run tools, save complete
-  assistant batches, and respond.
+  assistant batches, run the invoked skill's `before_stop` hook on each
+  finished answer, and return the stop reason and final answer.
 - `src/acp/convert.rs`: ACP input conversion, session update construction
-  including each tool call's kind, and transcript replay.
+  including each tool call's kind and hook tool calls, and transcript replay.
+- `.agents/skills/init/`: The instruction-only `init` skill, which creates or
+  updates `AGENTS.md`.
+- `examples/skills/goal/`: An example skill whose `before_stop` hook,
+  `scripts/judge.py`, asks a headless `ox run` to judge each answer, with its
+  test and a README describing the hook protocol and installation.
 
 ## Documentation
 

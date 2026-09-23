@@ -54,18 +54,61 @@ COMMIT;
 
 /// One entry in a session transcript. Every nonempty transcript opens with
 /// the model its completions use, which does not change within the session.
-/// Effort and mode entries form a settings block immediately before the user
-/// message where they take effect. Tool results follow the assistant message
-/// that called them, one per call, in call order.
+/// A turn starts with a user message or a skill invocation. Effort and mode
+/// entries form a settings block immediately before the turn start where they
+/// take effect. Tool results follow the assistant message that called them,
+/// one per call, in call order. Hook feedback follows an assistant message with
+/// no tool calls.
 #[derive(Debug, Clone, PartialEq)]
 pub enum TranscriptEntry {
     Model(String),
     Effort(EffortLevel),
     Mode(SessionMode),
     UserMessage(String),
+    SkillInvocation(SkillInvocation),
     AssistantMessage(AssistantMessage),
     ToolResult(ToolResult),
+    HookFeedback(HookFeedback),
     CompactionCheckpoint(CompactionCheckpoint),
+}
+
+/// A skill invoked as a slash command, saved in place of the user message for
+/// its turn. The instructions are copied from the skill when it is invoked.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SkillInvocation {
+    pub name: String,
+    pub arguments: String,
+    pub instructions: String,
+}
+
+impl SkillInvocation {
+    /// The slash command as typed, used for the session title and replay.
+    pub fn command_text(&self) -> String {
+        if self.arguments.is_empty() {
+            format!("/{}", self.name)
+        } else {
+            format!("/{} {}", self.name, self.arguments)
+        }
+    }
+}
+
+/// What a skill's `before_stop` hook concluded about a finished answer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HookFeedback {
+    pub skill: String,
+    pub decision: HookDecision,
+    pub message: String,
+}
+
+/// `Continue` makes another model request in the same prompt run; `Stop` ends
+/// the run. It is distinct from an OpenRouter stop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HookDecision {
+    Continue,
+    Stop,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -342,13 +385,26 @@ fn validate_transcript(entries: &[TranscriptEntry]) -> io::Result<()> {
                     }
                     index += 1;
                 }
-                if !matches!(entries.get(index), Some(TranscriptEntry::UserMessage(_))) {
+                if !matches!(
+                    entries.get(index),
+                    Some(TranscriptEntry::UserMessage(_) | TranscriptEntry::SkillInvocation(_))
+                ) {
                     return Err(invalid_data(
-                        "a settings block does not immediately precede a user message",
+                        "a settings block does not immediately precede a user message or skill invocation",
                     ));
                 }
             }
-            TranscriptEntry::UserMessage(_) => index += 1,
+            TranscriptEntry::UserMessage(_) | TranscriptEntry::SkillInvocation(_) => index += 1,
+            TranscriptEntry::HookFeedback(_) => {
+                if !matches!(&entries[index - 1],
+                    TranscriptEntry::AssistantMessage(message) if message.tool_calls.is_empty())
+                {
+                    return Err(invalid_data(
+                        "hook feedback does not follow an assistant message without tool calls",
+                    ));
+                }
+                index += 1;
+            }
             TranscriptEntry::CompactionCheckpoint(checkpoint) => {
                 if checkpoint.summary.trim().is_empty()
                     || checkpoint.covered_prefix <= previous_prefix
@@ -416,8 +472,10 @@ impl StoredSession {
                 TranscriptEntry::Effort(effort) => settings.effort = *effort,
                 TranscriptEntry::Mode(mode) => settings.mode = *mode,
                 TranscriptEntry::UserMessage(_)
+                | TranscriptEntry::SkillInvocation(_)
                 | TranscriptEntry::AssistantMessage(_)
                 | TranscriptEntry::ToolResult(_)
+                | TranscriptEntry::HookFeedback(_)
                 | TranscriptEntry::CompactionCheckpoint(_) => {}
             }
         }
@@ -537,18 +595,26 @@ impl SessionStore {
             .map_err(io::Error::other)
     }
 
-    /// Appends setting entries and the user message, adopts a session title
-    /// when none has been saved, and updates activity in one transaction.
+    /// Appends setting entries and the turn start, a user message or skill
+    /// invocation, adopts a session title when none has been saved, and
+    /// updates activity in one transaction.
     pub fn append_user(
         &self,
         id: &SessionId,
         settings: &SessionSettingsChange,
-        text: &str,
+        turn_start: &TranscriptEntry,
     ) -> io::Result<SessionSummary> {
+        let session_title = match turn_start {
+            TranscriptEntry::UserMessage(text) => session_title_from_prompt(text),
+            TranscriptEntry::SkillInvocation(invocation) => {
+                session_title_from_prompt(&invocation.command_text())
+            }
+            other => panic!("{other:?} does not start a turn"),
+        };
         let at = now();
         let mut connection = self.lock();
         let tx = connection.transaction().map_err(io::Error::other)?;
-        update_activity_and_adopt_session_title(&tx, id, session_title_from_prompt(text), &at)?;
+        update_activity_and_adopt_session_title(&tx, id, session_title, &at)?;
         if let Some(model) = &settings.model {
             insert_entry(&tx, id, &at, "model", model)?;
         }
@@ -558,7 +624,15 @@ impl SessionStore {
         if let Some(mode) = settings.mode {
             insert_entry(&tx, id, &at, "mode", &mode)?;
         }
-        insert_entry(&tx, id, &at, "user_message", &text)?;
+        match turn_start {
+            TranscriptEntry::UserMessage(text) => {
+                insert_entry(&tx, id, &at, "user_message", text)?;
+            }
+            TranscriptEntry::SkillInvocation(invocation) => {
+                insert_entry(&tx, id, &at, "skill_invocation", invocation)?;
+            }
+            _ => unreachable!("the session title match rejects other entries"),
+        }
         let summary = summary(&tx, id)
             .map_err(io::Error::other)?
             .expect("a session that was just updated exists");
@@ -577,6 +651,16 @@ impl SessionStore {
         for result in &batch.results {
             insert_entry(&tx, id, &at, "tool_result", result)?;
         }
+        tx.commit().map_err(io::Error::other)
+    }
+
+    /// Appends hook feedback and updates activity in one transaction.
+    pub fn append_hook_feedback(&self, id: &SessionId, feedback: &HookFeedback) -> io::Result<()> {
+        let at = now();
+        let mut connection = self.lock();
+        let tx = connection.transaction().map_err(io::Error::other)?;
+        update_activity_and_adopt_session_title(&tx, id, None, &at)?;
+        insert_entry(&tx, id, &at, "hook_feedback", feedback)?;
         tx.commit().map_err(io::Error::other)
     }
 
@@ -712,8 +796,10 @@ fn decode_entry(kind: &str, data: &str) -> io::Result<TranscriptEntry> {
         "effort" => TranscriptEntry::Effort(decode(kind, data)?),
         "mode" => TranscriptEntry::Mode(decode(kind, data)?),
         "user_message" => TranscriptEntry::UserMessage(decode(kind, data)?),
+        "skill_invocation" => TranscriptEntry::SkillInvocation(decode(kind, data)?),
         "assistant_message" => TranscriptEntry::AssistantMessage(decode(kind, data)?),
         "tool_result" => TranscriptEntry::ToolResult(decode(kind, data)?),
+        "hook_feedback" => TranscriptEntry::HookFeedback(decode(kind, data)?),
         "compaction_checkpoint" => TranscriptEntry::CompactionCheckpoint(decode(kind, data)?),
         _ => {
             return Err(invalid_data(format!(
@@ -813,6 +899,22 @@ mod tests {
         }
     }
 
+    fn invocation() -> SkillInvocation {
+        SkillInvocation {
+            name: "goal".to_owned(),
+            arguments: "Pass the tests.".to_owned(),
+            instructions: "Work until the hook stops you.".to_owned(),
+        }
+    }
+
+    fn stop_feedback() -> HookFeedback {
+        HookFeedback {
+            skill: "goal".to_owned(),
+            decision: HookDecision::Stop,
+            message: "Objective met.".to_owned(),
+        }
+    }
+
     fn ids(summaries: &[SessionSummary]) -> Vec<String> {
         summaries.iter().map(|s| s.id.to_string()).collect()
     }
@@ -832,6 +934,7 @@ mod tests {
     fn a_saved_batch_survives_database_reopen_in_order() {
         let dir = std::env::temp_dir().join(format!("ox-test-{}", uuid::Uuid::new_v4()));
         let path = dir.join(DATABASE_FILE);
+        let answered = message(vec![]);
         let message = message(vec![
             call("call-1", "printf Chicago"),
             call("call-2", "printf Denver"),
@@ -858,7 +961,7 @@ mod tests {
                         effort: None,
                         mode: Some(SessionMode::Auto),
                     },
-                    "Weather in Chicago and Denver?",
+                    &TranscriptEntry::UserMessage("Weather in Chicago and Denver?".to_owned()),
                 )
                 .unwrap();
             let batch = AssistantBatch::new(message.clone(), results.clone()).unwrap();
@@ -873,6 +976,21 @@ mod tests {
                     },
                 )
                 .unwrap();
+            store
+                .append_user(
+                    &id,
+                    &SessionSettingsChange {
+                        model: None,
+                        effort: Some(EffortLevel::Low),
+                        mode: None,
+                    },
+                    &TranscriptEntry::SkillInvocation(invocation()),
+                )
+                .unwrap();
+            store
+                .append_batch(&id, &AssistantBatch::new(answered.clone(), vec![]).unwrap())
+                .unwrap();
+            store.append_hook_feedback(&id, &stop_feedback()).unwrap();
             id
         };
 
@@ -900,11 +1018,15 @@ mod tests {
                     summary: "Chicago checked; Denver unavailable.".to_owned(),
                     covered_prefix: 6,
                 }),
+                TranscriptEntry::Effort(EffortLevel::Low),
+                TranscriptEntry::SkillInvocation(invocation()),
+                TranscriptEntry::AssistantMessage(answered),
+                TranscriptEntry::HookFeedback(stop_feedback()),
             ]
         );
         assert_eq!(
             stored.saved_settings(&SessionSettings::new("other", EffortLevel::High)),
-            SessionSettings::new(openrouter::DEFAULT_MODEL, EffortLevel::High)
+            SessionSettings::new(openrouter::DEFAULT_MODEL, EffortLevel::Low)
                 .with_mode(SessionMode::Auto)
         );
         let mut replay = Vec::new();
@@ -915,8 +1037,8 @@ mod tests {
         .unwrap();
         assert_eq!(
             replay.len(),
-            5,
-            "the checkpoint is hidden but earlier entries replay"
+            9,
+            "the checkpoint is hidden but the other entries replay"
         );
 
         drop(store);
@@ -1003,7 +1125,7 @@ mod tests {
                     effort: None,
                     mode: None,
                 },
-                "hello",
+                &TranscriptEntry::UserMessage("hello".to_owned()),
             )
             .unwrap();
         insert(
@@ -1067,6 +1189,48 @@ mod tests {
         insert(&effort_in_batch, "effort", r#""high""#);
         insert(&effort_in_batch, "user_message", r#""next""#);
         assert!(store.read(&effort_in_batch).is_err());
+
+        let feedback = serde_json::to_string(&stop_feedback()).unwrap();
+        let answered = message(vec![]);
+        for preceding in [
+            vec![("user_message", r#""hello""#.to_owned())],
+            vec![
+                ("user_message", r#""hello""#.to_owned()),
+                (
+                    "assistant_message",
+                    serde_json::to_string(&message(vec![call("call-1", "printf Chicago")]))
+                        .unwrap(),
+                ),
+                (
+                    "tool_result",
+                    serde_json::to_string(&completed("call-1")).unwrap(),
+                ),
+            ],
+            vec![
+                ("user_message", r#""hello""#.to_owned()),
+                (
+                    "assistant_message",
+                    serde_json::to_string(&answered).unwrap(),
+                ),
+                ("hook_feedback", feedback.clone()),
+            ],
+        ] {
+            let misplaced = store.create(workspace()).unwrap().id;
+            insert(
+                &misplaced,
+                "model",
+                &serde_json::to_string(openrouter::DEFAULT_MODEL).unwrap(),
+            );
+            for (kind, data) in &preceding {
+                insert(&misplaced, kind, data);
+            }
+            insert(&misplaced, "hook_feedback", &feedback);
+            assert!(
+                store.read(&misplaced).is_err(),
+                "hook feedback after {:?}",
+                preceding.last().unwrap().0
+            );
+        }
 
         let duplicate_settings = store.create(workspace()).unwrap().id;
         insert(
@@ -1217,6 +1381,16 @@ mod tests {
             ])
             .is_err()
         );
+        assert!(
+            validate_transcript(&[
+                TranscriptEntry::Model(openrouter::DEFAULT_MODEL.to_owned()),
+                TranscriptEntry::Mode(SessionMode::Auto),
+                TranscriptEntry::SkillInvocation(invocation()),
+                TranscriptEntry::AssistantMessage(message(vec![])),
+                TranscriptEntry::HookFeedback(stop_feedback()),
+            ])
+            .is_ok()
+        );
 
         let store = SessionStore::in_memory();
         let id = store.create(workspace()).unwrap().id;
@@ -1234,7 +1408,7 @@ mod tests {
                     effort: None,
                     mode: None,
                 },
-                "old transcript",
+                &TranscriptEntry::UserMessage("old transcript".to_owned()),
             )
             .unwrap();
         assert_eq!(
@@ -1255,7 +1429,7 @@ mod tests {
                     effort: Some(EffortLevel::Low),
                     mode: Some(SessionMode::Auto),
                 },
-                "first",
+                &TranscriptEntry::UserMessage("first".to_owned()),
             )
             .unwrap();
         store
@@ -1266,7 +1440,7 @@ mod tests {
                     effort: Some(EffortLevel::High),
                     mode: None,
                 },
-                "second",
+                &TranscriptEntry::UserMessage("second".to_owned()),
             )
             .unwrap();
         store
@@ -1277,7 +1451,7 @@ mod tests {
                     effort: Some(EffortLevel::Medium),
                     mode: None,
                 },
-                "third",
+                &TranscriptEntry::UserMessage("third".to_owned()),
             )
             .unwrap();
         assert_eq!(
@@ -1310,7 +1484,7 @@ mod tests {
                     effort: None,
                     mode: None,
                 },
-                "\n\nFirst line\nsecond line",
+                &TranscriptEntry::UserMessage("\n\nFirst line\nsecond line".to_owned()),
             )
             .unwrap();
         assert_eq!(first.session_title.as_deref(), Some("First line"));
@@ -1321,7 +1495,7 @@ mod tests {
             .append_user(
                 &created.id,
                 &SessionSettingsChange::default(),
-                "Something else",
+                &TranscriptEntry::UserMessage("Something else".to_owned()),
             )
             .unwrap();
         assert_eq!(second.session_title.as_deref(), Some("First line"));
@@ -1336,7 +1510,7 @@ mod tests {
                     effort: None,
                     mode: None,
                 },
-                &"x".repeat(MAX_SESSION_TITLE_CHARS + 10),
+                &TranscriptEntry::UserMessage("x".repeat(MAX_SESSION_TITLE_CHARS + 10)),
             )
             .unwrap()
             .session_title
@@ -1348,6 +1522,23 @@ mod tests {
         );
         assert!(session_title.ends_with('…'));
 
+        let skill = store.create(workspace()).unwrap();
+        let adopted = store
+            .append_user(
+                &skill.id,
+                &SessionSettingsChange {
+                    model: Some(openrouter::DEFAULT_MODEL.to_owned()),
+                    effort: None,
+                    mode: None,
+                },
+                &TranscriptEntry::SkillInvocation(invocation()),
+            )
+            .unwrap();
+        assert_eq!(
+            adopted.session_title.as_deref(),
+            Some("/goal Pass the tests.")
+        );
+
         assert!(
             store
                 .append_user(
@@ -1357,7 +1548,7 @@ mod tests {
                         effort: None,
                         mode: None,
                     },
-                    "hello",
+                    &TranscriptEntry::UserMessage("hello".to_owned()),
                 )
                 .is_err(),
             "appending never creates a session"
@@ -1400,7 +1591,7 @@ mod tests {
                     effort: None,
                     mode: None,
                 },
-                "hello",
+                &TranscriptEntry::UserMessage("hello".to_owned()),
             )
             .unwrap();
 

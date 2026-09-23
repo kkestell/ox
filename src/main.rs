@@ -1,8 +1,11 @@
 mod acp;
 mod auth;
 mod compaction;
+mod hooks;
 mod openrouter;
+mod process;
 mod sessions;
+mod skills;
 mod system_prompt;
 mod tools;
 
@@ -133,7 +136,11 @@ async fn run() -> Result<(), Box<dyn Error>> {
             model,
             effort,
             prompt,
-        } => acp::run_headless(&absolute_dir(dir.as_deref())?, model, effort, prompt).await?,
+        } => {
+            let answer =
+                acp::run_headless(&absolute_dir(dir.as_deref())?, model, effort, prompt).await?;
+            println!("{answer}");
+        }
         Command::Login => {
             let api_key = rpassword::prompt_password("OpenRouter API key: ")?;
             let api_key = api_key.trim();
