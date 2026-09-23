@@ -3,6 +3,7 @@
 use std::{
     collections::{BTreeMap, VecDeque},
     io::{self, ErrorKind},
+    time::Duration,
 };
 
 use serde::Deserialize;
@@ -16,105 +17,180 @@ use crate::{
     tools,
 };
 
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug)]
 pub struct CatalogModel {
     pub id: String,
     pub name: String,
     pub context_limit: usize,
-    effort_mapping: EffortMapping,
-}
-
-/// The OpenRouter effort sent for Low, Medium, and High.
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct EffortMapping {
-    low: String,
-    medium: String,
-    high: String,
+    /// `Default` followed by the efforts OpenRouter lists, in ascending order.
+    pub efforts: Vec<EffortLevel>,
 }
 
 impl CatalogModel {
-    pub fn openrouter_effort(&self, level: EffortLevel) -> Option<&str> {
-        let mapping = &self.effort_mapping;
-        match level {
-            EffortLevel::Default => None,
-            EffortLevel::Low => Some(&mapping.low),
-            EffortLevel::Medium => Some(&mapping.medium),
-            EffortLevel::High => Some(&mapping.high),
-        }
+    pub fn supports(&self, effort: EffortLevel) -> bool {
+        self.efforts.contains(&effort)
     }
 
-    pub fn validate(&self) -> io::Result<()> {
-        let mapping = &self.effort_mapping;
-        let invalid = |message: String| Err(io::Error::new(ErrorKind::InvalidData, message));
-        if [
-            &self.id,
-            &self.name,
-            &mapping.low,
-            &mapping.medium,
-            &mapping.high,
-        ]
-        .iter()
-        .any(|value| value.trim().is_empty())
-        {
-            return invalid(format!("model {:?} has a blank field", self.id));
-        }
-        // Compaction reserves 8,000 tokens below the context limit.
-        if self.context_limit <= 8_000 {
-            return invalid(format!(
-                "model {} context_limit must be greater than 8000",
-                self.id
-            ));
-        }
-        Ok(())
+    /// The lowest effort that still reasons, for summarizer requests.
+    pub fn summary_effort(&self) -> EffortLevel {
+        self.efforts
+            .iter()
+            .copied()
+            .find(|effort| !matches!(effort, EffortLevel::Default | EffortLevel::None))
+            .unwrap_or(EffortLevel::Default)
     }
 }
 
-static CATALOG: std::sync::OnceLock<Vec<CatalogModel>> = std::sync::OnceLock::new();
-
-/// Installs the model catalog loaded from settings, once per process.
-pub fn install_catalog(models: Vec<CatalogModel>) {
-    assert!(!models.is_empty(), "the model catalog is not empty");
-    CATALOG
-        .set(models)
-        .expect("the model catalog is installed once");
+/// The fields Ox reads from one entry of OpenRouter's `GET /models`.
+#[derive(Deserialize)]
+struct OpenRouterModel {
+    id: String,
+    name: String,
+    context_length: usize,
+    /// Unix seconds when OpenRouter added the model.
+    created: i64,
+    architecture: Architecture,
+    supported_parameters: Vec<String>,
+    #[serde(default)]
+    reasoning: Option<Reasoning>,
 }
 
-pub fn catalog() -> &'static [CatalogModel] {
+#[derive(Deserialize)]
+struct Architecture {
+    input_modalities: Vec<String>,
+    output_modalities: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct Reasoning {
+    #[serde(default)]
+    supported_efforts: Option<Vec<String>>,
+}
+
+#[derive(Deserialize)]
+struct ModelsResponse {
+    data: Vec<OpenRouterModel>,
+}
+
+/// Parses OpenRouter's `GET /models` response and applies the catalog filter:
+/// a model must not be a `:batch` variant, which the chat-completions endpoint
+/// does not serve, and must accept tools, take and produce text, have a context
+/// limit above
+/// the 8,000 tokens compaction reserves, and have been released within
+/// `RECENT_SECONDS` of `now`. Efforts Ox does not know are dropped. Models are
+/// sorted by name.
+/// About six months.
+const RECENT_SECONDS: i64 = 183 * 24 * 60 * 60;
+
+pub fn parse_catalog(text: &str, now: i64) -> io::Result<Vec<CatalogModel>> {
+    let response: ModelsResponse = serde_json::from_str(text).map_err(|error| {
+        io::Error::new(
+            ErrorKind::InvalidData,
+            format!("malformed OpenRouter model catalog: {error}"),
+        )
+    })?;
+    let has = |values: &[String], wanted: &str| values.iter().any(|value| value == wanted);
+    let mut models = response
+        .data
+        .into_iter()
+        .filter(|model| {
+            !model.id.ends_with(":batch")
+                && has(&model.supported_parameters, "tools")
+                && has(&model.architecture.input_modalities, "text")
+                && has(&model.architecture.output_modalities, "text")
+                && model.context_length > 8_000
+                && model.created >= now - RECENT_SECONDS
+        })
+        .map(|model| {
+            let listed = model
+                .reasoning
+                .and_then(|reasoning| reasoning.supported_efforts)
+                .unwrap_or_default();
+            let efforts = EffortLevel::ALL
+                .into_iter()
+                .filter(|effort| *effort == EffortLevel::Default || has(&listed, effort.id()))
+                .collect();
+            CatalogModel {
+                id: model.id,
+                name: model.name,
+                context_limit: model.context_length,
+                efforts,
+            }
+        })
+        .collect::<Vec<_>>();
+    models.sort_by_key(|model| model.name.to_lowercase());
+    if models.is_empty() {
+        return Err(io::Error::new(
+            ErrorKind::InvalidData,
+            "the OpenRouter model catalog has no usable models",
+        ));
+    }
+    Ok(models)
+}
+
+/// Downloads and filters OpenRouter's model catalog. It needs no API key.
+pub async fn fetch_catalog() -> io::Result<Vec<CatalogModel>> {
+    let response = reqwest::Client::new()
+        .get(format!("{ENDPOINT}/models"))
+        .timeout(Duration::from_secs(15))
+        .send()
+        .await
+        .map_err(transport)?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(io::Error::other(format!(
+            "OpenRouter model catalog returned {status}"
+        )));
+    }
+    parse_catalog(
+        &response.text().await.map_err(transport)?,
+        chrono::Utc::now().timestamp(),
+    )
+}
+
+struct Catalog {
+    models: Vec<CatalogModel>,
+    default_model: String,
+}
+
+static CATALOG: std::sync::OnceLock<Catalog> = std::sync::OnceLock::new();
+
+/// Installs the fetched model catalog and the default model, once per process.
+pub fn install_catalog(models: Vec<CatalogModel>, default_model: String) -> io::Result<()> {
+    if !models.iter().any(|model| model.id == default_model) {
+        return Err(io::Error::new(
+            ErrorKind::InvalidData,
+            format!("model {default_model} is not in the OpenRouter model catalog"),
+        ));
+    }
+    if CATALOG
+        .set(Catalog {
+            models,
+            default_model,
+        })
+        .is_err()
+    {
+        panic!("the model catalog is installed once");
+    }
+    Ok(())
+}
+
+fn installed() -> &'static Catalog {
     #[cfg(test)]
-    CATALOG.get_or_init(test_catalog);
+    CATALOG.get_or_init(|| Catalog {
+        models: parse_catalog(fixture::CATALOG, fixture::NOW).unwrap(),
+        default_model: "deepseek/deepseek-v4.1-flash".to_owned(),
+    });
     CATALOG.get().expect("the model catalog is installed")
 }
 
-#[cfg(test)]
-fn test_catalog() -> Vec<CatalogModel> {
-    serde_json::from_value(json!([
-        {
-            "id": "deepseek/deepseek-v4.1-flash",
-            "name": "DeepSeek V4.1 Flash",
-            "context_limit": 1_048_576,
-            "effort_mapping": {"low": "low", "medium": "high", "high": "max"},
-        },
-        {
-            "id": "z-ai/glm-5.3-flash",
-            "name": "GLM 5.3 Flash",
-            "context_limit": 1_310_720,
-            "effort_mapping": {"low": "low", "medium": "high", "high": "max"},
-        },
-        {
-            "id": "meta/muse-spark-1.3-contributor",
-            "name": "Muse Spark 1.3 Contributor",
-            "context_limit": 1_048_576,
-            "effort_mapping": {"low": "low", "medium": "medium", "high": "high"},
-        },
-    ]))
-    .unwrap()
+pub fn catalog() -> &'static [CatalogModel] {
+    &installed().models
 }
 
-/// The first model in the catalog.
+/// The model named by `model` in the settings file.
 pub fn default_model() -> &'static str {
-    &catalog()[0].id
+    &installed().default_model
 }
 
 const ENDPOINT: &str = "https://openrouter.ai/api/v1";
@@ -178,7 +254,7 @@ pub(crate) fn ordinary_body(
     system_prompt: &str,
     transcript: &[TranscriptEntry],
 ) -> io::Result<Value> {
-    let catalog = catalog_model(model)
+    catalog_model(model)
         .ok_or_else(|| io::Error::new(ErrorKind::InvalidInput, format!("unknown model {model}")))?;
     let messages = std::iter::once(json!({ "role": "system", "content": system_prompt }))
         .chain(chat_messages(transcript))
@@ -190,8 +266,8 @@ pub(crate) fn ordinary_body(
         "stream": true,
         "usage": { "include": true },
     });
-    if let Some(mapped) = catalog.openrouter_effort(effort) {
-        body["reasoning"] = json!({ "effort": mapped });
+    if let Some(effort) = effort.openrouter_effort() {
+        body["reasoning"] = json!({ "effort": effort });
     }
     Ok(body)
 }
@@ -199,17 +275,20 @@ pub(crate) fn ordinary_body(
 pub(crate) fn summary_body(model: &str, previous: &str, piece: &str) -> io::Result<Value> {
     let catalog = catalog_model(model)
         .ok_or_else(|| io::Error::new(ErrorKind::InvalidInput, format!("unknown model {model}")))?;
-    Ok(json!({
+    let mut body = json!({
         "model": model,
         "messages": [
             {"role": "system", "content": include_str!("prompts/compaction_prompt.md")},
             {"role": "user", "content": format!("Previous summary:\n{previous}\n\nNew conversation material:\n{piece}")},
         ],
-        "reasoning": {"effort": catalog.openrouter_effort(EffortLevel::Low)},
         "max_tokens": 4096,
         "stream": true,
         "usage": { "include": true },
-    }))
+    });
+    if let Some(effort) = catalog.summary_effort().openrouter_effort() {
+        body["reasoning"] = json!({ "effort": effort });
+    }
+    Ok(body)
 }
 
 impl Client {
@@ -722,6 +801,44 @@ pub(crate) mod fixture {
     use super::{Client, default_model};
     use crate::tools;
 
+    /// The time `CATALOG` is filtered at: 2026-09-23.
+    pub const NOW: i64 = 1_790_121_600;
+
+    /// An OpenRouter `GET /models` response, out of name order. The last five
+    /// models fail the catalog filter.
+    pub const CATALOG: &str = r#"{"data": [
+        {"id": "acme/plain", "name": "Plain", "context_length": 8001, "created": 1774310400,
+         "architecture": {"input_modalities": ["text"], "output_modalities": ["text"]},
+         "supported_parameters": ["tools"], "reasoning": {"mandatory": false}},
+        {"id": "z-ai/glm-5.3-flash", "name": "GLM 5.3 Flash", "context_length": 1310720, "created": 1788393600,
+         "architecture": {"input_modalities": ["text", "image"], "output_modalities": ["text"]},
+         "supported_parameters": ["tools"],
+         "reasoning": {"supported_efforts": ["future", "max", "xhigh", "high", "medium", "low"]}},
+        {"id": "deepseek/deepseek-v4.1-flash", "name": "DeepSeek V4.1 Flash", "context_length": 1048576, "created": 1789689600,
+         "architecture": {"input_modalities": ["text"], "output_modalities": ["text"]},
+         "supported_parameters": ["reasoning", "tools"],
+         "reasoning": {"supported_efforts": ["max", "high", "medium", "low"], "default_effort": "high"}},
+        {"id": "meta/muse-spark-1.3-contributor", "name": "Muse Spark 1.3 Contributor", "context_length": 1048576, "created": 1788998400,
+         "architecture": {"input_modalities": ["text"], "output_modalities": ["text"]},
+         "supported_parameters": ["tools"],
+         "reasoning": {"supported_efforts": ["xhigh", "high", "medium", "none"]}},
+        {"id": "acme/no-tools", "name": "No Tools", "context_length": 1048576, "created": 1789689600,
+         "architecture": {"input_modalities": ["text"], "output_modalities": ["text"]},
+         "supported_parameters": ["reasoning"]},
+        {"id": "acme/image-out", "name": "Image Out", "context_length": 1048576, "created": 1789689600,
+         "architecture": {"input_modalities": ["text"], "output_modalities": ["image"]},
+         "supported_parameters": ["tools"]},
+        {"id": "acme/small", "name": "Small", "context_length": 8000, "created": 1789689600,
+         "architecture": {"input_modalities": ["text"], "output_modalities": ["text"]},
+         "supported_parameters": ["tools"]},
+        {"id": "deepseek/deepseek-v4.1-flash:batch", "name": "DeepSeek V4.1 Flash (batch)", "context_length": 1048576, "created": 1789689600,
+         "architecture": {"input_modalities": ["text"], "output_modalities": ["text"]},
+         "supported_parameters": ["tools"]},
+        {"id": "acme/old", "name": "Old", "context_length": 1048576, "created": 1774310399,
+         "architecture": {"input_modalities": ["text"], "output_modalities": ["text"]},
+         "supported_parameters": ["tools"]}
+    ]}"#;
+
     pub enum Reply {
         /// A complete SSE body, one HTTP chunk per event, then the
         /// connection stays open for the next request.
@@ -1144,10 +1261,34 @@ mod tests {
         assert!(projected_messages[3].get("reasoning").is_none());
     }
 
+    #[test]
+    fn catalog_filter_keeps_recent_usable_models_by_name_with_known_efforts() {
+        use EffortLevel::*;
+        let models = catalog();
+        assert_eq!(
+            models
+                .iter()
+                .map(|model| model.id.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "deepseek/deepseek-v4.1-flash",
+                "z-ai/glm-5.3-flash",
+                "meta/muse-spark-1.3-contributor",
+                "acme/plain",
+            ]
+        );
+        assert_eq!(models[1].efforts, [Default, Low, Medium, High, XHigh, Max]);
+        assert_eq!(models[2].summary_effort(), Medium);
+        assert_eq!(models[3].efforts, [Default]);
+        assert_eq!(models[3].summary_effort(), Default);
+        assert!(parse_catalog(r#"{"data": []}"#, fixture::NOW).is_err());
+        assert!(parse_catalog(r#"{"data": [{"id": "a/b"}]}"#, fixture::NOW).is_err());
+    }
+
     #[tokio::test]
-    async fn requests_map_each_effort_for_each_model() {
+    async fn requests_send_each_effort_of_each_model() {
         for model in catalog() {
-            for effort in EffortLevel::ALL {
+            for effort in model.efforts.iter().copied() {
                 let server = Server::start(vec![text_reply("Done")]).await;
                 let mut stream = server
                     .client()
@@ -1158,9 +1299,9 @@ mod tests {
                 let requests = server.requests();
                 let body = &requests[0];
                 assert_eq!(body["model"], model.id);
-                match model.openrouter_effort(effort) {
-                    Some(expected) => assert_eq!(body["reasoning"]["effort"], expected),
-                    None => assert!(body.get("reasoning").is_none()),
+                match effort {
+                    EffortLevel::Default => assert!(body.get("reasoning").is_none()),
+                    _ => assert_eq!(body["reasoning"]["effort"], effort.id()),
                 }
             }
         }

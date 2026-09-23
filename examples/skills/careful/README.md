@@ -54,11 +54,11 @@ do not run for ordinary messages, `/compact`, or headless prompts.
 ## Global hooks
 
 To enable hooks across workspaces, define them in `~/.config/ox/settings.json`
-next to its required `models` list:
+next to its required `model`:
 
 ```json
 {
-  "models": [ ... ],
+  "model": "deepseek/deepseek-v4.1-flash",
   "hooks": {
     "before_tool": { "command": "python3 scripts/careful.py" },
     "after_run": { "command": "python3 scripts/careful.py" }

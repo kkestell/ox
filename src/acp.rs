@@ -46,23 +46,31 @@ fn default_settings() -> SessionSettings {
     SessionSettings::new(openrouter::default_model(), EffortLevel::Default)
 }
 
+/// Rejects saved or selected settings the fetched model catalog no longer
+/// accepts.
 fn validate_settings(settings: &SessionSettings) -> Result<()> {
-    if openrouter::catalog_model(&settings.model).is_some() {
-        return Ok(());
-    }
-    Err(Error::into_internal_error(io::Error::new(
-        ErrorKind::InvalidData,
-        format!(
+    let message = match openrouter::catalog_model(&settings.model) {
+        None => format!(
             "session model {} is not in the model catalog",
             settings.model
         ),
+        Some(model) if !model.supports(settings.effort) => format!(
+            "session model {} does not accept effort {}",
+            settings.model,
+            settings.effort.id()
+        ),
+        Some(_) => return Ok(()),
+    };
+    Err(Error::into_internal_error(io::Error::new(
+        ErrorKind::InvalidData,
+        message,
     )))
 }
 
 fn config_options(settings: &SessionSettings, model_locked: bool) -> Vec<SessionConfigOption> {
+    let model = openrouter::catalog_model(&settings.model)
+        .expect("a session model comes from the model catalog");
     let models = if model_locked {
-        let model = openrouter::catalog_model(&settings.model)
-            .expect("a session model comes from the model catalog");
         vec![SessionConfigSelectOption::new(
             model.id.clone(),
             model.name.clone(),
@@ -80,8 +88,9 @@ fn config_options(settings: &SessionSettings, model_locked: bool) -> Vec<Session
             "effort",
             "Effort",
             settings.effort.id(),
-            EffortLevel::ALL
-                .into_iter()
+            model
+                .efforts
+                .iter()
                 .map(|effort| SessionConfigSelectOption::new(effort.id(), effort.name()))
                 .collect::<Vec<_>>(),
         )
@@ -319,14 +328,21 @@ impl ServerState {
                     ))
                 })?;
                 selections.model.clone_from(&model.id);
+                if !model.supports(selections.effort) {
+                    selections.effort = EffortLevel::Default;
+                }
             }
             "effort" => {
-                selections.effort = EffortLevel::from_id(value.0.as_ref()).ok_or_else(|| {
-                    Error::invalid_params().data(format!(
-                        "{} is not a choice of configuration option {}",
-                        value, request.config_id
-                    ))
-                })?;
+                let model = openrouter::catalog_model(&selections.model)
+                    .expect("a session model comes from the model catalog");
+                selections.effort = EffortLevel::from_id(value.0.as_ref())
+                    .filter(|effort| model.supports(*effort))
+                    .ok_or_else(|| {
+                        Error::invalid_params().data(format!(
+                            "{} is not a choice of configuration option {}",
+                            value, request.config_id
+                        ))
+                    })?;
             }
             "mode" => {
                 selections.mode = SessionMode::from_id(value.0.as_ref()).ok_or_else(|| {
@@ -1378,16 +1394,57 @@ mod tests {
                 }
             ])
         );
+        let set = |id: &'static str, value: &'static str| {
+            state
+                .set_config_option(&SetSessionConfigOptionRequest::new(
+                    created.session_id.clone(),
+                    id,
+                    value,
+                ))
+                .map(|response| serde_json::to_value(response).unwrap())
+        };
+        let effort_values = |options: &serde_json::Value| {
+            (
+                options["configOptions"][1]["currentValue"].clone(),
+                options["configOptions"][1]["options"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|option| option["value"].as_str().unwrap().to_owned())
+                    .collect::<Vec<_>>(),
+            )
+        };
+        assert_eq!(
+            effort_values(&new_options),
+            (
+                serde_json::json!("default"),
+                ["default", "low", "medium", "high", "max"]
+                    .map(String::from)
+                    .to_vec()
+            )
+        );
+        assert_eq!(
+            set("effort", "xhigh").unwrap_err().code,
+            ErrorCode::InvalidParams,
+            "the default model does not list xhigh"
+        );
+        set("effort", "max").unwrap();
         let chosen = openrouter::catalog()[1].id.as_str();
-        let response = state
-            .set_config_option(&SetSessionConfigOptionRequest::new(
-                created.session_id.clone(),
-                "model",
-                chosen,
-            ))
-            .unwrap();
-        let response = serde_json::to_value(response).unwrap();
+        let response = set("model", openrouter::catalog()[2].id.as_str()).unwrap();
+        assert_eq!(
+            effort_values(&response),
+            (
+                serde_json::json!("default"),
+                ["default", "none", "medium", "high", "xhigh"]
+                    .map(String::from)
+                    .to_vec()
+            ),
+            "a model without the current effort level resets it"
+        );
+        set("effort", "xhigh").unwrap();
+        let response = set("model", chosen).unwrap();
         assert_eq!(response["configOptions"][0]["currentValue"], chosen);
+        assert_eq!(response["configOptions"][1]["currentValue"], "xhigh");
         assert_eq!(
             response["configOptions"][0]["options"]
                 .as_array()
@@ -1395,26 +1452,12 @@ mod tests {
                 .len(),
             openrouter::catalog().len()
         );
-        let response = state
-            .set_config_option(&SetSessionConfigOptionRequest::new(
-                created.session_id.clone(),
-                "mode",
-                "auto",
-            ))
-            .unwrap();
         assert_eq!(
-            serde_json::to_value(response).unwrap()["configOptions"][2]["currentValue"],
+            set("mode", "auto").unwrap()["configOptions"][2]["currentValue"],
             "auto"
         );
         assert_eq!(
-            state
-                .set_config_option(&SetSessionConfigOptionRequest::new(
-                    created.session_id.clone(),
-                    "mode",
-                    "unknown",
-                ))
-                .unwrap_err()
-                .code,
+            set("mode", "unknown").unwrap_err().code,
             ErrorCode::InvalidParams
         );
 
@@ -1430,14 +1473,10 @@ mod tests {
                 &TranscriptEntry::UserMessage("Hello".to_owned()),
             )
             .unwrap();
-        let error = state
-            .set_config_option(&SetSessionConfigOptionRequest::new(
-                created.session_id.clone(),
-                "model",
-                openrouter::default_model(),
-            ))
-            .unwrap_err();
-        assert_eq!(error.code, ErrorCode::InvalidParams);
+        assert_eq!(
+            set("model", openrouter::default_model()).unwrap_err().code,
+            ErrorCode::InvalidParams
+        );
         state
             .store
             .append_batch(
@@ -1542,7 +1581,7 @@ mod tests {
                 .set_config_option(&SetSessionConfigOptionRequest::new(
                     id.clone(),
                     "effort",
-                    "high",
+                    "max",
                 ))
                 .unwrap();
             state
@@ -1575,7 +1614,7 @@ mod tests {
                 TranscriptEntry::Model(_),
                 TranscriptEntry::Effort(EffortLevel::Low),
                 TranscriptEntry::UserMessage(first),
-                TranscriptEntry::Effort(EffortLevel::High),
+                TranscriptEntry::Effort(EffortLevel::Max),
                 TranscriptEntry::Mode(SessionMode::Auto),
                 TranscriptEntry::UserMessage(second),
             ] if first == "first" && second == "second"
@@ -2092,7 +2131,7 @@ Run the commands.
         }
         let workspace = Workspace::new();
         fs::create_dir_all(workspace.0.join(".config/ox")).unwrap();
-        fs::write(workspace.0.join(".config/ox/settings.json"), r#"{"models":[{"id":"a/b","name":"B","context_limit":8001,"effort_mapping":{"low":"low","medium":"high","high":"max"}}],"hooks":{"after_run":{"command":"printf %s \"$OX_IN_HOOK\" > reported; echo '{}'"}}}"#).unwrap();
+        fs::write(workspace.0.join(".config/ox/settings.json"), r#"{"model":"a/b","hooks":{"after_run":{"command":"printf %s \"$OX_IN_HOOK\" > reported; echo '{}'"}}}"#).unwrap();
         let mut child = tokio::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",

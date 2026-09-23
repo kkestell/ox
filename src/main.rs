@@ -22,7 +22,8 @@ use std::{
 use sessions::EffortLevel;
 
 const USAGE: &str = "ox [run [--dir <workspace-path>] [--model <model-id>] \
-                     [--effort <default|low|medium|high>] <prompt> | auth <login|logout>]";
+                     [--effort <default|none|minimal|low|medium|high|xhigh|max>] <prompt> \
+                     | auth <login|logout>]";
 
 enum Command {
     Serve,
@@ -102,6 +103,25 @@ fn resolve_model(model: Option<String>) -> io::Result<String> {
     )))
 }
 
+/// Rejects an effort level the chosen model does not list.
+fn check_effort(model: &str, effort: EffortLevel) -> io::Result<()> {
+    let model = openrouter::catalog_model(model).expect("a resolved model is in the catalog");
+    if model.supports(effort) {
+        return Ok(());
+    }
+    Err(invalid_input(format!(
+        "{} does not accept effort {}; choose one of {}",
+        model.id,
+        effort.id(),
+        model
+            .efforts
+            .iter()
+            .map(|effort| effort.id())
+            .collect::<Vec<_>>()
+            .join(", ")
+    )))
+}
+
 fn usage_error() -> io::Error {
     invalid_input(format!("usage: {USAGE}"))
 }
@@ -124,10 +144,16 @@ fn absolute_dir(dir: Option<&Path>) -> io::Result<PathBuf> {
     dir.canonicalize()
 }
 
-/// Installs the model catalog and returns the global hooks.
-fn load_settings() -> io::Result<Option<hooks::RunHooks>> {
+/// Fetches and installs the model catalog and returns the global hooks.
+async fn load_settings() -> io::Result<Option<hooks::RunHooks>> {
     let settings = settings::load()?;
-    openrouter::install_catalog(settings.models);
+    openrouter::install_catalog(openrouter::fetch_catalog().await?, settings.default_model)
+        .map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                format!("{}: {error}", settings.path.display()),
+            )
+        })?;
     Ok(settings.global_hooks)
 }
 
@@ -144,17 +170,19 @@ async fn main() -> ExitCode {
 
 async fn run() -> Result<(), Box<dyn Error>> {
     match command(env::args().skip(1))? {
-        Command::Serve => acp::serve_stdio(load_settings()?).await?,
+        Command::Serve => acp::serve_stdio(load_settings().await?).await?,
         Command::Run {
             dir,
             model,
             effort,
             prompt,
         } => {
-            let global_hooks = load_settings()?;
+            let global_hooks = load_settings().await?;
+            let model = resolve_model(model)?;
+            check_effort(&model, effort)?;
             let answer = acp::run_headless(
                 &absolute_dir(dir.as_deref())?,
-                resolve_model(model)?,
+                model,
                 effort,
                 prompt,
                 global_hooks,
@@ -242,7 +270,7 @@ mod tests {
             "--model",
             chosen,
             "--effort",
-            "high",
+            "xhigh",
         ])
         .unwrap()
         else {
@@ -250,7 +278,8 @@ mod tests {
         };
         assert_eq!(dir.as_deref(), Some(Path::new("workspace")));
         assert_eq!(resolve_model(model).unwrap(), chosen);
-        assert_eq!(effort, EffortLevel::High);
+        assert_eq!(effort, EffortLevel::XHigh);
+        check_effort(chosen, effort).unwrap();
         assert_eq!(prompt, "Fix it");
     }
 
@@ -267,7 +296,13 @@ mod tests {
                 .to_string()
                 .contains("not a model")
         );
-        assert!(error(&["run", "--effort", "max", "Hello"]).contains("not an effort level"));
+        assert!(error(&["run", "--effort", "huge", "Hello"]).contains("not an effort level"));
+        assert!(
+            check_effort(openrouter::default_model(), EffortLevel::XHigh)
+                .unwrap_err()
+                .to_string()
+                .contains("choose one of default, low, medium, high, max")
+        );
     }
 
     fn error(args: &[&str]) -> String {

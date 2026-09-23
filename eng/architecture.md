@@ -150,13 +150,26 @@ invoke skills.
 ### Settings
 
 Ox reads `$HOME/.config/ox/settings.json` once when starting the ACP server or
-one headless run; `ox auth` and help do not read it. Ox has no built-in models.
-The required `models` list is the model catalog: each model's id, name, context
-limit, and effort mapping. The first model is the default model. A missing,
-malformed, unreadable, non-UTF-8, or oversized settings file, an empty model
-catalog, a duplicate id, a blank field, or a context limit of 8,000 or less
-fails startup with its path. Restarting Ox reads edits. The model catalog is
-installed once per process; `OX_IN_HOOK` does not affect it.
+one headless run; `ox auth` and help do not read it. Its required `model` names
+the default model. A missing, malformed, unreadable, non-UTF-8, or oversized
+settings file, or a blank `model`, fails startup with its path. Restarting Ox
+reads edits.
+
+After reading settings, Ox downloads the model catalog from OpenRouter's
+`GET /models`, which needs no API key. The catalog filter keeps models that
+OpenRouter added within the last 183 days, are not `:batch` variants, which
+the chat-completions endpoint does not serve, accept tools, take text input,
+produce text output, and have a context limit above 8,000 tokens. The catalog is
+sorted by model name. A model's effort levels are Default
+plus each effort OpenRouter lists for it that Ox knows. A failed download, a
+malformed response, an empty filtered catalog, or a default model outside it
+fails startup. The model catalog is installed once per process; `OX_IN_HOOK`
+does not affect it.
+
+The ACP `effort` option lists only the selected model's effort levels.
+Selecting a model that lacks the current effort level resets it to Default. A
+saved model outside the catalog, or a saved effort level its model no longer
+lists, fails load and prompt runs.
 
 ### Global hooks
 
@@ -222,7 +235,9 @@ process assembles it again from its built-in prompt and the then-current
 the session title.
 
 Compaction uses the dedicated `src/prompts/compaction_prompt.md` as its system
-prompt, the session model at Low effort, no tools, and a bounded text completion.
+prompt, the session model at its summarizer effort (its lowest effort level
+other than Default and `none`, or Default when it lists none), no tools, and a
+bounded text completion.
 The active session's system prompt remains unchanged for ordinary requests.
 
 ## Lifecycle boundaries

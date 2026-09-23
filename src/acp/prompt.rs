@@ -209,15 +209,7 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
         if !stored.transcript.is_empty() {
             settings.model.clone_from(&saved_settings.model);
         }
-        if openrouter::catalog_model(&settings.model).is_none() {
-            return Err(Error::into_internal_error(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!(
-                    "session model {} is not in the model catalog",
-                    settings.model
-                ),
-            )));
-        }
+        super::validate_settings(&settings)?;
         let settings_change = SessionSettingsChange {
             model: stored.transcript.is_empty().then(|| settings.model.clone()),
             effort: (saved_settings.effort != settings.effort).then_some(settings.effort),
@@ -2469,7 +2461,7 @@ mod tests {
         let (first, _) = harness
             .run_with_settings("one", first_settings, move |update| {
                 if matches!(update, SessionUpdate::SessionInfoUpdate(_)) {
-                    *changed.borrow_mut() = EffortLevel::High;
+                    *changed.borrow_mut() = EffortLevel::Max;
                 }
                 Ok(())
             })
@@ -2487,7 +2479,7 @@ mod tests {
                 TranscriptEntry::Effort(EffortLevel::Low),
                 user("one"),
                 answer("First"),
-                TranscriptEntry::Effort(EffortLevel::High),
+                TranscriptEntry::Effort(EffortLevel::Max),
                 user("two"),
                 answer("Second"),
             ]
@@ -2502,7 +2494,7 @@ mod tests {
     #[tokio::test]
     async fn absent_selection_uses_saved_settings_without_duplicate_entries() {
         let harness = Harness::new(vec![text_reply("Done")]).await;
-        let saved = SessionSettings::new(catalog()[1].id.as_str(), EffortLevel::High);
+        let saved = SessionSettings::new(catalog()[1].id.as_str(), EffortLevel::Max);
         harness
             .store
             .append_user(
@@ -2527,7 +2519,7 @@ mod tests {
             transcript,
             vec![
                 TranscriptEntry::Model(saved.model),
-                TranscriptEntry::Effort(EffortLevel::High),
+                TranscriptEntry::Effort(EffortLevel::Max),
                 user("saved turn"),
                 user("next turn"),
                 answer("Done"),

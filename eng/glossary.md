@@ -27,7 +27,7 @@
 | prompt outcome              | `stopReason`         | `finish_reason`                                 |
 | system prompt               | —                    | first `system` message                          |
 | context tokens              | `used`               | `usage.prompt_tokens + usage.completion_tokens` |
-| context limit               | `size`               | —                                               |
+| context limit               | `size`               | `context_length`                                |
 | session cost                | `cost`               | sum of `usage.cost`                             |
 
 ## Terms
@@ -64,10 +64,10 @@
   fallback when there are no ACP selections.
 - **Settings snapshot**: The session settings a prompt run captures at its turn
   boundary.
-- **Effort level**: One of Ox's four reasoning levels: Default, Low, Medium, or
-  High.
-- **Effort mapping**: The per-model table that turns an effort level into an
-  OpenRouter effort string, or into no reasoning parameter for Default.
+- **Effort level**: Default, which sends no reasoning parameter, or one of the
+  OpenRouter efforts `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, or
+  `max`. A model's effort levels are Default plus the efforts OpenRouter lists
+  for it.
 - **Session mode**: The durable choice that controls shell authorization for a
   turn: Ask or Auto.
 - **Ask mode**: The session mode that requests ACP client permission before
@@ -84,8 +84,8 @@
   conversation into later model requests. It is separate from session metadata.
 - **Compaction checkpoint**: A saved transcript entry with a compaction summary
   and the exclusive index of the completed prefix it covers.
-- **Context limit**: The maximum token budget of one model request and output
-  in the model catalog.
+- **Context limit**: The maximum token budget of one model request and output,
+  taken from the model's OpenRouter `context_length` in the model catalog.
 - **Request estimate**: Ox's heuristic token estimate for a serialized model
   request, using three bytes per token.
 - **Stored session**: A session summary paired with its validated transcript.
@@ -154,11 +154,15 @@
   used for every model request in that session.
 - **OpenRouter client**: The concrete client that verifies the API key and sends
   model requests to OpenRouter's chat-completions endpoint.
-- **Model catalog**: The OpenRouter models declared in `models` in
-  `~/.config/ox/settings.json`, each with its name, context limit, and effort
-  mapping. Ox has no built-in models.
-- **Default model**: The first model in the model catalog, used for a new
-  session and for `ox run` without `--model`.
+- **Model catalog**: The OpenRouter models from `GET /models` that pass the
+  catalog filter, fetched once at startup, each with its name, context limit,
+  and effort levels.
+- **Catalog filter**: The rules that admit an OpenRouter model to the model
+  catalog: OpenRouter added it within the last 183 days, it is not a `:batch`
+  variant, it accepts tools, takes text input, produces text output, and has a context limit above 8,000 tokens.
+- **Default model**: The model named by `model` in
+  `~/.config/ox/settings.json`, used for a new session and for `ox run` without
+  `--model`.
 - **Model request**: One OpenRouter chat-completion HTTP request. A prompt run
   may make several.
 - **Completion stream**: The reader for one streamed OpenRouter response after

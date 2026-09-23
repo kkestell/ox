@@ -4,11 +4,12 @@ Run `cargo test` for the in-module `#[cfg(test)]` suite and `cargo build` for a
 debug build.
 
 For live end-to-end testing, prefer
-`scripts/run.py [--keep] [--repo <GitHub-commit-URL>] [--model <model-id>] [--effort <default|low|medium|high>] '<prompt>'`.
+`scripts/run.py [--keep] [--repo <GitHub-commit-URL>] [--model <model-id>] [--effort <effort>] '<prompt>'`.
 It reads `OPENROUTER_API_KEY` from `.env` and creates a temporary workspace. To
 use an existing workspace, run
-`ox run [--dir <workspace-path>] [--model <model-id>] [--effort <default|low|medium|high>] '<prompt>'`
-directly. The model must be in the model catalog; an unset model or effort uses
+`ox run [--dir <workspace-path>] [--model <model-id>] [--effort <effort>] '<prompt>'`
+directly. The model must be in the model catalog and the effort level must be
+one it lists; an unset model or effort uses
 the same defaults as a new ACP session. The headless run creates a new session
 in `ox.db`, prints the final answer to stdout when the prompt ends normally, and
 otherwise prints nothing to stdout and exits with a failure status. Set

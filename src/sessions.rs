@@ -236,40 +236,68 @@ impl SessionMode {
     }
 }
 
-/// How much reasoning Ox asks a model to do. `Default` leaves the choice to
-/// the model.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// How much reasoning Ox asks a model to do, in ascending order. `Default`
+/// leaves the choice to the model; every other level is the OpenRouter effort
+/// of the same id.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EffortLevel {
     Default,
+    None,
+    Minimal,
     Low,
     Medium,
     High,
+    #[serde(rename = "xhigh")]
+    XHigh,
+    Max,
 }
 
 impl EffortLevel {
-    pub const ALL: [Self; 4] = [Self::Default, Self::Low, Self::Medium, Self::High];
+    pub const ALL: [Self; 8] = [
+        Self::Default,
+        Self::None,
+        Self::Minimal,
+        Self::Low,
+        Self::Medium,
+        Self::High,
+        Self::XHigh,
+        Self::Max,
+    ];
 
     pub fn id(self) -> &'static str {
         match self {
             Self::Default => "default",
+            Self::None => "none",
+            Self::Minimal => "minimal",
             Self::Low => "low",
             Self::Medium => "medium",
             Self::High => "high",
+            Self::XHigh => "xhigh",
+            Self::Max => "max",
         }
     }
 
     pub fn name(self) -> &'static str {
         match self {
             Self::Default => "Default",
+            Self::None => "None",
+            Self::Minimal => "Minimal",
             Self::Low => "Low",
             Self::Medium => "Medium",
             Self::High => "High",
+            Self::XHigh => "Extra high",
+            Self::Max => "Max",
         }
     }
 
     pub fn from_id(id: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|level| level.id() == id)
+    }
+
+    /// The OpenRouter `reasoning.effort`, omitted for `Default`.
+    pub fn openrouter_effort(self) -> Option<&'static str> {
+        (self != Self::Default).then(|| self.id())
     }
 }
 

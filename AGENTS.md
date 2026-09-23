@@ -19,7 +19,7 @@ THIS DOCUMENT MUST BE KEPT UP TO DATE
   Ox's coding-agent behavior.
 - `src/skills.rs`: Workspace skill definitions in `.agents/skills/`, frontmatter
   parsing and skill catalog loading.
-- `src/settings.rs`: The required model catalog and optional global hooks
+- `src/settings.rs`: The required default model and optional global hooks
   loaded from `~/.config/ox/settings.json` at process startup, with global hook
   suppression inside hook commands.
 - `src/hooks.rs`: Shared hook definitions, validation, and the protocol for
@@ -28,8 +28,8 @@ THIS DOCUMENT MUST BE KEPT UP TO DATE
 - `src/process.rs`: Child processes in a new process group with optional
   stdin, bounded output tails, a deadline, cancellation, and group cleanup with
   an optional SIGTERM grace period.
-- `src/openrouter.rs`: The process-wide model catalog, default model, and
-  effort mapping, request
+- `src/openrouter.rs`: The model catalog fetched from OpenRouter at startup,
+  its catalog filter and each model's effort levels, the default model, request
   encoding, context limits, client, streamed response assembly with usage
   parsing, and explicit input-context overflow errors.
 - `src/compaction.rs`: Request estimates, safe transcript cuts, bounded
