@@ -14,7 +14,7 @@ use tokio::process::Command;
 use crate::{
     process::{self, Limits, Observed},
     sessions::{
-        EffortLevel, HookDecision, HookKind, SessionMode, ToolCall, ToolOutcome, ToolResult,
+        EffortLevel, HookKind, SessionMode, StopDecision, ToolCall, ToolOutcome, ToolResult,
     },
 };
 
@@ -80,9 +80,10 @@ fn deadline(kind: HookKind) -> Duration {
     })
 }
 
-/// Global or skill hooks supplied to one prompt run. Commands are never saved.
+/// The hooks from one source, the global settings or one skill, supplied to
+/// one prompt run. Commands are never saved.
 #[derive(Debug, Clone, PartialEq)]
-pub struct RunHooks {
+pub struct HookSource {
     pub hooks: Hooks,
     pub skill: Option<String>,
     /// The directory containing the definition, where its commands run.
@@ -119,7 +120,7 @@ pub enum Event {
         answer: String,
     },
     AfterRun {
-        outcome: RunOutcome,
+        outcome: AfterRunOutcome,
         answer: Option<String>,
         error: Option<String>,
     },
@@ -165,10 +166,10 @@ impl ToolReport {
     }
 }
 
-/// How a prompt run ended, derived from its final response.
+/// The `after_run` input's `outcome`, derived from the prompt run's result.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum RunOutcome {
+pub enum AfterRunOutcome {
     Finished,
     Cancelled,
     TokenLimit,
@@ -235,12 +236,12 @@ impl Output for ToolDecision {
 /// `before_stop` output.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct StopDecision {
-    pub decision: HookDecision,
+pub struct StopResponse {
+    pub decision: StopDecision,
     pub message: String,
 }
 
-impl Output for StopDecision {
+impl Output for StopResponse {
     fn message(&self) -> Option<&str> {
         Some(&self.message)
     }
@@ -262,13 +263,13 @@ impl Output for Report {
 /// `Interrupted` error; every other failure is an error naming the origin and
 /// hook kind with the command's stderr tail.
 pub async fn run<T: Output>(
-    hooks: &RunHooks,
+    source: &HookSource,
     context: &Context,
     event: &Event,
     cancelled: impl Future<Output = ()>,
 ) -> io::Result<T> {
     let kind = event.kind();
-    let command = hooks
+    let command = source
         .hooks
         .command(kind)
         .expect("a hook runs only when its definition declares it");
@@ -293,7 +294,7 @@ pub async fn run<T: Output>(
     process
         .arg("-c")
         .arg(command)
-        .current_dir(&hooks.directory)
+        .current_dir(&source.directory)
         .env(IN_HOOK_ENV, "1");
     let limits = Limits {
         stdout: STDOUT_LIMIT,
@@ -305,7 +306,7 @@ pub async fn run<T: Output>(
         .await
         .map_err(|error| {
             failure(
-                format!("could not start in {}: {error}", hooks.directory.display()),
+                format!("could not start in {}: {error}", source.directory.display()),
                 "",
             )
         })?;
@@ -400,14 +401,14 @@ mod tests {
                 message: "Use the test script.".to_owned()
             })
         );
-        let stop = parse::<StopDecision>(
+        let stop = parse::<StopResponse>(
             HookKind::BeforeStop,
             r#"{"decision":"stop","message":"Done."}"#,
         )
         .unwrap();
         assert_eq!(
             (stop.decision, stop.message.as_str()),
-            (HookDecision::Stop, "Done.")
+            (StopDecision::Stop, "Done.")
         );
         parse::<Report>(HookKind::AfterRun, "{}").unwrap();
 
@@ -439,18 +440,18 @@ mod tests {
                 "message is blank",
             ),
             (
-                error::<StopDecision>(
+                error::<StopResponse>(
                     HookKind::BeforeStop,
                     r#"{"decision":"maybe","message":"Unsure."}"#,
                 ),
                 "unknown variant `maybe`",
             ),
             (
-                error::<StopDecision>(HookKind::BeforeStop, r#"{"decision":"stop","message":" "}"#),
+                error::<StopResponse>(HookKind::BeforeStop, r#"{"decision":"stop","message":" "}"#),
                 "message is blank",
             ),
             (
-                error::<StopDecision>(HookKind::BeforeStop, "not json"),
+                error::<StopResponse>(HookKind::BeforeStop, "not json"),
                 "output is not one valid before_stop response object",
             ),
             (

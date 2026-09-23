@@ -54,7 +54,7 @@ pub(super) async fn execute(root: &Path, name: &str, arguments: &str) -> Result<
         (args.path, Some(matcher))
     };
     let path = workspace
-        .resolve_existing(Path::new(&scope))
+        .resolve_allowing_link_target(Path::new(&scope))
         .map_err(|e| format!("{scope}: {e}"))?;
     let directory = workspace.directory(&path).is_ok();
     if name == GLOB && !directory {
@@ -104,7 +104,7 @@ async fn run(
         while reader.read_until(0, &mut candidate).await? != 0 {
             let name = candidate.strip_suffix(&[0]).unwrap_or(&candidate);
             let path = Path::new(OsStr::from_bytes(name));
-            if let Ok(relative) = workspace.resolve_existing(path) {
+            if let Ok(relative) = workspace.resolve_allowing_link_target(path) {
                 if let Some(matcher) = matcher {
                     match workspace.read_file(&relative) {
                         Ok(file) => match scan_file(file, path, matcher, &mut output).await {
@@ -425,7 +425,9 @@ mod tests {
         std::fs::write(outside.0.join("secret"), "secret\n").unwrap();
         std::fs::create_dir(workspace.0.join("link")).unwrap();
         let pinned = super::Workspace::open(&workspace.0).unwrap();
-        let validated = pinned.resolve_existing(Path::new("link")).unwrap();
+        let validated = pinned
+            .resolve_allowing_link_target(Path::new("link"))
+            .unwrap();
         assert!(pinned.directory(&validated).is_ok());
         std::fs::remove_dir(workspace.0.join("link")).unwrap();
         symlink(&outside.0, workspace.0.join("link")).unwrap();

@@ -47,7 +47,7 @@ impl Workspace {
     }
 
     /// Resolves a directly named link, then uses only its in-workspace target.
-    pub fn resolve_existing(&self, name: &Path) -> io::Result<PathBuf> {
+    pub fn resolve_allowing_link_target(&self, name: &Path) -> io::Result<PathBuf> {
         if name.as_os_str().is_empty()
             || name
                 .components()

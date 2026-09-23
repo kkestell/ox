@@ -151,7 +151,7 @@ pub enum HookFeedbackContent {
     AfterTools { message: String },
     /// Follows an assistant message without tool calls.
     BeforeStop {
-        decision: HookDecision,
+        decision: StopDecision,
         message: String,
     },
 }
@@ -183,7 +183,7 @@ impl HookFeedback {
 /// stop.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum HookDecision {
+pub enum StopDecision {
     Continue,
     Stop,
 }
@@ -771,7 +771,7 @@ impl SessionStore {
     /// Appends setting entries and the turn start, a user message or skill
     /// invocation, adopts a session title when none has been saved, and
     /// updates activity in one transaction.
-    pub fn append_user(
+    pub fn append_turn_start(
         &self,
         id: &SessionId,
         settings: &SessionSettingsChange,
@@ -1102,7 +1102,7 @@ mod tests {
 
     fn stop_feedback() -> HookFeedback {
         feedback(HookFeedbackContent::BeforeStop {
-            decision: HookDecision::Stop,
+            decision: StopDecision::Stop,
             message: "Objective met.".to_owned(),
         })
     }
@@ -1146,7 +1146,7 @@ mod tests {
             let store = SessionStore::open(&path).unwrap();
             let id = store.create(workspace()).unwrap().id;
             store
-                .append_user(
+                .append_turn_start(
                     &id,
                     &SessionSettingsChange {
                         model: Some(openrouter::default_model().to_owned()),
@@ -1170,7 +1170,7 @@ mod tests {
                 )
                 .unwrap();
             store
-                .append_user(
+                .append_turn_start(
                     &id,
                     &SessionSettingsChange {
                         model: None,
@@ -1328,7 +1328,7 @@ mod tests {
 
         let orphan = store.create(workspace()).unwrap().id;
         store
-            .append_user(
+            .append_turn_start(
                 &orphan,
                 &SessionSettingsChange {
                     model: Some(openrouter::default_model().to_owned()),
@@ -1654,7 +1654,7 @@ mod tests {
 
         let without_mode = store.create(workspace()).unwrap().id;
         store
-            .append_user(
+            .append_turn_start(
                 &without_mode,
                 &SessionSettingsChange {
                     model: Some(openrouter::default_model().to_owned()),
@@ -1675,7 +1675,7 @@ mod tests {
         );
 
         store
-            .append_user(
+            .append_turn_start(
                 &id,
                 &SessionSettingsChange {
                     model: Some(openrouter::catalog()[1].id.as_str().to_owned()),
@@ -1686,7 +1686,7 @@ mod tests {
             )
             .unwrap();
         store
-            .append_user(
+            .append_turn_start(
                 &id,
                 &SessionSettingsChange {
                     model: None,
@@ -1697,7 +1697,7 @@ mod tests {
             )
             .unwrap();
         store
-            .append_user(
+            .append_turn_start(
                 &id,
                 &SessionSettingsChange {
                     model: None,
@@ -1724,13 +1724,13 @@ mod tests {
     }
 
     #[test]
-    fn user_append_adopts_a_session_title_once_and_updates_activity() {
+    fn turn_start_append_adopts_a_session_title_once_and_updates_activity() {
         let store = SessionStore::in_memory();
         let created = store.create(workspace()).unwrap();
         set_updated_at(&store, &created.id, "2026-09-18T09:00:00.000Z");
 
         let first = store
-            .append_user(
+            .append_turn_start(
                 &created.id,
                 &SessionSettingsChange {
                     model: Some(openrouter::default_model().to_owned()),
@@ -1745,7 +1745,7 @@ mod tests {
         assert!(first.updated_at.as_str() > "2026-09-18T09:00:00.000Z");
 
         let second = store
-            .append_user(
+            .append_turn_start(
                 &created.id,
                 &SessionSettingsChange::default(),
                 &TranscriptEntry::UserMessage("Something else".to_owned()),
@@ -1756,7 +1756,7 @@ mod tests {
 
         let long = store.create(workspace()).unwrap();
         let session_title = store
-            .append_user(
+            .append_turn_start(
                 &long.id,
                 &SessionSettingsChange {
                     model: Some(openrouter::default_model().to_owned()),
@@ -1777,7 +1777,7 @@ mod tests {
 
         let skill = store.create(workspace()).unwrap();
         let adopted = store
-            .append_user(
+            .append_turn_start(
                 &skill.id,
                 &SessionSettingsChange {
                     model: Some(openrouter::default_model().to_owned()),
@@ -1794,7 +1794,7 @@ mod tests {
 
         assert!(
             store
-                .append_user(
+                .append_turn_start(
                     &SessionId::new("missing"),
                     &SessionSettingsChange {
                         model: Some(openrouter::default_model().to_owned()),
@@ -1837,7 +1837,7 @@ mod tests {
         let store = SessionStore::in_memory();
         let id = store.create(workspace()).unwrap().id;
         store
-            .append_user(
+            .append_turn_start(
                 &id,
                 &SessionSettingsChange {
                     model: Some(openrouter::default_model().to_owned()),

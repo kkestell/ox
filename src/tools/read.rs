@@ -29,7 +29,7 @@ pub(super) async fn execute(root: &Path, arguments: &str) -> Result<String, Stri
     }
     let workspace = Workspace::open(root).map_err(|e| e.to_string())?;
     let path = workspace
-        .resolve_existing(Path::new(&args.path))
+        .resolve_allowing_link_target(Path::new(&args.path))
         .map_err(|e| format!("{}: {e}", args.path))?;
     let file = tokio::fs::File::from_std(workspace.read_file(&path).map_err(|e| e.to_string())?);
     let mut reader = BufReader::new(file);

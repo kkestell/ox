@@ -15,6 +15,8 @@ THIS DOCUMENT MUST BE KEPT UP TO DATE
   operations.
 - `src/system_prompt.rs`: Assembly of Ox's built-in system prompt with bounded
   workspace-root `AGENTS.md` instructions.
+- `src/text_file.rs`: Bounded UTF-8 reads for `AGENTS.md`, `SKILL.md`, and
+  `settings.json`.
 - `src/prompts/system_prompt.md`: The editable built-in instructions that define
   Ox's coding-agent behavior.
 - `src/skills.rs`: Workspace skill definitions in `.agents/skills/`, frontmatter
@@ -59,8 +61,9 @@ THIS DOCUMENT MUST BE KEPT UP TO DATE
   selections, system prompts and skill catalogs loaded when a session becomes
   active, guarded `/compact`, usage updates after `/compact` and load, and the
   automatic headless prompt entry point.
-- `src/acp/operations.rs`: One active prompt, load, delete, or compaction per
-  session, enforced by an operation guard.
+- `src/acp/operations.rs`: At most one prompt, load, or delete running for a
+  session at a time, enforced by an operation guard; `/compact` runs as a
+  prompt operation.
 - `src/acp/prompt.rs`: One prompt run: reject oversized input before saving,
   save accepted input with captured settings, announce it and run global and
   invoked skill `before_run` hooks, compact before large model requests, retry
@@ -70,7 +73,7 @@ THIS DOCUMENT MUST BE KEPT UP TO DATE
   batch and `before_stop` on each finished answer, run `after_run` on the
   result, and return the stop reason and final answer.
 - `src/acp/convert.rs`: ACP input conversion, session update construction
-  including each tool call's kind, hook tool calls, and usage updates, and
+  including each tool call's kind, hook runs, and usage updates, and
   transcript replay.
 - `.agents/skills/init/`: The instruction-only `init` skill, which creates or
   updates `AGENTS.md`.

@@ -94,7 +94,8 @@
 - **Workspace path**: The exact absolute path associated with a session. Ox does
   not normalize or resolve aliases.
 - **Session operation**: One prompt, load, or delete running for a session. At
-  most one can run for the same session at a time.
+  most one can run for the same session at a time. `/compact` arrives as a
+  prompt request and runs as a prompt operation.
 - **Operation guard**: A value that keeps one session busy for a session
   operation. Dropping it makes the session available.
 - **Prompt request**: One ACP request containing user content for a session.
@@ -117,13 +118,14 @@
 - **Hook kind**: The point in a prompt run where a hook runs: `before_run`,
   `before_tool`, `after_tools`, `before_stop`, or `after_run`. It is `HookKind`
   in code and `kind` in hook input.
-- **Hook decision**: `continue` or `stop` from a `before_stop` hook. It is
-  distinct from an OpenRouter stop and from a tool decision.
+- **Stop decision**: `continue` or `stop` from a `before_stop` hook. It is
+  `StopDecision` in code and distinct from an OpenRouter stop and from a tool
+  decision.
 - **Tool decision**: `allow` or `deny` from a `before_tool` hook for one model
   tool call. It is never saved.
 - **Hook feedback**: A transcript entry holding a hook's optional skill name and
   saved message from `before_run`, `after_tools`, or `before_stop`, with the
-  hook decision for `before_stop`. It is neither a user message nor a tool
+  stop decision for `before_stop`. It is neither a user message nor a tool
   result.
 - **Hook continuation**: A model request in the same prompt run caused by a
   `continue` decision.

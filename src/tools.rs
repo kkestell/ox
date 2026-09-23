@@ -476,7 +476,9 @@ mod tests {
         }
 
         let pinned = workspace::Workspace::open(&workspace.0).unwrap();
-        let file = pinned.resolve_existing(Path::new("file")).unwrap();
+        let file = pinned
+            .resolve_allowing_link_target(Path::new("file"))
+            .unwrap();
         std::fs::remove_file(workspace.0.join("file")).unwrap();
         std::os::unix::fs::symlink(outside.0.join("file"), workspace.0.join("file")).unwrap();
         assert!(pinned.read_file(&file).is_err());

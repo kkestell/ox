@@ -8,8 +8,8 @@ use std::{
 use serde::Deserialize;
 
 use crate::{
-    hooks::{Hooks, IN_HOOK_ENV, RunHooks},
-    system_prompt,
+    hooks::{HookSource, Hooks, IN_HOOK_ENV},
+    text_file,
 };
 
 #[derive(Deserialize)]
@@ -22,7 +22,7 @@ struct Settings {
 pub struct Loaded {
     pub path: PathBuf,
     pub default_model: String,
-    pub global_hooks: Option<RunHooks>,
+    pub global_hooks: Option<HookSource>,
 }
 
 pub fn load() -> io::Result<Loaded> {
@@ -39,7 +39,7 @@ pub fn load() -> io::Result<Loaded> {
 
 fn load_from(path: &Path) -> io::Result<Loaded> {
     let read = || {
-        let text = system_prompt::read_text(path)?;
+        let text = text_file::read_bounded(path)?;
         let settings: Settings = serde_json::from_str(&text)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
         if settings.model.trim().is_empty() {
@@ -51,7 +51,7 @@ fn load_from(path: &Path) -> io::Result<Loaded> {
         let global_hooks = match settings.hooks {
             Some(hooks) => {
                 hooks.validate()?;
-                Some(RunHooks {
+                Some(HookSource {
                     hooks,
                     skill: None,
                     directory: path
@@ -122,10 +122,10 @@ mod tests {
                     assert_eq!(
                         loaded
                             .global_hooks
-                            .and_then(|hooks| {
-                                assert_eq!(hooks.directory, directory.0);
-                                assert!(hooks.skill.is_none());
-                                hooks.hooks.before_run
+                            .and_then(|source| {
+                                assert_eq!(source.directory, directory.0);
+                                assert!(source.skill.is_none());
+                                source.hooks.before_run
                             })
                             .map(|hook| hook.command),
                         text.contains("before_run").then(|| "true".to_owned())

@@ -44,7 +44,7 @@ Ox has six architectural components:
   execution, hook runs, transcript commits, and the final response.
 - The **compaction workflow** owns summarizer requests and checkpoint commits.
   It serves both automatic compaction during a prompt run and the cancellable
-  `/compact` session operation.
+  `/compact` command, which runs as a prompt operation.
 - The **OpenRouter client** encodes model requests and turns one streamed
   response into provisional output followed by one validated completion.
 - The **tool boundary** defines the concrete tool set and executes one complete
@@ -82,7 +82,7 @@ A skill invocation stores the skill's name, its literal arguments, and the
 instructions copied from its definition when it was invoked, so later changes to
 the definition do not change saved model context. Hook feedback stores the
 optional skill name, the hook kind, the hook's message, and, for
-`before_stop`, the hook decision. Global feedback has no skill name. Model
+`before_stop`, the stop decision. Global feedback has no skill name. Model
 requests send each as a labeled user-role message. Hook feedback is neither a
 user message nor a tool result.
 
@@ -120,9 +120,9 @@ Ox advertises its slash commands through an ACP session update after a session
 is created or loaded: the built-in `/compact` and one command for each skill in
 the session's skill catalog. A skill's argument hint becomes the command's
 input hint. A recognized command is handled at the ACP boundary before anything
-is saved or a model request begins. `/compact` acquires the session operation
-guard and runs cancellable compaction without saving a user message. Prompt,
-load, delete, and compaction operations cannot overlap for one session.
+is saved or a model request begins. `/compact` acquires the prompt operation
+guard and runs cancellable compaction without saving a user message, so it
+cannot overlap a prompt, load, or delete for the same session.
 
 A skill is `.agents/skills/<name>/SKILL.md` directly under the session
 workspace: YAML frontmatter with a name, description, optional argument hint,
@@ -364,8 +364,9 @@ save a validated uncommitted assistant batch.
 
 ## Concurrency and cancellation
 
-Prompt, load, delete, and `/compact` are session operations. Each must acquire
-an operation guard, so at most one of them runs for a session at a time.
+Prompt, load, and delete are session operations; `/compact` runs as a prompt
+operation. Each must acquire an operation guard, so at most one of them runs
+for a session at a time.
 Different sessions may run concurrently. Listing and changing ACP selections
 do not acquire an operation guard.
 

@@ -17,12 +17,12 @@ use super::convert;
 use crate::cancellation::PromptCancellation;
 use crate::{
     compaction,
-    hooks::{self, RunHooks},
+    hooks::{self, HookSource},
     openrouter,
     sessions::{
-        AssistantBatch, AssistantMessage, HookDecision, HookFeedback, HookFeedbackContent,
-        HookKind, SessionMode, SessionSettings, SessionSettingsChange, SessionStore,
-        SessionSummary, SkillInvocation, ToolCall, ToolOutcome, ToolResult, TranscriptEntry,
+        AssistantBatch, AssistantMessage, HookFeedback, HookFeedbackContent, HookKind, SessionMode,
+        SessionSettings, SessionSettingsChange, SessionStore, SessionSummary, SkillInvocation,
+        StopDecision, ToolCall, ToolOutcome, ToolResult, TranscriptEntry,
     },
     tools,
 };
@@ -31,7 +31,7 @@ use crate::{
 /// request, however many hooks requested it.
 const MAX_HOOK_CONTINUATIONS: usize = 50;
 
-/// How a hook call finishes when its command saved nothing.
+/// How a hook run finishes when its command saved nothing.
 const NO_FEEDBACK: &str = "No feedback.";
 
 /// Transport for Ask mode's ACP permission request. The captured session mode,
@@ -46,13 +46,13 @@ pub(super) struct PromptInput {
     /// The user message or skill invocation that starts the turn.
     pub turn_start: TranscriptEntry,
     /// Global hooks followed by the invoked skill's hooks.
-    pub hooks: Vec<RunHooks>,
+    pub hook_sources: Vec<HookSource>,
     pub selected_settings: Option<SessionSettings>,
     /// The complete system prompt captured when the session became active.
     pub system_prompt: String,
 }
 
-/// How a prompt run ended.
+/// The ACP stop reason and final answer a prompt run returns.
 #[derive(Debug)]
 pub struct PromptOutput {
     pub stop_reason: StopReason,
@@ -141,7 +141,7 @@ struct PromptRun<F> {
     /// Saved transcript, extended only after a database transaction succeeds.
     transcript: Vec<TranscriptEntry>,
     uncommitted_batch: Option<UncommittedAssistantBatch>,
-    hooks: Vec<RunHooks>,
+    hook_sources: Vec<HookSource>,
     /// Identifies this run in the input of each of its hook commands.
     run_id: String,
     hook_continuations: usize,
@@ -227,7 +227,7 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
             permission_transport,
             transcript: stored.transcript,
             uncommitted_batch: None,
-            hooks: input.hooks.clone(),
+            hook_sources: input.hook_sources.clone(),
             run_id: uuid::Uuid::new_v4().to_string(),
             hook_continuations: 0,
             answer: None,
@@ -267,7 +267,7 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
         }
         let updated = self
             .store
-            .append_user(&self.summary.id, &self.settings_change, &turn_start)
+            .append_turn_start(&self.summary.id, &self.settings_change, &turn_start)
             .map_err(Error::into_internal_error)?;
         let locks_model = self.settings_change.model.is_some();
         if let Some(model) = self.settings_change.model.take() {
@@ -304,13 +304,13 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
         for update in updates {
             (self.send_update)(update).map_err(PromptOutcome::AcpUpdate)?;
         }
-        for hooks in self.hooks_for(HookKind::BeforeRun) {
+        for source in self.sources_for(HookKind::BeforeRun) {
             self.run_hook(
-                &hooks,
+                &source,
                 &hooks::Event::BeforeRun,
-                |run, hooks, output: hooks::Feedback| {
+                |run, source, output: hooks::Feedback| {
                     run.save_optional_feedback(
-                        hooks,
+                        source,
                         output
                             .message
                             .map(|message| HookFeedbackContent::BeforeRun { message }),
@@ -360,18 +360,18 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
                 Some(PromptOutcome::Finished) => {
                     self.answer = Some(text.clone());
                     let event = hooks::Event::BeforeStop { answer: text };
-                    let mut decision = HookDecision::Stop;
-                    for hooks in self.hooks_for(HookKind::BeforeStop) {
+                    let mut decision = StopDecision::Stop;
+                    for source in self.sources_for(HookKind::BeforeStop) {
                         match self
-                            .run_hook(&hooks, &event, Self::save_stop_feedback)
+                            .run_hook(&source, &event, Self::save_stop_feedback)
                             .await
                         {
-                            Ok(HookDecision::Continue) => decision = HookDecision::Continue,
-                            Ok(HookDecision::Stop) => {}
+                            Ok(StopDecision::Continue) => decision = StopDecision::Continue,
+                            Ok(StopDecision::Stop) => {}
                             Err(outcome) => return outcome,
                         }
                     }
-                    if decision == HookDecision::Continue {
+                    if decision == StopDecision::Continue {
                         self.hook_continuations += 1;
                         continue;
                     }
@@ -387,52 +387,52 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
         }
     }
 
-    fn hooks_for(&self, kind: HookKind) -> Vec<RunHooks> {
-        self.hooks
+    fn sources_for(&self, kind: HookKind) -> Vec<HookSource> {
+        self.hook_sources
             .iter()
-            .filter(|hooks| hooks.hooks.command(kind).is_some())
+            .filter(|source| source.hooks.command(kind).is_some())
             .cloned()
             .collect()
     }
 
     /// Runs one command for `event`, shown to the ACP client
     /// as an execute tool call; it is not a model tool call. `apply` turns the
-    /// command's output into the result and the text the call finishes with.
+    /// command's output into the result and the text the hook run finishes with.
     async fn run_hook<T: hooks::Output, R>(
         &mut self,
-        hooks: &RunHooks,
+        source: &HookSource,
         event: &hooks::Event,
-        apply: impl FnOnce(&mut Self, &RunHooks, T) -> std::result::Result<(R, String), PromptOutcome>,
+        apply: impl FnOnce(&mut Self, &HookSource, T) -> std::result::Result<(R, String), PromptOutcome>,
     ) -> std::result::Result<R, PromptOutcome> {
         if self.cancellation.is_cancelled() {
             return Err(PromptOutcome::Cancelled);
         }
-        let context = self.hook_context(hooks);
-        let call_id = convert::hook_call_id();
-        let pending = convert::pending_hook_call(&call_id, context.skill.as_deref(), event.kind());
+        let context = self.hook_context(source);
+        let call_id = convert::hook_run_id();
+        let pending = convert::pending_hook_run(&call_id, context.skill.as_deref(), event.kind());
         (self.send_update)(pending).map_err(PromptOutcome::AcpUpdate)?;
         (self.send_update)(convert::in_progress_tool_call_update(&call_id))
             .map_err(PromptOutcome::AcpUpdate)?;
-        let output = hooks::run(hooks, &context, event, self.cancellation.cancelled()).await;
+        let output = hooks::run(source, &context, event, self.cancellation.cancelled()).await;
         let result = match output {
-            Ok(output) => apply(self, hooks, output),
+            Ok(output) => apply(self, source, output),
             Err(error) if error.kind() == io::ErrorKind::Interrupted => {
                 Err(PromptOutcome::Cancelled)
             }
             Err(error) => Err(PromptOutcome::Hook(error)),
         };
         let update = match &result {
-            Ok((_, text)) => convert::finished_hook_call_update(&call_id, Ok(text)),
-            Err(outcome) => convert::finished_hook_call_update(&call_id, Err(&outcome.to_string())),
+            Ok((_, text)) => convert::finished_hook_run_update(&call_id, Ok(text)),
+            Err(outcome) => convert::finished_hook_run_update(&call_id, Err(&outcome.to_string())),
         };
         (self.send_update)(update).map_err(PromptOutcome::AcpUpdate)?;
         result.map(|(value, _)| value)
     }
 
-    fn hook_context(&self, hooks: &RunHooks) -> hooks::Context {
+    fn hook_context(&self, source: &HookSource) -> hooks::Context {
         hooks::Context {
-            skill: hooks.skill.clone(),
-            arguments: match &hooks.skill {
+            skill: source.skill.clone(),
+            arguments: match &source.skill {
                 Some(name) => {
                     let invocation = self.hook_invocation();
                     assert_eq!(
@@ -472,23 +472,27 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
     ) -> std::result::Result<Option<String>, PromptOutcome> {
         let event = hooks::Event::BeforeTool { tool: call.clone() };
         let mut denials = Vec::new();
-        for hooks in self.hooks_for(HookKind::BeforeTool) {
+        for source in self.sources_for(HookKind::BeforeTool) {
             let denial = self
-                .run_hook(&hooks, &event, |_, hooks, decision: hooks::ToolDecision| {
-                    Ok(match decision {
-                        hooks::ToolDecision::Allow {} => (None, "Allowed.".to_owned()),
-                        hooks::ToolDecision::Deny { message } => {
-                            let label = crate::sessions::hook_label(
-                                hooks.skill.as_deref(),
-                                HookKind::BeforeTool,
-                            );
-                            (
-                                Some(format!("{label} denied this call: {message}")),
-                                format!("Denied: {message}"),
-                            )
-                        }
-                    })
-                })
+                .run_hook(
+                    &source,
+                    &event,
+                    |_, source, decision: hooks::ToolDecision| {
+                        Ok(match decision {
+                            hooks::ToolDecision::Allow {} => (None, "Allowed.".to_owned()),
+                            hooks::ToolDecision::Deny { message } => {
+                                let label = crate::sessions::hook_label(
+                                    source.skill.as_deref(),
+                                    HookKind::BeforeTool,
+                                );
+                                (
+                                    Some(format!("{label} denied this call: {message}")),
+                                    format!("Denied: {message}"),
+                                )
+                            }
+                        })
+                    },
+                )
                 .await?;
             denials.extend(denial);
         }
@@ -510,10 +514,10 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
             })
             .collect();
         let event = hooks::Event::AfterTools { tools };
-        for hooks in self.hooks_for(HookKind::AfterTools) {
-            self.run_hook(&hooks, &event, |run, hooks, output: hooks::Feedback| {
+        for source in self.sources_for(HookKind::AfterTools) {
+            self.run_hook(&source, &event, |run, source, output: hooks::Feedback| {
                 run.save_optional_feedback(
-                    hooks,
+                    source,
                     output
                         .message
                         .map(|message| HookFeedbackContent::AfterTools { message }),
@@ -532,10 +536,10 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
         let (outcome, answer, error) = match result {
             Ok(output) => {
                 let outcome = match output.stop_reason {
-                    StopReason::EndTurn => hooks::RunOutcome::Finished,
-                    StopReason::Cancelled => hooks::RunOutcome::Cancelled,
-                    StopReason::MaxTokens => hooks::RunOutcome::TokenLimit,
-                    StopReason::Refusal => hooks::RunOutcome::Refused,
+                    StopReason::EndTurn => hooks::AfterRunOutcome::Finished,
+                    StopReason::Cancelled => hooks::AfterRunOutcome::Cancelled,
+                    StopReason::MaxTokens => hooks::AfterRunOutcome::TokenLimit,
+                    StopReason::Refusal => hooks::AfterRunOutcome::Refused,
                     other => unreachable!("a prompt run never stops with {other:?}"),
                 };
                 (outcome, output.answer.clone(), None)
@@ -546,7 +550,7 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
                     Some(data) => format!("{}: {data}", error.message),
                     None => error.to_string(),
                 };
-                (hooks::RunOutcome::Failed, None, Some(text))
+                (hooks::AfterRunOutcome::Failed, None, Some(text))
             }
         };
         let event = hooks::Event::AfterRun {
@@ -554,22 +558,22 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
             answer,
             error,
         };
-        for hooks in self.hooks_for(HookKind::AfterRun) {
-            let context = self.hook_context(&hooks);
-            let call_id = convert::hook_call_id();
-            let _ = (self.send_update)(convert::pending_hook_call(
+        for source in self.sources_for(HookKind::AfterRun) {
+            let context = self.hook_context(&source);
+            let call_id = convert::hook_run_id();
+            let _ = (self.send_update)(convert::pending_hook_run(
                 &call_id,
                 context.skill.as_deref(),
                 HookKind::AfterRun,
             ));
             let _ = (self.send_update)(convert::in_progress_tool_call_update(&call_id));
             let reported: io::Result<hooks::Report> =
-                hooks::run(&hooks, &context, &event, std::future::pending()).await;
+                hooks::run(&source, &context, &event, std::future::pending()).await;
             let update = match reported {
-                Ok(_) => convert::finished_hook_call_update(&call_id, Ok(NO_FEEDBACK)),
+                Ok(_) => convert::finished_hook_run_update(&call_id, Ok(NO_FEEDBACK)),
                 Err(error) => {
                     eprintln!("{error}");
-                    convert::finished_hook_call_update(&call_id, Err(&error.to_string()))
+                    convert::finished_hook_run_update(&call_id, Err(&error.to_string()))
                 }
             };
             let _ = (self.send_update)(update);
@@ -578,12 +582,12 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
 
     fn save_optional_feedback(
         &mut self,
-        hooks: &RunHooks,
+        source: &HookSource,
         content: Option<HookFeedbackContent>,
     ) -> std::result::Result<((), String), PromptOutcome> {
         match content {
             Some(content) => self
-                .save_feedback(hooks, content)
+                .save_feedback(source, content)
                 .map(|message| ((), message)),
             None => Ok(((), NO_FEEDBACK.to_owned())),
         }
@@ -591,19 +595,19 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
 
     fn save_stop_feedback(
         &mut self,
-        hooks: &RunHooks,
-        output: hooks::StopDecision,
-    ) -> std::result::Result<(HookDecision, String), PromptOutcome> {
-        if output.decision == HookDecision::Continue
+        source: &HookSource,
+        output: hooks::StopResponse,
+    ) -> std::result::Result<(StopDecision, String), PromptOutcome> {
+        if output.decision == StopDecision::Continue
             && self.hook_continuations == MAX_HOOK_CONTINUATIONS
         {
             return Err(PromptOutcome::Hook(io::Error::other(format!(
                 "{} asked to continue more than {MAX_HOOK_CONTINUATIONS} times",
-                crate::sessions::hook_label(hooks.skill.as_deref(), HookKind::BeforeStop)
+                crate::sessions::hook_label(source.skill.as_deref(), HookKind::BeforeStop)
             ))));
         }
         let message = self.save_feedback(
-            hooks,
+            source,
             HookFeedbackContent::BeforeStop {
                 decision: output.decision,
                 message: output.message,
@@ -616,11 +620,11 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
     /// message.
     fn save_feedback(
         &mut self,
-        hooks: &RunHooks,
+        source: &HookSource,
         content: HookFeedbackContent,
     ) -> std::result::Result<String, PromptOutcome> {
         let feedback = HookFeedback {
-            skill: hooks.skill.clone(),
+            skill: source.skill.clone(),
             content,
         };
         let mut prospective = self.transcript.clone();
@@ -652,8 +656,11 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
     async fn request_completion(
         &mut self,
     ) -> std::result::Result<openrouter::Completion, PromptOutcome> {
-        let (admission, trigger, _) =
-            compaction::budget(&self.settings.model).map_err(PromptOutcome::OpenRouter)?;
+        let compaction::Budget {
+            admission,
+            automatic_threshold,
+            ..
+        } = compaction::budget(&self.settings.model).map_err(PromptOutcome::OpenRouter)?;
         let estimate = compaction::request_estimate(
             &self.settings.model,
             self.settings.effort,
@@ -661,7 +668,7 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
             &self.transcript,
         )
         .map_err(PromptOutcome::OpenRouter)?;
-        if estimate >= trigger && compaction::has_candidate(&self.transcript) {
+        if estimate >= automatic_threshold && compaction::has_candidate(&self.transcript) {
             self.compact().await?;
         }
         if compaction::request_estimate(
@@ -946,7 +953,7 @@ mod tests {
         cancellation: PromptCancellation,
         updates: Updates,
         workspace: Workspace,
-        global_hooks: Option<RunHooks>,
+        global_hooks: Option<HookSource>,
     }
 
     impl Harness {
@@ -1004,7 +1011,7 @@ mod tests {
         async fn run_turn(
             &self,
             turn_start: TranscriptEntry,
-            hooks: Vec<RunHooks>,
+            hooks: Vec<HookSource>,
             selected_settings: Option<SessionSettings>,
             mut on_update: impl FnMut(&SessionUpdate) -> Result<()>,
         ) -> (Result<PromptOutput>, Vec<TranscriptEntry>) {
@@ -1019,7 +1026,7 @@ mod tests {
                 PromptInput {
                     session_id: self.session_id.clone(),
                     turn_start,
-                    hooks: self.global_hooks.clone().into_iter().chain(hooks).collect(),
+                    hook_sources: self.global_hooks.clone().into_iter().chain(hooks).collect(),
                     selected_settings,
                     system_prompt: system_prompt::for_workspace(&self.workspace.0).unwrap(),
                 },
@@ -1065,7 +1072,7 @@ mod tests {
         })
     }
 
-    fn feedback(decision: HookDecision, message: &str) -> TranscriptEntry {
+    fn feedback(decision: StopDecision, message: &str) -> TranscriptEntry {
         TranscriptEntry::HookFeedback(HookFeedback {
             skill: Some("goal".to_owned()),
             content: HookFeedbackContent::BeforeStop {
@@ -1116,7 +1123,7 @@ mod tests {
             hooks: hooks::Hooks,
             on_update: impl FnMut(&SessionUpdate) -> Result<()>,
         ) -> (Result<PromptOutput>, Vec<TranscriptEntry>) {
-            let hooks = RunHooks {
+            let hooks = HookSource {
                 skill: Some("goal".to_owned()),
                 hooks,
                 directory: self.workspace.0.clone(),
@@ -1134,7 +1141,7 @@ mod tests {
         }
     }
 
-    /// Update descriptions with each generated hook call ID shortened to `hook`.
+    /// Update descriptions with each generated hook run ID shortened to `hook`.
     fn described_updates(harness: &Harness) -> Vec<String> {
         harness
             .updates()
@@ -1445,9 +1452,9 @@ mod tests {
                 auto(),
                 invocation("Pass the tests."),
                 answer("First try."),
-                feedback(HookDecision::Continue, "Two tests still fail."),
+                feedback(StopDecision::Continue, "Two tests still fail."),
                 answer("Second try."),
-                feedback(HookDecision::Stop, "Objective met."),
+                feedback(StopDecision::Stop, "Objective met."),
             ]
         );
         assert_eq!(harness.stored(), transcript);
@@ -1545,7 +1552,7 @@ mod tests {
         )
         .await;
         let again = r#"echo '{"decision":"continue","message":"Again."}'"#;
-        harness.global_hooks = Some(RunHooks {
+        harness.global_hooks = Some(HookSource {
             skill: None,
             directory: harness.workspace.0.clone(),
             hooks: hooks::Hooks {
@@ -1708,7 +1715,7 @@ mod tests {
             .into_iter()
             .flatten()
             .enumerate()
-            .map(|(index, (skill, directory))| RunHooks {
+            .map(|(index, (skill, directory))| HookSource {
                 skill,
                 directory,
                 hooks: hooks::Hooks {
@@ -1902,7 +1909,7 @@ mod tests {
             PromptInput {
                 session_id: harness.session_id.clone(),
                 turn_start: invocation(&"x".repeat(3_000_000)),
-                hooks: vec![RunHooks {
+                hook_sources: vec![HookSource {
                     skill: Some("goal".to_owned()),
                     hooks: hooks::Hooks {
                         before_run: command("touch ran; echo '{}'"),
@@ -1925,7 +1932,7 @@ mod tests {
         // `before_run` saves nothing for `{}`; an error or oversized feedback
         // ends the run before any model request.
         let system = system_prompt::for_workspace(&Workspace::new().0).unwrap();
-        let (admission, _, _) = compaction::budget(default_model()).unwrap();
+        let admission = compaction::budget(default_model()).unwrap().admission;
         let base = compaction::request_estimate(
             default_model(),
             EffortLevel::Default,
@@ -1952,7 +1959,7 @@ mod tests {
             let (response, transcript) = harness
                 .run_turn(
                     invocation(arguments),
-                    vec![RunHooks {
+                    vec![HookSource {
                         skill: Some("goal".to_owned()),
                         hooks: hooks::Hooks {
                             before_run: command(before_run),
@@ -2043,7 +2050,7 @@ mod tests {
         // `after_run` reports cancellation during a tool and a failed
         // turn-start update, and its own failure or timeout changes nothing.
         let mut harness = Harness::new(vec![tool_reply(&[("call-1", "sleep 30")])]).await;
-        harness.global_hooks = Some(RunHooks {
+        harness.global_hooks = Some(HookSource {
             skill: None,
             directory: harness.workspace.0.clone(),
             hooks: hooks::Hooks {
@@ -2094,7 +2101,7 @@ mod tests {
 
         for after_run in ["exit 7", "sleep 30"] {
             let mut harness = Harness::new(vec![text_reply("Done.")]).await;
-            harness.global_hooks = Some(RunHooks {
+            harness.global_hooks = Some(HookSource {
                 skill: None,
                 directory: harness.workspace.0.clone(),
                 hooks: hooks::Hooks {
@@ -2125,7 +2132,7 @@ mod tests {
             PromptInput {
                 session_id: harness.session_id.clone(),
                 turn_start: user(&oversized),
-                hooks: Vec::new(),
+                hook_sources: Vec::new(),
                 selected_settings: None,
                 system_prompt: "system".to_owned(),
             },
@@ -2142,7 +2149,7 @@ mod tests {
         assert_eq!(
             harness.server.requests().len(),
             1,
-            "a valid request above the trigger runs when no prefix can be cut"
+            "a valid request above the automatic threshold runs when no prefix can be cut"
         );
 
         let directory =
@@ -2151,7 +2158,7 @@ mod tests {
         let store = SessionStore::open(&database).unwrap();
         let id = store.create(&harness.workspace.0).unwrap().id;
         store
-            .append_user(
+            .append_turn_start(
                 &id,
                 &SessionSettingsChange {
                     model: Some(default_model().to_owned()),
@@ -2168,7 +2175,7 @@ mod tests {
         let input = |user_message: String| PromptInput {
             session_id: id.clone(),
             turn_start: user(&user_message),
-            hooks: Vec::new(),
+            hook_sources: Vec::new(),
             selected_settings: None,
             system_prompt: "system".to_owned(),
         };
@@ -2209,7 +2216,7 @@ mod tests {
         let old = "x".repeat(2_300_000);
         harness
             .store
-            .append_user(
+            .append_turn_start(
                 &harness.session_id,
                 &SessionSettingsChange {
                     model: Some(default_model().to_owned()),
@@ -2255,7 +2262,9 @@ mod tests {
         ])
         .await;
         let system = system_prompt::for_workspace(&between.workspace.0).unwrap();
-        let (_, trigger, _) = compaction::budget(default_model()).unwrap();
+        let automatic_threshold = compaction::budget(default_model())
+            .unwrap()
+            .automatic_threshold;
         let base = "x".repeat(2_000_000);
         let prospective = vec![
             model(),
@@ -2271,10 +2280,10 @@ mod tests {
             &prospective,
         )
         .unwrap();
-        let old = "x".repeat(2_000_000 + (trigger - base_estimate - 50) * 3);
+        let old = "x".repeat(2_000_000 + (automatic_threshold - base_estimate - 50) * 3);
         between
             .store
-            .append_user(
+            .append_turn_start(
                 &between.session_id,
                 &SessionSettingsChange {
                     model: Some(default_model().to_owned()),
@@ -2347,7 +2356,7 @@ mod tests {
         );
         assert_eq!(
             transcript.last(),
-            Some(&feedback(HookDecision::Stop, "Objective met."))
+            Some(&feedback(StopDecision::Stop, "Objective met."))
         );
     }
 
@@ -2364,7 +2373,7 @@ mod tests {
         .await;
         harness
             .store
-            .append_user(
+            .append_turn_start(
                 &harness.session_id,
                 &SessionSettingsChange {
                     model: Some(default_model().to_owned()),
@@ -2404,7 +2413,7 @@ mod tests {
         .await;
         no_reduction
             .store
-            .append_user(
+            .append_turn_start(
                 &no_reduction.session_id,
                 &SessionSettingsChange {
                     model: Some(default_model().to_owned()),
@@ -2497,7 +2506,7 @@ mod tests {
         let saved = SessionSettings::new(catalog()[1].id.as_str(), EffortLevel::Max);
         harness
             .store
-            .append_user(
+            .append_turn_start(
                 &harness.session_id,
                 &SessionSettingsChange {
                     model: Some(saved.model.clone()),
@@ -2539,7 +2548,7 @@ mod tests {
             PromptInput {
                 session_id: missing,
                 turn_start: user("not saved"),
-                hooks: Vec::new(),
+                hook_sources: Vec::new(),
                 selected_settings: None,
                 system_prompt: system_prompt::for_workspace(&workspace.0).unwrap(),
             },
@@ -2551,7 +2560,7 @@ mod tests {
 
         let unknown = store.create(&workspace.0).unwrap().id;
         store
-            .append_user(
+            .append_turn_start(
                 &unknown,
                 &SessionSettingsChange {
                     model: Some("retired/model".to_owned()),
@@ -2568,7 +2577,7 @@ mod tests {
             PromptInput {
                 session_id: unknown.clone(),
                 turn_start: user("not saved"),
-                hooks: Vec::new(),
+                hook_sources: Vec::new(),
                 selected_settings: None,
                 system_prompt: system_prompt::for_workspace(&workspace.0).unwrap(),
             },

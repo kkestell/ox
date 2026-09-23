@@ -9,7 +9,7 @@ use std::{
 
 use serde::Deserialize;
 
-use crate::{hooks::Hooks, system_prompt};
+use crate::{hooks::Hooks, text_file};
 
 const SKILLS_DIR: &str = ".agents/skills";
 const FILE_NAME: &str = "SKILL.md";
@@ -64,7 +64,7 @@ pub fn load(workspace_path: &Path) -> io::Result<Vec<Skill>> {
             "{SKILLS_DIR}/{}/{FILE_NAME}",
             directory_name.to_string_lossy()
         );
-        let skill = system_prompt::read_text(&directory.join(FILE_NAME))
+        let skill = text_file::read_bounded(&directory.join(FILE_NAME))
             .and_then(|text| parse(&directory_name.to_string_lossy(), directory, &text))
             .map_err(|error| io::Error::new(error.kind(), format!("{path}: {error}")))?;
         skills.push(skill);

@@ -32,7 +32,7 @@ impl CatalogModel {
     }
 
     /// The lowest effort that still reasons, for summarizer requests.
-    pub fn summary_effort(&self) -> EffortLevel {
+    pub fn summarizer_effort(&self) -> EffortLevel {
         self.efforts
             .iter()
             .copied()
@@ -272,7 +272,7 @@ pub(crate) fn ordinary_body(
     Ok(body)
 }
 
-pub(crate) fn summary_body(model: &str, previous: &str, piece: &str) -> io::Result<Value> {
+pub(crate) fn summarizer_body(model: &str, previous: &str, piece: &str) -> io::Result<Value> {
     let catalog = catalog_model(model)
         .ok_or_else(|| io::Error::new(ErrorKind::InvalidInput, format!("unknown model {model}")))?;
     let mut body = json!({
@@ -285,7 +285,7 @@ pub(crate) fn summary_body(model: &str, previous: &str, piece: &str) -> io::Resu
         "stream": true,
         "usage": { "include": true },
     });
-    if let Some(effort) = catalog.summary_effort().openrouter_effort() {
+    if let Some(effort) = catalog.summarizer_effort().openrouter_effort() {
         body["reasoning"] = json!({ "effort": effort });
     }
     Ok(body)
@@ -345,7 +345,7 @@ impl Client {
         previous: &str,
         piece: &str,
     ) -> io::Result<(String, Option<ModelUsage>)> {
-        let body = summary_body(model, previous, piece)?;
+        let body = summarizer_body(model, previous, piece)?;
         let mut stream = self.stream_body(&body).await?;
         while let Some(item) = stream.next().await? {
             if let StreamItem::Completion(completion) = item {
@@ -1278,9 +1278,9 @@ mod tests {
             ]
         );
         assert_eq!(models[1].efforts, [Default, Low, Medium, High, XHigh, Max]);
-        assert_eq!(models[2].summary_effort(), Medium);
+        assert_eq!(models[2].summarizer_effort(), Medium);
         assert_eq!(models[3].efforts, [Default]);
-        assert_eq!(models[3].summary_effort(), Default);
+        assert_eq!(models[3].summarizer_effort(), Default);
         assert!(parse_catalog(r#"{"data": []}"#, fixture::NOW).is_err());
         assert!(parse_catalog(r#"{"data": [{"id": "a/b"}]}"#, fixture::NOW).is_err());
     }

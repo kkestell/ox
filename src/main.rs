@@ -9,6 +9,7 @@ mod sessions;
 mod settings;
 mod skills;
 mod system_prompt;
+mod text_file;
 mod tools;
 
 use std::{
@@ -145,7 +146,7 @@ fn absolute_dir(dir: Option<&Path>) -> io::Result<PathBuf> {
 }
 
 /// Fetches and installs the model catalog and returns the global hooks.
-async fn load_settings() -> io::Result<Option<hooks::RunHooks>> {
+async fn load_settings_and_catalog() -> io::Result<Option<hooks::HookSource>> {
     let settings = settings::load()?;
     openrouter::install_catalog(openrouter::fetch_catalog().await?, settings.default_model)
         .map_err(|error| {
@@ -170,14 +171,14 @@ async fn main() -> ExitCode {
 
 async fn run() -> Result<(), Box<dyn Error>> {
     match command(env::args().skip(1))? {
-        Command::Serve => acp::serve_stdio(load_settings().await?).await?,
+        Command::Serve => acp::serve_stdio(load_settings_and_catalog().await?).await?,
         Command::Run {
             dir,
             model,
             effort,
             prompt,
         } => {
-            let global_hooks = load_settings().await?;
+            let global_hooks = load_settings_and_catalog().await?;
             let model = resolve_model(model)?;
             check_effort(&model, effort)?;
             let answer = acp::run_headless(

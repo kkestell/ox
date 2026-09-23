@@ -1,4 +1,4 @@
-//! Converts ACP prompt content into a user message and transcript entries into
+//! Converts ACP prompt content into prompt text and transcript entries into
 //! ACP updates for live output and session replay.
 
 use agent_client_protocol::{
@@ -23,7 +23,7 @@ use crate::{
 
 /// Text blocks and resource links become one text input; a link contributes
 /// its name and URI and is not fetched. Anything else is invalid input.
-pub fn prompt_to_user_message(content: &[ContentBlock]) -> Result<String> {
+pub fn prompt_text(content: &[ContentBlock]) -> Result<String> {
     let mut parts = Vec::new();
     for block in content {
         match block {
@@ -187,12 +187,12 @@ pub fn finished_tool_call_update(result: &ToolResult) -> SessionUpdate {
 
 /// A new ACP tool call ID for one hook run. Hook runs are not model tool calls,
 /// so Ox generates their IDs.
-pub fn hook_call_id() -> String {
+pub fn hook_run_id() -> String {
     format!("hook-{}", uuid::Uuid::new_v4())
 }
 
 /// Announces a hook run as an execute tool call.
-pub fn pending_hook_call(call_id: &str, skill: Option<&str>, kind: HookKind) -> SessionUpdate {
+pub fn pending_hook_run(call_id: &str, skill: Option<&str>, kind: HookKind) -> SessionUpdate {
     SessionUpdate::ToolCall(
         AcpToolCall::new(
             ToolCallId::new(call_id.to_owned()),
@@ -204,7 +204,7 @@ pub fn pending_hook_call(call_id: &str, skill: Option<&str>, kind: HookKind) -> 
 }
 
 /// Finishes a hook run with a description of its output or its error.
-pub fn finished_hook_call_update(
+pub fn finished_hook_run_update(
     call_id: &str,
     result: std::result::Result<&str, &str>,
 ) -> SessionUpdate {
@@ -221,9 +221,9 @@ pub fn finished_hook_call_update(
     ))
 }
 
-fn replayed_hook_call(feedback: &HookFeedback) -> SessionUpdate {
+fn replayed_hook_run(feedback: &HookFeedback) -> SessionUpdate {
     SessionUpdate::ToolCall(
-        AcpToolCall::new(ToolCallId::new(hook_call_id()), feedback.label())
+        AcpToolCall::new(ToolCallId::new(hook_run_id()), feedback.label())
             .kind(ToolKind::Execute)
             .status(ToolCallStatus::Completed)
             .content(vec![text_content(feedback.message())])
@@ -248,7 +248,7 @@ pub fn replay_transcript(
             TranscriptEntry::SkillInvocation(invocation) => {
                 send_update(user_message_chunk(&invocation.command_text()))?
             }
-            TranscriptEntry::HookFeedback(feedback) => send_update(replayed_hook_call(feedback))?,
+            TranscriptEntry::HookFeedback(feedback) => send_update(replayed_hook_run(feedback))?,
             TranscriptEntry::AssistantMessage(message) => {
                 if !message.reasoning.is_empty() {
                     send_update(agent_thought_chunk(&message.reasoning))?;
@@ -314,7 +314,7 @@ mod tests {
 
     #[test]
     fn prompt_to_user_message_keeps_links_and_rejects_other_or_blank_content() {
-        let text = prompt_to_user_message(&[
+        let text = prompt_text(&[
             ContentBlock::Text(TextContent::new("Review this")),
             ContentBlock::ResourceLink(ResourceLink::new(
                 "src/main.rs",
@@ -328,17 +328,12 @@ mod tests {
         );
 
         let image =
-            prompt_to_user_message(&[ContentBlock::Image(ImageContent::new("", "image/png"))])
-                .unwrap_err();
+            prompt_text(&[ContentBlock::Image(ImageContent::new("", "image/png"))]).unwrap_err();
         assert_eq!(image.code, ErrorCode::InvalidParams);
 
-        let blank =
-            prompt_to_user_message(&[ContentBlock::Text(TextContent::new("  \n\t"))]).unwrap_err();
+        let blank = prompt_text(&[ContentBlock::Text(TextContent::new("  \n\t"))]).unwrap_err();
         assert_eq!(blank.code, ErrorCode::InvalidParams);
-        assert_eq!(
-            prompt_to_user_message(&[]).unwrap_err().code,
-            ErrorCode::InvalidParams
-        );
+        assert_eq!(prompt_text(&[]).unwrap_err().code, ErrorCode::InvalidParams);
     }
 
     #[test]

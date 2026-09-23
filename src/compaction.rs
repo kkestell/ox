@@ -12,8 +12,8 @@ use crate::{
     cancellation::PromptCancellation,
     openrouter::{self, Client},
     sessions::{
-        CompactionCheckpoint, EffortLevel, HookDecision, HookFeedbackContent, SessionSettings,
-        SessionStore, TranscriptEntry,
+        CompactionCheckpoint, EffortLevel, HookFeedbackContent, SessionSettings, SessionStore,
+        StopDecision, TranscriptEntry,
     },
 };
 
@@ -26,12 +26,27 @@ fn tokens(bytes: usize) -> usize {
     bytes.div_ceil(3)
 }
 
-pub fn budget(model: &str) -> io::Result<(usize, usize, usize)> {
+/// Request-size limits for one model, in estimated tokens.
+pub struct Budget {
+    /// The largest request estimate Ox admits or sends.
+    pub admission: usize,
+    /// The request estimate at which a prompt run compacts before its next
+    /// model request.
+    pub automatic_threshold: usize,
+    /// The request estimate compaction prefers a cut to reach.
+    pub cut_target: usize,
+}
+
+pub fn budget(model: &str) -> io::Result<Budget> {
     let limit = openrouter::catalog_model(model)
         .ok_or_else(|| io::Error::new(ErrorKind::InvalidInput, "unknown model"))?
         .context_limit;
     let admission = limit - 8_000.max(limit / 10);
-    Ok((admission, admission * 80 / 100, admission * 60 / 100))
+    Ok(Budget {
+        admission,
+        automatic_threshold: admission * 80 / 100,
+        cut_target: admission * 60 / 100,
+    })
 }
 
 pub fn request_estimate(
@@ -160,7 +175,7 @@ pub fn input_fits(
     system: &str,
     prospective: &[TranscriptEntry],
 ) -> io::Result<bool> {
-    let (admission, _, _) = budget(model)?;
+    let admission = budget(model)?.admission;
     if request_estimate(model, effort, system, prospective)? <= admission {
         return Ok(true);
     }
@@ -185,7 +200,11 @@ fn ranked_cuts(
     transcript: &[TranscriptEntry],
     original: usize,
 ) -> io::Result<Vec<usize>> {
-    let (admission, _, target) = budget(model)?;
+    let Budget {
+        admission,
+        cut_target,
+        ..
+    } = budget(model)?;
     let start = latest(transcript).map_or(0, |checkpoint| checkpoint.covered_prefix);
     let cuts = candidates(transcript);
     let summary = TranscriptEntry::UserMessage(format!(
@@ -213,7 +232,7 @@ fn ranked_cuts(
         if estimate > admission {
             continue;
         }
-        let rank = (estimate >= original, estimate > target, estimate);
+        let rank = (estimate >= original, estimate > cut_target, estimate);
         ranked.push((cut, rank));
     }
     ranked.sort_by_key(|(_, rank)| *rank);
@@ -263,11 +282,11 @@ fn material(transcript: &[TranscriptEntry], cut: usize) -> VecDeque<(String, Str
             TranscriptEntry::HookFeedback(feedback) => {
                 let decision = match feedback.content {
                     HookFeedbackContent::BeforeStop {
-                        decision: HookDecision::Continue,
+                        decision: StopDecision::Continue,
                         ..
                     } => " continue",
                     HookFeedbackContent::BeforeStop {
-                        decision: HookDecision::Stop,
+                        decision: StopDecision::Stop,
                         ..
                     } => " stop",
                     HookFeedbackContent::BeforeRun { .. }
@@ -321,7 +340,7 @@ fn summary_request_fits(model: &str, previous: &str, piece: &str) -> io::Result<
     let limit = openrouter::catalog_model(model)
         .expect("validated model")
         .context_limit;
-    let body = openrouter::summary_body(model, previous, piece)?;
+    let body = openrouter::summarizer_body(model, previous, piece)?;
     Ok(tokens(
         serde_json::to_vec(&body)
             .expect("summary body serializes")
@@ -416,7 +435,7 @@ pub async fn compact(
             ));
         }
         let actual = projected_estimate(model, effort, system, transcript, cut, &summary)?;
-        if actual >= original || actual > budget(model)?.0 {
+        if actual >= original || actual > budget(model)?.admission {
             continue;
         }
         let checkpoint = CompactionCheckpoint {
@@ -486,7 +505,7 @@ mod tests {
         let store = SessionStore::in_memory();
         let id = store.create(std::path::Path::new("/workspace")).unwrap().id;
         store
-            .append_user(
+            .append_turn_start(
                 &id,
                 &SessionSettingsChange {
                     model: Some(default_model().to_owned()),
@@ -523,7 +542,7 @@ mod tests {
             .append_hook_feedback(
                 &id,
                 &feedback(HookFeedbackContent::BeforeStop {
-                    decision: HookDecision::Stop,
+                    decision: StopDecision::Stop,
                     message: "Objective met.".to_owned(),
                 }),
             )
@@ -538,7 +557,7 @@ mod tests {
         let mut transcript = store.read(&id).unwrap().unwrap().transcript;
         assert!(
             request_estimate(default_model(), EffortLevel::Default, "system", &transcript).unwrap()
-                < budget(default_model()).unwrap().1,
+                < budget(default_model()).unwrap().automatic_threshold,
             "manual compaction is below the automatic trigger"
         );
         assert!(
@@ -556,7 +575,7 @@ mod tests {
         );
         let first_cut = transcript.len() - 1;
         store
-            .append_user(
+            .append_turn_start(
                 &id,
                 &SessionSettingsChange::default(),
                 &TranscriptEntry::UserMessage("active request".to_owned()),
@@ -657,7 +676,7 @@ mod tests {
         let store = SessionStore::in_memory();
         let id = store.create(std::path::Path::new("/workspace")).unwrap().id;
         store
-            .append_user(
+            .append_turn_start(
                 &id,
                 &SessionSettingsChange {
                     model: Some(default_model().to_owned()),
@@ -669,7 +688,7 @@ mod tests {
             .unwrap();
         store.append_batch(&id, &answer("older work done")).unwrap();
         store
-            .append_user(
+            .append_turn_start(
                 &id,
                 &SessionSettingsChange::default(),
                 &TranscriptEntry::UserMessage("u".repeat(1_800_000)),
@@ -690,11 +709,15 @@ mod tests {
             .await
             .unwrap()
         );
-        let (admission, _, target) = budget(default_model()).unwrap();
+        let Budget {
+            admission,
+            cut_target,
+            ..
+        } = budget(default_model()).unwrap();
         let estimate =
             request_estimate(default_model(), EffortLevel::Default, "system", &transcript).unwrap();
         assert!(
-            estimate > target && estimate <= admission,
+            estimate > cut_target && estimate <= admission,
             "a useful reduction is accepted even when the target cannot be reached"
         );
     }
@@ -704,7 +727,7 @@ mod tests {
         let store = SessionStore::in_memory();
         let id = store.create(std::path::Path::new("/workspace")).unwrap().id;
         store
-            .append_user(
+            .append_turn_start(
                 &id,
                 &SessionSettingsChange {
                     model: Some(default_model().to_owned()),
@@ -728,7 +751,7 @@ mod tests {
             .unwrap();
         let large = "x".repeat(3_300_000);
         store
-            .append_user(
+            .append_turn_start(
                 &id,
                 &SessionSettingsChange::default(),
                 &TranscriptEntry::UserMessage(large.clone()),
@@ -769,7 +792,7 @@ mod tests {
             .unwrap()
             .id;
         small_store
-            .append_user(
+            .append_turn_start(
                 &small_id,
                 &SessionSettingsChange {
                     model: Some(default_model().to_owned()),

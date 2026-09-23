@@ -135,7 +135,7 @@ enum Dispatch {
     Compact,
     Skill {
         invocation: SkillInvocation,
-        hooks: Box<hooks::RunHooks>,
+        hook_source: Box<hooks::HookSource>,
     },
     UserMessage(String),
 }
@@ -143,8 +143,8 @@ enum Dispatch {
 /// A prompt whose first word is `/compact` or `/<name>` for a catalog skill is
 /// a command; the rest of its text, trimmed, is literal skill arguments. Any
 /// other text is a user message.
-fn dispatch(user_message: String, skills: &[Skill]) -> Dispatch {
-    let text = user_message.trim();
+fn dispatch(prompt_text: String, skills: &[Skill]) -> Dispatch {
+    let text = prompt_text.trim();
     let (word, rest) = text.split_once(char::is_whitespace).unwrap_or((text, ""));
     if word == "/compact" {
         return Dispatch::Compact;
@@ -153,11 +153,11 @@ fn dispatch(user_message: String, skills: &[Skill]) -> Dispatch {
         .strip_prefix('/')
         .and_then(|name| skills.iter().find(|skill| skill.name == name))
     else {
-        return Dispatch::UserMessage(user_message);
+        return Dispatch::UserMessage(prompt_text);
     };
     let arguments = rest.trim().to_owned();
     Dispatch::Skill {
-        hooks: Box::new(hooks::RunHooks {
+        hook_source: Box::new(hooks::HookSource {
             hooks: skill.hooks.clone(),
             skill: Some(skill.name.clone()),
             directory: skill.directory.clone(),
@@ -173,7 +173,7 @@ fn dispatch(user_message: String, skills: &[Skill]) -> Dispatch {
 #[derive(Clone)]
 struct ServerState {
     store: SessionStore,
-    global_hooks: Option<hooks::RunHooks>,
+    global_hooks: Option<hooks::HookSource>,
     openrouter: Arc<Mutex<Option<openrouter::Client>>>,
     operations: SessionOperations,
     /// The sessions created or loaded in this process. Only an active session
@@ -194,7 +194,7 @@ struct ActiveSession {
 }
 
 impl ServerState {
-    fn new(store: SessionStore, global_hooks: Option<hooks::RunHooks>) -> Self {
+    fn new(store: SessionStore, global_hooks: Option<hooks::HookSource>) -> Self {
         Self {
             store,
             global_hooks,
@@ -384,8 +384,8 @@ impl ServerState {
         let saved_settings = stored.saved_settings(&default_settings());
         validate_settings(&saved_settings)?;
         let model_locked = !stored.transcript.is_empty();
-        // A repeated load keeps the prefix and skill catalog captured by the
-        // first load.
+        // A repeated load keeps the system prompt and skill catalog captured by
+        // the first load.
         let (system_prompt, skills) = match self.active_session(&request.session_id) {
             Some(active) => (active.system_prompt, active.skills),
             None => (
@@ -552,7 +552,7 @@ fn initialize_response(initialize: &InitializeRequest) -> InitializeResponse {
 }
 
 pub async fn serve_stdio(
-    global_hooks: Option<hooks::RunHooks>,
+    global_hooks: Option<hooks::HookSource>,
 ) -> std::result::Result<(), Box<dyn StdError>> {
     let store = SessionStore::open(&sessions::database_path()?)?;
     serve(ServerState::new(store, global_hooks), Stdio::new()).await?;
@@ -566,7 +566,7 @@ pub async fn run_headless(
     model: String,
     effort: EffortLevel,
     user_message: String,
-    global_hooks: Option<hooks::RunHooks>,
+    global_hooks: Option<hooks::HookSource>,
 ) -> std::result::Result<String, Box<dyn StdError>> {
     let api_key = auth::api_key()?.ok_or_else(|| {
         io::Error::new(
@@ -596,7 +596,7 @@ async fn run_headless_prompt(
     settings: SessionSettings,
     system_prompt: String,
     user_message: String,
-    hooks: Vec<hooks::RunHooks>,
+    hook_sources: Vec<hooks::HookSource>,
 ) -> std::result::Result<String, Box<dyn StdError>> {
     use tokio::signal::unix::{SignalKind, signal};
     let mut interrupt = signal(SignalKind::interrupt())?;
@@ -608,7 +608,7 @@ async fn run_headless_prompt(
         prompt::PromptInput {
             session_id,
             turn_start: TranscriptEntry::UserMessage(user_message),
-            hooks,
+            hook_sources,
             selected_settings: Some(settings.with_mode(SessionMode::Auto)),
             system_prompt,
         },
@@ -726,8 +726,8 @@ async fn serve(state: ServerState, transport: impl ConnectTo<Agent> + 'static) -
         )
         .on_receive_request(
             async move |request: PromptRequest, responder, connection| {
-                let user_message = match convert::prompt_to_user_message(&request.prompt) {
-                    Ok(user_message) => user_message,
+                let prompt_text = match convert::prompt_text(&request.prompt) {
+                    Ok(prompt_text) => prompt_text,
                     Err(error) => return responder.respond_with_error(error),
                 };
                 let Some((guard, cancellation)) =
@@ -738,7 +738,7 @@ async fn serve(state: ServerState, transport: impl ConnectTo<Agent> + 'static) -
                 let Some(active) = prompt_state.active_session(&request.session_id) else {
                     return responder.respond_with_error(inactive(&request.session_id));
                 };
-                let (turn_start, hooks) = match dispatch(user_message, &active.skills) {
+                let (turn_start, skill_source) = match dispatch(prompt_text, &active.skills) {
                     Dispatch::Compact => {
                         let session_id = request.session_id;
                         let compact_state = prompt_state.clone();
@@ -757,9 +757,13 @@ async fn serve(state: ServerState, transport: impl ConnectTo<Agent> + 'static) -
                             reply(responder, result)
                         });
                     }
-                    Dispatch::Skill { invocation, hooks } => {
-                        (TranscriptEntry::SkillInvocation(invocation), Some(*hooks))
-                    }
+                    Dispatch::Skill {
+                        invocation,
+                        hook_source,
+                    } => (
+                        TranscriptEntry::SkillInvocation(invocation),
+                        Some(*hook_source),
+                    ),
                     Dispatch::UserMessage(text) => (TranscriptEntry::UserMessage(text), None),
                 };
                 let openrouter = match prompt_state.openrouter_client() {
@@ -782,11 +786,11 @@ async fn serve(state: ServerState, transport: impl ConnectTo<Agent> + 'static) -
                     prompt::PromptInput {
                         session_id: session_id.clone(),
                         turn_start,
-                        hooks: prompt_state
+                        hook_sources: prompt_state
                             .global_hooks
                             .clone()
                             .into_iter()
-                            .chain(hooks)
+                            .chain(skill_source)
                             .collect(),
                         selected_settings: Some(active.selections),
                         system_prompt: active.system_prompt,
@@ -861,7 +865,7 @@ mod tests {
         );
 
         store
-            .append_user(
+            .append_turn_start(
                 &id,
                 &SessionSettingsChange {
                     model: Some(openrouter::default_model().to_owned()),
@@ -1030,7 +1034,7 @@ mod tests {
                     arguments: arguments.to_owned(),
                     instructions: "Follow the goal steps.".to_owned(),
                 },
-                hooks: Box::new(hooks::RunHooks {
+                hook_source: Box::new(hooks::HookSource {
                     hooks: skills[0].hooks.clone(),
                     skill: Some("goal".to_owned()),
                     directory: skills[0].directory.clone(),
@@ -1045,7 +1049,7 @@ mod tests {
                     arguments: String::new(),
                     instructions: "Follow the init steps.".to_owned(),
                 },
-                hooks: Box::new(hooks::RunHooks {
+                hook_source: Box::new(hooks::HookSource {
                     skill: Some("init".to_owned()),
                     hooks: hooks::Hooks::default(),
                     directory: skills[1].directory.clone(),
@@ -1292,7 +1296,7 @@ mod tests {
             .unwrap();
         state
             .store
-            .append_user(
+            .append_turn_start(
                 &created.session_id,
                 &sessions::SessionSettingsChange {
                     model: Some(openrouter::default_model().to_owned()),
@@ -1335,7 +1339,7 @@ mod tests {
             .unwrap();
         state
             .store
-            .append_user(
+            .append_turn_start(
                 &created.session_id,
                 &sessions::SessionSettingsChange {
                     model: Some("retired/model".to_owned()),
@@ -1463,7 +1467,7 @@ mod tests {
 
         state
             .store
-            .append_user(
+            .append_turn_start(
                 &created.session_id,
                 &sessions::SessionSettingsChange {
                     model: Some(chosen.to_owned()),
@@ -1556,7 +1560,7 @@ mod tests {
             prompt::PromptInput {
                 session_id: id.clone(),
                 turn_start: TranscriptEntry::UserMessage(user_message.to_owned()),
-                hooks: Vec::new(),
+                hook_sources: Vec::new(),
                 selected_settings: Some(active.selections),
                 system_prompt: active.system_prompt,
             }
@@ -1784,7 +1788,7 @@ Run the commands.
 "#,
                 )
                 .unwrap();
-                state.global_hooks = Some(hooks::RunHooks {
+                state.global_hooks = Some(hooks::HookSource {
                     skill: None,
                     directory: workspace.0.clone(),
                     hooks: skills::load(&workspace.0).unwrap().remove(0).hooks,

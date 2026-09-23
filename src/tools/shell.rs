@@ -148,7 +148,7 @@ mod tests {
     use crate::{
         hooks,
         process::{OUTPUT_DRAIN_TIMEOUT, kill_group},
-        sessions::{EffortLevel, HookDecision, SessionMode},
+        sessions::{EffortLevel, SessionMode, StopDecision},
         tools::{self, fixture::Workspace},
     };
     use rustix::process::Pid;
@@ -298,7 +298,7 @@ mod tests {
             .await;
             assert!(matches!(outcome, ToolOutcome::Completed(_)), "{outcome:?}");
             // A hook inherits the key and reads its input from stdin.
-            let hooks = hooks::RunHooks {
+            let hooks = hooks::HookSource {
                 skill: Some("goal".to_owned()),
                 hooks: hooks::Hooks {
                     before_stop: Some(hooks::HookCommand {
@@ -318,7 +318,7 @@ mod tests {
                 model: "test/model".to_owned(),
                 effort: EffortLevel::Low,
             };
-            let decision: hooks::StopDecision = hooks::run(
+            let decision: hooks::StopResponse = hooks::run(
                 &hooks,
                 &context,
                 &hooks::Event::BeforeStop {
@@ -330,7 +330,7 @@ mod tests {
             .unwrap();
             assert_eq!(
                 (decision.decision, decision.message.as_str()),
-                (HookDecision::Stop, "Key present.")
+                (StopDecision::Stop, "Key present.")
             );
             let input: serde_json::Value = serde_json::from_str(
                 &std::fs::read_to_string(workspace.0.join("input.json")).unwrap(),

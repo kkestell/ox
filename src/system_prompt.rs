@@ -2,13 +2,13 @@
 //! instructions.
 
 use std::{
-    fs::File,
-    io::{self, ErrorKind, Read},
+    io::{self, ErrorKind},
     path::Path,
 };
 
+use crate::text_file;
+
 const FILE_NAME: &str = "AGENTS.md";
-const MAX_BYTES: u64 = 32 * 1024;
 const BUILT_IN_PROMPT: &str = include_str!("prompts/system_prompt.md");
 
 /// Builds the system prompt for a workspace. The result is stable until the
@@ -27,7 +27,7 @@ pub fn for_workspace(workspace_path: &Path) -> io::Result<String> {
 /// file is missing or blank. A file that cannot be read, is not UTF-8, or
 /// exceeds the limit is an error rather than a silently ignored file.
 fn read_workspace(workspace_path: &Path) -> io::Result<Option<String>> {
-    match read_text(&workspace_path.join(FILE_NAME)) {
+    match text_file::read_bounded(&workspace_path.join(FILE_NAME)) {
         Ok(text) if text.trim().is_empty() => Ok(None),
         Ok(text) => Ok(Some(text)),
         Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
@@ -38,27 +38,12 @@ fn read_workspace(workspace_path: &Path) -> io::Result<Option<String>> {
     }
 }
 
-/// Reads a UTF-8 text file of at most 32 KiB for instructions or settings.
-pub fn read_text(path: &Path) -> io::Result<String> {
-    let mut bytes = Vec::new();
-    File::open(path)?
-        .take(MAX_BYTES + 1)
-        .read_to_end(&mut bytes)?;
-    if bytes.len() as u64 > MAX_BYTES {
-        return Err(io::Error::new(
-            ErrorKind::InvalidData,
-            format!("larger than {} KiB", MAX_BYTES / 1024),
-        ));
-    }
-    String::from_utf8(bytes).map_err(|_| io::Error::new(ErrorKind::InvalidData, "not UTF-8 text"))
-}
-
 #[cfg(test)]
 mod tests {
     use std::fs;
 
     use super::*;
-    use crate::tools::fixture::Workspace;
+    use crate::{text_file::MAX_BYTES, tools::fixture::Workspace};
 
     #[test]
     fn builds_a_prompt_from_bounded_utf8_workspace_instructions() {
