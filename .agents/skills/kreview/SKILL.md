@@ -77,6 +77,8 @@ short verdict.
   assertions.
 - [`readability`](references/general/readability.md) — clear control flow and
   local reasoning.
+- [`comments`](references/general/comments.md) — useful explanations of intent,
+  constraints, and consequences in the code.
 - [`concurrency`](references/general/concurrency.md) — shared state, task
   lifetime, and cancellation.
 - [`security`](references/general/security.md) — trust boundaries, permissions,
