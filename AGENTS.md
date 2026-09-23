@@ -3,7 +3,8 @@ THIS DOCUMENT MUST BE KEPT UP TO DATE
 ## Code
 
 - `Makefile`: Release builds and fast-by-default or release local installs.
-  Installs replace the Ox binary and delete the disposable session database.
+  Installs replace the Ox binary, overwrite `~/.config/ox/settings.json` with
+  `examples/settings.json`, and delete the disposable session database.
 - `scripts/run.py`: Temporary workspace runner for a headless prompt, with
   optional model, effort, and checkout of a pinned GitHub commit.
 - `src/main.rs`: Command parsing and process entry; starts the ACP server, runs
@@ -18,15 +19,17 @@ THIS DOCUMENT MUST BE KEPT UP TO DATE
   Ox's coding-agent behavior.
 - `src/skills.rs`: Workspace skill definitions in `.agents/skills/`, frontmatter
   parsing and skill catalog loading.
-- `src/settings.rs`: Global hooks loaded from `~/.config/ox/settings.json` at
-  process startup, with suppression inside hook commands.
+- `src/settings.rs`: The required model catalog and optional global hooks
+  loaded from `~/.config/ox/settings.json` at process startup, with global hook
+  suppression inside hook commands.
 - `src/hooks.rs`: Shared hook definitions, validation, and the protocol for
   every hook kind: JSON input on stdin with the fields every hook shares, one
   response object per kind on stdout, deadlines, limits, and hook errors.
 - `src/process.rs`: Child processes in a new process group with optional
   stdin, bounded output tails, a deadline, cancellation, and group cleanup with
   an optional SIGTERM grace period.
-- `src/openrouter.rs`: OpenRouter model catalog and effort mapping, request
+- `src/openrouter.rs`: The process-wide model catalog, default model, and
+  effort mapping, request
   encoding, context limits, client, streamed response assembly with usage
   parsing, and explicit input-context overflow errors.
 - `src/compaction.rs`: Request estimates, safe transcript cuts, bounded

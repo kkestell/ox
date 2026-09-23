@@ -937,7 +937,7 @@ mod tests {
 
     use crate::{
         openrouter::{
-            DEFAULT_MODEL, MODEL_CATALOG,
+            catalog, default_model,
             fixture::{Reply, Server, delta, sse, text_reply, tool_reply, usage},
         },
         sessions::{EffortLevel, ModelUsage, SkillInvocation},
@@ -982,7 +982,7 @@ mod tests {
         ) -> (Result<PromptOutput>, Vec<TranscriptEntry>) {
             self.run_with_settings(
                 input,
-                SessionSettings::new(DEFAULT_MODEL, EffortLevel::Default)
+                SessionSettings::new(default_model(), EffortLevel::Default)
                     .with_mode(SessionMode::Auto),
                 on_update,
             )
@@ -1054,7 +1054,7 @@ mod tests {
     }
 
     fn model() -> TranscriptEntry {
-        TranscriptEntry::Model(DEFAULT_MODEL.to_owned())
+        TranscriptEntry::Model(default_model().to_owned())
     }
 
     fn auto() -> TranscriptEntry {
@@ -1133,7 +1133,7 @@ mod tests {
                 invocation("Pass the tests."),
                 vec![hooks],
                 Some(
-                    SessionSettings::new(DEFAULT_MODEL, EffortLevel::Default)
+                    SessionSettings::new(default_model(), EffortLevel::Default)
                         .with_mode(SessionMode::Auto),
                 ),
                 on_update,
@@ -1387,7 +1387,7 @@ mod tests {
 
         assert_eq!(response.unwrap().stop_reason, StopReason::EndTurn);
         let request = &harness.server.requests()[0];
-        assert_eq!(request["model"], DEFAULT_MODEL);
+        assert_eq!(request["model"], default_model());
         assert!(request.get("reasoning").is_none());
         let TranscriptEntry::AssistantMessage(mut answered) = answer("Hello there.") else {
             unreachable!()
@@ -1431,7 +1431,7 @@ mod tests {
         };
         assert_eq!(
             (reported.used, reported.size),
-            (150, MODEL_CATALOG[0].context_limit as u64)
+            (150, catalog()[0].context_limit as u64)
         );
         assert_eq!(
             reported.cost,
@@ -1480,7 +1480,7 @@ mod tests {
             inputs[0]["workspace"],
             harness.workspace.0.to_str().unwrap()
         );
-        assert_eq!(inputs[0]["model"], DEFAULT_MODEL);
+        assert_eq!(inputs[0]["model"], default_model());
         assert_eq!(inputs[0]["effort"], "default");
         assert_eq!(inputs[0]["answer"], "First try.");
         assert_eq!(inputs[1]["answer"], "Second try.");
@@ -1742,7 +1742,7 @@ mod tests {
                     turn_start,
                     definitions.clone(),
                     Some(
-                        SessionSettings::new(DEFAULT_MODEL, EffortLevel::Default)
+                        SessionSettings::new(default_model(), EffortLevel::Default)
                             .with_mode(SessionMode::Auto),
                     ),
                     |_| Ok(()),
@@ -1933,9 +1933,9 @@ mod tests {
         // `before_run` saves nothing for `{}`; an error or oversized feedback
         // ends the run before any model request.
         let system = system_prompt::for_workspace(&Workspace::new().0).unwrap();
-        let (admission, _, _) = compaction::budget(DEFAULT_MODEL).unwrap();
+        let (admission, _, _) = compaction::budget(default_model()).unwrap();
         let base = compaction::request_estimate(
-            DEFAULT_MODEL,
+            default_model(),
             EffortLevel::Default,
             &system,
             &[model(), auto(), invocation("")],
@@ -1970,7 +1970,7 @@ mod tests {
                         directory: harness.workspace.0.clone(),
                     }],
                     Some(
-                        SessionSettings::new(DEFAULT_MODEL, EffortLevel::Default)
+                        SessionSettings::new(default_model(), EffortLevel::Default)
                             .with_mode(SessionMode::Auto),
                     ),
                     |_| Ok(()),
@@ -2162,7 +2162,7 @@ mod tests {
             .append_user(
                 &id,
                 &SessionSettingsChange {
-                    model: Some(DEFAULT_MODEL.to_owned()),
+                    model: Some(default_model().to_owned()),
                     effort: None,
                     mode: None,
                 },
@@ -2220,7 +2220,7 @@ mod tests {
             .append_user(
                 &harness.session_id,
                 &SessionSettingsChange {
-                    model: Some(DEFAULT_MODEL.to_owned()),
+                    model: Some(default_model().to_owned()),
                     effort: None,
                     mode: None,
                 },
@@ -2263,7 +2263,7 @@ mod tests {
         ])
         .await;
         let system = system_prompt::for_workspace(&between.workspace.0).unwrap();
-        let (_, trigger, _) = compaction::budget(DEFAULT_MODEL).unwrap();
+        let (_, trigger, _) = compaction::budget(default_model()).unwrap();
         let base = "x".repeat(2_000_000);
         let prospective = vec![
             model(),
@@ -2273,7 +2273,7 @@ mod tests {
             user("next request"),
         ];
         let base_estimate = compaction::request_estimate(
-            DEFAULT_MODEL,
+            default_model(),
             EffortLevel::Default,
             &system,
             &prospective,
@@ -2285,7 +2285,7 @@ mod tests {
             .append_user(
                 &between.session_id,
                 &SessionSettingsChange {
-                    model: Some(DEFAULT_MODEL.to_owned()),
+                    model: Some(default_model().to_owned()),
                     effort: None,
                     mode: Some(SessionMode::Auto),
                 },
@@ -2375,7 +2375,7 @@ mod tests {
             .append_user(
                 &harness.session_id,
                 &SessionSettingsChange {
-                    model: Some(DEFAULT_MODEL.to_owned()),
+                    model: Some(default_model().to_owned()),
                     effort: None,
                     mode: None,
                 },
@@ -2415,7 +2415,7 @@ mod tests {
             .append_user(
                 &no_reduction.session_id,
                 &SessionSettingsChange {
-                    model: Some(DEFAULT_MODEL.to_owned()),
+                    model: Some(default_model().to_owned()),
                     effort: None,
                     mode: None,
                 },
@@ -2463,7 +2463,7 @@ mod tests {
         let harness = Harness::new(vec![text_reply("First"), text_reply("Second")]).await;
         let selected = Rc::new(RefCell::new(EffortLevel::Low));
         let changed = selected.clone();
-        let saved_model = MODEL_CATALOG[1].id;
+        let saved_model = catalog()[1].id.as_str();
         let first_settings = SessionSettings::new(saved_model, *selected.borrow());
 
         let (first, _) = harness
@@ -2475,7 +2475,7 @@ mod tests {
             })
             .await;
         assert_eq!(first.unwrap().stop_reason, StopReason::EndTurn);
-        let second_settings = SessionSettings::new(MODEL_CATALOG[2].id, *selected.borrow());
+        let second_settings = SessionSettings::new(catalog()[2].id.as_str(), *selected.borrow());
         let (second, transcript) = harness
             .run_with_settings("two", second_settings, |_| Ok(()))
             .await;
@@ -2502,7 +2502,7 @@ mod tests {
     #[tokio::test]
     async fn absent_selection_uses_saved_settings_without_duplicate_entries() {
         let harness = Harness::new(vec![text_reply("Done")]).await;
-        let saved = SessionSettings::new(MODEL_CATALOG[1].id, EffortLevel::High);
+        let saved = SessionSettings::new(catalog()[1].id.as_str(), EffortLevel::High);
         harness
             .store
             .append_user(

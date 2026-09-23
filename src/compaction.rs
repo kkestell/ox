@@ -436,7 +436,7 @@ mod tests {
     use super::*;
     use crate::{
         openrouter::{
-            DEFAULT_MODEL,
+            default_model,
             fixture::{Reply, Server, text_reply},
         },
         sessions::{
@@ -489,7 +489,7 @@ mod tests {
             .append_user(
                 &id,
                 &SessionSettingsChange {
-                    model: Some(DEFAULT_MODEL.to_owned()),
+                    model: Some(default_model().to_owned()),
                     effort: None,
                     mode: None,
                 },
@@ -537,8 +537,8 @@ mod tests {
         let cancellation = PromptCancellation::new();
         let mut transcript = store.read(&id).unwrap().unwrap().transcript;
         assert!(
-            request_estimate(DEFAULT_MODEL, EffortLevel::Default, "system", &transcript).unwrap()
-                < budget(DEFAULT_MODEL).unwrap().1,
+            request_estimate(default_model(), EffortLevel::Default, "system", &transcript).unwrap()
+                < budget(default_model()).unwrap().1,
             "manual compaction is below the automatic trigger"
         );
         assert!(
@@ -547,7 +547,7 @@ mod tests {
                 &server.client(),
                 &cancellation,
                 &id,
-                &SessionSettings::new(DEFAULT_MODEL, EffortLevel::Default),
+                &SessionSettings::new(default_model(), EffortLevel::Default),
                 "system",
                 &mut transcript
             )
@@ -573,7 +573,7 @@ mod tests {
                 &server.client(),
                 &cancellation,
                 &id,
-                &SessionSettings::new(DEFAULT_MODEL, EffortLevel::Default),
+                &SessionSettings::new(default_model(), EffortLevel::Default),
                 "system",
                 &mut transcript
             )
@@ -590,7 +590,7 @@ mod tests {
                 &server.client(),
                 &cancellation,
                 &id,
-                &SessionSettings::new(DEFAULT_MODEL, EffortLevel::Default),
+                &SessionSettings::new(default_model(), EffortLevel::Default),
                 "system",
                 &mut transcript
             )
@@ -660,7 +660,7 @@ mod tests {
             .append_user(
                 &id,
                 &SessionSettingsChange {
-                    model: Some(DEFAULT_MODEL.to_owned()),
+                    model: Some(default_model().to_owned()),
                     effort: None,
                     mode: None,
                 },
@@ -683,16 +683,16 @@ mod tests {
                 &server.client(),
                 &PromptCancellation::new(),
                 &id,
-                &SessionSettings::new(DEFAULT_MODEL, EffortLevel::Default),
+                &SessionSettings::new(default_model(), EffortLevel::Default),
                 "system",
                 &mut transcript
             )
             .await
             .unwrap()
         );
-        let (admission, _, target) = budget(DEFAULT_MODEL).unwrap();
+        let (admission, _, target) = budget(default_model()).unwrap();
         let estimate =
-            request_estimate(DEFAULT_MODEL, EffortLevel::Default, "system", &transcript).unwrap();
+            request_estimate(default_model(), EffortLevel::Default, "system", &transcript).unwrap();
         assert!(
             estimate > target && estimate <= admission,
             "a useful reduction is accepted even when the target cannot be reached"
@@ -707,7 +707,7 @@ mod tests {
             .append_user(
                 &id,
                 &SessionSettingsChange {
-                    model: Some(DEFAULT_MODEL.to_owned()),
+                    model: Some(default_model().to_owned()),
                     effort: None,
                     mode: None,
                 },
@@ -748,7 +748,7 @@ mod tests {
                 &server.client(),
                 &PromptCancellation::new(),
                 &id,
-                &SessionSettings::new(DEFAULT_MODEL, EffortLevel::Default),
+                &SessionSettings::new(default_model(), EffortLevel::Default),
                 "system",
                 &mut transcript
             )
@@ -772,7 +772,7 @@ mod tests {
             .append_user(
                 &small_id,
                 &SessionSettingsChange {
-                    model: Some(DEFAULT_MODEL.to_owned()),
+                    model: Some(default_model().to_owned()),
                     effort: None,
                     mode: None,
                 },
@@ -800,7 +800,7 @@ mod tests {
                     &server.client(),
                     &PromptCancellation::new(),
                     &small_id,
-                    &SessionSettings::new(DEFAULT_MODEL, EffortLevel::Default),
+                    &SessionSettings::new(default_model(), EffortLevel::Default),
                     "system",
                     &mut copy
                 )
@@ -830,7 +830,7 @@ mod tests {
                 &server.client(),
                 &PromptCancellation::new(),
                 &small_id,
-                &SessionSettings::new(DEFAULT_MODEL, EffortLevel::Default),
+                &SessionSettings::new(default_model(), EffortLevel::Default),
                 "system",
                 &mut copy
             )
@@ -853,7 +853,7 @@ mod tests {
                 &hanging.client(),
                 &cancel,
                 &small_id,
-                &SessionSettings::new(DEFAULT_MODEL, EffortLevel::Default),
+                &SessionSettings::new(default_model(), EffortLevel::Default),
                 "system",
                 &mut copy,
             )

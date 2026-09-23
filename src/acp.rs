@@ -37,14 +37,13 @@ use crate::{
         self, EffortLevel, SessionMode, SessionSettings, SessionStore, SessionSummary,
         SkillInvocation, TranscriptEntry,
     },
-    settings,
     skills::{self, Skill},
     system_prompt,
 };
 use operations::SessionOperations;
 
 fn default_settings() -> SessionSettings {
-    SessionSettings::new(openrouter::DEFAULT_MODEL, EffortLevel::Default)
+    SessionSettings::new(openrouter::default_model(), EffortLevel::Default)
 }
 
 fn validate_settings(settings: &SessionSettings) -> Result<()> {
@@ -64,11 +63,14 @@ fn config_options(settings: &SessionSettings, model_locked: bool) -> Vec<Session
     let models = if model_locked {
         let model = openrouter::catalog_model(&settings.model)
             .expect("a session model comes from the model catalog");
-        vec![SessionConfigSelectOption::new(model.id, model.name)]
+        vec![SessionConfigSelectOption::new(
+            model.id.clone(),
+            model.name.clone(),
+        )]
     } else {
-        openrouter::MODEL_CATALOG
+        openrouter::catalog()
             .iter()
-            .map(|model| SessionConfigSelectOption::new(model.id, model.name))
+            .map(|model| SessionConfigSelectOption::new(model.id.clone(), model.name.clone()))
             .collect()
     };
     vec![
@@ -316,7 +318,7 @@ impl ServerState {
                         value, request.config_id
                     ))
                 })?;
-                selections.model = model.id.to_owned();
+                selections.model.clone_from(&model.id);
             }
             "effort" => {
                 selections.effort = EffortLevel::from_id(value.0.as_ref()).ok_or_else(|| {
@@ -533,9 +535,11 @@ fn initialize_response(initialize: &InitializeRequest) -> InitializeResponse {
     response
 }
 
-pub async fn serve_stdio() -> std::result::Result<(), Box<dyn StdError>> {
+pub async fn serve_stdio(
+    global_hooks: Option<hooks::RunHooks>,
+) -> std::result::Result<(), Box<dyn StdError>> {
     let store = SessionStore::open(&sessions::database_path()?)?;
-    serve(ServerState::new(store, settings::load()?), Stdio::new()).await?;
+    serve(ServerState::new(store, global_hooks), Stdio::new()).await?;
     Ok(())
 }
 
@@ -546,6 +550,7 @@ pub async fn run_headless(
     model: String,
     effort: EffortLevel,
     user_message: String,
+    global_hooks: Option<hooks::RunHooks>,
 ) -> std::result::Result<String, Box<dyn StdError>> {
     let api_key = auth::api_key()?.ok_or_else(|| {
         io::Error::new(
@@ -554,7 +559,6 @@ pub async fn run_headless(
         )
     })?;
     let system_prompt = system_prompt::for_workspace(workspace_path)?;
-    let hooks = settings::load()?.into_iter().collect();
     let store = SessionStore::open(&sessions::database_path()?)?;
     let session = store.create(workspace_path)?;
     run_headless_prompt(
@@ -564,7 +568,7 @@ pub async fn run_headless(
         SessionSettings::new(model, effort),
         system_prompt,
         user_message,
-        hooks,
+        global_hooks.into_iter().collect(),
     )
     .await
 }
@@ -844,7 +848,7 @@ mod tests {
             .append_user(
                 &id,
                 &SessionSettingsChange {
-                    model: Some(openrouter::DEFAULT_MODEL.to_owned()),
+                    model: Some(openrouter::default_model().to_owned()),
                     effort: None,
                     mode: None,
                 },
@@ -897,7 +901,7 @@ mod tests {
                 if checkpoint.summarizer_cost == Some(0.125)
         ));
         let estimate = compaction::request_estimate(
-            openrouter::DEFAULT_MODEL,
+            openrouter::default_model(),
             EffortLevel::Default,
             "captured system",
             &after,
@@ -1275,7 +1279,7 @@ mod tests {
             .append_user(
                 &created.session_id,
                 &sessions::SessionSettingsChange {
-                    model: Some(openrouter::DEFAULT_MODEL.to_owned()),
+                    model: Some(openrouter::default_model().to_owned()),
                     effort: None,
                     mode: None,
                 },
@@ -1374,7 +1378,7 @@ mod tests {
                 }
             ])
         );
-        let chosen = openrouter::MODEL_CATALOG[1].id;
+        let chosen = openrouter::catalog()[1].id.as_str();
         let response = state
             .set_config_option(&SetSessionConfigOptionRequest::new(
                 created.session_id.clone(),
@@ -1389,7 +1393,7 @@ mod tests {
                 .as_array()
                 .unwrap()
                 .len(),
-            openrouter::MODEL_CATALOG.len()
+            openrouter::catalog().len()
         );
         let response = state
             .set_config_option(&SetSessionConfigOptionRequest::new(
@@ -1430,7 +1434,7 @@ mod tests {
             .set_config_option(&SetSessionConfigOptionRequest::new(
                 created.session_id.clone(),
                 "model",
-                openrouter::DEFAULT_MODEL,
+                openrouter::default_model(),
             ))
             .unwrap_err();
         assert_eq!(error.code, ErrorCode::InvalidParams);
@@ -1474,7 +1478,7 @@ mod tests {
             replayed.last(),
             Some(SessionUpdate::UsageUpdate(usage))
                 if usage.used == 42
-                    && usage.size == openrouter::MODEL_CATALOG[1].context_limit as u64
+                    && usage.size == openrouter::catalog()[1].context_limit as u64
                     && usage.cost.as_ref().is_some_and(|cost| cost.amount == 0.5)
         ));
         assert_eq!(
@@ -1675,7 +1679,7 @@ mod tests {
         assert_eq!(
             store.read(&id).unwrap().unwrap().transcript,
             vec![
-                TranscriptEntry::Model(openrouter::DEFAULT_MODEL.to_owned()),
+                TranscriptEntry::Model(openrouter::default_model().to_owned()),
                 TranscriptEntry::UserMessage("Hello".to_owned())
             ],
         );
@@ -2041,10 +2045,14 @@ Run the commands.
                 store.clone(),
                 server.client(),
                 answered.id,
-                SessionSettings::new(openrouter::DEFAULT_MODEL, EffortLevel::Default),
+                SessionSettings::new(openrouter::default_model(), EffortLevel::Default),
                 system_prompt::for_workspace(path).unwrap(),
                 "Answer".into(),
-                settings::load().unwrap().into_iter().collect(),
+                crate::settings::load()
+                    .unwrap()
+                    .global_hooks
+                    .into_iter()
+                    .collect(),
             )
             .await
             .unwrap();
@@ -2058,7 +2066,7 @@ Run the commands.
                 store.clone(),
                 server.client(),
                 session.id.clone(),
-                SessionSettings::new(openrouter::MODEL_CATALOG[1].id, EffortLevel::High),
+                SessionSettings::new(openrouter::catalog()[1].id.as_str(), EffortLevel::High),
                 system_prompt::for_workspace(path).unwrap(),
                 "Run commands".into(),
                 Vec::new(),
@@ -2072,7 +2080,7 @@ Run the commands.
             assert_eq!(
                 &transcript[..4],
                 [
-                    TranscriptEntry::Model(openrouter::MODEL_CATALOG[1].id.to_owned()),
+                    TranscriptEntry::Model(openrouter::catalog()[1].id.as_str().to_owned()),
                     TranscriptEntry::Effort(EffortLevel::High),
                     TranscriptEntry::Mode(SessionMode::Auto),
                     TranscriptEntry::UserMessage("Run commands".to_owned()),
@@ -2084,7 +2092,7 @@ Run the commands.
         }
         let workspace = Workspace::new();
         fs::create_dir_all(workspace.0.join(".config/ox")).unwrap();
-        fs::write(workspace.0.join(".config/ox/settings.json"), r#"{"hooks":{"after_run":{"command":"printf %s \"$OX_IN_HOOK\" > reported; echo '{}'"}}}"#).unwrap();
+        fs::write(workspace.0.join(".config/ox/settings.json"), r#"{"models":[{"id":"a/b","name":"B","context_limit":8001,"effort_mapping":{"low":"low","medium":"high","high":"max"}}],"hooks":{"after_run":{"command":"printf %s \"$OX_IN_HOOK\" > reported; echo '{}'"}}}"#).unwrap();
         let mut child = tokio::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",

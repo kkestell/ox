@@ -53,10 +53,12 @@ do not run for ordinary messages, `/compact`, or headless prompts.
 
 ## Global hooks
 
-To enable hooks across workspaces, define them in `~/.config/ox/settings.json`:
+To enable hooks across workspaces, define them in `~/.config/ox/settings.json`
+next to its required `models` list:
 
 ```json
 {
+  "models": [ ... ],
   "hooks": {
     "before_tool": { "command": "python3 scripts/careful.py" },
     "after_run": { "command": "python3 scripts/careful.py" }
@@ -67,10 +69,9 @@ To enable hooks across workspaces, define them in `~/.config/ox/settings.json`:
 For this example, copy `scripts/careful.py` to
 `~/.config/ox/scripts/careful.py`. All five hook kinds are supported. Commands
 run in `~/.config/ox`; their `workspace` input identifies the session workspace.
-Global input uses `"skill": null` and empty `arguments`. The settings object
-accepts only `hooks`; its definitions use the same rules as skills, including
-ignoring unknown hook kinds. Missing settings, omitted or null `hooks`, or an
-empty map enables none. Invalid settings fail startup with the file path.
+Global input uses `"skill": null` and empty `arguments`. Hook definitions use
+the same rules as skills, including ignoring unknown hook kinds. Omitted or
+null `hooks`, or an empty map, enables none. Invalid settings fail startup with the file path.
 Restart Ox to pick up edits.
 
 Global commands run on ordinary ACP and headless prompts in both Ask and Auto

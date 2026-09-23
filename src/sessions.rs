@@ -1121,7 +1121,7 @@ mod tests {
                 .append_user(
                     &id,
                     &SessionSettingsChange {
-                        model: Some(openrouter::DEFAULT_MODEL.to_owned()),
+                        model: Some(openrouter::default_model().to_owned()),
                         effort: None,
                         mode: Some(SessionMode::Auto),
                     },
@@ -1179,12 +1179,12 @@ mod tests {
         );
         assert!(matches!(
             stored.transcript.first(),
-            Some(TranscriptEntry::Model(model)) if model == openrouter::DEFAULT_MODEL
+            Some(TranscriptEntry::Model(model)) if model == openrouter::default_model()
         ));
         assert_eq!(
             stored.transcript,
             vec![
-                TranscriptEntry::Model(openrouter::DEFAULT_MODEL.to_owned()),
+                TranscriptEntry::Model(openrouter::default_model().to_owned()),
                 TranscriptEntry::Mode(SessionMode::Auto),
                 TranscriptEntry::UserMessage("Weather in Chicago and Denver?".to_owned()),
                 TranscriptEntry::AssistantMessage(message.clone()),
@@ -1208,7 +1208,7 @@ mod tests {
         );
         assert_eq!(
             stored.saved_settings(&SessionSettings::new("other", EffortLevel::High)),
-            SessionSettings::new(openrouter::DEFAULT_MODEL, EffortLevel::Low)
+            SessionSettings::new(openrouter::default_model(), EffortLevel::Low)
                 .with_mode(SessionMode::Auto)
         );
         let mut replay = Vec::new();
@@ -1303,7 +1303,7 @@ mod tests {
             .append_user(
                 &orphan,
                 &SessionSettingsChange {
-                    model: Some(openrouter::DEFAULT_MODEL.to_owned()),
+                    model: Some(openrouter::default_model().to_owned()),
                     effort: None,
                     mode: None,
                 },
@@ -1321,7 +1321,7 @@ mod tests {
         insert(
             &unresolved,
             "model",
-            &serde_json::to_string(openrouter::DEFAULT_MODEL).unwrap(),
+            &serde_json::to_string(openrouter::default_model()).unwrap(),
         );
         let unresolved_message = message(vec![call("call-1", "printf Chicago")]);
         insert(
@@ -1347,7 +1347,7 @@ mod tests {
         insert(
             &switched,
             "model",
-            &serde_json::to_string(openrouter::DEFAULT_MODEL).unwrap(),
+            &serde_json::to_string(openrouter::default_model()).unwrap(),
         );
         insert(&switched, "model", r#""other/model""#);
         assert!(store.read(&switched).is_err());
@@ -1360,7 +1360,7 @@ mod tests {
         insert(
             &effort_in_batch,
             "model",
-            &serde_json::to_string(openrouter::DEFAULT_MODEL).unwrap(),
+            &serde_json::to_string(openrouter::default_model()).unwrap(),
         );
         let called = message(vec![call("call-1", "printf Chicago")]);
         insert(
@@ -1432,7 +1432,7 @@ mod tests {
             insert(
                 &misplaced,
                 "model",
-                &serde_json::to_string(openrouter::DEFAULT_MODEL).unwrap(),
+                &serde_json::to_string(openrouter::default_model()).unwrap(),
             );
             for (kind, data) in &preceding {
                 insert(&misplaced, kind, data);
@@ -1454,7 +1454,7 @@ mod tests {
         insert(
             &duplicate_settings,
             "model",
-            &serde_json::to_string(openrouter::DEFAULT_MODEL).unwrap(),
+            &serde_json::to_string(openrouter::default_model()).unwrap(),
         );
         insert(&duplicate_settings, "mode", r#""ask""#);
         insert(&duplicate_settings, "effort", r#""low""#);
@@ -1463,7 +1463,7 @@ mod tests {
         assert!(store.read(&duplicate_settings).is_err());
 
         let base = vec![
-            TranscriptEntry::Model(openrouter::DEFAULT_MODEL.to_owned()),
+            TranscriptEntry::Model(openrouter::default_model().to_owned()),
             TranscriptEntry::UserMessage("first".to_owned()),
             TranscriptEntry::AssistantMessage(message(vec![call("a", "one"), call("b", "two")])),
             TranscriptEntry::ToolResult(completed("a")),
@@ -1560,7 +1560,7 @@ mod tests {
         assert!(
             validate_transcript(&[
                 TranscriptEntry::UserMessage("first".to_owned()),
-                TranscriptEntry::Model(openrouter::DEFAULT_MODEL.to_owned()),
+                TranscriptEntry::Model(openrouter::default_model().to_owned()),
             ])
             .is_err()
         );
@@ -1576,7 +1576,7 @@ mod tests {
         ] {
             assert!(
                 validate_transcript(&[
-                    TranscriptEntry::Model(openrouter::DEFAULT_MODEL.to_owned()),
+                    TranscriptEntry::Model(openrouter::default_model().to_owned()),
                     settings[0].clone(),
                     settings[1].clone(),
                     TranscriptEntry::UserMessage("first".to_owned()),
@@ -1590,7 +1590,7 @@ mod tests {
         ] {
             assert!(
                 validate_transcript(&[
-                    TranscriptEntry::Model(openrouter::DEFAULT_MODEL.to_owned()),
+                    TranscriptEntry::Model(openrouter::default_model().to_owned()),
                     duplicate.clone(),
                     duplicate,
                     TranscriptEntry::UserMessage("first".to_owned()),
@@ -1600,7 +1600,7 @@ mod tests {
         }
         assert!(
             validate_transcript(&[
-                TranscriptEntry::Model(openrouter::DEFAULT_MODEL.to_owned()),
+                TranscriptEntry::Model(openrouter::default_model().to_owned()),
                 TranscriptEntry::Mode(SessionMode::Auto),
                 TranscriptEntry::AssistantMessage(message(vec![])),
             ])
@@ -1608,7 +1608,7 @@ mod tests {
         );
         assert!(
             validate_transcript(&[
-                TranscriptEntry::Model(openrouter::DEFAULT_MODEL.to_owned()),
+                TranscriptEntry::Model(openrouter::default_model().to_owned()),
                 TranscriptEntry::Mode(SessionMode::Auto),
                 TranscriptEntry::SkillInvocation(invocation()),
                 TranscriptEntry::AssistantMessage(message(vec![])),
@@ -1621,7 +1621,7 @@ mod tests {
         let id = store.create(workspace()).unwrap().id;
         let empty = store.read(&id).unwrap().unwrap();
         assert!(empty.transcript.is_empty());
-        let defaults = SessionSettings::new(openrouter::DEFAULT_MODEL, EffortLevel::Default);
+        let defaults = SessionSettings::new(openrouter::default_model(), EffortLevel::Default);
         assert_eq!(empty.saved_settings(&defaults), defaults);
 
         let without_mode = store.create(workspace()).unwrap().id;
@@ -1629,7 +1629,7 @@ mod tests {
             .append_user(
                 &without_mode,
                 &SessionSettingsChange {
-                    model: Some(openrouter::DEFAULT_MODEL.to_owned()),
+                    model: Some(openrouter::default_model().to_owned()),
                     effort: None,
                     mode: None,
                 },
@@ -1650,7 +1650,7 @@ mod tests {
             .append_user(
                 &id,
                 &SessionSettingsChange {
-                    model: Some(openrouter::MODEL_CATALOG[1].id.to_owned()),
+                    model: Some(openrouter::catalog()[1].id.as_str().to_owned()),
                     effort: Some(EffortLevel::Low),
                     mode: Some(SessionMode::Auto),
                 },
@@ -1681,7 +1681,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             store.read(&id).unwrap().unwrap().saved_settings(&defaults),
-            SessionSettings::new(openrouter::MODEL_CATALOG[1].id, EffortLevel::Medium)
+            SessionSettings::new(openrouter::catalog()[1].id.as_str(), EffortLevel::Medium)
                 .with_mode(SessionMode::Auto)
         );
         assert!(matches!(
@@ -1705,7 +1705,7 @@ mod tests {
             .append_user(
                 &created.id,
                 &SessionSettingsChange {
-                    model: Some(openrouter::DEFAULT_MODEL.to_owned()),
+                    model: Some(openrouter::default_model().to_owned()),
                     effort: None,
                     mode: None,
                 },
@@ -1731,7 +1731,7 @@ mod tests {
             .append_user(
                 &long.id,
                 &SessionSettingsChange {
-                    model: Some(openrouter::DEFAULT_MODEL.to_owned()),
+                    model: Some(openrouter::default_model().to_owned()),
                     effort: None,
                     mode: None,
                 },
@@ -1752,7 +1752,7 @@ mod tests {
             .append_user(
                 &skill.id,
                 &SessionSettingsChange {
-                    model: Some(openrouter::DEFAULT_MODEL.to_owned()),
+                    model: Some(openrouter::default_model().to_owned()),
                     effort: None,
                     mode: None,
                 },
@@ -1769,7 +1769,7 @@ mod tests {
                 .append_user(
                     &SessionId::new("missing"),
                     &SessionSettingsChange {
-                        model: Some(openrouter::DEFAULT_MODEL.to_owned()),
+                        model: Some(openrouter::default_model().to_owned()),
                         effort: None,
                         mode: None,
                     },
@@ -1812,7 +1812,7 @@ mod tests {
             .append_user(
                 &id,
                 &SessionSettingsChange {
-                    model: Some(openrouter::DEFAULT_MODEL.to_owned()),
+                    model: Some(openrouter::default_model().to_owned()),
                     effort: None,
                     mode: None,
                 },

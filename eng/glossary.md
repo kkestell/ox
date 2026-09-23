@@ -154,8 +154,11 @@
   used for every model request in that session.
 - **OpenRouter client**: The concrete client that verifies the API key and sends
   model requests to OpenRouter's chat-completions endpoint.
-- **Model catalog**: The OpenRouter models Ox offers, paired with their effort
-  mappings.
+- **Model catalog**: The OpenRouter models declared in `models` in
+  `~/.config/ox/settings.json`, each with its name, context limit, and effort
+  mapping. Ox has no built-in models.
+- **Default model**: The first model in the model catalog, used for a new
+  session and for `ox run` without `--model`.
 - **Model request**: One OpenRouter chat-completion HTTP request. A prompt run
   may make several.
 - **Completion stream**: The reader for one streamed OpenRouter response after

@@ -28,7 +28,7 @@ enum Command {
     Serve,
     Run {
         dir: Option<PathBuf>,
-        model: String,
+        model: Option<String>,
         effort: EffortLevel,
         prompt: String,
     },
@@ -61,18 +61,7 @@ fn run_command(args: &[String]) -> io::Result<Command> {
                 let value = args.next().ok_or_else(usage_error)?;
                 match arg.as_str() {
                     "--dir" => dir = Some(PathBuf::from(value)),
-                    "--model" => {
-                        model = Some(openrouter::catalog_model(value).ok_or_else(|| {
-                            invalid_input(format!(
-                                "{value} is not a model; choose one of {}",
-                                openrouter::MODEL_CATALOG
-                                    .iter()
-                                    .map(|model| model.id)
-                                    .collect::<Vec<_>>()
-                                    .join(", ")
-                            ))
-                        })?);
-                    }
+                    "--model" => model = Some(value.clone()),
                     _ => {
                         effort = Some(EffortLevel::from_id(value).ok_or_else(|| {
                             invalid_input(format!(
@@ -89,12 +78,28 @@ fn run_command(args: &[String]) -> io::Result<Command> {
     }
     Ok(Command::Run {
         dir,
-        model: model
-            .map_or(openrouter::DEFAULT_MODEL, |model| model.id)
-            .to_owned(),
+        model,
         effort: effort.unwrap_or(EffortLevel::Default),
         prompt: prompt.ok_or_else(usage_error)?,
     })
+}
+
+/// Resolves a `--model` choice against the installed model catalog.
+fn resolve_model(model: Option<String>) -> io::Result<String> {
+    let Some(model) = model else {
+        return Ok(openrouter::default_model().to_owned());
+    };
+    if openrouter::catalog_model(&model).is_some() {
+        return Ok(model);
+    }
+    Err(invalid_input(format!(
+        "{model} is not a model; choose one of {}",
+        openrouter::catalog()
+            .iter()
+            .map(|model| model.id.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    )))
 }
 
 fn usage_error() -> io::Error {
@@ -119,6 +124,13 @@ fn absolute_dir(dir: Option<&Path>) -> io::Result<PathBuf> {
     dir.canonicalize()
 }
 
+/// Installs the model catalog and returns the global hooks.
+fn load_settings() -> io::Result<Option<hooks::RunHooks>> {
+    let settings = settings::load()?;
+    openrouter::install_catalog(settings.models);
+    Ok(settings.global_hooks)
+}
+
 #[tokio::main]
 async fn main() -> ExitCode {
     match run().await {
@@ -132,15 +144,22 @@ async fn main() -> ExitCode {
 
 async fn run() -> Result<(), Box<dyn Error>> {
     match command(env::args().skip(1))? {
-        Command::Serve => acp::serve_stdio().await?,
+        Command::Serve => acp::serve_stdio(load_settings()?).await?,
         Command::Run {
             dir,
             model,
             effort,
             prompt,
         } => {
-            let answer =
-                acp::run_headless(&absolute_dir(dir.as_deref())?, model, effort, prompt).await?;
+            let global_hooks = load_settings()?;
+            let answer = acp::run_headless(
+                &absolute_dir(dir.as_deref())?,
+                resolve_model(model)?,
+                effort,
+                prompt,
+                global_hooks,
+            )
+            .await?;
             println!("{answer}");
         }
         Command::Login => {
@@ -204,11 +223,12 @@ mod tests {
             panic!("expected run command");
         };
         assert_eq!(dir, None);
-        assert_eq!(model, openrouter::DEFAULT_MODEL);
+        assert_eq!(model, None);
+        assert_eq!(resolve_model(model).unwrap(), openrouter::default_model());
         assert_eq!(effort, EffortLevel::Default);
         assert_eq!(prompt, "Hello");
 
-        let chosen = openrouter::MODEL_CATALOG[1].id;
+        let chosen = openrouter::catalog()[1].id.as_str();
         let Command::Run {
             dir,
             model,
@@ -229,7 +249,7 @@ mod tests {
             panic!("expected run command");
         };
         assert_eq!(dir.as_deref(), Some(Path::new("workspace")));
-        assert_eq!(model, chosen);
+        assert_eq!(resolve_model(model).unwrap(), chosen);
         assert_eq!(effort, EffortLevel::High);
         assert_eq!(prompt, "Fix it");
     }
@@ -241,7 +261,12 @@ mod tests {
         assert!(run(&["run", ""]).is_err());
         assert!(run(&["run", "--dir"]).is_err());
         assert!(run(&["run", "Hello", "again"]).is_err());
-        assert!(error(&["run", "--model", "retired/model", "Hello"]).contains("not a model"));
+        assert!(
+            resolve_model(Some("retired/model".to_owned()))
+                .unwrap_err()
+                .to_string()
+                .contains("not a model")
+        );
         assert!(error(&["run", "--effort", "max", "Hello"]).contains("not an effort level"));
     }
 

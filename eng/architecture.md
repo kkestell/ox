@@ -147,14 +147,23 @@ saved skill invocation for the current turn.
 Other slash-prefixed text is an ordinary user message. Headless prompts never
 invoke skills.
 
-### Global hooks
+### Settings
 
 Ox reads `$HOME/.config/ox/settings.json` once when starting the ACP server or
-one headless run. Its `hooks` object uses the same definitions and validation
-as skill hooks, with one command per hook kind. Missing settings or omitted
-or null `hooks` means no global hooks. A malformed, unreadable, non-UTF-8, or
-oversized settings file fails startup with its path. Restarting Ox reads edits.
-Global hooks are held in process state and apply across workspaces.
+one headless run; `ox auth` and help do not read it. Ox has no built-in models.
+The required `models` list is the model catalog: each model's id, name, context
+limit, and effort mapping. The first model is the default model. A missing,
+malformed, unreadable, non-UTF-8, or oversized settings file, an empty model
+catalog, a duplicate id, a blank field, or a context limit of 8,000 or less
+fails startup with its path. Restarting Ox reads edits. The model catalog is
+installed once per process; `OX_IN_HOOK` does not affect it.
+
+### Global hooks
+
+The settings file's optional `hooks` object uses the same definitions and
+validation as skill hooks, with one command per hook kind. Omitted or null
+`hooks` means no global hooks. Global hooks are held in process state and apply
+across workspaces.
 
 At each hook point, the global command runs before the invoked skill's command.
 Both run even when the first denies a tool call or requests continuation.

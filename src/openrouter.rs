@@ -16,52 +16,111 @@ use crate::{
     tools,
 };
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct CatalogModel {
-    pub id: &'static str,
-    pub name: &'static str,
+    pub id: String,
+    pub name: String,
     pub context_limit: usize,
-    /// The OpenRouter effort sent for Low, Medium, and High.
-    openrouter_efforts: [&'static str; 3],
+    effort_mapping: EffortMapping,
+}
+
+/// The OpenRouter effort sent for Low, Medium, and High.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EffortMapping {
+    low: String,
+    medium: String,
+    high: String,
 }
 
 impl CatalogModel {
-    pub fn openrouter_effort(&self, level: EffortLevel) -> Option<&'static str> {
-        let [low, medium, high] = self.openrouter_efforts;
+    pub fn openrouter_effort(&self, level: EffortLevel) -> Option<&str> {
+        let mapping = &self.effort_mapping;
         match level {
             EffortLevel::Default => None,
-            EffortLevel::Low => Some(low),
-            EffortLevel::Medium => Some(medium),
-            EffortLevel::High => Some(high),
+            EffortLevel::Low => Some(&mapping.low),
+            EffortLevel::Medium => Some(&mapping.medium),
+            EffortLevel::High => Some(&mapping.high),
         }
+    }
+
+    pub fn validate(&self) -> io::Result<()> {
+        let mapping = &self.effort_mapping;
+        let invalid = |message: String| Err(io::Error::new(ErrorKind::InvalidData, message));
+        if [
+            &self.id,
+            &self.name,
+            &mapping.low,
+            &mapping.medium,
+            &mapping.high,
+        ]
+        .iter()
+        .any(|value| value.trim().is_empty())
+        {
+            return invalid(format!("model {:?} has a blank field", self.id));
+        }
+        // Compaction reserves 8,000 tokens below the context limit.
+        if self.context_limit <= 8_000 {
+            return invalid(format!(
+                "model {} context_limit must be greater than 8000",
+                self.id
+            ));
+        }
+        Ok(())
     }
 }
 
-pub const MODEL_CATALOG: &[CatalogModel] = &[
-    CatalogModel {
-        id: "deepseek/deepseek-v4.1-flash",
-        name: "DeepSeek V4.1 Flash",
-        context_limit: 1_048_576,
-        openrouter_efforts: ["low", "high", "max"],
-    },
-    CatalogModel {
-        id: "z-ai/glm-5.3-flash",
-        name: "GLM 5.3 Flash",
-        context_limit: 1_310_720,
-        openrouter_efforts: ["low", "high", "max"],
-    },
-    CatalogModel {
-        id: "meta/muse-spark-1.3-contributor",
-        name: "Muse Spark 1.3 Contributor",
-        context_limit: 1_048_576,
-        openrouter_efforts: ["low", "medium", "high"],
-    },
-];
+static CATALOG: std::sync::OnceLock<Vec<CatalogModel>> = std::sync::OnceLock::new();
 
-pub const DEFAULT_MODEL: &str = MODEL_CATALOG[0].id;
+/// Installs the model catalog loaded from settings, once per process.
+pub fn install_catalog(models: Vec<CatalogModel>) {
+    assert!(!models.is_empty(), "the model catalog is not empty");
+    CATALOG
+        .set(models)
+        .expect("the model catalog is installed once");
+}
+
+pub fn catalog() -> &'static [CatalogModel] {
+    #[cfg(test)]
+    CATALOG.get_or_init(test_catalog);
+    CATALOG.get().expect("the model catalog is installed")
+}
+
+#[cfg(test)]
+fn test_catalog() -> Vec<CatalogModel> {
+    serde_json::from_value(json!([
+        {
+            "id": "deepseek/deepseek-v4.1-flash",
+            "name": "DeepSeek V4.1 Flash",
+            "context_limit": 1_048_576,
+            "effort_mapping": {"low": "low", "medium": "high", "high": "max"},
+        },
+        {
+            "id": "z-ai/glm-5.3-flash",
+            "name": "GLM 5.3 Flash",
+            "context_limit": 1_310_720,
+            "effort_mapping": {"low": "low", "medium": "high", "high": "max"},
+        },
+        {
+            "id": "meta/muse-spark-1.3-contributor",
+            "name": "Muse Spark 1.3 Contributor",
+            "context_limit": 1_048_576,
+            "effort_mapping": {"low": "low", "medium": "medium", "high": "high"},
+        },
+    ]))
+    .unwrap()
+}
+
+/// The first model in the catalog.
+pub fn default_model() -> &'static str {
+    &catalog()[0].id
+}
+
 const ENDPOINT: &str = "https://openrouter.ai/api/v1";
 
 pub fn catalog_model(id: &str) -> Option<&'static CatalogModel> {
-    MODEL_CATALOG.iter().find(|model| model.id == id)
+    catalog().iter().find(|model| model.id == id)
 }
 
 /// OpenRouter credentials and a reusable HTTP connection pool.
@@ -660,7 +719,7 @@ pub(crate) mod fixture {
         net::{TcpListener, TcpStream},
     };
 
-    use super::{Client, DEFAULT_MODEL};
+    use super::{Client, default_model};
     use crate::tools;
 
     pub enum Reply {
@@ -840,7 +899,7 @@ pub(crate) mod fixture {
         json!({
             "id": "gen-1",
             "object": "chat.completion.chunk",
-            "model": DEFAULT_MODEL,
+            "model": default_model(),
             "choices": [{ "index": 0, "delta": delta, "finish_reason": finish_reason }],
         })
     }
@@ -850,7 +909,7 @@ pub(crate) mod fixture {
         json!({
             "id": "gen-1",
             "object": "chat.completion.chunk",
-            "model": DEFAULT_MODEL,
+            "model": default_model(),
             "choices": [{ "index": 0, "delta": { "content": "" }, "finish_reason": "stop" }],
             "usage": { "prompt_tokens": input, "completion_tokens": output, "total_tokens": input + output, "cost": cost },
         })
@@ -910,7 +969,7 @@ mod tests {
         let mut request = server
             .client()
             .stream_completion(
-                DEFAULT_MODEL,
+                default_model(),
                 EffortLevel::Default,
                 TEST_SYSTEM_PROMPT,
                 &[TranscriptEntry::UserMessage("hi".to_owned())],
@@ -954,7 +1013,7 @@ mod tests {
             "index": 0,
         })];
         let transcript = vec![
-            TranscriptEntry::Model(MODEL_CATALOG[2].id.to_owned()),
+            TranscriptEntry::Model(catalog()[2].id.as_str().to_owned()),
             TranscriptEntry::Mode(SessionMode::Auto),
             TranscriptEntry::UserMessage("Weather in Chicago and Denver?".to_owned()),
             TranscriptEntry::AssistantMessage(AssistantMessage {
@@ -982,7 +1041,7 @@ mod tests {
         let mut request = server
             .client()
             .stream_completion(
-                MODEL_CATALOG[2].id,
+                catalog()[2].id.as_str(),
                 EffortLevel::Default,
                 "You are Ox.\n\n# Workspace instructions from AGENTS.md\n\nAnswer in French.",
                 &transcript,
@@ -993,7 +1052,7 @@ mod tests {
         assert_eq!(completion(&items).stop, Stop::Finished);
 
         let body = &server.requests()[0];
-        assert_eq!(body["model"], MODEL_CATALOG[2].id);
+        assert_eq!(body["model"], catalog()[2].id.as_str());
         assert_eq!(body["stream"], true);
         assert_eq!(body["usage"], json!({ "include": true }));
         assert!(
@@ -1065,7 +1124,7 @@ mod tests {
         }));
         let projected = crate::compaction::projection(&compacted);
         let body = ordinary_body(
-            DEFAULT_MODEL,
+            default_model(),
             EffortLevel::Default,
             TEST_SYSTEM_PROMPT,
             &projected,
@@ -1087,12 +1146,12 @@ mod tests {
 
     #[tokio::test]
     async fn requests_map_each_effort_for_each_model() {
-        for model in MODEL_CATALOG {
+        for model in catalog() {
             for effort in EffortLevel::ALL {
                 let server = Server::start(vec![text_reply("Done")]).await;
                 let mut stream = server
                     .client()
-                    .stream_completion(model.id, effort, TEST_SYSTEM_PROMPT, &[])
+                    .stream_completion(&model.id, effort, TEST_SYSTEM_PROMPT, &[])
                     .await
                     .unwrap();
                 drain(&mut stream).await.unwrap();
@@ -1359,7 +1418,12 @@ mod tests {
         let server = Server::start(vec![Reply::Stream("data: not json\n\n".to_owned())]).await;
         let mut request = server
             .client()
-            .stream_completion(DEFAULT_MODEL, EffortLevel::Default, TEST_SYSTEM_PROMPT, &[])
+            .stream_completion(
+                default_model(),
+                EffortLevel::Default,
+                TEST_SYSTEM_PROMPT,
+                &[],
+            )
             .await
             .unwrap();
         assert!(drain(&mut request).await.is_err());
@@ -1371,7 +1435,12 @@ mod tests {
         .await;
         let error = server
             .client()
-            .stream_completion(DEFAULT_MODEL, EffortLevel::Default, TEST_SYSTEM_PROMPT, &[])
+            .stream_completion(
+                default_model(),
+                EffortLevel::Default,
+                TEST_SYSTEM_PROMPT,
+                &[],
+            )
             .await
             .err()
             .expect("a failed status is an error");
@@ -1385,7 +1454,7 @@ mod tests {
         for _ in 0..2 {
             let mut request = client
                 .stream_completion(
-                    DEFAULT_MODEL,
+                    default_model(),
                     EffortLevel::Default,
                     TEST_SYSTEM_PROMPT,
                     &[TranscriptEntry::UserMessage("hi".to_owned())],
