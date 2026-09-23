@@ -4,16 +4,20 @@
 use agent_client_protocol::{
     Error, Result,
     schema::v1::{
-        ContentBlock, ContentChunk, PermissionOption, PermissionOptionKind,
+        ContentBlock, ContentChunk, Cost, PermissionOption, PermissionOptionKind,
         RequestPermissionRequest, SessionId, SessionUpdate, TextContent, ToolCall as AcpToolCall,
         ToolCallContent, ToolCallId, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields,
-        ToolKind,
+        ToolKind, UsageUpdate,
     },
 };
 use serde_json::Value;
 
 use crate::{
-    sessions::{HookFeedback, HookKind, ToolCall, ToolOutcome, ToolResult, TranscriptEntry},
+    compaction, openrouter,
+    sessions::{
+        self, AssistantMessage, HookFeedback, HookKind, SessionSettings, ToolCall, ToolOutcome,
+        ToolResult, TranscriptEntry,
+    },
     tools,
 };
 
@@ -54,6 +58,47 @@ pub fn agent_thought_chunk(text: &str) -> SessionUpdate {
 
 fn text_chunk(text: &str) -> ContentChunk {
     ContentChunk::new(ContentBlock::Text(TextContent::new(text)))
+}
+
+/// Reports the context tokens, the context limit, and the session cost. The
+/// latest assistant message's reported usage counts the context until a later
+/// checkpoint replaces it; otherwise the request estimate does. `None` before
+/// the first assistant message.
+pub fn usage_update(
+    transcript: &[TranscriptEntry],
+    settings: &SessionSettings,
+    system_prompt: &str,
+) -> std::io::Result<Option<SessionUpdate>> {
+    let latest = transcript.iter().rev().find(|entry| {
+        matches!(
+            entry,
+            TranscriptEntry::AssistantMessage(_) | TranscriptEntry::CompactionCheckpoint(_)
+        )
+    });
+    let used = match latest {
+        None => return Ok(None),
+        Some(TranscriptEntry::AssistantMessage(AssistantMessage {
+            usage: Some(usage), ..
+        })) => usage.input_tokens + usage.output_tokens,
+        Some(_) => compaction::request_estimate(
+            &settings.model,
+            settings.effort,
+            system_prompt,
+            transcript,
+        )? as u64,
+    };
+    let size = openrouter::catalog_model(&settings.model)
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("unknown model {}", settings.model),
+            )
+        })?
+        .context_limit as u64;
+    let cost = sessions::session_cost(transcript).map(|amount| Cost::new(amount, "USD"));
+    Ok(Some(SessionUpdate::UsageUpdate(
+        UsageUpdate::new(used, size).cost(cost),
+    )))
 }
 
 /// Announces a call the model made, before anything runs.

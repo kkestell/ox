@@ -92,12 +92,17 @@ may change between turns. Folding the transcript reconstructs all session
 settings after load or restart, including Auto mode before another command can
 run.
 
-An assistant message keeps answer text, visible reasoning, tool calls, and
-continuation metadata together. Continuation metadata is durable model context,
-not visible reasoning, and is not included in replay.
+An assistant message keeps answer text, visible reasoning, tool calls,
+continuation metadata, and model usage together. Continuation metadata is
+durable model context, not visible reasoning, and is not included in replay.
+Model usage is the input tokens, output tokens, and cost OpenRouter reported for
+the model request that produced the message, or nothing when the stream carried
+no usage.
 
-A compaction checkpoint stores a nonempty summary and the exclusive index of a
-completed transcript prefix. The latest checkpoint controls model requests;
+A compaction checkpoint stores a nonempty summary, the exclusive index of a
+completed transcript prefix, and its summarizer cost: the summed cost of every
+summarizer request made by the compaction that committed it, including cuts it
+tried and rejected. The latest checkpoint controls model requests;
 earlier checkpoints and all covered entries remain saved for replay. Checkpoints
 are omitted from replay. A model request uses the latest summary as a labeled
 user-role message, followed by entries after its covered prefix. When the
@@ -316,6 +321,18 @@ shown as an ACP execute tool call with an Ox-generated ID. It is not a model
 tool call and never enters an assistant batch; replay rebuilds it from saved
 hook feedback as a completed tool call. Hook runs that saved nothing, tool
 decisions, and `after_run` appear only in live ACP updates.
+
+A usage update reports context tokens, the model's context limit, and the
+session cost in US dollars. The session cost is the sum of every saved model
+usage cost and summarizer cost; a model request or compaction that commits
+nothing is not counted. When the latest assistant message or checkpoint is an
+assistant message with model usage, the context tokens are its input plus output
+tokens; otherwise they are the request estimate for the current transcript, so
+the count drops after compaction. The prompt run sends a usage update after each
+committed assistant batch in its model loop and after each automatic compaction
+that commits a checkpoint; a batch saved after the run stops sends none.
+`/compact` sends one after its checkpoint commits, and load sends one after
+replay. A transcript without an assistant message has no usage update.
 
 Sending an ACP update does not confirm that the ACP client received or displayed
 it. An ACP update failure stops new work, but the prompt run still attempts to

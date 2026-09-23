@@ -217,6 +217,7 @@ impl ServerState {
         session_id: &SessionId,
         active: ActiveSession,
         cancellation: &PromptCancellation,
+        mut send_update: impl FnMut(SessionUpdate) -> Result<()>,
     ) -> Result<PromptResponse> {
         let stored = self
             .store
@@ -242,11 +243,20 @@ impl ServerState {
         )
         .await
         {
-            Ok(_) => Ok(PromptResponse::new(if cancellation.is_cancelled() {
-                StopReason::Cancelled
-            } else {
-                StopReason::EndTurn
-            })),
+            Ok(compacted) => {
+                if compacted
+                    && let Some(update) =
+                        convert::usage_update(&transcript, &settings, &active.system_prompt)
+                            .map_err(Error::into_internal_error)?
+                {
+                    send_update(update)?;
+                }
+                Ok(PromptResponse::new(if cancellation.is_cancelled() {
+                    StopReason::Cancelled
+                } else {
+                    StopReason::EndTurn
+                }))
+            }
             Err(error) if error.kind() == ErrorKind::Interrupted => {
                 Ok(PromptResponse::new(StopReason::Cancelled))
             }
@@ -337,7 +347,7 @@ impl ServerState {
     fn load_session(
         &self,
         request: &LoadSessionRequest,
-        send_update: impl FnMut(SessionUpdate) -> Result<()>,
+        mut send_update: impl FnMut(SessionUpdate) -> Result<()>,
     ) -> Result<LoadSessionResponse> {
         self.openrouter_client()?;
         let stored = self
@@ -366,6 +376,8 @@ impl ServerState {
                 skills::load(&stored.summary.workspace_path).map_err(Error::into_internal_error)?,
             ),
         };
+        let usage = convert::usage_update(&stored.transcript, &saved_settings, &system_prompt)
+            .map_err(Error::into_internal_error)?;
         self.activate(
             request.session_id.clone(),
             ActiveSession {
@@ -374,7 +386,10 @@ impl ServerState {
                 skills,
             },
         );
-        convert::replay_transcript(&stored.transcript, send_update)?;
+        convert::replay_transcript(&stored.transcript, &mut send_update)?;
+        if let Some(usage) = usage {
+            send_update(usage)?;
+        }
         Ok(
             LoadSessionResponse::new()
                 .config_options(config_options(&saved_settings, model_locked)),
@@ -707,10 +722,17 @@ async fn serve(state: ServerState, transport: impl ConnectTo<Agent> + 'static) -
                     Dispatch::Compact => {
                         let session_id = request.session_id;
                         let compact_state = prompt_state.clone();
+                        let task_connection = connection.clone();
                         return connection.spawn(async move {
                             let _guard = guard;
+                            let send_update = |update| {
+                                task_connection.send_notification(SessionNotification::new(
+                                    session_id.clone(),
+                                    update,
+                                ))
+                            };
                             let result = compact_state
-                                .compact_session(&session_id, active, &cancellation)
+                                .compact_session(&session_id, active, &cancellation, send_update)
                                 .await;
                             reply(responder, result)
                         });
@@ -790,8 +812,11 @@ mod tests {
     #[tokio::test]
     async fn manual_compact_command_uses_the_active_prompt_without_saving_a_message() {
         use crate::{
-            openrouter::fixture::{Server, text_reply},
-            sessions::{AssistantBatch, AssistantMessage, SessionSettingsChange, TranscriptEntry},
+            openrouter::fixture::{Reply, Server, delta, sse, usage},
+            sessions::{
+                AssistantBatch, AssistantMessage, ModelUsage, SessionSettingsChange,
+                TranscriptEntry,
+            },
         };
         let store = SessionStore::in_memory();
         let state = ServerState::new(store.clone(), None);
@@ -801,8 +826,12 @@ mod tests {
             system_prompt: "captured system".to_owned(),
             skills: vec![],
         };
+        let mut updates = Vec::new();
         let empty = state
-            .compact_session(&id, active.clone(), &PromptCancellation::new())
+            .compact_session(&id, active.clone(), &PromptCancellation::new(), |update| {
+                updates.push(update);
+                Ok(())
+            })
             .await
             .unwrap();
         assert_eq!(empty.stop_reason, StopReason::EndTurn);
@@ -831,6 +860,11 @@ mod tests {
                         reasoning: String::new(),
                         tool_calls: vec![],
                         continuation_metadata: vec![],
+                        usage: Some(ModelUsage {
+                            input_tokens: 9000,
+                            output_tokens: 10,
+                            cost: 0.25,
+                        }),
                     },
                     vec![],
                 )
@@ -838,10 +872,20 @@ mod tests {
             )
             .unwrap();
         let before = store.read(&id).unwrap().unwrap().transcript;
-        let server = Server::start(vec![text_reply("Previous work complete.")]).await;
+        let server = Server::start(vec![Reply::Stream(sse(&[
+            delta(
+                serde_json::json!({ "role": "assistant", "content": "Previous work complete." }),
+                Some("stop"),
+            ),
+            usage(9000, 20, 0.125),
+        ]))])
+        .await;
         *state.openrouter.lock().unwrap() = Some(server.client());
         let response = state
-            .compact_session(&id, active, &PromptCancellation::new())
+            .compact_session(&id, active, &PromptCancellation::new(), |update| {
+                updates.push(update);
+                Ok(())
+            })
             .await
             .unwrap();
         assert_eq!(response.stop_reason, StopReason::EndTurn);
@@ -849,7 +893,21 @@ mod tests {
         assert_eq!(after.len(), before.len() + 1);
         assert!(matches!(
             after.last(),
-            Some(TranscriptEntry::CompactionCheckpoint(_))
+            Some(TranscriptEntry::CompactionCheckpoint(checkpoint))
+                if checkpoint.summarizer_cost == Some(0.125)
+        ));
+        let estimate = compaction::request_estimate(
+            openrouter::DEFAULT_MODEL,
+            EffortLevel::Default,
+            "captured system",
+            &after,
+        )
+        .unwrap();
+        assert!(matches!(
+            &updates[..],
+            [SessionUpdate::UsageUpdate(usage)]
+                if usage.used == estimate as u64
+                    && usage.cost.as_ref().is_some_and(|cost| cost.amount == 0.375 && cost.currency == "USD")
         ));
         assert_eq!(
             server.requests()[0]["messages"][0]["content"],
@@ -1376,6 +1434,27 @@ mod tests {
             ))
             .unwrap_err();
         assert_eq!(error.code, ErrorCode::InvalidParams);
+        state
+            .store
+            .append_batch(
+                &created.session_id,
+                &sessions::AssistantBatch::new(
+                    sessions::AssistantMessage {
+                        text: "Hi.".to_owned(),
+                        reasoning: String::new(),
+                        tool_calls: vec![],
+                        continuation_metadata: vec![],
+                        usage: Some(sessions::ModelUsage {
+                            input_tokens: 40,
+                            output_tokens: 2,
+                            cost: 0.5,
+                        }),
+                    },
+                    vec![],
+                )
+                .unwrap(),
+            )
+            .unwrap();
 
         let mut replayed = Vec::new();
         let loaded = state
@@ -1390,7 +1469,14 @@ mod tests {
         let loaded = serde_json::to_value(loaded).unwrap();
         assert_eq!(loaded["configOptions"][0]["currentValue"], chosen);
         assert_eq!(loaded["configOptions"][2]["currentValue"], "auto");
-        assert_eq!(replayed.len(), 1, "setting entries are not replayed");
+        assert_eq!(replayed.len(), 3, "setting entries are not replayed");
+        assert!(matches!(
+            replayed.last(),
+            Some(SessionUpdate::UsageUpdate(usage))
+                if usage.used == 42
+                    && usage.size == openrouter::MODEL_CATALOG[1].context_limit as u64
+                    && usage.cost.as_ref().is_some_and(|cost| cost.amount == 0.5)
+        ));
         assert_eq!(
             loaded["configOptions"][0]["options"]
                 .as_array()

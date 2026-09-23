@@ -388,6 +388,8 @@ pub async fn compact(
     let model = settings.model.as_str();
     let effort = settings.effort;
     let original = request_estimate(model, effort, system, transcript)?;
+    // Every summarizer request counts, including those for rejected cuts.
+    let mut summarizer_cost: Option<f64> = None;
     for cut in ranked_cuts(model, effort, system, transcript, original)? {
         let mut fields = material(transcript, cut);
         if fields.is_empty() {
@@ -397,11 +399,15 @@ pub async fn compact(
             latest(transcript).map_or(String::new(), |checkpoint| checkpoint.summary.clone());
         while !fields.is_empty() {
             let piece = next_piece(model, &summary, &mut fields)?;
-            summary = tokio::select! {
+            let (next, usage) = tokio::select! {
                 biased;
                 () = cancellation.cancelled() => return Err(io::Error::new(ErrorKind::Interrupted, "compaction cancelled")),
                 result = client.summarize(model, &summary, &piece) => result?,
             };
+            summary = next;
+            if let Some(usage) = usage {
+                *summarizer_cost.get_or_insert(0.0) += usage.cost;
+            }
         }
         if cancellation.is_cancelled() {
             return Err(io::Error::new(
@@ -416,6 +422,7 @@ pub async fn compact(
         let checkpoint = CompactionCheckpoint {
             summary,
             covered_prefix: cut,
+            summarizer_cost,
         };
         store.append_checkpoint(id, transcript.len(), &checkpoint)?;
         transcript.push(TranscriptEntry::CompactionCheckpoint(checkpoint));
@@ -445,6 +452,7 @@ mod tests {
                 reasoning: "private reasoning".to_owned(),
                 tool_calls: vec![],
                 continuation_metadata: vec![serde_json::json!({"opaque": true})],
+                usage: None,
             },
             vec![],
         )
@@ -462,6 +470,7 @@ mod tests {
                     arguments: "{\"command\":\"true\"}".to_owned(),
                 }],
                 continuation_metadata: vec![],
+                usage: None,
             },
             vec![ToolResult {
                 call_id: id.to_owned(),
@@ -601,7 +610,8 @@ mod tests {
         assert_eq!(requests.len(), 3);
         assert!(requests.iter().all(|request| request.get("tools").is_none()
             && request["reasoning"]["effort"] == "low"
-            && request["max_tokens"] == 4096));
+            && request["max_tokens"] == 4096
+            && request["usage"] == serde_json::json!({ "include": true })));
         let material = |index: usize| {
             requests[index]["messages"][1]["content"]
                 .as_str()
@@ -712,6 +722,7 @@ mod tests {
                 &CompactionCheckpoint {
                     summary: "Earlier work is complete.".to_owned(),
                     covered_prefix: 3,
+                    summarizer_cost: None,
                 },
             )
             .unwrap();

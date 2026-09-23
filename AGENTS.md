@@ -27,8 +27,8 @@ THIS DOCUMENT MUST BE KEPT UP TO DATE
   stdin, bounded output tails, a deadline, cancellation, and group cleanup with
   an optional SIGTERM grace period.
 - `src/openrouter.rs`: OpenRouter model catalog and effort mapping, request
-  encoding, context limits, client, streamed response assembly, and explicit
-  input-context overflow errors.
+  encoding, context limits, client, streamed response assembly with usage
+  parsing, and explicit input-context overflow errors.
 - `src/compaction.rs`: Request estimates, safe transcript cuts, bounded
   summarizer input with explicit tool-result excerpts, checkpoint commits, and
   model-request projection, which repeats a covered skill invocation after the
@@ -46,25 +46,29 @@ THIS DOCUMENT MUST BE KEPT UP TO DATE
 - `src/tools/workspace.rs`: Descriptor-relative file operations shared by
   read, search, and patch tools.
 - `src/sessions.rs`: Transcript and durable model, effort, and mode setting
-  types, skill invocations, hook kinds, hook feedback, compaction checkpoints, stored JSON
+  types, skill invocations, hook kinds, hook feedback, model usage, compaction
+  checkpoints with their summarizer cost, session cost, stored JSON
   encoding, transcript validation, database path selection, and `SessionStore`
   over one SQLite connection.
 - `src/acp.rs`: Connection wiring, `ServerState`, lazy OpenRouter client,
   request handlers, advertised slash commands and their prompt dispatch,
   global hooks captured at startup, per-session model, effort, and mode
   selections, system prompts and skill catalogs loaded when a session becomes
-  active, guarded `/compact`, and the automatic headless prompt entry point.
+  active, guarded `/compact`, usage updates after `/compact` and load, and the
+  automatic headless prompt entry point.
 - `src/acp/operations.rs`: One active prompt, load, delete, or compaction per
   session, enforced by an operation guard.
 - `src/acp/prompt.rs`: One prompt run: reject oversized input before saving,
   save accepted input with captured settings, announce it and run global and
   invoked skill `before_run` hooks, compact before large model requests, retry
   explicit input overflow once, run `before_tool` before each tool
-  call, run tools, save complete assistant batches, run `after_tools` after each
+  call, run tools, save complete assistant batches and send a usage update
+  after each and after each automatic compaction, run `after_tools` after each
   batch and `before_stop` on each finished answer, run `after_run` on the
   result, and return the stop reason and final answer.
 - `src/acp/convert.rs`: ACP input conversion, session update construction
-  including each tool call's kind and hook tool calls, and transcript replay.
+  including each tool call's kind, hook tool calls, and usage updates, and
+  transcript replay.
 - `.agents/skills/init/`: The instruction-only `init` skill, which creates or
   updates `AGENTS.md`.
 - `examples/skills/goal/`: An example skill whose `before_stop` hook,

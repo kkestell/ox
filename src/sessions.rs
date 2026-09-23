@@ -188,11 +188,15 @@ pub enum HookDecision {
     Stop,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CompactionCheckpoint {
     pub summary: String,
     pub covered_prefix: usize,
+    /// The summed cost of the summarizer requests made by the compaction that
+    /// committed this checkpoint, including cuts it tried and rejected. `None`
+    /// when none of them reported usage.
+    pub summarizer_cost: Option<f64>,
 }
 
 /// Whether shell calls require approval from the ACP client.
@@ -308,6 +312,20 @@ pub struct AssistantMessage {
     pub tool_calls: Vec<ToolCall>,
     /// OpenRouter's opaque `reasoning_details`, retained for the next request.
     pub continuation_metadata: Vec<serde_json::Value>,
+    /// The usage OpenRouter reported for the model request that produced this
+    /// message, or `None` when the stream carried none.
+    pub usage: Option<ModelUsage>,
+}
+
+/// The input tokens, output tokens, and cost that OpenRouter reports for one
+/// model request. OpenRouter reports cost in credits, whose base currency is
+/// the US dollar.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ModelUsage {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cost: f64,
 }
 
 impl AssistantMessage {
@@ -565,6 +583,21 @@ pub struct SessionSummary {
     pub session_title: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+}
+
+/// The sum of every saved model usage cost and summarizer cost, or `None` when
+/// no saved entry reported a cost.
+pub fn session_cost(transcript: &[TranscriptEntry]) -> Option<f64> {
+    transcript
+        .iter()
+        .filter_map(|entry| match entry {
+            TranscriptEntry::AssistantMessage(message) => {
+                message.usage.as_ref().map(|usage| usage.cost)
+            }
+            TranscriptEntry::CompactionCheckpoint(checkpoint) => checkpoint.summarizer_cost,
+            _ => None,
+        })
+        .reduce(|total, cost| total + cost)
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1008,6 +1041,7 @@ mod tests {
                 "format": "openai-responses-v1",
                 "index": 0,
             })],
+            usage: None,
         }
     }
 
@@ -1103,6 +1137,7 @@ mod tests {
                     &CompactionCheckpoint {
                         summary: "Chicago checked; Denver unavailable.".to_owned(),
                         covered_prefix: 6,
+                        summarizer_cost: None,
                     },
                 )
                 .unwrap();
@@ -1158,6 +1193,7 @@ mod tests {
                 TranscriptEntry::CompactionCheckpoint(CompactionCheckpoint {
                     summary: "Chicago checked; Denver unavailable.".to_owned(),
                     covered_prefix: 6,
+                    summarizer_cost: None,
                 }),
                 TranscriptEntry::Effort(EffortLevel::Low),
                 TranscriptEntry::SkillInvocation(invocation()),
@@ -1438,6 +1474,7 @@ mod tests {
                 CompactionCheckpoint {
                     summary: " ".to_owned(),
                     covered_prefix: 5,
+                    summarizer_cost: None,
                 },
                 None,
             ),
@@ -1445,6 +1482,7 @@ mod tests {
                 CompactionCheckpoint {
                     summary: "ok".to_owned(),
                     covered_prefix: 4,
+                    summarizer_cost: None,
                 },
                 None,
             ),
@@ -1452,6 +1490,7 @@ mod tests {
                 CompactionCheckpoint {
                     summary: "ok".to_owned(),
                     covered_prefix: 6,
+                    summarizer_cost: None,
                 },
                 None,
             ),
@@ -1459,20 +1498,24 @@ mod tests {
                 CompactionCheckpoint {
                     summary: "ok".to_owned(),
                     covered_prefix: 5,
+                    summarizer_cost: None,
                 },
                 Some(CompactionCheckpoint {
                     summary: "same".to_owned(),
                     covered_prefix: 5,
+                    summarizer_cost: None,
                 }),
             ),
             (
                 CompactionCheckpoint {
                     summary: "ok".to_owned(),
                     covered_prefix: 5,
+                    summarizer_cost: None,
                 },
                 Some(CompactionCheckpoint {
                     summary: "future".to_owned(),
                     covered_prefix: 7,
+                    summarizer_cost: None,
                 }),
             ),
         ] {

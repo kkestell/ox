@@ -10,7 +10,8 @@ use serde_json::{Value, json};
 
 use crate::{
     sessions::{
-        AssistantMessage, EffortLevel, HookFeedback, SkillInvocation, ToolCall, TranscriptEntry,
+        AssistantMessage, EffortLevel, HookFeedback, ModelUsage, SkillInvocation, ToolCall,
+        TranscriptEntry,
     },
     tools,
 };
@@ -128,6 +129,7 @@ pub(crate) fn ordinary_body(
         "messages": messages,
         "tools": tools::schemas(),
         "stream": true,
+        "usage": { "include": true },
     });
     if let Some(mapped) = catalog.openrouter_effort(effort) {
         body["reasoning"] = json!({ "effort": mapped });
@@ -147,6 +149,7 @@ pub(crate) fn summary_body(model: &str, previous: &str, piece: &str) -> io::Resu
         "reasoning": {"effort": catalog.openrouter_effort(EffortLevel::Low)},
         "max_tokens": 4096,
         "stream": true,
+        "usage": { "include": true },
     }))
 }
 
@@ -197,7 +200,13 @@ impl Client {
         self.stream_body(&body).await
     }
 
-    pub async fn summarize(&self, model: &str, previous: &str, piece: &str) -> io::Result<String> {
+    /// Returns the summary and the usage OpenRouter reported for it.
+    pub async fn summarize(
+        &self,
+        model: &str,
+        previous: &str,
+        piece: &str,
+    ) -> io::Result<(String, Option<ModelUsage>)> {
         let body = summary_body(model, previous, piece)?;
         let mut stream = self.stream_body(&body).await?;
         while let Some(item) = stream.next().await? {
@@ -210,7 +219,7 @@ impl Client {
                         "compaction summary was not a finished, nonempty text completion",
                     ));
                 }
-                return Ok(completion.message.text);
+                return Ok((completion.message.text, completion.message.usage));
             }
         }
         Err(malformed("compaction summary ended without a completion"))
@@ -242,6 +251,7 @@ impl Client {
             data: String::new(),
             assembly: Some(Assembly::default()),
             buffered_items: VecDeque::new(),
+            usage: None,
         })
     }
 }
@@ -350,6 +360,8 @@ pub struct CompletionStream {
     data: String,
     assembly: Option<Assembly>,
     buffered_items: VecDeque<StreamItem>,
+    /// OpenRouter reports usage once, in the final chunk.
+    usage: Option<ModelUsage>,
 }
 
 impl CompletionStream {
@@ -369,10 +381,14 @@ impl CompletionStream {
             }
         }
         if matches!(self.buffered_items.front(), Some(StreamItem::Completion(_))) {
-            // The finish chunk is followed by `[DONE]` and a usage chunk. An
-            // HTTP/1.1 connection returns to the pool only once its body is
-            // read to the end, so read them before yielding the completion.
+            // The finish chunk may be followed by a usage chunk and `[DONE]`.
+            // Read them before yielding the completion, so the completion
+            // carries the usage and the HTTP/1.1 connection, which returns to
+            // the pool only once its body is read to the end, can be reused.
             while self.read_chunk().await? {}
+            if let Some(StreamItem::Completion(completion)) = self.buffered_items.front_mut() {
+                completion.message.usage = self.usage.take();
+            }
         }
         Ok(self.buffered_items.pop_front())
     }
@@ -419,6 +435,13 @@ impl CompletionStream {
                 "OpenRouter reported an error: {} ({})",
                 error.message, error.code
             )));
+        }
+        if let Some(usage) = chunk.usage {
+            self.usage = Some(ModelUsage {
+                input_tokens: usage.prompt_tokens,
+                output_tokens: usage.completion_tokens,
+                cost: usage.cost,
+            });
         }
         // The usage chunk after the final one repeats the finish reason with
         // an empty delta; it cannot change the validated message.
@@ -557,6 +580,7 @@ impl Assembly {
             reasoning: self.reasoning,
             tool_calls,
             continuation_metadata: self.continuation_metadata,
+            usage: None,
         };
         message.validate().map_err(|error| {
             malformed(format!("incomplete tool call in model response: {error}"))
@@ -570,6 +594,14 @@ struct Chunk {
     #[serde(default)]
     choices: Vec<Choice>,
     error: Option<ApiError>,
+    usage: Option<ApiUsage>,
+}
+
+#[derive(Deserialize)]
+struct ApiUsage {
+    prompt_tokens: u64,
+    completion_tokens: u64,
+    cost: f64,
 }
 
 #[derive(Deserialize)]
@@ -813,6 +845,17 @@ pub(crate) mod fixture {
         })
     }
 
+    /// A usage chunk like the one OpenRouter sends after the finish chunk.
+    pub fn usage(input: u64, output: u64, cost: f64) -> Value {
+        json!({
+            "id": "gen-1",
+            "object": "chat.completion.chunk",
+            "model": DEFAULT_MODEL,
+            "choices": [{ "index": 0, "delta": { "content": "" }, "finish_reason": "stop" }],
+            "usage": { "prompt_tokens": input, "completion_tokens": output, "total_tokens": input + output, "cost": cost },
+        })
+    }
+
     pub fn text_reply(text: &str) -> Reply {
         Reply::Stream(sse(&[
             delta(json!({ "role": "assistant", "content": text }), None),
@@ -847,7 +890,7 @@ pub(crate) mod fixture {
 #[cfg(test)]
 mod tests {
     use super::{
-        fixture::{Reply, Server, delta, sse, text_reply},
+        fixture::{Reply, Server, delta, sse, text_reply, usage},
         *,
     };
     use crate::sessions::{SessionMode, ToolOutcome, ToolResult};
@@ -922,6 +965,7 @@ mod tests {
                     call("call-2", "printf Denver"),
                 ],
                 continuation_metadata: details.clone(),
+                usage: None,
             }),
             TranscriptEntry::ToolResult(ToolResult {
                 call_id: "call-1".to_owned(),
@@ -951,6 +995,7 @@ mod tests {
         let body = &server.requests()[0];
         assert_eq!(body["model"], MODEL_CATALOG[2].id);
         assert_eq!(body["stream"], true);
+        assert_eq!(body["usage"], json!({ "include": true }));
         assert!(
             body["tools"]
                 .as_array()
@@ -992,6 +1037,7 @@ mod tests {
             crate::sessions::CompactionCheckpoint {
                 summary: "Older summary".to_owned(),
                 covered_prefix: 6,
+                summarizer_cost: None,
             },
         ));
         compacted.push(TranscriptEntry::UserMessage("middle".to_owned()));
@@ -1000,11 +1046,13 @@ mod tests {
             reasoning: String::new(),
             tool_calls: vec![],
             continuation_metadata: vec![],
+            usage: None,
         }));
         compacted.push(TranscriptEntry::CompactionCheckpoint(
             crate::sessions::CompactionCheckpoint {
                 summary: "Current summary".to_owned(),
                 covered_prefix: 9,
+                summarizer_cost: None,
             },
         ));
         compacted.push(TranscriptEntry::UserMessage("recent".to_owned()));
@@ -1013,6 +1061,7 @@ mod tests {
             reasoning: "visible".to_owned(),
             tool_calls: vec![],
             continuation_metadata: vec![json!({"type":"reasoning.encrypted", "data":"recent"})],
+            usage: None,
         }));
         let projected = crate::compaction::projection(&compacted);
         let body = ordinary_body(
@@ -1065,6 +1114,7 @@ mod tests {
             reasoning: "Add them.".to_owned(),
             tool_calls: vec![],
             continuation_metadata: vec![],
+            usage: None,
         };
         let messages = chat_messages(&[TranscriptEntry::AssistantMessage(plain)]);
         assert_eq!(messages[0]["reasoning"], "Add them.");
@@ -1113,7 +1163,7 @@ mod tests {
                 json!({ "tool_calls": [{ "index": 1, "function": { "arguments": "{\"command\":\"printf Denver\"}" } }] }),
                 Some("tool_calls"),
             ),
-            delta(json!({ "content": "" }), Some("tool_calls")),
+            usage(12, 34, 0.25),
         ])
         .await
         .unwrap();
@@ -1150,6 +1200,11 @@ mod tests {
                     json!({ "type": "reasoning.text", "text": "Let me check.", "index": 0, "format": "x", "signature": "sig" }),
                     json!({ "type": "reasoning.encrypted", "data": "blob", "id": "rs_1", "index": 1 }),
                 ],
+                usage: Some(ModelUsage {
+                    input_tokens: 12,
+                    output_tokens: 34,
+                    cost: 0.25,
+                }),
             }
         );
         assert!(matches!(items.last(), Some(StreamItem::Completion(_))));
@@ -1293,6 +1348,13 @@ mod tests {
             .await
             .unwrap_err();
         assert!(error.to_string().contains("Provider disconnected"));
+
+        let mut costless = usage(12, 34, 0.25);
+        costless["usage"].as_object_mut().unwrap().remove("cost");
+        let error = complete_with(&[delta(json!({ "content": "Done." }), Some("stop")), costless])
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::InvalidData);
 
         let server = Server::start(vec![Reply::Stream("data: not json\n\n".to_owned())]).await;
         let mut request = server

@@ -13,19 +13,22 @@
 
 ## Names across boundaries
 
-| Domain                      | ACP                  | OpenRouter                               |
-| --------------------------- | -------------------- | ---------------------------------------- |
-| continuation metadata       | —                    | `reasoning_details`                      |
-| workspace path              | `cwd`                | —                                        |
-| visible reasoning, request  | —                    | `reasoning`                              |
-| visible reasoning, response | `AgentThoughtChunk`  | `delta.reasoning`                        |
-| effort level                | `effort` option      | `reasoning.effort` (omitted for Default) |
-| session mode                | `mode` option        | —                                        |
-| tool name                   | tool kind            | `function.name`                          |
-| tool outcome `cancelled`    | tool status `failed` | —                                        |
-| hook run                    | tool kind execute    | —                                        |
-| prompt outcome              | `stopReason`         | `finish_reason`                          |
-| system prompt               | —                    | first `system` message                   |
+| Domain                      | ACP                  | OpenRouter                                      |
+| --------------------------- | -------------------- | ----------------------------------------------- |
+| continuation metadata       | —                    | `reasoning_details`                             |
+| workspace path              | `cwd`                | —                                               |
+| visible reasoning, request  | —                    | `reasoning`                                     |
+| visible reasoning, response | `AgentThoughtChunk`  | `delta.reasoning`                               |
+| effort level                | `effort` option      | `reasoning.effort` (omitted for Default)        |
+| session mode                | `mode` option        | —                                               |
+| tool name                   | tool kind            | `function.name`                                 |
+| tool outcome `cancelled`    | tool status `failed` | —                                               |
+| hook run                    | tool kind execute    | —                                               |
+| prompt outcome              | `stopReason`         | `finish_reason`                                 |
+| system prompt               | —                    | first `system` message                          |
+| context tokens              | `used`               | `usage.prompt_tokens + usage.completion_tokens` |
+| context limit               | `size`               | —                                               |
+| session cost                | `cost`               | sum of `usage.cost`                             |
 
 ## Terms
 
@@ -161,7 +164,22 @@
 - **OpenRouter stream item**: An answer-text delta, a reasoning delta, or the
   one completion yielded by a completion stream.
 - **Assistant message**: The validated model output assembled from a completion
-  stream: answer text, visible reasoning, tool calls, and continuation metadata.
+  stream: answer text, visible reasoning, tool calls, continuation metadata, and
+  model usage.
+- **Model usage**: The input tokens, output tokens, and cost that OpenRouter
+  reports for one model request. It is `ModelUsage` in code and is saved with
+  the assistant message the request produced.
+- **Summarizer cost**: The summed cost of the summarizer requests made by the
+  compaction that committed a checkpoint, saved in that checkpoint.
+- **Session cost**: The sum of every saved model usage cost and summarizer cost
+  in a transcript, reported in US dollars.
+- **Context tokens**: The number of tokens Ox reports as currently in a
+  session's context: the latest assistant message's input plus output tokens
+  when it reported usage and no checkpoint follows it, otherwise the request
+  estimate.
+- **Usage update**: The ACP update that reports context tokens, the context
+  limit, and session cost. It is `SessionUpdate::UsageUpdate` in code and
+  `usage_update` on the wire.
 - **Completion**: An assistant message paired with the normalized reason
   OpenRouter stopped generating.
 - **OpenRouter stop**: The normalized OpenRouter stopping reason attached to a

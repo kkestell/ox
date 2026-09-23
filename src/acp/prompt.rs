@@ -361,6 +361,9 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
             if let Err(error) = self.commit() {
                 return PromptOutcome::Storage(error);
             }
+            if let Err(outcome) = self.send_usage() {
+                return outcome;
+            }
             match outcome {
                 Some(PromptOutcome::Finished) => {
                     self.answer = Some(text.clone());
@@ -732,7 +735,7 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
     }
 
     async fn compact(&mut self) -> std::result::Result<bool, PromptOutcome> {
-        compaction::compact(
+        let compacted = compaction::compact(
             &self.store,
             &self.openrouter,
             &self.cancellation,
@@ -748,7 +751,21 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
             } else {
                 PromptOutcome::OpenRouter(error)
             }
-        })
+        })?;
+        if compacted {
+            self.send_usage()?;
+        }
+        Ok(compacted)
+    }
+
+    /// Reports the context tokens and session cost of the saved transcript.
+    fn send_usage(&mut self) -> std::result::Result<(), PromptOutcome> {
+        let update = convert::usage_update(&self.transcript, &self.settings, &self.system_prompt)
+            .map_err(PromptOutcome::OpenRouter)?;
+        if let Some(update) = update {
+            (self.send_update)(update).map_err(PromptOutcome::AcpUpdate)?;
+        }
+        Ok(())
     }
 
     /// Runs validated calls in order. Each outcome enters the uncommitted batch
@@ -921,9 +938,9 @@ mod tests {
     use crate::{
         openrouter::{
             DEFAULT_MODEL, MODEL_CATALOG,
-            fixture::{Reply, Server, delta, sse, text_reply, tool_reply},
+            fixture::{Reply, Server, delta, sse, text_reply, tool_reply, usage},
         },
-        sessions::{EffortLevel, SkillInvocation},
+        sessions::{EffortLevel, ModelUsage, SkillInvocation},
         system_prompt,
         tools::fixture::Workspace,
     };
@@ -1146,6 +1163,7 @@ mod tests {
             reasoning: String::new(),
             tool_calls: vec![],
             continuation_metadata: vec![],
+            usage: None,
         })
     }
 
@@ -1162,6 +1180,7 @@ mod tests {
                 })
                 .collect(),
             continuation_metadata: vec![],
+            usage: None,
         })
     }
 
@@ -1191,6 +1210,7 @@ mod tests {
             SessionUpdate::ConfigOptionUpdate(_) => "config".to_owned(),
             SessionUpdate::AgentMessageChunk(_) => "text".to_owned(),
             SessionUpdate::AgentThoughtChunk(_) => "reasoning".to_owned(),
+            SessionUpdate::UsageUpdate(_) => "usage".to_owned(),
             SessionUpdate::ToolCall(call) => format!("{} pending", call.tool_call_id),
             SessionUpdate::ToolCallUpdate(update) => format!(
                 "{} {}",
@@ -1353,7 +1373,15 @@ mod tests {
 
     #[tokio::test]
     async fn a_text_answer_is_saved_in_the_transcript() {
-        let harness = Harness::new(vec![text_reply("Hello there.")]).await;
+        let harness = Harness::new(vec![Reply::Stream(sse(&[
+            delta(
+                json!({ "role": "assistant", "content": "Hello there." }),
+                None,
+            ),
+            delta(json!({}), Some("stop")),
+            usage(120, 30, 0.25),
+        ]))])
+        .await;
 
         let (response, transcript) = harness.run_with_selection("Hi", None, |_| Ok(())).await;
 
@@ -1361,9 +1389,21 @@ mod tests {
         let request = &harness.server.requests()[0];
         assert_eq!(request["model"], DEFAULT_MODEL);
         assert!(request.get("reasoning").is_none());
+        let TranscriptEntry::AssistantMessage(mut answered) = answer("Hello there.") else {
+            unreachable!()
+        };
+        answered.usage = Some(ModelUsage {
+            input_tokens: 120,
+            output_tokens: 30,
+            cost: 0.25,
+        });
         assert_eq!(
             transcript,
-            vec![model(), user("Hi"), answer("Hello there.")]
+            vec![
+                model(),
+                user("Hi"),
+                TranscriptEntry::AssistantMessage(answered)
+            ]
         );
         assert_eq!(harness.stored(), transcript);
         let updates = harness.updates();
@@ -1384,7 +1424,18 @@ mod tests {
         ));
         assert_eq!(
             updates.iter().map(describe).collect::<Vec<_>>(),
-            vec!["config", "info", "text"]
+            vec!["config", "info", "text", "usage"]
+        );
+        let SessionUpdate::UsageUpdate(reported) = updates.last().unwrap() else {
+            unreachable!()
+        };
+        assert_eq!(
+            (reported.used, reported.size),
+            (150, MODEL_CATALOG[0].context_limit as u64)
+        );
+        assert_eq!(
+            reported.cost,
+            Some(agent_client_protocol::schema::v1::Cost::new(0.25, "USD"))
         );
     }
 
@@ -1439,10 +1490,12 @@ mod tests {
                 "config",
                 "info",
                 "text",
+                "usage",
                 "hook pending",
                 "hook running",
                 "hook completed",
                 "text",
+                "usage",
                 "hook pending",
                 "hook running",
                 "hook completed",
@@ -2571,7 +2624,9 @@ mod tests {
                 "call-1 completed",
                 "call-2 running",
                 "call-2 completed",
+                "usage",
                 "text",
+                "usage",
             ]
         );
         let second_request = &harness.server.requests()[1];
