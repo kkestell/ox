@@ -40,7 +40,7 @@ use crate::{
     skills::{self, Skill},
     system_prompt,
 };
-use operations::SessionOperations;
+use operations::{OperationGuard, SessionOperations};
 
 fn default_settings() -> SessionSettings {
     SessionSettings::new(openrouter::default_model(), EffortLevel::Default)
@@ -487,6 +487,164 @@ impl ServerState {
         removed.map_err(Error::into_internal_error)?;
         Ok(LogoutResponse::new())
     }
+
+    fn respond_to_new_session(
+        &self,
+        request: &NewSessionRequest,
+        responder: Responder<NewSessionResponse>,
+        connection: &ConnectionTo<Client>,
+    ) -> Result<()> {
+        match self.new_session(request) {
+            Ok(response) => {
+                let session_id = response.session_id.clone();
+                responder.respond(response)?;
+                self.send_available_commands(connection, session_id)
+            }
+            Err(error) => responder.respond_with_error(error),
+        }
+    }
+
+    /// Replays the saved transcript as ACP updates before the response.
+    fn respond_to_load_session(
+        &self,
+        request: LoadSessionRequest,
+        responder: Responder<LoadSessionResponse>,
+        connection: &ConnectionTo<Client>,
+    ) -> Result<()> {
+        let Some(_guard) = self.operations.try_load(&request.session_id) else {
+            return responder.respond_with_error(busy());
+        };
+        let send_update = acp_update_sender(connection.clone(), request.session_id.clone());
+        match self.load_session(&request, send_update) {
+            Ok(response) => {
+                responder.respond(response)?;
+                self.send_available_commands(connection, request.session_id)
+            }
+            Err(error) => responder.respond_with_error(error),
+        }
+    }
+
+    fn respond_to_delete_session(
+        &self,
+        request: &DeleteSessionRequest,
+        responder: Responder<DeleteSessionResponse>,
+    ) -> Result<()> {
+        let Some(_guard) = self.operations.try_delete(&request.session_id) else {
+            return responder.respond_with_error(busy());
+        };
+        reply(responder, self.delete_session(request))
+    }
+
+    /// Rejects a prompt request that cannot start, or spawns `/compact` or a
+    /// prompt run that responds when it finishes.
+    fn start_prompt(
+        &self,
+        request: PromptRequest,
+        responder: Responder<PromptResponse>,
+        connection: &ConnectionTo<Client>,
+    ) -> Result<()> {
+        let prompt_text = match convert::prompt_text(&request.prompt) {
+            Ok(prompt_text) => prompt_text,
+            Err(error) => return responder.respond_with_error(error),
+        };
+        let Some(operation) = self.operations.try_prompt(&request.session_id) else {
+            return responder.respond_with_error(busy());
+        };
+        let Some(active) = self.active_session(&request.session_id) else {
+            return responder.respond_with_error(inactive(&request.session_id));
+        };
+        let turn = match dispatch(prompt_text, &active.skills) {
+            Dispatch::Compact => {
+                return self.spawn_compaction(
+                    request.session_id,
+                    active,
+                    operation,
+                    responder,
+                    connection,
+                );
+            }
+            Dispatch::Skill {
+                invocation,
+                hook_source,
+            } => (
+                TranscriptEntry::SkillInvocation(invocation),
+                Some(*hook_source),
+            ),
+            Dispatch::UserMessage(text) => (TranscriptEntry::UserMessage(text), None),
+        };
+        self.spawn_prompt_run(
+            request.session_id,
+            active,
+            turn,
+            operation,
+            responder,
+            connection,
+        )
+    }
+
+    fn spawn_compaction(
+        &self,
+        session_id: SessionId,
+        active: ActiveSession,
+        (guard, cancellation): (OperationGuard, PromptCancellation),
+        responder: Responder<PromptResponse>,
+        connection: &ConnectionTo<Client>,
+    ) -> Result<()> {
+        let state = self.clone();
+        let send_update = acp_update_sender(connection.clone(), session_id.clone());
+        connection.spawn(async move {
+            let _guard = guard;
+            let result = state
+                .compact_session(&session_id, active, &cancellation, send_update)
+                .await;
+            reply(responder, result)
+        })
+    }
+
+    fn spawn_prompt_run(
+        &self,
+        session_id: SessionId,
+        active: ActiveSession,
+        (turn_start, skill_source): (TranscriptEntry, Option<hooks::HookSource>),
+        (guard, cancellation): (OperationGuard, PromptCancellation),
+        responder: Responder<PromptResponse>,
+        connection: &ConnectionTo<Client>,
+    ) -> Result<()> {
+        let openrouter = match self.openrouter_client() {
+            Ok(openrouter) => openrouter,
+            Err(error) => return responder.respond_with_error(error),
+        };
+        let run = match prompt::run(
+            self.store.clone(),
+            openrouter,
+            prompt::PromptInput {
+                session_id: session_id.clone(),
+                turn_start,
+                hook_sources: self
+                    .global_hooks
+                    .clone()
+                    .into_iter()
+                    .chain(skill_source)
+                    .collect(),
+                selected_settings: Some(active.selections),
+                system_prompt: active.system_prompt,
+            },
+            cancellation,
+            acp_update_sender(connection.clone(), session_id),
+            prompt::PermissionTransport::Acp(connection.clone()),
+        ) {
+            Ok(run) => run,
+            Err(error) => return responder.respond_with_error(error),
+        };
+        connection.spawn(async move {
+            let _guard = guard;
+            let result = run.await;
+            reply(
+                responder,
+                result.map(|output| PromptResponse::new(output.stop_reason)),
+            )
+        })
+    }
 }
 
 fn store_error(error: io::Error) -> Error {
@@ -521,6 +679,14 @@ fn reply<T: JsonRpcResponse>(responder: Responder<T>, result: Result<T>) -> Resu
         Ok(response) => responder.respond(response),
         Err(error) => responder.respond_with_error(error),
     }
+}
+
+/// Sends each ACP update as a notification for `session_id`.
+fn acp_update_sender(
+    connection: ConnectionTo<Client>,
+    session_id: SessionId,
+) -> impl FnMut(SessionUpdate) -> Result<()> + Send + 'static {
+    move |update| connection.send_notification(SessionNotification::new(session_id.clone(), update))
 }
 
 // TODO: Test terminal authentication with the preview version of Zed.
@@ -664,36 +830,14 @@ async fn serve(state: ServerState, transport: impl ConnectTo<Agent> + 'static) -
             agent_client_protocol::on_receive_request!(),
         )
         .on_receive_request(
-            async move |request: NewSessionRequest, responder, connection| match new_state
-                .new_session(&request)
-            {
-                Ok(response) => {
-                    let session_id = response.session_id.clone();
-                    responder.respond(response)?;
-                    new_state.send_available_commands(&connection, session_id)
-                }
-                Err(error) => responder.respond_with_error(error),
+            async move |request: NewSessionRequest, responder, connection| {
+                new_state.respond_to_new_session(&request, responder, &connection)
             },
             agent_client_protocol::on_receive_request!(),
         )
         .on_receive_request(
             async move |request: LoadSessionRequest, responder, connection| {
-                let Some(_guard) = load_state.operations.try_load(&request.session_id) else {
-                    return responder.respond_with_error(busy());
-                };
-                let result = load_state.load_session(&request, |update| {
-                    connection.send_notification(SessionNotification::new(
-                        request.session_id.clone(),
-                        update,
-                    ))
-                });
-                match result {
-                    Ok(response) => {
-                        responder.respond(response)?;
-                        load_state.send_available_commands(&connection, request.session_id)
-                    }
-                    Err(error) => responder.respond_with_error(error),
-                }
+                load_state.respond_to_load_session(request, responder, &connection)
             },
             agent_client_protocol::on_receive_request!(),
         )
@@ -705,10 +849,7 @@ async fn serve(state: ServerState, transport: impl ConnectTo<Agent> + 'static) -
         )
         .on_receive_request(
             async move |request: DeleteSessionRequest, responder, _connection| {
-                let Some(_guard) = delete_state.operations.try_delete(&request.session_id) else {
-                    return responder.respond_with_error(busy());
-                };
-                reply(responder, delete_state.delete_session(&request))
+                delete_state.respond_to_delete_session(&request, responder)
             },
             agent_client_protocol::on_receive_request!(),
         )
@@ -726,90 +867,7 @@ async fn serve(state: ServerState, transport: impl ConnectTo<Agent> + 'static) -
         )
         .on_receive_request(
             async move |request: PromptRequest, responder, connection| {
-                let prompt_text = match convert::prompt_text(&request.prompt) {
-                    Ok(prompt_text) => prompt_text,
-                    Err(error) => return responder.respond_with_error(error),
-                };
-                let Some((guard, cancellation)) =
-                    prompt_state.operations.try_prompt(&request.session_id)
-                else {
-                    return responder.respond_with_error(busy());
-                };
-                let Some(active) = prompt_state.active_session(&request.session_id) else {
-                    return responder.respond_with_error(inactive(&request.session_id));
-                };
-                let (turn_start, skill_source) = match dispatch(prompt_text, &active.skills) {
-                    Dispatch::Compact => {
-                        let session_id = request.session_id;
-                        let compact_state = prompt_state.clone();
-                        let task_connection = connection.clone();
-                        return connection.spawn(async move {
-                            let _guard = guard;
-                            let send_update = |update| {
-                                task_connection.send_notification(SessionNotification::new(
-                                    session_id.clone(),
-                                    update,
-                                ))
-                            };
-                            let result = compact_state
-                                .compact_session(&session_id, active, &cancellation, send_update)
-                                .await;
-                            reply(responder, result)
-                        });
-                    }
-                    Dispatch::Skill {
-                        invocation,
-                        hook_source,
-                    } => (
-                        TranscriptEntry::SkillInvocation(invocation),
-                        Some(*hook_source),
-                    ),
-                    Dispatch::UserMessage(text) => (TranscriptEntry::UserMessage(text), None),
-                };
-                let openrouter = match prompt_state.openrouter_client() {
-                    Ok(openrouter) => openrouter,
-                    Err(error) => return responder.respond_with_error(error),
-                };
-                let session_id = request.session_id;
-                let task_connection = connection.clone();
-                let send_update = {
-                    let task_connection = task_connection.clone();
-                    let session_id = session_id.clone();
-                    move |update| {
-                        task_connection
-                            .send_notification(SessionNotification::new(session_id.clone(), update))
-                    }
-                };
-                let run = match prompt::run(
-                    prompt_state.store.clone(),
-                    openrouter,
-                    prompt::PromptInput {
-                        session_id: session_id.clone(),
-                        turn_start,
-                        hook_sources: prompt_state
-                            .global_hooks
-                            .clone()
-                            .into_iter()
-                            .chain(skill_source)
-                            .collect(),
-                        selected_settings: Some(active.selections),
-                        system_prompt: active.system_prompt,
-                    },
-                    cancellation,
-                    send_update,
-                    prompt::PermissionTransport::Acp(task_connection),
-                ) {
-                    Ok(run) => run,
-                    Err(error) => return responder.respond_with_error(error),
-                };
-                connection.spawn(async move {
-                    let _guard = guard;
-                    let result = run.await;
-                    reply(
-                        responder,
-                        result.map(|output| PromptResponse::new(output.stop_reason)),
-                    )
-                })
+                prompt_state.start_prompt(request, responder, &connection)
             },
             agent_client_protocol::on_receive_request!(),
         )
@@ -1656,6 +1714,18 @@ mod tests {
         let store = state.store.clone();
         let operations = state.operations.clone();
         let inactive = store.create(Path::new("/workspace")).unwrap().id;
+        let saved = store.create(Path::new("/workspace")).unwrap().id;
+        store
+            .append_turn_start(
+                &saved,
+                &sessions::SessionSettingsChange {
+                    model: Some(openrouter::default_model().to_owned()),
+                    effort: None,
+                    mode: None,
+                },
+                &TranscriptEntry::UserMessage("Earlier".to_owned()),
+            )
+            .unwrap();
         let id = create_session(&state, Path::new("/workspace"));
         let (incoming_tx, incoming_rx) = mpsc::unbounded();
         let (outgoing_tx, mut outgoing_rx) = mpsc::unbounded::<String>();
@@ -1667,11 +1737,19 @@ mod tests {
                 "params": { "protocolVersion": 1, "clientCapabilities": {} },
             }),
             json!({
-                "jsonrpc": "2.0", "id": 2, "method": "session/prompt",
+                "jsonrpc": "2.0", "id": 2, "method": "session/new",
+                "params": { "cwd": "/workspace", "mcpServers": [] },
+            }),
+            json!({
+                "jsonrpc": "2.0", "id": 3, "method": "session/load",
+                "params": { "sessionId": saved, "cwd": "/workspace", "mcpServers": [] },
+            }),
+            json!({
+                "jsonrpc": "2.0", "id": 4, "method": "session/prompt",
                 "params": { "sessionId": inactive, "prompt": [{ "type": "text", "text": "Hello" }] },
             }),
             json!({
-                "jsonrpc": "2.0", "id": 3, "method": "session/prompt",
+                "jsonrpc": "2.0", "id": 5, "method": "session/prompt",
                 "params": { "sessionId": id, "prompt": [{ "type": "text", "text": "Hello" }] },
             }),
         ] {
@@ -1680,29 +1758,48 @@ mod tests {
 
         let client = async {
             let mut incoming_tx = Some(incoming_tx);
-            let mut rejected = None;
-            let mut response = None;
+            let mut messages = Vec::new();
             while let Some(line) = outgoing_rx.next().await {
                 let message: Value = serde_json::from_str(&line).unwrap();
                 if message["params"]["update"]["sessionUpdate"] == "agent_message_chunk" {
                     assert!(operations.try_load(&id).is_none());
                     drop(incoming_tx.take());
                 }
-                if message["id"] == 2 {
-                    rejected = Some(message);
-                } else if message["id"] == 3 {
-                    response = Some(message);
-                }
+                messages.push(message);
             }
             assert!(incoming_tx.is_none(), "EOF was sent during inference");
-            let rejected = rejected.expect("the inactive session was answered");
+            let position = |matches: &dyn Fn(&Value) -> bool| {
+                messages
+                    .iter()
+                    .position(matches)
+                    .expect("the message was sent")
+            };
+            let update = |session_id: &Value, kind: &str| {
+                position(&|message: &Value| {
+                    message["params"]["sessionId"] == *session_id
+                        && message["params"]["update"]["sessionUpdate"] == kind
+                })
+            };
+            let response = |id: u64| position(&|message: &Value| message["id"] == id);
+
+            let created = &messages[response(2)]["result"]["sessionId"];
+            assert!(response(2) < update(created, "available_commands_update"));
+            let saved = json!(saved);
+            assert!(update(&saved, "user_message_chunk") < response(3));
+            assert!(messages[response(3)]["error"].is_null());
+            assert!(response(3) < update(&saved, "available_commands_update"));
+
+            let rejected = &messages[response(4)];
             assert_eq!(rejected["error"]["code"], -32600);
             assert_eq!(
                 rejected["error"]["data"],
                 format!("session {inactive} is not active; create or load it first")
             );
-            let response = response.expect("the final response was drained before shutdown");
-            assert_eq!(response["result"]["stopReason"], "cancelled");
+            assert_eq!(
+                messages[response(5)]["result"]["stopReason"],
+                "cancelled",
+                "the final response was drained before shutdown"
+            );
         };
         let (result, ()) = futures::join!(serve(state, transport), client);
         result.unwrap();
