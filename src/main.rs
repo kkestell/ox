@@ -6,6 +6,7 @@ mod hooks;
 mod openrouter;
 mod process;
 mod sessions;
+mod settings;
 mod skills;
 mod system_prompt;
 mod tools;

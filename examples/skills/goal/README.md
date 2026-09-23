@@ -45,7 +45,8 @@ nonblank.
 A `before_stop` hook runs after each assistant message that finishes the answer
 without tool calls, during the prompt run that invoked the skill. Invoking the
 skill approves running its hook in both Ask and Auto mode. The hook inherits
-Ox's environment, including `OPENROUTER_API_KEY`.
+Ox's environment, including `OPENROUTER_API_KEY`, and `OX_IN_HOOK=1`. The
+nested headless judge inherits this marker and skips global hooks.
 
 Ox writes one JSON object to the hook's stdin and closes it:
 
@@ -74,17 +75,18 @@ The hook exits zero and prints exactly one JSON object to stdout:
 {"decision": "continue", "message": "Two parser tests still fail. Fix them."}
 ```
 
-| Decision   | Effect                                                         |
-| ---------- | -------------------------------------------------------------- |
-| `continue` | Ox saves the feedback and makes another model request          |
-| `stop`     | Ox saves the feedback and ends the prompt run                  |
+| Decision   | Effect                                                                                                 |
+| ---------- | ------------------------------------------------------------------------------------------------------ |
+| `continue` | Ox saves the feedback and makes another model request                                                  |
+| `stop`     | Ox saves the feedback and ends the prompt run unless a global `before_stop` hook requests continuation |
 
 `message` is nonblank. Use `stop` both when the objective is met and when the
 agent needs the user; the message says which. The saved feedback is model
 context for later requests.
 
-The hook has 600 seconds, 16 KiB of stdout, and 50 `continue` decisions per
-prompt run. Ox keeps the last 4 KiB of stderr for its error message. Any other
+The hook has 600 seconds and 16 KiB of stdout. A prompt run permits 50 hook
+continuations, counting once when both global and skill hooks request one. Ox
+keeps the last 4 KiB of stderr for its error message. Any other
 exit status, output that is not one valid decision object, a timeout, or a
 `continue` past the limit ends the prompt run with an error, and nothing is
 saved for that hook run. On cancellation, Ox sends SIGTERM to the hook's

@@ -17,10 +17,12 @@ THIS DOCUMENT MUST BE KEPT UP TO DATE
 - `src/prompts/system_prompt.md`: The editable built-in instructions that define
   Ox's coding-agent behavior.
 - `src/skills.rs`: Workspace skill definitions in `.agents/skills/`, frontmatter
-  parsing, hook validation, and skill catalog loading.
-- `src/hooks.rs`: The hook protocol for every hook kind: JSON input on stdin
-  with the fields every hook shares, one response object per kind on stdout,
-  deadlines, limits, and hook errors.
+  parsing and skill catalog loading.
+- `src/settings.rs`: Global hooks loaded from `~/.config/ox/settings.json` at
+  process startup, with suppression inside hook commands.
+- `src/hooks.rs`: Shared hook definitions, validation, and the protocol for
+  every hook kind: JSON input on stdin with the fields every hook shares, one
+  response object per kind on stdout, deadlines, limits, and hook errors.
 - `src/process.rs`: Child processes in a new process group with optional
   stdin, bounded output tails, a deadline, cancellation, and group cleanup with
   an optional SIGTERM grace period.
@@ -49,14 +51,14 @@ THIS DOCUMENT MUST BE KEPT UP TO DATE
   over one SQLite connection.
 - `src/acp.rs`: Connection wiring, `ServerState`, lazy OpenRouter client,
   request handlers, advertised slash commands and their prompt dispatch,
-  per-session model, effort, and mode selections, system prompts and skill
-  catalogs loaded when a session becomes active, guarded `/compact`, and the
-  automatic headless prompt entry point.
+  global hooks captured at startup, per-session model, effort, and mode
+  selections, system prompts and skill catalogs loaded when a session becomes
+  active, guarded `/compact`, and the automatic headless prompt entry point.
 - `src/acp/operations.rs`: One active prompt, load, delete, or compaction per
   session, enforced by an operation guard.
 - `src/acp/prompt.rs`: One prompt run: reject oversized input before saving,
-  save accepted input with captured settings, announce it and run the invoked
-  skill's `before_run` hook, compact before large model requests, retry
+  save accepted input with captured settings, announce it and run global and
+  invoked skill `before_run` hooks, compact before large model requests, retry
   explicit input overflow once, run `before_tool` before each tool
   call, run tools, save complete assistant batches, run `after_tools` after each
   batch and `before_stop` on each finished answer, run `after_run` on the
@@ -72,7 +74,7 @@ THIS DOCUMENT MUST BE KEPT UP TO DATE
   `before_tool`, `after_tools`, and `after_run` hooks, all
   `scripts/careful.py`, supply the Git status, deny destructive shell commands,
   check each patch batch, and log each run outcome, with its test and a README
-  describing every hook kind, batch timing, and hook errors.
+  describing every hook kind, batch timing, hook errors, and global hooks.
 
 ## Validation
 

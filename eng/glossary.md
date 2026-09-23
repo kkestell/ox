@@ -106,8 +106,11 @@
   becomes active.
 - **Skill invocation**: A transcript entry holding a skill's name, arguments,
   and instructions, saved in place of the user message for that turn.
-- **Hook**: An external command a skill declares for one hook kind. It runs
-  only in the prompt run that invoked its skill.
+- **Global hooks**: Commands declared in `~/.config/ox/settings.json`, loaded
+  at process startup and available to prompt runs across workspaces. Processes
+  descended from a hook command suppress global hooks through `OX_IN_HOOK`.
+- **Hook**: An external command declared globally or by a skill for one hook
+  kind. A skill hook runs only in the prompt run that invoked its skill.
 - **Hook kind**: The point in a prompt run where a hook runs: `before_run`,
   `before_tool`, `after_tools`, `before_stop`, or `after_run`. It is `HookKind`
   in code and `kind` in hook input.
@@ -115,14 +118,15 @@
   distinct from an OpenRouter stop and from a tool decision.
 - **Tool decision**: `allow` or `deny` from a `before_tool` hook for one model
   tool call. It is never saved.
-- **Hook feedback**: A transcript entry holding a hook's skill and saved message
-  from `before_run`, `after_tools`, or `before_stop`, with the hook decision for
-  `before_stop`. It is neither a user message nor a tool result.
+- **Hook feedback**: A transcript entry holding a hook's optional skill name and
+  saved message from `before_run`, `after_tools`, or `before_stop`, with the
+  hook decision for `before_stop`. It is neither a user message nor a tool
+  result.
 - **Hook continuation**: A model request in the same prompt run caused by a
   `continue` decision.
 - **Prompt run**: The work caused by one prompt request: save the user message
-  or skill invocation, request model output, run tools and the invoked skill's
-  hooks, save results, and respond.
+  or skill invocation, request model output, run tools and global and invoked
+  skill hooks, save results, and respond.
 - **Run ID**: A UUID identifying one prompt run in the input of each of its hook
   commands.
 - **Final answer**: The text of the assistant message committed with the

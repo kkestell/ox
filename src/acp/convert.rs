@@ -146,16 +146,12 @@ pub fn hook_call_id() -> String {
     format!("hook-{}", uuid::Uuid::new_v4())
 }
 
-fn hook_call_title(skill: &str, kind: HookKind) -> String {
-    format!("{skill} {} hook", kind.id())
-}
-
 /// Announces a hook run as an execute tool call.
-pub fn pending_hook_call(call_id: &str, skill: &str, kind: HookKind) -> SessionUpdate {
+pub fn pending_hook_call(call_id: &str, skill: Option<&str>, kind: HookKind) -> SessionUpdate {
     SessionUpdate::ToolCall(
         AcpToolCall::new(
             ToolCallId::new(call_id.to_owned()),
-            hook_call_title(skill, kind),
+            crate::sessions::hook_label(skill, kind),
         )
         .kind(ToolKind::Execute)
         .status(ToolCallStatus::Pending),
@@ -182,14 +178,11 @@ pub fn finished_hook_call_update(
 
 fn replayed_hook_call(feedback: &HookFeedback) -> SessionUpdate {
     SessionUpdate::ToolCall(
-        AcpToolCall::new(
-            ToolCallId::new(hook_call_id()),
-            hook_call_title(&feedback.skill, feedback.kind()),
-        )
-        .kind(ToolKind::Execute)
-        .status(ToolCallStatus::Completed)
-        .content(vec![text_content(feedback.message())])
-        .raw_output(Value::String(feedback.message().to_owned())),
+        AcpToolCall::new(ToolCallId::new(hook_call_id()), feedback.label())
+            .kind(ToolKind::Execute)
+            .status(ToolCallStatus::Completed)
+            .content(vec![text_content(feedback.message())])
+            .raw_output(Value::String(feedback.message().to_owned())),
     )
 }
 
@@ -369,28 +362,33 @@ mod tests {
                         == Some(Value::String("Cancelled before this tool was started.".to_owned()))
         ));
 
-        let mut replay = Vec::new();
-        replay_transcript(
-            &[TranscriptEntry::HookFeedback(HookFeedback {
-                skill: "goal".to_owned(),
-                content: crate::sessions::HookFeedbackContent::AfterTools {
-                    message: "Two tests still fail.".to_owned(),
+        for (skill, label) in [
+            (None, "global after_tools hook"),
+            (Some("global"), "skill /global after_tools hook"),
+        ] {
+            let mut replay = Vec::new();
+            replay_transcript(
+                &[TranscriptEntry::HookFeedback(HookFeedback {
+                    skill: skill.map(str::to_owned),
+                    content: crate::sessions::HookFeedbackContent::AfterTools {
+                        message: "Two tests still fail.".to_owned(),
+                    },
+                })],
+                |update| {
+                    replay.push(update);
+                    Ok(())
                 },
-            })],
-            |update| {
-                replay.push(update);
-                Ok(())
-            },
-        )
-        .unwrap();
-        assert!(matches!(
-            &replay[..],
-            [SessionUpdate::ToolCall(call)]
-                if call.tool_call_id.to_string().starts_with("hook-")
-                    && call.title == "goal after_tools hook"
-                    && call.kind == ToolKind::Execute
-                    && call.status == ToolCallStatus::Completed
-                    && call.raw_output == Some(Value::String("Two tests still fail.".to_owned()))
-        ));
+            )
+            .unwrap();
+            assert!(matches!(
+                &replay[..],
+                [SessionUpdate::ToolCall(call)]
+                    if call.tool_call_id.to_string().starts_with("hook-")
+                        && call.title == label
+                        && call.kind == ToolKind::Execute
+                        && call.status == ToolCallStatus::Completed
+                        && call.raw_output == Some(Value::String("Two tests still fail.".to_owned()))
+            ));
+        }
     }
 }

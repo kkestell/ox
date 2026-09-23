@@ -274,11 +274,7 @@ fn material(transcript: &[TranscriptEntry], cut: usize) -> VecDeque<(String, Str
                     | HookFeedbackContent::AfterTools { .. } => "",
                 };
                 fields.push_back((
-                    format!(
-                        "{source} {} {} hook{decision} feedback",
-                        feedback.skill,
-                        feedback.kind().id()
-                    ),
+                    format!("{source} {}{decision} feedback", feedback.label()),
                     feedback.message().to_owned(),
                     1,
                 ))
@@ -496,7 +492,8 @@ mod tests {
             )
             .unwrap();
         let feedback = |content| HookFeedback {
-            skill: "goal".to_owned(),
+            skill: matches!(&content, HookFeedbackContent::BeforeStop { .. })
+                .then(|| "goal".to_owned()),
             content,
         };
         store
@@ -613,12 +610,11 @@ mod tests {
         };
         assert!(material(0).contains("Entry 1 user request, part 1:\nSkill /goal invoked."));
         assert!(material(0).contains(
-            "Entry 2 goal before_run hook feedback, part 1:\nThe parser lives in src/parse.rs."
+            "Entry 2 global before_run hook feedback, part 1:\nThe parser lives in src/parse.rs."
         ));
-        assert!(
-            material(1)
-                .contains("Entry 4 goal before_stop hook stop feedback, part 1:\nObjective met.")
-        );
+        assert!(material(1).contains(
+            "Entry 4 skill /goal before_stop hook stop feedback, part 1:\nObjective met."
+        ));
         assert!(
             requests[1]["messages"][1]["content"]
                 .as_str()

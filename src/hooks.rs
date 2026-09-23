@@ -1,4 +1,4 @@
-//! Runs one skill hook command: one JSON object in on stdin, one response
+//! Runs one hook command: one JSON object in on stdin, one response
 //! object out on stdout.
 
 use std::{
@@ -16,8 +16,54 @@ use crate::{
     sessions::{
         EffortLevel, HookDecision, HookKind, SessionMode, ToolCall, ToolOutcome, ToolResult,
     },
-    skills::Hooks,
 };
+
+/// At most one command per hook kind. Unknown hook kinds belong to other
+/// agents and are ignored.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+pub struct Hooks {
+    pub before_run: Option<HookCommand>,
+    pub before_tool: Option<HookCommand>,
+    pub after_tools: Option<HookCommand>,
+    pub before_stop: Option<HookCommand>,
+    pub after_run: Option<HookCommand>,
+}
+
+/// A hook command, run with `/bin/sh -c`.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HookCommand {
+    pub command: String,
+}
+
+impl Hooks {
+    pub fn command(&self, kind: HookKind) -> Option<&str> {
+        match kind {
+            HookKind::BeforeRun => self.before_run.as_ref().map(|hook| hook.command.as_str()),
+            HookKind::BeforeTool => self.before_tool.as_ref().map(|hook| hook.command.as_str()),
+            HookKind::AfterTools => self.after_tools.as_ref().map(|hook| hook.command.as_str()),
+            HookKind::BeforeStop => self.before_stop.as_ref().map(|hook| hook.command.as_str()),
+            HookKind::AfterRun => self.after_run.as_ref().map(|hook| hook.command.as_str()),
+        }
+    }
+
+    pub fn validate(&self) -> io::Result<()> {
+        for kind in HookKind::ALL {
+            if self
+                .command(kind)
+                .is_some_and(|command| command.trim().is_empty())
+            {
+                return Err(io::Error::new(
+                    ErrorKind::InvalidData,
+                    format!("{} hook command is blank", kind.id()),
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+pub const IN_HOOK_ENV: &str = "OX_IN_HOOK";
 
 const STDOUT_LIMIT: usize = 16 * 1024;
 const STDERR_LIMIT: usize = 4 * 1024;
@@ -34,19 +80,20 @@ fn deadline(kind: HookKind) -> Duration {
     })
 }
 
-/// The hooks of the skill invoked for one prompt run. They come from the skill
-/// catalog and are never saved.
+/// Global or skill hooks supplied to one prompt run. Commands are never saved.
 #[derive(Debug, Clone, PartialEq)]
-pub struct SkillHooks {
+pub struct RunHooks {
     pub hooks: Hooks,
-    /// The skill directory, where the commands run.
+    pub skill: Option<String>,
+    /// The directory containing the definition, where its commands run.
     pub directory: PathBuf,
 }
 
-/// The input fields every hook of one prompt run shares.
+/// The input fields every command of one hook definition shares in a prompt
+/// run. Global definitions have no skill and empty arguments.
 #[derive(Serialize)]
 pub struct Context {
-    pub skill: String,
+    pub skill: Option<String>,
     pub arguments: String,
     pub session_id: String,
     pub mode: SessionMode,
@@ -210,12 +257,12 @@ impl Output for Report {
     }
 }
 
-/// Runs the skill's command for `event`. The command inherits Ox's
+/// Runs one configured command for `event`. The command inherits Ox's
 /// environment, including `OPENROUTER_API_KEY`. Cancellation is an
-/// `Interrupted` error; every other failure is an error naming the skill and
+/// `Interrupted` error; every other failure is an error naming the origin and
 /// hook kind with the command's stderr tail.
 pub async fn run<T: Output>(
-    hooks: &SkillHooks,
+    hooks: &RunHooks,
     context: &Context,
     event: &Event,
     cancelled: impl Future<Output = ()>,
@@ -224,8 +271,8 @@ pub async fn run<T: Output>(
     let command = hooks
         .hooks
         .command(kind)
-        .expect("a hook runs only for a skill that declares it");
-    let name = format!("{} {} hook", context.skill, kind.id());
+        .expect("a hook runs only when its definition declares it");
+    let name = crate::sessions::hook_label(context.skill.as_deref(), kind);
     let failure = |reason: String, stderr: &str| {
         let mut message = format!("{name} {reason}");
         if !stderr.trim().is_empty() {
@@ -243,7 +290,11 @@ pub async fn run<T: Output>(
     })
     .map_err(|error| failure(format!("input could not be encoded: {error}"), ""))?;
     let mut process = Command::new("/bin/sh");
-    process.arg("-c").arg(command).current_dir(&hooks.directory);
+    process
+        .arg("-c")
+        .arg(command)
+        .current_dir(&hooks.directory)
+        .env(IN_HOOK_ENV, "1");
     let limits = Limits {
         stdout: STDOUT_LIMIT,
         stderr: STDERR_LIMIT,

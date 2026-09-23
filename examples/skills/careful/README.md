@@ -47,9 +47,42 @@ directory. No other fields are allowed. The script checks tool names to apply
 its shell and patch rules. The [goal skill](../goal/README.md) shows
 `before_stop`.
 
-Hooks run only in the prompt run that invoked their skill. Invoking the skill
-approves all of its hook commands in both Ask and Auto mode. Hooks never run for
-ordinary messages, `/compact`, or headless prompts.
+Skill hooks run only in the prompt run that invoked their skill. Invoking the
+skill approves all of its hook commands in both Ask and Auto mode. Skill hooks
+do not run for ordinary messages, `/compact`, or headless prompts.
+
+## Global hooks
+
+To enable hooks across workspaces, define them in `~/.config/ox/settings.json`:
+
+```json
+{
+  "hooks": {
+    "before_tool": { "command": "python3 scripts/careful.py" },
+    "after_run": { "command": "python3 scripts/careful.py" }
+  }
+}
+```
+
+For this example, copy `scripts/careful.py` to
+`~/.config/ox/scripts/careful.py`. All five hook kinds are supported. Commands
+run in `~/.config/ox`; their `workspace` input identifies the session workspace.
+Global input uses `"skill": null` and empty `arguments`. The settings object
+accepts only `hooks`; its definitions use the same rules as skills, including
+ignoring unknown hook kinds. Missing settings, omitted or null `hooks`, or an
+empty map enables none. Invalid settings fail startup with the file path.
+Restart Ox to pick up edits.
+
+Global commands run on ordinary ACP and headless prompts in both Ask and Auto
+mode. At each hook point, the global command runs before the invoked skill's
+command. Both run even if the first denies a tool call or asks to continue.
+Either denial blocks a call; either continuation requests another model
+response, counting once toward the limit. Each hook's feedback is saved.
+Ordinary hook errors stop the run; `after_run` attempts both commands even if
+one fails. Hooks do not execute during `/compact`, replay, or compaction.
+
+Ox sets `OX_IN_HOOK=1` for every hook command. Nested Ox processes inherit the
+marker and skip global hooks, preventing recursive invocation.
 
 ## Hook protocol
 
@@ -74,19 +107,19 @@ receives these fields:
 `run_id` is shared by every hook command of one prompt run. The command exits
 zero and prints one JSON object to stdout:
 
-| Hook          | When it runs                                                   | Added input                                                             | Stdout                                                         | Deadline |
-| ------------- | -------------------------------------------------------------- | ----------------------------------------------------------------------- | -------------------------------------------------------------- | -------- |
-| `before_run`  | Once, after the skill invocation is saved                      | None                                                                    | `{}` or `{"message": "..."}`                                   | 30 s     |
-| `before_tool` | Before each tool call and its permission request               | `tool`: `call_id`, `name`, raw `arguments` string                       | `{"decision": "allow"}` or `{"decision": "deny", "message": "..."}` | 10 s     |
-| `after_tools` | Once per tool batch, after the batch is saved                  | `tools`: list of `call_id`, `name`, `arguments`, `outcome`, `text`      | `{}` or `{"message": "..."}`                                   | 60 s     |
-| `before_stop` | After each finished answer                                     | `answer`                                                                | `{"decision": "continue" or "stop", "message": "..."}`         | 600 s    |
-| `after_run`   | Once, after the prompt run's result is known                   | `outcome`, `answer` or null, `error` or null                            | `{}`                                                           | 5 s      |
+| Hook          | When it runs                                              | Added input                                                        | Stdout                                                              | Deadline |
+| ------------- | --------------------------------------------------------- | ------------------------------------------------------------------ | ------------------------------------------------------------------- | -------- |
+| `before_run`  | Once, after the user message or skill invocation is saved | None                                                               | `{}` or `{"message": "..."}`                                        | 30 s     |
+| `before_tool` | Before each tool call and its permission request          | `tool`: `call_id`, `name`, raw `arguments` string                  | `{"decision": "allow"}` or `{"decision": "deny", "message": "..."}` | 10 s     |
+| `after_tools` | Once per tool batch, after the batch is saved             | `tools`: list of `call_id`, `name`, `arguments`, `outcome`, `text` | `{}` or `{"message": "..."}`                                        | 60 s     |
+| `before_stop` | After each finished answer                                | `answer`                                                           | `{"decision": "continue" or "stop", "message": "..."}`              | 600 s    |
+| `after_run`   | Once, after the prompt run's result is known              | `outcome`, `answer` or null, `error` or null                       | `{}`                                                                | 5 s      |
 
-A message is nonblank. A `before_run` or `after_tools` message is saved and
-sent to the model as feedback. A denial skips the permission request and the
-call, and gives the call a failed result:
-`careful before_tool hook denied this call: <message>`. The model sees the
-reason in that result, and later calls in the batch still run.
+A message is nonblank. A `before_run` or `after_tools` message is saved and sent
+to the model as feedback. A denial skips the permission request and the call,
+and gives the call a failed result:
+`skill /careful before_tool hook denied this call: <message>`. The model sees
+the reason in that result, and later calls in the batch still run.
 
 `after_run`'s `outcome` is `finished`, `cancelled`, `token_limit`, `refused`,
 or `failed`. `answer` is set only for `finished` and `error` only for `failed`.

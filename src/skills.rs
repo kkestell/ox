@@ -9,7 +9,7 @@ use std::{
 
 use serde::Deserialize;
 
-use crate::{sessions::HookKind, system_prompt};
+use crate::{hooks::Hooks, system_prompt};
 
 const SKILLS_DIR: &str = ".agents/skills";
 const FILE_NAME: &str = "SKILL.md";
@@ -25,48 +25,6 @@ pub struct Skill {
     /// The skill directory, where its hook commands run.
     pub directory: PathBuf,
     pub hooks: Hooks,
-}
-
-/// At most one command per hook kind. Unknown hook kinds belong to other
-/// agents and are ignored.
-#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
-pub struct Hooks {
-    pub before_run: Option<HookCommand>,
-    pub before_tool: Option<HookCommand>,
-    pub after_tools: Option<HookCommand>,
-    pub before_stop: Option<HookCommand>,
-    pub after_run: Option<HookCommand>,
-}
-
-/// A hook command, run with `/bin/sh -c`.
-#[derive(Debug, Clone, PartialEq, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct HookCommand {
-    pub command: String,
-}
-
-impl Hooks {
-    pub fn command(&self, kind: HookKind) -> Option<&str> {
-        match kind {
-            HookKind::BeforeRun => self.before_run.as_ref().map(|hook| hook.command.as_str()),
-            HookKind::BeforeTool => self.before_tool.as_ref().map(|hook| hook.command.as_str()),
-            HookKind::AfterTools => self.after_tools.as_ref().map(|hook| hook.command.as_str()),
-            HookKind::BeforeStop => self.before_stop.as_ref().map(|hook| hook.command.as_str()),
-            HookKind::AfterRun => self.after_run.as_ref().map(|hook| hook.command.as_str()),
-        }
-    }
-
-    fn validate(&self) -> io::Result<()> {
-        for kind in HookKind::ALL {
-            if self
-                .command(kind)
-                .is_some_and(|command| command.trim().is_empty())
-            {
-                return Err(invalid(format!("{} hook command is blank", kind.id())));
-            }
-        }
-        Ok(())
-    }
 }
 
 /// Other frontmatter keys belong to other agents and are ignored.

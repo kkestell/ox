@@ -37,6 +37,7 @@ use crate::{
         self, EffortLevel, SessionMode, SessionSettings, SessionStore, SessionSummary,
         SkillInvocation, TranscriptEntry,
     },
+    settings,
     skills::{self, Skill},
     system_prompt,
 };
@@ -123,7 +124,7 @@ enum Dispatch {
     Compact,
     Skill {
         invocation: SkillInvocation,
-        hooks: hooks::SkillHooks,
+        hooks: Box<hooks::RunHooks>,
     },
     UserMessage(String),
 }
@@ -145,10 +146,11 @@ fn dispatch(user_message: String, skills: &[Skill]) -> Dispatch {
     };
     let arguments = rest.trim().to_owned();
     Dispatch::Skill {
-        hooks: hooks::SkillHooks {
+        hooks: Box::new(hooks::RunHooks {
             hooks: skill.hooks.clone(),
+            skill: Some(skill.name.clone()),
             directory: skill.directory.clone(),
-        },
+        }),
         invocation: SkillInvocation {
             name: skill.name.clone(),
             arguments,
@@ -160,6 +162,7 @@ fn dispatch(user_message: String, skills: &[Skill]) -> Dispatch {
 #[derive(Clone)]
 struct ServerState {
     store: SessionStore,
+    global_hooks: Option<hooks::RunHooks>,
     openrouter: Arc<Mutex<Option<openrouter::Client>>>,
     operations: SessionOperations,
     /// The sessions created or loaded in this process. Only an active session
@@ -180,9 +183,10 @@ struct ActiveSession {
 }
 
 impl ServerState {
-    fn new(store: SessionStore) -> Self {
+    fn new(store: SessionStore, global_hooks: Option<hooks::RunHooks>) -> Self {
         Self {
             store,
+            global_hooks,
             openrouter: Arc::default(),
             operations: SessionOperations::default(),
             active: Arc::default(),
@@ -516,7 +520,7 @@ fn initialize_response(initialize: &InitializeRequest) -> InitializeResponse {
 
 pub async fn serve_stdio() -> std::result::Result<(), Box<dyn StdError>> {
     let store = SessionStore::open(&sessions::database_path()?)?;
-    serve(ServerState::new(store), Stdio::new()).await?;
+    serve(ServerState::new(store, settings::load()?), Stdio::new()).await?;
     Ok(())
 }
 
@@ -535,6 +539,7 @@ pub async fn run_headless(
         )
     })?;
     let system_prompt = system_prompt::for_workspace(workspace_path)?;
+    let hooks = settings::load()?.into_iter().collect();
     let store = SessionStore::open(&sessions::database_path()?)?;
     let session = store.create(workspace_path)?;
     run_headless_prompt(
@@ -544,6 +549,7 @@ pub async fn run_headless(
         SessionSettings::new(model, effort),
         system_prompt,
         user_message,
+        hooks,
     )
     .await
 }
@@ -555,6 +561,7 @@ async fn run_headless_prompt(
     settings: SessionSettings,
     system_prompt: String,
     user_message: String,
+    hooks: Vec<hooks::RunHooks>,
 ) -> std::result::Result<String, Box<dyn StdError>> {
     use tokio::signal::unix::{SignalKind, signal};
     let mut interrupt = signal(SignalKind::interrupt())?;
@@ -566,7 +573,7 @@ async fn run_headless_prompt(
         prompt::PromptInput {
             session_id,
             turn_start: TranscriptEntry::UserMessage(user_message),
-            hooks: None,
+            hooks,
             selected_settings: Some(settings.with_mode(SessionMode::Auto)),
             system_prompt,
         },
@@ -709,7 +716,7 @@ async fn serve(state: ServerState, transport: impl ConnectTo<Agent> + 'static) -
                         });
                     }
                     Dispatch::Skill { invocation, hooks } => {
-                        (TranscriptEntry::SkillInvocation(invocation), Some(hooks))
+                        (TranscriptEntry::SkillInvocation(invocation), Some(*hooks))
                     }
                     Dispatch::UserMessage(text) => (TranscriptEntry::UserMessage(text), None),
                 };
@@ -733,7 +740,12 @@ async fn serve(state: ServerState, transport: impl ConnectTo<Agent> + 'static) -
                     prompt::PromptInput {
                         session_id: session_id.clone(),
                         turn_start,
-                        hooks,
+                        hooks: prompt_state
+                            .global_hooks
+                            .clone()
+                            .into_iter()
+                            .chain(hooks)
+                            .collect(),
                         selected_settings: Some(active.selections),
                         system_prompt: active.system_prompt,
                     },
@@ -782,7 +794,7 @@ mod tests {
             sessions::{AssistantBatch, AssistantMessage, SessionSettingsChange, TranscriptEntry},
         };
         let store = SessionStore::in_memory();
-        let state = ServerState::new(store.clone());
+        let state = ServerState::new(store.clone(), None);
         let id = store.create(Path::new("/workspace")).unwrap().id;
         let active = ActiveSession {
             selections: default_settings(),
@@ -852,7 +864,7 @@ mod tests {
 
     /// A server state over `store`, as a later process would open it.
     fn state_over(store: SessionStore) -> ServerState {
-        let state = ServerState::new(store);
+        let state = ServerState::new(store, None);
         *state.openrouter.lock().unwrap() = Some(openrouter::Client::new("test-key".to_owned()));
         state
     }
@@ -892,11 +904,11 @@ mod tests {
             argument_hint: argument_hint.map(str::to_owned),
             instructions: format!("Follow the {name} steps."),
             directory: Path::new("/workspace/.agents/skills").join(name),
-            hooks: skills::Hooks {
-                before_stop: before_stop.map(|command| skills::HookCommand {
+            hooks: hooks::Hooks {
+                before_stop: before_stop.map(|command| hooks::HookCommand {
                     command: command.to_owned(),
                 }),
-                ..skills::Hooks::default()
+                ..hooks::Hooks::default()
             },
         };
         let skills = [
@@ -940,10 +952,11 @@ mod tests {
                     arguments: arguments.to_owned(),
                     instructions: "Follow the goal steps.".to_owned(),
                 },
-                hooks: hooks::SkillHooks {
+                hooks: Box::new(hooks::RunHooks {
                     hooks: skills[0].hooks.clone(),
+                    skill: Some("goal".to_owned()),
                     directory: skills[0].directory.clone(),
-                },
+                }),
             }
         );
         assert_eq!(
@@ -954,10 +967,11 @@ mod tests {
                     arguments: String::new(),
                     instructions: "Follow the init steps.".to_owned(),
                 },
-                hooks: hooks::SkillHooks {
-                    hooks: skills::Hooks::default(),
+                hooks: Box::new(hooks::RunHooks {
+                    skill: Some("init".to_owned()),
+                    hooks: hooks::Hooks::default(),
                     directory: skills[1].directory.clone(),
-                },
+                }),
             }
         );
         for user_message in [
@@ -996,20 +1010,20 @@ mod tests {
             argument_hint: Some("<objective>".to_owned()),
             instructions: "Work toward the objective.".to_owned(),
             directory: skills_dir.join("goal"),
-            hooks: skills::Hooks {
-                before_run: Some(skills::HookCommand {
+            hooks: hooks::Hooks {
+                before_run: Some(hooks::HookCommand {
                     command: "python3 scripts/context.py".to_owned(),
                 }),
-                before_tool: Some(skills::HookCommand {
+                before_tool: Some(hooks::HookCommand {
                     command: "python3 scripts/check_call.py".to_owned(),
                 }),
-                after_tools: Some(skills::HookCommand {
+                after_tools: Some(hooks::HookCommand {
                     command: "python3 scripts/format.py".to_owned(),
                 }),
-                before_stop: Some(skills::HookCommand {
+                before_stop: Some(hooks::HookCommand {
                     command: "python3 scripts/check.py".to_owned(),
                 }),
-                after_run: Some(skills::HookCommand {
+                after_run: Some(hooks::HookCommand {
                     command: "python3 scripts/report.py".to_owned(),
                 }),
             },
@@ -1091,7 +1105,7 @@ mod tests {
             let id = create_session(&state, &workspace.0);
             assert_eq!(
                 state.active_session(&id).unwrap().skills[0].hooks,
-                skills::Hooks::default()
+                hooks::Hooks::default()
             );
             let later = state_over(state.store.clone());
             later
@@ -1101,7 +1115,7 @@ mod tests {
                 .unwrap();
             assert_eq!(
                 later.active_session(&id).unwrap().skills[0].hooks,
-                skills::Hooks::default()
+                hooks::Hooks::default()
             );
             state
                 .delete_session(&DeleteSessionRequest::new(id))
@@ -1413,7 +1427,7 @@ mod tests {
             prompt::PromptInput {
                 session_id: id.clone(),
                 turn_start: TranscriptEntry::UserMessage(user_message.to_owned()),
-                hooks: None,
+                hooks: Vec::new(),
                 selected_settings: Some(active.selections),
                 system_prompt: active.system_prompt,
             }
@@ -1620,7 +1634,7 @@ mod tests {
                 replies.push(text_reply("Done"));
             }
             let server = Server::start(replies).await;
-            let state = state();
+            let mut state = state();
             *state.openrouter.lock().unwrap() = Some(server.client());
             let store = state.store.clone();
             let operations = state.operations.clone();
@@ -1641,6 +1655,11 @@ Run the commands.
 "#,
                 )
                 .unwrap();
+                state.global_hooks = Some(hooks::RunHooks {
+                    skill: None,
+                    directory: workspace.0.clone(),
+                    hooks: skills::load(&workspace.0).unwrap().remove(0).hooks,
+                });
                 text = "/check Run commands";
             }
             let id = create_session(&state, &workspace.0);
@@ -1864,7 +1883,7 @@ Run the commands.
                         "{decision}, result {index}"
                     ),
                     "hook" if index == 0 => {
-                        let denied = "check before_tool hook denied this call: Leave first alone.";
+                        let denied = "global before_tool hook denied this call: Leave first alone.\nskill /check before_tool hook denied this call: Leave first alone.";
                         assert_eq!(result.outcome, ToolOutcome::Failed(denied.to_owned()));
                         assert_eq!(server.requests()[1]["messages"][3]["content"], denied);
                     }
@@ -1939,10 +1958,15 @@ Run the commands.
                 SessionSettings::new(openrouter::DEFAULT_MODEL, EffortLevel::Default),
                 system_prompt::for_workspace(path).unwrap(),
                 "Answer".into(),
+                settings::load().unwrap().into_iter().collect(),
             )
             .await
             .unwrap();
             assert_eq!(answer, "Finished answer.", "ox run prints this answer");
+            assert_eq!(
+                fs::read_to_string(path.join(".config/ox/reported")).unwrap(),
+                "1"
+            );
             let session = store.create(path).unwrap();
             let response = run_headless_prompt(
                 store.clone(),
@@ -1951,6 +1975,7 @@ Run the commands.
                 SessionSettings::new(openrouter::MODEL_CATALOG[1].id, EffortLevel::High),
                 system_prompt::for_workspace(path).unwrap(),
                 "Run commands".into(),
+                Vec::new(),
             )
             .await;
             assert!(
@@ -1972,6 +1997,8 @@ Run the commands.
             return;
         }
         let workspace = Workspace::new();
+        fs::create_dir_all(workspace.0.join(".config/ox")).unwrap();
+        fs::write(workspace.0.join(".config/ox/settings.json"), r#"{"hooks":{"after_run":{"command":"printf %s \"$OX_IN_HOOK\" > reported; echo '{}'"}}}"#).unwrap();
         let mut child = tokio::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
@@ -1979,6 +2006,8 @@ Run the commands.
                 "--nocapture",
             ])
             .env(FLAG, &workspace.0)
+            .env("HOME", &workspace.0)
+            .env_remove(hooks::IN_HOOK_ENV)
             .kill_on_drop(true)
             .spawn()
             .unwrap();

@@ -149,7 +149,6 @@ mod tests {
         hooks,
         process::{OUTPUT_DRAIN_TIMEOUT, kill_group},
         sessions::{EffortLevel, HookDecision, SessionMode},
-        skills,
         tools::{self, fixture::Workspace},
     };
     use rustix::process::Pid;
@@ -299,17 +298,18 @@ mod tests {
             .await;
             assert!(matches!(outcome, ToolOutcome::Completed(_)), "{outcome:?}");
             // A hook inherits the key and reads its input from stdin.
-            let hooks = hooks::SkillHooks {
-                hooks: skills::Hooks {
-                    before_stop: Some(skills::HookCommand {
-                        command: r#"test "$OPENROUTER_API_KEY" = dummy-key && cat > input.json && printf '{"decision":"stop","message":"Key present."}'"#.to_owned(),
+            let hooks = hooks::RunHooks {
+                skill: Some("goal".to_owned()),
+                hooks: hooks::Hooks {
+                    before_stop: Some(hooks::HookCommand {
+                        command: r#"test "$OPENROUTER_API_KEY" = dummy-key && test "$OX_IN_HOOK" = 1 && cat > input.json && printf '{"decision":"stop","message":"Key present."}'"#.to_owned(),
                     }),
-                    ..skills::Hooks::default()
+                    ..hooks::Hooks::default()
                 },
                 directory: workspace.0.clone(),
             };
             let context = hooks::Context {
-                skill: "goal".to_owned(),
+                skill: Some("goal".to_owned()),
                 arguments: "Check the key.".to_owned(),
                 session_id: "session-1".to_owned(),
                 mode: SessionMode::Ask,

@@ -38,8 +38,7 @@ fn read_workspace(workspace_path: &Path) -> io::Result<Option<String>> {
     }
 }
 
-/// Reads a UTF-8 text file of at most 32 KiB, the limit for both `AGENTS.md`
-/// and `SKILL.md`.
+/// Reads a UTF-8 text file of at most 32 KiB for instructions or settings.
 pub fn read_text(path: &Path) -> io::Result<String> {
     let mut bytes = Vec::new();
     File::open(path)?

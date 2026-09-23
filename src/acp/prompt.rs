@@ -1,7 +1,7 @@
 //! Runs one ACP prompt request. It saves the user message or skill invocation,
 //! makes model requests, runs tools in call order, saves each complete
-//! assistant batch, runs the invoked skill's hooks at their points in the run,
-//! and returns the final stop reason and answer.
+//! assistant batch, runs global and invoked skill hooks at their points in the
+//! run, and returns the final stop reason and answer.
 
 use std::{fmt, future::Future, io};
 
@@ -17,7 +17,7 @@ use super::convert;
 use crate::cancellation::PromptCancellation;
 use crate::{
     compaction,
-    hooks::{self, SkillHooks},
+    hooks::{self, RunHooks},
     openrouter,
     sessions::{
         AssistantBatch, AssistantMessage, HookDecision, HookFeedback, HookFeedbackContent,
@@ -27,7 +27,8 @@ use crate::{
     tools,
 };
 
-/// The most `continue` decisions one prompt run accepts from its hook.
+/// The most hook continuations one prompt run accepts. Each is one model
+/// request, however many hooks requested it.
 const MAX_HOOK_CONTINUATIONS: usize = 50;
 
 /// How a hook call finishes when its command saved nothing.
@@ -44,8 +45,8 @@ pub(super) struct PromptInput {
     pub session_id: SessionId,
     /// The user message or skill invocation that starts the turn.
     pub turn_start: TranscriptEntry,
-    /// The invoked skill's hooks.
-    pub hooks: Option<SkillHooks>,
+    /// Global hooks followed by the invoked skill's hooks.
+    pub hooks: Vec<RunHooks>,
     pub selected_settings: Option<SessionSettings>,
     /// The complete system prompt captured when the session became active.
     pub system_prompt: String,
@@ -140,7 +141,7 @@ struct PromptRun<F> {
     /// Saved transcript, extended only after a database transaction succeeds.
     transcript: Vec<TranscriptEntry>,
     uncommitted_batch: Option<UncommittedAssistantBatch>,
-    hooks: Option<SkillHooks>,
+    hooks: Vec<RunHooks>,
     /// Identifies this run in the input of each of its hook commands.
     run_id: String,
     hook_continuations: usize,
@@ -303,7 +304,7 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
         Ok(Some(updates))
     }
 
-    /// Announces the saved turn start and runs the `before_run` hook.
+    /// Announces the saved turn start and runs the `before_run` hooks.
     async fn start(
         &mut self,
         updates: Vec<SessionUpdate>,
@@ -311,14 +312,19 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
         for update in updates {
             (self.send_update)(update).map_err(PromptOutcome::AcpUpdate)?;
         }
-        if self.has_hook(HookKind::BeforeRun) {
-            self.run_hook(hooks::Event::BeforeRun, |run, output: hooks::Feedback| {
-                run.save_optional_feedback(
-                    output
-                        .message
-                        .map(|message| HookFeedbackContent::BeforeRun { message }),
-                )
-            })
+        for hooks in self.hooks_for(HookKind::BeforeRun) {
+            self.run_hook(
+                &hooks,
+                &hooks::Event::BeforeRun,
+                |run, hooks, output: hooks::Feedback| {
+                    run.save_optional_feedback(
+                        hooks,
+                        output
+                            .message
+                            .map(|message| HookFeedbackContent::BeforeRun { message }),
+                    )
+                },
+            )
             .await?;
         }
         Ok(())
@@ -358,13 +364,21 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
             match outcome {
                 Some(PromptOutcome::Finished) => {
                     self.answer = Some(text.clone());
-                    if self.has_hook(HookKind::BeforeStop) {
-                        let event = hooks::Event::BeforeStop { answer: text };
-                        match self.run_hook(event, Self::save_stop_feedback).await {
-                            Ok(HookDecision::Continue) => continue,
+                    let event = hooks::Event::BeforeStop { answer: text };
+                    let mut decision = HookDecision::Stop;
+                    for hooks in self.hooks_for(HookKind::BeforeStop) {
+                        match self
+                            .run_hook(&hooks, &event, Self::save_stop_feedback)
+                            .await
+                        {
+                            Ok(HookDecision::Continue) => decision = HookDecision::Continue,
                             Ok(HookDecision::Stop) => {}
                             Err(outcome) => return outcome,
                         }
+                    }
+                    if decision == HookDecision::Continue {
+                        self.hook_continuations += 1;
+                        continue;
                     }
                     return PromptOutcome::Finished;
                 }
@@ -378,36 +392,35 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
         }
     }
 
-    fn has_hook(&self, kind: HookKind) -> bool {
+    fn hooks_for(&self, kind: HookKind) -> Vec<RunHooks> {
         self.hooks
-            .as_ref()
-            .is_some_and(|hooks| hooks.hooks.command(kind).is_some())
+            .iter()
+            .filter(|hooks| hooks.hooks.command(kind).is_some())
+            .cloned()
+            .collect()
     }
 
-    /// Runs the invoked skill's command for `event`, shown to the ACP client
+    /// Runs one command for `event`, shown to the ACP client
     /// as an execute tool call; it is not a model tool call. `apply` turns the
     /// command's output into the result and the text the call finishes with.
     async fn run_hook<T: hooks::Output, R>(
         &mut self,
-        event: hooks::Event,
-        apply: impl FnOnce(&mut Self, T) -> std::result::Result<(R, String), PromptOutcome>,
+        hooks: &RunHooks,
+        event: &hooks::Event,
+        apply: impl FnOnce(&mut Self, &RunHooks, T) -> std::result::Result<(R, String), PromptOutcome>,
     ) -> std::result::Result<R, PromptOutcome> {
         if self.cancellation.is_cancelled() {
             return Err(PromptOutcome::Cancelled);
         }
-        let context = self.hook_context();
+        let context = self.hook_context(hooks);
         let call_id = convert::hook_call_id();
-        let pending = convert::pending_hook_call(&call_id, &context.skill, event.kind());
+        let pending = convert::pending_hook_call(&call_id, context.skill.as_deref(), event.kind());
         (self.send_update)(pending).map_err(PromptOutcome::AcpUpdate)?;
         (self.send_update)(convert::in_progress_tool_call_update(&call_id))
             .map_err(PromptOutcome::AcpUpdate)?;
-        let hooks = self
-            .hooks
-            .as_ref()
-            .expect("a hook runs only in a prompt run that invoked its skill");
-        let output = hooks::run(hooks, &context, &event, self.cancellation.cancelled()).await;
+        let output = hooks::run(hooks, &context, event, self.cancellation.cancelled()).await;
         let result = match output {
-            Ok(output) => apply(self, output),
+            Ok(output) => apply(self, hooks, output),
             Err(error) if error.kind() == io::ErrorKind::Interrupted => {
                 Err(PromptOutcome::Cancelled)
             }
@@ -421,11 +434,20 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
         result.map(|(value, _)| value)
     }
 
-    fn hook_context(&self) -> hooks::Context {
-        let invocation = self.hook_invocation();
+    fn hook_context(&self, hooks: &RunHooks) -> hooks::Context {
         hooks::Context {
-            skill: invocation.name.clone(),
-            arguments: invocation.arguments.clone(),
+            skill: hooks.skill.clone(),
+            arguments: match &hooks.skill {
+                Some(name) => {
+                    let invocation = self.hook_invocation();
+                    assert_eq!(
+                        name, &invocation.name,
+                        "skill hooks belong to the current invocation"
+                    );
+                    invocation.arguments.clone()
+                }
+                None => String::new(),
+            },
             session_id: self.summary.id.to_string(),
             mode: self.settings.mode,
             run_id: self.run_id.clone(),
@@ -443,49 +465,46 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
             )
         }) {
             Some(TranscriptEntry::SkillInvocation(invocation)) => invocation,
-            _ => panic!("a hook runs only in a turn started by a skill invocation"),
+            _ => panic!("a skill hook runs only in a turn started by its invocation"),
         }
     }
 
-    /// Runs the `before_tool` hook on a call. `Some` holds the message of a denial.
+    /// Runs the `before_tool` hooks on a call. `Some` holds the messages of any
+    /// denials, one per line.
     async fn run_before_tool(
         &mut self,
         call: &ToolCall,
     ) -> std::result::Result<Option<String>, PromptOutcome> {
-        if self
-            .hooks
-            .as_ref()
-            .and_then(|hooks| hooks.hooks.before_tool.as_ref())
-            .is_none()
-        {
-            return Ok(None);
-        }
         let event = hooks::Event::BeforeTool { tool: call.clone() };
-        self.run_hook(event, |_, decision: hooks::ToolDecision| {
-            Ok(match decision {
-                hooks::ToolDecision::Allow {} => (None, "Allowed.".to_owned()),
-                hooks::ToolDecision::Deny { message } => {
-                    let text = format!("Denied: {message}");
-                    (Some(message), text)
-                }
-            })
-        })
-        .await
+        let mut denials = Vec::new();
+        for hooks in self.hooks_for(HookKind::BeforeTool) {
+            let denial = self
+                .run_hook(&hooks, &event, |_, hooks, decision: hooks::ToolDecision| {
+                    Ok(match decision {
+                        hooks::ToolDecision::Allow {} => (None, "Allowed.".to_owned()),
+                        hooks::ToolDecision::Deny { message } => {
+                            let label = crate::sessions::hook_label(
+                                hooks.skill.as_deref(),
+                                HookKind::BeforeTool,
+                            );
+                            (
+                                Some(format!("{label} denied this call: {message}")),
+                                format!("Denied: {message}"),
+                            )
+                        }
+                    })
+                })
+                .await?;
+            denials.extend(denial);
+        }
+        Ok((!denials.is_empty()).then(|| denials.join("\n")))
     }
 
-    /// Runs the `after_tools` hook on the batch just committed.
+    /// Runs the `after_tools` hooks on the batch just committed.
     async fn run_after_tools(
         &mut self,
         calls: &[ToolCall],
     ) -> std::result::Result<(), PromptOutcome> {
-        if self
-            .hooks
-            .as_ref()
-            .and_then(|hooks| hooks.hooks.after_tools.as_ref())
-            .is_none()
-        {
-            return Ok(());
-        }
         let results = &self.transcript[self.transcript.len() - calls.len()..];
         let tools: Vec<_> = calls
             .iter()
@@ -495,27 +514,26 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
                 _ => unreachable!("a committed batch ends with its tool results"),
             })
             .collect();
-        self.run_hook(
-            hooks::Event::AfterTools { tools },
-            |run, output: hooks::Feedback| {
+        let event = hooks::Event::AfterTools { tools };
+        for hooks in self.hooks_for(HookKind::AfterTools) {
+            self.run_hook(&hooks, &event, |run, hooks, output: hooks::Feedback| {
                 run.save_optional_feedback(
+                    hooks,
                     output
                         .message
                         .map(|message| HookFeedbackContent::AfterTools { message }),
                 )
-            },
-        )
-        .await
+            })
+            .await?;
+        }
+        Ok(())
     }
 
-    /// Runs the `after_run` hook on the prompt run's result. It ignores
-    /// cancellation, which it may be reporting, and its deadline bounds it.
-    /// Its ACP updates are best effort, and a failure is written to stderr
-    /// without changing the result.
+    /// Runs the `after_run` hooks on the prompt run's result. They ignore
+    /// cancellation, which they may be reporting, and their deadlines bound
+    /// them. Their ACP updates are best effort, and each failure is written to
+    /// stderr without changing the result or stopping the next hook.
     async fn run_after_run(&mut self, result: &Result<PromptOutput>) {
-        if !self.has_hook(HookKind::AfterRun) {
-            return;
-        }
         let (outcome, answer, error) = match result {
             Ok(output) => {
                 let outcome = match output.stop_reason {
@@ -541,59 +559,61 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
             answer,
             error,
         };
-        let context = self.hook_context();
-        let call_id = convert::hook_call_id();
-        let _ = (self.send_update)(convert::pending_hook_call(
-            &call_id,
-            &context.skill,
-            HookKind::AfterRun,
-        ));
-        let _ = (self.send_update)(convert::in_progress_tool_call_update(&call_id));
-        let hooks = self
-            .hooks
-            .as_ref()
-            .expect("a hook runs only in a prompt run that invoked its skill");
-        let reported: io::Result<hooks::Report> =
-            hooks::run(hooks, &context, &event, std::future::pending()).await;
-        let update = match reported {
-            Ok(_) => convert::finished_hook_call_update(&call_id, Ok(NO_FEEDBACK)),
-            Err(error) => {
-                eprintln!("{error}");
-                convert::finished_hook_call_update(&call_id, Err(&error.to_string()))
-            }
-        };
-        let _ = (self.send_update)(update);
+        for hooks in self.hooks_for(HookKind::AfterRun) {
+            let context = self.hook_context(&hooks);
+            let call_id = convert::hook_call_id();
+            let _ = (self.send_update)(convert::pending_hook_call(
+                &call_id,
+                context.skill.as_deref(),
+                HookKind::AfterRun,
+            ));
+            let _ = (self.send_update)(convert::in_progress_tool_call_update(&call_id));
+            let reported: io::Result<hooks::Report> =
+                hooks::run(&hooks, &context, &event, std::future::pending()).await;
+            let update = match reported {
+                Ok(_) => convert::finished_hook_call_update(&call_id, Ok(NO_FEEDBACK)),
+                Err(error) => {
+                    eprintln!("{error}");
+                    convert::finished_hook_call_update(&call_id, Err(&error.to_string()))
+                }
+            };
+            let _ = (self.send_update)(update);
+        }
     }
 
     fn save_optional_feedback(
         &mut self,
+        hooks: &RunHooks,
         content: Option<HookFeedbackContent>,
     ) -> std::result::Result<((), String), PromptOutcome> {
         match content {
-            Some(content) => self.save_feedback(content).map(|message| ((), message)),
+            Some(content) => self
+                .save_feedback(hooks, content)
+                .map(|message| ((), message)),
             None => Ok(((), NO_FEEDBACK.to_owned())),
         }
     }
 
     fn save_stop_feedback(
         &mut self,
+        hooks: &RunHooks,
         output: hooks::StopDecision,
     ) -> std::result::Result<(HookDecision, String), PromptOutcome> {
         if output.decision == HookDecision::Continue
             && self.hook_continuations == MAX_HOOK_CONTINUATIONS
         {
             return Err(PromptOutcome::Hook(io::Error::other(format!(
-                "{} before_stop hook asked to continue more than {MAX_HOOK_CONTINUATIONS} times",
-                self.hook_invocation().name
+                "{} asked to continue more than {MAX_HOOK_CONTINUATIONS} times",
+                crate::sessions::hook_label(hooks.skill.as_deref(), HookKind::BeforeStop)
             ))));
         }
-        let message = self.save_feedback(HookFeedbackContent::BeforeStop {
-            decision: output.decision,
-            message: output.message,
-        })?;
-        if output.decision == HookDecision::Continue {
-            self.hook_continuations += 1;
-        }
+        let message = self.save_feedback(
+            hooks,
+            HookFeedbackContent::BeforeStop {
+                decision: output.decision,
+                message: output.message,
+            },
+        )?;
         Ok((output.decision, message))
     }
 
@@ -601,10 +621,11 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
     /// message.
     fn save_feedback(
         &mut self,
+        hooks: &RunHooks,
         content: HookFeedbackContent,
     ) -> std::result::Result<String, PromptOutcome> {
         let feedback = HookFeedback {
-            skill: self.hook_invocation().name.clone(),
+            skill: hooks.skill.clone(),
             content,
         };
         let mut prospective = self.transcript.clone();
@@ -618,9 +639,8 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
         .map_err(PromptOutcome::OpenRouter)?
         {
             return Err(PromptOutcome::Hook(io::Error::other(format!(
-                "{} {} hook feedback exceeds the model context limit",
-                feedback.skill,
-                feedback.kind().id()
+                "{} feedback exceeds the model context limit",
+                feedback.label()
             ))));
         }
         self.store
@@ -741,10 +761,7 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
             }
             let denial = self.run_before_tool(call).await?;
             let outcome = if let Some(message) = denial {
-                ToolOutcome::Failed(format!(
-                    "{} before_tool hook denied this call: {message}",
-                    self.hook_invocation().name
-                ))
+                ToolOutcome::Failed(message)
             } else if self.approve(call).await? {
                 (self.send_update)(convert::in_progress_tool_call_update(&call.call_id))
                     .map_err(PromptOutcome::AcpUpdate)?;
@@ -907,7 +924,7 @@ mod tests {
             fixture::{Reply, Server, delta, sse, text_reply, tool_reply},
         },
         sessions::{EffortLevel, SkillInvocation},
-        skills, system_prompt,
+        system_prompt,
         tools::fixture::Workspace,
     };
 
@@ -920,6 +937,7 @@ mod tests {
         cancellation: PromptCancellation,
         updates: Updates,
         workspace: Workspace,
+        global_hooks: Option<RunHooks>,
     }
 
     impl Harness {
@@ -934,6 +952,7 @@ mod tests {
                 cancellation: PromptCancellation::new(),
                 updates: Rc::default(),
                 workspace,
+                global_hooks: None,
             }
         }
 
@@ -969,14 +988,14 @@ mod tests {
             selected_settings: Option<SessionSettings>,
             on_update: impl FnMut(&SessionUpdate) -> Result<()>,
         ) -> (Result<PromptOutput>, Vec<TranscriptEntry>) {
-            self.run_turn(user(input), None, selected_settings, on_update)
+            self.run_turn(user(input), Vec::new(), selected_settings, on_update)
                 .await
         }
 
         async fn run_turn(
             &self,
             turn_start: TranscriptEntry,
-            hooks: Option<SkillHooks>,
+            hooks: Vec<RunHooks>,
             selected_settings: Option<SessionSettings>,
             mut on_update: impl FnMut(&SessionUpdate) -> Result<()>,
         ) -> (Result<PromptOutput>, Vec<TranscriptEntry>) {
@@ -991,7 +1010,7 @@ mod tests {
                 PromptInput {
                     session_id: self.session_id.clone(),
                     turn_start,
-                    hooks,
+                    hooks: self.global_hooks.clone().into_iter().chain(hooks).collect(),
                     selected_settings,
                     system_prompt: system_prompt::for_workspace(&self.workspace.0).unwrap(),
                 },
@@ -1039,7 +1058,7 @@ mod tests {
 
     fn feedback(decision: HookDecision, message: &str) -> TranscriptEntry {
         TranscriptEntry::HookFeedback(HookFeedback {
-            skill: "goal".to_owned(),
+            skill: Some("goal".to_owned()),
             content: HookFeedbackContent::BeforeStop {
                 decision,
                 message: message.to_owned(),
@@ -1047,8 +1066,8 @@ mod tests {
         })
     }
 
-    fn command(command: &str) -> Option<skills::HookCommand> {
-        Some(skills::HookCommand {
+    fn command(command: &str) -> Option<hooks::HookCommand> {
+        Some(hooks::HookCommand {
             command: command.to_owned(),
         })
     }
@@ -1075,9 +1094,9 @@ mod tests {
             before_stop: &str,
             on_update: impl FnMut(&SessionUpdate) -> Result<()>,
         ) -> (Result<PromptOutput>, Vec<TranscriptEntry>) {
-            let hooks = skills::Hooks {
+            let hooks = hooks::Hooks {
                 before_stop: command(before_stop),
-                ..skills::Hooks::default()
+                ..hooks::Hooks::default()
             };
             self.run_skill(hooks, on_update).await
         }
@@ -1085,16 +1104,17 @@ mod tests {
         /// Runs `/goal Pass the tests.` with `hooks` running in the workspace.
         async fn run_skill(
             &self,
-            hooks: skills::Hooks,
+            hooks: hooks::Hooks,
             on_update: impl FnMut(&SessionUpdate) -> Result<()>,
         ) -> (Result<PromptOutput>, Vec<TranscriptEntry>) {
-            let hooks = SkillHooks {
+            let hooks = RunHooks {
+                skill: Some("goal".to_owned()),
                 hooks,
                 directory: self.workspace.0.clone(),
             };
             self.run_turn(
                 invocation("Pass the tests."),
-                Some(hooks),
+                vec![hooks],
                 Some(
                     SessionSettings::new(DEFAULT_MODEL, EffortLevel::Default)
                         .with_mode(SessionMode::Auto),
@@ -1395,7 +1415,7 @@ mod tests {
         );
         assert_eq!(
             requests[1]["messages"][3]["content"],
-            "Feedback from the goal before_stop hook:\nTwo tests still fail."
+            "Feedback from the skill /goal before_stop hook:\nTwo tests still fail."
         );
         let inputs = fs::read_to_string(harness.workspace.0.join("inputs")).unwrap();
         let inputs: Vec<serde_json::Value> = inputs
@@ -1432,23 +1452,23 @@ mod tests {
         for (command, expected) in [
             (
                 "echo broken >&2; exit 3",
-                "goal before_stop hook exited with code 3\nstderr:\nbroken",
+                "skill /goal before_stop hook exited with code 3\nstderr:\nbroken",
             ),
             (
                 "echo 'not json'",
-                "goal before_stop hook output is not one valid before_stop response object",
+                "skill /goal before_stop hook output is not one valid before_stop response object",
             ),
             (
                 r#"echo '{"decision":"stop","message":" "}'"#,
-                "goal before_stop hook message is blank",
+                "skill /goal before_stop hook message is blank",
             ),
             (
                 "head -c 20000 /dev/zero | tr '\\0' x",
-                "goal before_stop hook output exceeds 16 KiB",
+                "skill /goal before_stop hook output exceeds 16 KiB",
             ),
             (
                 "printf '\\377'",
-                "goal before_stop hook output is not UTF-8",
+                "skill /goal before_stop hook output is not UTF-8",
             ),
         ] {
             let harness = Harness::new(vec![text_reply("Done.")]).await;
@@ -1473,18 +1493,22 @@ mod tests {
             assert_eq!(described_updates(&harness).last().unwrap(), "hook failed");
         }
 
-        let harness = Harness::new(
+        let mut harness = Harness::new(
             (0..=MAX_HOOK_CONTINUATIONS)
                 .map(|index| text_reply(&format!("Try {index}.")))
                 .collect(),
         )
         .await;
-        let (response, transcript) = harness
-            .run_goal(
-                r#"echo '{"decision":"continue","message":"Again."}'"#,
-                |_| Ok(()),
-            )
-            .await;
+        let again = r#"echo '{"decision":"continue","message":"Again."}'"#;
+        harness.global_hooks = Some(RunHooks {
+            skill: None,
+            directory: harness.workspace.0.clone(),
+            hooks: hooks::Hooks {
+                before_stop: command(again),
+                ..hooks::Hooks::default()
+            },
+        });
+        let (response, transcript) = harness.run_goal(again, |_| Ok(())).await;
         let error = response.unwrap_err();
         assert!(format!("{error:?}").contains("asked to continue more than 50 times"));
         assert_eq!(harness.server.requests().len(), MAX_HOOK_CONTINUATIONS + 1);
@@ -1493,7 +1517,7 @@ mod tests {
                 .iter()
                 .filter(|entry| matches!(entry, TranscriptEntry::HookFeedback(_)))
                 .count(),
-            MAX_HOOK_CONTINUATIONS
+            2 * MAX_HOOK_CONTINUATIONS
         );
         assert_eq!(transcript.last(), Some(&answer("Try 50.")));
 
@@ -1591,158 +1615,229 @@ mod tests {
 
     #[tokio::test]
     async fn lifecycle_hooks_run_at_their_points_and_their_feedback_reaches_the_model() {
-        let patch = |id: &'static str, file: &str| {
-            (
-                id,
-                tools::APPLY_PATCH,
-                json!({ "patch": format!("*** Begin Patch\n*** Add File: {file}\n+{file}\n*** End Patch") }),
-            )
-        };
-        let harness = Harness::new(vec![
-            calls_reply(&[
-                patch("patch-1", "first"),
-                ("shell-1", tools::SHELL, json!({ "command": "exit 3" })),
-                patch("patch-2", "second"),
+        for (global, skill, deciding) in [
+            (true, false, 0),
+            (false, true, 0),
+            (true, true, 0),
+            (true, true, 1),
+            (true, true, 2),
+        ] {
+            let patch = |id: &'static str, file: &str| {
                 (
-                    "shell-2",
-                    tools::SHELL,
-                    json!({ "command": "rm -rf first" }),
-                ),
-            ]),
-            text_reply("First try."),
-            text_reply("Second try."),
-        ])
-        .await;
-        let hooks = skills::Hooks {
-            before_run: command(
-                r#"cat >> before_run.json; echo >> before_run.json; echo '{"message":"The tests live in tests/."}'"#,
-            ),
-            before_tool: command(DENY_REMOVAL),
-            // Runs after the whole batch, so it sees both patches.
-            after_tools: command(
-                r#"cat > after_tools.json; test -e first && test -e second && echo '{"message":"Both files exist."}'"#,
-            ),
-            before_stop: command(CONTINUE_THEN_STOP),
-            after_run: command(r#"cat > after_run.json; echo '{}'"#),
-        };
-        let (response, transcript) = harness.run_skill(hooks, |_| Ok(())).await;
-
-        let output = response.unwrap();
-        assert_eq!(output.stop_reason, StopReason::EndTurn);
-        assert_eq!(output.answer.as_deref(), Some("Second try."));
-        assert_eq!(
-            fs::read_to_string(harness.workspace.0.join("first")).unwrap(),
-            "first\n",
-            "the denied call did not run"
-        );
-        let denied = "goal before_tool hook denied this call: Removing files is not allowed.";
-        assert_eq!(
-            transcript
+                    id,
+                    tools::APPLY_PATCH,
+                    json!({ "patch": format!("*** Begin Patch\n*** Add File: {file}\n+{file}\n*** End Patch") }),
+                )
+            };
+            let harness = Harness::new(vec![
+                calls_reply(&[
+                    patch("patch-1", "first"),
+                    ("shell-1", tools::SHELL, json!({ "command": "exit 3" })),
+                    patch("patch-2", "second"),
+                    (
+                        "shell-2",
+                        tools::SHELL,
+                        json!({ "command": "rm -rf first" }),
+                    ),
+                ]),
+                text_reply("First try."),
+                text_reply("Second try."),
+            ])
+            .await;
+            let global_dir = Workspace::new();
+            let decides = |index: usize| index == deciding || deciding == 2;
+            let before_run =
+                r#"cat > before_run.json; echo '{"message":"The tests live in tests/."}'"#;
+            let allow =
+                r#"cat >> before_tool.json; echo >> before_tool.json; echo '{"decision":"allow"}'"#;
+            let after_tools = format!(
+                r#"cat > after_tools.json; test -e '{0}/first' && test -e '{0}/second' && echo '{{"message":"Both files exist."}}'"#,
+                harness.workspace.0.display()
+            );
+            let stop =
+                r#"cat >> inputs; echo >> inputs; echo '{"decision":"stop","message":"Ready."}'"#;
+            let definitions: Vec<_> = [
+                global.then_some((None, global_dir.0.clone())),
+                skill.then_some((Some("goal".to_owned()), harness.workspace.0.clone())),
+            ]
+            .into_iter()
+            .flatten()
+            .enumerate()
+            .map(|(index, (skill, directory))| RunHooks {
+                skill,
+                directory,
+                hooks: hooks::Hooks {
+                    before_run: command(before_run),
+                    before_tool: command(if decides(index) { DENY_REMOVAL } else { allow }),
+                    after_tools: command(&after_tools),
+                    before_stop: command(if decides(index) {
+                        CONTINUE_THEN_STOP
+                    } else {
+                        stop
+                    }),
+                    after_run: command(r#"cat > after_run.json; echo '{}'"#),
+                },
+            })
+            .collect();
+            let turn_start = if skill {
+                invocation("Pass the tests.")
+            } else {
+                user("Pass the tests.")
+            };
+            let (response, transcript) = harness
+                .run_turn(
+                    turn_start,
+                    definitions.clone(),
+                    Some(
+                        SessionSettings::new(DEFAULT_MODEL, EffortLevel::Default)
+                            .with_mode(SessionMode::Auto),
+                    ),
+                    |_| Ok(()),
+                )
+                .await;
+            assert_eq!(response.unwrap().answer.as_deref(), Some("Second try."));
+            assert_eq!(
+                fs::read_to_string(harness.workspace.0.join("first")).unwrap(),
+                "first\n"
+            );
+            let denied = definitions
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| decides(*index))
+                .map(|(_, hooks)| {
+                    format!(
+                        "{} denied this call: Removing files is not allowed.",
+                        crate::sessions::hook_label(hooks.skill.as_deref(), HookKind::BeforeTool)
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            let requests = harness.server.requests();
+            assert_eq!(requests.len(), 3);
+            assert_eq!(harness.stored(), transcript);
+            let feedback: Vec<_> = transcript
                 .iter()
                 .filter_map(|entry| match entry {
-                    TranscriptEntry::HookFeedback(feedback) => Some(feedback.kind()),
+                    TranscriptEntry::HookFeedback(feedback) => Some(feedback),
                     _ => None,
                 })
-                .collect::<Vec<_>>(),
-            [
+                .collect();
+            assert_eq!(feedback.len(), 4 * definitions.len());
+            for (point, kind) in [
                 HookKind::BeforeRun,
                 HookKind::AfterTools,
                 HookKind::BeforeStop,
-                HookKind::BeforeStop
+                HookKind::BeforeStop,
             ]
-        );
-        assert_eq!(harness.stored(), transcript);
-
-        let requests = harness.server.requests();
-        assert_eq!(requests.len(), 3);
-        let before_run = "Feedback from the goal before_run hook:\nThe tests live in tests/.";
-        let messages = |index: usize| requests[index]["messages"].as_array().unwrap().clone();
-        assert_eq!(messages(0).len(), 3);
-        assert_eq!(messages(0)[2]["content"], before_run);
-        let second = messages(1);
-        assert_eq!(second[7]["content"], denied);
-        assert_eq!(
-            second.last().unwrap()["content"],
-            "Feedback from the goal after_tools hook:\nBoth files exist."
-        );
-        assert_eq!(
-            messages(2)
-                .iter()
-                .filter(|message| message["content"] == before_run)
-                .count(),
-            1,
-            "a continuation does not rerun before_run"
-        );
-
-        let before_run = hook_inputs(&harness, "before_run.json");
-        let before_tool = hook_inputs(&harness, "before_tool.json");
-        let after_tools = hook_inputs(&harness, "after_tools.json");
-        let before_stop = hook_inputs(&harness, "inputs");
-        let after_run = hook_inputs(&harness, "after_run.json");
-        assert_eq!(
-            (before_run.len(), before_tool.len(), before_stop.len()),
-            (1, 4, 2)
-        );
-        assert_eq!(
-            before_tool
-                .iter()
-                .map(|input| input["tool"]["name"].as_str().unwrap())
-                .collect::<Vec<_>>(),
-            ["apply_patch", "shell", "apply_patch", "shell"]
-        );
-        assert_eq!(
-            before_tool[1]["tool"],
-            json!({ "call_id": "shell-1", "name": "shell", "arguments": r#"{"command":"exit 3"}"# })
-        );
-        let reported = after_tools[0]["tools"].as_array().unwrap();
-        assert_eq!(
-            reported
-                .iter()
-                .map(|tool| format!(
-                    "{} {}",
-                    tool["call_id"].as_str().unwrap(),
-                    tool["outcome"].as_str().unwrap()
-                ))
-                .collect::<Vec<_>>(),
-            [
-                "patch-1 completed",
-                "shell-1 failed",
-                "patch-2 completed",
-                "shell-2 failed"
+            .into_iter()
+            .enumerate()
+            {
+                for (entry, hooks) in feedback
+                    [point * definitions.len()..(point + 1) * definitions.len()]
+                    .iter()
+                    .zip(&definitions)
+                {
+                    assert_eq!(entry.kind(), kind);
+                    assert_eq!(entry.skill, hooks.skill);
+                    let text = openrouter::hook_feedback_text(entry);
+                    // The last stop feedback is saved after the final model request.
+                    if point < 3 {
+                        assert_eq!(
+                            requests[point]["messages"]
+                                .as_array()
+                                .unwrap()
+                                .iter()
+                                .filter(|message| message["content"] == text)
+                                .count(),
+                            1
+                        );
+                    }
+                }
+            }
+            let mut shared_run_id = None;
+            let mut batch_input = None;
+            for hooks in &definitions {
+                let read = |file: &str| -> Vec<serde_json::Value> {
+                    fs::read_to_string(hooks.directory.join(file))
+                        .unwrap()
+                        .lines()
+                        .map(|line| serde_json::from_str(line).unwrap())
+                        .collect()
+                };
+                for (file, kind, count) in [
+                    ("before_run.json", "before_run", 1),
+                    ("before_tool.json", "before_tool", 4),
+                    ("after_tools.json", "after_tools", 1),
+                    ("inputs", "before_stop", 2),
+                    ("after_run.json", "after_run", 1),
+                ] {
+                    let inputs = read(file);
+                    assert_eq!(inputs.len(), count);
+                    for input in &inputs {
+                        assert_eq!(input["kind"], kind);
+                        assert_eq!(input["skill"], json!(hooks.skill));
+                        assert_eq!(
+                            input["arguments"],
+                            if hooks.skill.is_some() {
+                                "Pass the tests."
+                            } else {
+                                ""
+                            }
+                        );
+                        assert_eq!(input["session_id"], harness.session_id.to_string());
+                        assert_eq!(input["workspace"], harness.workspace.0.to_str().unwrap());
+                        assert_eq!(input["mode"], "auto");
+                        assert_eq!(
+                            shared_run_id.get_or_insert_with(|| input["run_id"].clone()),
+                            &input["run_id"]
+                        );
+                    }
+                }
+                let tools = read("before_tool.json");
+                assert_eq!(
+                    tools[1]["tool"],
+                    json!({ "call_id": "shell-1", "name": "shell", "arguments": r#"{"command":"exit 3"}"# })
+                );
+                let input = read("after_tools.json").remove(0);
+                assert_eq!(
+                    batch_input.get_or_insert_with(|| input["tools"].clone()),
+                    &input["tools"]
+                );
+                assert_eq!(
+                    input["tools"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .map(|tool| tool["outcome"].as_str().unwrap())
+                        .collect::<Vec<_>>(),
+                    ["completed", "failed", "completed", "failed"]
+                );
+                assert_eq!(input["tools"][3]["text"], denied);
+                let report = read("after_run.json").remove(0);
+                assert_eq!(report["outcome"], "finished");
+                assert_eq!(report["answer"], "Second try.");
+                assert!(report["error"].is_null());
+            }
+            let expected_titles: Vec<_> = [
+                HookKind::BeforeRun,
+                HookKind::BeforeTool,
+                HookKind::BeforeTool,
+                HookKind::BeforeTool,
+                HookKind::BeforeTool,
+                HookKind::AfterTools,
+                HookKind::BeforeStop,
+                HookKind::BeforeStop,
+                HookKind::AfterRun,
             ]
-        );
-        assert_eq!(reported[3]["text"], denied);
-        assert_eq!(after_run[0]["outcome"], "finished");
-        assert_eq!(after_run[0]["answer"], "Second try.");
-        assert!(after_run[0]["error"].is_null());
-        let run_id = &before_run[0]["run_id"];
-        for (input, kind) in [
-            (&before_run[0], "before_run"),
-            (&before_tool[3], "before_tool"),
-            (&after_tools[0], "after_tools"),
-            (&before_stop[1], "before_stop"),
-            (&after_run[0], "after_run"),
-        ] {
-            assert_eq!(input["kind"], kind);
-            assert_eq!(&input["run_id"], run_id);
-            assert_eq!(input["session_id"], harness.session_id.to_string());
-            assert_eq!(input["mode"], "auto");
-            assert_eq!(input["skill"], "goal");
+            .into_iter()
+            .flat_map(|kind| {
+                definitions
+                    .iter()
+                    .map(move |hooks| crate::sessions::hook_label(hooks.skill.as_deref(), kind))
+            })
+            .collect();
+            assert_eq!(hook_titles(&harness), expected_titles);
         }
-        assert_eq!(
-            hook_titles(&harness),
-            [
-                "goal before_run hook",
-                "goal before_tool hook",
-                "goal before_tool hook",
-                "goal before_tool hook",
-                "goal before_tool hook",
-                "goal after_tools hook",
-                "goal before_stop hook",
-                "goal before_stop hook",
-                "goal after_run hook",
-            ]
-        );
     }
 
     #[tokio::test]
@@ -1762,14 +1857,15 @@ mod tests {
             PromptInput {
                 session_id: harness.session_id.clone(),
                 turn_start: invocation(&"x".repeat(3_000_000)),
-                hooks: Some(SkillHooks {
-                    hooks: skills::Hooks {
+                hooks: vec![RunHooks {
+                    skill: Some("goal".to_owned()),
+                    hooks: hooks::Hooks {
                         before_run: command("touch ran; echo '{}'"),
                         after_run: command("touch ran; echo '{}'"),
-                        ..skills::Hooks::default()
+                        ..hooks::Hooks::default()
                     },
                     directory: harness.workspace.0.clone(),
-                }),
+                }],
                 selected_settings: None,
                 system_prompt: "system".to_owned(),
             },
@@ -1799,26 +1895,27 @@ mod tests {
             (
                 "Pass the tests.",
                 "echo broken >&2; exit 4",
-                Some("goal before_run hook exited with code 4\nstderr:\nbroken"),
+                Some("skill /goal before_run hook exited with code 4\nstderr:\nbroken"),
             ),
             (
                 near_limit.as_str(),
                 large,
-                Some("goal before_run hook feedback exceeds the model context limit"),
+                Some("skill /goal before_run hook feedback exceeds the model context limit"),
             ),
         ] {
             let harness = Harness::new(vec![text_reply("Done.")]).await;
             let (response, transcript) = harness
                 .run_turn(
                     invocation(arguments),
-                    Some(SkillHooks {
-                        hooks: skills::Hooks {
+                    vec![RunHooks {
+                        skill: Some("goal".to_owned()),
+                        hooks: hooks::Hooks {
                             before_run: command(before_run),
                             after_run: command(REPORT),
-                            ..skills::Hooks::default()
+                            ..hooks::Hooks::default()
                         },
                         directory: harness.workspace.0.clone(),
-                    }),
+                    }],
                     Some(
                         SessionSettings::new(DEFAULT_MODEL, EffortLevel::Default)
                             .with_mode(SessionMode::Auto),
@@ -1854,27 +1951,27 @@ mod tests {
                 call_id: id.to_owned(),
                 name: tools::SHELL.to_owned(),
                 outcome: ToolOutcome::Failed(
-                    "Not started: goal before_tool hook exited with code 5".to_owned(),
+                    "Not started: skill /goal before_tool hook exited with code 5".to_owned(),
                 ),
             })
         };
         let batch = [("call-1", "printf one"), ("call-2", "printf two")];
         for (hooks, results, expected) in [
             (
-                skills::Hooks {
+                hooks::Hooks {
                     before_tool: command("exit 5"),
-                    ..skills::Hooks::default()
+                    ..hooks::Hooks::default()
                 },
                 vec![not_started("call-1"), not_started("call-2")],
-                "goal before_tool hook exited with code 5",
+                "skill /goal before_tool hook exited with code 5",
             ),
             (
-                skills::Hooks {
+                hooks::Hooks {
                     after_tools: command("exit 6"),
-                    ..skills::Hooks::default()
+                    ..hooks::Hooks::default()
                 },
                 vec![printed("call-1", "one"), printed("call-2", "two")],
-                "goal after_tools hook exited with code 6",
+                "skill /goal after_tools hook exited with code 6",
             ),
         ] {
             let harness = Harness::new(vec![tool_reply(&batch), text_reply("Done.")]).await;
@@ -1900,11 +1997,19 @@ mod tests {
 
         // `after_run` reports cancellation during a tool and a failed
         // turn-start update, and its own failure or timeout changes nothing.
-        let harness = Harness::new(vec![tool_reply(&[("call-1", "sleep 30")])]).await;
+        let mut harness = Harness::new(vec![tool_reply(&[("call-1", "sleep 30")])]).await;
+        harness.global_hooks = Some(RunHooks {
+            skill: None,
+            directory: harness.workspace.0.clone(),
+            hooks: hooks::Hooks {
+                after_run: command("exit 7"),
+                ..hooks::Hooks::default()
+            },
+        });
         let cancel = harness.cancellation.clone();
-        let hooks = skills::Hooks {
+        let hooks = hooks::Hooks {
             after_run: command(REPORT),
-            ..skills::Hooks::default()
+            ..hooks::Hooks::default()
         };
         let (response, _) = harness
             .run_skill(hooks.clone(), |update| {
@@ -1943,16 +2048,25 @@ mod tests {
         );
 
         for after_run in ["exit 7", "sleep 30"] {
-            let harness = Harness::new(vec![text_reply("Done.")]).await;
-            let hooks = skills::Hooks {
-                after_run: command(after_run),
-                ..skills::Hooks::default()
+            let mut harness = Harness::new(vec![text_reply("Done.")]).await;
+            harness.global_hooks = Some(RunHooks {
+                skill: None,
+                directory: harness.workspace.0.clone(),
+                hooks: hooks::Hooks {
+                    after_run: command(after_run),
+                    ..hooks::Hooks::default()
+                },
+            });
+            let hooks = hooks::Hooks {
+                after_run: command(REPORT),
+                ..hooks::Hooks::default()
             };
             let (response, _) = harness.run_skill(hooks, |_| Ok(())).await;
-            let output = response.unwrap();
-            assert_eq!(output.stop_reason, StopReason::EndTurn, "{after_run}");
-            assert_eq!(output.answer.as_deref(), Some("Done."));
-            assert_eq!(described_updates(&harness).last().unwrap(), "hook failed");
+            assert_eq!(response.unwrap().answer.as_deref(), Some("Done."));
+            assert_eq!(reported(&harness)["outcome"], "finished");
+            let updates = described_updates(&harness);
+            assert!(updates.iter().any(|update| update == "hook failed"));
+            assert_eq!(updates.last().unwrap(), "hook completed");
         }
     }
 
@@ -1966,7 +2080,7 @@ mod tests {
             PromptInput {
                 session_id: harness.session_id.clone(),
                 turn_start: user(&oversized),
-                hooks: None,
+                hooks: Vec::new(),
                 selected_settings: None,
                 system_prompt: "system".to_owned(),
             },
@@ -2009,7 +2123,7 @@ mod tests {
         let input = |user_message: String| PromptInput {
             session_id: id.clone(),
             turn_start: user(&user_message),
-            hooks: None,
+            hooks: Vec::new(),
             selected_settings: None,
             system_prompt: "system".to_owned(),
         };
@@ -2184,7 +2298,7 @@ mod tests {
         );
         assert_eq!(
             messages[3]["content"],
-            "Feedback from the goal before_stop hook:\nTwo tests still fail."
+            "Feedback from the skill /goal before_stop hook:\nTwo tests still fail."
         );
         assert_eq!(
             transcript.last(),
@@ -2380,7 +2494,7 @@ mod tests {
             PromptInput {
                 session_id: missing,
                 turn_start: user("not saved"),
-                hooks: None,
+                hooks: Vec::new(),
                 selected_settings: None,
                 system_prompt: system_prompt::for_workspace(&workspace.0).unwrap(),
             },
@@ -2409,7 +2523,7 @@ mod tests {
             PromptInput {
                 session_id: unknown.clone(),
                 turn_start: user("not saved"),
-                hooks: None,
+                hooks: Vec::new(),
                 selected_settings: None,
                 system_prompt: system_prompt::for_workspace(&workspace.0).unwrap(),
             },
