@@ -515,8 +515,7 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
             &self.openrouter,
             &self.cancellation,
             &self.summary.id,
-            &self.settings.model,
-            self.settings.effort,
+            &self.settings,
             &self.system_prompt,
             &mut self.transcript,
         )

@@ -221,16 +221,16 @@ impl ServerState {
             return Ok(PromptResponse::new(StopReason::EndTurn));
         }
         let client = self.openrouter_client()?;
-        let settings = stored.saved_settings(&default_settings());
+        let mut settings = stored.saved_settings(&default_settings());
         validate_settings(&settings)?;
+        settings.effort = active.selections.effort;
         let mut transcript = stored.transcript;
         match compaction::compact(
             &self.store,
             &client,
             cancellation,
             session_id,
-            &settings.model,
-            active.selections.effort,
+            &settings,
             &active.system_prompt,
             &mut transcript,
         )

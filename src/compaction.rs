@@ -11,7 +11,10 @@ use agent_client_protocol::schema::v1::SessionId;
 use crate::{
     acp::operations::PromptCancellation,
     openrouter::{self, Client},
-    sessions::{CompactionCheckpoint, EffortLevel, HookDecision, SessionStore, TranscriptEntry},
+    sessions::{
+        CompactionCheckpoint, EffortLevel, HookDecision, SessionSettings, SessionStore,
+        TranscriptEntry,
+    },
 };
 
 const SUMMARY_OUTPUT_TOKENS: usize = 4096;
@@ -388,11 +391,12 @@ pub async fn compact(
     client: &Client,
     cancellation: &PromptCancellation,
     id: &SessionId,
-    model: &str,
-    effort: EffortLevel,
+    settings: &SessionSettings,
     system: &str,
     transcript: &mut Vec<TranscriptEntry>,
 ) -> io::Result<bool> {
+    let model = settings.model.as_str();
+    let effort = settings.effort;
     let original = request_estimate(model, effort, system, transcript)?;
     for cut in ranked_cuts(model, effort, system, transcript, original)? {
         let mut fields = material(transcript, cut);
@@ -532,8 +536,7 @@ mod tests {
                 &server.client(),
                 &cancellation,
                 &id,
-                DEFAULT_MODEL,
-                EffortLevel::Default,
+                &SessionSettings::new(DEFAULT_MODEL, EffortLevel::Default),
                 "system",
                 &mut transcript
             )
@@ -559,8 +562,7 @@ mod tests {
                 &server.client(),
                 &cancellation,
                 &id,
-                DEFAULT_MODEL,
-                EffortLevel::Default,
+                &SessionSettings::new(DEFAULT_MODEL, EffortLevel::Default),
                 "system",
                 &mut transcript
             )
@@ -577,8 +579,7 @@ mod tests {
                 &server.client(),
                 &cancellation,
                 &id,
-                DEFAULT_MODEL,
-                EffortLevel::Default,
+                &SessionSettings::new(DEFAULT_MODEL, EffortLevel::Default),
                 "system",
                 &mut transcript
             )
@@ -668,8 +669,7 @@ mod tests {
                 &server.client(),
                 &PromptCancellation::new(),
                 &id,
-                DEFAULT_MODEL,
-                EffortLevel::Default,
+                &SessionSettings::new(DEFAULT_MODEL, EffortLevel::Default),
                 "system",
                 &mut transcript
             )
@@ -733,8 +733,7 @@ mod tests {
                 &server.client(),
                 &PromptCancellation::new(),
                 &id,
-                DEFAULT_MODEL,
-                EffortLevel::Default,
+                &SessionSettings::new(DEFAULT_MODEL, EffortLevel::Default),
                 "system",
                 &mut transcript
             )
@@ -786,8 +785,7 @@ mod tests {
                     &server.client(),
                     &PromptCancellation::new(),
                     &small_id,
-                    DEFAULT_MODEL,
-                    EffortLevel::Default,
+                    &SessionSettings::new(DEFAULT_MODEL, EffortLevel::Default),
                     "system",
                     &mut copy
                 )
@@ -817,8 +815,7 @@ mod tests {
                 &server.client(),
                 &PromptCancellation::new(),
                 &small_id,
-                DEFAULT_MODEL,
-                EffortLevel::Default,
+                &SessionSettings::new(DEFAULT_MODEL, EffortLevel::Default),
                 "system",
                 &mut copy
             )
@@ -841,8 +838,7 @@ mod tests {
                 &hanging.client(),
                 &cancel,
                 &small_id,
-                DEFAULT_MODEL,
-                EffortLevel::Default,
+                &SessionSettings::new(DEFAULT_MODEL, EffortLevel::Default),
                 "system",
                 &mut copy,
             )
