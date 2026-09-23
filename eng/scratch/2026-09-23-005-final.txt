@@ -1,0 +1,515 @@
+Location                    Item                                                      Kind    Prod  Doc  Cog
+────────────────────────────────────────────────────────────────────────────────────────────────────────────
+src/acp/convert.rs:26       prompt_text                                               fn        20    2    4
+src/acp/convert.rs:47       user_message_chunk                                        fn         3    0    0
+src/acp/convert.rs:51       agent_message_chunk                                       fn         3    0    0
+src/acp/convert.rs:55       agent_thought_chunk                                       fn         3    0    0
+src/acp/convert.rs:59       text_chunk                                                fn         3    0    0
+src/acp/convert.rs:67       usage_update                                              fn        36    4    1
+src/acp/convert.rs:105      pending_tool_call                                         fn        11    1    0
+src/acp/convert.rs:118      tool_kind                                                 fn         9    1    1
+src/acp/convert.rs:128      in_progress_tool_call_update                              fn         6    0    0
+src/acp/convert.rs:135      shell_permission_request                                  fn        38    4    2
+src/acp/convert.rs:178      finished_tool_call_update                                 fn         9    0    0
+src/acp/convert.rs:190      hook_run_id                                               fn         3    2    0
+src/acp/convert.rs:195      pending_hook_run                                          fn        10    1    0
+src/acp/convert.rs:207      finished_hook_run_update                                  fn        16    1    1
+src/acp/convert.rs:224      replayed_hook_run                                         fn         9    0    0
+src/acp/convert.rs:236      replay_transcript                                         fn        36    2    9
+src/acp/convert.rs:273      replayed_tool_call                                        fn        13    0    0
+src/acp/convert.rs:287      raw_input                                                 fn         3    0    0
+src/acp/convert.rs:291      raw_output                                                fn         3    0    0
+src/acp/convert.rs:295      output_content                                            fn         3    0    0
+src/acp/convert.rs:299      text_content                                              fn         3    0    0
+src/acp/convert.rs:303      status                                                    fn         6    0    1
+src/acp/operations.rs:16    Operation                                                 enum       5    0    0
+src/acp/operations.rs:23    SessionOperations                                         struct     2    0    0
+src/acp/operations.rs:26    OperationsState                                           struct     5    0    0
+src/acp/operations.rs:32    OperationGuard                                            struct     4    1    0
+src/acp/operations.rs:37    impl SessionOperations                                    impl      59    4    9
+src/acp/operations.rs:38      try_prompt                                              fn         8    0    0
+src/acp/operations.rs:47      try_load                                                fn         3    0    0
+src/acp/operations.rs:51      try_delete                                              fn         3    0    0
+src/acp/operations.rs:57      cancel                                                  fn         9    2    3
+src/acp/operations.rs:69      shutdown                                                fn        19    2    4
+src/acp/operations.rs:89      acquire                                                 fn        12    0    1
+src/acp/operations.rs:102     lock                                                    fn         3    0    1
+src/acp/operations.rs:107   impl Drop for OperationGuard                              impl      11    0    2
+src/acp/operations.rs:108     drop                                                    fn         9    0    2
+src/acp/prompt.rs:32        MAX_HOOK_CONTINUATIONS                                    const      1    2    0
+src/acp/prompt.rs:35        NO_FEEDBACK                                               const      1    1    0
+src/acp/prompt.rs:39        PermissionTransport                                       enum       4    2    0
+src/acp/prompt.rs:44        PromptInput                                               struct     7    3    0
+src/acp/prompt.rs:57        PromptOutput                                              struct     5    3    0
+src/acp/prompt.rs:64        run                                                       fn        36    0    2
+src/acp/prompt.rs:102       PromptOutcome                                             enum      11    1    0
+src/acp/prompt.rs:114       impl fmt::Display for PromptOutcome                       impl      15    0    1
+src/acp/prompt.rs:115         fmt                                                     fn        13    0    1
+src/acp/prompt.rs:130       PromptRun                                                 struct    17    4    0
+src/acp/prompt.rs:153       UncommittedAssistantBatch                                 struct     4    2    0
+src/acp/prompt.rs:159       impl UncommittedAssistantBatch                            impl      20    0    1
+src/acp/prompt.rs:160         new                                                     fn         6    0    1
+src/acp/prompt.rs:167         append_remaining_results                                fn         8    0    0
+src/acp/prompt.rs:176         complete                                                fn         4    0    0
+src/acp/prompt.rs:182       tool_result                                               fn         7    0    0
+src/acp/prompt.rs:190       impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F>  impl     683   34  103
+src/acp/prompt.rs:191         open                                                    fn        45    0    1
+src/acp/prompt.rs:240         save_turn_start                                         fn        58    3   11
+src/acp/prompt.rs:300         start                                                   fn        24    1    2
+src/acp/prompt.rs:325         run_model_loop                                          fn         8    0    3
+src/acp/prompt.rs:337         run_model_step                                          fn        29    3    4
+src/acp/prompt.rs:369         run_before_stop                                         fn        22    2    4
+src/acp/prompt.rs:392         sources_for                                             fn         7    0    0
+src/acp/prompt.rs:403         run_hook                                                fn        30    3    3
+src/acp/prompt.rs:434         hook_context                                            fn        22    0    1
+src/acp/prompt.rs:457         hook_invocation                                         fn        11    0    1
+src/acp/prompt.rs:471         run_before_tool                                         fn        32    2    4
+src/acp/prompt.rs:505         run_after_tools                                         fn        27    1    3
+src/acp/prompt.rs:537         run_after_run                                           fn        46    5    8
+src/acp/prompt.rs:585         save_optional_feedback                                  fn        12    0    1
+src/acp/prompt.rs:598         save_stop_feedback                                      fn        22    0    2
+src/acp/prompt.rs:623         save_feedback                                           fn        32    2    1
+src/acp/prompt.rs:658         request_completion                                      fn        79    2   15
+src/acp/prompt.rs:738         compact                                                 fn        23    0    5
+src/acp/prompt.rs:763         send_usage                                              fn         8    1    1
+src/acp/prompt.rs:775         execute                                                 fn        34    5   11
+src/acp/prompt.rs:812         approve                                                 fn        31    0    6
+src/acp/prompt.rs:846         commit                                                  fn        14    2    0
+src/acp/prompt.rs:863         finish                                                  fn        65    2   16
+src/acp.rs:3                convert                                                   mod        1    0    0
+src/acp.rs:4                operations                                                mod        1    0    0
+src/acp.rs:5                prompt                                                    mod        1    0    0
+src/acp.rs:45               default_settings                                          fn         3    0    0
+src/acp.rs:51               validate_settings                                         fn        18    2    1
+src/acp.rs:70               config_options                                            fn        43    0    2
+src/acp.rs:115              available_commands                                        fn        16    1    2
+src/acp.rs:134              Dispatch                                                  enum       9    1    0
+src/acp.rs:146              dispatch                                                  fn        26    3    2
+src/acp.rs:174              ServerState                                               struct     8    2    0
+src/acp.rs:186              ActiveSession                                             struct     6    5    0
+src/acp.rs:196              impl ServerState                                          impl     274   10   21
+src/acp.rs:197                new                                                     fn         9    0    0
+src/acp.rs:210                openrouter_client                                       fn        15    3    1
+src/acp.rs:226                compact_session                                         fn        51    0    8
+src/acp.rs:278                new_session                                             fn        17    0    0
+src/acp.rs:296                set_config_option                                       fn        68    0    7
+src/acp.rs:365                load_session                                            fn        49    2    3
+src/acp.rs:417                activate                                                fn         6    0    0
+src/acp.rs:426                send_available_commands                                 fn        13    2    1
+src/acp.rs:441                active_session                                          fn         7    1    0
+src/acp.rs:449                list_sessions                                           fn        18    0    1
+src/acp.rs:468                delete_session                                          fn        10    0    0
+src/acp.rs:481                logout                                                  fn         9    2    0
+src/acp.rs:492              store_error                                               fn         6    0    1
+src/acp.rs:499              not_found                                                 fn         3    0    0
+src/acp.rs:503              busy                                                      fn         3    0    0
+src/acp.rs:507              inactive                                                  fn         5    0    0
+src/acp.rs:513              session_info                                              fn         5    0    0
+src/acp.rs:519              reply                                                     fn         6    0    1
+src/acp.rs:527              terminal_auth_method                                      fn         7    1    0
+src/acp.rs:537              initialize_response                                       fn        16    2    1
+src/acp.rs:554              serve_stdio                                               fn         7    0    0
+src/acp.rs:564              run_headless                                              fn        27    2    0
+src/acp.rs:592              run_headless_prompt                                       fn        49    0    2
+src/acp.rs:642              serve                                                     fn       183    0   20
+src/auth.rs:4               SERVICE                                                   const      1    0    0
+src/auth.rs:5               ACCOUNT                                                   const      1    0    0
+src/auth.rs:7               entry                                                     fn         3    0    0
+src/auth.rs:11              keyring_error                                             fn         3    0    0
+src/auth.rs:15              api_key                                                   fn         7    0    2
+src/auth.rs:23              api_key_with                                              fn        16    0    1
+src/auth.rs:40              save_api_key                                              fn         3    0    0
+src/auth.rs:44              delete_api_key                                            fn         7    0    1
+src/cancellation.rs:17      PromptCancellation                                        struct     2    2    0
+src/cancellation.rs:19      CancellationState                                         struct     4    0    0
+src/cancellation.rs:24      impl PromptCancellation                                   impl      26    0    3
+src/cancellation.rs:25        new                                                     fn         7    0    2
+src/cancellation.rs:33        cancelled                                               fn         3    0    0
+src/cancellation.rs:37        is_cancelled                                            fn         3    0    0
+src/cancellation.rs:41        cancel                                                  fn        11    0    1
+src/compaction.rs:20        SUMMARY_OUTPUT_TOKENS                                     const      1    0    0
+src/compaction.rs:21        SUMMARY_ALLOWANCE_BYTES                                   const      1    0    0
+src/compaction.rs:22        SUMMARY_LABEL                                             const      1    0    0
+src/compaction.rs:23        TOOL_RESULT_EXCERPT_CHARS                                 const      1    0    0
+src/compaction.rs:25        tokens                                                    fn         3    0    0
+src/compaction.rs:30        Budget                                                    struct     5    5    0
+src/compaction.rs:40        budget                                                    fn        11    0    0
+src/compaction.rs:52        request_estimate                                          fn        14    0    0
+src/compaction.rs:67        latest                                                    fn         6    0    2
+src/compaction.rs:74        projection                                                fn        12    0    1
+src/compaction.rs:91        repeated_invocation                                       fn         9    4    1
+src/compaction.rs:101       has_candidate                                             fn         3    0    0
+src/compaction.rs:105       context_error                                             fn         6    0    0
+src/compaction.rs:112       projection_at                                             fn        19    0    1
+src/compaction.rs:132       candidates                                                fn        16    0    7
+src/compaction.rs:149       projected_estimate                                        fn        20    0    0
+src/compaction.rs:172       input_fits                                                fn        23    2    2
+src/compaction.rs:196       ranked_cuts                                               fn        44    1    4
+src/compaction.rs:244       message_bytes                                             fn        11    2    0
+src/compaction.rs:256       tool_result_excerpt                                       fn        11    0    1
+src/compaction.rs:268       material                                                  fn        70    0   22
+src/compaction.rs:339       summary_request_fits                                      fn        12    0    0
+src/compaction.rs:352       next_piece                                                fn        45    0   20
+src/compaction.rs:398       compact                                                   fn        53    1   13
+src/hooks.rs:24             Hooks                                                     struct     8    2    0
+src/hooks.rs:35             HookCommand                                               struct     5    1    0
+src/hooks.rs:39             impl Hooks                                                impl      25    0    4
+src/hooks.rs:40               command                                                 fn         9    0    1
+src/hooks.rs:50               validate                                                fn        14    0    3
+src/hooks.rs:66             IN_HOOK_ENV                                               const      1    0    0
+src/hooks.rs:68             STDOUT_LIMIT                                              const      1    0    0
+src/hooks.rs:69             STDERR_LIMIT                                              const      1    0    0
+src/hooks.rs:71             GRACE                                                     const      1    1    0
+src/hooks.rs:73             deadline                                                  fn         9    0    1
+src/hooks.rs:86             HookSource                                                struct     6    3    0
+src/hooks.rs:96             Context                                                   struct    11    3    0
+src/hooks.rs:111            Event                                                     enum      19    1    0
+src/hooks.rs:129            impl Event                                                impl      11    0    1
+src/hooks.rs:130              kind                                                    fn         9    0    1
+src/hooks.rs:143            ToolReport                                                struct     8    2    0
+src/hooks.rs:152            impl ToolReport                                           impl      16    0    1
+src/hooks.rs:153              new                                                     fn        14    0    1
+src/hooks.rs:172            AfterRunOutcome                                           enum       9    1    0
+src/hooks.rs:181            Input                                                     struct     8    0    0
+src/hooks.rs:190            Output                                                    trait      3    2    0
+src/hooks.rs:192              message                                                 fn         1    1    0
+src/hooks.rs:198            Feedback                                                  struct     6    1    0
+src/hooks.rs:203            deserialize_present_string                                fn         6    0    0
+src/hooks.rs:210            impl Output for Feedback                                  impl       5    0    0
+src/hooks.rs:211              message                                                 fn         3    0    0
+src/hooks.rs:219            ToolDecision                                              enum       8    2    0
+src/hooks.rs:227            impl Output for ToolDecision                              impl       8    0    1
+src/hooks.rs:228              message                                                 fn         6    0    1
+src/hooks.rs:239            StopResponse                                              struct     6    1    0
+src/hooks.rs:244            impl Output for StopResponse                              impl       5    0    0
+src/hooks.rs:245              message                                                 fn         3    0    0
+src/hooks.rs:253            Report                                                    struct     3    1    0
+src/hooks.rs:255            impl Output for Report                                    impl       5    0    0
+src/hooks.rs:256              message                                                 fn         3    0    0
+src/hooks.rs:265            run                                                       fn        85    4    7
+src/hooks.rs:351            parse                                                     fn        24    0    2
+src/main.rs:1               acp                                                       mod        1    0    0
+src/main.rs:2               auth                                                      mod        1    0    0
+src/main.rs:3               cancellation                                              mod        1    0    0
+src/main.rs:4               compaction                                                mod        1    0    0
+src/main.rs:5               hooks                                                     mod        1    0    0
+src/main.rs:6               openrouter                                                mod        1    0    0
+src/main.rs:7               process                                                   mod        1    0    0
+src/main.rs:8               sessions                                                  mod        1    0    0
+src/main.rs:9               settings                                                  mod        1    0    0
+src/main.rs:10              skills                                                    mod        1    0    0
+src/main.rs:11              system_prompt                                             mod        1    0    0
+src/main.rs:12              text_file                                                 mod        1    0    0
+src/main.rs:13              tools                                                     mod        1    0    0
+src/main.rs:25              USAGE                                                     const      3    0    0
+src/main.rs:29              Command                                                   enum      12    0    0
+src/main.rs:42              command                                                   fn        11    0    4
+src/main.rs:54              run_command                                               fn        34    0    7
+src/main.rs:90              resolve_model                                             fn        16    1    2
+src/main.rs:108             check_effort                                              fn        17    1    1
+src/main.rs:126             usage_error                                               fn         3    0    0
+src/main.rs:130             invalid_input                                             fn         3    0    0
+src/main.rs:134             print_help                                                fn         3    0    0
+src/main.rs:138             absolute_dir                                              fn         9    0    1
+src/main.rs:149             load_settings_and_catalog                                 fn        11    1    0
+src/main.rs:162             main                                                      fn        10    0    1
+src/main.rs:172             run                                                       fn        50    0    8
+src/openrouter.rs:21        CatalogModel                                              struct     7    1    0
+src/openrouter.rs:29        impl CatalogModel                                         impl      12    1    0
+src/openrouter.rs:30          supports                                                fn         3    0    0
+src/openrouter.rs:35          summarizer_effort                                       fn         7    1    0
+src/openrouter.rs:46        OpenRouterModel                                           struct    11    2    0
+src/openrouter.rs:59        Architecture                                              struct     5    0    0
+src/openrouter.rs:65        Reasoning                                                 struct     5    0    0
+src/openrouter.rs:71        ModelsResponse                                            struct     4    0    0
+src/openrouter.rs:83        RECENT_SECONDS                                            const      1    8    0
+src/openrouter.rs:85        parse_catalog                                             fn        45    0    3
+src/openrouter.rs:132       fetch_catalog                                             fn        18    1    1
+src/openrouter.rs:151       Catalog                                                   struct     4    0    0
+src/openrouter.rs:156       CATALOG                                                   static     1    0    0
+src/openrouter.rs:159       install_catalog                                           fn        18    1    2
+src/openrouter.rs:178       installed                                                 fn         8    0    0
+src/openrouter.rs:187       catalog                                                   fn         3    0    0
+src/openrouter.rs:192       default_model                                             fn         3    1    0
+src/openrouter.rs:196       ENDPOINT                                                  const      1    0    0
+src/openrouter.rs:198       catalog_model                                             fn         3    0    0
+src/openrouter.rs:204       Client                                                    struct     6    1    0
+src/openrouter.rs:211       StreamItem                                                enum       6    0    0
+src/openrouter.rs:218       Completion                                                struct     5    0    0
+src/openrouter.rs:224       Stop                                                      enum       7    0    0
+src/openrouter.rs:232       InputContextOverflow                                      struct     2    0    0
+src/openrouter.rs:234       impl std::fmt::Display for InputContextOverflow           impl       8    0    0
+src/openrouter.rs:235         fmt                                                     fn         6    0    0
+src/openrouter.rs:243       impl std::error::Error for InputContextOverflow           impl       1    0    0
+src/openrouter.rs:245       is_input_context_overflow                                 fn         5    0    0
+src/openrouter.rs:251       ordinary_body                                             fn        23    0    1
+src/openrouter.rs:275       summarizer_body                                           fn        18    0    1
+src/openrouter.rs:294       impl Client                                               impl      93    4   12
+src/openrouter.rs:295         new                                                     fn         3    0    0
+src/openrouter.rs:299         for_endpoint                                            fn         7    0    0
+src/openrouter.rs:308         verify                                                  fn        19    1    1
+src/openrouter.rs:330         stream_completion                                       fn        10    2    0
+src/openrouter.rs:342         summarize                                               fn        23    1    7
+src/openrouter.rs:366         stream_body                                             fn        29    0    4
+src/openrouter.rs:397       explicit_context_overflow                                 fn        14    0    2
+src/openrouter.rs:413       skill_invocation_text                                     fn         6    1    0
+src/openrouter.rs:421       hook_feedback_text                                        fn         7    1    0
+src/openrouter.rs:431       chat_messages                                             fn        53    2   13
+src/openrouter.rs:485       transport                                                 fn         3    0    0
+src/openrouter.rs:489       malformed                                                 fn         3    0    0
+src/openrouter.rs:495       CompletionStream                                          struct     8    3    0
+src/openrouter.rs:505       impl CompletionStream                                     impl     101    9   30
+src/openrouter.rs:508         next                                                    fn        21    6   12
+src/openrouter.rs:535         read_chunk                                              fn        14    1    2
+src/openrouter.rs:550         line                                                    fn        14    0    6
+src/openrouter.rs:565         process_sse_event                                       fn        50    2   10
+src/openrouter.rs:620       Assembly                                                  struct     7    0    0
+src/openrouter.rs:628       PartialCall                                               struct     6    0    0
+src/openrouter.rs:634       impl Assembly                                             impl      91    2   16
+src/openrouter.rs:635         tool_call                                               fn        12    0    3
+src/openrouter.rs:650         reasoning_detail                                        fn        34    2   12
+src/openrouter.rs:685         finish                                                  fn        43    0    1
+src/openrouter.rs:731       Chunk                                                     struct     7    0    0
+src/openrouter.rs:739       ApiUsage                                                  struct     6    0    0
+src/openrouter.rs:746       Choice                                                    struct     6    0    0
+src/openrouter.rs:753       Delta                                                     struct     7    0    0
+src/openrouter.rs:761       ToolCallDelta                                             struct     8    0    0
+src/openrouter.rs:770       FunctionDelta                                             struct     5    0    0
+src/openrouter.rs:776       ApiError                                                  struct     7    0    0
+src/process.rs:18           OUTPUT_DRAIN_TIMEOUT                                      const      1    0    0
+src/process.rs:19           GROUP_POLL_INTERVAL                                       const      1    0    0
+src/process.rs:22           Capture                                                   struct     7    2    0
+src/process.rs:31           impl Capture                                              impl      38    1    4
+src/process.rs:32             new                                                     fn         9    0    1
+src/process.rs:42             read                                                    fn        18    1    2
+src/process.rs:62             drain                                                   fn         6    0    1
+src/process.rs:69             decode                                                  fn         3    0    0
+src/process.rs:74           Observed                                                  enum       6    0    0
+src/process.rs:81           Limits                                                    struct     6    2    0
+src/process.rs:91           Finished                                                  struct     6    2    0
+src/process.rs:101          kill_group                                                fn         6    2    1
+src/process.rs:110          ProcessGroup                                              struct     1    2    0
+src/process.rs:112          impl ProcessGroup                                         impl      21    2    8
+src/process.rs:113            terminate                                               fn        19    2    8
+src/process.rs:136          impl Drop for ProcessGroup                                impl       7    0    1
+src/process.rs:137            drop                                                    fn         5    0    1
+src/process.rs:149          run                                                       fn        92    8   16
+src/sessions.rs:21          DATA_DIR_ENV                                              const      1    1    0
+src/sessions.rs:23          DATABASE_FILE                                             const      1    0    0
+src/sessions.rs:26          MAX_SESSION_TITLE_CHARS                                   const      1    1    0
+src/sessions.rs:28          SCHEMA                                                    const     21    0    0
+src/sessions.rs:64          TranscriptEntry                                           enum      12    8    0
+src/sessions.rs:80          SkillInvocation                                           struct     7    2    0
+src/sessions.rs:86          impl SkillInvocation                                      impl       9    1    2
+src/sessions.rs:88            command_text                                            fn         7    1    2
+src/sessions.rs:99          HookKind                                                  enum       8    1    0
+src/sessions.rs:107         impl HookKind                                             impl      18    0    1
+src/sessions.rs:116           id                                                      fn         9    0    1
+src/sessions.rs:128         hook_label                                                fn         7    1    1
+src/sessions.rs:139         HookFeedback                                              struct     6    1    0
+src/sessions.rs:147         HookFeedbackContent                                       enum      10    4    0
+src/sessions.rs:159         impl HookFeedback                                         impl      19    0    2
+src/sessions.rs:160           label                                                   fn         3    0    0
+src/sessions.rs:164           kind                                                    fn         7    0    1
+src/sessions.rs:172           message                                                 fn         7    0    1
+src/sessions.rs:186         StopDecision                                              enum       6    3    0
+src/sessions.rs:193         CompactionCheckpoint                                      struct     7    3    0
+src/sessions.rs:205         SessionMode                                               enum       6    1    0
+src/sessions.rs:210         impl SessionMode                                          impl      24    0    3
+src/sessions.rs:213           id                                                      fn         6    0    1
+src/sessions.rs:220           name                                                    fn         6    0    1
+src/sessions.rs:227           description                                             fn         6    0    1
+src/sessions.rs:234           from_id                                                 fn         3    0    0
+src/sessions.rs:244         EffortLevel                                               enum      13    3    0
+src/sessions.rs:256         impl EffortLevel                                          impl      42    1    2
+src/sessions.rs:268           id                                                      fn        12    0    1
+src/sessions.rs:281           name                                                    fn        12    0    1
+src/sessions.rs:294           from_id                                                 fn         3    0    0
+src/sessions.rs:299           openrouter_effort                                       fn         3    1    0
+src/sessions.rs:305         SessionSettings                                           struct     6    0    0
+src/sessions.rs:311         impl SessionSettings                                      impl      13    0    0
+src/sessions.rs:312           new                                                     fn         7    0    0
+src/sessions.rs:320           with_mode                                               fn         4    0    0
+src/sessions.rs:327         SessionSettingsChange                                     struct     6    0    0
+src/sessions.rs:337         AssistantMessage                                          struct     9    5    0
+src/sessions.rs:353         ModelUsage                                                struct     7    3    0
+src/sessions.rs:359         impl AssistantMessage                                     impl      27    2    7
+src/sessions.rs:362           validate                                                fn        25    2    7
+src/sessions.rs:393         ToolCall                                                  struct     7    2    0
+src/sessions.rs:401         ToolResult                                                struct     7    0    0
+src/sessions.rs:410         ToolOutcome                                               enum       7    1    0
+src/sessions.rs:416         impl ToolOutcome                                          impl       7    0    1
+src/sessions.rs:417           text                                                    fn         5    0    1
+src/sessions.rs:427         AssistantBatch                                            struct     5    2    0
+src/sessions.rs:432         impl AssistantBatch                                       impl       7    0    0
+src/sessions.rs:433           new                                                     fn         5    0    0
+src/sessions.rs:440         pair_results                                              fn        32    0    4
+src/sessions.rs:473         validate_transcript                                       fn       132    1   33
+src/sessions.rs:608         SessionSummary                                            struct     8    0    0
+src/sessions.rs:618         session_cost                                              fn        12    2    2
+src/sessions.rs:632         StoredSession                                             struct     5    0    0
+src/sessions.rs:637         impl StoredSession                                        impl      19    2    3
+src/sessions.rs:640           saved_settings                                          fn        17    2    3
+src/sessions.rs:661         SessionStore                                              struct     2    1    0
+src/sessions.rs:663         impl SessionStore                                         impl     199   14   11
+src/sessions.rs:664           open                                                    fn         7    0    2
+src/sessions.rs:672           initialize                                              fn         7    0    0
+src/sessions.rs:681           in_memory                                               fn         5    0    0
+src/sessions.rs:687           with_connection                                         fn         4    0    0
+src/sessions.rs:691           lock                                                    fn         3    0    1
+src/sessions.rs:697           create                                                  fn        19    2    0
+src/sessions.rs:719           read                                                    fn        32    2    1
+src/sessions.rs:753           list                                                    fn        17    1    0
+src/sessions.rs:774           append_turn_start                                       fn        41    3    5
+src/sessions.rs:818           append_batch                                            fn        11    2    1
+src/sessions.rs:831           append_hook_feedback                                    fn         8    1    0
+src/sessions.rs:842           append_checkpoint                                       fn        34    2    1
+src/sessions.rs:878           delete                                                  fn         9    1    0
+src/sessions.rs:890         validate_workspace_path                                   fn        12    1    1
+src/sessions.rs:903         summary                                                   fn        12    0    0
+src/sessions.rs:916         summary_row                                               fn         9    0    0
+src/sessions.rs:928         update_activity_and_adopt_session_title                   fn        20    2    1
+src/sessions.rs:949         insert_entry                                              fn        16    0    0
+src/sessions.rs:966         decode_entry                                              fn        18    0    1
+src/sessions.rs:985         decode                                                    fn         3    0    0
+src/sessions.rs:989         invalid_data                                              fn         3    0    0
+src/sessions.rs:993         now                                                       fn         3    0    1
+src/sessions.rs:1001        session_title_from_prompt                                 fn         8    4    1
+src/sessions.rs:1010        database_path                                             fn        17    0    4
+src/settings.rs:17          Settings                                                  struct     6    0    0
+src/settings.rs:22          Loaded                                                    struct     5    0    0
+src/settings.rs:28          load                                                      fn         9    2    1
+src/settings.rs:40          load_from                                                 fn        33    0    4
+src/skills.rs:14            SKILLS_DIR                                                const      1    0    0
+src/skills.rs:15            FILE_NAME                                                 const      1    0    0
+src/skills.rs:20            Skill                                                     struct     9    3    0
+src/skills.rs:32            Frontmatter                                               struct     8    1    0
+src/skills.rs:43            load                                                      fn        32    3    4
+src/skills.rs:76            parse                                                     fn        40    0    7
+src/skills.rs:118           split_frontmatter                                         fn        15    1    3
+src/skills.rs:134           invalid                                                   fn         3    0    0
+src/system_prompt.rs:11     FILE_NAME                                                 const      1    0    0
+src/system_prompt.rs:12     BUILT_IN_PROMPT                                           const      1    0    0
+src/system_prompt.rs:16     for_workspace                                             fn         9    2    1
+src/system_prompt.rs:29     read_workspace                                            fn        11    3    1
+src/text_file.rs:10         MAX_BYTES                                                 const      1    0    0
+src/text_file.rs:13         read_bounded                                              fn        13    1    1
+src/tools/patch.rs:10       Patch                                                     struct     1    0    0
+src/tools/patch.rs:12       FileOperation                                             struct     4    0    0
+src/tools/patch.rs:17       Operation                                                 enum       8    0    0
+src/tools/patch.rs:26       Chunk                                                     struct     5    0    0
+src/tools/patch.rs:32       impl Patch                                                impl       9    0    1
+src/tools/patch.rs:33         parse                                                   fn         7    0    1
+src/tools/patch.rs:44       Parser                                                    struct     4    2    0
+src/tools/patch.rs:49       impl Parser                                               impl     116    2   25
+src/tools/patch.rs:50         parse                                                   fn        17    0    7
+src/tools/patch.rs:68         line                                                    fn         3    0    0
+src/tools/patch.rs:72         file_operation                                          fn        24    0    5
+src/tools/patch.rs:97         add_file                                                fn         9    0    1
+src/tools/patch.rs:107        update_file                                             fn        26    0    6
+src/tools/patch.rs:136        chunk                                                   fn        32    2    6
+src/tools/patch.rs:169        error                                                   fn         3    0    0
+src/tools/patch.rs:174      update                                                    fn        37    0   14
+src/tools/patch.rs:214      workspace_path_rejecting_links                            fn        32    2   10
+src/tools/patch.rs:247      target                                                    fn        14    0    1
+src/tools/patch.rs:262      require_absent                                            fn         7    0    1
+src/tools/patch.rs:270      Prepared                                                  struct     4    0    0
+src/tools/patch.rs:275      Change                                                    enum      14    0    0
+src/tools/patch.rs:290      prepare                                                   fn        80    0   18
+src/tools/patch.rs:371      impl Change                                               impl      25    0    4
+src/tools/patch.rs:372        apply                                                   fn        23    0    4
+src/tools/patch.rs:397      apply_prepared                                            fn        32    0    4
+src/tools/patch.rs:432      changed_paths                                             fn         6    2    1
+src/tools/patch.rs:439      apply                                                     fn         6    0    0
+src/tools/read.rs:10        Args                                                      struct     9    0    0
+src/tools/read.rs:18        default_offset                                            fn         3    0    0
+src/tools/read.rs:21        default_limit                                             fn         3    0    0
+src/tools/read.rs:25        execute                                                   fn        66    0   24
+src/tools/read.rs:94        line                                                      fn        61    2   18
+src/tools/search.rs:19      GlobArgs                                                  struct     7    0    0
+src/tools/search.rs:27      GrepArgs                                                  struct     8    0    0
+src/tools/search.rs:34      default_path                                              fn         3    0    0
+src/tools/search.rs:38      execute                                                   fn        38    2    8
+src/tools/search.rs:80      NOTICE_LIMIT                                              const      1    1    0
+src/tools/search.rs:81      MATCH_LIMIT                                               const      1    0    0
+src/tools/search.rs:82      DIAGNOSTICS_LIMIT                                         const      1    0    0
+src/tools/search.rs:84      run                                                       fn        85    2   36
+src/tools/search.rs:172     append_match                                              fn         9    0    2
+src/tools/search.rs:182     scan_file                                                 fn        26    0   11
+src/tools/search.rs:210     drain_errors                                              fn        12    1    3
+src/tools/shell.rs:12       OUTPUT_BODY_LIMIT                                         const      1    0    0
+src/tools/shell.rs:16       Args                                                      struct     7    0    0
+src/tools/shell.rs:22       default_timeout                                           fn         3    0    0
+src/tools/shell.rs:26       execute                                                   fn        39    0    3
+src/tools/shell.rs:66       failure                                                   fn         8    0    0
+src/tools/shell.rs:75       trim_front                                                fn        11    0    2
+src/tools/shell.rs:87       render                                                    fn        57    0   12
+src/tools/workspace.rs:14   Workspace                                                 struct     4    0    0
+src/tools/workspace.rs:19   impl Workspace                                            impl     139    1   16
+src/tools/workspace.rs:20     open                                                    fn        13    0    0
+src/tools/workspace.rs:34     root                                                    fn         3    0    0
+src/tools/workspace.rs:38     relative                                                fn        10    0    0
+src/tools/workspace.rs:50     resolve_allowing_link_target                            fn        13    1    2
+src/tools/workspace.rs:64     parent                                                  fn        32    0   10
+src/tools/workspace.rs:97     read_file                                               fn        16    0    1
+src/tools/workspace.rs:114    directory                                               fn        12    0    1
+src/tools/workspace.rs:127    regular_file                                            fn         5    0    0
+src/tools/workspace.rs:133    write_file                                              fn        16    0    2
+src/tools/workspace.rs:150    remove_file                                             fn         5    0    0
+src/tools/workspace.rs:156    move_file                                               fn        12    0    0
+src/tools.rs:11             patch                                                     mod        1    0    0
+src/tools.rs:12             read                                                      mod        1    0    0
+src/tools.rs:13             search                                                    mod        1    0    0
+src/tools.rs:14             shell                                                     mod        1    0    0
+src/tools.rs:15             workspace                                                 mod        1    0    0
+src/tools.rs:17             APPLY_PATCH                                               const      1    0    0
+src/tools.rs:18             READ_FILE                                                 const      1    0    0
+src/tools.rs:19             GLOB                                                      const      1    0    0
+src/tools.rs:20             SHELL                                                     const      1    0    0
+src/tools.rs:21             GREP                                                      const      1    0    0
+src/tools.rs:22             OUTPUT_LIMIT                                              const      1    0    0
+src/tools.rs:24             BODY_LIMIT                                                const      1    1    0
+src/tools.rs:26             MAX_TOOL_CALL_TITLE_CHARS                                 const      1    1    0
+src/tools.rs:28             APPLY_PATCH_DESCRIPTION                                   const     44    0    0
+src/tools.rs:79             truncate                                                  fn         7    0    2
+src/tools.rs:87             bounded_result                                            fn        15    0    3
+src/tools.rs:103            schemas                                                   fn        99    0    0
+src/tools.rs:205            PatchArgs                                                 struct     5    0    0
+src/tools.rs:212            tool_call_title                                           fn         6    3    1
+src/tools.rs:219            default_tool_call_title                                   fn        10    0    1
+src/tools.rs:232            describe                                                  fn        31    2    9
+src/tools.rs:266            searched_path                                             fn         6    2    1
+src/tools.rs:274            command_line                                              fn        12    1    2
+src/tools.rs:289            shorten                                                   fn        10    2    1
+src/tools.rs:302            execute                                                   fn        16    2    2
+src/tools.rs:319            execute_other                                             fn        16    0    6
+────────────────────────────────────────────────────────────────────────────────────────────────────────────
+                                                                                              6276  365
+
+# rsloc (file totals)
+File                    Prod  Test  Doc  Cog
+────────────────────────────────────────────
+src/acp/convert.rs       264   118   20   19
+src/acp/operations.rs     93    72    9   11
+src/acp/prompt.rs        832  1744   56  107
+src/acp.rs               758  1442   30   53
+src/auth.rs               43    20    0    4
+src/cancellation.rs       41     0    3    3
+src/compaction.rs        410   436   17   74
+src/hooks.rs             317    87   27   17
+src/main.rs              203    87    3   24
+src/openrouter.rs        682   782   39   81
+src/process.rs           204     0   23   30
+src/sessions.rs          866   790   79   81
+src/settings.rs           62    89    3    5
+src/skills.rs            116     0   10   14
+src/system_prompt.rs      27    46    7    2
+src/text_file.rs          19     0    3    1
+src/tools/patch.rs       411   297    8   79
+src/tools/read.rs        146    84    2   42
+src/tools/search.rs      204   213    6   60
+src/tools/shell.rs       134   373    0   17
+src/tools/workspace.rs   150     0    4   16
+src/tools.rs             294   227   16   28
+────────────────────────────────────────────
+                        6276  6907  365

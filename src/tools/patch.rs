@@ -31,105 +31,143 @@ struct Chunk {
 
 impl Patch {
     fn parse(input: &str) -> Result<Self, String> {
-        let lines: Vec<_> = input.lines().collect();
-        let error = |index: usize, reason: &str| format!("parse: line {}: {reason}", index + 1);
-        if lines.first() != Some(&"*** Begin Patch") {
-            return Err(error(0, "expected *** Begin Patch"));
+        Parser {
+            lines: input.lines().map(str::to_owned).collect(),
+            index: 0,
         }
+        .parse()
+    }
+}
+
+/// A cursor over a patch's lines. Each method reads the part of the patch
+/// format it names and leaves `index` on the first line after it.
+struct Parser {
+    lines: Vec<String>,
+    index: usize,
+}
+
+impl Parser {
+    fn parse(mut self) -> Result<Patch, String> {
+        if self.line() != Some("*** Begin Patch") {
+            return Err(Self::error(0, "expected *** Begin Patch"));
+        }
+        self.index += 1;
         let mut operations = Vec::new();
-        let mut index = 1;
-        while index < lines.len() {
-            let header_index = index;
-            let line = lines[index];
+        while let Some(line) = self.line() {
             if line == "*** End Patch" {
-                if index + 1 != lines.len() {
-                    return Err(error(index + 1, "text after *** End Patch"));
+                if self.index + 1 != self.lines.len() {
+                    return Err(Self::error(self.index + 1, "text after *** End Patch"));
                 }
-                return Ok(Self(operations));
+                return Ok(Patch(operations));
             }
-            let (path, kind) = if let Some(path) = line.strip_prefix("*** Add File: ") {
-                index += 1;
-                let mut contents = String::new();
-                while let Some(body) = lines.get(index).and_then(|line| line.strip_prefix('+')) {
-                    contents.push_str(body);
-                    contents.push('\n');
-                    index += 1;
-                }
-                (path, Operation::Add(contents))
-            } else if let Some(path) = line.strip_prefix("*** Delete File: ") {
-                index += 1;
-                (path, Operation::Delete)
-            } else if let Some(path) = line.strip_prefix("*** Update File: ") {
-                index += 1;
-                let destination = lines
-                    .get(index)
-                    .and_then(|line| line.strip_prefix("*** Move to: "));
-                if let Some(destination) = destination {
-                    if destination.is_empty() {
-                        return Err(error(index, "move destination is empty"));
-                    }
-                    index += 1;
-                }
-                let mut chunks = Vec::new();
-                while let Some(header) = lines.get(index) {
-                    let anchor = if *header == "@@" {
-                        None
-                    } else if let Some(anchor) = header.strip_prefix("@@ ") {
-                        Some(anchor.to_owned())
-                    } else {
-                        break;
-                    };
-                    index += 1;
-                    let mut chunk = Chunk {
-                        anchor,
-                        old: Vec::new(),
-                        new: Vec::new(),
-                    };
-                    while let Some(body) = lines.get(index) {
-                        match body.as_bytes().first() {
-                            Some(b' ') => {
-                                chunk.old.push(body[1..].to_owned());
-                                chunk.new.push(body[1..].to_owned());
-                            }
-                            Some(b'-') => chunk.old.push(body[1..].to_owned()),
-                            Some(b'+') => chunk.new.push(body[1..].to_owned()),
-                            _ => break,
-                        }
-                        index += 1;
-                    }
-                    if chunk.old.is_empty() && chunk.new.is_empty() {
-                        return Err(error(
-                            index,
-                            "chunk must contain context, removed, or added lines",
-                        ));
-                    }
-                    chunks.push(chunk);
-                }
-                if destination.is_none() && chunks.is_empty() {
-                    return Err(error(index, "Update File requires chunks or Move to"));
-                }
-                (
-                    path,
-                    Operation::Update {
-                        destination: destination.map(str::to_owned),
-                        chunks,
-                    },
-                )
-            } else {
-                return Err(error(
-                    index,
-                    "expected a file operation or *** End Patch; invalid header or body prefix",
-                ));
-            };
-            if path.is_empty() {
-                return Err(error(header_index, "file path is empty"));
-            }
-            operations.push(FileOperation {
-                path: path.to_owned(),
-                kind,
-            });
+            operations.push(self.file_operation()?);
         }
-        Err(error(index, "expected *** End Patch"))
+        Err(Self::error(self.index, "expected *** End Patch"))
+    }
+
+    fn line(&self) -> Option<&str> {
+        self.lines.get(self.index).map(String::as_str)
+    }
+
+    fn file_operation(&mut self) -> Result<FileOperation, String> {
+        let header_index = self.index;
+        let header = self.lines[header_index].clone();
+        self.index += 1;
+        let (path, kind) = if let Some(path) = header.strip_prefix("*** Add File: ") {
+            (path, self.add_file())
+        } else if let Some(path) = header.strip_prefix("*** Delete File: ") {
+            (path, Operation::Delete)
+        } else if let Some(path) = header.strip_prefix("*** Update File: ") {
+            (path, self.update_file()?)
+        } else {
+            return Err(Self::error(
+                header_index,
+                "expected a file operation or *** End Patch; invalid header or body prefix",
+            ));
+        };
+        if path.is_empty() {
+            return Err(Self::error(header_index, "file path is empty"));
+        }
+        Ok(FileOperation {
+            path: path.to_owned(),
+            kind,
+        })
+    }
+
+    fn add_file(&mut self) -> Operation {
+        let mut contents = String::new();
+        while let Some(body) = self.line().and_then(|line| line.strip_prefix('+')) {
+            contents.push_str(body);
+            contents.push('\n');
+            self.index += 1;
+        }
+        Operation::Add(contents)
+    }
+
+    fn update_file(&mut self) -> Result<Operation, String> {
+        let destination = self
+            .line()
+            .and_then(|line| line.strip_prefix("*** Move to: "))
+            .map(str::to_owned);
+        if let Some(destination) = &destination {
+            if destination.is_empty() {
+                return Err(Self::error(self.index, "move destination is empty"));
+            }
+            self.index += 1;
+        }
+        let mut chunks = Vec::new();
+        while let Some(chunk) = self.chunk()? {
+            chunks.push(chunk);
+        }
+        if destination.is_none() && chunks.is_empty() {
+            return Err(Self::error(
+                self.index,
+                "Update File requires chunks or Move to",
+            ));
+        }
+        Ok(Operation::Update {
+            destination,
+            chunks,
+        })
+    }
+
+    /// Reads one chunk, or returns `None` when the next line is not a chunk
+    /// header.
+    fn chunk(&mut self) -> Result<Option<Chunk>, String> {
+        let anchor = match self.line() {
+            Some("@@") => None,
+            Some(line) if line.starts_with("@@ ") => Some(line["@@ ".len()..].to_owned()),
+            _ => return Ok(None),
+        };
+        self.index += 1;
+        let mut chunk = Chunk {
+            anchor,
+            old: Vec::new(),
+            new: Vec::new(),
+        };
+        while let Some(body) = self.line() {
+            match body.as_bytes().first() {
+                Some(b' ') => {
+                    chunk.old.push(body[1..].to_owned());
+                    chunk.new.push(body[1..].to_owned());
+                }
+                Some(b'-') => chunk.old.push(body[1..].to_owned()),
+                Some(b'+') => chunk.new.push(body[1..].to_owned()),
+                _ => break,
+            }
+            self.index += 1;
+        }
+        if chunk.old.is_empty() && chunk.new.is_empty() {
+            return Err(Self::error(
+                self.index,
+                "chunk must contain context, removed, or added lines",
+            ));
+        }
+        Ok(Some(chunk))
+    }
+
+    fn error(index: usize, reason: &str) -> String {
+        format!("parse: line {}: {reason}", index + 1)
     }
 }
 
@@ -559,22 +597,49 @@ mod tests {
     #[test]
     fn malformed_patches_report_lines_and_never_write() {
         let workspace = Workspace::new();
-        for input in [
-            "",
-            " *** Begin Patch\n*** End Patch",
-            "*** Begin Patch",
-            "*** Begin Patch\n*** End Patch\nextra",
-            "*** Begin Patch\n*** Add File: first\n+ok\ninvalid\n*** End Patch",
-            "*** Begin Patch\n*** Add File: first\n+ok\n*** Update File: x\n@@\n?bad\n*** End Patch",
-            "*** Begin Patch\n*** Add File: first\n+ok\n*** Delete File: x\n-body\n*** End Patch",
-            "*** Begin Patch\n*** Update File: x\n*** End Patch",
-            "*** Begin Patch\n*** Update File: x\n@@ -1 +1 @@\n*** End Patch",
-            "*** Begin Patch\n*** Update File: x\n*** Move to: \n*** End Patch",
+        for (input, error) in [
+            ("", "line 1: expected *** Begin Patch"),
+            (
+                " *** Begin Patch\n*** End Patch",
+                "line 1: expected *** Begin Patch",
+            ),
+            ("*** Begin Patch", "line 2: expected *** End Patch"),
+            (
+                "*** Begin Patch\n*** End Patch\nextra",
+                "line 3: text after *** End Patch",
+            ),
+            (
+                "*** Begin Patch\n*** Add File: first\n+ok\ninvalid\n*** End Patch",
+                "line 4: expected a file operation or *** End Patch; invalid header or body prefix",
+            ),
+            (
+                "*** Begin Patch\n*** Add File: first\n+ok\n*** Update File: x\n@@\n?bad\n*** End Patch",
+                "line 6: chunk must contain context, removed, or added lines",
+            ),
+            (
+                "*** Begin Patch\n*** Add File: first\n+ok\n*** Delete File: x\n-body\n*** End Patch",
+                "line 5: expected a file operation or *** End Patch; invalid header or body prefix",
+            ),
+            (
+                "*** Begin Patch\n*** Add File: \n*** End Patch",
+                "line 2: file path is empty",
+            ),
+            (
+                "*** Begin Patch\n*** Update File: x\n*** End Patch",
+                "line 3: Update File requires chunks or Move to",
+            ),
+            (
+                "*** Begin Patch\n*** Update File: x\n@@ -1 +1 @@\n*** End Patch",
+                "line 4: chunk must contain context, removed, or added lines",
+            ),
+            (
+                "*** Begin Patch\n*** Update File: x\n*** Move to: \n*** End Patch",
+                "line 3: move destination is empty",
+            ),
         ] {
-            assert!(
-                apply(&workspace.0, input)
-                    .unwrap_err()
-                    .starts_with("parse: line"),
+            assert_eq!(
+                apply(&workspace.0, input).unwrap_err(),
+                format!("parse: {error}"),
                 "{input}"
             );
             assert_eq!(fs::read_dir(&workspace.0).unwrap().count(), 0);

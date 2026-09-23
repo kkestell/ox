@@ -3,7 +3,7 @@
 //! assistant batch, runs global and invoked skill hooks at their points in the
 //! run, and returns the final stop reason and answer.
 
-use std::{fmt, future::Future, io};
+use std::{fmt, future::Future, io, ops::ControlFlow};
 
 use agent_client_protocol::{
     Client, ConnectionTo, Error, Result,
@@ -324,67 +324,69 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
 
     async fn run_model_loop(&mut self) -> PromptOutcome {
         loop {
-            if self.cancellation.is_cancelled() {
-                return PromptOutcome::Cancelled;
-            }
-            let openrouter::Completion { message, stop } = match self.request_completion().await {
-                Ok(completion) => completion,
-                Err(outcome) => return outcome,
-            };
-            let calls = message.tool_calls.clone();
-            let text = message.text.clone();
-            self.uncommitted_batch = Some(UncommittedAssistantBatch::new(message));
-            for call in &calls {
-                if let Err(error) = (self.send_update)(convert::pending_tool_call(call)) {
-                    return PromptOutcome::AcpUpdate(error);
-                }
-            }
-            let outcome = match stop {
-                openrouter::Stop::Finished => Some(PromptOutcome::Finished),
-                openrouter::Stop::TokenLimit => Some(PromptOutcome::TokenLimit),
-                openrouter::Stop::Refused => Some(PromptOutcome::Refused),
-                openrouter::Stop::ToolCalls => {
-                    if let Err(outcome) = self.execute(&calls).await {
-                        return outcome;
-                    }
-                    None
-                }
-            };
-            if let Err(error) = self.commit() {
-                return PromptOutcome::Storage(error);
-            }
-            if let Err(outcome) = self.send_usage() {
-                return outcome;
-            }
-            match outcome {
-                Some(PromptOutcome::Finished) => {
-                    self.answer = Some(text.clone());
-                    let event = hooks::Event::BeforeStop { answer: text };
-                    let mut decision = StopDecision::Stop;
-                    for source in self.sources_for(HookKind::BeforeStop) {
-                        match self
-                            .run_hook(&source, &event, Self::save_stop_feedback)
-                            .await
-                        {
-                            Ok(StopDecision::Continue) => decision = StopDecision::Continue,
-                            Ok(StopDecision::Stop) => {}
-                            Err(outcome) => return outcome,
-                        }
-                    }
-                    if decision == StopDecision::Continue {
-                        self.hook_continuations += 1;
-                        continue;
-                    }
-                    return PromptOutcome::Finished;
-                }
-                Some(outcome) => return outcome,
-                None => {
-                    if let Err(outcome) = self.run_after_tools(&calls).await {
-                        return outcome;
-                    }
-                }
+            match self.run_model_step().await {
+                Ok(ControlFlow::Continue(())) => {}
+                Ok(ControlFlow::Break(outcome)) | Err(outcome) => return outcome,
             }
         }
+    }
+
+    /// Makes one model request, runs its tool calls, commits its batch, and
+    /// runs the hooks that follow. `Break` is a normal stop, and `Continue`
+    /// asks for another model request.
+    async fn run_model_step(
+        &mut self,
+    ) -> std::result::Result<ControlFlow<PromptOutcome>, PromptOutcome> {
+        if self.cancellation.is_cancelled() {
+            return Err(PromptOutcome::Cancelled);
+        }
+        let openrouter::Completion { message, stop } = self.request_completion().await?;
+        let calls = message.tool_calls.clone();
+        let text = message.text.clone();
+        self.uncommitted_batch = Some(UncommittedAssistantBatch::new(message));
+        for call in &calls {
+            (self.send_update)(convert::pending_tool_call(call))
+                .map_err(PromptOutcome::AcpUpdate)?;
+        }
+        if stop == openrouter::Stop::ToolCalls {
+            self.execute(&calls).await?;
+        }
+        self.commit().map_err(PromptOutcome::Storage)?;
+        self.send_usage()?;
+        match stop {
+            openrouter::Stop::ToolCalls => {
+                self.run_after_tools(&calls).await?;
+                Ok(ControlFlow::Continue(()))
+            }
+            openrouter::Stop::Finished => self.run_before_stop(text).await,
+            openrouter::Stop::TokenLimit => Ok(ControlFlow::Break(PromptOutcome::TokenLimit)),
+            openrouter::Stop::Refused => Ok(ControlFlow::Break(PromptOutcome::Refused)),
+        }
+    }
+
+    /// Runs the `before_stop` hooks on the answer just committed. Any
+    /// `continue` decision makes the next model request a hook continuation.
+    async fn run_before_stop(
+        &mut self,
+        answer: String,
+    ) -> std::result::Result<ControlFlow<PromptOutcome>, PromptOutcome> {
+        self.answer = Some(answer.clone());
+        let event = hooks::Event::BeforeStop { answer };
+        let mut decision = StopDecision::Stop;
+        for source in self.sources_for(HookKind::BeforeStop) {
+            if self
+                .run_hook(&source, &event, Self::save_stop_feedback)
+                .await?
+                == StopDecision::Continue
+            {
+                decision = StopDecision::Continue;
+            }
+        }
+        if decision == StopDecision::Continue {
+            self.hook_continuations += 1;
+            return Ok(ControlFlow::Continue(()));
+        }
+        Ok(ControlFlow::Break(PromptOutcome::Finished))
     }
 
     fn sources_for(&self, kind: HookKind) -> Vec<HookSource> {
