@@ -67,15 +67,17 @@ entry. A turn starts with a user message or a skill invocation. Effort and mode
 entries form a contiguous settings block immediately before the turn start where
 those settings take effect; a block contains at most one of each. An assistant
 message is followed immediately by one tool result for each tool call it
-contains, in call order. Hook feedback follows an assistant message with no tool
-calls.
+contains, in call order. Hook feedback follows the entry its hook ran after:
+`before_run` feedback immediately follows a skill invocation, `after_tools`
+feedback immediately follows the last tool result of an assistant batch, and
+`before_stop` feedback follows an assistant message with no tool calls.
 
 A skill invocation stores the skill's name, its literal arguments, and the
 instructions copied from its definition when it was invoked, so later changes to
 the definition do not change saved model context. Hook feedback stores the
-skill, the hook decision, and the hook's message. Model requests send each as a
-labeled user-role message. Hook feedback is neither a user message nor a tool
-result.
+skill, the hook kind, the hook's message, and, for `before_stop`, the hook
+decision. Model requests send each as a labeled user-role message. Hook feedback
+is neither a user message nor a tool result.
 
 The model entry fixes the OpenRouter model when the first turn starts. The model
 does not change within that session. The current effort level and session mode
@@ -94,8 +96,8 @@ are omitted from replay. A model request uses the latest summary as a labeled
 user-role message, followed by entries after its covered prefix. When the
 latest turn start is a skill invocation inside the covered prefix, its message
 is repeated right after the summary, so a long hook-driven run keeps its
-instructions and arguments. Once a later turn starts, the summary alone carries
-it. Request estimates, input admission, and compaction cut sizes use the same
+instructions and arguments; the summary carries its `before_run` feedback. Once
+a later turn starts, the summary alone carries it. Request estimates, input admission, and compaction cut sizes use the same
 projection.
 
 The system prompt is not a transcript entry. It is neither stored nor replayed.
@@ -111,20 +113,25 @@ compaction without saving a user message.
 
 A skill is `.agents/skills/<name>/SKILL.md` directly under the session
 workspace: YAML frontmatter with a name, description, optional argument hint,
-and optional `before_stop` hook command, followed by Markdown instructions. Ox
+and optional hook commands, followed by Markdown instructions. Ox
 has no built-in skills. The skill catalog is loaded when a session becomes
 active through `session/new` or its first `session/load` in the process,
 alongside the system prompt, and is kept for the active session; a missing
 skills directory means no skills.
 
-Ox ignores unknown top-level frontmatter keys and unknown hook kinds, so skills
-can share a directory with other agents. An empty `hooks` map declares no hook;
-a `before_stop` definition must contain only a nonblank `command`.
+A skill declares at most one command for each hook kind: `before_run`,
+`before_tool`, `after_tools`, `before_stop`, and `after_run`. Each definition
+has a nonblank `command` and no unknown fields. `before_tool` and `after_tools`
+may add `tools`, a nonempty list of distinct names from the concrete tool set;
+without it they match every tool, and a tool name outside the set never
+matches. Ox ignores unknown top-level frontmatter keys and unknown hook kinds,
+so skills can share a directory with other agents. An empty `hooks` map
+declares no hook.
 
 A prompt whose first word is `/<name>` for a catalog skill invokes it. The rest
 of the text, trimmed, is its arguments. The prompt run saves a skill invocation
-in place of the user message and passes the skill's hook to that run only.
-The hook holds its command and directory; its name and arguments come from the
+in place of the user message and passes the skill's hooks and directory to that
+run only. The skill name and arguments their commands receive come from the
 saved skill invocation for the current turn.
 Other slash-prefixed text is an ordinary user message. Headless prompts never
 invoke skills.
@@ -185,11 +192,14 @@ The active session's system prompt remains unchanged for ordinary requests.
 
 One prompt run owns the state for one turn: its settings snapshot, saved
 transcript copy, cancellation signal, active completion stream, any
-uncommitted assistant batch, and the invoked skill's hook.
+uncommitted assistant batch, the invoked skill's hooks, and the run ID shared by
+their commands.
 
 An input that cannot fit even after the largest eligible compaction cut is
 rejected before persistence. An accepted user message or skill invocation and
-any session-setting changes are committed before the first model request. Model output remains
+any session-setting changes are committed before the first model request. The
+ACP updates announcing them are sent after the commit, inside the prompt run, so
+a failure to send them still ends the run through its normal completion. Model output remains
 provisional until the OpenRouter client yields a validated completion. Tools run
 only from that completion.
 
@@ -204,16 +214,42 @@ When a completion contains tool calls, the prompt run executes them in order and
 builds one assistant batch. The batch is committed before another model request
 begins. A successful final response follows the same commit boundary.
 
-When the prompt run was started by a skill invocation whose skill declares a
-`before_stop` hook, each committed assistant message with a finished OpenRouter
-stop is given to the hook. A `continue` decision saves the hook feedback and
-makes another model request in the same prompt run; a `stop` decision saves the
-feedback and ends the run. Feedback passes the same input admission as a turn
-start. A hook error ends the run with an error and saves nothing for that hook
-run. Refusal, token limit, request failure, and cancellation never run a hook.
-The hook ends with its prompt run; nothing stays enabled for later turns. The
-final answer is the text of the assistant message committed with the finished
-stop that ended the run.
+When the prompt run was started by a skill invocation, the skill's hooks run at
+fixed points in the turn:
+
+1. `before_run` runs once, after the skill invocation is saved and announced
+   and before the first model request. Compaction, request retries, and hook
+   continuations do not rerun it.
+2. `before_tool` runs before each matching tool call, before the Ask mode
+   permission request. A denial skips the permission request and execution and
+   gives the call a failed tool result that carries the reason. Later calls in
+   the batch proceed. A tool decision saves no hook feedback and cannot change
+   the call's arguments.
+3. `after_tools` runs once for each tool-bearing assistant batch with a matching
+   call, after the batch commits and before the next model request.
+4. `before_stop` runs on each committed assistant message with a finished
+   OpenRouter stop. A `continue` decision saves the hook feedback and makes
+   another model request in the same prompt run; a `stop` decision saves the
+   feedback and ends the run.
+5. `after_run` runs once on the prompt run's result.
+
+A `before_run`, `after_tools`, or `before_stop` message passes the same input
+admission as a turn start and is saved as hook feedback; `before_run` and
+`after_tools` may save nothing. A hook error ends the run with an error and saves
+nothing for that hook run. Refusal, token limit, request failure, and
+cancellation never run `before_stop`. Hooks end with their prompt run; nothing
+stays enabled for later turns. The final answer is the text of the assistant
+message committed with the finished stop that ended the run.
+
+`after_run` runs for every prompt run that saved its skill invocation, after any
+outstanding batch is saved and the result is known, while the operation guard
+is still held. Its input reports the outcome as `finished`, `cancelled`,
+`token_limit`, `refused`, or `failed`, derived from that result. It ignores
+prompt cancellation, because it may be reporting it, and its five-second
+deadline bounds it, including during connection shutdown. Its ACP updates are
+best effort, a failure is written to stderr, and it never changes the prompt
+run's result or the transcript. Input rejected by admission, or cancellation
+observed before the turn start is saved, saves nothing and runs no hook.
 
 ### Assistant-batch boundary
 
@@ -228,7 +264,15 @@ commit succeeds.
 
 If the turn stops after validation, every call without an observed outcome gets
 an explicit failed or cancelled tool outcome before the batch is saved. Ox does
-not infer success or claim that cancellation reversed effects.
+not infer success or claim that cancellation reversed effects. A `before_tool`
+error is the only hook error that stops a batch before it completes; the current
+call and every later call get a failed `Not started` result.
+
+`after_tools` runs only after the whole batch commits, so it sees the workspace
+after every call in the batch. Its input lists every matching call in call
+order with its saved result, including failed and denied calls. It does not run
+for a batch the turn stopped before completing. After an `after_tools` error,
+the committed batch stays saved and the hook's effects are not undone.
 
 ### Projection boundary
 
@@ -238,7 +282,8 @@ absent from replay if the model request fails or is cancelled. Replay contains
 only saved, displayable transcript content and final tool states. A hook run is
 shown as an ACP execute tool call with an Ox-generated ID. It is not a model
 tool call and never enters an assistant batch; replay rebuilds it from saved
-hook feedback as a completed tool call.
+hook feedback as a completed tool call. Hook runs that saved nothing, tool
+decisions, and `after_run` appear only in live ACP updates.
 
 Sending an ACP update does not confirm that the ACP client received or displayed
 it. An ACP update failure stops new work, but the prompt run still attempts to
@@ -256,10 +301,11 @@ response sending. The SQLite mutex is separate and covers only a synchronous
 store operation; it is never held across an asynchronous wait.
 
 Prompt cancellation is latched and scoped to the active prompt. It prevents new
-model requests, tool work, and hook runs but does not roll back a saved user
-message, observed tool effects, or committed transcript entries. Each running
-tool or hook owns the cleanup boundary for its resources: its whole process
-group is stopped, a hook's after a two-second SIGTERM grace period. Connection shutdown cancels active
+model requests, tool work, and hook runs other than `after_run` but does not
+roll back a saved user message, observed tool effects, or committed transcript
+entries. Each running tool or hook owns the cleanup boundary for its resources:
+its whole process group is stopped, a hook's after a two-second SIGTERM grace
+period. Connection shutdown cancels active
 prompts and waits for their operation guards to drop.
 
 ## Capability and trust boundaries
@@ -292,12 +338,15 @@ activation instead of being ignored. The same holds for each `SKILL.md`, and a
 definition that fails validation, or a skill named `compact`, fails activation
 with its path.
 
-A skill's `before_stop` hook is a workspace-defined command run with
-`/bin/sh -c` in the skill directory with Ox's permissions. Invoking the skill is
-the approval to run its hook in both Ask and Auto mode. The hook receives the
-skill, arguments, workspace path, Ox executable path, model, effort level, and
-answer as JSON on stdin, and must print one decision object within its time and
-output limits.
+A skill's hooks are workspace-defined commands run with `/bin/sh -c` in the
+skill directory with Ox's permissions. Invoking the skill is the approval to run
+all of its hook commands in both Ask and Auto mode. Hooks never run for ordinary
+user messages, `/compact`, headless prompts, replay, or compaction requests, and
+never for another hook's command. Each command receives the hook kind, skill,
+arguments, session ID, session mode, run ID, workspace path, Ox executable
+path, model, and effort level as JSON on stdin, with fields specific to its
+kind, and must print one response object for its kind within that kind's time
+limit and the output limit.
 
 The example goal skill launches a nested headless Auto-mode agent in the same
 workspace. Its prompt asks it not to change files; permissions do not enforce
@@ -337,14 +386,16 @@ The implementation enforces these properties:
     assembled when the session became active before the transcript.
 14. Every shell call uses the session mode captured at the prompt's turn
     boundary.
-15. A hook runs only on an assistant message committed with a finished
-    OpenRouter stop, in the prompt run that invoked its skill, and its feedback
-    is saved before the next model request.
+15. A hook runs only in the prompt run that invoked its skill, at its point in
+    that run. `before_stop` runs only on an assistant message committed with a
+    finished OpenRouter stop, `after_tools` only after a committed assistant
+    batch, and hook feedback is saved before the next model request.
 
 ## Deliberate constraints
 
 The implemented architecture has one OpenRouter provider, one concrete tool set,
-one hook point, one SQLite connection, sequential tool execution,
+five fixed hook kinds with at most one command each per skill, one SQLite
+connection, sequential tool execution,
 whole-transcript reads, and process-local operation guards. It has no provider fallback, prompt queue,
 durable provisional output, background continuation, cross-process coordination,
 or database migration path.

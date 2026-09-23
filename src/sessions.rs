@@ -57,8 +57,8 @@ COMMIT;
 /// A turn starts with a user message or a skill invocation. Effort and mode
 /// entries form a settings block immediately before the turn start where they
 /// take effect. Tool results follow the assistant message that called them,
-/// one per call, in call order. Hook feedback follows an assistant message with
-/// no tool calls.
+/// one per call, in call order. Hook feedback follows the skill invocation,
+/// tool results, or assistant message its hook ran after.
 #[derive(Debug, Clone, PartialEq)]
 pub enum TranscriptEntry {
     Model(String),
@@ -93,17 +93,80 @@ impl SkillInvocation {
     }
 }
 
-/// What a skill's `before_stop` hook concluded about a finished answer.
+/// The point in a prompt run where a skill hook runs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HookKind {
+    BeforeRun,
+    BeforeTool,
+    AfterTools,
+    BeforeStop,
+    AfterRun,
+}
+
+impl HookKind {
+    pub const ALL: [Self; 5] = [
+        Self::BeforeRun,
+        Self::BeforeTool,
+        Self::AfterTools,
+        Self::BeforeStop,
+        Self::AfterRun,
+    ];
+
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::BeforeRun => "before_run",
+            Self::BeforeTool => "before_tool",
+            Self::AfterTools => "after_tools",
+            Self::BeforeStop => "before_stop",
+            Self::AfterRun => "after_run",
+        }
+    }
+}
+
+/// A hook's saved message, which later model requests receive.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HookFeedback {
     pub skill: String,
-    pub decision: HookDecision,
-    pub message: String,
+    pub content: HookFeedbackContent,
 }
 
-/// `Continue` makes another model request in the same prompt run; `Stop` ends
-/// the run. It is distinct from an OpenRouter stop.
+/// Each variant has its own place in the transcript.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum HookFeedbackContent {
+    /// Immediately follows a skill invocation.
+    BeforeRun { message: String },
+    /// Immediately follows the last tool result of an assistant batch.
+    AfterTools { message: String },
+    /// Follows an assistant message without tool calls.
+    BeforeStop {
+        decision: HookDecision,
+        message: String,
+    },
+}
+
+impl HookFeedback {
+    pub fn kind(&self) -> HookKind {
+        match self.content {
+            HookFeedbackContent::BeforeRun { .. } => HookKind::BeforeRun,
+            HookFeedbackContent::AfterTools { .. } => HookKind::AfterTools,
+            HookFeedbackContent::BeforeStop { .. } => HookKind::BeforeStop,
+        }
+    }
+
+    pub fn message(&self) -> &str {
+        match &self.content {
+            HookFeedbackContent::BeforeRun { message }
+            | HookFeedbackContent::AfterTools { message }
+            | HookFeedbackContent::BeforeStop { message, .. } => message,
+        }
+    }
+}
+
+/// A `before_stop` decision. `Continue` makes another model request in the
+/// same prompt run; `Stop` ends the run. It is distinct from an OpenRouter
+/// stop.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HookDecision {
@@ -395,13 +458,28 @@ fn validate_transcript(entries: &[TranscriptEntry]) -> io::Result<()> {
                 }
             }
             TranscriptEntry::UserMessage(_) | TranscriptEntry::SkillInvocation(_) => index += 1,
-            TranscriptEntry::HookFeedback(_) => {
-                if !matches!(&entries[index - 1],
-                    TranscriptEntry::AssistantMessage(message) if message.tool_calls.is_empty())
-                {
-                    return Err(invalid_data(
-                        "hook feedback does not follow an assistant message without tool calls",
-                    ));
+            TranscriptEntry::HookFeedback(feedback) => {
+                let previous = &entries[index - 1];
+                let (placed, place) = match feedback.content {
+                    HookFeedbackContent::BeforeRun { .. } => (
+                        matches!(previous, TranscriptEntry::SkillInvocation(_)),
+                        "a skill invocation",
+                    ),
+                    HookFeedbackContent::AfterTools { .. } => (
+                        matches!(previous, TranscriptEntry::ToolResult(_)),
+                        "the tool results of an assistant batch",
+                    ),
+                    HookFeedbackContent::BeforeStop { .. } => (
+                        matches!(previous,
+                            TranscriptEntry::AssistantMessage(message) if message.tool_calls.is_empty()),
+                        "an assistant message without tool calls",
+                    ),
+                };
+                if !placed {
+                    return Err(invalid_data(format!(
+                        "{} hook feedback does not follow {place}",
+                        feedback.kind().id()
+                    )));
                 }
                 index += 1;
             }
@@ -907,12 +985,30 @@ mod tests {
         }
     }
 
-    fn stop_feedback() -> HookFeedback {
+    fn feedback(content: HookFeedbackContent) -> HookFeedback {
         HookFeedback {
             skill: "goal".to_owned(),
+            content,
+        }
+    }
+
+    fn before_run_feedback() -> HookFeedback {
+        feedback(HookFeedbackContent::BeforeRun {
+            message: "The parser lives in src/parse.rs.".to_owned(),
+        })
+    }
+
+    fn after_tools_feedback() -> HookFeedback {
+        feedback(HookFeedbackContent::AfterTools {
+            message: "Formatting is clean.".to_owned(),
+        })
+    }
+
+    fn stop_feedback() -> HookFeedback {
+        feedback(HookFeedbackContent::BeforeStop {
             decision: HookDecision::Stop,
             message: "Objective met.".to_owned(),
-        }
+        })
     }
 
     fn ids(summaries: &[SessionSummary]) -> Vec<String> {
@@ -967,9 +1063,12 @@ mod tests {
             let batch = AssistantBatch::new(message.clone(), results.clone()).unwrap();
             store.append_batch(&id, &batch).unwrap();
             store
+                .append_hook_feedback(&id, &after_tools_feedback())
+                .unwrap();
+            store
                 .append_checkpoint(
                     &id,
-                    6,
+                    7,
                     &CompactionCheckpoint {
                         summary: "Chicago checked; Denver unavailable.".to_owned(),
                         covered_prefix: 6,
@@ -986,6 +1085,9 @@ mod tests {
                     },
                     &TranscriptEntry::SkillInvocation(invocation()),
                 )
+                .unwrap();
+            store
+                .append_hook_feedback(&id, &before_run_feedback())
                 .unwrap();
             store
                 .append_batch(&id, &AssistantBatch::new(answered.clone(), vec![]).unwrap())
@@ -1014,12 +1116,14 @@ mod tests {
                 TranscriptEntry::AssistantMessage(message.clone()),
                 TranscriptEntry::ToolResult(results[0].clone()),
                 TranscriptEntry::ToolResult(results[1].clone()),
+                TranscriptEntry::HookFeedback(after_tools_feedback()),
                 TranscriptEntry::CompactionCheckpoint(CompactionCheckpoint {
                     summary: "Chicago checked; Denver unavailable.".to_owned(),
                     covered_prefix: 6,
                 }),
                 TranscriptEntry::Effort(EffortLevel::Low),
                 TranscriptEntry::SkillInvocation(invocation()),
+                TranscriptEntry::HookFeedback(before_run_feedback()),
                 TranscriptEntry::AssistantMessage(answered),
                 TranscriptEntry::HookFeedback(stop_feedback()),
             ]
@@ -1037,7 +1141,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             replay.len(),
-            9,
+            11,
             "the checkpoint is hidden but the other entries replay"
         );
 
@@ -1190,30 +1294,40 @@ mod tests {
         insert(&effort_in_batch, "user_message", r#""next""#);
         assert!(store.read(&effort_in_batch).is_err());
 
-        let feedback = serde_json::to_string(&stop_feedback()).unwrap();
-        let answered = message(vec![]);
-        for preceding in [
-            vec![("user_message", r#""hello""#.to_owned())],
-            vec![
-                ("user_message", r#""hello""#.to_owned()),
-                (
-                    "assistant_message",
-                    serde_json::to_string(&message(vec![call("call-1", "printf Chicago")]))
-                        .unwrap(),
-                ),
-                (
-                    "tool_result",
-                    serde_json::to_string(&completed("call-1")).unwrap(),
-                ),
-            ],
-            vec![
-                ("user_message", r#""hello""#.to_owned()),
-                (
-                    "assistant_message",
-                    serde_json::to_string(&answered).unwrap(),
-                ),
-                ("hook_feedback", feedback.clone()),
-            ],
+        let user = ("user_message", r#""hello""#.to_owned());
+        let skill = (
+            "skill_invocation",
+            serde_json::to_string(&invocation()).unwrap(),
+        );
+        let answer = (
+            "assistant_message",
+            serde_json::to_string(&message(vec![])).unwrap(),
+        );
+        let called = [
+            (
+                "assistant_message",
+                serde_json::to_string(&message(vec![call("call-1", "printf Chicago")])).unwrap(),
+            ),
+            (
+                "tool_result",
+                serde_json::to_string(&completed("call-1")).unwrap(),
+            ),
+        ];
+        let stopped = (
+            "hook_feedback",
+            serde_json::to_string(&stop_feedback()).unwrap(),
+        );
+        for (feedback, preceding) in [
+            (before_run_feedback(), vec![user.clone()]),
+            (before_run_feedback(), vec![skill.clone(), answer.clone()]),
+            (after_tools_feedback(), vec![user.clone(), answer.clone()]),
+            (after_tools_feedback(), vec![skill.clone()]),
+            (stop_feedback(), vec![user.clone()]),
+            (
+                stop_feedback(),
+                [vec![user.clone()], called.to_vec()].concat(),
+            ),
+            (stop_feedback(), vec![user.clone(), answer.clone(), stopped]),
         ] {
             let misplaced = store.create(workspace()).unwrap().id;
             insert(
@@ -1224,10 +1338,15 @@ mod tests {
             for (kind, data) in &preceding {
                 insert(&misplaced, kind, data);
             }
-            insert(&misplaced, "hook_feedback", &feedback);
+            insert(
+                &misplaced,
+                "hook_feedback",
+                &serde_json::to_string(&feedback).unwrap(),
+            );
             assert!(
                 store.read(&misplaced).is_err(),
-                "hook feedback after {:?}",
+                "{} hook feedback after {:?}",
+                feedback.kind().id(),
                 preceding.last().unwrap().0
             );
         }

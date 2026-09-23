@@ -117,11 +117,15 @@ fn available_commands(skills: &[Skill]) -> SessionUpdate {
 
 /// What a prompt request asks for.
 #[derive(Debug, PartialEq)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "a dispatch result is consumed right after it is made"
+)]
 enum Dispatch {
     Compact,
     Skill {
         invocation: SkillInvocation,
-        hook: Option<hooks::Hook>,
+        hooks: hooks::SkillHooks,
     },
     UserMessage(String),
 }
@@ -143,10 +147,10 @@ fn dispatch(user_message: String, skills: &[Skill]) -> Dispatch {
     };
     let arguments = rest.trim().to_owned();
     Dispatch::Skill {
-        hook: skill.before_stop.clone().map(|command| hooks::Hook {
-            command,
+        hooks: hooks::SkillHooks {
+            hooks: skill.hooks.clone(),
             directory: skill.directory.clone(),
-        }),
+        },
         invocation: SkillInvocation {
             name: skill.name.clone(),
             arguments,
@@ -564,7 +568,7 @@ async fn run_headless_prompt(
         prompt::PromptInput {
             session_id,
             turn_start: TranscriptEntry::UserMessage(user_message),
-            hook: None,
+            hooks: None,
             selected_settings: Some(settings.with_mode(SessionMode::Auto)),
             system_prompt,
         },
@@ -694,7 +698,7 @@ async fn serve(state: ServerState, transport: impl ConnectTo<Agent> + 'static) -
                 let Some(active) = prompt_state.active_session(&request.session_id) else {
                     return responder.respond_with_error(inactive(&request.session_id));
                 };
-                let (turn_start, hook) = match dispatch(user_message, &active.skills) {
+                let (turn_start, hooks) = match dispatch(user_message, &active.skills) {
                     Dispatch::Compact => {
                         let session_id = request.session_id;
                         let compact_state = prompt_state.clone();
@@ -706,8 +710,8 @@ async fn serve(state: ServerState, transport: impl ConnectTo<Agent> + 'static) -
                             reply(responder, result)
                         });
                     }
-                    Dispatch::Skill { invocation, hook } => {
-                        (TranscriptEntry::SkillInvocation(invocation), hook)
+                    Dispatch::Skill { invocation, hooks } => {
+                        (TranscriptEntry::SkillInvocation(invocation), Some(hooks))
                     }
                     Dispatch::UserMessage(text) => (TranscriptEntry::UserMessage(text), None),
                 };
@@ -731,7 +735,7 @@ async fn serve(state: ServerState, transport: impl ConnectTo<Agent> + 'static) -
                     prompt::PromptInput {
                         session_id: session_id.clone(),
                         turn_start,
-                        hook,
+                        hooks,
                         selected_settings: Some(active.selections),
                         system_prompt: active.system_prompt,
                     },
@@ -890,7 +894,12 @@ mod tests {
             argument_hint: argument_hint.map(str::to_owned),
             instructions: format!("Follow the {name} steps."),
             directory: Path::new("/workspace/.agents/skills").join(name),
-            before_stop: before_stop.map(str::to_owned),
+            hooks: skills::Hooks {
+                before_stop: before_stop.map(|command| skills::HookCommand {
+                    command: command.to_owned(),
+                }),
+                ..skills::Hooks::default()
+            },
         };
         let skills = [
             skill(
@@ -933,10 +942,10 @@ mod tests {
                     arguments: arguments.to_owned(),
                     instructions: "Follow the goal steps.".to_owned(),
                 },
-                hook: Some(hooks::Hook {
-                    command: "python3 scripts/check.py".to_owned(),
+                hooks: hooks::SkillHooks {
+                    hooks: skills[0].hooks.clone(),
                     directory: skills[0].directory.clone(),
-                }),
+                },
             }
         );
         assert_eq!(
@@ -947,7 +956,10 @@ mod tests {
                     arguments: String::new(),
                     instructions: "Follow the init steps.".to_owned(),
                 },
-                hook: None,
+                hooks: hooks::SkillHooks {
+                    hooks: skills::Hooks::default(),
+                    directory: skills[1].directory.clone(),
+                },
             }
         );
         for user_message in [
@@ -977,7 +989,7 @@ mod tests {
         };
         write_skill(
             "goal",
-            "---\nname: goal\ndescription: \"Work toward an objective: verify it.\"\nargument-hint: \"<objective>\"\nallowed-tools: [shell]\nmetadata:\n  owner: ox\nhooks:\n  PreToolUse: [{matcher: shell}]\n  before_stop:\n    command: python3 scripts/check.py\n---\n\nWork toward the objective.\n",
+            "---\nname: goal\ndescription: \"Work toward an objective: verify it.\"\nargument-hint: \"<objective>\"\nallowed-tools: [shell]\nmetadata:\n  owner: ox\nhooks:\n  PreToolUse: [{matcher: shell}]\n  before_run:\n    command: python3 scripts/context.py\n  before_tool:\n    command: python3 scripts/check_call.py\n    tools: [shell, apply_patch]\n  after_tools:\n    command: python3 scripts/format.py\n  before_stop:\n    command: python3 scripts/check.py\n  after_run:\n    command: python3 scripts/report.py\n---\n\nWork toward the objective.\n",
         );
         fs::write(skills_dir.join(".DS_Store"), "").unwrap();
         let goal = Skill {
@@ -986,7 +998,25 @@ mod tests {
             argument_hint: Some("<objective>".to_owned()),
             instructions: "Work toward the objective.".to_owned(),
             directory: skills_dir.join("goal"),
-            before_stop: Some("python3 scripts/check.py".to_owned()),
+            hooks: skills::Hooks {
+                before_run: Some(skills::HookCommand {
+                    command: "python3 scripts/context.py".to_owned(),
+                }),
+                before_tool: Some(skills::ToolHookCommand {
+                    command: "python3 scripts/check_call.py".to_owned(),
+                    tools: Some(vec!["shell".to_owned(), "apply_patch".to_owned()]),
+                }),
+                after_tools: Some(skills::ToolHookCommand {
+                    command: "python3 scripts/format.py".to_owned(),
+                    tools: None,
+                }),
+                before_stop: Some(skills::HookCommand {
+                    command: "python3 scripts/check.py".to_owned(),
+                }),
+                after_run: Some(skills::HookCommand {
+                    command: "python3 scripts/report.py".to_owned(),
+                }),
+            },
         };
         let french = system_prompt::for_workspace(&workspace.0).unwrap();
         let state = state();
@@ -1063,10 +1093,9 @@ mod tests {
                 &format!("---\nname: shared\ndescription: Shared.\nhooks: {hooks}\n---\nBody\n"),
             );
             let id = create_session(&state, &workspace.0);
-            assert!(
-                state.active_session(&id).unwrap().skills[0]
-                    .before_stop
-                    .is_none()
+            assert_eq!(
+                state.active_session(&id).unwrap().skills[0].hooks,
+                skills::Hooks::default()
             );
             let later = state_over(state.store.clone());
             later
@@ -1074,10 +1103,9 @@ mod tests {
                     Ok(())
                 })
                 .unwrap();
-            assert!(
-                later.active_session(&id).unwrap().skills[0]
-                    .before_stop
-                    .is_none()
+            assert_eq!(
+                later.active_session(&id).unwrap().skills[0].hooks,
+                skills::Hooks::default()
             );
             state
                 .delete_session(&DeleteSessionRequest::new(id))
@@ -1128,8 +1156,28 @@ mod tests {
             ),
             (
                 "unhooked",
-                "---\nname: unhooked\ndescription: Unhooked.\nhooks:\n  before_stop:\n    command: \" \"\n---\nBody\n",
-                "before_stop hook command is blank",
+                "---\nname: unhooked\ndescription: Unhooked.\nhooks:\n  after_run:\n    command: \" \"\n---\nBody\n",
+                "after_run hook command is blank",
+            ),
+            (
+                "filtered",
+                "---\nname: filtered\ndescription: Filtered.\nhooks:\n  before_run:\n    command: 'true'\n    tools: [shell]\n---\nBody\n",
+                "unknown field `tools`",
+            ),
+            (
+                "unfiltered",
+                "---\nname: unfiltered\ndescription: Unfiltered.\nhooks:\n  before_tool:\n    command: 'true'\n    tools: []\n---\nBody\n",
+                "before_tool hook tools list is empty",
+            ),
+            (
+                "repeated",
+                "---\nname: repeated\ndescription: Repeated.\nhooks:\n  after_tools:\n    command: 'true'\n    tools: [shell, shell]\n---\nBody\n",
+                "after_tools hook tool \"shell\" is repeated",
+            ),
+            (
+                "unknown",
+                "---\nname: unknown\ndescription: Unknown.\nhooks:\n  before_tool:\n    command: 'true'\n    tools: [edit]\n---\nBody\n",
+                "before_tool hook tool \"edit\" is unknown",
             ),
             ("missing", "", "No such file or directory"),
         ] {
@@ -1384,7 +1432,7 @@ mod tests {
             prompt::PromptInput {
                 session_id: id.clone(),
                 turn_start: TranscriptEntry::UserMessage(user_message.to_owned()),
-                hook: None,
+                hooks: None,
                 selected_settings: Some(active.selections),
                 system_prompt: active.system_prompt,
             }
@@ -1577,6 +1625,7 @@ mod tests {
             "auto",
             "deny",
             "mixed",
+            "hook",
             "cancelled",
             "cancel",
             "eof",
@@ -1584,7 +1633,7 @@ mod tests {
             "error",
         ] {
             let workspace = Workspace::new();
-            let continues = matches!(decision, "approve" | "auto" | "deny" | "mixed");
+            let continues = matches!(decision, "approve" | "auto" | "deny" | "mixed" | "hook");
             let mut replies = vec![shell_reply(&[("touch first", 5), ("touch second", 5)])];
             if continues {
                 replies.push(text_reply("Done"));
@@ -1594,6 +1643,26 @@ mod tests {
             *state.openrouter.lock().unwrap() = Some(server.client());
             let store = state.store.clone();
             let operations = state.operations.clone();
+            let mut text = "Run commands";
+            if decision == "hook" {
+                let skill = workspace.0.join(".agents/skills/check");
+                fs::create_dir_all(&skill).unwrap();
+                fs::write(
+                    skill.join("SKILL.md"),
+                    r#"---
+name: check
+description: Check each shell call.
+hooks:
+  before_tool:
+    command: "case \"$(cat)\" in *'touch first'*) echo '{\"decision\":\"deny\",\"message\":\"Leave first alone.\"}';; *) echo '{\"decision\":\"allow\"}';; esac"
+    tools: [shell]
+---
+Run the commands.
+"#,
+                )
+                .unwrap();
+                text = "/check Run commands";
+            }
             let id = create_session(&state, &workspace.0);
             if decision == "auto" {
                 state
@@ -1609,7 +1678,7 @@ mod tests {
             let transport = Lines::new(outgoing_tx.sink_map_err(io::Error::other), incoming_rx);
             for message in [
                 json!({"jsonrpc":"2.0", "id":1, "method":"initialize", "params":{"protocolVersion":1,"clientCapabilities":{}}}),
-                json!({"jsonrpc":"2.0", "id":2, "method":"session/prompt", "params":{"sessionId":id,"prompt":[{"type":"text","text":"Run commands"}]}}),
+                json!({"jsonrpc":"2.0", "id":2, "method":"session/prompt", "params":{"sessionId":id,"prompt":[{"type":"text","text":text}]}}),
             ] {
                 incoming_tx.unbounded_send(Ok(message.to_string())).unwrap();
             }
@@ -1646,6 +1715,9 @@ mod tests {
                     if message["method"] == "session/request_permission" {
                         let params = &message["params"];
                         let file = if requested == 0 { "first" } else { "second" };
+                        if decision == "hook" {
+                            assert_eq!(params["toolCall"]["toolCallId"], "shell-1");
+                        }
                         if decision == "approve" {
                             assert_eq!(params["sessionId"], id.to_string());
                             assert_eq!(
@@ -1692,10 +1764,10 @@ mod tests {
                                 let outcome = if decision == "cancelled" {
                                     json!({"outcome":"cancelled"})
                                 } else {
-                                    let option = if decision == "mixed" {
-                                        if requested == 1 { "deny" } else { "approve" }
-                                    } else {
-                                        decision
+                                    let option = match decision {
+                                        "mixed" if requested == 1 => "deny",
+                                        "mixed" | "hook" => "approve",
+                                        _ => decision,
                                     };
                                     json!({"outcome":"selected","optionId":option})
                                 };
@@ -1728,8 +1800,13 @@ mod tests {
                         drop(incoming_tx.take());
                     }
                 }
-                if matches!(decision, "approve" | "auto") {
-                    assert_eq!(requested, if decision == "approve" { 2 } else { 0 });
+                if matches!(decision, "approve" | "auto" | "hook") {
+                    let expected = match decision {
+                        "approve" => 2,
+                        "hook" => 1,
+                        _ => 0,
+                    };
+                    assert_eq!(requested, expected);
                 }
                 if decision == "auto" {
                     assert_eq!(
@@ -1778,7 +1855,7 @@ mod tests {
             );
             assert_eq!(
                 workspace.0.join("second").exists(),
-                matches!(decision, "approve" | "auto" | "mixed"),
+                matches!(decision, "approve" | "auto" | "mixed" | "hook"),
                 "{decision}"
             );
             let transcript = store.read(&id).unwrap().unwrap().transcript;
@@ -1806,6 +1883,11 @@ mod tests {
                         matches!(result.outcome, ToolOutcome::Completed(_)),
                         "{decision}, result {index}"
                     ),
+                    "hook" if index == 0 => {
+                        let denied = "check before_tool hook denied this call: Leave first alone.";
+                        assert_eq!(result.outcome, ToolOutcome::Failed(denied.to_owned()));
+                        assert_eq!(server.requests()[1]["messages"][3]["content"], denied);
+                    }
                     "deny" | "mixed" if decision == "deny" || index == 0 => assert_eq!(
                         result.outcome,
                         ToolOutcome::Failed(
@@ -1813,7 +1895,7 @@ mod tests {
                         ),
                         "{decision}, result {index}"
                     ),
-                    "mixed" => assert!(
+                    "mixed" | "hook" => assert!(
                         matches!(result.outcome, ToolOutcome::Completed(_)),
                         "{decision}, result {index}"
                     ),

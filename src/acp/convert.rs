@@ -13,7 +13,7 @@ use agent_client_protocol::{
 use serde_json::Value;
 
 use crate::{
-    sessions::{HookFeedback, ToolCall, ToolOutcome, ToolResult, TranscriptEntry},
+    sessions::{HookFeedback, HookKind, ToolCall, ToolOutcome, ToolResult, TranscriptEntry},
     tools,
 };
 
@@ -146,20 +146,23 @@ pub fn hook_call_id() -> String {
     format!("hook-{}", uuid::Uuid::new_v4())
 }
 
-fn hook_call_title(skill: &str) -> String {
-    format!("{skill} before_stop hook")
+fn hook_call_title(skill: &str, kind: HookKind) -> String {
+    format!("{skill} {} hook", kind.id())
 }
 
 /// Announces a hook run as an execute tool call.
-pub fn pending_hook_call(call_id: &str, skill: &str) -> SessionUpdate {
+pub fn pending_hook_call(call_id: &str, skill: &str, kind: HookKind) -> SessionUpdate {
     SessionUpdate::ToolCall(
-        AcpToolCall::new(ToolCallId::new(call_id.to_owned()), hook_call_title(skill))
-            .kind(ToolKind::Execute)
-            .status(ToolCallStatus::Pending),
+        AcpToolCall::new(
+            ToolCallId::new(call_id.to_owned()),
+            hook_call_title(skill, kind),
+        )
+        .kind(ToolKind::Execute)
+        .status(ToolCallStatus::Pending),
     )
 }
 
-/// Finishes a hook run with its feedback message or its error.
+/// Finishes a hook run with a description of its output or its error.
 pub fn finished_hook_call_update(
     call_id: &str,
     result: std::result::Result<&str, &str>,
@@ -181,12 +184,12 @@ fn replayed_hook_call(feedback: &HookFeedback) -> SessionUpdate {
     SessionUpdate::ToolCall(
         AcpToolCall::new(
             ToolCallId::new(hook_call_id()),
-            hook_call_title(&feedback.skill),
+            hook_call_title(&feedback.skill, feedback.kind()),
         )
         .kind(ToolKind::Execute)
         .status(ToolCallStatus::Completed)
-        .content(vec![text_content(&feedback.message)])
-        .raw_output(Value::String(feedback.message.clone())),
+        .content(vec![text_content(feedback.message())])
+        .raw_output(Value::String(feedback.message().to_owned())),
     )
 }
 
@@ -370,8 +373,9 @@ mod tests {
         replay_transcript(
             &[TranscriptEntry::HookFeedback(HookFeedback {
                 skill: "goal".to_owned(),
-                decision: crate::sessions::HookDecision::Continue,
-                message: "Two tests still fail.".to_owned(),
+                content: crate::sessions::HookFeedbackContent::AfterTools {
+                    message: "Two tests still fail.".to_owned(),
+                },
             })],
             |update| {
                 replay.push(update);
@@ -383,7 +387,7 @@ mod tests {
             &replay[..],
             [SessionUpdate::ToolCall(call)]
                 if call.tool_call_id.to_string().starts_with("hook-")
-                    && call.title == "goal before_stop hook"
+                    && call.title == "goal after_tools hook"
                     && call.kind == ToolKind::Execute
                     && call.status == ToolCallStatus::Completed
                     && call.raw_output == Some(Value::String("Two tests still fail.".to_owned()))

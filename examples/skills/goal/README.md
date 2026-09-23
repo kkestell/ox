@@ -31,8 +31,9 @@ followed by Markdown instructions.
   lowercase letters, digits, and hyphens.
 - `description`: The command description shown by the ACP client.
 - `argument-hint`: Optional hint for the command's arguments.
-- `hooks.before_stop.command`: Optional hook command, run with `/bin/sh -c` in
-  the skill directory.
+- `hooks`: Optional hook commands, each run with `/bin/sh -c` in the skill
+  directory. This skill declares `hooks.before_stop.command`. The
+  [careful skill](../careful/README.md) describes every hook kind.
 
 Ox ignores other top-level keys and unknown hook kinds. An empty `hooks` map
 declares no hook; a `before_stop` definition must contain only a nonblank
@@ -50,8 +51,12 @@ Ox writes one JSON object to the hook's stdin and closes it:
 
 ```json
 {
+  "kind": "before_stop",
   "skill": "goal",
   "arguments": "Make the parser tests pass.",
+  "session_id": "…",
+  "mode": "ask",
+  "run_id": "…",
   "workspace": "/abs/workspace",
   "ox": "/abs/path/to/ox",
   "model": "…",
@@ -60,8 +65,8 @@ Ox writes one JSON object to the hook's stdin and closes it:
 }
 ```
 
-`ox` is the running Ox executable, and `answer` is the text of the finished
-assistant message.
+`ox` is the running Ox executable, `run_id` identifies the prompt run across
+its hook commands, and `answer` is the text of the finished assistant message.
 
 The hook exits zero and prints exactly one JSON object to stdout:
 

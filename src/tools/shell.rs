@@ -148,7 +148,8 @@ mod tests {
     use crate::{
         hooks,
         process::{OUTPUT_DRAIN_TIMEOUT, kill_group},
-        sessions::{EffortLevel, HookDecision, HookFeedback, SkillInvocation},
+        sessions::{EffortLevel, HookDecision, SessionMode},
+        skills,
         tools::{self, fixture::Workspace},
     };
     use rustix::process::Pid;
@@ -298,32 +299,38 @@ mod tests {
             .await;
             assert!(matches!(outcome, ToolOutcome::Completed(_)), "{outcome:?}");
             // A hook inherits the key and reads its input from stdin.
-            let hook = hooks::Hook {
-                command: r#"test "$OPENROUTER_API_KEY" = dummy-key && cat > input.json && printf '{"decision":"stop","message":"Key present."}'"#.to_owned(),
+            let hooks = hooks::SkillHooks {
+                hooks: skills::Hooks {
+                    before_stop: Some(skills::HookCommand {
+                        command: r#"test "$OPENROUTER_API_KEY" = dummy-key && cat > input.json && printf '{"decision":"stop","message":"Key present."}'"#.to_owned(),
+                    }),
+                    ..skills::Hooks::default()
+                },
                 directory: workspace.0.clone(),
             };
-            let feedback = hooks::run(
-                &hook,
-                &SkillInvocation {
-                    name: "goal".to_owned(),
-                    arguments: "Check the key.".to_owned(),
-                    instructions: "Check the environment.".to_owned(),
+            let context = hooks::Context {
+                skill: "goal".to_owned(),
+                arguments: "Check the key.".to_owned(),
+                session_id: "session-1".to_owned(),
+                mode: SessionMode::Ask,
+                run_id: "run-1".to_owned(),
+                workspace: "/workspace".into(),
+                model: "test/model".to_owned(),
+                effort: EffortLevel::Low,
+            };
+            let decision: hooks::StopDecision = hooks::run(
+                &hooks,
+                &context,
+                &hooks::Event::BeforeStop {
+                    answer: "The answer.".to_owned(),
                 },
-                Path::new("/workspace"),
-                "test/model",
-                EffortLevel::Low,
-                "The answer.",
                 std::future::pending(),
             )
             .await
             .unwrap();
             assert_eq!(
-                feedback,
-                HookFeedback {
-                    skill: "goal".to_owned(),
-                    decision: HookDecision::Stop,
-                    message: "Key present.".to_owned(),
-                }
+                (decision.decision, decision.message.as_str()),
+                (HookDecision::Stop, "Key present.")
             );
             let input: serde_json::Value = serde_json::from_str(
                 &std::fs::read_to_string(workspace.0.join("input.json")).unwrap(),
@@ -332,8 +339,12 @@ mod tests {
             assert_eq!(
                 input,
                 json!({
+                    "kind": "before_stop",
                     "skill": "goal",
                     "arguments": "Check the key.",
+                    "session_id": "session-1",
+                    "mode": "ask",
+                    "run_id": "run-1",
                     "workspace": "/workspace",
                     "ox": std::env::current_exe().unwrap(),
                     "model": "test/model",

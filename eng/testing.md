@@ -21,6 +21,11 @@ Test the example goal skill's hook script with
 `examples/skills/goal` into a workspace's `.agents/skills/goal` and invoke
 `/goal <objective>` from an ACP client; headless runs never invoke skills.
 
+Test the example careful skill's hook script with
+`python3 -m unittest discover -s examples/skills/careful/scripts`. It uses a
+temporary Git repository and needs no OpenRouter key. Install and invoke it the
+same way as the goal skill.
+
 ## Test discipline
 
 - The test suite is curated code, not an append-only log of changes. Feature

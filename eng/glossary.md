@@ -101,23 +101,30 @@
   before saving anything or making a model request.
 - **Skill**: A `SKILL.md` definition and its directory in the workspace's
   `.agents/skills/`. It has a name, description, optional argument hint,
-  instructions, and an optional hook.
+  instructions, and optional hooks.
 - **Skill catalog**: The skills available to an active session, loaded when it
   becomes active.
 - **Skill invocation**: A transcript entry holding a skill's name, arguments,
   and instructions, saved in place of the user message for that turn.
-- **Hook**: An external command a skill declares for `before_stop`, the point
-  after an assistant message with a finished OpenRouter stop is committed. It
-  runs only in the prompt run that invoked its skill.
-- **Hook decision**: `continue` or `stop`. It is distinct from an OpenRouter
-  stop.
-- **Hook feedback**: A transcript entry holding a hook's skill, decision, and
-  message. It is neither a user message nor a tool result.
+- **Hook**: An external command a skill declares for one hook kind. It runs
+  only in the prompt run that invoked its skill.
+- **Hook kind**: The point in a prompt run where a hook runs: `before_run`,
+  `before_tool`, `after_tools`, `before_stop`, or `after_run`. It is `HookKind`
+  in code and `kind` in hook input.
+- **Hook decision**: `continue` or `stop` from a `before_stop` hook. It is
+  distinct from an OpenRouter stop and from a tool decision.
+- **Tool decision**: `allow` or `deny` from a `before_tool` hook for one model
+  tool call. It is never saved.
+- **Hook feedback**: A transcript entry holding a hook's skill and saved message
+  from `before_run`, `after_tools`, or `before_stop`, with the hook decision for
+  `before_stop`. It is neither a user message nor a tool result.
 - **Hook continuation**: A model request in the same prompt run caused by a
   `continue` decision.
 - **Prompt run**: The work caused by one prompt request: save the user message
-  or skill invocation, request model output, run tools and any hook, save
-  results, and respond.
+  or skill invocation, request model output, run tools and the invoked skill's
+  hooks, save results, and respond.
+- **Run ID**: A UUID identifying one prompt run in the input of each of its hook
+  commands.
 - **Final answer**: The text of the assistant message committed with the
   finished OpenRouter stop that ended a prompt run.
 - **Headless entry point**: The `ox run` mode, which creates a session, runs

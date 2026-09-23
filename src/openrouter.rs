@@ -272,8 +272,10 @@ pub(crate) fn skill_invocation_text(invocation: &SkillInvocation) -> String {
 /// The user-role text that gives the model a hook's feedback.
 pub(crate) fn hook_feedback_text(feedback: &HookFeedback) -> String {
     format!(
-        "Feedback from the {} before_stop hook:\n{}",
-        feedback.skill, feedback.message
+        "Feedback from the {} {} hook:\n{}",
+        feedback.skill,
+        feedback.kind().id(),
+        feedback.message()
     )
 }
 

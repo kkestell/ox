@@ -1,7 +1,7 @@
 //! Runs one ACP prompt request. It saves the user message or skill invocation,
 //! makes model requests, runs tools in call order, saves each complete
-//! assistant batch, runs the invoked skill's `before_stop` hook on each
-//! finished answer, and returns the final stop reason and answer.
+//! assistant batch, runs the invoked skill's hooks at their points in the run,
+//! and returns the final stop reason and answer.
 
 use std::{fmt, future::Future, io};
 
@@ -15,17 +15,22 @@ use agent_client_protocol::{
 
 use super::{convert, operations::PromptCancellation};
 use crate::{
-    compaction, hooks, openrouter,
+    compaction,
+    hooks::{self, SkillHooks},
+    openrouter,
     sessions::{
-        AssistantBatch, AssistantMessage, HookDecision, HookFeedback, SessionMode, SessionSettings,
-        SessionSettingsChange, SessionStore, SessionSummary, SkillInvocation, ToolCall,
-        ToolOutcome, ToolResult, TranscriptEntry,
+        AssistantBatch, AssistantMessage, HookDecision, HookFeedback, HookFeedbackContent,
+        HookKind, SessionMode, SessionSettings, SessionSettingsChange, SessionStore,
+        SessionSummary, SkillInvocation, ToolCall, ToolOutcome, ToolResult, TranscriptEntry,
     },
     tools,
 };
 
 /// The most `continue` decisions one prompt run accepts from its hook.
 const MAX_HOOK_CONTINUATIONS: usize = 50;
+
+/// How a hook call finishes when its command saved nothing.
+const NO_FEEDBACK: &str = "No feedback.";
 
 /// Transport for Ask mode's ACP permission request. The captured session mode,
 /// not this transport, decides whether shell approval is required.
@@ -38,8 +43,8 @@ pub(super) struct PromptInput {
     pub session_id: SessionId,
     /// The user message or skill invocation that starts the turn.
     pub turn_start: TranscriptEntry,
-    /// The invoked skill's `before_stop` hook.
-    pub hook: Option<hooks::Hook>,
+    /// The invoked skill's hooks.
+    pub hooks: Option<SkillHooks>,
     pub selected_settings: Option<SessionSettings>,
     /// The complete system prompt captured when the session became active.
     pub system_prompt: String,
@@ -73,16 +78,21 @@ where
         send_update,
         permission_transport,
     )?;
-    let saved = run.save_turn_start(input.turn_start)?;
+    let updates = run.save_turn_start(input.turn_start)?;
     Ok(async move {
-        if !saved {
+        let Some(updates) = updates else {
             return Ok(PromptOutput {
                 stop_reason: StopReason::Cancelled,
                 answer: None,
             });
-        }
-        let outcome = run.run_model_loop().await;
-        run.finish(outcome)
+        };
+        let outcome = match run.start(updates).await {
+            Ok(()) => run.run_model_loop().await,
+            Err(outcome) => outcome,
+        };
+        let result = run.finish(outcome);
+        run.run_after_run(&result).await;
+        result
     })
 }
 
@@ -129,7 +139,9 @@ struct PromptRun<F> {
     /// Saved transcript, extended only after a database transaction succeeds.
     transcript: Vec<TranscriptEntry>,
     uncommitted_batch: Option<UncommittedAssistantBatch>,
-    hook: Option<hooks::Hook>,
+    hooks: Option<SkillHooks>,
+    /// Identifies this run in the input of each of its hook commands.
+    run_id: String,
     hook_continuations: usize,
     /// The text of the latest assistant message committed with a finished stop.
     answer: Option<String>,
@@ -221,18 +233,22 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
             permission_transport,
             transcript: stored.transcript,
             uncommitted_batch: None,
-            hook: input.hook.clone(),
+            hooks: input.hooks.clone(),
+            run_id: uuid::Uuid::new_v4().to_string(),
             hook_continuations: 0,
             answer: None,
         })
     }
 
     /// Saves the user message or skill invocation before any model request and
-    /// announces the session update. `false` when cancellation was already
-    /// observed, in which case nothing is written.
-    fn save_turn_start(&mut self, turn_start: TranscriptEntry) -> Result<bool> {
+    /// returns the session updates that announce it. `None` when cancellation
+    /// was already observed, in which case nothing is written.
+    fn save_turn_start(
+        &mut self,
+        turn_start: TranscriptEntry,
+    ) -> Result<Option<Vec<SessionUpdate>>> {
         if self.cancellation.is_cancelled() {
-            return Ok(false);
+            return Ok(None);
         }
         let mut prospective = self.transcript.clone();
         if let Some(model) = &self.settings_change.model {
@@ -269,10 +285,11 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
         if let Some(mode) = self.settings_change.mode.take() {
             self.transcript.push(TranscriptEntry::Mode(mode));
         }
+        let mut updates = Vec::new();
         if locks_model {
-            (self.send_update)(SessionUpdate::ConfigOptionUpdate(ConfigOptionUpdate::new(
+            updates.push(SessionUpdate::ConfigOptionUpdate(ConfigOptionUpdate::new(
                 super::config_options(&self.settings, true),
-            )))?;
+            )));
         }
         self.transcript.push(turn_start);
         let mut info = SessionInfoUpdate::new().updated_at(updated.updated_at);
@@ -281,8 +298,29 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
         {
             info = info.title(session_title);
         }
-        (self.send_update)(SessionUpdate::SessionInfoUpdate(info))?;
-        Ok(true)
+        updates.push(SessionUpdate::SessionInfoUpdate(info));
+        Ok(Some(updates))
+    }
+
+    /// Announces the saved turn start and runs the `before_run` hook.
+    async fn start(
+        &mut self,
+        updates: Vec<SessionUpdate>,
+    ) -> std::result::Result<(), PromptOutcome> {
+        for update in updates {
+            (self.send_update)(update).map_err(PromptOutcome::AcpUpdate)?;
+        }
+        if self.has_hook(HookKind::BeforeRun) {
+            self.run_hook(hooks::Event::BeforeRun, |run, output: hooks::Feedback| {
+                run.save_optional_feedback(
+                    output
+                        .message
+                        .map(|message| HookFeedbackContent::BeforeRun { message }),
+                )
+            })
+            .await?;
+        }
+        Ok(())
     }
 
     async fn run_model_loop(&mut self) -> PromptOutcome {
@@ -318,9 +356,10 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
             }
             match outcome {
                 Some(PromptOutcome::Finished) => {
-                    self.answer = Some(text);
-                    if self.hook.is_some() {
-                        match self.run_hook().await {
+                    self.answer = Some(text.clone());
+                    if self.has_hook(HookKind::BeforeStop) {
+                        let event = hooks::Event::BeforeStop { answer: text };
+                        match self.run_hook(event, Self::save_stop_feedback).await {
                             Ok(HookDecision::Continue) => continue,
                             Ok(HookDecision::Stop) => {}
                             Err(outcome) => return outcome,
@@ -329,34 +368,70 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
                     return PromptOutcome::Finished;
                 }
                 Some(outcome) => return outcome,
-                None => {}
+                None => {
+                    if let Err(outcome) = self.run_after_tools(&calls).await {
+                        return outcome;
+                    }
+                }
             }
         }
     }
 
-    /// Runs the invoked skill's hook on the answer just committed and saves
-    /// its feedback. The hook is shown to the ACP client as an execute tool
-    /// call; it is not a model tool call.
-    async fn run_hook(&mut self) -> std::result::Result<HookDecision, PromptOutcome> {
+    fn has_hook(&self, kind: HookKind) -> bool {
+        self.hooks
+            .as_ref()
+            .is_some_and(|hooks| hooks.hooks.command(kind).is_some())
+    }
+
+    /// Runs the invoked skill's command for `event`, shown to the ACP client
+    /// as an execute tool call; it is not a model tool call. `apply` turns the
+    /// command's output into the result and the text the call finishes with.
+    async fn run_hook<T: hooks::Output, R>(
+        &mut self,
+        event: hooks::Event,
+        apply: impl FnOnce(&mut Self, T) -> std::result::Result<(R, String), PromptOutcome>,
+    ) -> std::result::Result<R, PromptOutcome> {
         if self.cancellation.is_cancelled() {
             return Err(PromptOutcome::Cancelled);
         }
-        let hook = self
-            .hook
-            .clone()
-            .expect("a hook runs only for a skill that declares one");
+        let context = self.hook_context();
         let call_id = convert::hook_call_id();
-        let pending = convert::pending_hook_call(&call_id, &self.hook_invocation().name);
+        let pending = convert::pending_hook_call(&call_id, &context.skill, event.kind());
         (self.send_update)(pending).map_err(PromptOutcome::AcpUpdate)?;
         (self.send_update)(convert::in_progress_tool_call_update(&call_id))
             .map_err(PromptOutcome::AcpUpdate)?;
-        let result = self.run_and_save_hook(&hook).await;
+        let hooks = self
+            .hooks
+            .as_ref()
+            .expect("a hook runs only in a prompt run that invoked its skill");
+        let output = hooks::run(hooks, &context, &event, self.cancellation.cancelled()).await;
+        let result = match output {
+            Ok(output) => apply(self, output),
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {
+                Err(PromptOutcome::Cancelled)
+            }
+            Err(error) => Err(PromptOutcome::Hook(error)),
+        };
         let update = match &result {
-            Ok(feedback) => convert::finished_hook_call_update(&call_id, Ok(&feedback.message)),
+            Ok((_, text)) => convert::finished_hook_call_update(&call_id, Ok(text)),
             Err(outcome) => convert::finished_hook_call_update(&call_id, Err(&outcome.to_string())),
         };
         (self.send_update)(update).map_err(PromptOutcome::AcpUpdate)?;
-        result.map(|feedback| feedback.decision)
+        result.map(|(value, _)| value)
+    }
+
+    fn hook_context(&self) -> hooks::Context {
+        let invocation = self.hook_invocation();
+        hooks::Context {
+            skill: invocation.name.clone(),
+            arguments: invocation.arguments.clone(),
+            session_id: self.summary.id.to_string(),
+            mode: self.settings.mode,
+            run_id: self.run_id.clone(),
+            workspace: self.summary.workspace_path.clone(),
+            model: self.settings.model.clone(),
+            effort: self.settings.effort,
+        }
     }
 
     fn hook_invocation(&self) -> &SkillInvocation {
@@ -371,39 +446,171 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
         }
     }
 
-    /// Runs the hook and saves its feedback. Nothing is saved for a failed hook.
-    async fn run_and_save_hook(
+    /// Runs the `before_tool` hook on a call its filter matches. `Some` holds
+    /// the message of a denial.
+    async fn run_before_tool(
         &mut self,
-        hook: &hooks::Hook,
-    ) -> std::result::Result<HookFeedback, PromptOutcome> {
-        let invocation = self.hook_invocation();
-        let feedback = hooks::run(
-            hook,
-            invocation,
-            &self.summary.workspace_path,
-            &self.settings.model,
-            self.settings.effort,
-            self.answer
-                .as_deref()
-                .expect("a before_stop hook runs on a committed answer"),
-            self.cancellation.cancelled(),
+        call: &ToolCall,
+    ) -> std::result::Result<Option<String>, PromptOutcome> {
+        if !self
+            .hooks
+            .as_ref()
+            .and_then(|hooks| hooks.hooks.before_tool.as_ref())
+            .is_some_and(|hook| hook.matches(&call.name))
+        {
+            return Ok(None);
+        }
+        let event = hooks::Event::BeforeTool { tool: call.clone() };
+        self.run_hook(event, |_, decision: hooks::ToolDecision| {
+            Ok(match decision {
+                hooks::ToolDecision::Allow {} => (None, "Allowed.".to_owned()),
+                hooks::ToolDecision::Deny { message } => {
+                    let text = format!("Denied: {message}");
+                    (Some(message), text)
+                }
+            })
+        })
+        .await
+    }
+
+    /// Runs the `after_tools` hook on the batch just committed when its filter
+    /// matches any of the batch's calls.
+    async fn run_after_tools(
+        &mut self,
+        calls: &[ToolCall],
+    ) -> std::result::Result<(), PromptOutcome> {
+        let Some(hook) = self
+            .hooks
+            .as_ref()
+            .and_then(|hooks| hooks.hooks.after_tools.as_ref())
+        else {
+            return Ok(());
+        };
+        let results = &self.transcript[self.transcript.len() - calls.len()..];
+        let tools: Vec<_> = calls
+            .iter()
+            .zip(results)
+            .filter(|(call, _)| hook.matches(&call.name))
+            .map(|(call, entry)| match entry {
+                TranscriptEntry::ToolResult(result) => hooks::ToolReport::new(call, result),
+                _ => unreachable!("a committed batch ends with its tool results"),
+            })
+            .collect();
+        if tools.is_empty() {
+            return Ok(());
+        }
+        self.run_hook(
+            hooks::Event::AfterTools { tools },
+            |run, output: hooks::Feedback| {
+                run.save_optional_feedback(
+                    output
+                        .message
+                        .map(|message| HookFeedbackContent::AfterTools { message }),
+                )
+            },
         )
         .await
-        .map_err(|error| {
-            if error.kind() == io::ErrorKind::Interrupted {
-                PromptOutcome::Cancelled
-            } else {
-                PromptOutcome::Hook(error)
+    }
+
+    /// Runs the `after_run` hook on the prompt run's result. It ignores
+    /// cancellation, which it may be reporting, and its deadline bounds it.
+    /// Its ACP updates are best effort, and a failure is written to stderr
+    /// without changing the result.
+    async fn run_after_run(&mut self, result: &Result<PromptOutput>) {
+        if !self.has_hook(HookKind::AfterRun) {
+            return;
+        }
+        let (outcome, answer, error) = match result {
+            Ok(output) => {
+                let outcome = match output.stop_reason {
+                    StopReason::EndTurn => hooks::RunOutcome::Finished,
+                    StopReason::Cancelled => hooks::RunOutcome::Cancelled,
+                    StopReason::MaxTokens => hooks::RunOutcome::TokenLimit,
+                    StopReason::Refusal => hooks::RunOutcome::Refused,
+                    other => unreachable!("a prompt run never stops with {other:?}"),
+                };
+                (outcome, output.answer.clone(), None)
             }
-        })?;
-        if feedback.decision == HookDecision::Continue
+            // The ACP error's Display quotes string data as JSON.
+            Err(error) => {
+                let text = match error.data.as_ref().and_then(serde_json::Value::as_str) {
+                    Some(data) => format!("{}: {data}", error.message),
+                    None => error.to_string(),
+                };
+                (hooks::RunOutcome::Failed, None, Some(text))
+            }
+        };
+        let event = hooks::Event::AfterRun {
+            outcome,
+            answer,
+            error,
+        };
+        let context = self.hook_context();
+        let call_id = convert::hook_call_id();
+        let _ = (self.send_update)(convert::pending_hook_call(
+            &call_id,
+            &context.skill,
+            HookKind::AfterRun,
+        ));
+        let _ = (self.send_update)(convert::in_progress_tool_call_update(&call_id));
+        let hooks = self
+            .hooks
+            .as_ref()
+            .expect("a hook runs only in a prompt run that invoked its skill");
+        let reported: io::Result<hooks::Report> =
+            hooks::run(hooks, &context, &event, std::future::pending()).await;
+        let update = match reported {
+            Ok(_) => convert::finished_hook_call_update(&call_id, Ok(NO_FEEDBACK)),
+            Err(error) => {
+                eprintln!("{error}");
+                convert::finished_hook_call_update(&call_id, Err(&error.to_string()))
+            }
+        };
+        let _ = (self.send_update)(update);
+    }
+
+    fn save_optional_feedback(
+        &mut self,
+        content: Option<HookFeedbackContent>,
+    ) -> std::result::Result<((), String), PromptOutcome> {
+        match content {
+            Some(content) => self.save_feedback(content).map(|message| ((), message)),
+            None => Ok(((), NO_FEEDBACK.to_owned())),
+        }
+    }
+
+    fn save_stop_feedback(
+        &mut self,
+        output: hooks::StopDecision,
+    ) -> std::result::Result<(HookDecision, String), PromptOutcome> {
+        if output.decision == HookDecision::Continue
             && self.hook_continuations == MAX_HOOK_CONTINUATIONS
         {
             return Err(PromptOutcome::Hook(io::Error::other(format!(
                 "{} before_stop hook asked to continue more than {MAX_HOOK_CONTINUATIONS} times",
-                invocation.name
+                self.hook_invocation().name
             ))));
         }
+        let message = self.save_feedback(HookFeedbackContent::BeforeStop {
+            decision: output.decision,
+            message: output.message,
+        })?;
+        if output.decision == HookDecision::Continue {
+            self.hook_continuations += 1;
+        }
+        Ok((output.decision, message))
+    }
+
+    /// Saves hook feedback after it passes input admission, and returns its
+    /// message.
+    fn save_feedback(
+        &mut self,
+        content: HookFeedbackContent,
+    ) -> std::result::Result<String, PromptOutcome> {
+        let feedback = HookFeedback {
+            skill: self.hook_invocation().name.clone(),
+            content,
+        };
         let mut prospective = self.transcript.clone();
         prospective.push(TranscriptEntry::HookFeedback(feedback.clone()));
         if !compaction::input_fits(
@@ -415,19 +622,18 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
         .map_err(PromptOutcome::OpenRouter)?
         {
             return Err(PromptOutcome::Hook(io::Error::other(format!(
-                "{} before_stop hook feedback exceeds the model context limit",
-                invocation.name
+                "{} {} hook feedback exceeds the model context limit",
+                feedback.skill,
+                feedback.kind().id()
             ))));
         }
         self.store
             .append_hook_feedback(&self.summary.id, &feedback)
             .map_err(PromptOutcome::Storage)?;
+        let message = feedback.message().to_owned();
         self.transcript
-            .push(TranscriptEntry::HookFeedback(feedback.clone()));
-        if feedback.decision == HookDecision::Continue {
-            self.hook_continuations += 1;
-        }
-        Ok(feedback)
+            .push(TranscriptEntry::HookFeedback(feedback));
+        Ok(message)
     }
 
     /// Makes one model request, forwards provisional output, and returns its
@@ -537,8 +743,13 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
             if self.cancellation.is_cancelled() {
                 return Err(PromptOutcome::Cancelled);
             }
-            let approved = self.approve(call).await?;
-            let outcome = if approved {
+            let denial = self.run_before_tool(call).await?;
+            let outcome = if let Some(message) = denial {
+                ToolOutcome::Failed(format!(
+                    "{} before_tool hook denied this call: {message}",
+                    self.hook_invocation().name
+                ))
+            } else if self.approve(call).await? {
                 (self.send_update)(convert::in_progress_tool_call_update(&call.call_id))
                     .map_err(PromptOutcome::AcpUpdate)?;
                 // The dispatcher polls tools first, so a synchronous patch can finish
@@ -634,11 +845,11 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
                 PromptOutcome::Storage(_) => ToolOutcome::Failed(
                     "Not started: the conversation could not be stored.".to_owned(),
                 ),
+                PromptOutcome::Hook(error) => ToolOutcome::Failed(format!("Not started: {error}")),
                 PromptOutcome::Finished
                 | PromptOutcome::TokenLimit
                 | PromptOutcome::Refused
-                | PromptOutcome::OpenRouter(_)
-                | PromptOutcome::Hook(_) => {
+                | PromptOutcome::OpenRouter(_) => {
                     unreachable!("{outcome} leaves no uncommitted batch")
                 }
             };
@@ -700,7 +911,7 @@ mod tests {
             fixture::{Reply, Server, delta, sse, text_reply, tool_reply},
         },
         sessions::{EffortLevel, SkillInvocation},
-        system_prompt,
+        skills, system_prompt,
         tools::fixture::Workspace,
     };
 
@@ -769,7 +980,7 @@ mod tests {
         async fn run_turn(
             &self,
             turn_start: TranscriptEntry,
-            hook: Option<hooks::Hook>,
+            hooks: Option<SkillHooks>,
             selected_settings: Option<SessionSettings>,
             mut on_update: impl FnMut(&SessionUpdate) -> Result<()>,
         ) -> (Result<PromptOutput>, Vec<TranscriptEntry>) {
@@ -784,7 +995,7 @@ mod tests {
                 PromptInput {
                     session_id: self.session_id.clone(),
                     turn_start,
-                    hook,
+                    hooks,
                     selected_settings,
                     system_prompt: system_prompt::for_workspace(&self.workspace.0).unwrap(),
                 },
@@ -833,9 +1044,34 @@ mod tests {
     fn feedback(decision: HookDecision, message: &str) -> TranscriptEntry {
         TranscriptEntry::HookFeedback(HookFeedback {
             skill: "goal".to_owned(),
-            decision,
-            message: message.to_owned(),
+            content: HookFeedbackContent::BeforeStop {
+                decision,
+                message: message.to_owned(),
+            },
         })
+    }
+
+    fn command(command: &str) -> Option<skills::HookCommand> {
+        Some(skills::HookCommand {
+            command: command.to_owned(),
+        })
+    }
+
+    fn tool_command(command: &str, tools: Option<&[&str]>) -> Option<skills::ToolHookCommand> {
+        Some(skills::ToolHookCommand {
+            command: command.to_owned(),
+            tools: tools.map(|tools| tools.iter().map(|&tool| tool.to_owned()).collect()),
+        })
+    }
+
+    /// The JSON objects a hook command wrote to `file` in the workspace, one
+    /// per line.
+    fn hook_inputs(harness: &Harness, file: &str) -> Vec<serde_json::Value> {
+        fs::read_to_string(harness.workspace.0.join(file))
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect()
     }
 
     /// A hook command that appends each input line to `inputs`, continues
@@ -843,20 +1079,33 @@ mod tests {
     const CONTINUE_THEN_STOP: &str = r#"cat >> inputs; echo >> inputs; if [ -e continued ]; then echo '{"decision":"stop","message":"Objective met."}'; else touch continued; echo '{"decision":"continue","message":"Two tests still fail."}'; fi"#;
 
     impl Harness {
-        /// Runs `/goal <arguments>` with a hook running `command` in the
-        /// workspace.
+        /// Runs `/goal Pass the tests.` with a `before_stop` hook running
+        /// `before_stop` in the workspace.
         async fn run_goal(
             &self,
-            command: &str,
+            before_stop: &str,
             on_update: impl FnMut(&SessionUpdate) -> Result<()>,
         ) -> (Result<PromptOutput>, Vec<TranscriptEntry>) {
-            let hook = hooks::Hook {
-                command: command.to_owned(),
+            let hooks = skills::Hooks {
+                before_stop: command(before_stop),
+                ..skills::Hooks::default()
+            };
+            self.run_skill(hooks, on_update).await
+        }
+
+        /// Runs `/goal Pass the tests.` with `hooks` running in the workspace.
+        async fn run_skill(
+            &self,
+            hooks: skills::Hooks,
+            on_update: impl FnMut(&SessionUpdate) -> Result<()>,
+        ) -> (Result<PromptOutput>, Vec<TranscriptEntry>) {
+            let hooks = SkillHooks {
+                hooks,
                 directory: self.workspace.0.clone(),
             };
             self.run_turn(
                 invocation("Pass the tests."),
-                Some(hook),
+                Some(hooks),
                 Some(
                     SessionSettings::new(DEFAULT_MODEL, EffortLevel::Default)
                         .with_mode(SessionMode::Auto),
@@ -1198,11 +1447,7 @@ mod tests {
             ),
             (
                 "echo 'not json'",
-                "goal before_stop hook output is not one decision object",
-            ),
-            (
-                r#"echo '{"decision":"maybe","message":"Unsure."}'"#,
-                "unknown variant `maybe`",
+                "goal before_stop hook output is not one valid before_stop response object",
             ),
             (
                 r#"echo '{"decision":"stop","message":" "}'"#,
@@ -1317,6 +1562,403 @@ mod tests {
         }
     }
 
+    /// One assistant message with one call per `(call_id, tool name,
+    /// arguments)`.
+    fn calls_reply(calls: &[(&str, &str, serde_json::Value)]) -> Reply {
+        let tool_calls: Vec<_> = calls
+            .iter()
+            .enumerate()
+            .map(|(index, (id, name, arguments))| {
+                json!({
+                    "index": index,
+                    "id": id,
+                    "type": "function",
+                    "function": { "name": name, "arguments": arguments.to_string() },
+                })
+            })
+            .collect();
+        Reply::Stream(sse(&[delta(
+            json!({ "role": "assistant", "tool_calls": tool_calls }),
+            Some("tool_calls"),
+        )]))
+    }
+
+    fn hook_titles(harness: &Harness) -> Vec<String> {
+        harness
+            .updates()
+            .iter()
+            .filter_map(|update| match update {
+                SessionUpdate::ToolCall(call)
+                    if call.tool_call_id.to_string().starts_with("hook-") =>
+                {
+                    Some(call.title.clone())
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    const DENY_REMOVAL: &str = r#"input=$(cat); printf '%s\n' "$input" >> before_tool.json; case "$input" in *'rm -rf'*) echo '{"decision":"deny","message":"Removing files is not allowed."}';; *) echo '{"decision":"allow"}';; esac"#;
+
+    #[tokio::test]
+    async fn lifecycle_hooks_run_at_their_points_and_their_feedback_reaches_the_model() {
+        let patch = |id: &'static str, file: &str| {
+            (
+                id,
+                tools::APPLY_PATCH,
+                json!({ "patch": format!("*** Begin Patch\n*** Add File: {file}\n+{file}\n*** End Patch") }),
+            )
+        };
+        let harness = Harness::new(vec![
+            calls_reply(&[
+                patch("patch-1", "first"),
+                ("shell-1", tools::SHELL, json!({ "command": "exit 3" })),
+                patch("patch-2", "second"),
+                (
+                    "shell-2",
+                    tools::SHELL,
+                    json!({ "command": "rm -rf first" }),
+                ),
+            ]),
+            text_reply("First try."),
+            text_reply("Second try."),
+        ])
+        .await;
+        let hooks = skills::Hooks {
+            before_run: command(
+                r#"cat >> before_run.json; echo >> before_run.json; echo '{"message":"The tests live in tests/."}'"#,
+            ),
+            before_tool: tool_command(DENY_REMOVAL, Some(&[tools::SHELL])),
+            // Runs after the whole batch, so it sees both patches.
+            after_tools: tool_command(
+                r#"cat > after_tools.json; test -e first && test -e second && echo '{"message":"Both files exist."}'"#,
+                None,
+            ),
+            before_stop: command(CONTINUE_THEN_STOP),
+            after_run: command(r#"cat > after_run.json; echo '{}'"#),
+        };
+        let (response, transcript) = harness.run_skill(hooks, |_| Ok(())).await;
+
+        let output = response.unwrap();
+        assert_eq!(output.stop_reason, StopReason::EndTurn);
+        assert_eq!(output.answer.as_deref(), Some("Second try."));
+        assert_eq!(
+            fs::read_to_string(harness.workspace.0.join("first")).unwrap(),
+            "first\n",
+            "the denied call did not run"
+        );
+        let denied = "goal before_tool hook denied this call: Removing files is not allowed.";
+        assert_eq!(
+            transcript
+                .iter()
+                .filter_map(|entry| match entry {
+                    TranscriptEntry::HookFeedback(feedback) => Some(feedback.kind()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>(),
+            [
+                HookKind::BeforeRun,
+                HookKind::AfterTools,
+                HookKind::BeforeStop,
+                HookKind::BeforeStop
+            ]
+        );
+        assert_eq!(harness.stored(), transcript);
+
+        let requests = harness.server.requests();
+        assert_eq!(requests.len(), 3);
+        let before_run = "Feedback from the goal before_run hook:\nThe tests live in tests/.";
+        let messages = |index: usize| requests[index]["messages"].as_array().unwrap().clone();
+        assert_eq!(messages(0).len(), 3);
+        assert_eq!(messages(0)[2]["content"], before_run);
+        let second = messages(1);
+        assert_eq!(second[7]["content"], denied);
+        assert_eq!(
+            second.last().unwrap()["content"],
+            "Feedback from the goal after_tools hook:\nBoth files exist."
+        );
+        assert_eq!(
+            messages(2)
+                .iter()
+                .filter(|message| message["content"] == before_run)
+                .count(),
+            1,
+            "a continuation does not rerun before_run"
+        );
+
+        let before_run = hook_inputs(&harness, "before_run.json");
+        let before_tool = hook_inputs(&harness, "before_tool.json");
+        let after_tools = hook_inputs(&harness, "after_tools.json");
+        let before_stop = hook_inputs(&harness, "inputs");
+        let after_run = hook_inputs(&harness, "after_run.json");
+        assert_eq!(
+            (before_run.len(), before_tool.len(), before_stop.len()),
+            (1, 2, 2)
+        );
+        assert_eq!(
+            before_tool[0]["tool"],
+            json!({ "call_id": "shell-1", "name": "shell", "arguments": r#"{"command":"exit 3"}"# })
+        );
+        let reported = after_tools[0]["tools"].as_array().unwrap();
+        assert_eq!(
+            reported
+                .iter()
+                .map(|tool| format!(
+                    "{} {}",
+                    tool["call_id"].as_str().unwrap(),
+                    tool["outcome"].as_str().unwrap()
+                ))
+                .collect::<Vec<_>>(),
+            [
+                "patch-1 completed",
+                "shell-1 failed",
+                "patch-2 completed",
+                "shell-2 failed"
+            ]
+        );
+        assert_eq!(reported[3]["text"], denied);
+        assert_eq!(after_run[0]["outcome"], "finished");
+        assert_eq!(after_run[0]["answer"], "Second try.");
+        assert!(after_run[0]["error"].is_null());
+        let run_id = &before_run[0]["run_id"];
+        for (input, kind) in [
+            (&before_run[0], "before_run"),
+            (&before_tool[1], "before_tool"),
+            (&after_tools[0], "after_tools"),
+            (&before_stop[1], "before_stop"),
+            (&after_run[0], "after_run"),
+        ] {
+            assert_eq!(input["kind"], kind);
+            assert_eq!(&input["run_id"], run_id);
+            assert_eq!(input["session_id"], harness.session_id.to_string());
+            assert_eq!(input["mode"], "auto");
+            assert_eq!(input["skill"], "goal");
+        }
+        assert_eq!(
+            hook_titles(&harness),
+            [
+                "goal before_run hook",
+                "goal before_tool hook",
+                "goal before_tool hook",
+                "goal after_tools hook",
+                "goal before_stop hook",
+                "goal before_stop hook",
+                "goal after_run hook",
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn hook_errors_keep_saved_work_and_after_run_reports_every_outcome() {
+        const REPORT: &str = r#"cat > after_run.json; echo '{}'"#;
+        let reported = |harness: &Harness| hook_inputs(harness, "after_run.json").remove(0);
+        let error_text = |response: Result<PromptOutput>| {
+            let error = response.unwrap_err();
+            error.data.unwrap().as_str().unwrap().to_owned()
+        };
+
+        // Input rejected before saving runs no hook.
+        let harness = Harness::new(vec![]).await;
+        let rejected = run(
+            harness.store.clone(),
+            harness.server.client(),
+            PromptInput {
+                session_id: harness.session_id.clone(),
+                turn_start: invocation(&"x".repeat(3_000_000)),
+                hooks: Some(SkillHooks {
+                    hooks: skills::Hooks {
+                        before_run: command("touch ran; echo '{}'"),
+                        after_run: command("touch ran; echo '{}'"),
+                        ..skills::Hooks::default()
+                    },
+                    directory: harness.workspace.0.clone(),
+                }),
+                selected_settings: None,
+                system_prompt: "system".to_owned(),
+            },
+            PromptCancellation::new(),
+            |_| Ok(()),
+            PermissionTransport::None,
+        );
+        assert!(rejected.is_err());
+        assert!(harness.stored().is_empty());
+        assert!(!harness.workspace.0.join("ran").exists());
+
+        // `before_run` saves nothing for `{}`; an error or oversized feedback
+        // ends the run before any model request.
+        let system = system_prompt::for_workspace(&Workspace::new().0).unwrap();
+        let (admission, _, _) = compaction::budget(DEFAULT_MODEL).unwrap();
+        let base = compaction::request_estimate(
+            DEFAULT_MODEL,
+            EffortLevel::Default,
+            &system,
+            &[model(), auto(), invocation("")],
+        )
+        .unwrap();
+        let near_limit = "x".repeat((admission - base - 100) * 3);
+        let large = r#"printf '{"message":"%s"}' $(head -c 1000 /dev/zero | tr '\0' y)"#;
+        for (arguments, before_run, expected) in [
+            ("Pass the tests.", "echo '{}'", None),
+            (
+                "Pass the tests.",
+                "echo broken >&2; exit 4",
+                Some("goal before_run hook exited with code 4\nstderr:\nbroken"),
+            ),
+            (
+                near_limit.as_str(),
+                large,
+                Some("goal before_run hook feedback exceeds the model context limit"),
+            ),
+        ] {
+            let harness = Harness::new(vec![text_reply("Done.")]).await;
+            let (response, transcript) = harness
+                .run_turn(
+                    invocation(arguments),
+                    Some(SkillHooks {
+                        hooks: skills::Hooks {
+                            before_run: command(before_run),
+                            after_run: command(REPORT),
+                            ..skills::Hooks::default()
+                        },
+                        directory: harness.workspace.0.clone(),
+                    }),
+                    Some(
+                        SessionSettings::new(DEFAULT_MODEL, EffortLevel::Default)
+                            .with_mode(SessionMode::Auto),
+                    ),
+                    |_| Ok(()),
+                )
+                .await;
+            let report = reported(&harness);
+            match expected {
+                None => {
+                    assert_eq!(response.unwrap().stop_reason, StopReason::EndTurn);
+                    assert_eq!(
+                        transcript,
+                        [model(), auto(), invocation(arguments), answer("Done.")]
+                    );
+                    assert_eq!(report["outcome"], "finished");
+                }
+                Some(expected) => {
+                    let error = error_text(response);
+                    assert!(error.contains(expected), "{error}");
+                    assert!(harness.server.requests().is_empty());
+                    assert_eq!(transcript, [model(), auto(), invocation(arguments)]);
+                    assert_eq!(report["outcome"], "failed");
+                    assert!(report["error"].as_str().unwrap().contains(expected));
+                }
+            }
+        }
+
+        // A `before_tool` error completes and saves the batch; an
+        // `after_tools` error leaves the committed batch saved.
+        let not_started = |id: &str| {
+            TranscriptEntry::ToolResult(ToolResult {
+                call_id: id.to_owned(),
+                name: tools::SHELL.to_owned(),
+                outcome: ToolOutcome::Failed(
+                    "Not started: goal before_tool hook exited with code 5".to_owned(),
+                ),
+            })
+        };
+        let batch = [("call-1", "printf one"), ("call-2", "printf two")];
+        for (hooks, results, expected) in [
+            (
+                skills::Hooks {
+                    before_tool: tool_command("exit 5", None),
+                    ..skills::Hooks::default()
+                },
+                vec![not_started("call-1"), not_started("call-2")],
+                "goal before_tool hook exited with code 5",
+            ),
+            (
+                skills::Hooks {
+                    after_tools: tool_command("exit 6", None),
+                    ..skills::Hooks::default()
+                },
+                vec![printed("call-1", "one"), printed("call-2", "two")],
+                "goal after_tools hook exited with code 6",
+            ),
+        ] {
+            let harness = Harness::new(vec![tool_reply(&batch), text_reply("Done.")]).await;
+            let (response, transcript) = harness.run_skill(hooks, |_| Ok(())).await;
+            let error = error_text(response);
+            assert!(error.contains(expected), "{error}");
+            assert_eq!(
+                transcript,
+                [
+                    vec![
+                        model(),
+                        auto(),
+                        invocation("Pass the tests."),
+                        calls(&batch)
+                    ],
+                    results
+                ]
+                .concat()
+            );
+            assert_eq!(harness.stored(), transcript);
+            assert_eq!(harness.server.requests().len(), 1);
+        }
+
+        // `after_run` reports cancellation during a tool and a failed
+        // turn-start update, and its own failure or timeout changes nothing.
+        let harness = Harness::new(vec![tool_reply(&[("call-1", "sleep 30")])]).await;
+        let cancel = harness.cancellation.clone();
+        let hooks = skills::Hooks {
+            after_run: command(REPORT),
+            ..skills::Hooks::default()
+        };
+        let (response, _) = harness
+            .run_skill(hooks.clone(), |update| {
+                if matches!(update, SessionUpdate::ToolCallUpdate(update)
+                    if update.tool_call_id.to_string() == "call-1"
+                        && update.fields.status == Some(ToolCallStatus::InProgress))
+                {
+                    cancel.cancel();
+                }
+                Ok(())
+            })
+            .await;
+        assert_eq!(response.unwrap().stop_reason, StopReason::Cancelled);
+        let report = reported(&harness);
+        assert_eq!(report["outcome"], "cancelled");
+        assert!(report["answer"].is_null());
+
+        let harness = Harness::new(vec![text_reply("Done.")]).await;
+        let (response, transcript) = harness
+            .run_skill(hooks, |update| match update {
+                SessionUpdate::SessionInfoUpdate(_) => {
+                    Err(Error::internal_error().data("connection closed"))
+                }
+                _ => Ok(()),
+            })
+            .await;
+        assert!(error_text(response).contains("connection closed"));
+        assert_eq!(transcript, [model(), auto(), invocation("Pass the tests.")]);
+        let report = reported(&harness);
+        assert_eq!(report["outcome"], "failed");
+        assert!(
+            report["error"]
+                .as_str()
+                .unwrap()
+                .contains("connection closed")
+        );
+
+        for after_run in ["exit 7", "sleep 30"] {
+            let harness = Harness::new(vec![text_reply("Done.")]).await;
+            let hooks = skills::Hooks {
+                after_run: command(after_run),
+                ..skills::Hooks::default()
+            };
+            let (response, _) = harness.run_skill(hooks, |_| Ok(())).await;
+            let output = response.unwrap();
+            assert_eq!(output.stop_reason, StopReason::EndTurn, "{after_run}");
+            assert_eq!(output.answer.as_deref(), Some("Done."));
+            assert_eq!(described_updates(&harness).last().unwrap(), "hook failed");
+        }
+    }
+
     #[tokio::test]
     async fn oversized_input_is_rejected_before_save_and_a_valid_prompt_can_follow() {
         let harness = Harness::new(vec![text_reply("Accepted")]).await;
@@ -1327,7 +1969,7 @@ mod tests {
             PromptInput {
                 session_id: harness.session_id.clone(),
                 turn_start: user(&oversized),
-                hook: None,
+                hooks: None,
                 selected_settings: None,
                 system_prompt: "system".to_owned(),
             },
@@ -1370,7 +2012,7 @@ mod tests {
         let input = |user_message: String| PromptInput {
             session_id: id.clone(),
             turn_start: user(&user_message),
-            hook: None,
+            hooks: None,
             selected_settings: None,
             system_prompt: "system".to_owned(),
         };
@@ -1741,7 +2383,7 @@ mod tests {
             PromptInput {
                 session_id: missing,
                 turn_start: user("not saved"),
-                hook: None,
+                hooks: None,
                 selected_settings: None,
                 system_prompt: system_prompt::for_workspace(&workspace.0).unwrap(),
             },
@@ -1770,7 +2412,7 @@ mod tests {
             PromptInput {
                 session_id: unknown.clone(),
                 turn_start: user("not saved"),
-                hook: None,
+                hooks: None,
                 selected_settings: None,
                 system_prompt: system_prompt::for_workspace(&workspace.0).unwrap(),
             },

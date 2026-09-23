@@ -2,35 +2,39 @@
 
 ## Goal
 
-Extend skill hooks with `after_tool`, `before_tool`, `before_run`, and
-`after_run`. Skills can check tool effects, reject individual tool calls,
-supply initial context, and report the final prompt outcome. Preserve the
-existing `before_stop` continuation behavior and complete assistant batches.
+Extend skill hooks with `before_run`, `before_tool`, `after_tools`, and
+`after_run`. With them a skill can supply initial context, reject individual
+tool calls, check the effects of each tool batch, and report how the prompt
+run ended. The existing `before_stop` behavior and assistant-batch guarantees
+do not change.
 
-Build on [skills and before-stop hooks](2026-09-22-003-skills-and-hooks.md).
-Its implementation and tests are still being completed; this plan extends
-that work rather than introducing a second hook mechanism. Follow
-[architecture](../architecture.md), [code style](../code-style.md),
+This extends [skills and before-stop hooks](2026-09-22-003-skills-and-hooks.md)
+with the same command protocol, process runner, and hook feedback entry. It
+follows [architecture](../architecture.md), [code style](../code-style.md),
 [glossary](../glossary.md), and [testing](../testing.md).
 
 ## Related code
 
-- `src/skills.rs`: frontmatter parsing and the session's skill catalog.
-- `src/hooks.rs`: hook inputs, output validation, and command execution.
-- `src/process.rs`: bounded capture, deadlines, cancellation, and cleanup.
-- `src/acp.rs`: skill dispatch and the operation guard around a prompt run.
-- `src/acp/prompt.rs`: input admission, tool approval and execution,
-  assistant-batch commits, hook continuations, and final response construction.
-- `src/sessions.rs`: hook feedback, transcript validation, and persistence.
+- `src/skills.rs`: frontmatter parsing and hook definitions.
+- `src/hooks.rs`: hook input, output validation, and command execution.
+- `src/tools.rs`: tool name constants that `tools` filters are checked
+  against.
+- `src/acp.rs`: skill dispatch, which passes the invoked skill's hooks to the
+  prompt run.
+- `src/acp/prompt.rs`: turn-start saving, tool approval and execution,
+  assistant-batch commits, `before_stop` continuations, and `finish`.
+- `src/sessions.rs`: `HookFeedback`, transcript validation, and persistence.
 - `src/openrouter.rs`: hook feedback projected into model requests.
-- `src/compaction.rs`: feedback in summaries, request estimates, and cuts.
+- `src/compaction.rs`: hook feedback in summarizer material and estimates.
 - `src/acp/convert.rs`: live hook updates and transcript replay.
+- `examples/skills/goal/`: the existing `before_stop` example, which must keep
+  working with the added input fields.
 
 ## Decisions
 
-### Definitions and scope
+### Definitions
 
-Keep one optional command per hook kind on the invoked skill:
+A skill declares at most one command per hook kind:
 
 ```yaml
 hooks:
@@ -39,8 +43,8 @@ hooks:
   before_tool:
     command: python3 scripts/check_call.py
     tools: [shell, apply_patch]
-  after_tool:
-    command: python3 scripts/check_result.py
+  after_tools:
+    command: python3 scripts/format.py
     tools: [apply_patch]
   before_stop:
     command: python3 scripts/judge.py
@@ -48,268 +52,216 @@ hooks:
     command: python3 scripts/report.py
 ```
 
-Use a concrete `Hooks` structure with optional fields and a closed `HookKind`
-enum. Replace the singular hook passed through dispatch and `PromptInput`
-with the invoked skill's hook definitions and directory. Read the name and
-arguments from the saved skill invocation for the current turn.
+`tools` is allowed only on `before_tool` and `after_tools`. It is a nonempty
+list of distinct names from the concrete tool set; omitting it matches every
+tool. Commands must be nonblank, and a known hook definition rejects unknown
+fields. Unknown hook kinds and an empty `hooks` map remain accepted.
 
-`tools` is an optional list of exact names from the concrete tool set. Omission
-matches every known tool; an empty list, duplicate name, or unknown name is a
-definition error. Reject `tools` on other known hook kinds. Ignore unknown hook
-kinds and accept an empty `hooks` map, while rejecting unknown fields and blank
-commands within known hook definitions. Instruction-only skills remain valid.
+`Skill` holds a `Hooks` structure with one optional field per kind. Dispatch
+passes the invoked skill's `Hooks` and directory to the prompt run in place of
+today's single `hooks::Hook`. A closed `HookKind` enum names the kind in
+inputs, errors, labels, and ACP titles.
 
-Hooks run only for the explicitly invoked skill and expire with its prompt
-run. Invoking the skill authorizes its declared commands under the existing
-environment and working-directory rules. Catalog loading, replay, ordinary
-user messages, `/compact`, and headless prompts do not activate hooks. Hooks
-do not intercept other hook commands or compaction model requests.
+Hooks run only in the prompt run that invoked their skill, as today. Invoking
+the skill approves all of its hook commands in both Ask and Auto mode. Hooks
+never run for ordinary user messages, `/compact`, headless prompts, replay,
+or compaction requests, and they never run for another hook's command.
 
 ### Command protocol
 
-Keep JSON on stdin, one JSON object on stdout, commands executed in the skill
-directory, inherited environment, and the shared process runner. Include
-`kind`, `session_id`, and a per-run UUID `run_id` in every input, alongside
-`skill`, `arguments`, `workspace`, `ox`, `model`, `effort`, and `mode`. All
-calls in one prompt run share `run_id`; hook continuations retain it.
+The protocol is unchanged: `/bin/sh -c` in the skill directory, inherited
+environment, one JSON object on stdin, and one JSON object on stdout from a
+zero exit. Every input gains `kind`, `session_id`, `mode`, and `run_id` beside
+the existing `skill`, `arguments`, `workspace`, `ox`, `model`, and `effort`.
+`run_id` is a UUID created once per prompt run and shared by all of its hook
+commands, so scripts can correlate the hooks of one run.
 
-Use event-specific Rust input and output types. Decode stdout according to
-the requested hook kind and reject fields belonging to another response type.
-
-| Hook | Additional input | Successful stdout |
+| Hook | Added input | Stdout |
 | --- | --- | --- |
-| `before_run` | None; the invocation arguments identify the task. | `{}` or `{"message":"Current workspace context..."}` |
-| `before_tool` | `tool`: call ID, name, and the raw arguments string. | `{"decision":"allow"}` or `{"decision":"deny","message":"Reason..."}` |
-| `after_tool` | `tool` plus `result`: actual outcome kind and bounded text. | `{}` or `{"message":"Check diagnostics..."}` |
-| `before_stop` | `answer`: the committed finished answer. | Existing `continue` or `stop` decision with a message. |
-| `after_run` | `outcome`, nullable `answer`, and nullable `error`. | `{}` |
+| `before_run` | None | `{}` or `{"message": "..."}` |
+| `before_tool` | `tool`: `call_id`, `name`, raw `arguments` string | `{"decision": "allow"}` or `{"decision": "deny", "message": "..."}` |
+| `after_tools` | `tools`: list of `call_id`, `name`, `arguments`, `outcome`, `text` | `{}` or `{"message": "..."}` |
+| `before_stop` | `answer` | `{"decision": "continue" or "stop", "message": "..."}` |
+| `after_run` | `outcome`, `answer` or null, `error` or null | `{}` |
 
-Messages must be nonblank when present; denial and before-stop decisions
-require them. Allow decisions carry no message. Tool arguments remain a raw
-string because malformed model arguments must retain their normal failed-tool
-behavior. Unknown tool names bypass tool hooks and reach the existing
-unknown-tool result.
+Each kind has its own output type with `deny_unknown_fields`. A message must
+be nonblank when present; `deny` and both `before_stop` decisions require one,
+and `allow` takes none. Tool arguments stay a raw string so malformed model
+arguments keep their normal failed-tool result.
 
-Use these command deadlines as local constants: 30 seconds for `before_run`,
-10 for `before_tool`, 60 for `after_tool`, the existing 600 for `before_stop`,
-and 5 for `after_run`. Retain 16 KiB stdout, the 4 KiB stderr tail, and the
-existing two-second process-group cleanup grace. Cleanup and output draining
-may extend beyond the command deadline. Protocol and process errors name the
-skill and hook kind and include the stderr tail.
+Deadlines are local constants chosen by kind: 30 seconds for `before_run`, 10
+for `before_tool`, 60 for `after_tools`, 600 for `before_stop`, and 5 for
+`after_run`. The 16 KiB stdout limit, 4 KiB stderr tail, and two-second
+cleanup grace apply to every kind. Errors name the skill and hook kind and
+include the stderr tail.
+
+Every hook command is shown as an ACP execute tool call titled
+`<skill> <kind> hook`, as `before_stop` is today.
 
 ### Before the first model request
 
-Run `before_run` once after the skill invocation is admitted and saved, before
-the first ordinary model request. It does not run again after compaction,
-request retries, or a before-stop continuation.
-
-Save a returned message as hook feedback after checking input admission; it
-becomes model context without changing the captured system prompt. `{}` adds
-no transcript entry. A process error, invalid response, or oversized feedback
-ends the run before model work. The accepted invocation remains saved, and
-`after_run` receives the failure.
+`before_run` runs once, after the skill invocation is saved and before the
+first model request. Compaction, request retries, and `before_stop`
+continuations do not rerun it. A message passes input admission and is saved
+as hook feedback; `{}` saves nothing. A hook error ends the run before any
+model request.
 
 ### Before each tool call
 
-For each matching call from a validated completion, run `before_tool` before
-Ask-mode shell permission and before tool execution. Recheck cancellation
-before every new hook, permission request, or tool operation.
+For each call matching the `tools` filter, `before_tool` runs before the Ask
+mode permission request and before execution. Unknown tool names never match
+and keep their unknown-tool result.
 
-An allow decision proceeds to the existing permission path. A deny decision
-skips both permission and execution, and becomes a failed `ToolResult` for
-the original call with the skill name and denial reason. Other calls in the
-completion proceed in order. This gives the model an actionable result while
-preserving one result per call. Denial is a successful hook execution, not a
-hook protocol error.
+`allow` continues to the existing permission path. `deny` skips permission and
+execution and records a failed tool result for that call:
+`<skill> before_tool hook denied this call: <message>`. The model sees the
+reason in that result, so a decision saves no hook feedback. Later calls in the
+batch proceed. The hook cannot rewrite arguments.
 
-Do not rewrite tool arguments. Do not append separate model feedback for
-before-tool decisions: the denied tool result already carries the reason,
-and an allow decision supplies no context.
+A `before_tool` error ends the run with the batch incomplete. `finish` gives
+the current call and every later call a failed `Not started: <error>` result
+and commits the batch, as it does for other interruptions. This is the only
+hook error that can leave an uncommitted batch.
 
-A failed before-tool command ends the run. `finish` must now handle
-`PromptOutcome::Hook` with an uncommitted assistant batch: preserve observed
-results, give the current and remaining unstarted calls explicit failed
-results, and attempt to commit the complete batch before returning the error.
+### After each tool batch
 
-### After tools, at the assistant-batch boundary
+`after_tools` runs once per tool-bearing assistant batch, after the batch
+commits and before the next model request, when at least one call in the
+batch matches its filter. Its input lists every matching call in call order
+with its saved result, including failed and denied calls. It sees the
+workspace after the whole batch, so a formatter cannot disturb a patch that is
+still waiting to run in the same batch.
 
-Dispatch `after_tool` after all calls in a completion have resolved and the
-complete assistant batch has committed, before the next model request. Run
-the hook once for each matching call actually passed to `tools::execute`, in
-call order, including calls that returned a failed outcome. Denied calls and
-unstarted placeholders do not qualify. Keep this eligibility information with
-the uncommitted assistant batch until commit; it is not durable state.
+It does not run when the run stopped before the batch completed. A message
+passes input admission and is saved as hook feedback; `{}` saves nothing. A
+hook error ends the run; the committed batch stays saved and hook side effects
+are not undone.
 
-This timing is deliberate: formatter commands see the workspace after the
-whole batch and cannot invalidate patches still waiting in that batch. Each
-invocation receives the historical result of its associated call, but sees
-the current workspace, including changes from later calls and earlier hooks.
-Document this distinction in the protocol.
-
-Only dispatch after-tool hooks on the normal path after a successful batch
-commit. If cancellation or another run-level failure interrupted the batch,
-save observed results through existing finalization and skip new after-tool
-work. `after_run` reports the interruption.
-
-Admit and save each nonempty hook message before its successful finished ACP
-update and before starting another hook. A check failure expressed as a
-message is model feedback, not a failed original tool result. A hook protocol
-or process error stops the run; the original batch and any earlier saved
-feedback remain intact. Hook side effects are not rolled back.
-
-The initial protocol exposes existing raw arguments and bounded result text.
-It does not claim to know every changed path, especially for shell commands.
-Checks and formatters must inspect the workspace or use skill-specific paths;
-they must not rely on parsing truncated tool output as an exhaustive file list.
+The input carries tool arguments and result text, not a list of changed
+paths. A script that needs changed files inspects the workspace itself.
 
 ### Before stopping
 
-Keep `before_stop` behavior and its continuation limit. Only a finished model
-answer reaches it; neither tool feedback nor run reporting counts toward the
-50-continuation limit. It continues to judge an answer that has already been
-streamed and committed.
+`before_stop` keeps its behavior and its 50-continuation limit. Only
+`continue` decisions count toward the limit.
 
 ### After the prompt run
 
-Run `after_run` once after normal finalization has attempted to save any
-outstanding assistant batch and determined the response. Keep the operation
-guard held through this command and its cleanup, then send the original
-response. It runs after any saved skill invocation, including before-run
-failure, refusal, token limit, cancellation, and storage or transport failure.
-Rejected input and cancellation before invocation persistence do not run it.
+`after_run` runs once for every prompt run that saved its skill invocation,
+after `finish` has saved any outstanding batch and produced the result. It
+runs inside the prompt run's future, so the operation guard stays held and the
+response is sent after it ends. Input rejected by admission, or cancellation
+observed before the invocation is saved, saves nothing and runs no hook.
 
-Expose `outcome` as `finished`, `cancelled`, `token_limit`, `refused`, or
-`failed`. Include an answer only for `finished`, and an error string only for
-`failed`. Use the outcome after finalization so a storage failure is reported
-instead of an earlier apparent success. This reports Ox's response decision,
-not confirmation that the ACP client received it.
+The turn start's ACP updates are sent before the future starts, so a failure
+after the save returns an error without reaching `finish`. Move those updates
+into the future so their failure becomes `PromptOutcome::AcpUpdate` and
+reaches `finish` and `after_run`. Admission and the store write stay synchronous, so rejected input
+is still an immediate error response.
 
-Move invocation saving and its initial ACP notifications inside the owned
-asynchronous run path, and track whether persistence succeeded before sending
-updates. An update failure immediately after the save must still reach this
-finalizer. Keep startup validation failures before persistence hook-free.
+`outcome` is `finished`, `cancelled`, `token_limit`, `refused`, or `failed`,
+derived from the result of `finish`, so a storage failure while finishing is
+reported as `failed`. `answer` is set only for `finished` and `error` only for
+`failed`.
 
-`after_run` observes a cancellation that has already happened: use its own
-short command deadline rather than the already-latched prompt cancellation
-signal. It cannot resume the model or change the response. Its own failure is
-reported on stderr and through a best-effort failed ACP hook update without
-replacing the primary outcome. A disconnected ACP client must not prevent the
-command from running. Do not start it from `Drop`, retry it, or rerun it after
-restart; process termination can prevent delivery.
+`after_run` ignores the prompt's cancellation signal, because it may be
+reporting that cancellation; its short deadline bounds it, including during
+connection shutdown. Its ACP updates are best effort. Its failure is written
+to stderr and never replaces the prompt run's result. Nothing it prints enters
+the transcript.
 
-After-run output supplies no model context and is not saved as hook feedback.
-Scripts that record outcomes use the supplied identifiers themselves.
+### Transcript and model context
 
-### Transcript and ACP representation
+`HookFeedback` keeps `skill` and replaces `decision` and `message` with a
+tagged enum:
 
-Replace the before-stop-only payload with a `HookFeedback` containing the
-skill name and a tagged enum with these variants:
+- `BeforeRun { message }` immediately follows a skill invocation.
+- `AfterTools { message }` immediately follows the last tool result of a
+  tool-bearing assistant batch.
+- `BeforeStop { decision, message }` follows an assistant message without tool
+  calls, as today.
 
-- `BeforeRun { message }`
-- `AfterTool { call_id, message }`
-- `BeforeStop { decision, message }`
+`HookDecision` stays the `before_stop` `continue` or `stop`; `before_tool` uses
+a separate allow or deny type that is never saved. Transcript validation
+checks each variant's placement. No migration is needed; recreate the
+database.
 
-Keep `HookDecision` scoped to before-stop `Continue` and `Stop`; define a
-separate allow/deny type for before-tool responses. Successful commands with
-no feedback, before-tool decisions, failed commands, and after-run observers
-do not create additional transcript entries.
-
-Validation requires before-run feedback immediately after its skill
-invocation, at most once. After-tool feedback forms a contiguous sequence
-after a complete tool-bearing assistant batch, references calls in that batch
-in order without duplicates, and belongs to the current skill invocation.
-Before-stop feedback follows an assistant message without tool calls and
-belongs to that invocation. Never insert feedback between an assistant
-message and its tool results.
-
-Project saved feedback as labeled user-role messages including hook kind and,
-for after-tool feedback, call ID. Generalize ACP hook titles and replay from
-the same fields. Replay denial through the original failed tool result;
-successful no-message hooks and after-run observers have only live updates.
-
-Include all feedback variants in compaction material and estimates. Keep
-assistant batches indivisible and retain the existing repetition of the
-active skill invocation after a summary. A cut may leave trailing feedback
-after the summary; labels must remain understandable without the original
-call. Do not rerun hooks during projection or replay.
+Model requests send each feedback entry as a user-role message labeled
+`Feedback from the <skill> <kind> hook:`. Replay rebuilds each entry as a
+completed hook tool call. Hooks that saved nothing, `before_tool` decisions,
+and `after_run` appear only in live updates. Compaction material and request
+estimates include every variant. When a checkpoint covers a skill invocation,
+projection repeats only the invocation; the summary carries its `before_run`
+feedback.
 
 ## Naming
 
-- **Hook kind**: one of the five supported execution points, represented by
-  `HookKind` and the `kind` input field.
-- **Hook feedback**: durable model context from `before_run`, `after_tool`, or
-  `before_stop`; distinct from tool results and operational hook errors.
-- **Before-tool decision**: allow or deny for one model tool call; separate
-  from a before-stop hook decision.
-- **Run ID**: a UUID identifying one prompt run for its hook commands; kept in
-  `PromptRun` and shared across its hook continuations.
+- **Hook kind**: `before_run`, `before_tool`, `after_tools`, `before_stop`, or
+  `after_run`. `HookKind` in code and `kind` in hook input.
+- **Hook feedback**: a transcript entry holding a hook's saved message from
+  `before_run`, `after_tools`, or `before_stop`. It is neither a user message
+  nor a tool result.
+- **Hook decision**: `continue` or `stop` from `before_stop`, unchanged.
+- **Tool decision**: `allow` or `deny` from `before_tool` for one model tool
+  call. It is never saved.
+- **Run ID**: a UUID identifying one prompt run in hook input, kept in
+  `PromptRun`.
 
 ## Test plan
 
-- Extend catalog activation and slash-dispatch tests for each optional hook,
-  exact tool filters, malformed definitions, and captured per-run settings.
-- Extend the prompt harness's hook coverage for before-run feedback reaching
-  the first request once, empty responses, oversized feedback, and no startup
-  hook on rejected input or cancellation before persistence.
-- Extend `shell_permissions_control_execution_and_save_results` for hook
-  denial suppressing permission and execution, allowed calls retaining Ask
-  approval, and denial reasons reaching the next model request.
-- Extend ordered tool-result and interruption tests: after-tool scripts run
-  only after every call and the batch commit; a formatter cannot affect an
-  unstarted patch in the same batch; actual failed calls qualify, denied calls
-  do not; hook failure preserves the batch and earlier feedback. A before-tool
-  failure resolves and saves all outstanding call results.
-- Extend the before-stop lifecycle test to prove continuations do not repeat
-  before-run setup or invoke after-run early. Add an after-run lifecycle test
-  only if existing lifecycle coverage cannot express its distinct guarantee:
-  once per saved invocation, finalization failures reflected in its input,
-  cancellation and disconnected transport still reach it, and observer failure
-  or timeout does not replace the original result.
-- Extend transcript round-trip, malformed-transcript, replay, and compaction
-  cases for the new feedback placements and call associations. Verify the
-  model projection as well as the saved transcript.
-- Extend existing hook/process cases for response validation and shorter
-  deadlines. Reuse process-group cleanup coverage rather than duplicating it
-  for every hook kind. Use fake commands and the existing fake OpenRouter
-  server; no live model or external notification service is needed.
+- Skill loading accepts each hook kind and `tools` filter, and rejects `tools`
+  on other kinds, empty or duplicate filters, unknown tool names, blank
+  commands, and unknown fields in known definitions.
+- `before_run` feedback reaches the first model request once and is not
+  repeated after a `before_stop` continuation; `{}` saves nothing; oversized
+  feedback or a hook error ends the run before any model request; rejected
+  input runs no hook.
+- In `shell_permissions_control_execution_and_save_results`, a denial skips
+  both permission and execution and its reason reaches the next model request,
+  and an allowed call still requires Ask approval.
+- A `before_tool` error saves the complete batch with `Not started` results for
+  the current and later calls.
+- `after_tools` runs once after the batch commits: a script that inspects the
+  workspace sees every patch in the batch, its input lists failed and denied
+  calls, and its feedback reaches the next model request. Its error leaves the
+  batch saved.
+- `after_run` receives `finished` with the answer, `cancelled` after
+  cancellation during a tool, and `failed` when the turn start's ACP update
+  fails after the save; a failing or timed-out `after_run` does not change the
+  prompt result.
+- Transcript round-trip, malformed-placement, replay, and compaction cases
+  cover the three feedback variants.
+- Hook output validation covers each kind's response type. Existing process
+  cleanup coverage is reused. Tests use fake commands and the fake OpenRouter
+  server.
 
 ## Implementation plan
 
-1. `src/skills.rs`, `src/hooks.rs`, `src/acp.rs`: introduce optional hook
-   definitions, filters, `HookKind`, captured invocation data, common command
-   context, and typed event inputs and responses. Adapt `before_stop` to the
-   shared runner and kind-aware errors without changing its behavior.
+1. `src/skills.rs`, `src/hooks.rs`, `src/acp.rs`: add `Hooks`, `HookKind`,
+   filters, the common input fields, and per-kind input and output types.
+   Move `before_stop` onto the generalized runner without changing its
+   behavior.
 2. `src/sessions.rs`, `src/openrouter.rs`, `src/compaction.rs`,
-   `src/acp/convert.rs`: implement tagged feedback, placement validation,
-   labels, persistence, model projection, and replay. Keep operational
-   no-message hooks out of the transcript.
-3. `src/acp/prompt.rs`: add after-tool eligibility to the batch's owned state,
-   dispatch after-tool hooks after commit, admit feedback, and preserve
-   original outcomes on hook failure. Complete the ordered-batch tests.
-4. `src/acp/prompt.rs`: run before-tool decisions before permission, save
-   denials as failed tool results, and handle hook failures while a batch is
-   incomplete. Complete permission and interruption coverage.
-5. `src/acp/prompt.rs`: move turn-start persistence into the asynchronous
-   lifecycle and run before-run setup once. Preserve admission, setting
-   capture, session title adoption, and saved-before-model guarantees.
-6. `src/acp/prompt.rs`, `src/acp.rs`: separate finalization from response
-   return sufficiently to run the bounded after-run observer with the actual
-   outcome and the operation guard still held. Preserve primary errors and
-   make observer ACP updates best effort.
-7. `examples/skills/`: add a small documented skill demonstrating initial
-   workspace context, an explicit denied tool call, a deterministic
-   after-tool check, and local outcome recording. Document formatter timing,
-   empty responses, and the distinction between check diagnostics and hook
-   execution errors. Keep the existing goal example's before-stop protocol
-   working with the added common input fields.
+   `src/acp/convert.rs`: change `HookFeedback` to the tagged form with
+   placement validation, labels, projection, and replay.
+3. `src/acp/prompt.rs`: add `run_id`, move the turn start's ACP updates into
+   the future, and run `before_run` before the model loop.
+4. `src/acp/prompt.rs`: run `before_tool` before approval, record denials as
+   failed results, and handle its errors in `finish`.
+5. `src/acp/prompt.rs`: run `after_tools` after each tool-bearing commit.
+6. `src/acp/prompt.rs`: run `after_run` on the result of `finish`.
+7. `examples/skills/`: add a small skill that supplies initial workspace
+   context, denies a tool call, checks each tool batch, and records the run
+   outcome, with a README covering batch timing and the difference between a
+   check message and a hook error. Confirm the goal example still passes its
+   test.
 
 ## Documentation updates
 
-- `AGENTS.md`: update the hook, skill, prompt-run, process, and example entries
-  to match the extended responsibilities.
-- `eng/architecture.md`: hook ordering, after-tool batch timing, feedback
-  placement, invocation scope, and bounded after-run work after cancellation.
-- `eng/glossary.md`: extend hook and hook-feedback definitions; add hook kind,
-  before-tool decision, and run ID without changing prompt outcome terminology.
-- `eng/testing.md` and the skill examples: protocol fixtures, local examples,
-  outcome reporting, and which successful hooks are absent from replay.
+- `AGENTS.md`: the skill, hook, prompt-run, and example entries.
+- `eng/architecture.md`: skill definitions, hook ordering within the turn,
+  `after_tools` batch timing, feedback placement, `after_run` after
+  cancellation, invariant 15, and the "one hook point" constraint.
+- `eng/glossary.md`: hook, hook feedback, and prompt run; add hook kind, tool
+  decision, and run ID.
+- `eng/testing.md`: the new example's test.

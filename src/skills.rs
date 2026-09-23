@@ -9,7 +9,7 @@ use std::{
 
 use serde::Deserialize;
 
-use crate::system_prompt;
+use crate::{sessions::HookKind, system_prompt, tools};
 
 const SKILLS_DIR: &str = ".agents/skills";
 const FILE_NAME: &str = "SKILL.md";
@@ -22,10 +22,91 @@ pub struct Skill {
     pub description: String,
     pub argument_hint: Option<String>,
     pub instructions: String,
-    /// The skill directory, where its hook command runs.
+    /// The skill directory, where its hook commands run.
     pub directory: PathBuf,
-    /// The `before_stop` hook command, run with `/bin/sh -c`.
-    pub before_stop: Option<String>,
+    pub hooks: Hooks,
+}
+
+/// At most one command per hook kind. Unknown hook kinds belong to other
+/// agents and are ignored.
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+pub struct Hooks {
+    pub before_run: Option<HookCommand>,
+    pub before_tool: Option<ToolHookCommand>,
+    pub after_tools: Option<ToolHookCommand>,
+    pub before_stop: Option<HookCommand>,
+    pub after_run: Option<HookCommand>,
+}
+
+/// A hook command, run with `/bin/sh -c`.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HookCommand {
+    pub command: String,
+}
+
+/// A hook command for tool calls, optionally limited to some tools.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ToolHookCommand {
+    pub command: String,
+    /// Distinct names from the concrete tool set. `None` matches every tool.
+    pub tools: Option<Vec<String>>,
+}
+
+impl ToolHookCommand {
+    /// A tool name outside the concrete tool set never matches.
+    pub fn matches(&self, name: &str) -> bool {
+        tools::NAMES.contains(&name)
+            && self
+                .tools
+                .as_ref()
+                .is_none_or(|tools| tools.iter().any(|tool| tool == name))
+    }
+}
+
+impl Hooks {
+    pub fn command(&self, kind: HookKind) -> Option<&str> {
+        match kind {
+            HookKind::BeforeRun => self.before_run.as_ref().map(|hook| hook.command.as_str()),
+            HookKind::BeforeTool => self.before_tool.as_ref().map(|hook| hook.command.as_str()),
+            HookKind::AfterTools => self.after_tools.as_ref().map(|hook| hook.command.as_str()),
+            HookKind::BeforeStop => self.before_stop.as_ref().map(|hook| hook.command.as_str()),
+            HookKind::AfterRun => self.after_run.as_ref().map(|hook| hook.command.as_str()),
+        }
+    }
+
+    fn validate(&self) -> io::Result<()> {
+        for kind in HookKind::ALL {
+            if self
+                .command(kind)
+                .is_some_and(|command| command.trim().is_empty())
+            {
+                return Err(invalid(format!("{} hook command is blank", kind.id())));
+            }
+        }
+        for (kind, hook) in [
+            (HookKind::BeforeTool, &self.before_tool),
+            (HookKind::AfterTools, &self.after_tools),
+        ] {
+            let Some(names) = hook.as_ref().and_then(|hook| hook.tools.as_ref()) else {
+                continue;
+            };
+            let kind = kind.id();
+            if names.is_empty() {
+                return Err(invalid(format!("{kind} hook tools list is empty")));
+            }
+            for (index, name) in names.iter().enumerate() {
+                if !tools::NAMES.contains(&name.as_str()) {
+                    return Err(invalid(format!("{kind} hook tool {name:?} is unknown")));
+                }
+                if names[..index].contains(name) {
+                    return Err(invalid(format!("{kind} hook tool {name:?} is repeated")));
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Other frontmatter keys belong to other agents and are ignored.
@@ -36,17 +117,6 @@ struct Frontmatter {
     #[serde(rename = "argument-hint")]
     argument_hint: Option<String>,
     hooks: Option<Hooks>,
-}
-
-#[derive(Deserialize)]
-struct Hooks {
-    before_stop: Option<HookDefinition>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct HookDefinition {
-    command: String,
 }
 
 /// The skill catalog for a workspace, ordered by name. A missing skills
@@ -114,23 +184,15 @@ fn parse(directory_name: &str, directory: PathBuf, text: &str) -> io::Result<Ski
     if instructions.is_empty() {
         return Err(invalid("instructions are blank"));
     }
-    let before_stop = frontmatter
-        .hooks
-        .and_then(|hooks| hooks.before_stop)
-        .map(|hook| hook.command);
-    if before_stop
-        .as_ref()
-        .is_some_and(|command| command.trim().is_empty())
-    {
-        return Err(invalid("before_stop hook command is blank"));
-    }
+    let hooks = frontmatter.hooks.unwrap_or_default();
+    hooks.validate()?;
     Ok(Skill {
         name,
         description: frontmatter.description,
         argument_hint: frontmatter.argument_hint,
         instructions: instructions.to_owned(),
         directory,
-        before_stop,
+        hooks,
     })
 }
 

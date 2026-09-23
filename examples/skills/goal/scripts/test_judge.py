@@ -31,8 +31,12 @@ class JudgeTest(unittest.TestCase):
             ox.chmod(0o755)
             record = directory / "record.json"
             hook = {
+                "kind": "before_stop",
                 "skill": "goal",
                 "arguments": "Make the parser tests pass.",
+                "session_id": "session-1",
+                "mode": "ask",
+                "run_id": "run-1",
                 "workspace": str(directory),
                 "ox": str(ox),
                 "model": "test/model",

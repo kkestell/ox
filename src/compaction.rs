@@ -12,8 +12,8 @@ use crate::{
     acp::operations::PromptCancellation,
     openrouter::{self, Client},
     sessions::{
-        CompactionCheckpoint, EffortLevel, HookDecision, SessionSettings, SessionStore,
-        TranscriptEntry,
+        CompactionCheckpoint, EffortLevel, HookDecision, HookFeedbackContent, SessionSettings,
+        SessionStore, TranscriptEntry,
     },
 };
 
@@ -276,16 +276,25 @@ fn material(transcript: &[TranscriptEntry], cut: usize) -> VecDeque<(String, Str
                 1,
             )),
             TranscriptEntry::HookFeedback(feedback) => {
-                let decision = match feedback.decision {
-                    HookDecision::Continue => "continue",
-                    HookDecision::Stop => "stop",
+                let decision = match feedback.content {
+                    HookFeedbackContent::BeforeStop {
+                        decision: HookDecision::Continue,
+                        ..
+                    } => " continue",
+                    HookFeedbackContent::BeforeStop {
+                        decision: HookDecision::Stop,
+                        ..
+                    } => " stop",
+                    HookFeedbackContent::BeforeRun { .. }
+                    | HookFeedbackContent::AfterTools { .. } => "",
                 };
                 fields.push_back((
                     format!(
-                        "{source} {} before_stop hook {decision} feedback",
-                        feedback.skill
+                        "{source} {} {} hook{decision} feedback",
+                        feedback.skill,
+                        feedback.kind().id()
                     ),
-                    feedback.message.clone(),
+                    feedback.message().to_owned(),
                     1,
                 ))
             }
@@ -501,6 +510,18 @@ mod tests {
                 }),
             )
             .unwrap();
+        let feedback = |content| HookFeedback {
+            skill: "goal".to_owned(),
+            content,
+        };
+        store
+            .append_hook_feedback(
+                &id,
+                &feedback(HookFeedbackContent::BeforeRun {
+                    message: "The parser lives in src/parse.rs.".to_owned(),
+                }),
+            )
+            .unwrap();
         store
             .append_batch(
                 &id,
@@ -510,11 +531,10 @@ mod tests {
         store
             .append_hook_feedback(
                 &id,
-                &HookFeedback {
-                    skill: "goal".to_owned(),
+                &feedback(HookFeedbackContent::BeforeStop {
                     decision: HookDecision::Stop,
                     message: "Objective met.".to_owned(),
-                },
+                }),
             )
             .unwrap();
         let server = Server::start(vec![
@@ -556,6 +576,11 @@ mod tests {
         store.append_batch(&id, &batch).unwrap();
         transcript.push(TranscriptEntry::AssistantMessage(batch.message));
         transcript.extend(batch.results.into_iter().map(TranscriptEntry::ToolResult));
+        let formatted = feedback(HookFeedbackContent::AfterTools {
+            message: "Formatting is clean.".to_owned(),
+        });
+        store.append_hook_feedback(&id, &formatted).unwrap();
+        transcript.push(TranscriptEntry::HookFeedback(formatted));
         assert!(
             compact(
                 &store,
@@ -607,9 +632,16 @@ mod tests {
                 .to_owned()
         };
         assert!(material(0).contains("Entry 1 user request, part 1:\nSkill /goal invoked."));
+        assert!(material(0).contains(
+            "Entry 2 goal before_run hook feedback, part 1:\nThe parser lives in src/parse.rs."
+        ));
         assert!(
             material(1)
-                .contains("Entry 3 goal before_stop hook stop feedback, part 1:\nObjective met.")
+                .contains("Entry 4 goal before_stop hook stop feedback, part 1:\nObjective met.")
+        );
+        assert!(
+            material(2)
+                .contains("Entry 9 goal after_tools hook feedback, part 1:\nFormatting is clean.")
         );
         assert!(
             requests[1]["messages"][1]["content"]

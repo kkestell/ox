@@ -1,5 +1,5 @@
-//! Runs a skill's `before_stop` hook: one JSON object in on stdin, one
-//! decision object out on stdout.
+//! Runs one skill hook command: one JSON object in on stdin, one response
+//! object out on stdout.
 
 use std::{
     io::{self, ErrorKind},
@@ -8,62 +8,218 @@ use std::{
     time::Duration,
 };
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use tokio::process::Command;
 
 use crate::{
     process::{self, Limits, Observed},
-    sessions::{EffortLevel, HookDecision, HookFeedback, SkillInvocation},
+    sessions::{
+        EffortLevel, HookDecision, HookKind, SessionMode, ToolCall, ToolOutcome, ToolResult,
+    },
+    skills::Hooks,
 };
 
-const DEADLINE: Duration = Duration::from_secs(600);
 const STDOUT_LIMIT: usize = 16 * 1024;
 const STDERR_LIMIT: usize = 4 * 1024;
 /// Long enough for a nested `ox run` to stop its own shell process groups.
 const GRACE: Duration = Duration::from_secs(2);
 
-/// The hook of the skill invoked for one prompt run. It comes from the skill
-/// catalog and is never saved.
+fn deadline(kind: HookKind) -> Duration {
+    Duration::from_secs(match kind {
+        HookKind::BeforeRun => 30,
+        HookKind::BeforeTool => 10,
+        HookKind::AfterTools => 60,
+        HookKind::BeforeStop => 600,
+        HookKind::AfterRun => 5,
+    })
+}
+
+/// The hooks of the skill invoked for one prompt run. They come from the skill
+/// catalog and are never saved.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Hook {
-    pub command: String,
-    /// The skill directory, where the command runs.
+pub struct SkillHooks {
+    pub hooks: Hooks,
+    /// The skill directory, where the commands run.
     pub directory: PathBuf,
+}
+
+/// The input fields every hook of one prompt run shares.
+#[derive(Serialize)]
+pub struct Context {
+    pub skill: String,
+    pub arguments: String,
+    pub session_id: String,
+    pub mode: SessionMode,
+    /// Identifies one prompt run across its hook commands.
+    pub run_id: String,
+    pub workspace: PathBuf,
+    pub model: String,
+    pub effort: EffortLevel,
+}
+
+/// The input fields of one hook kind.
+#[derive(Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Event {
+    BeforeRun,
+    BeforeTool {
+        tool: ToolCall,
+    },
+    AfterTools {
+        tools: Vec<ToolReport>,
+    },
+    BeforeStop {
+        answer: String,
+    },
+    AfterRun {
+        outcome: RunOutcome,
+        answer: Option<String>,
+        error: Option<String>,
+    },
+}
+
+impl Event {
+    pub fn kind(&self) -> HookKind {
+        match self {
+            Self::BeforeRun => HookKind::BeforeRun,
+            Self::BeforeTool { .. } => HookKind::BeforeTool,
+            Self::AfterTools { .. } => HookKind::AfterTools,
+            Self::BeforeStop { .. } => HookKind::BeforeStop,
+            Self::AfterRun { .. } => HookKind::AfterRun,
+        }
+    }
+}
+
+/// One saved tool call and its result.
+#[derive(Serialize)]
+pub struct ToolReport {
+    pub call_id: String,
+    pub name: String,
+    pub arguments: String,
+    /// `completed`, `failed`, or `cancelled`.
+    pub outcome: &'static str,
+    pub text: String,
+}
+
+impl ToolReport {
+    pub fn new(call: &ToolCall, result: &ToolResult) -> Self {
+        let outcome = match result.outcome {
+            ToolOutcome::Completed(_) => "completed",
+            ToolOutcome::Failed(_) => "failed",
+            ToolOutcome::Cancelled(_) => "cancelled",
+        };
+        Self {
+            call_id: call.call_id.clone(),
+            name: call.name.clone(),
+            arguments: call.arguments.clone(),
+            outcome,
+            text: result.outcome.text().to_owned(),
+        }
+    }
+}
+
+/// How a prompt run ended, derived from its final response.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunOutcome {
+    Finished,
+    Cancelled,
+    TokenLimit,
+    Refused,
+    Failed,
 }
 
 #[derive(Serialize)]
 struct Input<'a> {
-    skill: &'a str,
-    arguments: &'a str,
-    workspace: &'a Path,
+    #[serde(flatten)]
+    context: &'a Context,
     ox: &'a Path,
-    model: &'a str,
-    effort: &'a str,
-    answer: &'a str,
+    #[serde(flatten)]
+    event: &'a Event,
 }
 
-#[derive(Deserialize)]
+/// One hook kind's stdout object.
+pub trait Output: DeserializeOwned {
+    /// A message present in the output, which must be nonblank.
+    fn message(&self) -> Option<&str>;
+}
+
+/// `before_run` and `after_tools` output: `{}` saves nothing.
+#[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Output {
-    decision: HookDecision,
-    message: String,
+pub struct Feedback {
+    pub message: Option<String>,
 }
 
-/// Runs the hook on a finished answer. The hook inherits Ox's environment,
-/// including `OPENROUTER_API_KEY`. Cancellation is an `Interrupted` error;
-/// every other failure is an error naming the skill with the hook's stderr
-/// tail.
-pub async fn run(
-    hook: &Hook,
-    invocation: &SkillInvocation,
-    workspace: &Path,
-    model: &str,
-    effort: EffortLevel,
-    answer: &str,
+impl Output for Feedback {
+    fn message(&self) -> Option<&str> {
+        self.message.as_deref()
+    }
+}
+
+/// `before_tool` output for one model tool call. It is never saved.
+#[derive(Debug, PartialEq, Eq, Deserialize)]
+#[serde(tag = "decision", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ToolDecision {
+    /// A struct variant, so `deny_unknown_fields` rejects a message.
+    Allow {},
+    Deny {
+        message: String,
+    },
+}
+
+impl Output for ToolDecision {
+    fn message(&self) -> Option<&str> {
+        match self {
+            Self::Allow {} => None,
+            Self::Deny { message } => Some(message),
+        }
+    }
+}
+
+/// `before_stop` output.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StopDecision {
+    pub decision: HookDecision,
+    pub message: String,
+}
+
+impl Output for StopDecision {
+    fn message(&self) -> Option<&str> {
+        Some(&self.message)
+    }
+}
+
+/// `after_run` output, which is always `{}`.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Report {}
+
+impl Output for Report {
+    fn message(&self) -> Option<&str> {
+        None
+    }
+}
+
+/// Runs the skill's command for `event`. The command inherits Ox's
+/// environment, including `OPENROUTER_API_KEY`. Cancellation is an
+/// `Interrupted` error; every other failure is an error naming the skill and
+/// hook kind with the command's stderr tail.
+pub async fn run<T: Output>(
+    hooks: &SkillHooks,
+    context: &Context,
+    event: &Event,
     cancelled: impl Future<Output = ()>,
-) -> io::Result<HookFeedback> {
+) -> io::Result<T> {
+    let kind = event.kind();
+    let command = hooks
+        .hooks
+        .command(kind)
+        .expect("a hook runs only for a skill that declares it");
+    let name = format!("{} {} hook", context.skill, kind.id());
     let failure = |reason: String, stderr: &str| {
-        let mut message = format!("{} before_stop hook {reason}", invocation.name);
+        let mut message = format!("{name} {reason}");
         if !stderr.trim().is_empty() {
             message.push_str("\nstderr:\n");
             message.push_str(stderr.trim_end());
@@ -73,31 +229,24 @@ pub async fn run(
     let ox = std::env::current_exe()
         .map_err(|error| failure(format!("could not find the ox executable: {error}"), ""))?;
     let input = serde_json::to_vec(&Input {
-        skill: &invocation.name,
-        arguments: &invocation.arguments,
-        workspace,
+        context,
         ox: &ox,
-        model,
-        effort: effort.id(),
-        answer,
+        event,
     })
     .map_err(|error| failure(format!("input could not be encoded: {error}"), ""))?;
-    let mut command = Command::new("/bin/sh");
-    command
-        .arg("-c")
-        .arg(&hook.command)
-        .current_dir(&hook.directory);
+    let mut process = Command::new("/bin/sh");
+    process.arg("-c").arg(command).current_dir(&hooks.directory);
     let limits = Limits {
         stdout: STDOUT_LIMIT,
         stderr: STDERR_LIMIT,
-        deadline: DEADLINE,
+        deadline: deadline(kind),
         grace: GRACE,
     };
-    let mut finished = process::run(command, Some(input), limits, cancelled)
+    let mut finished = process::run(process, Some(input), limits, cancelled)
         .await
         .map_err(|error| {
             failure(
-                format!("could not start in {}: {error}", hook.directory.display()),
+                format!("could not start in {}: {error}", hooks.directory.display()),
                 "",
             )
         })?;
@@ -123,7 +272,7 @@ pub async fn run(
         Observed::Cancelled => {
             return Err(io::Error::new(
                 ErrorKind::Interrupted,
-                format!("{} before_stop hook was cancelled", invocation.name),
+                format!("{name} was cancelled"),
             ));
         }
         Observed::Failed(error) => return Err(failure(error, &stderr)),
@@ -136,18 +285,112 @@ pub async fn run(
     }
     let stdout = String::from_utf8(finished.stdout.bytes.into())
         .map_err(|_| failure("output is not UTF-8".to_owned(), &stderr))?;
-    let output: Output = serde_json::from_str(&stdout).map_err(|error| {
-        failure(
-            format!("output is not one decision object: {error}"),
-            &stderr,
+    parse(kind, &stdout).map_err(|reason| failure(reason, &stderr))
+}
+
+fn parse<T: Output>(kind: HookKind, stdout: &str) -> Result<T, String> {
+    let output: T = serde_json::from_str(stdout).map_err(|error| {
+        format!(
+            "output is not one valid {} response object: {error}",
+            kind.id()
         )
     })?;
-    if output.message.trim().is_empty() {
-        return Err(failure("message is blank".to_owned(), &stderr));
+    if output
+        .message()
+        .is_some_and(|message| message.trim().is_empty())
+    {
+        return Err("message is blank".to_owned());
     }
-    Ok(HookFeedback {
-        skill: invocation.name.clone(),
-        decision: output.decision,
-        message: output.message,
-    })
+    Ok(output)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn error<T: Output + std::fmt::Debug>(kind: HookKind, stdout: &str) -> String {
+        parse::<T>(kind, stdout).unwrap_err()
+    }
+
+    #[test]
+    fn each_kind_accepts_only_its_response_object() {
+        let feedback = |stdout| {
+            parse::<Feedback>(HookKind::AfterTools, stdout)
+                .unwrap()
+                .message
+        };
+        assert_eq!(feedback("{}"), None);
+        assert_eq!(
+            feedback(r#"{"message":"Run the formatter."}"#).as_deref(),
+            Some("Run the formatter.")
+        );
+        let tool = |stdout| parse::<ToolDecision>(HookKind::BeforeTool, stdout);
+        assert_eq!(tool(r#"{"decision":"allow"}"#), Ok(ToolDecision::Allow {}));
+        assert_eq!(
+            tool(r#"{"decision":"deny","message":"Use the test script."}"#),
+            Ok(ToolDecision::Deny {
+                message: "Use the test script.".to_owned()
+            })
+        );
+        let stop = parse::<StopDecision>(
+            HookKind::BeforeStop,
+            r#"{"decision":"stop","message":"Done."}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            (stop.decision, stop.message.as_str()),
+            (HookDecision::Stop, "Done.")
+        );
+        parse::<Report>(HookKind::AfterRun, "{}").unwrap();
+
+        for (message, expected) in [
+            (
+                error::<Feedback>(
+                    HookKind::BeforeRun,
+                    r#"{"message":"Hi.","decision":"stop"}"#,
+                ),
+                "output is not one valid before_run response object: unknown field `decision`",
+            ),
+            (
+                error::<Feedback>(HookKind::AfterTools, r#"{"message":"  "}"#),
+                "message is blank",
+            ),
+            (
+                error::<ToolDecision>(
+                    HookKind::BeforeTool,
+                    r#"{"decision":"allow","message":"Fine."}"#,
+                ),
+                "unknown field `message`",
+            ),
+            (
+                error::<ToolDecision>(HookKind::BeforeTool, r#"{"decision":"deny"}"#),
+                "missing field `message`",
+            ),
+            (
+                error::<ToolDecision>(HookKind::BeforeTool, r#"{"decision":"deny","message":""}"#),
+                "message is blank",
+            ),
+            (
+                error::<StopDecision>(
+                    HookKind::BeforeStop,
+                    r#"{"decision":"maybe","message":"Unsure."}"#,
+                ),
+                "unknown variant `maybe`",
+            ),
+            (
+                error::<StopDecision>(HookKind::BeforeStop, r#"{"decision":"stop","message":" "}"#),
+                "message is blank",
+            ),
+            (
+                error::<StopDecision>(HookKind::BeforeStop, "not json"),
+                "output is not one valid before_stop response object",
+            ),
+            (
+                error::<Report>(HookKind::AfterRun, r#"{"message":"Logged."}"#),
+                "unknown field `message`",
+            ),
+        ] {
+            assert!(message.contains(expected), "{message}");
+        }
+    }
 }

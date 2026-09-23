@@ -15,9 +15,11 @@ THIS DOCUMENT MUST BE KEPT UP TO DATE
 - `src/prompts/system_prompt.md`: The editable built-in instructions that define
   Ox's coding-agent behavior.
 - `src/skills.rs`: Workspace skill definitions in `.agents/skills/`, frontmatter
-  parsing, validation, and skill catalog loading.
-- `src/hooks.rs`: The `before_stop` hook protocol: JSON input on stdin, one
-  decision object on stdout, limits, and hook errors.
+  parsing, hook definitions with their tool filters, validation, and skill
+  catalog loading.
+- `src/hooks.rs`: The hook protocol for every hook kind: JSON input on stdin
+  with the fields every hook shares, one response object per kind on stdout,
+  deadlines, limits, and hook errors.
 - `src/process.rs`: Child processes in a new process group with optional
   stdin, bounded output tails, a deadline, cancellation, and group cleanup with
   an optional SIGTERM grace period.
@@ -28,8 +30,8 @@ THIS DOCUMENT MUST BE KEPT UP TO DATE
   summarizer input, checkpoint commits, and model-request projection, which
   repeats a covered skill invocation after the summary.
 - `src/prompts/compaction_prompt.md`: Dedicated summarizer instructions.
-- `src/tools.rs`: Concrete tool schemas, tool call titles, and execution of one
-  complete call.
+- `src/tools.rs`: Concrete tool names and schemas, tool call titles, and
+  execution of one complete call.
 - `src/tools/read.rs`: Bounded text-file reading with line pagination.
 - `src/tools/shell.rs`: Shell tool arguments, API-key removal, and rendering of
   one process run as a tool outcome.
@@ -40,7 +42,7 @@ THIS DOCUMENT MUST BE KEPT UP TO DATE
 - `src/tools/workspace.rs`: Descriptor-relative file operations shared by
   read, search, and patch tools.
 - `src/sessions.rs`: Transcript and durable model, effort, and mode setting
-  types, skill invocations, hook feedback, compaction checkpoints, stored JSON
+  types, skill invocations, hook kinds, hook feedback, compaction checkpoints, stored JSON
   encoding, transcript validation, database path selection, and `SessionStore`
   over one SQLite connection.
 - `src/acp.rs`: Connection wiring, `ServerState`, lazy OpenRouter client,
@@ -51,17 +53,24 @@ THIS DOCUMENT MUST BE KEPT UP TO DATE
 - `src/acp/operations.rs`: One active prompt, load, or delete per session,
   enforced by an operation guard.
 - `src/acp/prompt.rs`: One prompt run: reject oversized input before saving,
-  save accepted input with captured settings, compact before large model
-  requests, retry explicit input overflow once, run tools, save complete
-  assistant batches, run the invoked skill's `before_stop` hook on each
-  finished answer, and return the stop reason and final answer.
+  save accepted input with captured settings, announce it and run the invoked
+  skill's `before_run` hook, compact before large model requests, retry
+  explicit input overflow once, run `before_tool` before each matching tool
+  call, run tools, save complete assistant batches, run `after_tools` after each
+  batch and `before_stop` on each finished answer, run `after_run` on the
+  result, and return the stop reason and final answer.
 - `src/acp/convert.rs`: ACP input conversion, session update construction
   including each tool call's kind and hook tool calls, and transcript replay.
 - `.agents/skills/init/`: The instruction-only `init` skill, which creates or
   updates `AGENTS.md`.
 - `examples/skills/goal/`: An example skill whose `before_stop` hook,
   `scripts/judge.py`, asks a headless `ox run` to judge each answer, with its
-  test and a README describing the hook protocol and installation.
+  test and a README describing the `before_stop` protocol and installation.
+- `examples/skills/careful/`: An example skill whose `before_run`,
+  `before_tool`, `after_tools`, and `after_run` hooks, all
+  `scripts/careful.py`, supply the Git status, deny destructive shell commands,
+  check each patch batch, and log each run outcome, with its test and a README
+  describing every hook kind, batch timing, and hook errors.
 
 ## Documentation
 
