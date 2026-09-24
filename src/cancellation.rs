@@ -1,52 +1,31 @@
 //! Shared cancellation signal for one active session operation.
 
-use std::{
-    future::Future,
-    sync::{Arc, Mutex},
-};
+use std::{future::Future, sync::Arc};
 
-use futures::{
-    FutureExt,
-    channel::oneshot,
-    future::{BoxFuture, Shared},
-};
+use tokio::sync::watch;
 
 /// Once cancelled, every clone continues to observe cancellation; cancelling
 /// twice is harmless.
 #[derive(Clone)]
-pub struct PromptCancellation(Arc<CancellationState>);
-
-struct CancellationState {
-    signal_tx: Mutex<Option<oneshot::Sender<()>>>,
-    signal_rx: Shared<BoxFuture<'static, ()>>,
-}
+pub struct PromptCancellation(Arc<watch::Sender<bool>>);
 
 impl PromptCancellation {
     pub(crate) fn new() -> Self {
-        let (signal_tx, signal_rx) = oneshot::channel();
-        Self(Arc::new(CancellationState {
-            signal_tx: Mutex::new(Some(signal_tx)),
-            signal_rx: signal_rx.map(|_| ()).boxed().shared(),
-        }))
+        Self(Arc::new(watch::Sender::new(false)))
     }
 
     pub fn cancelled(&self) -> impl Future<Output = ()> + Send + 'static + use<> {
-        self.0.signal_rx.clone()
+        let mut receiver = self.0.subscribe();
+        async move {
+            let _ = receiver.wait_for(|cancelled| *cancelled).await;
+        }
     }
 
     pub fn is_cancelled(&self) -> bool {
-        self.0.signal_rx.clone().now_or_never().is_some()
+        *self.0.borrow()
     }
 
     pub fn cancel(&self) {
-        let signal_tx = self
-            .0
-            .signal_tx
-            .lock()
-            .expect("prompt cancellation mutex poisoned")
-            .take();
-        if let Some(signal_tx) = signal_tx {
-            let _ = signal_tx.send(());
-        }
+        self.0.send_replace(true);
     }
 }
