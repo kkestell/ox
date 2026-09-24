@@ -463,7 +463,7 @@ fn find<'a>(state: &'a mut State, id: &str) -> std::result::Result<&'a mut Agent
         .agents
         .iter_mut()
         .find(|agent| agent.id.to_string() == id)
-        .ok_or_else(|| format!("No subagent {id} in this prompt run."))
+        .ok_or_else(|| format!("No live subagent {id} in this prompt run."))
 }
 
 /// Each subagent's ID and state, one per line.
@@ -669,7 +669,7 @@ mod tests {
         let other = Owner::new(vec![]).await;
         let id = owner.start("Task");
         owner.settle().await;
-        let unknown = |id: &str| Err(format!("No subagent {id} in this prompt run."));
+        let unknown = |id: &str| Err(format!("No live subagent {id} in this prompt run."));
         assert_eq!(
             other.subagents.send(&id, "Hello.".to_owned()).map(drop),
             unknown(&id)
