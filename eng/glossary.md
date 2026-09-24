@@ -258,7 +258,7 @@
   and results and is never an operating-system PID.
 - **Replay**: Sending saved transcript content back to the ACP client when a
   session is loaded.
-- **Commit**: A successful SQLite transaction. `PromptRun::commit` takes one
+- **Commit**: A successful SQLite transaction. `AgentTurn::commit` takes one
   complete assistant batch, saves it, updates session activity, and only then
   extends the in-memory transcript.
 - **Provisional output**: Answer text or visible reasoning sent to the ACP

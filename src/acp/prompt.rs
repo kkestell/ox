@@ -173,7 +173,7 @@ pub fn run(
     cancellation: PromptCancellation,
     presentation: Presentation,
 ) -> Result<impl Future<Output = Result<PromptOutput>>> {
-    let mut run = PromptRun::open(store, openrouter, &input, cancellation, presentation)?;
+    let mut run = AgentTurn::open(store, openrouter, &input, cancellation, presentation)?;
     let updates = run.save_turn_start(input.turn_input)?;
     Ok(async move {
         let Some(updates) = updates else {
@@ -218,7 +218,7 @@ impl fmt::Display for PromptOutcome {
     }
 }
 
-struct PromptRun {
+struct AgentTurn {
     store: SessionStore,
     openrouter: openrouter::Client,
     /// Sent with the transcript on every model request of this run.
@@ -237,7 +237,7 @@ struct PromptRun {
 }
 
 /// A validated assistant message whose tool calls do not all have outcomes
-/// yet. `PromptRun::process_batch` owns it until the batch is saved.
+/// yet. `AgentTurn::process_batch` owns it until the batch is saved.
 struct UncommittedAssistantBatch {
     message: AssistantMessage,
     /// Sequential execution makes observed outcomes a prefix of the tool calls.
@@ -270,7 +270,7 @@ impl UncommittedAssistantBatch {
     }
 }
 
-impl PromptRun {
+impl AgentTurn {
     fn open(
         store: SessionStore,
         openrouter: openrouter::Client,
