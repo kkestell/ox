@@ -1,0 +1,97 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  guard:
+    # Publish only for a `v*` tag that points at a commit on main. Any other
+    # tag push fails here without building anything.
+    name: verify tag on main
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repository history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify the tag points at a commit on main
+        run: |
+          tag_commit=$(git rev-parse "${GITHUB_REF}^{commit}")
+          if ! git merge-base --is-ancestor "$tag_commit" origin/main; then
+            echo "::error::Tag ${GITHUB_REF_NAME} does not point at a commit on main."
+            exit 1
+          fi
+          echo "Tag ${GITHUB_REF_NAME} points at commit ${tag_commit} on main."
+
+  build:
+    name: build ${{ matrix.target }}
+    needs: guard
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: macos-15
+            target: aarch64-apple-darwin
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Check out the tagged commit
+        uses: actions/checkout@v4
+      - name: Install the stable Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Restore the build cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - name: Build the optimized binary
+        run: cargo build --release --locked
+      - name: Package the binary
+        run: |
+          mkdir dist
+          cp target/release/ox dist/ox
+          tar -C dist -czf "ox-${GITHUB_REF_NAME#v}-${{ matrix.target }}.tar.gz" ox
+      - name: Upload the archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.target }}
+          path: '*.tar.gz'
+          if-no-files-found: error
+
+  publish:
+    name: publish release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download the built archives
+        uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: release
+      - name: Checksum the archives
+        run: |
+          cd release
+          sha256sum -- *.tar.gz > SHA256SUMS
+      - name: Publish the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          flags=(--verify-tag --title "${GITHUB_REF_NAME}" --generate-notes)
+          if [[ "${GITHUB_REF_NAME}" == *-* ]]; then
+            flags+=(--prerelease)
+          fi
+          # A re-run after a partial publish reuses the existing release and
+          # replaces its assets.
+          if ! gh release view "${GITHUB_REF_NAME}" > /dev/null 2>&1; then
+            gh release create "${GITHUB_REF_NAME}" "${flags[@]}"
+          fi
+          gh release upload "${GITHUB_REF_NAME}" release/* --clobber

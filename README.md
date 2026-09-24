@@ -1,65 +1,100 @@
 # Ox
 
-Ox is a local ACP coding agent using OpenRouter. Run `ox` to start the ACP server.
+Ox is a local ACP coding agent using OpenRouter. Run `ox` to start the ACP
+server.
 
-## Image input
+## Getting Started
 
-ACP prompts can include up to four PNG, JPEG, WebP, or GIF images, with at most
-10 MiB of decoded image data total. Select an image-capable model before the
-first turn of the session. Ox saves images for session replay and later model
-requests. Text-only models reject image prompts before saving them.
+Extract and install `ox`:
 
-## Background commands
+```bash
+tar -xzf ox-<version>-<target>.tar.gz
+install ox ~/.local/bin/ox
+```
 
-The `shell` tool normally waits for its command to finish. With
-`background: true` it starts the command, such as a development server or a
-long build, and returns a process ID at once; background commands have no
-timeout. The `shell_process` tool then works with the session's background
-commands:
+Save your OpenRouter API key to the system keychain:
 
-- `list` shows each process ID, command, and state.
-- `read` returns the state and the output kept for stdout and stderr, and can
-  wait up to 30 seconds for the command to end.
-- `write` sends text to the command's stdin exactly as given, and can close
-  stdin afterward. Input is plain text through a pipe, not a terminal.
-- `stop` sends SIGTERM to the command's process group and SIGKILL two seconds
-  later if it is still running.
+```bash
+ox auth login
+```
 
-Ox keeps the last 14 KiB of each output stream, so repeated reads can show the
-same output and earlier output is dropped; redirect a full log to a workspace
-file when you need it. A session keeps up to 16 background commands and makes
-room by forgetting the oldest finished one.
+Configure `ox` in your ACP client of choice, or run it headless:
 
-A background command keeps running across turns and when a prompt is cancelled.
-Deleting the session, closing the ACP connection, a SIGINT, SIGTERM, or SIGHUP
-to Ox, and the end of an `ox run` stop its whole process group at once with
-SIGKILL, without the grace period of an explicit `stop`. A command that
-survives Ox being killed with SIGKILL keeps running. Loading a saved session
-shows the earlier results but starts nothing again.
+```bash
+ox run 'hello, ox'
+```
 
-In Ask mode, Ox asks before starting a command and before each `write`,
-including one that only closes stdin. Approving a start does not approve later
-input. Listing, reading, and stopping need no approval.
+## Auth
 
-## Auth and headless runs
-
-`ox auth login` saves an OpenRouter API key in the system keyring; `ox auth logout` removes it. `OPENROUTER_API_KEY` takes precedence over the saved key.
-
-`ox run [--dir <workspace>] [--model <model-id>] [--effort <effort>] '<prompt>'` runs one prompt and prints its final answer. The effort must be `default` or one the model lists. Headless runs do not invoke skills.
-
-## Skills and hooks
-
-Put a `SKILL.md` with `name` and `description` YAML frontmatter and Markdown instructions at `.agents/skills/<name>/SKILL.md`, then invoke it as `/<name> <arguments>` in an ACP session. Skills can declare `hooks` with commands for `before_run`, `before_tool`, `after_tools`, `before_stop`, and `after_run`. Hook commands receive JSON on stdin and return JSON on stdout. See the [goal](examples/skills/goal/README.md) and [careful](examples/skills/careful/README.md) examples for definitions and the protocol.
+`ox auth login` saves an OpenRouter API key in the system keyring;
+`ox auth logout` removes it. `OPENROUTER_API_KEY` takes precedence over the
+saved key.
 
 ## Settings
 
-`ox` and `ox run` download OpenRouter's model catalog at startup and keep the models released in the last six months, other than `:batch` variants, that accept tools, take and produce text, and have a context limit above 8,000 tokens, sorted by name. Each model offers Default plus the reasoning efforts OpenRouter lists for it. They also require `~/.config/ox/settings.json`, whose `model` names the default model:
+Create `~/.config/ox/settings.json` before starting `ox`. The `model` field is
+required and names the default model:
 
 ```json
 {
-  "model": "deepseek/deepseek-v4.1-flash",
-  "hooks": {"before_run": {"command": "printf '{}'"}}
+  "model": "deepseek/deepseek-v4.1-flash"
 }
 ```
 
-`make install` overwrites this file with [examples/settings.json](examples/settings.json). Optional global `hooks` run from `~/.config/ox` before invoked skill hooks and also apply to `ox run`. Ox reads the file at startup.
+Ox reads the file at startup, so restart it after editing settings.
+`make install` overwrites the file with
+[examples/settings.json](examples/settings.json).
+
+Ox loads its model choices and effort levels from OpenRouter at startup.
+
+## Skills
+
+Ox loads `.agents/skills/<name>/SKILL.md` from the workspace when a session
+becomes active. Each file has YAML frontmatter with `name` and `description`,
+followed by Markdown instructions. A prompt whose first word is `/<name>`
+invokes that skill and passes the remaining text as its arguments.
+
+Skills may also declare hooks, described in [Skill Hooks](#skill-hooks).
+
+The [goal](examples/skills/goal/README.md) and
+[careful](examples/skills/careful/README.md) skills show complete definitions.
+
+## Hooks
+
+Hooks run commands at these points in a prompt run:
+
+| Hook kind     | When it runs                                     |
+| ------------- | ------------------------------------------------ |
+| `before_run`  | Before the first model request                   |
+| `before_tool` | Before each tool call                            |
+| `after_tools` | After a batch of tool calls                      |
+| `before_stop` | After an answer that would finish the prompt run |
+| `after_run`   | After the prompt run ends                        |
+
+Hook commands receive JSON on stdin and return JSON on stdout.
+
+### Global Hooks
+
+Declare global hooks under `hooks` in `~/.config/ox/settings.json`. They apply
+to prompt runs in every workspace. Their commands run from `~/.config/ox`, so
+relative script paths start there.
+
+When a global hook and a skill hook have the same kind, Ox runs the global hook
+first. See the
+[global hooks example](examples/skills/careful/README.md#global-hooks) for a
+configuration you can adapt.
+
+### Skill Hooks
+
+Declare skill hooks under `hooks` in a skill's `SKILL.md`. They run only in a
+prompt run that invokes the skill. Their commands run from the skill directory.
+
+The [careful skill](examples/skills/careful/README.md) documents the input and
+output for every hook; the [goal skill](examples/skills/goal/README.md) shows
+how `before_stop` can continue a prompt run.
+
+## Headless prompts
+
+`ox run [--dir <workspace>] [--model <model-id>] [--effort <effort>] '<prompt>'`
+runs one headless prompt and prints its final answer. The effort level must be
+`default` or one the model lists. Headless prompts do not invoke skills.
