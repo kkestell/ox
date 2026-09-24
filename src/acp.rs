@@ -692,8 +692,7 @@ impl ServerState {
                 shell_processes: active.shell_processes,
             },
             cancellation,
-            acp_update_sender(connection.clone(), session_id),
-            prompt::PermissionTransport::Acp(connection.clone()),
+            prompt::Presentation::acp(connection.clone(), session_id),
         ) {
             Ok(run) => run,
             Err(error) => return responder.respond_with_error(error),
@@ -855,7 +854,7 @@ async fn run_headless_prompt(
         store,
         openrouter,
         prompt::PromptInput {
-            session_id,
+            session_id: session_id.clone(),
             turn_input: TurnInput::UserMessage(user_message.into()),
             hook_sources,
             selected_settings: settings.with_mode(SessionMode::Auto),
@@ -863,8 +862,7 @@ async fn run_headless_prompt(
             shell_processes: shell_processes.clone(),
         },
         cancellation.clone(),
-        |_| Ok(()),
-        prompt::PermissionTransport::None,
+        prompt::Presentation::headless(session_id),
     )?;
     tokio::pin!(run, signalled);
     // The first signal stops the shell processes at once, before the prompt
@@ -1891,8 +1889,7 @@ mod tests {
             server.client(),
             input("first"),
             cancellation.clone(),
-            |_| Ok(()),
-            prompt::PermissionTransport::None,
+            prompt::Presentation::headless(id.clone()),
         )
         .unwrap();
         let change = async {
@@ -1931,8 +1928,7 @@ mod tests {
             server.client(),
             input("second"),
             PromptCancellation::new(),
-            |_| Ok(()),
-            prompt::PermissionTransport::None,
+            prompt::Presentation::headless(id.clone()),
         )
         .unwrap();
         assert!(matches!(
@@ -3221,7 +3217,7 @@ Run the commands.
                 shell_processes: active.shell_processes,
             },
             cancellation,
-            move |update| {
+            prompt::Presentation::observed(id.clone(), move |update| {
                 if cancel
                     && matches!(&update, SessionUpdate::ToolCallUpdate(update)
                         if update.fields.status == Some(ToolCallStatus::Completed))
@@ -3229,8 +3225,7 @@ Run the commands.
                     cancel_after.cancel();
                 }
                 Ok(())
-            },
-            prompt::PermissionTransport::None,
+            }),
         )
         .unwrap()
         .await

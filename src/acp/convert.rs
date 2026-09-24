@@ -5,7 +5,7 @@ use agent_client_protocol::{
     Error, Result,
     schema::v1::{
         ContentBlock, ContentChunk, Cost, PermissionOption, PermissionOptionKind,
-        RequestPermissionRequest, SessionId, SessionUpdate, TextContent, ToolCall as AcpToolCall,
+        RequestPermissionRequest, SessionUpdate, TextContent, ToolCall as AcpToolCall,
         ToolCallContent, ToolCallId, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields,
         ToolKind, UsageUpdate,
     },
@@ -13,6 +13,7 @@ use agent_client_protocol::{
 use base64::{Engine, engine::general_purpose::STANDARD};
 use serde_json::Value;
 
+use super::prompt::AcpIdentity;
 use crate::{
     compaction,
     openrouter::ModelRequestParameters,
@@ -172,16 +173,18 @@ pub fn in_progress_tool_call_update(call_id: &str) -> SessionUpdate {
 
 /// Asks whether one shell command may run or one input may be sent to a shell
 /// process. Clients can omit rawInput from the approval UI, so the content
-/// shows everything being approved.
+/// shows everything being approved. A subagent's request goes to the main
+/// session, with its tool call ID and title scoped by the subagent ID so they
+/// cannot collide with the main agent's.
 pub fn shell_permission_request(
-    session_id: SessionId,
+    identity: &AcpIdentity,
     call: &ToolCall,
     workspace: &std::path::Path,
     permission: &tools::Permission,
 ) -> RequestPermissionRequest {
     let input = raw_input(call);
     let tool_call_title = tools::tool_call_title(call);
-    let content = match permission {
+    let mut content = match permission {
         tools::Permission::NotRequired => {
             unreachable!("a call that needs no permission sends no permission request")
         }
@@ -222,10 +225,20 @@ pub fn shell_permission_request(
             )
         }
     };
+    let (tool_call_id, tool_call_title) = match &identity.subagent_id {
+        Some(subagent_id) => {
+            content = format!("Subagent: {subagent_id}\n\n{content}");
+            (
+                format!("{subagent_id}:{}", call.call_id),
+                format!("Subagent {subagent_id}: {tool_call_title}"),
+            )
+        }
+        None => (call.call_id.clone(), tool_call_title),
+    };
     RequestPermissionRequest::new(
-        session_id,
+        identity.session_id.clone(),
         ToolCallUpdate::new(
-            ToolCallId::new(call.call_id.clone()),
+            ToolCallId::new(tool_call_id),
             ToolCallUpdateFields::new()
                 .title(tool_call_title)
                 .kind(tool_kind(call))
@@ -534,7 +547,10 @@ mod tests {
                 arguments: input_arguments,
             };
             let request = shell_permission_request(
-                SessionId::new("session-1"),
+                &AcpIdentity {
+                    session_id: agent_client_protocol::schema::v1::SessionId::new("session-1"),
+                    subagent_id: None,
+                },
                 &call,
                 std::path::Path::new("/workspace"),
                 &permission,

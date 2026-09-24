@@ -7,7 +7,10 @@ use std::{fmt, future::Future, io, ops::ControlFlow};
 
 use agent_client_protocol::{
     Client, ConnectionTo, Error, Result,
-    schema::v1::{RequestPermissionOutcome, SessionId, SessionInfoUpdate, SessionUpdate},
+    schema::v1::{
+        RequestPermissionOutcome, RequestPermissionResponse, SessionId, SessionInfoUpdate,
+        SessionNotification, SessionUpdate,
+    },
 };
 
 use super::convert;
@@ -22,7 +25,7 @@ use crate::{
         ToolCall, ToolOutcome, TranscriptEntry, TurnInput, TurnStart,
     },
     shell_processes::ShellProcesses,
-    tools,
+    tools::{self, ToolContext},
 };
 
 /// The most hook continuations one prompt run accepts. Each is one model
@@ -32,11 +35,111 @@ const MAX_HOOK_CONTINUATIONS: usize = 50;
 /// How a hook run finishes when its command saved nothing.
 const NO_FEEDBACK: &str = "No feedback.";
 
-/// Transport for Ask mode's ACP permission request. The captured session mode,
-/// not this transport, decides whether shell approval is required.
-pub enum PermissionTransport {
+/// The main session ID and, for a subagent, its child session ID. ACP updates
+/// and permission requests are addressed with it; the session store uses the
+/// agent's own session ID instead.
+#[derive(Debug, Clone)]
+pub struct AcpIdentity {
+    pub session_id: SessionId,
+    pub subagent_id: Option<SessionId>,
+}
+
+impl AcpIdentity {
+    fn main(session_id: SessionId) -> Self {
+        Self {
+            session_id,
+            subagent_id: None,
+        }
+    }
+}
+
+/// Where one agent's ACP updates and Ask mode permission requests go. The
+/// captured session mode, not this value, decides whether shell approval is
+/// required.
+pub struct Presentation {
+    identity: AcpIdentity,
+    target: Target,
+}
+
+enum Target {
+    /// Headless execution sends nothing and has no one to ask.
     None,
-    Acp(ConnectionTo<Client>),
+    /// `updates` is false for a subagent, whose permission requests still use
+    /// the main session's connection.
+    Acp {
+        connection: ConnectionTo<Client>,
+        updates: bool,
+    },
+    /// Tests observe updates here. The mutex lets the observer mutate
+    /// through a shared reference.
+    #[cfg(test)]
+    Observed(std::sync::Mutex<Box<dyn FnMut(SessionUpdate) -> Result<()> + Send>>),
+}
+
+impl Presentation {
+    /// The main agent of an ACP prompt request.
+    pub fn acp(connection: ConnectionTo<Client>, session_id: SessionId) -> Self {
+        Self {
+            identity: AcpIdentity::main(session_id),
+            target: Target::Acp {
+                connection,
+                updates: true,
+            },
+        }
+    }
+
+    /// A headless run, which saves Auto mode and so never asks.
+    pub fn headless(session_id: SessionId) -> Self {
+        Self {
+            identity: AcpIdentity::main(session_id),
+            target: Target::None,
+        }
+    }
+
+    /// The main agent of a test prompt, whose updates go to `observe`.
+    #[cfg(test)]
+    pub fn observed(
+        session_id: SessionId,
+        observe: impl FnMut(SessionUpdate) -> Result<()> + Send + 'static,
+    ) -> Self {
+        Self {
+            identity: AcpIdentity::main(session_id),
+            target: Target::Observed(std::sync::Mutex::new(Box::new(observe))),
+        }
+    }
+
+    /// Sends one ACP update for the main session. A suppressed update
+    /// succeeds without being sent.
+    fn send(&self, update: SessionUpdate) -> Result<()> {
+        match &self.target {
+            Target::None | Target::Acp { updates: false, .. } => Ok(()),
+            Target::Acp {
+                connection,
+                updates: true,
+            } => connection.send_notification(SessionNotification::new(
+                self.identity.session_id.clone(),
+                update,
+            )),
+            #[cfg(test)]
+            Target::Observed(observe) => (observe.lock().expect("observer mutex poisoned"))(update),
+        }
+    }
+
+    /// Asks the ACP client whether `call` may run, under the main session.
+    fn request_permission(
+        &self,
+        call: &ToolCall,
+        workspace: &std::path::Path,
+        permission: &tools::Permission,
+    ) -> impl Future<Output = Result<RequestPermissionResponse>> + Send + use<> {
+        let Target::Acp { connection, .. } = &self.target else {
+            panic!("Ask mode requires an ACP permission-request connection");
+        };
+        let request =
+            convert::shell_permission_request(&self.identity, call, workspace, permission);
+        let connection = connection.clone();
+        async move { connection.send_request(request).block_task().await }
+    }
 }
 
 pub(super) struct PromptInput {
@@ -63,25 +166,14 @@ pub enum PromptOutput {
     Refused,
 }
 
-pub fn run<F>(
+pub fn run(
     store: SessionStore,
     openrouter: openrouter::Client,
     input: PromptInput,
     cancellation: PromptCancellation,
-    send_update: F,
-    permission_transport: PermissionTransport,
-) -> Result<impl Future<Output = Result<PromptOutput>>>
-where
-    F: FnMut(SessionUpdate) -> Result<()>,
-{
-    let mut run = PromptRun::open(
-        store,
-        openrouter,
-        &input,
-        cancellation,
-        send_update,
-        permission_transport,
-    )?;
+    presentation: Presentation,
+) -> Result<impl Future<Output = Result<PromptOutput>>> {
+    let mut run = PromptRun::open(store, openrouter, &input, cancellation, presentation)?;
     let updates = run.save_turn_start(input.turn_input)?;
     Ok(async move {
         let Some(updates) = updates else {
@@ -126,7 +218,7 @@ impl fmt::Display for PromptOutcome {
     }
 }
 
-struct PromptRun<F> {
+struct PromptRun {
     store: SessionStore,
     openrouter: openrouter::Client,
     /// Sent with the transcript on every model request of this run.
@@ -134,9 +226,8 @@ struct PromptRun<F> {
     mode: SessionMode,
     summary: SessionSummary,
     cancellation: PromptCancellation,
-    send_update: F,
-    permission_transport: PermissionTransport,
-    shell_processes: ShellProcesses,
+    presentation: Presentation,
+    tools: ToolContext,
     /// Saved transcript, extended only after a database transaction succeeds.
     transcript: Vec<TranscriptEntry>,
     hook_sources: Vec<HookSource>,
@@ -179,14 +270,13 @@ impl UncommittedAssistantBatch {
     }
 }
 
-impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
+impl PromptRun {
     fn open(
         store: SessionStore,
         openrouter: openrouter::Client,
         input: &PromptInput,
         cancellation: PromptCancellation,
-        send_update: F,
-        permission_transport: PermissionTransport,
+        presentation: Presentation,
     ) -> Result<Self> {
         let session_id = &input.session_id;
         let stored = store
@@ -205,11 +295,13 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
             openrouter,
             parameters,
             mode: settings.mode,
+            tools: ToolContext {
+                workspace_path: stored.summary.workspace_path.clone(),
+                shell_processes: input.shell_processes.clone(),
+            },
             summary: stored.summary,
             cancellation,
-            send_update,
-            permission_transport,
-            shell_processes: input.shell_processes.clone(),
+            presentation,
             transcript: stored.transcript,
             hook_sources: input.hook_sources.clone(),
             run_id: uuid::Uuid::new_v4().to_string(),
@@ -264,7 +356,9 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
         updates: Vec<SessionUpdate>,
     ) -> std::result::Result<(), PromptOutcome> {
         for update in updates {
-            (self.send_update)(update).map_err(PromptOutcome::AcpUpdate)?;
+            self.presentation
+                .send(update)
+                .map_err(PromptOutcome::AcpUpdate)?;
         }
         for source in self.sources_for(HookKind::BeforeRun) {
             self.run_hook(
@@ -366,8 +460,11 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
         let context = self.hook_context(source);
         let call_id = convert::hook_run_id();
         let pending = convert::pending_hook_run(&call_id, context.skill.as_deref(), event.kind());
-        (self.send_update)(pending).map_err(PromptOutcome::AcpUpdate)?;
-        (self.send_update)(convert::in_progress_tool_call_update(&call_id))
+        self.presentation
+            .send(pending)
+            .map_err(PromptOutcome::AcpUpdate)?;
+        self.presentation
+            .send(convert::in_progress_tool_call_update(&call_id))
             .map_err(PromptOutcome::AcpUpdate)?;
         let output = hooks::run(source, &context, event, self.cancellation.cancelled()).await;
         let result = match output {
@@ -381,7 +478,9 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
             Ok((_, text)) => convert::finished_hook_run_update(&call_id, Ok(text)),
             Err(outcome) => convert::finished_hook_run_update(&call_id, Err(&outcome.to_string())),
         };
-        (self.send_update)(update).map_err(PromptOutcome::AcpUpdate)?;
+        self.presentation
+            .send(update)
+            .map_err(PromptOutcome::AcpUpdate)?;
         result.map(|(value, _)| value)
     }
 
@@ -512,12 +611,14 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
         for source in self.sources_for(HookKind::AfterRun) {
             let context = self.hook_context(&source);
             let call_id = convert::hook_run_id();
-            let _ = (self.send_update)(convert::pending_hook_run(
+            let _ = self.presentation.send(convert::pending_hook_run(
                 &call_id,
                 context.skill.as_deref(),
                 HookKind::AfterRun,
             ));
-            let _ = (self.send_update)(convert::in_progress_tool_call_update(&call_id));
+            let _ = self
+                .presentation
+                .send(convert::in_progress_tool_call_update(&call_id));
             let reported: io::Result<hooks::Report> =
                 hooks::run(&source, &context, &event, std::future::pending()).await;
             let update = match reported {
@@ -527,7 +628,7 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
                     convert::finished_hook_run_update(&call_id, Err(&error.to_string()))
                 }
             };
-            let _ = (self.send_update)(update);
+            let _ = self.presentation.send(update);
         }
     }
 
@@ -639,11 +740,13 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
                 };
                 match item {
                     Some(openrouter::StreamItem::TextDelta(text)) => {
-                        (self.send_update)(convert::agent_message_chunk(&text))
+                        self.presentation
+                            .send(convert::agent_message_chunk(&text))
                             .map_err(PromptOutcome::AcpUpdate)?;
                     }
                     Some(openrouter::StreamItem::ReasoningDelta(text)) => {
-                        (self.send_update)(convert::agent_thought_chunk(&text))
+                        self.presentation
+                            .send(convert::agent_thought_chunk(&text))
                             .map_err(PromptOutcome::AcpUpdate)?;
                     }
                     Some(openrouter::StreamItem::Completion(completion)) => return Ok(completion),
@@ -684,7 +787,9 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
     /// Reports the context tokens and session cost of the saved transcript.
     fn send_usage(&mut self) -> std::result::Result<(), PromptOutcome> {
         if let Some(update) = convert::usage_update(&self.transcript, &self.parameters) {
-            (self.send_update)(update).map_err(PromptOutcome::AcpUpdate)?;
+            self.presentation
+                .send(update)
+                .map_err(PromptOutcome::AcpUpdate)?;
         }
         Ok(())
     }
@@ -714,7 +819,8 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
     ) -> std::result::Result<(), PromptOutcome> {
         let calls = batch.message.tool_calls.clone();
         for call in &calls {
-            (self.send_update)(convert::pending_tool_call(call))
+            self.presentation
+                .send(convert::pending_tool_call(call))
                 .map_err(PromptOutcome::AcpUpdate)?;
         }
         for call in &calls {
@@ -728,24 +834,21 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
             let outcome = if let Some(message) = denial {
                 ToolOutcome::Failed(message)
             } else {
-                (self.send_update)(convert::in_progress_tool_call_update(&call.call_id))
+                self.presentation
+                    .send(convert::in_progress_tool_call_update(&call.call_id))
                     .map_err(PromptOutcome::AcpUpdate)?;
                 // The dispatcher polls tools first, so a synchronous patch can finish
                 // before it observes cancellation that arrived while sending the update.
                 if self.cancellation.is_cancelled() {
                     return Err(PromptOutcome::Cancelled);
                 }
-                tools::execute(
-                    &self.summary.workspace_path,
-                    &self.shell_processes,
-                    call,
-                    self.cancellation.cancelled(),
-                )
-                .await
+                tools::execute(&self.tools, call, self.cancellation.cancelled()).await
             };
             let update = convert::finished_tool_call_update(call, &outcome);
             batch.outcomes.push(outcome);
-            (self.send_update)(update).map_err(PromptOutcome::AcpUpdate)?;
+            self.presentation
+                .send(update)
+                .map_err(PromptOutcome::AcpUpdate)?;
         }
         Ok(())
     }
@@ -756,7 +859,7 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
         &self,
         call: &ToolCall,
     ) -> std::result::Result<Option<String>, PromptOutcome> {
-        let permission = tools::permission(call, &self.shell_processes);
+        let permission = tools::permission(&self.tools, call);
         let denial = match &permission {
             tools::Permission::NotRequired => return Ok(None),
             tools::Permission::Command { .. } => "User denied permission to run this command.",
@@ -765,15 +868,12 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
         if self.mode == SessionMode::Auto {
             return Ok(None);
         }
-        let PermissionTransport::Acp(connection) = &self.permission_transport else {
-            panic!("Ask mode requires an ACP permission-request connection");
-        };
         let response = tokio::select! {
             biased;
             () = self.cancellation.cancelled() => return Err(PromptOutcome::Cancelled),
-            response = connection.send_request(convert::shell_permission_request(
-                self.summary.id.clone(), call, &self.summary.workspace_path, &permission,
-            )).block_task() => response.map_err(PromptOutcome::Permission)?,
+            response = self.presentation.request_permission(
+                call, &self.summary.workspace_path, &permission,
+            ) => response.map_err(PromptOutcome::Permission)?,
         };
         match response.outcome {
             RequestPermissionOutcome::Selected(selected) => match selected.option_id.0.as_ref() {
@@ -833,7 +933,7 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
         }
         if !matches!(outcome, PromptOutcome::AcpUpdate(_)) {
             for update in remaining {
-                if let Err(error) = (self.send_update)(update) {
+                if let Err(error) = self.presentation.send(update) {
                     outcome = PromptOutcome::AcpUpdate(error);
                     break;
                 }
@@ -860,7 +960,10 @@ impl PromptOutcome {
 
 #[cfg(test)]
 mod tests {
-    use std::{cell::RefCell, fs, rc::Rc};
+    use std::{
+        fs,
+        sync::{Arc, Mutex},
+    };
 
     use agent_client_protocol::schema::v1::ToolCallStatus;
 
@@ -880,7 +983,7 @@ mod tests {
         tools::fixture::Workspace,
     };
 
-    type Updates = Rc<RefCell<Vec<SessionUpdate>>>;
+    type Updates = Arc<Mutex<Vec<SessionUpdate>>>;
 
     struct Harness {
         server: Server,
@@ -903,7 +1006,7 @@ mod tests {
                 store,
                 session_id,
                 cancellation: PromptCancellation::new(),
-                updates: Rc::default(),
+                updates: Arc::default(),
                 workspace,
                 global_hooks: None,
                 shell_processes: ShellProcesses::default(),
@@ -915,7 +1018,7 @@ mod tests {
         async fn run(
             &self,
             input: &str,
-            on_update: impl FnMut(&SessionUpdate) -> Result<()>,
+            on_update: impl FnMut(&SessionUpdate) -> Result<()> + Send + 'static,
         ) -> (Result<PromptOutput>, Vec<TranscriptEntry>) {
             self.run_with_settings(
                 input,
@@ -930,7 +1033,7 @@ mod tests {
             &self,
             input: &str,
             settings: SessionSettings,
-            on_update: impl FnMut(&SessionUpdate) -> Result<()>,
+            on_update: impl FnMut(&SessionUpdate) -> Result<()> + Send + 'static,
         ) -> (Result<PromptOutput>, Vec<TranscriptEntry>) {
             self.run_turn(user(input), Vec::new(), settings, on_update)
                 .await
@@ -941,11 +1044,11 @@ mod tests {
             turn_input: TurnInput,
             hooks: Vec<HookSource>,
             selected_settings: SessionSettings,
-            mut on_update: impl FnMut(&SessionUpdate) -> Result<()>,
+            mut on_update: impl FnMut(&SessionUpdate) -> Result<()> + Send + 'static,
         ) -> (Result<PromptOutput>, Vec<TranscriptEntry>) {
             let updates = self.updates.clone();
             let send_update = move |update: SessionUpdate| {
-                updates.borrow_mut().push(update.clone());
+                updates.lock().unwrap().push(update.clone());
                 on_update(&update)
             };
             let prompt = run(
@@ -960,8 +1063,7 @@ mod tests {
                     shell_processes: self.shell_processes.clone(),
                 },
                 self.cancellation.clone(),
-                send_update,
-                PermissionTransport::None,
+                Presentation::observed(self.session_id.clone(), send_update),
             )
             .unwrap();
             let response = prompt.await;
@@ -977,7 +1079,7 @@ mod tests {
         }
 
         fn updates(&self) -> Vec<SessionUpdate> {
-            self.updates.borrow().clone()
+            self.updates.lock().unwrap().clone()
         }
     }
 
@@ -1043,7 +1145,7 @@ mod tests {
         async fn run_goal(
             &self,
             before_stop: &str,
-            on_update: impl FnMut(&SessionUpdate) -> Result<()>,
+            on_update: impl FnMut(&SessionUpdate) -> Result<()> + Send + 'static,
         ) -> (Result<PromptOutput>, Vec<TranscriptEntry>) {
             let hooks = hooks::Hooks {
                 before_stop: command(before_stop),
@@ -1056,7 +1158,7 @@ mod tests {
         async fn run_skill(
             &self,
             hooks: hooks::Hooks,
-            on_update: impl FnMut(&SessionUpdate) -> Result<()>,
+            on_update: impl FnMut(&SessionUpdate) -> Result<()> + Send + 'static,
         ) -> (Result<PromptOutput>, Vec<TranscriptEntry>) {
             let hooks = HookSource {
                 skill: Some("goal".to_owned()),
@@ -1203,7 +1305,7 @@ mod tests {
 
     fn sent_patch_call(harness: &Harness) -> bool {
         harness.updates().iter().any(
-            |update| matches!(update, SessionUpdate::ToolCall(call) if call.title == "Apply patch to 2 files"),
+            move |update| matches!(update, SessionUpdate::ToolCall(call) if call.title == "Apply patch to 2 files"),
         )
     }
 
@@ -1246,7 +1348,7 @@ mod tests {
         let harness = patch_harness("tool_calls").await;
         let cancel = harness.cancellation.clone();
         let (response, transcript) = harness
-            .run("Apply the patch", |update| {
+            .run("Apply the patch", move |update| {
                 if matches!(update, SessionUpdate::ToolCallUpdate(update)
                     if update.fields.status == Some(ToolCallStatus::InProgress))
                 {
@@ -1271,7 +1373,7 @@ mod tests {
             let harness = patch_harness("tool_calls").await;
             let cancel = harness.cancellation.clone();
             let (response, transcript) = harness
-                .run("Apply the patch", |update| {
+                .run("Apply the patch", move |update| {
                     if finished_tool_call_update_for(update, "patch-1") {
                         if fail_update {
                             return Err(Error::internal_error().data("connection closed"));
@@ -1544,15 +1646,15 @@ mod tests {
                     cancel.cancel();
                 }
             });
+            let cancels_on_text = !hook_runs && expected == Some(PromptOutput::Cancelled);
+            let continued = harness.workspace.0.join("continued");
             let (response, transcript) = harness
                 .run_skill(hooks::Hooks {
                     before_stop: command(r#"if [ ! -e continued ]; then touch continued; echo '{"decision":"continue","message":"Again."}'; else touch ran; sleep 30; fi"#),
                     after_run: command("cat > after_run.json; echo '{}'"),
                     ..hooks::Hooks::default()
-                }, |update| {
-                    if !hook_runs
-                        && expected == Some(PromptOutput::Cancelled)
-                        && harness.workspace.0.join("continued").exists()
+                }, move |update| {
+                    if cancels_on_text && continued.exists()
                         && matches!(update, SessionUpdate::AgentMessageChunk(_))
                     {
                         cancel.cancel();
@@ -1941,8 +2043,7 @@ mod tests {
                 shell_processes: ShellProcesses::default(),
             },
             PromptCancellation::new(),
-            |_| Ok(()),
-            PermissionTransport::None,
+            Presentation::headless(harness.session_id.clone()),
         );
         assert!(rejected.is_err());
         assert!(harness.stored().is_empty());
@@ -2067,7 +2168,7 @@ mod tests {
             ..hooks::Hooks::default()
         };
         let (response, _) = harness
-            .run_skill(hooks.clone(), |update| {
+            .run_skill(hooks.clone(), move |update| {
                 if matches!(update, SessionUpdate::ToolCallUpdate(update)
                     if update.tool_call_id.to_string() == "call-1"
                         && update.fields.status == Some(ToolCallStatus::InProgress))
@@ -2084,7 +2185,7 @@ mod tests {
 
         let harness = Harness::new(vec![text_reply("Done.")]).await;
         let (response, transcript) = harness
-            .run_skill(hooks, |update| match update {
+            .run_skill(hooks, move |update| match update {
                 SessionUpdate::SessionInfoUpdate(_) => {
                     Err(Error::internal_error().data("connection closed"))
                 }
@@ -2147,8 +2248,7 @@ mod tests {
                 shell_processes: ShellProcesses::default(),
             },
             PromptCancellation::new(),
-            |_| Ok(()),
-            PermissionTransport::None,
+            Presentation::headless(harness.session_id.clone()),
         );
         assert!(rejected.is_err());
         assert!(harness.stored().is_empty());
@@ -2188,8 +2288,7 @@ mod tests {
                 server.client(),
                 input("b".repeat(1_100_000)),
                 PromptCancellation::new(),
-                |_| Ok(()),
-                PermissionTransport::None
+                Presentation::headless(id.clone()),
             )
             .is_err()
         );
@@ -2199,8 +2298,7 @@ mod tests {
             server.client(),
             input("small".to_owned()),
             PromptCancellation::new(),
-            |_| Ok(()),
-            PermissionTransport::None,
+            Presentation::headless(id.clone()),
         )
         .unwrap();
         assert!(matches!(accepted.await.unwrap(), PromptOutput::Finished(_)));
@@ -2414,22 +2512,22 @@ mod tests {
     #[tokio::test]
     async fn each_turn_saves_and_sends_its_own_model_and_effort() {
         let harness = Harness::new(vec![text_reply("First"), text_reply("Second")]).await;
-        let selected = Rc::new(RefCell::new(EffortLevel::Low));
+        let selected = Arc::new(Mutex::new(EffortLevel::Low));
         let changed = selected.clone();
         let first_model = catalog()[1].id.as_str();
         let second_model = catalog()[2].id.as_str();
-        let first_settings = SessionSettings::new(first_model, *selected.borrow());
+        let first_settings = SessionSettings::new(first_model, *selected.lock().unwrap());
 
         let (first, _) = harness
             .run_with_settings("one", first_settings, move |update| {
                 if matches!(update, SessionUpdate::SessionInfoUpdate(_)) {
-                    *changed.borrow_mut() = EffortLevel::XHigh;
+                    *changed.lock().unwrap() = EffortLevel::XHigh;
                 }
                 Ok(())
             })
             .await;
         assert!(matches!(first.unwrap(), PromptOutput::Finished(_)));
-        let second_settings = SessionSettings::new(second_model, *selected.borrow());
+        let second_settings = SessionSettings::new(second_model, *selected.lock().unwrap());
         let (second, transcript) = harness
             .run_with_settings("two", second_settings, |_| Ok(()))
             .await;
@@ -2472,13 +2570,13 @@ mod tests {
             shell_processes: ShellProcesses::default(),
         };
         let start = |client: openrouter::Client, input: PromptInput| {
+            let session_id = input.session_id.clone();
             run(
                 store.clone(),
                 client,
                 input,
                 PromptCancellation::new(),
-                |_| Ok(()),
-                PermissionTransport::None,
+                Presentation::headless(session_id),
             )
         };
         let without_images =
@@ -2628,7 +2726,7 @@ mod tests {
             .await;
 
             let (response, transcript) = harness
-                .run("Start the server", |update| match failing {
+                .run("Start the server", move |update| match failing {
                     Some(failing) if describe(update) == failing => {
                         Err(Error::internal_error().data("connection closed"))
                     }
@@ -2722,7 +2820,7 @@ mod tests {
         let cancel = harness.cancellation.clone();
 
         let (response, transcript) = harness
-            .run("Weather?", |update| {
+            .run("Weather?", move |update| {
                 if finished_tool_call_update_for(update, "call-1") {
                     cancel.cancel();
                 }
@@ -2773,7 +2871,7 @@ mod tests {
         let cancel = harness.cancellation.clone();
 
         let (response, transcript) = harness
-            .run("Hi", |update| {
+            .run("Hi", move |update| {
                 if matches!(update, SessionUpdate::AgentMessageChunk(_)) {
                     cancel.cancel();
                 }
@@ -2841,7 +2939,7 @@ mod tests {
             .await;
 
             let (response, transcript) = harness
-                .run("Weather?", |update| {
+                .run("Weather?", move |update| {
                     if describe(update) == failing {
                         return Err(Error::internal_error().data("connection closed"));
                     }

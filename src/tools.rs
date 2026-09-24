@@ -1,7 +1,7 @@
 //! The concrete tool set: schemas sent to the model, tool call titles, and
 //! execution of one complete call.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 use serde_json::Value;
@@ -18,6 +18,13 @@ mod shell;
 mod workspace;
 
 pub use shell::Permission;
+
+/// What running and classifying one call needs from the agent that made it.
+pub struct ToolContext {
+    pub workspace_path: PathBuf,
+    /// The active session's shell processes, which outlive the call.
+    pub shell_processes: ShellProcesses,
+}
 
 pub const APPLY_PATCH: &str = "apply_patch";
 pub const READ_FILE: &str = "read_file";
@@ -183,10 +190,10 @@ fn shorten(tool_call_title: &str) -> String {
 
 /// What Ask mode must request before `call` runs, classified by the same
 /// argument validation its execution uses.
-pub fn permission(call: &ToolCall, shell_processes: &ShellProcesses) -> Permission {
+pub fn permission(context: &ToolContext, call: &ToolCall) -> Permission {
     match call.name.as_str() {
         SHELL => shell::command_permission(&call.arguments),
-        SHELL_PROCESS => shell::process_permission(&call.arguments, shell_processes),
+        SHELL_PROCESS => shell::process_permission(&call.arguments, &context.shell_processes),
         _ => Permission::NotRequired,
     }
 }
@@ -196,18 +203,24 @@ pub fn permission(call: &ToolCall, shell_processes: &ShellProcesses) -> Permissi
 /// cancellation themselves, so they can report a partial write or finish a
 /// stop's cleanup.
 pub async fn execute(
-    workspace_path: &Path,
-    shell_processes: &ShellProcesses,
+    context: &ToolContext,
     call: &ToolCall,
     cancelled: impl Future<Output = ()>,
 ) -> ToolOutcome {
+    let workspace_path = &context.workspace_path;
     match call.name.as_str() {
         SHELL => {
-            return shell::execute(workspace_path, shell_processes, &call.arguments, cancelled)
-                .await;
+            return shell::execute(
+                workspace_path,
+                &context.shell_processes,
+                &call.arguments,
+                cancelled,
+            )
+            .await;
         }
         SHELL_PROCESS => {
-            return shell::execute_process(shell_processes, &call.arguments, cancelled).await;
+            return shell::execute_process(&context.shell_processes, &call.arguments, cancelled)
+                .await;
         }
         _ => {}
     }
@@ -265,13 +278,11 @@ mod tests {
     use super::*;
 
     async fn execute(workspace: &Path, call: &ToolCall) -> ToolOutcome {
-        super::execute(
-            workspace,
-            &ShellProcesses::default(),
-            call,
-            std::future::pending(),
-        )
-        .await
+        let context = ToolContext {
+            workspace_path: workspace.to_path_buf(),
+            shell_processes: ShellProcesses::default(),
+        };
+        super::execute(&context, call, std::future::pending()).await
     }
 
     fn call(name: &str, arguments: &str) -> ToolCall {
