@@ -40,16 +40,12 @@ use crate::{
         self, EffortLevel, SessionMode, SessionSettings, SessionStore, SessionSummary,
         SkillInvocation, TurnInput, UserMessage, UserMessagePart,
     },
-    settings,
+    settings::{self, Settings},
     shell_processes::ShellProcesses,
     skills::{self, Skill},
     system_prompt,
 };
 use operations::{OperationGuard, SessionOperations};
-
-fn default_settings() -> SessionSettings {
-    SessionSettings::new(openrouter::default_model(), EffortLevel::Default)
-}
 
 fn config_options(settings: &SessionSettings, model_locked: bool) -> Vec<SessionConfigOption> {
     let model = openrouter::catalog_model(&settings.model)
@@ -168,7 +164,9 @@ fn dispatch(message: UserMessage, skills: &[Skill]) -> Dispatch {
 #[derive(Clone)]
 struct ServerState {
     store: SessionStore,
-    global_hooks: Option<hooks::HookSource>,
+    /// The settings file's settings. Each session applies its workspace
+    /// settings file to them when it becomes active.
+    settings: Settings,
     /// The home directory read at startup, which holds the user skills
     /// directories.
     home: PathBuf,
@@ -196,10 +194,10 @@ struct ActiveSession {
 }
 
 impl ServerState {
-    fn new(store: SessionStore, global_hooks: Option<hooks::HookSource>, home: PathBuf) -> Self {
+    fn new(store: SessionStore, settings: Settings, home: PathBuf) -> Self {
         Self {
             store,
-            global_hooks,
+            settings,
             home,
             openrouter: Arc::default(),
             operations: SessionOperations::default(),
@@ -242,7 +240,7 @@ impl ServerState {
             return Ok(PromptResponse::new(StopReason::EndTurn));
         }
         let client = self.openrouter_client()?;
-        let saved_settings = stored.saved_settings(&default_settings());
+        let saved_settings = stored.saved_settings(&active.selections);
         let mut parameters = ModelRequestParameters::new(
             &saved_settings.model,
             saved_settings.effort,
@@ -288,13 +286,25 @@ impl ServerState {
         loaded.skills
     }
 
+    /// The session settings of a new session in `workspace_path`.
+    fn default_settings(&self, workspace_path: &Path) -> Result<SessionSettings> {
+        let settings = self
+            .settings
+            .for_workspace(workspace_path)
+            .map_err(Error::into_internal_error)?;
+        Ok(SessionSettings::new(
+            settings.default_model,
+            EffortLevel::Default,
+        ))
+    }
+
     fn new_session(&self, request: &NewSessionRequest) -> Result<NewSessionResponse> {
         self.openrouter_client()?;
         let system_prompt =
             system_prompt::for_workspace(&request.cwd).map_err(Error::into_internal_error)?;
         let skills = self.skill_catalog(&request.cwd);
+        let settings = self.default_settings(&request.cwd)?;
         let summary = self.store.create(&request.cwd).map_err(store_error)?;
-        let settings = default_settings();
         self.activate(
             summary.id.clone(),
             ActiveSession {
@@ -319,15 +329,15 @@ impl ServerState {
             .read(&request.session_id)
             .map_err(Error::into_internal_error)?
             .ok_or_else(|| not_found(&request.session_id))?;
-        let saved_settings = stored.saved_settings(&default_settings());
-        ModelRequestParameters::new(&saved_settings.model, saved_settings.effort, String::new())
-            .map_err(Error::into_internal_error)?;
         let model_locked = !stored.transcript.is_empty();
         let mut active = self.active.lock().expect("active sessions mutex poisoned");
         let selections = &mut active
             .get_mut(&request.session_id)
             .ok_or_else(|| inactive(&request.session_id))?
             .selections;
+        let saved_settings = stored.saved_settings(selections);
+        ModelRequestParameters::new(&saved_settings.model, saved_settings.effort, String::new())
+            .map_err(Error::into_internal_error)?;
         if model_locked {
             selections.model.clone_from(&saved_settings.model);
         }
@@ -396,7 +406,8 @@ impl ServerState {
                 request.cwd.display()
             )));
         }
-        let saved_settings = stored.saved_settings(&default_settings());
+        let saved_settings =
+            stored.saved_settings(&self.default_settings(&stored.summary.workspace_path)?);
         let model_locked = !stored.transcript.is_empty();
         // A repeated load keeps the system prompt, skill catalog, and shell
         // processes of the first load.
@@ -694,12 +705,13 @@ impl ServerState {
                 session_id: session_id.clone(),
                 turn_input,
                 hook_sources: self
+                    .settings
                     .global_hooks
                     .clone()
                     .into_iter()
                     .chain(skill_source)
                     .collect(),
-                selected_settings: Some(active.selections),
+                selected_settings: active.selections,
                 system_prompt: active.system_prompt,
                 shell_processes: active.shell_processes,
             },
@@ -795,12 +807,10 @@ fn initialize_response(initialize: &InitializeRequest) -> InitializeResponse {
     response
 }
 
-pub async fn serve_stdio(
-    global_hooks: Option<hooks::HookSource>,
-) -> std::result::Result<(), Box<dyn StdError>> {
+pub async fn serve_stdio(settings: Settings) -> std::result::Result<(), Box<dyn StdError>> {
     let store = SessionStore::open(&sessions::database_path()?)?;
     serve(
-        ServerState::new(store, global_hooks, settings::home_dir()?),
+        ServerState::new(store, settings, settings::home_dir()?),
         Stdio::new(),
         termination_signal()?,
     )
@@ -872,7 +882,7 @@ async fn run_headless_prompt(
             session_id,
             turn_input: TurnInput::UserMessage(user_message.into()),
             hook_sources,
-            selected_settings: Some(settings.with_mode(SessionMode::Auto)),
+            selected_settings: settings.with_mode(SessionMode::Auto),
             system_prompt,
             shell_processes: shell_processes.clone(),
         },
@@ -1082,10 +1092,13 @@ mod tests {
             sessions::{AssistantBatch, AssistantMessage, ModelUsage},
         };
         let store = SessionStore::in_memory();
-        let state = ServerState::new(store.clone(), None, no_home());
+        let state = ServerState::new(store.clone(), test_settings(), no_home());
         let id = store.create(Path::new("/workspace")).unwrap().id;
         let active = ActiveSession {
-            selections: default_settings(),
+            selections: SessionSettings::new(
+                openrouter::fixture::DEFAULT_MODEL,
+                EffortLevel::Default,
+            ),
             system_prompt: "captured system".to_owned(),
             shell_processes: ShellProcesses::default(),
             skills: vec![],
@@ -1108,7 +1121,7 @@ mod tests {
             .append_turn_start(
                 &id,
                 &[
-                    TranscriptEntry::Model(openrouter::default_model().to_owned()),
+                    TranscriptEntry::Model(openrouter::fixture::DEFAULT_MODEL.to_owned()),
                     TranscriptEntry::turn("previous work ".repeat(3000)),
                 ],
             )
@@ -1160,7 +1173,7 @@ mod tests {
         ));
         let estimate = compaction::request_estimate(
             &ModelRequestParameters::new(
-                openrouter::default_model(),
+                openrouter::fixture::DEFAULT_MODEL,
                 EffortLevel::Default,
                 "captured system".to_owned(),
             )
@@ -1185,6 +1198,14 @@ mod tests {
         state_over(SessionStore::in_memory())
     }
 
+    /// Settings with the test catalog's default model and no global hooks.
+    fn test_settings() -> Settings {
+        Settings {
+            default_model: openrouter::fixture::DEFAULT_MODEL.to_owned(),
+            global_hooks: None,
+        }
+    }
+
     /// A home directory that does not exist, so skills installed on the
     /// developer's machine never enter a test catalog.
     fn no_home() -> PathBuf {
@@ -1193,7 +1214,7 @@ mod tests {
 
     /// A server state over `store`, as a later process would open it.
     fn state_over(store: SessionStore) -> ServerState {
-        let state = ServerState::new(store, None, no_home());
+        let state = ServerState::new(store, test_settings(), no_home());
         *state.openrouter.lock().unwrap() = Some(openrouter::Client::new("test-key".to_owned()));
         state
     }
@@ -1556,6 +1577,47 @@ mod tests {
     }
 
     #[test]
+    fn new_sessions_use_the_workspace_default_model() {
+        let workspace = Workspace::new();
+        let chosen = openrouter::catalog()[1].id.as_str();
+        let path = workspace.0.join(".ox/settings.json");
+        fs::create_dir(workspace.0.join(".ox")).unwrap();
+        fs::write(&path, format!(r#"{{"model":"{chosen}"}}"#)).unwrap();
+        let state = state();
+        let created = state
+            .new_session(&NewSessionRequest::new(&workspace.0))
+            .unwrap();
+        let options = serde_json::to_value(&created).unwrap();
+        assert_eq!(options["configOptions"][0]["currentValue"], chosen);
+
+        let later = state_over(state.store.clone());
+        let loaded = later
+            .load_session(
+                &LoadSessionRequest::new(created.session_id, &workspace.0),
+                |_| Ok(()),
+            )
+            .unwrap();
+        let options = serde_json::to_value(&loaded).unwrap();
+        assert_eq!(
+            options["configOptions"][0]["currentValue"], chosen,
+            "a later load of a session without turns"
+        );
+
+        fs::write(&path, r#"{"model":"a/b"}"#).unwrap();
+        let invalid = state
+            .new_session(&NewSessionRequest::new(&workspace.0))
+            .unwrap_err();
+        let data = invalid.data.unwrap();
+        assert!(
+            data.as_str()
+                .unwrap()
+                .starts_with(&format!("{}: model a/b", path.display())),
+            "{data}"
+        );
+        assert_eq!(state.store.list(None).unwrap().len(), 1);
+    }
+
+    #[test]
     fn load_and_list_use_the_same_exact_workspace_path() {
         let state = state();
         let created = state
@@ -1566,7 +1628,7 @@ mod tests {
             .append_turn_start(
                 &created.session_id,
                 &[
-                    TranscriptEntry::Model(openrouter::default_model().to_owned()),
+                    TranscriptEntry::Model(openrouter::fixture::DEFAULT_MODEL.to_owned()),
                     TranscriptEntry::turn("Hello".to_owned()),
                 ],
             )
@@ -1750,7 +1812,9 @@ mod tests {
             )
             .unwrap();
         assert_eq!(
-            set("model", openrouter::default_model()).unwrap_err().code,
+            set("model", openrouter::fixture::DEFAULT_MODEL)
+                .unwrap_err()
+                .code,
             ErrorCode::InvalidParams
         );
         state
@@ -1833,7 +1897,7 @@ mod tests {
                 session_id: id.clone(),
                 turn_input: TurnInput::UserMessage(user_message.to_owned().into()),
                 hook_sources: Vec::new(),
-                selected_settings: Some(active.selections),
+                selected_settings: active.selections,
                 system_prompt: active.system_prompt,
                 shell_processes: active.shell_processes,
             }
@@ -2007,7 +2071,7 @@ mod tests {
             .append_turn_start(
                 &saved,
                 &[
-                    TranscriptEntry::Model(openrouter::default_model().to_owned()),
+                    TranscriptEntry::Model(openrouter::fixture::DEFAULT_MODEL.to_owned()),
                     TranscriptEntry::turn("Earlier".to_owned()),
                 ],
             )
@@ -2102,7 +2166,7 @@ mod tests {
         assert_eq!(
             store.read(&id).unwrap().unwrap().transcript,
             vec![
-                TranscriptEntry::Model(openrouter::default_model().to_owned()),
+                TranscriptEntry::Model(openrouter::fixture::DEFAULT_MODEL.to_owned()),
                 TranscriptEntry::turn("Hello".to_owned())
             ],
         );
@@ -2217,7 +2281,7 @@ Run the commands.
 "#),
                 )
                 .unwrap();
-                state.global_hooks = Some(hooks::HookSource {
+                state.settings.global_hooks = Some(hooks::HookSource {
                     skill: None,
                     directory: workspace.0.clone(),
                     hooks: skills::load(&no_home(), &workspace.0)
@@ -2791,10 +2855,10 @@ Run the commands.
                 store.clone(),
                 server.client(),
                 answered.id,
-                SessionSettings::new(openrouter::default_model(), EffortLevel::Default),
+                SessionSettings::new(openrouter::fixture::DEFAULT_MODEL, EffortLevel::Default),
                 system_prompt::for_workspace(path).unwrap(),
                 "Answer".into(),
-                crate::settings::load()
+                crate::settings::load(openrouter::catalog())
                     .unwrap()
                     .global_hooks
                     .into_iter()
@@ -2814,7 +2878,7 @@ Run the commands.
                     store.clone(),
                     server.client(),
                     failed.id,
-                    SessionSettings::new(openrouter::default_model(), EffortLevel::Default),
+                    SessionSettings::new(openrouter::fixture::DEFAULT_MODEL, EffortLevel::Default),
                     system_prompt::for_workspace(path).unwrap(),
                     "Fail".into(),
                     Vec::new(),
@@ -2867,7 +2931,7 @@ Run the commands.
         }
         let workspace = Workspace::new();
         fs::create_dir_all(workspace.0.join(".config/ox")).unwrap();
-        fs::write(workspace.0.join(".config/ox/settings.json"), r#"{"model":"a/b","hooks":{"after_run":{"command":"printf %s \"$OX_IN_HOOK\" > reported; echo '{}'"}}}"#).unwrap();
+        fs::write(workspace.0.join(".config/ox/settings.json"), format!(r#"{{"model":"{}","hooks":{{"after_run":{{"command":"printf %s \"$OX_IN_HOOK\" > reported; echo '{{}}'"}}}}}}"#, openrouter::fixture::DEFAULT_MODEL)).unwrap();
         let mut child = tokio::process::Command::new(std::env::current_exe().unwrap())
             .args([
                 "--exact",
@@ -2931,7 +2995,7 @@ Run the commands.
                 store,
                 server.client(),
                 session.id,
-                SessionSettings::new(openrouter::default_model(), EffortLevel::Default),
+                SessionSettings::new(openrouter::fixture::DEFAULT_MODEL, EffortLevel::Default),
                 String::new(),
                 "Start the server".into(),
                 Vec::new(),
@@ -2963,7 +3027,7 @@ Run the commands.
             mode: SessionMode::Auto,
             run_id: "run-1".to_owned(),
             workspace: workspace.0.clone(),
-            model: openrouter::default_model().to_owned(),
+            model: openrouter::fixture::DEFAULT_MODEL.to_owned(),
             effort: EffortLevel::Default,
         };
         let stopped_at = std::sync::Mutex::new(None);
@@ -3169,7 +3233,7 @@ Run the commands.
                 session_id: id.clone(),
                 turn_input: TurnInput::UserMessage("Go".to_owned().into()),
                 hook_sources: Vec::new(),
-                selected_settings: Some(active.selections.with_mode(SessionMode::Auto)),
+                selected_settings: active.selections.with_mode(SessionMode::Auto),
                 system_prompt: active.system_prompt,
                 shell_processes: active.shell_processes,
             },

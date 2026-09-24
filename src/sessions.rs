@@ -1219,7 +1219,7 @@ mod tests {
                 .append_turn_start(
                     &id,
                     &[
-                        TranscriptEntry::Model(openrouter::default_model().to_owned()),
+                        TranscriptEntry::Model(openrouter::fixture::DEFAULT_MODEL.to_owned()),
                         first.clone(),
                     ],
                 )
@@ -1258,7 +1258,7 @@ mod tests {
         assert_eq!(
             stored.transcript,
             vec![
-                TranscriptEntry::Model(openrouter::default_model().to_owned()),
+                TranscriptEntry::Model(openrouter::fixture::DEFAULT_MODEL.to_owned()),
                 first,
                 TranscriptEntry::AssistantBatch(AssistantBatch {
                     message: message.clone(),
@@ -1280,7 +1280,7 @@ mod tests {
         );
         assert_eq!(
             stored.saved_settings(&SessionSettings::new("other", EffortLevel::High)),
-            SessionSettings::new(openrouter::default_model(), EffortLevel::Low)
+            SessionSettings::new(openrouter::fixture::DEFAULT_MODEL, EffortLevel::Low)
                 .with_mode(SessionMode::Auto)
         );
         let mut replay = Vec::new();
@@ -1327,7 +1327,7 @@ mod tests {
 
     fn model_row() -> (&'static str, String) {
         row(&TranscriptEntry::Model(
-            openrouter::default_model().to_owned(),
+            openrouter::fixture::DEFAULT_MODEL.to_owned(),
         ))
     }
 
@@ -1556,7 +1556,7 @@ mod tests {
     #[test]
     fn checkpoints_cover_a_growing_prefix_that_ends_at_an_assistant_batch() {
         let base = [
-            TranscriptEntry::Model(openrouter::default_model().to_owned()),
+            TranscriptEntry::Model(openrouter::fixture::DEFAULT_MODEL.to_owned()),
             TranscriptEntry::turn("first".to_owned()),
             TranscriptEntry::AssistantBatch(AssistantBatch {
                 message: message(vec![call("a", "one"), call("b", "two")]),
@@ -1603,7 +1603,7 @@ mod tests {
     fn saved_settings_come_from_the_model_entry_and_latest_turn_start() {
         let store = SessionStore::in_memory();
         let id = store.create(workspace()).unwrap().id;
-        let defaults = SessionSettings::new(openrouter::default_model(), EffortLevel::High)
+        let defaults = SessionSettings::new(openrouter::fixture::DEFAULT_MODEL, EffortLevel::High)
             .with_mode(SessionMode::Auto);
         assert_eq!(
             store.read(&id).unwrap().unwrap().saved_settings(&defaults),
@@ -1655,7 +1655,7 @@ mod tests {
             .append_turn_start(
                 &created.id,
                 &[
-                    TranscriptEntry::Model(openrouter::default_model().to_owned()),
+                    TranscriptEntry::Model(openrouter::fixture::DEFAULT_MODEL.to_owned()),
                     TranscriptEntry::turn("\n\nFirst line\nsecond line".to_owned()),
                 ],
             )
@@ -1678,7 +1678,7 @@ mod tests {
             .append_turn_start(
                 &long.id,
                 &[
-                    TranscriptEntry::Model(openrouter::default_model().to_owned()),
+                    TranscriptEntry::Model(openrouter::fixture::DEFAULT_MODEL.to_owned()),
                     TranscriptEntry::turn("x".repeat(MAX_SESSION_TITLE_CHARS + 10)),
                 ],
             )
@@ -1697,7 +1697,7 @@ mod tests {
             .append_turn_start(
                 &image_only.id,
                 &[
-                    TranscriptEntry::Model(openrouter::default_model().to_owned()),
+                    TranscriptEntry::Model(openrouter::fixture::DEFAULT_MODEL.to_owned()),
                     TranscriptEntry::turn(UserMessage {
                         parts: vec![UserMessagePart::Image(ImageAttachment {
                             data: "aGVsbG8=".to_owned(),
@@ -1715,7 +1715,7 @@ mod tests {
             .append_turn_start(
                 &skill.id,
                 &[
-                    TranscriptEntry::Model(openrouter::default_model().to_owned()),
+                    TranscriptEntry::Model(openrouter::fixture::DEFAULT_MODEL.to_owned()),
                     TranscriptEntry::turn(invocation()),
                 ],
             )
@@ -1730,7 +1730,7 @@ mod tests {
                 .append_turn_start(
                     &SessionId::new("missing"),
                     &[
-                        TranscriptEntry::Model(openrouter::default_model().to_owned()),
+                        TranscriptEntry::Model(openrouter::fixture::DEFAULT_MODEL.to_owned()),
                         TranscriptEntry::turn("hello".to_owned())
                     ],
                 )
@@ -1771,7 +1771,7 @@ mod tests {
             .append_turn_start(
                 &id,
                 &[
-                    TranscriptEntry::Model(openrouter::default_model().to_owned()),
+                    TranscriptEntry::Model(openrouter::fixture::DEFAULT_MODEL.to_owned()),
                     TranscriptEntry::turn("hello".to_owned()),
                 ],
             )

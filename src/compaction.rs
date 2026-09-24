@@ -463,10 +463,7 @@ pub async fn compact(
 mod tests {
     use super::*;
     use crate::{
-        openrouter::{
-            default_model,
-            fixture::{Reply, Server, text_reply},
-        },
+        openrouter::fixture::{DEFAULT_MODEL, Reply, Server, text_reply},
         sessions::{
             AssistantMessage, EffortLevel, ImageAttachment, SkillInvocation, ToolCall, ToolOutcome,
             TurnStart,
@@ -474,7 +471,7 @@ mod tests {
     };
 
     fn parameters() -> ModelRequestParameters {
-        ModelRequestParameters::new(default_model(), EffortLevel::Default, "system".to_owned())
+        ModelRequestParameters::new(DEFAULT_MODEL, EffortLevel::Default, "system".to_owned())
             .unwrap()
     }
 
@@ -518,7 +515,7 @@ mod tests {
             .append_turn_start(
                 &id,
                 &[
-                    TranscriptEntry::Model(default_model().to_owned()),
+                    TranscriptEntry::Model(DEFAULT_MODEL.to_owned()),
                     TranscriptEntry::turn(SkillInvocation {
                         name: "goal".to_owned(),
                         arguments: "Record the old details.".to_owned(),
@@ -688,7 +685,7 @@ mod tests {
             })
         };
         let transcript = vec![
-            TranscriptEntry::Model(default_model().to_owned()),
+            TranscriptEntry::Model(DEFAULT_MODEL.to_owned()),
             TranscriptEntry::turn("first".to_owned()),
             TranscriptEntry::AssistantBatch(answer("first answer")),
             checkpoint("Older summary", 3),
@@ -717,7 +714,7 @@ mod tests {
     #[test]
     fn ranked_cuts_follow_the_latest_checkpoint_smallest_request_first() {
         let transcript = vec![
-            TranscriptEntry::Model(default_model().to_owned()),
+            TranscriptEntry::Model(DEFAULT_MODEL.to_owned()),
             TranscriptEntry::turn("earlier request".to_owned()),
             TranscriptEntry::AssistantBatch(answer("earlier answer")),
             TranscriptEntry::CompactionCheckpoint(CompactionCheckpoint {
@@ -756,7 +753,7 @@ mod tests {
     /// A user message and a skill invocation, each with one image.
     fn image_transcript() -> Vec<TranscriptEntry> {
         vec![
-            TranscriptEntry::Model(default_model().to_owned()),
+            TranscriptEntry::Model(DEFAULT_MODEL.to_owned()),
             TranscriptEntry::turn(UserMessage {
                 parts: vec![
                     UserMessagePart::Text("Inspect this".to_owned()),
@@ -862,7 +859,7 @@ mod tests {
             .append_turn_start(
                 &id,
                 &[
-                    TranscriptEntry::Model(default_model().to_owned()),
+                    TranscriptEntry::Model(DEFAULT_MODEL.to_owned()),
                     TranscriptEntry::turn("o".repeat(1_500_000)),
                 ],
             )
@@ -902,7 +899,7 @@ mod tests {
             .append_turn_start(
                 &id,
                 &[
-                    TranscriptEntry::Model(default_model().to_owned()),
+                    TranscriptEntry::Model(DEFAULT_MODEL.to_owned()),
                     TranscriptEntry::turn("earlier work".to_owned()),
                 ],
             )
@@ -960,7 +957,7 @@ mod tests {
             .append_turn_start(
                 &small_id,
                 &[
-                    TranscriptEntry::Model(default_model().to_owned()),
+                    TranscriptEntry::Model(DEFAULT_MODEL.to_owned()),
                     TranscriptEntry::turn("older ".repeat(4000)),
                 ],
             )

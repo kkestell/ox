@@ -88,9 +88,9 @@ fn run_command(args: &[String]) -> io::Result<Command> {
 }
 
 /// Resolves a `--model` choice against the installed model catalog.
-fn resolve_model(model: Option<String>) -> io::Result<String> {
+fn resolve_model(model: Option<String>, default_model: String) -> io::Result<String> {
     let Some(model) = model else {
-        return Ok(openrouter::default_model().to_owned());
+        return Ok(default_model);
     };
     if openrouter::catalog_model(&model).is_some() {
         return Ok(model);
@@ -146,17 +146,13 @@ fn absolute_dir(dir: Option<&Path>) -> io::Result<PathBuf> {
     dir.canonicalize()
 }
 
-/// Fetches and installs the model catalog and returns the global hooks.
-async fn load_settings_and_catalog() -> io::Result<Option<hooks::HookSource>> {
-    let settings = settings::load()?;
-    openrouter::install_catalog(openrouter::fetch_catalog().await?, settings.default_model)
-        .map_err(|error| {
-            io::Error::new(
-                error.kind(),
-                format!("{}: {error}", settings.path.display()),
-            )
-        })?;
-    Ok(settings.global_hooks)
+/// Fetches and installs the model catalog and returns the settings checked
+/// against it.
+async fn load_settings_and_catalog() -> io::Result<settings::Settings> {
+    let catalog = openrouter::fetch_catalog().await?;
+    let settings = settings::load(&catalog)?;
+    openrouter::install_catalog(catalog);
+    Ok(settings)
 }
 
 #[tokio::main]
@@ -179,17 +175,12 @@ async fn run() -> Result<(), Box<dyn Error>> {
             effort,
             prompt,
         } => {
-            let global_hooks = load_settings_and_catalog().await?;
-            let model = resolve_model(model)?;
+            let dir = absolute_dir(dir.as_deref())?;
+            let settings = load_settings_and_catalog().await?.for_workspace(&dir)?;
+            let model = resolve_model(model, settings.default_model)?;
             check_effort(&model, effort)?;
-            let answer = acp::run_headless(
-                &absolute_dir(dir.as_deref())?,
-                model,
-                effort,
-                prompt,
-                global_hooks,
-            )
-            .await?;
+            let answer =
+                acp::run_headless(&dir, model, effort, prompt, settings.global_hooks).await?;
             println!("{answer}");
         }
         Command::Login => {
@@ -254,7 +245,10 @@ mod tests {
         };
         assert_eq!(dir, None);
         assert_eq!(model, None);
-        assert_eq!(resolve_model(model).unwrap(), openrouter::default_model());
+        assert_eq!(
+            resolve_model(model, "workspace/model".to_owned()).unwrap(),
+            "workspace/model"
+        );
         assert_eq!(effort, EffortLevel::Default);
         assert_eq!(prompt, "Hello");
 
@@ -279,7 +273,10 @@ mod tests {
             panic!("expected run command");
         };
         assert_eq!(dir.as_deref(), Some(Path::new("workspace")));
-        assert_eq!(resolve_model(model).unwrap(), chosen);
+        assert_eq!(
+            resolve_model(model, "workspace/model".to_owned()).unwrap(),
+            chosen
+        );
         assert_eq!(effort, EffortLevel::XHigh);
         check_effort(chosen, effort).unwrap();
         assert_eq!(prompt, "Fix it");
@@ -293,14 +290,14 @@ mod tests {
         assert!(run(&["run", "--dir"]).is_err());
         assert!(run(&["run", "Hello", "again"]).is_err());
         assert!(
-            resolve_model(Some("retired/model".to_owned()))
+            resolve_model(Some("retired/model".to_owned()), String::new())
                 .unwrap_err()
                 .to_string()
                 .contains("not a model")
         );
         assert!(error(&["run", "--effort", "huge", "Hello"]).contains("not an effort level"));
         assert!(
-            check_effort(openrouter::default_model(), EffortLevel::XHigh)
+            check_effort(openrouter::fixture::DEFAULT_MODEL, EffortLevel::XHigh)
                 .unwrap_err()
                 .to_string()
                 .contains("choose one of default, low, medium, high, max")

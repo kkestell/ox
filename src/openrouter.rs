@@ -150,49 +150,19 @@ pub async fn fetch_catalog() -> io::Result<Vec<CatalogModel>> {
     )
 }
 
-struct Catalog {
-    models: Vec<CatalogModel>,
-    default_model: String,
-}
+static CATALOG: std::sync::OnceLock<Vec<CatalogModel>> = std::sync::OnceLock::new();
 
-static CATALOG: std::sync::OnceLock<Catalog> = std::sync::OnceLock::new();
-
-/// Installs the fetched model catalog and the default model, once per process.
-pub fn install_catalog(models: Vec<CatalogModel>, default_model: String) -> io::Result<()> {
-    if !models.iter().any(|model| model.id == default_model) {
-        return Err(io::Error::new(
-            ErrorKind::InvalidData,
-            format!("model {default_model} is not in the OpenRouter model catalog"),
-        ));
-    }
-    if CATALOG
-        .set(Catalog {
-            models,
-            default_model,
-        })
-        .is_err()
-    {
+/// Installs the fetched model catalog, once per process.
+pub fn install_catalog(models: Vec<CatalogModel>) {
+    if CATALOG.set(models).is_err() {
         panic!("the model catalog is installed once");
     }
-    Ok(())
-}
-
-fn installed() -> &'static Catalog {
-    #[cfg(test)]
-    CATALOG.get_or_init(|| Catalog {
-        models: parse_catalog(fixture::CATALOG, fixture::NOW).unwrap(),
-        default_model: "deepseek/deepseek-v4.1-flash".to_owned(),
-    });
-    CATALOG.get().expect("the model catalog is installed")
 }
 
 pub fn catalog() -> &'static [CatalogModel] {
-    &installed().models
-}
-
-/// The model named by `model` in the settings file.
-pub fn default_model() -> &'static str {
-    &installed().default_model
+    #[cfg(test)]
+    CATALOG.get_or_init(|| parse_catalog(fixture::CATALOG, fixture::NOW).unwrap());
+    CATALOG.get().expect("the model catalog is installed")
 }
 
 const ENDPOINT: &str = "https://openrouter.ai/api/v1";
@@ -873,8 +843,11 @@ pub(crate) mod fixture {
         net::{TcpListener, TcpStream},
     };
 
-    use super::{Client, default_model};
+    use super::Client;
     use crate::tools;
+
+    /// The default model of the test settings, a model in `CATALOG`.
+    pub const DEFAULT_MODEL: &str = "deepseek/deepseek-v4.1-flash";
 
     /// The time `CATALOG` is filtered at: 2026-09-23.
     pub const NOW: i64 = 1_790_121_600;
@@ -1091,7 +1064,7 @@ pub(crate) mod fixture {
         json!({
             "id": "gen-1",
             "object": "chat.completion.chunk",
-            "model": default_model(),
+            "model": DEFAULT_MODEL,
             "choices": [{ "index": 0, "delta": delta, "finish_reason": finish_reason }],
         })
     }
@@ -1101,7 +1074,7 @@ pub(crate) mod fixture {
         json!({
             "id": "gen-1",
             "object": "chat.completion.chunk",
-            "model": default_model(),
+            "model": DEFAULT_MODEL,
             "choices": [{ "index": 0, "delta": { "content": "" }, "finish_reason": "stop" }],
             "usage": { "prompt_tokens": input, "completion_tokens": output, "total_tokens": input + output, "cost": cost },
         })
@@ -1162,7 +1135,7 @@ pub(crate) mod fixture {
 #[cfg(test)]
 mod tests {
     use super::{
-        fixture::{Reply, Server, delta, sse, text_reply, usage},
+        fixture::{DEFAULT_MODEL, Reply, Server, delta, sse, text_reply, usage},
         *,
     };
     use crate::sessions::{AssistantBatch, SessionMode, ToolOutcome, TurnStart};
@@ -1171,7 +1144,7 @@ mod tests {
 
     fn test_parameters() -> ModelRequestParameters {
         ModelRequestParameters::new(
-            default_model(),
+            DEFAULT_MODEL,
             EffortLevel::Default,
             TEST_SYSTEM_PROMPT.to_owned(),
         )

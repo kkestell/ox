@@ -417,7 +417,7 @@ mod tests {
             .append_turn_start(
                 &id,
                 &[
-                    TranscriptEntry::Model(crate::openrouter::default_model().to_owned()),
+                    TranscriptEntry::Model(crate::openrouter::fixture::DEFAULT_MODEL.to_owned()),
                     TranscriptEntry::turn(message.clone()),
                 ],
             )

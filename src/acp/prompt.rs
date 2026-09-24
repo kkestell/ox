@@ -47,7 +47,9 @@ pub(super) struct PromptInput {
     pub turn_input: TurnInput,
     /// Global hooks followed by the invoked skill's hooks.
     pub hook_sources: Vec<HookSource>,
-    pub selected_settings: Option<SessionSettings>,
+    /// The ACP selections the turn starts with. A session with turns keeps the
+    /// model in its model entry instead.
+    pub selected_settings: SessionSettings,
     /// The complete system prompt captured when the session became active.
     pub system_prompt: String,
     /// The active session's shell processes, which outlive this run.
@@ -193,13 +195,9 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
             .read(session_id)
             .map_err(Error::into_internal_error)?
             .ok_or_else(|| Error::resource_not_found(Some(session_id.to_string())))?;
-        let saved_settings = stored.saved_settings(&super::default_settings());
-        let mut settings = input
-            .selected_settings
-            .clone()
-            .unwrap_or_else(|| saved_settings.clone());
+        let mut settings = input.selected_settings.clone();
         if !stored.transcript.is_empty() {
-            settings.model.clone_from(&saved_settings.model);
+            settings.model = stored.saved_settings(&settings).model;
         }
         let parameters = ModelRequestParameters::new(
             &settings.model,
@@ -886,8 +884,11 @@ mod tests {
 
     use crate::{
         openrouter::{
-            catalog, default_model,
-            fixture::{Reply, Server, calls_reply, delta, sse, text_reply, tool_reply, usage},
+            catalog,
+            fixture::{
+                DEFAULT_MODEL, Reply, Server, calls_reply, delta, sse, text_reply, tool_reply,
+                usage,
+            },
         },
         sessions::{EffortLevel, ModelUsage, SkillInvocation},
         system_prompt,
@@ -933,7 +934,7 @@ mod tests {
         ) -> (Result<PromptOutput>, Vec<TranscriptEntry>) {
             self.run_with_settings(
                 input,
-                SessionSettings::new(default_model(), EffortLevel::Default)
+                SessionSettings::new(DEFAULT_MODEL, EffortLevel::Default)
                     .with_mode(SessionMode::Auto),
                 on_update,
             )
@@ -946,17 +947,7 @@ mod tests {
             settings: SessionSettings,
             on_update: impl FnMut(&SessionUpdate) -> Result<()>,
         ) -> (Result<PromptOutput>, Vec<TranscriptEntry>) {
-            self.run_with_selection(input, Some(settings), on_update)
-                .await
-        }
-
-        async fn run_with_selection(
-            &self,
-            input: &str,
-            selected_settings: Option<SessionSettings>,
-            on_update: impl FnMut(&SessionUpdate) -> Result<()>,
-        ) -> (Result<PromptOutput>, Vec<TranscriptEntry>) {
-            self.run_turn(user(input), Vec::new(), selected_settings, on_update)
+            self.run_turn(user(input), Vec::new(), settings, on_update)
                 .await
         }
 
@@ -964,7 +955,7 @@ mod tests {
             &self,
             turn_input: TurnInput,
             hooks: Vec<HookSource>,
-            selected_settings: Option<SessionSettings>,
+            selected_settings: SessionSettings,
             mut on_update: impl FnMut(&SessionUpdate) -> Result<()>,
         ) -> (Result<PromptOutput>, Vec<TranscriptEntry>) {
             let updates = self.updates.clone();
@@ -1006,7 +997,7 @@ mod tests {
     }
 
     fn model() -> TranscriptEntry {
-        TranscriptEntry::Model(default_model().to_owned())
+        TranscriptEntry::Model(DEFAULT_MODEL.to_owned())
     }
 
     /// A turn start saved by `Harness::run`: Default effort in Auto mode.
@@ -1094,10 +1085,8 @@ mod tests {
             self.run_turn(
                 invocation("Pass the tests."),
                 vec![hooks],
-                Some(
-                    SessionSettings::new(default_model(), EffortLevel::Default)
-                        .with_mode(SessionMode::Auto),
-                ),
+                SessionSettings::new(DEFAULT_MODEL, EffortLevel::Default)
+                    .with_mode(SessionMode::Auto),
                 on_update,
             )
             .await
@@ -1353,11 +1342,17 @@ mod tests {
         ]))])
         .await;
 
-        let (response, transcript) = harness.run_with_selection("Hi", None, |_| Ok(())).await;
+        let (response, transcript) = harness
+            .run_with_settings(
+                "Hi",
+                SessionSettings::new(DEFAULT_MODEL, EffortLevel::Default),
+                |_| Ok(()),
+            )
+            .await;
 
         assert!(matches!(response.unwrap(), PromptOutput::Finished(_)));
         let request = &harness.server.requests()[0];
-        assert_eq!(request["model"], default_model());
+        assert_eq!(request["model"], DEFAULT_MODEL);
         assert!(request.get("reasoning").is_none());
         let TranscriptEntry::AssistantBatch(AssistantBatch {
             message: mut answered,
@@ -1452,7 +1447,7 @@ mod tests {
             inputs[0]["workspace"],
             harness.workspace.0.to_str().unwrap()
         );
-        assert_eq!(inputs[0]["model"], default_model());
+        assert_eq!(inputs[0]["model"], DEFAULT_MODEL);
         assert_eq!(inputs[0]["effort"], "default");
         assert_eq!(inputs[0]["answer"], "First try.");
         assert_eq!(inputs[1]["answer"], "Second try.");
@@ -1736,10 +1731,8 @@ mod tests {
                 .run_turn(
                     turn_input,
                     definitions.clone(),
-                    Some(
-                        SessionSettings::new(default_model(), EffortLevel::Default)
-                            .with_mode(SessionMode::Auto),
-                    ),
+                    SessionSettings::new(DEFAULT_MODEL, EffortLevel::Default)
+                        .with_mode(SessionMode::Auto),
                     |_| Ok(()),
                 )
                 .await;
@@ -1981,7 +1974,7 @@ mod tests {
                     },
                     directory: harness.workspace.0.clone(),
                 }],
-                selected_settings: None,
+                selected_settings: SessionSettings::new(DEFAULT_MODEL, EffortLevel::Default),
                 system_prompt: "system".to_owned(),
                 shell_processes: ShellProcesses::default(),
             },
@@ -1999,7 +1992,7 @@ mod tests {
         // `{}` saves nothing and the run continues.
         let system = system_prompt::for_workspace(&Workspace::new().0).unwrap();
         let parameters =
-            ModelRequestParameters::new(default_model(), EffortLevel::Default, system).unwrap();
+            ModelRequestParameters::new(DEFAULT_MODEL, EffortLevel::Default, system).unwrap();
         let admission = compaction::budget(parameters.model).admission;
         let base = compaction::request_estimate(&parameters, &[model(), turn(invocation(""))]);
         let near_limit = "x".repeat((admission - base - 100) * 3);
@@ -2030,10 +2023,8 @@ mod tests {
                         },
                         directory: harness.workspace.0.clone(),
                     }],
-                    Some(
-                        SessionSettings::new(default_model(), EffortLevel::Default)
-                            .with_mode(SessionMode::Auto),
-                    ),
+                    SessionSettings::new(DEFAULT_MODEL, EffortLevel::Default)
+                        .with_mode(SessionMode::Auto),
                     |_| Ok(()),
                 )
                 .await;
@@ -2196,7 +2187,7 @@ mod tests {
                 session_id: harness.session_id.clone(),
                 turn_input: user(&oversized),
                 hook_sources: Vec::new(),
-                selected_settings: None,
+                selected_settings: SessionSettings::new(DEFAULT_MODEL, EffortLevel::Default),
                 system_prompt: "system".to_owned(),
                 shell_processes: ShellProcesses::default(),
             },
@@ -2225,7 +2216,7 @@ mod tests {
             .append_turn_start(
                 &id,
                 &[
-                    TranscriptEntry::Model(default_model().to_owned()),
+                    TranscriptEntry::Model(DEFAULT_MODEL.to_owned()),
                     TranscriptEntry::turn("unanswered ".repeat(180_000)),
                 ],
             )
@@ -2238,7 +2229,7 @@ mod tests {
             session_id: id.clone(),
             turn_input: user(&user_message),
             hook_sources: Vec::new(),
-            selected_settings: None,
+            selected_settings: SessionSettings::new(DEFAULT_MODEL, EffortLevel::Default),
             system_prompt: "system".to_owned(),
             shell_processes: ShellProcesses::default(),
         };
@@ -2282,7 +2273,7 @@ mod tests {
             .append_turn_start(
                 &harness.session_id,
                 &[
-                    TranscriptEntry::Model(default_model().to_owned()),
+                    TranscriptEntry::Model(DEFAULT_MODEL.to_owned()),
                     TranscriptEntry::turn(old.clone()),
                 ],
             )
@@ -2294,9 +2285,7 @@ mod tests {
             .store
             .append_batch(&harness.session_id, &batch)
             .unwrap();
-        let (response, transcript) = harness
-            .run_with_selection("next request", None, |_| Ok(()))
-            .await;
+        let (response, transcript) = harness.run("next request", |_| Ok(())).await;
         assert!(matches!(response.unwrap(), PromptOutput::Finished(_)));
         let requests = harness.server.requests();
         assert_eq!(requests.len(), 2);
@@ -2321,7 +2310,7 @@ mod tests {
         .await;
         let system = system_prompt::for_workspace(&between.workspace.0).unwrap();
         let parameters =
-            ModelRequestParameters::new(default_model(), EffortLevel::Default, system).unwrap();
+            ModelRequestParameters::new(DEFAULT_MODEL, EffortLevel::Default, system).unwrap();
         let automatic_threshold = compaction::budget(parameters.model).automatic_threshold;
         let base = "x".repeat(2_000_000);
         let prospective = vec![
@@ -2337,7 +2326,7 @@ mod tests {
             .append_turn_start(
                 &between.session_id,
                 &[
-                    TranscriptEntry::Model(default_model().to_owned()),
+                    TranscriptEntry::Model(DEFAULT_MODEL.to_owned()),
                     turn(user(&old)),
                 ],
             )
@@ -2349,9 +2338,7 @@ mod tests {
             .store
             .append_batch(&between.session_id, &batch)
             .unwrap();
-        let (response, transcript) = between
-            .run_with_selection("next request", None, |_| Ok(()))
-            .await;
+        let (response, transcript) = between.run("next request", |_| Ok(())).await;
         assert!(matches!(response.unwrap(), PromptOutput::Finished(_)));
         let requests = between.server.requests();
         assert_eq!(
@@ -2422,7 +2409,7 @@ mod tests {
             .append_turn_start(
                 &harness.session_id,
                 &[
-                    TranscriptEntry::Model(default_model().to_owned()),
+                    TranscriptEntry::Model(DEFAULT_MODEL.to_owned()),
                     TranscriptEntry::turn("history ".repeat(4000)),
                 ],
             )
@@ -2434,9 +2421,7 @@ mod tests {
             .store
             .append_batch(&harness.session_id, &batch)
             .unwrap();
-        let (response, transcript) = harness
-            .run_with_selection("next request", None, |_| Ok(()))
-            .await;
+        let (response, transcript) = harness.run("next request", |_| Ok(())).await;
         assert!(matches!(response.unwrap(), PromptOutput::Finished(_)));
         assert_eq!(harness.server.requests().len(), 3);
         assert!(matches!(
@@ -2457,7 +2442,7 @@ mod tests {
             .append_turn_start(
                 &no_reduction.session_id,
                 &[
-                    TranscriptEntry::Model(default_model().to_owned()),
+                    TranscriptEntry::Model(DEFAULT_MODEL.to_owned()),
                     TranscriptEntry::turn("old".to_owned()),
                 ],
             )
@@ -2469,9 +2454,7 @@ mod tests {
             .store
             .append_batch(&no_reduction.session_id, &batch)
             .unwrap();
-        let (response, transcript) = no_reduction
-            .run_with_selection("next", None, |_| Ok(()))
-            .await;
+        let (response, transcript) = no_reduction.run("next", |_| Ok(())).await;
         assert!(response.is_err());
         assert_eq!(no_reduction.server.requests().len(), 2);
         assert_eq!(transcript.len(), 4, "the new user message remains saved");
@@ -2535,39 +2518,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn absent_selection_falls_back_to_saved_settings() {
-        let harness = Harness::new(vec![text_reply("Done")]).await;
-        let saved = catalog()[1].id.as_str();
-        harness
-            .store
-            .append_turn_start(
-                &harness.session_id,
-                &[
-                    TranscriptEntry::Model(saved.to_owned()),
-                    turn_with(EffortLevel::Max, SessionMode::Auto, user("saved turn")),
-                ],
-            )
-            .unwrap();
-
-        let (response, transcript) = harness
-            .run_with_selection("next turn", None, |_| Ok(()))
-            .await;
-
-        assert!(matches!(response.unwrap(), PromptOutput::Finished(_)));
-        assert_eq!(harness.server.requests()[0]["model"], saved);
-        assert_eq!(harness.server.requests()[0]["reasoning"]["effort"], "max");
-        assert_eq!(
-            transcript,
-            vec![
-                TranscriptEntry::Model(saved.to_owned()),
-                turn_with(EffortLevel::Max, SessionMode::Auto, user("saved turn")),
-                turn_with(EffortLevel::Max, SessionMode::Auto, user("next turn")),
-                answer("Done"),
-            ]
-        );
-    }
-
-    #[tokio::test]
     async fn invalid_prompt_startup_sends_no_request_or_user_message() {
         let workspace = Workspace::new();
         let store = SessionStore::in_memory();
@@ -2580,7 +2530,7 @@ mod tests {
                 session_id: missing,
                 turn_input: user("not saved"),
                 hook_sources: Vec::new(),
-                selected_settings: None,
+                selected_settings: SessionSettings::new(DEFAULT_MODEL, EffortLevel::Default),
                 system_prompt: system_prompt::for_workspace(&workspace.0).unwrap(),
                 shell_processes: ShellProcesses::default(),
             },
@@ -2608,7 +2558,7 @@ mod tests {
                 session_id: unknown.clone(),
                 turn_input: user("not saved"),
                 hook_sources: Vec::new(),
-                selected_settings: None,
+                selected_settings: SessionSettings::new(DEFAULT_MODEL, EffortLevel::Default),
                 system_prompt: system_prompt::for_workspace(&workspace.0).unwrap(),
                 shell_processes: ShellProcesses::default(),
             },
@@ -2634,10 +2584,7 @@ mod tests {
                 session_id: image_session.clone(),
                 turn_input: image_input.clone(),
                 hook_sources: Vec::new(),
-                selected_settings: Some(SessionSettings::new(
-                    default_model(),
-                    EffortLevel::Default,
-                )),
+                selected_settings: SessionSettings::new(DEFAULT_MODEL, EffortLevel::Default),
                 system_prompt: system_prompt::for_workspace(&workspace.0).unwrap(),
                 shell_processes: ShellProcesses::default(),
             },
@@ -2665,10 +2612,7 @@ mod tests {
                 session_id: vision_session.clone(),
                 turn_input: image_input.clone(),
                 hook_sources: Vec::new(),
-                selected_settings: Some(SessionSettings::new(
-                    &catalog()[1].id,
-                    EffortLevel::Default,
-                )),
+                selected_settings: SessionSettings::new(&catalog()[1].id, EffortLevel::Default),
                 system_prompt: system_prompt::for_workspace(&workspace.0).unwrap(),
                 shell_processes: ShellProcesses::default(),
             },
