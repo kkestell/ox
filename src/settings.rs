@@ -25,10 +25,16 @@ pub struct Loaded {
     pub global_hooks: Option<HookSource>,
 }
 
+/// The home directory in `$HOME`, which holds `~/.config/ox` and the user
+/// skills directories.
+pub fn home_dir() -> io::Result<PathBuf> {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "HOME is not set"))
+}
+
 pub fn load() -> io::Result<Loaded> {
-    let home = std::env::var_os("HOME")
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "HOME is not set"))?;
-    let mut loaded = load_from(&PathBuf::from(home).join(".config/ox/settings.json"))?;
+    let mut loaded = load_from(&home_dir()?.join(".config/ox/settings.json"))?;
     // A hook's nested `ox run` still needs the default model but must not
     // rerun global hooks.
     if std::env::var_os(IN_HOOK_ENV).is_some() {

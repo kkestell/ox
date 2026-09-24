@@ -8,7 +8,7 @@ use std::{
     collections::HashMap,
     error::Error as StdError,
     io::{self, ErrorKind},
-    path::Path,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
 
@@ -40,6 +40,7 @@ use crate::{
         self, EffortLevel, SessionMode, SessionSettings, SessionStore, SessionSummary,
         SkillInvocation, TurnInput, UserMessage, UserMessagePart,
     },
+    settings,
     shell_processes::ShellProcesses,
     skills::{self, Skill},
     system_prompt,
@@ -168,6 +169,9 @@ fn dispatch(message: UserMessage, skills: &[Skill]) -> Dispatch {
 struct ServerState {
     store: SessionStore,
     global_hooks: Option<hooks::HookSource>,
+    /// The home directory read at startup, which holds the user skills
+    /// directories.
+    home: PathBuf,
     openrouter: Arc<Mutex<Option<openrouter::Client>>>,
     operations: SessionOperations,
     /// The sessions created or loaded in this process. Only an active session
@@ -192,10 +196,11 @@ struct ActiveSession {
 }
 
 impl ServerState {
-    fn new(store: SessionStore, global_hooks: Option<hooks::HookSource>) -> Self {
+    fn new(store: SessionStore, global_hooks: Option<hooks::HookSource>, home: PathBuf) -> Self {
         Self {
             store,
             global_hooks,
+            home,
             openrouter: Arc::default(),
             operations: SessionOperations::default(),
             active: Arc::default(),
@@ -273,11 +278,21 @@ impl ServerState {
         }
     }
 
+    /// Loads the skill catalog for a session becoming active, writing each
+    /// skipped definition to stderr.
+    fn skill_catalog(&self, workspace_path: &Path) -> Vec<Skill> {
+        let loaded = skills::load(&self.home, workspace_path);
+        for message in loaded.skipped {
+            eprintln!("{message}");
+        }
+        loaded.skills
+    }
+
     fn new_session(&self, request: &NewSessionRequest) -> Result<NewSessionResponse> {
         self.openrouter_client()?;
         let system_prompt =
             system_prompt::for_workspace(&request.cwd).map_err(Error::into_internal_error)?;
-        let skills = skills::load(&request.cwd).map_err(Error::into_internal_error)?;
+        let skills = self.skill_catalog(&request.cwd);
         let summary = self.store.create(&request.cwd).map_err(store_error)?;
         let settings = default_settings();
         self.activate(
@@ -385,17 +400,16 @@ impl ServerState {
         let model_locked = !stored.transcript.is_empty();
         // A repeated load keeps the system prompt, skill catalog, and shell
         // processes of the first load.
-        let (system_prompt, skills, shell_processes) = match self
-            .active_session(&request.session_id)
-        {
-            Some(active) => (active.system_prompt, active.skills, active.shell_processes),
-            None => (
-                system_prompt::for_workspace(&stored.summary.workspace_path)
-                    .map_err(Error::into_internal_error)?,
-                skills::load(&stored.summary.workspace_path).map_err(Error::into_internal_error)?,
-                ShellProcesses::default(),
-            ),
-        };
+        let (system_prompt, skills, shell_processes) =
+            match self.active_session(&request.session_id) {
+                Some(active) => (active.system_prompt, active.skills, active.shell_processes),
+                None => (
+                    system_prompt::for_workspace(&stored.summary.workspace_path)
+                        .map_err(Error::into_internal_error)?,
+                    self.skill_catalog(&stored.summary.workspace_path),
+                    ShellProcesses::default(),
+                ),
+            };
         let parameters = ModelRequestParameters::new(
             &saved_settings.model,
             saved_settings.effort,
@@ -786,7 +800,7 @@ pub async fn serve_stdio(
 ) -> std::result::Result<(), Box<dyn StdError>> {
     let store = SessionStore::open(&sessions::database_path()?)?;
     serve(
-        ServerState::new(store, global_hooks),
+        ServerState::new(store, global_hooks, settings::home_dir()?),
         Stdio::new(),
         termination_signal()?,
     )
@@ -1068,7 +1082,7 @@ mod tests {
             sessions::{AssistantBatch, AssistantMessage, ModelUsage},
         };
         let store = SessionStore::in_memory();
-        let state = ServerState::new(store.clone(), None);
+        let state = ServerState::new(store.clone(), None, no_home());
         let id = store.create(Path::new("/workspace")).unwrap().id;
         let active = ActiveSession {
             selections: default_settings(),
@@ -1171,9 +1185,15 @@ mod tests {
         state_over(SessionStore::in_memory())
     }
 
+    /// A home directory that does not exist, so skills installed on the
+    /// developer's machine never enter a test catalog.
+    fn no_home() -> PathBuf {
+        std::env::temp_dir().join(format!("ox-no-home-{}", uuid::Uuid::new_v4()))
+    }
+
     /// A server state over `store`, as a later process would open it.
     fn state_over(store: SessionStore) -> ServerState {
-        let state = ServerState::new(store, None);
+        let state = ServerState::new(store, None, no_home());
         *state.openrouter.lock().unwrap() = Some(openrouter::Client::new("test-key".to_owned()));
         state
     }
@@ -1325,8 +1345,8 @@ mod tests {
         );
     }
 
-    fn write_skill(workspace: &Path, name: &str, text: &str) {
-        let directory = workspace.join(".agents/skills").join(name);
+    fn write_skill(skills_directory: &Path, name: &str, text: &str) {
+        let directory = skills_directory.join(name);
         fs::create_dir_all(&directory).unwrap();
         fs::write(directory.join("SKILL.md"), text).unwrap();
     }
@@ -1338,7 +1358,7 @@ mod tests {
         fs::write(&agents_md, "Answer in French.\n").unwrap();
         let skills_dir = workspace.0.join(".agents/skills");
         write_skill(
-            &workspace.0,
+            &skills_dir,
             "goal",
             "---\nname: goal\ndescription: \"Work toward an objective: verify it.\"\nargument-hint: \"<objective>\"\nallowed-tools: [shell]\nmetadata:\n  owner: ox\nhooks:\n  PreToolUse: [{matcher: shell}]\n  before_run:\n    command: python3 scripts/context.py\n  before_tool:\n    command: python3 scripts/check_call.py\n  after_tools:\n    command: python3 scripts/format.py\n  before_stop:\n    command: python3 scripts/check.py\n  after_run:\n    command: python3 scripts/report.py\n---\n\nWork toward the objective.\n",
         );
@@ -1446,7 +1466,7 @@ mod tests {
         for hooks in ["{}", "{PreToolUse: [{matcher: shell}]}"] {
             let workspace = Workspace::new();
             write_skill(
-                &workspace.0,
+                &workspace.0.join(".agents/skills"),
                 "shared",
                 &format!("---\nname: shared\ndescription: Shared.\nhooks: {hooks}\n---\nBody\n"),
             );
@@ -1471,80 +1491,52 @@ mod tests {
     }
 
     #[test]
-    fn an_invalid_skill_definition_fails_activation_with_its_path() {
-        for (name, text, error) in [
-            (
-                "compact",
-                "---\nname: compact\ndescription: Shadow.\n---\nBody\n",
-                "compact is the built-in /compact command",
-            ),
-            (
-                "Goal",
-                "---\nname: Goal\ndescription: Goal.\n---\nBody\n",
-                "may contain only lowercase letters, digits, and hyphens",
-            ),
-            (
-                "other",
-                "---\nname: goal\ndescription: Goal.\n---\nBody\n",
-                "does not match its directory",
-            ),
-            (
-                "blank",
-                "---\nname: blank\ndescription: \" \"\n---\nBody\n",
-                "description is blank",
-            ),
-            (
-                "empty",
-                "---\nname: empty\ndescription: Empty.\n---\n\n",
-                "instructions are blank",
-            ),
-            (
-                "plain",
-                "No frontmatter.\n",
-                "does not begin with --- delimited YAML",
-            ),
-            (
-                "hooked",
-                "---\nname: hooked\ndescription: Hooked.\nhooks:\n  before_stop:\n    command: 'true'\n    extra: true\n---\nBody\n",
-                "unknown field `extra`",
-            ),
-            (
-                "incomplete",
-                "---\nname: incomplete\ndescription: Incomplete.\nhooks:\n  before_stop: {}\n---\nBody\n",
-                "missing field `command`",
-            ),
-            (
-                "unhooked",
-                "---\nname: unhooked\ndescription: Unhooked.\nhooks:\n  after_run:\n    command: \" \"\n---\nBody\n",
-                "after_run hook command is blank",
-            ),
-            (
-                "extra",
-                "---\nname: extra\ndescription: Extra.\nhooks:\n  before_tool:\n    command: 'true'\n    tools: [shell]\n---\nBody\n",
-                "unknown field `tools`",
-            ),
-            ("missing", "", "No such file or directory"),
-        ] {
-            let workspace = Workspace::new();
-            if text.is_empty() {
-                fs::create_dir_all(workspace.0.join(".agents/skills").join(name)).unwrap();
-            } else {
-                write_skill(&workspace.0, name, text);
-            }
-            let state = state();
-            let invalid = state
-                .new_session(&NewSessionRequest::new(&workspace.0))
-                .unwrap_err();
-            let data = invalid.data.unwrap();
-            let data = data.as_str().unwrap();
-            assert!(
-                data.starts_with(&format!(".agents/skills/{name}/SKILL.md: "))
-                    && data.contains(error),
-                "{name}: {data}"
+    fn skills_directories_load_in_priority_order() {
+        let home = Workspace::new();
+        let workspace = Workspace::new();
+        let ox = home.0.join(".config/ox/skills");
+        let agents = home.0.join(".agents/skills");
+        let local = workspace.0.join(".agents/skills");
+        let skill = |name: &str, description: &str| {
+            format!("---\nname: {name}\ndescription: {description}\n---\nBody\n")
+        };
+        for directory in [&ox, &agents, &local] {
+            write_skill(
+                directory,
+                "shared",
+                &skill("shared", &directory.display().to_string()),
             );
-            assert!(state.store.list(None).unwrap().is_empty(), "{name}");
-            assert!(state.active.lock().unwrap().is_empty(), "{name}");
         }
+        for directory in [&agents, &local] {
+            write_skill(
+                directory,
+                "personal",
+                &skill("personal", &directory.display().to_string()),
+            );
+        }
+        write_skill(&ox, "ox-only", &skill("ox-only", "Ox."));
+        write_skill(&agents, "agents-only", &skill("agents-only", "Agents."));
+        write_skill(&local, "local-only", &skill("local-only", "Local."));
+        write_skill(&local, "broken", "No frontmatter.\n");
+        let mut state = state();
+        state.home = home.0.clone();
+        let id = create_session(&state, &workspace.0);
+        let skills = state.active_session(&id).unwrap().skills;
+        let loaded: Vec<_> = skills
+            .iter()
+            .map(|skill| (skill.name.as_str(), skill.directory.clone()))
+            .collect();
+        assert_eq!(
+            loaded,
+            [
+                ("agents-only", agents.join("agents-only")),
+                ("local-only", local.join("local-only")),
+                ("ox-only", ox.join("ox-only")),
+                ("personal", agents.join("personal")),
+                ("shared", ox.join("shared")),
+            ],
+            "each name once, from its highest-priority skills directory, without the broken skill"
+        );
     }
 
     #[test]
@@ -2228,7 +2220,10 @@ Run the commands.
                 state.global_hooks = Some(hooks::HookSource {
                     skill: None,
                     directory: workspace.0.clone(),
-                    hooks: skills::load(&workspace.0).unwrap().remove(0).hooks,
+                    hooks: skills::load(&no_home(), &workspace.0)
+                        .skills
+                        .remove(0)
+                        .hooks,
                 });
                 text = "/check Run commands";
             }

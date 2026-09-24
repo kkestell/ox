@@ -49,8 +49,19 @@ Ox loads its model choices and effort levels from OpenRouter at startup.
 
 ## Skills
 
-Ox loads `.agents/skills/<name>/SKILL.md` from the workspace when a session
-becomes active. Each file has YAML frontmatter with `name` and `description`,
+Ox loads `<name>/SKILL.md` from these skills directories when a session becomes
+active, highest priority first:
+
+1. `~/.config/ox/skills/`
+2. `~/.agents/skills/`
+3. The workspace's `.agents/skills/`
+
+When two directories hold a skill with the same name, Ox uses the one from the
+higher-priority directory. Ox skips an invalid skill and writes its path and
+error to stderr; a lower-priority skill with the same name stays unavailable
+until it is fixed.
+
+Each file has YAML frontmatter with `name` and `description`,
 followed by Markdown instructions. A prompt whose first word is `/<name>`
 invokes that skill and passes the remaining text as its arguments.
 

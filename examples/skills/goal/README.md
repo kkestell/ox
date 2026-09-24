@@ -18,14 +18,16 @@ mkdir -p <workspace>/.agents/skills
 cp -R examples/skills/goal <workspace>/.agents/skills/goal
 ```
 
-Ox loads the workspace's skills when a session is created or first loaded, so
-start a new session or restart Ox after copying. The judge needs `python3` and
+To use it in every workspace, copy it into `~/.config/ox/skills/goal` instead.
+
+Ox loads skills when a session is created or first loaded, so start a new
+session or restart Ox after copying. The judge needs `python3` and
 uses the session's model and effort level with the same OpenRouter key.
 
 ## Skill definition
 
-A skill is `.agents/skills/<name>/SKILL.md` in the workspace: YAML frontmatter
-followed by Markdown instructions.
+A skill is `<name>/SKILL.md` in a skills directory, such as the workspace's
+`.agents/skills/`: YAML frontmatter followed by Markdown instructions.
 
 - `name`: The command name. It matches the directory and contains only
   lowercase letters, digits, and hyphens.

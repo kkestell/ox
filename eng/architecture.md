@@ -29,7 +29,7 @@ ACP boundary --> prompt run --> OpenRouter
       +---------------------------------------> session store
 ```
 
-OpenRouter, the ACP client, the workspace, workspace skill definitions, global
+OpenRouter, the ACP client, the workspace, skill definitions, global
 settings, child processes, the operating-system keyring, and SQLite are external
 boundaries. Their input is validated or translated before it becomes Ox domain
 state.
@@ -131,13 +131,24 @@ is saved or a model request begins. `/compact` acquires the prompt operation
 guard and runs cancellable compaction without saving a user message, so it
 cannot overlap a prompt, load, or delete for the same session.
 
-A skill is `.agents/skills/<name>/SKILL.md` directly under the session
-workspace: YAML frontmatter with a name, description, optional argument hint,
-and optional hook commands, followed by Markdown instructions. Ox
-has no built-in skills. The skill catalog is loaded when a session becomes
-active through `session/new` or its first `session/load` in the process,
-alongside the system prompt, and is kept for the active session; a missing
-skills directory means no skills.
+A skill is `<name>/SKILL.md` directly under a skills directory: YAML
+frontmatter with a name, description, optional argument hint, and optional hook
+commands, followed by Markdown instructions. Ox has no built-in skills. The
+skills directories, highest priority first, are `~/.config/ox/skills`,
+`~/.agents/skills`, and the session workspace's `.agents/skills`, with the home
+directory read once at process startup. The skill catalog is loaded from them
+when a session becomes active through `session/new` or its first
+`session/load` in the process, alongside the system prompt, and is kept for the
+active session; a missing skills directory means no skills from it.
+
+When two skills directories hold a skill with the same name, the catalog keeps
+the higher-priority one, so a workspace cannot replace a skill the user
+installed. A definition that cannot be read, is not UTF-8, exceeds 32 KiB, or
+fails validation, including a skill named `compact`, is left out of the catalog
+and written to stderr with its path. It still takes its directory name at its
+priority, so a lower-priority skill never runs under the name of a broken one.
+Every definition is validated, including a replaced one. A skills directory that
+cannot be read is reported and skipped the same way.
 
 A skill declares at most one command for each hook kind: `before_run`,
 `before_tool`, `after_tools`, `before_stop`, and `after_run`. Each definition
@@ -500,9 +511,8 @@ transactional and may remain after failure or cancellation.
 
 `AGENTS.md` is user-controlled workspace input appended to the system prompt. A
 file that cannot be read, is not UTF-8, or exceeds 32 KiB fails session
-activation instead of being ignored. The same holds for each `SKILL.md`, and a
-definition that fails validation, or a skill named `compact`, fails activation
-with its path.
+activation instead of being ignored. An invalid `SKILL.md` is skipped and
+reported instead, as described in Slash commands and skills.
 
 Hook commands run with `/bin/sh -c` and Ox's permissions, in the skill directory
 or, for global hooks, `~/.config/ox`. Invoking a skill approves its commands;

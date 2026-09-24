@@ -24,8 +24,11 @@ mkdir -p <workspace>/.agents/skills
 cp -R examples/skills/careful <workspace>/.agents/skills/careful
 ```
 
-Ox loads the workspace's skills when a session is created or first loaded, so
-start a new session or restart Ox after copying. The hooks need `python3` and
+To use it in every workspace, copy it into `~/.config/ox/skills/careful`
+instead.
+
+Ox loads skills when a session is created or first loaded, so start a new
+session or restart Ox after copying. The hooks need `python3` and
 `git`. Add `.agents/skills/careful/runs.jsonl` to the workspace's `.gitignore`
 to keep the run log out of the Git status.
 

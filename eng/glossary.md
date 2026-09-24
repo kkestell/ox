@@ -109,9 +109,12 @@
   and sent by the ACP client as prompt text beginning with `/`: the built-in
   `/compact` or a skill in the skill catalog. Ox recognizes a slash command
   before saving anything or making a model request.
-- **Skill**: A `SKILL.md` definition and its directory in the workspace's
-  `.agents/skills/`. It has a name, description, optional argument hint,
-  instructions, and optional hooks.
+- **Skill**: A `SKILL.md` definition and its directory in a skills directory.
+  It has a name, description, optional argument hint, instructions, and
+  optional hooks.
+- **Skills directory**: One of the directories Ox loads skills from, highest
+  priority first: `~/.config/ox/skills/`, `~/.agents/skills/`, and the
+  workspace's `.agents/skills/`. Each holds `<name>/SKILL.md` entries.
 - **Skill catalog**: The skills available to an active session, loaded when it
   becomes active.
 - **Skill invocation**: A turn input holding a skill's name, arguments,
