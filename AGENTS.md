@@ -104,8 +104,6 @@ THIS DOCUMENT MUST BE KEPT UP TO DATE
   construction including each tool call's kind, shell permission content for
   commands, background starts, and shell process input, hook runs, and usage
   updates, and transcript replay.
-- `.agents/skills/init/`: The instruction-only `init` skill, which creates or
-  updates `AGENTS.md`.
 - `examples/skills/goal/`: An example skill whose `before_stop` hook,
   `scripts/judge.py`, asks a headless `ox run` to judge each answer, with its
   test and a README describing the `before_stop` protocol and installation.

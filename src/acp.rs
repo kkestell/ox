@@ -1410,12 +1410,6 @@ mod tests {
         assert!(later.active_session(&id).unwrap().skills.is_empty());
     }
 
-    #[test]
-    fn the_repository_skills_load() {
-        let repository = skills::load(Path::new(env!("CARGO_MANIFEST_DIR"))).unwrap();
-        assert!(repository.iter().any(|skill| skill.name == "init"));
-    }
-
     #[tokio::test]
     async fn loading_an_unknown_or_moved_session_fails_and_delete_deactivates_it() {
         let workspace = Workspace::new();

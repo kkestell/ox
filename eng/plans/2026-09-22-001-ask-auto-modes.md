@@ -1,6 +1,6 @@
 # Ask and Auto modes
 
-Status: proposed.
+Status: implemented.
 
 ## 1. Goal
 
