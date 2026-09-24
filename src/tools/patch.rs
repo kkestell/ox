@@ -361,85 +361,108 @@ enum Change {
     Unchanged,
 }
 
+/// Checks every operation in `patch` against the workspace and builds its
+/// change, so that nothing touches the disk unless every operation can apply.
+/// Each path may be targeted once. The first failing operation stops
+/// preparation with an error prefixed by its path.
 fn prepare(root: &Path, patch: Patch) -> Result<(Workspace, Vec<Prepared>), String> {
     let workspace = Workspace::open(root).map_err(|error| format!("workspace: {error}"))?;
     let mut seen = HashSet::new();
     let mut prepared = Vec::new();
-    for operation in patch.0 {
-        let name = operation.path;
-        let prepare_operation = || -> Result<Prepared, String> {
-            let path = target(&workspace, &name, &mut seen)?;
-            let mut source_file = match &operation.kind {
-                Operation::Add(_) => None,
-                _ => Some(
-                    workspace
-                        .read_file(&path)
-                        .map_err(|error| error.to_string())?,
-                ),
-            };
-            let (summary, change) = match operation.kind {
-                Operation::Add(contents) => {
-                    require_absent(&workspace.root().join(&path))?;
-                    (
-                        format!("Added {name}"),
-                        Change::Write {
-                            path,
-                            contents: contents.into_bytes(),
-                            create: true,
-                        },
-                    )
-                }
-                Operation::Delete => (format!("Deleted {name}"), Change::Delete(path)),
-                Operation::Update {
-                    destination,
-                    chunks,
-                } => {
-                    let contents = if chunks.is_empty() {
-                        None
-                    } else {
-                        let mut source = String::new();
-                        source_file
-                            .as_mut()
-                            .expect("an update has an opened source file")
-                            .read_to_string(&mut source)
-                            .map_err(|error| error.to_string())?;
-                        let contents = update(&source, &chunks)?;
-                        (contents != source).then(|| contents.into_bytes())
-                    };
-                    if let Some(destination_name) = destination {
-                        let destination = target(&workspace, &destination_name, &mut seen)
-                            .and_then(|path| {
-                                require_absent(&workspace.root().join(&path))?;
-                                Ok(path)
-                            })
-                            .map_err(|error| format!("destination {destination_name}: {error}"))?;
-                        (
-                            format!("Moved {name} -> {destination_name}"),
-                            Change::Move {
-                                source: path,
-                                destination,
-                                contents,
-                            },
-                        )
-                    } else if let Some(contents) = contents {
-                        (
-                            format!("Modified {name}"),
-                            Change::Write {
-                                path,
-                                contents,
-                                create: false,
-                            },
-                        )
-                    } else {
-                        (format!("Unchanged {name}"), Change::Unchanged)
-                    }
-                }
-            };
-            Ok(Prepared { summary, change })
-        };
-        prepared.push(prepare_operation().map_err(|error| format!("{name}: {error}"))?);
+    for FileOperation { path: name, kind } in patch.0 {
+        prepared.push(
+            prepare_operation(&workspace, &mut seen, &name, kind)
+                .map_err(|error| format!("{name}: {error}"))?,
+        );
     }
     Ok((workspace, prepared))
+}
+
+fn prepare_operation(
+    workspace: &Workspace,
+    seen: &mut HashSet<PathBuf>,
+    name: &str,
+    kind: Operation,
+) -> Result<Prepared, String> {
+    let path = target(workspace, name, seen)?;
+    match kind {
+        Operation::Add(contents) => {
+            require_absent(&workspace.root().join(&path))?;
+            Ok(Prepared {
+                summary: format!("Added {name}"),
+                change: Change::Write {
+                    path,
+                    contents: contents.into_bytes(),
+                    create: true,
+                },
+            })
+        }
+        Operation::Delete => {
+            // Opening the file checks that it is a regular file.
+            workspace
+                .read_file(&path)
+                .map_err(|error| error.to_string())?;
+            Ok(Prepared {
+                summary: format!("Deleted {name}"),
+                change: Change::Delete(path),
+            })
+        }
+        Operation::Update {
+            destination,
+            chunks,
+        } => prepare_update(workspace, seen, name, path, destination, &chunks),
+    }
+}
+
+fn prepare_update(
+    workspace: &Workspace,
+    seen: &mut HashSet<PathBuf>,
+    name: &str,
+    path: PathBuf,
+    destination: Option<String>,
+    chunks: &[Chunk],
+) -> Result<Prepared, String> {
+    let mut source_file = workspace
+        .read_file(&path)
+        .map_err(|error| error.to_string())?;
+    let contents = if chunks.is_empty() {
+        None
+    } else {
+        let mut source = String::new();
+        source_file
+            .read_to_string(&mut source)
+            .map_err(|error| error.to_string())?;
+        let contents = update(&source, chunks)?;
+        (contents != source).then(|| contents.into_bytes())
+    };
+    let (summary, change) = if let Some(destination_name) = destination {
+        let destination = target(workspace, &destination_name, seen)
+            .and_then(|path| {
+                require_absent(&workspace.root().join(&path))?;
+                Ok(path)
+            })
+            .map_err(|error| format!("destination {destination_name}: {error}"))?;
+        (
+            format!("Moved {name} -> {destination_name}"),
+            Change::Move {
+                source: path,
+                destination,
+                contents,
+            },
+        )
+    } else if let Some(contents) = contents {
+        (
+            format!("Modified {name}"),
+            Change::Write {
+                path,
+                contents,
+                create: false,
+            },
+        )
+    } else {
+        (format!("Unchanged {name}"), Change::Unchanged)
+    };
+    Ok(Prepared { summary, change })
 }
 
 impl Change {

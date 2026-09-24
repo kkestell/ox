@@ -13,8 +13,8 @@ use crate::{
     cancellation::PromptCancellation,
     openrouter::{self, CatalogModel, Client, ModelRequestParameters},
     sessions::{
-        self, CompactionCheckpoint, HookFeedbackContent, SessionStore, StopDecision, ToolOutcome,
-        TranscriptEntry, TurnInput, UserMessage, UserMessagePart,
+        self, AssistantBatch, CompactionCheckpoint, HookFeedback, HookFeedbackContent,
+        SessionStore, StopDecision, TranscriptEntry, TurnInput, UserMessage, UserMessagePart,
     },
 };
 
@@ -231,127 +231,143 @@ fn tool_result_excerpt(text: &str) -> String {
     format!("{head}\n[... {omitted} characters omitted from tool result ...]\n{tail}")
 }
 
-fn push_user_request(
-    fields: &mut VecDeque<(String, String, usize)>,
-    source: &str,
-    message: &UserMessage,
-) {
-    for part in &message.parts {
-        let value = match part {
-            UserMessagePart::Text(text) => text.clone(),
-            UserMessagePart::Image(image) => format!("[image: {}]", image.mime_type),
-        };
-        fields.push_back((format!("{source} user request"), value, 1));
+/// One labeled text value of summarizer material.
+struct MaterialField {
+    label: String,
+    text: String,
+    /// The part number the next piece gives this field. A field too large for
+    /// one summarizer request is sent in parts, each piece continuing where the
+    /// previous one stopped.
+    part: usize,
+}
+
+impl MaterialField {
+    fn new(label: String, text: String) -> Self {
+        Self {
+            label,
+            text,
+            part: 1,
+        }
     }
 }
 
-fn material(transcript: &[TranscriptEntry], cut: usize) -> VecDeque<(String, String, usize)> {
+/// The summarizer material for `cut`: every entry after the latest checkpoint's
+/// covered prefix and before `cut`, in transcript order, each labeled with its
+/// transcript index.
+fn material(transcript: &[TranscriptEntry], cut: usize) -> VecDeque<MaterialField> {
     let start = latest(transcript).map_or(0, |checkpoint| checkpoint.covered_prefix);
     let mut fields = VecDeque::new();
     for (index, entry) in transcript[start..cut].iter().enumerate() {
         let source = format!("Entry {}", start + index);
         match entry {
-            TranscriptEntry::TurnStart(turn_start) => match &turn_start.input {
-                TurnInput::UserMessage(message) => {
-                    push_user_request(&mut fields, &source, message);
-                }
-                TurnInput::SkillInvocation(invocation) => push_user_request(
-                    &mut fields,
-                    &source,
-                    &openrouter::skill_invocation_message(invocation),
-                ),
-            },
+            TranscriptEntry::TurnStart(turn_start) => {
+                push_turn_input(&mut fields, &source, &turn_start.input);
+            }
             TranscriptEntry::HookFeedback(feedback) => {
-                let decision = match feedback.content {
-                    HookFeedbackContent::BeforeStop {
-                        decision: StopDecision::Continue,
-                        ..
-                    } => " continue",
-                    HookFeedbackContent::BeforeStop {
-                        decision: StopDecision::Stop,
-                        ..
-                    } => " stop",
-                    HookFeedbackContent::BeforeRun { .. }
-                    | HookFeedbackContent::AfterTools { .. } => "",
-                };
-                fields.push_back((
-                    format!("{source} {}{decision} feedback", feedback.label()),
-                    feedback.message().to_owned(),
-                    1,
-                ))
+                fields.push_back(feedback_field(&source, feedback));
             }
-            TranscriptEntry::AssistantBatch(batch) => {
-                let message = &batch.message;
-                if !message.text.is_empty() {
-                    fields.push_back((
-                        format!("{source} assistant answer"),
-                        message.text.clone(),
-                        1,
-                    ));
-                }
-                for call in &message.tool_calls {
-                    if !call.arguments.is_empty() {
-                        fields.push_back((
-                            format!("{source} tool {} arguments", call.name),
-                            call.arguments.clone(),
-                            1,
-                        ));
-                    }
-                }
-                for (call, outcome) in message.tool_calls.iter().zip(&batch.outcomes) {
-                    let status = match outcome {
-                        ToolOutcome::Completed(_) => "completed",
-                        ToolOutcome::Failed(_) => "failed",
-                        ToolOutcome::Cancelled(_) => "cancelled",
-                    };
-                    if !outcome.text().is_empty() {
-                        fields.push_back((
-                            format!("{source} tool {} {status} outcome", call.name),
-                            tool_result_excerpt(outcome.text()),
-                            1,
-                        ));
-                    }
-                }
-            }
-            _ => {}
+            TranscriptEntry::AssistantBatch(batch) => push_batch(&mut fields, &source, batch),
+            TranscriptEntry::Model(_) | TranscriptEntry::CompactionCheckpoint(_) => {}
         }
     }
     fields
 }
 
-fn summary_request_fits(model: &CatalogModel, previous: &str, piece: &str) -> bool {
-    let body = openrouter::summarizer_body(model, previous, piece);
-    tokens(
-        serde_json::to_vec(&body)
-            .expect("summary body serializes")
-            .len(),
-    ) + SUMMARY_OUTPUT_TOKENS
-        <= model.context_limit
+fn push_turn_input(fields: &mut VecDeque<MaterialField>, source: &str, input: &TurnInput) {
+    match input {
+        TurnInput::UserMessage(message) => push_user_request(fields, source, message),
+        TurnInput::SkillInvocation(invocation) => push_user_request(
+            fields,
+            source,
+            &openrouter::skill_invocation_message(invocation),
+        ),
+    }
 }
 
+fn push_user_request(fields: &mut VecDeque<MaterialField>, source: &str, message: &UserMessage) {
+    for part in &message.parts {
+        let text = match part {
+            UserMessagePart::Text(text) => text.clone(),
+            UserMessagePart::Image(image) => format!("[image: {}]", image.mime_type),
+        };
+        fields.push_back(MaterialField::new(format!("{source} user request"), text));
+    }
+}
+
+fn feedback_field(source: &str, feedback: &HookFeedback) -> MaterialField {
+    let decision = match feedback.content {
+        HookFeedbackContent::BeforeStop {
+            decision: StopDecision::Continue,
+            ..
+        } => " continue",
+        HookFeedbackContent::BeforeStop {
+            decision: StopDecision::Stop,
+            ..
+        } => " stop",
+        HookFeedbackContent::BeforeRun { .. } | HookFeedbackContent::AfterTools { .. } => "",
+    };
+    MaterialField::new(
+        format!("{source} {}{decision} feedback", feedback.label()),
+        feedback.message().to_owned(),
+    )
+}
+
+fn push_batch(fields: &mut VecDeque<MaterialField>, source: &str, batch: &AssistantBatch) {
+    let message = &batch.message;
+    if !message.text.is_empty() {
+        fields.push_back(MaterialField::new(
+            format!("{source} assistant answer"),
+            message.text.clone(),
+        ));
+    }
+    for call in &message.tool_calls {
+        if !call.arguments.is_empty() {
+            fields.push_back(MaterialField::new(
+                format!("{source} tool {} arguments", call.name),
+                call.arguments.clone(),
+            ));
+        }
+    }
+    for (call, outcome) in message.tool_calls.iter().zip(&batch.outcomes) {
+        if !outcome.text().is_empty() {
+            fields.push_back(MaterialField::new(
+                format!("{source} tool {} {} outcome", call.name, outcome.status()),
+                tool_result_excerpt(outcome.text()),
+            ));
+        }
+    }
+}
+
+/// The bytes `text` adds to a serialized request body inside a JSON string.
+fn escaped_bytes(text: &str) -> usize {
+    serde_json::to_string(text).expect("text serializes").len() - 2
+}
+
+/// Fills one piece with as much of `fields` as fits in a summarizer request
+/// beside `previous`, removing what it takes. Whole fields go in while they
+/// fit. The first field that does not fit contributes its longest prefix that
+/// does, found by halving, and the rest of it stays at the front of `fields`
+/// as its next part.
+///
+/// A piece adds exactly its escaped length to the summarizer body, so the body
+/// is measured once without one.
 fn next_piece(
     model: &CatalogModel,
     previous: &str,
-    fields: &mut VecDeque<(String, String, usize)>,
+    fields: &mut VecDeque<MaterialField>,
 ) -> io::Result<String> {
+    let body = openrouter::summarizer_body(model, previous, "");
+    let body_bytes = serde_json::to_vec(&body)
+        .expect("summary body serializes")
+        .len();
     let mut piece = String::new();
-    while let Some((label, value, part)) = fields.front() {
-        let header = format!("{label}, part {part}:\n");
-        let available = value.len();
-        let mut take = available;
-        loop {
-            while !value.is_char_boundary(take) {
-                take -= 1;
-            }
-            let addition = format!("{header}{}\n", &value[..take]);
-            if summary_request_fits(model, previous, &(piece.clone() + &addition)) {
-                break;
-            }
-            if take == 0 {
-                break;
-            }
-            take /= 2;
-        }
+    let mut piece_bytes = 0;
+    while let Some(field) = fields.front_mut() {
+        let header = format!("{}, part {}:\n", field.label, field.part);
+        let fits = |bytes| {
+            tokens(body_bytes + piece_bytes + bytes) + SUMMARY_OUTPUT_TOKENS <= model.context_limit
+        };
+        let (take, addition) = fitting_prefix(&header, &field.text, fits);
         if take == 0 {
             if piece.is_empty() {
                 return Err(io::Error::new(
@@ -361,18 +377,33 @@ fn next_piece(
             }
             break;
         }
-        piece.push_str(&header);
-        piece.push_str(&value[..take]);
-        piece.push('\n');
-        if take == available {
+        piece_bytes += escaped_bytes(&addition);
+        piece.push_str(&addition);
+        if take == field.text.len() {
             fields.pop_front();
         } else {
-            let field = fields.front_mut().expect("field remains");
-            field.1.drain(..take);
-            field.2 += 1;
+            field.text.drain(..take);
+            field.part += 1;
         }
     }
     Ok(piece)
+}
+
+/// The longest prefix of `text` that halving from its full length finds to
+/// fit, with the labeled addition it makes to a piece. A zero-length prefix
+/// means none of `text` fits.
+fn fitting_prefix(header: &str, text: &str, fits: impl Fn(usize) -> bool) -> (usize, String) {
+    let mut take = text.len();
+    loop {
+        while !text.is_char_boundary(take) {
+            take -= 1;
+        }
+        let addition = format!("{header}{}\n", &text[..take]);
+        if take == 0 || fits(escaped_bytes(&addition)) {
+            return (take, addition);
+        }
+        take /= 2;
+    }
 }
 
 pub async fn compact(
@@ -437,8 +468,8 @@ mod tests {
             fixture::{Reply, Server, text_reply},
         },
         sessions::{
-            AssistantBatch, AssistantMessage, EffortLevel, HookFeedback, ImageAttachment,
-            SkillInvocation, ToolCall, TurnStart,
+            AssistantMessage, EffortLevel, ImageAttachment, SkillInvocation, ToolCall, ToolOutcome,
+            TurnStart,
         },
     };
 
@@ -753,7 +784,7 @@ mod tests {
         let request = |label: &str, value: &str| {
             fields
                 .iter()
-                .any(|field| field.0 == label && field.1.starts_with(value))
+                .any(|field| field.label == label && field.text.starts_with(value))
         };
         assert!(request("Entry 1 user request", "[image: image/png]"));
         assert!(request("Entry 2 user request", "Skill /look invoked."));
@@ -761,8 +792,47 @@ mod tests {
         assert!(
             fields
                 .iter()
-                .all(|(_, value, _)| !value.contains("aGVsbG8=") && !value.contains("d29ybGQ="))
+                .all(|field| !field.text.contains("aGVsbG8=") && !field.text.contains("d29ybGQ="))
         );
+    }
+
+    #[test]
+    fn summarizer_pieces_fit_the_context_limit_and_keep_all_material() {
+        let model = openrouter::catalog_model("acme/plain").unwrap();
+        let previous = "Earlier \"summary\".";
+        let text = "Quote \" slash \\ tab \t bell \u{7} snow 雪\n".repeat(1_000);
+        let transcript = vec![
+            TranscriptEntry::Model(model.id.clone()),
+            TranscriptEntry::turn(text.clone()),
+        ];
+        let mut fields = material(&transcript, 2);
+        let mut rebuilt = String::new();
+        let mut pieces = 0;
+        let mut part = 0;
+        while !fields.is_empty() {
+            let piece = next_piece(model, previous, &mut fields).unwrap();
+            pieces += 1;
+            let body = openrouter::summarizer_body(model, previous, &piece);
+            assert!(
+                tokens(serde_json::to_vec(&body).unwrap().len()) + SUMMARY_OUTPUT_TOKENS
+                    <= model.context_limit,
+                "piece {pieces} fits the context limit"
+            );
+            let mut rest = piece.as_str();
+            while !rest.is_empty() {
+                part += 1;
+                rest = rest
+                    .strip_prefix(&format!("Entry 1 user request, part {part}:\n"))
+                    .expect("parts continue in order");
+                let end = rest
+                    .find("Entry 1 user request, part ")
+                    .unwrap_or(rest.len());
+                rebuilt.push_str(&rest[..end - 1]);
+                rest = &rest[end..];
+            }
+        }
+        assert!(pieces > 1, "the material needs several pieces");
+        assert_eq!(rebuilt, text);
     }
 
     #[test]

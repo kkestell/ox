@@ -526,6 +526,15 @@ impl ToolOutcome {
             Self::Completed(text) | Self::Failed(text) | Self::Cancelled(text) => text,
         }
     }
+
+    /// `completed`, `failed`, or `cancelled`.
+    pub fn status(&self) -> &'static str {
+        match self {
+            Self::Completed(_) => "completed",
+            Self::Failed(_) => "failed",
+            Self::Cancelled(_) => "cancelled",
+        }
+    }
 }
 
 /// One validated assistant message with a final outcome for each tool call.

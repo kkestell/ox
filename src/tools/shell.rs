@@ -899,12 +899,7 @@ mod tests {
             for (stop_call, expected) in [(false, read), (true, stop)] {
                 let outcome =
                     render_process("p-1", "npm run dev", output(state.clone()), stop_call);
-                let kind = match &outcome {
-                    ToolOutcome::Completed(_) => "completed",
-                    ToolOutcome::Failed(_) => "failed",
-                    ToolOutcome::Cancelled(_) => "cancelled",
-                };
-                assert_eq!(kind, expected, "{state:?}, stop: {stop_call}");
+                assert_eq!(outcome.status(), expected, "{state:?}, stop: {stop_call}");
                 assert_eq!(
                     outcome.text(),
                     format!(

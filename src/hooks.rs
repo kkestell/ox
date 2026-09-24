@@ -149,11 +149,7 @@ pub struct ToolReport {
 
 impl ToolReport {
     pub fn new(call: &ToolCall, outcome: &ToolOutcome) -> Self {
-        let status = match outcome {
-            ToolOutcome::Completed(_) => "completed",
-            ToolOutcome::Failed(_) => "failed",
-            ToolOutcome::Cancelled(_) => "cancelled",
-        };
+        let status = outcome.status();
         Self {
             call_id: call.call_id.clone(),
             name: call.name.clone(),

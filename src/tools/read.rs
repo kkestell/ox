@@ -43,6 +43,10 @@ pub(super) fn schema() -> Value {
     })
 }
 
+/// Returns up to `limit` numbered lines from `offset`, using at most
+/// `BODY_LIMIT` bytes for the lines. A line cut short to fit is followed by a
+/// notice that its rest cannot be read by line. When the file continues, the
+/// result ends with the offset to continue from.
 pub(super) async fn execute(root: &Path, arguments: &str) -> Result<String, String> {
     let args: Args = serde_json::from_str(arguments).map_err(|e| format!("arguments: {e}"))?;
     if args.offset == 0 || !(1..=1000).contains(&args.limit) {
@@ -59,31 +63,12 @@ pub(super) async fn execute(root: &Path, arguments: &str) -> Result<String, Stri
             return Ok("Offset is past end of file.".to_owned());
         }
     }
-    let mut output = String::new();
-    let mut next = args.offset;
-    let mut deferred = false;
-    let mut preview = false;
-    for _ in 0..args.limit {
-        let Some((text, omitted)) = line(&mut reader, BODY_LIMIT + 2).await? else {
-            break;
-        };
-        let mut numbered = format!("{next}: {text}");
-        if !output.is_empty() && (omitted || output.len() + numbered.len() + 1 > BODY_LIMIT) {
-            deferred = true;
-            break;
-        }
-        if omitted || numbered.len() + 1 > BODY_LIMIT {
-            truncate(&mut numbered, BODY_LIMIT - 1);
-            preview = true;
-        }
-        output.push_str(&numbered);
-        output.push('\n');
-        next = next.checked_add(1).expect("file line number fits in u64");
-        if preview {
-            break;
-        }
-    }
-    if output.is_empty() {
+    let Page {
+        mut text,
+        next,
+        end,
+    } = page(&mut reader, args.offset, args.limit).await?;
+    if text.is_empty() {
         return Ok(if args.offset == 1 {
             "File is empty."
         } else {
@@ -91,23 +76,89 @@ pub(super) async fn execute(root: &Path, arguments: &str) -> Result<String, Stri
         }
         .to_owned());
     }
-    if preview {
-        output.push_str(
-            "[Line truncated. The omitted portion cannot be retrieved through line pagination.]\n",
-        );
-    }
-    if deferred
-        || !reader
-            .fill_buf()
-            .await
-            .map_err(|e| e.to_string())?
-            .is_empty()
-    {
-        output.push_str(&format!(
+    let more = match end {
+        PageEnd::NextLineDeferred => true,
+        PageEnd::LineTruncated => {
+            text.push_str(
+                "[Line truncated. The omitted portion cannot be retrieved through line pagination.]\n",
+            );
+            has_more(&mut reader).await?
+        }
+        PageEnd::LineLimitOrEndOfFile => has_more(&mut reader).await?,
+    };
+    if more {
+        text.push_str(&format!(
             "More content remains. Continue with offset={next}.\n"
         ));
     }
-    Ok(output)
+    Ok(text)
+}
+
+/// The numbered lines of one `read_file` result.
+struct Page {
+    text: String,
+    /// The number of the first line the page does not include.
+    next: u64,
+    end: PageEnd,
+}
+
+/// Why a page ended.
+enum PageEnd {
+    LineLimitOrEndOfFile,
+    /// The next line did not fit in the page's remaining space, so it starts
+    /// the next page.
+    NextLineDeferred,
+    /// The page's only line was longer than `BODY_LIMIT` and was cut short.
+    LineTruncated,
+}
+
+async fn page(
+    reader: &mut BufReader<tokio::fs::File>,
+    first: u64,
+    limit: usize,
+) -> Result<Page, String> {
+    let mut text = String::new();
+    let mut next = first;
+    for _ in 0..limit {
+        let Some((content, omitted)) = line(reader, BODY_LIMIT + 2).await? else {
+            break;
+        };
+        let mut numbered = format!("{next}: {content}");
+        if !text.is_empty() && (omitted || text.len() + numbered.len() + 1 > BODY_LIMIT) {
+            return Ok(Page {
+                text,
+                next,
+                end: PageEnd::NextLineDeferred,
+            });
+        }
+        let truncated = omitted || numbered.len() + 1 > BODY_LIMIT;
+        if truncated {
+            truncate(&mut numbered, BODY_LIMIT - 1);
+        }
+        text.push_str(&numbered);
+        text.push('\n');
+        next = next.checked_add(1).expect("file line number fits in u64");
+        if truncated {
+            return Ok(Page {
+                text,
+                next,
+                end: PageEnd::LineTruncated,
+            });
+        }
+    }
+    Ok(Page {
+        text,
+        next,
+        end: PageEnd::LineLimitOrEndOfFile,
+    })
+}
+
+async fn has_more(reader: &mut BufReader<tokio::fs::File>) -> Result<bool, String> {
+    Ok(!reader
+        .fill_buf()
+        .await
+        .map_err(|e| e.to_string())?
+        .is_empty())
 }
 
 // Validate the entire line but retain only its prefix, even for enormous lines.
