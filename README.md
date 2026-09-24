@@ -45,6 +45,19 @@ Ox reads the file at startup, so restart it after editing settings.
 `make install` overwrites the file with
 [examples/settings.json](examples/settings.json).
 
+A workspace can override settings in `.ox/settings.json`. It uses the same
+format, and each key it sets replaces the same key from
+`~/.config/ox/settings.json`. It can set `model` to change the default model for
+new sessions and `ox run` in that workspace, but not `hooks`:
+
+```json
+{
+  "model": "deepseek/deepseek-v4.1-flash"
+}
+```
+
+Ox reads it when a session starts or is loaded, and once for each `ox run`.
+
 Ox loads its model choices and effort levels from OpenRouter at startup.
 
 ## Skills

@@ -29,9 +29,14 @@ THIS DOCUMENT MUST BE KEPT UP TO DATE
   `.agents/skills/`, highest priority first; frontmatter parsing, and skill
   catalog loading where a higher-priority skill replaces one with the same name
   and an invalid definition is skipped with a message while keeping its name.
-- `src/settings.rs`: The home directory, and the required default model and
-  optional global hooks loaded from `~/.config/ox/settings.json` at process
-  startup, with global hook suppression inside hook commands.
+- `src/settings.rs`: The home directory; the settings file format shared by
+  `~/.config/ox/settings.json` and the workspace settings file
+  `.ox/settings.json`, with one reader that checks the model against the model
+  catalog; the required default model and optional global hooks read from
+  `~/.config/ox/settings.json` at process startup, with global hook suppression
+  inside hook commands; and each workspace's effective settings, where each key
+  the workspace settings file sets replaces the same key from
+  `~/.config/ox/settings.json`, except `hooks`, which is an error there.
 - `src/hooks.rs`: Shared hook definitions, validation, and the protocol for
   every hook kind: JSON input on stdin with the fields every hook shares, one
   response object per kind on stdout, deadlines, limits, and hook errors.
@@ -46,12 +51,11 @@ THIS DOCUMENT MUST BE KEPT UP TO DATE
   removal of the oldest finished one, explicit stops with a two-second SIGTERM
   grace period, and owner shutdown that kills every group at once.
 - `src/openrouter.rs`: The model catalog fetched from OpenRouter at startup, its
-  catalog filter and each model's effort levels and image input support, the
-  default model, model request parameters, transcript encoding into chat
-  messages that pairs each tool call with its outcome, request encoding from
-  those messages with the skill invocation message, context limits, client,
-  streamed response assembly with usage parsing, and explicit input-context
-  overflow errors.
+  catalog filter and each model's effort levels and image input support, model
+  request parameters, transcript encoding into chat messages that pairs each
+  tool call with its outcome, request encoding from those messages with the
+  skill invocation message, context limits, client, streamed response assembly
+  with usage parsing, and explicit input-context overflow errors.
 - `src/compaction.rs`: Image-aware request estimates, safe transcript cuts,
   bounded summarizer input with explicit tool-result excerpts, checkpoint
   commits, and model-request projection into encoded chat messages, which
@@ -74,25 +78,25 @@ THIS DOCUMENT MUST BE KEPT UP TO DATE
   and filesystem changes.
 - `src/tools/workspace.rs`: Descriptor-relative file operations shared by read,
   search, and patch tools.
-- `src/sessions.rs`: Transcript types, including the model entry and turn starts
-  that save each turn's input with its effort and mode, ordered user message
-  parts and image attachments, skill invocations, hook kinds, hook feedback,
-  assistant batch entries with tool outcomes in call order, model usage,
-  compaction checkpoints with their summarizer cost, session cost, transcript
-  entry encoding as stored JSON, transcript validation, saved settings from the
-  model entry and latest turn start, database path selection, and `SessionStore`
-  over one SQLite connection.
+- `src/sessions.rs`: Transcript types, including turn starts that save each
+  turn's input with its model, effort, and mode, ordered user message parts and
+  image attachments, skill invocations, hook kinds, hook feedback, assistant
+  batch entries with tool outcomes in call order, model usage, compaction
+  checkpoints with their summarizer cost, session cost, transcript entry
+  encoding as stored JSON, transcript validation, saved settings from the latest
+  turn start, database path selection, and `SessionStore` over one SQLite
+  connection.
 - `src/acp.rs`: Connection wiring, `ServerState`, lazy OpenRouter client,
-  request handlers, advertised slash commands and their prompt dispatch, global
-  hooks and the home directory captured at startup, per-session model, effort,
-  and mode selections, system prompts and skill catalogs loaded when a session
-  becomes active, per-session shell processes kept across repeated loads,
-  deletion spawned under its operation guard that stops the session's shell
-  processes after the database deletion, connection shutdown on incoming EOF or
-  SIGINT, SIGTERM, or SIGHUP that finishes every shell process cleanup after any
-  connection result, guarded `/compact`, usage updates after `/compact` and
-  load, and the automatic headless prompt entry point, which stops its shell
-  processes before returning.
+  request handlers, advertised slash commands and their prompt dispatch, the
+  settings from `~/.config/ox/settings.json` and the home directory captured at
+  startup, per-session model, effort, and mode selections, workspace settings,
+  system prompts, and skill catalogs loaded when a session becomes active,
+  per-session shell processes kept across repeated loads, deletion spawned under
+  its operation guard that stops the session's shell processes after the
+  database deletion, connection shutdown on incoming EOF or SIGINT, SIGTERM, or
+  SIGHUP that finishes every shell process cleanup after any connection result,
+  guarded `/compact`, usage updates after `/compact` and load, and the automatic
+  headless prompt entry point, which stops its shell processes before returning.
 - `src/acp/operations.rs`: At most one prompt, load, or delete running for a
   session at a time, enforced by an operation guard; `/compact` runs as a prompt
   operation. Once connection shutdown begins, no operation starts.

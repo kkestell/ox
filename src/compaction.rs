@@ -100,6 +100,15 @@ pub fn projection(transcript: &[TranscriptEntry]) -> Vec<Value> {
     }
 }
 
+/// Whether the projection of the next model request contains an image.
+pub fn has_images(transcript: &[TranscriptEntry]) -> bool {
+    projection(transcript).iter().any(|message| {
+        message["content"]
+            .as_array()
+            .is_some_and(|parts| parts.iter().any(|part| part["type"] == "image_url"))
+    })
+}
+
 /// The index of the skill invocation to repeat after a summary covering
 /// `[..cut]`: the latest turn start, when it is a covered skill invocation. A
 /// long hook-driven run keeps its instructions and arguments this way until a
@@ -267,7 +276,7 @@ fn material(transcript: &[TranscriptEntry], cut: usize) -> VecDeque<MaterialFiel
                 fields.push_back(feedback_field(&source, feedback));
             }
             TranscriptEntry::AssistantBatch(batch) => push_batch(&mut fields, &source, batch),
-            TranscriptEntry::Model(_) | TranscriptEntry::CompactionCheckpoint(_) => {}
+            TranscriptEntry::CompactionCheckpoint(_) => {}
         }
     }
     fields
@@ -514,15 +523,12 @@ mod tests {
         store
             .append_turn_start(
                 &id,
-                &[
-                    TranscriptEntry::Model(DEFAULT_MODEL.to_owned()),
-                    TranscriptEntry::turn(SkillInvocation {
-                        name: "goal".to_owned(),
-                        arguments: "Record the old details.".to_owned(),
-                        instructions: "Work until the hook stops you.".to_owned(),
-                        images: vec![],
-                    }),
-                ],
+                &TurnStart::test(SkillInvocation {
+                    name: "goal".to_owned(),
+                    arguments: "Record the old details.".to_owned(),
+                    instructions: "Work until the hook stops you.".to_owned(),
+                    images: vec![],
+                }),
             )
             .unwrap();
         let feedback = |content| HookFeedback {
@@ -580,7 +586,7 @@ mod tests {
         );
         let first_cut = transcript.len() - 1;
         store
-            .append_turn_start(&id, &[TranscriptEntry::turn("active request".to_owned())])
+            .append_turn_start(&id, &TurnStart::test("active request".to_owned()))
             .unwrap();
         transcript.push(TranscriptEntry::turn("active request".to_owned()));
         let batch = tool_batch("first", &"new details ".repeat(3000));
@@ -638,12 +644,12 @@ mod tests {
                 .unwrap()
                 .to_owned()
         };
-        assert!(material(0).contains("Entry 1 user request, part 1:\nSkill /goal invoked."));
+        assert!(material(0).contains("Entry 0 user request, part 1:\nSkill /goal invoked."));
         assert!(material(0).contains(
-            "Entry 2 global before_run hook feedback, part 1:\nThe parser lives in src/parse.rs."
+            "Entry 1 global before_run hook feedback, part 1:\nThe parser lives in src/parse.rs."
         ));
         assert!(material(1).contains(
-            "Entry 4 skill /goal before_stop hook stop feedback, part 1:\nObjective met."
+            "Entry 3 skill /goal before_stop hook stop feedback, part 1:\nObjective met."
         ));
         assert!(
             requests[1]["messages"][1]["content"]
@@ -685,13 +691,12 @@ mod tests {
             })
         };
         let transcript = vec![
-            TranscriptEntry::Model(DEFAULT_MODEL.to_owned()),
             TranscriptEntry::turn("first".to_owned()),
             TranscriptEntry::AssistantBatch(answer("first answer")),
-            checkpoint("Older summary", 3),
+            checkpoint("Older summary", 2),
             TranscriptEntry::turn("middle".to_owned()),
             TranscriptEntry::AssistantBatch(answer("middle answer")),
-            checkpoint("Current summary", 6),
+            checkpoint("Current summary", 5),
             TranscriptEntry::turn("recent".to_owned()),
             TranscriptEntry::AssistantBatch(answer("recent answer")),
         ];
@@ -714,12 +719,11 @@ mod tests {
     #[test]
     fn ranked_cuts_follow_the_latest_checkpoint_smallest_request_first() {
         let transcript = vec![
-            TranscriptEntry::Model(DEFAULT_MODEL.to_owned()),
             TranscriptEntry::turn("earlier request".to_owned()),
             TranscriptEntry::AssistantBatch(answer("earlier answer")),
             TranscriptEntry::CompactionCheckpoint(CompactionCheckpoint {
                 summary: "Earlier work is complete.".to_owned(),
-                covered_prefix: 3,
+                covered_prefix: 2,
                 summarizer_cost: None,
             }),
             TranscriptEntry::turn("current request".to_owned()),
@@ -727,7 +731,7 @@ mod tests {
             TranscriptEntry::AssistantBatch(answer("latest answer")),
         ];
         let cuts = ranked_cuts(&parameters(), &transcript);
-        assert_eq!(cuts, [7, 6]);
+        assert_eq!(cuts, [6, 5]);
         let summary = "x".repeat(SUMMARY_ALLOWANCE_BYTES);
         assert!(
             projected_estimate(&parameters(), &transcript, cuts[0], &summary)
@@ -753,7 +757,6 @@ mod tests {
     /// A user message and a skill invocation, each with one image.
     fn image_transcript() -> Vec<TranscriptEntry> {
         vec![
-            TranscriptEntry::Model(DEFAULT_MODEL.to_owned()),
             TranscriptEntry::turn(UserMessage {
                 parts: vec![
                     UserMessagePart::Text("Inspect this".to_owned()),
@@ -776,16 +779,44 @@ mod tests {
     }
 
     #[test]
+    fn images_leave_the_projection_once_a_checkpoint_covers_them() {
+        let [user, skill] = image_transcript().try_into().unwrap();
+        let answered = || TranscriptEntry::AssistantBatch(answer("Seen."));
+        let checkpoint = || {
+            TranscriptEntry::CompactionCheckpoint(CompactionCheckpoint {
+                summary: "The image was inspected.".to_owned(),
+                covered_prefix: 2,
+                summarizer_cost: None,
+            })
+        };
+        for (case, transcript, expected) in [
+            ("an uncovered image", vec![user.clone()], true),
+            (
+                "a covered user message",
+                vec![user, answered(), checkpoint()],
+                false,
+            ),
+            (
+                "a covered skill invocation repeated after the summary",
+                vec![skill, answered(), checkpoint()],
+                true,
+            ),
+        ] {
+            assert_eq!(has_images(&transcript), expected, "{case}");
+        }
+    }
+
+    #[test]
     fn summarizer_material_describes_images_by_mime_type() {
-        let fields = material(&image_transcript(), 3);
+        let fields = material(&image_transcript(), 2);
         let request = |label: &str, value: &str| {
             fields
                 .iter()
                 .any(|field| field.label == label && field.text.starts_with(value))
         };
-        assert!(request("Entry 1 user request", "[image: image/png]"));
-        assert!(request("Entry 2 user request", "Skill /look invoked."));
-        assert!(request("Entry 2 user request", "[image: image/jpeg]"));
+        assert!(request("Entry 0 user request", "[image: image/png]"));
+        assert!(request("Entry 1 user request", "Skill /look invoked."));
+        assert!(request("Entry 1 user request", "[image: image/jpeg]"));
         assert!(
             fields
                 .iter()
@@ -798,11 +829,8 @@ mod tests {
         let model = openrouter::catalog_model("acme/plain").unwrap();
         let previous = "Earlier \"summary\".";
         let text = "Quote \" slash \\ tab \t bell \u{7} snow 雪\n".repeat(1_000);
-        let transcript = vec![
-            TranscriptEntry::Model(model.id.clone()),
-            TranscriptEntry::turn(text.clone()),
-        ];
-        let mut fields = material(&transcript, 2);
+        let transcript = vec![TranscriptEntry::turn(text.clone())];
+        let mut fields = material(&transcript, 1);
         let mut rebuilt = String::new();
         let mut pieces = 0;
         let mut part = 0;
@@ -819,10 +847,10 @@ mod tests {
             while !rest.is_empty() {
                 part += 1;
                 rest = rest
-                    .strip_prefix(&format!("Entry 1 user request, part {part}:\n"))
+                    .strip_prefix(&format!("Entry 0 user request, part {part}:\n"))
                     .expect("parts continue in order");
                 let end = rest
-                    .find("Entry 1 user request, part ")
+                    .find("Entry 0 user request, part ")
                     .unwrap_or(rest.len());
                 rebuilt.push_str(&rest[..end - 1]);
                 rest = &rest[end..];
@@ -836,14 +864,14 @@ mod tests {
     fn projected_images_count_as_a_fixed_allowance() {
         let mut transcript = image_transcript();
         assert_eq!(
-            projection_at(&transcript, 1, "summary")[1]["content"][1]["type"],
+            projection_at(&transcript, 0, "summary")[1]["content"][1]["type"],
             "image_url"
         );
         let estimate = request_estimate(&parameters(), &transcript);
         if let TranscriptEntry::TurnStart(TurnStart {
             input: TurnInput::UserMessage(message),
             ..
-        }) = &mut transcript[1]
+        }) = &mut transcript[0]
             && let UserMessagePart::Image(image) = &mut message.parts[1]
         {
             image.data = "A".repeat(4_000);
@@ -856,17 +884,11 @@ mod tests {
         let store = SessionStore::in_memory();
         let id = store.create(std::path::Path::new("/workspace")).unwrap().id;
         store
-            .append_turn_start(
-                &id,
-                &[
-                    TranscriptEntry::Model(DEFAULT_MODEL.to_owned()),
-                    TranscriptEntry::turn("o".repeat(1_500_000)),
-                ],
-            )
+            .append_turn_start(&id, &TurnStart::test("o".repeat(1_500_000)))
             .unwrap();
         store.append_batch(&id, &answer("older work done")).unwrap();
         store
-            .append_turn_start(&id, &[TranscriptEntry::turn("u".repeat(1_800_000))])
+            .append_turn_start(&id, &TurnStart::test("u".repeat(1_800_000)))
             .unwrap();
         let mut transcript = store.read(&id).unwrap().unwrap().transcript;
         let original = request_estimate(&parameters(), &transcript);
@@ -896,29 +918,23 @@ mod tests {
         let store = SessionStore::in_memory();
         let id = store.create(std::path::Path::new("/workspace")).unwrap().id;
         store
-            .append_turn_start(
-                &id,
-                &[
-                    TranscriptEntry::Model(DEFAULT_MODEL.to_owned()),
-                    TranscriptEntry::turn("earlier work".to_owned()),
-                ],
-            )
+            .append_turn_start(&id, &TurnStart::test("earlier work".to_owned()))
             .unwrap();
         store.append_batch(&id, &answer("earlier answer")).unwrap();
         store
             .append_checkpoint(
                 &id,
-                3,
+                2,
                 &CompactionCheckpoint {
                     summary: "Earlier work is complete.".to_owned(),
-                    covered_prefix: 3,
+                    covered_prefix: 2,
                     summarizer_cost: None,
                 },
             )
             .unwrap();
         let large = "x".repeat(3_300_000);
         store
-            .append_turn_start(&id, &[TranscriptEntry::turn(large.clone())])
+            .append_turn_start(&id, &TurnStart::test(large.clone()))
             .unwrap();
         store.append_batch(&id, &answer("done")).unwrap();
         let before = store.read(&id).unwrap().unwrap().transcript;
@@ -954,13 +970,7 @@ mod tests {
             .unwrap()
             .id;
         small_store
-            .append_turn_start(
-                &small_id,
-                &[
-                    TranscriptEntry::Model(DEFAULT_MODEL.to_owned()),
-                    TranscriptEntry::turn("older ".repeat(4000)),
-                ],
-            )
+            .append_turn_start(&small_id, &TurnStart::test("older ".repeat(4000)))
             .unwrap();
         small_store
             .append_batch(&small_id, &answer("done"))

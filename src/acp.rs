@@ -47,7 +47,7 @@ use crate::{
 };
 use operations::{OperationGuard, SessionOperations};
 
-fn config_options(settings: &SessionSettings, model_locked: bool) -> Vec<SessionConfigOption> {
+fn config_options(settings: &SessionSettings) -> Vec<SessionConfigOption> {
     let model = openrouter::catalog_model(&settings.model)
         .expect("a session model comes from the model catalog");
     let model_option = |model: &openrouter::CatalogModel| {
@@ -58,11 +58,7 @@ fn config_options(settings: &SessionSettings, model_locked: bool) -> Vec<Session
             option
         }
     };
-    let models = if model_locked {
-        vec![model_option(model)]
-    } else {
-        openrouter::catalog().iter().map(model_option).collect()
-    };
+    let models: Vec<_> = openrouter::catalog().iter().map(model_option).collect();
     vec![
         SessionConfigOption::select("model", "Model", settings.model.clone(), models)
             .category(SessionConfigOptionCategory::Model),
@@ -240,14 +236,13 @@ impl ServerState {
             return Ok(PromptResponse::new(StopReason::EndTurn));
         }
         let client = self.openrouter_client()?;
-        let saved_settings = stored.saved_settings(&active.selections);
-        let mut parameters = ModelRequestParameters::new(
-            &saved_settings.model,
-            saved_settings.effort,
+        // Compaction prepares the next turn, which uses the selected model.
+        let parameters = ModelRequestParameters::new(
+            &active.selections.model,
+            active.selections.effort,
             active.system_prompt,
         )
         .map_err(Error::into_internal_error)?;
-        parameters.effort = active.selections.effort;
         let mut transcript = stored.transcript;
         match compaction::compact(
             &self.store,
@@ -314,7 +309,7 @@ impl ServerState {
                 shell_processes: ShellProcesses::default(),
             },
         );
-        Ok(NewSessionResponse::new(summary.id).config_options(config_options(&settings, false)))
+        Ok(NewSessionResponse::new(summary.id).config_options(config_options(&settings)))
     }
 
     fn set_config_option(
@@ -324,28 +319,13 @@ impl ServerState {
         let SessionConfigOptionValue::ValueId { value } = &request.value else {
             return Err(Error::invalid_params().data("every configuration option is a selector"));
         };
-        let stored = self
-            .store
-            .read(&request.session_id)
-            .map_err(Error::into_internal_error)?
-            .ok_or_else(|| not_found(&request.session_id))?;
-        let model_locked = !stored.transcript.is_empty();
         let mut active = self.active.lock().expect("active sessions mutex poisoned");
         let selections = &mut active
             .get_mut(&request.session_id)
             .ok_or_else(|| inactive(&request.session_id))?
             .selections;
-        let saved_settings = stored.saved_settings(selections);
-        ModelRequestParameters::new(&saved_settings.model, saved_settings.effort, String::new())
-            .map_err(Error::into_internal_error)?;
-        if model_locked {
-            selections.model.clone_from(&saved_settings.model);
-        }
         match request.config_id.0.as_ref() {
             "model" => {
-                if model_locked {
-                    return Err(Error::invalid_params().data("the session model cannot be changed"));
-                }
                 let model = openrouter::catalog_model(value.0.as_ref()).ok_or_else(|| {
                     Error::invalid_params().data(format!(
                         "{} is not a choice of configuration option {}",
@@ -382,7 +362,7 @@ impl ServerState {
                     .data(format!("no configuration option {}", request.config_id)));
             }
         }
-        let options = config_options(selections, model_locked);
+        let options = config_options(selections);
         drop(active);
         Ok(SetSessionConfigOptionResponse::new(options))
     }
@@ -408,7 +388,6 @@ impl ServerState {
         }
         let saved_settings =
             stored.saved_settings(&self.default_settings(&stored.summary.workspace_path)?);
-        let model_locked = !stored.transcript.is_empty();
         // A repeated load keeps the system prompt, skill catalog, and shell
         // processes of the first load.
         let (system_prompt, skills, shell_processes) =
@@ -441,10 +420,7 @@ impl ServerState {
         if let Some(usage) = usage {
             send_update(usage)?;
         }
-        Ok(
-            LoadSessionResponse::new()
-                .config_options(config_options(&saved_settings, model_locked)),
-        )
+        Ok(LoadSessionResponse::new().config_options(config_options(&saved_settings)))
     }
 
     fn activate(&self, session_id: SessionId, active: ActiveSession) {
@@ -1094,11 +1070,11 @@ mod tests {
         let store = SessionStore::in_memory();
         let state = ServerState::new(store.clone(), test_settings(), no_home());
         let id = store.create(Path::new("/workspace")).unwrap().id;
+        // The saved turn start uses the default model; compaction prepares the
+        // next turn, which uses the selected one.
+        let selected = openrouter::catalog()[1].id.as_str();
         let active = ActiveSession {
-            selections: SessionSettings::new(
-                openrouter::fixture::DEFAULT_MODEL,
-                EffortLevel::Default,
-            ),
+            selections: SessionSettings::new(selected, EffortLevel::Default),
             system_prompt: "captured system".to_owned(),
             shell_processes: ShellProcesses::default(),
             skills: vec![],
@@ -1118,13 +1094,7 @@ mod tests {
         );
 
         store
-            .append_turn_start(
-                &id,
-                &[
-                    TranscriptEntry::Model(openrouter::fixture::DEFAULT_MODEL.to_owned()),
-                    TranscriptEntry::turn("previous work ".repeat(3000)),
-                ],
-            )
+            .append_turn_start(&id, &TurnStart::test("previous work ".repeat(3000)))
             .unwrap();
         store
             .append_batch(
@@ -1173,7 +1143,7 @@ mod tests {
         ));
         let estimate = compaction::request_estimate(
             &ModelRequestParameters::new(
-                openrouter::fixture::DEFAULT_MODEL,
+                selected,
                 EffortLevel::Default,
                 "captured system".to_owned(),
             )
@@ -1186,8 +1156,10 @@ mod tests {
                 if usage.used == estimate as u64
                     && usage.cost.as_ref().is_some_and(|cost| cost.amount == 0.375 && cost.currency == "USD")
         ));
+        let summarizer = &server.requests()[0];
+        assert_eq!(summarizer["model"], selected);
         assert_eq!(
-            server.requests()[0]["messages"][0]["content"],
+            summarizer["messages"][0]["content"],
             include_str!("prompts/compaction_prompt.md")
         );
         assert!(after.iter().all(|entry| !matches!(entry,
@@ -1625,13 +1597,7 @@ mod tests {
             .unwrap();
         state
             .store
-            .append_turn_start(
-                &created.session_id,
-                &[
-                    TranscriptEntry::Model(openrouter::fixture::DEFAULT_MODEL.to_owned()),
-                    TranscriptEntry::turn("Hello".to_owned()),
-                ],
-            )
+            .append_turn_start(&created.session_id, &TurnStart::test("Hello".to_owned()))
             .unwrap();
 
         for workspace_path in ["/workspace/", "/workspace", "/workspace/./", "//workspace/"] {
@@ -1664,27 +1630,38 @@ mod tests {
         let created = state
             .new_session(&NewSessionRequest::new("/workspace"))
             .unwrap();
-        state
-            .store
-            .append_turn_start(
-                &created.session_id,
-                &[
-                    TranscriptEntry::Model("retired/model".to_owned()),
-                    TranscriptEntry::turn("Hello".to_owned()),
-                ],
-            )
-            .unwrap();
+        let append = |model: &str| {
+            state
+                .store
+                .append_turn_start(
+                    &created.session_id,
+                    &TurnStart {
+                        model: model.to_owned(),
+                        ..TurnStart::test("Hello".to_owned())
+                    },
+                )
+                .unwrap();
+        };
         let mut updates = Vec::new();
-
-        let error = state
-            .load_session(
-                &LoadSessionRequest::new(created.session_id, "/workspace"),
+        let mut load = || {
+            updates.clear();
+            state.load_session(
+                &LoadSessionRequest::new(created.session_id.clone(), "/workspace"),
                 |update| {
                     updates.push(update);
                     Ok(())
                 },
             )
-            .unwrap_err();
+        };
+        append("retired/model");
+        append(openrouter::fixture::DEFAULT_MODEL);
+        assert!(
+            load().is_ok(),
+            "only the latest turn start's model must be in the catalog"
+        );
+
+        append("retired/model");
+        let error = load().unwrap_err();
 
         assert_eq!(error.code, ErrorCode::InternalError);
         assert_eq!(
@@ -1801,21 +1778,25 @@ mod tests {
             .store
             .append_turn_start(
                 &created.session_id,
-                &[
-                    TranscriptEntry::Model(chosen.to_owned()),
-                    TranscriptEntry::TurnStart(TurnStart {
-                        effort: EffortLevel::Default,
-                        mode: SessionMode::Auto,
-                        input: TurnInput::UserMessage("Hello".to_owned().into()),
-                    }),
-                ],
+                &TurnStart {
+                    model: chosen.to_owned(),
+                    mode: SessionMode::Auto,
+                    ..TurnStart::test("Hello".to_owned())
+                },
             )
             .unwrap();
+        let changed = set("model", openrouter::fixture::DEFAULT_MODEL).unwrap();
         assert_eq!(
-            set("model", openrouter::fixture::DEFAULT_MODEL)
-                .unwrap_err()
-                .code,
-            ErrorCode::InvalidParams
+            changed["configOptions"][0]["currentValue"],
+            openrouter::fixture::DEFAULT_MODEL,
+            "the model changes after a turn start is saved"
+        );
+        assert_eq!(
+            changed["configOptions"][0]["options"]
+                .as_array()
+                .unwrap()
+                .len(),
+            openrouter::catalog().len()
         );
         state
             .store
@@ -1865,7 +1846,7 @@ mod tests {
                 .as_array()
                 .unwrap()
                 .len(),
-            1
+            openrouter::catalog().len()
         );
     }
 
@@ -1903,6 +1884,7 @@ mod tests {
             }
         };
 
+        let changed_model = openrouter::catalog()[1].id.as_str();
         let cancellation = PromptCancellation::new();
         let first = prompt::run(
             state.store.clone(),
@@ -1918,6 +1900,13 @@ mod tests {
                 tokio::task::yield_now().await;
             }
             fs::write(&agents_md, "Answer in German.\n").unwrap();
+            state
+                .set_config_option(&SetSessionConfigOptionRequest::new(
+                    id.clone(),
+                    "model",
+                    changed_model,
+                ))
+                .unwrap();
             state
                 .set_config_option(&SetSessionConfigOptionRequest::new(
                     id.clone(),
@@ -1952,22 +1941,30 @@ mod tests {
         ));
 
         let stored = state.store.read(&id).unwrap().unwrap();
-        let turn = |effort, mode, text: &str| {
+        let turn = |model: &str, effort, mode, text: &str| {
             TranscriptEntry::TurnStart(TurnStart {
+                model: model.to_owned(),
                 effort,
                 mode,
-                input: TurnInput::UserMessage(text.to_owned().into()),
+                ..TurnStart::test(text.to_owned())
             })
         };
         assert_eq!(
-            stored.transcript[1],
-            turn(EffortLevel::Low, SessionMode::Ask, "first")
+            stored.transcript[0],
+            turn(
+                openrouter::fixture::DEFAULT_MODEL,
+                EffortLevel::Low,
+                SessionMode::Ask,
+                "first"
+            )
         );
         assert_eq!(
-            stored.transcript[2],
-            turn(EffortLevel::Max, SessionMode::Auto, "second")
+            stored.transcript[1],
+            turn(changed_model, EffortLevel::Max, SessionMode::Auto, "second")
         );
         let requests = server.requests();
+        assert_eq!(requests[0]["model"], openrouter::fixture::DEFAULT_MODEL);
+        assert_eq!(requests[1]["model"], changed_model);
         assert_eq!(requests[0]["reasoning"]["effort"], "low");
         assert_eq!(requests[1]["reasoning"]["effort"], "max");
         for request in &requests {
@@ -2068,13 +2065,7 @@ mod tests {
         let inactive = store.create(Path::new("/workspace")).unwrap().id;
         let saved = store.create(Path::new("/workspace")).unwrap().id;
         store
-            .append_turn_start(
-                &saved,
-                &[
-                    TranscriptEntry::Model(openrouter::fixture::DEFAULT_MODEL.to_owned()),
-                    TranscriptEntry::turn("Earlier".to_owned()),
-                ],
-            )
+            .append_turn_start(&saved, &TurnStart::test("Earlier".to_owned()))
             .unwrap();
         let id = create_session(&state, Path::new("/workspace"));
         let (incoming_tx, incoming_rx) = mpsc::unbounded();
@@ -2165,10 +2156,7 @@ mod tests {
         );
         assert_eq!(
             store.read(&id).unwrap().unwrap().transcript,
-            vec![
-                TranscriptEntry::Model(openrouter::fixture::DEFAULT_MODEL.to_owned()),
-                TranscriptEntry::turn("Hello".to_owned())
-            ],
+            vec![TranscriptEntry::turn("Hello".to_owned())],
         );
     }
 
@@ -2631,14 +2619,11 @@ Run the commands.
             ]
         );
         assert!(matches!(
-            &run.transcript[..2],
-            [
-                TranscriptEntry::Model(_),
-                TranscriptEntry::TurnStart(TurnStart {
-                    mode: SessionMode::Auto,
-                    ..
-                }),
-            ]
+            &run.transcript[..1],
+            [TranscriptEntry::TurnStart(TurnStart {
+                mode: SessionMode::Auto,
+                ..
+            }),]
         ));
     }
 
@@ -2904,15 +2889,13 @@ Run the commands.
             );
             let transcript = store.read(&session.id).unwrap().unwrap().transcript;
             assert_eq!(
-                &transcript[..2],
-                [
-                    TranscriptEntry::Model(openrouter::catalog()[1].id.as_str().to_owned()),
-                    TranscriptEntry::TurnStart(TurnStart {
-                        effort: EffortLevel::High,
-                        mode: SessionMode::Auto,
-                        input: TurnInput::UserMessage("Run commands".to_owned().into()),
-                    }),
-                ]
+                &transcript[..1],
+                [TranscriptEntry::TurnStart(TurnStart {
+                    model: openrouter::catalog()[1].id.clone(),
+                    effort: EffortLevel::High,
+                    mode: SessionMode::Auto,
+                    input: TurnInput::UserMessage("Run commands".to_owned().into()),
+                }),]
             );
             assert_eq!(
                 transcript

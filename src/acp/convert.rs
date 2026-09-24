@@ -312,7 +312,7 @@ pub fn replay_transcript(
 ) -> Result<()> {
     for entry in transcript {
         match entry {
-            TranscriptEntry::Model(_) | TranscriptEntry::CompactionCheckpoint(_) => {}
+            TranscriptEntry::CompactionCheckpoint(_) => {}
             TranscriptEntry::TurnStart(turn_start) => match &turn_start.input {
                 TurnInput::UserMessage(message) => {
                     for update in user_message_updates(message) {
@@ -414,16 +414,10 @@ mod tests {
         let store = sessions::SessionStore::in_memory();
         let id = store.create(std::path::Path::new("/workspace")).unwrap().id;
         store
-            .append_turn_start(
-                &id,
-                &[
-                    TranscriptEntry::Model(crate::openrouter::fixture::DEFAULT_MODEL.to_owned()),
-                    TranscriptEntry::turn(message.clone()),
-                ],
-            )
+            .append_turn_start(&id, &sessions::TurnStart::test(message.clone()))
             .unwrap();
         let stored = store.read(&id).unwrap().unwrap();
-        assert_eq!(stored.transcript[1], TranscriptEntry::turn(message));
+        assert_eq!(stored.transcript[0], TranscriptEntry::turn(message));
         let mut updates = Vec::new();
         replay_transcript(&stored.transcript, |update| {
             updates.push(update);

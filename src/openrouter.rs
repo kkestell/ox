@@ -472,7 +472,7 @@ pub(crate) fn chat_messages(transcript: &[TranscriptEntry]) -> Vec<Value> {
     let mut messages = Vec::new();
     for entry in transcript {
         let value = match entry {
-            TranscriptEntry::Model(_) | TranscriptEntry::CompactionCheckpoint(_) => continue,
+            TranscriptEntry::CompactionCheckpoint(_) => continue,
             TranscriptEntry::TurnStart(turn_start) => match &turn_start.input {
                 TurnInput::UserMessage(message) => user_message(message),
                 TurnInput::SkillInvocation(invocation) => {
@@ -1211,8 +1211,8 @@ mod tests {
             ..call("call-1", "printf Chicago")
         };
         let transcript = vec![
-            TranscriptEntry::Model(catalog()[2].id.as_str().to_owned()),
             TranscriptEntry::TurnStart(TurnStart {
+                model: catalog()[2].id.clone(),
                 effort: EffortLevel::High,
                 mode: SessionMode::Auto,
                 input: "Weather in Chicago and Denver?".to_owned().into(),

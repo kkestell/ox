@@ -69,16 +69,15 @@ The transcript is the single durable conversation. Both replay and future model
 requests are projections of the same saved transcript; neither has a separate
 authoritative representation.
 
-A transcript may be empty. Every nonempty transcript begins with one model
-entry followed by the first turn start. A turn start holds the user message or
-skill invocation that starts the turn together with the effort level and session
-mode captured for that turn. Each assistant batch is one transcript entry
-containing its message and one tool outcome for each tool call; outcome `i`
-belongs to call `i`. Hook feedback follows the entry its hook ran
-after: `before_run` feedback follows a turn start,
-`after_tools` feedback follows a batch with tool calls, and `before_stop`
-feedback follows a batch without tool calls. Consecutive feedback entries of
-the same hook kind share that placement.
+A transcript may be empty. Every nonempty transcript begins with a turn start. A
+turn start holds the user message or skill invocation that starts the turn
+together with the model, effort level, and session mode captured for that turn.
+Each assistant batch is one transcript entry containing its message and one tool
+outcome for each tool call; outcome `i` belongs to call `i`. Hook feedback
+follows the entry its hook ran after: `before_run` feedback follows a turn
+start, `after_tools` feedback follows a batch with tool calls, and `before_stop`
+feedback follows a batch without tool calls. Consecutive feedback entries of the
+same hook kind share that placement.
 
 A skill invocation stores the skill's name, its literal arguments, any image
 attachments, and the instructions copied from its definition when it was
@@ -89,12 +88,10 @@ optional skill name, the hook kind, the hook's message, and, for
 requests send each as a labeled user-role message. Hook feedback is neither a
 user message nor a tool result.
 
-The model entry fixes the OpenRouter model when the first turn starts. The model
-does not change within that session. The current effort level and session mode
-may change between turns, and every turn start stores both, including values
-unchanged from the previous turn. After load or restart, the model entry and the
-latest turn start reconstruct the session settings, including Auto mode before
-another command can run.
+The model, effort level, and session mode may change between turns, and every
+turn start stores all three, including values unchanged from the previous turn.
+After load or restart, the latest turn start restores the session settings,
+including Auto mode before another command can run.
 
 An assistant message keeps answer text, visible reasoning, tool calls,
 continuation metadata, and model usage together. Continuation metadata is
@@ -167,31 +164,46 @@ invoke skills.
 
 ### Settings
 
-Ox reads `$HOME/.config/ox/settings.json` once when starting the ACP server or
-one headless run; `ox auth` and help do not read it. Its required `model` names
-the default model. A missing, malformed, unreadable, non-UTF-8, or oversized
-settings file, or a blank `model`, fails startup with its path. Restarting Ox
-reads edits.
+When starting the ACP server or one headless run, Ox downloads the model
+catalog and then reads `$HOME/.config/ox/settings.json` once; `ox auth` and help
+do neither. The settings file's required `model` names the default model. A
+missing, malformed, unreadable, non-UTF-8, or oversized settings file, an
+unknown key, or a `model` outside the model catalog fails startup with its path.
+Because the catalog comes first, a settings error is reported only after the
+catalog download succeeds. Restarting Ox reads edits.
 
-After reading settings, Ox downloads the model catalog from OpenRouter's
-`GET /models`, which needs no API key. The catalog filter keeps models that
-OpenRouter added within the last 183 days, are not `:batch` variants, which
-the chat-completions endpoint does not serve, accept tools, take text input,
-produce text output, and have a context limit above 8,000 tokens. The catalog is
-sorted by model name. A model's effort levels are Default
-plus each effort OpenRouter lists for it that Ox knows. A failed download, a
-malformed response, an empty filtered catalog, or a default model outside it
+A workspace can override settings in its workspace settings file,
+`.ox/settings.json`. It uses the settings file format: each key it sets replaces
+the same key from the settings file, and each key it leaves out keeps that
+file's value. Today it can set only `model`, which then names the default model
+for that workspace. Setting `hooks` there is an error, because hooks run
+commands without any other approval and a repository must not add them. Ox
+reads the workspace settings file when a session becomes active, together with
+`AGENTS.md` and the skill catalog, and once for a headless run. A missing file
+changes nothing; any other failure, including an invalid key or value, fails
+activation or the run with its path. Only a session with an empty transcript
+uses the default model. A loaded session starts from its saved settings.
+
+Ox downloads the model catalog from OpenRouter's `GET /models`, which needs no
+API key. The catalog filter keeps models that OpenRouter added within the last
+183 days, are not `:batch` variants, which the chat-completions endpoint does
+not serve, accept tools, take text input, produce text output, and have a
+context limit above 8,000 tokens. The catalog is sorted by model name. A model's
+effort levels are Default plus each effort OpenRouter lists for it that Ox
+knows. A failed download, a malformed response, or an empty filtered catalog
 fails startup. The model catalog is installed once per process; `OX_IN_HOOK`
 does not affect it.
 
 The catalog also records whether each model accepts images. Ox advertises ACP
-image prompt support, but a prompt containing an image is rejected before its
-turn start is saved when the selected model does not accept images.
+image prompt support, but a prompt is rejected before its turn start is saved
+when the selected model does not accept images and the next model request would
+contain one. That includes an image from an earlier turn until a checkpoint
+covers it.
 
 The ACP `effort` option lists only the selected model's effort levels.
 Selecting a model that lacks the current effort level resets it to Default. A
-saved model outside the catalog, or a saved effort level its model no longer
-lists, fails load and prompt runs.
+latest turn start whose model or effort level is outside the model catalog fails
+load.
 
 ### Global hooks
 
@@ -229,14 +241,15 @@ state:
 - active sessions hold, for each session created or loaded in the process, the
   ACP selections chosen for a future turn, the system prompt and skill catalog
   captured at activation, and the session's shell processes;
-- global hooks hold the definitions read at process startup;
+- the settings read from the settings file at process startup hold the default
+  model and global hooks;
 - the OpenRouter client cache holds credentials and reusable HTTP state; and
 - the session store holds one SQLite connection.
 
 ACP selections are not a second durable settings store. A prompt run takes a
 model, effort, and mode snapshot at its turn boundary. Changes made while it is
 running apply to the next turn. The transcript remains authoritative for the
-fixed model and last saved effort level and mode.
+last saved model, effort level, and session mode.
 
 ### System prompt
 
@@ -257,7 +270,8 @@ process assembles it again from its built-in prompt and the then-current
 the session title.
 
 Compaction uses the dedicated `src/prompts/compaction_prompt.md` as its system
-prompt, the session model at its summarizer effort (its lowest effort level
+prompt, the prompt run's model, or for `/compact` the model of the ACP
+selections, at its summarizer effort (its lowest effort level
 other than Default and `none`, or Default when it lists none), no tools, and a
 bounded text completion.
 The active session's system prompt remains unchanged for ordinary requests.
@@ -271,8 +285,8 @@ transcript copy, cancellation signal, active completion stream, global and
 invoked skill hooks, and the run ID shared by their commands.
 
 An input that cannot fit even after the largest eligible compaction cut is
-rejected before persistence. An accepted turn start, with its effort level and
-session mode, is committed before the first model request. The
+rejected before persistence. An accepted turn start, with its model, effort
+level, and session mode, is committed before the first model request. The
 ACP updates announcing them are sent after the commit, inside the prompt run, so
 a failure to send them still ends the run through its normal completion. Model output remains
 provisional until the OpenRouter client yields a validated completion. Tools run
@@ -547,10 +561,9 @@ The implementation enforces these properties:
 1. A session has at most one active prompt, load, or delete operation in the
    process.
 2. The saved turn start is durable before its turn's first model request.
-3. A nonempty transcript begins with exactly one model entry followed by a turn
-   start, and every model request in the session uses that model.
-4. Every turn start stores the effort level and session mode captured for its
-   turn.
+3. A nonempty transcript begins with a turn start.
+4. Every turn start stores the model, effort level, and session mode captured
+   for its turn, which every model request in that turn uses.
 5. Tool execution begins only from a validated completion.
 6. A saved assistant message has exactly one final tool outcome for each tool
    call, and outcome `i` belongs to call `i`.

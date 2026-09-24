@@ -7,9 +7,7 @@ use std::{fmt, future::Future, io, ops::ControlFlow};
 
 use agent_client_protocol::{
     Client, ConnectionTo, Error, Result,
-    schema::v1::{
-        ConfigOptionUpdate, RequestPermissionOutcome, SessionId, SessionInfoUpdate, SessionUpdate,
-    },
+    schema::v1::{RequestPermissionOutcome, SessionId, SessionInfoUpdate, SessionUpdate},
 };
 
 use super::convert;
@@ -47,8 +45,8 @@ pub(super) struct PromptInput {
     pub turn_input: TurnInput,
     /// Global hooks followed by the invoked skill's hooks.
     pub hook_sources: Vec<HookSource>,
-    /// The ACP selections the turn starts with. A session with turns keeps the
-    /// model in its model entry instead.
+    /// The ACP selections the turn starts with, used for every model request
+    /// in the turn, including automatic compaction.
     pub selected_settings: SessionSettings,
     /// The complete system prompt captured when the session became active.
     pub system_prompt: String,
@@ -195,10 +193,7 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
             .read(session_id)
             .map_err(Error::into_internal_error)?
             .ok_or_else(|| Error::resource_not_found(Some(session_id.to_string())))?;
-        let mut settings = input.selected_settings.clone();
-        if !stored.transcript.is_empty() {
-            settings.model = stored.saved_settings(&settings).model;
-        }
+        let settings = &input.selected_settings;
         let parameters = ModelRequestParameters::new(
             &settings.model,
             settings.effort,
@@ -222,47 +217,37 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
         })
     }
 
-    /// Saves the turn start with the captured effort level and session mode
-    /// before any model request, preceded by the model entry in a new session,
-    /// and returns the session updates that announce it. `None` when
-    /// cancellation was already observed, in which case nothing is written.
+    /// Saves the turn start with the captured model, effort level, and session
+    /// mode before any model request, and returns the session update that
+    /// announces it. `None` when cancellation was already observed, in which
+    /// case nothing is written.
     fn save_turn_start(&mut self, input: TurnInput) -> Result<Option<Vec<SessionUpdate>>> {
         if self.cancellation.is_cancelled() {
             return Ok(None);
         }
-        if input.has_images() && !self.parameters.model.accepts_images {
-            return Err(Error::invalid_params().data(
-                "session model does not accept images; start a new session with an image-capable model",
-            ));
-        }
-        let start = self.transcript.len();
-        let locks_model = start == 0;
-        let mut prospective = self.transcript.clone();
-        if locks_model {
-            prospective.push(TranscriptEntry::Model(self.parameters.model.id.clone()));
-        }
-        prospective.push(TranscriptEntry::TurnStart(TurnStart {
+        let turn_start = TurnStart {
+            model: self.parameters.model.id.clone(),
             effort: self.parameters.effort,
             mode: self.mode,
             input,
-        }));
+        };
+        let mut prospective = self.transcript.clone();
+        prospective.push(TranscriptEntry::TurnStart(turn_start.clone()));
+        // An earlier image fails every request to a model without image input.
+        if !self.parameters.model.accepts_images && compaction::has_images(&prospective) {
+            return Err(Error::invalid_params().data(
+                "the selected model does not accept images; choose a model that accepts images",
+            ));
+        }
         if !compaction::input_fits(&self.parameters, &prospective) {
             return Err(Error::invalid_params().data("prompt exceeds the model context limit"));
         }
         let updated = self
             .store
-            .append_turn_start(&self.summary.id, &prospective[start..])
+            .append_turn_start(&self.summary.id, &turn_start)
             .map_err(Error::into_internal_error)?;
         self.transcript = prospective;
         let mut updates = Vec::new();
-        if locks_model {
-            let settings =
-                SessionSettings::new(self.parameters.model.id.clone(), self.parameters.effort)
-                    .with_mode(self.mode);
-            updates.push(SessionUpdate::ConfigOptionUpdate(ConfigOptionUpdate::new(
-                super::config_options(&settings, true),
-            )));
-        }
         let mut info = SessionInfoUpdate::new().updated_at(updated.updated_at);
         if self.summary.session_title.is_none()
             && let Some(session_title) = updated.session_title
@@ -996,10 +981,6 @@ mod tests {
         }
     }
 
-    fn model() -> TranscriptEntry {
-        TranscriptEntry::Model(DEFAULT_MODEL.to_owned())
-    }
-
     /// A turn start saved by `Harness::run`: Default effort in Auto mode.
     fn turn(input: TurnInput) -> TranscriptEntry {
         turn_with(EffortLevel::Default, SessionMode::Auto, input)
@@ -1009,7 +990,7 @@ mod tests {
         TranscriptEntry::TurnStart(TurnStart {
             effort,
             mode,
-            input,
+            ..TurnStart::test(input)
         })
     }
 
@@ -1166,7 +1147,6 @@ mod tests {
     fn describe(update: &SessionUpdate) -> String {
         match update {
             SessionUpdate::SessionInfoUpdate(_) => "info".to_owned(),
-            SessionUpdate::ConfigOptionUpdate(_) => "config".to_owned(),
             SessionUpdate::AgentMessageChunk(_) => "text".to_owned(),
             SessionUpdate::AgentThoughtChunk(_) => "reasoning".to_owned(),
             SessionUpdate::UsageUpdate(_) => "usage".to_owned(),
@@ -1325,7 +1305,7 @@ mod tests {
         let (response, transcript) = harness.run("Apply the patch", |_| Ok(())).await;
 
         assert!(response.is_err());
-        assert_eq!(transcript, vec![model(), turn(user("Apply the patch"))]);
+        assert_eq!(transcript, vec![turn(user("Apply the patch"))]);
         assert_eq!(harness.stored(), transcript);
         assert_eq!(fs::read_dir(&harness.workspace.0).unwrap().count(), 0);
     }
@@ -1369,31 +1349,19 @@ mod tests {
         assert_eq!(
             transcript,
             vec![
-                model(),
                 turn_with(EffortLevel::Default, SessionMode::Ask, user("Hi")),
                 TranscriptEntry::AssistantBatch(AssistantBatch::new(answered, vec![]).unwrap())
             ]
         );
         assert_eq!(harness.stored(), transcript);
         let updates = harness.updates();
-        let SessionUpdate::ConfigOptionUpdate(config) = &updates[0] else {
-            panic!("the first prompt locks the model selector");
-        };
-        let config = serde_json::to_value(config).unwrap();
-        assert_eq!(
-            config["configOptions"][0]["options"]
-                .as_array()
-                .unwrap()
-                .len(),
-            1
-        );
         assert!(matches!(
-            &updates[1],
+            &updates[0],
             SessionUpdate::SessionInfoUpdate(info) if info.title.contains_value(&"Hi".to_owned())
         ));
         assert_eq!(
             updates.iter().map(describe).collect::<Vec<_>>(),
-            vec!["config", "info", "text", "usage"]
+            vec!["info", "text", "usage"]
         );
         let SessionUpdate::UsageUpdate(reported) = updates.last().unwrap() else {
             unreachable!()
@@ -1417,7 +1385,6 @@ mod tests {
         assert_eq!(
             transcript,
             vec![
-                model(),
                 turn(invocation("Pass the tests.")),
                 answer("First try."),
                 feedback(StopDecision::Continue, "Two tests still fail."),
@@ -1454,7 +1421,6 @@ mod tests {
         assert_eq!(
             described_updates(&harness),
             [
-                "config",
                 "info",
                 "text",
                 "usage",
@@ -1505,11 +1471,7 @@ mod tests {
             assert!(data.contains(expected), "{command}: {data}");
             assert_eq!(
                 transcript,
-                vec![
-                    model(),
-                    turn(invocation("Pass the tests.")),
-                    answer("Done.")
-                ],
+                vec![turn(invocation("Pass the tests.")), answer("Done.")],
                 "{command}: nothing is saved for a failed hook"
             );
             assert_eq!(described_updates(&harness).last().unwrap(), "hook failed");
@@ -1611,7 +1573,7 @@ mod tests {
             assert!(report["answer"].is_null());
             assert_eq!(response.ok(), expected, "{outcome}");
             assert_eq!(ran.exists(), hook_runs, "{outcome}");
-            assert_eq!(transcript[2], answer("First try."));
+            assert_eq!(transcript[1], answer("First try."));
             assert_eq!(
                 transcript
                     .iter()
@@ -1994,7 +1956,7 @@ mod tests {
         let parameters =
             ModelRequestParameters::new(DEFAULT_MODEL, EffortLevel::Default, system).unwrap();
         let admission = compaction::budget(parameters.model).admission;
-        let base = compaction::request_estimate(&parameters, &[model(), turn(invocation(""))]);
+        let base = compaction::request_estimate(&parameters, &[turn(invocation(""))]);
         let near_limit = "x".repeat((admission - base - 100) * 3);
         let large = r#"printf '{"message":"%s"}' $(head -c 1000 /dev/zero | tr '\0' y)"#;
         for (arguments, before_run, expected) in [
@@ -2032,17 +1994,14 @@ mod tests {
             match expected {
                 None => {
                     assert!(matches!(response.unwrap(), PromptOutput::Finished(_)));
-                    assert_eq!(
-                        transcript,
-                        [model(), turn(invocation(arguments)), answer("Done.")]
-                    );
+                    assert_eq!(transcript, [turn(invocation(arguments)), answer("Done.")]);
                     assert_eq!(report["outcome"], "finished");
                 }
                 Some(expected) => {
                     let error = error_text(response);
                     assert!(error.contains(expected), "{error}");
                     assert!(harness.server.requests().is_empty());
-                    assert_eq!(transcript, [model(), turn(invocation(arguments))]);
+                    assert_eq!(transcript, [turn(invocation(arguments))]);
                     assert_eq!(report["outcome"], "failed");
                     assert!(report["error"].as_str().unwrap().contains(expected));
                 }
@@ -2084,11 +2043,7 @@ mod tests {
             assert!(error.contains(expected), "{error}");
             assert_eq!(
                 transcript,
-                [
-                    model(),
-                    turn(invocation("Pass the tests.")),
-                    calls(&batch, outcomes)
-                ]
+                [turn(invocation("Pass the tests.")), calls(&batch, outcomes)]
             );
             assert_eq!(harness.stored(), transcript);
             assert_eq!(harness.server.requests().len(), 1);
@@ -2137,7 +2092,7 @@ mod tests {
             })
             .await;
         assert!(error_text(response).contains("connection closed"));
-        assert_eq!(transcript, [model(), turn(invocation("Pass the tests."))]);
+        assert_eq!(transcript, [turn(invocation("Pass the tests."))]);
         let report = reported(&harness);
         assert_eq!(report["outcome"], "failed");
         assert!(
@@ -2200,7 +2155,7 @@ mod tests {
         let valid = "v".repeat(2_300_000);
         let (response, transcript) = harness.run(&valid, |_| Ok(())).await;
         assert!(matches!(response.unwrap(), PromptOutput::Finished(_)));
-        assert_eq!(transcript.len(), 3);
+        assert_eq!(transcript.len(), 2);
         assert_eq!(
             harness.server.requests().len(),
             1,
@@ -2213,13 +2168,7 @@ mod tests {
         let store = SessionStore::open(&database).unwrap();
         let id = store.create(&harness.workspace.0).unwrap().id;
         store
-            .append_turn_start(
-                &id,
-                &[
-                    TranscriptEntry::Model(DEFAULT_MODEL.to_owned()),
-                    TranscriptEntry::turn("unanswered ".repeat(180_000)),
-                ],
-            )
+            .append_turn_start(&id, &TurnStart::test("unanswered ".repeat(180_000)))
             .unwrap();
         drop(store);
         let reopened = SessionStore::open(&database).unwrap();
@@ -2270,13 +2219,7 @@ mod tests {
         let old = "x".repeat(2_300_000);
         harness
             .store
-            .append_turn_start(
-                &harness.session_id,
-                &[
-                    TranscriptEntry::Model(DEFAULT_MODEL.to_owned()),
-                    TranscriptEntry::turn(old.clone()),
-                ],
-            )
+            .append_turn_start(&harness.session_id, &TurnStart::test(old.clone()))
             .unwrap();
         let TranscriptEntry::AssistantBatch(batch) = answer("Earlier answer") else {
             unreachable!()
@@ -2296,7 +2239,7 @@ mod tests {
         );
         assert_eq!(requests[1]["messages"][2]["content"], "next request");
         assert!(matches!(
-            &transcript[4],
+            &transcript[3],
             TranscriptEntry::CompactionCheckpoint(_)
         ));
         assert_eq!(harness.stored(), transcript);
@@ -2314,7 +2257,6 @@ mod tests {
         let automatic_threshold = compaction::budget(parameters.model).automatic_threshold;
         let base = "x".repeat(2_000_000);
         let prospective = vec![
-            model(),
             turn(user(&base)),
             answer("Earlier answer"),
             turn(user("next request")),
@@ -2325,10 +2267,10 @@ mod tests {
             .store
             .append_turn_start(
                 &between.session_id,
-                &[
-                    TranscriptEntry::Model(DEFAULT_MODEL.to_owned()),
-                    turn(user(&old)),
-                ],
+                &TurnStart {
+                    mode: SessionMode::Auto,
+                    ..TurnStart::test(user(&old))
+                },
             )
             .unwrap();
         let TranscriptEntry::AssistantBatch(batch) = answer("Earlier answer") else {
@@ -2408,10 +2350,7 @@ mod tests {
             .store
             .append_turn_start(
                 &harness.session_id,
-                &[
-                    TranscriptEntry::Model(DEFAULT_MODEL.to_owned()),
-                    TranscriptEntry::turn("history ".repeat(4000)),
-                ],
+                &TurnStart::test("history ".repeat(4000)),
             )
             .unwrap();
         let TranscriptEntry::AssistantBatch(batch) = answer("Earlier answer") else {
@@ -2425,7 +2364,7 @@ mod tests {
         assert!(matches!(response.unwrap(), PromptOutput::Finished(_)));
         assert_eq!(harness.server.requests().len(), 3);
         assert!(matches!(
-            &transcript[4],
+            &transcript[3],
             TranscriptEntry::CompactionCheckpoint(_)
         ));
 
@@ -2439,13 +2378,7 @@ mod tests {
         .await;
         no_reduction
             .store
-            .append_turn_start(
-                &no_reduction.session_id,
-                &[
-                    TranscriptEntry::Model(DEFAULT_MODEL.to_owned()),
-                    TranscriptEntry::turn("old".to_owned()),
-                ],
-            )
+            .append_turn_start(&no_reduction.session_id, &TurnStart::test("old".to_owned()))
             .unwrap();
         let TranscriptEntry::AssistantBatch(batch) = answer("done") else {
             unreachable!()
@@ -2457,7 +2390,7 @@ mod tests {
         let (response, transcript) = no_reduction.run("next", |_| Ok(())).await;
         assert!(response.is_err());
         assert_eq!(no_reduction.server.requests().len(), 2);
-        assert_eq!(transcript.len(), 4, "the new user message remains saved");
+        assert_eq!(transcript.len(), 3, "the new user message remains saved");
 
         for reply in [
             Reply::Status(500, "server unavailable".to_owned()),
@@ -2479,23 +2412,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn different_efforts_are_saved_and_sent_for_sequential_turns() {
+    async fn each_turn_saves_and_sends_its_own_model_and_effort() {
         let harness = Harness::new(vec![text_reply("First"), text_reply("Second")]).await;
         let selected = Rc::new(RefCell::new(EffortLevel::Low));
         let changed = selected.clone();
-        let saved_model = catalog()[1].id.as_str();
-        let first_settings = SessionSettings::new(saved_model, *selected.borrow());
+        let first_model = catalog()[1].id.as_str();
+        let second_model = catalog()[2].id.as_str();
+        let first_settings = SessionSettings::new(first_model, *selected.borrow());
 
         let (first, _) = harness
             .run_with_settings("one", first_settings, move |update| {
                 if matches!(update, SessionUpdate::SessionInfoUpdate(_)) {
-                    *changed.borrow_mut() = EffortLevel::Max;
+                    *changed.borrow_mut() = EffortLevel::XHigh;
                 }
                 Ok(())
             })
             .await;
         assert!(matches!(first.unwrap(), PromptOutput::Finished(_)));
-        let second_settings = SessionSettings::new(catalog()[2].id.as_str(), *selected.borrow());
+        let second_settings = SessionSettings::new(second_model, *selected.borrow());
         let (second, transcript) = harness
             .run_with_settings("two", second_settings, |_| Ok(()))
             .await;
@@ -2503,18 +2437,25 @@ mod tests {
         assert_eq!(
             transcript,
             vec![
-                TranscriptEntry::Model(saved_model.to_owned()),
-                turn_with(EffortLevel::Low, SessionMode::Ask, user("one")),
+                TranscriptEntry::TurnStart(TurnStart {
+                    model: first_model.to_owned(),
+                    effort: EffortLevel::Low,
+                    ..TurnStart::test(user("one"))
+                }),
                 answer("First"),
-                turn_with(EffortLevel::Max, SessionMode::Ask, user("two")),
+                TranscriptEntry::TurnStart(TurnStart {
+                    model: second_model.to_owned(),
+                    effort: EffortLevel::XHigh,
+                    ..TurnStart::test(user("two"))
+                }),
                 answer("Second"),
             ]
         );
         let requests = harness.server.requests();
-        assert_eq!(requests[0]["model"], saved_model);
-        assert_eq!(requests[1]["model"], saved_model);
+        assert_eq!(requests[0]["model"], first_model);
+        assert_eq!(requests[1]["model"], second_model);
         assert_eq!(requests[0]["reasoning"]["effort"], "low");
-        assert_eq!(requests[1]["reasoning"]["effort"], "max");
+        assert_eq!(requests[1]["reasoning"]["effort"], "xhigh");
     }
 
     #[tokio::test]
@@ -2522,52 +2463,33 @@ mod tests {
         let workspace = Workspace::new();
         let store = SessionStore::in_memory();
         let server = Server::start(vec![]).await;
+        let input = |session_id: &SessionId, turn_input: TurnInput, model: &str| PromptInput {
+            session_id: session_id.clone(),
+            turn_input,
+            hook_sources: Vec::new(),
+            selected_settings: SessionSettings::new(model, EffortLevel::Default),
+            system_prompt: system_prompt::for_workspace(&workspace.0).unwrap(),
+            shell_processes: ShellProcesses::default(),
+        };
+        let start = |client: openrouter::Client, input: PromptInput| {
+            run(
+                store.clone(),
+                client,
+                input,
+                PromptCancellation::new(),
+                |_| Ok(()),
+                PermissionTransport::None,
+            )
+        };
+        let without_images =
+            "the selected model does not accept images; choose a model that accepts images";
         let missing = SessionId::new("missing");
-        let missing_run = run(
-            store.clone(),
+        let missing_run = start(
             server.client(),
-            PromptInput {
-                session_id: missing,
-                turn_input: user("not saved"),
-                hook_sources: Vec::new(),
-                selected_settings: SessionSettings::new(DEFAULT_MODEL, EffortLevel::Default),
-                system_prompt: system_prompt::for_workspace(&workspace.0).unwrap(),
-                shell_processes: ShellProcesses::default(),
-            },
-            PromptCancellation::new(),
-            |_| Ok(()),
-            PermissionTransport::None,
+            input(&missing, user("not saved"), DEFAULT_MODEL),
         );
         assert!(missing_run.is_err());
 
-        let unknown = store.create(&workspace.0).unwrap().id;
-        store
-            .append_turn_start(
-                &unknown,
-                &[
-                    TranscriptEntry::Model("retired/model".to_owned()),
-                    turn_with(EffortLevel::High, SessionMode::Ask, user("saved turn")),
-                ],
-            )
-            .unwrap();
-        let before = store.read(&unknown).unwrap().unwrap().transcript;
-        let unknown_run = run(
-            store.clone(),
-            server.client(),
-            PromptInput {
-                session_id: unknown.clone(),
-                turn_input: user("not saved"),
-                hook_sources: Vec::new(),
-                selected_settings: SessionSettings::new(DEFAULT_MODEL, EffortLevel::Default),
-                system_prompt: system_prompt::for_workspace(&workspace.0).unwrap(),
-                shell_processes: ShellProcesses::default(),
-            },
-            PromptCancellation::new(),
-            |_| Ok(()),
-            PermissionTransport::None,
-        );
-        assert!(unknown_run.is_err());
-        assert_eq!(store.read(&unknown).unwrap().unwrap().transcript, before);
         let image_input = TurnInput::UserMessage(crate::sessions::UserMessage {
             parts: vec![crate::sessions::UserMessagePart::Image(
                 crate::sessions::ImageAttachment {
@@ -2577,22 +2499,13 @@ mod tests {
             )],
         });
         let image_session = store.create(&workspace.0).unwrap().id;
-        let image_run = run(
-            store.clone(),
+        let Err(error) = start(
             server.client(),
-            PromptInput {
-                session_id: image_session.clone(),
-                turn_input: image_input.clone(),
-                hook_sources: Vec::new(),
-                selected_settings: SessionSettings::new(DEFAULT_MODEL, EffortLevel::Default),
-                system_prompt: system_prompt::for_workspace(&workspace.0).unwrap(),
-                shell_processes: ShellProcesses::default(),
-            },
-            PromptCancellation::new(),
-            |_| Ok(()),
-            PermissionTransport::None,
-        );
-        assert!(image_run.is_err());
+            input(&image_session, image_input.clone(), DEFAULT_MODEL),
+        ) else {
+            panic!("an image prompt to a model without image input is rejected");
+        };
+        assert_eq!(error.data.unwrap(), without_images);
         assert!(
             store
                 .read(&image_session)
@@ -2605,34 +2518,42 @@ mod tests {
 
         let vision_server = Server::start(vec![text_reply("I see it.")]).await;
         let vision_session = store.create(&workspace.0).unwrap().id;
-        let vision_run = run(
-            store.clone(),
+        let vision_model = catalog()[1].id.as_str();
+        let vision_run = start(
             vision_server.client(),
-            PromptInput {
-                session_id: vision_session.clone(),
-                turn_input: image_input.clone(),
-                hook_sources: Vec::new(),
-                selected_settings: SessionSettings::new(&catalog()[1].id, EffortLevel::Default),
-                system_prompt: system_prompt::for_workspace(&workspace.0).unwrap(),
-                shell_processes: ShellProcesses::default(),
-            },
-            PromptCancellation::new(),
-            |_| Ok(()),
-            PermissionTransport::None,
+            input(&vision_session, image_input.clone(), vision_model),
         )
         .unwrap();
         assert_eq!(
             vision_run.await.unwrap(),
             PromptOutput::Finished("I see it.".to_owned())
         );
+        let saved = store.read(&vision_session).unwrap().unwrap().transcript;
         assert_eq!(
-            store.read(&vision_session).unwrap().unwrap().transcript[1],
-            turn_with(EffortLevel::Default, SessionMode::Ask, image_input)
+            saved[0],
+            TranscriptEntry::TurnStart(TurnStart {
+                model: vision_model.to_owned(),
+                ..TurnStart::test(image_input)
+            })
         );
         assert_eq!(
             vision_server.requests()[0]["messages"][1]["content"][0]["image_url"]["url"],
             "data:image/png;base64,aGVsbG8="
         );
+
+        // The earlier image would be sent with a text prompt too.
+        let Err(error) = start(
+            vision_server.client(),
+            input(&vision_session, user("Describe it again"), DEFAULT_MODEL),
+        ) else {
+            panic!("a model without image input cannot continue a session with an image");
+        };
+        assert_eq!(error.data.unwrap(), without_images);
+        assert_eq!(
+            store.read(&vision_session).unwrap().unwrap().transcript,
+            saved
+        );
+        assert_eq!(vision_server.requests().len(), 1);
     }
 
     #[tokio::test]
@@ -2649,7 +2570,6 @@ mod tests {
         assert_eq!(
             transcript,
             vec![
-                model(),
                 turn(user("Weather?")),
                 calls(
                     &[("call-1", "printf Chicago"), ("call-2", "printf Denver")],
@@ -2662,7 +2582,6 @@ mod tests {
         assert_eq!(
             harness.updates().iter().map(describe).collect::<Vec<_>>(),
             vec![
-                "config",
                 "info",
                 "call-1 pending",
                 "call-2 pending",
@@ -2723,7 +2642,7 @@ mod tests {
                 crate::shell_processes::State::Running,
                 "{failing:?}"
             );
-            let Some(TranscriptEntry::AssistantBatch(batch)) = transcript.get(2) else {
+            let Some(TranscriptEntry::AssistantBatch(batch)) = transcript.get(1) else {
                 panic!("{failing:?}: the batch was saved");
             };
             let started = ToolOutcome::Completed(format!(
@@ -2784,7 +2703,7 @@ mod tests {
             "skill /goal before_tool hook denied this call: Not now.".to_owned(),
         );
         assert!(
-            matches!(&transcript[2], TranscriptEntry::AssistantBatch(batch)
+            matches!(&transcript[1], TranscriptEntry::AssistantBatch(batch)
             if batch.outcomes == [denied.clone(), denied])
         );
         assert_eq!(harness.shell_processes.list().len(), 1, "nothing started");
@@ -2815,7 +2734,6 @@ mod tests {
         assert_eq!(
             transcript,
             vec![
-                model(),
                 turn(user("Weather?")),
                 calls(
                     &[("call-1", "printf Chicago"), ("call-2", "printf Denver")],
@@ -2832,7 +2750,6 @@ mod tests {
         assert_eq!(
             harness.updates().iter().map(describe).collect::<Vec<_>>(),
             vec![
-                "config",
                 "info",
                 "call-1 pending",
                 "call-2 pending",
@@ -2865,7 +2782,7 @@ mod tests {
             .await;
 
         assert_eq!(response.unwrap(), PromptOutput::Cancelled);
-        assert_eq!(transcript, vec![model(), turn(user("Hi"))]);
+        assert_eq!(transcript, vec![turn(user("Hi"))]);
         assert_eq!(harness.stored(), transcript);
     }
 
@@ -2888,7 +2805,7 @@ mod tests {
         assert!(
             error.to_string().contains("disk full") || format!("{error:?}").contains("disk full")
         );
-        assert_eq!(transcript, vec![model(), turn(user("Hi"))]);
+        assert_eq!(transcript, vec![turn(user("Hi"))]);
         assert_eq!(harness.stored(), transcript);
     }
 
@@ -2903,13 +2820,12 @@ mod tests {
             (
                 "call-2 pending",
                 vec![not_started(), not_started()],
-                vec!["config", "info", "call-1 pending", "call-2 pending"],
+                vec!["info", "call-1 pending", "call-2 pending"],
             ),
             (
                 "call-1 completed",
                 vec![printed("Chicago"), not_started()],
                 vec![
-                    "config",
                     "info",
                     "call-1 pending",
                     "call-2 pending",
@@ -2937,7 +2853,6 @@ mod tests {
             assert_eq!(
                 transcript,
                 vec![
-                    model(),
                     turn(user("Weather?")),
                     calls(
                         &[("call-1", "printf Chicago"), ("call-2", "printf Denver")],

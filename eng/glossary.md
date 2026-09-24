@@ -46,7 +46,7 @@
   progress, completed, or failed. A cancelled Ox tool outcome is presented as
   failed because ACP has no separate cancelled tool status.
 - **Session**: A saved conversation and its metadata, identified by a session
-  ID. Its OpenRouter model is fixed when the first turn starts.
+  ID.
 - **Active session**: A session created or loaded in the current process. Its
   system prompt is assembled and its skill catalog loaded when it becomes
   active, and only an active session can be configured or prompted over ACP.
@@ -60,10 +60,9 @@
   a turn.
 - **ACP selections**: The latest session settings selected through ACP for a
   future turn. They are process state, not durable authority.
-- **Saved settings**: The session settings read from a stored transcript: the
-  model entry's model with the effort level and session mode of the latest turn
-  start. They are the durable authority for the session model and the fallback
-  when there are no ACP selections.
+- **Saved settings**: The model, effort level, and session mode of the latest
+  turn start. They are the durable authority for the session settings after
+  load. An empty transcript has no saved settings.
 - **Settings snapshot**: The session settings a prompt run captures at its turn
   boundary.
 - **Effort level**: Default, which sends no reasoning parameter, or one of the
@@ -163,14 +162,12 @@
   MIME type, saved in a user message or skill invocation.
 - **Transcript**: The ordered, saved conversation used for both session replay
   and future model requests.
-- **Transcript entry**: A model entry, turn start, assistant batch, hook
-  feedback, or compaction checkpoint in the transcript.
-- **Model entry**: The first transcript entry. It stores the OpenRouter model
-  used for every model request in that session.
+- **Transcript entry**: A turn start, assistant batch, hook feedback, or
+  compaction checkpoint in the transcript.
 - **Turn input**: The user message or skill invocation that starts a turn. It
   is `TurnInput` in code and `PromptInput.turn_input` in a prompt run's input.
-- **Turn start**: A transcript entry holding a turn input with the effort level
-  and session mode captured for that turn. It is `TurnStart` in code and
+- **Turn start**: A transcript entry holding a turn input with the model, effort
+  level, and session mode captured for that turn. It is `TurnStart` in code and
   `turn_start` in the database.
 - **OpenRouter client**: The concrete client that verifies the API key and sends
   model requests to OpenRouter's chat-completions endpoint.
@@ -180,9 +177,14 @@
 - **Catalog filter**: The rules that admit an OpenRouter model to the model
   catalog: OpenRouter added it within the last 183 days, it is not a `:batch`
   variant, it accepts tools, takes text input, produces text output, and has a context limit above 8,000 tokens.
-- **Default model**: The model named by `model` in
-  `~/.config/ox/settings.json`, used for a new session and for `ox run` without
-  `--model`.
+- **Default model**: The model named by `model` in the workspace settings file,
+  else by `model` in the settings file, used for a new session and for `ox run`
+  without `--model`. It is `Settings::default_model` in code.
+- **Settings file**: `~/.config/ox/settings.json`, read once at process startup.
+  It names the default model and may declare global hooks.
+- **Workspace settings file**: `.ox/settings.json` in a session workspace. It
+  uses the settings file format, and each key it sets replaces the same key from
+  the settings file. It may set every key except `hooks`.
 - **Model request**: One OpenRouter chat-completion HTTP request. A prompt run
   may make several.
 - **Model request parameters**: The validated catalog model, effort level, and

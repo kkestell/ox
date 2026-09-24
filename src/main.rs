@@ -214,7 +214,10 @@ async fn run() -> Result<(), Box<dyn Error>> {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use super::*;
+    use crate::tools::fixture::Workspace;
 
     #[test]
     fn parses_auth_commands() {
@@ -245,14 +248,32 @@ mod tests {
         };
         assert_eq!(dir, None);
         assert_eq!(model, None);
+        let settings = settings::Settings {
+            default_model: openrouter::fixture::DEFAULT_MODEL.to_owned(),
+            global_hooks: None,
+        };
+        let workspace = Workspace::new();
+        let workspace_model = || {
+            resolve_model(
+                None,
+                settings.for_workspace(&workspace.0).unwrap().default_model,
+            )
+        };
         assert_eq!(
-            resolve_model(model, "workspace/model".to_owned()).unwrap(),
-            "workspace/model"
+            workspace_model().unwrap(),
+            openrouter::fixture::DEFAULT_MODEL
         );
+        let chosen = openrouter::catalog()[1].id.as_str();
+        fs::create_dir(workspace.0.join(".ox")).unwrap();
+        fs::write(
+            workspace.0.join(".ox/settings.json"),
+            format!(r#"{{"model":"{chosen}"}}"#),
+        )
+        .unwrap();
+        assert_eq!(workspace_model().unwrap(), chosen);
         assert_eq!(effort, EffortLevel::Default);
         assert_eq!(prompt, "Hello");
 
-        let chosen = openrouter::catalog()[1].id.as_str();
         let Command::Run {
             dir,
             model,
@@ -274,7 +295,7 @@ mod tests {
         };
         assert_eq!(dir.as_deref(), Some(Path::new("workspace")));
         assert_eq!(
-            resolve_model(model, "workspace/model".to_owned()).unwrap(),
+            resolve_model(model, openrouter::fixture::DEFAULT_MODEL.to_owned()).unwrap(),
             chosen
         );
         assert_eq!(effort, EffortLevel::XHigh);

@@ -52,26 +52,25 @@ CREATE INDEX IF NOT EXISTS transcript_entries_by_session
 COMMIT;
 ";
 
-/// One entry in a session transcript. Every nonempty transcript opens with
-/// the model its completions use, which does not change within the session,
-/// followed by the first turn start. Each assistant batch contains its message
+/// One entry in a session transcript. Every nonempty transcript opens with a
+/// turn start. Each assistant batch contains its message
 /// and one outcome per call, in call order. Hook feedback follows the turn
 /// start or assistant batch its hook ran after, allowing adjacent feedback of
 /// the same kind.
 #[derive(Debug, Clone, PartialEq)]
 pub enum TranscriptEntry {
-    Model(String),
     TurnStart(TurnStart),
     AssistantBatch(AssistantBatch),
     HookFeedback(HookFeedback),
     CompactionCheckpoint(CompactionCheckpoint),
 }
 
-/// The input that starts a turn, saved with the effort level and session mode
-/// captured for that turn.
+/// The input that starts a turn, saved with the model, effort level, and
+/// session mode captured for that turn.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TurnStart {
+    pub model: String,
     pub effort: EffortLevel,
     pub mode: SessionMode,
     pub input: TurnInput,
@@ -90,25 +89,25 @@ pub enum TurnInput {
     SkillInvocation(SkillInvocation),
 }
 
-impl TurnInput {
-    pub fn has_images(&self) -> bool {
-        match self {
-            Self::UserMessage(message) => message.has_images(),
-            Self::SkillInvocation(invocation) => !invocation.images.is_empty(),
-        }
+#[cfg(test)]
+impl TranscriptEntry {
+    /// A turn start entry with the settings of a new ACP session.
+    pub(crate) fn turn(input: impl Into<TurnInput>) -> Self {
+        Self::TurnStart(TurnStart::test(input))
     }
 }
 
 #[cfg(test)]
-impl TranscriptEntry {
-    /// A turn start with the settings of a new ACP session: Default effort in
-    /// Ask mode.
-    pub(crate) fn turn(input: impl Into<TurnInput>) -> Self {
-        Self::TurnStart(TurnStart {
+impl TurnStart {
+    /// A turn start with the settings of a new ACP session: the test
+    /// catalog's default model at Default effort in Ask mode.
+    pub(crate) fn test(input: impl Into<TurnInput>) -> Self {
+        Self {
+            model: crate::openrouter::fixture::DEFAULT_MODEL.to_owned(),
             effort: EffortLevel::Default,
             mode: SessionMode::Ask,
             input: input.into(),
-        })
+        }
     }
 }
 
@@ -571,23 +570,13 @@ fn validate_transcript(entries: &[TranscriptEntry]) -> io::Result<()> {
     if entries.is_empty() {
         return Ok(());
     }
-    if !matches!(entries.first(), Some(TranscriptEntry::Model(_))) {
-        return Err(invalid_data("transcript does not open with a model"));
-    }
-    if !matches!(entries.get(1), Some(TranscriptEntry::TurnStart(_))) {
-        return Err(invalid_data(
-            "the model entry is not followed by a turn start",
-        ));
+    if !matches!(entries.first(), Some(TranscriptEntry::TurnStart(_))) {
+        return Err(invalid_data("transcript does not open with a turn start"));
     }
     let mut previous_prefix = 0;
     let mut current_skill: Option<&str> = None;
-    for (index, entry) in entries.iter().enumerate().skip(1) {
+    for (index, entry) in entries.iter().enumerate() {
         match entry {
-            TranscriptEntry::Model(_) => {
-                return Err(invalid_data(
-                    "a model entry appears after the transcript opened",
-                ));
-            }
             TranscriptEntry::TurnStart(turn_start) => {
                 current_skill = match &turn_start.input {
                     TurnInput::UserMessage(_) => None,
@@ -627,7 +616,7 @@ fn check_hook_feedback_placement(
 ) -> io::Result<()> {
     let previous = entries[..index].iter().rev().find(|entry| {
         !matches!(entry, TranscriptEntry::HookFeedback(prior) if prior.kind() == feedback.kind())
-    }).expect("a transcript begins with a model entry");
+    }).expect("a transcript begins with a turn start");
     let (placed, place) = match feedback.content {
         HookFeedbackContent::BeforeRun { .. } => (
             matches!(previous, TranscriptEntry::TurnStart(_)),
@@ -705,15 +694,13 @@ pub struct StoredSession {
 }
 
 impl StoredSession {
-    /// The session model with the effort level and session mode of the latest
-    /// turn start. An empty transcript uses the supplied defaults.
+    /// The model, effort level, and session mode of the latest turn start. An
+    /// empty transcript uses the supplied defaults.
     pub fn saved_settings(&self, defaults: &SessionSettings) -> SessionSettings {
-        let Some(TranscriptEntry::Model(model)) = self.transcript.first() else {
+        let Some((_, turn_start)) = latest_turn_start(&self.transcript) else {
             return defaults.clone();
         };
-        let (_, turn_start) = latest_turn_start(&self.transcript)
-            .expect("a validated transcript follows its model entry with a turn start");
-        SessionSettings::new(model.clone(), turn_start.effort).with_mode(turn_start.mode)
+        SessionSettings::new(turn_start.model.clone(), turn_start.effort).with_mode(turn_start.mode)
     }
 }
 
@@ -816,17 +803,13 @@ impl SessionStore {
             .map_err(io::Error::other)
     }
 
-    /// Appends a turn start, preceded by the model entry for a new transcript,
-    /// adopts a session title when none has been saved, and updates activity in
-    /// one transaction.
+    /// Appends a turn start, adopts a session title when none has been saved,
+    /// and updates activity in one transaction.
     pub fn append_turn_start(
         &self,
         id: &SessionId,
-        entries: &[TranscriptEntry],
+        turn_start: &TurnStart,
     ) -> io::Result<SessionSummary> {
-        let Some(TranscriptEntry::TurnStart(turn_start)) = entries.last() else {
-            panic!("{:?} does not end with a turn start", entries.last());
-        };
         let session_title = match &turn_start.input {
             TurnInput::UserMessage(message) => session_title_from_prompt(&message.text())
                 .or_else(|| message.has_images().then(|| "Image".to_owned())),
@@ -834,7 +817,11 @@ impl SessionStore {
                 session_title_from_prompt(&invocation.command_text())
             }
         };
-        self.append(id, session_title, entries)
+        self.append(
+            id,
+            session_title,
+            &[TranscriptEntry::TurnStart(turn_start.clone())],
+        )
     }
 
     /// Appends the assistant message and all of its outcomes, and updates
@@ -1014,7 +1001,6 @@ fn insert_entry(
 
 fn encode_entry(entry: &TranscriptEntry) -> (&'static str, String) {
     let (kind, data) = match entry {
-        TranscriptEntry::Model(model) => ("model", serde_json::to_string(model)),
         TranscriptEntry::TurnStart(turn_start) => ("turn_start", serde_json::to_string(turn_start)),
         TranscriptEntry::AssistantBatch(batch) => ("assistant_batch", serde_json::to_string(batch)),
         TranscriptEntry::HookFeedback(feedback) => {
@@ -1029,7 +1015,6 @@ fn encode_entry(entry: &TranscriptEntry) -> (&'static str, String) {
 
 fn decode_entry(kind: &str, data: &str) -> io::Result<TranscriptEntry> {
     Ok(match kind {
-        "model" => TranscriptEntry::Model(decode(kind, data)?),
         "turn_start" => TranscriptEntry::TurnStart(decode(kind, data)?),
         "assistant_batch" => TranscriptEntry::AssistantBatch(decode(kind, data)?),
         "hook_feedback" => TranscriptEntry::HookFeedback(decode(kind, data)?),
@@ -1109,16 +1094,12 @@ mod tests {
         ToolOutcome::Completed("ok".to_owned())
     }
 
-    fn turn_with(
-        effort: EffortLevel,
-        mode: SessionMode,
-        input: impl Into<TurnInput>,
-    ) -> TranscriptEntry {
-        TranscriptEntry::TurnStart(TurnStart {
+    fn turn_with(effort: EffortLevel, mode: SessionMode, input: impl Into<TurnInput>) -> TurnStart {
+        TurnStart {
             effort,
             mode,
-            input: input.into(),
-        })
+            ..TurnStart::test(input)
+        }
     }
 
     fn message(tool_calls: Vec<ToolCall>) -> AssistantMessage {
@@ -1208,28 +1189,18 @@ mod tests {
         let second = turn_with(EffortLevel::Low, SessionMode::Auto, invocation());
         let checkpoint = CompactionCheckpoint {
             summary: "Chicago checked; Denver unavailable.".to_owned(),
-            covered_prefix: 3,
+            covered_prefix: 2,
             summarizer_cost: None,
         };
 
         let id = {
             let store = SessionStore::open(&path).unwrap();
             let id = store.create(workspace()).unwrap().id;
-            store
-                .append_turn_start(
-                    &id,
-                    &[
-                        TranscriptEntry::Model(openrouter::fixture::DEFAULT_MODEL.to_owned()),
-                        first.clone(),
-                    ],
-                )
-                .unwrap();
+            store.append_turn_start(&id, &first).unwrap();
             let batch = AssistantBatch::new(message.clone(), outcomes.clone()).unwrap();
             store.append_batch(&id, &batch).unwrap();
-            store.append_checkpoint(&id, 3, &checkpoint).unwrap();
-            store
-                .append_turn_start(&id, std::slice::from_ref(&second))
-                .unwrap();
+            store.append_checkpoint(&id, 2, &checkpoint).unwrap();
+            store.append_turn_start(&id, &second).unwrap();
             for skill in [None, Some("goal".to_owned())] {
                 store
                     .append_hook_feedback(
@@ -1258,14 +1229,13 @@ mod tests {
         assert_eq!(
             stored.transcript,
             vec![
-                TranscriptEntry::Model(openrouter::fixture::DEFAULT_MODEL.to_owned()),
-                first,
+                TranscriptEntry::TurnStart(first),
                 TranscriptEntry::AssistantBatch(AssistantBatch {
                     message: message.clone(),
                     outcomes,
                 }),
                 TranscriptEntry::CompactionCheckpoint(checkpoint),
-                second,
+                TranscriptEntry::TurnStart(second),
                 TranscriptEntry::HookFeedback(HookFeedback {
                     skill: None,
                     ..before_run_feedback()
@@ -1325,31 +1295,21 @@ mod tests {
         encode_entry(entry)
     }
 
-    fn model_row() -> (&'static str, String) {
-        row(&TranscriptEntry::Model(
-            openrouter::fixture::DEFAULT_MODEL.to_owned(),
-        ))
-    }
-
     fn user_row() -> (&'static str, String) {
         row(&TranscriptEntry::turn("hello".to_owned()))
     }
 
     #[test]
-    fn a_transcript_opens_with_its_model_and_first_turn_start() {
+    fn a_nonempty_transcript_opens_with_a_turn_start() {
         let answer = row(&TranscriptEntry::AssistantBatch(
             AssistantBatch::new(message(vec![]), vec![]).unwrap(),
         ));
-        let other_model = row(&TranscriptEntry::Model("other/model".to_owned()));
+        let model = ("model", r#""other/model""#.to_owned());
         for (rows, expected) in [
-            (vec![user_row()], "transcript does not open with a model"),
+            (vec![answer], "transcript does not open with a turn start"),
             (
-                vec![model_row(), answer],
-                "the model entry is not followed by a turn start",
-            ),
-            (
-                vec![model_row(), user_row(), other_model],
-                "a model entry appears after the transcript opened",
+                vec![user_row(), model],
+                r#"unknown transcript entry kind "model""#,
             ),
         ] {
             let error = read_error(&rows);
@@ -1380,9 +1340,8 @@ mod tests {
             );
             let batch = AssistantBatch { message, outcomes };
             let id = store.create(workspace()).unwrap().id;
-            for (kind, data) in [model_row(), user_row()] {
-                insert_row(&store, &id, kind, &data);
-            }
+            let (kind, data) = user_row();
+            insert_row(&store, &id, kind, &data);
             assert!(
                 store.append_batch(&id, &batch).is_err(),
                 "append accepts {case}"
@@ -1544,8 +1503,8 @@ mod tests {
                 other_skill,
             ),
         ] {
-            let rows: Vec<_> = std::iter::once(model_row())
-                .chain(preceding)
+            let rows: Vec<_> = preceding
+                .into_iter()
                 .chain([row(&TranscriptEntry::HookFeedback(feedback))])
                 .collect();
             let error = read_error(&rows);
@@ -1556,7 +1515,6 @@ mod tests {
     #[test]
     fn checkpoints_cover_a_growing_prefix_that_ends_at_an_assistant_batch() {
         let base = [
-            TranscriptEntry::Model(openrouter::fixture::DEFAULT_MODEL.to_owned()),
             TranscriptEntry::turn("first".to_owned()),
             TranscriptEntry::AssistantBatch(AssistantBatch {
                 message: message(vec![call("a", "one"), call("b", "two")]),
@@ -1573,21 +1531,21 @@ mod tests {
             ))
         };
         for (case, checkpoints) in [
-            ("a blank summary", vec![checkpoint(" ", 3)]),
+            ("a blank summary", vec![checkpoint(" ", 2)]),
             ("an empty prefix", vec![checkpoint("ok", 0)]),
-            ("a prefix ending at a turn start", vec![checkpoint("ok", 2)]),
-            ("a prefix past the checkpoint", vec![checkpoint("ok", 4)]),
+            ("a prefix ending at a turn start", vec![checkpoint("ok", 1)]),
+            ("a prefix past the checkpoint", vec![checkpoint("ok", 3)]),
             (
                 "a repeated prefix",
-                vec![checkpoint("ok", 3), checkpoint("next", 3)],
+                vec![checkpoint("ok", 2), checkpoint("next", 2)],
             ),
             (
                 "a shrinking prefix",
-                vec![checkpoint("ok", 3), checkpoint("next", 2)],
+                vec![checkpoint("ok", 2), checkpoint("next", 1)],
             ),
             (
                 "a later prefix past its checkpoint",
-                vec![checkpoint("ok", 3), checkpoint("next", 5)],
+                vec![checkpoint("ok", 2), checkpoint("next", 4)],
             ),
         ] {
             let rows: Vec<_> = base.iter().map(row).chain(checkpoints).collect();
@@ -1600,7 +1558,7 @@ mod tests {
     }
 
     #[test]
-    fn saved_settings_come_from_the_model_entry_and_latest_turn_start() {
+    fn saved_settings_come_from_the_latest_turn_start() {
         let store = SessionStore::in_memory();
         let id = store.create(workspace()).unwrap().id;
         let defaults = SessionSettings::new(openrouter::fixture::DEFAULT_MODEL, EffortLevel::High)
@@ -1613,32 +1571,36 @@ mod tests {
 
         let chosen = openrouter::catalog()[1].id.as_str();
         let turns = [
-            (EffortLevel::Low, SessionMode::Auto),
-            (EffortLevel::High, SessionMode::Auto),
-            (EffortLevel::Default, SessionMode::Ask),
+            (chosen, EffortLevel::Low, SessionMode::Auto),
+            (
+                openrouter::fixture::DEFAULT_MODEL,
+                EffortLevel::High,
+                SessionMode::Auto,
+            ),
+            (chosen, EffortLevel::Default, SessionMode::Ask),
         ];
-        for (index, (effort, mode)) in turns.into_iter().enumerate() {
-            let turn = turn_with(effort, mode, format!("turn {index}"));
-            let entries = if index == 0 {
-                vec![TranscriptEntry::Model(chosen.to_owned()), turn]
-            } else {
-                vec![turn]
+        for (index, (model, effort, mode)) in turns.into_iter().enumerate() {
+            let turn_start = TurnStart {
+                model: model.to_owned(),
+                ..turn_with(effort, mode, format!("turn {index}"))
             };
-            store.append_turn_start(&id, &entries).unwrap();
+            store.append_turn_start(&id, &turn_start).unwrap();
         }
         let stored = store.read(&id).unwrap().unwrap();
         assert_eq!(
             stored.saved_settings(&defaults),
             SessionSettings::new(chosen, EffortLevel::Default),
-            "returning to Default and Ask is saved rather than inherited"
+            "returning to a model, Default, and Ask is saved rather than inherited"
         );
         let saved_turns: Vec<_> = stored
             .transcript
             .iter()
             .filter_map(|entry| match entry {
-                TranscriptEntry::TurnStart(turn_start) => {
-                    Some((turn_start.effort, turn_start.mode))
-                }
+                TranscriptEntry::TurnStart(turn_start) => Some((
+                    turn_start.model.as_str(),
+                    turn_start.effort,
+                    turn_start.mode,
+                )),
                 _ => None,
             })
             .collect();
@@ -1654,10 +1616,7 @@ mod tests {
         let first = store
             .append_turn_start(
                 &created.id,
-                &[
-                    TranscriptEntry::Model(openrouter::fixture::DEFAULT_MODEL.to_owned()),
-                    TranscriptEntry::turn("\n\nFirst line\nsecond line".to_owned()),
-                ],
+                &TurnStart::test("\n\nFirst line\nsecond line".to_owned()),
             )
             .unwrap();
         assert_eq!(first.session_title.as_deref(), Some("First line"));
@@ -1665,10 +1624,7 @@ mod tests {
         assert!(first.updated_at.as_str() > "2026-09-18T09:00:00.000Z");
 
         let second = store
-            .append_turn_start(
-                &created.id,
-                &[TranscriptEntry::turn("Something else".to_owned())],
-            )
+            .append_turn_start(&created.id, &TurnStart::test("Something else".to_owned()))
             .unwrap();
         assert_eq!(second.session_title.as_deref(), Some("First line"));
         assert!(second.updated_at >= first.updated_at);
@@ -1677,10 +1633,7 @@ mod tests {
         let session_title = store
             .append_turn_start(
                 &long.id,
-                &[
-                    TranscriptEntry::Model(openrouter::fixture::DEFAULT_MODEL.to_owned()),
-                    TranscriptEntry::turn("x".repeat(MAX_SESSION_TITLE_CHARS + 10)),
-                ],
+                &TurnStart::test("x".repeat(MAX_SESSION_TITLE_CHARS + 10)),
             )
             .unwrap()
             .session_title
@@ -1696,15 +1649,12 @@ mod tests {
         let image_title = store
             .append_turn_start(
                 &image_only.id,
-                &[
-                    TranscriptEntry::Model(openrouter::fixture::DEFAULT_MODEL.to_owned()),
-                    TranscriptEntry::turn(UserMessage {
-                        parts: vec![UserMessagePart::Image(ImageAttachment {
-                            data: "aGVsbG8=".to_owned(),
-                            mime_type: "image/png".to_owned(),
-                        })],
-                    }),
-                ],
+                &TurnStart::test(UserMessage {
+                    parts: vec![UserMessagePart::Image(ImageAttachment {
+                        data: "aGVsbG8=".to_owned(),
+                        mime_type: "image/png".to_owned(),
+                    })],
+                }),
             )
             .unwrap()
             .session_title;
@@ -1712,13 +1662,7 @@ mod tests {
 
         let skill = store.create(workspace()).unwrap();
         let adopted = store
-            .append_turn_start(
-                &skill.id,
-                &[
-                    TranscriptEntry::Model(openrouter::fixture::DEFAULT_MODEL.to_owned()),
-                    TranscriptEntry::turn(invocation()),
-                ],
-            )
+            .append_turn_start(&skill.id, &TurnStart::test(invocation()))
             .unwrap();
         assert_eq!(
             adopted.session_title.as_deref(),
@@ -1729,10 +1673,7 @@ mod tests {
             store
                 .append_turn_start(
                     &SessionId::new("missing"),
-                    &[
-                        TranscriptEntry::Model(openrouter::fixture::DEFAULT_MODEL.to_owned()),
-                        TranscriptEntry::turn("hello".to_owned())
-                    ],
+                    &TurnStart::test("hello".to_owned()),
                 )
                 .is_err(),
             "appending never creates a session"
@@ -1768,13 +1709,7 @@ mod tests {
         let store = SessionStore::in_memory();
         let id = store.create(workspace()).unwrap().id;
         store
-            .append_turn_start(
-                &id,
-                &[
-                    TranscriptEntry::Model(openrouter::fixture::DEFAULT_MODEL.to_owned()),
-                    TranscriptEntry::turn("hello".to_owned()),
-                ],
-            )
+            .append_turn_start(&id, &TurnStart::test("hello".to_owned()))
             .unwrap();
 
         store.delete(&id).unwrap();
