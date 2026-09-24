@@ -1,7 +1,7 @@
 //! Runs one ACP prompt request. It saves the user message or skill invocation,
 //! makes model requests, runs tools in call order, saves each complete
 //! assistant batch, runs global and invoked skill hooks at their points in the
-//! run, and returns the final stop reason and answer.
+//! run, and returns an outcome carrying the accepted answer only when finished.
 
 use std::{fmt, future::Future, io, ops::ControlFlow};
 
@@ -9,7 +9,6 @@ use agent_client_protocol::{
     Client, ConnectionTo, Error, Result,
     schema::v1::{
         ConfigOptionUpdate, RequestPermissionOutcome, SessionId, SessionInfoUpdate, SessionUpdate,
-        StopReason,
     },
 };
 
@@ -52,13 +51,13 @@ pub(super) struct PromptInput {
     pub system_prompt: String,
 }
 
-/// The ACP stop reason and final answer a prompt run returns.
-#[derive(Debug)]
-pub struct PromptOutput {
-    pub stop_reason: StopReason,
-    /// The text of the assistant message committed with the finished stop
-    /// that ended the run. `None` unless the stop reason is `EndTurn`.
-    pub answer: Option<String>,
+/// A prompt run's outcome, carrying an answer only when it finishes.
+#[derive(Debug, PartialEq)]
+pub enum PromptOutput {
+    Finished(String),
+    Cancelled,
+    TokenLimit,
+    Refused,
 }
 
 pub fn run<F>(
@@ -83,10 +82,7 @@ where
     let updates = run.save_turn_start(input.turn_start)?;
     Ok(async move {
         let Some(updates) = updates else {
-            return Ok(PromptOutput {
-                stop_reason: StopReason::Cancelled,
-                answer: None,
-            });
+            return Ok(PromptOutput::Cancelled);
         };
         let outcome = match run.start(updates).await {
             Ok(()) => run.run_model_loop().await,
@@ -100,7 +96,7 @@ where
 
 /// Why this prompt run stopped. Each variant requires a different final response.
 enum PromptOutcome {
-    Finished,
+    Finished(String),
     Cancelled,
     TokenLimit,
     Refused,
@@ -114,7 +110,7 @@ enum PromptOutcome {
 impl fmt::Display for PromptOutcome {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Finished => write!(f, "the answer finished"),
+            Self::Finished(_) => write!(f, "the answer finished"),
             Self::Cancelled => write!(f, "the prompt was cancelled"),
             Self::TokenLimit => write!(f, "the model reached its token limit"),
             Self::Refused => write!(f, "the model refused"),
@@ -147,8 +143,6 @@ struct PromptRun<F> {
     /// Identifies this run in the input of each of its hook commands.
     run_id: String,
     hook_continuations: usize,
-    /// The text of the latest assistant message committed with a finished stop.
-    answer: Option<String>,
 }
 
 /// A validated assistant message whose tool calls do not all have results yet.
@@ -242,7 +236,6 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
             hook_sources: input.hook_sources.clone(),
             run_id: uuid::Uuid::new_v4().to_string(),
             hook_continuations: 0,
-            answer: None,
         })
     }
 
@@ -357,7 +350,7 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
         self.send_usage()?;
         match stop {
             openrouter::Stop::ToolCalls => {
-                self.run_after_tools(&calls).await?;
+                self.run_after_tools().await?;
                 Ok(ControlFlow::Continue(()))
             }
             openrouter::Stop::Finished => self.run_before_stop(text).await,
@@ -372,8 +365,9 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
         &mut self,
         answer: String,
     ) -> std::result::Result<ControlFlow<PromptOutcome>, PromptOutcome> {
-        self.answer = Some(answer.clone());
-        let event = hooks::Event::BeforeStop { answer };
+        let event = hooks::Event::BeforeStop {
+            answer: answer.clone(),
+        };
         let mut decision = StopDecision::Stop;
         for source in self.sources_for(HookKind::BeforeStop) {
             if self
@@ -388,7 +382,7 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
             self.hook_continuations += 1;
             return Ok(ControlFlow::Continue(()));
         }
-        Ok(ControlFlow::Break(PromptOutcome::Finished))
+        Ok(ControlFlow::Break(PromptOutcome::Finished(answer)))
     }
 
     fn sources_for(&self, kind: HookKind) -> Vec<HookSource> {
@@ -499,18 +493,16 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
     }
 
     /// Runs the `after_tools` hooks on the batch just committed.
-    async fn run_after_tools(
-        &mut self,
-        calls: &[ToolCall],
-    ) -> std::result::Result<(), PromptOutcome> {
-        let results = &self.transcript[self.transcript.len() - calls.len()..];
-        let tools: Vec<_> = calls
+    async fn run_after_tools(&mut self) -> std::result::Result<(), PromptOutcome> {
+        let Some(TranscriptEntry::AssistantBatch(batch)) = self.transcript.last() else {
+            unreachable!("after_tools follows a committed assistant batch");
+        };
+        let tools = batch
+            .message
+            .tool_calls
             .iter()
-            .zip(results)
-            .map(|(call, entry)| match entry {
-                TranscriptEntry::ToolResult(result) => hooks::ToolReport::new(call, result),
-                _ => unreachable!("a committed batch ends with its tool results"),
-            })
+            .zip(&batch.results)
+            .map(|(call, result)| hooks::ToolReport::new(call, result))
             .collect();
         let event = hooks::Event::AfterTools { tools };
         for source in self.sources_for(HookKind::AfterTools) {
@@ -533,16 +525,12 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
     /// stderr without changing the result or stopping the next hook.
     async fn run_after_run(&mut self, result: &Result<PromptOutput>) {
         let (outcome, answer, error) = match result {
-            Ok(output) => {
-                let outcome = match output.stop_reason {
-                    StopReason::EndTurn => hooks::AfterRunOutcome::Finished,
-                    StopReason::Cancelled => hooks::AfterRunOutcome::Cancelled,
-                    StopReason::MaxTokens => hooks::AfterRunOutcome::TokenLimit,
-                    StopReason::Refusal => hooks::AfterRunOutcome::Refused,
-                    other => unreachable!("a prompt run never stops with {other:?}"),
-                };
-                (outcome, output.answer.clone(), None)
+            Ok(PromptOutput::Finished(answer)) => {
+                (hooks::AfterRunOutcome::Finished, Some(answer.clone()), None)
             }
+            Ok(PromptOutput::Cancelled) => (hooks::AfterRunOutcome::Cancelled, None, None),
+            Ok(PromptOutput::TokenLimit) => (hooks::AfterRunOutcome::TokenLimit, None, None),
+            Ok(PromptOutput::Refused) => (hooks::AfterRunOutcome::Refused, None, None),
             // The ACP error's Display quotes string data as JSON.
             Err(error) => {
                 let text = match error.data.as_ref().and_then(serde_json::Value::as_str) {
@@ -818,16 +806,13 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
             .expect("commit needs an uncommitted assistant batch")
             .complete();
         self.store.append_batch(&self.summary.id, &batch)?;
-        self.transcript
-            .push(TranscriptEntry::AssistantMessage(batch.message));
-        self.transcript
-            .extend(batch.results.into_iter().map(TranscriptEntry::ToolResult));
+        self.transcript.push(TranscriptEntry::AssistantBatch(batch));
         self.uncommitted_batch = None;
         Ok(())
     }
 
     /// Gives every unstarted call an explicit outcome, saves the batch, sends
-    /// the remaining updates, and returns the final stop reason.
+    /// the remaining updates, and returns the final outcome.
     fn finish(&mut self, outcome: PromptOutcome) -> Result<PromptOutput> {
         let mut outcome = outcome;
         if let Some(batch) = self.uncommitted_batch.as_mut() {
@@ -845,7 +830,7 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
                     "Not started: the conversation could not be stored.".to_owned(),
                 ),
                 PromptOutcome::Hook(error) => ToolOutcome::Failed(format!("Not started: {error}")),
-                PromptOutcome::Finished
+                PromptOutcome::Finished(_)
                 | PromptOutcome::TokenLimit
                 | PromptOutcome::Refused
                 | PromptOutcome::OpenRouter(_) => {
@@ -871,11 +856,11 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
                 }
             }
         }
-        let stop_reason = match outcome {
-            PromptOutcome::Finished => StopReason::EndTurn,
-            PromptOutcome::Cancelled => StopReason::Cancelled,
-            PromptOutcome::TokenLimit => StopReason::MaxTokens,
-            PromptOutcome::Refused => StopReason::Refusal,
+        let output = match outcome {
+            PromptOutcome::Finished(answer) => PromptOutput::Finished(answer),
+            PromptOutcome::Cancelled => PromptOutput::Cancelled,
+            PromptOutcome::TokenLimit => PromptOutput::TokenLimit,
+            PromptOutcome::Refused => PromptOutput::Refused,
             PromptOutcome::OpenRouter(error)
             | PromptOutcome::Storage(error)
             | PromptOutcome::Hook(error) => {
@@ -885,13 +870,7 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
                 return Err(error);
             }
         };
-        Ok(PromptOutput {
-            answer: self
-                .answer
-                .take()
-                .filter(|_| stop_reason == StopReason::EndTurn),
-            stop_reason,
-        })
+        Ok(output)
     }
 }
 
@@ -1128,41 +1107,53 @@ mod tests {
     }
 
     fn answer(text: &str) -> TranscriptEntry {
-        TranscriptEntry::AssistantMessage(AssistantMessage {
-            text: text.to_owned(),
-            reasoning: String::new(),
-            tool_calls: vec![],
-            continuation_metadata: vec![],
-            usage: None,
-        })
+        TranscriptEntry::AssistantBatch(
+            AssistantBatch::new(
+                AssistantMessage {
+                    text: text.to_owned(),
+                    reasoning: String::new(),
+                    tool_calls: vec![],
+                    continuation_metadata: vec![],
+                    usage: None,
+                },
+                vec![],
+            )
+            .unwrap(),
+        )
     }
 
-    fn calls(calls: &[(&str, &str)]) -> TranscriptEntry {
-        TranscriptEntry::AssistantMessage(AssistantMessage {
-            text: String::new(),
-            reasoning: String::new(),
-            tool_calls: calls
-                .iter()
-                .map(|(id, command)| ToolCall {
-                    call_id: (*id).to_owned(),
-                    name: tools::SHELL.to_owned(),
-                    arguments: serde_json::json!({ "command": command }).to_string(),
-                })
-                .collect(),
-            continuation_metadata: vec![],
-            usage: None,
-        })
+    fn calls(calls: &[(&str, &str)], results: Vec<ToolResult>) -> TranscriptEntry {
+        TranscriptEntry::AssistantBatch(
+            AssistantBatch::new(
+                AssistantMessage {
+                    text: String::new(),
+                    reasoning: String::new(),
+                    tool_calls: calls
+                        .iter()
+                        .map(|(id, command)| ToolCall {
+                            call_id: (*id).to_owned(),
+                            name: tools::SHELL.to_owned(),
+                            arguments: serde_json::json!({ "command": command }).to_string(),
+                        })
+                        .collect(),
+                    continuation_metadata: vec![],
+                    usage: None,
+                },
+                results,
+            )
+            .unwrap(),
+        )
     }
 
     /// The completed result of a shell call that printed `text`.
-    fn printed(id: &str, text: &str) -> TranscriptEntry {
-        TranscriptEntry::ToolResult(ToolResult {
+    fn printed(id: &str, text: &str) -> ToolResult {
+        ToolResult {
             call_id: id.to_owned(),
             name: tools::SHELL.to_owned(),
             outcome: ToolOutcome::Completed(format!(
                 "Exit code: 0\n\nstdout:\n{text}\n\nstderr:\n(empty)"
             )),
-        })
+        }
     }
 
     fn finished_tool_call_update_for(update: &SessionUpdate, call_id: &str) -> bool {
@@ -1226,7 +1217,7 @@ mod tests {
         transcript
             .iter()
             .find_map(|entry| match entry {
-                TranscriptEntry::ToolResult(result) => Some(result),
+                TranscriptEntry::AssistantBatch(batch) => batch.results.first(),
                 _ => None,
             })
             .expect("the patch call left one tool result")
@@ -1257,7 +1248,7 @@ mod tests {
         let harness = patch_harness("tool_calls").await;
         let (response, transcript) = harness.run("Apply the patch", |_| Ok(())).await;
 
-        assert_eq!(response.unwrap().stop_reason, StopReason::EndTurn);
+        assert!(matches!(response.unwrap(), PromptOutput::Finished(_)));
         assert_eq!(
             fs::read_to_string(harness.workspace.0.join("first")).unwrap(),
             "one\n"
@@ -1287,7 +1278,7 @@ mod tests {
             })
             .await;
 
-        assert_eq!(response.unwrap().stop_reason, StopReason::Cancelled);
+        assert_eq!(response.unwrap(), PromptOutput::Cancelled);
         assert_eq!(fs::read_dir(&harness.workspace.0).unwrap().count(), 0);
         let outcome = &patch_result(&transcript).outcome;
         assert!(matches!(outcome, ToolOutcome::Cancelled(_)));
@@ -1316,7 +1307,7 @@ mod tests {
             if fail_update {
                 assert!(response.is_err());
             } else {
-                assert_eq!(response.unwrap().stop_reason, StopReason::Cancelled);
+                assert_eq!(response.unwrap(), PromptOutput::Cancelled);
             }
             assert_eq!(
                 fs::read_to_string(harness.workspace.0.join("first")).unwrap(),
@@ -1355,11 +1346,15 @@ mod tests {
 
         let (response, transcript) = harness.run_with_selection("Hi", None, |_| Ok(())).await;
 
-        assert_eq!(response.unwrap().stop_reason, StopReason::EndTurn);
+        assert!(matches!(response.unwrap(), PromptOutput::Finished(_)));
         let request = &harness.server.requests()[0];
         assert_eq!(request["model"], default_model());
         assert!(request.get("reasoning").is_none());
-        let TranscriptEntry::AssistantMessage(mut answered) = answer("Hello there.") else {
+        let TranscriptEntry::AssistantBatch(AssistantBatch {
+            message: mut answered,
+            ..
+        }) = answer("Hello there.")
+        else {
             unreachable!()
         };
         answered.usage = Some(ModelUsage {
@@ -1372,7 +1367,7 @@ mod tests {
             vec![
                 model(),
                 user("Hi"),
-                TranscriptEntry::AssistantMessage(answered)
+                TranscriptEntry::AssistantBatch(AssistantBatch::new(answered, vec![]).unwrap())
             ]
         );
         assert_eq!(harness.stored(), transcript);
@@ -1414,8 +1409,7 @@ mod tests {
         let harness = Harness::new(vec![text_reply("First try."), text_reply("Second try.")]).await;
         let (response, transcript) = harness.run_goal(CONTINUE_THEN_STOP, |_| Ok(())).await;
         let output = response.unwrap();
-        assert_eq!(output.stop_reason, StopReason::EndTurn);
-        assert_eq!(output.answer.as_deref(), Some("Second try."));
+        assert_eq!(output, PromptOutput::Finished("Second try.".to_owned()));
         assert_eq!(
             transcript,
             vec![
@@ -1548,21 +1542,22 @@ mod tests {
             "data: {}\n\n",
             delta(json!({ "role": "assistant", "content": "Hel" }), None)
         );
-        for (reply, stop_reason, hook_runs) in [
+        for (reply, expected, hook_runs) in [
             (
                 Reply::Stream(sse(&[delta(json!({}), Some("content_filter"))])),
-                StopReason::Refusal,
+                Some(PromptOutput::Refused),
                 false,
             ),
             (
                 Reply::Stream(sse(&[delta(json!({ "content": "Cut" }), Some("length"))])),
-                StopReason::MaxTokens,
+                Some(PromptOutput::TokenLimit),
                 false,
             ),
-            (Reply::Hang(hang), StopReason::Cancelled, false),
-            (text_reply("Done."), StopReason::Cancelled, true),
+            (Reply::Hang(hang), Some(PromptOutput::Cancelled), false),
+            (text_reply("Done."), Some(PromptOutput::Cancelled), true),
+            (Reply::Status(500, "failed".to_owned()), None, false),
         ] {
-            let harness = Harness::new(vec![reply]).await;
+            let harness = Harness::new(vec![text_reply("First try."), reply]).await;
             let cancel = harness.cancellation.clone();
             let ran = harness.workspace.0.join("ran");
             // Cancels once the hook has started.
@@ -1577,9 +1572,14 @@ mod tests {
                 }
             });
             let (response, transcript) = harness
-                .run_goal("touch ran; sleep 30", |update| {
+                .run_skill(hooks::Hooks {
+                    before_stop: command(r#"if [ ! -e continued ]; then touch continued; echo '{"decision":"continue","message":"Again."}'; else touch ran; sleep 30; fi"#),
+                    after_run: command("cat > after_run.json; echo '{}'"),
+                    ..hooks::Hooks::default()
+                }, |update| {
                     if !hook_runs
-                        && stop_reason == StopReason::Cancelled
+                        && expected == Some(PromptOutput::Cancelled)
+                        && harness.workspace.0.join("continued").exists()
                         && matches!(update, SessionUpdate::AgentMessageChunk(_))
                     {
                         cancel.cancel();
@@ -1588,12 +1588,25 @@ mod tests {
                 })
                 .await;
             watcher.abort();
-            assert_eq!(response.unwrap().stop_reason, stop_reason);
-            assert_eq!(ran.exists(), hook_runs, "{stop_reason:?}");
-            assert!(
+            let outcome = match &expected {
+                Some(PromptOutput::Cancelled) => "cancelled",
+                Some(PromptOutput::TokenLimit) => "token_limit",
+                Some(PromptOutput::Refused) => "refused",
+                None => "failed",
+                Some(PromptOutput::Finished(_)) => unreachable!(),
+            };
+            let report = hook_inputs(&harness, "after_run.json").remove(0);
+            assert_eq!(report["outcome"], outcome);
+            assert!(report["answer"].is_null());
+            assert_eq!(response.ok(), expected);
+            assert_eq!(ran.exists(), hook_runs);
+            assert_eq!(transcript[3], answer("First try."));
+            assert_eq!(
                 transcript
                     .iter()
-                    .all(|entry| !matches!(entry, TranscriptEntry::HookFeedback(_)))
+                    .filter(|entry| matches!(entry, TranscriptEntry::HookFeedback(_)))
+                    .count(),
+                1
             );
         }
     }
@@ -1718,7 +1731,10 @@ mod tests {
                     |_| Ok(()),
                 )
                 .await;
-            assert_eq!(response.unwrap().answer.as_deref(), Some("Second try."));
+            assert_eq!(
+                response.unwrap(),
+                PromptOutput::Finished("Second try.".to_owned())
+            );
             assert_eq!(
                 fs::read_to_string(harness.workspace.0.join("first")).unwrap(),
                 "first\n"
@@ -1945,7 +1961,7 @@ mod tests {
             let report = reported(&harness);
             match expected {
                 None => {
-                    assert_eq!(response.unwrap().stop_reason, StopReason::EndTurn);
+                    assert!(matches!(response.unwrap(), PromptOutput::Finished(_)));
                     assert_eq!(
                         transcript,
                         [model(), auto(), invocation(arguments), answer("Done.")]
@@ -1965,14 +1981,12 @@ mod tests {
 
         // A `before_tool` error completes and saves the batch; an
         // `after_tools` error leaves the committed batch saved.
-        let not_started = |id: &str| {
-            TranscriptEntry::ToolResult(ToolResult {
-                call_id: id.to_owned(),
-                name: tools::SHELL.to_owned(),
-                outcome: ToolOutcome::Failed(
-                    "Not started: skill /goal before_tool hook exited with code 5".to_owned(),
-                ),
-            })
+        let not_started = |id: &str| ToolResult {
+            call_id: id.to_owned(),
+            name: tools::SHELL.to_owned(),
+            outcome: ToolOutcome::Failed(
+                "Not started: skill /goal before_tool hook exited with code 5".to_owned(),
+            ),
         };
         let batch = [("call-1", "printf one"), ("call-2", "printf two")];
         for (hooks, results, expected) in [
@@ -2000,15 +2014,11 @@ mod tests {
             assert_eq!(
                 transcript,
                 [
-                    vec![
-                        model(),
-                        auto(),
-                        invocation("Pass the tests."),
-                        calls(&batch)
-                    ],
-                    results
+                    model(),
+                    auto(),
+                    invocation("Pass the tests."),
+                    calls(&batch, results)
                 ]
-                .concat()
             );
             assert_eq!(harness.stored(), transcript);
             assert_eq!(harness.server.requests().len(), 1);
@@ -2041,7 +2051,7 @@ mod tests {
                 Ok(())
             })
             .await;
-        assert_eq!(response.unwrap().stop_reason, StopReason::Cancelled);
+        assert_eq!(response.unwrap(), PromptOutput::Cancelled);
         let report = reported(&harness);
         assert_eq!(report["outcome"], "cancelled");
         assert!(report["answer"].is_null());
@@ -2081,7 +2091,10 @@ mod tests {
                 ..hooks::Hooks::default()
             };
             let (response, _) = harness.run_skill(hooks, |_| Ok(())).await;
-            assert_eq!(response.unwrap().answer.as_deref(), Some("Done."));
+            assert_eq!(
+                response.unwrap(),
+                PromptOutput::Finished("Done.".to_owned())
+            );
             assert_eq!(reported(&harness)["outcome"], "finished");
             let updates = described_updates(&harness);
             assert!(updates.iter().any(|update| update == "hook failed"));
@@ -2111,7 +2124,7 @@ mod tests {
         assert!(harness.stored().is_empty());
         let valid = "v".repeat(2_300_000);
         let (response, transcript) = harness.run(&valid, |_| Ok(())).await;
-        assert_eq!(response.unwrap().stop_reason, StopReason::EndTurn);
+        assert!(matches!(response.unwrap(), PromptOutput::Finished(_)));
         assert_eq!(transcript.len(), 4);
         assert_eq!(
             harness.server.requests().len(),
@@ -2165,7 +2178,7 @@ mod tests {
             PermissionTransport::None,
         )
         .unwrap();
-        assert_eq!(accepted.await.unwrap().stop_reason, StopReason::EndTurn);
+        assert!(matches!(accepted.await.unwrap(), PromptOutput::Finished(_)));
         assert_eq!(server.requests().len(), 1);
         drop(reopened);
         fs::remove_dir_all(directory).unwrap();
@@ -2189,20 +2202,17 @@ mod tests {
                 ],
             )
             .unwrap();
-        let TranscriptEntry::AssistantMessage(message) = answer("Earlier answer") else {
+        let TranscriptEntry::AssistantBatch(batch) = answer("Earlier answer") else {
             unreachable!()
         };
         harness
             .store
-            .append_batch(
-                &harness.session_id,
-                &AssistantBatch::new(message, vec![]).unwrap(),
-            )
+            .append_batch(&harness.session_id, &batch)
             .unwrap();
         let (response, transcript) = harness
             .run_with_selection("next request", None, |_| Ok(()))
             .await;
-        assert_eq!(response.unwrap().stop_reason, StopReason::EndTurn);
+        assert!(matches!(response.unwrap(), PromptOutput::Finished(_)));
         let requests = harness.server.requests();
         assert_eq!(requests.len(), 2);
         assert!(requests[0].get("tools").is_none());
@@ -2249,20 +2259,17 @@ mod tests {
                 ],
             )
             .unwrap();
-        let TranscriptEntry::AssistantMessage(message) = answer("Earlier answer") else {
+        let TranscriptEntry::AssistantBatch(batch) = answer("Earlier answer") else {
             unreachable!()
         };
         between
             .store
-            .append_batch(
-                &between.session_id,
-                &AssistantBatch::new(message, vec![]).unwrap(),
-            )
+            .append_batch(&between.session_id, &batch)
             .unwrap();
         let (response, transcript) = between
             .run_with_selection("next request", None, |_| Ok(()))
             .await;
-        assert_eq!(response.unwrap().stop_reason, StopReason::EndTurn);
+        assert!(matches!(response.unwrap(), PromptOutput::Finished(_)));
         let requests = between.server.requests();
         assert_eq!(
             requests.len(),
@@ -2292,7 +2299,7 @@ mod tests {
         ])
         .await;
         let (response, transcript) = during_hook.run_goal(CONTINUE_THEN_STOP, |_| Ok(())).await;
-        assert_eq!(response.unwrap().stop_reason, StopReason::EndTurn);
+        assert!(matches!(response.unwrap(), PromptOutput::Finished(_)));
         let requests = during_hook.server.requests();
         assert_eq!(requests.len(), 3);
         assert!(requests[1].get("tools").is_none());
@@ -2337,20 +2344,17 @@ mod tests {
                 ],
             )
             .unwrap();
-        let TranscriptEntry::AssistantMessage(message) = answer("Earlier answer") else {
+        let TranscriptEntry::AssistantBatch(batch) = answer("Earlier answer") else {
             unreachable!()
         };
         harness
             .store
-            .append_batch(
-                &harness.session_id,
-                &AssistantBatch::new(message, vec![]).unwrap(),
-            )
+            .append_batch(&harness.session_id, &batch)
             .unwrap();
         let (response, transcript) = harness
             .run_with_selection("next request", None, |_| Ok(()))
             .await;
-        assert_eq!(response.unwrap().stop_reason, StopReason::EndTurn);
+        assert!(matches!(response.unwrap(), PromptOutput::Finished(_)));
         assert_eq!(harness.server.requests().len(), 3);
         assert!(matches!(
             &transcript[4],
@@ -2375,15 +2379,12 @@ mod tests {
                 ],
             )
             .unwrap();
-        let TranscriptEntry::AssistantMessage(message) = answer("done") else {
+        let TranscriptEntry::AssistantBatch(batch) = answer("done") else {
             unreachable!()
         };
         no_reduction
             .store
-            .append_batch(
-                &no_reduction.session_id,
-                &AssistantBatch::new(message, vec![]).unwrap(),
-            )
+            .append_batch(&no_reduction.session_id, &batch)
             .unwrap();
         let (response, transcript) = no_reduction
             .run_with_selection("next", None, |_| Ok(()))
@@ -2401,7 +2402,7 @@ mod tests {
         ] {
             let harness = Harness::new(vec![reply]).await;
             let (response, transcript) = harness.run("small", |_| Ok(())).await;
-            assert!(response.is_err() || response.unwrap().stop_reason == StopReason::MaxTokens);
+            assert!(response.is_err() || response.unwrap() == PromptOutput::TokenLimit);
             assert_eq!(harness.server.requests().len(), 1);
             assert!(
                 transcript
@@ -2427,12 +2428,12 @@ mod tests {
                 Ok(())
             })
             .await;
-        assert_eq!(first.unwrap().stop_reason, StopReason::EndTurn);
+        assert!(matches!(first.unwrap(), PromptOutput::Finished(_)));
         let second_settings = SessionSettings::new(catalog()[2].id.as_str(), *selected.borrow());
         let (second, transcript) = harness
             .run_with_settings("two", second_settings, |_| Ok(()))
             .await;
-        assert_eq!(second.unwrap().stop_reason, StopReason::EndTurn);
+        assert!(matches!(second.unwrap(), PromptOutput::Finished(_)));
         assert_eq!(
             transcript,
             vec![
@@ -2472,7 +2473,7 @@ mod tests {
             .run_with_selection("next turn", None, |_| Ok(()))
             .await;
 
-        assert_eq!(response.unwrap().stop_reason, StopReason::EndTurn);
+        assert!(matches!(response.unwrap(), PromptOutput::Finished(_)));
         assert_eq!(harness.server.requests()[0]["model"], saved.model);
         assert_eq!(harness.server.requests()[0]["reasoning"]["effort"], "max");
         assert_eq!(
@@ -2595,8 +2596,8 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            vision_run.await.unwrap().answer.as_deref(),
-            Some("I see it.")
+            vision_run.await.unwrap(),
+            PromptOutput::Finished("I see it.".to_owned())
         );
         assert_eq!(
             store.read(&vision_session).unwrap().unwrap().transcript[1],
@@ -2618,16 +2619,17 @@ mod tests {
 
         let (response, transcript) = harness.run("Weather?", |_| Ok(())).await;
 
-        assert_eq!(response.unwrap().stop_reason, StopReason::EndTurn);
+        assert!(matches!(response.unwrap(), PromptOutput::Finished(_)));
         assert_eq!(
             transcript,
             vec![
                 model(),
                 auto(),
                 user("Weather?"),
-                calls(&[("call-1", "printf Chicago"), ("call-2", "printf Denver")]),
-                printed("call-1", "Chicago"),
-                printed("call-2", "Denver"),
+                calls(
+                    &[("call-1", "printf Chicago"), ("call-2", "printf Denver")],
+                    vec![printed("call-1", "Chicago"), printed("call-2", "Denver")]
+                ),
                 answer("Both sunny."),
             ]
         );
@@ -2671,22 +2673,26 @@ mod tests {
             })
             .await;
 
-        assert_eq!(response.unwrap().stop_reason, StopReason::Cancelled);
+        assert_eq!(response.unwrap(), PromptOutput::Cancelled);
         assert_eq!(
             transcript,
             vec![
                 model(),
                 auto(),
                 user("Weather?"),
-                calls(&[("call-1", "printf Chicago"), ("call-2", "printf Denver")]),
-                printed("call-1", "Chicago"),
-                TranscriptEntry::ToolResult(ToolResult {
-                    call_id: "call-2".to_owned(),
-                    name: tools::SHELL.to_owned(),
-                    outcome: ToolOutcome::Cancelled(
-                        "Cancelled before this tool was started.".to_owned()
-                    ),
-                }),
+                calls(
+                    &[("call-1", "printf Chicago"), ("call-2", "printf Denver")],
+                    vec![
+                        printed("call-1", "Chicago"),
+                        ToolResult {
+                            call_id: "call-2".to_owned(),
+                            name: tools::SHELL.to_owned(),
+                            outcome: ToolOutcome::Cancelled(
+                                "Cancelled before this tool was started.".to_owned()
+                            ),
+                        }
+                    ]
+                ),
             ]
         );
         assert_eq!(harness.stored(), transcript);
@@ -2725,7 +2731,7 @@ mod tests {
             })
             .await;
 
-        assert_eq!(response.unwrap().stop_reason, StopReason::Cancelled);
+        assert_eq!(response.unwrap(), PromptOutput::Cancelled);
         assert_eq!(transcript, vec![model(), auto(), user("Hi")]);
         assert_eq!(harness.stored(), transcript);
     }
@@ -2737,7 +2743,7 @@ mod tests {
             connection
                 .execute_batch(
                     "CREATE TRIGGER refuse BEFORE INSERT ON transcript_entries
-                     WHEN NEW.kind = 'assistant_message'
+                     WHEN NEW.kind = 'assistant_batch'
                      BEGIN SELECT RAISE(ABORT, 'disk full'); END;",
                 )
                 .unwrap()
@@ -2777,16 +2783,20 @@ mod tests {
                 model(),
                 auto(),
                 user("Weather?"),
-                calls(&[("call-1", "printf Chicago"), ("call-2", "printf Denver")]),
-                printed("call-1", "Chicago"),
-                TranscriptEntry::ToolResult(ToolResult {
-                    call_id: "call-2".to_owned(),
-                    name: tools::SHELL.to_owned(),
-                    outcome: ToolOutcome::Failed(
-                        "Not started: the client connection failed before this tool ran."
-                            .to_owned()
-                    ),
-                }),
+                calls(
+                    &[("call-1", "printf Chicago"), ("call-2", "printf Denver")],
+                    vec![
+                        printed("call-1", "Chicago"),
+                        ToolResult {
+                            call_id: "call-2".to_owned(),
+                            name: tools::SHELL.to_owned(),
+                            outcome: ToolOutcome::Failed(
+                                "Not started: the client connection failed before this tool ran."
+                                    .to_owned()
+                            ),
+                        }
+                    ]
+                ),
             ]
         );
         assert_eq!(harness.stored(), transcript);

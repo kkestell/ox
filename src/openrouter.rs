@@ -496,60 +496,64 @@ fn user_content(message: &UserMessage) -> Value {
 /// Encodes the saved transcript as OpenRouter chat messages. Visible reasoning
 /// is sent only when no continuation metadata carries it.
 pub(crate) fn chat_messages(transcript: &[TranscriptEntry]) -> Vec<Value> {
-    transcript
-        .iter()
-        .filter_map(|entry| {
-            Some(match entry {
-                TranscriptEntry::Model(_)
-                | TranscriptEntry::Effort(_)
-                | TranscriptEntry::Mode(_)
-                | TranscriptEntry::CompactionCheckpoint(_) => return None,
-                TranscriptEntry::UserMessage(message) => {
-                    json!({ "role": "user", "content": user_content(message) })
-                }
-                TranscriptEntry::SkillInvocation(invocation) => {
-                    let content = user_content(&skill_invocation_message(invocation));
-                    json!({ "role": "user", "content": content })
-                }
-                TranscriptEntry::HookFeedback(feedback) => {
-                    json!({ "role": "user", "content": hook_feedback_text(feedback) })
-                }
-                TranscriptEntry::AssistantMessage(message) => {
-                    let content = if message.text.is_empty() {
-                        Value::Null
-                    } else {
-                        Value::String(message.text.clone())
-                    };
-                    let mut value = json!({ "role": "assistant", "content": content });
-                    if !message.tool_calls.is_empty() {
-                        value["tool_calls"] = message
-                            .tool_calls
-                            .iter()
-                            .map(|call| {
-                                json!({
-                                    "id": call.call_id,
-                                    "type": "function",
-                                    "function": { "name": call.name, "arguments": call.arguments },
-                                })
+    let mut messages = Vec::new();
+    for entry in transcript {
+        let value = match entry {
+            TranscriptEntry::Model(_)
+            | TranscriptEntry::Effort(_)
+            | TranscriptEntry::Mode(_)
+            | TranscriptEntry::CompactionCheckpoint(_) => continue,
+            TranscriptEntry::UserMessage(message) => {
+                json!({ "role": "user", "content": user_content(message) })
+            }
+            TranscriptEntry::SkillInvocation(invocation) => {
+                let content = user_content(&skill_invocation_message(invocation));
+                json!({ "role": "user", "content": content })
+            }
+            TranscriptEntry::HookFeedback(feedback) => {
+                json!({ "role": "user", "content": hook_feedback_text(feedback) })
+            }
+            TranscriptEntry::AssistantBatch(batch) => {
+                let message = &batch.message;
+                let content = if message.text.is_empty() {
+                    Value::Null
+                } else {
+                    Value::String(message.text.clone())
+                };
+                let mut value = json!({ "role": "assistant", "content": content });
+                if !message.tool_calls.is_empty() {
+                    value["tool_calls"] = message
+                        .tool_calls
+                        .iter()
+                        .map(|call| {
+                            json!({
+                                "id": call.call_id,
+                                "type": "function",
+                                "function": { "name": call.name, "arguments": call.arguments },
                             })
-                            .collect();
-                    }
-                    if !message.continuation_metadata.is_empty() {
-                        value["reasoning_details"] =
-                            Value::Array(message.continuation_metadata.clone());
-                    } else if !message.reasoning.is_empty() {
-                        value["reasoning"] = Value::String(message.reasoning.clone());
-                    }
-                    value
+                        })
+                        .collect();
                 }
-                TranscriptEntry::ToolResult(result) => json!({
-                    "role": "tool",
-                    "tool_call_id": result.call_id,
-                    "content": result.outcome.text(),
-                }),
-            })
-        })
-        .collect()
+                if !message.continuation_metadata.is_empty() {
+                    value["reasoning_details"] =
+                        Value::Array(message.continuation_metadata.clone());
+                } else if !message.reasoning.is_empty() {
+                    value["reasoning"] = Value::String(message.reasoning.clone());
+                }
+                messages.push(value);
+                messages.extend(batch.results.iter().map(|result| {
+                    json!({
+                        "role": "tool",
+                        "tool_call_id": result.call_id,
+                        "content": result.outcome.text(),
+                    })
+                }));
+                continue;
+            }
+        };
+        messages.push(value);
+    }
+    messages
 }
 
 fn transport(error: reqwest::Error) -> io::Error {
@@ -1139,7 +1143,7 @@ mod tests {
         fixture::{Reply, Server, delta, sse, text_reply, usage},
         *,
     };
-    use crate::sessions::{SessionMode, ToolOutcome, ToolResult};
+    use crate::sessions::{AssistantBatch, SessionMode, ToolOutcome, ToolResult};
 
     const TEST_SYSTEM_PROMPT: &str = "You are Ox.";
 
@@ -1206,29 +1210,35 @@ mod tests {
             "format": "openai-responses-v1",
             "index": 0,
         })];
+        let raw = r#" { "command": "printf Chicago" } "#;
+        let first = ToolCall {
+            arguments: raw.to_owned(),
+            ..call("call-1", "printf Chicago")
+        };
         let transcript = vec![
             TranscriptEntry::Model(catalog()[2].id.as_str().to_owned()),
             TranscriptEntry::Mode(SessionMode::Auto),
             TranscriptEntry::UserMessage("Weather in Chicago and Denver?".to_owned().into()),
-            TranscriptEntry::AssistantMessage(AssistantMessage {
-                text: String::new(),
-                reasoning: "Need both cities.".to_owned(),
-                tool_calls: vec![
-                    call("call-1", "printf Chicago"),
-                    call("call-2", "printf Denver"),
+            TranscriptEntry::AssistantBatch(AssistantBatch {
+                message: AssistantMessage {
+                    text: String::new(),
+                    reasoning: "Need both cities.".to_owned(),
+                    tool_calls: vec![first, call("call-2", "printf Denver")],
+                    continuation_metadata: details.clone(),
+                    usage: None,
+                },
+                results: vec![
+                    ToolResult {
+                        call_id: "call-1".to_owned(),
+                        name: tools::SHELL.to_owned(),
+                        outcome: ToolOutcome::Completed("Sunny.".to_owned()),
+                    },
+                    ToolResult {
+                        call_id: "call-2".to_owned(),
+                        name: tools::SHELL.to_owned(),
+                        outcome: ToolOutcome::Failed("Unavailable.".to_owned()),
+                    },
                 ],
-                continuation_metadata: details.clone(),
-                usage: None,
-            }),
-            TranscriptEntry::ToolResult(ToolResult {
-                call_id: "call-1".to_owned(),
-                name: tools::SHELL.to_owned(),
-                outcome: ToolOutcome::Completed("Sunny.".to_owned()),
-            }),
-            TranscriptEntry::ToolResult(ToolResult {
-                call_id: "call-2".to_owned(),
-                name: tools::SHELL.to_owned(),
-                outcome: ToolOutcome::Failed("Unavailable.".to_owned()),
             }),
         ];
 
@@ -1277,8 +1287,8 @@ mod tests {
         assert_eq!(messages[2]["content"], Value::Null);
         assert_eq!(messages[2]["tool_calls"].as_array().unwrap().len(), 2);
         assert_eq!(
-            messages[2]["tool_calls"][0]["function"]["name"],
-            tools::SHELL
+            messages[2]["tool_calls"][0]["function"],
+            json!({"name": tools::SHELL, "arguments": raw})
         );
         assert_eq!(messages[2]["tool_calls"][1]["id"], "call-2");
         assert_eq!(messages[2]["reasoning_details"], json!(details));
@@ -1293,32 +1303,38 @@ mod tests {
         compacted.push(TranscriptEntry::CompactionCheckpoint(
             crate::sessions::CompactionCheckpoint {
                 summary: "Older summary".to_owned(),
-                covered_prefix: 6,
+                covered_prefix: 4,
                 summarizer_cost: None,
             },
         ));
         compacted.push(TranscriptEntry::UserMessage("middle".to_owned().into()));
-        compacted.push(TranscriptEntry::AssistantMessage(AssistantMessage {
-            text: "middle answer".to_owned(),
-            reasoning: String::new(),
-            tool_calls: vec![],
-            continuation_metadata: vec![],
-            usage: None,
+        compacted.push(TranscriptEntry::AssistantBatch(AssistantBatch {
+            message: AssistantMessage {
+                text: "middle answer".to_owned(),
+                reasoning: String::new(),
+                tool_calls: vec![],
+                continuation_metadata: vec![],
+                usage: None,
+            },
+            results: vec![],
         }));
         compacted.push(TranscriptEntry::CompactionCheckpoint(
             crate::sessions::CompactionCheckpoint {
                 summary: "Current summary".to_owned(),
-                covered_prefix: 9,
+                covered_prefix: 7,
                 summarizer_cost: None,
             },
         ));
         compacted.push(TranscriptEntry::UserMessage("recent".to_owned().into()));
-        compacted.push(TranscriptEntry::AssistantMessage(AssistantMessage {
-            text: "recent answer".to_owned(),
-            reasoning: "visible".to_owned(),
-            tool_calls: vec![],
-            continuation_metadata: vec![json!({"type":"reasoning.encrypted", "data":"recent"})],
-            usage: None,
+        compacted.push(TranscriptEntry::AssistantBatch(AssistantBatch {
+            message: AssistantMessage {
+                text: "recent answer".to_owned(),
+                reasoning: "visible".to_owned(),
+                tool_calls: vec![],
+                continuation_metadata: vec![json!({"type":"reasoning.encrypted", "data":"recent"})],
+                usage: None,
+            },
+            results: vec![],
         }));
         let projected = crate::compaction::projection(&compacted);
         let body = ordinary_body(&test_parameters(), &projected);
@@ -1437,7 +1453,10 @@ mod tests {
             continuation_metadata: vec![],
             usage: None,
         };
-        let messages = chat_messages(&[TranscriptEntry::AssistantMessage(plain)]);
+        let messages = chat_messages(&[TranscriptEntry::AssistantBatch(AssistantBatch {
+            message: plain,
+            results: vec![],
+        })]);
         assert_eq!(messages[0]["reasoning"], "Add them.");
         assert!(messages[0].get("reasoning_details").is_none());
         assert!(messages[0].get("tool_calls").is_none());
@@ -1573,7 +1592,10 @@ mod tests {
                     third_encrypted,
                 ];
                 assert_eq!(message.continuation_metadata, expected);
-                let messages = chat_messages(&[TranscriptEntry::AssistantMessage(message)]);
+                let messages = chat_messages(&[TranscriptEntry::AssistantBatch(AssistantBatch {
+                    message,
+                    results: vec![],
+                })]);
                 assert_eq!(messages[0]["reasoning_details"], json!(expected));
             }
         }

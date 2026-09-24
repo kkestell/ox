@@ -57,7 +57,7 @@ THIS DOCUMENT MUST BE KEPT UP TO DATE
   read, search, and patch tools.
 - `src/sessions.rs`: Transcript and durable model, effort, and mode setting
   types, ordered user message parts and image attachments, skill invocations,
-  hook kinds, hook feedback, model usage, compaction
+  hook kinds, hook feedback, assistant batch entries, model usage, compaction
   checkpoints with their summarizer cost, session cost, transcript entry
   encoding as stored JSON, transcript validation, database path selection,
   and `SessionStore` over one SQLite connection.
@@ -77,7 +77,7 @@ THIS DOCUMENT MUST BE KEPT UP TO DATE
   call, run tools, save complete assistant batches and send a usage update
   after each and after each automatic compaction, run `after_tools` after each
   batch and `before_stop` on each finished answer, run `after_run` on the
-  result, and return the stop reason and final answer.
+  result, and return an outcome carrying the accepted answer only when finished.
 - `src/acp/convert.rs`: ACP text and image input conversion, session update
   construction
   including each tool call's kind, hook runs, and usage updates, and

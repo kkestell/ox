@@ -17,8 +17,8 @@ use crate::{
     compaction,
     openrouter::ModelRequestParameters,
     sessions::{
-        self, AssistantMessage, HookFeedback, HookKind, ImageAttachment, ToolCall, ToolOutcome,
-        ToolResult, TranscriptEntry, UserMessage, UserMessagePart,
+        self, AssistantBatch, AssistantMessage, HookFeedback, HookKind, ImageAttachment, ToolCall,
+        ToolOutcome, ToolResult, TranscriptEntry, UserMessage, UserMessagePart,
     },
     tools,
 };
@@ -120,12 +120,15 @@ pub fn usage_update(
     let latest = transcript.iter().rev().find(|entry| {
         matches!(
             entry,
-            TranscriptEntry::AssistantMessage(_) | TranscriptEntry::CompactionCheckpoint(_)
+            TranscriptEntry::AssistantBatch(_) | TranscriptEntry::CompactionCheckpoint(_)
         )
     });
     let used = match latest? {
-        TranscriptEntry::AssistantMessage(AssistantMessage {
-            usage: Some(usage), ..
+        TranscriptEntry::AssistantBatch(AssistantBatch {
+            message: AssistantMessage {
+                usage: Some(usage), ..
+            },
+            ..
         }) => usage.input_tokens + usage.output_tokens,
         _ => compaction::request_estimate(parameters, transcript) as u64,
     };
@@ -272,7 +275,6 @@ pub fn replay_transcript(
     transcript: &[TranscriptEntry],
     mut send_update: impl FnMut(SessionUpdate) -> Result<()>,
 ) -> Result<()> {
-    let mut calls: &[ToolCall] = &[];
     for entry in transcript {
         match entry {
             TranscriptEntry::Model(_)
@@ -291,21 +293,17 @@ pub fn replay_transcript(
                 }
             }
             TranscriptEntry::HookFeedback(feedback) => send_update(replayed_hook_run(feedback))?,
-            TranscriptEntry::AssistantMessage(message) => {
+            TranscriptEntry::AssistantBatch(batch) => {
+                let message = &batch.message;
                 if !message.reasoning.is_empty() {
                     send_update(agent_thought_chunk(&message.reasoning))?;
                 }
                 if !message.text.is_empty() {
                     send_update(agent_message_chunk(&message.text))?;
                 }
-                calls = &message.tool_calls;
-            }
-            TranscriptEntry::ToolResult(result) => {
-                let call = calls
-                    .iter()
-                    .find(|call| call.call_id == result.call_id)
-                    .expect("a stored tool result follows the assistant message that called it");
-                send_update(replayed_tool_call(call, result))?;
+                for (call, result) in message.tool_calls.iter().zip(&batch.results) {
+                    send_update(replayed_tool_call(call, result))?;
+                }
             }
         }
     }

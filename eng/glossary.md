@@ -83,7 +83,8 @@
 - **Compaction summary**: Model-generated text carrying relevant older
   conversation into later model requests. It is separate from session metadata.
 - **Compaction checkpoint**: A saved transcript entry with a compaction summary
-  and the exclusive index of the completed prefix it covers.
+  and the exclusive index of the completed prefix it covers, ending at an
+  assistant batch.
 - **Context limit**: The maximum token budget of one model request and output,
   taken from the model's OpenRouter `context_length` in the model catalog.
 - **Request estimate**: Ox's heuristic token estimate for a serialized model
@@ -136,7 +137,8 @@
 - **Run ID**: A UUID identifying one prompt run in the input of each of its hook
   commands.
 - **Final answer**: The text of the assistant message committed with the
-  finished OpenRouter stop that ended a prompt run.
+  finished OpenRouter stop that ended a prompt run, accepted by every applicable
+  `before_stop` hook and carried only in a finished outcome.
 - **Headless entry point**: The `ox run` mode, which creates a session, runs
   one prompt without an ACP client, and prints the final answer. A prompt run
   there is headless and never invokes a skill.
@@ -154,7 +156,7 @@
 - **Transcript**: The ordered, saved conversation used for both session replay
   and future model requests.
 - **Transcript entry**: A model entry, effort entry, mode entry, user message,
-  skill invocation, assistant message, tool result, hook feedback, or
+  skill invocation, assistant batch, hook feedback, or
   compaction checkpoint in the transcript.
 - **Model entry**: The first transcript entry. It stores the OpenRouter model
   used for every model request in that session.
@@ -181,7 +183,7 @@
   one completion yielded by a completion stream.
 - **Assistant message**: The validated model output assembled from a completion
   stream: answer text, visible reasoning, tool calls, continuation metadata, and
-  model usage.
+  model usage. It is part of an assistant batch.
 - **Model usage**: The input tokens, output tokens, and cost that OpenRouter
   reports for one model request. It is `ModelUsage` in code and is saved with
   the assistant message the request produced.
@@ -217,9 +219,11 @@
   tool call: execute, read, search, edit, or other.
 - **Tool outcome**: What Ox knows happened: completed, failed, or cancelled,
   with explanatory text.
-- **Tool result**: A tool call's ID and name paired with its outcome.
+- **Tool result**: A tool call's ID and name paired with its outcome, stored
+  within the assistant batch containing the call.
 - **Assistant batch**: One assistant message plus exactly one final tool result
-  for each call in the message. The store saves it in one transaction.
+  for each call in the message, in call order. The store saves it as one
+  transcript entry in one transaction.
 - **Uncommitted assistant batch**: A validated assistant message whose tool
   outcomes are incomplete or have not yet been saved.
 - **Shell permission request**: An ACP request asking whether one shell tool

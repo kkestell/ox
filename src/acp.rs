@@ -637,7 +637,14 @@ impl ServerState {
             let result = run.await;
             reply(
                 responder,
-                result.map(|output| PromptResponse::new(output.stop_reason)),
+                result.map(|output| {
+                    PromptResponse::new(match output {
+                        prompt::PromptOutput::Finished(_) => StopReason::EndTurn,
+                        prompt::PromptOutput::Cancelled => StopReason::Cancelled,
+                        prompt::PromptOutput::TokenLimit => StopReason::MaxTokens,
+                        prompt::PromptOutput::Refused => StopReason::Refusal,
+                    })
+                }),
             )
         })
     }
@@ -794,11 +801,9 @@ async fn run_headless_prompt(
             }
         }
     };
-    match output.answer {
-        Some(answer) => Ok(answer),
-        None => {
-            Err(io::Error::other(format!("prompt stopped with {:?}", output.stop_reason)).into())
-        }
+    match output {
+        prompt::PromptOutput::Finished(answer) => Ok(answer),
+        other => Err(io::Error::other(format!("prompt stopped with {other:?}")).into()),
     }
 }
 
@@ -1671,7 +1676,7 @@ mod tests {
             cancellation.cancel();
         };
         let (first_response, ()) = futures::join!(first, change);
-        assert_eq!(first_response.unwrap().stop_reason, StopReason::Cancelled);
+        assert_eq!(first_response.unwrap(), prompt::PromptOutput::Cancelled);
 
         let second = prompt::run(
             state.store.clone(),
@@ -1682,7 +1687,10 @@ mod tests {
             prompt::PermissionTransport::None,
         )
         .unwrap();
-        assert_eq!(second.await.unwrap().stop_reason, StopReason::EndTurn);
+        assert!(matches!(
+            second.await.unwrap(),
+            prompt::PromptOutput::Finished(_)
+        ));
 
         let stored = state.store.read(&id).unwrap().unwrap();
         assert!(matches!(
@@ -2030,10 +2038,12 @@ Run the commands.
                                     .unwrap()
                                     .transcript
                                     .iter()
-                                    .filter(|entry| {
-                                        matches!(entry, TranscriptEntry::ToolResult(_))
+                                    .filter_map(|entry| match entry {
+                                        TranscriptEntry::AssistantBatch(batch) =>
+                                            Some(batch.results.len()),
+                                        _ => None,
                                     })
-                                    .count(),
+                                    .sum::<usize>(),
                                 2,
                                 "the batch is saved before responding"
                             );
@@ -2103,9 +2113,9 @@ Run the commands.
             let transcript = store.read(&id).unwrap().unwrap().transcript;
             let results: Vec<_> = transcript
                 .iter()
-                .filter_map(|entry| match entry {
-                    TranscriptEntry::ToolResult(result) => Some(result),
-                    _ => None,
+                .flat_map(|entry| match entry {
+                    TranscriptEntry::AssistantBatch(batch) => batch.results.as_slice(),
+                    _ => &[],
                 })
                 .collect();
             assert_eq!(results.len(), 2, "{decision}");
@@ -2239,7 +2249,18 @@ Run the commands.
                     TranscriptEntry::UserMessage("Run commands".to_owned().into()),
                 ]
             );
-            assert_eq!(transcript.iter().filter(|entry| matches!(entry, TranscriptEntry::ToolResult(result) if matches!(result.outcome, ToolOutcome::Cancelled(_)))).count(), 2);
+            assert_eq!(
+                transcript
+                    .iter()
+                    .filter_map(|entry| match entry {
+                        TranscriptEntry::AssistantBatch(batch) => Some(batch),
+                        _ => None,
+                    })
+                    .flat_map(|batch| &batch.results)
+                    .filter(|result| matches!(result.outcome, ToolOutcome::Cancelled(_)))
+                    .count(),
+                2
+            );
             std::fs::write(path.join("saved"), "yes").unwrap();
             return;
         }
@@ -2275,7 +2296,7 @@ Run the commands.
         assert!(!workspace.0.join("wrong").exists());
         let store = SessionStore::open(&workspace.0.join("ox.db")).unwrap();
         assert!(store.list(None).unwrap().iter().any(|session| store.read(&session.id).unwrap().unwrap().transcript.iter().any(|entry| matches!(entry,
-            TranscriptEntry::ToolResult(result) if matches!(&result.outcome, ToolOutcome::Cancelled(text) if text.contains("started") && text.contains("partial changes"))))));
+            TranscriptEntry::AssistantBatch(batch) if batch.results.iter().any(|result| matches!(&result.outcome, ToolOutcome::Cancelled(text) if text.contains("started") && text.contains("partial changes")))))));
     }
 
     #[tokio::test]
@@ -2336,7 +2357,7 @@ Run the commands.
                             .unwrap()
                             .transcript
                             .iter()
-                            .any(|entry| matches!(entry, TranscriptEntry::ToolResult(_))),
+                            .any(|entry| matches!(entry, TranscriptEntry::AssistantBatch(batch) if !batch.results.is_empty())),
                         "saved before response"
                     );
                     response = Some(message);
@@ -2355,7 +2376,18 @@ Run the commands.
         assert_process_stopped(&workspace.0.join("child"), false).await;
         assert!(!workspace.0.join("wrong").exists());
         let transcript = store.read(&id).unwrap().unwrap().transcript;
-        assert_eq!(transcript.iter().filter(|entry| matches!(entry, TranscriptEntry::ToolResult(result) if matches!(result.outcome, ToolOutcome::Cancelled(_)))).count(), 2);
+        assert_eq!(
+            transcript
+                .iter()
+                .filter_map(|entry| match entry {
+                    TranscriptEntry::AssistantBatch(batch) => Some(batch),
+                    _ => None,
+                })
+                .flat_map(|batch| &batch.results)
+                .filter(|result| matches!(result.outcome, ToolOutcome::Cancelled(_)))
+                .count(),
+            2
+        );
     }
 
     #[tokio::test]

@@ -56,10 +56,9 @@ COMMIT;
 /// the model its completions use, which does not change within the session.
 /// A turn starts with a user message or a skill invocation. Effort and mode
 /// entries form a settings block immediately before the turn start where they
-/// take effect. Tool results follow the assistant message that called them,
-/// one per call, in call order. Hook feedback follows the turn start,
-/// tool results, or assistant message its hook ran after, allowing adjacent
-/// feedback of the same kind.
+/// take effect. Each assistant batch contains its message and one result per
+/// call, in call order. Hook feedback follows the turn start or assistant batch
+/// its hook ran after, allowing adjacent feedback of the same kind.
 #[derive(Debug, Clone, PartialEq)]
 pub enum TranscriptEntry {
     Model(String),
@@ -67,8 +66,7 @@ pub enum TranscriptEntry {
     Mode(SessionMode),
     UserMessage(UserMessage),
     SkillInvocation(SkillInvocation),
-    AssistantMessage(AssistantMessage),
-    ToolResult(ToolResult),
+    AssistantBatch(AssistantBatch),
     HookFeedback(HookFeedback),
     CompactionCheckpoint(CompactionCheckpoint),
 }
@@ -480,8 +478,9 @@ impl ToolOutcome {
 }
 
 /// One validated assistant message with a final result for each tool call.
-/// The store saves this entire value in one transaction.
-#[derive(Debug, Clone, PartialEq)]
+/// The store saves this entire value as one entry in one transaction.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AssistantBatch {
     pub message: AssistantMessage,
     pub results: Vec<ToolResult>,
@@ -489,13 +488,18 @@ pub struct AssistantBatch {
 
 impl AssistantBatch {
     pub fn new(message: AssistantMessage, results: Vec<ToolResult>) -> io::Result<Self> {
-        message.validate()?;
-        pair_results(&message.tool_calls, &results.iter().collect::<Vec<_>>())?;
-        Ok(Self { message, results })
+        let batch = Self { message, results };
+        batch.validate()?;
+        Ok(batch)
+    }
+
+    fn validate(&self) -> io::Result<()> {
+        self.message.validate()?;
+        pair_results(&self.message.tool_calls, &self.results)
     }
 }
 
-fn pair_results(calls: &[ToolCall], results: &[&ToolResult]) -> io::Result<()> {
+fn pair_results(calls: &[ToolCall], results: &[ToolResult]) -> io::Result<()> {
     for (index, call) in calls.iter().enumerate() {
         match results.get(index) {
             None => {
@@ -537,7 +541,6 @@ fn validate_transcript(entries: &[TranscriptEntry]) -> io::Result<()> {
     }
     let mut index = 1;
     let mut previous_prefix = 0;
-    let mut complete_batches = Vec::new();
     let mut current_skill: Option<&str> = None;
     while let Some(entry) = entries.get(index) {
         index = match entry {
@@ -563,20 +566,13 @@ fn validate_transcript(entries: &[TranscriptEntry]) -> io::Result<()> {
                 index + 1
             }
             TranscriptEntry::CompactionCheckpoint(checkpoint) => {
-                check_compaction_checkpoint(checkpoint, index, previous_prefix, &complete_batches)?;
+                check_compaction_checkpoint(checkpoint, index, previous_prefix, entries)?;
                 previous_prefix = checkpoint.covered_prefix;
                 index + 1
             }
-            TranscriptEntry::ToolResult(result) => {
-                return Err(invalid_data(format!(
-                    "tool result {} does not follow an assistant message that called it",
-                    result.call_id
-                )));
-            }
-            TranscriptEntry::AssistantMessage(message) => {
-                let end = assistant_batch_end(entries, index, message)?;
-                complete_batches.push(end);
-                end
+            TranscriptEntry::AssistantBatch(batch) => {
+                batch.validate()?;
+                index + 1
             }
         };
     }
@@ -644,12 +640,12 @@ fn check_hook_feedback_placement(
             "a user message or skill invocation",
         ),
         HookFeedbackContent::AfterTools { .. } => (
-            matches!(previous, TranscriptEntry::ToolResult(_)),
+            matches!(previous, TranscriptEntry::AssistantBatch(batch) if !batch.message.tool_calls.is_empty()),
             "the tool results of an assistant batch",
         ),
         HookFeedbackContent::BeforeStop { .. } => (
             matches!(previous,
-                TranscriptEntry::AssistantMessage(message) if message.tool_calls.is_empty()),
+                TranscriptEntry::AssistantBatch(batch) if batch.message.tool_calls.is_empty()),
             "an assistant message without tool calls",
         ),
     };
@@ -666,42 +662,22 @@ fn check_compaction_checkpoint(
     checkpoint: &CompactionCheckpoint,
     index: usize,
     previous_prefix: usize,
-    complete_batches: &[usize],
+    entries: &[TranscriptEntry],
 ) -> io::Result<()> {
     // The preceding scan already validated every assistant batch.
     if checkpoint.summary.trim().is_empty()
         || checkpoint.covered_prefix <= previous_prefix
         || checkpoint.covered_prefix > index
-        || complete_batches
-            .binary_search(&checkpoint.covered_prefix)
-            .is_err()
+        || !matches!(
+            entries[checkpoint.covered_prefix - 1],
+            TranscriptEntry::AssistantBatch(_)
+        )
     {
         return Err(invalid_data(
             "invalid compaction checkpoint or covered prefix",
         ));
     }
     Ok(())
-}
-
-/// Returns the index after the assistant batch that starts at `index`.
-fn assistant_batch_end(
-    entries: &[TranscriptEntry],
-    index: usize,
-    message: &AssistantMessage,
-) -> io::Result<usize> {
-    message.validate()?;
-    let results = entries[index + 1..]
-        .iter()
-        .take(message.tool_calls.len())
-        .map(|entry| match entry {
-            TranscriptEntry::ToolResult(result) => Ok(result),
-            _ => Err(invalid_data(
-                "an assistant message's tool calls are not all resolved before the next message",
-            )),
-        })
-        .collect::<io::Result<Vec<_>>>()?;
-    pair_results(&message.tool_calls, &results)?;
-    Ok(index + 1 + results.len())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -719,8 +695,8 @@ pub fn session_cost(transcript: &[TranscriptEntry]) -> Option<f64> {
     transcript
         .iter()
         .filter_map(|entry| match entry {
-            TranscriptEntry::AssistantMessage(message) => {
-                message.usage.as_ref().map(|usage| usage.cost)
+            TranscriptEntry::AssistantBatch(batch) => {
+                batch.message.usage.as_ref().map(|usage| usage.cost)
             }
             TranscriptEntry::CompactionCheckpoint(checkpoint) => checkpoint.summarizer_cost,
             _ => None,
@@ -746,8 +722,7 @@ impl StoredSession {
                 TranscriptEntry::Mode(mode) => settings.mode = *mode,
                 TranscriptEntry::UserMessage(_)
                 | TranscriptEntry::SkillInvocation(_)
-                | TranscriptEntry::AssistantMessage(_)
-                | TranscriptEntry::ToolResult(_)
+                | TranscriptEntry::AssistantBatch(_)
                 | TranscriptEntry::HookFeedback(_)
                 | TranscriptEntry::CompactionCheckpoint(_) => {}
             }
@@ -879,15 +854,9 @@ impl SessionStore {
     /// Appends the assistant message and all of its results, and updates
     /// activity, in one transaction.
     pub fn append_batch(&self, id: &SessionId, batch: &AssistantBatch) -> io::Result<()> {
-        let mut entries = vec![TranscriptEntry::AssistantMessage(batch.message.clone())];
-        entries.extend(
-            batch
-                .results
-                .iter()
-                .cloned()
-                .map(TranscriptEntry::ToolResult),
-        );
-        self.append(id, None, &entries).map(drop)
+        batch.validate()?;
+        self.append(id, None, &[TranscriptEntry::AssistantBatch(batch.clone())])
+            .map(drop)
     }
 
     /// Appends hook feedback and updates activity in one transaction.
@@ -1066,10 +1035,7 @@ fn encode_entry(entry: &TranscriptEntry) -> (&'static str, String) {
         TranscriptEntry::SkillInvocation(invocation) => {
             ("skill_invocation", serde_json::to_string(invocation))
         }
-        TranscriptEntry::AssistantMessage(message) => {
-            ("assistant_message", serde_json::to_string(message))
-        }
-        TranscriptEntry::ToolResult(result) => ("tool_result", serde_json::to_string(result)),
+        TranscriptEntry::AssistantBatch(batch) => ("assistant_batch", serde_json::to_string(batch)),
         TranscriptEntry::HookFeedback(feedback) => {
             ("hook_feedback", serde_json::to_string(feedback))
         }
@@ -1087,8 +1053,7 @@ fn decode_entry(kind: &str, data: &str) -> io::Result<TranscriptEntry> {
         "mode" => TranscriptEntry::Mode(decode(kind, data)?),
         "user_message" => TranscriptEntry::UserMessage(decode(kind, data)?),
         "skill_invocation" => TranscriptEntry::SkillInvocation(decode(kind, data)?),
-        "assistant_message" => TranscriptEntry::AssistantMessage(decode(kind, data)?),
-        "tool_result" => TranscriptEntry::ToolResult(decode(kind, data)?),
+        "assistant_batch" => TranscriptEntry::AssistantBatch(decode(kind, data)?),
         "hook_feedback" => TranscriptEntry::HookFeedback(decode(kind, data)?),
         "compaction_checkpoint" => TranscriptEntry::CompactionCheckpoint(decode(kind, data)?),
         _ => {
@@ -1280,10 +1245,10 @@ mod tests {
             store
                 .append_checkpoint(
                     &id,
-                    6,
+                    4,
                     &CompactionCheckpoint {
                         summary: "Chicago checked; Denver unavailable.".to_owned(),
-                        covered_prefix: 6,
+                        covered_prefix: 4,
                         summarizer_cost: None,
                     },
                 )
@@ -1332,12 +1297,13 @@ mod tests {
                 TranscriptEntry::Model(openrouter::default_model().to_owned()),
                 TranscriptEntry::Mode(SessionMode::Auto),
                 TranscriptEntry::UserMessage("Weather in Chicago and Denver?".to_owned().into()),
-                TranscriptEntry::AssistantMessage(message.clone()),
-                TranscriptEntry::ToolResult(results[0].clone()),
-                TranscriptEntry::ToolResult(results[1].clone()),
+                TranscriptEntry::AssistantBatch(AssistantBatch {
+                    message: message.clone(),
+                    results: vec![results[0].clone(), results[1].clone()]
+                }),
                 TranscriptEntry::CompactionCheckpoint(CompactionCheckpoint {
                     summary: "Chicago checked; Denver unavailable.".to_owned(),
-                    covered_prefix: 6,
+                    covered_prefix: 4,
                     summarizer_cost: None,
                 }),
                 TranscriptEntry::Effort(EffortLevel::Low),
@@ -1347,7 +1313,10 @@ mod tests {
                     ..before_run_feedback()
                 }),
                 TranscriptEntry::HookFeedback(before_run_feedback()),
-                TranscriptEntry::AssistantMessage(answered),
+                TranscriptEntry::AssistantBatch(AssistantBatch {
+                    message: answered,
+                    results: vec![]
+                }),
                 TranscriptEntry::HookFeedback(stop_feedback()),
             ]
         );
@@ -1373,62 +1342,6 @@ mod tests {
     }
 
     #[test]
-    fn batch_validation_rejects_orphan_duplicate_and_missing_results() {
-        let two_calls = message(vec![
-            call("call-1", "printf Chicago"),
-            call("call-2", "printf Denver"),
-        ]);
-
-        assert!(AssistantBatch::new(two_calls.clone(), vec![completed("call-1")]).is_err());
-        assert!(
-            AssistantBatch::new(
-                two_calls.clone(),
-                vec![completed("call-1"), completed("call-1")]
-            )
-            .is_err()
-        );
-        assert!(
-            AssistantBatch::new(
-                two_calls.clone(),
-                vec![
-                    completed("call-1"),
-                    completed("call-2"),
-                    completed("call-3")
-                ],
-            )
-            .is_err()
-        );
-        assert!(
-            AssistantBatch::new(
-                two_calls.clone(),
-                vec![completed("call-2"), completed("call-1")]
-            )
-            .is_err()
-        );
-        let mut renamed = completed("call-2");
-        renamed.name = "other".to_owned();
-        assert!(
-            AssistantBatch::new(two_calls.clone(), vec![completed("call-1"), renamed]).is_err()
-        );
-        assert!(
-            AssistantBatch::new(two_calls, vec![completed("call-1"), completed("call-2")]).is_ok()
-        );
-
-        let repeated = message(vec![
-            call("call-1", "printf Chicago"),
-            call("call-1", "printf Denver"),
-        ]);
-        assert!(repeated.validate().is_err());
-        let unnamed = message(vec![ToolCall {
-            name: String::new(),
-            ..call("call-1", "printf Chicago")
-        }]);
-        assert!(unnamed.validate().is_err());
-        let anonymous = message(vec![call("", "printf Chicago")]);
-        assert!(anonymous.validate().is_err());
-    }
-
-    #[test]
     fn read_rejects_a_malformed_transcript() {
         let store = SessionStore::in_memory();
         let insert = |id: &SessionId, kind: &str, data: &str| {
@@ -1447,51 +1360,66 @@ mod tests {
             assert!(error.ends_with(expected), "{error}");
         };
 
-        let orphan = store.create(workspace()).unwrap().id;
-        store
-            .append_turn_start(
-                &orphan,
-                &[
-                    TranscriptEntry::Model(openrouter::default_model().to_owned()),
-                    TranscriptEntry::UserMessage("hello".to_owned().into()),
-                ],
-            )
-            .unwrap();
-        insert(
-            &orphan,
-            "tool_result",
-            r#"{"call_id":"x","name":"shell","outcome":{"status":"completed","content":"ok"}}"#,
-        );
-        rejects(
-            &orphan,
-            "tool result x does not follow an assistant message that called it",
-        );
-
-        let unresolved = store.create(workspace()).unwrap().id;
-        insert(
-            &unresolved,
-            "model",
-            &serde_json::to_string(openrouter::default_model()).unwrap(),
-        );
-        let unresolved_message = message(vec![call("call-1", "printf Chicago")]);
-        insert(
-            &unresolved,
-            "assistant_message",
-            &serde_json::to_string(&unresolved_message).unwrap(),
-        );
-        rejects(&unresolved, "tool call call-1 has no result");
-
-        let unknown = store.create(workspace()).unwrap().id;
-        insert(&unknown, "mystery", "{}");
-        assert!(store.read(&unknown).is_err());
-
-        let malformed = store.create(workspace()).unwrap().id;
-        insert(
-            &malformed,
-            "assistant_message",
-            r#"{"text":"hi","reasoning":"","tool_calls":[],"continuation_metadata":[],"extra":true}"#,
-        );
-        assert!(store.read(&malformed).is_err());
+        let called = message(vec![call("a", "one"), call("b", "two")]);
+        let mut renamed = completed("b");
+        renamed.name = "other".to_owned();
+        let mut invalid_call = called.clone();
+        invalid_call.tool_calls[0].call_id.clear();
+        let mut repeated = called.clone();
+        repeated.tool_calls[1].call_id = "a".to_owned();
+        let mut unnamed = called.clone();
+        unnamed.tool_calls[0].name.clear();
+        for (message, results) in [
+            (called.clone(), vec![completed("a")]),
+            (
+                called.clone(),
+                vec![completed("a"), completed("b"), completed("c")],
+            ),
+            (called.clone(), vec![completed("a"), completed("a")]),
+            (called.clone(), vec![completed("b"), completed("a")]),
+            (called, vec![completed("a"), renamed]),
+            (invalid_call, vec![completed("a"), completed("b")]),
+            (repeated, vec![completed("a"), completed("a")]),
+            (unnamed, vec![completed("a"), completed("b")]),
+        ] {
+            let id = store.create(workspace()).unwrap().id;
+            insert(
+                &id,
+                "model",
+                &serde_json::to_string(openrouter::default_model()).unwrap(),
+            );
+            assert!(AssistantBatch::new(message.clone(), results.clone()).is_err());
+            let batch = AssistantBatch { message, results };
+            assert!(store.append_batch(&id, &batch).is_err());
+            insert(
+                &id,
+                "assistant_batch",
+                &serde_json::to_string(&batch).unwrap(),
+            );
+            assert!(store.read(&id).is_err());
+        }
+        for (kind, data) in [
+            ("mystery", "{}".to_owned()),
+            (
+                "assistant_batch",
+                serde_json::json!({
+                    "message": message(vec![]), "results": [], "extra": true,
+                })
+                .to_string(),
+            ),
+            (
+                "assistant_batch",
+                serde_json::json!({
+                    "message": {"text":"hi", "reasoning":"", "tool_calls":[],
+                        "continuation_metadata":[], "extra":true}, "results": [],
+                })
+                .to_string(),
+            ),
+        ] {
+            let id = store.create(workspace()).unwrap().id;
+            insert(&id, kind, &data);
+            assert!(store.read(&id).is_err());
+        }
 
         let switched = store.create(workspace()).unwrap().id;
         insert(
@@ -1510,25 +1438,7 @@ mod tests {
         insert(&unmodelled, "user_message", &hello);
         rejects(&unmodelled, "transcript does not open with a model");
 
-        let effort_in_batch = store.create(workspace()).unwrap().id;
-        insert(
-            &effort_in_batch,
-            "model",
-            &serde_json::to_string(openrouter::default_model()).unwrap(),
-        );
-        let called = message(vec![call("call-1", "printf Chicago")]);
-        insert(
-            &effort_in_batch,
-            "assistant_message",
-            &serde_json::to_string(&called).unwrap(),
-        );
-        insert(&effort_in_batch, "effort", r#""high""#);
         let next = serde_json::to_string(&UserMessage::from("next".to_owned())).unwrap();
-        insert(&effort_in_batch, "user_message", &next);
-        rejects(
-            &effort_in_batch,
-            "an assistant message's tool calls are not all resolved before the next message",
-        );
 
         let user = ("user_message", hello);
         let skill = (
@@ -1536,19 +1446,20 @@ mod tests {
             serde_json::to_string(&invocation()).unwrap(),
         );
         let answer = (
-            "assistant_message",
-            serde_json::to_string(&message(vec![])).unwrap(),
+            "assistant_batch",
+            serde_json::to_string(&AssistantBatch::new(message(vec![]), vec![]).unwrap()).unwrap(),
         );
-        let called = [
-            (
-                "assistant_message",
-                serde_json::to_string(&message(vec![call("call-1", "printf Chicago")])).unwrap(),
-            ),
-            (
-                "tool_result",
-                serde_json::to_string(&completed("call-1")).unwrap(),
-            ),
-        ];
+        let called = [(
+            "assistant_batch",
+            serde_json::to_string(
+                &AssistantBatch::new(
+                    message(vec![call("call-1", "printf Chicago")]),
+                    vec![completed("call-1")],
+                )
+                .unwrap(),
+            )
+            .unwrap(),
+        )];
         let stopped = (
             "hook_feedback",
             serde_json::to_string(&stop_feedback()).unwrap(),
@@ -1654,77 +1565,28 @@ mod tests {
         let base = vec![
             TranscriptEntry::Model(openrouter::default_model().to_owned()),
             TranscriptEntry::UserMessage("first".to_owned().into()),
-            TranscriptEntry::AssistantMessage(message(vec![call("a", "one"), call("b", "two")])),
-            TranscriptEntry::ToolResult(completed("a")),
-            TranscriptEntry::ToolResult(completed("b")),
+            TranscriptEntry::AssistantBatch(AssistantBatch {
+                message: message(vec![call("a", "one"), call("b", "two")]),
+                results: vec![completed("a"), completed("b")],
+            }),
         ];
-        for (first, second) in [
-            (
-                CompactionCheckpoint {
-                    summary: " ".to_owned(),
-                    covered_prefix: 5,
-                    summarizer_cost: None,
-                },
-                None,
-            ),
-            (
-                CompactionCheckpoint {
-                    summary: "ok".to_owned(),
-                    covered_prefix: 4,
-                    summarizer_cost: None,
-                },
-                None,
-            ),
-            (
-                CompactionCheckpoint {
-                    summary: "ok".to_owned(),
-                    covered_prefix: 6,
-                    summarizer_cost: None,
-                },
-                None,
-            ),
-            (
-                CompactionCheckpoint {
-                    summary: "ok".to_owned(),
-                    covered_prefix: 5,
-                    summarizer_cost: None,
-                },
-                Some(CompactionCheckpoint {
-                    summary: "same".to_owned(),
-                    covered_prefix: 5,
-                    summarizer_cost: None,
-                }),
-            ),
-            (
-                CompactionCheckpoint {
-                    summary: "ok".to_owned(),
-                    covered_prefix: 5,
-                    summarizer_cost: None,
-                },
-                Some(CompactionCheckpoint {
-                    summary: "future".to_owned(),
-                    covered_prefix: 7,
-                    summarizer_cost: None,
-                }),
-            ),
+        for (prefix, summary, second) in [
+            (3, " ", None),
+            (0, "ok", None),
+            (2, "ok", None),
+            (4, "ok", None),
+            (3, "ok", Some(3)),
+            (3, "ok", Some(2)),
+            (3, "ok", Some(5)),
         ] {
             let id = store.create(workspace()).unwrap().id;
+            let first = CompactionCheckpoint {
+                summary: summary.to_owned(),
+                covered_prefix: prefix,
+                summarizer_cost: None,
+            };
             for entry in &base {
-                let (kind, data) = match entry {
-                    TranscriptEntry::Model(value) => {
-                        ("model", serde_json::to_string(value).unwrap())
-                    }
-                    TranscriptEntry::UserMessage(value) => {
-                        ("user_message", serde_json::to_string(value).unwrap())
-                    }
-                    TranscriptEntry::AssistantMessage(value) => {
-                        ("assistant_message", serde_json::to_string(value).unwrap())
-                    }
-                    TranscriptEntry::ToolResult(value) => {
-                        ("tool_result", serde_json::to_string(value).unwrap())
-                    }
-                    _ => unreachable!(),
-                };
+                let (kind, data) = encode_entry(entry);
                 insert(&id, kind, &data);
             }
             insert(
@@ -1732,7 +1594,12 @@ mod tests {
                 "compaction_checkpoint",
                 &serde_json::to_string(&first).unwrap(),
             );
-            if let Some(second) = second {
+            if let Some(prefix) = second {
+                let second = CompactionCheckpoint {
+                    summary: "next".to_owned(),
+                    covered_prefix: prefix,
+                    summarizer_cost: None,
+                };
                 insert(
                     &id,
                     "compaction_checkpoint",
@@ -1801,7 +1668,10 @@ mod tests {
             validate_transcript(&[
                 TranscriptEntry::Model(openrouter::default_model().to_owned()),
                 TranscriptEntry::Mode(SessionMode::Auto),
-                TranscriptEntry::AssistantMessage(message(vec![])),
+                TranscriptEntry::AssistantBatch(AssistantBatch {
+                    message: message(vec![]),
+                    results: vec![]
+                }),
             ])
             .unwrap_err()
             .to_string(),
@@ -1812,7 +1682,10 @@ mod tests {
                 TranscriptEntry::Model(openrouter::default_model().to_owned()),
                 TranscriptEntry::Mode(SessionMode::Auto),
                 TranscriptEntry::SkillInvocation(invocation()),
-                TranscriptEntry::AssistantMessage(message(vec![])),
+                TranscriptEntry::AssistantBatch(AssistantBatch {
+                    message: message(vec![]),
+                    results: vec![]
+                }),
                 TranscriptEntry::HookFeedback(stop_feedback()),
             ])
             .is_ok()

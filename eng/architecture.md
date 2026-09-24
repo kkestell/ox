@@ -70,13 +70,13 @@ authoritative representation.
 A transcript may be empty. Every nonempty transcript begins with one model
 entry. A turn starts with a user message or a skill invocation. Effort and mode
 entries form a contiguous settings block immediately before the turn start where
-those settings take effect; a block contains at most one of each. An assistant
-message is followed immediately by one tool result for each tool call it
-contains, in call order. Hook feedback follows the entry its hook ran after:
-`before_run` feedback follows a user message or skill invocation, `after_tools`
-feedback follows the last tool result of an assistant batch, and `before_stop`
-feedback follows an assistant message with no tool calls. Consecutive feedback
-entries of the same hook kind share that placement.
+those settings take effect; a block contains at most one of each. Each assistant
+batch is one transcript entry containing its message and one tool result for
+each tool call, in call order. Hook feedback follows the entry its hook ran
+after: `before_run` feedback follows a user message or skill invocation,
+`after_tools` feedback follows a batch with tool calls, and `before_stop`
+feedback follows a batch without tool calls. Consecutive feedback entries of
+the same hook kind share that placement.
 
 A skill invocation stores the skill's name, its literal arguments, any image
 attachments, and the instructions copied from its definition when it was
@@ -101,9 +101,10 @@ the model request that produced the message, or nothing when the stream carried
 no usage.
 
 A compaction checkpoint stores a nonempty summary, the exclusive index of a
-completed transcript prefix, and its summarizer cost: the summed cost of every
-summarizer request made by the compaction that committed it, including cuts it
-tried and rejected. The latest checkpoint controls model requests;
+completed transcript prefix ending at an assistant batch, and its summarizer
+cost: the summed cost of every summarizer request made by the compaction that
+committed it, including cuts it tried and rejected. The latest checkpoint
+controls model requests;
 earlier checkpoints and all covered entries remain saved for replay. Checkpoints
 are omitted from replay. A model request uses the latest summary as a labeled
 user-role message, followed by entries after its covered prefix. When the
@@ -304,8 +305,11 @@ admission as a turn start and is saved as hook feedback; `before_run` and
 `after_tools` may save nothing. A hook error ends the run with an error and saves
 nothing for that hook run. Refusal, token limit, request failure, and
 cancellation never run `before_stop`. Skill hooks end with their prompt run;
-global hooks remain available for later turns. The final answer is the text of
-the assistant message committed with the finished stop that ended the run.
+global hooks remain available for later turns. A finished outcome carries the
+text of the committed answer accepted by every applicable `before_stop` hook,
+including an empty answer. Continuation carries no final answer. Cancellation,
+token limit, and refusal outcomes carry no answer; failures remain errors.
+The ACP boundary maps these outcomes to ACP stop reasons.
 
 `after_run` runs for every prompt run that saved its turn start, after any
 outstanding batch is saved and the result is known, while the operation guard
@@ -321,7 +325,10 @@ observed before the turn start is saved, saves nothing and runs no hook.
 
 An assistant batch contains one validated assistant message and exactly one
 final tool result for every tool call in that message. The session store saves
-the whole batch and updates session activity in one SQLite transaction.
+the whole batch as one `assistant_batch` entry and updates session activity in
+one SQLite transaction. Construction, append, and transcript validation check
+the message and the exact ordered pairing of calls and results. JSON decoding
+alone does not establish validity.
 
 The prompt run holds incomplete results in an uncommitted assistant batch. Every
 observed tool outcome enters it before a finished ACP update is sent or a later
@@ -354,8 +361,8 @@ decisions, and `after_run` appear only in live ACP updates.
 A usage update reports context tokens, the model's context limit, and the
 session cost in US dollars. The session cost is the sum of every saved model
 usage cost and summarizer cost; a model request or compaction that commits
-nothing is not counted. When the latest assistant message or checkpoint is an
-assistant message with model usage, the context tokens are its input plus output
+nothing is not counted. When the latest assistant batch or checkpoint is a
+batch whose message has model usage, the context tokens are its input plus output
 tokens; otherwise they are the request estimate for the current transcript, so
 the count drops after compaction. The prompt run sends a usage update after each
 committed assistant batch in its model loop and after each automatic compaction

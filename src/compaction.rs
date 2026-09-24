@@ -35,8 +35,6 @@ pub struct Budget {
     /// The request estimate at which a prompt run compacts before its next
     /// model request.
     pub automatic_threshold: usize,
-    /// The request estimate compaction prefers a cut to reach.
-    pub cut_target: usize,
 }
 
 pub fn budget(model: &CatalogModel) -> Budget {
@@ -45,7 +43,6 @@ pub fn budget(model: &CatalogModel) -> Budget {
     Budget {
         admission,
         automatic_threshold: admission * 80 / 100,
-        cut_target: admission * 60 / 100,
     }
 }
 
@@ -147,19 +144,14 @@ fn projection_at(
 
 fn candidates(transcript: &[TranscriptEntry]) -> Vec<usize> {
     let start = latest(transcript).map_or(0, |checkpoint| checkpoint.covered_prefix);
-    let mut result = Vec::new();
-    let mut index = start;
-    while index < transcript.len() {
-        if let TranscriptEntry::AssistantMessage(message) = &transcript[index] {
-            index += 1 + message.tool_calls.len();
-            if index <= transcript.len() {
-                result.push(index);
-            }
-        } else {
-            index += 1;
-        }
-    }
-    result
+    transcript
+        .iter()
+        .enumerate()
+        .skip(start)
+        .filter_map(|(index, entry)| {
+            matches!(entry, TranscriptEntry::AssistantBatch(_)).then_some(index + 1)
+        })
+        .collect()
 }
 
 fn projected_estimate(
@@ -190,16 +182,8 @@ pub fn input_fits(parameters: &ModelRequestParameters, prospective: &[Transcript
     ) <= admission
 }
 
-fn ranked_cuts(
-    parameters: &ModelRequestParameters,
-    transcript: &[TranscriptEntry],
-    original: usize,
-) -> Vec<usize> {
-    let Budget {
-        admission,
-        cut_target,
-        ..
-    } = budget(parameters.model);
+fn ranked_cuts(parameters: &ModelRequestParameters, transcript: &[TranscriptEntry]) -> Vec<usize> {
+    let admission = budget(parameters.model).admission;
     let start = latest(transcript).map_or(0, |checkpoint| checkpoint.covered_prefix);
     let cuts = candidates(transcript);
     let summary = TranscriptEntry::UserMessage(
@@ -224,10 +208,9 @@ fn ranked_cuts(
         if estimate > admission {
             continue;
         }
-        let rank = (estimate >= original, estimate > cut_target, estimate);
-        ranked.push((cut, rank));
+        ranked.push((cut, estimate));
     }
-    ranked.sort_by_key(|(_, rank)| *rank);
+    ranked.sort_by_key(|(_, estimate)| *estimate);
     ranked.into_iter().map(|(cut, _)| cut).collect()
 }
 
@@ -306,7 +289,8 @@ fn material(transcript: &[TranscriptEntry], cut: usize) -> VecDeque<(String, Str
                     1,
                 ))
             }
-            TranscriptEntry::AssistantMessage(message) => {
+            TranscriptEntry::AssistantBatch(batch) => {
+                let message = &batch.message;
                 if !message.text.is_empty() {
                     fields.push_back((
                         format!("{source} assistant answer"),
@@ -323,19 +307,19 @@ fn material(transcript: &[TranscriptEntry], cut: usize) -> VecDeque<(String, Str
                         ));
                     }
                 }
-            }
-            TranscriptEntry::ToolResult(result) => {
-                let status = match result.outcome {
-                    crate::sessions::ToolOutcome::Completed(_) => "completed",
-                    crate::sessions::ToolOutcome::Failed(_) => "failed",
-                    crate::sessions::ToolOutcome::Cancelled(_) => "cancelled",
-                };
-                if !result.outcome.text().is_empty() {
-                    fields.push_back((
-                        format!("{source} tool {} {status} outcome", result.name),
-                        tool_result_excerpt(result.outcome.text()),
-                        1,
-                    ));
+                for result in &batch.results {
+                    let status = match result.outcome {
+                        crate::sessions::ToolOutcome::Completed(_) => "completed",
+                        crate::sessions::ToolOutcome::Failed(_) => "failed",
+                        crate::sessions::ToolOutcome::Cancelled(_) => "cancelled",
+                    };
+                    if !result.outcome.text().is_empty() {
+                        fields.push_back((
+                            format!("{source} tool {} {status} outcome", result.name),
+                            tool_result_excerpt(result.outcome.text()),
+                            1,
+                        ));
+                    }
                 }
             }
             _ => {}
@@ -412,7 +396,7 @@ pub async fn compact(
     let original = request_estimate(parameters, transcript);
     // Every summarizer request counts, including those for rejected cuts.
     let mut summarizer_cost: Option<f64> = None;
-    for cut in ranked_cuts(parameters, transcript, original) {
+    for cut in ranked_cuts(parameters, transcript) {
         let mut fields = material(transcript, cut);
         if fields.is_empty() {
             continue;
@@ -593,8 +577,7 @@ mod tests {
         ));
         let batch = tool_batch("first", &"new details ".repeat(3000));
         store.append_batch(&id, &batch).unwrap();
-        transcript.push(TranscriptEntry::AssistantMessage(batch.message));
-        transcript.extend(batch.results.into_iter().map(TranscriptEntry::ToolResult));
+        transcript.push(TranscriptEntry::AssistantBatch(batch));
         assert!(
             compact(
                 &store,
@@ -609,8 +592,7 @@ mod tests {
         );
         let batch = tool_batch("second", &"later details ".repeat(3000));
         store.append_batch(&id, &batch).unwrap();
-        transcript.push(TranscriptEntry::AssistantMessage(batch.message));
-        transcript.extend(batch.results.into_iter().map(TranscriptEntry::ToolResult));
+        transcript.push(TranscriptEntry::AssistantBatch(batch));
         assert!(
             compact(
                 &store,
@@ -680,6 +662,20 @@ mod tests {
             TranscriptEntry::CompactionCheckpoint(_)
         ));
 
+        let mut ranked = transcript.clone();
+        ranked.push(TranscriptEntry::AssistantBatch(tool_batch(
+            "rank",
+            "tool output",
+        )));
+        ranked.push(TranscriptEntry::AssistantBatch(answer("latest answer")));
+        let cuts = ranked_cuts(&parameters(), &ranked);
+        assert_eq!(cuts, [ranked.len(), ranked.len() - 1]);
+        let summary = "x".repeat(SUMMARY_ALLOWANCE_BYTES);
+        assert!(
+            projected_estimate(&parameters(), &ranked, cuts[0], &summary)
+                < projected_estimate(&parameters(), &ranked, cuts[1], &summary)
+        );
+
         let image_message = UserMessage {
             parts: vec![
                 UserMessagePart::Text("Inspect this".to_owned()),
@@ -746,6 +742,7 @@ mod tests {
             )
             .unwrap();
         let mut transcript = store.read(&id).unwrap().unwrap().transcript;
+        let original = request_estimate(&parameters(), &transcript);
         let server = Server::start(vec![text_reply("Older work summarized.")]).await;
         assert!(
             compact(
@@ -759,15 +756,11 @@ mod tests {
             .await
             .unwrap()
         );
-        let Budget {
-            admission,
-            cut_target,
-            ..
-        } = budget(parameters().model);
+        let admission = budget(parameters().model).admission;
         let estimate = request_estimate(&parameters(), &transcript);
         assert!(
-            estimate > cut_target && estimate <= admission,
-            "a useful reduction is accepted even when the target cannot be reached"
+            estimate < original && estimate <= admission,
+            "compaction reduces the request and admits the remaining input"
         );
     }
 
