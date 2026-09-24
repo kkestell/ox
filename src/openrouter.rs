@@ -386,10 +386,7 @@ impl Client {
             if matches!(status.as_u16(), 400 | 413 | 422) && explicit_context_overflow(&detail) {
                 return Err(io::Error::other(InputContextOverflow));
             }
-            return Err(io::Error::other(format!(
-                "OpenRouter returned {status}: {}",
-                detail.trim()
-            )));
+            return Err(io::Error::other(status_error(status, &detail)));
         }
         Ok(CompletionStream {
             response,
@@ -399,6 +396,23 @@ impl Client {
             buffered_items: VecDeque::new(),
             usage: None,
         })
+    }
+}
+
+/// Names the provider when OpenRouter reports that the provider it routed
+/// the request to returned the error.
+fn status_error(status: reqwest::StatusCode, detail: &str) -> String {
+    let detail = detail.trim();
+    let provider = serde_json::from_str::<Value>(detail).ok().and_then(|body| {
+        body["error"]["metadata"]["provider_name"]
+            .as_str()
+            .map(str::to_owned)
+    });
+    match provider {
+        Some(provider) => format!(
+            "{provider}, the provider OpenRouter routed this request to, returned {status}: {detail}"
+        ),
+        None => format!("OpenRouter returned {status}: {detail}"),
     }
 }
 
@@ -1787,6 +1801,22 @@ mod tests {
             .err()
             .expect("a failed status is an error");
         assert!(error.to_string().contains("429"));
+
+        let server = Server::start(vec![Reply::Status(
+            401,
+            r#"{"error":{"message":"Provider returned error","code":401,"metadata":{"provider_name":"Meta"}}}"#
+                .to_owned(),
+        )])
+        .await;
+        let error = server
+            .client()
+            .stream_completion(&test_parameters(), vec![])
+            .await
+            .err()
+            .expect("a failed status is an error");
+        assert!(error.to_string().starts_with(
+            "Meta, the provider OpenRouter routed this request to, returned 401 Unauthorized"
+        ));
     }
 
     #[tokio::test]

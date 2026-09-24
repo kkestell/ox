@@ -59,10 +59,12 @@ THIS DOCUMENT MUST BE KEPT UP TO DATE
   tools, transcript encoding into chat messages that pairs each tool call with
   its outcome and gives each agent message its own attributed user message,
   request encoding from those messages with the skill invocation message,
-  context limits, client, streamed response assembly with usage parsing, and
-  explicit input-context overflow errors. Its test fixture routes each request
-  by its first message after the system prompt, holds gated replies until a
-  test opens them, and builds replies from the requests they answer.
+  context limits, client, streamed response assembly with usage parsing,
+  explicit input-context overflow errors, and failed-status errors that name
+  the upstream provider when OpenRouter reports one. Its test fixture routes
+  each request by its first message after the system prompt, holds gated
+  replies until a test opens them, and builds replies from the requests they
+  answer.
 - `src/compaction.rs`: Image-aware request estimates, safe transcript cuts,
   bounded summarizer input with explicit tool-result excerpts and attributed
   agent messages, checkpoint commits, and model-request projection into encoded
