@@ -36,7 +36,7 @@ use crate::{
     openrouter::{self, ModelRequestParameters},
     sessions::{
         self, EffortLevel, SessionMode, SessionSettings, SessionStore, SessionSummary,
-        SkillInvocation, TranscriptEntry, UserMessage, UserMessagePart,
+        SkillInvocation, TurnInput, UserMessage, UserMessagePart,
     },
     skills::{self, Skill},
     system_prompt,
@@ -562,11 +562,8 @@ impl ServerState {
             Dispatch::Skill {
                 invocation,
                 hook_source,
-            } => (
-                TranscriptEntry::SkillInvocation(invocation),
-                Some(*hook_source),
-            ),
-            Dispatch::UserMessage(message) => (TranscriptEntry::UserMessage(message), None),
+            } => (TurnInput::SkillInvocation(invocation), Some(*hook_source)),
+            Dispatch::UserMessage(message) => (TurnInput::UserMessage(message), None),
         };
         self.spawn_prompt_run(
             request.session_id,
@@ -601,7 +598,7 @@ impl ServerState {
         &self,
         session_id: SessionId,
         active: ActiveSession,
-        (turn_start, skill_source): (TranscriptEntry, Option<hooks::HookSource>),
+        (turn_input, skill_source): (TurnInput, Option<hooks::HookSource>),
         (guard, cancellation): (OperationGuard, PromptCancellation),
         responder: Responder<PromptResponse>,
         connection: &ConnectionTo<Client>,
@@ -615,7 +612,7 @@ impl ServerState {
             openrouter,
             prompt::PromptInput {
                 session_id: session_id.clone(),
-                turn_start,
+                turn_input,
                 hook_sources: self
                     .global_hooks
                     .clone()
@@ -777,7 +774,7 @@ async fn run_headless_prompt(
         openrouter,
         prompt::PromptInput {
             session_id,
-            turn_start: TranscriptEntry::UserMessage(user_message.into()),
+            turn_input: TurnInput::UserMessage(user_message.into()),
             hook_sources,
             selected_settings: Some(settings.with_mode(SessionMode::Auto)),
             system_prompt,
@@ -891,13 +888,16 @@ mod tests {
     use agent_client_protocol::schema::v1::{AuthCapabilities, ClientCapabilities, ErrorCode};
 
     use super::*;
-    use crate::tools::fixture::Workspace;
+    use crate::{
+        sessions::{ToolOutcome, TranscriptEntry, TurnStart},
+        tools::fixture::Workspace,
+    };
 
     #[tokio::test]
     async fn manual_compact_command_uses_the_active_prompt_without_saving_a_message() {
         use crate::{
             openrouter::fixture::{Reply, Server, delta, sse, usage},
-            sessions::{AssistantBatch, AssistantMessage, ModelUsage, TranscriptEntry},
+            sessions::{AssistantBatch, AssistantMessage, ModelUsage},
         };
         let store = SessionStore::in_memory();
         let state = ServerState::new(store.clone(), None);
@@ -926,7 +926,7 @@ mod tests {
                 &id,
                 &[
                     TranscriptEntry::Model(openrouter::default_model().to_owned()),
-                    TranscriptEntry::UserMessage("previous work ".repeat(3000).into()),
+                    TranscriptEntry::turn("previous work ".repeat(3000)),
                 ],
             )
             .unwrap();
@@ -995,7 +995,8 @@ mod tests {
             include_str!("prompts/compaction_prompt.md")
         );
         assert!(after.iter().all(|entry| !matches!(entry,
-            TranscriptEntry::UserMessage(message) if message.text() == "/compact")));
+            TranscriptEntry::TurnStart(TurnStart { input: TurnInput::UserMessage(message), .. })
+                if message.text() == "/compact")));
     }
     fn state() -> ServerState {
         state_over(SessionStore::in_memory())
@@ -1147,17 +1148,20 @@ mod tests {
         );
     }
 
+    fn write_skill(workspace: &Path, name: &str, text: &str) {
+        let directory = workspace.join(".agents/skills").join(name);
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(directory.join("SKILL.md"), text).unwrap();
+    }
+
     #[test]
-    fn activation_validates_the_session_and_captures_the_system_prompt_once() {
+    fn activation_captures_the_system_prompt_and_skill_catalog_once_per_process() {
         let workspace = Workspace::new();
         let agents_md = workspace.0.join("AGENTS.md");
         fs::write(&agents_md, "Answer in French.\n").unwrap();
         let skills_dir = workspace.0.join(".agents/skills");
-        let write_skill = |name: &str, text: &str| {
-            fs::create_dir_all(skills_dir.join(name)).unwrap();
-            fs::write(skills_dir.join(name).join("SKILL.md"), text).unwrap();
-        };
         write_skill(
+            &workspace.0,
             "goal",
             "---\nname: goal\ndescription: \"Work toward an objective: verify it.\"\nargument-hint: \"<objective>\"\nallowed-tools: [shell]\nmetadata:\n  owner: ox\nhooks:\n  PreToolUse: [{matcher: shell}]\n  before_run:\n    command: python3 scripts/context.py\n  before_tool:\n    command: python3 scripts/check_call.py\n  after_tools:\n    command: python3 scripts/format.py\n  before_stop:\n    command: python3 scripts/check.py\n  after_run:\n    command: python3 scripts/report.py\n---\n\nWork toward the objective.\n",
         );
@@ -1194,36 +1198,17 @@ mod tests {
             state.active_session(&id).unwrap().skills,
             std::slice::from_ref(&goal)
         );
-        let repository = skills::load(Path::new(env!("CARGO_MANIFEST_DIR"))).unwrap();
-        assert!(repository.iter().any(|skill| skill.name == "init"));
-        let mut updates = Vec::new();
-        let mut send_update = |update| {
-            updates.push(update);
-            Ok(())
-        };
-
-        let missing = state
-            .load_session(
-                &LoadSessionRequest::new(SessionId::new("missing"), &workspace.0),
-                &mut send_update,
-            )
-            .unwrap_err();
-        assert_eq!(missing.code, ErrorCode::ResourceNotFound);
-
-        let elsewhere = state
-            .load_session(
-                &LoadSessionRequest::new(id.clone(), Path::new("/elsewhere")),
-                &mut send_update,
-            )
-            .unwrap_err();
-        assert_eq!(elsewhere.code, ErrorCode::InvalidParams);
 
         fs::write(&agents_md, "Answer in German.\n").unwrap();
         fs::remove_dir_all(skills_dir.join("goal")).unwrap();
+        let mut updates = Vec::new();
         state
             .load_session(
                 &LoadSessionRequest::new(id.clone(), &workspace.0),
-                &mut send_update,
+                |update| {
+                    updates.push(update);
+                    Ok(())
+                },
             )
             .unwrap();
         assert!(updates.is_empty(), "a new session replays nothing");
@@ -1246,6 +1231,33 @@ mod tests {
             "a later process reads the current file on its first load"
         );
         assert!(later.active_session(&id).unwrap().skills.is_empty());
+    }
+
+    #[test]
+    fn the_repository_skills_load() {
+        let repository = skills::load(Path::new(env!("CARGO_MANIFEST_DIR"))).unwrap();
+        assert!(repository.iter().any(|skill| skill.name == "init"));
+    }
+
+    #[test]
+    fn loading_an_unknown_or_moved_session_fails_and_delete_deactivates_it() {
+        let workspace = Workspace::new();
+        let state = state();
+        let id = create_session(&state, &workspace.0);
+        let missing = state
+            .load_session(
+                &LoadSessionRequest::new(SessionId::new("missing"), &workspace.0),
+                |_| Ok(()),
+            )
+            .unwrap_err();
+        assert_eq!(missing.code, ErrorCode::ResourceNotFound);
+        let elsewhere = state
+            .load_session(
+                &LoadSessionRequest::new(id.clone(), Path::new("/elsewhere")),
+                |_| Ok(()),
+            )
+            .unwrap_err();
+        assert_eq!(elsewhere.code, ErrorCode::InvalidParams);
 
         state
             .delete_session(&DeleteSessionRequest::new(id.clone()))
@@ -1254,16 +1266,23 @@ mod tests {
             state.active_session(&id).is_none(),
             "delete removes the active session"
         );
+    }
 
+    #[test]
+    fn an_empty_or_foreign_hooks_map_declares_no_hooks() {
+        let state = state();
         for hooks in ["{}", "{PreToolUse: [{matcher: shell}]}"] {
+            let workspace = Workspace::new();
             write_skill(
+                &workspace.0,
                 "shared",
                 &format!("---\nname: shared\ndescription: Shared.\nhooks: {hooks}\n---\nBody\n"),
             );
             let id = create_session(&state, &workspace.0);
             assert_eq!(
                 state.active_session(&id).unwrap().skills[0].hooks,
-                hooks::Hooks::default()
+                hooks::Hooks::default(),
+                "{hooks}"
             );
             let later = state_over(state.store.clone());
             later
@@ -1273,14 +1292,14 @@ mod tests {
                 .unwrap();
             assert_eq!(
                 later.active_session(&id).unwrap().skills[0].hooks,
-                hooks::Hooks::default()
+                hooks::Hooks::default(),
+                "{hooks}: on load"
             );
-            state
-                .delete_session(&DeleteSessionRequest::new(id))
-                .unwrap();
-            fs::remove_dir_all(skills_dir.join("shared")).unwrap();
         }
+    }
 
+    #[test]
+    fn an_invalid_skill_definition_fails_activation_with_its_path() {
         for (name, text, error) in [
             (
                 "compact",
@@ -1334,11 +1353,13 @@ mod tests {
             ),
             ("missing", "", "No such file or directory"),
         ] {
+            let workspace = Workspace::new();
             if text.is_empty() {
-                fs::create_dir_all(skills_dir.join(name)).unwrap();
+                fs::create_dir_all(workspace.0.join(".agents/skills").join(name)).unwrap();
             } else {
-                write_skill(name, text);
+                write_skill(&workspace.0, name, text);
             }
+            let state = state();
             let invalid = state
                 .new_session(&NewSessionRequest::new(&workspace.0))
                 .unwrap_err();
@@ -1349,10 +1370,16 @@ mod tests {
                     && data.contains(error),
                 "{name}: {data}"
             );
-            fs::remove_dir_all(skills_dir.join(name)).unwrap();
+            assert!(state.store.list(None).unwrap().is_empty(), "{name}");
+            assert!(state.active.lock().unwrap().is_empty(), "{name}");
         }
+    }
 
-        fs::write(&agents_md, [0xff, 0xfe]).unwrap();
+    #[test]
+    fn a_non_utf8_agents_md_fails_activation() {
+        let workspace = Workspace::new();
+        fs::write(workspace.0.join("AGENTS.md"), [0xff, 0xfe]).unwrap();
+        let state = state();
         let invalid = state
             .new_session(&NewSessionRequest::new(&workspace.0))
             .unwrap_err();
@@ -1376,7 +1403,7 @@ mod tests {
                 &created.session_id,
                 &[
                     TranscriptEntry::Model(openrouter::default_model().to_owned()),
-                    TranscriptEntry::UserMessage("Hello".to_owned().into()),
+                    TranscriptEntry::turn("Hello".to_owned()),
                 ],
             )
             .unwrap();
@@ -1417,7 +1444,7 @@ mod tests {
                 &created.session_id,
                 &[
                     TranscriptEntry::Model("retired/model".to_owned()),
-                    TranscriptEntry::UserMessage("Hello".to_owned().into()),
+                    TranscriptEntry::turn("Hello".to_owned()),
                 ],
             )
             .unwrap();
@@ -1550,8 +1577,11 @@ mod tests {
                 &created.session_id,
                 &[
                     TranscriptEntry::Model(chosen.to_owned()),
-                    TranscriptEntry::Mode(SessionMode::Auto),
-                    TranscriptEntry::UserMessage("Hello".to_owned().into()),
+                    TranscriptEntry::TurnStart(TurnStart {
+                        effort: EffortLevel::Default,
+                        mode: SessionMode::Auto,
+                        input: TurnInput::UserMessage("Hello".to_owned().into()),
+                    }),
                 ],
             )
             .unwrap();
@@ -1637,7 +1667,7 @@ mod tests {
             let active = state.active_session(&id).unwrap();
             prompt::PromptInput {
                 session_id: id.clone(),
-                turn_start: TranscriptEntry::UserMessage(user_message.to_owned().into()),
+                turn_input: TurnInput::UserMessage(user_message.to_owned().into()),
                 hook_sources: Vec::new(),
                 selected_settings: Some(active.selections),
                 system_prompt: active.system_prompt,
@@ -1693,17 +1723,21 @@ mod tests {
         ));
 
         let stored = state.store.read(&id).unwrap().unwrap();
-        assert!(matches!(
-            &stored.transcript[..6],
-            [
-                TranscriptEntry::Model(_),
-                TranscriptEntry::Effort(EffortLevel::Low),
-                TranscriptEntry::UserMessage(first),
-                TranscriptEntry::Effort(EffortLevel::Max),
-                TranscriptEntry::Mode(SessionMode::Auto),
-                TranscriptEntry::UserMessage(second),
-            ] if first.text() == "first" && second.text() == "second"
-        ));
+        let turn = |effort, mode, text: &str| {
+            TranscriptEntry::TurnStart(TurnStart {
+                effort,
+                mode,
+                input: TurnInput::UserMessage(text.to_owned().into()),
+            })
+        };
+        assert_eq!(
+            stored.transcript[1],
+            turn(EffortLevel::Low, SessionMode::Ask, "first")
+        );
+        assert_eq!(
+            stored.transcript[2],
+            turn(EffortLevel::Max, SessionMode::Auto, "second")
+        );
         let requests = server.requests();
         assert_eq!(requests[0]["reasoning"]["effort"], "low");
         assert_eq!(requests[1]["reasoning"]["effort"], "max");
@@ -1743,7 +1777,7 @@ mod tests {
                 &saved,
                 &[
                     TranscriptEntry::Model(openrouter::default_model().to_owned()),
-                    TranscriptEntry::UserMessage("Earlier".to_owned().into()),
+                    TranscriptEntry::turn("Earlier".to_owned()),
                 ],
             )
             .unwrap();
@@ -1841,7 +1875,7 @@ mod tests {
             store.read(&id).unwrap().unwrap().transcript,
             vec![
                 TranscriptEntry::Model(openrouter::default_model().to_owned()),
-                TranscriptEntry::UserMessage("Hello".to_owned().into())
+                TranscriptEntry::turn("Hello".to_owned())
             ],
         );
     }
@@ -1856,32 +1890,46 @@ mod tests {
         .unwrap();
     }
 
-    #[tokio::test]
-    async fn shell_permissions_control_execution_and_save_results() {
-        use agent_client_protocol::Lines;
-        use futures::{SinkExt, StreamExt, channel::mpsc};
-        use serde_json::{Value, json};
+    /// One shell permission request as the ACP client received it.
+    struct PermissionRequest {
+        params: serde_json::Value,
+        /// Whether its call was announced as pending before the request.
+        announced: bool,
+        /// Whether the file its command creates existed at the request.
+        target_existed: bool,
+        /// Whether load, delete, and prompt were all refused for the session.
+        session_busy: bool,
+    }
 
-        use crate::openrouter::fixture::{Server, shell_reply, text_reply};
-        use crate::sessions::{ToolOutcome, TranscriptEntry};
-        use crate::tools::fixture::Workspace;
+    /// A prompt over an ACP connection whose model calls `touch first` and
+    /// `touch second`. The client answers each permission request according
+    /// to `decision`.
+    struct PermissionRun {
+        workspace: Workspace,
+        server: crate::openrouter::fixture::Server,
+        session_id: SessionId,
+        requests: Vec<PermissionRequest>,
+        /// Tool call updates as `<call ID> <status>`, in order.
+        tool_updates: Vec<String>,
+        /// The number of tool outcomes saved when the prompt response arrived.
+        saved_at_response: usize,
+        response: serde_json::Value,
+        transcript: Vec<TranscriptEntry>,
+        /// Whether the session accepted a load after the connection closed.
+        session_free_after: bool,
+    }
 
-        for decision in [
-            "approve",
-            "auto",
-            "deny",
-            "mixed",
-            "hook",
-            "cancelled",
-            "cancel",
-            "eof",
-            "unknown",
-            "error",
-        ] {
+    impl PermissionRun {
+        async fn new(decision: &'static str) -> Self {
+            use agent_client_protocol::Lines;
+            use futures::{SinkExt, StreamExt, channel::mpsc};
+            use serde_json::{Value, json};
+
+            use crate::openrouter::fixture::{Server, shell_reply, text_reply};
+
             let workspace = Workspace::new();
-            let continues = matches!(decision, "approve" | "auto" | "deny" | "mixed" | "hook");
             let mut replies = vec![shell_reply(&[("touch first", 5), ("touch second", 5)])];
-            if continues {
+            if matches!(decision, "approve" | "auto" | "deny" | "mixed" | "hook") {
                 replies.push(text_reply("Done"));
             }
             let server = Server::start(replies).await;
@@ -1932,73 +1980,54 @@ Run the commands.
             ] {
                 incoming_tx.unbounded_send(Ok(message.to_string())).unwrap();
             }
+            let saved_outcomes = || {
+                store
+                    .read(&id)
+                    .unwrap()
+                    .unwrap()
+                    .transcript
+                    .iter()
+                    .map(|entry| match entry {
+                        TranscriptEntry::AssistantBatch(batch) => batch.outcomes.len(),
+                        _ => 0,
+                    })
+                    .sum::<usize>()
+            };
             let client = async {
                 let mut incoming_tx = Some(incoming_tx);
-                let mut requested = 0;
-                let mut announced = Vec::new();
-                let mut auto_updates = Vec::new();
+                let mut requests = Vec::new();
+                let mut tool_updates = Vec::new();
+                let mut saved_at_response = 0;
                 let mut response = None;
                 while let Some(line) = outgoing_rx.next().await {
                     let message: Value = serde_json::from_str(&line).unwrap();
                     let update = &message["params"]["update"];
-                    if decision == "approve" && update["sessionUpdate"] == "tool_call" {
-                        assert!(
-                            update["status"].is_null() || update["status"] == "pending",
-                            "{decision}"
-                        );
-                        announced.push(update["toolCallId"].clone());
-                    }
-                    if decision == "auto" {
-                        match update["sessionUpdate"].as_str() {
-                            Some("tool_call") => auto_updates.push(format!(
-                                "{} pending",
-                                update["toolCallId"].as_str().unwrap()
-                            )),
-                            Some("tool_call_update") => auto_updates.push(format!(
-                                "{} {}",
-                                update["toolCallId"].as_str().unwrap(),
-                                update["status"].as_str().unwrap()
-                            )),
-                            _ => {}
-                        }
+                    let call_id = update["toolCallId"].as_str().unwrap_or_default();
+                    match update["sessionUpdate"].as_str() {
+                        Some("tool_call") => tool_updates.push(format!("{call_id} pending")),
+                        Some("tool_call_update") => tool_updates
+                            .push(format!("{call_id} {}", update["status"].as_str().unwrap())),
+                        _ => {}
                     }
                     if message["method"] == "session/request_permission" {
-                        let params = &message["params"];
-                        let file = if requested == 0 { "first" } else { "second" };
-                        if decision == "hook" {
-                            assert_eq!(params["toolCall"]["toolCallId"], "shell-1");
-                        }
-                        if decision == "approve" {
-                            assert_eq!(params["sessionId"], id.to_string());
-                            assert_eq!(
-                                params["toolCall"]["toolCallId"],
-                                format!("shell-{requested}")
-                            );
-                            assert!(announced.contains(&params["toolCall"]["toolCallId"]));
-                            assert_eq!(params["toolCall"]["status"], "pending");
-                            assert_eq!(params["toolCall"]["kind"], "execute");
-                            assert_eq!(
-                                params["toolCall"]["rawInput"]["command"],
-                                format!("touch {file}")
-                            );
-                            assert_eq!(params["toolCall"]["title"], format!("touch {file}"));
-                            assert_eq!(
-                                params["toolCall"]["content"][0]["content"]["text"],
-                                format!("Working directory: {}", workspace.0.display())
-                            );
-                            assert!(!workspace.0.join(file).exists());
-                            assert_eq!(
-                                params["options"],
-                                json!([
-                                    {"optionId":"approve","name":"Approve","kind":"allow_once"},
-                                    {"optionId":"deny","name":"Deny","kind":"reject_once"},
-                                ])
-                            );
-                            assert!(operations.try_load(&id).is_none());
-                            assert!(operations.try_delete(&id).is_none());
-                            assert!(operations.try_prompt(&id).is_none());
-                        }
-                        requested += 1;
+                        let params = message["params"].clone();
+                        let file = if requests.is_empty() {
+                            "first"
+                        } else {
+                            "second"
+                        };
+                        let pending = format!(
+                            "{} pending",
+                            params["toolCall"]["toolCallId"].as_str().unwrap()
+                        );
+                        requests.push(PermissionRequest {
+                            announced: tool_updates.contains(&pending),
+                            target_existed: workspace.0.join(file).exists(),
+                            session_busy: operations.try_load(&id).is_none()
+                                && operations.try_delete(&id).is_none()
+                                && operations.try_prompt(&id).is_none(),
+                            params,
+                        });
                         if decision == "eof" {
                             drop(incoming_tx.take());
                             continue;
@@ -2015,7 +2044,7 @@ Run the commands.
                                     json!({"outcome":"cancelled"})
                                 } else {
                                     let option = match decision {
-                                        "mixed" if requested == 1 => "deny",
+                                        "mixed" if requests.len() == 1 => "deny",
                                         "mixed" | "hook" => "approve",
                                         _ => decision,
                                     };
@@ -2030,140 +2059,226 @@ Run the commands.
                             .unbounded_send(Ok(reply.to_string()))
                             .unwrap();
                     } else if message["id"] == 2 {
-                        if decision == "approve" {
-                            assert_eq!(
-                                store
-                                    .read(&id)
-                                    .unwrap()
-                                    .unwrap()
-                                    .transcript
-                                    .iter()
-                                    .filter_map(|entry| match entry {
-                                        TranscriptEntry::AssistantBatch(batch) =>
-                                            Some(batch.results.len()),
-                                        _ => None,
-                                    })
-                                    .sum::<usize>(),
-                                2,
-                                "the batch is saved before responding"
-                            );
-                        }
+                        saved_at_response = saved_outcomes();
                         response = Some(message);
                         drop(incoming_tx.take());
                     }
                 }
-                if matches!(decision, "approve" | "auto" | "hook") {
-                    let expected = match decision {
-                        "approve" => 2,
-                        "hook" => 1,
-                        _ => 0,
-                    };
-                    assert_eq!(requested, expected);
-                }
-                if decision == "auto" {
-                    assert_eq!(
-                        auto_updates,
-                        [
-                            "shell-0 pending",
-                            "shell-1 pending",
-                            "shell-0 in_progress",
-                            "shell-0 completed",
-                            "shell-1 in_progress",
-                            "shell-1 completed",
-                        ]
-                    );
-                }
                 let response =
                     response.unwrap_or_else(|| panic!("{decision}: missing prompt response"));
-                if matches!(decision, "unknown" | "error") {
-                    assert_eq!(response["error"]["code"], -32603, "{decision}");
-                    if decision == "unknown" {
-                        assert_eq!(
-                            response["error"]["data"], "Unknown shell permission option: unknown",
-                            "{decision}"
-                        );
-                    }
-                } else {
+                (requests, tool_updates, saved_at_response, response)
+            };
+            let (result, (requests, tool_updates, saved_at_response, response)) =
+                tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                    tokio::join!(serve(state, transport), client)
+                })
+                .await
+                .unwrap_or_else(|error| panic!("{decision}: timed out: {error}"));
+            result.unwrap_or_else(|error| panic!("{decision}: ACP connection failed: {error}"));
+            let session_free_after = operations.try_load(&id).is_some();
+            let transcript = store.read(&id).unwrap().unwrap().transcript;
+            Self {
+                workspace,
+                server,
+                session_id: id,
+                requests,
+                tool_updates,
+                saved_at_response,
+                response,
+                transcript,
+                session_free_after,
+            }
+        }
+
+        fn outcomes(&self) -> Vec<&ToolOutcome> {
+            self.transcript
+                .iter()
+                .flat_map(|entry| match entry {
+                    TranscriptEntry::AssistantBatch(batch) => batch.outcomes.as_slice(),
+                    _ => &[],
+                })
+                .collect()
+        }
+    }
+
+    #[tokio::test]
+    async fn shell_permission_decisions_control_execution_and_saved_outcomes() {
+        let denied = "User denied permission to run this command.";
+        // Each outcome is `completed`, `denied`, `failed`, or `cancelled`.
+        for (decision, requests, created, outcomes, response) in [
+            (
+                "approve",
+                2,
+                [true, true],
+                ["completed", "completed"],
+                Ok("end_turn"),
+            ),
+            (
+                "auto",
+                0,
+                [true, true],
+                ["completed", "completed"],
+                Ok("end_turn"),
+            ),
+            (
+                "deny",
+                2,
+                [false, false],
+                ["denied", "denied"],
+                Ok("end_turn"),
+            ),
+            (
+                "mixed",
+                2,
+                [false, true],
+                ["denied", "completed"],
+                Ok("end_turn"),
+            ),
+            (
+                "hook",
+                1,
+                [false, true],
+                ["failed", "completed"],
+                Ok("end_turn"),
+            ),
+            (
+                "cancelled",
+                1,
+                [false, false],
+                ["cancelled", "cancelled"],
+                Ok("cancelled"),
+            ),
+            (
+                "cancel",
+                1,
+                [false, false],
+                ["cancelled", "cancelled"],
+                Ok("cancelled"),
+            ),
+            (
+                "eof",
+                1,
+                [false, false],
+                ["cancelled", "cancelled"],
+                Ok("cancelled"),
+            ),
+            (
+                "unknown",
+                1,
+                [false, false],
+                ["failed", "failed"],
+                Err(Some("Unknown shell permission option: unknown")),
+            ),
+            ("error", 1, [false, false], ["failed", "failed"], Err(None)),
+        ] {
+            let run = PermissionRun::new(decision).await;
+            assert_eq!(run.requests.len(), requests, "{decision}");
+            for (file, created) in ["first", "second"].into_iter().zip(created) {
+                assert_eq!(
+                    run.workspace.0.join(file).exists(),
+                    created,
+                    "{decision}: {file}"
+                );
+            }
+            let saved = run.outcomes();
+            assert_eq!(saved.len(), 2, "{decision}");
+            for (index, (outcome, expected)) in saved.into_iter().zip(outcomes).enumerate() {
+                assert!(
+                    match expected {
+                        "completed" => matches!(outcome, ToolOutcome::Completed(_)),
+                        "denied" => *outcome == ToolOutcome::Failed(denied.to_owned()),
+                        "failed" => matches!(outcome, ToolOutcome::Failed(_)),
+                        _ => matches!(outcome, ToolOutcome::Cancelled(_)),
+                    },
+                    "{decision}, outcome {index}: {outcome:?}"
+                );
+            }
+            match response {
+                Ok(stop_reason) => {
                     assert_eq!(
-                        response["result"]["stopReason"],
-                        if continues { "end_turn" } else { "cancelled" },
+                        run.response["result"]["stopReason"], stop_reason,
                         "{decision}"
                     );
                 }
-            };
-            let (result, ()) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
-                tokio::join!(serve(state, transport), client)
-            })
-            .await
-            .unwrap_or_else(|error| panic!("{decision}: timed out: {error}"));
-            result.unwrap_or_else(|error| panic!("{decision}: ACP connection failed: {error}"));
-            if decision == "approve" {
-                assert!(operations.try_load(&id).is_some());
-            }
-            assert_eq!(
-                workspace.0.join("first").exists(),
-                matches!(decision, "approve" | "auto"),
-                "{decision}"
-            );
-            assert_eq!(
-                workspace.0.join("second").exists(),
-                matches!(decision, "approve" | "auto" | "mixed" | "hook"),
-                "{decision}"
-            );
-            let transcript = store.read(&id).unwrap().unwrap().transcript;
-            let results: Vec<_> = transcript
-                .iter()
-                .flat_map(|entry| match entry {
-                    TranscriptEntry::AssistantBatch(batch) => batch.results.as_slice(),
-                    _ => &[],
-                })
-                .collect();
-            assert_eq!(results.len(), 2, "{decision}");
-            if decision == "auto" {
-                assert!(matches!(
-                    &transcript[..3],
-                    [
-                        TranscriptEntry::Model(_),
-                        TranscriptEntry::Mode(SessionMode::Auto),
-                        TranscriptEntry::UserMessage(_),
-                    ]
-                ));
-            }
-            for (index, result) in results.iter().enumerate() {
-                match decision {
-                    "approve" | "auto" => assert!(
-                        matches!(result.outcome, ToolOutcome::Completed(_)),
-                        "{decision}, result {index}"
-                    ),
-                    "hook" if index == 0 => {
-                        let denied = "global before_tool hook denied this call: Leave first alone.\nskill /check before_tool hook denied this call: Leave first alone.";
-                        assert_eq!(result.outcome, ToolOutcome::Failed(denied.to_owned()));
-                        assert_eq!(server.requests()[1]["messages"][3]["content"], denied);
+                Err(data) => {
+                    assert_eq!(run.response["error"]["code"], -32603, "{decision}");
+                    if let Some(data) = data {
+                        assert_eq!(run.response["error"]["data"], data, "{decision}");
                     }
-                    "deny" | "mixed" if decision == "deny" || index == 0 => assert_eq!(
-                        result.outcome,
-                        ToolOutcome::Failed(
-                            "User denied permission to run this command.".to_owned()
-                        ),
-                        "{decision}, result {index}"
-                    ),
-                    "mixed" | "hook" => assert!(
-                        matches!(result.outcome, ToolOutcome::Completed(_)),
-                        "{decision}, result {index}"
-                    ),
-                    "unknown" | "error" => {
-                        assert!(
-                            matches!(result.outcome, ToolOutcome::Failed(_)),
-                            "{decision}, result {index}"
-                        )
-                    }
-                    _ => assert!(
-                        matches!(result.outcome, ToolOutcome::Cancelled(_)),
-                        "{decision}, result {index}"
-                    ),
                 }
             }
         }
+    }
+
+    #[tokio::test]
+    async fn a_shell_permission_request_describes_the_pending_call_while_the_session_is_busy() {
+        let run = PermissionRun::new("approve").await;
+        for (index, request) in run.requests.iter().enumerate() {
+            let file = ["first", "second"][index];
+            let call = &request.params["toolCall"];
+            assert_eq!(request.params["sessionId"], run.session_id.to_string());
+            assert_eq!(call["toolCallId"], format!("shell-{index}"));
+            assert!(request.announced, "{file}: announced before the request");
+            assert!(!request.target_existed, "{file}: requested before it runs");
+            assert!(request.session_busy, "{file}: the session stays busy");
+            assert_eq!(call["status"], "pending");
+            assert_eq!(call["kind"], "execute");
+            assert_eq!(call["rawInput"]["command"], format!("touch {file}"));
+            assert_eq!(call["title"], format!("touch {file}"));
+            assert_eq!(
+                call["content"][0]["content"]["text"],
+                format!("Working directory: {}", run.workspace.0.display())
+            );
+            assert_eq!(
+                request.params["options"],
+                serde_json::json!([
+                    {"optionId":"approve","name":"Approve","kind":"allow_once"},
+                    {"optionId":"deny","name":"Deny","kind":"reject_once"},
+                ])
+            );
+        }
+        assert_eq!(
+            run.saved_at_response, 2,
+            "the batch is saved before responding"
+        );
+        assert!(run.session_free_after);
+    }
+
+    #[tokio::test]
+    async fn auto_mode_runs_shell_calls_without_permission_requests() {
+        let run = PermissionRun::new("auto").await;
+        assert!(run.requests.is_empty());
+        assert_eq!(
+            run.tool_updates,
+            [
+                "shell-0 pending",
+                "shell-1 pending",
+                "shell-0 in_progress",
+                "shell-0 completed",
+                "shell-1 in_progress",
+                "shell-1 completed",
+            ]
+        );
+        assert!(matches!(
+            &run.transcript[..2],
+            [
+                TranscriptEntry::Model(_),
+                TranscriptEntry::TurnStart(TurnStart {
+                    mode: SessionMode::Auto,
+                    ..
+                }),
+            ]
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_before_tool_denial_skips_the_permission_request() {
+        let run = PermissionRun::new("hook").await;
+        assert_eq!(run.requests.len(), 1);
+        assert_eq!(run.requests[0].params["toolCall"]["toolCallId"], "shell-1");
+        let denied = "global before_tool hook denied this call: Leave first alone.\nskill /check before_tool hook denied this call: Leave first alone.";
+        assert_eq!(*run.outcomes()[0], ToolOutcome::Failed(denied.to_owned()));
+        assert_eq!(run.server.requests()[1]["messages"][3]["content"], denied);
     }
 
     async fn assert_process_stopped(path: &Path, reaped: bool) {
@@ -2241,12 +2356,14 @@ Run the commands.
             );
             let transcript = store.read(&session.id).unwrap().unwrap().transcript;
             assert_eq!(
-                &transcript[..4],
+                &transcript[..2],
                 [
                     TranscriptEntry::Model(openrouter::catalog()[1].id.as_str().to_owned()),
-                    TranscriptEntry::Effort(EffortLevel::High),
-                    TranscriptEntry::Mode(SessionMode::Auto),
-                    TranscriptEntry::UserMessage("Run commands".to_owned().into()),
+                    TranscriptEntry::TurnStart(TurnStart {
+                        effort: EffortLevel::High,
+                        mode: SessionMode::Auto,
+                        input: TurnInput::UserMessage("Run commands".to_owned().into()),
+                    }),
                 ]
             );
             assert_eq!(
@@ -2256,8 +2373,8 @@ Run the commands.
                         TranscriptEntry::AssistantBatch(batch) => Some(batch),
                         _ => None,
                     })
-                    .flat_map(|batch| &batch.results)
-                    .filter(|result| matches!(result.outcome, ToolOutcome::Cancelled(_)))
+                    .flat_map(|batch| &batch.outcomes)
+                    .filter(|outcome| matches!(outcome, ToolOutcome::Cancelled(_)))
                     .count(),
                 2
             );
@@ -2296,7 +2413,7 @@ Run the commands.
         assert!(!workspace.0.join("wrong").exists());
         let store = SessionStore::open(&workspace.0.join("ox.db")).unwrap();
         assert!(store.list(None).unwrap().iter().any(|session| store.read(&session.id).unwrap().unwrap().transcript.iter().any(|entry| matches!(entry,
-            TranscriptEntry::AssistantBatch(batch) if batch.results.iter().any(|result| matches!(&result.outcome, ToolOutcome::Cancelled(text) if text.contains("started") && text.contains("partial changes")))))));
+            TranscriptEntry::AssistantBatch(batch) if batch.outcomes.iter().any(|outcome| matches!(outcome, ToolOutcome::Cancelled(text) if text.contains("started") && text.contains("partial changes")))))));
     }
 
     #[tokio::test]
@@ -2357,7 +2474,7 @@ Run the commands.
                             .unwrap()
                             .transcript
                             .iter()
-                            .any(|entry| matches!(entry, TranscriptEntry::AssistantBatch(batch) if !batch.results.is_empty())),
+                            .any(|entry| matches!(entry, TranscriptEntry::AssistantBatch(batch) if !batch.outcomes.is_empty())),
                         "saved before response"
                     );
                     response = Some(message);
@@ -2383,8 +2500,8 @@ Run the commands.
                     TranscriptEntry::AssistantBatch(batch) => Some(batch),
                     _ => None,
                 })
-                .flat_map(|batch| &batch.results)
-                .filter(|result| matches!(result.outcome, ToolOutcome::Cancelled(_)))
+                .flat_map(|batch| &batch.outcomes)
+                .filter(|outcome| matches!(outcome, ToolOutcome::Cancelled(_)))
                 .count(),
             2
         );

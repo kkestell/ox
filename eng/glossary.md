@@ -59,9 +59,10 @@
   a turn.
 - **ACP selections**: The latest session settings selected through ACP for a
   future turn. They are process state, not durable authority.
-- **Saved settings**: The session settings rebuilt by folding a stored
-  transcript. They are the durable authority for the session model and the
-  fallback when there are no ACP selections.
+- **Saved settings**: The session settings read from a stored transcript: the
+  model entry's model with the effort level and session mode of the latest turn
+  start. They are the durable authority for the session model and the fallback
+  when there are no ACP selections.
 - **Settings snapshot**: The session settings a prompt run captures at its turn
   boundary.
 - **Effort level**: Default, which sends no reasoning parameter, or one of the
@@ -75,8 +76,8 @@
 - **Auto mode**: The session mode that runs shell calls without an ACP
   permission request. Headless prompts use Auto.
 - **Session title**: The short label a session shows in a client, taken once
-  from the first nonblank line of the first saved user message or skill
-  invocation and shortened to 80 characters. A skill invocation contributes
+  from the first nonblank line of the first saved turn input and shortened to
+  80 characters. A skill invocation contributes
   `/<name> <arguments>`; an image-only user message contributes `Image`.
 - **Session summary**: A session's ID, workspace path, optional session title,
   and creation and activity timestamps, without its transcript.
@@ -109,7 +110,7 @@
   instructions, and optional hooks.
 - **Skill catalog**: The skills available to an active session, loaded when it
   becomes active.
-- **Skill invocation**: A transcript entry holding a skill's name, arguments,
+- **Skill invocation**: A turn input holding a skill's name, arguments,
   instructions, and image attachments, saved in place of the user message for
   that turn.
 - **Global hooks**: Commands declared in `~/.config/ox/settings.json`, loaded
@@ -131,8 +132,8 @@
   result.
 - **Hook continuation**: A model request in the same prompt run caused by a
   `continue` decision.
-- **Prompt run**: The work caused by one prompt request: save the user message
-  or skill invocation, request model output, run tools and global and invoked
+- **Prompt run**: The work caused by one prompt request: save the turn start,
+  request model output, run tools and global and invoked
   skill hooks, save results, and respond.
 - **Run ID**: A UUID identifying one prompt run in the input of each of its hook
   commands.
@@ -155,11 +156,15 @@
   MIME type, saved in a user message or skill invocation.
 - **Transcript**: The ordered, saved conversation used for both session replay
   and future model requests.
-- **Transcript entry**: A model entry, effort entry, mode entry, user message,
-  skill invocation, assistant batch, hook feedback, or
-  compaction checkpoint in the transcript.
+- **Transcript entry**: A model entry, turn start, assistant batch, hook
+  feedback, or compaction checkpoint in the transcript.
 - **Model entry**: The first transcript entry. It stores the OpenRouter model
   used for every model request in that session.
+- **Turn input**: The user message or skill invocation that starts a turn. It
+  is `TurnInput` in code and `PromptInput.turn_input` in a prompt run's input.
+- **Turn start**: A transcript entry holding a turn input with the effort level
+  and session mode captured for that turn. It is `TurnStart` in code and
+  `turn_start` in the database.
 - **OpenRouter client**: The concrete client that verifies the API key and sends
   model requests to OpenRouter's chat-completions endpoint.
 - **Model catalog**: The OpenRouter models from `GET /models` that pass the
@@ -219,20 +224,22 @@
   tool call: execute, read, search, edit, or other.
 - **Tool outcome**: What Ox knows happened: completed, failed, or cancelled,
   with explanatory text.
-- **Tool result**: A tool call's ID and name paired with its outcome, stored
-  within the assistant batch containing the call.
-- **Assistant batch**: One assistant message plus exactly one final tool result
+- **Tool result**: A tool call paired with its outcome: the call and the outcome
+  at the same position in its assistant batch. Model requests send it as a
+  tool-role message.
+- **Assistant batch**: One assistant message plus exactly one final tool outcome
   for each call in the message, in call order. The store saves it as one
   transcript entry in one transaction.
 - **Uncommitted assistant batch**: A validated assistant message whose tool
-  outcomes are incomplete or have not yet been saved.
+  outcomes are incomplete or have not yet been saved. The step of the prompt
+  run that processes that message owns it until the save attempt.
 - **Shell permission request**: An ACP request asking whether one shell tool
   call may run. Approval or denial applies only to that call.
 - **Replay**: Sending saved transcript content back to the ACP client when a
   session is loaded.
-- **Commit**: A successful SQLite transaction. `PromptRun::commit` saves one
-  complete assistant batch, updates session activity, and only then extends the
-  in-memory transcript.
+- **Commit**: A successful SQLite transaction. `PromptRun::commit` takes one
+  complete assistant batch, saves it, updates session activity, and only then
+  extends the in-memory transcript.
 - **Provisional output**: Answer text or visible reasoning sent to the ACP
   client before the assistant message is validated. It is not saved if the model
   request is interrupted.

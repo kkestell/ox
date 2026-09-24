@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 use crate::{
     sessions::{
         AssistantMessage, EffortLevel, HookFeedback, ImageAttachment, ModelUsage, SkillInvocation,
-        ToolCall, TranscriptEntry, UserMessage, UserMessagePart,
+        ToolCall, TranscriptEntry, TurnInput, UserMessage, UserMessagePart,
     },
     tools,
 };
@@ -286,13 +286,12 @@ impl ModelRequestParameters {
     }
 }
 
-pub(crate) fn ordinary_body(
-    parameters: &ModelRequestParameters,
-    transcript: &[TranscriptEntry],
-) -> Value {
+/// The request body for encoded chat `messages`, which follow the system
+/// prompt.
+pub(crate) fn ordinary_body(parameters: &ModelRequestParameters, messages: Vec<Value>) -> Value {
     let messages =
         std::iter::once(json!({ "role": "system", "content": parameters.system_prompt }))
-            .chain(chat_messages(transcript))
+            .chain(messages)
             .collect::<Vec<_>>();
     let mut body = json!({
         "model": parameters.model.id,
@@ -358,15 +357,14 @@ impl Client {
         }
     }
 
-    /// Starts one streamed completion using `parameters` and `transcript`. The
-    /// system prompt precedes the transcript.
+    /// Starts one streamed completion using `parameters` and encoded chat
+    /// `messages`. The system prompt precedes the messages.
     pub async fn stream_completion(
         &self,
         parameters: &ModelRequestParameters,
-        transcript: &[TranscriptEntry],
+        messages: Vec<Value>,
     ) -> io::Result<CompletionStream> {
-        self.stream_body(&ordinary_body(parameters, transcript))
-            .await
+        self.stream_body(&ordinary_body(parameters, messages)).await
     }
 
     /// Returns the summary and the usage OpenRouter reported for it.
@@ -493,23 +491,24 @@ fn user_content(message: &UserMessage) -> Value {
     )
 }
 
+/// A user-role chat message.
+pub(crate) fn user_message(message: &UserMessage) -> Value {
+    json!({ "role": "user", "content": user_content(message) })
+}
+
 /// Encodes the saved transcript as OpenRouter chat messages. Visible reasoning
 /// is sent only when no continuation metadata carries it.
 pub(crate) fn chat_messages(transcript: &[TranscriptEntry]) -> Vec<Value> {
     let mut messages = Vec::new();
     for entry in transcript {
         let value = match entry {
-            TranscriptEntry::Model(_)
-            | TranscriptEntry::Effort(_)
-            | TranscriptEntry::Mode(_)
-            | TranscriptEntry::CompactionCheckpoint(_) => continue,
-            TranscriptEntry::UserMessage(message) => {
-                json!({ "role": "user", "content": user_content(message) })
-            }
-            TranscriptEntry::SkillInvocation(invocation) => {
-                let content = user_content(&skill_invocation_message(invocation));
-                json!({ "role": "user", "content": content })
-            }
+            TranscriptEntry::Model(_) | TranscriptEntry::CompactionCheckpoint(_) => continue,
+            TranscriptEntry::TurnStart(turn_start) => match &turn_start.input {
+                TurnInput::UserMessage(message) => user_message(message),
+                TurnInput::SkillInvocation(invocation) => {
+                    user_message(&skill_invocation_message(invocation))
+                }
+            },
             TranscriptEntry::HookFeedback(feedback) => {
                 json!({ "role": "user", "content": hook_feedback_text(feedback) })
             }
@@ -541,13 +540,15 @@ pub(crate) fn chat_messages(transcript: &[TranscriptEntry]) -> Vec<Value> {
                     value["reasoning"] = Value::String(message.reasoning.clone());
                 }
                 messages.push(value);
-                messages.extend(batch.results.iter().map(|result| {
-                    json!({
-                        "role": "tool",
-                        "tool_call_id": result.call_id,
-                        "content": result.outcome.text(),
-                    })
-                }));
+                messages.extend(message.tool_calls.iter().zip(&batch.outcomes).map(
+                    |(call, outcome)| {
+                        json!({
+                            "role": "tool",
+                            "tool_call_id": call.call_id,
+                            "content": outcome.text(),
+                        })
+                    },
+                ));
                 continue;
             }
         };
@@ -1143,7 +1144,7 @@ mod tests {
         fixture::{Reply, Server, delta, sse, text_reply, usage},
         *,
     };
-    use crate::sessions::{AssistantBatch, SessionMode, ToolOutcome, ToolResult};
+    use crate::sessions::{AssistantBatch, SessionMode, ToolOutcome, TurnStart};
 
     const TEST_SYSTEM_PROMPT: &str = "You are Ox.";
 
@@ -1170,7 +1171,7 @@ mod tests {
             .client()
             .stream_completion(
                 &test_parameters(),
-                &[TranscriptEntry::UserMessage("hi".to_owned().into())],
+                chat_messages(&[TranscriptEntry::turn("hi".to_owned())]),
             )
             .await?;
         drain(&mut request).await
@@ -1217,8 +1218,11 @@ mod tests {
         };
         let transcript = vec![
             TranscriptEntry::Model(catalog()[2].id.as_str().to_owned()),
-            TranscriptEntry::Mode(SessionMode::Auto),
-            TranscriptEntry::UserMessage("Weather in Chicago and Denver?".to_owned().into()),
+            TranscriptEntry::TurnStart(TurnStart {
+                effort: EffortLevel::High,
+                mode: SessionMode::Auto,
+                input: "Weather in Chicago and Denver?".to_owned().into(),
+            }),
             TranscriptEntry::AssistantBatch(AssistantBatch {
                 message: AssistantMessage {
                     text: String::new(),
@@ -1227,17 +1231,9 @@ mod tests {
                     continuation_metadata: details.clone(),
                     usage: None,
                 },
-                results: vec![
-                    ToolResult {
-                        call_id: "call-1".to_owned(),
-                        name: tools::SHELL.to_owned(),
-                        outcome: ToolOutcome::Completed("Sunny.".to_owned()),
-                    },
-                    ToolResult {
-                        call_id: "call-2".to_owned(),
-                        name: tools::SHELL.to_owned(),
-                        outcome: ToolOutcome::Failed("Unavailable.".to_owned()),
-                    },
+                outcomes: vec![
+                    ToolOutcome::Completed("Sunny.".to_owned()),
+                    ToolOutcome::Failed("Unavailable.".to_owned()),
                 ],
             }),
         ];
@@ -1252,7 +1248,7 @@ mod tests {
                         .to_owned(),
                 )
                 .unwrap(),
-                &transcript,
+                chat_messages(&transcript),
             )
             .await
             .unwrap();
@@ -1281,8 +1277,10 @@ mod tests {
         );
         assert_eq!(
             messages[1],
-            json!({ "role": "user", "content": "Weather in Chicago and Denver?" })
+            json!({ "role": "user", "content": "Weather in Chicago and Denver?" }),
+            "the turn's saved settings are not message content"
         );
+        assert!(body.get("reasoning").is_none());
         assert_eq!(messages[2]["role"], "assistant");
         assert_eq!(messages[2]["content"], Value::Null);
         assert_eq!(messages[2]["tool_calls"].as_array().unwrap().len(), 2);
@@ -1297,73 +1295,27 @@ mod tests {
             messages[3],
             json!({ "role": "tool", "tool_call_id": "call-1", "content": "Sunny." })
         );
-        assert_eq!(messages[4]["tool_call_id"], "call-2");
-
-        let mut compacted = transcript.clone();
-        compacted.push(TranscriptEntry::CompactionCheckpoint(
-            crate::sessions::CompactionCheckpoint {
-                summary: "Older summary".to_owned(),
-                covered_prefix: 4,
-                summarizer_cost: None,
-            },
-        ));
-        compacted.push(TranscriptEntry::UserMessage("middle".to_owned().into()));
-        compacted.push(TranscriptEntry::AssistantBatch(AssistantBatch {
-            message: AssistantMessage {
-                text: "middle answer".to_owned(),
-                reasoning: String::new(),
-                tool_calls: vec![],
-                continuation_metadata: vec![],
-                usage: None,
-            },
-            results: vec![],
-        }));
-        compacted.push(TranscriptEntry::CompactionCheckpoint(
-            crate::sessions::CompactionCheckpoint {
-                summary: "Current summary".to_owned(),
-                covered_prefix: 7,
-                summarizer_cost: None,
-            },
-        ));
-        compacted.push(TranscriptEntry::UserMessage("recent".to_owned().into()));
-        compacted.push(TranscriptEntry::AssistantBatch(AssistantBatch {
-            message: AssistantMessage {
-                text: "recent answer".to_owned(),
-                reasoning: "visible".to_owned(),
-                tool_calls: vec![],
-                continuation_metadata: vec![json!({"type":"reasoning.encrypted", "data":"recent"})],
-                usage: None,
-            },
-            results: vec![],
-        }));
-        let projected = crate::compaction::projection(&compacted);
-        let body = ordinary_body(&test_parameters(), &projected);
-        let projected_messages = body["messages"].as_array().unwrap();
-        assert_eq!(projected_messages.len(), 4);
         assert_eq!(
-            projected_messages[1]["content"],
-            "Compaction summary of earlier conversation:\nCurrent summary"
+            messages[4],
+            json!({ "role": "tool", "tool_call_id": "call-2", "content": "Unavailable." })
         );
-        assert_eq!(projected_messages[2]["content"], "recent");
-        assert_eq!(
-            projected_messages[3]["reasoning_details"][0]["data"],
-            "recent"
-        );
-        assert!(projected_messages[3].get("reasoning").is_none());
+    }
 
+    #[test]
+    fn user_images_keep_their_order_and_skill_images_follow_the_instructions() {
         let image = ImageAttachment {
             data: "aGVsbG8=".to_owned(),
             mime_type: "image/png".to_owned(),
         };
         let messages = chat_messages(&[
-            TranscriptEntry::UserMessage(UserMessage {
+            TranscriptEntry::turn(UserMessage {
                 parts: vec![
                     UserMessagePart::Text("Before".to_owned()),
                     UserMessagePart::Image(image.clone()),
                     UserMessagePart::Text("After".to_owned()),
                 ],
             }),
-            TranscriptEntry::SkillInvocation(SkillInvocation {
+            TranscriptEntry::turn(SkillInvocation {
                 name: "goal".to_owned(),
                 arguments: "Inspect".to_owned(),
                 instructions: "Look at the screenshot.".to_owned(),
@@ -1428,7 +1380,7 @@ mod tests {
                             TEST_SYSTEM_PROMPT.to_owned(),
                         )
                         .unwrap(),
-                        &[],
+                        vec![],
                     )
                     .await
                     .unwrap();
@@ -1455,7 +1407,7 @@ mod tests {
         };
         let messages = chat_messages(&[TranscriptEntry::AssistantBatch(AssistantBatch {
             message: plain,
-            results: vec![],
+            outcomes: vec![],
         })]);
         assert_eq!(messages[0]["reasoning"], "Add them.");
         assert!(messages[0].get("reasoning_details").is_none());
@@ -1594,7 +1546,7 @@ mod tests {
                 assert_eq!(message.continuation_metadata, expected);
                 let messages = chat_messages(&[TranscriptEntry::AssistantBatch(AssistantBatch {
                     message,
-                    results: vec![],
+                    outcomes: vec![],
                 })]);
                 assert_eq!(messages[0]["reasoning_details"], json!(expected));
             }
@@ -1702,7 +1654,7 @@ mod tests {
         let server = Server::start(vec![Reply::Stream("data: not json\n\n".to_owned())]).await;
         let mut request = server
             .client()
-            .stream_completion(&test_parameters(), &[])
+            .stream_completion(&test_parameters(), vec![])
             .await
             .unwrap();
         assert!(drain(&mut request).await.is_err());
@@ -1714,7 +1666,7 @@ mod tests {
         .await;
         let error = server
             .client()
-            .stream_completion(&test_parameters(), &[])
+            .stream_completion(&test_parameters(), vec![])
             .await
             .err()
             .expect("a failed status is an error");
@@ -1729,7 +1681,7 @@ mod tests {
             let mut request = client
                 .stream_completion(
                     &test_parameters(),
-                    &[TranscriptEntry::UserMessage("hi".to_owned().into())],
+                    chat_messages(&[TranscriptEntry::turn("hi".to_owned())]),
                 )
                 .await
                 .unwrap();

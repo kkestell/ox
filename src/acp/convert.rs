@@ -18,7 +18,7 @@ use crate::{
     openrouter::ModelRequestParameters,
     sessions::{
         self, AssistantBatch, AssistantMessage, HookFeedback, HookKind, ImageAttachment, ToolCall,
-        ToolOutcome, ToolResult, TranscriptEntry, UserMessage, UserMessagePart,
+        ToolOutcome, TranscriptEntry, TurnInput, UserMessage, UserMessagePart,
     },
     tools,
 };
@@ -213,13 +213,13 @@ pub fn shell_permission_request(
     )
 }
 
-pub fn finished_tool_call_update(result: &ToolResult) -> SessionUpdate {
+pub fn finished_tool_call_update(call: &ToolCall, outcome: &ToolOutcome) -> SessionUpdate {
     SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
-        ToolCallId::new(result.call_id.clone()),
+        ToolCallId::new(call.call_id.clone()),
         ToolCallUpdateFields::new()
-            .status(status(&result.outcome))
-            .content(vec![output_content(&result.outcome)])
-            .raw_output(raw_output(&result.outcome)),
+            .status(status(outcome))
+            .content(vec![output_content(outcome)])
+            .raw_output(raw_output(outcome)),
     ))
 }
 
@@ -277,21 +277,20 @@ pub fn replay_transcript(
 ) -> Result<()> {
     for entry in transcript {
         match entry {
-            TranscriptEntry::Model(_)
-            | TranscriptEntry::Effort(_)
-            | TranscriptEntry::Mode(_)
-            | TranscriptEntry::CompactionCheckpoint(_) => {}
-            TranscriptEntry::UserMessage(message) => {
-                for update in user_message_updates(message) {
-                    send_update(update)?;
+            TranscriptEntry::Model(_) | TranscriptEntry::CompactionCheckpoint(_) => {}
+            TranscriptEntry::TurnStart(turn_start) => match &turn_start.input {
+                TurnInput::UserMessage(message) => {
+                    for update in user_message_updates(message) {
+                        send_update(update)?;
+                    }
                 }
-            }
-            TranscriptEntry::SkillInvocation(invocation) => {
-                send_update(user_message_chunk(&invocation.command_text()))?;
-                for image in &invocation.images {
-                    send_update(user_image_chunk(image))?;
+                TurnInput::SkillInvocation(invocation) => {
+                    send_update(user_message_chunk(&invocation.command_text()))?;
+                    for image in &invocation.images {
+                        send_update(user_image_chunk(image))?;
+                    }
                 }
-            }
+            },
             TranscriptEntry::HookFeedback(feedback) => send_update(replayed_hook_run(feedback))?,
             TranscriptEntry::AssistantBatch(batch) => {
                 let message = &batch.message;
@@ -301,8 +300,8 @@ pub fn replay_transcript(
                 if !message.text.is_empty() {
                     send_update(agent_message_chunk(&message.text))?;
                 }
-                for (call, result) in message.tool_calls.iter().zip(&batch.results) {
-                    send_update(replayed_tool_call(call, result))?;
+                for (call, outcome) in message.tool_calls.iter().zip(&batch.outcomes) {
+                    send_update(replayed_tool_call(call, outcome))?;
                 }
             }
         }
@@ -310,17 +309,17 @@ pub fn replay_transcript(
     Ok(())
 }
 
-fn replayed_tool_call(call: &ToolCall, result: &ToolResult) -> SessionUpdate {
+fn replayed_tool_call(call: &ToolCall, outcome: &ToolOutcome) -> SessionUpdate {
     SessionUpdate::ToolCall(
         AcpToolCall::new(
             ToolCallId::new(call.call_id.clone()),
             tools::tool_call_title(call),
         )
         .kind(tool_kind(call))
-        .status(status(&result.outcome))
+        .status(status(outcome))
         .raw_input(raw_input(call))
-        .content(vec![output_content(&result.outcome)])
-        .raw_output(raw_output(&result.outcome)),
+        .content(vec![output_content(outcome)])
+        .raw_output(raw_output(outcome)),
     )
 }
 
@@ -384,12 +383,12 @@ mod tests {
                 &id,
                 &[
                     TranscriptEntry::Model(crate::openrouter::default_model().to_owned()),
-                    TranscriptEntry::UserMessage(message.clone()),
+                    TranscriptEntry::turn(message.clone()),
                 ],
             )
             .unwrap();
         let stored = store.read(&id).unwrap().unwrap();
-        assert_eq!(stored.transcript[1], TranscriptEntry::UserMessage(message));
+        assert_eq!(stored.transcript[1], TranscriptEntry::turn(message));
         let mut updates = Vec::new();
         replay_transcript(&stored.transcript, |update| {
             updates.push(update);
@@ -502,13 +501,10 @@ mod tests {
                     && update.title == "Run shell command"
                     && update.raw_input == Some(Value::String("{\"comm".to_owned()))
         ));
-        let cancelled = ToolResult {
-            call_id: "call-1".to_owned(),
-            name: tools::SHELL.to_owned(),
-            outcome: ToolOutcome::Cancelled("Cancelled before this tool was started.".to_owned()),
-        };
+        let cancelled =
+            ToolOutcome::Cancelled("Cancelled before this tool was started.".to_owned());
         assert!(matches!(
-            finished_tool_call_update(&cancelled),
+            finished_tool_call_update(&call, &cancelled),
             SessionUpdate::ToolCallUpdate(update)
                 if update.fields.status == Some(ToolCallStatus::Failed)
                     && update.fields.raw_output

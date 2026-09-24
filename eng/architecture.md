@@ -68,12 +68,12 @@ requests are projections of the same saved transcript; neither has a separate
 authoritative representation.
 
 A transcript may be empty. Every nonempty transcript begins with one model
-entry. A turn starts with a user message or a skill invocation. Effort and mode
-entries form a contiguous settings block immediately before the turn start where
-those settings take effect; a block contains at most one of each. Each assistant
-batch is one transcript entry containing its message and one tool result for
-each tool call, in call order. Hook feedback follows the entry its hook ran
-after: `before_run` feedback follows a user message or skill invocation,
+entry followed by the first turn start. A turn start holds the user message or
+skill invocation that starts the turn together with the effort level and session
+mode captured for that turn. Each assistant batch is one transcript entry
+containing its message and one tool outcome for each tool call; outcome `i`
+belongs to call `i`. Hook feedback follows the entry its hook ran
+after: `before_run` feedback follows a turn start,
 `after_tools` feedback follows a batch with tool calls, and `before_stop`
 feedback follows a batch without tool calls. Consecutive feedback entries of
 the same hook kind share that placement.
@@ -89,9 +89,10 @@ user message nor a tool result.
 
 The model entry fixes the OpenRouter model when the first turn starts. The model
 does not change within that session. The current effort level and session mode
-may change between turns. Folding the transcript reconstructs all session
-settings after load or restart, including Auto mode before another command can
-run.
+may change between turns, and every turn start stores both, including values
+unchanged from the previous turn. After load or restart, the model entry and the
+latest turn start reconstruct the session settings, including Auto mode before
+another command can run.
 
 An assistant message keeps answer text, visible reasoning, tool calls,
 continuation metadata, and model usage together. Continuation metadata is
@@ -111,8 +112,10 @@ user-role message, followed by entries after its covered prefix. When the
 latest turn start is a skill invocation inside the covered prefix, its message
 is repeated right after the summary, so a long hook-driven run keeps its
 instructions and arguments; the summary carries its `before_run` feedback. Once
-a later turn starts, the summary alone carries it. Request estimates, input admission, and compaction cut sizes use the same
-projection.
+a later turn starts, the summary alone carries it. The projection encodes the
+summary and the selected entries directly as request messages; the summary is
+never a transcript entry. Request estimates, input admission, and compaction cut
+sizes use the same projection.
 
 The system prompt is not a transcript entry. It is neither stored nor replayed.
 
@@ -251,13 +254,12 @@ The active session's system prompt remains unchanged for ordinary requests.
 ### Turn boundary
 
 One prompt run owns the state for one turn: its settings snapshot, saved
-transcript copy, cancellation signal, active completion stream, any
-uncommitted assistant batch, global and invoked skill hooks, and the run ID
-shared by their commands.
+transcript copy, cancellation signal, active completion stream, global and
+invoked skill hooks, and the run ID shared by their commands.
 
 An input that cannot fit even after the largest eligible compaction cut is
-rejected before persistence. An accepted user message or skill invocation and
-any session-setting changes are committed before the first model request. The
+rejected before persistence. An accepted turn start, with its effort level and
+session mode, is committed before the first model request. The
 ACP updates announcing them are sent after the commit, inside the prompt run, so
 a failure to send them still ends the run through its normal completion. Model output remains
 provisional until the OpenRouter client yields a validated completion. Tools run
@@ -284,12 +286,12 @@ begins. A successful final response follows the same commit boundary.
 
 Global hooks and the invoked skill's hooks run at fixed points in the turn:
 
-1. `before_run` runs once, after the user message or skill invocation is saved
+1. `before_run` runs once, after the turn start is saved
    and announced and before the first model request. Compaction, request
    retries, and hook continuations do not rerun it.
 2. `before_tool` runs before each tool call, before the Ask mode
    permission request. A denial skips the permission request and execution and
-   gives the call a failed tool result that carries the reason. Later calls in
+   gives the call a failed tool outcome that carries the reason. Later calls in
    the batch proceed. A tool decision saves no hook feedback and cannot change
    the call's arguments.
 3. `after_tools` runs once for each tool-bearing assistant batch, after the
@@ -324,26 +326,30 @@ observed before the turn start is saved, saves nothing and runs no hook.
 ### Assistant-batch boundary
 
 An assistant batch contains one validated assistant message and exactly one
-final tool result for every tool call in that message. The session store saves
-the whole batch as one `assistant_batch` entry and updates session activity in
-one SQLite transaction. Construction, append, and transcript validation check
-the message and the exact ordered pairing of calls and results. JSON decoding
+final tool outcome for every tool call in that message, in call order. Each
+consumer pairs a call with the outcome at the same position. The session store
+saves the whole batch as one `assistant_batch` entry and updates session
+activity in one SQLite transaction. Construction, append, and transcript
+validation check the message and that it has one outcome per call. JSON decoding
 alone does not establish validity.
 
-The prompt run holds incomplete results in an uncommitted assistant batch. Every
-observed tool outcome enters it before a finished ACP update is sent or a later
-tool begins. The prompt run extends its transcript copy only after the database
-commit succeeds.
+The step of the prompt run that processes one validated assistant message owns
+its uncommitted assistant batch, from the pending ACP updates through the save
+attempt. Every observed tool outcome enters the batch before a finished ACP
+update is sent or a later tool begins. Every exit from that step gives each call
+a final outcome and attempts the save before the step returns; usage updates,
+`after_tools`, and `before_stop` run only after the batch commits. The prompt
+run extends its transcript copy only after the database commit succeeds.
 
 If the turn stops after validation, every call without an observed outcome gets
 an explicit failed or cancelled tool outcome before the batch is saved. Ox does
 not infer success or claim that cancellation reversed effects. A `before_tool`
 error is the only hook error that stops a batch before it completes; the current
-call and every later call get a failed `Not started` result.
+call and every later call get a failed `Not started` outcome.
 
 `after_tools` runs only after the whole batch commits, so it sees the workspace
 after every call in the batch. Its input lists every call in call
-order with its saved result, including failed and denied calls. It does not run
+order with its saved outcome, including failed and denied calls. It does not run
 for a batch the turn stopped before completing. After an `after_tools` error,
 the committed batch stays saved and the hook's effects are not undone.
 
@@ -463,15 +469,14 @@ The implementation enforces these properties:
 
 1. A session has at most one active prompt, load, or delete operation in the
    process.
-2. The saved user message or skill invocation is durable before its turn's first
-   model request.
-3. A nonempty transcript begins with exactly one model entry, and every model
-   request in the session uses that model.
-4. Effort and mode entries form one nonduplicating settings block immediately
-   before the turn start where they take effect.
+2. The saved turn start is durable before its turn's first model request.
+3. A nonempty transcript begins with exactly one model entry followed by a turn
+   start, and every model request in the session uses that model.
+4. Every turn start stores the effort level and session mode captured for its
+   turn.
 5. Tool execution begins only from a validated completion.
-6. A saved assistant message has exactly one matching final tool result for each
-   tool call, in call order.
+6. A saved assistant message has exactly one final tool outcome for each tool
+   call, and outcome `i` belongs to call `i`.
 7. An observed tool outcome enters the uncommitted assistant batch before its
    finished ACP update is sent.
 8. A prompt run advances its transcript copy only after the corresponding

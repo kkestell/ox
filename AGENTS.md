@@ -32,14 +32,15 @@ THIS DOCUMENT MUST BE KEPT UP TO DATE
   an optional SIGTERM grace period.
 - `src/openrouter.rs`: The model catalog fetched from OpenRouter at startup,
   its catalog filter and each model's effort levels and image input support,
-  the default model, model request parameters, request encoding with the skill
-  invocation message, context limits, client, streamed
-  response assembly with usage parsing, and explicit input-context overflow
-  errors.
+  the default model, model request parameters, transcript encoding into chat
+  messages that pairs each tool call with its outcome, request encoding from
+  those messages with the skill invocation message, context limits, client,
+  streamed response assembly with usage parsing, and explicit input-context
+  overflow errors.
 - `src/compaction.rs`: Image-aware request estimates, safe transcript cuts,
   bounded summarizer input with explicit tool-result excerpts, checkpoint
-  commits, and model-request projection, which repeats a covered skill
-  invocation after the summary.
+  commits, and model-request projection into encoded chat messages, which
+  repeats a covered skill invocation after the summary.
 - `src/prompts/compaction_prompt.md`: Dedicated summarizer instructions.
 - `src/tools.rs`: Concrete tool names, the ordered list of tool schemas sent to
   the model, tool call titles, and execution of one complete call. Each tool
@@ -55,12 +56,14 @@ THIS DOCUMENT MUST BE KEPT UP TO DATE
   and filesystem changes.
 - `src/tools/workspace.rs`: Descriptor-relative file operations shared by
   read, search, and patch tools.
-- `src/sessions.rs`: Transcript and durable model, effort, and mode setting
-  types, ordered user message parts and image attachments, skill invocations,
-  hook kinds, hook feedback, assistant batch entries, model usage, compaction
-  checkpoints with their summarizer cost, session cost, transcript entry
-  encoding as stored JSON, transcript validation, database path selection,
-  and `SessionStore` over one SQLite connection.
+- `src/sessions.rs`: Transcript types, including the model entry and turn
+  starts that save each turn's input with its effort and mode, ordered user
+  message parts and image attachments, skill invocations, hook kinds, hook
+  feedback, assistant batch entries with tool outcomes in call order, model
+  usage, compaction checkpoints with their summarizer cost, session cost,
+  transcript entry encoding as stored JSON, transcript validation, saved
+  settings from the model entry and latest turn start, database path
+  selection, and `SessionStore` over one SQLite connection.
 - `src/acp.rs`: Connection wiring, `ServerState`, lazy OpenRouter client,
   request handlers, advertised slash commands and their prompt dispatch,
   global hooks captured at startup, per-session model, effort, and mode
@@ -71,13 +74,15 @@ THIS DOCUMENT MUST BE KEPT UP TO DATE
   session at a time, enforced by an operation guard; `/compact` runs as a
   prompt operation.
 - `src/acp/prompt.rs`: One prompt run: reject oversized input before saving,
-  save accepted input with captured settings, announce it and run global and
-  invoked skill `before_run` hooks, compact before large model requests, retry
-  explicit input overflow once, run `before_tool` before each tool
-  call, run tools, save complete assistant batches and send a usage update
-  after each and after each automatic compaction, run `after_tools` after each
-  batch and `before_stop` on each finished answer, run `after_run` on the
-  result, and return an outcome carrying the accepted answer only when finished.
+  save accepted input with captured settings as one turn start, announce it and
+  run global and invoked skill `before_run` hooks, compact before large model
+  requests, retry explicit input overflow once, process each assistant batch in
+  the one step that owns it (run `before_tool` before each tool call, run
+  tools, and on every exit give each call an outcome and attempt the save),
+  send a usage update after each committed batch and after each automatic
+  compaction, run `after_tools` after each batch and `before_stop` on each
+  finished answer, run `after_run` on the result, and return an outcome
+  carrying the accepted answer only when finished.
 - `src/acp/convert.rs`: ACP text and image input conversion, session update
   construction
   including each tool call's kind, hook runs, and usage updates, and

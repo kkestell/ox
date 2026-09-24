@@ -53,38 +53,96 @@ COMMIT;
 ";
 
 /// One entry in a session transcript. Every nonempty transcript opens with
-/// the model its completions use, which does not change within the session.
-/// A turn starts with a user message or a skill invocation. Effort and mode
-/// entries form a settings block immediately before the turn start where they
-/// take effect. Each assistant batch contains its message and one result per
-/// call, in call order. Hook feedback follows the turn start or assistant batch
-/// its hook ran after, allowing adjacent feedback of the same kind.
+/// the model its completions use, which does not change within the session,
+/// followed by the first turn start. Each assistant batch contains its message
+/// and one outcome per call, in call order. Hook feedback follows the turn
+/// start or assistant batch its hook ran after, allowing adjacent feedback of
+/// the same kind.
 #[derive(Debug, Clone, PartialEq)]
 pub enum TranscriptEntry {
     Model(String),
-    Effort(EffortLevel),
-    Mode(SessionMode),
-    UserMessage(UserMessage),
-    SkillInvocation(SkillInvocation),
+    TurnStart(TurnStart),
     AssistantBatch(AssistantBatch),
     HookFeedback(HookFeedback),
     CompactionCheckpoint(CompactionCheckpoint),
 }
 
-impl TranscriptEntry {
-    /// A user message or skill invocation.
-    pub fn is_turn_start(&self) -> bool {
-        matches!(self, Self::UserMessage(_) | Self::SkillInvocation(_))
+/// The input that starts a turn, saved with the effort level and session mode
+/// captured for that turn.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TurnStart {
+    pub effort: EffortLevel,
+    pub mode: SessionMode,
+    pub input: TurnInput,
+}
+
+/// The user message or skill invocation that starts a turn.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "type",
+    content = "content",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
+pub enum TurnInput {
+    UserMessage(UserMessage),
+    SkillInvocation(SkillInvocation),
+}
+
+impl TurnInput {
+    pub fn has_images(&self) -> bool {
+        match self {
+            Self::UserMessage(message) => message.has_images(),
+            Self::SkillInvocation(invocation) => !invocation.images.is_empty(),
+        }
     }
 }
 
-/// The index and entry of the latest turn start.
-pub fn latest_turn_start(transcript: &[TranscriptEntry]) -> Option<(usize, &TranscriptEntry)> {
+#[cfg(test)]
+impl TranscriptEntry {
+    /// A turn start with the settings of a new ACP session: Default effort in
+    /// Ask mode.
+    pub(crate) fn turn(input: impl Into<TurnInput>) -> Self {
+        Self::TurnStart(TurnStart {
+            effort: EffortLevel::Default,
+            mode: SessionMode::Ask,
+            input: input.into(),
+        })
+    }
+}
+
+#[cfg(test)]
+impl From<String> for TurnInput {
+    fn from(text: String) -> Self {
+        Self::UserMessage(text.into())
+    }
+}
+
+#[cfg(test)]
+impl From<UserMessage> for TurnInput {
+    fn from(message: UserMessage) -> Self {
+        Self::UserMessage(message)
+    }
+}
+
+#[cfg(test)]
+impl From<SkillInvocation> for TurnInput {
+    fn from(invocation: SkillInvocation) -> Self {
+        Self::SkillInvocation(invocation)
+    }
+}
+
+/// The index and value of the latest turn start.
+pub fn latest_turn_start(transcript: &[TranscriptEntry]) -> Option<(usize, &TurnStart)> {
     transcript
         .iter()
         .enumerate()
         .rev()
-        .find(|(_, entry)| entry.is_turn_start())
+        .find_map(|(index, entry)| match entry {
+            TranscriptEntry::TurnStart(turn_start) => Some((index, turn_start)),
+            _ => None,
+        })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -452,14 +510,6 @@ pub struct ToolCall {
     pub arguments: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ToolResult {
-    pub call_id: String,
-    pub name: String,
-    pub outcome: ToolOutcome,
-}
-
 /// Every variant carries text describing what Ox knows about the call.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "status", content = "content", rename_all = "snake_case")]
@@ -477,59 +527,34 @@ impl ToolOutcome {
     }
 }
 
-/// One validated assistant message with a final result for each tool call.
-/// The store saves this entire value as one entry in one transaction.
+/// One validated assistant message with a final outcome for each tool call.
+/// Outcome `i` belongs to tool call `i`. The store saves this entire value as
+/// one entry in one transaction.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AssistantBatch {
     pub message: AssistantMessage,
-    pub results: Vec<ToolResult>,
+    pub outcomes: Vec<ToolOutcome>,
 }
 
 impl AssistantBatch {
-    pub fn new(message: AssistantMessage, results: Vec<ToolResult>) -> io::Result<Self> {
-        let batch = Self { message, results };
+    pub fn new(message: AssistantMessage, outcomes: Vec<ToolOutcome>) -> io::Result<Self> {
+        let batch = Self { message, outcomes };
         batch.validate()?;
         Ok(batch)
     }
 
     fn validate(&self) -> io::Result<()> {
         self.message.validate()?;
-        pair_results(&self.message.tool_calls, &self.results)
-    }
-}
-
-fn pair_results(calls: &[ToolCall], results: &[ToolResult]) -> io::Result<()> {
-    for (index, call) in calls.iter().enumerate() {
-        match results.get(index) {
-            None => {
-                return Err(invalid_data(format!(
-                    "tool call {} has no result",
-                    call.call_id
-                )));
-            }
-            Some(result) if result.call_id != call.call_id => {
-                return Err(invalid_data(format!(
-                    "expected a result for tool call {} but found one for {}",
-                    call.call_id, result.call_id
-                )));
-            }
-            Some(result) if result.name != call.name => {
-                return Err(invalid_data(format!(
-                    "result for tool call {} names tool {} but the call was for {}",
-                    call.call_id, result.name, call.name
-                )));
-            }
-            Some(_) => {}
+        let calls = self.message.tool_calls.len();
+        let outcomes = self.outcomes.len();
+        if calls != outcomes {
+            return Err(invalid_data(format!(
+                "an assistant message with {calls} tool calls has {outcomes} tool outcomes"
+            )));
         }
+        Ok(())
     }
-    if let Some(extra) = results.get(calls.len()) {
-        return Err(invalid_data(format!(
-            "tool result {} does not belong to any call in its assistant message",
-            extra.call_id
-        )));
-    }
-    Ok(())
 }
 
 fn validate_transcript(entries: &[TranscriptEntry]) -> io::Result<()> {
@@ -539,79 +564,38 @@ fn validate_transcript(entries: &[TranscriptEntry]) -> io::Result<()> {
     if !matches!(entries.first(), Some(TranscriptEntry::Model(_))) {
         return Err(invalid_data("transcript does not open with a model"));
     }
-    let mut index = 1;
+    if !matches!(entries.get(1), Some(TranscriptEntry::TurnStart(_))) {
+        return Err(invalid_data(
+            "the model entry is not followed by a turn start",
+        ));
+    }
     let mut previous_prefix = 0;
     let mut current_skill: Option<&str> = None;
-    while let Some(entry) = entries.get(index) {
-        index = match entry {
+    for (index, entry) in entries.iter().enumerate().skip(1) {
+        match entry {
             TranscriptEntry::Model(_) => {
                 return Err(invalid_data(
                     "a model entry appears after the transcript opened",
                 ));
             }
-            TranscriptEntry::Effort(_) | TranscriptEntry::Mode(_) => {
-                settings_block_end(entries, index)?
-            }
-            TranscriptEntry::UserMessage(_) => {
-                current_skill = None;
-                index + 1
-            }
-            TranscriptEntry::SkillInvocation(invocation) => {
-                current_skill = Some(&invocation.name);
-                index + 1
+            TranscriptEntry::TurnStart(turn_start) => {
+                current_skill = match &turn_start.input {
+                    TurnInput::UserMessage(_) => None,
+                    TurnInput::SkillInvocation(invocation) => Some(&invocation.name),
+                };
             }
             TranscriptEntry::HookFeedback(feedback) => {
                 check_hook_feedback_skill(feedback, current_skill)?;
                 check_hook_feedback_placement(entries, index, feedback)?;
-                index + 1
             }
             TranscriptEntry::CompactionCheckpoint(checkpoint) => {
                 check_compaction_checkpoint(checkpoint, index, previous_prefix, entries)?;
                 previous_prefix = checkpoint.covered_prefix;
-                index + 1
             }
-            TranscriptEntry::AssistantBatch(batch) => {
-                batch.validate()?;
-                index + 1
-            }
-        };
+            TranscriptEntry::AssistantBatch(batch) => batch.validate()?,
+        }
     }
     Ok(())
-}
-
-/// Returns the index of the turn start that follows the settings block at
-/// `start`.
-fn settings_block_end(entries: &[TranscriptEntry], start: usize) -> io::Result<usize> {
-    let mut index = start;
-    let mut saw_effort = false;
-    let mut saw_mode = false;
-    while let Some(setting) = entries.get(index) {
-        match setting {
-            TranscriptEntry::Effort(_) if saw_effort => {
-                return Err(invalid_data(
-                    "a settings block contains more than one effort entry",
-                ));
-            }
-            TranscriptEntry::Effort(_) => saw_effort = true,
-            TranscriptEntry::Mode(_) if saw_mode => {
-                return Err(invalid_data(
-                    "a settings block contains more than one mode entry",
-                ));
-            }
-            TranscriptEntry::Mode(_) => saw_mode = true,
-            _ => break,
-        }
-        index += 1;
-    }
-    if !entries
-        .get(index)
-        .is_some_and(TranscriptEntry::is_turn_start)
-    {
-        return Err(invalid_data(
-            "a settings block does not immediately precede a user message or skill invocation",
-        ));
-    }
-    Ok(index)
 }
 
 fn check_hook_feedback_skill(
@@ -636,7 +620,7 @@ fn check_hook_feedback_placement(
     }).expect("a transcript begins with a model entry");
     let (placed, place) = match feedback.content {
         HookFeedbackContent::BeforeRun { .. } => (
-            previous.is_turn_start(),
+            matches!(previous, TranscriptEntry::TurnStart(_)),
             "a user message or skill invocation",
         ),
         HookFeedbackContent::AfterTools { .. } => (
@@ -711,23 +695,15 @@ pub struct StoredSession {
 }
 
 impl StoredSession {
-    /// The session settings in force after the last transcript entry. An empty
-    /// transcript still uses the supplied defaults.
+    /// The session model with the effort level and session mode of the latest
+    /// turn start. An empty transcript uses the supplied defaults.
     pub fn saved_settings(&self, defaults: &SessionSettings) -> SessionSettings {
-        let mut settings = defaults.clone();
-        for entry in &self.transcript {
-            match entry {
-                TranscriptEntry::Model(model) => settings.model.clone_from(model),
-                TranscriptEntry::Effort(effort) => settings.effort = *effort,
-                TranscriptEntry::Mode(mode) => settings.mode = *mode,
-                TranscriptEntry::UserMessage(_)
-                | TranscriptEntry::SkillInvocation(_)
-                | TranscriptEntry::AssistantBatch(_)
-                | TranscriptEntry::HookFeedback(_)
-                | TranscriptEntry::CompactionCheckpoint(_) => {}
-            }
-        }
-        settings
+        let Some(TranscriptEntry::Model(model)) = self.transcript.first() else {
+            return defaults.clone();
+        };
+        let (_, turn_start) = latest_turn_start(&self.transcript)
+            .expect("a validated transcript follows its model entry with a turn start");
+        SessionSettings::new(model.clone(), turn_start.effort).with_mode(turn_start.mode)
     }
 }
 
@@ -767,8 +743,8 @@ impl SessionStore {
         self.0.lock().expect("session store mutex poisoned")
     }
 
-    /// Creates an empty session. Its settings are saved with its first user
-    /// message.
+    /// Creates an empty session. Its settings are saved with its first turn
+    /// start.
     pub fn create(&self, workspace_path: &Path) -> io::Result<SessionSummary> {
         let path = validate_workspace_path(workspace_path)?;
         let id = SessionId::new(uuid::Uuid::new_v4().to_string());
@@ -830,28 +806,28 @@ impl SessionStore {
             .map_err(io::Error::other)
     }
 
-    /// Appends settings entries followed by the turn start, a user message or
-    /// skill invocation, adopts a session title when none has been saved, and
-    /// updates activity in one transaction.
+    /// Appends a turn start, preceded by the model entry for a new transcript,
+    /// adopts a session title when none has been saved, and updates activity in
+    /// one transaction.
     pub fn append_turn_start(
         &self,
         id: &SessionId,
         entries: &[TranscriptEntry],
     ) -> io::Result<SessionSummary> {
-        let session_title = match entries.last() {
-            Some(TranscriptEntry::UserMessage(message)) => {
-                session_title_from_prompt(&message.text())
-                    .or_else(|| message.has_images().then(|| "Image".to_owned()))
-            }
-            Some(TranscriptEntry::SkillInvocation(invocation)) => {
+        let Some(TranscriptEntry::TurnStart(turn_start)) = entries.last() else {
+            panic!("{:?} does not end with a turn start", entries.last());
+        };
+        let session_title = match &turn_start.input {
+            TurnInput::UserMessage(message) => session_title_from_prompt(&message.text())
+                .or_else(|| message.has_images().then(|| "Image".to_owned())),
+            TurnInput::SkillInvocation(invocation) => {
                 session_title_from_prompt(&invocation.command_text())
             }
-            other => panic!("{other:?} does not start a turn"),
         };
         self.append(id, session_title, entries)
     }
 
-    /// Appends the assistant message and all of its results, and updates
+    /// Appends the assistant message and all of its outcomes, and updates
     /// activity, in one transaction.
     pub fn append_batch(&self, id: &SessionId, batch: &AssistantBatch) -> io::Result<()> {
         batch.validate()?;
@@ -1029,12 +1005,7 @@ fn insert_entry(
 fn encode_entry(entry: &TranscriptEntry) -> (&'static str, String) {
     let (kind, data) = match entry {
         TranscriptEntry::Model(model) => ("model", serde_json::to_string(model)),
-        TranscriptEntry::Effort(effort) => ("effort", serde_json::to_string(effort)),
-        TranscriptEntry::Mode(mode) => ("mode", serde_json::to_string(mode)),
-        TranscriptEntry::UserMessage(message) => ("user_message", serde_json::to_string(message)),
-        TranscriptEntry::SkillInvocation(invocation) => {
-            ("skill_invocation", serde_json::to_string(invocation))
-        }
+        TranscriptEntry::TurnStart(turn_start) => ("turn_start", serde_json::to_string(turn_start)),
         TranscriptEntry::AssistantBatch(batch) => ("assistant_batch", serde_json::to_string(batch)),
         TranscriptEntry::HookFeedback(feedback) => {
             ("hook_feedback", serde_json::to_string(feedback))
@@ -1049,10 +1020,7 @@ fn encode_entry(entry: &TranscriptEntry) -> (&'static str, String) {
 fn decode_entry(kind: &str, data: &str) -> io::Result<TranscriptEntry> {
     Ok(match kind {
         "model" => TranscriptEntry::Model(decode(kind, data)?),
-        "effort" => TranscriptEntry::Effort(decode(kind, data)?),
-        "mode" => TranscriptEntry::Mode(decode(kind, data)?),
-        "user_message" => TranscriptEntry::UserMessage(decode(kind, data)?),
-        "skill_invocation" => TranscriptEntry::SkillInvocation(decode(kind, data)?),
+        "turn_start" => TranscriptEntry::TurnStart(decode(kind, data)?),
         "assistant_batch" => TranscriptEntry::AssistantBatch(decode(kind, data)?),
         "hook_feedback" => TranscriptEntry::HookFeedback(decode(kind, data)?),
         "compaction_checkpoint" => TranscriptEntry::CompactionCheckpoint(decode(kind, data)?),
@@ -1127,16 +1095,20 @@ mod tests {
         }
     }
 
-    fn result(id: &str, outcome: ToolOutcome) -> ToolResult {
-        ToolResult {
-            call_id: id.to_owned(),
-            name: tools::SHELL.to_owned(),
-            outcome,
-        }
+    fn completed() -> ToolOutcome {
+        ToolOutcome::Completed("ok".to_owned())
     }
 
-    fn completed(id: &str) -> ToolResult {
-        result(id, ToolOutcome::Completed("ok".to_owned()))
+    fn turn_with(
+        effort: EffortLevel,
+        mode: SessionMode,
+        input: impl Into<TurnInput>,
+    ) -> TranscriptEntry {
+        TranscriptEntry::TurnStart(TurnStart {
+            effort,
+            mode,
+            input: input.into(),
+        })
     }
 
     fn message(tool_calls: Vec<ToolCall>) -> AssistantMessage {
@@ -1214,16 +1186,21 @@ mod tests {
             call("call-1", "printf Chicago"),
             call("call-2", "printf Denver"),
         ]);
-        let results = vec![
-            result(
-                "call-1",
-                ToolOutcome::Completed("Sunny in Chicago.".to_owned()),
-            ),
-            result(
-                "call-2",
-                ToolOutcome::Failed("Denver is unavailable.".to_owned()),
-            ),
+        let outcomes = vec![
+            ToolOutcome::Completed("Sunny in Chicago.".to_owned()),
+            ToolOutcome::Failed("Denver is unavailable.".to_owned()),
         ];
+        let first = turn_with(
+            EffortLevel::Default,
+            SessionMode::Auto,
+            "Weather in Chicago and Denver?".to_owned(),
+        );
+        let second = turn_with(EffortLevel::Low, SessionMode::Auto, invocation());
+        let checkpoint = CompactionCheckpoint {
+            summary: "Chicago checked; Denver unavailable.".to_owned(),
+            covered_prefix: 3,
+            summarizer_cost: None,
+        };
 
         let id = {
             let store = SessionStore::open(&path).unwrap();
@@ -1233,34 +1210,15 @@ mod tests {
                     &id,
                     &[
                         TranscriptEntry::Model(openrouter::default_model().to_owned()),
-                        TranscriptEntry::Mode(SessionMode::Auto),
-                        TranscriptEntry::UserMessage(
-                            "Weather in Chicago and Denver?".to_owned().into(),
-                        ),
+                        first.clone(),
                     ],
                 )
                 .unwrap();
-            let batch = AssistantBatch::new(message.clone(), results.clone()).unwrap();
+            let batch = AssistantBatch::new(message.clone(), outcomes.clone()).unwrap();
             store.append_batch(&id, &batch).unwrap();
+            store.append_checkpoint(&id, 3, &checkpoint).unwrap();
             store
-                .append_checkpoint(
-                    &id,
-                    4,
-                    &CompactionCheckpoint {
-                        summary: "Chicago checked; Denver unavailable.".to_owned(),
-                        covered_prefix: 4,
-                        summarizer_cost: None,
-                    },
-                )
-                .unwrap();
-            store
-                .append_turn_start(
-                    &id,
-                    &[
-                        TranscriptEntry::Effort(EffortLevel::Low),
-                        TranscriptEntry::SkillInvocation(invocation()),
-                    ],
-                )
+                .append_turn_start(&id, std::slice::from_ref(&second))
                 .unwrap();
             for skill in [None, Some("goal".to_owned())] {
                 store
@@ -1287,27 +1245,17 @@ mod tests {
             stored.summary.session_title.as_deref(),
             Some("Weather in Chicago and Denver?")
         );
-        assert!(matches!(
-            stored.transcript.first(),
-            Some(TranscriptEntry::Model(model)) if model == openrouter::default_model()
-        ));
         assert_eq!(
             stored.transcript,
             vec![
                 TranscriptEntry::Model(openrouter::default_model().to_owned()),
-                TranscriptEntry::Mode(SessionMode::Auto),
-                TranscriptEntry::UserMessage("Weather in Chicago and Denver?".to_owned().into()),
+                first,
                 TranscriptEntry::AssistantBatch(AssistantBatch {
                     message: message.clone(),
-                    results: vec![results[0].clone(), results[1].clone()]
+                    outcomes,
                 }),
-                TranscriptEntry::CompactionCheckpoint(CompactionCheckpoint {
-                    summary: "Chicago checked; Denver unavailable.".to_owned(),
-                    covered_prefix: 4,
-                    summarizer_cost: None,
-                }),
-                TranscriptEntry::Effort(EffortLevel::Low),
-                TranscriptEntry::SkillInvocation(invocation()),
+                TranscriptEntry::CompactionCheckpoint(checkpoint),
+                second,
                 TranscriptEntry::HookFeedback(HookFeedback {
                     skill: None,
                     ..before_run_feedback()
@@ -1315,7 +1263,7 @@ mod tests {
                 TranscriptEntry::HookFeedback(before_run_feedback()),
                 TranscriptEntry::AssistantBatch(AssistantBatch {
                     message: answered,
-                    results: vec![]
+                    outcomes: vec![]
                 }),
                 TranscriptEntry::HookFeedback(stop_feedback()),
             ]
@@ -1341,426 +1289,350 @@ mod tests {
         fs::remove_dir_all(dir).unwrap();
     }
 
-    #[test]
-    fn read_rejects_a_malformed_transcript() {
-        let store = SessionStore::in_memory();
-        let insert = |id: &SessionId, kind: &str, data: &str| {
-            store.with_connection(|connection| {
-                connection
-                    .execute(
-                        "INSERT INTO transcript_entries (session_id, ts, kind, data)
-                         VALUES (?1, ?2, ?3, ?4)",
-                        params![id.to_string(), now(), kind, data],
-                    )
-                    .unwrap()
-            });
-        };
-        let rejects = |id: &SessionId, expected: &str| {
-            let error = store.read(id).unwrap_err().to_string();
-            assert!(error.ends_with(expected), "{error}");
-        };
-
-        let called = message(vec![call("a", "one"), call("b", "two")]);
-        let mut renamed = completed("b");
-        renamed.name = "other".to_owned();
-        let mut invalid_call = called.clone();
-        invalid_call.tool_calls[0].call_id.clear();
-        let mut repeated = called.clone();
-        repeated.tool_calls[1].call_id = "a".to_owned();
-        let mut unnamed = called.clone();
-        unnamed.tool_calls[0].name.clear();
-        for (message, results) in [
-            (called.clone(), vec![completed("a")]),
-            (
-                called.clone(),
-                vec![completed("a"), completed("b"), completed("c")],
-            ),
-            (called.clone(), vec![completed("a"), completed("a")]),
-            (called.clone(), vec![completed("b"), completed("a")]),
-            (called, vec![completed("a"), renamed]),
-            (invalid_call, vec![completed("a"), completed("b")]),
-            (repeated, vec![completed("a"), completed("a")]),
-            (unnamed, vec![completed("a"), completed("b")]),
-        ] {
-            let id = store.create(workspace()).unwrap().id;
-            insert(
-                &id,
-                "model",
-                &serde_json::to_string(openrouter::default_model()).unwrap(),
-            );
-            assert!(AssistantBatch::new(message.clone(), results.clone()).is_err());
-            let batch = AssistantBatch { message, results };
-            assert!(store.append_batch(&id, &batch).is_err());
-            insert(
-                &id,
-                "assistant_batch",
-                &serde_json::to_string(&batch).unwrap(),
-            );
-            assert!(store.read(&id).is_err());
-        }
-        for (kind, data) in [
-            ("mystery", "{}".to_owned()),
-            (
-                "assistant_batch",
-                serde_json::json!({
-                    "message": message(vec![]), "results": [], "extra": true,
-                })
-                .to_string(),
-            ),
-            (
-                "assistant_batch",
-                serde_json::json!({
-                    "message": {"text":"hi", "reasoning":"", "tool_calls":[],
-                        "continuation_metadata":[], "extra":true}, "results": [],
-                })
-                .to_string(),
-            ),
-        ] {
-            let id = store.create(workspace()).unwrap().id;
-            insert(&id, kind, &data);
-            assert!(store.read(&id).is_err());
-        }
-
-        let switched = store.create(workspace()).unwrap().id;
-        insert(
-            &switched,
-            "model",
-            &serde_json::to_string(openrouter::default_model()).unwrap(),
-        );
-        insert(&switched, "model", r#""other/model""#);
-        rejects(
-            &switched,
-            "a model entry appears after the transcript opened",
-        );
-
-        let unmodelled = store.create(workspace()).unwrap().id;
-        let hello = serde_json::to_string(&UserMessage::from("hello".to_owned())).unwrap();
-        insert(&unmodelled, "user_message", &hello);
-        rejects(&unmodelled, "transcript does not open with a model");
-
-        let next = serde_json::to_string(&UserMessage::from("next".to_owned())).unwrap();
-
-        let user = ("user_message", hello);
-        let skill = (
-            "skill_invocation",
-            serde_json::to_string(&invocation()).unwrap(),
-        );
-        let answer = (
-            "assistant_batch",
-            serde_json::to_string(&AssistantBatch::new(message(vec![]), vec![]).unwrap()).unwrap(),
-        );
-        let called = [(
-            "assistant_batch",
-            serde_json::to_string(
-                &AssistantBatch::new(
-                    message(vec![call("call-1", "printf Chicago")]),
-                    vec![completed("call-1")],
+    fn insert_row(store: &SessionStore, id: &SessionId, kind: &str, data: &str) {
+        store.with_connection(|connection| {
+            connection
+                .execute(
+                    "INSERT INTO transcript_entries (session_id, ts, kind, data)
+                     VALUES (?1, ?2, ?3, ?4)",
+                    params![id.to_string(), now(), kind, data],
                 )
-                .unwrap(),
-            )
-            .unwrap(),
-        )];
-        let stopped = (
-            "hook_feedback",
-            serde_json::to_string(&stop_feedback()).unwrap(),
-        );
-        let global = |feedback: HookFeedback| HookFeedback {
-            skill: None,
-            ..feedback
-        };
-        for (feedback, preceding, expected) in [
-            (
-                global(before_run_feedback()),
-                vec![user.clone(), answer.clone()],
-                "before_run hook feedback does not follow a user message or skill invocation",
-            ),
-            (
-                global(after_tools_feedback()),
-                vec![user.clone()],
-                "after_tools hook feedback does not follow the tool results of an assistant batch",
-            ),
-            (
-                global(stop_feedback()),
-                [vec![user.clone()], called.to_vec()].concat(),
-                "before_stop hook feedback does not follow an assistant message without tool calls",
-            ),
-            (
-                global(before_run_feedback()),
-                vec![skill.clone(), answer.clone(), stopped.clone()],
-                "before_run hook feedback does not follow a user message or skill invocation",
-            ),
-            (
-                before_run_feedback(),
-                vec![user.clone()],
-                "hook feedback does not belong to the current skill invocation",
-            ),
-            (
-                before_run_feedback(),
-                vec![skill.clone(), answer.clone()],
-                "before_run hook feedback does not follow a user message or skill invocation",
-            ),
-            (
-                after_tools_feedback(),
-                vec![user.clone(), answer.clone()],
-                "hook feedback does not belong to the current skill invocation",
-            ),
-            (
-                after_tools_feedback(),
-                vec![skill.clone()],
-                "after_tools hook feedback does not follow the tool results of an assistant batch",
-            ),
-            (
-                after_tools_feedback(),
-                [vec![user.clone()], called.to_vec()].concat(),
-                "hook feedback does not belong to the current skill invocation",
-            ),
-            (
-                stop_feedback(),
-                vec![user.clone()],
-                "hook feedback does not belong to the current skill invocation",
-            ),
-            (
-                stop_feedback(),
-                [vec![user.clone()], called.to_vec()].concat(),
-                "hook feedback does not belong to the current skill invocation",
-            ),
-            (
-                stop_feedback(),
-                vec![user.clone(), answer.clone(), stopped],
-                "hook feedback does not belong to the current skill invocation",
-            ),
-        ] {
-            let misplaced = store.create(workspace()).unwrap().id;
-            insert(
-                &misplaced,
-                "model",
-                &serde_json::to_string(openrouter::default_model()).unwrap(),
-            );
-            for (kind, data) in &preceding {
-                insert(&misplaced, kind, data);
-            }
-            insert(
-                &misplaced,
-                "hook_feedback",
-                &serde_json::to_string(&feedback).unwrap(),
-            );
-            rejects(&misplaced, expected);
+                .unwrap()
+        });
+    }
+
+    /// The error from reading a session whose stored rows are `rows`.
+    fn read_error(rows: &[(&str, String)]) -> String {
+        let store = SessionStore::in_memory();
+        let id = store.create(workspace()).unwrap().id;
+        for (kind, data) in rows {
+            insert_row(&store, &id, kind, data);
         }
+        store.read(&id).unwrap_err().to_string()
+    }
 
-        let duplicate_settings = store.create(workspace()).unwrap().id;
-        insert(
-            &duplicate_settings,
-            "model",
-            &serde_json::to_string(openrouter::default_model()).unwrap(),
-        );
-        insert(&duplicate_settings, "mode", r#""ask""#);
-        insert(&duplicate_settings, "effort", r#""low""#);
-        insert(&duplicate_settings, "mode", r#""auto""#);
-        insert(&duplicate_settings, "user_message", &next);
-        rejects(
-            &duplicate_settings,
-            "a settings block contains more than one mode entry",
-        );
+    fn row(entry: &TranscriptEntry) -> (&'static str, String) {
+        encode_entry(entry)
+    }
 
-        let base = vec![
-            TranscriptEntry::Model(openrouter::default_model().to_owned()),
-            TranscriptEntry::UserMessage("first".to_owned().into()),
-            TranscriptEntry::AssistantBatch(AssistantBatch {
-                message: message(vec![call("a", "one"), call("b", "two")]),
-                results: vec![completed("a"), completed("b")],
-            }),
-        ];
-        for (prefix, summary, second) in [
-            (3, " ", None),
-            (0, "ok", None),
-            (2, "ok", None),
-            (4, "ok", None),
-            (3, "ok", Some(3)),
-            (3, "ok", Some(2)),
-            (3, "ok", Some(5)),
+    fn model_row() -> (&'static str, String) {
+        row(&TranscriptEntry::Model(
+            openrouter::default_model().to_owned(),
+        ))
+    }
+
+    fn user_row() -> (&'static str, String) {
+        row(&TranscriptEntry::turn("hello".to_owned()))
+    }
+
+    #[test]
+    fn a_transcript_opens_with_its_model_and_first_turn_start() {
+        let answer = row(&TranscriptEntry::AssistantBatch(
+            AssistantBatch::new(message(vec![]), vec![]).unwrap(),
+        ));
+        let other_model = row(&TranscriptEntry::Model("other/model".to_owned()));
+        for (rows, expected) in [
+            (vec![user_row()], "transcript does not open with a model"),
+            (
+                vec![model_row(), answer],
+                "the model entry is not followed by a turn start",
+            ),
+            (
+                vec![model_row(), user_row(), other_model],
+                "a model entry appears after the transcript opened",
+            ),
         ] {
-            let id = store.create(workspace()).unwrap().id;
-            let first = CompactionCheckpoint {
-                summary: summary.to_owned(),
-                covered_prefix: prefix,
-                summarizer_cost: None,
-            };
-            for entry in &base {
-                let (kind, data) = encode_entry(entry);
-                insert(&id, kind, &data);
-            }
-            insert(
-                &id,
-                "compaction_checkpoint",
-                &serde_json::to_string(&first).unwrap(),
-            );
-            if let Some(prefix) = second {
-                let second = CompactionCheckpoint {
-                    summary: "next".to_owned(),
-                    covered_prefix: prefix,
-                    summarizer_cost: None,
-                };
-                insert(
-                    &id,
-                    "compaction_checkpoint",
-                    &serde_json::to_string(&second).unwrap(),
-                );
-            }
-            rejects(&id, "invalid compaction checkpoint or covered prefix");
+            let error = read_error(&rows);
+            assert!(error.ends_with(expected), "{error}");
         }
     }
 
     #[test]
-    fn empty_transcripts_are_valid_and_settings_fold_in_order() {
-        assert!(validate_transcript(&[]).is_ok());
-        assert_eq!(
-            validate_transcript(&[
-                TranscriptEntry::UserMessage("first".to_owned().into()),
-                TranscriptEntry::Model(openrouter::default_model().to_owned()),
-            ])
-            .unwrap_err()
-            .to_string(),
-            "transcript does not open with a model"
-        );
-        for settings in [
-            [
-                TranscriptEntry::Effort(EffortLevel::Low),
-                TranscriptEntry::Mode(SessionMode::Auto),
-            ],
-            [
-                TranscriptEntry::Mode(SessionMode::Auto),
-                TranscriptEntry::Effort(EffortLevel::Low),
-            ],
+    fn malformed_assistant_batches_are_rejected_at_every_boundary() {
+        let called = message(vec![call("a", "one"), call("b", "two")]);
+        let mut empty_id = called.clone();
+        empty_id.tool_calls[0].call_id.clear();
+        let mut repeated_id = called.clone();
+        repeated_id.tool_calls[1].call_id = "a".to_owned();
+        let mut unnamed = called.clone();
+        unnamed.tool_calls[0].name.clear();
+        let store = SessionStore::in_memory();
+        for (case, message, outcomes) in [
+            ("a missing outcome", called.clone(), vec![completed()]),
+            ("an extra outcome", called, vec![completed(); 3]),
+            ("an empty call ID", empty_id, vec![completed(); 2]),
+            ("a repeated call ID", repeated_id, vec![completed(); 2]),
+            ("an empty tool name", unnamed, vec![completed(); 2]),
         ] {
             assert!(
-                validate_transcript(&[
-                    TranscriptEntry::Model(openrouter::default_model().to_owned()),
-                    settings[0].clone(),
-                    settings[1].clone(),
-                    TranscriptEntry::UserMessage("first".to_owned().into()),
-                ])
-                .is_ok()
+                AssistantBatch::new(message.clone(), outcomes.clone()).is_err(),
+                "construction accepts {case}"
             );
+            let batch = AssistantBatch { message, outcomes };
+            let id = store.create(workspace()).unwrap().id;
+            for (kind, data) in [model_row(), user_row()] {
+                insert_row(&store, &id, kind, &data);
+            }
+            assert!(
+                store.append_batch(&id, &batch).is_err(),
+                "append accepts {case}"
+            );
+            insert_row(
+                &store,
+                &id,
+                "assistant_batch",
+                &serde_json::to_string(&batch).unwrap(),
+            );
+            assert!(store.read(&id).is_err(), "read accepts {case}");
         }
-        for (duplicate, expected) in [
+    }
+
+    #[test]
+    fn entries_that_do_not_decode_fail_the_read() {
+        let hello = json!({ "type": "user_message", "content": { "parts": [
+            { "type": "text", "content": "hello" },
+        ] } });
+        for (case, kind, data) in [
+            ("an unknown kind", "mystery", json!({})),
             (
-                TranscriptEntry::Effort(EffortLevel::High),
-                "a settings block contains more than one effort entry",
+                "an unknown batch field",
+                "assistant_batch",
+                json!({ "message": message(vec![]), "outcomes": [], "extra": true }),
             ),
             (
-                TranscriptEntry::Mode(SessionMode::Ask),
-                "a settings block contains more than one mode entry",
+                "an unknown message field",
+                "assistant_batch",
+                json!({
+                    "message": {"text":"hi", "reasoning":"", "tool_calls":[],
+                        "continuation_metadata":[], "extra":true}, "outcomes": [],
+                }),
+            ),
+            (
+                "an unknown turn start field",
+                "turn_start",
+                json!({ "effort": "low", "mode": "ask", "input": hello, "extra": true }),
+            ),
+            (
+                "a missing effort level",
+                "turn_start",
+                json!({ "mode": "ask", "input": hello }),
+            ),
+            (
+                "an unknown effort level",
+                "turn_start",
+                json!({ "effort": "loud", "mode": "ask", "input": hello }),
+            ),
+            (
+                "an unknown turn input",
+                "turn_start",
+                json!({ "effort": "low", "mode": "ask",
+                    "input": { "type": "voice_note", "content": "hello" } }),
             ),
         ] {
-            assert_eq!(
-                validate_transcript(&[
-                    TranscriptEntry::Model(openrouter::default_model().to_owned()),
-                    duplicate.clone(),
-                    duplicate,
-                    TranscriptEntry::UserMessage("first".to_owned().into()),
-                ])
-                .unwrap_err()
-                .to_string(),
-                expected
+            let error = read_error(&[(kind, data.to_string())]);
+            assert!(error.contains(kind), "{case}: {error}");
+        }
+    }
+
+    #[test]
+    fn hook_feedback_follows_its_hook_point_within_its_skill_turn() {
+        let user = user_row();
+        let skill = row(&TranscriptEntry::turn(invocation()));
+        let answer = row(&TranscriptEntry::AssistantBatch(
+            AssistantBatch::new(message(vec![]), vec![]).unwrap(),
+        ));
+        let called = row(&TranscriptEntry::AssistantBatch(
+            AssistantBatch::new(
+                message(vec![call("call-1", "printf Chicago")]),
+                vec![completed()],
+            )
+            .unwrap(),
+        ));
+        let stopped = row(&TranscriptEntry::HookFeedback(stop_feedback()));
+        let global = |feedback: HookFeedback| HookFeedback {
+            skill: None,
+            ..feedback
+        };
+        let not_after_turn_start =
+            "before_run hook feedback does not follow a user message or skill invocation";
+        let not_after_tools =
+            "after_tools hook feedback does not follow the tool results of an assistant batch";
+        let not_after_answer =
+            "before_stop hook feedback does not follow an assistant message without tool calls";
+        let other_skill = "hook feedback does not belong to the current skill invocation";
+        for (case, feedback, preceding, expected) in [
+            (
+                "global before_run after an answer",
+                global(before_run_feedback()),
+                vec![user.clone(), answer.clone()],
+                not_after_turn_start,
+            ),
+            (
+                "global after_tools after a turn start",
+                global(after_tools_feedback()),
+                vec![user.clone()],
+                not_after_tools,
+            ),
+            (
+                "global before_stop after tool calls",
+                global(stop_feedback()),
+                vec![user.clone(), called.clone()],
+                not_after_answer,
+            ),
+            (
+                "global before_run after before_stop feedback",
+                global(before_run_feedback()),
+                vec![skill.clone(), answer.clone(), stopped.clone()],
+                not_after_turn_start,
+            ),
+            (
+                "skill before_run in a user turn",
+                before_run_feedback(),
+                vec![user.clone()],
+                other_skill,
+            ),
+            (
+                "skill before_run after an answer",
+                before_run_feedback(),
+                vec![skill.clone(), answer.clone()],
+                not_after_turn_start,
+            ),
+            (
+                "skill after_tools in a user turn after an answer",
+                after_tools_feedback(),
+                vec![user.clone(), answer.clone()],
+                other_skill,
+            ),
+            (
+                "skill after_tools after a turn start",
+                after_tools_feedback(),
+                vec![skill.clone()],
+                not_after_tools,
+            ),
+            (
+                "skill after_tools in a user turn after tool calls",
+                after_tools_feedback(),
+                vec![user.clone(), called.clone()],
+                other_skill,
+            ),
+            (
+                "skill before_stop in a user turn",
+                stop_feedback(),
+                vec![user.clone()],
+                other_skill,
+            ),
+            (
+                "skill before_stop in a user turn after tool calls",
+                stop_feedback(),
+                vec![user.clone(), called],
+                other_skill,
+            ),
+            (
+                "skill before_stop in a user turn after before_stop feedback",
+                stop_feedback(),
+                vec![user.clone(), answer.clone(), stopped],
+                other_skill,
+            ),
+        ] {
+            let rows: Vec<_> = std::iter::once(model_row())
+                .chain(preceding)
+                .chain([row(&TranscriptEntry::HookFeedback(feedback))])
+                .collect();
+            let error = read_error(&rows);
+            assert!(error.ends_with(expected), "{case}: {error}");
+        }
+    }
+
+    #[test]
+    fn checkpoints_cover_a_growing_prefix_that_ends_at_an_assistant_batch() {
+        let base = [
+            TranscriptEntry::Model(openrouter::default_model().to_owned()),
+            TranscriptEntry::turn("first".to_owned()),
+            TranscriptEntry::AssistantBatch(AssistantBatch {
+                message: message(vec![call("a", "one"), call("b", "two")]),
+                outcomes: vec![completed(), completed()],
+            }),
+        ];
+        let checkpoint = |summary: &str, covered_prefix| {
+            row(&TranscriptEntry::CompactionCheckpoint(
+                CompactionCheckpoint {
+                    summary: summary.to_owned(),
+                    covered_prefix,
+                    summarizer_cost: None,
+                },
+            ))
+        };
+        for (case, checkpoints) in [
+            ("a blank summary", vec![checkpoint(" ", 3)]),
+            ("an empty prefix", vec![checkpoint("ok", 0)]),
+            ("a prefix ending at a turn start", vec![checkpoint("ok", 2)]),
+            ("a prefix past the checkpoint", vec![checkpoint("ok", 4)]),
+            (
+                "a repeated prefix",
+                vec![checkpoint("ok", 3), checkpoint("next", 3)],
+            ),
+            (
+                "a shrinking prefix",
+                vec![checkpoint("ok", 3), checkpoint("next", 2)],
+            ),
+            (
+                "a later prefix past its checkpoint",
+                vec![checkpoint("ok", 3), checkpoint("next", 5)],
+            ),
+        ] {
+            let rows: Vec<_> = base.iter().map(row).chain(checkpoints).collect();
+            let error = read_error(&rows);
+            assert!(
+                error.ends_with("invalid compaction checkpoint or covered prefix"),
+                "{case}: {error}"
             );
         }
-        assert_eq!(
-            validate_transcript(&[
-                TranscriptEntry::Model(openrouter::default_model().to_owned()),
-                TranscriptEntry::Mode(SessionMode::Auto),
-                TranscriptEntry::AssistantBatch(AssistantBatch {
-                    message: message(vec![]),
-                    results: vec![]
-                }),
-            ])
-            .unwrap_err()
-            .to_string(),
-            "a settings block does not immediately precede a user message or skill invocation"
-        );
-        assert!(
-            validate_transcript(&[
-                TranscriptEntry::Model(openrouter::default_model().to_owned()),
-                TranscriptEntry::Mode(SessionMode::Auto),
-                TranscriptEntry::SkillInvocation(invocation()),
-                TranscriptEntry::AssistantBatch(AssistantBatch {
-                    message: message(vec![]),
-                    results: vec![]
-                }),
-                TranscriptEntry::HookFeedback(stop_feedback()),
-            ])
-            .is_ok()
-        );
+    }
 
+    #[test]
+    fn saved_settings_come_from_the_model_entry_and_latest_turn_start() {
         let store = SessionStore::in_memory();
         let id = store.create(workspace()).unwrap().id;
-        let empty = store.read(&id).unwrap().unwrap();
-        assert!(empty.transcript.is_empty());
-        let defaults = SessionSettings::new(openrouter::default_model(), EffortLevel::Default);
-        assert_eq!(empty.saved_settings(&defaults), defaults);
-
-        let without_mode = store.create(workspace()).unwrap().id;
-        store
-            .append_turn_start(
-                &without_mode,
-                &[
-                    TranscriptEntry::Model(openrouter::default_model().to_owned()),
-                    TranscriptEntry::UserMessage("old transcript".to_owned().into()),
-                ],
-            )
-            .unwrap();
-        assert_eq!(
-            store
-                .read(&without_mode)
-                .unwrap()
-                .unwrap()
-                .saved_settings(&defaults),
-            defaults,
-            "a transcript without a mode entry uses Ask from the defaults"
-        );
-
-        store
-            .append_turn_start(
-                &id,
-                &[
-                    TranscriptEntry::Model(openrouter::catalog()[1].id.as_str().to_owned()),
-                    TranscriptEntry::Effort(EffortLevel::Low),
-                    TranscriptEntry::Mode(SessionMode::Auto),
-                    TranscriptEntry::UserMessage("first".to_owned().into()),
-                ],
-            )
-            .unwrap();
-        store
-            .append_turn_start(
-                &id,
-                &[
-                    TranscriptEntry::Effort(EffortLevel::High),
-                    TranscriptEntry::UserMessage("second".to_owned().into()),
-                ],
-            )
-            .unwrap();
-        store
-            .append_turn_start(
-                &id,
-                &[
-                    TranscriptEntry::Effort(EffortLevel::Medium),
-                    TranscriptEntry::UserMessage("third".to_owned().into()),
-                ],
-            )
-            .unwrap();
+        let defaults = SessionSettings::new(openrouter::default_model(), EffortLevel::High)
+            .with_mode(SessionMode::Auto);
         assert_eq!(
             store.read(&id).unwrap().unwrap().saved_settings(&defaults),
-            SessionSettings::new(openrouter::catalog()[1].id.as_str(), EffortLevel::Medium)
-                .with_mode(SessionMode::Auto)
+            defaults,
+            "an empty transcript uses the defaults"
         );
-        assert!(matches!(
-            &store.read(&id).unwrap().unwrap().transcript[..4],
-            [
-                TranscriptEntry::Model(_),
-                TranscriptEntry::Effort(EffortLevel::Low),
-                TranscriptEntry::Mode(SessionMode::Auto),
-                TranscriptEntry::UserMessage(_),
-            ]
-        ));
+
+        let chosen = openrouter::catalog()[1].id.as_str();
+        let turns = [
+            (EffortLevel::Low, SessionMode::Auto),
+            (EffortLevel::High, SessionMode::Auto),
+            (EffortLevel::Default, SessionMode::Ask),
+        ];
+        for (index, (effort, mode)) in turns.into_iter().enumerate() {
+            let turn = turn_with(effort, mode, format!("turn {index}"));
+            let entries = if index == 0 {
+                vec![TranscriptEntry::Model(chosen.to_owned()), turn]
+            } else {
+                vec![turn]
+            };
+            store.append_turn_start(&id, &entries).unwrap();
+        }
+        let stored = store.read(&id).unwrap().unwrap();
+        assert_eq!(
+            stored.saved_settings(&defaults),
+            SessionSettings::new(chosen, EffortLevel::Default),
+            "returning to Default and Ask is saved rather than inherited"
+        );
+        let saved_turns: Vec<_> = stored
+            .transcript
+            .iter()
+            .filter_map(|entry| match entry {
+                TranscriptEntry::TurnStart(turn_start) => {
+                    Some((turn_start.effort, turn_start.mode))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(saved_turns, turns);
     }
 
     #[test]
@@ -1774,7 +1646,7 @@ mod tests {
                 &created.id,
                 &[
                     TranscriptEntry::Model(openrouter::default_model().to_owned()),
-                    TranscriptEntry::UserMessage("\n\nFirst line\nsecond line".to_owned().into()),
+                    TranscriptEntry::turn("\n\nFirst line\nsecond line".to_owned()),
                 ],
             )
             .unwrap();
@@ -1785,9 +1657,7 @@ mod tests {
         let second = store
             .append_turn_start(
                 &created.id,
-                &[TranscriptEntry::UserMessage(
-                    "Something else".to_owned().into(),
-                )],
+                &[TranscriptEntry::turn("Something else".to_owned())],
             )
             .unwrap();
         assert_eq!(second.session_title.as_deref(), Some("First line"));
@@ -1799,7 +1669,7 @@ mod tests {
                 &long.id,
                 &[
                     TranscriptEntry::Model(openrouter::default_model().to_owned()),
-                    TranscriptEntry::UserMessage("x".repeat(MAX_SESSION_TITLE_CHARS + 10).into()),
+                    TranscriptEntry::turn("x".repeat(MAX_SESSION_TITLE_CHARS + 10)),
                 ],
             )
             .unwrap()
@@ -1818,7 +1688,7 @@ mod tests {
                 &image_only.id,
                 &[
                     TranscriptEntry::Model(openrouter::default_model().to_owned()),
-                    TranscriptEntry::UserMessage(UserMessage {
+                    TranscriptEntry::turn(UserMessage {
                         parts: vec![UserMessagePart::Image(ImageAttachment {
                             data: "aGVsbG8=".to_owned(),
                             mime_type: "image/png".to_owned(),
@@ -1836,7 +1706,7 @@ mod tests {
                 &skill.id,
                 &[
                     TranscriptEntry::Model(openrouter::default_model().to_owned()),
-                    TranscriptEntry::SkillInvocation(invocation()),
+                    TranscriptEntry::turn(invocation()),
                 ],
             )
             .unwrap();
@@ -1851,7 +1721,7 @@ mod tests {
                     &SessionId::new("missing"),
                     &[
                         TranscriptEntry::Model(openrouter::default_model().to_owned()),
-                        TranscriptEntry::UserMessage("hello".to_owned().into())
+                        TranscriptEntry::turn("hello".to_owned())
                     ],
                 )
                 .is_err(),
@@ -1892,7 +1762,7 @@ mod tests {
                 &id,
                 &[
                     TranscriptEntry::Model(openrouter::default_model().to_owned()),
-                    TranscriptEntry::UserMessage("hello".to_owned().into()),
+                    TranscriptEntry::turn("hello".to_owned()),
                 ],
             )
             .unwrap();

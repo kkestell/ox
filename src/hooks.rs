@@ -13,9 +13,7 @@ use tokio::process::Command;
 
 use crate::{
     process::{self, Limits, Observed},
-    sessions::{
-        EffortLevel, HookKind, SessionMode, StopDecision, ToolCall, ToolOutcome, ToolResult,
-    },
+    sessions::{EffortLevel, HookKind, SessionMode, StopDecision, ToolCall, ToolOutcome},
 };
 
 /// At most one command per hook kind. Unknown hook kinds belong to other
@@ -138,7 +136,7 @@ impl Event {
     }
 }
 
-/// One saved tool call and its result.
+/// One saved tool call and its outcome.
 #[derive(Serialize)]
 pub struct ToolReport {
     pub call_id: String,
@@ -150,8 +148,8 @@ pub struct ToolReport {
 }
 
 impl ToolReport {
-    pub fn new(call: &ToolCall, result: &ToolResult) -> Self {
-        let outcome = match result.outcome {
+    pub fn new(call: &ToolCall, outcome: &ToolOutcome) -> Self {
+        let status = match outcome {
             ToolOutcome::Completed(_) => "completed",
             ToolOutcome::Failed(_) => "failed",
             ToolOutcome::Cancelled(_) => "cancelled",
@@ -160,8 +158,8 @@ impl ToolReport {
             call_id: call.call_id.clone(),
             name: call.name.clone(),
             arguments: call.arguments.clone(),
-            outcome,
-            text: result.outcome.text().to_owned(),
+            outcome: status,
+            text: outcome.text().to_owned(),
         }
     }
 }

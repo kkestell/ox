@@ -13,8 +13,8 @@ use crate::{
     cancellation::PromptCancellation,
     openrouter::{self, CatalogModel, Client, ModelRequestParameters},
     sessions::{
-        self, CompactionCheckpoint, HookFeedbackContent, SessionStore, StopDecision,
-        TranscriptEntry, UserMessage, UserMessagePart,
+        self, CompactionCheckpoint, HookFeedbackContent, SessionStore, StopDecision, ToolOutcome,
+        TranscriptEntry, TurnInput, UserMessage, UserMessagePart,
     },
 };
 
@@ -50,7 +50,7 @@ pub fn request_estimate(
     parameters: &ModelRequestParameters,
     transcript: &[TranscriptEntry],
 ) -> usize {
-    let body = openrouter::ordinary_body(parameters, &projection(transcript));
+    let body = openrouter::ordinary_body(parameters, projection(transcript));
     tokens(estimated_bytes(body))
 }
 
@@ -89,16 +89,14 @@ fn latest(transcript: &[TranscriptEntry]) -> Option<&CompactionCheckpoint> {
     })
 }
 
-pub fn projection(transcript: &[TranscriptEntry]) -> Vec<TranscriptEntry> {
+/// The chat messages of the next model request: the saved transcript, or the
+/// latest summary followed by the entries after its covered prefix.
+pub fn projection(transcript: &[TranscriptEntry]) -> Vec<Value> {
     match latest(transcript) {
         Some(checkpoint) => {
             projection_at(transcript, checkpoint.covered_prefix, &checkpoint.summary)
         }
-        None => transcript
-            .iter()
-            .filter(|entry| !matches!(entry, TranscriptEntry::CompactionCheckpoint(_)))
-            .cloned()
-            .collect(),
+        None => openrouter::chat_messages(transcript),
     }
 }
 
@@ -107,8 +105,8 @@ pub fn projection(transcript: &[TranscriptEntry]) -> Vec<TranscriptEntry> {
 /// long hook-driven run keeps its instructions and arguments this way until a
 /// later turn begins.
 fn repeated_invocation(transcript: &[TranscriptEntry], cut: usize) -> Option<usize> {
-    let (index, entry) = sessions::latest_turn_start(transcript)?;
-    (index < cut && matches!(entry, TranscriptEntry::SkillInvocation(_))).then_some(index)
+    let (index, turn_start) = sessions::latest_turn_start(transcript)?;
+    (index < cut && matches!(turn_start.input, TurnInput::SkillInvocation(_))).then_some(index)
 }
 
 pub fn has_candidate(transcript: &[TranscriptEntry]) -> bool {
@@ -122,23 +120,16 @@ pub fn context_error() -> io::Error {
     )
 }
 
-fn projection_at(
-    transcript: &[TranscriptEntry],
-    cut: usize,
-    summary: &str,
-) -> Vec<TranscriptEntry> {
-    let mut projected = vec![TranscriptEntry::UserMessage(
-        format!("{SUMMARY_LABEL}{summary}").into(),
-    )];
+fn summary_message(summary: &str) -> Value {
+    openrouter::user_message(&format!("{SUMMARY_LABEL}{summary}").into())
+}
+
+fn projection_at(transcript: &[TranscriptEntry], cut: usize, summary: &str) -> Vec<Value> {
+    let mut projected = vec![summary_message(summary)];
     if let Some(index) = repeated_invocation(transcript, cut) {
-        projected.push(transcript[index].clone());
+        projected.extend(openrouter::chat_messages(&transcript[index..=index]));
     }
-    projected.extend(
-        transcript[cut..]
-            .iter()
-            .filter(|entry| !matches!(entry, TranscriptEntry::CompactionCheckpoint(_)))
-            .cloned(),
-    );
+    projected.extend(openrouter::chat_messages(&transcript[cut..]));
     projected
 }
 
@@ -160,7 +151,7 @@ fn projected_estimate(
     cut: usize,
     summary: &str,
 ) -> usize {
-    let body = openrouter::ordinary_body(parameters, &projection_at(transcript, cut, summary));
+    let body = openrouter::ordinary_body(parameters, projection_at(transcript, cut, summary));
     tokens(estimated_bytes(body))
 }
 
@@ -186,10 +177,8 @@ fn ranked_cuts(parameters: &ModelRequestParameters, transcript: &[TranscriptEntr
     let admission = budget(parameters.model).admission;
     let start = latest(transcript).map_or(0, |checkpoint| checkpoint.covered_prefix);
     let cuts = candidates(transcript);
-    let summary = TranscriptEntry::UserMessage(
-        format!("{SUMMARY_LABEL}{}", "x".repeat(SUMMARY_ALLOWANCE_BYTES)).into(),
-    );
-    let base = openrouter::ordinary_body(parameters, std::slice::from_ref(&summary));
+    let summary = summary_message(&"x".repeat(SUMMARY_ALLOWANCE_BYTES));
+    let base = openrouter::ordinary_body(parameters, vec![summary]);
     let base_bytes = estimated_bytes(base);
     let mut suffix_bytes = vec![0; transcript.len() - start + 1];
     for index in (start..transcript.len()).rev() {
@@ -262,14 +251,16 @@ fn material(transcript: &[TranscriptEntry], cut: usize) -> VecDeque<(String, Str
     for (index, entry) in transcript[start..cut].iter().enumerate() {
         let source = format!("Entry {}", start + index);
         match entry {
-            TranscriptEntry::UserMessage(message) => {
-                push_user_request(&mut fields, &source, message);
-            }
-            TranscriptEntry::SkillInvocation(invocation) => push_user_request(
-                &mut fields,
-                &source,
-                &openrouter::skill_invocation_message(invocation),
-            ),
+            TranscriptEntry::TurnStart(turn_start) => match &turn_start.input {
+                TurnInput::UserMessage(message) => {
+                    push_user_request(&mut fields, &source, message);
+                }
+                TurnInput::SkillInvocation(invocation) => push_user_request(
+                    &mut fields,
+                    &source,
+                    &openrouter::skill_invocation_message(invocation),
+                ),
+            },
             TranscriptEntry::HookFeedback(feedback) => {
                 let decision = match feedback.content {
                     HookFeedbackContent::BeforeStop {
@@ -307,16 +298,16 @@ fn material(transcript: &[TranscriptEntry], cut: usize) -> VecDeque<(String, Str
                         ));
                     }
                 }
-                for result in &batch.results {
-                    let status = match result.outcome {
-                        crate::sessions::ToolOutcome::Completed(_) => "completed",
-                        crate::sessions::ToolOutcome::Failed(_) => "failed",
-                        crate::sessions::ToolOutcome::Cancelled(_) => "cancelled",
+                for (call, outcome) in message.tool_calls.iter().zip(&batch.outcomes) {
+                    let status = match outcome {
+                        ToolOutcome::Completed(_) => "completed",
+                        ToolOutcome::Failed(_) => "failed",
+                        ToolOutcome::Cancelled(_) => "cancelled",
                     };
-                    if !result.outcome.text().is_empty() {
+                    if !outcome.text().is_empty() {
                         fields.push_back((
-                            format!("{source} tool {} {status} outcome", result.name),
-                            tool_result_excerpt(result.outcome.text()),
+                            format!("{source} tool {} {status} outcome", call.name),
+                            tool_result_excerpt(outcome.text()),
                             1,
                         ));
                     }
@@ -447,7 +438,7 @@ mod tests {
         },
         sessions::{
             AssistantBatch, AssistantMessage, EffortLevel, HookFeedback, ImageAttachment,
-            SkillInvocation, ToolCall, ToolOutcome, ToolResult,
+            SkillInvocation, ToolCall, TurnStart,
         },
     };
 
@@ -483,11 +474,7 @@ mod tests {
                 continuation_metadata: vec![],
                 usage: None,
             },
-            vec![ToolResult {
-                call_id: id.to_owned(),
-                name: "shell".to_owned(),
-                outcome: ToolOutcome::Completed(output.to_owned()),
-            }],
+            vec![ToolOutcome::Completed(output.to_owned())],
         )
         .unwrap()
     }
@@ -501,7 +488,7 @@ mod tests {
                 &id,
                 &[
                     TranscriptEntry::Model(default_model().to_owned()),
-                    TranscriptEntry::SkillInvocation(SkillInvocation {
+                    TranscriptEntry::turn(SkillInvocation {
                         name: "goal".to_owned(),
                         arguments: "Record the old details.".to_owned(),
                         instructions: "Work until the hook stops you.".to_owned(),
@@ -565,16 +552,9 @@ mod tests {
         );
         let first_cut = transcript.len() - 1;
         store
-            .append_turn_start(
-                &id,
-                &[TranscriptEntry::UserMessage(
-                    "active request".to_owned().into(),
-                )],
-            )
+            .append_turn_start(&id, &[TranscriptEntry::turn("active request".to_owned())])
             .unwrap();
-        transcript.push(TranscriptEntry::UserMessage(
-            "active request".to_owned().into(),
-        ));
+        transcript.push(TranscriptEntry::turn("active request".to_owned()));
         let batch = tool_batch("first", &"new details ".repeat(3000));
         store.append_batch(&id, &batch).unwrap();
         transcript.push(TranscriptEntry::AssistantBatch(batch));
@@ -611,9 +591,13 @@ mod tests {
             .filter(|entry| matches!(entry, TranscriptEntry::CompactionCheckpoint(_)))
             .count();
         assert_eq!(checkpoints, 3);
-        let projected = projection(&transcript);
-        assert_eq!(projected, vec![TranscriptEntry::UserMessage(
-            "Compaction summary of earlier conversation:\nActive request carried; next tool complete.".to_owned().into())]);
+        assert_eq!(
+            projection(&transcript),
+            vec![serde_json::json!({
+                "role": "user",
+                "content": "Compaction summary of earlier conversation:\nActive request carried; next tool complete.",
+            })]
+        );
         let requests = server.requests();
         assert_eq!(requests.len(), 3);
         assert!(requests.iter().all(|request| request.get("tools").is_none()
@@ -661,34 +645,97 @@ mod tests {
             &transcript[first_cut],
             TranscriptEntry::CompactionCheckpoint(_)
         ));
+    }
 
-        let mut ranked = transcript.clone();
-        ranked.push(TranscriptEntry::AssistantBatch(tool_batch(
-            "rank",
-            "tool output",
-        )));
-        ranked.push(TranscriptEntry::AssistantBatch(answer("latest answer")));
-        let cuts = ranked_cuts(&parameters(), &ranked);
-        assert_eq!(cuts, [ranked.len(), ranked.len() - 1]);
+    #[test]
+    fn requests_send_the_latest_summary_followed_by_the_entries_it_does_not_cover() {
+        let checkpoint = |summary: &str, covered_prefix| {
+            TranscriptEntry::CompactionCheckpoint(CompactionCheckpoint {
+                summary: summary.to_owned(),
+                covered_prefix,
+                summarizer_cost: None,
+            })
+        };
+        let transcript = vec![
+            TranscriptEntry::Model(default_model().to_owned()),
+            TranscriptEntry::turn("first".to_owned()),
+            TranscriptEntry::AssistantBatch(answer("first answer")),
+            checkpoint("Older summary", 3),
+            TranscriptEntry::turn("middle".to_owned()),
+            TranscriptEntry::AssistantBatch(answer("middle answer")),
+            checkpoint("Current summary", 6),
+            TranscriptEntry::turn("recent".to_owned()),
+            TranscriptEntry::AssistantBatch(answer("recent answer")),
+        ];
+        let projected = projection(&transcript);
+        assert_eq!(projected.len(), 3);
+        assert_eq!(
+            projected[0],
+            serde_json::json!({
+                "role": "user",
+                "content": "Compaction summary of earlier conversation:\nCurrent summary",
+            })
+        );
+        assert_eq!(
+            projected[1],
+            serde_json::json!({ "role": "user", "content": "recent" })
+        );
+        assert_eq!(projected[2]["content"], "recent answer");
+    }
+
+    #[test]
+    fn ranked_cuts_follow_the_latest_checkpoint_smallest_request_first() {
+        let transcript = vec![
+            TranscriptEntry::Model(default_model().to_owned()),
+            TranscriptEntry::turn("earlier request".to_owned()),
+            TranscriptEntry::AssistantBatch(answer("earlier answer")),
+            TranscriptEntry::CompactionCheckpoint(CompactionCheckpoint {
+                summary: "Earlier work is complete.".to_owned(),
+                covered_prefix: 3,
+                summarizer_cost: None,
+            }),
+            TranscriptEntry::turn("current request".to_owned()),
+            TranscriptEntry::AssistantBatch(tool_batch("rank", "tool output")),
+            TranscriptEntry::AssistantBatch(answer("latest answer")),
+        ];
+        let cuts = ranked_cuts(&parameters(), &transcript);
+        assert_eq!(cuts, [7, 6]);
         let summary = "x".repeat(SUMMARY_ALLOWANCE_BYTES);
         assert!(
-            projected_estimate(&parameters(), &ranked, cuts[0], &summary)
-                < projected_estimate(&parameters(), &ranked, cuts[1], &summary)
+            projected_estimate(&parameters(), &transcript, cuts[0], &summary)
+                < projected_estimate(&parameters(), &transcript, cuts[1], &summary)
         );
+        let base = estimated_bytes(openrouter::ordinary_body(
+            &parameters(),
+            vec![summary_message(&summary)],
+        ));
+        for &cut in &cuts {
+            let suffix: usize = transcript[cut..].iter().map(message_bytes).sum();
+            assert_eq!(
+                base + suffix,
+                estimated_bytes(openrouter::ordinary_body(
+                    &parameters(),
+                    projection_at(&transcript, cut, &summary)
+                )),
+                "ranking counts the bytes of the projected request for cut {cut}"
+            );
+        }
+    }
 
-        let image_message = UserMessage {
-            parts: vec![
-                UserMessagePart::Text("Inspect this".to_owned()),
-                UserMessagePart::Image(ImageAttachment {
-                    data: "aGVsbG8=".to_owned(),
-                    mime_type: "image/png".to_owned(),
-                }),
-            ],
-        };
-        let mut image_transcript = vec![
+    /// A user message and a skill invocation, each with one image.
+    fn image_transcript() -> Vec<TranscriptEntry> {
+        vec![
             TranscriptEntry::Model(default_model().to_owned()),
-            TranscriptEntry::UserMessage(image_message),
-            TranscriptEntry::SkillInvocation(SkillInvocation {
+            TranscriptEntry::turn(UserMessage {
+                parts: vec![
+                    UserMessagePart::Text("Inspect this".to_owned()),
+                    UserMessagePart::Image(ImageAttachment {
+                        data: "aGVsbG8=".to_owned(),
+                        mime_type: "image/png".to_owned(),
+                    }),
+                ],
+            }),
+            TranscriptEntry::turn(SkillInvocation {
                 name: "look".to_owned(),
                 arguments: "closely".to_owned(),
                 instructions: "Describe the image.".to_owned(),
@@ -697,9 +744,12 @@ mod tests {
                     mime_type: "image/jpeg".to_owned(),
                 }],
             }),
-        ];
-        let estimate = request_estimate(&parameters(), &image_transcript);
-        let fields = super::material(&image_transcript, 3);
+        ]
+    }
+
+    #[test]
+    fn summarizer_material_describes_images_by_mime_type() {
+        let fields = material(&image_transcript(), 3);
         let request = |label: &str, value: &str| {
             fields
                 .iter()
@@ -713,16 +763,29 @@ mod tests {
                 .iter()
                 .all(|(_, value, _)| !value.contains("aGVsbG8=") && !value.contains("d29ybGQ="))
         );
-        if let TranscriptEntry::UserMessage(message) = &mut image_transcript[1]
+    }
+
+    #[test]
+    fn projected_images_count_as_a_fixed_allowance() {
+        let mut transcript = image_transcript();
+        assert_eq!(
+            projection_at(&transcript, 1, "summary")[1]["content"][1]["type"],
+            "image_url"
+        );
+        let estimate = request_estimate(&parameters(), &transcript);
+        if let TranscriptEntry::TurnStart(TurnStart {
+            input: TurnInput::UserMessage(message),
+            ..
+        }) = &mut transcript[1]
             && let UserMessagePart::Image(image) = &mut message.parts[1]
         {
             image.data = "A".repeat(4_000);
         }
-        assert_eq!(estimate, request_estimate(&parameters(), &image_transcript));
-        assert!(
-            matches!(&projection_at(&image_transcript, 1, "summary")[1], TranscriptEntry::UserMessage(message) if message.has_images())
-        );
+        assert_eq!(estimate, request_estimate(&parameters(), &transcript));
+    }
 
+    #[tokio::test]
+    async fn compaction_brings_an_oversized_request_within_admission() {
         let store = SessionStore::in_memory();
         let id = store.create(std::path::Path::new("/workspace")).unwrap().id;
         store
@@ -730,16 +793,13 @@ mod tests {
                 &id,
                 &[
                     TranscriptEntry::Model(default_model().to_owned()),
-                    TranscriptEntry::UserMessage("o".repeat(1_500_000).into()),
+                    TranscriptEntry::turn("o".repeat(1_500_000)),
                 ],
             )
             .unwrap();
         store.append_batch(&id, &answer("older work done")).unwrap();
         store
-            .append_turn_start(
-                &id,
-                &[TranscriptEntry::UserMessage("u".repeat(1_800_000).into())],
-            )
+            .append_turn_start(&id, &[TranscriptEntry::turn("u".repeat(1_800_000))])
             .unwrap();
         let mut transcript = store.read(&id).unwrap().unwrap().transcript;
         let original = request_estimate(&parameters(), &transcript);
@@ -773,7 +833,7 @@ mod tests {
                 &id,
                 &[
                     TranscriptEntry::Model(default_model().to_owned()),
-                    TranscriptEntry::UserMessage("earlier work".to_owned().into()),
+                    TranscriptEntry::turn("earlier work".to_owned()),
                 ],
             )
             .unwrap();
@@ -791,7 +851,7 @@ mod tests {
             .unwrap();
         let large = "x".repeat(3_300_000);
         store
-            .append_turn_start(&id, &[TranscriptEntry::UserMessage(large.clone().into())])
+            .append_turn_start(&id, &[TranscriptEntry::turn(large.clone())])
             .unwrap();
         store.append_batch(&id, &answer("done")).unwrap();
         let before = store.read(&id).unwrap().unwrap().transcript;
@@ -831,7 +891,7 @@ mod tests {
                 &small_id,
                 &[
                     TranscriptEntry::Model(default_model().to_owned()),
-                    TranscriptEntry::UserMessage("older ".repeat(4000).into()),
+                    TranscriptEntry::turn("older ".repeat(4000)),
                 ],
             )
             .unwrap();

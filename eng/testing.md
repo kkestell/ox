@@ -29,26 +29,21 @@ same way as the goal skill.
 
 ## Test discipline
 
-- The test suite is curated code, not an append-only log of changes. Feature
-  work, bug fixes, refactors, and hardening all have the same obligation to
-  avoid permanent test growth.
-- Default to adding no new test function. Before writing one, inspect the
-  relevant existing tests and extend, replace, merge, or delete them so the
-  changed behavior is covered at the closest stable boundary.
-- A new test is justified only by a distinct, durable, observable guarantee or a
-  reproduced regression that existing coverage cannot express clearly. New code,
-  another branch, another input row, or a plan item is not by itself a reason
-  for another test.
-- When a new test is justified, look for stale, overlapping, or lower-value
-  tests in the same area and remove or consolidate them. The default test-count
-  and test-code budget for every change is flat or lower, not just for
-  simplifications.
-- Give each guarantee one owner. Do not repeat the same assertions in unit,
-  orchestration, ACP, and end-to-end tests unless those layers have distinct
-  failure modes. Table-driven cases exercising one behavior belong in one test.
-- Do not game the count by combining functions while retaining duplicated setup
-  and assertions. Optimize the maintenance surface, not the reported number of
-  tests.
+The test suite is curated code. Each test owns one durable, observable
+guarantee, and the suite changes as the guarantees change.
+
+- Give each guarantee one owning test, named for that guarantee. A test that
+  checks unrelated guarantees is split so each failure names what broke.
+- A change adds a test for each new guarantee and for each reproduced
+  regression, at the closest stable boundary. It rewrites or deletes the tests
+  for guarantees it changes or removes, in the same change.
+- Test a guarantee once. Unit, orchestration, ACP, and end-to-end tests repeat an
+  assertion only when those layers have distinct failure modes.
+- Use table-driven cases for one behavior over varied inputs. Each case states
+  its input and expected result, and a failure message identifies the case.
+- Keep setup proportional to the guarantee. Shared fixtures and helpers hold
+  setup that several tests need, so each test body reads as its guarantee.
+- Test observable behavior. Internals change freely while the guarantees they
+  serve hold.
 - Before finishing any change that touches tests, inspect the complete test diff
-  and report the test-function and test-code delta. Any net growth needs a
-  concrete explanation of the previously unprotected behavior.
+  and report which guarantees gained, lost, or moved their owning tests.
