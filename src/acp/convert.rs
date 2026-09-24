@@ -219,7 +219,7 @@ pub fn shell_permission_request(
         } => {
             let command = match command {
                 Some(command) => indented(command),
-                None => "    (no such shell process in this session)".to_owned(),
+                None => "    (no shell process with this ID that this agent started)".to_owned(),
             };
             let text = if text.is_empty() {
                 "    (none)".to_owned()
@@ -575,7 +575,7 @@ mod tests {
                 tools::SHELL_PROCESS,
                 serde_json::json!({"action": "write", "process_id": "p-1", "text": "", "close_stdin": true}).to_string(),
                 input(None, "", true),
-                "Shell process: p-1\n\nCommand:\n\n    (no such shell process in this session)\n\nInput:\n\n    (none)\n\nCloses stdin afterward: yes".to_owned(),
+                "Shell process: p-1\n\nCommand:\n\n    (no shell process with this ID that this agent started)\n\nInput:\n\n    (none)\n\nCloses stdin afterward: yes".to_owned(),
             ),
         ] {
             let call = ToolCall {

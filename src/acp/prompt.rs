@@ -206,7 +206,8 @@ pub(crate) struct PromptInput {
     pub selected_settings: SessionSettings,
     /// The complete system prompt captured when the session became active.
     pub system_prompt: String,
-    /// The active session's shell processes, which outlive this run.
+    /// The active session's shell processes, which outlive this run. The
+    /// run reaches only the ones its own session ID started.
     pub shell_processes: ShellProcesses,
 }
 
@@ -380,6 +381,7 @@ impl AgentTurn {
             mode: settings.mode,
             tools: ToolContext {
                 workspace_path: stored.summary.workspace_path.clone(),
+                session_id: stored.summary.id.clone(),
                 shell_processes: input.shell_processes.clone(),
                 subagents,
             },
@@ -2900,7 +2902,7 @@ mod tests {
                 })
                 .await;
 
-            let process = harness.shell_processes.list().remove(0);
+            let process = harness.shell_processes.list(&harness.session_id).remove(0);
             assert_eq!(
                 process.state(),
                 crate::shell_processes::State::Running,
@@ -2934,7 +2936,7 @@ mod tests {
         sleeper.args(["-c", "exec sleep 30"]);
         let running = harness
             .shell_processes
-            .start(sleeper, "exec sleep 30", 1024)
+            .start(&harness.session_id, sleeper, "exec sleep 30", 1024)
             .unwrap();
         let harness = Harness {
             server: Server::start(vec![
@@ -2970,7 +2972,11 @@ mod tests {
             matches!(&transcript[1], TranscriptEntry::AssistantBatch(batch)
             if batch.outcomes == [denied.clone(), denied])
         );
-        assert_eq!(harness.shell_processes.list().len(), 1, "nothing started");
+        assert_eq!(
+            harness.shell_processes.list(&harness.session_id).len(),
+            1,
+            "nothing started"
+        );
         assert!(!harness.workspace.0.join("started").exists());
         assert_eq!(running.state(), crate::shell_processes::State::Running);
         harness.shell_processes.shutdown().await;

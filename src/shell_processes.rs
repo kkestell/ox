@@ -1,7 +1,8 @@
 //! The shell processes of one active session: background commands started by
-//! the shell tool. Each has one supervisor task that owns its child, process
-//! group, and output capture until the command ends and its group is cleaned
-//! up. The owner registers, looks up, and shuts down shell processes.
+//! the shell tool, each belonging to the agent that started it. Each has one
+//! supervisor task that owns its child, process group, and output capture
+//! until the command ends and its group is cleaned up. The owner registers,
+//! looks up, kills, and shuts down shell processes.
 
 use std::{
     io,
@@ -10,20 +11,21 @@ use std::{
     time::Duration,
 };
 
+use agent_client_protocol::schema::v1::SessionId;
 use futures::{
     FutureExt,
     future::{BoxFuture, Shared, join_all},
 };
 use tokio::{
-    io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
+    io::AsyncWriteExt,
     process::{Child, ChildStdin, Command},
     sync::watch,
     time::{sleep, timeout},
 };
 
-use crate::process::{Capture, OUTPUT_DRAIN_TIMEOUT, ProcessGroup};
+use crate::process::{Capture, OutputPipes, ProcessGroup, Stream};
 
-/// The most shell processes one active session retains.
+/// The most shell processes one agent of an active session retains.
 const MAX_SHELL_PROCESSES: usize = 16;
 /// How long an explicit stop waits after SIGTERM before sending SIGKILL.
 const STOP_GRACE: Duration = Duration::from_secs(2);
@@ -46,6 +48,8 @@ struct Registry {
 #[derive(Clone)]
 pub struct ShellProcess {
     id: String,
+    /// The agent session ID of the agent that started it.
+    session_id: SessionId,
     command: String,
     output: Arc<Mutex<Output>>,
     stdin: Arc<tokio::sync::Mutex<Option<ChildStdin>>>,
@@ -61,7 +65,8 @@ enum Ending {
     None,
     /// An explicit stop: SIGTERM, then SIGKILL after the grace period.
     Stop,
-    /// Owner shutdown: SIGKILL at once.
+    /// Owner shutdown or the end of the subagent that started it: SIGKILL at
+    /// once.
     Kill,
 }
 
@@ -71,7 +76,8 @@ pub enum State {
     Running,
     /// The command exited on its own.
     Exited(ExitStatus),
-    /// The command ended after an explicit stop or owner shutdown.
+    /// The command ended after an explicit stop, owner shutdown, or the end
+    /// of the subagent that started it.
     Stopped(ExitStatus),
     /// Reading its output failed, so Ox ended the command.
     Failed {
@@ -110,12 +116,14 @@ pub enum Interruption {
 
 impl ShellProcesses {
     /// Spawns `command` with piped stdin, stdout, and stderr in a new process
-    /// group and registers it, keeping up to `output_limit` bytes of each
-    /// stream. A full registry first removes its oldest finished shell
-    /// process. Fails without spawning when shutdown has begun or every
-    /// retained shell process is running.
+    /// group and registers it under the agent session ID `session_id`,
+    /// keeping up to `output_limit` bytes of each stream. When that agent
+    /// already retains the most shell processes, its oldest finished one is
+    /// removed first. Fails without spawning when shutdown has begun or every
+    /// shell process that agent retains is running.
     pub fn start(
         &self,
+        session_id: &SessionId,
         mut command: Command,
         command_text: &str,
         output_limit: usize,
@@ -128,14 +136,18 @@ impl ShellProcesses {
                 "this session's shell processes are shutting down",
             ));
         }
-        let removable = if registry.processes.len() < MAX_SHELL_PROCESSES {
+        let retained = registry
+            .processes
+            .iter()
+            .filter(|process| &process.session_id == session_id);
+        let removable = if retained.clone().count() < MAX_SHELL_PROCESSES {
             None
         } else {
             Some(
                 registry
                     .processes
                     .iter()
-                    .position(ShellProcess::is_finished)
+                    .position(|process| &process.session_id == session_id && process.is_finished())
                     .ok_or_else(|| {
                         io::Error::other(format!(
                             "{MAX_SHELL_PROCESSES} shell processes are running; stop one before starting another"
@@ -173,6 +185,7 @@ impl ShellProcesses {
         .shared();
         let process = ShellProcess {
             id: uuid::Uuid::new_v4().to_string(),
+            session_id: session_id.clone(),
             command: command_text.to_owned(),
             output,
             stdin,
@@ -183,17 +196,50 @@ impl ShellProcesses {
         Ok(process)
     }
 
-    /// Every retained shell process, oldest first.
-    pub fn list(&self) -> Vec<ShellProcess> {
-        self.lock().processes.clone()
-    }
-
-    pub fn get(&self, process_id: &str) -> Option<ShellProcess> {
+    /// Every shell process the agent session ID `session_id` retains, oldest
+    /// first.
+    pub fn list(&self, session_id: &SessionId) -> Vec<ShellProcess> {
         self.lock()
             .processes
             .iter()
-            .find(|process| process.id == process_id)
+            .filter(|process| &process.session_id == session_id)
             .cloned()
+            .collect()
+    }
+
+    /// The shell process `process_id`, only when the agent session ID
+    /// `session_id` started it.
+    pub fn get(&self, session_id: &SessionId, process_id: &str) -> Option<ShellProcess> {
+        self.lock()
+            .processes
+            .iter()
+            .find(|process| &process.session_id == session_id && process.id == process_id)
+            .cloned()
+    }
+
+    /// Asks the supervisor of every shell process the agent session ID
+    /// `session_id` started to kill its group at once, without waiting.
+    pub fn kill(&self, session_id: &SessionId) {
+        for process in &self.lock().processes {
+            if &process.session_id == session_id {
+                process.ending.send_replace(Ending::Kill);
+            }
+        }
+    }
+
+    /// Kills every shell process the agent session ID `session_id` started,
+    /// waits until each group was cleaned up, and removes them.
+    pub async fn remove(&self, session_id: &SessionId) {
+        self.kill(session_id);
+        let supervisors: Vec<_> = self
+            .list(session_id)
+            .iter()
+            .map(|process| process.supervisor.clone())
+            .collect();
+        join_all(supervisors).await;
+        self.lock()
+            .processes
+            .retain(|process| &process.session_id != session_id);
     }
 
     /// Closes registration and asks every supervisor to kill its group at
@@ -322,12 +368,6 @@ impl ShellProcess {
     }
 }
 
-#[derive(Clone, Copy)]
-enum Stream {
-    Stdout,
-    Stderr,
-}
-
 /// Why the supervisor's main loop ended.
 enum Reason {
     Exited,
@@ -345,55 +385,29 @@ async fn supervise(
     stdin: Arc<tokio::sync::Mutex<Option<ChildStdin>>>,
     mut requests: watch::Receiver<Ending>,
 ) {
-    let mut stdout = child.stdout.take().expect("stdout was piped");
-    let mut stderr = child.stderr.take().expect("stderr was piped");
-    let (mut out_open, mut err_open) = (true, true);
-    let mut out_buffer = [0; 8192];
-    let mut err_buffer = [0; 8192];
-    let append_out = |bytes: &[u8]| lock(&output).stdout.append(bytes);
-    let append_err = |bytes: &[u8]| lock(&output).stderr.append(bytes);
-    let reason = loop {
-        tokio::select! {
-            biased;
-            status = child.wait() => {
-                status.expect("reap owned child");
-                break Reason::Exited;
-            }
-            // A dropped owner counts as shutdown.
-            _ = requests.wait_for(|ending| *ending != Ending::None) => break Reason::Requested,
-            // Unbiased between the streams, so continuous output on one
-            // cannot starve the other.
-            (stream, read) = async {
-                tokio::select! {
-                    read = stdout.read(&mut out_buffer), if out_open => (Stream::Stdout, read),
-                    read = stderr.read(&mut err_buffer), if err_open => (Stream::Stderr, read),
-                }
-            }, if out_open || err_open => {
-                let (open, name) = match stream {
-                    Stream::Stdout => (&mut out_open, "stdout"),
-                    Stream::Stderr => (&mut err_open, "stderr"),
-                };
-                match read {
-                    Ok(0) => *open = false,
-                    Ok(read) => match stream {
-                        Stream::Stdout => append_out(&out_buffer[..read]),
-                        Stream::Stderr => append_err(&err_buffer[..read]),
-                    },
-                    Err(error) => {
-                        *open = false;
-                        break Reason::Failed(format!("Reading {name} failed: {error}"));
-                    }
-                }
-            }
+    let mut pipes = OutputPipes::new(&mut child, |stream, bytes: &[u8]| {
+        let mut output = lock(&output);
+        match stream {
+            Stream::Stdout => output.stdout.append(bytes),
+            Stream::Stderr => output.stderr.append(bytes),
         }
+    });
+    let reason = tokio::select! {
+        biased;
+        status = child.wait() => {
+            status.expect("reap owned child");
+            Reason::Exited
+        }
+        // A dropped owner counts as shutdown.
+        _ = requests.wait_for(|ending| *ending != Ending::None) => Reason::Requested,
+        error = pipes.read_until_failure() => Reason::Failed(error),
     };
     let grace = match (&reason, *requests.borrow()) {
         (Reason::Requested, Ending::Stop) => STOP_GRACE,
         _ => Duration::ZERO,
     };
-    let (mut out_error, mut err_error) = (None, None);
-    let (status, drained) = {
-        let cleanup = async {
+    let drained = pipes
+        .drain_during(async {
             let kill_requested = async {
                 let _ = requests.wait_for(|ending| *ending == Ending::Kill).await;
             };
@@ -402,84 +416,25 @@ async fn supervise(
                 .wait()
                 .await
                 .expect("reap owned child after process group cleanup")
-        };
-        let drain = async {
-            tokio::join!(
-                drain(&mut stdout, out_open, "stdout", &append_out, &mut out_error),
-                drain(&mut stderr, err_open, "stderr", &append_err, &mut err_error),
-            )
-        };
-        tokio::pin!(cleanup, drain);
-        // Capture continues through the grace period. A detached descendant
-        // can hold a pipe open, so draining gets a fixed time after the group
-        // is actually cleaned up, however that cleanup ended.
-        let mut drained = false;
-        let status = loop {
-            tokio::select! {
-                biased;
-                status = &mut cleanup => break status,
-                _ = &mut drain, if !drained => drained = true,
-            }
-        };
-        let drained = drained || timeout(OUTPUT_DRAIN_TIMEOUT, &mut drain).await.is_ok();
-        (status, drained)
-    };
+        })
+        .await;
     // A completed command cannot receive input. Wait for an in-flight write
     // to finish before publishing the final state.
     *stdin.lock().await = None;
-    let mut output = lock(&output);
-    if !drained {
-        output
-            .diagnostics
-            .push_str("Output capture stopped before EOF; additional output may be missing.");
-    }
+    let status = drained.status;
     let exited = matches!(reason, Reason::Exited);
-    let mut failure = match reason {
+    let (late_failure, diagnostics) = drained.into_failure_and_diagnostics(exited);
+    let failure = match reason {
         Reason::Failed(error) => Some(error),
-        Reason::Exited | Reason::Requested => None,
+        Reason::Exited | Reason::Requested => late_failure,
     };
-    for error in [out_error, err_error].into_iter().flatten() {
-        // A read error decides the state of a command that exited on its own,
-        // as it does for an ordinary shell call.
-        if failure.is_none() && exited {
-            failure = Some(error);
-        } else {
-            if !output.diagnostics.is_empty() {
-                output.diagnostics.push('\n');
-            }
-            output.diagnostics.push_str(&error);
-        }
-    }
+    let mut output = lock(&output);
+    output.diagnostics = diagnostics;
     output.state = match failure {
         Some(error) => State::Failed { error, status },
         None if exited => State::Exited(status),
         None => State::Stopped(status),
     };
-}
-
-/// Reads `pipe` to EOF into its capture through `append`, recording a read
-/// error.
-async fn drain(
-    pipe: &mut (impl AsyncRead + Unpin),
-    open: bool,
-    name: &str,
-    append: &impl Fn(&[u8]),
-    error: &mut Option<String>,
-) {
-    if !open {
-        return;
-    }
-    let mut buffer = [0; 8192];
-    loop {
-        match pipe.read(&mut buffer).await {
-            Ok(0) => return,
-            Ok(read) => append(&buffer[..read]),
-            Err(failure) => {
-                *error = Some(format!("Reading {name} failed: {failure}"));
-                return;
-            }
-        }
-    }
 }
 
 fn lock(output: &Mutex<Output>) -> MutexGuard<'_, Output> {
@@ -493,9 +448,13 @@ mod tests {
     use tokio::time::Instant;
 
     use super::*;
-    use crate::tools::fixture::Workspace;
+    use crate::{process::OUTPUT_DRAIN_TIMEOUT, tools::fixture::Workspace};
 
     const LIMIT: usize = 1024;
+
+    fn agent() -> SessionId {
+        SessionId::new("agent")
+    }
 
     fn shell(workspace: &Path, command: &str) -> Command {
         let mut shell = Command::new("/bin/sh");
@@ -504,8 +463,17 @@ mod tests {
     }
 
     fn start(owner: &ShellProcesses, workspace: &Path, command: &str) -> ShellProcess {
+        start_as(owner, &agent(), workspace, command)
+    }
+
+    fn start_as(
+        owner: &ShellProcesses,
+        session_id: &SessionId,
+        workspace: &Path,
+        command: &str,
+    ) -> ShellProcess {
         owner
-            .start(shell(workspace, command), command, LIMIT)
+            .start(session_id, shell(workspace, command), command, LIMIT)
             .unwrap()
     }
 
@@ -587,7 +555,7 @@ mod tests {
         );
         assert_eq!(
             owner
-                .list()
+                .list(&agent())
                 .iter()
                 .map(ShellProcess::command)
                 .collect::<Vec<_>>(),
@@ -705,6 +673,9 @@ mod tests {
     async fn the_limit_removes_the_oldest_finished_process_and_never_a_running_one() {
         let workspace = Workspace::new();
         let owner = ShellProcesses::default();
+        let other = SessionId::new("other");
+        let other_done = start_as(&owner, &other, &workspace.0, "true");
+        finished(&other_done).await;
         let done = start(&owner, &workspace.0, "true");
         finished(&done).await;
         let running: Vec<_> = (1..MAX_SHELL_PROCESSES)
@@ -712,12 +683,21 @@ mod tests {
             .collect();
         let replacement = start(&owner, &workspace.0, "exec sleep 30");
         assert!(
-            owner.get(done.id()).is_none(),
+            owner.get(&agent(), done.id()).is_none(),
             "the finished process was removed"
         );
-        assert_eq!(owner.list().len(), MAX_SHELL_PROCESSES);
+        assert!(
+            owner.get(&other, other_done.id()).is_some(),
+            "another agent's finished process was kept"
+        );
+        assert_eq!(owner.list(&agent()).len(), MAX_SHELL_PROCESSES);
         let refused = owner
-            .start(shell(&workspace.0, "touch spawned"), "touch spawned", LIMIT)
+            .start(
+                &agent(),
+                shell(&workspace.0, "touch spawned"),
+                "touch spawned",
+                LIMIT,
+            )
             .map(|process| process.id().to_owned())
             .unwrap_err();
         assert!(
@@ -728,11 +708,36 @@ mod tests {
         assert!(
             running
                 .iter()
-                .all(|process| owner.get(process.id()).is_some())
+                .all(|process| owner.get(&agent(), process.id()).is_some())
         );
-        assert!(owner.get(replacement.id()).is_some());
+        assert!(owner.get(&agent(), replacement.id()).is_some());
+        let unaffected = start_as(&owner, &other, &workspace.0, "exec sleep 30");
+        assert_eq!(unaffected.state(), State::Running);
+        assert_eq!(owner.list(&other).len(), 2);
         owner.shutdown().await;
         assert!(!workspace.0.join("spawned").exists(), "nothing was spawned");
+    }
+
+    #[tokio::test]
+    async fn removing_an_agent_session_kills_and_forgets_only_its_shell_processes() {
+        let workspace = Workspace::new();
+        let owner = ShellProcesses::default();
+        let other = SessionId::new("other");
+        let removed = start(&owner, &workspace.0, &format!("trap '' TERM; {TREE}"));
+        let kept = start_as(&owner, &other, &workspace.0, "exec sleep 30");
+        printed(&removed, "ready").await;
+        let start_time = Instant::now();
+        owner.remove(&agent()).await;
+        assert!(start_time.elapsed() < STOP_GRACE, "no SIGTERM grace period");
+        assert_eq!(removed.state(), State::Stopped(ExitStatus::from_raw(9)));
+        assert_gone(&workspace.0.join("shell"), true).await;
+        assert_gone(&workspace.0.join("child"), false).await;
+        assert!(owner.list(&agent()).is_empty());
+        assert_eq!(
+            owner.get(&other, kept.id()).map(|process| process.state()),
+            Some(State::Running)
+        );
+        owner.shutdown().await;
     }
 
     #[tokio::test]
@@ -1031,7 +1036,7 @@ mod tests {
                     let command = format!("touch started-{index}; exec sleep 30");
                     (
                         index,
-                        owner.start(shell(&workspace, &command), &command, LIMIT),
+                        owner.start(&agent(), shell(&workspace, &command), &command, LIMIT),
                     )
                 })
             })

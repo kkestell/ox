@@ -53,6 +53,10 @@ run one session through these turns:
 3. Ask Ox to start a subagent that runs `sleep 60` and then wait for it, and
    cancel that prompt while it waits. The prompt ends cancelled, and `ps` shows
    the subagent's `sleep 60` has stopped.
+4. Ask Ox to start a subagent that starts `python3 -m http.server 8765` in the
+   background and then answers, and to list its own shell processes after the
+   answer arrives. The list shows no shell processes. After the prompt ends,
+   `curl http://127.0.0.1:8765/` fails.
 
 The session list shows only the main session, and its cost includes the
 subagents' requests.

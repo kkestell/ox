@@ -1,5 +1,6 @@
 use std::{os::unix::process::ExitStatusExt, path::Path, process::ExitStatus, time::Duration};
 
+use agent_client_protocol::schema::v1::SessionId;
 use futures::FutureExt;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -63,7 +64,8 @@ pub enum Permission {
         background: bool,
     },
     /// Send text to a shell process's stdin. `command` is the shell process's
-    /// command, or nothing when the ID names no shell process.
+    /// command, or nothing when the ID names no shell process the calling
+    /// agent started.
     Input {
         process_id: String,
         command: Option<String>,
@@ -81,7 +83,11 @@ pub(super) fn command_permission(arguments: &str) -> Permission {
 
 /// Writes need permission. Other actions, and arguments that fail the
 /// validation execution repeats, run without it.
-pub(super) fn process_permission(arguments: &str, shell_processes: &ShellProcesses) -> Permission {
+pub(super) fn process_permission(
+    arguments: &str,
+    shell_processes: &ShellProcesses,
+    session_id: &SessionId,
+) -> Permission {
     match process_action(arguments) {
         Ok(ProcessAction::Write {
             process_id,
@@ -89,7 +95,7 @@ pub(super) fn process_permission(arguments: &str, shell_processes: &ShellProcess
             close_stdin,
         }) => Permission::Input {
             command: shell_processes
-                .get(&process_id)
+                .get(session_id, &process_id)
                 .map(|process| process.command().to_owned()),
             process_id,
             text,
@@ -161,7 +167,7 @@ pub(super) fn process_schema() -> Value {
         "type": "function",
         "function": {
             "name": SHELL_PROCESS,
-            "description": "Inspect or control this session's background commands, started by shell with background true. list returns each process ID, command, and state. read returns the state and the retained tails of stdout and stderr, optionally waiting up to wait_seconds for the command to end; reads do not consume output, so repeated reads may repeat it. write sends text to stdin exactly as given, adding no newline, and close_stdin closes stdin afterward. stop sends SIGTERM to the command's process group, then SIGKILL after 2 seconds. Process IDs are not operating-system PIDs and are valid only in this session.",
+            "description": "Inspect or control the background commands you started with shell and background true. list returns each process ID, command, and state. read returns the state and the retained tails of stdout and stderr, optionally waiting up to wait_seconds for the command to end; reads do not consume output, so repeated reads may repeat it. write sends text to stdin exactly as given, adding no newline, and close_stdin closes stdin afterward. stop sends SIGTERM to the command's process group, then SIGKILL after 2 seconds. Process IDs are not operating-system PIDs and are valid only for the background commands you started.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -213,6 +219,7 @@ fn shell_command(workspace: &Path, command_text: &str) -> Command {
 pub(super) async fn execute(
     workspace: &Path,
     shell_processes: &ShellProcesses,
+    session_id: &SessionId,
     arguments: &str,
     cancelled: impl Future<Output = ()>,
 ) -> ToolOutcome {
@@ -241,7 +248,7 @@ pub(super) async fn execute(
     let Some(seconds) = timeout_seconds else {
         // Once registered, the start is the observed outcome; later
         // cancellation does not undo it.
-        return match shell_processes.start(command, &args.command, OUTPUT_BODY_LIMIT) {
+        return match shell_processes.start(session_id, command, &args.command, OUTPUT_BODY_LIMIT) {
             Ok(process) => ToolOutcome::Completed(format!(
                 "Started shell process {}.\nThe command is running in the background. This confirms that it started, not that it finished or is ready. Use shell_process to read its output, write to its stdin, or stop it.",
                 process.id()
@@ -276,6 +283,7 @@ pub(super) async fn execute(
 /// themselves so the command keeps running; a stop finishes its cleanup.
 pub(super) async fn execute_process(
     shell_processes: &ShellProcesses,
+    session_id: &SessionId,
     arguments: &str,
     cancelled: impl Future<Output = ()>,
 ) -> ToolOutcome {
@@ -284,14 +292,14 @@ pub(super) async fn execute_process(
         Err(error) => return super::bounded_result(Err(error)),
     };
     let process_id = match &action {
-        ProcessAction::List {} => return list(shell_processes),
+        ProcessAction::List {} => return list(shell_processes, session_id),
         ProcessAction::Read { process_id, .. }
         | ProcessAction::Write { process_id, .. }
         | ProcessAction::Stop { process_id } => process_id,
     };
-    let Some(process) = shell_processes.get(process_id) else {
+    let Some(process) = shell_processes.get(session_id, process_id) else {
         return super::bounded_result(Err(format!(
-            "No shell process {process_id} in this session. Call shell_process with action \"list\" to see the available shell processes."
+            "No shell process {process_id} that you started. Call shell_process with action \"list\" to see the shell processes you started."
         )));
     };
     match action {
@@ -320,10 +328,10 @@ pub(super) async fn execute_process(
     }
 }
 
-fn list(shell_processes: &ShellProcesses) -> ToolOutcome {
-    let processes = shell_processes.list();
+fn list(shell_processes: &ShellProcesses, session_id: &SessionId) -> ToolOutcome {
+    let processes = shell_processes.list(session_id);
     if processes.is_empty() {
-        return ToolOutcome::Completed("No shell processes in this session.".to_owned());
+        return ToolOutcome::Completed("No shell processes that you started.".to_owned());
     }
     let lines: Vec<_> = processes
         .iter()
@@ -508,13 +516,24 @@ mod tests {
     use serde_json::json;
     use tokio::time::{Instant, timeout};
 
+    fn agent() -> SessionId {
+        SessionId::new("agent")
+    }
+
     /// Runs one shell call with a shell-process owner of its own.
     async fn execute(
         workspace: &Path,
         arguments: &str,
         cancelled: impl Future<Output = ()>,
     ) -> ToolOutcome {
-        super::execute(workspace, &ShellProcesses::default(), arguments, cancelled).await
+        super::execute(
+            workspace,
+            &ShellProcesses::default(),
+            &agent(),
+            arguments,
+            cancelled,
+        )
+        .await
     }
 
     async fn run(workspace: &Path, command: &str) -> ToolOutcome {
@@ -718,7 +737,7 @@ mod tests {
                     "{arguments}: {parsed:?}"
                 ),
             }
-            let permission = process_permission(&arguments, &owner);
+            let permission = process_permission(&arguments, &owner, &agent());
             match expected {
                 Ok(ProcessAction::Write {
                     process_id,
@@ -756,11 +775,20 @@ mod tests {
         let owner = ShellProcesses::default();
         let process = |arguments: serde_json::Value| {
             let owner = owner.clone();
-            async move { execute_process(&owner, &arguments.to_string(), std::future::pending()).await }
+            async move {
+                execute_process(
+                    &owner,
+                    &agent(),
+                    &arguments.to_string(),
+                    std::future::pending(),
+                )
+                .await
+            }
         };
         let started = super::execute(
             &workspace.0,
             &owner,
+            &agent(),
             &json!({"command":"printf ready; read line; printf 'got:%s' \"$line\"; touch done", "background":true}).to_string(),
             std::future::pending(),
         )
@@ -770,7 +798,7 @@ mod tests {
         };
         assert!(text.contains("confirms that it started, not that it finished"));
         assert!(!workspace.0.join("done").exists(), "the start did not wait");
-        let id = owner.list()[0].id().to_owned();
+        let id = owner.list(&agent())[0].id().to_owned();
         assert!(text.starts_with(&format!("Started shell process {id}.")));
 
         let running = process(json!({"action":"read","process_id":id})).await;
@@ -780,6 +808,7 @@ mod tests {
         );
         let cancelled = execute_process(
             &owner,
+            &agent(),
             &json!({"action":"read","process_id":id,"wait_seconds":30}).to_string(),
             async {},
         )
@@ -815,28 +844,88 @@ mod tests {
         ));
         assert!(matches!(
             process(json!({"action":"read","process_id":"missing"})).await,
-            ToolOutcome::Failed(text) if text == "No shell process missing in this session. Call shell_process with action \"list\" to see the available shell processes."
+            ToolOutcome::Failed(text) if text == "No shell process missing that you started. Call shell_process with action \"list\" to see the shell processes you started."
         ));
         assert_eq!(
             execute_process(
                 &ShellProcesses::default(),
+                &agent(),
                 &json!({"action":"list"}).to_string(),
                 std::future::pending()
             )
             .await,
-            ToolOutcome::Completed("No shell processes in this session.".to_owned())
+            ToolOutcome::Completed("No shell processes that you started.".to_owned())
         );
         let closed = ShellProcesses::default();
         closed.begin_shutdown();
         let refused = super::execute(
             &workspace.0,
             &closed,
+            &agent(),
             &json!({"command":"touch refused", "background":true}).to_string(),
             std::future::pending(),
         )
         .await;
         assert!(matches!(refused, ToolOutcome::Failed(text) if text.contains("shutting down")),);
         assert!(!workspace.0.join("refused").exists());
+    }
+
+    #[tokio::test]
+    async fn a_shell_process_is_visible_only_to_the_agent_that_started_it() {
+        let workspace = Workspace::new();
+        let owner = ShellProcesses::default();
+        let other = SessionId::new("other");
+        let started = super::execute(
+            &workspace.0,
+            &owner,
+            &agent(),
+            &json!({"command":"exec sleep 30", "background":true}).to_string(),
+            std::future::pending(),
+        )
+        .await;
+        assert!(matches!(started, ToolOutcome::Completed(_)), "{started:?}");
+        let process = owner.list(&agent()).remove(0);
+        let id = process.id();
+        let unknown = ToolOutcome::Failed(format!(
+            "No shell process {id} that you started. Call shell_process with action \"list\" to see the shell processes you started."
+        ));
+        for (arguments, expected) in [
+            (
+                json!({"action":"list"}),
+                ToolOutcome::Completed("No shell processes that you started.".to_owned()),
+            ),
+            (json!({"action":"read","process_id":id}), unknown.clone()),
+            (
+                json!({"action":"write","process_id":id,"text":"hi\n"}),
+                unknown.clone(),
+            ),
+            (json!({"action":"stop","process_id":id}), unknown.clone()),
+        ] {
+            assert_eq!(
+                execute_process(
+                    &owner,
+                    &other,
+                    &arguments.to_string(),
+                    std::future::pending()
+                )
+                .await,
+                expected,
+                "{arguments}"
+            );
+            assert_eq!(process.state(), State::Running, "{arguments}");
+        }
+        let read = execute_process(
+            &owner,
+            &agent(),
+            &json!({"action":"read","process_id":id}).to_string(),
+            std::future::pending(),
+        )
+        .await;
+        assert!(
+            matches!(&read, ToolOutcome::Completed(text) if text.contains("State: running")),
+            "{read:?}"
+        );
+        owner.shutdown().await;
     }
 
     #[test]
@@ -1006,14 +1095,16 @@ mod tests {
             let started = super::execute(
                 &workspace.0,
                 &owner,
+                &agent(),
                 &json!({"command": check, "background": true}).to_string(),
                 std::future::pending(),
             )
             .await;
             assert!(matches!(started, ToolOutcome::Completed(_)), "{started:?}");
-            let process = owner.list().remove(0);
+            let process = owner.list(&agent()).remove(0);
             let read = execute_process(
                 &owner,
+                &agent(),
                 &json!({"action":"read","process_id":process.id(),"wait_seconds":5}).to_string(),
                 std::future::pending(),
             )

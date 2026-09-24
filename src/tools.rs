@@ -3,6 +3,7 @@
 
 use std::path::{Path, PathBuf};
 
+use agent_client_protocol::schema::v1::SessionId;
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -32,8 +33,11 @@ pub enum Role {
 /// What running and classifying one call needs from the agent that made it.
 pub struct ToolContext {
     pub workspace_path: PathBuf,
-    /// The active session's shell processes, which outlive the call and are
-    /// shared by every agent of the session.
+    /// The agent session ID of the agent that made the call, which scopes the
+    /// shell processes it can start and reach.
+    pub session_id: SessionId,
+    /// The active session's shell processes, which outlive the call. Each
+    /// agent reaches only the ones it started.
     pub shell_processes: ShellProcesses,
     /// The main agent's subagents; `None` for a subagent.
     pub subagents: Option<Subagents>,
@@ -234,7 +238,11 @@ fn shorten(tool_call_title: &str) -> String {
 pub fn permission(context: &ToolContext, call: &ToolCall) -> Permission {
     match call.name.as_str() {
         SHELL => shell::command_permission(&call.arguments),
-        SHELL_PROCESS => shell::process_permission(&call.arguments, &context.shell_processes),
+        SHELL_PROCESS => shell::process_permission(
+            &call.arguments,
+            &context.shell_processes,
+            &context.session_id,
+        ),
         _ => Permission::NotRequired,
     }
 }
@@ -254,14 +262,20 @@ pub async fn execute(
             return shell::execute(
                 workspace_path,
                 &context.shell_processes,
+                &context.session_id,
                 &call.arguments,
                 cancelled,
             )
             .await;
         }
         SHELL_PROCESS => {
-            return shell::execute_process(&context.shell_processes, &call.arguments, cancelled)
-                .await;
+            return shell::execute_process(
+                &context.shell_processes,
+                &context.session_id,
+                &call.arguments,
+                cancelled,
+            )
+            .await;
         }
         // A stop finishes even if the prompt is cancelled; a wait observes
         // cancellation itself.
@@ -332,6 +346,7 @@ mod tests {
     async fn execute(workspace: &Path, call: &ToolCall) -> ToolOutcome {
         let context = ToolContext {
             workspace_path: workspace.to_path_buf(),
+            session_id: SessionId::new("session"),
             shell_processes: ShellProcesses::default(),
             subagents: None,
         };

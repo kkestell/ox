@@ -45,7 +45,7 @@ pub(super) fn start_schema() -> Value {
         "type": "function",
         "function": {
             "name": START_SUBAGENT,
-            "description": format!("Start a subagent on a task and return its subagent ID at once; it works concurrently while you keep using your tools. A subagent uses your model, workspace, instructions, and the workspace and shell tools, shares this session's background commands, and starts with no other context, so the prompt must say everything it needs. Its final answer, or its failure, arrives automatically as a message before a later model request. A subagent that needs input ends its turn with a question; reply with send_message. At most {MAX_SUBAGENTS} subagents can exist at once, including idle ones; stop_subagent removes one. Every subagent is stopped when your turn ends, so wait for the answers you need before finishing."),
+            "description": format!("Start a subagent on a task and return its subagent ID at once; it works concurrently while you keep using your tools. A subagent uses your model, workspace, instructions, and the workspace and shell tools, and starts with no other context, so the prompt must say everything it needs. Its final answer, or its failure, arrives automatically as a message before a later model request. A subagent that needs input ends its turn with a question; reply with send_message. At most {MAX_SUBAGENTS} subagents can exist at once, including idle ones; stop_subagent removes one. Every subagent is stopped when your turn ends, so wait for the answers you need before finishing."),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -91,7 +91,7 @@ pub(super) fn stop_schema() -> Value {
         "type": "function",
         "function": {
             "name": STOP_SUBAGENT,
-            "description": "Stop a subagent: cancel its current turn, discard its queued messages, and wait until it has stopped. Its saved conversation remains, and background commands it started keep running.",
+            "description": "Stop a subagent: cancel its current turn, discard its queued messages, and wait until it has stopped. Its saved conversation remains, and the background commands it started are killed.",
             "parameters": {
                 "type": "object",
                 "properties": {

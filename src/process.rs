@@ -1,6 +1,7 @@
-//! Child processes in a new process group: bounded output tails, cleanup of
-//! the whole group, and a runner for one child with optional stdin, a
-//! deadline, and cancellation.
+//! Child processes in a new process group: bounded output tails, reading and
+//! draining a child's output pipes into a caller's sink, cleanup of the whole
+//! group, and a runner for one child with optional stdin, a deadline, and
+//! cancellation.
 
 use std::{
     collections::VecDeque,
@@ -11,8 +12,8 @@ use std::{
 
 use rustix::process::{Pid, Signal, kill_process_group, test_kill_process_group};
 use tokio::{
-    io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
-    process::{Child, Command},
+    io::{AsyncReadExt, AsyncWriteExt},
+    process::{Child, ChildStderr, ChildStdout, Command},
     time::{Instant, sleep, sleep_until, timeout},
 };
 
@@ -26,8 +27,6 @@ pub struct Capture {
     /// Earlier output was dropped to stay within the limit.
     pub omitted: bool,
     limit: usize,
-    done: bool,
-    error: Option<String>,
 }
 
 impl Capture {
@@ -36,24 +35,7 @@ impl Capture {
             bytes: VecDeque::new(),
             omitted: false,
             limit,
-            done: false,
-            error: None,
         }
-    }
-
-    async fn read(&mut self, pipe: &mut (impl AsyncRead + Unpin)) -> io::Result<()> {
-        let mut buffer = [0; 8192];
-        let read = match pipe.read(&mut buffer).await {
-            Ok(read) => read,
-            Err(error) => {
-                self.done = true;
-                self.error = Some(error.to_string());
-                return Err(error);
-            }
-        };
-        self.done = read == 0;
-        self.append(&buffer[..read]);
-        Ok(())
     }
 
     /// Keeps the last `limit` bytes of the stream after `bytes`.
@@ -66,15 +48,159 @@ impl Capture {
         self.bytes.extend(&bytes[excess - dropped..]);
     }
 
-    async fn drain(&mut self, pipe: &mut (impl AsyncRead + Unpin)) -> io::Result<()> {
-        while !self.done {
-            self.read(pipe).await?;
-        }
-        Ok(())
-    }
-
     pub fn decode(&mut self) -> String {
         String::from_utf8_lossy(self.bytes.make_contiguous()).into_owned()
+    }
+}
+
+/// One of a child's two output streams.
+#[derive(Clone, Copy)]
+pub enum Stream {
+    Stdout,
+    Stderr,
+}
+
+impl Stream {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Stdout => "stdout",
+            Self::Stderr => "stderr",
+        }
+    }
+}
+
+/// The stdout and stderr pipes of one child, and the sink `append` their
+/// output is written to.
+pub struct OutputPipes<A> {
+    stdout: ChildStdout,
+    stderr: ChildStderr,
+    stdout_open: bool,
+    stderr_open: bool,
+    append: A,
+}
+
+/// What draining a child's output pipes observed.
+pub struct Drained {
+    /// The exit status the cleanup returned.
+    pub status: ExitStatus,
+    /// Both pipes reached EOF.
+    pub complete: bool,
+    /// Read errors seen while draining, stdout's first.
+    pub errors: Vec<String>,
+}
+
+impl<A: FnMut(Stream, &[u8])> OutputPipes<A> {
+    /// Takes the child's stdout and stderr, both of which must be piped.
+    pub fn new(child: &mut Child, append: A) -> Self {
+        Self {
+            stdout: child.stdout.take().expect("stdout was piped"),
+            stderr: child.stderr.take().expect("stderr was piped"),
+            stdout_open: true,
+            stderr_open: true,
+            append,
+        }
+    }
+
+    fn open(&self) -> bool {
+        self.stdout_open || self.stderr_open
+    }
+
+    /// Reads one chunk from whichever open pipe has output into the sink. EOF
+    /// or a read error closes that pipe; an error is returned with its
+    /// stream. Cancel-safe.
+    async fn read_chunk(&mut self) -> Option<(Stream, String)> {
+        let mut stdout_buffer = [0; 8192];
+        let mut stderr_buffer = [0; 8192];
+        // Unbiased between the streams, so continuous output on one cannot
+        // starve the other.
+        let (stream, read) = tokio::select! {
+            read = self.stdout.read(&mut stdout_buffer), if self.stdout_open => (Stream::Stdout, read),
+            read = self.stderr.read(&mut stderr_buffer), if self.stderr_open => (Stream::Stderr, read),
+        };
+        let (open, buffer) = match stream {
+            Stream::Stdout => (&mut self.stdout_open, &stdout_buffer),
+            Stream::Stderr => (&mut self.stderr_open, &stderr_buffer),
+        };
+        match read {
+            Ok(0) => {
+                *open = false;
+                None
+            }
+            Ok(read) => {
+                (self.append)(stream, &buffer[..read]);
+                None
+            }
+            Err(error) => {
+                *open = false;
+                Some((stream, format!("Reading {} failed: {error}", stream.name())))
+            }
+        }
+    }
+
+    /// Reads output into the sink until a read fails, and returns that
+    /// failure. Once both pipes reached EOF, it never completes. Cancel-safe,
+    /// so a caller may recreate it on each iteration of its loop.
+    pub async fn read_until_failure(&mut self) -> String {
+        while self.open() {
+            if let Some((_, error)) = self.read_chunk().await {
+                return error;
+            }
+        }
+        std::future::pending().await
+    }
+
+    /// Drains both pipes into the sink while `cleanup` stops the group and
+    /// reaps the child, then for up to `OUTPUT_DRAIN_TIMEOUT` more.
+    pub async fn drain_during(mut self, cleanup: impl Future<Output = ExitStatus>) -> Drained {
+        let mut errors = [None, None];
+        let (status, complete) = {
+            let drain = async {
+                while self.open() {
+                    if let Some((stream, error)) = self.read_chunk().await {
+                        errors[stream as usize] = Some(error);
+                    }
+                }
+            };
+            tokio::pin!(cleanup, drain);
+            // Capture continues through any grace period. A detached
+            // descendant can hold a pipe open, so draining gets a fixed time
+            // after the group is actually cleaned up, however that cleanup
+            // ended.
+            let mut complete = false;
+            let status = loop {
+                tokio::select! {
+                    biased;
+                    status = &mut cleanup => break status,
+                    () = &mut drain, if !complete => complete = true,
+                }
+            };
+            let complete = complete || timeout(OUTPUT_DRAIN_TIMEOUT, &mut drain).await.is_ok();
+            (status, complete)
+        };
+        Drained {
+            status,
+            complete,
+            errors: errors.into_iter().flatten().collect(),
+        }
+    }
+}
+
+impl Drained {
+    /// Splits the read errors into the one that decides the outcome and the
+    /// diagnostics text. A read error decides the outcome only after the child
+    /// `exited` on its own; every other error, after a notice when the drain
+    /// did not complete, becomes one diagnostics line.
+    pub fn into_failure_and_diagnostics(self, exited: bool) -> (Option<String>, String) {
+        let mut errors = self.errors.into_iter();
+        let failure = if exited { errors.next() } else { None };
+        let mut lines = Vec::new();
+        if !self.complete {
+            lines.push(
+                "Output capture stopped before EOF; additional output may be missing.".to_owned(),
+            );
+        }
+        lines.extend(errors);
+        (failure, lines.join("\n"))
     }
 }
 
@@ -201,64 +327,38 @@ pub async fn run(
         }
     });
     let mut written = false;
-    let mut stdout = child.stdout.take().expect("stdout was piped");
-    let mut stderr = child.stderr.take().expect("stderr was piped");
     let mut out = Capture::new(limits.stdout);
     let mut err = Capture::new(limits.stderr);
-    let observed = loop {
+    let mut pipes = OutputPipes::new(&mut child, |stream, bytes: &[u8]| match stream {
+        Stream::Stdout => out.append(bytes),
+        Stream::Stderr => err.append(bytes),
+    });
+    let mut observed = loop {
         tokio::select! {
             biased;
             status = child.wait() => break Observed::Exit(status.expect("reap owned child")),
             () = sleep_until(deadline) => break Observed::Timeout(limits.deadline),
             () = &mut cancelled => break Observed::Cancelled,
             () = &mut write, if !written => written = true,
-            (name, result) = async {
-                tokio::select! {
-                    result = out.read(&mut stdout), if !out.done => ("stdout", result),
-                    result = err.read(&mut stderr), if !err.done => ("stderr", result),
-                }
-            }, if !out.done || !err.done => {
-                if let Err(error) = result {
-                    break Observed::Failed(format!("Reading {name} failed: {error}"));
-                }
-            }
+            error = pipes.read_until_failure() => break Observed::Failed(error),
         }
     };
     drop(write);
-    let cleanup = async {
-        group
-            .terminate(limits.grace, &mut child, std::future::pending())
-            .await;
-        child
-            .wait()
-            .await
-            .expect("reap owned child after process group cleanup");
-    };
-    let drain = timeout(limits.grace + OUTPUT_DRAIN_TIMEOUT, async {
-        // Own the pipes here so the drain deadline closes them even while reaping waits.
-        let mut stdout = stdout;
-        let mut stderr = stderr;
-        tokio::join!(out.drain(&mut stdout), err.drain(&mut stderr))
-    });
-    let ((), drained) = tokio::join!(cleanup, drain);
-    let mut diagnostics = String::new();
-    let mut observed = observed;
-    if drained.is_err() {
-        diagnostics
-            .push_str("Output capture stopped before EOF; additional output may be missing.");
-    }
-    for (name, error) in [("stdout", &out.error), ("stderr", &err.error)] {
-        if let Some(error) = error {
-            let message = format!("Reading {name} failed: {error}");
-            if matches!(observed, Observed::Exit(_)) {
-                observed = Observed::Failed(message);
-            } else if !matches!(observed, Observed::Failed(_)) {
-                if !diagnostics.is_empty() {
-                    diagnostics.push('\n');
-                }
-                diagnostics.push_str(&message);
-            }
-        }
+    let drained = pipes
+        .drain_during(async {
+            group
+                .terminate(limits.grace, &mut child, std::future::pending())
+                .await;
+            child
+                .wait()
+                .await
+                .expect("reap owned child after process group cleanup")
+        })
+        .await;
+    let (failure, diagnostics) =
+        drained.into_failure_and_diagnostics(matches!(observed, Observed::Exit(_)));
+    if let Some(error) = failure {
+        observed = Observed::Failed(error);
     }
     Ok(Finished {
         observed,
@@ -266,4 +366,62 @@ pub async fn run(
         stderr: err,
         diagnostics,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::os::unix::process::ExitStatusExt;
+
+    use super::*;
+
+    #[test]
+    fn late_read_errors_decide_only_a_natural_exit() {
+        const NOTICE: &str = "Output capture stopped before EOF; additional output may be missing.";
+        for (case, exited, complete, errors, failure, diagnostics) in [
+            (
+                "exited with one error",
+                true,
+                true,
+                vec!["out"],
+                Some("out"),
+                String::new(),
+            ),
+            (
+                "exited with two errors",
+                true,
+                true,
+                vec!["out", "err"],
+                Some("out"),
+                "err".to_owned(),
+            ),
+            (
+                "not exited with one error",
+                false,
+                true,
+                vec!["out"],
+                None,
+                "out".to_owned(),
+            ),
+            (
+                "incomplete drain",
+                false,
+                false,
+                vec!["out", "err"],
+                None,
+                format!("{NOTICE}\nout\nerr"),
+            ),
+            ("no errors", true, true, vec![], None, String::new()),
+        ] {
+            let drained = Drained {
+                status: ExitStatus::from_raw(0),
+                complete,
+                errors: errors.into_iter().map(str::to_owned).collect(),
+            };
+            assert_eq!(
+                drained.into_failure_and_diagnostics(exited),
+                (failure.map(str::to_owned), diagnostics),
+                "{case}"
+            );
+        }
+    }
 }

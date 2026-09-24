@@ -45,14 +45,19 @@ THIS DOCUMENT MUST BE KEPT UP TO DATE
   response object per kind on stdout, deadlines, limits, and hook errors.
 - `src/process.rs`: Child processes in a new process group with optional stdin,
   bounded output tails, a deadline, cancellation, and group cleanup with an
-  optional, interruptible SIGTERM grace period. Shell process supervisors share
-  its output capture and process-group cleanup.
-- `src/shell_processes.rs`: The shell processes of one active session:
-  background commands spawned and registered under the owner's lock, one
-  supervisor per command that drains its output tails and cleans up its process
-  group, bounded stdin writes, state snapshots, listing, the limit of 16 with
-  removal of the oldest finished one, explicit stops with a two-second SIGTERM
-  grace period, and owner shutdown that kills every group at once.
+  optional, interruptible SIGTERM grace period. It owns reading and draining a
+  child's output pipes into a caller's sink and the rule that a late read error
+  decides the outcome only after a natural exit. Shell process supervisors use
+  that capture together with its process-group cleanup.
+- `src/shell_processes.rs`: The shell processes of one active session, each
+  tagged with the agent session ID of the agent that started it: background
+  commands spawned and registered under the owner's lock, one supervisor per
+  command that drains its output tails and cleans up its process group, bounded
+  stdin writes, state snapshots, listing and lookup scoped to one agent session
+  ID, the limit of 16 per agent session ID with removal of that agent's oldest
+  finished one, explicit stops with a two-second SIGTERM grace period, killing
+  and removing one agent session ID's shell processes, and owner shutdown that
+  kills every group at once.
 - `src/openrouter.rs`: The model catalog fetched from OpenRouter at startup, its
   catalog filter and each model's effort levels and image input support, model
   request parameters including the agent's role, which selects the advertised
@@ -73,8 +78,8 @@ THIS DOCUMENT MUST BE KEPT UP TO DATE
 - `src/tools.rs`: Concrete tool names, the agent role, the ordered list of tool
   schemas sent to the model for a role, tool call titles, permission
   classification, and execution of one complete call with a `ToolContext`: the
-  workspace path, the active session's shell processes, and, for the main
-  agent only, its subagents. Each tool module owns its own schema; this module
+  workspace path, the agent session ID of the calling agent, the active
+  session's shell processes, and, for the main agent only, its subagents. Each tool module owns its own schema; this module
   only collects them.
 - `src/tools/read.rs`: The `read_file` schema and bounded text-file reading with
   line pagination.
@@ -96,13 +101,16 @@ THIS DOCUMENT MUST BE KEPT UP TO DATE
 - `src/subagents.rs`: `Subagents`, the prompt-owned guard over one prompt run's
   subagents and their shared state: at most four live subagents including idle
   ones, each with its child session, queued follow-up messages, busy, idle, or
-  stopping status, cancellation, and Tokio task; the queue of agent messages
+  stopping status, cancellation, and Tokio task; the IDs of every subagent
+  started in the prompt run, including ended ones; the queue of agent messages
   for the main agent; and the notification waits use. Each task runs the
   shared loop against its child session with the inherited settings, system
   prompt, global hooks, and shell processes, publishes each final answer or
   failure with bounded text, then starts the next queued message or goes idle.
-  Stopping, normal shutdown, and dropping the guard close admission and cancel
-  subagents; stopping and shutdown also await their tasks.
+  A failure that ends a subagent kills its shell processes. Stopping, normal
+  shutdown, and dropping the guard close admission, cancel subagents, and kill
+  their shell processes; stopping and shutdown also await their tasks and the
+  removal of their shell processes.
 - `src/sessions.rs`: Transcript types, including turn starts that save each
   turn's input with its model, effort, and mode, ordered user message parts and
   image attachments, skill invocations, hook kinds, hook feedback, assistant

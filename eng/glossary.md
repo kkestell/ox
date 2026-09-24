@@ -66,9 +66,10 @@
   code; the session store uses each agent's own session ID instead.
 - **Presentation**: The ACP connection, ACP identity, and choice to send or
   suppress updates that one agent turn uses. It is `Presentation` in code.
-- **Tool context**: The workspace path, the session's shell processes, and, for
-  the main agent, its subagents, passed to tool execution and permission
-  classification. It is `ToolContext` in code.
+- **Tool context**: The workspace path, the agent session ID of the agent making
+  the call, the session's shell processes, and, for the main agent, its
+  subagents, passed to tool execution and permission classification. It is
+  `ToolContext` in code.
 - **Active session**: A session created or loaded in the current process. Its
   system prompt is assembled and its skill catalog loaded when it becomes
   active, and only an active session can be configured or prompted over ACP.
@@ -273,14 +274,18 @@
   later input.
 - **Background command**: A command started by `shell` with
   `background: true`, whose lifetime continues after that tool call returns.
-- **Shell process**: One background command owned by an active session,
-  together with its process group, stdin, retained output, and current state.
-  `ShellProcesses` in `src/shell_processes.rs` is the owner, and
+- **Shell process**: One background command started by one agent of an active
+  session, together with its process group, stdin, retained output, and
+  current state. `ShellProcesses` in `src/shell_processes.rs` is the owner, and
   `shell_processes` is the field that carries it from the active session to
   the tools.
-- **Shell process ID**: An opaque UUID identifying one shell process within
-  one active session's shell processes. It is `process_id` in tool arguments
-  and results and is never an operating-system PID.
+- **Agent session ID**: The session ID of the agent that started a shell
+  process: the main session ID for the main agent, or the child session ID for
+  a subagent. It is `ShellProcess::session_id` and `ToolContext::session_id` in
+  code.
+- **Shell process ID**: An opaque UUID identifying one shell process among the
+  shell processes one agent started in one active session. It is `process_id`
+  in tool arguments and results and is never an operating-system PID.
 - **Replay**: Sending saved transcript content back to the ACP client when a
   session is loaded.
 - **Commit**: A successful SQLite transaction. `AgentTurn::commit` takes one

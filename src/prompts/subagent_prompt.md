@@ -9,5 +9,5 @@ remains.
 If you need information only the main agent has, end your turn with the
 question. Its reply arrives as your next message.
 
-Other agents may change the workspace while you work. You share this session's
-background commands with them; stop only the ones you started.
+Other agents may change the workspace while you work. The background commands
+you start are killed when you end.

@@ -183,9 +183,10 @@ struct ActiveSession {
     system_prompt: String,
     /// The skill catalog loaded when the session became active.
     skills: Vec<Skill>,
-    /// Background commands started in this session. They outlive prompt runs
-    /// and repeated loads, and stop when the session is deleted or the
-    /// connection shuts down.
+    /// Background commands started by this session's agents. The main
+    /// agent's outlive prompt runs and repeated loads; each subagent's end
+    /// with it. All stop when the session is deleted or the connection shuts
+    /// down.
     shell_processes: ShellProcesses,
 }
 
@@ -2304,7 +2305,7 @@ mod tests {
             .active_session(id)
             .unwrap()
             .shell_processes
-            .start(shell, command, 1024)
+            .start(id, shell, command, 1024)
             .unwrap()
     }
 
@@ -3422,7 +3423,7 @@ Run the commands.
         .await;
         assert_eq!(output, prompt::PromptOutput::Cancelled);
         let owner = state.active_session(&id).unwrap().shell_processes;
-        let process = owner.list().remove(0);
+        let process = owner.list(&id).remove(0);
         let process_id = process.id().to_owned();
         assert!(
             matches!(&outcomes[..], [ToolOutcome::Completed(text)]
@@ -3445,7 +3446,7 @@ Run the commands.
                 .active_session(&id)
                 .unwrap()
                 .shell_processes
-                .get(&process_id)
+                .get(&id, &process_id)
                 .is_some(),
             "a repeated load keeps the shell processes"
         );
@@ -3463,7 +3464,7 @@ Run the commands.
         .await;
         assert!(
             matches!(&outcomes[..], [ToolOutcome::Failed(text)]
-                if text.starts_with(&format!("No shell process {process_id} in this session."))),
+                if text.starts_with(&format!("No shell process {process_id} that you started."))),
             "another session cannot reach it: {outcomes:?}"
         );
 
@@ -3507,7 +3508,7 @@ Run the commands.
                 .active_session(&id)
                 .unwrap()
                 .shell_processes
-                .list()
+                .list(&id)
                 .is_empty(),
             "loading saved observations creates no process"
         );

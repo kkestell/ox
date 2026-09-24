@@ -50,8 +50,8 @@ Ox has six architectural components:
   response into provisional output followed by one validated completion.
 - The **tool boundary** defines the concrete tool set and executes one complete
   tool call. It does not send ACP updates or save the transcript. Shell tool
-  calls can start, inspect, and control the shell processes of the active
-  session, which outlive the call.
+  calls can start, inspect, and control the shell processes the calling agent
+  started in the active session, which outlive the call.
 - The **session store** validates and persists sessions and transcripts. It does
   not know OpenRouter wire formats or construct ACP updates.
 
@@ -258,7 +258,8 @@ state:
   operations;
 - active sessions hold, for each session created or loaded in the process, the
   ACP selections chosen for a future turn, the system prompt and skill catalog
-  captured at activation, and the session's shell processes;
+  captured at activation, and the session's shell processes, each tagged with
+  the agent session ID of the agent that started it;
 - each main prompt run holds its `Subagents` owner, which exists only while
   that run does;
 - the settings read from the settings file at process startup hold the default
@@ -361,20 +362,27 @@ subagents, or only idle ones, otherwise on the next of those, the timeout of at
 most 600 seconds, or prompt cancellation; it registers for notification before
 checking, so a change between the check and the wait still wakes it.
 
-`stop_subagent` cancels the subagent's turn, discards its queue, and awaits its
-task. When the main turn's result is known, normally or after cancellation, it
-closes its owner, cancels every subagent, and awaits their tasks before its
-`after_run`; each cancelled turn still attempts to save its interrupted batch
-and runs its own `after_run`. Each subagent task also cancels its turn when the
+`stop_subagent` cancels the subagent's turn, discards its queue, awaits its
+task, and then kills its shell processes and awaits their cleanup. When the
+main turn's result is known, normally or after cancellation, it closes its
+owner, cancels every subagent, awaits their tasks, and then kills the shell
+processes of every subagent started in the run, awaiting their cleanup and
+removing them from the active session's owner before its `after_run`; each
+cancelled turn still attempts to save its interrupted batch and runs its own
+`after_run`. Each subagent task also cancels its turn when the
 main prompt is cancelled. A dropped prompt future can only signal
-cancellation: dropping the owner closes it, discards its messages, and cancels
-its subagents, whose tasks may finish unwinding afterward while the runtime
+cancellation: dropping the owner closes it, discards its messages, cancels
+its subagents, and requests the kill of their shell processes, whose finished
+entries stay in the active session's owner until it shuts down. The subagent
+tasks may finish unwinding afterward while the runtime
 lives. They write only their child sessions, a save after the main session's
 deletion fails without recreating it, and abrupt transport loss or process exit
 guarantees no save. Reloading a session starts no subagent.
 
-Subagents share the active session's shell processes. Stopping a subagent or
-ending the prompt run does not stop a background command a subagent started.
+Each subagent's shell processes belong to its child session ID, so no other
+agent can reach them, and they end with the subagent. A failure that ends a
+subagent requests SIGKILL for each of its shell process groups at once, without
+a grace period, as `stop_subagent` and the end of the prompt run do.
 
 ### Compaction operation
 
@@ -465,15 +473,20 @@ the committed batch stays saved and the hook's effects are not undone.
 
 ### Shell process lifetime
 
-A shell process is one background command started by a `shell` call with
-`background: true`, together with its process group, stdin, retained output,
-and current state. Each active session owns its shell processes through one
+A shell process is one background command started by one agent's `shell` call
+with `background: true`, together with its process group, stdin, retained
+output, and current state. It belongs to the agent that started it, identified
+by its agent session ID: the main session ID for the main agent, or the child
+session ID for a subagent. Each active session owns its shell processes through one
 `ShellProcesses` owner, created when the session becomes active and kept by a
 repeated load in the same process. The prompt run receives the owner in its
 input and passes it to the tool boundary; the headless entry point creates one
 for its run. A shell process ID is an opaque UUID resolved only through the
-current active session's owner. It is never an operating-system PID, is never
-reused, and names nothing in another session or a later process.
+current active session's owner and only for the agent session ID that started
+it; `list` shows only that agent's shell processes, and `read`, `write`, and
+`stop` treat another agent's shell process ID as unknown. It is never an
+operating-system PID, is never reused, and names nothing in another session or
+a later process.
 
 One supervisor task per shell process owns its child, process group, and
 output capture. It drains both output pipes continuously, keeping the last
@@ -481,8 +494,9 @@ output capture. It drains both output pipes continuously, keeping the last
 the supervisor stops any remaining members of its group, finishes capturing
 output, closes stdin, and only then publishes the final state. A read failure ends the
 command through the same cleanup. The owner retains at most 16 shell processes
-and makes room by removing the oldest finished one; it never removes a running
-one, and a start with 16 running fails before spawning.
+for each agent session ID and makes room by removing that agent's oldest
+finished one; it never removes a running one or another agent's, and a start
+with 16 of that agent's running fails before spawning.
 
 Tool-call completion and command termination are separate. Starting a
 command, listing, reading a running command, writing input, and stopping
@@ -493,8 +507,9 @@ transcript entries, send ACP updates, run hooks, or start model requests.
 Sequential tool calls, in one batch or later turns, can therefore interact
 with a command that keeps running between them.
 
-Prompt cancellation does not stop a shell process, including one started
-earlier in the same prompt run; it cancels a waiting read or write. A write
+Prompt cancellation does not stop the main agent's shell processes, including
+one started earlier in the same prompt run; it cancels a waiting read or write.
+A subagent's shell processes end with the subagent. A write
 waits at most five seconds and reports how many bytes it sent and whether
 stdin is closed. An explicit stop sends SIGTERM, waits up to two seconds,
 sends SIGKILL if needed, reaps the child, and bounds output draining; once
@@ -576,7 +591,8 @@ roll back a saved user message, observed tool effects, or committed transcript
 entries. Each running tool or hook owns the cleanup boundary for its resources:
 its whole process group is stopped, a hook's after a two-second SIGTERM grace
 period. Shell processes belong to their active session instead, so prompt
-cancellation leaves them running. Connection shutdown rejects new operations,
+cancellation leaves the main agent's running and ends a subagent's with the
+subagent. Connection shutdown rejects new operations,
 cancels active prompts, signals every shell process, and waits for the
 operation guards to drop. Deletion runs as a spawned task under its operation
 guard, so waiting for shell process cleanup does not block other sessions.
@@ -682,14 +698,15 @@ The implementation enforces these properties:
     assistant message committed with a finished OpenRouter stop, `after_tools`
     only after a committed assistant batch, and hook feedback is saved before
     the next model request.
-16. Every shell process belongs to exactly one active session's owner, and its
-    whole process group is stopped when that session is deleted, the ACP
-    connection shuts down, or its headless run ends.
+16. Every shell process belongs to one agent of exactly one active session's
+    owner, only that agent can reach it, and its whole process group is
+    stopped when that session is deleted, the ACP connection shuts down, or its
+    headless run ends.
 17. Only the main loop saves agent messages, only in the main transcript, and
     never inside an assistant batch or its hook feedback; `before_stop` never
     judges an answer that messages waiting at its commit superseded.
 18. A main prompt run that returns has stopped every subagent and awaited its
-    task before `after_run`.
+    task, and every subagent's shell processes have ended, before `after_run`.
 
 ## Deliberate constraints
 

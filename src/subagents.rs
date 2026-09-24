@@ -2,6 +2,7 @@
 //! own child session in a Tokio task, concurrently with the main agent, and
 //! publishes each final answer or failure for the main loop to save and
 //! deliver. Follow-up messages start later turns of the same conversation.
+//! A subagent's shell processes are killed when it ends.
 
 use std::{
     collections::VecDeque,
@@ -43,6 +44,8 @@ pub struct Launch {
     pub system_prompt: String,
     /// Global hooks only; invoked skill hooks belong to the main agent.
     pub global_hooks: Vec<HookSource>,
+    /// The active session's shell processes. Each subagent reaches only the
+    /// ones its child session ID started.
     pub shell_processes: ShellProcesses,
     /// The main agent's ACP connection, which carries subagent permission
     /// requests.
@@ -67,9 +70,10 @@ struct Shared {
 
 struct State {
     open: bool,
-    /// Whether any subagent started, so shutdown knows the cost may have
-    /// changed.
-    started: bool,
+    /// Every subagent started in the prompt run, including ended ones, so
+    /// shutdown can remove their shell processes and knows whether the cost
+    /// may have changed.
+    started: Vec<SessionId>,
     /// Live subagents in start order.
     agents: Vec<Agent>,
     /// Messages for the main agent in publication order.
@@ -125,7 +129,7 @@ impl Subagents {
             launch,
             state: Mutex::new(State {
                 open: true,
-                started: false,
+                started: Vec::new(),
                 agents: Vec::new(),
                 messages: VecDeque::new(),
             }),
@@ -140,20 +144,23 @@ impl Subagents {
 
     /// Closes admission, discards unread messages, cancels every subagent,
     /// and waits for their current tasks, so each can attempt to save its
-    /// interrupted batch. Returns whether any subagent started.
+    /// interrupted batch. Then kills every subagent's shell processes and
+    /// waits until they are removed. Returns whether any subagent started.
     pub async fn shutdown(&self) -> bool {
         let (tasks, started) = {
             let mut state = self.0.lock();
             state.open = false;
             state.messages.clear();
             let tasks: Vec<_> = state.agents.iter_mut().filter_map(Agent::stop).collect();
-            (tasks, state.started)
+            (tasks, state.started.clone())
         };
         for result in futures::future::join_all(tasks).await {
             propagate_panic(result);
         }
         self.0.lock().agents.clear();
-        started
+        let shell_processes = &self.0.launch.shell_processes;
+        futures::future::join_all(started.iter().map(|id| shell_processes.remove(id))).await;
+        !started.is_empty()
     }
 
     /// Starts a subagent on `task` in a new child session and returns its ID
@@ -186,7 +193,7 @@ impl Subagents {
             cancellation,
             task: Some(task),
         });
-        state.started = true;
+        state.started.push(id.clone());
         Ok(id)
     }
 
@@ -220,16 +227,19 @@ impl Subagents {
     }
 
     /// Cancels a subagent's current turn, discards its queued messages, and
-    /// waits for its task before removing it.
+    /// waits for its task and the removal of its shell processes before
+    /// removing it.
     pub async fn stop(&self, id: &str) -> std::result::Result<(), String> {
-        let task = find(&mut self.0.lock(), id)?.stop();
+        let (session_id, task) = {
+            let mut state = self.0.lock();
+            let agent = find(&mut state, id)?;
+            (agent.id.clone(), agent.stop())
+        };
         if let Some(task) = task {
             propagate_panic(task.await);
         }
-        self.0
-            .lock()
-            .agents
-            .retain(|agent| agent.id.to_string() != id);
+        self.0.launch.shell_processes.remove(&session_id).await;
+        self.0.lock().agents.retain(|agent| agent.id != session_id);
         self.0.changed.notify_waiters();
         Ok(())
     }
@@ -294,6 +304,9 @@ impl Drop for Subagents {
         state.messages.clear();
         for agent in state.agents.drain(..) {
             agent.cancellation.cancel();
+        }
+        for id in &state.started {
+            self.0.launch.shell_processes.kill(id);
         }
     }
 }
@@ -365,6 +378,7 @@ impl Shared {
             )),
             Ok(PromptOutput::Cancelled) => {
                 state.agents.remove(index);
+                self.launch.shell_processes.kill(id);
                 drop(state);
                 self.changed.notify_waiters();
                 return None;
@@ -389,6 +403,7 @@ impl Shared {
             self.next_turn(&mut state, index)
         } else {
             state.agents.remove(index);
+            self.launch.shell_processes.kill(id);
             None
         };
         drop(state);
@@ -415,6 +430,7 @@ impl Shared {
                     )),
                 });
                 state.agents.remove(index);
+                self.launch.shell_processes.kill(&id);
                 None
             }
         }
@@ -528,6 +544,7 @@ mod tests {
         subagents: Subagents,
         server: Server,
         store: SessionStore,
+        main_session_id: SessionId,
         shell_processes: ShellProcesses,
         workspace: Workspace,
     }
@@ -542,7 +559,7 @@ mod tests {
             let subagents = Subagents::new(Launch {
                 store: store.clone(),
                 openrouter: server.client(),
-                main_session_id,
+                main_session_id: main_session_id.clone(),
                 workspace_path: workspace.0.clone(),
                 settings: SessionSettings::new(DEFAULT_MODEL, EffortLevel::Default)
                     .with_mode(SessionMode::Auto),
@@ -556,6 +573,7 @@ mod tests {
                 subagents,
                 server,
                 store,
+                main_session_id,
                 shell_processes,
                 workspace,
             }
@@ -772,8 +790,16 @@ mod tests {
         assert_eq!(waited.states, format!("{id}: idle"));
     }
 
+    fn background(command: &str) -> Reply {
+        calls_reply(&[(
+            "background",
+            tools::SHELL,
+            json!({"command": command, "background": true}),
+        )])
+    }
+
     #[tokio::test]
-    async fn stopping_a_subagent_cancels_its_turn_discards_its_queue_and_keeps_its_commands() {
+    async fn stopping_a_subagent_cancels_its_turn_discards_its_queue_and_kills_its_commands() {
         let owner = Owner::new(vec![(
             "Task",
             vec![calls_reply(&[
@@ -803,6 +829,8 @@ mod tests {
             owner.subagents.send(&id, "Queued.".to_owned()),
             Ok(Sent::Queued(1))
         ));
+        let child = SessionId::new(id.clone());
+        let process = owner.shell_processes.list(&child).remove(0);
 
         owner.subagents.stop(&id).await.unwrap();
 
@@ -816,9 +844,64 @@ mod tests {
             if started.starts_with("Started shell process"))
         );
         assert!(owner.subagents.take_messages().is_empty());
-        let processes = owner.shell_processes.list();
-        assert_eq!(processes.len(), 1);
-        assert_eq!(processes[0].state(), crate::shell_processes::State::Running);
+        assert!(matches!(
+            process.state(),
+            crate::shell_processes::State::Stopped(_)
+        ));
+        assert!(owner.shell_processes.list(&child).is_empty());
+    }
+
+    #[tokio::test]
+    async fn ending_the_prompt_run_kills_every_subagents_shell_processes() {
+        let owner = Owner::new(vec![
+            (
+                "Idle task",
+                vec![background("exec sleep 30"), text_reply("Started.")],
+            ),
+            (
+                "Failing task",
+                vec![
+                    background("exec sleep 30"),
+                    Reply::Status(500, "unavailable".to_owned()),
+                ],
+            ),
+        ])
+        .await;
+        let mut sleeper = tokio::process::Command::new("/bin/sh");
+        sleeper.args(["-c", "exec sleep 30"]);
+        let main = owner
+            .shell_processes
+            .start(&owner.main_session_id, sleeper, "exec sleep 30", 1024)
+            .unwrap();
+        let ids = [owner.start("Idle task"), owner.start("Failing task")];
+        let messages = owner.settle().await;
+        assert_eq!(messages.len(), 2, "{messages:?}");
+        let processes: Vec<_> = ids
+            .iter()
+            .map(|id| {
+                owner
+                    .shell_processes
+                    .list(&SessionId::new(id.clone()))
+                    .remove(0)
+            })
+            .collect();
+
+        assert!(owner.subagents.shutdown().await);
+
+        for (id, process) in ids.iter().zip(&processes) {
+            assert!(
+                matches!(process.state(), crate::shell_processes::State::Stopped(_)),
+                "{id}"
+            );
+            assert!(
+                owner
+                    .shell_processes
+                    .list(&SessionId::new(id.clone()))
+                    .is_empty()
+            );
+        }
+        assert_eq!(main.state(), crate::shell_processes::State::Running);
+        assert_eq!(owner.shell_processes.list(&owner.main_session_id).len(), 1);
         owner.shell_processes.shutdown().await;
     }
 
