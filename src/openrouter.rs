@@ -11,8 +11,8 @@ use serde_json::{Value, json};
 
 use crate::{
     sessions::{
-        AssistantMessage, EffortLevel, HookFeedback, ImageAttachment, ModelUsage, SkillInvocation,
-        ToolCall, TranscriptEntry, TurnInput, UserMessage, UserMessagePart,
+        AgentMessage, AssistantMessage, EffortLevel, HookFeedback, ImageAttachment, ModelUsage,
+        SkillInvocation, ToolCall, TranscriptEntry, TurnInput, UserMessage, UserMessagePart,
     },
     tools,
 };
@@ -220,19 +220,26 @@ pub fn is_input_context_overflow(error: &io::Error) -> bool {
         .is_some_and(|inner| inner.is::<InputContextOverflow>())
 }
 
-/// The validated catalog model, effort level, and system prompt that every
-/// ordinary model request in a turn sends with the transcript.
+/// The validated catalog model, effort level, system prompt, and the tools of
+/// the agent's role, which every ordinary model request in a turn sends with
+/// the transcript.
 #[derive(Debug, Clone)]
 pub struct ModelRequestParameters {
     pub model: &'static CatalogModel,
     pub effort: EffortLevel,
     pub system_prompt: String,
+    pub role: tools::Role,
 }
 
 impl ModelRequestParameters {
     /// Rejects saved or selected settings the fetched model catalog no longer
     /// accepts.
-    pub fn new(model_id: &str, effort: EffortLevel, system_prompt: String) -> io::Result<Self> {
+    pub fn new(
+        model_id: &str,
+        effort: EffortLevel,
+        system_prompt: String,
+        role: tools::Role,
+    ) -> io::Result<Self> {
         let model = catalog_model(model_id).ok_or_else(|| {
             io::Error::new(
                 ErrorKind::InvalidData,
@@ -252,6 +259,7 @@ impl ModelRequestParameters {
             model,
             effort,
             system_prompt,
+            role,
         })
     }
 }
@@ -266,7 +274,7 @@ pub(crate) fn ordinary_body(parameters: &ModelRequestParameters, messages: Vec<V
     let mut body = json!({
         "model": parameters.model.id,
         "messages": messages,
-        "tools": tools::schemas(),
+        "tools": tools::schemas(parameters.role),
         "stream": true,
         "usage": { "include": true },
     });
@@ -438,6 +446,11 @@ pub(crate) fn hook_feedback_text(feedback: &HookFeedback) -> String {
     )
 }
 
+/// The user-role text that gives the main agent one subagent message.
+pub(crate) fn agent_message_text(message: &AgentMessage) -> String {
+    format!("{}:\n{}", message.label(), message.text())
+}
+
 fn image_part(image: &ImageAttachment) -> Value {
     json!({
         "type": "image_url",
@@ -481,6 +494,12 @@ pub(crate) fn chat_messages(transcript: &[TranscriptEntry]) -> Vec<Value> {
             },
             TranscriptEntry::HookFeedback(feedback) => {
                 json!({ "role": "user", "content": hook_feedback_text(feedback) })
+            }
+            TranscriptEntry::AgentMessages(agent_messages) => {
+                messages.extend(agent_messages.iter().map(
+                    |message| json!({ "role": "user", "content": agent_message_text(message) }),
+                ));
+                continue;
             }
             TranscriptEntry::AssistantBatch(batch) => {
                 let message = &batch.message;
@@ -895,7 +914,54 @@ pub(crate) mod fixture {
         Status(u16, String),
         /// The start of an SSE body, then the connection stays open forever.
         Hang(String),
+        /// The reply, sent only once the gate opens, so its model request
+        /// stays in flight until the test releases it.
+        Gated(Gate, Box<Reply>),
+        /// A reply built from the request it answers, for a scripted model
+        /// that refers to IDs from earlier tool results.
+        From(Box<dyn FnOnce(&Value) -> Reply + Send>),
     }
+
+    impl Reply {
+        pub fn from(build: impl FnOnce(&Value) -> Reply + Send + 'static) -> Self {
+            Self::From(Box::new(build))
+        }
+    }
+
+    /// Holds gated replies until the test opens it.
+    #[derive(Clone)]
+    pub struct Gate(Arc<tokio::sync::watch::Sender<bool>>);
+
+    impl Gate {
+        pub fn new() -> Self {
+            Self(Arc::new(tokio::sync::watch::Sender::new(false)))
+        }
+
+        pub fn open(&self) {
+            self.0.send_replace(true);
+        }
+
+        /// Gates `reply`.
+        pub fn hold(&self, reply: Reply) -> Reply {
+            Reply::Gated(self.clone(), Box::new(reply))
+        }
+
+        async fn wait(&self) {
+            self.0
+                .subscribe()
+                .wait_for(|open| *open)
+                .await
+                .expect("the gate outlives its replies");
+        }
+    }
+
+    /// Scripts keyed by a marker in a request's first message after the
+    /// system prompt, each with its own replies in order. The first route
+    /// whose marker that message contains answers, so a route with an empty
+    /// marker answers every request no earlier route claims. For concurrent
+    /// agents, each agent's distinct first message selects its script
+    /// whatever order their requests arrive in.
+    type Routes = Arc<Mutex<Vec<(String, VecDeque<Reply>)>>>;
 
     pub fn shell_reply(commands: &[(&str, u64)]) -> Reply {
         let calls: Vec<_> = commands
@@ -926,17 +992,28 @@ pub(crate) mod fixture {
         /// Serves `replies` in request order, over as many connections as
         /// the client opens.
         pub async fn start(replies: Vec<Reply>) -> Self {
+            Self::routed(vec![("", replies)]).await
+        }
+
+        /// Serves each request from the first route whose marker its first
+        /// message after the system prompt contains.
+        pub async fn routed(routes: Vec<(&str, Vec<Reply>)>) -> Self {
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
             let url = format!("http://{}", listener.local_addr().unwrap());
             let requests = Arc::new(Mutex::new(Vec::new()));
             let connections = Arc::new(AtomicUsize::new(0));
-            let replies = Arc::new(Mutex::new(VecDeque::from(replies)));
+            let routes: Routes = Arc::new(Mutex::new(
+                routes
+                    .into_iter()
+                    .map(|(marker, replies)| (marker.to_owned(), VecDeque::from(replies)))
+                    .collect(),
+            ));
             let (seen, opened) = (requests.clone(), connections.clone());
             tokio::spawn(async move {
                 loop {
                     let (socket, _) = listener.accept().await.unwrap();
                     opened.fetch_add(1, Ordering::SeqCst);
-                    tokio::spawn(serve(socket, replies.clone(), seen.clone()));
+                    tokio::spawn(serve(socket, routes.clone(), seen.clone()));
                 }
             });
             Self {
@@ -954,24 +1031,65 @@ pub(crate) mod fixture {
             self.requests.lock().unwrap().clone()
         }
 
+        /// The requests whose first message after the system prompt
+        /// contains `marker`, in arrival order.
+        pub fn requests_for(&self, marker: &str) -> Vec<Value> {
+            self.requests()
+                .into_iter()
+                .filter(|request| route_key(request).contains(marker))
+                .collect()
+        }
+
+        /// Waits until `count` requests for `marker` have arrived.
+        pub async fn wait_for_requests(&self, marker: &str, count: usize) {
+            tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                while self.requests_for(marker).len() < count {
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                }
+            })
+            .await
+            .unwrap_or_else(|_| panic!("{count} requests for {marker:?} did not arrive"));
+        }
+
         pub fn connections(&self) -> usize {
             self.connections.load(Ordering::SeqCst)
         }
     }
 
-    async fn serve(
-        mut socket: TcpStream,
-        replies: Arc<Mutex<VecDeque<Reply>>>,
-        seen: Arc<Mutex<Vec<Value>>>,
-    ) {
+    /// The text a request is routed by.
+    fn route_key(request: &Value) -> String {
+        request["messages"][1]["content"].to_string()
+    }
+
+    async fn serve(mut socket: TcpStream, routes: Routes, seen: Arc<Mutex<Vec<Value>>>) {
         while let Some(body) = read_request(&mut socket).await {
+            let request = if body.is_empty() {
+                Value::Null
+            } else {
+                serde_json::from_slice(&body).unwrap()
+            };
+            let key = route_key(&request);
             if !body.is_empty() {
-                seen.lock()
-                    .unwrap()
-                    .push(serde_json::from_slice(&body).unwrap());
+                seen.lock().unwrap().push(request.clone());
             }
-            let Some(reply) = replies.lock().unwrap().pop_front() else {
+            let reply = routes
+                .lock()
+                .unwrap()
+                .iter_mut()
+                .find(|(marker, _)| key.contains(marker.as_str()))
+                .and_then(|(_, replies)| replies.pop_front());
+            let Some(mut reply) = reply else {
                 break;
+            };
+            let reply = loop {
+                match reply {
+                    Reply::Gated(gate, gated) => {
+                        gate.wait().await;
+                        reply = *gated;
+                    }
+                    Reply::From(build) => reply = build(&request),
+                    reply => break reply,
+                }
             };
             match reply {
                 Reply::Stream(body) => {
@@ -993,6 +1111,7 @@ pub(crate) mod fixture {
                     socket.write_all(head.as_bytes()).await.unwrap();
                     std::future::pending::<()>().await;
                 }
+                Reply::Gated(..) | Reply::From(_) => unreachable!("resolved above"),
             }
         }
         socket.shutdown().await.ok();
@@ -1147,6 +1266,7 @@ mod tests {
             DEFAULT_MODEL,
             EffortLevel::Default,
             TEST_SYSTEM_PROMPT.to_owned(),
+            tools::Role::Main,
         )
         .unwrap()
     }
@@ -1240,6 +1360,7 @@ mod tests {
                     EffortLevel::Default,
                     "You are Ox.\n\n# Workspace instructions from AGENTS.md\n\nAnswer in French."
                         .to_owned(),
+                    tools::Role::Main,
                 )
                 .unwrap(),
                 chat_messages(&transcript),
@@ -1372,6 +1493,7 @@ mod tests {
                             &model.id,
                             effort,
                             TEST_SYSTEM_PROMPT.to_owned(),
+                            tools::Role::Main,
                         )
                         .unwrap(),
                         vec![],

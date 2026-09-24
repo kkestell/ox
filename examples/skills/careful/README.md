@@ -57,7 +57,9 @@ result. The [goal skill](../goal/README.md) shows
 
 Skill hooks run only in the prompt run that invoked their skill. Invoking the
 skill approves all of its hook commands in both Ask and Auto mode. Skill hooks
-do not run for ordinary messages, `/compact`, or headless prompts.
+do not run for ordinary messages, `/compact`, headless prompts, or the prompt
+run's subagents, so this skill does not check a subagent's shell calls or
+patches.
 
 ## Global hooks
 
@@ -83,7 +85,10 @@ null `hooks`, or an empty map, enables none. Invalid settings fail startup with 
 Restart Ox to pick up edits.
 
 Global commands run on ordinary ACP and headless prompts in both Ask and Auto
-mode. At each hook point, the global command runs before the invoked skill's
+mode, and in every subagent turn. A subagent turn passes its own child session
+ID as `session_id` and its own `run_id`, and its `after_tools` input lists only
+its own batch, though other agents may change the workspace meanwhile. At each
+hook point, the global command runs before the invoked skill's
 command. Both run even if the first denies a tool call or asks to continue.
 Either denial blocks a call; either continuation requests another model
 response, counting once toward the limit. Each hook's feedback is saved.

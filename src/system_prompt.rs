@@ -10,6 +10,7 @@ use crate::text_file;
 
 const FILE_NAME: &str = "AGENTS.md";
 const BUILT_IN_PROMPT: &str = include_str!("prompts/system_prompt.md");
+const SUBAGENT_PROMPT: &str = include_str!("prompts/subagent_prompt.md");
 
 /// Builds the system prompt for a workspace. The result is stable until the
 /// caller chooses to build it for that workspace again.
@@ -21,6 +22,12 @@ pub fn for_workspace(workspace_path: &Path) -> io::Result<String> {
         prompt.push_str(workspace.trim_end());
     }
     Ok(prompt)
+}
+
+/// The system prompt of a subagent: the main agent's captured system prompt,
+/// including its workspace instructions, followed by the subagent role.
+pub fn for_subagent(main_prompt: &str) -> String {
+    format!("{main_prompt}\n\n{}", SUBAGENT_PROMPT.trim_end())
 }
 
 /// Reads the workspace instructions in `<workspace>/AGENTS.md`. `None` when the

@@ -41,7 +41,8 @@ Ox has six architectural components:
 - The **ACP boundary** owns the connection, translates ACP input, sends ACP
   updates, exposes session operations, and holds shared process state.
 - The **prompt run** coordinates one turn: ordinary model requests, tool
-  execution, hook runs, transcript commits, and the final response.
+  execution, hook runs, transcript commits, and the final response. Its shared
+  loop, `AgentTurn`, also runs every turn of the prompt run's subagents.
 - The **compaction workflow** owns summarizer requests and checkpoint commits.
   It serves both automatic compaction during a prompt run and the cancellable
   `/compact` command, which runs as a prompt operation.
@@ -55,11 +56,14 @@ Ox has six architectural components:
   not know OpenRouter wire formats or construct ACP updates.
 
 The process entry, credential code, settings and skill catalog loading, hook
-protocol, child-process execution, and each active session's shell-process
-owner support these components but do not participate in prompt orchestration. Dependencies point from the ACP boundary,
-prompt run, and compaction workflow toward the concrete OpenRouter client and
-session store; the prompt run also depends on the tool boundary. The cancellation signal lives
-below the ACP layer so both prompt and compaction workflows can use it.
+protocol, child-process execution, and each active session's shell-process owner
+support these components but do not participate in prompt orchestration. The
+subagent owner, `Subagents`, belongs to one main prompt run; it starts subagent
+turns through the same loop and never talks to the ACP client itself.
+Dependencies point from the ACP boundary, prompt run, and compaction workflow
+toward the concrete OpenRouter client and session store; the prompt run also
+depends on the tool boundary. The cancellation signal lives below the ACP layer
+so both prompt and compaction workflows can use it.
 
 ## Sources of authority
 
@@ -115,6 +119,14 @@ a later turn starts, the summary alone carries it. The projection encodes the
 summary and the selected entries directly as request messages; the summary is
 never a transcript entry. Request estimates, input admission, and compaction cut
 sizes use the same projection.
+
+Agent messages are saved only in a main session's transcript. An agent
+messages entry holds one or more subagent final answers or failures in the
+order they were published, each with its subagent ID. Model requests send each
+as its own labeled user-role message, replay shows each as a finished tool call
+attributed to its subagent, and summarizer material labels each with its
+subagent. An agent message is neither a user message nor a tool result, and it
+never falls inside an assistant batch or between a batch and its hook feedback.
 
 The system prompt is not a transcript entry. It is neither stored nor replayed.
 
@@ -231,6 +243,12 @@ The first saved turn start supplies the session title from its first nonblank
 text line; an image-only user message contributes `Image`, and a skill
 invocation contributes `/<name> <arguments>`. Later turns do not replace it.
 
+A child session is a session whose `parent_session_id` names its main
+session. It holds one subagent's transcript in the main session's workspace.
+Listing, loading, prompting, and deleting over ACP see only main sessions;
+deleting a main session deletes its child sessions. Child sessions from every
+prompt run stay saved for inspection and session cost.
+
 ### Process state
 
 Process state is either live coordination state or a cache of reconstructible
@@ -241,6 +259,8 @@ state:
 - active sessions hold, for each session created or loaded in the process, the
   ACP selections chosen for a future turn, the system prompt and skill catalog
   captured at activation, and the session's shell processes;
+- each main prompt run holds its `Subagents` owner, which exists only while
+  that run does;
 - the settings read from the settings file at process startup hold the default
   model and global hooks;
 - the OpenRouter client cache holds credentials and reusable HTTP state; and
@@ -268,6 +288,11 @@ grows. A repeated load in the same process reuses the assembled prompt. A later
 process assembles it again from its built-in prompt and the then-current
 `AGENTS.md`. The system prompt is not written to SQLite, replayed, or used for
 the session title.
+
+A subagent's system prompt is the main agent's captured system prompt,
+including its workspace instructions, followed by the subagent role in
+`src/prompts/subagent_prompt.md`. It is derived once per prompt run and used
+for every request of every subagent turn in it.
 
 Compaction uses the dedicated `src/prompts/compaction_prompt.md` as its system
 prompt, the prompt run's model, or for `/compact` the model of the ACP
@@ -297,6 +322,60 @@ size and asks the compaction workflow to compact when it reaches the automatic
 threshold. An explicit pre-stream input-context overflow may force one
 compaction and one retry if the request becomes smaller.
 
+### Subagent lifetime
+
+A subagent belongs to one main prompt run. The main agent's `start_subagent`
+creates a child session, saves the assigned task as its first turn start, and
+returns the child session ID as the subagent ID at once; the turn runs in its
+own Tokio task through the shared loop while the main agent keeps working.
+Every subagent turn uses the main turn's captured model, effort level, session
+mode, workspace path, and global hooks, the subagent system prompt, and a
+fresh transcript. Subagents have only the workspace and shell tools; the main
+agent alone has `start_subagent`, `send_message`, `stop_subagent`, and `wait`.
+The same role selects the advertised tools, request estimates, and the tool
+dispatch check, so a coordination call from a subagent fails as a tool result.
+A subagent ID resolves only through its prompt run's owner.
+
+An owner holds at most four live subagents, idle ones included, and rejects a
+fifth start with the limit and every subagent's state. A subagent that finishes
+a turn publishes its final answer, bounded to 16 KiB with a truncation marker
+while its child session keeps the whole answer. A model failure, refusal,
+token limit, hook error, or rejected queued message publishes a failure and
+ends the subagent. After a final answer it starts its next queued follow-up
+message as a new turn or becomes idle. `send_message` starts a turn of an idle
+subagent at once and queues behind a busy one; queued messages start turns in
+acceptance order, as ordinary user messages that are never dispatched as slash
+commands. Deciding between the next queued message and idleness, and accepting
+a message, happen under one mutex, so no message is lost between them.
+Assigned tasks and follow-up messages over 16 KiB are rejected before they are
+accepted, and each turn start passes the child's input admission.
+
+Only the main loop saves agent messages. Before each ordinary model request it
+takes every published message, checks input admission, saves them as one
+agent messages entry, and shows them. When a finished answer commits while
+messages are waiting, those messages are saved and the turn continues without
+running `before_stop` on that answer. Otherwise `before_stop` runs, and
+messages published while it runs wait for the next request boundary or are
+discarded when the run ends. `wait` returns at once for waiting messages, no
+subagents, or only idle ones, otherwise on the next of those, the timeout of at
+most 600 seconds, or prompt cancellation; it registers for notification before
+checking, so a change between the check and the wait still wakes it.
+
+`stop_subagent` cancels the subagent's turn, discards its queue, and awaits its
+task. When the main turn's result is known, normally or after cancellation, it
+closes its owner, cancels every subagent, and awaits their tasks before its
+`after_run`; each cancelled turn still attempts to save its interrupted batch
+and runs its own `after_run`. Each subagent task also cancels its turn when the
+main prompt is cancelled. A dropped prompt future can only signal
+cancellation: dropping the owner closes it, discards its messages, and cancels
+its subagents, whose tasks may finish unwinding afterward while the runtime
+lives. They write only their child sessions, a save after the main session's
+deletion fails without recreating it, and abrupt transport loss or process exit
+guarantees no save. Reloading a session starts no subagent.
+
+Subagents share the active session's shell processes. Stopping a subagent or
+ending the prompt run does not stop a background command a subagent started.
+
 ### Compaction operation
 
 The compaction workflow owns summarizer requests, validates the projected
@@ -311,7 +390,11 @@ When a completion contains tool calls, the prompt run executes them in order and
 builds one assistant batch. The batch is committed before another model request
 begins. A successful final response follows the same commit boundary.
 
-Global hooks and the invoked skill's hooks run at fixed points in the turn:
+Global hooks run in every main and subagent turn; the invoked skill's hooks
+run only in the main agent's turns. Each subagent turn has its own run ID and
+passes its child session ID as the hook's session ID, and its hooks see its own
+batches while other agents may change the workspace. Hooks run at fixed points
+in the turn:
 
 1. `before_run` runs once, after the turn start is saved
    and announced and before the first model request. Compaction, request
@@ -449,15 +532,25 @@ decisions, and `after_run` appear only in live ACP updates.
 
 A usage update reports context tokens, the model's context limit, and the
 session cost in US dollars. The session cost is the sum of every saved model
-usage cost and summarizer cost; a model request or compaction that commits
-nothing is not counted. When the latest assistant batch or checkpoint is a
-batch whose message has model usage, the context tokens are its input plus output
-tokens; otherwise they are the request estimate for the current transcript, so
-the count drops after compaction. The prompt run sends a usage update after each
-committed assistant batch in its model loop and after each automatic compaction
-that commits a checkpoint; a batch saved after the run stops sends none.
-`/compact` sends one after its checkpoint commits, and load sends one after
-replay. A transcript without an assistant message has no usage update.
+usage cost and summarizer cost in the main transcript and in every child session
+of it; a model request or compaction that commits nothing is not counted.
+Context tokens describe the main transcript. When the latest assistant batch or
+checkpoint is a batch whose message has model usage, the context tokens are its
+input plus output tokens; otherwise they are the request estimate for the
+current transcript, so the count drops after compaction. The prompt run sends a
+usage update after each committed assistant batch in its model loop and after
+each automatic compaction that commits a checkpoint; a batch saved after the run
+stops sends none. A main prompt run that started a subagent sends one more after
+its subagents stop. Subagent turns send no ACP updates at all. `/compact` sends
+one after its checkpoint commits, and load sends one after replay. A transcript
+without an assistant message has no usage update.
+
+ACP updates and permission requests use an ACP identity: the main session ID
+and, for a subagent, its child session ID. The session store uses each
+agent's own session ID. A subagent's permission request is sent under the main
+session ID, with its tool call ID and title scoped by the subagent ID and its
+content naming the subagent; the transcript and model requests keep the model's
+original call ID.
 
 Sending an ACP update does not confirm that the ACP client received or displayed
 it. An ACP update failure stops new work, but the prompt run still attempts to
@@ -467,7 +560,9 @@ save a validated uncommitted assistant batch.
 
 Prompt, load, and delete are session operations; `/compact` runs as a prompt
 operation. Each must acquire an operation guard, so at most one of them runs
-for a session at a time.
+for a session at a time. Child sessions have no operation guard of their own:
+only their subagent's task writes one, inside the main session's prompt
+operation, except for unwinding after a dropped prompt.
 Different sessions may run concurrently. Listing and changing ACP selections
 do not acquire an operation guard.
 
@@ -512,16 +607,17 @@ through that handle before returning its name or opening it to search contents.
 Read and patch reject a link swapped into a validated path before use; search
 drops a candidate that no longer resolves inside the workspace and does not
 forward ripgrep's unchecked path diagnostics. Shell starts in the workspace but
-may access other paths and the network with Ox's
-permissions. In Ask mode, every ACP shell call, including a background start,
-and every `shell_process` write, including one that only closes stdin,
-requires a permission request. Approving a start does not approve later input.
-Listing, reading, and stopping shell processes need no request. The shell tool
-module classifies each call's permission with the same argument validation its
-execution uses. In Auto mode, these calls run without that request. Headless prompts use and
-save Auto mode. The captured mode is the authorization policy for the whole
-turn; the ACP connection only transports Ask requests. Tool effects are not
-transactional and may remain after failure or cancellation.
+may access other paths and the network with Ox's permissions. In Ask mode, every
+ACP shell call, including a background start, and every `shell_process` write,
+including one that only closes stdin, requires a permission request, including
+each subagent's; starting a subagent approves none of its shell calls. Approving
+a start does not approve later input. Listing, reading, and stopping shell
+processes need no request. The shell tool module classifies each call's
+permission with the same argument validation its execution uses. In Auto mode,
+these calls run without that request. Headless prompts use and save Auto mode.
+The captured mode is the authorization policy for the whole turn; the ACP
+connection only transports Ask requests. Tool effects are not transactional and
+may remain after failure or cancellation.
 
 `AGENTS.md` is user-controlled workspace input appended to the system prompt. A
 file that cannot be read, is not UTF-8, or exceeds 32 KiB fails session
@@ -559,7 +655,7 @@ do not inherit `OPENROUTER_API_KEY`. Hooks inherit it, so a hook can run a neste
 The implementation enforces these properties:
 
 1. A session has at most one active prompt, load, or delete operation in the
-   process.
+   process, and a child session is written only by its subagent.
 2. The saved turn start is durable before its turn's first model request.
 3. A nonempty transcript begins with a turn start.
 4. Every turn start stores the model, effort level, and session mode captured
@@ -589,10 +685,16 @@ The implementation enforces these properties:
 16. Every shell process belongs to exactly one active session's owner, and its
     whole process group is stopped when that session is deleted, the ACP
     connection shuts down, or its headless run ends.
+17. Only the main loop saves agent messages, only in the main transcript, and
+    never inside an assistant batch or its hook feedback; `before_stop` never
+    judges an answer that messages waiting at its commit superseded.
+18. A main prompt run that returns has stopped every subagent and awaited its
+    task before `after_run`.
 
 ## Deliberate constraints
 
-The implemented architecture has one OpenRouter provider, one concrete tool set,
+The implemented architecture has one OpenRouter provider, one concrete tool set
+with a main-agent and a subagent role, at most four subagents per prompt run,
 five fixed hook kinds with at most one global and one skill command each, one
 SQLite connection, sequential tool execution,
 whole-transcript reads, process-local operation guards, and process-local shell

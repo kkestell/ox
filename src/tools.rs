@@ -9,21 +9,34 @@ use serde_json::Value;
 use crate::{
     sessions::{ToolCall, ToolOutcome},
     shell_processes::ShellProcesses,
+    subagents::Subagents,
 };
 
 mod patch;
 mod read;
 mod search;
 mod shell;
+mod subagent;
 mod workspace;
 
 pub use shell::Permission;
 
+/// Which tools an agent has. The main agent also coordinates subagents,
+/// which have only the workspace and shell tools.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Role {
+    Main,
+    Subagent,
+}
+
 /// What running and classifying one call needs from the agent that made it.
 pub struct ToolContext {
     pub workspace_path: PathBuf,
-    /// The active session's shell processes, which outlive the call.
+    /// The active session's shell processes, which outlive the call and are
+    /// shared by every agent of the session.
     pub shell_processes: ShellProcesses,
+    /// The main agent's subagents; `None` for a subagent.
+    pub subagents: Option<Subagents>,
 }
 
 pub const APPLY_PATCH: &str = "apply_patch";
@@ -32,13 +45,17 @@ pub const GLOB: &str = "glob";
 pub const SHELL: &str = "shell";
 pub const SHELL_PROCESS: &str = "shell_process";
 pub const GREP: &str = "grep";
-const OUTPUT_LIMIT: usize = 16 * 1024;
+pub const START_SUBAGENT: &str = "start_subagent";
+pub const SEND_MESSAGE: &str = "send_message";
+pub const STOP_SUBAGENT: &str = "stop_subagent";
+pub const WAIT: &str = "wait";
+pub(crate) const OUTPUT_LIMIT: usize = 16 * 1024;
 // Leave room for line numbers, continuation instructions, and truncation notices.
-const BODY_LIMIT: usize = OUTPUT_LIMIT - 256;
+pub(crate) const BODY_LIMIT: usize = OUTPUT_LIMIT - 256;
 // Long enough to name a path or pattern, short enough for one display line.
 const MAX_TOOL_CALL_TITLE_CHARS: usize = 80;
 
-fn truncate(text: &mut String, limit: usize) {
+pub(crate) fn truncate(text: &mut String, limit: usize) {
     let mut end = text.len().min(limit);
     while !text.is_char_boundary(end) {
         end -= 1;
@@ -62,16 +79,26 @@ fn bounded_result(result: Result<String, String>) -> ToolOutcome {
     }
 }
 
-/// Every tool definition sent to OpenRouter, each owned by its tool's module.
-pub fn schemas() -> Vec<Value> {
-    vec![
+/// Every tool definition sent to OpenRouter for an agent with `role`, each
+/// owned by its tool's module.
+pub fn schemas(role: Role) -> Vec<Value> {
+    let mut schemas = vec![
         shell::schema(),
         shell::process_schema(),
         read::schema(),
         search::glob_schema(),
         search::grep_schema(),
         patch::schema(),
-    ]
+    ];
+    if role == Role::Main {
+        schemas.extend([
+            subagent::start_schema(),
+            subagent::send_schema(),
+            subagent::stop_schema(),
+            subagent::wait_schema(),
+        ]);
+    }
+    schemas
 }
 
 #[derive(Deserialize)]
@@ -98,6 +125,10 @@ fn default_tool_call_title(call: &ToolCall) -> String {
         GLOB => "Find files".to_owned(),
         GREP => "Search file contents".to_owned(),
         APPLY_PATCH => "Apply patch".to_owned(),
+        START_SUBAGENT => "Start subagent".to_owned(),
+        SEND_MESSAGE => "Message subagent".to_owned(),
+        STOP_SUBAGENT => "Stop subagent".to_owned(),
+        WAIT => "Wait for subagents".to_owned(),
         other => other.to_owned(),
     }
 }
@@ -148,6 +179,16 @@ fn describe(call: &ToolCall) -> Option<String> {
             [path] => Some(format!("Apply patch to {path}")),
             paths => Some(format!("Apply patch to {} files", paths.len())),
         },
+        START_SUBAGENT => Some(format!(
+            "Start subagent: {}",
+            command_line(argument("prompt")?)?
+        )),
+        SEND_MESSAGE => Some(format!("Message subagent {}", argument("subagent_id")?)),
+        STOP_SUBAGENT => Some(format!("Stop subagent {}", argument("subagent_id")?)),
+        WAIT => {
+            let seconds = arguments.get("seconds").and_then(Value::as_f64)?;
+            Some(format!("Wait up to {seconds} seconds for subagents"))
+        }
         _ => None,
     }
 }
@@ -222,6 +263,17 @@ pub async fn execute(
             return shell::execute_process(&context.shell_processes, &call.arguments, cancelled)
                 .await;
         }
+        // A stop finishes even if the prompt is cancelled; a wait observes
+        // cancellation itself.
+        START_SUBAGENT | SEND_MESSAGE | STOP_SUBAGENT | WAIT => {
+            return subagent::execute(
+                context.subagents.as_ref(),
+                &call.name,
+                &call.arguments,
+                cancelled,
+            )
+            .await;
+        }
         _ => {}
     }
     tokio::select! {
@@ -281,6 +333,7 @@ mod tests {
         let context = ToolContext {
             workspace_path: workspace.to_path_buf(),
             shell_processes: ShellProcesses::default(),
+            subagents: None,
         };
         super::execute(&context, call, std::future::pending()).await
     }
@@ -320,7 +373,7 @@ mod tests {
                     ToolOutcome::Failed(_)
                 ));
             }
-            let schema = schemas()
+            let schema = schemas(Role::Subagent)
                 .into_iter()
                 .find(|s| s["function"]["name"] == name)
                 .unwrap();
@@ -409,14 +462,38 @@ mod tests {
 
     #[tokio::test]
     async fn tool_schemas_and_patch_argument_errors() {
-        let schemas = schemas();
+        let names = |role| {
+            schemas(role)
+                .into_iter()
+                .map(|schema| schema["function"]["name"].as_str().unwrap().to_owned())
+                .collect::<Vec<_>>()
+        };
         assert_eq!(
-            schemas
-                .iter()
-                .map(|schema| schema["function"]["name"].as_str().unwrap())
-                .collect::<Vec<_>>(),
+            names(Role::Subagent),
             [SHELL, SHELL_PROCESS, READ_FILE, GLOB, GREP, APPLY_PATCH]
         );
+        assert_eq!(
+            names(Role::Main),
+            [
+                SHELL,
+                SHELL_PROCESS,
+                READ_FILE,
+                GLOB,
+                GREP,
+                APPLY_PATCH,
+                START_SUBAGENT,
+                SEND_MESSAGE,
+                STOP_SUBAGENT,
+                WAIT
+            ]
+        );
+        let schemas = schemas(Role::Main);
+        for schema in &schemas {
+            assert_eq!(
+                schema["function"]["parameters"]["additionalProperties"],
+                false
+            );
+        }
         let schema = schemas
             .iter()
             .find(|schema| schema["function"]["name"] == APPLY_PATCH)
@@ -518,6 +595,27 @@ mod tests {
                 "Apply patch",
             ),
             (
+                START_SUBAGENT,
+                json!({"prompt":"Fix the parser.\nThen run the tests."}),
+                "Start subagent: Fix the parser. …",
+            ),
+            (
+                SEND_MESSAGE,
+                json!({"subagent_id":"s-1","message":"Yes."}),
+                "Message subagent s-1",
+            ),
+            (
+                STOP_SUBAGENT,
+                json!({"subagent_id":"s-1"}),
+                "Stop subagent s-1",
+            ),
+            (
+                WAIT,
+                json!({"seconds":2.5}),
+                "Wait up to 2.5 seconds for subagents",
+            ),
+            (WAIT, json!({}), "Wait for subagents"),
+            (
                 READ_FILE,
                 json!({"path": long_path}),
                 "Read aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa…",
@@ -526,6 +624,21 @@ mod tests {
             assert_eq!(
                 tool_call_title(&call(name, &arguments.to_string())),
                 expected
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn coordination_calls_from_a_subagent_fail_as_results() {
+        for (name, arguments) in [
+            (START_SUBAGENT, json!({"prompt": "Nest."})),
+            (SEND_MESSAGE, json!({"subagent_id": "a", "message": "Hi."})),
+            (STOP_SUBAGENT, json!({"subagent_id": "a"})),
+            (WAIT, json!({"seconds": 1})),
+        ] {
+            assert_eq!(
+                execute(Path::new("/workspace"), &call(name, &arguments.to_string())).await,
+                ToolOutcome::Failed(format!("{name} is available only to the main agent."))
             );
         }
     }

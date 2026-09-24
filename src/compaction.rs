@@ -276,6 +276,14 @@ fn material(transcript: &[TranscriptEntry], cut: usize) -> VecDeque<MaterialFiel
                 fields.push_back(feedback_field(&source, feedback));
             }
             TranscriptEntry::AssistantBatch(batch) => push_batch(&mut fields, &source, batch),
+            TranscriptEntry::AgentMessages(messages) => {
+                fields.extend(messages.iter().map(|message| {
+                    MaterialField::new(
+                        format!("{source} {}", message.label()),
+                        message.text().to_owned(),
+                    )
+                }));
+            }
             TranscriptEntry::CompactionCheckpoint(_) => {}
         }
     }
@@ -477,11 +485,17 @@ mod tests {
             AssistantMessage, EffortLevel, ImageAttachment, SkillInvocation, ToolCall, ToolOutcome,
             TurnStart,
         },
+        tools,
     };
 
     fn parameters() -> ModelRequestParameters {
-        ModelRequestParameters::new(DEFAULT_MODEL, EffortLevel::Default, "system".to_owned())
-            .unwrap()
+        ModelRequestParameters::new(
+            DEFAULT_MODEL,
+            EffortLevel::Default,
+            "system".to_owned(),
+            tools::Role::Main,
+        )
+        .unwrap()
     }
 
     fn answer(text: &str) -> AssistantBatch {
@@ -804,6 +818,48 @@ mod tests {
         ] {
             assert_eq!(has_images(&transcript), expected, "{case}");
         }
+    }
+
+    #[test]
+    fn subagent_messages_reach_requests_and_summarizer_material_with_their_attribution() {
+        use crate::sessions::{AgentMessage, AgentMessageContent};
+        let transcript = vec![
+            TranscriptEntry::turn("Delegate.".to_owned()),
+            TranscriptEntry::AssistantBatch(answer("Waiting.")),
+            TranscriptEntry::AgentMessages(vec![
+                AgentMessage {
+                    subagent_id: "child-1".to_owned(),
+                    content: AgentMessageContent::FinalAnswer("Fixed the parser.".to_owned()),
+                },
+                AgentMessage {
+                    subagent_id: "child-2".to_owned(),
+                    content: AgentMessageContent::Failure("The model refused.".to_owned()),
+                },
+            ]),
+        ];
+        assert_eq!(
+            projection(&transcript)[2..],
+            [
+                serde_json::json!({"role": "user", "content": "Final answer from subagent child-1:\nFixed the parser."}),
+                serde_json::json!({"role": "user", "content": "Failure of subagent child-2:\nThe model refused."}),
+            ]
+        );
+        let fields = material(&transcript, 3);
+        let labeled: Vec<_> = fields
+            .iter()
+            .skip(2)
+            .map(|field| (field.label.as_str(), field.text.as_str()))
+            .collect();
+        assert_eq!(
+            labeled,
+            [
+                (
+                    "Entry 2 Final answer from subagent child-1",
+                    "Fixed the parser."
+                ),
+                ("Entry 2 Failure of subagent child-2", "The model refused."),
+            ]
+        );
     }
 
     #[test]

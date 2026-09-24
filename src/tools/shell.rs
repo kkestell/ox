@@ -604,7 +604,7 @@ mod tests {
             ));
         }
         let schema = |name: &str| {
-            tools::schemas()
+            tools::schemas(tools::Role::Main)
                 .into_iter()
                 .find(|s| s["function"]["name"] == name)
                 .unwrap()["function"]["parameters"]

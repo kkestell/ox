@@ -18,8 +18,9 @@ use crate::{
     compaction,
     openrouter::ModelRequestParameters,
     sessions::{
-        self, AssistantBatch, AssistantMessage, HookFeedback, HookKind, ImageAttachment, ToolCall,
-        ToolOutcome, TranscriptEntry, TurnInput, UserMessage, UserMessagePart,
+        self, AgentMessage, AgentMessageContent, AssistantBatch, AssistantMessage, HookFeedback,
+        HookKind, ImageAttachment, ToolCall, ToolOutcome, TranscriptEntry, TurnInput, UserMessage,
+        UserMessagePart,
     },
     tools,
 };
@@ -110,13 +111,15 @@ fn text_chunk(text: &str) -> ContentChunk {
     ContentChunk::new(ContentBlock::Text(TextContent::new(text)))
 }
 
-/// Reports the context tokens, the context limit, and the session cost. The
-/// latest assistant message's reported usage counts the context until a later
-/// checkpoint replaces it; otherwise the request estimate does. `None` before
-/// the first assistant message.
+/// Reports the context tokens, the context limit, and the session cost: the
+/// main transcript's saved cost plus `children_cost`, the saved cost of its
+/// child sessions. The latest assistant message's reported usage counts the
+/// context until a later checkpoint replaces it; otherwise the request
+/// estimate does. `None` before the first assistant message.
 pub fn usage_update(
     transcript: &[TranscriptEntry],
     parameters: &ModelRequestParameters,
+    children_cost: Option<f64>,
 ) -> Option<SessionUpdate> {
     let latest = transcript.iter().rev().find(|entry| {
         matches!(
@@ -134,7 +137,11 @@ pub fn usage_update(
         _ => compaction::request_estimate(parameters, transcript) as u64,
     };
     let size = parameters.model.context_limit as u64;
-    let cost = sessions::session_cost(transcript).map(|amount| Cost::new(amount, "USD"));
+    let cost = match (sessions::transcript_cost(transcript), children_cost) {
+        (Some(main), Some(children)) => Some(main + children),
+        (main, children) => main.or(children),
+    }
+    .map(|amount| Cost::new(amount, "USD"));
     Some(SessionUpdate::UsageUpdate(
         UsageUpdate::new(used, size).cost(cost),
     ))
@@ -307,6 +314,31 @@ pub fn finished_hook_run_update(
     ))
 }
 
+/// Shows each saved subagent message as a finished tool call attributed to
+/// its subagent, both live and in replay. They are not model tool calls, so
+/// Ox generates their IDs.
+pub fn agent_message_updates(messages: &[AgentMessage]) -> Vec<SessionUpdate> {
+    messages
+        .iter()
+        .map(|message| {
+            let status = match message.content {
+                AgentMessageContent::FinalAnswer(_) => ToolCallStatus::Completed,
+                AgentMessageContent::Failure(_) => ToolCallStatus::Failed,
+            };
+            SessionUpdate::ToolCall(
+                AcpToolCall::new(
+                    ToolCallId::new(format!("agent-message-{}", uuid::Uuid::new_v4())),
+                    message.label(),
+                )
+                .kind(ToolKind::Other)
+                .status(status)
+                .content(vec![text_content(message.text())])
+                .raw_output(Value::String(message.text().to_owned())),
+            )
+        })
+        .collect()
+}
+
 fn replayed_hook_run(feedback: &HookFeedback) -> SessionUpdate {
     SessionUpdate::ToolCall(
         AcpToolCall::new(ToolCallId::new(hook_run_id()), feedback.label())
@@ -340,6 +372,11 @@ pub fn replay_transcript(
                 }
             },
             TranscriptEntry::HookFeedback(feedback) => send_update(replayed_hook_run(feedback))?,
+            TranscriptEntry::AgentMessages(messages) => {
+                for update in agent_message_updates(messages) {
+                    send_update(update)?;
+                }
+            }
             TranscriptEntry::AssistantBatch(batch) => {
                 let message = &batch.message;
                 if !message.reasoning.is_empty() {
@@ -564,6 +601,83 @@ mod tests {
             );
             assert_eq!(request["toolCall"]["rawInput"], raw_input(&call));
             assert_eq!(request["toolCall"]["kind"], "execute");
+        }
+    }
+
+    #[test]
+    fn a_subagent_permission_request_goes_to_the_main_session_with_a_scoped_tool_call() {
+        let call = ToolCall {
+            call_id: "shell-1".to_owned(),
+            name: tools::SHELL.to_owned(),
+            arguments: serde_json::json!({"command": "touch first"}).to_string(),
+        };
+        let request = shell_permission_request(
+            &AcpIdentity {
+                session_id: agent_client_protocol::schema::v1::SessionId::new("main"),
+                subagent_id: Some(agent_client_protocol::schema::v1::SessionId::new("child")),
+            },
+            &call,
+            std::path::Path::new("/workspace"),
+            &tools::Permission::Command { background: false },
+        );
+        let request = serde_json::to_value(request).unwrap();
+        assert_eq!(request["sessionId"], "main");
+        assert_eq!(request["toolCall"]["toolCallId"], "child:shell-1");
+        assert_eq!(request["toolCall"]["title"], "Subagent child: touch first");
+        assert_eq!(
+            request["toolCall"]["content"][0]["content"]["text"],
+            "Subagent: child\n\nWorking directory: /workspace"
+        );
+        assert_eq!(request["toolCall"]["rawInput"]["command"], "touch first");
+    }
+
+    #[test]
+    fn subagent_messages_are_shown_as_attributed_tool_calls_live_and_in_replay() {
+        let messages = vec![
+            AgentMessage {
+                subagent_id: "child".to_owned(),
+                content: AgentMessageContent::FinalAnswer("Fixed.".to_owned()),
+            },
+            AgentMessage {
+                subagent_id: "child".to_owned(),
+                content: AgentMessageContent::Failure("The model refused.".to_owned()),
+            },
+        ];
+        let mut replay = Vec::new();
+        replay_transcript(
+            &[TranscriptEntry::AgentMessages(messages.clone())],
+            |update| {
+                replay.push(update);
+                Ok(())
+            },
+        )
+        .unwrap();
+        for updates in [agent_message_updates(&messages), replay] {
+            let shown: Vec<_> = updates
+                .iter()
+                .map(|update| match update {
+                    SessionUpdate::ToolCall(call) => {
+                        assert!(call.tool_call_id.to_string().starts_with("agent-message-"));
+                        (call.title.clone(), call.status, call.raw_output.clone())
+                    }
+                    other => panic!("unexpected update {other:?}"),
+                })
+                .collect();
+            assert_eq!(
+                shown,
+                [
+                    (
+                        "Final answer from subagent child".to_owned(),
+                        ToolCallStatus::Completed,
+                        Some(Value::String("Fixed.".to_owned()))
+                    ),
+                    (
+                        "Failure of subagent child".to_owned(),
+                        ToolCallStatus::Failed,
+                        Some(Value::String("The model refused.".to_owned()))
+                    ),
+                ]
+            );
         }
     }
 

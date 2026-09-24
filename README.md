@@ -95,7 +95,9 @@ Hooks run commands at these points in a prompt run:
 | `before_stop` | After an answer that would finish the prompt run |
 | `after_run`   | After the prompt run ends                        |
 
-Hook commands receive JSON on stdin and return JSON on stdout.
+Hook commands receive JSON on stdin and return JSON on stdout. Global hooks
+also run for subagents, each with its own session ID and run ID; skill hooks
+run only for Ox's own turns.
 
 ### Global Hooks
 
@@ -116,6 +118,21 @@ prompt run that invokes the skill. Their commands run from the skill directory.
 The [careful skill](examples/skills/careful/README.md) documents the input and
 output for every hook; the [goal skill](examples/skills/goal/README.md) shows
 how `before_stop` can continue a prompt run.
+
+## Subagents
+
+Ox can delegate work to subagents while it keeps working. Each subagent gets
+the task Ox writes for it, the session's model, effort level, mode, workspace,
+and `AGENTS.md` instructions, and the workspace and shell tools, but none of
+the conversation. Its final answer reaches Ox automatically. A subagent that
+needs input ends its turn with a question, and Ox answers it with a follow-up
+message, which continues the same conversation. Up to four subagents can exist
+at once, and all of them stop when Ox finishes its answer to your prompt.
+
+Subagents share the session's background commands. In Ask mode, each shell
+command or input a subagent sends asks for permission in your session, naming
+the subagent. Only Ox's own work appears in the conversation, followed by each
+subagent's final answer; the cost includes the subagents' requests.
 
 ## Headless prompts
 

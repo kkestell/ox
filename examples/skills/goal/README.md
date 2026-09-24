@@ -45,7 +45,10 @@ nonblank.
 ## Hook protocol
 
 A `before_stop` hook runs after each assistant message that finishes the answer
-without tool calls, during the prompt run that invoked the skill. Invoking the
+without tool calls, during the prompt run that invoked the skill. It judges
+only the main agent's answers: subagents run global hooks but never skill
+hooks, and an answer that subagent messages superseded before it was judged
+is not judged at all. Invoking the
 skill approves running its hook in both Ask and Auto mode. The hook inherits
 Ox's environment, including `OPENROUTER_API_KEY`, and `OX_IN_HOOK=1`. The
 nested headless judge inherits this marker and skips global hooks.

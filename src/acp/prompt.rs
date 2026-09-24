@@ -25,6 +25,8 @@ use crate::{
         ToolCall, ToolOutcome, TranscriptEntry, TurnInput, TurnStart,
     },
     shell_processes::ShellProcesses,
+    subagents::{Launch, Subagents},
+    system_prompt,
     tools::{self, ToolContext},
 };
 
@@ -96,6 +98,29 @@ impl Presentation {
         }
     }
 
+    /// A subagent of the main session `main_session_id`. Its updates are
+    /// suppressed; its permission requests use the main agent's connection,
+    /// when there is one.
+    pub(crate) fn subagent(
+        connection: Option<ConnectionTo<Client>>,
+        main_session_id: SessionId,
+        subagent_id: SessionId,
+    ) -> Self {
+        Self {
+            identity: AcpIdentity {
+                session_id: main_session_id,
+                subagent_id: Some(subagent_id),
+            },
+            target: match connection {
+                Some(connection) => Target::Acp {
+                    connection,
+                    updates: false,
+                },
+                None => Target::None,
+            },
+        }
+    }
+
     /// The main agent of a test prompt, whose updates go to `observe`.
     #[cfg(test)]
     pub fn observed(
@@ -105,6 +130,34 @@ impl Presentation {
         Self {
             identity: AcpIdentity::main(session_id),
             target: Target::Observed(std::sync::Mutex::new(Box::new(observe))),
+        }
+    }
+
+    /// Only an agent presented under a subagent ID is a subagent.
+    fn role(&self) -> tools::Role {
+        match self.identity.subagent_id {
+            Some(_) => tools::Role::Subagent,
+            None => tools::Role::Main,
+        }
+    }
+
+    /// The connection a subagent's permission requests use.
+    fn connection(&self) -> Option<ConnectionTo<Client>> {
+        match &self.target {
+            Target::Acp { connection, .. } => Some(connection.clone()),
+            Target::None => None,
+            #[cfg(test)]
+            Target::Observed(_) => None,
+        }
+    }
+
+    /// Whether ACP updates are sent rather than suppressed.
+    fn sends_updates(&self) -> bool {
+        match &self.target {
+            Target::None => false,
+            Target::Acp { updates, .. } => *updates,
+            #[cfg(test)]
+            Target::Observed(_) => true,
         }
     }
 
@@ -142,7 +195,7 @@ impl Presentation {
     }
 }
 
-pub(super) struct PromptInput {
+pub(crate) struct PromptInput {
     pub session_id: SessionId,
     /// The user message or skill invocation that starts the turn.
     pub turn_input: TurnInput,
@@ -184,9 +237,18 @@ pub fn run(
             Err(outcome) => outcome,
         };
         let result = outcome.into_output();
+        run.stop_subagents().await;
         run.run_after_run(&result).await;
         result
     })
+}
+
+/// An ACP error as readable text. Its Display quotes string data as JSON.
+pub(crate) fn error_text(error: &Error) -> String {
+    match error.data.as_ref().and_then(serde_json::Value::as_str) {
+        Some(data) => format!("{}: {data}", error.message),
+        None => error.to_string(),
+    }
 }
 
 /// Why this prompt run stopped. Each variant requires a different final response.
@@ -284,12 +346,33 @@ impl AgentTurn {
             .map_err(Error::into_internal_error)?
             .ok_or_else(|| Error::resource_not_found(Some(session_id.to_string())))?;
         let settings = &input.selected_settings;
+        let role = presentation.role();
         let parameters = ModelRequestParameters::new(
             &settings.model,
             settings.effort,
             input.system_prompt.clone(),
+            role,
         )
         .map_err(Error::into_internal_error)?;
+        let subagents = (role == tools::Role::Main).then(|| {
+            Subagents::new(Launch {
+                store: store.clone(),
+                openrouter: openrouter.clone(),
+                main_session_id: stored.summary.id.clone(),
+                workspace_path: stored.summary.workspace_path.clone(),
+                settings: settings.clone(),
+                system_prompt: system_prompt::for_subagent(&input.system_prompt),
+                global_hooks: input
+                    .hook_sources
+                    .iter()
+                    .filter(|source| source.skill.is_none())
+                    .cloned()
+                    .collect(),
+                shell_processes: input.shell_processes.clone(),
+                connection: presentation.connection(),
+                cancellation: cancellation.clone(),
+            })
+        });
         Ok(Self {
             store,
             openrouter,
@@ -298,6 +381,7 @@ impl AgentTurn {
             tools: ToolContext {
                 workspace_path: stored.summary.workspace_path.clone(),
                 shell_processes: input.shell_processes.clone(),
+                subagents,
             },
             summary: stored.summary,
             cancellation,
@@ -396,6 +480,7 @@ impl AgentTurn {
         if self.cancellation.is_cancelled() {
             return Err(PromptOutcome::Cancelled);
         }
+        self.deliver_agent_messages()?;
         let openrouter::Completion { message, stop } = self.request_completion().await?;
         let text = message.text.clone();
         self.process_batch(message).await?;
@@ -403,6 +488,12 @@ impl AgentTurn {
         match stop {
             openrouter::Stop::ToolCalls => {
                 self.run_after_tools().await?;
+                Ok(ControlFlow::Continue(()))
+            }
+            // Messages that arrived by the time the answer committed
+            // supersede it, so `before_stop` judges only the answer that
+            // follows them. Later ones may be discarded when the run ends.
+            openrouter::Stop::Finished if self.deliver_agent_messages()? => {
                 Ok(ControlFlow::Continue(()))
             }
             openrouter::Stop::Finished => self.run_before_stop(text).await,
@@ -594,14 +685,11 @@ impl AgentTurn {
             Ok(PromptOutput::Cancelled) => (hooks::AfterRunOutcome::Cancelled, None, None),
             Ok(PromptOutput::TokenLimit) => (hooks::AfterRunOutcome::TokenLimit, None, None),
             Ok(PromptOutput::Refused) => (hooks::AfterRunOutcome::Refused, None, None),
-            // The ACP error's Display quotes string data as JSON.
-            Err(error) => {
-                let text = match error.data.as_ref().and_then(serde_json::Value::as_str) {
-                    Some(data) => format!("{}: {data}", error.message),
-                    None => error.to_string(),
-                };
-                (hooks::AfterRunOutcome::Failed, None, Some(text))
-            }
+            Err(error) => (
+                hooks::AfterRunOutcome::Failed,
+                None,
+                Some(error_text(error)),
+            ),
         };
         let event = hooks::Event::AfterRun {
             outcome,
@@ -784,9 +872,62 @@ impl AgentTurn {
         Ok(compacted)
     }
 
-    /// Reports the context tokens and session cost of the saved transcript.
+    /// Saves the subagent messages published since the last request
+    /// boundary, after they pass input admission, and presents them. Returns
+    /// whether there were any; a subagent has none.
+    fn deliver_agent_messages(&mut self) -> std::result::Result<bool, PromptOutcome> {
+        let Some(subagents) = &self.tools.subagents else {
+            return Ok(false);
+        };
+        let messages = subagents.take_messages();
+        if messages.is_empty() {
+            return Ok(false);
+        }
+        let mut prospective = self.transcript.clone();
+        prospective.push(TranscriptEntry::AgentMessages(messages.clone()));
+        if !compaction::input_fits(&self.parameters, &prospective) {
+            return Err(PromptOutcome::OpenRouter(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "subagent messages exceed the model context limit",
+            )));
+        }
+        self.store
+            .append_agent_messages(&self.summary.id, &messages)
+            .map_err(PromptOutcome::Storage)?;
+        self.transcript = prospective;
+        for update in convert::agent_message_updates(&messages) {
+            self.presentation
+                .send(update)
+                .map_err(PromptOutcome::AcpUpdate)?;
+        }
+        Ok(true)
+    }
+
+    /// Stops the main agent's subagents once its result is known, waiting
+    /// for each to save its interrupted batch, and reports the session cost
+    /// their saved work may have changed. Its ACP update is best effort.
+    async fn stop_subagents(&mut self) {
+        let Some(subagents) = &self.tools.subagents else {
+            return;
+        };
+        if subagents.shutdown().await {
+            let _ = self.send_usage();
+        }
+    }
+
+    /// Reports the context tokens of the saved transcript and the session
+    /// cost, which includes the saved cost of its child sessions.
     fn send_usage(&mut self) -> std::result::Result<(), PromptOutcome> {
-        if let Some(update) = convert::usage_update(&self.transcript, &self.parameters) {
+        if !self.presentation.sends_updates() {
+            return Ok(());
+        }
+        let children_cost = self
+            .store
+            .children_cost(&self.summary.id)
+            .map_err(PromptOutcome::Storage)?;
+        if let Some(update) =
+            convert::usage_update(&self.transcript, &self.parameters, children_cost)
+        {
             self.presentation
                 .send(update)
                 .map_err(PromptOutcome::AcpUpdate)?;
@@ -974,8 +1115,8 @@ mod tests {
         openrouter::{
             catalog,
             fixture::{
-                DEFAULT_MODEL, Reply, Server, calls_reply, delta, sse, text_reply, tool_reply,
-                usage,
+                DEFAULT_MODEL, Gate, Reply, Server, calls_reply, delta, sse, text_reply,
+                tool_reply, usage,
             },
         },
         sessions::{EffortLevel, ModelUsage, SkillInvocation},
@@ -998,11 +1139,18 @@ mod tests {
 
     impl Harness {
         async fn new(replies: Vec<Reply>) -> Self {
+            Self::routed(vec![("", replies)]).await
+        }
+
+        /// A harness whose server routes each request by its first message
+        /// after the system prompt, so the main agent and each subagent
+        /// follow their own scripts.
+        async fn routed(routes: Vec<(&str, Vec<Reply>)>) -> Self {
             let workspace = Workspace::new();
             let store = SessionStore::in_memory();
             let session_id = store.create(&workspace.0).unwrap().id;
             Self {
-                server: Server::start(replies).await,
+                server: Server::routed(routes).await,
                 store,
                 session_id,
                 cancellation: PromptCancellation::new(),
@@ -1073,6 +1221,14 @@ mod tests {
         fn stored(&self) -> Vec<TranscriptEntry> {
             self.store
                 .read(&self.session_id)
+                .unwrap()
+                .unwrap()
+                .transcript
+        }
+
+        fn stored_child(&self, id: &str) -> Vec<TranscriptEntry> {
+            self.store
+                .read(&SessionId::new(id))
                 .unwrap()
                 .unwrap()
                 .transcript
@@ -2054,8 +2210,13 @@ mod tests {
     async fn before_run_errors_end_the_run_before_any_model_request() {
         // `{}` saves nothing and the run continues.
         let system = system_prompt::for_workspace(&Workspace::new().0).unwrap();
-        let parameters =
-            ModelRequestParameters::new(DEFAULT_MODEL, EffortLevel::Default, system).unwrap();
+        let parameters = ModelRequestParameters::new(
+            DEFAULT_MODEL,
+            EffortLevel::Default,
+            system,
+            tools::Role::Main,
+        )
+        .unwrap();
         let admission = compaction::budget(parameters.model).admission;
         let base = compaction::request_estimate(&parameters, &[turn(invocation(""))]);
         let near_limit = "x".repeat((admission - base - 100) * 3);
@@ -2350,8 +2511,13 @@ mod tests {
         ])
         .await;
         let system = system_prompt::for_workspace(&between.workspace.0).unwrap();
-        let parameters =
-            ModelRequestParameters::new(DEFAULT_MODEL, EffortLevel::Default, system).unwrap();
+        let parameters = ModelRequestParameters::new(
+            DEFAULT_MODEL,
+            EffortLevel::Default,
+            system,
+            tools::Role::Main,
+        )
+        .unwrap();
         let automatic_threshold = compaction::budget(parameters.model).automatic_threshold;
         let base = "x".repeat(2_000_000);
         let prospective = vec![
@@ -2966,5 +3132,412 @@ mod tests {
                 "nothing more is attempted after sending an update fails"
             );
         }
+    }
+
+    /// The subagent ID a start result reports.
+    fn started_subagent(text: &str) -> Option<String> {
+        let (id, _) = text.strip_prefix("Started subagent ")?.split_once('.')?;
+        Some(id.to_owned())
+    }
+
+    /// The subagent IDs that start results in `request` report, in order.
+    fn started_ids(request: &serde_json::Value) -> Vec<String> {
+        request["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|message| started_subagent(message["content"].as_str()?))
+            .collect()
+    }
+
+    /// The subagent ID a start outcome saved in `transcript` reports.
+    fn started_id(transcript: &[TranscriptEntry]) -> String {
+        transcript
+            .iter()
+            .find_map(|entry| match entry {
+                TranscriptEntry::AssistantBatch(batch) => batch
+                    .outcomes
+                    .iter()
+                    .find_map(|outcome| started_subagent(outcome.text())),
+                _ => None,
+            })
+            .expect("a subagent started")
+    }
+
+    fn final_answer(subagent_id: &str, text: &str) -> crate::sessions::AgentMessage {
+        crate::sessions::AgentMessage {
+            subagent_id: subagent_id.to_owned(),
+            content: crate::sessions::AgentMessageContent::FinalAnswer(text.to_owned()),
+        }
+    }
+
+    fn start_call(id: &'static str, task: &str) -> (&'static str, &'static str, serde_json::Value) {
+        (id, tools::START_SUBAGENT, json!({ "prompt": task }))
+    }
+
+    fn wait_call(id: &'static str) -> (&'static str, &'static str, serde_json::Value) {
+        (id, tools::WAIT, json!({ "seconds": 600 }))
+    }
+
+    fn answer_with_cost(text: &str, cost: f64) -> Reply {
+        Reply::Stream(sse(&[
+            delta(json!({ "role": "assistant", "content": text }), None),
+            delta(json!({}), Some("stop")),
+            usage(10, 5, cost),
+        ]))
+    }
+
+    async fn wait_for_path(path: &std::path::Path) {
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while !path.exists() {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("{} was not created", path.display()));
+    }
+
+    #[tokio::test]
+    async fn subagents_run_concurrently_and_their_final_answers_reach_the_main_agent() {
+        let (a, b) = (Gate::new(), Gate::new());
+        let harness = Harness::routed(vec![
+            ("Task A", vec![a.hold(text_reply("A found it."))]),
+            ("Task B", vec![b.hold(answer_with_cost("B found it.", 0.5))]),
+            (
+                "Coordinate",
+                vec![
+                    calls_reply(&[
+                        start_call("start-a", "Task A: find the parser."),
+                        start_call("start-b", "Task B: find the tests."),
+                    ]),
+                    calls_reply(&[wait_call("wait-1")]),
+                    calls_reply(&[wait_call("wait-2")]),
+                    answer_with_cost("Both done.", 0.25),
+                ],
+            ),
+        ])
+        .await;
+        fs::write(harness.workspace.0.join("AGENTS.md"), "Answer in French.\n").unwrap();
+        let server = &harness.server;
+        let driver = async {
+            // Both subagents' requests are in flight before either returns.
+            server.wait_for_requests("Task A", 1).await;
+            server.wait_for_requests("Task B", 1).await;
+            server.wait_for_requests("Coordinate", 2).await;
+            b.open();
+            server.wait_for_requests("Coordinate", 3).await;
+            a.open();
+        };
+        let ((response, transcript), ()) =
+            tokio::join!(harness.run("Coordinate the search.", |_| Ok(())), driver);
+
+        assert_eq!(
+            response.unwrap(),
+            PromptOutput::Finished("Both done.".to_owned())
+        );
+        let [id_a, id_b] =
+            <[String; 2]>::try_from(started_ids(&server.requests_for("Coordinate")[1])).unwrap();
+        let outcomes = |index: usize| match &transcript[index] {
+            TranscriptEntry::AssistantBatch(batch) => batch.outcomes.clone(),
+            other => panic!("entry {index} is {other:?}"),
+        };
+        assert_eq!(
+            outcomes(2),
+            [ToolOutcome::Completed(format!(
+                "1 subagent message arrived; it follows this result.\n\n{id_a}: busy\n{id_b}: idle"
+            ))]
+        );
+        assert_eq!(
+            transcript[3],
+            TranscriptEntry::AgentMessages(vec![final_answer(&id_b, "B found it.")])
+        );
+        assert_eq!(
+            transcript[5],
+            TranscriptEntry::AgentMessages(vec![final_answer(&id_a, "A found it.")])
+        );
+        assert_eq!(transcript.len(), 7);
+        let main_requests = server.requests_for("Coordinate");
+        for (request, id, text) in [(2, &id_b, "B found it."), (3, &id_a, "A found it.")] {
+            assert_eq!(
+                main_requests[request]["messages"]
+                    .as_array()
+                    .unwrap()
+                    .last()
+                    .unwrap(),
+                &json!({
+                    "role": "user",
+                    "content": format!("Final answer from subagent {id}:\n{text}"),
+                })
+            );
+        }
+
+        // Each child starts fresh with the inherited settings and instructions.
+        let main_prompt = system_prompt::for_workspace(&harness.workspace.0).unwrap();
+        for (id, marker, task) in [
+            (&id_a, "Task A", "Task A: find the parser."),
+            (&id_b, "Task B", "Task B: find the tests."),
+        ] {
+            let child = harness.stored_child(id);
+            assert_eq!(child[0], turn(user(task)));
+            assert_eq!(child.len(), 2);
+            let request = &server.requests_for(marker)[0];
+            assert_eq!(
+                request["messages"],
+                json!([
+                    {"role": "system", "content": system_prompt::for_subagent(&main_prompt)},
+                    {"role": "user", "content": task},
+                ])
+            );
+            assert!(main_prompt.contains("Answer in French."));
+            assert_eq!(
+                request["tools"].as_array().unwrap().len(),
+                tools::schemas(tools::Role::Subagent).len()
+            );
+        }
+
+        // Only the main agent reports, including once after its subagents stop.
+        let updates = harness.updates();
+        assert!(!updates.iter().any(|update| matches!(update,
+            SessionUpdate::AgentMessageChunk(chunk) if format!("{chunk:?}").contains("found it"))));
+        let usages: Vec<_> = updates
+            .iter()
+            .filter_map(|update| match update {
+                SessionUpdate::UsageUpdate(usage) => Some(usage.cost.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(usages.len(), 5);
+        assert_eq!(
+            usages.last().unwrap(),
+            &Some(agent_client_protocol::schema::v1::Cost::new(0.75, "USD"))
+        );
+    }
+
+    #[tokio::test]
+    async fn messages_published_by_a_finished_answer_supersede_it_before_before_stop() {
+        let (child_gate, main_gate, never) = (Gate::new(), Gate::new(), Gate::new());
+        let mut harness = Harness::routed(vec![
+            (
+                "Task S",
+                vec![
+                    child_gate.hold(text_reply("Child answer.")),
+                    never.hold(text_reply("Unused.")),
+                ],
+            ),
+            (
+                "Skill /goal",
+                vec![
+                    calls_reply(&[start_call("start", "Task S: check the parser.")]),
+                    Reply::from(|request| {
+                        let id = started_ids(request).remove(0);
+                        calls_reply(&[(
+                            "send",
+                            tools::SEND_MESSAGE,
+                            json!({ "subagent_id": id, "message": "Keep going." }),
+                        )])
+                    }),
+                    main_gate.hold(text_reply("Premature answer.")),
+                    text_reply("Final answer."),
+                ],
+            ),
+        ])
+        .await;
+        harness.global_hooks = Some(HookSource {
+            skill: None,
+            directory: harness.workspace.0.clone(),
+            hooks: hooks::Hooks {
+                before_stop: command(
+                    r#"cat >> global_stops; echo >> global_stops; echo '{"decision":"stop","message":"Accepted."}'"#,
+                ),
+                ..hooks::Hooks::default()
+            },
+        });
+        let skill_hooks = hooks::Hooks {
+            before_stop: command(
+                r#"cat >> skill_stops; echo >> skill_stops; echo '{"decision":"stop","message":"Skill accepted."}'"#,
+            ),
+            ..hooks::Hooks::default()
+        };
+        let server = &harness.server;
+        let driver = async {
+            // The child answers only while the main answer is in flight, and
+            // the main answer arrives only after the child's message is
+            // published: its queued follow-up then starts a second request.
+            server.wait_for_requests("Skill /goal", 3).await;
+            child_gate.open();
+            server.wait_for_requests("Task S", 2).await;
+            main_gate.open();
+        };
+        let ((response, transcript), ()) =
+            tokio::join!(harness.run_skill(skill_hooks, |_| Ok(())), driver);
+
+        assert_eq!(
+            response.unwrap(),
+            PromptOutput::Finished("Final answer.".to_owned())
+        );
+        let id = started_id(&transcript);
+        assert_eq!(
+            transcript[3..],
+            [
+                answer("Premature answer."),
+                TranscriptEntry::AgentMessages(vec![final_answer(&id, "Child answer.")]),
+                answer("Final answer."),
+                TranscriptEntry::HookFeedback(HookFeedback {
+                    skill: None,
+                    content: HookFeedbackContent::BeforeStop {
+                        decision: StopDecision::Stop,
+                        message: "Accepted.".to_owned(),
+                    },
+                }),
+                feedback(StopDecision::Stop, "Skill accepted."),
+            ]
+        );
+        let main_id = harness.session_id.to_string();
+        let answers = |file: &str, session: &str| {
+            hook_inputs(&harness, file)
+                .into_iter()
+                .filter(|input| input["session_id"] == session)
+                .map(|input| {
+                    (
+                        input["answer"].as_str().unwrap().to_owned(),
+                        input["run_id"].clone(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let main_stops = answers("global_stops", &main_id);
+        let child_stops = answers("global_stops", &id);
+        assert_eq!(main_stops.len(), 1);
+        assert_eq!(main_stops[0].0, "Final answer.");
+        assert_eq!(child_stops.len(), 1);
+        assert_eq!(child_stops[0].0, "Child answer.");
+        assert_ne!(
+            main_stops[0].1, child_stops[0].1,
+            "each turn has its own run ID"
+        );
+        assert_eq!(answers("skill_stops", &main_id).len(), 1);
+        assert!(
+            answers("skill_stops", &id).is_empty(),
+            "skill hooks belong to the main agent"
+        );
+
+        let child = harness.stored_child(&id);
+        assert_eq!(
+            child[..2],
+            [
+                turn(user("Task S: check the parser.")),
+                answer("Child answer.")
+            ]
+        );
+        assert_eq!(child[3], turn(user("Keep going.")));
+        assert_eq!(child.len(), 4, "the follow-up turn was cancelled in flight");
+    }
+
+    #[tokio::test]
+    async fn ending_the_prompt_run_stops_subagents_before_after_run() {
+        let main_gate = Gate::new();
+        let mut harness = Harness::routed(vec![
+            (
+                "Task L",
+                vec![tool_reply(&[("sleeper", "touch running; sleep 30")])],
+            ),
+            (
+                "Start",
+                vec![
+                    calls_reply(&[start_call("start", "Task L: a long job.")]),
+                    main_gate.hold(text_reply("Done.")),
+                ],
+            ),
+        ])
+        .await;
+        harness.global_hooks = Some(HookSource {
+            skill: None,
+            directory: harness.workspace.0.clone(),
+            hooks: hooks::Hooks {
+                after_run: command("cat >> after_runs; echo >> after_runs; echo '{}'"),
+                ..hooks::Hooks::default()
+            },
+        });
+        let running = harness.workspace.0.join("running");
+        let driver = async {
+            wait_for_path(&running).await;
+            main_gate.open();
+        };
+        let ((response, transcript), ()) =
+            tokio::join!(harness.run("Start the job.", |_| Ok(())), driver);
+
+        assert_eq!(
+            response.unwrap(),
+            PromptOutput::Finished("Done.".to_owned())
+        );
+        let id = started_id(&transcript);
+        assert_eq!(transcript.len(), 3, "the child writes only its own session");
+        assert_eq!(transcript[2], answer("Done."));
+        let child = harness.stored_child(&id);
+        assert!(
+            matches!(&child[..], [TranscriptEntry::TurnStart(_), TranscriptEntry::AssistantBatch(batch)]
+            if matches!(batch.outcomes[..], [ToolOutcome::Cancelled(_)]))
+        );
+        let reports: Vec<_> = hook_inputs(&harness, "after_runs")
+            .into_iter()
+            .map(|input| {
+                (
+                    input["session_id"].as_str().unwrap().to_owned(),
+                    input["outcome"].clone(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            reports,
+            [
+                (id, json!("cancelled")),
+                (harness.session_id.to_string(), json!("finished")),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn dropping_the_prompt_cancels_its_subagents_which_still_save_their_own_batches() {
+        let never = Gate::new();
+        let harness = Harness::routed(vec![
+            (
+                "Task D",
+                vec![tool_reply(&[("sleeper", "touch running; sleep 30")])],
+            ),
+            (
+                "Start",
+                vec![
+                    calls_reply(&[start_call("start", "Task D: a long job.")]),
+                    never.hold(text_reply("Never.")),
+                ],
+            ),
+        ])
+        .await;
+        let running = harness.workspace.0.join("running");
+        tokio::select! {
+            _ = harness.run("Start the job.", |_| Ok(())) => panic!("the prompt finished"),
+            () = async {
+                wait_for_path(&running).await;
+                harness.server.wait_for_requests("Start", 2).await;
+            } => {}
+        }
+
+        let transcript = harness.stored();
+        assert_eq!(transcript.len(), 2);
+        let id = started_id(&transcript);
+        let child = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                let child = harness.stored_child(&id);
+                if child.len() == 2 {
+                    return child;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the cancelled child saves its interrupted batch");
+        assert!(matches!(&child[1], TranscriptEntry::AssistantBatch(batch)
+            if matches!(batch.outcomes[..], [ToolOutcome::Cancelled(_)])));
+        assert_eq!(harness.stored(), transcript);
     }
 }

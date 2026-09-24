@@ -41,6 +41,22 @@ Ask mode and run one session through these turns:
 Deleting the session or closing the ACP client instead stops the server at
 once.
 
+To try subagents live, connect an ACP client to a local build in Ask mode and
+run one session through these turns:
+
+1. Ask Ox to start a subagent that must ask which of two files to summarize
+   before reading either, and to wait for its question. The question arrives
+   as a subagent message.
+2. Ask Ox to answer that subagent with one file name and wait for its answer.
+   The follow-up continues the same conversation, and each shell command the
+   subagent runs asks for permission naming the subagent.
+3. Ask Ox to start a subagent that runs `sleep 60` and then wait for it, and
+   cancel that prompt while it waits. The prompt ends cancelled, and `ps` shows
+   the subagent's `sleep 60` has stopped.
+
+The session list shows only the main session, and its cost includes the
+subagents' requests.
+
 ## Test discipline
 
 The test suite is curated code. Each test owns one durable, observable

@@ -46,7 +46,29 @@
   progress, completed, or failed. A cancelled Ox tool outcome is presented as
   failed because ACP has no separate cancelled tool status.
 - **Session**: A saved conversation and its metadata, identified by a session
-  ID.
+  ID. A main session is one an ACP client or headless run created.
+- **Child session**: A saved session linked to its main session through
+  `parent_session_id`, holding one subagent's conversation. Its ID is the
+  `subagent_id` in coordination tools. It never appears in ACP listing and is
+  deleted with its main session.
+- **Subagent**: An agent owned by one main prompt run, running the shared loop
+  against its own child session concurrently with the main agent. `Subagents`
+  in `src/subagents.rs` is its prompt-owned guard and shared coordination
+  state.
+- **Agent turn**: One execution of the shared loop, for the main agent or a
+  subagent. It is `AgentTurn` in code; the prompt run remains the overall
+  operation.
+- **Agent message**: A subagent final answer or failure published to the main
+  agent, represented by `AgentMessage` and saved in an `AgentMessages`
+  transcript entry of the main session.
+- **ACP identity**: The main session ID and, for a subagent, its child session
+  ID, used for ACP updates and permission requests. It is `AcpIdentity` in
+  code; the session store uses each agent's own session ID instead.
+- **Presentation**: The ACP connection, ACP identity, and choice to send or
+  suppress updates that one agent turn uses. It is `Presentation` in code.
+- **Tool context**: The workspace path, the session's shell processes, and, for
+  the main agent, its subagents, passed to tool execution and permission
+  classification. It is `ToolContext` in code.
 - **Active session**: A session created or loaded in the current process. Its
   system prompt is assembled and its skill catalog loaded when it becomes
   active, and only an active session can be configured or prompted over ACP.
@@ -140,9 +162,9 @@
   `continue` decision.
 - **Prompt run**: The work caused by one prompt request: save the turn start,
   request model output, run tools and global and invoked
-  skill hooks, save results, and respond.
-- **Run ID**: A UUID identifying one prompt run in the input of each of its hook
-  commands.
+  skill hooks, run and stop its subagents, save results, and respond.
+- **Run ID**: A UUID identifying one agent turn in the input of each of its
+  hook commands: the main agent's prompt run, or one subagent turn.
 - **Final answer**: The text of the assistant message committed with the
   finished OpenRouter stop that ended a prompt run, accepted by every applicable
   `before_stop` hook and carried only in a finished outcome.
@@ -156,14 +178,16 @@
   triggered. It stops new work but does not roll back model or tool effects
   already observed.
 - **User message**: Ordered text and images produced from the supported ACP
-  content blocks and saved before the first model request.
+  content blocks and saved before the first model request. A subagent's
+  assigned task and each follow-up message are also saved as user messages.
 - **User message part**: One text or image element in a user message.
 - **Image attachment**: A validated user-provided image with base64 data and a
   MIME type, saved in a user message or skill invocation.
 - **Transcript**: The ordered, saved conversation used for both session replay
   and future model requests.
-- **Transcript entry**: A turn start, assistant batch, hook feedback, or
-  compaction checkpoint in the transcript.
+- **Transcript entry**: A turn start, assistant batch, hook feedback,
+  compaction checkpoint, or, in a main session only, agent messages in the
+  transcript.
 - **Turn input**: The user message or skill invocation that starts a turn. It
   is `TurnInput` in code and `PromptInput.turn_input` in a prompt run's input.
 - **Turn start**: A transcript entry holding a turn input with the model, effort
@@ -204,7 +228,8 @@
 - **Summarizer cost**: The summed cost of the summarizer requests made by the
   compaction that committed a checkpoint, saved in that checkpoint.
 - **Session cost**: The sum of every saved model usage cost and summarizer cost
-  in a transcript, reported in US dollars.
+  in a main session's transcript and in every child session of it, reported in
+  US dollars.
 - **Context tokens**: The number of tokens Ox reports as currently in a
   session's context: the latest assistant message's input plus output tokens
   when it reported usage and no checkpoint follows it, otherwise the request
