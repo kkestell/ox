@@ -1580,6 +1580,7 @@ name = "ox"
 version = "0.1.0"
 dependencies = [
  "agent-client-protocol",
+ "base64 0.22.1",
  "chrono",
  "futures",
  "keyring",

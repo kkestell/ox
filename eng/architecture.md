@@ -78,9 +78,10 @@ feedback follows the last tool result of an assistant batch, and `before_stop`
 feedback follows an assistant message with no tool calls. Consecutive feedback
 entries of the same hook kind share that placement.
 
-A skill invocation stores the skill's name, its literal arguments, and the
-instructions copied from its definition when it was invoked, so later changes to
-the definition do not change saved model context. Hook feedback stores the
+A skill invocation stores the skill's name, its literal arguments, any image
+attachments, and the instructions copied from its definition when it was
+invoked, so later changes to the definition do not change saved model context.
+Hook feedback stores the
 optional skill name, the hook kind, the hook's message, and, for
 `before_stop`, the stop decision. Global feedback has no skill name. Model
 requests send each as a labeled user-role message. Hook feedback is neither a
@@ -166,6 +167,10 @@ malformed response, an empty filtered catalog, or a default model outside it
 fails startup. The model catalog is installed once per process; `OX_IN_HOOK`
 does not affect it.
 
+The catalog also records whether each model accepts images. Ox advertises ACP
+image prompt support, but a prompt containing an image is rejected before its
+turn start is saved when the selected model does not accept images.
+
 The ACP `effort` option lists only the selected model's effort levels.
 Selecting a model that lacks the current effort level resets it to Default. A
 saved model outside the catalog, or a saved effort level its model no longer
@@ -194,8 +199,8 @@ tool context and the identity used when loading a session. Ox requires an
 absolute path and compares it exactly without resolving aliases.
 
 The first saved turn start supplies the session title from its first nonblank
-line; a skill invocation contributes `/<name> <arguments>`. Later turns do not
-replace it.
+text line; an image-only user message contributes `Image`, and a skill
+invocation contributes `/<name> <arguments>`. Later turns do not replace it.
 
 ### Process state
 
@@ -384,10 +389,17 @@ prompts and waits for their operation guards to drop.
 
 ## Capability and trust boundaries
 
-Text and descriptive resource links are the supported prompt input. Resource
-links contribute text and are not fetched. OpenRouter streams, tool calls,
-stored transcript entries, and ACP input are all treated as untrusted at their
-boundaries.
+Text, descriptive resource links, and images are the supported prompt input.
+Resource links contribute text and are not fetched. Images retain their order
+among text blocks, use validated base64 and a supported image MIME type, and
+are limited to four per prompt and 10 MiB of decoded data in total. They are
+saved in the transcript. Skill invocations keep their command text and
+arguments and attach images after their instructions in model requests. Images
+are replayed to the ACP client. Compaction describes older images with a MIME
+marker instead of sending base64 to the summarizer. Request estimates reserve
+a fixed allowance for each image rather than counting base64 as text.
+OpenRouter streams, tool calls, stored transcript entries, and ACP input are all
+treated as untrusted at their boundaries.
 
 Read, search, and patch operations are constrained to the session workspace.
 `read_file` and `grep` accept a directly named symbolic link to a file only when

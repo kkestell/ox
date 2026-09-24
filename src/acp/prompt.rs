@@ -244,6 +244,20 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
         if self.cancellation.is_cancelled() {
             return Ok(None);
         }
+        let has_images = match &turn_start {
+            TranscriptEntry::UserMessage(message) => message.has_images(),
+            TranscriptEntry::SkillInvocation(invocation) => !invocation.images.is_empty(),
+            _ => false,
+        };
+        if has_images
+            && !openrouter::catalog_model(&self.settings.model)
+                .expect("validated session model")
+                .accepts_images
+        {
+            return Err(Error::invalid_params().data(
+                "session model does not accept images; start a new session with an image-capable model",
+            ));
+        }
         let mut prospective = self.transcript.clone();
         if let Some(model) = &self.settings_change.model {
             prospective.push(TranscriptEntry::Model(model.clone()));
@@ -1063,7 +1077,7 @@ mod tests {
     }
 
     fn user(text: &str) -> TranscriptEntry {
-        TranscriptEntry::UserMessage(text.to_owned())
+        TranscriptEntry::UserMessage(text.to_owned().into())
     }
 
     fn invocation(arguments: &str) -> TranscriptEntry {
@@ -1071,6 +1085,7 @@ mod tests {
             name: "goal".to_owned(),
             arguments: arguments.to_owned(),
             instructions: "Work until the hook stops you.".to_owned(),
+            images: vec![],
         })
     }
 
@@ -2167,7 +2182,7 @@ mod tests {
                     effort: None,
                     mode: None,
                 },
-                &TranscriptEntry::UserMessage("unanswered ".repeat(180_000)),
+                &TranscriptEntry::UserMessage("unanswered ".repeat(180_000).into()),
             )
             .unwrap();
         drop(store);
@@ -2225,7 +2240,7 @@ mod tests {
                     effort: None,
                     mode: None,
                 },
-                &TranscriptEntry::UserMessage(old.clone()),
+                &TranscriptEntry::UserMessage(old.clone().into()),
             )
             .unwrap();
         let TranscriptEntry::AssistantMessage(message) = answer("Earlier answer") else {
@@ -2292,7 +2307,7 @@ mod tests {
                     effort: None,
                     mode: Some(SessionMode::Auto),
                 },
-                &TranscriptEntry::UserMessage(old.clone()),
+                &TranscriptEntry::UserMessage(old.clone().into()),
             )
             .unwrap();
         let TranscriptEntry::AssistantMessage(message) = answer("Earlier answer") else {
@@ -2382,7 +2397,7 @@ mod tests {
                     effort: None,
                     mode: None,
                 },
-                &TranscriptEntry::UserMessage("history ".repeat(4000)),
+                &TranscriptEntry::UserMessage("history ".repeat(4000).into()),
             )
             .unwrap();
         let TranscriptEntry::AssistantMessage(message) = answer("Earlier answer") else {
@@ -2422,7 +2437,7 @@ mod tests {
                     effort: None,
                     mode: None,
                 },
-                &TranscriptEntry::UserMessage("old".to_owned()),
+                &TranscriptEntry::UserMessage("old".to_owned().into()),
             )
             .unwrap();
         let TranscriptEntry::AssistantMessage(message) = answer("done") else {
@@ -2515,7 +2530,7 @@ mod tests {
                     effort: Some(saved.effort),
                     mode: None,
                 },
-                &TranscriptEntry::UserMessage("saved turn".to_owned()),
+                &TranscriptEntry::UserMessage("saved turn".to_owned().into()),
             )
             .unwrap();
 
@@ -2569,7 +2584,7 @@ mod tests {
                     effort: Some(EffortLevel::High),
                     mode: None,
                 },
-                &TranscriptEntry::UserMessage("saved turn".to_owned()),
+                &TranscriptEntry::UserMessage("saved turn".to_owned().into()),
             )
             .unwrap();
         let before = store.read(&unknown).unwrap().unwrap().transcript;
@@ -2589,7 +2604,75 @@ mod tests {
         );
         assert!(unknown_run.is_err());
         assert_eq!(store.read(&unknown).unwrap().unwrap().transcript, before);
+        let image_turn = TranscriptEntry::UserMessage(crate::sessions::UserMessage {
+            parts: vec![crate::sessions::UserMessagePart::Image(
+                crate::sessions::ImageAttachment {
+                    data: "aGVsbG8=".to_owned(),
+                    mime_type: "image/png".to_owned(),
+                },
+            )],
+        });
+        let image_session = store.create(&workspace.0).unwrap().id;
+        let image_run = run(
+            store.clone(),
+            server.client(),
+            PromptInput {
+                session_id: image_session.clone(),
+                turn_start: image_turn.clone(),
+                hook_sources: Vec::new(),
+                selected_settings: Some(SessionSettings::new(
+                    default_model(),
+                    EffortLevel::Default,
+                )),
+                system_prompt: system_prompt::for_workspace(&workspace.0).unwrap(),
+            },
+            PromptCancellation::new(),
+            |_| Ok(()),
+            PermissionTransport::None,
+        );
+        assert!(image_run.is_err());
+        assert!(
+            store
+                .read(&image_session)
+                .unwrap()
+                .unwrap()
+                .transcript
+                .is_empty()
+        );
         assert!(server.requests().is_empty());
+
+        let vision_server = Server::start(vec![text_reply("I see it.")]).await;
+        let vision_session = store.create(&workspace.0).unwrap().id;
+        let vision_run = run(
+            store.clone(),
+            vision_server.client(),
+            PromptInput {
+                session_id: vision_session.clone(),
+                turn_start: image_turn.clone(),
+                hook_sources: Vec::new(),
+                selected_settings: Some(SessionSettings::new(
+                    &catalog()[1].id,
+                    EffortLevel::Default,
+                )),
+                system_prompt: system_prompt::for_workspace(&workspace.0).unwrap(),
+            },
+            PromptCancellation::new(),
+            |_| Ok(()),
+            PermissionTransport::None,
+        )
+        .unwrap();
+        assert_eq!(
+            vision_run.await.unwrap().answer.as_deref(),
+            Some("I see it.")
+        );
+        assert_eq!(
+            store.read(&vision_session).unwrap().unwrap().transcript[1],
+            image_turn
+        );
+        assert_eq!(
+            vision_server.requests()[0]["messages"][1]["content"][0]["image_url"]["url"],
+            "data:image/png;base64,aGVsbG8="
+        );
     }
 
     #[tokio::test]

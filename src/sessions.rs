@@ -65,12 +65,59 @@ pub enum TranscriptEntry {
     Model(String),
     Effort(EffortLevel),
     Mode(SessionMode),
-    UserMessage(String),
+    UserMessage(UserMessage),
     SkillInvocation(SkillInvocation),
     AssistantMessage(AssistantMessage),
     ToolResult(ToolResult),
     HookFeedback(HookFeedback),
     CompactionCheckpoint(CompactionCheckpoint),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct UserMessage {
+    pub parts: Vec<UserMessagePart>,
+}
+
+impl UserMessage {
+    pub fn text(&self) -> String {
+        self.parts
+            .iter()
+            .filter_map(|part| match part {
+                UserMessagePart::Text(text) => Some(text.as_str()),
+                UserMessagePart::Image(_) => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    pub fn has_images(&self) -> bool {
+        self.parts
+            .iter()
+            .any(|part| matches!(part, UserMessagePart::Image(_)))
+    }
+}
+
+impl From<String> for UserMessage {
+    fn from(text: String) -> Self {
+        Self {
+            parts: vec![UserMessagePart::Text(text)],
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", content = "content", rename_all = "snake_case")]
+pub enum UserMessagePart {
+    Text(String),
+    Image(ImageAttachment),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ImageAttachment {
+    pub data: String,
+    pub mime_type: String,
 }
 
 /// A skill invoked as a slash command, saved in place of the user message for
@@ -81,6 +128,8 @@ pub struct SkillInvocation {
     pub name: String,
     pub arguments: String,
     pub instructions: String,
+    #[serde(default)]
+    pub images: Vec<ImageAttachment>,
 }
 
 impl SkillInvocation {
@@ -823,7 +872,8 @@ impl SessionStore {
         turn_start: &TranscriptEntry,
     ) -> io::Result<SessionSummary> {
         let session_title = match turn_start {
-            TranscriptEntry::UserMessage(text) => session_title_from_prompt(text),
+            TranscriptEntry::UserMessage(message) => session_title_from_prompt(&message.text())
+                .or_else(|| message.has_images().then(|| "Image".to_owned())),
             TranscriptEntry::SkillInvocation(invocation) => {
                 session_title_from_prompt(&invocation.command_text())
             }
@@ -1123,6 +1173,7 @@ mod tests {
             name: "goal".to_owned(),
             arguments: "Pass the tests.".to_owned(),
             instructions: "Work until the hook stops you.".to_owned(),
+            images: vec![],
         }
     }
 
@@ -1198,7 +1249,9 @@ mod tests {
                         effort: None,
                         mode: Some(SessionMode::Auto),
                     },
-                    &TranscriptEntry::UserMessage("Weather in Chicago and Denver?".to_owned()),
+                    &TranscriptEntry::UserMessage(
+                        "Weather in Chicago and Denver?".to_owned().into(),
+                    ),
                 )
                 .unwrap();
             let batch = AssistantBatch::new(message.clone(), results.clone()).unwrap();
@@ -1259,7 +1312,7 @@ mod tests {
             vec![
                 TranscriptEntry::Model(openrouter::default_model().to_owned()),
                 TranscriptEntry::Mode(SessionMode::Auto),
-                TranscriptEntry::UserMessage("Weather in Chicago and Denver?".to_owned()),
+                TranscriptEntry::UserMessage("Weather in Chicago and Denver?".to_owned().into()),
                 TranscriptEntry::AssistantMessage(message.clone()),
                 TranscriptEntry::ToolResult(results[0].clone()),
                 TranscriptEntry::ToolResult(results[1].clone()),
@@ -1384,7 +1437,7 @@ mod tests {
                     effort: None,
                     mode: None,
                 },
-                &TranscriptEntry::UserMessage("hello".to_owned()),
+                &TranscriptEntry::UserMessage("hello".to_owned().into()),
             )
             .unwrap();
         insert(
@@ -1436,7 +1489,8 @@ mod tests {
         );
 
         let unmodelled = store.create(workspace()).unwrap().id;
-        insert(&unmodelled, "user_message", r#""hello""#);
+        let hello = serde_json::to_string(&UserMessage::from("hello".to_owned())).unwrap();
+        insert(&unmodelled, "user_message", &hello);
         rejects(&unmodelled, "transcript does not open with a model");
 
         let effort_in_batch = store.create(workspace()).unwrap().id;
@@ -1452,13 +1506,14 @@ mod tests {
             &serde_json::to_string(&called).unwrap(),
         );
         insert(&effort_in_batch, "effort", r#""high""#);
-        insert(&effort_in_batch, "user_message", r#""next""#);
+        let next = serde_json::to_string(&UserMessage::from("next".to_owned())).unwrap();
+        insert(&effort_in_batch, "user_message", &next);
         rejects(
             &effort_in_batch,
             "an assistant message's tool calls are not all resolved before the next message",
         );
 
-        let user = ("user_message", r#""hello""#.to_owned());
+        let user = ("user_message", hello);
         let skill = (
             "skill_invocation",
             serde_json::to_string(&invocation()).unwrap(),
@@ -1573,7 +1628,7 @@ mod tests {
         insert(&duplicate_settings, "mode", r#""ask""#);
         insert(&duplicate_settings, "effort", r#""low""#);
         insert(&duplicate_settings, "mode", r#""auto""#);
-        insert(&duplicate_settings, "user_message", r#""next""#);
+        insert(&duplicate_settings, "user_message", &next);
         rejects(
             &duplicate_settings,
             "a settings block contains more than one mode entry",
@@ -1581,7 +1636,7 @@ mod tests {
 
         let base = vec![
             TranscriptEntry::Model(openrouter::default_model().to_owned()),
-            TranscriptEntry::UserMessage("first".to_owned()),
+            TranscriptEntry::UserMessage("first".to_owned().into()),
             TranscriptEntry::AssistantMessage(message(vec![call("a", "one"), call("b", "two")])),
             TranscriptEntry::ToolResult(completed("a")),
             TranscriptEntry::ToolResult(completed("b")),
@@ -1676,7 +1731,7 @@ mod tests {
         assert!(validate_transcript(&[]).is_ok());
         assert_eq!(
             validate_transcript(&[
-                TranscriptEntry::UserMessage("first".to_owned()),
+                TranscriptEntry::UserMessage("first".to_owned().into()),
                 TranscriptEntry::Model(openrouter::default_model().to_owned()),
             ])
             .unwrap_err()
@@ -1698,7 +1753,7 @@ mod tests {
                     TranscriptEntry::Model(openrouter::default_model().to_owned()),
                     settings[0].clone(),
                     settings[1].clone(),
-                    TranscriptEntry::UserMessage("first".to_owned()),
+                    TranscriptEntry::UserMessage("first".to_owned().into()),
                 ])
                 .is_ok()
             );
@@ -1718,7 +1773,7 @@ mod tests {
                     TranscriptEntry::Model(openrouter::default_model().to_owned()),
                     duplicate.clone(),
                     duplicate,
-                    TranscriptEntry::UserMessage("first".to_owned()),
+                    TranscriptEntry::UserMessage("first".to_owned().into()),
                 ])
                 .unwrap_err()
                 .to_string(),
@@ -1762,7 +1817,7 @@ mod tests {
                     effort: None,
                     mode: None,
                 },
-                &TranscriptEntry::UserMessage("old transcript".to_owned()),
+                &TranscriptEntry::UserMessage("old transcript".to_owned().into()),
             )
             .unwrap();
         assert_eq!(
@@ -1783,7 +1838,7 @@ mod tests {
                     effort: Some(EffortLevel::Low),
                     mode: Some(SessionMode::Auto),
                 },
-                &TranscriptEntry::UserMessage("first".to_owned()),
+                &TranscriptEntry::UserMessage("first".to_owned().into()),
             )
             .unwrap();
         store
@@ -1794,7 +1849,7 @@ mod tests {
                     effort: Some(EffortLevel::High),
                     mode: None,
                 },
-                &TranscriptEntry::UserMessage("second".to_owned()),
+                &TranscriptEntry::UserMessage("second".to_owned().into()),
             )
             .unwrap();
         store
@@ -1805,7 +1860,7 @@ mod tests {
                     effort: Some(EffortLevel::Medium),
                     mode: None,
                 },
-                &TranscriptEntry::UserMessage("third".to_owned()),
+                &TranscriptEntry::UserMessage("third".to_owned().into()),
             )
             .unwrap();
         assert_eq!(
@@ -1838,7 +1893,7 @@ mod tests {
                     effort: None,
                     mode: None,
                 },
-                &TranscriptEntry::UserMessage("\n\nFirst line\nsecond line".to_owned()),
+                &TranscriptEntry::UserMessage("\n\nFirst line\nsecond line".to_owned().into()),
             )
             .unwrap();
         assert_eq!(first.session_title.as_deref(), Some("First line"));
@@ -1849,7 +1904,7 @@ mod tests {
             .append_turn_start(
                 &created.id,
                 &SessionSettingsChange::default(),
-                &TranscriptEntry::UserMessage("Something else".to_owned()),
+                &TranscriptEntry::UserMessage("Something else".to_owned().into()),
             )
             .unwrap();
         assert_eq!(second.session_title.as_deref(), Some("First line"));
@@ -1864,7 +1919,7 @@ mod tests {
                     effort: None,
                     mode: None,
                 },
-                &TranscriptEntry::UserMessage("x".repeat(MAX_SESSION_TITLE_CHARS + 10)),
+                &TranscriptEntry::UserMessage("x".repeat(MAX_SESSION_TITLE_CHARS + 10).into()),
             )
             .unwrap()
             .session_title
@@ -1875,6 +1930,25 @@ mod tests {
             "the ellipsis counts against the limit"
         );
         assert!(session_title.ends_with('…'));
+
+        let image_only = store.create(workspace()).unwrap();
+        let image_title = store
+            .append_turn_start(
+                &image_only.id,
+                &SessionSettingsChange {
+                    model: Some(openrouter::default_model().to_owned()),
+                    ..Default::default()
+                },
+                &TranscriptEntry::UserMessage(UserMessage {
+                    parts: vec![UserMessagePart::Image(ImageAttachment {
+                        data: "aGVsbG8=".to_owned(),
+                        mime_type: "image/png".to_owned(),
+                    })],
+                }),
+            )
+            .unwrap()
+            .session_title;
+        assert_eq!(image_title.as_deref(), Some("Image"));
 
         let skill = store.create(workspace()).unwrap();
         let adopted = store
@@ -1902,7 +1976,7 @@ mod tests {
                         effort: None,
                         mode: None,
                     },
-                    &TranscriptEntry::UserMessage("hello".to_owned()),
+                    &TranscriptEntry::UserMessage("hello".to_owned().into()),
                 )
                 .is_err(),
             "appending never creates a session"
@@ -1945,7 +2019,7 @@ mod tests {
                     effort: None,
                     mode: None,
                 },
-                &TranscriptEntry::UserMessage("hello".to_owned()),
+                &TranscriptEntry::UserMessage("hello".to_owned().into()),
             )
             .unwrap();
 

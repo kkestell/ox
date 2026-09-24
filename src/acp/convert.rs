@@ -1,4 +1,4 @@
-//! Converts ACP prompt content into prompt text and transcript entries into
+//! Converts ACP prompt content into user messages and transcript entries into
 //! ACP updates for live output and session replay.
 
 use agent_client_protocol::{
@@ -10,42 +10,90 @@ use agent_client_protocol::{
         ToolKind, UsageUpdate,
     },
 };
+use base64::{Engine, engine::general_purpose::STANDARD};
 use serde_json::Value;
 
 use crate::{
     compaction, openrouter,
     sessions::{
-        self, AssistantMessage, HookFeedback, HookKind, SessionSettings, ToolCall, ToolOutcome,
-        ToolResult, TranscriptEntry,
+        self, AssistantMessage, HookFeedback, HookKind, ImageAttachment, SessionSettings, ToolCall,
+        ToolOutcome, ToolResult, TranscriptEntry, UserMessage, UserMessagePart,
     },
     tools,
 };
 
-/// Text blocks and resource links become one text input; a link contributes
-/// its name and URI and is not fetched. Anything else is invalid input.
-pub fn prompt_text(content: &[ContentBlock]) -> Result<String> {
+const MAX_IMAGES: usize = 4;
+const MAX_IMAGE_BYTES: usize = 10 * 1024 * 1024;
+
+/// Preserve text and image order. Resource links contribute text and are not
+/// fetched.
+pub fn prompt_message(content: &[ContentBlock]) -> Result<UserMessage> {
     let mut parts = Vec::new();
+    let mut image_count = 0;
+    let mut image_bytes = 0;
     for block in content {
         match block {
-            ContentBlock::Text(text) => parts.push(text.text.clone()),
+            ContentBlock::Text(text) => parts.push(UserMessagePart::Text(text.text.clone())),
             ContentBlock::ResourceLink(link) => {
-                parts.push(format!("Resource link: {}\nURI: {}", link.name, link.uri));
+                parts.push(UserMessagePart::Text(format!(
+                    "Resource link: {}\nURI: {}",
+                    link.name, link.uri
+                )));
+            }
+            ContentBlock::Image(image) => {
+                image_count += 1;
+                if image_count > MAX_IMAGES {
+                    return Err(Error::invalid_params().data("prompt contains too many images"));
+                }
+                if !matches!(
+                    image.mime_type.as_str(),
+                    "image/png" | "image/jpeg" | "image/webp" | "image/gif"
+                ) {
+                    return Err(Error::invalid_params().data("unsupported image MIME type"));
+                }
+                if image.data.len() > (MAX_IMAGE_BYTES - image_bytes).div_ceil(3) * 4 + 4 {
+                    return Err(Error::invalid_params().data("prompt images exceed 10 MiB"));
+                }
+                let decoded = STANDARD
+                    .decode(&image.data)
+                    .map_err(|_| Error::invalid_params().data("image data is not valid base64"))?;
+                if decoded.is_empty() || decoded.len() > MAX_IMAGE_BYTES - image_bytes {
+                    return Err(Error::invalid_params().data("prompt images exceed 10 MiB"));
+                }
+                image_bytes += decoded.len();
+                parts.push(UserMessagePart::Image(ImageAttachment {
+                    data: image.data.clone(),
+                    mime_type: image.mime_type.clone(),
+                }));
             }
             _ => {
                 return Err(Error::invalid_params()
-                    .data("prompts may contain only text and resource links"));
+                    .data("prompts may contain only text, resource links, and images"));
             }
         }
     }
-    let text = parts.join("\n");
-    if text.trim().is_empty() {
-        return Err(Error::invalid_params().data("prompt contains no text"));
+    let message = UserMessage { parts };
+    if message.text().trim().is_empty() && !message.has_images() {
+        return Err(Error::invalid_params().data("prompt contains no text or image"));
     }
-    Ok(text)
+    Ok(message)
 }
 
 pub fn user_message_chunk(text: &str) -> SessionUpdate {
     SessionUpdate::UserMessageChunk(text_chunk(text))
+}
+
+fn user_image_chunk(image: &ImageAttachment) -> SessionUpdate {
+    SessionUpdate::UserMessageChunk(ContentChunk::new(ContentBlock::Image(
+        agent_client_protocol::schema::v1::ImageContent::new(&image.data, &image.mime_type),
+    )))
+}
+
+fn user_message_updates(message: &UserMessage) -> impl Iterator<Item = SessionUpdate> + '_ {
+    message.parts.iter().map(|part| match part {
+        UserMessagePart::Text(text) => user_message_chunk(text),
+        UserMessagePart::Image(image) => user_image_chunk(image),
+    })
 }
 
 pub fn agent_message_chunk(text: &str) -> SessionUpdate {
@@ -244,9 +292,16 @@ pub fn replay_transcript(
             | TranscriptEntry::Effort(_)
             | TranscriptEntry::Mode(_)
             | TranscriptEntry::CompactionCheckpoint(_) => {}
-            TranscriptEntry::UserMessage(text) => send_update(user_message_chunk(text))?,
+            TranscriptEntry::UserMessage(message) => {
+                for update in user_message_updates(message) {
+                    send_update(update)?;
+                }
+            }
             TranscriptEntry::SkillInvocation(invocation) => {
-                send_update(user_message_chunk(&invocation.command_text()))?
+                send_update(user_message_chunk(&invocation.command_text()))?;
+                for image in &invocation.images {
+                    send_update(user_image_chunk(image))?;
+                }
             }
             TranscriptEntry::HookFeedback(feedback) => send_update(replayed_hook_run(feedback))?,
             TranscriptEntry::AssistantMessage(message) => {
@@ -310,30 +365,104 @@ fn status(outcome: &ToolOutcome) -> ToolCallStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agent_client_protocol::schema::v1::{ErrorCode, ImageContent, ResourceLink};
+    use agent_client_protocol::schema::v1::{AudioContent, ErrorCode, ImageContent, ResourceLink};
 
     #[test]
-    fn prompt_to_user_message_keeps_links_and_rejects_other_or_blank_content() {
-        let text = prompt_text(&[
+    fn prompt_to_user_message_keeps_links_and_images_and_rejects_invalid_content() {
+        let message = prompt_message(&[
             ContentBlock::Text(TextContent::new("Review this")),
             ContentBlock::ResourceLink(ResourceLink::new(
                 "src/main.rs",
                 "file:///workspace/src/main.rs",
             )),
+            ContentBlock::Image(ImageContent::new("aGVsbG8=", "image/png")),
         ])
         .unwrap();
         assert_eq!(
-            text,
+            message.text(),
             "Review this\nResource link: src/main.rs\nURI: file:///workspace/src/main.rs"
         );
+        assert!(
+            matches!(&message.parts[2], UserMessagePart::Image(image) if image.data == "aGVsbG8=")
+        );
+        assert!(
+            prompt_message(&[ContentBlock::Image(ImageContent::new(
+                "aGVsbG8=",
+                "image/png"
+            ))])
+            .is_ok()
+        );
+        let store = sessions::SessionStore::in_memory();
+        let id = store.create(std::path::Path::new("/workspace")).unwrap().id;
+        store
+            .append_turn_start(
+                &id,
+                &sessions::SessionSettingsChange {
+                    model: Some(openrouter::default_model().to_owned()),
+                    ..Default::default()
+                },
+                &TranscriptEntry::UserMessage(message.clone()),
+            )
+            .unwrap();
+        let stored = store.read(&id).unwrap().unwrap();
+        assert_eq!(stored.transcript[1], TranscriptEntry::UserMessage(message));
+        let mut updates = Vec::new();
+        replay_transcript(&stored.transcript, |update| {
+            updates.push(update);
+            Ok(())
+        })
+        .unwrap();
+        assert!(matches!(&updates[2], SessionUpdate::UserMessageChunk(chunk)
+            if matches!(&chunk.content, ContentBlock::Image(image) if image.data == "aGVsbG8=" && image.mime_type == "image/png")));
 
-        let image =
-            prompt_text(&[ContentBlock::Image(ImageContent::new("", "image/png"))]).unwrap_err();
-        assert_eq!(image.code, ErrorCode::InvalidParams);
+        for image in [
+            ImageContent::new("", "image/png"),
+            ImageContent::new("bad", "image/png"),
+            ImageContent::new("aGVsbG8=", "image/svg+xml"),
+        ] {
+            assert_eq!(
+                prompt_message(&[ContentBlock::Image(image)])
+                    .unwrap_err()
+                    .code,
+                ErrorCode::InvalidParams
+            );
+        }
+        for mime in ["image/png", "image/jpeg", "image/webp", "image/gif"] {
+            assert!(
+                prompt_message(&[ContentBlock::Image(ImageContent::new("aGVsbG8=", mime))]).is_ok()
+            );
+        }
+        let five = (0..5)
+            .map(|_| ContentBlock::Image(ImageContent::new("aGVsbG8=", "image/png")))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            prompt_message(&five).unwrap_err().code,
+            ErrorCode::InvalidParams
+        );
+        let too_large = ContentBlock::Image(ImageContent::new(
+            "A".repeat(MAX_IMAGE_BYTES * 4 / 3 + 8),
+            "image/png",
+        ));
+        assert_eq!(
+            prompt_message(&[too_large]).unwrap_err().code,
+            ErrorCode::InvalidParams
+        );
 
-        let blank = prompt_text(&[ContentBlock::Text(TextContent::new("  \n\t"))]).unwrap_err();
+        let blank = prompt_message(&[ContentBlock::Text(TextContent::new("  \n\t"))]).unwrap_err();
         assert_eq!(blank.code, ErrorCode::InvalidParams);
-        assert_eq!(prompt_text(&[]).unwrap_err().code, ErrorCode::InvalidParams);
+        assert_eq!(
+            prompt_message(&[]).unwrap_err().code,
+            ErrorCode::InvalidParams
+        );
+        assert_eq!(
+            prompt_message(&[ContentBlock::Audio(AudioContent::new(
+                "aGVsbG8=",
+                "audio/wav"
+            ))])
+            .unwrap_err()
+            .code,
+            ErrorCode::InvalidParams
+        );
     }
 
     #[test]

@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 agent-client-protocol = "2.1.0"
+base64 = "0.22.1"
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
 futures = "0.3.31"
 keyring = "4.2.0"

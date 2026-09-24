@@ -20,12 +20,12 @@ use agent_client_protocol::{
         AvailableCommandInput, AvailableCommandsUpdate, CancelNotification, DeleteSessionRequest,
         DeleteSessionResponse, InitializeRequest, InitializeResponse, ListSessionsRequest,
         ListSessionsResponse, LoadSessionRequest, LoadSessionResponse, LogoutCapabilities,
-        LogoutRequest, LogoutResponse, NewSessionRequest, NewSessionResponse, PromptRequest,
-        PromptResponse, SessionCapabilities, SessionConfigOption, SessionConfigOptionCategory,
-        SessionConfigOptionValue, SessionConfigSelectOption, SessionDeleteCapabilities, SessionId,
-        SessionInfo, SessionListCapabilities, SessionNotification, SessionUpdate,
-        SetSessionConfigOptionRequest, SetSessionConfigOptionResponse, StopReason,
-        UnstructuredCommandInput,
+        LogoutRequest, LogoutResponse, NewSessionRequest, NewSessionResponse, PromptCapabilities,
+        PromptRequest, PromptResponse, SessionCapabilities, SessionConfigOption,
+        SessionConfigOptionCategory, SessionConfigOptionValue, SessionConfigSelectOption,
+        SessionDeleteCapabilities, SessionId, SessionInfo, SessionListCapabilities,
+        SessionNotification, SessionUpdate, SetSessionConfigOptionRequest,
+        SetSessionConfigOptionResponse, StopReason, UnstructuredCommandInput,
     },
 };
 
@@ -35,7 +35,7 @@ use crate::{
     compaction, hooks, openrouter,
     sessions::{
         self, EffortLevel, SessionMode, SessionSettings, SessionStore, SessionSummary,
-        SkillInvocation, TranscriptEntry,
+        SkillInvocation, TranscriptEntry, UserMessage, UserMessagePart,
     },
     skills::{self, Skill},
     system_prompt,
@@ -70,16 +70,18 @@ fn validate_settings(settings: &SessionSettings) -> Result<()> {
 fn config_options(settings: &SessionSettings, model_locked: bool) -> Vec<SessionConfigOption> {
     let model = openrouter::catalog_model(&settings.model)
         .expect("a session model comes from the model catalog");
+    let model_option = |model: &openrouter::CatalogModel| {
+        let option = SessionConfigSelectOption::new(model.id.clone(), model.name.clone());
+        if model.accepts_images {
+            option.description("Accepts images")
+        } else {
+            option
+        }
+    };
     let models = if model_locked {
-        vec![SessionConfigSelectOption::new(
-            model.id.clone(),
-            model.name.clone(),
-        )]
+        vec![model_option(model)]
     } else {
-        openrouter::catalog()
-            .iter()
-            .map(|model| SessionConfigSelectOption::new(model.id.clone(), model.name.clone()))
-            .collect()
+        openrouter::catalog().iter().map(model_option).collect()
     };
     vec![
         SessionConfigOption::select("model", "Model", settings.model.clone(), models)
@@ -137,23 +139,24 @@ enum Dispatch {
         invocation: SkillInvocation,
         hook_source: Box<hooks::HookSource>,
     },
-    UserMessage(String),
+    UserMessage(UserMessage),
 }
 
 /// A prompt whose first word is `/compact` or `/<name>` for a catalog skill is
 /// a command; the rest of its text, trimmed, is literal skill arguments. Any
 /// other text is a user message.
-fn dispatch(prompt_text: String, skills: &[Skill]) -> Dispatch {
+fn dispatch(message: UserMessage, skills: &[Skill]) -> Dispatch {
+    let prompt_text = message.text();
     let text = prompt_text.trim();
     let (word, rest) = text.split_once(char::is_whitespace).unwrap_or((text, ""));
-    if word == "/compact" {
+    if word == "/compact" && !message.has_images() {
         return Dispatch::Compact;
     }
     let Some(skill) = word
         .strip_prefix('/')
         .and_then(|name| skills.iter().find(|skill| skill.name == name))
     else {
-        return Dispatch::UserMessage(prompt_text);
+        return Dispatch::UserMessage(message);
     };
     let arguments = rest.trim().to_owned();
     Dispatch::Skill {
@@ -166,6 +169,14 @@ fn dispatch(prompt_text: String, skills: &[Skill]) -> Dispatch {
             name: skill.name.clone(),
             arguments,
             instructions: skill.instructions.clone(),
+            images: message
+                .parts
+                .into_iter()
+                .filter_map(|part| match part {
+                    UserMessagePart::Image(image) => Some(image),
+                    UserMessagePart::Text(_) => None,
+                })
+                .collect(),
         },
     }
 }
@@ -543,8 +554,8 @@ impl ServerState {
         responder: Responder<PromptResponse>,
         connection: &ConnectionTo<Client>,
     ) -> Result<()> {
-        let prompt_text = match convert::prompt_text(&request.prompt) {
-            Ok(prompt_text) => prompt_text,
+        let message = match convert::prompt_message(&request.prompt) {
+            Ok(message) => message,
             Err(error) => return responder.respond_with_error(error),
         };
         let Some(operation) = self.operations.try_prompt(&request.session_id) else {
@@ -553,7 +564,7 @@ impl ServerState {
         let Some(active) = self.active_session(&request.session_id) else {
             return responder.respond_with_error(inactive(&request.session_id));
         };
-        let turn = match dispatch(prompt_text, &active.skills) {
+        let turn = match dispatch(message, &active.skills) {
             Dispatch::Compact => {
                 return self.spawn_compaction(
                     request.session_id,
@@ -570,7 +581,7 @@ impl ServerState {
                 TranscriptEntry::SkillInvocation(invocation),
                 Some(*hook_source),
             ),
-            Dispatch::UserMessage(text) => (TranscriptEntry::UserMessage(text), None),
+            Dispatch::UserMessage(message) => (TranscriptEntry::UserMessage(message), None),
         };
         self.spawn_prompt_run(
             request.session_id,
@@ -704,6 +715,7 @@ fn initialize_response(initialize: &InitializeRequest) -> InitializeResponse {
     let mut response = InitializeResponse::new(ProtocolVersion::LATEST).agent_capabilities(
         AgentCapabilities::new()
             .load_session(true)
+            .prompt_capabilities(PromptCapabilities::new().image(true))
             .session_capabilities(
                 SessionCapabilities::new()
                     .list(SessionListCapabilities::new())
@@ -773,7 +785,7 @@ async fn run_headless_prompt(
         openrouter,
         prompt::PromptInput {
             session_id,
-            turn_start: TranscriptEntry::UserMessage(user_message),
+            turn_start: TranscriptEntry::UserMessage(user_message.into()),
             hook_sources,
             selected_settings: Some(settings.with_mode(SessionMode::Auto)),
             system_prompt,
@@ -930,7 +942,7 @@ mod tests {
                     effort: None,
                     mode: None,
                 },
-                &TranscriptEntry::UserMessage("previous work ".repeat(3000)),
+                &TranscriptEntry::UserMessage("previous work ".repeat(3000).into()),
             )
             .unwrap();
         store
@@ -996,7 +1008,7 @@ mod tests {
             include_str!("prompts/compaction_prompt.md")
         );
         assert!(after.iter().all(|entry| !matches!(entry,
-            TranscriptEntry::UserMessage(text) if text == "/compact")));
+            TranscriptEntry::UserMessage(message) if message.text() == "/compact")));
     }
     fn state() -> ServerState {
         state_over(SessionStore::in_memory())
@@ -1021,6 +1033,7 @@ mod tests {
     fn terminal_login_is_advertised_only_to_supporting_clients() {
         let response = initialize_response(&InitializeRequest::new(ProtocolVersion::V1));
         assert!(response.auth_methods.is_empty());
+        assert!(response.agent_capabilities.prompt_capabilities.image);
 
         let initialize = InitializeRequest::new(ProtocolVersion::V1).client_capabilities(
             ClientCapabilities::new().auth(AuthCapabilities::new().terminal(true)),
@@ -1081,16 +1094,20 @@ mod tests {
             })
         );
         for command in ["/compact", " /compact now\n"] {
-            assert_eq!(dispatch(command.to_owned(), &skills), Dispatch::Compact);
+            assert_eq!(
+                dispatch(command.to_owned().into(), &skills),
+                Dispatch::Compact
+            );
         }
         let arguments = "Fix the \"tests\" in $HOME\n  and more";
         assert_eq!(
-            dispatch(format!(" /goal\t{arguments} \n"), &skills),
+            dispatch(format!(" /goal\t{arguments} \n").into(), &skills),
             Dispatch::Skill {
                 invocation: SkillInvocation {
                     name: "goal".to_owned(),
                     arguments: arguments.to_owned(),
                     instructions: "Follow the goal steps.".to_owned(),
+                    images: vec![],
                 },
                 hook_source: Box::new(hooks::HookSource {
                     hooks: skills[0].hooks.clone(),
@@ -1100,12 +1117,13 @@ mod tests {
             }
         );
         assert_eq!(
-            dispatch("/init".to_owned(), &skills),
+            dispatch("/init".to_owned().into(), &skills),
             Dispatch::Skill {
                 invocation: SkillInvocation {
                     name: "init".to_owned(),
                     arguments: String::new(),
                     instructions: "Follow the init steps.".to_owned(),
+                    images: vec![],
                 },
                 hook_source: Box::new(hooks::HookSource {
                     skill: Some("init".to_owned()),
@@ -1123,10 +1141,23 @@ mod tests {
             "do /goal",
         ] {
             assert_eq!(
-                dispatch(user_message.to_owned(), &skills),
-                Dispatch::UserMessage(user_message.to_owned())
+                dispatch(user_message.to_owned().into(), &skills),
+                Dispatch::UserMessage(user_message.to_owned().into())
             );
         }
+        let with_image = UserMessage {
+            parts: vec![
+                UserMessagePart::Text("/goal inspect".to_owned()),
+                UserMessagePart::Image(sessions::ImageAttachment {
+                    data: "aGVsbG8=".to_owned(),
+                    mime_type: "image/png".to_owned(),
+                }),
+            ],
+        };
+        assert!(
+            matches!(dispatch(with_image, &skills), Dispatch::Skill { invocation, .. }
+            if invocation.arguments == "inspect" && invocation.images.len() == 1)
+        );
     }
 
     #[test]
@@ -1361,7 +1392,7 @@ mod tests {
                     effort: None,
                     mode: None,
                 },
-                &TranscriptEntry::UserMessage("Hello".to_owned()),
+                &TranscriptEntry::UserMessage("Hello".to_owned().into()),
             )
             .unwrap();
 
@@ -1404,7 +1435,7 @@ mod tests {
                     effort: None,
                     mode: None,
                 },
-                &TranscriptEntry::UserMessage("Hello".to_owned()),
+                &TranscriptEntry::UserMessage("Hello".to_owned().into()),
             )
             .unwrap();
         let mut updates = Vec::new();
@@ -1438,6 +1469,13 @@ mod tests {
             .unwrap();
         let new_options = serde_json::to_value(&created).unwrap();
         assert_eq!(new_options["configOptions"].as_array().unwrap().len(), 3);
+        let image_option = new_options["configOptions"][0]["options"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|option| option["value"] == "z-ai/glm-5.3-flash")
+            .unwrap();
+        assert_eq!(image_option["description"], "Accepts images");
         assert_eq!(new_options["configOptions"][2]["id"], "mode");
         assert_eq!(new_options["configOptions"][2]["category"], "mode");
         assert_eq!(new_options["configOptions"][2]["currentValue"], "ask");
@@ -1532,7 +1570,7 @@ mod tests {
                     effort: None,
                     mode: Some(SessionMode::Auto),
                 },
-                &TranscriptEntry::UserMessage("Hello".to_owned()),
+                &TranscriptEntry::UserMessage("Hello".to_owned().into()),
             )
             .unwrap();
         assert_eq!(
@@ -1617,7 +1655,7 @@ mod tests {
             let active = state.active_session(&id).unwrap();
             prompt::PromptInput {
                 session_id: id.clone(),
-                turn_start: TranscriptEntry::UserMessage(user_message.to_owned()),
+                turn_start: TranscriptEntry::UserMessage(user_message.to_owned().into()),
                 hook_sources: Vec::new(),
                 selected_settings: Some(active.selections),
                 system_prompt: active.system_prompt,
@@ -1679,7 +1717,7 @@ mod tests {
                 TranscriptEntry::Effort(EffortLevel::Max),
                 TranscriptEntry::Mode(SessionMode::Auto),
                 TranscriptEntry::UserMessage(second),
-            ] if first == "first" && second == "second"
+            ] if first.text() == "first" && second.text() == "second"
         ));
         let requests = server.requests();
         assert_eq!(requests[0]["reasoning"]["effort"], "low");
@@ -1723,7 +1761,7 @@ mod tests {
                     effort: None,
                     mode: None,
                 },
-                &TranscriptEntry::UserMessage("Earlier".to_owned()),
+                &TranscriptEntry::UserMessage("Earlier".to_owned().into()),
             )
             .unwrap();
         let id = create_session(&state, Path::new("/workspace"));
@@ -1820,7 +1858,7 @@ mod tests {
             store.read(&id).unwrap().unwrap().transcript,
             vec![
                 TranscriptEntry::Model(openrouter::default_model().to_owned()),
-                TranscriptEntry::UserMessage("Hello".to_owned())
+                TranscriptEntry::UserMessage("Hello".to_owned().into())
             ],
         );
     }
@@ -2223,7 +2261,7 @@ Run the commands.
                     TranscriptEntry::Model(openrouter::catalog()[1].id.as_str().to_owned()),
                     TranscriptEntry::Effort(EffortLevel::High),
                     TranscriptEntry::Mode(SessionMode::Auto),
-                    TranscriptEntry::UserMessage("Run commands".to_owned()),
+                    TranscriptEntry::UserMessage("Run commands".to_owned().into()),
                 ]
             );
             assert_eq!(transcript.iter().filter(|entry| matches!(entry, TranscriptEntry::ToolResult(result) if matches!(result.outcome, ToolOutcome::Cancelled(_)))).count(), 2);

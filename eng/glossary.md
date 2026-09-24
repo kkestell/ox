@@ -77,7 +77,7 @@
 - **Session title**: The short label a session shows in a client, taken once
   from the first nonblank line of the first saved user message or skill
   invocation and shortened to 80 characters. A skill invocation contributes
-  `/<name> <arguments>`.
+  `/<name> <arguments>`; an image-only user message contributes `Image`.
 - **Session summary**: A session's ID, workspace path, optional session title,
   and creation and activity timestamps, without its transcript.
 - **Compaction summary**: Model-generated text carrying relevant older
@@ -87,7 +87,7 @@
 - **Context limit**: The maximum token budget of one model request and output,
   taken from the model's OpenRouter `context_length` in the model catalog.
 - **Request estimate**: Ox's heuristic token estimate for a serialized model
-  request, using three bytes per token.
+  request, using three bytes per token for text and a fixed allowance per image.
 - **Stored session**: A session summary paired with its validated transcript.
 - **Session store**: The SQLite-backed component that creates, reads, lists,
   updates, and deletes sessions and their transcripts.
@@ -109,7 +109,8 @@
 - **Skill catalog**: The skills available to an active session, loaded when it
   becomes active.
 - **Skill invocation**: A transcript entry holding a skill's name, arguments,
-  and instructions, saved in place of the user message for that turn.
+  instructions, and image attachments, saved in place of the user message for
+  that turn.
 - **Global hooks**: Commands declared in `~/.config/ox/settings.json`, loaded
   at process startup and available to prompt runs across workspaces. Processes
   descended from a hook command suppress global hooks through `OX_IN_HOOK`.
@@ -145,8 +146,11 @@
 - **Prompt cancellation**: A per-prompt signal that remains cancelled once
   triggered. It stops new work but does not roll back model or tool effects
   already observed.
-- **User message**: Text produced from the supported ACP content blocks and
-  saved before the first model request.
+- **User message**: Ordered text and images produced from the supported ACP
+  content blocks and saved before the first model request.
+- **User message part**: One text or image element in a user message.
+- **Image attachment**: A validated user-provided image with base64 data and a
+  MIME type, saved in a user message or skill invocation.
 - **Transcript**: The ordered, saved conversation used for both session replay
   and future model requests.
 - **Transcript entry**: A model entry, effort entry, mode entry, user message,
@@ -158,7 +162,7 @@
   model requests to OpenRouter's chat-completions endpoint.
 - **Model catalog**: The OpenRouter models from `GET /models` that pass the
   catalog filter, fetched once at startup, each with its name, context limit,
-  and effort levels.
+  effort levels, and image input support.
 - **Catalog filter**: The rules that admit an OpenRouter model to the model
   catalog: OpenRouter added it within the last 183 days, it is not a `:batch`
   variant, it accepts tools, takes text input, produces text output, and has a context limit above 8,000 tokens.

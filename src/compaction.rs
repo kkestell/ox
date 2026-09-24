@@ -7,13 +7,14 @@ use std::{
 };
 
 use agent_client_protocol::schema::v1::SessionId;
+use serde_json::Value;
 
 use crate::{
     cancellation::PromptCancellation,
     openrouter::{self, Client},
     sessions::{
         CompactionCheckpoint, EffortLevel, HookFeedbackContent, SessionSettings, SessionStore,
-        StopDecision, TranscriptEntry,
+        StopDecision, TranscriptEntry, UserMessagePart,
     },
 };
 
@@ -21,6 +22,7 @@ const SUMMARY_OUTPUT_TOKENS: usize = 4096;
 const SUMMARY_ALLOWANCE_BYTES: usize = SUMMARY_OUTPUT_TOKENS * 3;
 const SUMMARY_LABEL: &str = "Compaction summary of earlier conversation:\n";
 const TOOL_RESULT_EXCERPT_CHARS: usize = 2_000;
+const IMAGE_ESTIMATE_TOKENS: usize = 4_096;
 
 fn tokens(bytes: usize) -> usize {
     bytes.div_ceil(3)
@@ -57,11 +59,35 @@ pub fn request_estimate(
 ) -> io::Result<usize> {
     let projected = projection(transcript);
     let body = openrouter::ordinary_body(model, effort, system, &projected)?;
-    Ok(tokens(
-        serde_json::to_vec(&body)
-            .expect("request body serializes")
-            .len(),
-    ))
+    Ok(tokens(estimated_bytes(body)))
+}
+
+/// Count image data as a fixed token allowance. Encoded base64 is request
+/// transport, not text for the model to tokenize.
+fn estimated_bytes(mut body: Value) -> usize {
+    let mut images = 0;
+    if let Some(messages) = body.get_mut("messages").and_then(Value::as_array_mut) {
+        for message in messages {
+            images += strip_images(message);
+        }
+    }
+    serde_json::to_vec(&body)
+        .expect("request body serializes")
+        .len()
+        + images * IMAGE_ESTIMATE_TOKENS * 3
+}
+
+fn strip_images(message: &mut Value) -> usize {
+    let mut images = 0;
+    if let Some(parts) = message.get_mut("content").and_then(Value::as_array_mut) {
+        for part in parts {
+            if part.get("type").and_then(Value::as_str) == Some("image_url") {
+                part["image_url"]["url"] = Value::String("[image]".to_owned());
+                images += 1;
+            }
+        }
+    }
+    images
 }
 
 fn latest(transcript: &[TranscriptEntry]) -> Option<&CompactionCheckpoint> {
@@ -114,9 +140,9 @@ fn projection_at(
     cut: usize,
     summary: &str,
 ) -> Vec<TranscriptEntry> {
-    let mut projected = vec![TranscriptEntry::UserMessage(format!(
-        "{SUMMARY_LABEL}{summary}"
-    ))];
+    let mut projected = vec![TranscriptEntry::UserMessage(
+        format!("{SUMMARY_LABEL}{summary}").into(),
+    )];
     if let Some(index) = repeated_invocation(transcript, cut) {
         projected.push(transcript[index].clone());
     }
@@ -160,11 +186,7 @@ fn projected_estimate(
         system,
         &projection_at(transcript, cut, summary),
     )?;
-    Ok(tokens(
-        serde_json::to_vec(&body)
-            .expect("request body serializes")
-            .len(),
-    ))
+    Ok(tokens(estimated_bytes(body)))
 }
 
 /// A prospective prompt is rejected only if even the largest complete cut,
@@ -207,14 +229,11 @@ fn ranked_cuts(
     } = budget(model)?;
     let start = latest(transcript).map_or(0, |checkpoint| checkpoint.covered_prefix);
     let cuts = candidates(transcript);
-    let summary = TranscriptEntry::UserMessage(format!(
-        "{SUMMARY_LABEL}{}",
-        "x".repeat(SUMMARY_ALLOWANCE_BYTES)
-    ));
+    let summary = TranscriptEntry::UserMessage(
+        format!("{SUMMARY_LABEL}{}", "x".repeat(SUMMARY_ALLOWANCE_BYTES)).into(),
+    );
     let base = openrouter::ordinary_body(model, effort, system, std::slice::from_ref(&summary))?;
-    let base_bytes = serde_json::to_vec(&base)
-        .expect("request body serializes")
-        .len();
+    let base_bytes = estimated_bytes(base);
     let mut suffix_bytes = vec![0; transcript.len() - start + 1];
     for index in (start..transcript.len()).rev() {
         suffix_bytes[index - start] =
@@ -244,10 +263,12 @@ fn ranked_cuts(
 fn message_bytes(entry: &TranscriptEntry) -> usize {
     openrouter::chat_messages(std::slice::from_ref(entry))
         .into_iter()
-        .map(|message| {
+        .map(|mut message| {
+            let images = strip_images(&mut message);
             serde_json::to_vec(&message)
                 .expect("chat message serializes")
                 .len()
+                + images * IMAGE_ESTIMATE_TOKENS * 3
                 + 1
         })
         .sum()
@@ -271,14 +292,29 @@ fn material(transcript: &[TranscriptEntry], cut: usize) -> VecDeque<(String, Str
     for (index, entry) in transcript[start..cut].iter().enumerate() {
         let source = format!("Entry {}", start + index);
         match entry {
-            TranscriptEntry::UserMessage(text) => {
-                fields.push_back((format!("{source} user request"), text.clone(), 1))
+            TranscriptEntry::UserMessage(message) => {
+                for part in &message.parts {
+                    let value = match part {
+                        UserMessagePart::Text(text) => text.clone(),
+                        UserMessagePart::Image(image) => format!("[image: {}]", image.mime_type),
+                    };
+                    fields.push_back((format!("{source} user request"), value, 1));
+                }
             }
-            TranscriptEntry::SkillInvocation(invocation) => fields.push_back((
-                format!("{source} user request"),
-                openrouter::skill_invocation_text(invocation),
-                1,
-            )),
+            TranscriptEntry::SkillInvocation(invocation) => {
+                fields.push_back((
+                    format!("{source} user request"),
+                    openrouter::skill_invocation_text(invocation),
+                    1,
+                ));
+                for image in &invocation.images {
+                    fields.push_back((
+                        format!("{source} user request"),
+                        format!("[image: {}]", image.mime_type),
+                        1,
+                    ));
+                }
+            }
             TranscriptEntry::HookFeedback(feedback) => {
                 let decision = match feedback.content {
                     HookFeedbackContent::BeforeStop {
@@ -516,6 +552,7 @@ mod tests {
                     name: "goal".to_owned(),
                     arguments: "Record the old details.".to_owned(),
                     instructions: "Work until the hook stops you.".to_owned(),
+                    images: vec![],
                 }),
             )
             .unwrap();
@@ -578,10 +615,12 @@ mod tests {
             .append_turn_start(
                 &id,
                 &SessionSettingsChange::default(),
-                &TranscriptEntry::UserMessage("active request".to_owned()),
+                &TranscriptEntry::UserMessage("active request".to_owned().into()),
             )
             .unwrap();
-        transcript.push(TranscriptEntry::UserMessage("active request".to_owned()));
+        transcript.push(TranscriptEntry::UserMessage(
+            "active request".to_owned().into(),
+        ));
         let batch = tool_batch("first", &"new details ".repeat(3000));
         store.append_batch(&id, &batch).unwrap();
         transcript.push(TranscriptEntry::AssistantMessage(batch.message));
@@ -624,7 +663,7 @@ mod tests {
         assert_eq!(checkpoints, 3);
         let projected = projection(&transcript);
         assert_eq!(projected, vec![TranscriptEntry::UserMessage(
-            "Compaction summary of earlier conversation:\nActive request carried; next tool complete.".to_owned())]);
+            "Compaction summary of earlier conversation:\nActive request carried; next tool complete.".to_owned().into())]);
         let requests = server.requests();
         assert_eq!(requests.len(), 3);
         assert!(requests.iter().all(|request| request.get("tools").is_none()
@@ -673,6 +712,56 @@ mod tests {
             TranscriptEntry::CompactionCheckpoint(_)
         ));
 
+        let image_message = crate::sessions::UserMessage {
+            parts: vec![
+                UserMessagePart::Text("Inspect this".to_owned()),
+                UserMessagePart::Image(crate::sessions::ImageAttachment {
+                    data: "aGVsbG8=".to_owned(),
+                    mime_type: "image/png".to_owned(),
+                }),
+            ],
+        };
+        let mut image_transcript = vec![
+            TranscriptEntry::Model(default_model().to_owned()),
+            TranscriptEntry::UserMessage(image_message),
+        ];
+        let estimate = request_estimate(
+            default_model(),
+            EffortLevel::Default,
+            "system",
+            &image_transcript,
+        )
+        .unwrap();
+        let fields = super::material(&image_transcript, 2);
+        assert!(
+            fields
+                .iter()
+                .any(|(_, value, _)| value == "[image: image/png]")
+        );
+        assert!(
+            fields
+                .iter()
+                .all(|(_, value, _)| !value.contains("aGVsbG8="))
+        );
+        if let TranscriptEntry::UserMessage(message) = &mut image_transcript[1]
+            && let UserMessagePart::Image(image) = &mut message.parts[1]
+        {
+            image.data = "A".repeat(4_000);
+        }
+        assert_eq!(
+            estimate,
+            request_estimate(
+                default_model(),
+                EffortLevel::Default,
+                "system",
+                &image_transcript
+            )
+            .unwrap()
+        );
+        assert!(
+            matches!(&projection_at(&image_transcript, 1, "summary")[1], TranscriptEntry::UserMessage(message) if message.has_images())
+        );
+
         let store = SessionStore::in_memory();
         let id = store.create(std::path::Path::new("/workspace")).unwrap().id;
         store
@@ -683,7 +772,7 @@ mod tests {
                     effort: None,
                     mode: None,
                 },
-                &TranscriptEntry::UserMessage("o".repeat(1_500_000)),
+                &TranscriptEntry::UserMessage("o".repeat(1_500_000).into()),
             )
             .unwrap();
         store.append_batch(&id, &answer("older work done")).unwrap();
@@ -691,7 +780,7 @@ mod tests {
             .append_turn_start(
                 &id,
                 &SessionSettingsChange::default(),
-                &TranscriptEntry::UserMessage("u".repeat(1_800_000)),
+                &TranscriptEntry::UserMessage("u".repeat(1_800_000).into()),
             )
             .unwrap();
         let mut transcript = store.read(&id).unwrap().unwrap().transcript;
@@ -734,7 +823,7 @@ mod tests {
                     effort: None,
                     mode: None,
                 },
-                &TranscriptEntry::UserMessage("earlier work".to_owned()),
+                &TranscriptEntry::UserMessage("earlier work".to_owned().into()),
             )
             .unwrap();
         store.append_batch(&id, &answer("earlier answer")).unwrap();
@@ -754,7 +843,7 @@ mod tests {
             .append_turn_start(
                 &id,
                 &SessionSettingsChange::default(),
-                &TranscriptEntry::UserMessage(large.clone()),
+                &TranscriptEntry::UserMessage(large.clone().into()),
             )
             .unwrap();
         store.append_batch(&id, &answer("done")).unwrap();
@@ -799,7 +888,7 @@ mod tests {
                     effort: None,
                     mode: None,
                 },
-                &TranscriptEntry::UserMessage("older ".repeat(4000)),
+                &TranscriptEntry::UserMessage("older ".repeat(4000).into()),
             )
             .unwrap();
         small_store

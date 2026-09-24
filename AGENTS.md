@@ -31,13 +31,14 @@ THIS DOCUMENT MUST BE KEPT UP TO DATE
   stdin, bounded output tails, a deadline, cancellation, and group cleanup with
   an optional SIGTERM grace period.
 - `src/openrouter.rs`: The model catalog fetched from OpenRouter at startup,
-  its catalog filter and each model's effort levels, the default model, request
-  encoding, context limits, client, streamed response assembly with usage
-  parsing, and explicit input-context overflow errors.
-- `src/compaction.rs`: Request estimates, safe transcript cuts, bounded
-  summarizer input with explicit tool-result excerpts, checkpoint commits, and
-  model-request projection, which repeats a covered skill invocation after the
-  summary.
+  its catalog filter and each model's effort levels and image input support,
+  the default model, request encoding, context limits, client, streamed
+  response assembly with usage parsing, and explicit input-context overflow
+  errors.
+- `src/compaction.rs`: Image-aware request estimates, safe transcript cuts,
+  bounded summarizer input with explicit tool-result excerpts, checkpoint
+  commits, and model-request projection, which repeats a covered skill
+  invocation after the summary.
 - `src/prompts/compaction_prompt.md`: Dedicated summarizer instructions.
 - `src/tools.rs`: Concrete tool names, the ordered list of tool schemas sent to
   the model, tool call titles, and execution of one complete call. Each tool
@@ -54,7 +55,8 @@ THIS DOCUMENT MUST BE KEPT UP TO DATE
 - `src/tools/workspace.rs`: Descriptor-relative file operations shared by
   read, search, and patch tools.
 - `src/sessions.rs`: Transcript and durable model, effort, and mode setting
-  types, skill invocations, hook kinds, hook feedback, model usage, compaction
+  types, ordered user message parts and image attachments, skill invocations,
+  hook kinds, hook feedback, model usage, compaction
   checkpoints with their summarizer cost, session cost, stored JSON
   encoding, transcript validation, database path selection, and `SessionStore`
   over one SQLite connection.
@@ -75,7 +77,8 @@ THIS DOCUMENT MUST BE KEPT UP TO DATE
   after each and after each automatic compaction, run `after_tools` after each
   batch and `before_stop` on each finished answer, run `after_run` on the
   result, and return the stop reason and final answer.
-- `src/acp/convert.rs`: ACP input conversion, session update construction
+- `src/acp/convert.rs`: ACP text and image input conversion, session update
+  construction
   including each tool call's kind, hook runs, and usage updates, and
   transcript replay.
 - `.agents/skills/init/`: The instruction-only `init` skill, which creates or

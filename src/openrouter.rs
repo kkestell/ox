@@ -11,8 +11,8 @@ use serde_json::{Value, json};
 
 use crate::{
     sessions::{
-        AssistantMessage, EffortLevel, HookFeedback, ModelUsage, SkillInvocation, ToolCall,
-        TranscriptEntry,
+        AssistantMessage, EffortLevel, HookFeedback, ImageAttachment, ModelUsage, SkillInvocation,
+        ToolCall, TranscriptEntry, UserMessage, UserMessagePart,
     },
     tools,
 };
@@ -22,6 +22,7 @@ pub struct CatalogModel {
     pub id: String,
     pub name: String,
     pub context_limit: usize,
+    pub accepts_images: bool,
     /// `Default` followed by the efforts OpenRouter lists, in ascending order.
     pub efforts: Vec<EffortLevel>,
 }
@@ -114,6 +115,7 @@ pub fn parse_catalog(text: &str, now: i64) -> io::Result<Vec<CatalogModel>> {
                 id: model.id,
                 name: model.name,
                 context_limit: model.context_length,
+                accepts_images: has(&model.architecture.input_modalities, "image"),
                 efforts,
             }
         })
@@ -426,6 +428,29 @@ pub(crate) fn hook_feedback_text(feedback: &HookFeedback) -> String {
     )
 }
 
+fn image_part(image: &ImageAttachment) -> Value {
+    json!({
+        "type": "image_url",
+        "image_url": { "url": format!("data:{};base64,{}", image.mime_type, image.data) },
+    })
+}
+
+fn user_content(message: &UserMessage) -> Value {
+    if !message.has_images() {
+        return Value::String(message.text());
+    }
+    Value::Array(
+        message
+            .parts
+            .iter()
+            .map(|part| match part {
+                UserMessagePart::Text(text) => json!({ "type": "text", "text": text }),
+                UserMessagePart::Image(image) => image_part(image),
+            })
+            .collect(),
+    )
+}
+
 /// Encodes the saved transcript as OpenRouter chat messages. Visible reasoning
 /// is sent only when no continuation metadata carries it.
 pub(crate) fn chat_messages(transcript: &[TranscriptEntry]) -> Vec<Value> {
@@ -437,9 +462,19 @@ pub(crate) fn chat_messages(transcript: &[TranscriptEntry]) -> Vec<Value> {
                 | TranscriptEntry::Effort(_)
                 | TranscriptEntry::Mode(_)
                 | TranscriptEntry::CompactionCheckpoint(_) => return None,
-                TranscriptEntry::UserMessage(text) => json!({ "role": "user", "content": text }),
+                TranscriptEntry::UserMessage(message) => {
+                    json!({ "role": "user", "content": user_content(message) })
+                }
                 TranscriptEntry::SkillInvocation(invocation) => {
-                    json!({ "role": "user", "content": skill_invocation_text(invocation) })
+                    let text = skill_invocation_text(invocation);
+                    let content = if invocation.images.is_empty() {
+                        Value::String(text)
+                    } else {
+                        let mut parts = vec![json!({ "type": "text", "text": text })];
+                        parts.extend(invocation.images.iter().map(image_part));
+                        Value::Array(parts)
+                    };
+                    json!({ "role": "user", "content": content })
                 }
                 TranscriptEntry::HookFeedback(feedback) => {
                     json!({ "role": "user", "content": hook_feedback_text(feedback) })
@@ -1089,7 +1124,7 @@ mod tests {
                 default_model(),
                 EffortLevel::Default,
                 TEST_SYSTEM_PROMPT,
-                &[TranscriptEntry::UserMessage("hi".to_owned())],
+                &[TranscriptEntry::UserMessage("hi".to_owned().into())],
             )
             .await?;
         drain(&mut request).await
@@ -1132,7 +1167,7 @@ mod tests {
         let transcript = vec![
             TranscriptEntry::Model(catalog()[2].id.as_str().to_owned()),
             TranscriptEntry::Mode(SessionMode::Auto),
-            TranscriptEntry::UserMessage("Weather in Chicago and Denver?".to_owned()),
+            TranscriptEntry::UserMessage("Weather in Chicago and Denver?".to_owned().into()),
             TranscriptEntry::AssistantMessage(AssistantMessage {
                 text: String::new(),
                 reasoning: "Need both cities.".to_owned(),
@@ -1216,7 +1251,7 @@ mod tests {
                 summarizer_cost: None,
             },
         ));
-        compacted.push(TranscriptEntry::UserMessage("middle".to_owned()));
+        compacted.push(TranscriptEntry::UserMessage("middle".to_owned().into()));
         compacted.push(TranscriptEntry::AssistantMessage(AssistantMessage {
             text: "middle answer".to_owned(),
             reasoning: String::new(),
@@ -1231,7 +1266,7 @@ mod tests {
                 summarizer_cost: None,
             },
         ));
-        compacted.push(TranscriptEntry::UserMessage("recent".to_owned()));
+        compacted.push(TranscriptEntry::UserMessage("recent".to_owned().into()));
         compacted.push(TranscriptEntry::AssistantMessage(AssistantMessage {
             text: "recent answer".to_owned(),
             reasoning: "visible".to_owned(),
@@ -1259,6 +1294,42 @@ mod tests {
             "recent"
         );
         assert!(projected_messages[3].get("reasoning").is_none());
+
+        let image = ImageAttachment {
+            data: "aGVsbG8=".to_owned(),
+            mime_type: "image/png".to_owned(),
+        };
+        let messages = chat_messages(&[
+            TranscriptEntry::UserMessage(UserMessage {
+                parts: vec![
+                    UserMessagePart::Text("Before".to_owned()),
+                    UserMessagePart::Image(image.clone()),
+                    UserMessagePart::Text("After".to_owned()),
+                ],
+            }),
+            TranscriptEntry::SkillInvocation(SkillInvocation {
+                name: "goal".to_owned(),
+                arguments: "Inspect".to_owned(),
+                instructions: "Look at the screenshot.".to_owned(),
+                images: vec![image],
+            }),
+        ]);
+        assert_eq!(
+            messages[0]["content"],
+            json!([
+                {"type":"text","text":"Before"},
+                {"type":"image_url","image_url":{"url":"data:image/png;base64,aGVsbG8="}},
+                {"type":"text","text":"After"},
+            ])
+        );
+        assert_eq!(
+            messages[1]["content"][0]["text"],
+            "Skill /goal invoked.\n\nInstructions:\nLook at the screenshot.\n\nArguments:\nInspect"
+        );
+        assert_eq!(
+            messages[1]["content"][1]["image_url"]["url"],
+            "data:image/png;base64,aGVsbG8="
+        );
     }
 
     #[test]
@@ -1278,6 +1349,8 @@ mod tests {
             ]
         );
         assert_eq!(models[1].efforts, [Default, Low, Medium, High, XHigh, Max]);
+        assert!(models[1].accepts_images);
+        assert!(!models[0].accepts_images);
         assert_eq!(models[2].summarizer_effort(), Medium);
         assert_eq!(models[3].efforts, [Default]);
         assert_eq!(models[3].summarizer_effort(), Default);
@@ -1598,7 +1671,7 @@ mod tests {
                     default_model(),
                     EffortLevel::Default,
                     TEST_SYSTEM_PROMPT,
-                    &[TranscriptEntry::UserMessage("hi".to_owned())],
+                    &[TranscriptEntry::UserMessage("hi".to_owned().into())],
                 )
                 .await
                 .unwrap();

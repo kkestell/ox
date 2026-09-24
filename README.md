@@ -2,6 +2,13 @@
 
 Ox is a local ACP coding agent using OpenRouter. Run `ox` to start the ACP server.
 
+## Image input
+
+ACP prompts can include up to four PNG, JPEG, WebP, or GIF images, with at most
+10 MiB of decoded image data total. Select an image-capable model before the
+first turn of the session. Ox saves images for session replay and later model
+requests. Text-only models reject image prompts before saving them.
+
 ## Auth and headless runs
 
 `ox auth login` saves an OpenRouter API key in the system keyring; `ox auth logout` removes it. `OPENROUTER_API_KEY` takes precedence over the saved key.
