@@ -9,6 +9,38 @@ ACP prompts can include up to four PNG, JPEG, WebP, or GIF images, with at most
 first turn of the session. Ox saves images for session replay and later model
 requests. Text-only models reject image prompts before saving them.
 
+## Background commands
+
+The `shell` tool normally waits for its command to finish. With
+`background: true` it starts the command, such as a development server or a
+long build, and returns a process ID at once; background commands have no
+timeout. The `shell_process` tool then works with the session's background
+commands:
+
+- `list` shows each process ID, command, and state.
+- `read` returns the state and the output kept for stdout and stderr, and can
+  wait up to 30 seconds for the command to end.
+- `write` sends text to the command's stdin exactly as given, and can close
+  stdin afterward. Input is plain text through a pipe, not a terminal.
+- `stop` sends SIGTERM to the command's process group and SIGKILL two seconds
+  later if it is still running.
+
+Ox keeps the last 14 KiB of each output stream, so repeated reads can show the
+same output and earlier output is dropped; redirect a full log to a workspace
+file when you need it. A session keeps up to 16 background commands and makes
+room by forgetting the oldest finished one.
+
+A background command keeps running across turns and when a prompt is cancelled.
+Deleting the session, closing the ACP connection, a SIGINT, SIGTERM, or SIGHUP
+to Ox, and the end of an `ox run` stop its whole process group at once with
+SIGKILL, without the grace period of an explicit `stop`. A command that
+survives Ox being killed with SIGKILL keeps running. Loading a saved session
+shows the earlier results but starts nothing again.
+
+In Ask mode, Ox asks before starting a command and before each `write`,
+including one that only closes stdin. Approving a start does not approve later
+input. Listing, reading, and stopping need no approval.
+
 ## Auth and headless runs
 
 `ox auth login` saves an OpenRouter API key in the system keyring; `ox auth logout` removes it. `OPENROUTER_API_KEY` takes precedence over the saved key.

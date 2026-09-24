@@ -155,7 +155,7 @@ pub fn pending_tool_call(call: &ToolCall) -> SessionUpdate {
 /// The kind an ACP client uses to pick an icon for a call.
 fn tool_kind(call: &ToolCall) -> ToolKind {
     match call.name.as_str() {
-        tools::SHELL => ToolKind::Execute,
+        tools::SHELL | tools::SHELL_PROCESS => ToolKind::Execute,
         tools::READ_FILE => ToolKind::Read,
         tools::GLOB | tools::GREP => ToolKind::Search,
         tools::APPLY_PATCH => ToolKind::Edit,
@@ -170,29 +170,58 @@ pub fn in_progress_tool_call_update(call_id: &str) -> SessionUpdate {
     ))
 }
 
+/// Asks whether one shell command may run or one input may be sent to a shell
+/// process. Clients can omit rawInput from the approval UI, so the content
+/// shows everything being approved.
 pub fn shell_permission_request(
     session_id: SessionId,
     call: &ToolCall,
     workspace: &std::path::Path,
+    permission: &tools::Permission,
 ) -> RequestPermissionRequest {
     let input = raw_input(call);
-    let (label, text) = match input.get("command").and_then(Value::as_str) {
-        Some(command) => ("Command", command),
-        None => ("Arguments", call.arguments.as_str()),
-    };
     let tool_call_title = tools::tool_call_title(call);
-    let mut content = format!("Working directory: {}", workspace.display());
-    // The tool call title is one shortened line, so repeat the command as
-    // content only when the tool call title does not already show all of it.
-    // Clients can omit rawInput from the approval UI, so content is the only
-    // other place it appears.
-    if tool_call_title != text.trim() {
-        let indented: String = text
-            .split_inclusive('\n')
-            .map(|line| format!("    {line}"))
-            .collect();
-        content.push_str(&format!("\n\n{label}:\n\n{indented}"));
-    }
+    let content = match permission {
+        tools::Permission::NotRequired => {
+            unreachable!("a call that needs no permission sends no permission request")
+        }
+        tools::Permission::Command { background } => {
+            let (label, text) = match input.get("command").and_then(Value::as_str) {
+                Some(command) => ("Command", command),
+                None => ("Arguments", call.arguments.as_str()),
+            };
+            let mut content = format!("Working directory: {}", workspace.display());
+            // The tool call title is one shortened line, so repeat the command
+            // only when the tool call title does not already show all of it.
+            if tool_call_title != text.trim() {
+                content.push_str(&format!("\n\n{label}:\n\n{}", indented(text)));
+            }
+            if *background {
+                content.push_str("\n\nRuns in the background after this call returns, until it exits, is stopped, the session is deleted, or Ox exits. Approving it does not approve later input.");
+            }
+            content
+        }
+        tools::Permission::Input {
+            process_id,
+            command,
+            text,
+            close_stdin,
+        } => {
+            let command = match command {
+                Some(command) => indented(command),
+                None => "    (no such shell process in this session)".to_owned(),
+            };
+            let text = if text.is_empty() {
+                "    (none)".to_owned()
+            } else {
+                indented(text)
+            };
+            let closes = if *close_stdin { "yes" } else { "no" };
+            format!(
+                "Shell process: {process_id}\n\nCommand:\n\n{command}\n\nInput:\n\n{text}\n\nCloses stdin afterward: {closes}"
+            )
+        }
+    };
     RequestPermissionRequest::new(
         session_id,
         ToolCallUpdate::new(
@@ -211,6 +240,12 @@ pub fn shell_permission_request(
             PermissionOption::new("deny", "Deny", PermissionOptionKind::RejectOnce),
         ],
     )
+}
+
+fn indented(text: &str) -> String {
+    text.split_inclusive('\n')
+        .map(|line| format!("    {line}"))
+        .collect()
 }
 
 pub fn finished_tool_call_update(call: &ToolCall, outcome: &ToolOutcome) -> SessionUpdate {
@@ -449,41 +484,76 @@ mod tests {
     }
 
     #[test]
-    fn shell_approval_content_shows_a_command_the_tool_call_title_cannot_show_in_full() {
+    fn permission_content_shows_everything_the_tool_call_title_cannot_show_in_full() {
         let command = "printf '%s\\n' '```'\n  echo \"$HOME\"\n";
         let arguments = serde_json::json!({"command": command, "timeout_seconds": 5});
-        let mut call = ToolCall {
-            call_id: "shell-1".to_owned(),
-            name: tools::SHELL.to_owned(),
-            arguments: arguments.to_string(),
+        let ordinary = tools::Permission::Command { background: false };
+        let background = "\n\nRuns in the background after this call returns, until it exits, is stopped, the session is deleted, or Ox exits. Approving it does not approve later input.";
+        let input = |command: Option<&str>, text: &str, close_stdin| tools::Permission::Input {
+            process_id: "p-1".to_owned(),
+            command: command.map(str::to_owned),
+            text: text.to_owned(),
+            close_stdin,
         };
-        for (input, expected) in [
+        for (name, input_arguments, permission, expected) in [
             (
+                tools::SHELL,
                 arguments.to_string(),
-                "Working directory: /workspace\n\nCommand:\n\n    printf '%s\\n' '```'\n      echo \"$HOME\"\n",
+                ordinary.clone(),
+                "Working directory: /workspace\n\nCommand:\n\n    printf '%s\\n' '```'\n      echo \"$HOME\"\n".to_owned(),
             ),
             // A one-line command already appears in full as the tool call title.
             (
+                tools::SHELL,
                 serde_json::json!({"command": "echo hello  \n\n"}).to_string(),
-                "Working directory: /workspace",
+                ordinary.clone(),
+                "Working directory: /workspace".to_owned(),
             ),
             (
+                tools::SHELL,
                 "{bad json".to_owned(),
-                "Working directory: /workspace\n\nArguments:\n\n    {bad json",
+                ordinary,
+                "Working directory: /workspace\n\nArguments:\n\n    {bad json".to_owned(),
+            ),
+            (
+                tools::SHELL,
+                serde_json::json!({"command": "npm run dev", "background": true}).to_string(),
+                tools::Permission::Command { background: true },
+                format!("Working directory: /workspace\n\nCommand:\n\n    npm run dev{background}"),
+            ),
+            (
+                tools::SHELL_PROCESS,
+                serde_json::json!({"action": "write", "process_id": "p-1", "text": "y\nquit\n"}).to_string(),
+                input(Some("python3 -i\nexit"), "y\nquit\n", false),
+                "Shell process: p-1\n\nCommand:\n\n    python3 -i\n    exit\n\nInput:\n\n    y\n    quit\n\n\nCloses stdin afterward: no".to_owned(),
+            ),
+            (
+                tools::SHELL_PROCESS,
+                serde_json::json!({"action": "write", "process_id": "p-1", "text": "", "close_stdin": true}).to_string(),
+                input(None, "", true),
+                "Shell process: p-1\n\nCommand:\n\n    (no such shell process in this session)\n\nInput:\n\n    (none)\n\nCloses stdin afterward: yes".to_owned(),
             ),
         ] {
-            call.arguments = input;
+            let call = ToolCall {
+                call_id: "shell-1".to_owned(),
+                name: name.to_owned(),
+                arguments: input_arguments,
+            };
             let request = shell_permission_request(
                 SessionId::new("session-1"),
                 &call,
                 std::path::Path::new("/workspace"),
+                &permission,
             );
             let request = serde_json::to_value(request).unwrap();
             assert_eq!(
                 request["toolCall"]["content"][0]["content"]["text"],
-                expected
+                expected,
+                "{}",
+                call.arguments
             );
             assert_eq!(request["toolCall"]["rawInput"], raw_input(&call));
+            assert_eq!(request["toolCall"]["kind"], "execute");
         }
     }
 

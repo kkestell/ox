@@ -48,13 +48,15 @@ Ox has six architectural components:
 - The **OpenRouter client** encodes model requests and turns one streamed
   response into provisional output followed by one validated completion.
 - The **tool boundary** defines the concrete tool set and executes one complete
-  tool call. It does not send ACP updates or save the transcript.
+  tool call. It does not send ACP updates or save the transcript. Shell tool
+  calls can start, inspect, and control the shell processes of the active
+  session, which outlive the call.
 - The **session store** validates and persists sessions and transcripts. It does
   not know OpenRouter wire formats or construct ACP updates.
 
 The process entry, credential code, settings and skill catalog loading, hook
-protocol, and child-process execution support these components but do not
-participate in prompt orchestration. Dependencies point from the ACP boundary,
+protocol, child-process execution, and each active session's shell-process
+owner support these components but do not participate in prompt orchestration. Dependencies point from the ACP boundary,
 prompt run, and compaction workflow toward the concrete OpenRouter client and
 session store; the prompt run also depends on the tool boundary. The cancellation signal lives
 below the ACP layer so both prompt and compaction workflows can use it.
@@ -214,8 +216,8 @@ state:
 - operation guards and cancellation signals coordinate active session
   operations;
 - active sessions hold, for each session created or loaded in the process, the
-  ACP selections chosen for a future turn and the system prompt and skill
-  catalog captured at activation;
+  ACP selections chosen for a future turn, the system prompt and skill catalog
+  captured at activation, and the session's shell processes;
 - global hooks hold the definitions read at process startup;
 - the OpenRouter client cache holds credentials and reusable HTTP state; and
 - the session store holds one SQLite connection.
@@ -289,8 +291,8 @@ Global hooks and the invoked skill's hooks run at fixed points in the turn:
 1. `before_run` runs once, after the turn start is saved
    and announced and before the first model request. Compaction, request
    retries, and hook continuations do not rerun it.
-2. `before_tool` runs before each tool call, before the Ask mode
-   permission request. A denial skips the permission request and execution and
+2. `before_tool` runs before each tool call, including each
+   `shell_process` action, before the Ask mode permission request. A denial skips the permission request and execution and
    gives the call a failed tool outcome that carries the reason. Later calls in
    the batch proceed. A tool decision saves no hook feedback and cannot change
    the call's arguments.
@@ -353,12 +355,68 @@ order with its saved outcome, including failed and denied calls. It does not run
 for a batch the turn stopped before completing. After an `after_tools` error,
 the committed batch stays saved and the hook's effects are not undone.
 
+### Shell process lifetime
+
+A shell process is one background command started by a `shell` call with
+`background: true`, together with its process group, stdin, retained output,
+and current state. Each active session owns its shell processes through one
+`ShellProcesses` owner, created when the session becomes active and kept by a
+repeated load in the same process. The prompt run receives the owner in its
+input and passes it to the tool boundary; the headless entry point creates one
+for its run. A shell process ID is an opaque UUID resolved only through the
+current active session's owner. It is never an operating-system PID, is never
+reused, and names nothing in another session or a later process.
+
+One supervisor task per shell process owns its child, process group, and
+output capture. It drains both output pipes continuously, keeping the last
+14 KiB of each, whether or not a tool call is reading. When the command exits,
+the supervisor stops any remaining members of its group, finishes capturing
+output, closes stdin, and only then publishes the final state. A read failure ends the
+command through the same cleanup. The owner retains at most 16 shell processes
+and makes room by removing the oldest finished one; it never removes a running
+one, and a start with 16 running fails before spawning.
+
+Tool-call completion and command termination are separate. Starting a
+command, listing, reading a running command, writing input, and stopping
+complete their tool calls; the start result confirms only that the command
+started. A read of a finished command follows the ordinary shell conventions
+for its exit. Background output and command termination never append
+transcript entries, send ACP updates, run hooks, or start model requests.
+Sequential tool calls, in one batch or later turns, can therefore interact
+with a command that keeps running between them.
+
+Prompt cancellation does not stop a shell process, including one started
+earlier in the same prompt run; it cancels a waiting read or write. A write
+waits at most five seconds and reports how many bytes it sent and whether
+stdin is closed. An explicit stop sends SIGTERM, waits up to two seconds,
+sends SIGKILL if needed, reaps the child, and bounds output draining; once
+begun, it finishes even if the prompt is cancelled. Stopping a finished shell
+process signals nothing.
+
+Owner shutdown closes registration, asks every supervisor to SIGKILL its group
+at once, and then waits for them. Registration and shutdown are serialized, so
+a concurrent start either fails before spawning or is cleaned up. Session
+deletion holds the delete operation guard, deletes the stored session, shuts
+down the owner, and only then removes the active session and responds; a
+failed database deletion leaves the session and its shell processes in place.
+ACP connection shutdown, on incoming EOF or SIGINT, SIGTERM, or SIGHUP, rejects
+new session operations, cancels active prompts, and signals every owner before
+waiting for the operations. After a signal, Ox closes the agent's input once
+those operations finish, then waits for accepted ACP responses to drain through
+the output transport. After the connection ends, even with a transport error,
+every owner's cleanup finishes before Ox exits. A headless run begins
+owner shutdown on its first termination signal and finishes it before
+returning any result. SIGKILL of Ox itself runs no cleanup, so its shell
+processes can survive it.
+
 ### Projection boundary
 
 ACP updates are projections, not authoritative state. Live answer text and
 visible reasoning may be sent before validation; this provisional output is
 absent from replay if the model request fails or is cancelled. Replay contains
-only saved, displayable transcript content and final tool states. A hook run is
+only saved, displayable transcript content and final tool states. A replayed
+shell tool call shows the observation its call saved; a live `list` or `read`
+is the authority for a shell process's current state. A hook run is
 shown as an ACP execute tool call with an Ox-generated ID. It is not a model
 tool call and never enters an assistant batch; replay rebuilds it from saved
 hook feedback as a completed tool call. Hook runs that saved nothing, tool
@@ -397,8 +455,13 @@ model requests, tool work, and hook runs other than `after_run` but does not
 roll back a saved user message, observed tool effects, or committed transcript
 entries. Each running tool or hook owns the cleanup boundary for its resources:
 its whole process group is stopped, a hook's after a two-second SIGTERM grace
-period. Connection shutdown cancels active
-prompts and waits for their operation guards to drop.
+period. Shell processes belong to their active session instead, so prompt
+cancellation leaves them running. Connection shutdown rejects new operations,
+cancels active prompts, signals every shell process, and waits for the
+operation guards to drop. Deletion runs as a spawned task under its operation
+guard, so waiting for shell process cleanup does not block other sessions.
+Shell process control never holds the active-session lock across an
+asynchronous wait.
 
 ## Capability and trust boundaries
 
@@ -425,8 +488,12 @@ Read and patch reject a link swapped into a validated path before use; search
 drops a candidate that no longer resolves inside the workspace and does not
 forward ripgrep's unchecked path diagnostics. Shell starts in the workspace but
 may access other paths and the network with Ox's
-permissions. In Ask mode, every ACP shell call requires a permission request.
-In Auto mode, shell calls run without that request. Headless prompts use and
+permissions. In Ask mode, every ACP shell call, including a background start,
+and every `shell_process` write, including one that only closes stdin,
+requires a permission request. Approving a start does not approve later input.
+Listing, reading, and stopping shell processes need no request. The shell tool
+module classifies each call's permission with the same argument validation its
+execution uses. In Auto mode, these calls run without that request. Headless prompts use and
 save Auto mode. The captured mode is the authorization policy for the whole
 turn; the ACP connection only transports Ask requests. Tool effects are not
 transactional and may remain after failure or cancellation.
@@ -460,8 +527,8 @@ permissions do not enforce that restriction.
 
 Credentials come from `OPENROUTER_API_KEY` or the operating-system keyring and
 are not part of a session or transcript. The OpenRouter client is loaded lazily
-for ACP work and cached. Child shell processes do not inherit
-`OPENROUTER_API_KEY`. Hooks inherit it, so a hook can run a nested `ox run`.
+for ACP work and cached. Child shell processes, including background commands,
+do not inherit `OPENROUTER_API_KEY`. Hooks inherit it, so a hook can run a nested `ox run`.
 
 ## Invariants
 
@@ -489,22 +556,26 @@ The implementation enforces these properties:
     healthy ACP connection.
 13. Every model request for an active session sends the same system prompt
     assembled when the session became active before the transcript.
-14. Every shell call uses the session mode captured at the prompt's turn
-    boundary.
+14. Every shell call and shell process write uses the session mode captured
+    at the prompt's turn boundary.
 15. Hooks run only at their defined points in a prompt run; a skill hook also
     requires that run to invoke its skill. `before_stop` runs only on an
     assistant message committed with a finished OpenRouter stop, `after_tools`
     only after a committed assistant batch, and hook feedback is saved before
     the next model request.
+16. Every shell process belongs to exactly one active session's owner, and its
+    whole process group is stopped when that session is deleted, the ACP
+    connection shuts down, or its headless run ends.
 
 ## Deliberate constraints
 
 The implemented architecture has one OpenRouter provider, one concrete tool set,
 five fixed hook kinds with at most one global and one skill command each, one
 SQLite connection, sequential tool execution,
-whole-transcript reads, and process-local operation guards. It has no provider fallback, prompt queue,
-durable provisional output, background continuation, cross-process coordination,
-or database migration path.
+whole-transcript reads, process-local operation guards, and process-local shell
+processes with pipe input rather than terminal emulation. It has no provider
+fallback, prompt queue, durable provisional output, background continuation of
+a prompt run, cross-process coordination, or database migration path.
 
 These are current system constraints, not unimplemented abstractions. Changing
 one requires revisiting the authority or lifecycle boundary that depends on it.

@@ -27,6 +27,20 @@ Test the example careful skill's hook script with
 temporary Git repository and needs no OpenRouter key. Install and invoke it the
 same way as the goal skill.
 
+To try background commands live, connect an ACP client to a local build in
+Ask mode and run one session through these turns:
+
+1. Ask Ox to start `python3 -m http.server 8765` in the background. Approve
+   the start, and note the process ID in its result.
+2. In a later turn, ask Ox to fetch `http://127.0.0.1:8765/` with `curl` and
+   read the server's output. The read shows the request in stderr.
+3. Ask Ox to read the server while waiting up to 30 seconds for it to end, and
+   cancel that prompt while it waits. The server keeps answering `curl`.
+4. Ask Ox to stop the server. Its state becomes stopped, and `curl` fails.
+
+Deleting the session or closing the ACP client instead stops the server at
+once.
+
 ## Test discipline
 
 The test suite is curated code. Each test owns one durable, observable

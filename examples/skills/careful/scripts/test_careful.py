@@ -64,27 +64,49 @@ class CarefulTest(unittest.TestCase):
         self.assertIn("## main", message)
         self.assertIn(" M notes.txt", message)
 
-    def test_before_tool_denies_destructive_commands(self):
-        for command, decision in [
+    def test_before_tool_denies_destructive_shell_text(self):
+        def start(text, **extra):
+            return ("shell", {"command": text, **extra})
+
+        def write(text):
+            return (
+                "shell_process",
+                {"action": "write", "process_id": "p-1", "text": text},
+            )
+
+        for text, decision in [
             ("rm -rf build", "deny"),
             ("git reset --hard HEAD", "deny"),
             ("git push origin main", "deny"),
             ("ls -la", "allow"),
             ("git status", "allow"),
         ]:
-            with self.subTest(command=command):
-                tool = {
-                    "call_id": "call-1",
-                    "name": "shell",
-                    "arguments": json.dumps({"command": command}),
-                }
-                output = self.output("before_tool", tool=tool)
-                self.assertEqual(output["decision"], decision)
-                self.assertEqual("message" in output, decision == "deny")
-        malformed = {"call_id": "call-1", "name": "shell", "arguments": '{"comm'}
-        self.assertEqual(self.output("before_tool", tool=malformed), {"decision": "allow"})
-        patch = {"call_id": "call-2", "name": "apply_patch", "arguments": "rm -rf build"}
-        self.assertEqual(self.output("before_tool", tool=patch), {"decision": "allow"})
+            for name, arguments in [
+                start(text),
+                start(text, background=True),
+                write(text + "\n"),
+            ]:
+                with self.subTest(name=name, arguments=arguments):
+                    tool = {
+                        "call_id": "call-1",
+                        "name": name,
+                        "arguments": json.dumps(arguments),
+                    }
+                    output = self.output("before_tool", tool=tool)
+                    self.assertEqual(output["decision"], decision)
+                    self.assertEqual("message" in output, decision == "deny")
+        for name, arguments in [
+            ("shell", '{"comm'),
+            ("shell_process", '{"action": "write"'),
+            ("shell_process", json.dumps({"action": "write", "process_id": "p-1"})),
+            ("shell_process", json.dumps(["write", "rm -rf build"])),
+            ("shell_process", json.dumps({"action": "list"})),
+            ("shell_process", json.dumps({"action": "stop", "process_id": "rm -rf build"})),
+            ("apply_patch", "rm -rf build"),
+        ]:
+            with self.subTest(name=name, arguments=arguments):
+                tool = {"call_id": "call-2", "name": name, "arguments": arguments}
+                self.assertEqual(self.output("before_tool", tool=tool), {"decision": "allow"})
 
     def test_after_tools_reports_whitespace_errors_and_fails_outside_git(self):
         shell = {"call_id": "call-1", "name": "shell"}

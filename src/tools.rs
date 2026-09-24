@@ -6,7 +6,10 @@ use std::path::Path;
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::sessions::{ToolCall, ToolOutcome};
+use crate::{
+    sessions::{ToolCall, ToolOutcome},
+    shell_processes::ShellProcesses,
+};
 
 mod patch;
 mod read;
@@ -14,10 +17,13 @@ mod search;
 mod shell;
 mod workspace;
 
+pub use shell::Permission;
+
 pub const APPLY_PATCH: &str = "apply_patch";
 pub const READ_FILE: &str = "read_file";
 pub const GLOB: &str = "glob";
 pub const SHELL: &str = "shell";
+pub const SHELL_PROCESS: &str = "shell_process";
 pub const GREP: &str = "grep";
 const OUTPUT_LIMIT: usize = 16 * 1024;
 // Leave room for line numbers, continuation instructions, and truncation notices.
@@ -53,6 +59,7 @@ fn bounded_result(result: Result<String, String>) -> ToolOutcome {
 pub fn schemas() -> Vec<Value> {
     vec![
         shell::schema(),
+        shell::process_schema(),
         read::schema(),
         search::glob_schema(),
         search::grep_schema(),
@@ -79,6 +86,7 @@ pub fn tool_call_title(call: &ToolCall) -> String {
 fn default_tool_call_title(call: &ToolCall) -> String {
     match call.name.as_str() {
         SHELL => "Run shell command".to_owned(),
+        SHELL_PROCESS => "Use shell process".to_owned(),
         READ_FILE => "Read file".to_owned(),
         GLOB => "Find files".to_owned(),
         GREP => "Search file contents".to_owned(),
@@ -93,7 +101,23 @@ fn describe(call: &ToolCall) -> Option<String> {
     let arguments: Value = serde_json::from_str(&call.arguments).ok()?;
     let argument = |name: &str| arguments.get(name).and_then(Value::as_str);
     match call.name.as_str() {
-        SHELL => command_line(argument("command")?),
+        SHELL => {
+            let command = command_line(argument("command")?)?;
+            Some(match arguments.get("background").and_then(Value::as_bool) {
+                Some(true) => format!("Background: {command}"),
+                _ => command,
+            })
+        }
+        SHELL_PROCESS => {
+            let process = || argument("process_id");
+            Some(match argument("action")? {
+                "list" => "List shell processes".to_owned(),
+                "read" => format!("Read shell process {}", process()?),
+                "write" => format!("Write to shell process {}", process()?),
+                "stop" => format!("Stop shell process {}", process()?),
+                _ => return None,
+            })
+        }
         READ_FILE => Some(format!("Read {}", argument("path")?)),
         GLOB => {
             let pattern = argument("pattern")?;
@@ -157,15 +181,35 @@ fn shorten(tool_call_title: &str) -> String {
     format!("{}…", kept.trim_end())
 }
 
+/// What Ask mode must request before `call` runs, classified by the same
+/// argument validation its execution uses.
+pub fn permission(call: &ToolCall, shell_processes: &ShellProcesses) -> Permission {
+    match call.name.as_str() {
+        SHELL => shell::command_permission(&call.arguments),
+        SHELL_PROCESS => shell::process_permission(&call.arguments, shell_processes),
+        _ => Permission::NotRequired,
+    }
+}
+
 /// Unknown names and invalid arguments are failed results the model can read
-/// on its next request, not errors that end the prompt.
+/// on its next request, not errors that end the prompt. Shell tools handle
+/// cancellation themselves, so they can report a partial write or finish a
+/// stop's cleanup.
 pub async fn execute(
     workspace_path: &Path,
+    shell_processes: &ShellProcesses,
     call: &ToolCall,
     cancelled: impl Future<Output = ()>,
 ) -> ToolOutcome {
-    if call.name == SHELL {
-        return shell::execute(workspace_path, &call.arguments, cancelled).await;
+    match call.name.as_str() {
+        SHELL => {
+            return shell::execute(workspace_path, shell_processes, &call.arguments, cancelled)
+                .await;
+        }
+        SHELL_PROCESS => {
+            return shell::execute_process(shell_processes, &call.arguments, cancelled).await;
+        }
+        _ => {}
     }
     tokio::select! {
         biased;
@@ -221,7 +265,13 @@ mod tests {
     use super::*;
 
     async fn execute(workspace: &Path, call: &ToolCall) -> ToolOutcome {
-        super::execute(workspace, call, std::future::pending()).await
+        super::execute(
+            workspace,
+            &ShellProcesses::default(),
+            call,
+            std::future::pending(),
+        )
+        .await
     }
 
     fn call(name: &str, arguments: &str) -> ToolCall {
@@ -354,7 +404,7 @@ mod tests {
                 .iter()
                 .map(|schema| schema["function"]["name"].as_str().unwrap())
                 .collect::<Vec<_>>(),
-            [SHELL, READ_FILE, GLOB, GREP, APPLY_PATCH]
+            [SHELL, SHELL_PROCESS, READ_FILE, GLOB, GREP, APPLY_PATCH]
         );
         let schema = schemas
             .iter()
@@ -388,6 +438,42 @@ mod tests {
             ),
             (SHELL, json!({"command":"  \n"}), "Run shell command"),
             (SHELL, json!({"timeout_seconds":5}), "Run shell command"),
+            (
+                SHELL,
+                json!({"command":"npm run dev","background":true}),
+                "Background: npm run dev",
+            ),
+            (
+                SHELL,
+                json!({"command":"npm test","background":false}),
+                "npm test",
+            ),
+            (
+                SHELL_PROCESS,
+                json!({"action":"list"}),
+                "List shell processes",
+            ),
+            (
+                SHELL_PROCESS,
+                json!({"action":"read","process_id":"p-1","wait_seconds":5}),
+                "Read shell process p-1",
+            ),
+            (
+                SHELL_PROCESS,
+                json!({"action":"write","process_id":"p-1","text":"y\n"}),
+                "Write to shell process p-1",
+            ),
+            (
+                SHELL_PROCESS,
+                json!({"action":"stop","process_id":"p-1"}),
+                "Stop shell process p-1",
+            ),
+            (SHELL_PROCESS, json!({"action":"stop"}), "Use shell process"),
+            (
+                SHELL_PROCESS,
+                json!({"action":"restart","process_id":"p-1"}),
+                "Use shell process",
+            ),
             (READ_FILE, json!({"path":"src/main.rs"}), "Read src/main.rs"),
             (
                 GLOB,

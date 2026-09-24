@@ -34,18 +34,28 @@ def before_run(hook):
     return {"message": "Git status before this run:\n" + status.stdout.strip()}
 
 
+def shell_text(tool):
+    """The shell text a call runs: a shell command, including a background
+    start, or the text a shell_process write sends to a running command."""
+    if tool["name"] == "shell":
+        return json.loads(tool["arguments"])["command"]
+    if tool["name"] == "shell_process":
+        arguments = json.loads(tool["arguments"])
+        if arguments["action"] == "write":
+            return arguments["text"]
+    return None
+
+
 def before_tool(hook):
-    if hook["tool"]["name"] != "shell":
-        return {"decision": "allow"}
     try:
-        command = json.loads(hook["tool"]["arguments"])["command"]
+        text = shell_text(hook["tool"])
     except (ValueError, TypeError, KeyError):
         # Ox gives malformed arguments its normal failed tool result.
         return {"decision": "allow"}
-    if isinstance(command, str) and DESTRUCTIVE.search(command):
+    if isinstance(text, str) and DESTRUCTIVE.search(text):
         return {
             "decision": "deny",
-            "message": f"`{command}` can destroy work. Use a reversible "
+            "message": f"`{text}` can destroy work. Use a reversible "
             "command, or ask the user.",
         }
     return {"decision": "allow"}

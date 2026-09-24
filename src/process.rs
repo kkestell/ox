@@ -1,5 +1,6 @@
-//! Runs one child process in a new process group with optional stdin, bounded
-//! output tails, a deadline, cancellation, and cleanup of the whole group.
+//! Child processes in a new process group: bounded output tails, cleanup of
+//! the whole group, and a runner for one child with optional stdin, a
+//! deadline, and cancellation.
 
 use std::{
     collections::VecDeque,
@@ -19,6 +20,7 @@ pub const OUTPUT_DRAIN_TIMEOUT: Duration = Duration::from_secs(1);
 const GROUP_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
 /// The tail of one output stream, at most `limit` bytes.
+#[derive(Clone)]
 pub struct Capture {
     pub bytes: VecDeque<u8>,
     /// Earlier output was dropped to stay within the limit.
@@ -50,13 +52,18 @@ impl Capture {
             }
         };
         self.done = read == 0;
-        let excess = (self.bytes.len() + read).saturating_sub(self.limit);
+        self.append(&buffer[..read]);
+        Ok(())
+    }
+
+    /// Keeps the last `limit` bytes of the stream after `bytes`.
+    pub fn append(&mut self, bytes: &[u8]) {
+        let excess = (self.bytes.len() + bytes.len()).saturating_sub(self.limit);
         self.omitted |= excess > 0;
         // A limit smaller than one read also drops the front of that read.
         let dropped = excess.min(self.bytes.len());
         self.bytes.drain(..dropped);
-        self.bytes.extend(&buffer[excess - dropped..read]);
-        Ok(())
+        self.bytes.extend(&bytes[excess - dropped..]);
     }
 
     async fn drain(&mut self, pipe: &mut (impl AsyncRead + Unpin)) -> io::Result<()> {
@@ -105,18 +112,34 @@ pub fn kill_group(group: Pid) {
     }
 }
 
-/// Stops the group if the future running it is dropped before its normal
-/// cleanup finishes.
-struct ProcessGroup(Option<Pid>);
+/// The process group led by a child spawned with `process_group(0)`. It
+/// stops the group if dropped before its normal cleanup finishes.
+pub struct ProcessGroup(Option<Pid>);
 
 impl ProcessGroup {
-    async fn terminate(&mut self, grace: Duration, child: &mut Child) {
+    pub fn new(child: &Child) -> Self {
+        Self(Some(
+            Pid::from_raw(child.id().expect("spawned child has a PID") as i32)
+                .expect("spawned child has a positive PID"),
+        ))
+    }
+
+    /// Sends SIGTERM and waits up to `grace` for the group to exit, or until
+    /// `interrupted` completes, then sends SIGKILL. A zero grace sends SIGKILL
+    /// at once.
+    pub async fn terminate(
+        &mut self,
+        grace: Duration,
+        child: &mut Child,
+        interrupted: impl Future<Output = ()>,
+    ) {
         let group = self.0.expect("process group is terminated once");
         if !grace.is_zero() {
             match kill_process_group(group, Signal::TERM) {
                 Ok(()) | Err(rustix::io::Errno::SRCH | rustix::io::Errno::PERM) => {}
                 Err(error) => panic!("failed to signal owned process group: {error}"),
             }
+            tokio::pin!(interrupted);
             let deadline = Instant::now() + grace;
             while Instant::now() < deadline {
                 // Reaping the leader lets a group whose members all exited
@@ -125,7 +148,11 @@ impl ProcessGroup {
                 if test_kill_process_group(group).is_err() {
                     break;
                 }
-                sleep(GROUP_POLL_INTERVAL).await;
+                tokio::select! {
+                    biased;
+                    () = &mut interrupted => break,
+                    () = sleep(GROUP_POLL_INTERVAL) => {}
+                }
             }
         }
         kill_group(group);
@@ -164,10 +191,7 @@ pub async fn run(
         .spawn()?;
     tokio::pin!(cancelled);
     let deadline = Instant::now() + limits.deadline;
-    let mut group = ProcessGroup(Some(
-        Pid::from_raw(child.id().expect("spawned child has a PID") as i32)
-            .expect("spawned child has a positive PID"),
-    ));
+    let mut group = ProcessGroup::new(&child);
     let pipe = child.stdin.take();
     // A child may exit without reading its input, so a failed write is not
     // itself a failure. Dropping the pipe closes it.
@@ -202,7 +226,9 @@ pub async fn run(
     };
     drop(write);
     let cleanup = async {
-        group.terminate(limits.grace, &mut child).await;
+        group
+            .terminate(limits.grace, &mut child, std::future::pending())
+            .await;
         child
             .wait()
             .await

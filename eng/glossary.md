@@ -50,6 +50,7 @@
 - **Active session**: A session created or loaded in the current process. Its
   system prompt is assembled and its skill catalog loaded when it becomes
   active, and only an active session can be configured or prompted over ACP.
+  It owns its shell processes.
 - **System prompt**: Ox's built-in agent instructions followed, when present, by
   workspace instructions. It is assembled when a session becomes active and sent
   as the first message of every model request for that session.
@@ -72,9 +73,12 @@
 - **Session mode**: The durable choice that controls shell authorization for a
   turn: Ask or Auto.
 - **Ask mode**: The session mode that requests ACP client permission before
-  each shell call. It is the default for a new ACP session.
-- **Auto mode**: The session mode that runs shell calls without an ACP
-  permission request. Headless prompts use Auto.
+  each shell call, including a background start, and before each input sent to
+  a shell process, including closing its stdin. It is the default for a new ACP
+  session.
+- **Auto mode**: The session mode that runs shell calls and sends input to
+  shell processes without an ACP permission request. Headless prompts use
+  Auto.
 - **Session title**: The short label a session shows in a client, taken once
   from the first nonblank line of the first saved turn input and shortened to
   80 characters. A skill invocation contributes
@@ -233,8 +237,20 @@
 - **Uncommitted assistant batch**: A validated assistant message whose tool
   outcomes are incomplete or have not yet been saved. The step of the prompt
   run that processes that message owns it until the save attempt.
-- **Shell permission request**: An ACP request asking whether one shell tool
-  call may run. Approval or denial applies only to that call.
+- **Shell permission request**: An ACP request asking whether one shell call
+  may run or one `shell_process` write may send its input. Approval or denial
+  applies only to that call; approving a background start does not approve
+  later input.
+- **Background command**: A command started by `shell` with
+  `background: true`, whose lifetime continues after that tool call returns.
+- **Shell process**: One background command owned by an active session,
+  together with its process group, stdin, retained output, and current state.
+  `ShellProcesses` in `src/shell_processes.rs` is the owner, and
+  `shell_processes` is the field that carries it from the active session to
+  the tools.
+- **Shell process ID**: An opaque UUID identifying one shell process within
+  one active session's shell processes. It is `process_id` in tool arguments
+  and results and is never an operating-system PID.
 - **Replay**: Sending saved transcript content back to the ACP client when a
   session is loaded.
 - **Commit**: A successful SQLite transaction. `PromptRun::commit` takes one

@@ -1114,6 +1114,27 @@ pub(crate) mod fixture {
         ]))
     }
 
+    /// One assistant message with one call per `(call_id, tool name,
+    /// arguments)`.
+    pub fn calls_reply(calls: &[(&str, &str, Value)]) -> Reply {
+        let tool_calls: Vec<_> = calls
+            .iter()
+            .enumerate()
+            .map(|(index, (id, name, arguments))| {
+                json!({
+                    "index": index,
+                    "id": id,
+                    "type": "function",
+                    "function": { "name": name, "arguments": arguments.to_string() },
+                })
+            })
+            .collect();
+        Reply::Stream(sse(&[delta(
+            json!({ "role": "assistant", "tool_calls": tool_calls }),
+            Some("tool_calls"),
+        )]))
+    }
+
     /// One assistant message with one shell call per `(call_id, command)`.
     pub fn tool_reply(calls: &[(&str, &str)]) -> Reply {
         let tool_calls = calls

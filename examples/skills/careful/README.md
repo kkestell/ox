@@ -5,8 +5,11 @@ hooks, all run by `scripts/careful.py`:
 
 - `before_run` gives the model the workspace's Git status before its first
   model request.
-- `before_tool` denies shell commands that can destroy work, such as `rm -rf`,
-  `git reset --hard`, `git clean -f`, and `git push`.
+- `before_tool` denies shell text that can destroy work, such as `rm -rf`,
+  `git reset --hard`, `git clean -f`, and `git push`. It checks the command of
+  every `shell` call, including a background start, and the `text` of every
+  `shell_process` write, since text sent to a running shell can run commands
+  too.
 - `after_tools` runs `git diff --check` after each batch of patches and reports
   whitespace errors to the model.
 - `after_run` appends how the prompt run ended to `runs.jsonl` in the skill
@@ -43,8 +46,10 @@ hooks:
 ```
 
 Each definition has a nonblank `command`, run with `/bin/sh -c` in the skill
-directory. No other fields are allowed. The script checks tool names to apply
-its shell and patch rules. The [goal skill](../goal/README.md) shows
+directory. No other fields are allowed. The script checks tool names and
+`shell_process` actions to apply its shell and patch rules. It allows calls
+whose arguments are malformed, which Ox rejects with its own failed tool
+result. The [goal skill](../goal/README.md) shows
 `before_stop`.
 
 Skill hooks run only in the prompt run that invoked their skill. Invoking the

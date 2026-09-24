@@ -1,7 +1,7 @@
 //! Allows at most one prompt, load, or delete to run for a session at a time.
 //! `/compact` arrives as a prompt request and runs as a prompt operation. An
 //! operation starts only when it acquires a guard and ends when that guard is
-//! dropped.
+//! dropped. Once connection shutdown begins, no operation starts.
 
 use std::{
     collections::{HashMap, hash_map::Entry},
@@ -26,6 +26,8 @@ pub struct SessionOperations(Arc<Mutex<OperationsState>>);
 struct OperationsState {
     active: HashMap<SessionId, Operation>,
     drained: Option<oneshot::Sender<()>>,
+    /// Set when connection shutdown begins.
+    closed: bool,
 }
 
 /// Keeps one session busy. Dropping it makes the session available again.
@@ -64,19 +66,32 @@ impl SessionOperations {
         }
     }
 
-    /// Called once after incoming EOF, when no more operations can arrive.
-    /// Keep the connection running until active operations send their replies.
+    /// Rejects every later operation and cancels the active prompts.
+    /// Repeating it is harmless.
+    pub fn close(&self) {
+        let mut state = self.lock();
+        state.closed = true;
+        for operation in state.active.values() {
+            if let Operation::Prompt(cancellation) = operation {
+                cancellation.cancel();
+            }
+        }
+    }
+
+    pub fn is_closed(&self) -> bool {
+        self.lock().closed
+    }
+
+    /// Closes admission, then waits until every active operation has dropped
+    /// its guard. Called once, while the connection keeps running so active
+    /// operations can send their replies.
     pub async fn shutdown(&self) {
+        self.close();
         let (drained_tx, drained_rx) = oneshot::channel();
         {
             let mut state = self.lock();
             if state.active.is_empty() {
                 return;
-            }
-            for operation in state.active.values() {
-                if let Operation::Prompt(cancellation) = operation {
-                    cancellation.cancel();
-                }
             }
             assert!(state.drained.is_none(), "shutdown is already waiting");
             state.drained = Some(drained_tx);
@@ -87,7 +102,11 @@ impl SessionOperations {
     }
 
     fn acquire(&self, session_id: &SessionId, operation: Operation) -> Option<OperationGuard> {
-        match self.lock().active.entry(session_id.clone()) {
+        let mut state = self.lock();
+        if state.closed {
+            return None;
+        }
+        match state.active.entry(session_id.clone()) {
             Entry::Occupied(_) => None,
             Entry::Vacant(vacant) => {
                 vacant.insert(operation);
@@ -166,6 +185,11 @@ mod tests {
         assert!(cancel_a.is_cancelled());
         assert!(cancel_b.is_cancelled());
         assert!(operations.try_load(&id("a")).is_none());
+        assert!(operations.is_closed());
+        assert!(
+            operations.try_prompt(&id("idle")).is_none(),
+            "shutdown rejects operations for idle sessions"
+        );
         drop(guard_a);
         assert!(shutdown.as_mut().now_or_never().is_none());
         drop(guard_b);

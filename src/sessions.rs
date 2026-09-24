@@ -320,7 +320,8 @@ pub struct CompactionCheckpoint {
     pub summarizer_cost: Option<f64>,
 }
 
-/// Whether shell calls require approval from the ACP client.
+/// Whether shell calls and input sent to shell processes require approval
+/// from the ACP client.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionMode {
@@ -347,8 +348,8 @@ impl SessionMode {
 
     pub fn description(self) -> &'static str {
         match self {
-            Self::Ask => "Ask before running each shell command.",
-            Self::Auto => "Run shell commands without asking.",
+            Self::Ask => "Ask before running each shell command or sending input to one.",
+            Self::Auto => "Run shell commands and send them input without asking.",
         }
     }
 

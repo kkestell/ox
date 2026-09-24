@@ -23,6 +23,7 @@ use crate::{
         SessionMode, SessionSettings, SessionStore, SessionSummary, SkillInvocation, StopDecision,
         ToolCall, ToolOutcome, TranscriptEntry, TurnInput, TurnStart,
     },
+    shell_processes::ShellProcesses,
     tools,
 };
 
@@ -49,6 +50,8 @@ pub(super) struct PromptInput {
     pub selected_settings: Option<SessionSettings>,
     /// The complete system prompt captured when the session became active.
     pub system_prompt: String,
+    /// The active session's shell processes, which outlive this run.
+    pub shell_processes: ShellProcesses,
 }
 
 /// A prompt run's outcome, carrying an answer only when it finishes.
@@ -133,6 +136,7 @@ struct PromptRun<F> {
     cancellation: PromptCancellation,
     send_update: F,
     permission_transport: PermissionTransport,
+    shell_processes: ShellProcesses,
     /// Saved transcript, extended only after a database transaction succeeds.
     transcript: Vec<TranscriptEntry>,
     hook_sources: Vec<HookSource>,
@@ -212,6 +216,7 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
             cancellation,
             send_update,
             permission_transport,
+            shell_processes: input.shell_processes.clone(),
             transcript: stored.transcript,
             hook_sources: input.hook_sources.clone(),
             run_id: uuid::Uuid::new_v4().to_string(),
@@ -733,10 +738,13 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
             if self.cancellation.is_cancelled() {
                 return Err(PromptOutcome::Cancelled);
             }
-            let denial = self.run_before_tool(call).await?;
+            let denial = match self.run_before_tool(call).await? {
+                Some(message) => Some(message),
+                None => self.request_permission(call).await?,
+            };
             let outcome = if let Some(message) = denial {
                 ToolOutcome::Failed(message)
-            } else if self.approve(call).await? {
+            } else {
                 (self.send_update)(convert::in_progress_tool_call_update(&call.call_id))
                     .map_err(PromptOutcome::AcpUpdate)?;
                 // The dispatcher polls tools first, so a synchronous patch can finish
@@ -746,12 +754,11 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
                 }
                 tools::execute(
                     &self.summary.workspace_path,
+                    &self.shell_processes,
                     call,
                     self.cancellation.cancelled(),
                 )
                 .await
-            } else {
-                ToolOutcome::Failed("User denied permission to run this command.".to_owned())
             };
             let update = convert::finished_tool_call_update(call, &outcome);
             batch.outcomes.push(outcome);
@@ -760,12 +767,20 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
         Ok(())
     }
 
-    async fn approve(&self, call: &ToolCall) -> std::result::Result<bool, PromptOutcome> {
-        if call.name != tools::SHELL {
-            return Ok(true);
-        }
+    /// Requests Ask mode permission when the call needs it. `Some` holds the
+    /// denial message.
+    async fn request_permission(
+        &self,
+        call: &ToolCall,
+    ) -> std::result::Result<Option<String>, PromptOutcome> {
+        let permission = tools::permission(call, &self.shell_processes);
+        let denial = match &permission {
+            tools::Permission::NotRequired => return Ok(None),
+            tools::Permission::Command { .. } => "User denied permission to run this command.",
+            tools::Permission::Input { .. } => "User denied permission to send this input.",
+        };
         if self.mode == SessionMode::Auto {
-            return Ok(true);
+            return Ok(None);
         }
         let PermissionTransport::Acp(connection) = &self.permission_transport else {
             panic!("Ask mode requires an ACP permission-request connection");
@@ -774,13 +789,13 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
             biased;
             () = self.cancellation.cancelled() => return Err(PromptOutcome::Cancelled),
             response = connection.send_request(convert::shell_permission_request(
-                self.summary.id.clone(), call, &self.summary.workspace_path,
+                self.summary.id.clone(), call, &self.summary.workspace_path, &permission,
             )).block_task() => response.map_err(PromptOutcome::Permission)?,
         };
         match response.outcome {
             RequestPermissionOutcome::Selected(selected) => match selected.option_id.0.as_ref() {
-                "approve" => Ok(true),
-                "deny" => Ok(false),
+                "approve" => Ok(None),
+                "deny" => Ok(Some(denial.to_owned())),
                 id => Err(PromptOutcome::Permission(
                     Error::internal_error().data(format!("Unknown shell permission option: {id}")),
                 )),
@@ -872,7 +887,7 @@ mod tests {
     use crate::{
         openrouter::{
             catalog, default_model,
-            fixture::{Reply, Server, delta, sse, text_reply, tool_reply, usage},
+            fixture::{Reply, Server, calls_reply, delta, sse, text_reply, tool_reply, usage},
         },
         sessions::{EffortLevel, ModelUsage, SkillInvocation},
         system_prompt,
@@ -889,6 +904,7 @@ mod tests {
         updates: Updates,
         workspace: Workspace,
         global_hooks: Option<HookSource>,
+        shell_processes: ShellProcesses,
     }
 
     impl Harness {
@@ -904,6 +920,7 @@ mod tests {
                 updates: Rc::default(),
                 workspace,
                 global_hooks: None,
+                shell_processes: ShellProcesses::default(),
             }
         }
 
@@ -964,6 +981,7 @@ mod tests {
                     hook_sources: self.global_hooks.clone().into_iter().chain(hooks).collect(),
                     selected_settings,
                     system_prompt: system_prompt::for_workspace(&self.workspace.0).unwrap(),
+                    shell_processes: self.shell_processes.clone(),
                 },
                 self.cancellation.clone(),
                 send_update,
@@ -1609,27 +1627,6 @@ mod tests {
         }
     }
 
-    /// One assistant message with one call per `(call_id, tool name,
-    /// arguments)`.
-    fn calls_reply(calls: &[(&str, &str, serde_json::Value)]) -> Reply {
-        let tool_calls: Vec<_> = calls
-            .iter()
-            .enumerate()
-            .map(|(index, (id, name, arguments))| {
-                json!({
-                    "index": index,
-                    "id": id,
-                    "type": "function",
-                    "function": { "name": name, "arguments": arguments.to_string() },
-                })
-            })
-            .collect();
-        Reply::Stream(sse(&[delta(
-            json!({ "role": "assistant", "tool_calls": tool_calls }),
-            Some("tool_calls"),
-        )]))
-    }
-
     fn hook_titles(harness: &Harness) -> Vec<String> {
         harness
             .updates()
@@ -1986,6 +1983,7 @@ mod tests {
                 }],
                 selected_settings: None,
                 system_prompt: "system".to_owned(),
+                shell_processes: ShellProcesses::default(),
             },
             PromptCancellation::new(),
             |_| Ok(()),
@@ -2200,6 +2198,7 @@ mod tests {
                 hook_sources: Vec::new(),
                 selected_settings: None,
                 system_prompt: "system".to_owned(),
+                shell_processes: ShellProcesses::default(),
             },
             PromptCancellation::new(),
             |_| Ok(()),
@@ -2241,6 +2240,7 @@ mod tests {
             hook_sources: Vec::new(),
             selected_settings: None,
             system_prompt: "system".to_owned(),
+            shell_processes: ShellProcesses::default(),
         };
         assert!(
             run(
@@ -2582,6 +2582,7 @@ mod tests {
                 hook_sources: Vec::new(),
                 selected_settings: None,
                 system_prompt: system_prompt::for_workspace(&workspace.0).unwrap(),
+                shell_processes: ShellProcesses::default(),
             },
             PromptCancellation::new(),
             |_| Ok(()),
@@ -2609,6 +2610,7 @@ mod tests {
                 hook_sources: Vec::new(),
                 selected_settings: None,
                 system_prompt: system_prompt::for_workspace(&workspace.0).unwrap(),
+                shell_processes: ShellProcesses::default(),
             },
             PromptCancellation::new(),
             |_| Ok(()),
@@ -2637,6 +2639,7 @@ mod tests {
                     EffortLevel::Default,
                 )),
                 system_prompt: system_prompt::for_workspace(&workspace.0).unwrap(),
+                shell_processes: ShellProcesses::default(),
             },
             PromptCancellation::new(),
             |_| Ok(()),
@@ -2667,6 +2670,7 @@ mod tests {
                     EffortLevel::Default,
                 )),
                 system_prompt: system_prompt::for_workspace(&workspace.0).unwrap(),
+                shell_processes: ShellProcesses::default(),
             },
             PromptCancellation::new(),
             |_| Ok(()),
@@ -2739,6 +2743,110 @@ mod tests {
                 })
             );
         }
+    }
+
+    #[tokio::test]
+    async fn a_background_start_saves_one_outcome_while_its_command_keeps_running() {
+        let not_started = ToolOutcome::Failed(
+            "Not started: the client connection failed before this tool ran.".to_owned(),
+        );
+        for failing in [None, Some("start completed")] {
+            let harness = Harness::new(vec![
+                calls_reply(&[
+                    (
+                        "start",
+                        tools::SHELL,
+                        json!({"command":"exec sleep 30","background":true}),
+                    ),
+                    ("next", tools::SHELL, json!({"command":"printf next"})),
+                ]),
+                text_reply("Started."),
+            ])
+            .await;
+
+            let (response, transcript) = harness
+                .run("Start the server", |update| match failing {
+                    Some(failing) if describe(update) == failing => {
+                        Err(Error::internal_error().data("connection closed"))
+                    }
+                    _ => Ok(()),
+                })
+                .await;
+
+            let process = harness.shell_processes.list().remove(0);
+            assert_eq!(
+                process.state(),
+                crate::shell_processes::State::Running,
+                "{failing:?}"
+            );
+            let Some(TranscriptEntry::AssistantBatch(batch)) = transcript.get(2) else {
+                panic!("{failing:?}: the batch was saved");
+            };
+            let started = ToolOutcome::Completed(format!(
+                "Started shell process {}.\nThe command is running in the background. This confirms that it started, not that it finished or is ready. Use shell_process to read its output, write to its stdin, or stop it.",
+                process.id()
+            ));
+            match failing {
+                None => {
+                    assert!(matches!(response.unwrap(), PromptOutput::Finished(_)));
+                    assert_eq!(batch.outcomes, [started, printed("next")]);
+                }
+                Some(_) => {
+                    assert!(response.is_err());
+                    assert_eq!(batch.outcomes, [started, not_started.clone()]);
+                }
+            }
+            harness.shell_processes.shutdown().await;
+        }
+    }
+
+    #[tokio::test]
+    async fn a_before_tool_denial_prevents_starting_and_stopping_shell_processes() {
+        let harness = Harness::new(vec![]).await;
+        let mut sleeper = tokio::process::Command::new("/bin/sh");
+        sleeper.args(["-c", "exec sleep 30"]);
+        let running = harness
+            .shell_processes
+            .start(sleeper, "exec sleep 30", 1024)
+            .unwrap();
+        let harness = Harness {
+            server: Server::start(vec![
+                calls_reply(&[
+                    (
+                        "start",
+                        tools::SHELL,
+                        json!({"command":"touch started; exec sleep 30","background":true}),
+                    ),
+                    (
+                        "stop",
+                        tools::SHELL_PROCESS,
+                        json!({"action":"stop","process_id":running.id()}),
+                    ),
+                ]),
+                text_reply("Left alone."),
+            ])
+            .await,
+            ..harness
+        };
+        let hooks = hooks::Hooks {
+            before_tool: command(r#"echo '{"decision":"deny","message":"Not now."}'"#),
+            ..hooks::Hooks::default()
+        };
+
+        let (response, transcript) = harness.run_skill(hooks, |_| Ok(())).await;
+
+        assert!(matches!(response.unwrap(), PromptOutput::Finished(_)));
+        let denied = ToolOutcome::Failed(
+            "skill /goal before_tool hook denied this call: Not now.".to_owned(),
+        );
+        assert!(
+            matches!(&transcript[2], TranscriptEntry::AssistantBatch(batch)
+            if batch.outcomes == [denied.clone(), denied])
+        );
+        assert_eq!(harness.shell_processes.list().len(), 1, "nothing started");
+        assert!(!harness.workspace.0.join("started").exists());
+        assert_eq!(running.state(), crate::shell_processes::State::Running);
+        harness.shell_processes.shutdown().await;
     }
 
     #[tokio::test]

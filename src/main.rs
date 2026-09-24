@@ -7,6 +7,7 @@ mod openrouter;
 mod process;
 mod sessions;
 mod settings;
+mod shell_processes;
 mod skills;
 mod system_prompt;
 mod text_file;

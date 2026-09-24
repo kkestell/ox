@@ -13,7 +13,8 @@ use std::{
 };
 
 use agent_client_protocol::{
-    Agent, Client, ConnectTo, ConnectionTo, Error, JsonRpcResponse, Responder, Result, Stdio,
+    Agent, Channel, Client, ConnectTo, ConnectionTo, Error, JsonRpcResponse, Responder, Result,
+    Stdio,
     schema::ProtocolVersion,
     schema::v1::{
         AgentAuthCapabilities, AgentCapabilities, AuthMethod, AuthMethodTerminal, AvailableCommand,
@@ -28,6 +29,7 @@ use agent_client_protocol::{
         SetSessionConfigOptionResponse, StopReason, UnstructuredCommandInput,
     },
 };
+use futures::StreamExt;
 
 use crate::{
     auth,
@@ -38,6 +40,7 @@ use crate::{
         self, EffortLevel, SessionMode, SessionSettings, SessionStore, SessionSummary,
         SkillInvocation, TurnInput, UserMessage, UserMessagePart,
     },
+    shell_processes::ShellProcesses,
     skills::{self, Skill},
     system_prompt,
 };
@@ -182,6 +185,10 @@ struct ActiveSession {
     system_prompt: String,
     /// The skill catalog loaded when the session became active.
     skills: Vec<Skill>,
+    /// Background commands started in this session. They outlive prompt runs
+    /// and repeated loads, and stop when the session is deleted or the
+    /// connection shuts down.
+    shell_processes: ShellProcesses,
 }
 
 impl ServerState {
@@ -279,6 +286,7 @@ impl ServerState {
                 selections: settings.clone(),
                 system_prompt,
                 skills,
+                shell_processes: ShellProcesses::default(),
             },
         );
         Ok(NewSessionResponse::new(summary.id).config_options(config_options(&settings, false)))
@@ -375,14 +383,17 @@ impl ServerState {
         }
         let saved_settings = stored.saved_settings(&default_settings());
         let model_locked = !stored.transcript.is_empty();
-        // A repeated load keeps the system prompt and skill catalog captured by
-        // the first load.
-        let (system_prompt, skills) = match self.active_session(&request.session_id) {
-            Some(active) => (active.system_prompt, active.skills),
+        // A repeated load keeps the system prompt, skill catalog, and shell
+        // processes of the first load.
+        let (system_prompt, skills, shell_processes) = match self
+            .active_session(&request.session_id)
+        {
+            Some(active) => (active.system_prompt, active.skills, active.shell_processes),
             None => (
                 system_prompt::for_workspace(&stored.summary.workspace_path)
                     .map_err(Error::into_internal_error)?,
                 skills::load(&stored.summary.workspace_path).map_err(Error::into_internal_error)?,
+                ShellProcesses::default(),
             ),
         };
         let parameters = ModelRequestParameters::new(
@@ -398,6 +409,7 @@ impl ServerState {
                 selections: saved_settings.clone(),
                 system_prompt,
                 skills,
+                shell_processes,
             },
         );
         convert::replay_transcript(&stored.transcript, &mut send_update)?;
@@ -461,15 +473,61 @@ impl ServerState {
         ))
     }
 
-    fn delete_session(&self, request: &DeleteSessionRequest) -> Result<DeleteSessionResponse> {
+    /// Stops the session's shell processes only after the database deletion
+    /// succeeds. The active session stays registered until they are cleaned
+    /// up, so connection shutdown can still reach them.
+    async fn delete_session(
+        &self,
+        request: &DeleteSessionRequest,
+    ) -> Result<DeleteSessionResponse> {
         self.store
             .delete(&request.session_id)
             .map_err(Error::into_internal_error)?;
+        if let Some(active) = self.active_session(&request.session_id) {
+            active.shell_processes.shutdown().await;
+        }
         self.active
             .lock()
             .expect("active sessions mutex poisoned")
             .remove(&request.session_id);
         Ok(DeleteSessionResponse::new())
+    }
+
+    fn all_shell_processes(&self) -> Vec<ShellProcesses> {
+        self.active
+            .lock()
+            .expect("active sessions mutex poisoned")
+            .values()
+            .map(|active| active.shell_processes.clone())
+            .collect()
+    }
+
+    /// Rejects new session operations, cancels active prompts, and asks every
+    /// active session's shell processes to stop, without waiting.
+    fn begin_shutdown(&self) {
+        self.operations.close();
+        for shell_processes in self.all_shell_processes() {
+            shell_processes.begin_shutdown();
+        }
+    }
+
+    /// Signals the shell processes of every active session before waiting
+    /// for any, so cleanup time does not grow with the number of sessions.
+    async fn shutdown_shell_processes(&self) {
+        let owners = self.all_shell_processes();
+        for shell_processes in &owners {
+            shell_processes.begin_shutdown();
+        }
+        futures::future::join_all(owners.iter().map(ShellProcesses::shutdown)).await;
+    }
+
+    /// Why a session operation could not start.
+    fn unavailable(&self) -> Error {
+        if self.operations.is_closed() {
+            Error::invalid_request().data("Ox is shutting down")
+        } else {
+            Error::invalid_request().data("session has an operation in progress")
+        }
     }
 
     /// The cached client is cleared even when removing the saved key fails,
@@ -508,7 +566,7 @@ impl ServerState {
         connection: &ConnectionTo<Client>,
     ) -> Result<()> {
         let Some(_guard) = self.operations.try_load(&request.session_id) else {
-            return responder.respond_with_error(busy());
+            return responder.respond_with_error(self.unavailable());
         };
         let send_update = acp_update_sender(connection.clone(), request.session_id.clone());
         match self.load_session(&request, send_update) {
@@ -520,15 +578,23 @@ impl ServerState {
         }
     }
 
+    /// Spawns the deletion under its operation guard, so waiting for shell
+    /// process cleanup leaves the connection free for other sessions.
     fn respond_to_delete_session(
         &self,
-        request: &DeleteSessionRequest,
+        request: DeleteSessionRequest,
         responder: Responder<DeleteSessionResponse>,
+        connection: &ConnectionTo<Client>,
     ) -> Result<()> {
-        let Some(_guard) = self.operations.try_delete(&request.session_id) else {
-            return responder.respond_with_error(busy());
+        let Some(guard) = self.operations.try_delete(&request.session_id) else {
+            return responder.respond_with_error(self.unavailable());
         };
-        reply(responder, self.delete_session(request))
+        let state = self.clone();
+        connection.spawn(async move {
+            let _guard = guard;
+            let result = state.delete_session(&request).await;
+            reply(responder, result)
+        })
     }
 
     /// Rejects a prompt request that cannot start, or spawns `/compact` or a
@@ -544,7 +610,7 @@ impl ServerState {
             Err(error) => return responder.respond_with_error(error),
         };
         let Some(operation) = self.operations.try_prompt(&request.session_id) else {
-            return responder.respond_with_error(busy());
+            return responder.respond_with_error(self.unavailable());
         };
         let Some(active) = self.active_session(&request.session_id) else {
             return responder.respond_with_error(inactive(&request.session_id));
@@ -621,6 +687,7 @@ impl ServerState {
                     .collect(),
                 selected_settings: Some(active.selections),
                 system_prompt: active.system_prompt,
+                shell_processes: active.shell_processes,
             },
             cancellation,
             acp_update_sender(connection.clone(), session_id),
@@ -656,10 +723,6 @@ fn store_error(error: io::Error) -> Error {
 
 fn not_found(session_id: &SessionId) -> Error {
     Error::resource_not_found(Some(session_id.to_string()))
-}
-
-fn busy() -> Error {
-    Error::invalid_request().data("session has an operation in progress")
 }
 
 fn inactive(session_id: &SessionId) -> Error {
@@ -722,8 +785,28 @@ pub async fn serve_stdio(
     global_hooks: Option<hooks::HookSource>,
 ) -> std::result::Result<(), Box<dyn StdError>> {
     let store = SessionStore::open(&sessions::database_path()?)?;
-    serve(ServerState::new(store, global_hooks), Stdio::new()).await?;
+    serve(
+        ServerState::new(store, global_hooks),
+        Stdio::new(),
+        termination_signal()?,
+    )
+    .await?;
     Ok(())
+}
+
+/// Completes on the first SIGINT, SIGTERM, or SIGHUP.
+fn termination_signal() -> io::Result<impl Future<Output = ()>> {
+    use tokio::signal::unix::{SignalKind, signal};
+    let mut interrupt = signal(SignalKind::interrupt())?;
+    let mut terminate = signal(SignalKind::terminate())?;
+    let mut hangup = signal(SignalKind::hangup())?;
+    Ok(async move {
+        tokio::select! {
+            _ = interrupt.recv() => {}
+            _ = terminate.recv() => {}
+            _ = hangup.recv() => {}
+        }
+    })
 }
 
 /// Runs one prompt in a new session and returns the final answer. Skills are
@@ -765,10 +848,9 @@ async fn run_headless_prompt(
     user_message: String,
     hook_sources: Vec<hooks::HookSource>,
 ) -> std::result::Result<String, Box<dyn StdError>> {
-    use tokio::signal::unix::{SignalKind, signal};
-    let mut interrupt = signal(SignalKind::interrupt())?;
-    let mut terminate = signal(SignalKind::terminate())?;
+    let signalled = termination_signal()?;
     let cancellation = PromptCancellation::new();
+    let shell_processes = ShellProcesses::default();
     let run = prompt::run(
         store,
         openrouter,
@@ -778,34 +860,112 @@ async fn run_headless_prompt(
             hook_sources,
             selected_settings: Some(settings.with_mode(SessionMode::Auto)),
             system_prompt,
+            shell_processes: shell_processes.clone(),
         },
         cancellation.clone(),
         |_| Ok(()),
         prompt::PermissionTransport::None,
     )?;
-    tokio::pin!(run);
+    tokio::pin!(run, signalled);
+    // The first signal stops the shell processes at once, before the prompt
+    // and its hooks finish, so a parent hook's grace period is not spent
+    // waiting. The handlers stay installed, so later signals are ignored.
+    let mut stopping = false;
     let output = loop {
         tokio::select! {
             biased;
-            output = &mut run => break output?,
-            signal = interrupt.recv() => {
-                signal.expect("SIGINT listener remains open");
+            output = &mut run => break output,
+            () = &mut signalled, if !stopping => {
+                stopping = true;
                 cancellation.cancel();
-            }
-            signal = terminate.recv() => {
-                signal.expect("SIGTERM listener remains open");
-                cancellation.cancel();
+                shell_processes.begin_shutdown();
             }
         }
     };
-    match output {
+    shell_processes.shutdown().await;
+    match output? {
         prompt::PromptOutput::Finished(answer) => Ok(answer),
         other => Err(io::Error::other(format!("prompt stopped with {other:?}")).into()),
     }
 }
 
-async fn serve(state: ServerState, transport: impl ConnectTo<Agent> + 'static) -> Result<()> {
-    let shutdown_operations = state.operations.clone();
+/// Gives a signal-driven ACP connection a clean incoming EOF after active
+/// operations finish. The physical transport then drains accepted responses
+/// through its output sink before the connection returns.
+struct SignalAwareAgent<C, S> {
+    agent: C,
+    state: ServerState,
+    signalled: S,
+}
+
+impl<C, S> ConnectTo<Client> for SignalAwareAgent<C, S>
+where
+    C: ConnectTo<Client>,
+    S: Future<Output = ()> + Send + 'static,
+{
+    async fn connect_to(self, transport: impl ConnectTo<Agent>) -> Result<()> {
+        let (
+            Channel {
+                rx: mut from_agent,
+                tx: to_agent,
+            },
+            agent_future,
+        ) = self.agent.into_channel_and_future();
+        let (
+            Channel {
+                rx: mut from_transport,
+                tx: to_transport,
+            },
+            transport_future,
+        ) = transport.into_channel_and_future();
+
+        let incoming = async move {
+            let shutdown = async move {
+                self.signalled.await;
+                self.state.begin_shutdown();
+                self.state.operations.shutdown().await;
+            };
+            tokio::pin!(shutdown);
+            loop {
+                tokio::select! {
+                    biased;
+                    () = &mut shutdown => break,
+                    frame = from_transport.next() => match frame {
+                        Some(frame) => to_agent.unbounded_send(frame).map_err(|_| {
+                            Error::internal_error().data("agent input closed")
+                        })?,
+                        None => break,
+                    },
+                }
+            }
+            Ok::<(), Error>(())
+        };
+        let outgoing = async move {
+            while let Some(frame) = from_agent.next().await {
+                to_transport
+                    .unbounded_send(frame)
+                    .map_err(|_| Error::internal_error().data("ACP output transport closed"))?;
+            }
+            Ok::<(), Error>(())
+        };
+        futures::try_join!(incoming, outgoing, agent_future, transport_future)?;
+        Ok(())
+    }
+}
+
+/// Serves one ACP connection until incoming EOF or `signalled`. Either begins
+/// shutdown: new operations are rejected, active prompts are cancelled, and
+/// shell processes are signalled, while the connection keeps running until
+/// the active operations finish. Every shell process is cleaned up before
+/// returning, even after a transport error.
+async fn serve(
+    state: ServerState,
+    transport: impl ConnectTo<Agent> + 'static,
+    signalled: impl Future<Output = ()> + Send + 'static,
+) -> Result<()> {
+    let close_state = state.clone();
+    let signal_state = state.clone();
+    let cleanup_state = state.clone();
     let new_state = state.clone();
     let load_state = state.clone();
     let list_state = state.clone();
@@ -815,11 +975,12 @@ async fn serve(state: ServerState, transport: impl ConnectTo<Agent> + 'static) -
     let prompt_state = state.clone();
     let cancel_state = state;
 
-    Agent
+    let agent = Agent
         .builder()
         .name("ox")
         .on_close(async move |_connection| {
-            shutdown_operations.shutdown().await;
+            close_state.begin_shutdown();
+            close_state.operations.shutdown().await;
             Ok(())
         })
         .on_receive_request(
@@ -847,8 +1008,8 @@ async fn serve(state: ServerState, transport: impl ConnectTo<Agent> + 'static) -
             agent_client_protocol::on_receive_request!(),
         )
         .on_receive_request(
-            async move |request: DeleteSessionRequest, responder, _connection| {
-                delete_state.respond_to_delete_session(&request, responder)
+            async move |request: DeleteSessionRequest, responder, connection| {
+                delete_state.respond_to_delete_session(request, responder, &connection)
             },
             agent_client_protocol::on_receive_request!(),
         )
@@ -876,9 +1037,16 @@ async fn serve(state: ServerState, transport: impl ConnectTo<Agent> + 'static) -
                 Ok(())
             },
             agent_client_protocol::on_receive_notification!(),
-        )
-        .connect_to(transport)
-        .await
+        );
+    let result = transport
+        .connect_to(SignalAwareAgent {
+            agent,
+            state: signal_state,
+            signalled,
+        })
+        .await;
+    cleanup_state.shutdown_shell_processes().await;
+    result
 }
 
 #[cfg(test)]
@@ -890,7 +1058,7 @@ mod tests {
     use super::*;
     use crate::{
         sessions::{ToolOutcome, TranscriptEntry, TurnStart},
-        tools::fixture::Workspace,
+        tools::{self, fixture::Workspace},
     };
 
     #[tokio::test]
@@ -905,6 +1073,7 @@ mod tests {
         let active = ActiveSession {
             selections: default_settings(),
             system_prompt: "captured system".to_owned(),
+            shell_processes: ShellProcesses::default(),
             skills: vec![],
         };
         let mut updates = Vec::new();
@@ -1007,6 +1176,14 @@ mod tests {
         let state = ServerState::new(store, None);
         *state.openrouter.lock().unwrap() = Some(openrouter::Client::new("test-key".to_owned()));
         state
+    }
+
+    /// Whether every operation guard has been dropped. Admission stays closed
+    /// after connection shutdown, so this waits on no operation rather than
+    /// acquiring one.
+    fn operations_idle(operations: &SessionOperations) -> bool {
+        use futures::FutureExt;
+        operations.shutdown().now_or_never().is_some()
     }
 
     /// Creates an active session for `workspace_path` and returns its ID.
@@ -1239,8 +1416,8 @@ mod tests {
         assert!(repository.iter().any(|skill| skill.name == "init"));
     }
 
-    #[test]
-    fn loading_an_unknown_or_moved_session_fails_and_delete_deactivates_it() {
+    #[tokio::test]
+    async fn loading_an_unknown_or_moved_session_fails_and_delete_deactivates_it() {
         let workspace = Workspace::new();
         let state = state();
         let id = create_session(&state, &workspace.0);
@@ -1261,6 +1438,7 @@ mod tests {
 
         state
             .delete_session(&DeleteSessionRequest::new(id.clone()))
+            .await
             .unwrap();
         assert!(
             state.active_session(&id).is_none(),
@@ -1495,12 +1673,12 @@ mod tests {
                 {
                     "value": "ask",
                     "name": "Ask",
-                    "description": "Ask before running each shell command."
+                    "description": "Ask before running each shell command or sending input to one."
                 },
                 {
                     "value": "auto",
                     "name": "Auto",
-                    "description": "Run shell commands without asking."
+                    "description": "Run shell commands and send them input without asking."
                 }
             ])
         );
@@ -1671,6 +1849,7 @@ mod tests {
                 hook_sources: Vec::new(),
                 selected_settings: Some(active.selections),
                 system_prompt: active.system_prompt,
+                shell_processes: active.shell_processes,
             }
         };
 
@@ -1750,6 +1929,72 @@ mod tests {
         }
         assert_eq!(requests[1]["messages"][1]["content"], "first");
         assert_eq!(requests[1]["messages"][2]["content"], "second");
+    }
+
+    #[tokio::test]
+    async fn clean_eof_drains_a_blocked_final_response() {
+        use agent_client_protocol::Lines;
+        use futures::{
+            SinkExt, StreamExt,
+            channel::{mpsc, oneshot},
+        };
+        use serde_json::{Value, json};
+
+        let workspace = Workspace::new();
+        let state = state();
+        let id = create_session(&state, &workspace.0);
+        let (incoming_tx, incoming_rx) = mpsc::unbounded();
+        let (outgoing_tx, mut outgoing_rx) = mpsc::unbounded::<String>();
+        let (reached_tx, reached_rx) = oneshot::channel();
+        let (release_tx, release_rx) = oneshot::channel::<()>();
+        let mut gate = Some((reached_tx, release_rx));
+        let sink = outgoing_tx
+            .sink_map_err(io::Error::other)
+            .with(move |line: String| {
+                let message: Value = serde_json::from_str(&line).unwrap();
+                let gate = (message["id"] == 2).then(|| gate.take()).flatten();
+                async move {
+                    if let Some((reached, release)) = gate {
+                        let _ = reached.send(());
+                        let _ = release.await;
+                    }
+                    Ok::<_, io::Error>(line)
+                }
+            });
+        let transport = Lines::new(Box::pin(sink), incoming_rx);
+        for message in [
+            json!({"jsonrpc":"2.0", "id":1, "method":"initialize", "params":{"protocolVersion":1,"clientCapabilities":{}}}),
+            json!({"jsonrpc":"2.0", "id":2, "method":"session/prompt", "params":{"sessionId":id,"prompt":[{"type":"text","text":"Hello"}]}}),
+        ] {
+            incoming_tx.unbounded_send(Ok(message.to_string())).unwrap();
+        }
+        drop(incoming_tx);
+
+        let mut serving = Box::pin(serve(state, transport, std::future::pending()));
+        tokio::select! {
+            result = &mut serving => panic!("serve returned before the final response reached the sink: {result:?}"),
+            reached = reached_rx => reached.unwrap(),
+        }
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), &mut serving)
+                .await
+                .is_err(),
+            "serve returned while the final response sink was blocked"
+        );
+        release_tx.send(()).unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(2), &mut serving)
+            .await
+            .unwrap()
+            .unwrap();
+        drop(serving);
+        let mut final_response = None;
+        while let Some(line) = outgoing_rx.next().await {
+            let message: Value = serde_json::from_str(&line).unwrap();
+            if message["id"] == 2 {
+                final_response = Some(message);
+            }
+        }
+        assert!(final_response.is_some());
     }
 
     #[tokio::test]
@@ -1856,12 +2101,9 @@ mod tests {
                 "the final response was drained before shutdown"
             );
         };
-        let (result, ()) = futures::join!(serve(state, transport), client);
+        let (result, ()) = futures::join!(serve(state, transport, std::future::pending()), client);
         result.unwrap();
-        assert!(
-            operations.try_load(&id).is_some(),
-            "the session became available"
-        );
+        assert!(operations_idle(&operations), "the session became available");
         assert!(
             store
                 .read(&inactive)
@@ -1901,9 +2143,38 @@ mod tests {
         session_busy: bool,
     }
 
-    /// A prompt over an ACP connection whose model calls `touch first` and
-    /// `touch second`. The client answers each permission request according
-    /// to `decision`.
+    /// The calls a permission run's model makes in its one tool batch.
+    #[derive(Clone, Copy, PartialEq)]
+    enum Calls {
+        /// `touch first` and `touch second`, each saving its outcome.
+        Touch,
+        /// `start` runs `echo $$ > started; exec sleep 30` in the background;
+        /// then `list`, `write` of `hello\n` with stdin closure to a reader
+        /// started before the prompt, which saves its line in `received` once
+        /// `started` exists, a two-second `read` of the reader, and `stop` of
+        /// a sleeper started before the prompt.
+        Processes,
+    }
+
+    /// Starts `command` as a shell process of the active session `id`.
+    fn start_shell_process(
+        state: &ServerState,
+        id: &SessionId,
+        workspace: &Path,
+        command: &str,
+    ) -> crate::shell_processes::ShellProcess {
+        let mut shell = tokio::process::Command::new("/bin/sh");
+        shell.arg("-c").arg(command).current_dir(workspace);
+        state
+            .active_session(id)
+            .unwrap()
+            .shell_processes
+            .start(shell, command, 1024)
+            .unwrap()
+    }
+
+    /// A prompt over an ACP connection whose model makes `calls`. The client
+    /// answers each permission request according to `decision`.
     struct PermissionRun {
         workspace: Workspace,
         server: crate::openrouter::fixture::Server,
@@ -1915,43 +2186,49 @@ mod tests {
         saved_at_response: usize,
         response: serde_json::Value,
         transcript: Vec<TranscriptEntry>,
-        /// Whether the session accepted a load after the connection closed.
+        /// Whether every operation guard was dropped after the connection
+        /// closed.
         session_free_after: bool,
+        /// For `Calls::Processes`, the IDs of the reader and the sleeper.
+        processes: Vec<String>,
     }
 
     impl PermissionRun {
         async fn new(decision: &'static str) -> Self {
+            Self::with_calls(decision, Calls::Touch).await
+        }
+
+        async fn with_calls(decision: &'static str, calls: Calls) -> Self {
             use agent_client_protocol::Lines;
             use futures::{SinkExt, StreamExt, channel::mpsc};
             use serde_json::{Value, json};
 
-            use crate::openrouter::fixture::{Server, shell_reply, text_reply};
+            use crate::openrouter::fixture::{Server, calls_reply, shell_reply, text_reply};
 
             let workspace = Workspace::new();
-            let mut replies = vec![shell_reply(&[("touch first", 5), ("touch second", 5)])];
-            if matches!(decision, "approve" | "auto" | "deny" | "mixed" | "hook") {
-                replies.push(text_reply("Done"));
-            }
-            let server = Server::start(replies).await;
             let mut state = state();
-            *state.openrouter.lock().unwrap() = Some(server.client());
             let store = state.store.clone();
             let operations = state.operations.clone();
             let mut text = "Run commands";
+            // The `hook` decision denies the call whose input contains this.
+            let (denied, targets) = match calls {
+                Calls::Touch => ("touch first", ["first", "second"]),
+                Calls::Processes => ("hello", ["started", "received"]),
+            };
             if decision == "hook" {
                 let skill = workspace.0.join(".agents/skills/check");
                 fs::create_dir_all(&skill).unwrap();
                 fs::write(
                     skill.join("SKILL.md"),
-                    r#"---
+                    format!(r#"---
 name: check
 description: Check each shell call.
 hooks:
   before_tool:
-    command: "case \"$(cat)\" in *'touch first'*) echo '{\"decision\":\"deny\",\"message\":\"Leave first alone.\"}';; *) echo '{\"decision\":\"allow\"}';; esac"
+    command: "case \"$(cat)\" in *'{denied}'*) echo '{{\"decision\":\"deny\",\"message\":\"Leave first alone.\"}}';; *) echo '{{\"decision\":\"allow\"}}';; esac"
 ---
 Run the commands.
-"#,
+"#),
                 )
                 .unwrap();
                 state.global_hooks = Some(hooks::HookSource {
@@ -1971,6 +2248,50 @@ Run the commands.
                     ))
                     .unwrap();
             }
+            let mut processes = Vec::new();
+            let mut replies = match calls {
+                Calls::Touch => vec![shell_reply(&[("touch first", 5), ("touch second", 5)])],
+                Calls::Processes => {
+                    for command in [
+                        "read line; while [ ! -e started ]; do sleep 0.01; done; printf %s \"$line\" > received",
+                        "echo $$ > sleeper; exec sleep 30",
+                    ] {
+                        processes.push(
+                            start_shell_process(&state, &id, &workspace.0, command)
+                                .id()
+                                .to_owned(),
+                        );
+                    }
+                    vec![calls_reply(&[
+                        (
+                            "start",
+                            tools::SHELL,
+                            json!({"command":"echo $$ > started; exec sleep 30","background":true}),
+                        ),
+                        ("list", tools::SHELL_PROCESS, json!({"action":"list"})),
+                        (
+                            "write",
+                            tools::SHELL_PROCESS,
+                            json!({"action":"write","process_id":processes[0],"text":"hello\n","close_stdin":true}),
+                        ),
+                        (
+                            "read",
+                            tools::SHELL_PROCESS,
+                            json!({"action":"read","process_id":processes[0],"wait_seconds":2}),
+                        ),
+                        (
+                            "stop",
+                            tools::SHELL_PROCESS,
+                            json!({"action":"stop","process_id":processes[1]}),
+                        ),
+                    ])]
+                }
+            };
+            if matches!(decision, "approve" | "auto" | "deny" | "mixed" | "hook") {
+                replies.push(text_reply("Done"));
+            }
+            let server = Server::start(replies).await;
+            *state.openrouter.lock().unwrap() = Some(server.client());
             let (incoming_tx, incoming_rx) = mpsc::unbounded();
             let (outgoing_tx, mut outgoing_rx) = mpsc::unbounded::<String>();
             let transport = Lines::new(outgoing_tx.sink_map_err(io::Error::other), incoming_rx);
@@ -2011,11 +2332,7 @@ Run the commands.
                     }
                     if message["method"] == "session/request_permission" {
                         let params = message["params"].clone();
-                        let file = if requests.is_empty() {
-                            "first"
-                        } else {
-                            "second"
-                        };
+                        let file = targets[requests.len().min(1)];
                         let pending = format!(
                             "{} pending",
                             params["toolCall"]["toolCallId"].as_str().unwrap()
@@ -2070,12 +2387,12 @@ Run the commands.
             };
             let (result, (requests, tool_updates, saved_at_response, response)) =
                 tokio::time::timeout(std::time::Duration::from_secs(5), async {
-                    tokio::join!(serve(state, transport), client)
+                    tokio::join!(serve(state, transport, std::future::pending()), client)
                 })
                 .await
                 .unwrap_or_else(|error| panic!("{decision}: timed out: {error}"));
             result.unwrap_or_else(|error| panic!("{decision}: ACP connection failed: {error}"));
-            let session_free_after = operations.try_load(&id).is_some();
+            let session_free_after = operations_idle(&operations);
             let transcript = store.read(&id).unwrap().unwrap().transcript;
             Self {
                 workspace,
@@ -2087,6 +2404,7 @@ Run the commands.
                 response,
                 transcript,
                 session_free_after,
+                processes,
             }
         }
 
@@ -2281,6 +2599,125 @@ Run the commands.
         assert_eq!(run.server.requests()[1]["messages"][3]["content"], denied);
     }
 
+    #[tokio::test]
+    async fn shell_process_permissions_cover_starts_and_writes_only() {
+        let run_denied = "User denied permission to run this command.";
+        let send_denied = "User denied permission to send this input.";
+        let hook_denied = "global before_tool hook denied this call: Leave first alone.\nskill /check before_tool hook denied this call: Leave first alone.";
+        // Each outcome is `completed`, `running` for a completed read of a
+        // running command, or a failed outcome's exact text.
+        for (decision, requested, outcomes, received) in [
+            (
+                "approve",
+                &["start", "write"][..],
+                [
+                    "completed",
+                    "completed",
+                    "completed",
+                    "completed",
+                    "completed",
+                ],
+                true,
+            ),
+            (
+                "auto",
+                &[],
+                [
+                    "completed",
+                    "completed",
+                    "completed",
+                    "completed",
+                    "completed",
+                ],
+                true,
+            ),
+            (
+                "deny",
+                &["start", "write"],
+                [run_denied, "completed", send_denied, "running", "completed"],
+                false,
+            ),
+            (
+                "hook",
+                &["start"],
+                [
+                    "completed",
+                    "completed",
+                    hook_denied,
+                    "running",
+                    "completed",
+                ],
+                false,
+            ),
+        ] {
+            let run = PermissionRun::with_calls(decision, Calls::Processes).await;
+            assert_eq!(
+                run.requests
+                    .iter()
+                    .map(|request| request.params["toolCall"]["toolCallId"].as_str().unwrap())
+                    .collect::<Vec<_>>(),
+                requested,
+                "{decision}"
+            );
+            for request in &run.requests {
+                assert!(request.announced && !request.target_existed, "{decision}");
+            }
+            let saved = run.outcomes();
+            assert_eq!(saved.len(), 5, "{decision}");
+            for (index, (outcome, expected)) in saved.into_iter().zip(outcomes).enumerate() {
+                assert!(
+                    match expected {
+                        "completed" => matches!(outcome, ToolOutcome::Completed(_)),
+                        "running" =>
+                            matches!(outcome, ToolOutcome::Completed(text) if text.contains("State: running")),
+                        denial => *outcome == ToolOutcome::Failed(denial.to_owned()),
+                    },
+                    "{decision}, outcome {index}: {outcome:?}"
+                );
+            }
+            assert_eq!(
+                run.response["result"]["stopReason"], "end_turn",
+                "{decision}"
+            );
+            assert_eq!(
+                fs::read_to_string(run.workspace.0.join("received")).ok(),
+                received.then(|| "hello".to_owned()),
+                "{decision}"
+            );
+            assert_process_stopped(&run.workspace.0.join("sleeper"), true).await;
+            if outcomes[0] == "completed" {
+                // Connection shutdown stops the command started in the prompt.
+                assert_process_stopped(&run.workspace.0.join("started"), true).await;
+            } else {
+                assert!(!run.workspace.0.join("started").exists(), "{decision}");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_write_permission_request_shows_the_process_input_and_stdin_closure() {
+        let run = PermissionRun::with_calls("approve", Calls::Processes).await;
+        let content = |index: usize| {
+            run.requests[index].params["toolCall"]["content"][0]["content"]["text"]
+                .as_str()
+                .unwrap()
+                .to_owned()
+        };
+        assert!(content(0).ends_with("Approving it does not approve later input."));
+        assert_eq!(
+            run.requests[0].params["toolCall"]["title"],
+            "Background: echo $$ > started; exec sleep 30"
+        );
+        assert_eq!(
+            content(1),
+            format!(
+                "Shell process: {}\n\nCommand:\n\n    read line; while [ ! -e started ]; do sleep 0.01; done; printf %s \"$line\" > received\n\nInput:\n\n    hello\n\n\nCloses stdin afterward: yes",
+                run.processes[0]
+            )
+        );
+        assert_eq!(run.requests[1].params["toolCall"]["kind"], "execute");
+    }
+
     async fn assert_process_stopped(path: &Path, reaped: bool) {
         let pid = std::fs::read_to_string(path).unwrap();
         tokio::time::timeout(std::time::Duration::from_secs(3), async {
@@ -2303,7 +2740,7 @@ Run the commands.
 
     #[tokio::test]
     async fn headless_signals_clean_up_and_save_even_when_repeated() {
-        use crate::openrouter::fixture::{Server, shell_reply, text_reply};
+        use crate::openrouter::fixture::{Reply, Server, calls_reply, text_reply};
         use crate::sessions::{ToolOutcome, TranscriptEntry};
         use crate::tools::fixture::Workspace;
         use rustix::process::{Pid, Signal, kill_process, kill_process_group};
@@ -2313,9 +2750,51 @@ Run the commands.
             let path = Path::new(&path);
             let store = SessionStore::open(&path.join("ox.db")).unwrap();
             let command = "echo $$ > shell; python3 -c 'import subprocess; p = subprocess.Popen([\"sleep\", \"30\"], start_new_session=True); open(\"detached\", \"w\").write(str(p.pid))'; sleep 30 & echo $! > child; printf started; touch ready; wait";
+            let background = |file: &str| {
+                (
+                    "background",
+                    tools::SHELL,
+                    serde_json::json!({
+                        "command": format!("trap '' TERM; echo $$ > {file}; exec sleep 30"),
+                        "background": true,
+                    }),
+                )
+            };
+            let shell = |command: &str, seconds: u64| serde_json::json!({"command": command, "timeout_seconds": seconds});
+            // Each batch waits until its background command has written its
+            // PID, so the run ends while it is running.
+            let started = |file: &str| format!("while [ ! -e {file} ]; do sleep 0.01; done");
             let server = Server::start(vec![
+                calls_reply(&[
+                    background("finished-background"),
+                    (
+                        "wait",
+                        tools::SHELL,
+                        shell(&started("finished-background"), 5),
+                    ),
+                ]),
                 text_reply("Finished answer."),
-                shell_reply(&[(command, 30), ("touch wrong", 5)]),
+                calls_reply(&[
+                    background("failed-background"),
+                    (
+                        "wait",
+                        tools::SHELL,
+                        shell(&started("failed-background"), 5),
+                    ),
+                ]),
+                Reply::Status(500, "failed".to_owned()),
+                calls_reply(&[
+                    background("cancelled-background"),
+                    (
+                        "shell-0",
+                        tools::SHELL,
+                        shell(
+                            &format!("{}; {command}", started("cancelled-background")),
+                            30,
+                        ),
+                    ),
+                    ("shell-1", tools::SHELL, shell("touch wrong", 5)),
+                ]),
             ])
             .await;
             let answered = store.create(path).unwrap();
@@ -2339,6 +2818,22 @@ Run the commands.
                 fs::read_to_string(path.join(".config/ox/reported")).unwrap(),
                 "1"
             );
+            assert_process_stopped(&path.join("finished-background"), true).await;
+            let failed = store.create(path).unwrap();
+            assert!(
+                run_headless_prompt(
+                    store.clone(),
+                    server.client(),
+                    failed.id,
+                    SessionSettings::new(openrouter::default_model(), EffortLevel::Default),
+                    system_prompt::for_workspace(path).unwrap(),
+                    "Fail".into(),
+                    Vec::new(),
+                )
+                .await
+                .is_err()
+            );
+            assert_process_stopped(&path.join("failed-background"), true).await;
             let session = store.create(path).unwrap();
             let response = run_headless_prompt(
                 store.clone(),
@@ -2398,9 +2893,14 @@ Run the commands.
             .unwrap();
         wait_for_file(&workspace.0.join("ready")).await;
         let pid = Pid::from_raw(child.id().unwrap() as i32).unwrap();
-        kill_process(pid, Signal::TERM).unwrap();
+        // SIGHUP begins cleanup like SIGINT and SIGTERM, which then repeat
+        // harmlessly.
+        kill_process(pid, Signal::HUP).unwrap();
         assert_process_stopped(&workspace.0.join("shell"), true).await;
-        kill_process(pid, Signal::INT).unwrap();
+        assert_process_stopped(&workspace.0.join("cancelled-background"), true).await;
+        for signal in [Signal::TERM, Signal::INT] {
+            kill_process(pid, signal).unwrap();
+        }
         let status = tokio::time::timeout(std::time::Duration::from_secs(5), child.wait()).await;
         let detached = std::fs::read_to_string(workspace.0.join("detached"))
             .unwrap()
@@ -2409,11 +2909,92 @@ Run the commands.
         kill_process_group(Pid::from_raw(detached).unwrap(), Signal::KILL).unwrap();
         assert!(status.unwrap().unwrap().success());
         assert_process_stopped(&workspace.0.join("child"), false).await;
+        assert_process_stopped(&workspace.0.join("cancelled-background"), true).await;
         assert!(workspace.0.join("saved").exists());
         assert!(!workspace.0.join("wrong").exists());
         let store = SessionStore::open(&workspace.0.join("ox.db")).unwrap();
         assert!(store.list(None).unwrap().iter().any(|session| store.read(&session.id).unwrap().unwrap().transcript.iter().any(|entry| matches!(entry,
             TranscriptEntry::AssistantBatch(batch) if batch.outcomes.iter().any(|outcome| matches!(outcome, ToolOutcome::Cancelled(text) if text.contains("started") && text.contains("partial changes")))))));
+    }
+
+    #[tokio::test]
+    async fn a_hook_stopping_a_nested_headless_run_stops_its_background_commands_at_once() {
+        use crate::openrouter::fixture::{Reply, Server, calls_reply};
+
+        const FLAG: &str = "OX_NESTED_HEADLESS_TEST";
+        if let Some(path) = std::env::var_os(FLAG) {
+            let path = Path::new(&path);
+            let store = SessionStore::open(&path.join("nested.db")).unwrap();
+            let server = Server::start(vec![
+                calls_reply(&[(
+                    "background",
+                    tools::SHELL,
+                    serde_json::json!({
+                        "command": "trap '' TERM; echo $$ > background; exec sleep 30",
+                        "background": true,
+                    }),
+                )]),
+                Reply::Hang(": waiting\n\n".to_owned()),
+            ])
+            .await;
+            let session = store.create(path).unwrap();
+            let result = run_headless_prompt(
+                store,
+                server.client(),
+                session.id,
+                SessionSettings::new(openrouter::default_model(), EffortLevel::Default),
+                String::new(),
+                "Start the server".into(),
+                Vec::new(),
+            )
+            .await;
+            assert!(result.is_err(), "the terminated run prints no answer");
+            fs::write(path.join("exited"), "yes").unwrap();
+            return;
+        }
+        let workspace = Workspace::new();
+        let hook = hooks::HookSource {
+            skill: None,
+            directory: workspace.0.clone(),
+            hooks: hooks::Hooks {
+                before_run: Some(hooks::HookCommand {
+                    command: format!(
+                        "{FLAG}='{}' exec '{}' --exact acp::tests::a_hook_stopping_a_nested_headless_run_stops_its_background_commands_at_once --nocapture",
+                        workspace.0.display(),
+                        std::env::current_exe().unwrap().display()
+                    ),
+                }),
+                ..hooks::Hooks::default()
+            },
+        };
+        let context = hooks::Context {
+            skill: None,
+            arguments: String::new(),
+            session_id: "session-1".to_owned(),
+            mode: SessionMode::Auto,
+            run_id: "run-1".to_owned(),
+            workspace: workspace.0.clone(),
+            model: openrouter::default_model().to_owned(),
+            effort: EffortLevel::Default,
+        };
+        let stopped_at = std::sync::Mutex::new(None);
+        let result: io::Result<hooks::Feedback> =
+            hooks::run(&hook, &context, &hooks::Event::BeforeRun, async {
+                wait_for_file(&workspace.0.join("background")).await;
+                *stopped_at.lock().unwrap() = Some(tokio::time::Instant::now());
+            })
+            .await;
+        assert_eq!(result.unwrap_err().kind(), io::ErrorKind::Interrupted);
+        let stopped_at = stopped_at.lock().unwrap().unwrap();
+        assert!(
+            stopped_at.elapsed() < std::time::Duration::from_secs(2),
+            "the nested run exited within the hook's grace period"
+        );
+        assert!(
+            workspace.0.join("exited").exists(),
+            "the nested run finished its own cleanup"
+        );
+        assert_process_stopped(&workspace.0.join("background"), true).await;
     }
 
     #[tokio::test]
@@ -2483,12 +3064,12 @@ Run the commands.
             assert_eq!(response.unwrap()["result"]["stopReason"], "cancelled");
         };
         let (result, ()) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            tokio::join!(serve(state, transport), client)
+            tokio::join!(serve(state, transport, std::future::pending()), client)
         })
         .await
         .unwrap();
         result.unwrap();
-        assert!(operations.try_load(&id).is_some());
+        assert!(operations_idle(&operations));
         assert_process_stopped(&workspace.0.join("shell"), true).await;
         assert_process_stopped(&workspace.0.join("child"), false).await;
         assert!(!workspace.0.join("wrong").exists());
@@ -2508,7 +3089,7 @@ Run the commands.
     }
 
     #[tokio::test]
-    async fn transport_error_stops_the_shell_process_group() {
+    async fn transport_error_stops_the_shell_process_groups() {
         use crate::openrouter::fixture::{Server, shell_reply};
         use crate::tools::fixture::Workspace;
         use agent_client_protocol::Lines;
@@ -2524,6 +3105,12 @@ Run the commands.
         let state = state();
         *state.openrouter.lock().unwrap() = Some(server.client());
         let id = create_session(&state, &workspace.0);
+        start_shell_process(
+            &state,
+            &id,
+            &workspace.0,
+            "trap '' TERM; echo $$ > background; exec sleep 30",
+        );
         let (incoming_tx, incoming_rx) = mpsc::unbounded();
         let (outgoing_tx, mut outgoing_rx) = mpsc::unbounded::<String>();
         let transport = Lines::new(outgoing_tx.sink_map_err(io::Error::other), incoming_rx);
@@ -2534,6 +3121,7 @@ Run the commands.
             incoming_tx.unbounded_send(Ok(message.to_string())).unwrap();
         }
         let fail_transport = async {
+            wait_for_file(&workspace.0.join("background")).await;
             wait_for_file(&workspace.0.join("ready")).await;
             incoming_tx
                 .unbounded_send(Err(io::Error::other("broken transport")))
@@ -2554,7 +3142,11 @@ Run the commands.
             }
         };
         let (result, (), ()) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            tokio::join!(serve(state, transport), fail_transport, drain_output)
+            tokio::join!(
+                serve(state, transport, std::future::pending()),
+                fail_transport,
+                drain_output
+            )
         })
         .await
         .unwrap();
@@ -2564,6 +3156,352 @@ Run the commands.
         );
         assert_process_stopped(&workspace.0.join("shell"), false).await;
         assert_process_stopped(&workspace.0.join("child"), false).await;
+        assert_process_stopped(&workspace.0.join("background"), true).await;
+    }
+
+    /// Runs one Auto mode turn of the active session `id` against `replies`
+    /// and returns its output with the outcomes of its latest tool batch.
+    /// With `cancel`, the turn is cancelled when its first tool call finishes.
+    async fn run_auto_turn(
+        state: &ServerState,
+        id: &SessionId,
+        replies: Vec<crate::openrouter::fixture::Reply>,
+        cancel: bool,
+    ) -> (prompt::PromptOutput, Vec<ToolOutcome>) {
+        use agent_client_protocol::schema::v1::ToolCallStatus;
+        let server = crate::openrouter::fixture::Server::start(replies).await;
+        let active = state.active_session(id).unwrap();
+        let cancellation = PromptCancellation::new();
+        let cancel_after = cancellation.clone();
+        let output = prompt::run(
+            state.store.clone(),
+            server.client(),
+            prompt::PromptInput {
+                session_id: id.clone(),
+                turn_input: TurnInput::UserMessage("Go".to_owned().into()),
+                hook_sources: Vec::new(),
+                selected_settings: Some(active.selections.with_mode(SessionMode::Auto)),
+                system_prompt: active.system_prompt,
+                shell_processes: active.shell_processes,
+            },
+            cancellation,
+            move |update| {
+                if cancel
+                    && matches!(&update, SessionUpdate::ToolCallUpdate(update)
+                        if update.fields.status == Some(ToolCallStatus::Completed))
+                {
+                    cancel_after.cancel();
+                }
+                Ok(())
+            },
+            prompt::PermissionTransport::None,
+        )
+        .unwrap()
+        .await
+        .unwrap();
+        let transcript = state.store.read(id).unwrap().unwrap().transcript;
+        let outcomes = transcript
+            .iter()
+            .rev()
+            .find_map(|entry| match entry {
+                TranscriptEntry::AssistantBatch(batch) if !batch.outcomes.is_empty() => {
+                    Some(batch.outcomes.clone())
+                }
+                _ => None,
+            })
+            .unwrap_or_default();
+        (output, outcomes)
+    }
+
+    #[tokio::test]
+    async fn shell_processes_outlive_turns_cancellation_and_repeated_load_of_their_session_only() {
+        use crate::openrouter::fixture::{calls_reply, text_reply};
+        use serde_json::json;
+
+        let workspace = Workspace::new();
+        let state = state();
+        let id = create_session(&state, &workspace.0);
+        let other = create_session(&state, &workspace.0);
+        let (output, outcomes) = run_auto_turn(
+            &state,
+            &id,
+            vec![calls_reply(&[(
+                "start",
+                tools::SHELL,
+                json!({"command":"read line; printf 'got:%s' \"$line\"","background":true}),
+            )])],
+            true,
+        )
+        .await;
+        assert_eq!(output, prompt::PromptOutput::Cancelled);
+        let owner = state.active_session(&id).unwrap().shell_processes;
+        let process = owner.list().remove(0);
+        let process_id = process.id().to_owned();
+        assert!(
+            matches!(&outcomes[..], [ToolOutcome::Completed(text)]
+                if text.starts_with(&format!("Started shell process {process_id}."))),
+            "{outcomes:?}"
+        );
+        assert_eq!(
+            process.state(),
+            crate::shell_processes::State::Running,
+            "prompt cancellation keeps the command running"
+        );
+
+        state
+            .load_session(&LoadSessionRequest::new(id.clone(), &workspace.0), |_| {
+                Ok(())
+            })
+            .unwrap();
+        assert!(
+            state
+                .active_session(&id)
+                .unwrap()
+                .shell_processes
+                .get(&process_id)
+                .is_some(),
+            "a repeated load keeps the shell processes"
+        );
+
+        let read = json!({"action":"read","process_id":process_id,"wait_seconds":5});
+        let (_, outcomes) = run_auto_turn(
+            &state,
+            &other,
+            vec![
+                calls_reply(&[("read", tools::SHELL_PROCESS, read.clone())]),
+                text_reply("Not mine."),
+            ],
+            false,
+        )
+        .await;
+        assert!(
+            matches!(&outcomes[..], [ToolOutcome::Failed(text)]
+                if text.starts_with(&format!("No shell process {process_id} in this session."))),
+            "another session cannot reach it: {outcomes:?}"
+        );
+
+        let (output, outcomes) = run_auto_turn(
+            &state,
+            &id,
+            vec![
+                calls_reply(&[
+                    (
+                        "write",
+                        tools::SHELL_PROCESS,
+                        json!({"action":"write","process_id":process_id,"text":"hi\n"}),
+                    ),
+                    ("read", tools::SHELL_PROCESS, read),
+                ]),
+                text_reply("Done."),
+            ],
+            false,
+        )
+        .await;
+        assert!(matches!(output, prompt::PromptOutput::Finished(_)));
+        assert!(
+            matches!(&outcomes[..], [ToolOutcome::Completed(_), ToolOutcome::Completed(text)]
+                if text.contains("State: exited\nExit code: 0") && text.contains("stdout:\ngot:hi")),
+            "a later turn uses the command: {outcomes:?}"
+        );
+
+        let later = state_over(state.store.clone());
+        let mut replayed = Vec::new();
+        later
+            .load_session(
+                &LoadSessionRequest::new(id.clone(), &workspace.0),
+                |update| {
+                    replayed.push(update);
+                    Ok(())
+                },
+            )
+            .unwrap();
+        assert!(
+            later
+                .active_session(&id)
+                .unwrap()
+                .shell_processes
+                .list()
+                .is_empty(),
+            "loading saved observations creates no process"
+        );
+        assert!(replayed.iter().any(|update| matches!(update,
+            SessionUpdate::ToolCall(call) if call.raw_output.as_ref().and_then(serde_json::Value::as_str)
+                .is_some_and(|text| text.starts_with(&format!("Started shell process {process_id}."))))));
+    }
+
+    #[tokio::test]
+    async fn deletion_stops_its_shell_processes_while_other_sessions_respond() {
+        use agent_client_protocol::Lines;
+        use futures::{SinkExt, StreamExt, channel::mpsc};
+        use serde_json::{Value, json};
+
+        let workspace = Workspace::new();
+        let state = state();
+        let observer = state.clone();
+        let doomed = create_session(&state, &workspace.0);
+        let kept = create_session(&state, &workspace.0);
+        // The detached process keeps the output pipes open, so cleanup waits
+        // for the output drain deadline.
+        start_shell_process(
+            &state,
+            &doomed,
+            &workspace.0,
+            "python3 -c 'import subprocess; p = subprocess.Popen([\"sleep\", \"30\"], start_new_session=True); open(\"detached\", \"w\").write(str(p.pid))'; echo $$ > doomed; exec sleep 30",
+        );
+        start_shell_process(&state, &kept, &workspace.0, "echo $$ > kept; exec sleep 30");
+        for file in ["doomed", "kept"] {
+            wait_for_file(&workspace.0.join(file)).await;
+        }
+        let (incoming_tx, incoming_rx) = mpsc::unbounded();
+        let (outgoing_tx, mut outgoing_rx) = mpsc::unbounded::<String>();
+        let transport = Lines::new(outgoing_tx.sink_map_err(io::Error::other), incoming_rx);
+        for message in [
+            json!({"jsonrpc":"2.0", "id":1, "method":"initialize", "params":{"protocolVersion":1,"clientCapabilities":{}}}),
+            json!({"jsonrpc":"2.0", "id":2, "method":"session/delete", "params":{"sessionId":doomed}}),
+            json!({"jsonrpc":"2.0", "id":3, "method":"session/list", "params":{}}),
+        ] {
+            incoming_tx.unbounded_send(Ok(message.to_string())).unwrap();
+        }
+        let client = async {
+            let mut incoming_tx = Some(incoming_tx);
+            let mut responses = Vec::new();
+            while let Some(line) = outgoing_rx.next().await {
+                let message: Value = serde_json::from_str(&line).unwrap();
+                match message["id"].as_u64() {
+                    Some(3) => {
+                        assert!(
+                            observer.active_session(&doomed).is_some(),
+                            "the deleting session keeps its shell processes until cleanup"
+                        );
+                        responses.push(3);
+                    }
+                    Some(2) => {
+                        assert!(message["error"].is_null(), "{message}");
+                        assert!(observer.active_session(&doomed).is_none());
+                        responses.push(2);
+                        drop(incoming_tx.take());
+                    }
+                    _ => {}
+                }
+            }
+            responses
+        };
+        let (result, responses) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            tokio::join!(serve(state, transport, std::future::pending()), client)
+        })
+        .await
+        .unwrap();
+        let detached = fs::read_to_string(workspace.0.join("detached")).unwrap();
+        rustix::process::kill_process(
+            rustix::process::Pid::from_raw(detached.parse().unwrap()).unwrap(),
+            rustix::process::Signal::KILL,
+        )
+        .unwrap();
+        result.unwrap();
+        assert_eq!(
+            responses,
+            [3, 2],
+            "another session responds while deletion waits"
+        );
+        assert_process_stopped(&workspace.0.join("doomed"), true).await;
+        assert_process_stopped(&workspace.0.join("kept"), true).await;
+    }
+
+    #[tokio::test]
+    async fn a_failed_deletion_keeps_the_session_and_its_shell_processes() {
+        let workspace = Workspace::new();
+        let state = state();
+        let id = create_session(&state, &workspace.0);
+        let process = start_shell_process(&state, &id, &workspace.0, "exec sleep 30");
+        state.store.with_connection(|connection| {
+            connection
+                .execute_batch(
+                    "CREATE TRIGGER refuse BEFORE DELETE ON sessions
+                     BEGIN SELECT RAISE(ABORT, 'disk full'); END;",
+                )
+                .unwrap()
+        });
+        assert!(
+            state
+                .delete_session(&DeleteSessionRequest::new(id.clone()))
+                .await
+                .is_err()
+        );
+        assert!(state.active_session(&id).is_some());
+        assert_eq!(process.state(), crate::shell_processes::State::Running);
+        state.shutdown_shell_processes().await;
+    }
+
+    #[tokio::test]
+    async fn a_termination_signal_rejects_new_operations_and_stops_every_shell_process() {
+        use agent_client_protocol::Lines;
+        use futures::{SinkExt, StreamExt, channel::mpsc, channel::oneshot};
+        use serde_json::{Value, json};
+
+        let workspace = Workspace::new();
+        let state = state();
+        let operations = state.operations.clone();
+        let id = create_session(&state, &workspace.0);
+        let idle = create_session(&state, &workspace.0);
+        start_shell_process(
+            &state,
+            &id,
+            &workspace.0,
+            "trap '' TERM; echo $$ > stubborn; exec sleep 30",
+        );
+        wait_for_file(&workspace.0.join("stubborn")).await;
+        // An operation still running when the signal arrives keeps the
+        // connection serving while shutdown waits for it.
+        let held = operations.try_load(&idle).unwrap();
+        let (signal_tx, signal_rx) = oneshot::channel::<()>();
+        let (incoming_tx, incoming_rx) = mpsc::unbounded();
+        let (outgoing_tx, mut outgoing_rx) = mpsc::unbounded::<String>();
+        let transport = Lines::new(outgoing_tx.sink_map_err(io::Error::other), incoming_rx);
+        incoming_tx
+            .unbounded_send(Ok(json!({"jsonrpc":"2.0", "id":1, "method":"initialize", "params":{"protocolVersion":1,"clientCapabilities":{}}}).to_string()))
+            .unwrap();
+        let client = async {
+            let mut signal_tx = Some(signal_tx);
+            let mut held = Some(held);
+            let mut rejected = None;
+            while let Some(line) = outgoing_rx.next().await {
+                let message: Value = serde_json::from_str(&line).unwrap();
+                match message["id"].as_u64() {
+                    Some(1) => {
+                        signal_tx.take().unwrap().send(()).unwrap();
+                        while !operations.is_closed() {
+                            tokio::task::yield_now().await;
+                        }
+                        incoming_tx
+                            .unbounded_send(Ok(json!({"jsonrpc":"2.0", "id":2, "method":"session/prompt", "params":{"sessionId":id,"prompt":[{"type":"text","text":"Hello"}]}}).to_string()))
+                            .unwrap();
+                    }
+                    Some(2) => {
+                        rejected = Some(message["error"]["data"].clone());
+                        drop(held.take());
+                    }
+                    _ => {}
+                }
+            }
+            rejected
+        };
+        let (result, rejected) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            tokio::join!(
+                serve(state, transport, async {
+                    let _ = signal_rx.await;
+                }),
+                client
+            )
+        })
+        .await
+        .unwrap();
+        result.unwrap();
+        assert_eq!(rejected, Some(serde_json::json!("Ox is shutting down")));
+        assert!(
+            operations_idle(&operations),
+            "the connection ended after its operations, without incoming EOF"
+        );
+        assert_process_stopped(&workspace.0.join("stubborn"), true).await;
     }
 
     #[test]
