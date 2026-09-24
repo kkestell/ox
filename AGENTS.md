@@ -32,7 +32,8 @@ THIS DOCUMENT MUST BE KEPT UP TO DATE
   an optional SIGTERM grace period.
 - `src/openrouter.rs`: The model catalog fetched from OpenRouter at startup,
   its catalog filter and each model's effort levels and image input support,
-  the default model, request encoding, context limits, client, streamed
+  the default model, model request parameters, request encoding with the skill
+  invocation message, context limits, client, streamed
   response assembly with usage parsing, and explicit input-context overflow
   errors.
 - `src/compaction.rs`: Image-aware request estimates, safe transcript cuts,
@@ -57,9 +58,9 @@ THIS DOCUMENT MUST BE KEPT UP TO DATE
 - `src/sessions.rs`: Transcript and durable model, effort, and mode setting
   types, ordered user message parts and image attachments, skill invocations,
   hook kinds, hook feedback, model usage, compaction
-  checkpoints with their summarizer cost, session cost, stored JSON
-  encoding, transcript validation, database path selection, and `SessionStore`
-  over one SQLite connection.
+  checkpoints with their summarizer cost, session cost, transcript entry
+  encoding as stored JSON, transcript validation, database path selection,
+  and `SessionStore` over one SQLite connection.
 - `src/acp.rs`: Connection wiring, `ServerState`, lazy OpenRouter client,
   request handlers, advertised slash commands and their prompt dispatch,
   global hooks captured at startup, per-session model, effort, and mode

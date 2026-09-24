@@ -18,11 +18,11 @@ use crate::cancellation::PromptCancellation;
 use crate::{
     compaction,
     hooks::{self, HookSource},
-    openrouter,
+    openrouter::{self, ModelRequestParameters},
     sessions::{
-        AssistantBatch, AssistantMessage, HookFeedback, HookFeedbackContent, HookKind, SessionMode,
-        SessionSettings, SessionSettingsChange, SessionStore, SessionSummary, SkillInvocation,
-        StopDecision, ToolCall, ToolOutcome, ToolResult, TranscriptEntry,
+        self, AssistantBatch, AssistantMessage, HookFeedback, HookFeedbackContent, HookKind,
+        SessionMode, SessionSettings, SessionStore, SessionSummary, SkillInvocation, StopDecision,
+        ToolCall, ToolOutcome, ToolResult, TranscriptEntry,
     },
     tools,
 };
@@ -130,10 +130,12 @@ impl fmt::Display for PromptOutcome {
 struct PromptRun<F> {
     store: SessionStore,
     openrouter: openrouter::Client,
-    settings: SessionSettings,
-    settings_change: SessionSettingsChange,
-    /// Sent before the transcript on every model request of this run.
-    system_prompt: String,
+    /// Sent with the transcript on every model request of this run.
+    parameters: ModelRequestParameters,
+    mode: SessionMode,
+    /// The model, effort, and mode entries saved immediately before the turn
+    /// start.
+    settings_entries: Vec<TranscriptEntry>,
     summary: SessionSummary,
     cancellation: PromptCancellation,
     send_update: F,
@@ -209,18 +211,28 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
         if !stored.transcript.is_empty() {
             settings.model.clone_from(&saved_settings.model);
         }
-        super::validate_settings(&settings)?;
-        let settings_change = SessionSettingsChange {
-            model: stored.transcript.is_empty().then(|| settings.model.clone()),
-            effort: (saved_settings.effort != settings.effort).then_some(settings.effort),
-            mode: (saved_settings.mode != settings.mode).then_some(settings.mode),
-        };
+        let parameters = ModelRequestParameters::new(
+            &settings.model,
+            settings.effort,
+            input.system_prompt.clone(),
+        )
+        .map_err(Error::into_internal_error)?;
+        let mut settings_entries = Vec::new();
+        if stored.transcript.is_empty() {
+            settings_entries.push(TranscriptEntry::Model(settings.model));
+        }
+        if saved_settings.effort != settings.effort {
+            settings_entries.push(TranscriptEntry::Effort(settings.effort));
+        }
+        if saved_settings.mode != settings.mode {
+            settings_entries.push(TranscriptEntry::Mode(settings.mode));
+        }
         Ok(Self {
             store,
             openrouter,
-            settings,
-            settings_change,
-            system_prompt: input.system_prompt.clone(),
+            parameters,
+            mode: settings.mode,
+            settings_entries,
             summary: stored.summary,
             cancellation,
             send_update,
@@ -249,57 +261,33 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
             TranscriptEntry::SkillInvocation(invocation) => !invocation.images.is_empty(),
             _ => false,
         };
-        if has_images
-            && !openrouter::catalog_model(&self.settings.model)
-                .expect("validated session model")
-                .accepts_images
-        {
+        if has_images && !self.parameters.model.accepts_images {
             return Err(Error::invalid_params().data(
                 "session model does not accept images; start a new session with an image-capable model",
             ));
         }
+        let start = self.transcript.len();
         let mut prospective = self.transcript.clone();
-        if let Some(model) = &self.settings_change.model {
-            prospective.push(TranscriptEntry::Model(model.clone()));
-        }
-        if let Some(effort) = self.settings_change.effort {
-            prospective.push(TranscriptEntry::Effort(effort));
-        }
-        if let Some(mode) = self.settings_change.mode {
-            prospective.push(TranscriptEntry::Mode(mode));
-        }
-        prospective.push(turn_start.clone());
-        if !compaction::input_fits(
-            &self.settings.model,
-            self.settings.effort,
-            &self.system_prompt,
-            &prospective,
-        )
-        .map_err(Error::into_internal_error)?
-        {
+        prospective.append(&mut self.settings_entries);
+        prospective.push(turn_start);
+        if !compaction::input_fits(&self.parameters, &prospective) {
             return Err(Error::invalid_params().data("prompt exceeds the model context limit"));
         }
         let updated = self
             .store
-            .append_turn_start(&self.summary.id, &self.settings_change, &turn_start)
+            .append_turn_start(&self.summary.id, &prospective[start..])
             .map_err(Error::into_internal_error)?;
-        let locks_model = self.settings_change.model.is_some();
-        if let Some(model) = self.settings_change.model.take() {
-            self.transcript.push(TranscriptEntry::Model(model));
-        }
-        if let Some(effort) = self.settings_change.effort.take() {
-            self.transcript.push(TranscriptEntry::Effort(effort));
-        }
-        if let Some(mode) = self.settings_change.mode.take() {
-            self.transcript.push(TranscriptEntry::Mode(mode));
-        }
+        let locks_model = matches!(prospective[start], TranscriptEntry::Model(_));
+        self.transcript = prospective;
         let mut updates = Vec::new();
         if locks_model {
+            let settings =
+                SessionSettings::new(self.parameters.model.id.clone(), self.parameters.effort)
+                    .with_mode(self.mode);
             updates.push(SessionUpdate::ConfigOptionUpdate(ConfigOptionUpdate::new(
-                super::config_options(&self.settings, true),
+                super::config_options(&settings, true),
             )));
         }
-        self.transcript.push(turn_start);
         let mut info = SessionInfoUpdate::new().updated_at(updated.updated_at);
         if self.summary.session_title.is_none()
             && let Some(session_title) = updated.session_title
@@ -460,22 +448,17 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
                 None => String::new(),
             },
             session_id: self.summary.id.to_string(),
-            mode: self.settings.mode,
+            mode: self.mode,
             run_id: self.run_id.clone(),
             workspace: self.summary.workspace_path.clone(),
-            model: self.settings.model.clone(),
-            effort: self.settings.effort,
+            model: self.parameters.model.id.clone(),
+            effort: self.parameters.effort,
         }
     }
 
     fn hook_invocation(&self) -> &SkillInvocation {
-        match self.transcript.iter().rev().find(|entry| {
-            matches!(
-                entry,
-                TranscriptEntry::UserMessage(_) | TranscriptEntry::SkillInvocation(_)
-            )
-        }) {
-            Some(TranscriptEntry::SkillInvocation(invocation)) => invocation,
+        match sessions::latest_turn_start(&self.transcript) {
+            Some((_, TranscriptEntry::SkillInvocation(invocation))) => invocation,
             _ => panic!("a skill hook runs only in a turn started by its invocation"),
         }
     }
@@ -645,14 +628,7 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
         };
         let mut prospective = self.transcript.clone();
         prospective.push(TranscriptEntry::HookFeedback(feedback.clone()));
-        if !compaction::input_fits(
-            &self.settings.model,
-            self.settings.effort,
-            &self.system_prompt,
-            &prospective,
-        )
-        .map_err(PromptOutcome::OpenRouter)?
-        {
+        if !compaction::input_fits(&self.parameters, &prospective) {
             return Err(PromptOutcome::Hook(io::Error::other(format!(
                 "{} feedback exceeds the model context limit",
                 feedback.label()
@@ -676,26 +652,12 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
             admission,
             automatic_threshold,
             ..
-        } = compaction::budget(&self.settings.model).map_err(PromptOutcome::OpenRouter)?;
-        let estimate = compaction::request_estimate(
-            &self.settings.model,
-            self.settings.effort,
-            &self.system_prompt,
-            &self.transcript,
-        )
-        .map_err(PromptOutcome::OpenRouter)?;
+        } = compaction::budget(self.parameters.model);
+        let estimate = compaction::request_estimate(&self.parameters, &self.transcript);
         if estimate >= automatic_threshold && compaction::has_candidate(&self.transcript) {
             self.compact().await?;
         }
-        if compaction::request_estimate(
-            &self.settings.model,
-            self.settings.effort,
-            &self.system_prompt,
-            &self.transcript,
-        )
-        .map_err(PromptOutcome::OpenRouter)?
-            > admission
-        {
+        if compaction::request_estimate(&self.parameters, &self.transcript) > admission {
             return Err(PromptOutcome::OpenRouter(compaction::context_error()));
         }
         let mut retried = false;
@@ -704,12 +666,7 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
             let started = tokio::select! {
                 biased;
                 () = self.cancellation.cancelled() => return Err(PromptOutcome::Cancelled),
-                started = self.openrouter.stream_completion(
-                    &self.settings.model,
-                    self.settings.effort,
-                    &self.system_prompt,
-                    &projected,
-                ) => started,
+                started = self.openrouter.stream_completion(&self.parameters, &projected) => started,
             };
             let mut stream = match started {
                 Ok(stream) => stream,
@@ -755,8 +712,7 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
             &self.openrouter,
             &self.cancellation,
             &self.summary.id,
-            &self.settings,
-            &self.system_prompt,
+            &self.parameters,
             &mut self.transcript,
         )
         .await
@@ -775,9 +731,7 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
 
     /// Reports the context tokens and session cost of the saved transcript.
     fn send_usage(&mut self) -> std::result::Result<(), PromptOutcome> {
-        let update = convert::usage_update(&self.transcript, &self.settings, &self.system_prompt)
-            .map_err(PromptOutcome::OpenRouter)?;
-        if let Some(update) = update {
+        if let Some(update) = convert::usage_update(&self.transcript, &self.parameters) {
             (self.send_update)(update).map_err(PromptOutcome::AcpUpdate)?;
         }
         Ok(())
@@ -827,7 +781,7 @@ impl<F: FnMut(SessionUpdate) -> Result<()>> PromptRun<F> {
         if call.name != tools::SHELL {
             return Ok(true);
         }
-        if self.settings.mode == SessionMode::Auto {
+        if self.mode == SessionMode::Auto {
             return Ok(true);
         }
         let PermissionTransport::Acp(connection) = &self.permission_transport else {
@@ -1949,14 +1903,10 @@ mod tests {
         // `before_run` saves nothing for `{}`; an error or oversized feedback
         // ends the run before any model request.
         let system = system_prompt::for_workspace(&Workspace::new().0).unwrap();
-        let admission = compaction::budget(default_model()).unwrap().admission;
-        let base = compaction::request_estimate(
-            default_model(),
-            EffortLevel::Default,
-            &system,
-            &[model(), auto(), invocation("")],
-        )
-        .unwrap();
+        let parameters =
+            ModelRequestParameters::new(default_model(), EffortLevel::Default, system).unwrap();
+        let admission = compaction::budget(parameters.model).admission;
+        let base = compaction::request_estimate(&parameters, &[model(), auto(), invocation("")]);
         let near_limit = "x".repeat((admission - base - 100) * 3);
         let large = r#"printf '{"message":"%s"}' $(head -c 1000 /dev/zero | tr '\0' y)"#;
         for (arguments, before_run, expected) in [
@@ -2177,12 +2127,10 @@ mod tests {
         store
             .append_turn_start(
                 &id,
-                &SessionSettingsChange {
-                    model: Some(default_model().to_owned()),
-                    effort: None,
-                    mode: None,
-                },
-                &TranscriptEntry::UserMessage("unanswered ".repeat(180_000).into()),
+                &[
+                    TranscriptEntry::Model(default_model().to_owned()),
+                    TranscriptEntry::UserMessage("unanswered ".repeat(180_000).into()),
+                ],
             )
             .unwrap();
         drop(store);
@@ -2235,12 +2183,10 @@ mod tests {
             .store
             .append_turn_start(
                 &harness.session_id,
-                &SessionSettingsChange {
-                    model: Some(default_model().to_owned()),
-                    effort: None,
-                    mode: None,
-                },
-                &TranscriptEntry::UserMessage(old.clone().into()),
+                &[
+                    TranscriptEntry::Model(default_model().to_owned()),
+                    TranscriptEntry::UserMessage(old.clone().into()),
+                ],
             )
             .unwrap();
         let TranscriptEntry::AssistantMessage(message) = answer("Earlier answer") else {
@@ -2279,9 +2225,9 @@ mod tests {
         ])
         .await;
         let system = system_prompt::for_workspace(&between.workspace.0).unwrap();
-        let automatic_threshold = compaction::budget(default_model())
-            .unwrap()
-            .automatic_threshold;
+        let parameters =
+            ModelRequestParameters::new(default_model(), EffortLevel::Default, system).unwrap();
+        let automatic_threshold = compaction::budget(parameters.model).automatic_threshold;
         let base = "x".repeat(2_000_000);
         let prospective = vec![
             model(),
@@ -2290,24 +2236,17 @@ mod tests {
             answer("Earlier answer"),
             user("next request"),
         ];
-        let base_estimate = compaction::request_estimate(
-            default_model(),
-            EffortLevel::Default,
-            &system,
-            &prospective,
-        )
-        .unwrap();
+        let base_estimate = compaction::request_estimate(&parameters, &prospective);
         let old = "x".repeat(2_000_000 + (automatic_threshold - base_estimate - 50) * 3);
         between
             .store
             .append_turn_start(
                 &between.session_id,
-                &SessionSettingsChange {
-                    model: Some(default_model().to_owned()),
-                    effort: None,
-                    mode: Some(SessionMode::Auto),
-                },
-                &TranscriptEntry::UserMessage(old.clone().into()),
+                &[
+                    TranscriptEntry::Model(default_model().to_owned()),
+                    TranscriptEntry::Mode(SessionMode::Auto),
+                    TranscriptEntry::UserMessage(old.clone().into()),
+                ],
             )
             .unwrap();
         let TranscriptEntry::AssistantMessage(message) = answer("Earlier answer") else {
@@ -2392,12 +2331,10 @@ mod tests {
             .store
             .append_turn_start(
                 &harness.session_id,
-                &SessionSettingsChange {
-                    model: Some(default_model().to_owned()),
-                    effort: None,
-                    mode: None,
-                },
-                &TranscriptEntry::UserMessage("history ".repeat(4000).into()),
+                &[
+                    TranscriptEntry::Model(default_model().to_owned()),
+                    TranscriptEntry::UserMessage("history ".repeat(4000).into()),
+                ],
             )
             .unwrap();
         let TranscriptEntry::AssistantMessage(message) = answer("Earlier answer") else {
@@ -2432,12 +2369,10 @@ mod tests {
             .store
             .append_turn_start(
                 &no_reduction.session_id,
-                &SessionSettingsChange {
-                    model: Some(default_model().to_owned()),
-                    effort: None,
-                    mode: None,
-                },
-                &TranscriptEntry::UserMessage("old".to_owned().into()),
+                &[
+                    TranscriptEntry::Model(default_model().to_owned()),
+                    TranscriptEntry::UserMessage("old".to_owned().into()),
+                ],
             )
             .unwrap();
         let TranscriptEntry::AssistantMessage(message) = answer("done") else {
@@ -2525,12 +2460,11 @@ mod tests {
             .store
             .append_turn_start(
                 &harness.session_id,
-                &SessionSettingsChange {
-                    model: Some(saved.model.clone()),
-                    effort: Some(saved.effort),
-                    mode: None,
-                },
-                &TranscriptEntry::UserMessage("saved turn".to_owned().into()),
+                &[
+                    TranscriptEntry::Model(saved.model.clone()),
+                    TranscriptEntry::Effort(saved.effort),
+                    TranscriptEntry::UserMessage("saved turn".to_owned().into()),
+                ],
             )
             .unwrap();
 
@@ -2579,12 +2513,11 @@ mod tests {
         store
             .append_turn_start(
                 &unknown,
-                &SessionSettingsChange {
-                    model: Some("retired/model".to_owned()),
-                    effort: Some(EffortLevel::High),
-                    mode: None,
-                },
-                &TranscriptEntry::UserMessage("saved turn".to_owned().into()),
+                &[
+                    TranscriptEntry::Model("retired/model".to_owned()),
+                    TranscriptEntry::Effort(EffortLevel::High),
+                    TranscriptEntry::UserMessage("saved turn".to_owned().into()),
+                ],
             )
             .unwrap();
         let before = store.read(&unknown).unwrap().unwrap().transcript;

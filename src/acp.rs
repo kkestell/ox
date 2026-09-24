@@ -32,7 +32,8 @@ use agent_client_protocol::{
 use crate::{
     auth,
     cancellation::PromptCancellation,
-    compaction, hooks, openrouter,
+    compaction, hooks,
+    openrouter::{self, ModelRequestParameters},
     sessions::{
         self, EffortLevel, SessionMode, SessionSettings, SessionStore, SessionSummary,
         SkillInvocation, TranscriptEntry, UserMessage, UserMessagePart,
@@ -44,27 +45,6 @@ use operations::{OperationGuard, SessionOperations};
 
 fn default_settings() -> SessionSettings {
     SessionSettings::new(openrouter::default_model(), EffortLevel::Default)
-}
-
-/// Rejects saved or selected settings the fetched model catalog no longer
-/// accepts.
-fn validate_settings(settings: &SessionSettings) -> Result<()> {
-    let message = match openrouter::catalog_model(&settings.model) {
-        None => format!(
-            "session model {} is not in the model catalog",
-            settings.model
-        ),
-        Some(model) if !model.supports(settings.effort) => format!(
-            "session model {} does not accept effort {}",
-            settings.model,
-            settings.effort.id()
-        ),
-        Some(_) => return Ok(()),
-    };
-    Err(Error::into_internal_error(io::Error::new(
-        ErrorKind::InvalidData,
-        message,
-    )))
 }
 
 fn config_options(settings: &SessionSettings, model_locked: bool) -> Vec<SessionConfigOption> {
@@ -250,27 +230,27 @@ impl ServerState {
             return Ok(PromptResponse::new(StopReason::EndTurn));
         }
         let client = self.openrouter_client()?;
-        let mut settings = stored.saved_settings(&default_settings());
-        validate_settings(&settings)?;
-        settings.effort = active.selections.effort;
+        let saved_settings = stored.saved_settings(&default_settings());
+        let mut parameters = ModelRequestParameters::new(
+            &saved_settings.model,
+            saved_settings.effort,
+            active.system_prompt,
+        )
+        .map_err(Error::into_internal_error)?;
+        parameters.effort = active.selections.effort;
         let mut transcript = stored.transcript;
         match compaction::compact(
             &self.store,
             &client,
             cancellation,
             session_id,
-            &settings,
-            &active.system_prompt,
+            &parameters,
             &mut transcript,
         )
         .await
         {
             Ok(compacted) => {
-                if compacted
-                    && let Some(update) =
-                        convert::usage_update(&transcript, &settings, &active.system_prompt)
-                            .map_err(Error::into_internal_error)?
-                {
+                if compacted && let Some(update) = convert::usage_update(&transcript, &parameters) {
                     send_update(update)?;
                 }
                 Ok(PromptResponse::new(if cancellation.is_cancelled() {
@@ -317,7 +297,8 @@ impl ServerState {
             .map_err(Error::into_internal_error)?
             .ok_or_else(|| not_found(&request.session_id))?;
         let saved_settings = stored.saved_settings(&default_settings());
-        validate_settings(&saved_settings)?;
+        ModelRequestParameters::new(&saved_settings.model, saved_settings.effort, String::new())
+            .map_err(Error::into_internal_error)?;
         let model_locked = !stored.transcript.is_empty();
         let mut active = self.active.lock().expect("active sessions mutex poisoned");
         let selections = &mut active
@@ -393,7 +374,6 @@ impl ServerState {
             )));
         }
         let saved_settings = stored.saved_settings(&default_settings());
-        validate_settings(&saved_settings)?;
         let model_locked = !stored.transcript.is_empty();
         // A repeated load keeps the system prompt and skill catalog captured by
         // the first load.
@@ -405,8 +385,13 @@ impl ServerState {
                 skills::load(&stored.summary.workspace_path).map_err(Error::into_internal_error)?,
             ),
         };
-        let usage = convert::usage_update(&stored.transcript, &saved_settings, &system_prompt)
-            .map_err(Error::into_internal_error)?;
+        let parameters = ModelRequestParameters::new(
+            &saved_settings.model,
+            saved_settings.effort,
+            system_prompt.clone(),
+        )
+        .map_err(Error::into_internal_error)?;
+        let usage = convert::usage_update(&stored.transcript, &parameters);
         self.activate(
             request.session_id.clone(),
             ActiveSession {
@@ -907,10 +892,7 @@ mod tests {
     async fn manual_compact_command_uses_the_active_prompt_without_saving_a_message() {
         use crate::{
             openrouter::fixture::{Reply, Server, delta, sse, usage},
-            sessions::{
-                AssistantBatch, AssistantMessage, ModelUsage, SessionSettingsChange,
-                TranscriptEntry,
-            },
+            sessions::{AssistantBatch, AssistantMessage, ModelUsage, TranscriptEntry},
         };
         let store = SessionStore::in_memory();
         let state = ServerState::new(store.clone(), None);
@@ -937,12 +919,10 @@ mod tests {
         store
             .append_turn_start(
                 &id,
-                &SessionSettingsChange {
-                    model: Some(openrouter::default_model().to_owned()),
-                    effort: None,
-                    mode: None,
-                },
-                &TranscriptEntry::UserMessage("previous work ".repeat(3000).into()),
+                &[
+                    TranscriptEntry::Model(openrouter::default_model().to_owned()),
+                    TranscriptEntry::UserMessage("previous work ".repeat(3000).into()),
+                ],
             )
             .unwrap();
         store
@@ -991,12 +971,14 @@ mod tests {
                 if checkpoint.summarizer_cost == Some(0.125)
         ));
         let estimate = compaction::request_estimate(
-            openrouter::default_model(),
-            EffortLevel::Default,
-            "captured system",
+            &ModelRequestParameters::new(
+                openrouter::default_model(),
+                EffortLevel::Default,
+                "captured system".to_owned(),
+            )
+            .unwrap(),
             &after,
-        )
-        .unwrap();
+        );
         assert!(matches!(
             &updates[..],
             [SessionUpdate::UsageUpdate(usage)]
@@ -1387,12 +1369,10 @@ mod tests {
             .store
             .append_turn_start(
                 &created.session_id,
-                &sessions::SessionSettingsChange {
-                    model: Some(openrouter::default_model().to_owned()),
-                    effort: None,
-                    mode: None,
-                },
-                &TranscriptEntry::UserMessage("Hello".to_owned().into()),
+                &[
+                    TranscriptEntry::Model(openrouter::default_model().to_owned()),
+                    TranscriptEntry::UserMessage("Hello".to_owned().into()),
+                ],
             )
             .unwrap();
 
@@ -1430,12 +1410,10 @@ mod tests {
             .store
             .append_turn_start(
                 &created.session_id,
-                &sessions::SessionSettingsChange {
-                    model: Some("retired/model".to_owned()),
-                    effort: None,
-                    mode: None,
-                },
-                &TranscriptEntry::UserMessage("Hello".to_owned().into()),
+                &[
+                    TranscriptEntry::Model("retired/model".to_owned()),
+                    TranscriptEntry::UserMessage("Hello".to_owned().into()),
+                ],
             )
             .unwrap();
         let mut updates = Vec::new();
@@ -1565,12 +1543,11 @@ mod tests {
             .store
             .append_turn_start(
                 &created.session_id,
-                &sessions::SessionSettingsChange {
-                    model: Some(chosen.to_owned()),
-                    effort: None,
-                    mode: Some(SessionMode::Auto),
-                },
-                &TranscriptEntry::UserMessage("Hello".to_owned().into()),
+                &[
+                    TranscriptEntry::Model(chosen.to_owned()),
+                    TranscriptEntry::Mode(SessionMode::Auto),
+                    TranscriptEntry::UserMessage("Hello".to_owned().into()),
+                ],
             )
             .unwrap();
         assert_eq!(
@@ -1756,12 +1733,10 @@ mod tests {
         store
             .append_turn_start(
                 &saved,
-                &sessions::SessionSettingsChange {
-                    model: Some(openrouter::default_model().to_owned()),
-                    effort: None,
-                    mode: None,
-                },
-                &TranscriptEntry::UserMessage("Earlier".to_owned().into()),
+                &[
+                    TranscriptEntry::Model(openrouter::default_model().to_owned()),
+                    TranscriptEntry::UserMessage("Earlier".to_owned().into()),
+                ],
             )
             .unwrap();
         let id = create_session(&state, Path::new("/workspace"));

@@ -171,6 +171,9 @@
   `--model`.
 - **Model request**: One OpenRouter chat-completion HTTP request. A prompt run
   may make several.
+- **Model request parameters**: The validated catalog model, effort level, and
+  system prompt that every ordinary model request in a turn sends with the
+  transcript. It is `ModelRequestParameters` in code.
 - **Completion stream**: The reader for one streamed OpenRouter response after
   its HTTP request has succeeded. It yields output deltas followed by one
   completion.

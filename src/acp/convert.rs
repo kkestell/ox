@@ -14,10 +14,11 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use serde_json::Value;
 
 use crate::{
-    compaction, openrouter,
+    compaction,
+    openrouter::ModelRequestParameters,
     sessions::{
-        self, AssistantMessage, HookFeedback, HookKind, ImageAttachment, SessionSettings, ToolCall,
-        ToolOutcome, ToolResult, TranscriptEntry, UserMessage, UserMessagePart,
+        self, AssistantMessage, HookFeedback, HookKind, ImageAttachment, ToolCall, ToolOutcome,
+        ToolResult, TranscriptEntry, UserMessage, UserMessagePart,
     },
     tools,
 };
@@ -114,39 +115,25 @@ fn text_chunk(text: &str) -> ContentChunk {
 /// the first assistant message.
 pub fn usage_update(
     transcript: &[TranscriptEntry],
-    settings: &SessionSettings,
-    system_prompt: &str,
-) -> std::io::Result<Option<SessionUpdate>> {
+    parameters: &ModelRequestParameters,
+) -> Option<SessionUpdate> {
     let latest = transcript.iter().rev().find(|entry| {
         matches!(
             entry,
             TranscriptEntry::AssistantMessage(_) | TranscriptEntry::CompactionCheckpoint(_)
         )
     });
-    let used = match latest {
-        None => return Ok(None),
-        Some(TranscriptEntry::AssistantMessage(AssistantMessage {
+    let used = match latest? {
+        TranscriptEntry::AssistantMessage(AssistantMessage {
             usage: Some(usage), ..
-        })) => usage.input_tokens + usage.output_tokens,
-        Some(_) => compaction::request_estimate(
-            &settings.model,
-            settings.effort,
-            system_prompt,
-            transcript,
-        )? as u64,
+        }) => usage.input_tokens + usage.output_tokens,
+        _ => compaction::request_estimate(parameters, transcript) as u64,
     };
-    let size = openrouter::catalog_model(&settings.model)
-        .ok_or_else(|| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                format!("unknown model {}", settings.model),
-            )
-        })?
-        .context_limit as u64;
+    let size = parameters.model.context_limit as u64;
     let cost = sessions::session_cost(transcript).map(|amount| Cost::new(amount, "USD"));
-    Ok(Some(SessionUpdate::UsageUpdate(
+    Some(SessionUpdate::UsageUpdate(
         UsageUpdate::new(used, size).cost(cost),
-    )))
+    ))
 }
 
 /// Announces a call the model made, before anything runs.
@@ -397,11 +384,10 @@ mod tests {
         store
             .append_turn_start(
                 &id,
-                &sessions::SessionSettingsChange {
-                    model: Some(openrouter::default_model().to_owned()),
-                    ..Default::default()
-                },
-                &TranscriptEntry::UserMessage(message.clone()),
+                &[
+                    TranscriptEntry::Model(crate::openrouter::default_model().to_owned()),
+                    TranscriptEntry::UserMessage(message.clone()),
+                ],
             )
             .unwrap();
         let stored = store.read(&id).unwrap().unwrap();

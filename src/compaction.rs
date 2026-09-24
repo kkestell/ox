@@ -11,10 +11,10 @@ use serde_json::Value;
 
 use crate::{
     cancellation::PromptCancellation,
-    openrouter::{self, Client},
+    openrouter::{self, CatalogModel, Client, ModelRequestParameters},
     sessions::{
-        CompactionCheckpoint, EffortLevel, HookFeedbackContent, SessionSettings, SessionStore,
-        StopDecision, TranscriptEntry, UserMessagePart,
+        self, CompactionCheckpoint, HookFeedbackContent, SessionStore, StopDecision,
+        TranscriptEntry, UserMessage, UserMessagePart,
     },
 };
 
@@ -39,27 +39,22 @@ pub struct Budget {
     pub cut_target: usize,
 }
 
-pub fn budget(model: &str) -> io::Result<Budget> {
-    let limit = openrouter::catalog_model(model)
-        .ok_or_else(|| io::Error::new(ErrorKind::InvalidInput, "unknown model"))?
-        .context_limit;
+pub fn budget(model: &CatalogModel) -> Budget {
+    let limit = model.context_limit;
     let admission = limit - 8_000.max(limit / 10);
-    Ok(Budget {
+    Budget {
         admission,
         automatic_threshold: admission * 80 / 100,
         cut_target: admission * 60 / 100,
-    })
+    }
 }
 
 pub fn request_estimate(
-    model: &str,
-    effort: EffortLevel,
-    system: &str,
+    parameters: &ModelRequestParameters,
     transcript: &[TranscriptEntry],
-) -> io::Result<usize> {
-    let projected = projection(transcript);
-    let body = openrouter::ordinary_body(model, effort, system, &projected)?;
-    Ok(tokens(estimated_bytes(body)))
+) -> usize {
+    let body = openrouter::ordinary_body(parameters, &projection(transcript));
+    tokens(estimated_bytes(body))
 }
 
 /// Count image data as a fixed token allowance. Encoded base64 is request
@@ -115,12 +110,7 @@ pub fn projection(transcript: &[TranscriptEntry]) -> Vec<TranscriptEntry> {
 /// long hook-driven run keeps its instructions and arguments this way until a
 /// later turn begins.
 fn repeated_invocation(transcript: &[TranscriptEntry], cut: usize) -> Option<usize> {
-    let (index, entry) = transcript.iter().enumerate().rev().find(|(_, entry)| {
-        matches!(
-            entry,
-            TranscriptEntry::UserMessage(_) | TranscriptEntry::SkillInvocation(_)
-        )
-    })?;
+    let (index, entry) = sessions::latest_turn_start(transcript)?;
     (index < cut && matches!(entry, TranscriptEntry::SkillInvocation(_))).then_some(index)
 }
 
@@ -173,66 +163,49 @@ fn candidates(transcript: &[TranscriptEntry]) -> Vec<usize> {
 }
 
 fn projected_estimate(
-    model: &str,
-    effort: EffortLevel,
-    system: &str,
+    parameters: &ModelRequestParameters,
     transcript: &[TranscriptEntry],
     cut: usize,
     summary: &str,
-) -> io::Result<usize> {
-    let body = openrouter::ordinary_body(
-        model,
-        effort,
-        system,
-        &projection_at(transcript, cut, summary),
-    )?;
-    Ok(tokens(estimated_bytes(body)))
+) -> usize {
+    let body = openrouter::ordinary_body(parameters, &projection_at(transcript, cut, summary));
+    tokens(estimated_bytes(body))
 }
 
 /// A prospective prompt is rejected only if even the largest complete cut,
 /// with room for a new summary, cannot fit the admission budget.
-pub fn input_fits(
-    model: &str,
-    effort: EffortLevel,
-    system: &str,
-    prospective: &[TranscriptEntry],
-) -> io::Result<bool> {
-    let admission = budget(model)?.admission;
-    if request_estimate(model, effort, system, prospective)? <= admission {
-        return Ok(true);
+pub fn input_fits(parameters: &ModelRequestParameters, prospective: &[TranscriptEntry]) -> bool {
+    let admission = budget(parameters.model).admission;
+    if request_estimate(parameters, prospective) <= admission {
+        return true;
     }
     let Some(cut) = candidates(prospective).last().copied() else {
-        return Ok(false);
+        return false;
     };
     projected_estimate(
-        model,
-        effort,
-        system,
+        parameters,
         prospective,
         cut,
         &"x".repeat(SUMMARY_ALLOWANCE_BYTES),
-    )
-    .map(|estimate| estimate <= admission)
+    ) <= admission
 }
 
 fn ranked_cuts(
-    model: &str,
-    effort: EffortLevel,
-    system: &str,
+    parameters: &ModelRequestParameters,
     transcript: &[TranscriptEntry],
     original: usize,
-) -> io::Result<Vec<usize>> {
+) -> Vec<usize> {
     let Budget {
         admission,
         cut_target,
         ..
-    } = budget(model)?;
+    } = budget(parameters.model);
     let start = latest(transcript).map_or(0, |checkpoint| checkpoint.covered_prefix);
     let cuts = candidates(transcript);
     let summary = TranscriptEntry::UserMessage(
         format!("{SUMMARY_LABEL}{}", "x".repeat(SUMMARY_ALLOWANCE_BYTES)).into(),
     );
-    let base = openrouter::ordinary_body(model, effort, system, std::slice::from_ref(&summary))?;
+    let base = openrouter::ordinary_body(parameters, std::slice::from_ref(&summary));
     let base_bytes = estimated_bytes(base);
     let mut suffix_bytes = vec![0; transcript.len() - start + 1];
     for index in (start..transcript.len()).rev() {
@@ -255,7 +228,7 @@ fn ranked_cuts(
         ranked.push((cut, rank));
     }
     ranked.sort_by_key(|(_, rank)| *rank);
-    Ok(ranked.into_iter().map(|(cut, _)| cut).collect())
+    ranked.into_iter().map(|(cut, _)| cut).collect()
 }
 
 /// The serialized size an entry adds to a request body, counting the comma that
@@ -286,6 +259,20 @@ fn tool_result_excerpt(text: &str) -> String {
     format!("{head}\n[... {omitted} characters omitted from tool result ...]\n{tail}")
 }
 
+fn push_user_request(
+    fields: &mut VecDeque<(String, String, usize)>,
+    source: &str,
+    message: &UserMessage,
+) {
+    for part in &message.parts {
+        let value = match part {
+            UserMessagePart::Text(text) => text.clone(),
+            UserMessagePart::Image(image) => format!("[image: {}]", image.mime_type),
+        };
+        fields.push_back((format!("{source} user request"), value, 1));
+    }
+}
+
 fn material(transcript: &[TranscriptEntry], cut: usize) -> VecDeque<(String, String, usize)> {
     let start = latest(transcript).map_or(0, |checkpoint| checkpoint.covered_prefix);
     let mut fields = VecDeque::new();
@@ -293,28 +280,13 @@ fn material(transcript: &[TranscriptEntry], cut: usize) -> VecDeque<(String, Str
         let source = format!("Entry {}", start + index);
         match entry {
             TranscriptEntry::UserMessage(message) => {
-                for part in &message.parts {
-                    let value = match part {
-                        UserMessagePart::Text(text) => text.clone(),
-                        UserMessagePart::Image(image) => format!("[image: {}]", image.mime_type),
-                    };
-                    fields.push_back((format!("{source} user request"), value, 1));
-                }
+                push_user_request(&mut fields, &source, message);
             }
-            TranscriptEntry::SkillInvocation(invocation) => {
-                fields.push_back((
-                    format!("{source} user request"),
-                    openrouter::skill_invocation_text(invocation),
-                    1,
-                ));
-                for image in &invocation.images {
-                    fields.push_back((
-                        format!("{source} user request"),
-                        format!("[image: {}]", image.mime_type),
-                        1,
-                    ));
-                }
-            }
+            TranscriptEntry::SkillInvocation(invocation) => push_user_request(
+                &mut fields,
+                &source,
+                &openrouter::skill_invocation_message(invocation),
+            ),
             TranscriptEntry::HookFeedback(feedback) => {
                 let decision = match feedback.content {
                     HookFeedbackContent::BeforeStop {
@@ -372,21 +344,18 @@ fn material(transcript: &[TranscriptEntry], cut: usize) -> VecDeque<(String, Str
     fields
 }
 
-fn summary_request_fits(model: &str, previous: &str, piece: &str) -> io::Result<bool> {
-    let limit = openrouter::catalog_model(model)
-        .expect("validated model")
-        .context_limit;
-    let body = openrouter::summarizer_body(model, previous, piece)?;
-    Ok(tokens(
+fn summary_request_fits(model: &CatalogModel, previous: &str, piece: &str) -> bool {
+    let body = openrouter::summarizer_body(model, previous, piece);
+    tokens(
         serde_json::to_vec(&body)
             .expect("summary body serializes")
             .len(),
     ) + SUMMARY_OUTPUT_TOKENS
-        <= limit)
+        <= model.context_limit
 }
 
 fn next_piece(
-    model: &str,
+    model: &CatalogModel,
     previous: &str,
     fields: &mut VecDeque<(String, String, usize)>,
 ) -> io::Result<String> {
@@ -400,7 +369,7 @@ fn next_piece(
                 take -= 1;
             }
             let addition = format!("{header}{}\n", &value[..take]);
-            if summary_request_fits(model, previous, &(piece.clone() + &addition))? {
+            if summary_request_fits(model, previous, &(piece.clone() + &addition)) {
                 break;
             }
             if take == 0 {
@@ -436,16 +405,14 @@ pub async fn compact(
     client: &Client,
     cancellation: &PromptCancellation,
     id: &SessionId,
-    settings: &SessionSettings,
-    system: &str,
+    parameters: &ModelRequestParameters,
     transcript: &mut Vec<TranscriptEntry>,
 ) -> io::Result<bool> {
-    let model = settings.model.as_str();
-    let effort = settings.effort;
-    let original = request_estimate(model, effort, system, transcript)?;
+    let model = parameters.model;
+    let original = request_estimate(parameters, transcript);
     // Every summarizer request counts, including those for rejected cuts.
     let mut summarizer_cost: Option<f64> = None;
-    for cut in ranked_cuts(model, effort, system, transcript, original)? {
+    for cut in ranked_cuts(parameters, transcript, original) {
         let mut fields = material(transcript, cut);
         if fields.is_empty() {
             continue;
@@ -470,8 +437,8 @@ pub async fn compact(
                 "compaction cancelled",
             ));
         }
-        let actual = projected_estimate(model, effort, system, transcript, cut, &summary)?;
-        if actual >= original || actual > budget(model)?.admission {
+        let actual = projected_estimate(parameters, transcript, cut, &summary);
+        if actual >= original || actual > budget(model).admission {
             continue;
         }
         let checkpoint = CompactionCheckpoint {
@@ -495,10 +462,15 @@ mod tests {
             fixture::{Reply, Server, text_reply},
         },
         sessions::{
-            AssistantBatch, AssistantMessage, HookFeedback, SessionSettingsChange, SkillInvocation,
-            ToolCall, ToolOutcome, ToolResult,
+            AssistantBatch, AssistantMessage, EffortLevel, HookFeedback, ImageAttachment,
+            SkillInvocation, ToolCall, ToolOutcome, ToolResult,
         },
     };
+
+    fn parameters() -> ModelRequestParameters {
+        ModelRequestParameters::new(default_model(), EffortLevel::Default, "system".to_owned())
+            .unwrap()
+    }
 
     fn answer(text: &str) -> AssistantBatch {
         AssistantBatch::new(
@@ -543,17 +515,15 @@ mod tests {
         store
             .append_turn_start(
                 &id,
-                &SessionSettingsChange {
-                    model: Some(default_model().to_owned()),
-                    effort: None,
-                    mode: None,
-                },
-                &TranscriptEntry::SkillInvocation(SkillInvocation {
-                    name: "goal".to_owned(),
-                    arguments: "Record the old details.".to_owned(),
-                    instructions: "Work until the hook stops you.".to_owned(),
-                    images: vec![],
-                }),
+                &[
+                    TranscriptEntry::Model(default_model().to_owned()),
+                    TranscriptEntry::SkillInvocation(SkillInvocation {
+                        name: "goal".to_owned(),
+                        arguments: "Record the old details.".to_owned(),
+                        instructions: "Work until the hook stops you.".to_owned(),
+                        images: vec![],
+                    }),
+                ],
             )
             .unwrap();
         let feedback = |content| HookFeedback {
@@ -593,8 +563,8 @@ mod tests {
         let cancellation = PromptCancellation::new();
         let mut transcript = store.read(&id).unwrap().unwrap().transcript;
         assert!(
-            request_estimate(default_model(), EffortLevel::Default, "system", &transcript).unwrap()
-                < budget(default_model()).unwrap().automatic_threshold,
+            request_estimate(&parameters(), &transcript)
+                < budget(parameters().model).automatic_threshold,
             "manual compaction is below the automatic trigger"
         );
         assert!(
@@ -603,8 +573,7 @@ mod tests {
                 &server.client(),
                 &cancellation,
                 &id,
-                &SessionSettings::new(default_model(), EffortLevel::Default),
-                "system",
+                &parameters(),
                 &mut transcript
             )
             .await
@@ -614,8 +583,9 @@ mod tests {
         store
             .append_turn_start(
                 &id,
-                &SessionSettingsChange::default(),
-                &TranscriptEntry::UserMessage("active request".to_owned().into()),
+                &[TranscriptEntry::UserMessage(
+                    "active request".to_owned().into(),
+                )],
             )
             .unwrap();
         transcript.push(TranscriptEntry::UserMessage(
@@ -631,8 +601,7 @@ mod tests {
                 &server.client(),
                 &cancellation,
                 &id,
-                &SessionSettings::new(default_model(), EffortLevel::Default),
-                "system",
+                &parameters(),
                 &mut transcript
             )
             .await
@@ -648,8 +617,7 @@ mod tests {
                 &server.client(),
                 &cancellation,
                 &id,
-                &SessionSettings::new(default_model(), EffortLevel::Default),
-                "system",
+                &parameters(),
                 &mut transcript
             )
             .await
@@ -712,10 +680,10 @@ mod tests {
             TranscriptEntry::CompactionCheckpoint(_)
         ));
 
-        let image_message = crate::sessions::UserMessage {
+        let image_message = UserMessage {
             parts: vec![
                 UserMessagePart::Text("Inspect this".to_owned()),
-                UserMessagePart::Image(crate::sessions::ImageAttachment {
+                UserMessagePart::Image(ImageAttachment {
                     data: "aGVsbG8=".to_owned(),
                     mime_type: "image/png".to_owned(),
                 }),
@@ -724,40 +692,37 @@ mod tests {
         let mut image_transcript = vec![
             TranscriptEntry::Model(default_model().to_owned()),
             TranscriptEntry::UserMessage(image_message),
+            TranscriptEntry::SkillInvocation(SkillInvocation {
+                name: "look".to_owned(),
+                arguments: "closely".to_owned(),
+                instructions: "Describe the image.".to_owned(),
+                images: vec![ImageAttachment {
+                    data: "d29ybGQ=".to_owned(),
+                    mime_type: "image/jpeg".to_owned(),
+                }],
+            }),
         ];
-        let estimate = request_estimate(
-            default_model(),
-            EffortLevel::Default,
-            "system",
-            &image_transcript,
-        )
-        .unwrap();
-        let fields = super::material(&image_transcript, 2);
+        let estimate = request_estimate(&parameters(), &image_transcript);
+        let fields = super::material(&image_transcript, 3);
+        let request = |label: &str, value: &str| {
+            fields
+                .iter()
+                .any(|field| field.0 == label && field.1.starts_with(value))
+        };
+        assert!(request("Entry 1 user request", "[image: image/png]"));
+        assert!(request("Entry 2 user request", "Skill /look invoked."));
+        assert!(request("Entry 2 user request", "[image: image/jpeg]"));
         assert!(
             fields
                 .iter()
-                .any(|(_, value, _)| value == "[image: image/png]")
-        );
-        assert!(
-            fields
-                .iter()
-                .all(|(_, value, _)| !value.contains("aGVsbG8="))
+                .all(|(_, value, _)| !value.contains("aGVsbG8=") && !value.contains("d29ybGQ="))
         );
         if let TranscriptEntry::UserMessage(message) = &mut image_transcript[1]
             && let UserMessagePart::Image(image) = &mut message.parts[1]
         {
             image.data = "A".repeat(4_000);
         }
-        assert_eq!(
-            estimate,
-            request_estimate(
-                default_model(),
-                EffortLevel::Default,
-                "system",
-                &image_transcript
-            )
-            .unwrap()
-        );
+        assert_eq!(estimate, request_estimate(&parameters(), &image_transcript));
         assert!(
             matches!(&projection_at(&image_transcript, 1, "summary")[1], TranscriptEntry::UserMessage(message) if message.has_images())
         );
@@ -767,20 +732,17 @@ mod tests {
         store
             .append_turn_start(
                 &id,
-                &SessionSettingsChange {
-                    model: Some(default_model().to_owned()),
-                    effort: None,
-                    mode: None,
-                },
-                &TranscriptEntry::UserMessage("o".repeat(1_500_000).into()),
+                &[
+                    TranscriptEntry::Model(default_model().to_owned()),
+                    TranscriptEntry::UserMessage("o".repeat(1_500_000).into()),
+                ],
             )
             .unwrap();
         store.append_batch(&id, &answer("older work done")).unwrap();
         store
             .append_turn_start(
                 &id,
-                &SessionSettingsChange::default(),
-                &TranscriptEntry::UserMessage("u".repeat(1_800_000).into()),
+                &[TranscriptEntry::UserMessage("u".repeat(1_800_000).into())],
             )
             .unwrap();
         let mut transcript = store.read(&id).unwrap().unwrap().transcript;
@@ -791,8 +753,7 @@ mod tests {
                 &server.client(),
                 &PromptCancellation::new(),
                 &id,
-                &SessionSettings::new(default_model(), EffortLevel::Default),
-                "system",
+                &parameters(),
                 &mut transcript
             )
             .await
@@ -802,9 +763,8 @@ mod tests {
             admission,
             cut_target,
             ..
-        } = budget(default_model()).unwrap();
-        let estimate =
-            request_estimate(default_model(), EffortLevel::Default, "system", &transcript).unwrap();
+        } = budget(parameters().model);
+        let estimate = request_estimate(&parameters(), &transcript);
         assert!(
             estimate > cut_target && estimate <= admission,
             "a useful reduction is accepted even when the target cannot be reached"
@@ -818,12 +778,10 @@ mod tests {
         store
             .append_turn_start(
                 &id,
-                &SessionSettingsChange {
-                    model: Some(default_model().to_owned()),
-                    effort: None,
-                    mode: None,
-                },
-                &TranscriptEntry::UserMessage("earlier work".to_owned().into()),
+                &[
+                    TranscriptEntry::Model(default_model().to_owned()),
+                    TranscriptEntry::UserMessage("earlier work".to_owned().into()),
+                ],
             )
             .unwrap();
         store.append_batch(&id, &answer("earlier answer")).unwrap();
@@ -840,11 +798,7 @@ mod tests {
             .unwrap();
         let large = "x".repeat(3_300_000);
         store
-            .append_turn_start(
-                &id,
-                &SessionSettingsChange::default(),
-                &TranscriptEntry::UserMessage(large.clone().into()),
-            )
+            .append_turn_start(&id, &[TranscriptEntry::UserMessage(large.clone().into())])
             .unwrap();
         store.append_batch(&id, &answer("done")).unwrap();
         let before = store.read(&id).unwrap().unwrap().transcript;
@@ -860,8 +814,7 @@ mod tests {
                 &server.client(),
                 &PromptCancellation::new(),
                 &id,
-                &SessionSettings::new(default_model(), EffortLevel::Default),
-                "system",
+                &parameters(),
                 &mut transcript
             )
             .await
@@ -883,12 +836,10 @@ mod tests {
         small_store
             .append_turn_start(
                 &small_id,
-                &SessionSettingsChange {
-                    model: Some(default_model().to_owned()),
-                    effort: None,
-                    mode: None,
-                },
-                &TranscriptEntry::UserMessage("older ".repeat(4000).into()),
+                &[
+                    TranscriptEntry::Model(default_model().to_owned()),
+                    TranscriptEntry::UserMessage("older ".repeat(4000).into()),
+                ],
             )
             .unwrap();
         small_store
@@ -912,8 +863,7 @@ mod tests {
                     &server.client(),
                     &PromptCancellation::new(),
                     &small_id,
-                    &SessionSettings::new(default_model(), EffortLevel::Default),
-                    "system",
+                    &parameters(),
                     &mut copy
                 )
                 .await
@@ -942,8 +892,7 @@ mod tests {
                 &server.client(),
                 &PromptCancellation::new(),
                 &small_id,
-                &SessionSettings::new(default_model(), EffortLevel::Default),
-                "system",
+                &parameters(),
                 &mut copy
             )
             .await
@@ -965,8 +914,7 @@ mod tests {
                 &hanging.client(),
                 &cancel,
                 &small_id,
-                &SessionSettings::new(default_model(), EffortLevel::Default),
-                "system",
+                &parameters(),
                 &mut copy,
             )
             .await

@@ -250,35 +250,66 @@ pub fn is_input_context_overflow(error: &io::Error) -> bool {
         .is_some_and(|inner| inner.is::<InputContextOverflow>())
 }
 
+/// The validated catalog model, effort level, and system prompt that every
+/// ordinary model request in a turn sends with the transcript.
+#[derive(Debug, Clone)]
+pub struct ModelRequestParameters {
+    pub model: &'static CatalogModel,
+    pub effort: EffortLevel,
+    pub system_prompt: String,
+}
+
+impl ModelRequestParameters {
+    /// Rejects saved or selected settings the fetched model catalog no longer
+    /// accepts.
+    pub fn new(model_id: &str, effort: EffortLevel, system_prompt: String) -> io::Result<Self> {
+        let model = catalog_model(model_id).ok_or_else(|| {
+            io::Error::new(
+                ErrorKind::InvalidData,
+                format!("session model {model_id} is not in the model catalog"),
+            )
+        })?;
+        if !model.supports(effort) {
+            return Err(io::Error::new(
+                ErrorKind::InvalidData,
+                format!(
+                    "session model {model_id} does not accept effort {}",
+                    effort.id()
+                ),
+            ));
+        }
+        Ok(Self {
+            model,
+            effort,
+            system_prompt,
+        })
+    }
+}
+
 pub(crate) fn ordinary_body(
-    model: &str,
-    effort: EffortLevel,
-    system_prompt: &str,
+    parameters: &ModelRequestParameters,
     transcript: &[TranscriptEntry],
-) -> io::Result<Value> {
-    catalog_model(model)
-        .ok_or_else(|| io::Error::new(ErrorKind::InvalidInput, format!("unknown model {model}")))?;
-    let messages = std::iter::once(json!({ "role": "system", "content": system_prompt }))
-        .chain(chat_messages(transcript))
-        .collect::<Vec<_>>();
+) -> Value {
+    let messages =
+        std::iter::once(json!({ "role": "system", "content": parameters.system_prompt }))
+            .chain(chat_messages(transcript))
+            .collect::<Vec<_>>();
     let mut body = json!({
-        "model": model,
+        "model": parameters.model.id,
         "messages": messages,
         "tools": tools::schemas(),
         "stream": true,
         "usage": { "include": true },
     });
-    if let Some(effort) = effort.openrouter_effort() {
+    if let Some(effort) = parameters.effort.openrouter_effort() {
         body["reasoning"] = json!({ "effort": effort });
     }
-    Ok(body)
+    body
 }
 
-pub(crate) fn summarizer_body(model: &str, previous: &str, piece: &str) -> io::Result<Value> {
-    let catalog = catalog_model(model)
-        .ok_or_else(|| io::Error::new(ErrorKind::InvalidInput, format!("unknown model {model}")))?;
+pub(crate) fn summarizer_body(model: &CatalogModel, previous: &str, piece: &str) -> Value {
     let mut body = json!({
-        "model": model,
+        "model": model.id,
         "messages": [
             {"role": "system", "content": include_str!("prompts/compaction_prompt.md")},
             {"role": "user", "content": format!("Previous summary:\n{previous}\n\nNew conversation material:\n{piece}")},
@@ -287,10 +318,10 @@ pub(crate) fn summarizer_body(model: &str, previous: &str, piece: &str) -> io::R
         "stream": true,
         "usage": { "include": true },
     });
-    if let Some(effort) = catalog.summarizer_effort().openrouter_effort() {
+    if let Some(effort) = model.summarizer_effort().openrouter_effort() {
         body["reasoning"] = json!({ "effort": effort });
     }
-    Ok(body)
+    body
 }
 
 impl Client {
@@ -327,28 +358,27 @@ impl Client {
         }
     }
 
-    /// Starts one streamed completion using `model` and `transcript`. The
+    /// Starts one streamed completion using `parameters` and `transcript`. The
     /// system prompt precedes the transcript.
     pub async fn stream_completion(
         &self,
-        model: &str,
-        effort: EffortLevel,
-        system_prompt: &str,
+        parameters: &ModelRequestParameters,
         transcript: &[TranscriptEntry],
     ) -> io::Result<CompletionStream> {
-        let body = ordinary_body(model, effort, system_prompt, transcript)?;
-        self.stream_body(&body).await
+        self.stream_body(&ordinary_body(parameters, transcript))
+            .await
     }
 
     /// Returns the summary and the usage OpenRouter reported for it.
     pub async fn summarize(
         &self,
-        model: &str,
+        model: &CatalogModel,
         previous: &str,
         piece: &str,
     ) -> io::Result<(String, Option<ModelUsage>)> {
-        let body = summarizer_body(model, previous, piece)?;
-        let mut stream = self.stream_body(&body).await?;
+        let mut stream = self
+            .stream_body(&summarizer_body(model, previous, piece))
+            .await?;
         while let Some(item) = stream.next().await? {
             if let StreamItem::Completion(completion) = item {
                 if completion.stop != Stop::Finished
@@ -411,12 +441,24 @@ fn explicit_context_overflow(detail: &str) -> bool {
         .any(|term| lower.contains(term))
 }
 
-/// The user-role text that gives the model a skill invocation.
-pub(crate) fn skill_invocation_text(invocation: &SkillInvocation) -> String {
-    format!(
+/// The user message that gives the model a skill invocation: its text
+/// followed by its image attachments.
+pub(crate) fn skill_invocation_message(invocation: &SkillInvocation) -> UserMessage {
+    let text = format!(
         "Skill /{} invoked.\n\nInstructions:\n{}\n\nArguments:\n{}",
         invocation.name, invocation.instructions, invocation.arguments
-    )
+    );
+    UserMessage {
+        parts: std::iter::once(UserMessagePart::Text(text))
+            .chain(
+                invocation
+                    .images
+                    .iter()
+                    .cloned()
+                    .map(UserMessagePart::Image),
+            )
+            .collect(),
+    }
 }
 
 /// The user-role text that gives the model a hook's feedback.
@@ -466,14 +508,7 @@ pub(crate) fn chat_messages(transcript: &[TranscriptEntry]) -> Vec<Value> {
                     json!({ "role": "user", "content": user_content(message) })
                 }
                 TranscriptEntry::SkillInvocation(invocation) => {
-                    let text = skill_invocation_text(invocation);
-                    let content = if invocation.images.is_empty() {
-                        Value::String(text)
-                    } else {
-                        let mut parts = vec![json!({ "type": "text", "text": text })];
-                        parts.extend(invocation.images.iter().map(image_part));
-                        Value::Array(parts)
-                    };
+                    let content = user_content(&skill_invocation_message(invocation));
                     json!({ "role": "user", "content": content })
                 }
                 TranscriptEntry::HookFeedback(feedback) => {
@@ -1108,6 +1143,15 @@ mod tests {
 
     const TEST_SYSTEM_PROMPT: &str = "You are Ox.";
 
+    fn test_parameters() -> ModelRequestParameters {
+        ModelRequestParameters::new(
+            default_model(),
+            EffortLevel::Default,
+            TEST_SYSTEM_PROMPT.to_owned(),
+        )
+        .unwrap()
+    }
+
     async fn drain(request: &mut CompletionStream) -> io::Result<Vec<StreamItem>> {
         let mut items = Vec::new();
         while let Some(item) = request.next().await? {
@@ -1121,9 +1165,7 @@ mod tests {
         let mut request = server
             .client()
             .stream_completion(
-                default_model(),
-                EffortLevel::Default,
-                TEST_SYSTEM_PROMPT,
+                &test_parameters(),
                 &[TranscriptEntry::UserMessage("hi".to_owned().into())],
             )
             .await?;
@@ -1193,9 +1235,13 @@ mod tests {
         let mut request = server
             .client()
             .stream_completion(
-                catalog()[2].id.as_str(),
-                EffortLevel::Default,
-                "You are Ox.\n\n# Workspace instructions from AGENTS.md\n\nAnswer in French.",
+                &ModelRequestParameters::new(
+                    catalog()[2].id.as_str(),
+                    EffortLevel::Default,
+                    "You are Ox.\n\n# Workspace instructions from AGENTS.md\n\nAnswer in French."
+                        .to_owned(),
+                )
+                .unwrap(),
                 &transcript,
             )
             .await
@@ -1275,13 +1321,7 @@ mod tests {
             usage: None,
         }));
         let projected = crate::compaction::projection(&compacted);
-        let body = ordinary_body(
-            default_model(),
-            EffortLevel::Default,
-            TEST_SYSTEM_PROMPT,
-            &projected,
-        )
-        .unwrap();
+        let body = ordinary_body(&test_parameters(), &projected);
         let projected_messages = body["messages"].as_array().unwrap();
         assert_eq!(projected_messages.len(), 4);
         assert_eq!(
@@ -1365,7 +1405,15 @@ mod tests {
                 let server = Server::start(vec![text_reply("Done")]).await;
                 let mut stream = server
                     .client()
-                    .stream_completion(&model.id, effort, TEST_SYSTEM_PROMPT, &[])
+                    .stream_completion(
+                        &ModelRequestParameters::new(
+                            &model.id,
+                            effort,
+                            TEST_SYSTEM_PROMPT.to_owned(),
+                        )
+                        .unwrap(),
+                        &[],
+                    )
                     .await
                     .unwrap();
                 drain(&mut stream).await.unwrap();
@@ -1632,12 +1680,7 @@ mod tests {
         let server = Server::start(vec![Reply::Stream("data: not json\n\n".to_owned())]).await;
         let mut request = server
             .client()
-            .stream_completion(
-                default_model(),
-                EffortLevel::Default,
-                TEST_SYSTEM_PROMPT,
-                &[],
-            )
+            .stream_completion(&test_parameters(), &[])
             .await
             .unwrap();
         assert!(drain(&mut request).await.is_err());
@@ -1649,12 +1692,7 @@ mod tests {
         .await;
         let error = server
             .client()
-            .stream_completion(
-                default_model(),
-                EffortLevel::Default,
-                TEST_SYSTEM_PROMPT,
-                &[],
-            )
+            .stream_completion(&test_parameters(), &[])
             .await
             .err()
             .expect("a failed status is an error");
@@ -1668,9 +1706,7 @@ mod tests {
         for _ in 0..2 {
             let mut request = client
                 .stream_completion(
-                    default_model(),
-                    EffortLevel::Default,
-                    TEST_SYSTEM_PROMPT,
+                    &test_parameters(),
                     &[TranscriptEntry::UserMessage("hi".to_owned().into())],
                 )
                 .await

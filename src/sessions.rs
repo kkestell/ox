@@ -73,6 +73,22 @@ pub enum TranscriptEntry {
     CompactionCheckpoint(CompactionCheckpoint),
 }
 
+impl TranscriptEntry {
+    /// A user message or skill invocation.
+    pub fn is_turn_start(&self) -> bool {
+        matches!(self, Self::UserMessage(_) | Self::SkillInvocation(_))
+    }
+}
+
+/// The index and entry of the latest turn start.
+pub fn latest_turn_start(transcript: &[TranscriptEntry]) -> Option<(usize, &TranscriptEntry)> {
+    transcript
+        .iter()
+        .enumerate()
+        .rev()
+        .find(|(_, entry)| entry.is_turn_start())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct UserMessage {
@@ -372,13 +388,6 @@ impl SessionSettings {
     }
 }
 
-#[derive(Debug, Default)]
-pub struct SessionSettingsChange {
-    pub model: Option<String>,
-    pub effort: Option<EffortLevel>,
-    pub mode: Option<SessionMode>,
-}
-
 /// The content of one validated model completion. The serde derives on this
 /// type and its parts define the JSON stored in the `transcript_entries` table.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -598,10 +607,10 @@ fn settings_block_end(entries: &[TranscriptEntry], start: usize) -> io::Result<u
         }
         index += 1;
     }
-    if !matches!(
-        entries.get(index),
-        Some(TranscriptEntry::UserMessage(_) | TranscriptEntry::SkillInvocation(_))
-    ) {
+    if !entries
+        .get(index)
+        .is_some_and(TranscriptEntry::is_turn_start)
+    {
         return Err(invalid_data(
             "a settings block does not immediately precede a user message or skill invocation",
         ));
@@ -631,10 +640,7 @@ fn check_hook_feedback_placement(
     }).expect("a transcript begins with a model entry");
     let (placed, place) = match feedback.content {
         HookFeedbackContent::BeforeRun { .. } => (
-            matches!(
-                previous,
-                TranscriptEntry::UserMessage(_) | TranscriptEntry::SkillInvocation(_)
-            ),
+            previous.is_turn_start(),
             "a user message or skill invocation",
         ),
         HookFeedbackContent::AfterTools { .. } => (
@@ -816,26 +822,13 @@ impl SessionStore {
         let Some(summary) = summary(&tx, id).map_err(io::Error::other)? else {
             return Ok(None);
         };
-        let rows = tx
-            .prepare(
-                "SELECT kind, data FROM transcript_entries
-                 WHERE session_id = ?1 ORDER BY id ASC",
-            )
-            .and_then(|mut statement| {
-                statement
-                    .query_map(params![id.to_string()], |row| {
-                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-                    })?
-                    .collect::<rusqlite::Result<Vec<_>>>()
-            })
-            .map_err(io::Error::other)?;
-        let transcript = rows
-            .into_iter()
-            .map(|(kind, data)| decode_entry(&kind, &data))
-            .collect::<io::Result<Vec<_>>>()
+        let transcript = read_transcript(&tx, id)
             .and_then(|transcript| validate_transcript(&transcript).map(|()| transcript))
             .map_err(|error| {
-                invalid_data(format!("session {id} has an invalid transcript: {error}"))
+                io::Error::new(
+                    error.kind(),
+                    format!("session {id} has an invalid transcript: {error}"),
+                )
             })?;
         Ok(Some(StoredSession {
             summary,
@@ -862,74 +855,45 @@ impl SessionStore {
             .map_err(io::Error::other)
     }
 
-    /// Appends setting entries and the turn start, a user message or skill
-    /// invocation, adopts a session title when none has been saved, and
+    /// Appends settings entries followed by the turn start, a user message or
+    /// skill invocation, adopts a session title when none has been saved, and
     /// updates activity in one transaction.
     pub fn append_turn_start(
         &self,
         id: &SessionId,
-        settings: &SessionSettingsChange,
-        turn_start: &TranscriptEntry,
+        entries: &[TranscriptEntry],
     ) -> io::Result<SessionSummary> {
-        let session_title = match turn_start {
-            TranscriptEntry::UserMessage(message) => session_title_from_prompt(&message.text())
-                .or_else(|| message.has_images().then(|| "Image".to_owned())),
-            TranscriptEntry::SkillInvocation(invocation) => {
+        let session_title = match entries.last() {
+            Some(TranscriptEntry::UserMessage(message)) => {
+                session_title_from_prompt(&message.text())
+                    .or_else(|| message.has_images().then(|| "Image".to_owned()))
+            }
+            Some(TranscriptEntry::SkillInvocation(invocation)) => {
                 session_title_from_prompt(&invocation.command_text())
             }
             other => panic!("{other:?} does not start a turn"),
         };
-        let at = now();
-        let mut connection = self.lock();
-        let tx = connection.transaction().map_err(io::Error::other)?;
-        update_activity_and_adopt_session_title(&tx, id, session_title, &at)?;
-        if let Some(model) = &settings.model {
-            insert_entry(&tx, id, &at, "model", model)?;
-        }
-        if let Some(effort) = settings.effort {
-            insert_entry(&tx, id, &at, "effort", &effort)?;
-        }
-        if let Some(mode) = settings.mode {
-            insert_entry(&tx, id, &at, "mode", &mode)?;
-        }
-        match turn_start {
-            TranscriptEntry::UserMessage(text) => {
-                insert_entry(&tx, id, &at, "user_message", text)?;
-            }
-            TranscriptEntry::SkillInvocation(invocation) => {
-                insert_entry(&tx, id, &at, "skill_invocation", invocation)?;
-            }
-            _ => unreachable!("the session title match rejects other entries"),
-        }
-        let summary = summary(&tx, id)
-            .map_err(io::Error::other)?
-            .expect("a session that was just updated exists");
-        tx.commit().map_err(io::Error::other)?;
-        Ok(summary)
+        self.append(id, session_title, entries)
     }
 
     /// Appends the assistant message and all of its results, and updates
     /// activity, in one transaction.
     pub fn append_batch(&self, id: &SessionId, batch: &AssistantBatch) -> io::Result<()> {
-        let at = now();
-        let mut connection = self.lock();
-        let tx = connection.transaction().map_err(io::Error::other)?;
-        update_activity_and_adopt_session_title(&tx, id, None, &at)?;
-        insert_entry(&tx, id, &at, "assistant_message", &batch.message)?;
-        for result in &batch.results {
-            insert_entry(&tx, id, &at, "tool_result", result)?;
-        }
-        tx.commit().map_err(io::Error::other)
+        let mut entries = vec![TranscriptEntry::AssistantMessage(batch.message.clone())];
+        entries.extend(
+            batch
+                .results
+                .iter()
+                .cloned()
+                .map(TranscriptEntry::ToolResult),
+        );
+        self.append(id, None, &entries).map(drop)
     }
 
     /// Appends hook feedback and updates activity in one transaction.
     pub fn append_hook_feedback(&self, id: &SessionId, feedback: &HookFeedback) -> io::Result<()> {
-        let at = now();
-        let mut connection = self.lock();
-        let tx = connection.transaction().map_err(io::Error::other)?;
-        update_activity_and_adopt_session_title(&tx, id, None, &at)?;
-        insert_entry(&tx, id, &at, "hook_feedback", feedback)?;
-        tx.commit().map_err(io::Error::other)
+        self.append(id, None, &[TranscriptEntry::HookFeedback(feedback.clone())])
+            .map(drop)
     }
 
     /// Appends a checkpoint atomically, after checking the transcript it was
@@ -940,33 +904,32 @@ impl SessionStore {
         expected_len: usize,
         checkpoint: &CompactionCheckpoint,
     ) -> io::Result<()> {
-        let at = now();
         let mut connection = self.lock();
         let tx = connection.transaction().map_err(io::Error::other)?;
-        let rows = tx
-            .prepare("SELECT kind, data FROM transcript_entries WHERE session_id = ?1 ORDER BY id")
-            .and_then(|mut statement| {
-                statement
-                    .query_map(params![id.to_string()], |row| {
-                        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-                    })?
-                    .collect::<rusqlite::Result<Vec<_>>>()
-            })
-            .map_err(io::Error::other)?;
-        if rows.len() != expected_len {
+        let mut entries = read_transcript(&tx, id)?;
+        if entries.len() != expected_len {
             return Err(invalid_data(
                 "transcript changed before compaction checkpoint",
             ));
         }
-        let mut entries = rows
-            .into_iter()
-            .map(|(kind, data)| decode_entry(&kind, &data))
-            .collect::<io::Result<Vec<_>>>()?;
-        entries.push(TranscriptEntry::CompactionCheckpoint(checkpoint.clone()));
+        let entry = TranscriptEntry::CompactionCheckpoint(checkpoint.clone());
+        entries.push(entry.clone());
         validate_transcript(&entries)?;
-        update_activity_and_adopt_session_title(&tx, id, None, &at)?;
-        insert_entry(&tx, id, &at, "compaction_checkpoint", checkpoint)?;
+        write_entries(&tx, id, None, &[entry])?;
         tx.commit().map_err(io::Error::other)
+    }
+
+    fn append(
+        &self,
+        id: &SessionId,
+        session_title: Option<String>,
+        entries: &[TranscriptEntry],
+    ) -> io::Result<SessionSummary> {
+        let mut connection = self.lock();
+        let tx = connection.transaction().map_err(io::Error::other)?;
+        let summary = write_entries(&tx, id, session_title, entries)?;
+        tx.commit().map_err(io::Error::other)?;
+        Ok(summary)
     }
 
     /// Removes the session and its transcript. An absent session is a success.
@@ -1041,14 +1004,50 @@ fn update_activity_and_adopt_session_title(
     Ok(())
 }
 
-fn insert_entry<T: Serialize>(
+/// Updates activity, adopts the session title if one has not been saved,
+/// inserts `entries`, and returns the updated session summary. The caller
+/// commits.
+fn write_entries(
+    tx: &Transaction<'_>,
+    id: &SessionId,
+    session_title: Option<String>,
+    entries: &[TranscriptEntry],
+) -> io::Result<SessionSummary> {
+    let at = now();
+    update_activity_and_adopt_session_title(tx, id, session_title, &at)?;
+    for entry in entries {
+        insert_entry(tx, id, &at, entry)?;
+    }
+    Ok(summary(tx, id)
+        .map_err(io::Error::other)?
+        .expect("a session that was just updated exists"))
+}
+
+fn read_transcript(tx: &Transaction<'_>, id: &SessionId) -> io::Result<Vec<TranscriptEntry>> {
+    tx.prepare(
+        "SELECT kind, data FROM transcript_entries
+         WHERE session_id = ?1 ORDER BY id ASC",
+    )
+    .and_then(|mut statement| {
+        statement
+            .query_map(params![id.to_string()], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()
+    })
+    .map_err(io::Error::other)?
+    .into_iter()
+    .map(|(kind, data)| decode_entry(&kind, &data))
+    .collect()
+}
+
+fn insert_entry(
     tx: &Transaction<'_>,
     id: &SessionId,
     at: &str,
-    kind: &str,
-    payload: &T,
+    entry: &TranscriptEntry,
 ) -> io::Result<()> {
-    let data = serde_json::to_string(payload).expect("transcript entries serialize");
+    let (kind, data) = encode_entry(entry);
     tx.execute(
         "INSERT INTO transcript_entries (session_id, ts, kind, data)
          VALUES (?1, ?2, ?3, ?4)",
@@ -1056,6 +1055,29 @@ fn insert_entry<T: Serialize>(
     )
     .map_err(io::Error::other)?;
     Ok(())
+}
+
+fn encode_entry(entry: &TranscriptEntry) -> (&'static str, String) {
+    let (kind, data) = match entry {
+        TranscriptEntry::Model(model) => ("model", serde_json::to_string(model)),
+        TranscriptEntry::Effort(effort) => ("effort", serde_json::to_string(effort)),
+        TranscriptEntry::Mode(mode) => ("mode", serde_json::to_string(mode)),
+        TranscriptEntry::UserMessage(message) => ("user_message", serde_json::to_string(message)),
+        TranscriptEntry::SkillInvocation(invocation) => {
+            ("skill_invocation", serde_json::to_string(invocation))
+        }
+        TranscriptEntry::AssistantMessage(message) => {
+            ("assistant_message", serde_json::to_string(message))
+        }
+        TranscriptEntry::ToolResult(result) => ("tool_result", serde_json::to_string(result)),
+        TranscriptEntry::HookFeedback(feedback) => {
+            ("hook_feedback", serde_json::to_string(feedback))
+        }
+        TranscriptEntry::CompactionCheckpoint(checkpoint) => {
+            ("compaction_checkpoint", serde_json::to_string(checkpoint))
+        }
+    };
+    (kind, data.expect("transcript entries serialize"))
 }
 
 fn decode_entry(kind: &str, data: &str) -> io::Result<TranscriptEntry> {
@@ -1244,14 +1266,13 @@ mod tests {
             store
                 .append_turn_start(
                     &id,
-                    &SessionSettingsChange {
-                        model: Some(openrouter::default_model().to_owned()),
-                        effort: None,
-                        mode: Some(SessionMode::Auto),
-                    },
-                    &TranscriptEntry::UserMessage(
-                        "Weather in Chicago and Denver?".to_owned().into(),
-                    ),
+                    &[
+                        TranscriptEntry::Model(openrouter::default_model().to_owned()),
+                        TranscriptEntry::Mode(SessionMode::Auto),
+                        TranscriptEntry::UserMessage(
+                            "Weather in Chicago and Denver?".to_owned().into(),
+                        ),
+                    ],
                 )
                 .unwrap();
             let batch = AssistantBatch::new(message.clone(), results.clone()).unwrap();
@@ -1270,12 +1291,10 @@ mod tests {
             store
                 .append_turn_start(
                     &id,
-                    &SessionSettingsChange {
-                        model: None,
-                        effort: Some(EffortLevel::Low),
-                        mode: None,
-                    },
-                    &TranscriptEntry::SkillInvocation(invocation()),
+                    &[
+                        TranscriptEntry::Effort(EffortLevel::Low),
+                        TranscriptEntry::SkillInvocation(invocation()),
+                    ],
                 )
                 .unwrap();
             for skill in [None, Some("goal".to_owned())] {
@@ -1432,12 +1451,10 @@ mod tests {
         store
             .append_turn_start(
                 &orphan,
-                &SessionSettingsChange {
-                    model: Some(openrouter::default_model().to_owned()),
-                    effort: None,
-                    mode: None,
-                },
-                &TranscriptEntry::UserMessage("hello".to_owned().into()),
+                &[
+                    TranscriptEntry::Model(openrouter::default_model().to_owned()),
+                    TranscriptEntry::UserMessage("hello".to_owned().into()),
+                ],
             )
             .unwrap();
         insert(
@@ -1812,12 +1829,10 @@ mod tests {
         store
             .append_turn_start(
                 &without_mode,
-                &SessionSettingsChange {
-                    model: Some(openrouter::default_model().to_owned()),
-                    effort: None,
-                    mode: None,
-                },
-                &TranscriptEntry::UserMessage("old transcript".to_owned().into()),
+                &[
+                    TranscriptEntry::Model(openrouter::default_model().to_owned()),
+                    TranscriptEntry::UserMessage("old transcript".to_owned().into()),
+                ],
             )
             .unwrap();
         assert_eq!(
@@ -1833,34 +1848,30 @@ mod tests {
         store
             .append_turn_start(
                 &id,
-                &SessionSettingsChange {
-                    model: Some(openrouter::catalog()[1].id.as_str().to_owned()),
-                    effort: Some(EffortLevel::Low),
-                    mode: Some(SessionMode::Auto),
-                },
-                &TranscriptEntry::UserMessage("first".to_owned().into()),
+                &[
+                    TranscriptEntry::Model(openrouter::catalog()[1].id.as_str().to_owned()),
+                    TranscriptEntry::Effort(EffortLevel::Low),
+                    TranscriptEntry::Mode(SessionMode::Auto),
+                    TranscriptEntry::UserMessage("first".to_owned().into()),
+                ],
             )
             .unwrap();
         store
             .append_turn_start(
                 &id,
-                &SessionSettingsChange {
-                    model: None,
-                    effort: Some(EffortLevel::High),
-                    mode: None,
-                },
-                &TranscriptEntry::UserMessage("second".to_owned().into()),
+                &[
+                    TranscriptEntry::Effort(EffortLevel::High),
+                    TranscriptEntry::UserMessage("second".to_owned().into()),
+                ],
             )
             .unwrap();
         store
             .append_turn_start(
                 &id,
-                &SessionSettingsChange {
-                    model: None,
-                    effort: Some(EffortLevel::Medium),
-                    mode: None,
-                },
-                &TranscriptEntry::UserMessage("third".to_owned().into()),
+                &[
+                    TranscriptEntry::Effort(EffortLevel::Medium),
+                    TranscriptEntry::UserMessage("third".to_owned().into()),
+                ],
             )
             .unwrap();
         assert_eq!(
@@ -1888,12 +1899,10 @@ mod tests {
         let first = store
             .append_turn_start(
                 &created.id,
-                &SessionSettingsChange {
-                    model: Some(openrouter::default_model().to_owned()),
-                    effort: None,
-                    mode: None,
-                },
-                &TranscriptEntry::UserMessage("\n\nFirst line\nsecond line".to_owned().into()),
+                &[
+                    TranscriptEntry::Model(openrouter::default_model().to_owned()),
+                    TranscriptEntry::UserMessage("\n\nFirst line\nsecond line".to_owned().into()),
+                ],
             )
             .unwrap();
         assert_eq!(first.session_title.as_deref(), Some("First line"));
@@ -1903,8 +1912,9 @@ mod tests {
         let second = store
             .append_turn_start(
                 &created.id,
-                &SessionSettingsChange::default(),
-                &TranscriptEntry::UserMessage("Something else".to_owned().into()),
+                &[TranscriptEntry::UserMessage(
+                    "Something else".to_owned().into(),
+                )],
             )
             .unwrap();
         assert_eq!(second.session_title.as_deref(), Some("First line"));
@@ -1914,12 +1924,10 @@ mod tests {
         let session_title = store
             .append_turn_start(
                 &long.id,
-                &SessionSettingsChange {
-                    model: Some(openrouter::default_model().to_owned()),
-                    effort: None,
-                    mode: None,
-                },
-                &TranscriptEntry::UserMessage("x".repeat(MAX_SESSION_TITLE_CHARS + 10).into()),
+                &[
+                    TranscriptEntry::Model(openrouter::default_model().to_owned()),
+                    TranscriptEntry::UserMessage("x".repeat(MAX_SESSION_TITLE_CHARS + 10).into()),
+                ],
             )
             .unwrap()
             .session_title
@@ -1935,16 +1943,15 @@ mod tests {
         let image_title = store
             .append_turn_start(
                 &image_only.id,
-                &SessionSettingsChange {
-                    model: Some(openrouter::default_model().to_owned()),
-                    ..Default::default()
-                },
-                &TranscriptEntry::UserMessage(UserMessage {
-                    parts: vec![UserMessagePart::Image(ImageAttachment {
-                        data: "aGVsbG8=".to_owned(),
-                        mime_type: "image/png".to_owned(),
-                    })],
-                }),
+                &[
+                    TranscriptEntry::Model(openrouter::default_model().to_owned()),
+                    TranscriptEntry::UserMessage(UserMessage {
+                        parts: vec![UserMessagePart::Image(ImageAttachment {
+                            data: "aGVsbG8=".to_owned(),
+                            mime_type: "image/png".to_owned(),
+                        })],
+                    }),
+                ],
             )
             .unwrap()
             .session_title;
@@ -1954,12 +1961,10 @@ mod tests {
         let adopted = store
             .append_turn_start(
                 &skill.id,
-                &SessionSettingsChange {
-                    model: Some(openrouter::default_model().to_owned()),
-                    effort: None,
-                    mode: None,
-                },
-                &TranscriptEntry::SkillInvocation(invocation()),
+                &[
+                    TranscriptEntry::Model(openrouter::default_model().to_owned()),
+                    TranscriptEntry::SkillInvocation(invocation()),
+                ],
             )
             .unwrap();
         assert_eq!(
@@ -1971,12 +1976,10 @@ mod tests {
             store
                 .append_turn_start(
                     &SessionId::new("missing"),
-                    &SessionSettingsChange {
-                        model: Some(openrouter::default_model().to_owned()),
-                        effort: None,
-                        mode: None,
-                    },
-                    &TranscriptEntry::UserMessage("hello".to_owned().into()),
+                    &[
+                        TranscriptEntry::Model(openrouter::default_model().to_owned()),
+                        TranscriptEntry::UserMessage("hello".to_owned().into())
+                    ],
                 )
                 .is_err(),
             "appending never creates a session"
@@ -2014,12 +2017,10 @@ mod tests {
         store
             .append_turn_start(
                 &id,
-                &SessionSettingsChange {
-                    model: Some(openrouter::default_model().to_owned()),
-                    effort: None,
-                    mode: None,
-                },
-                &TranscriptEntry::UserMessage("hello".to_owned().into()),
+                &[
+                    TranscriptEntry::Model(openrouter::default_model().to_owned()),
+                    TranscriptEntry::UserMessage("hello".to_owned().into()),
+                ],
             )
             .unwrap();
 
