@@ -23,7 +23,6 @@
 | session mode                | `mode` option        | —                                               |
 | tool name                   | tool kind            | `function.name`                                 |
 | tool outcome `cancelled`    | tool status `failed` | —                                               |
-| hook run                    | tool kind execute    | —                                               |
 | prompt outcome              | `stopReason`         | `finish_reason`                                 |
 | system prompt               | —                    | first `system` message                          |
 | context tokens              | `used`               | `usage.prompt_tokens + usage.completion_tokens` |
@@ -132,8 +131,7 @@
   `/compact` or a skill in the skill catalog. Ox recognizes a slash command
   before saving anything or making a model request.
 - **Skill**: A `SKILL.md` definition and its directory in a skills directory.
-  It has a name, description, optional argument hint, instructions, and
-  optional hooks.
+  It has a name, description, optional argument hint, and instructions.
 - **Skills directory**: One of the directories Ox loads skills from, highest
   priority first: `~/.config/ox/skills/`, `~/.agents/skills/`, and the
   workspace's `.agents/skills/`. Each holds `<name>/SKILL.md` entries.
@@ -142,33 +140,12 @@
 - **Skill invocation**: A turn input holding a skill's name, arguments,
   instructions, and image attachments, saved in place of the user message for
   that turn.
-- **Global hooks**: Commands declared in `~/.config/ox/settings.json`, loaded
-  at process startup and available to prompt runs across workspaces. Processes
-  descended from a hook command suppress global hooks through `OX_IN_HOOK`.
-- **Hook**: An external command declared globally or by a skill for one hook
-  kind. A skill hook runs only in the prompt run that invoked its skill.
-- **Hook kind**: The point in a prompt run where a hook runs: `before_run`,
-  `before_tool`, `after_tools`, `before_stop`, or `after_run`. It is `HookKind`
-  in code and `kind` in hook input.
-- **Stop decision**: `continue` or `stop` from a `before_stop` hook. It is
-  `StopDecision` in code and distinct from an OpenRouter stop and from a tool
-  decision.
-- **Tool decision**: `allow` or `deny` from a `before_tool` hook for one model
-  tool call. It is never saved.
-- **Hook feedback**: A transcript entry holding a hook's optional skill name and
-  saved message from `before_run`, `after_tools`, or `before_stop`, with the
-  stop decision for `before_stop`. It is neither a user message nor a tool
-  result.
-- **Hook continuation**: A model request in the same prompt run caused by a
-  `continue` decision.
 - **Prompt run**: The work caused by one prompt request: save the turn start,
-  request model output, run tools and global and invoked
-  skill hooks, run and stop its subagents, save results, and respond.
-- **Run ID**: A UUID identifying one agent turn in the input of each of its
-  hook commands: the main agent's prompt run, or one subagent turn.
+  request model output, run tools, run and stop its subagents, save results, and
+  respond.
 - **Final answer**: The text of the assistant message committed with the
-  finished OpenRouter stop that ended a prompt run, accepted by every applicable
-  `before_stop` hook and carried only in a finished outcome.
+  finished OpenRouter stop that ended a prompt run, carried only in a finished
+  outcome.
 - **Headless entry point**: The `ox run` mode, which creates a session, runs
   one prompt without an ACP client, and prints the final answer. A prompt run
   there is headless and never invokes a skill.
@@ -186,9 +163,8 @@
   MIME type, saved in a user message or skill invocation.
 - **Transcript**: The ordered, saved conversation used for both session replay
   and future model requests.
-- **Transcript entry**: A turn start, assistant batch, hook feedback,
-  compaction checkpoint, or, in a main session only, agent messages in the
-  transcript.
+- **Transcript entry**: A turn start, assistant batch, compaction checkpoint,
+  or, in a main session only, agent messages in the transcript.
 - **Turn input**: The user message or skill invocation that starts a turn. It
   is `TurnInput` in code and `PromptInput.turn_input` in a prompt run's input.
 - **Turn start**: A transcript entry holding a turn input with the model, effort
@@ -206,10 +182,10 @@
   else by `model` in the settings file, used for a new session and for `ox run`
   without `--model`. It is `Settings::default_model` in code.
 - **Settings file**: `~/.config/ox/settings.json`, read once at process startup.
-  It names the default model and may declare global hooks.
+  It names the default model.
 - **Workspace settings file**: `.ox/settings.json` in a session workspace. It
   uses the settings file format, and each key it sets replaces the same key from
-  the settings file. It may set every key except `hooks`.
+  the settings file.
 - **Model request**: One OpenRouter chat-completion HTTP request. A prompt run
   may make several.
 - **Model request parameters**: The validated catalog model, effort level, and

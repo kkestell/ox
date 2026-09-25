@@ -13,8 +13,8 @@ use crate::{
     cancellation::PromptCancellation,
     openrouter::{self, CatalogModel, Client, ModelRequestParameters},
     sessions::{
-        self, AssistantBatch, CompactionCheckpoint, HookFeedback, HookFeedbackContent,
-        SessionStore, StopDecision, TranscriptEntry, TurnInput, UserMessage, UserMessagePart,
+        self, AssistantBatch, CompactionCheckpoint, SessionStore, TranscriptEntry, TurnInput,
+        UserMessage, UserMessagePart,
     },
 };
 
@@ -111,7 +111,7 @@ pub fn has_images(transcript: &[TranscriptEntry]) -> bool {
 
 /// The index of the skill invocation to repeat after a summary covering
 /// `[..cut]`: the latest turn start, when it is a covered skill invocation. A
-/// long hook-driven run keeps its instructions and arguments this way until a
+/// long run keeps its skill instructions and arguments this way until a
 /// later turn begins.
 fn repeated_invocation(transcript: &[TranscriptEntry], cut: usize) -> Option<usize> {
     let (index, turn_start) = sessions::latest_turn_start(transcript)?;
@@ -272,9 +272,6 @@ fn material(transcript: &[TranscriptEntry], cut: usize) -> VecDeque<MaterialFiel
             TranscriptEntry::TurnStart(turn_start) => {
                 push_turn_input(&mut fields, &source, &turn_start.input);
             }
-            TranscriptEntry::HookFeedback(feedback) => {
-                fields.push_back(feedback_field(&source, feedback));
-            }
             TranscriptEntry::AssistantBatch(batch) => push_batch(&mut fields, &source, batch),
             TranscriptEntry::AgentMessages(messages) => {
                 fields.extend(messages.iter().map(|message| {
@@ -309,24 +306,6 @@ fn push_user_request(fields: &mut VecDeque<MaterialField>, source: &str, message
         };
         fields.push_back(MaterialField::new(format!("{source} user request"), text));
     }
-}
-
-fn feedback_field(source: &str, feedback: &HookFeedback) -> MaterialField {
-    let decision = match feedback.content {
-        HookFeedbackContent::BeforeStop {
-            decision: StopDecision::Continue,
-            ..
-        } => " continue",
-        HookFeedbackContent::BeforeStop {
-            decision: StopDecision::Stop,
-            ..
-        } => " stop",
-        HookFeedbackContent::BeforeRun { .. } | HookFeedbackContent::AfterTools { .. } => "",
-    };
-    MaterialField::new(
-        format!("{source} {}{decision} feedback", feedback.label()),
-        feedback.message().to_owned(),
-    )
 }
 
 fn push_batch(fields: &mut VecDeque<MaterialField>, source: &str, batch: &AssistantBatch) {
@@ -540,21 +519,8 @@ mod tests {
                 &TurnStart::test(SkillInvocation {
                     name: "goal".to_owned(),
                     arguments: "Record the old details.".to_owned(),
-                    instructions: "Work until the hook stops you.".to_owned(),
+                    instructions: "Record details accurately.".to_owned(),
                     images: vec![],
-                }),
-            )
-            .unwrap();
-        let feedback = |content| HookFeedback {
-            skill: matches!(&content, HookFeedbackContent::BeforeStop { .. })
-                .then(|| "goal".to_owned()),
-            content,
-        };
-        store
-            .append_hook_feedback(
-                &id,
-                &feedback(HookFeedbackContent::BeforeRun {
-                    message: "The parser lives in src/parse.rs.".to_owned(),
                 }),
             )
             .unwrap();
@@ -562,15 +528,6 @@ mod tests {
             .append_batch(
                 &id,
                 &answer(&format!("Recorded {}", "old details ".repeat(3000))),
-            )
-            .unwrap();
-        store
-            .append_hook_feedback(
-                &id,
-                &feedback(HookFeedbackContent::BeforeStop {
-                    decision: StopDecision::Stop,
-                    message: "Objective met.".to_owned(),
-                }),
             )
             .unwrap();
         let server = Server::start(vec![
@@ -659,12 +616,6 @@ mod tests {
                 .to_owned()
         };
         assert!(material(0).contains("Entry 0 user request, part 1:\nSkill /goal invoked."));
-        assert!(material(0).contains(
-            "Entry 1 global before_run hook feedback, part 1:\nThe parser lives in src/parse.rs."
-        ));
-        assert!(material(1).contains(
-            "Entry 3 skill /goal before_stop hook stop feedback, part 1:\nObjective met."
-        ));
         assert!(
             requests[1]["messages"][1]["content"]
                 .as_str()

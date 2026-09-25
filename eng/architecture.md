@@ -7,8 +7,7 @@ Source code remains the authority for local control flow and protocol details.
 ## System boundary
 
 Ox is a local ACP agent. An ACP client supplies prompt requests and receives ACP
-updates. Ox sends model requests to OpenRouter, runs tools and hooks with
-the user's operating-system permissions, and saves sessions in a local SQLite
+updates. Ox sends model requests to OpenRouter, runs tools with the user's operating-system permissions, and saves sessions in a local SQLite
 database.
 
 The normal process serves one ACP connection. The headless entry point creates a
@@ -25,7 +24,6 @@ ACP boundary --> prompt run --> OpenRouter
       |              |                         |
       |              |                         +--> session store --> SQLite
       |              +--> tools --> workspace and child processes
-      |              +--> hooks --> child processes
       +---------------------------------------> session store
 ```
 
@@ -41,8 +39,7 @@ Ox has six architectural components:
 - The **ACP boundary** owns the connection, translates ACP input, sends ACP
   updates, exposes session operations, and holds shared process state.
 - The **prompt run** coordinates one turn: ordinary model requests, tool
-  execution, hook runs, transcript commits, and the final response. Its shared
-  loop, `AgentTurn`, also runs every turn of the prompt run's subagents.
+  execution, transcript commits, and the final response. Its shared loop, `AgentTurn`, also runs every turn of the prompt run's subagents.
 - The **compaction workflow** owns summarizer requests and checkpoint commits.
   It serves both automatic compaction during a prompt run and the cancellable
   `/compact` command, which runs as a prompt operation.
@@ -55,9 +52,8 @@ Ox has six architectural components:
 - The **session store** validates and persists sessions and transcripts. It does
   not know OpenRouter wire formats or construct ACP updates.
 
-The process entry, credential code, settings and skill catalog loading, hook
-protocol, child-process execution, and each active session's shell-process owner
-support these components but do not participate in prompt orchestration. The
+The process entry, credential code, settings and skill catalog loading,
+child-process execution, and each active session's shell-process owner support these components but do not participate in prompt orchestration. The
 subagent owner, `Subagents`, belongs to one main prompt run; it starts subagent
 turns through the same loop and never talks to the ACP client itself.
 Dependencies point from the ACP boundary, prompt run, and compaction workflow
@@ -77,20 +73,11 @@ A transcript may be empty. Every nonempty transcript begins with a turn start. A
 turn start holds the user message or skill invocation that starts the turn
 together with the model, effort level, and session mode captured for that turn.
 Each assistant batch is one transcript entry containing its message and one tool
-outcome for each tool call; outcome `i` belongs to call `i`. Hook feedback
-follows the entry its hook ran after: `before_run` feedback follows a turn
-start, `after_tools` feedback follows a batch with tool calls, and `before_stop`
-feedback follows a batch without tool calls. Consecutive feedback entries of the
-same hook kind share that placement.
+outcome for each tool call; outcome `i` belongs to call `i`.
 
 A skill invocation stores the skill's name, its literal arguments, any image
 attachments, and the instructions copied from its definition when it was
 invoked, so later changes to the definition do not change saved model context.
-Hook feedback stores the
-optional skill name, the hook kind, the hook's message, and, for
-`before_stop`, the stop decision. Global feedback has no skill name. Model
-requests send each as a labeled user-role message. Hook feedback is neither a
-user message nor a tool result.
 
 The model, effort level, and session mode may change between turns, and every
 turn start stores all three, including values unchanged from the previous turn.
@@ -108,15 +95,13 @@ A compaction checkpoint stores a nonempty summary, the exclusive index of a
 completed transcript prefix ending at an assistant batch, and its summarizer
 cost: the summed cost of every summarizer request made by the compaction that
 committed it, including cuts it tried and rejected. The latest checkpoint
-controls model requests;
-earlier checkpoints and all covered entries remain saved for replay. Checkpoints
+controls model requests; earlier checkpoints and all covered entries remain saved for replay. Checkpoints
 are omitted from replay. A model request uses the latest summary as a labeled
 user-role message, followed by entries after its covered prefix. When the
 latest turn start is a skill invocation inside the covered prefix, its message
-is repeated right after the summary, so a long hook-driven run keeps its
-instructions and arguments; the summary carries its `before_run` feedback. Once
-a later turn starts, the summary alone carries it. The projection encodes the
-summary and the selected entries directly as request messages; the summary is
+is repeated right after the summary, so a long run keeps its skill
+instructions and arguments. Once a later turn starts, the summary alone carries
+it. The projection encodes the summary and the selected entries directly as request messages; the summary is
 never a transcript entry. Request estimates, input admission, and compaction cut
 sizes use the same projection.
 
@@ -126,7 +111,7 @@ order they were published, each with its subagent ID. Model requests send each
 as its own labeled user-role message, replay shows each as a finished tool call
 attributed to its subagent, and summarizer material labels each with its
 subagent. An agent message is neither a user message nor a tool result, and it
-never falls inside an assistant batch or between a batch and its hook feedback.
+never falls inside an assistant batch.
 
 The system prompt is not a transcript entry. It is neither stored nor replayed.
 
@@ -141,8 +126,8 @@ guard and runs cancellable compaction without saving a user message, so it
 cannot overlap a prompt, load, or delete for the same session.
 
 A skill is `<name>/SKILL.md` directly under a skills directory: YAML
-frontmatter with a name, description, optional argument hint, and optional hook
-commands, followed by Markdown instructions. Ox has no built-in skills. The
+frontmatter with a name, description, and optional argument hint, followed by
+Markdown instructions. Ox has no built-in skills. The
 skills directories, highest priority first, are `~/.config/ox/skills`,
 `~/.agents/skills`, and the session workspace's `.agents/skills`, with the home
 directory read once at process startup. The skill catalog is loaded from them
@@ -159,18 +144,10 @@ priority, so a lower-priority skill never runs under the name of a broken one.
 Every definition is validated, including a replaced one. A skills directory that
 cannot be read is reported and skipped the same way.
 
-A skill declares at most one command for each hook kind: `before_run`,
-`before_tool`, `after_tools`, `before_stop`, and `after_run`. Each definition
-has a nonblank `command` and no unknown fields. Tool hooks inspect their input
-to decide which calls matter. Ox ignores unknown top-level frontmatter keys and
-unknown hook kinds, so skills can share a directory with other agents. An
-empty `hooks` map declares no hook.
-
 A prompt whose first word is `/<name>` for a catalog skill invokes it. The rest
 of the text, trimmed, is its arguments. The prompt run saves a skill invocation
-in place of the user message and passes the skill's hooks and directory to that
-run only. The skill name and arguments their commands receive come from the
-saved skill invocation for the current turn.
+in place of the user message. The skill name, arguments, and instructions in
+that invocation provide the model with context for the turn.
 Other slash-prefixed text is an ordinary user message. Headless prompts never
 invoke skills.
 
@@ -188,9 +165,7 @@ A workspace can override settings in its workspace settings file,
 `.ox/settings.json`. It uses the settings file format: each key it sets replaces
 the same key from the settings file, and each key it leaves out keeps that
 file's value. Today it can set only `model`, which then names the default model
-for that workspace. Setting `hooks` there is an error, because hooks run
-commands without any other approval and a repository must not add them. Ox
-reads the workspace settings file when a session becomes active, together with
+for that workspace. Ox reads the workspace settings file when a session becomes active, together with
 `AGENTS.md` and the skill catalog, and once for a headless run. A missing file
 changes nothing; any other failure, including an invalid key or value, fails
 activation or the run with its path. Only a session with an empty transcript
@@ -203,8 +178,7 @@ not serve, accept tools, take text input, produce text output, and have a
 context limit above 8,000 tokens. The catalog is sorted by model name. A model's
 effort levels are Default plus each effort OpenRouter lists for it that Ox
 knows. A failed download, a malformed response, or an empty filtered catalog
-fails startup. The model catalog is installed once per process; `OX_IN_HOOK`
-does not affect it.
+fails startup. The model catalog is installed once per process.
 
 The catalog also records whether each model accepts images. Ox advertises ACP
 image prompt support, but a prompt is rejected before its turn start is saved
@@ -216,21 +190,6 @@ The ACP `effort` option lists only the selected model's effort levels.
 Selecting a model that lacks the current effort level resets it to Default. A
 latest turn start whose model or effort level is outside the model catalog fails
 load.
-
-### Global hooks
-
-The settings file's optional `hooks` object uses the same definitions and
-validation as skill hooks, with one command per hook kind. Omitted or null
-`hooks` means no global hooks. Global hooks are held in process state and apply
-across workspaces.
-
-At each hook point, the global command runs before the invoked skill's command.
-Both run even when the first denies a tool call or requests continuation.
-Either denial blocks a tool call, with all denial messages in execution order;
-either continue decision requests another model response. A continuation counts
-once toward the prompt run's limit of 50. Feedback from each command is saved
-separately. An ordinary hook error stops the run, preserving earlier saved
-feedback; `after_run` attempts both commands even if the first fails.
 
 ### Session metadata
 
@@ -263,7 +222,7 @@ state:
 - each main prompt run holds its `Subagents` owner, which exists only while
   that run does;
 - the settings read from the settings file at process startup hold the default
-  model and global hooks;
+  model;
 - the OpenRouter client cache holds credentials and reusable HTTP state; and
 - the session store holds one SQLite connection.
 
@@ -307,8 +266,7 @@ The active session's system prompt remains unchanged for ordinary requests.
 ### Turn boundary
 
 One prompt run owns the state for one turn: its settings snapshot, saved
-transcript copy, cancellation signal, active completion stream, global and
-invoked skill hooks, and the run ID shared by their commands.
+transcript copy, cancellation signal, and active completion stream.
 
 An input that cannot fit even after the largest eligible compaction cut is
 rejected before persistence. An accepted turn start, with its model, effort
@@ -330,8 +288,8 @@ creates a child session, saves the assigned task as its first turn start, and
 returns the child session ID as the subagent ID at once; the turn runs in its
 own Tokio task through the shared loop while the main agent keeps working.
 Every subagent turn uses the main turn's captured model, effort level, session
-mode, workspace path, and global hooks, the subagent system prompt, and a
-fresh transcript. Subagents have only the workspace and shell tools; the main
+mode, workspace path, the subagent system prompt, and a fresh transcript.
+Subagents have only the workspace and shell tools; the main
 agent alone has `start_subagent`, `send_message`, `stop_subagent`, and `wait`.
 The same role selects the advertised tools, request estimates, and the tool
 dispatch check, so a coordination call from a subagent fails as a tool result.
@@ -341,7 +299,7 @@ An owner holds at most four live subagents, idle ones included, and rejects a
 fifth start with the limit and every subagent's state. A subagent that finishes
 a turn publishes its final answer, bounded to 16 KiB with a truncation marker
 while its child session keeps the whole answer. A model failure, refusal,
-token limit, hook error, or rejected queued message publishes a failure and
+token limit, or rejected queued message publishes a failure and
 ends the subagent. After a final answer it starts its next queued follow-up
 message as a new turn or becomes idle. `send_message` starts a turn of an idle
 subagent at once and queues behind a busy one; queued messages start turns in
@@ -354,9 +312,8 @@ accepted, and each turn start passes the child's input admission.
 Only the main loop saves agent messages. Before each ordinary model request it
 takes every published message, checks input admission, saves them as one
 agent messages entry, and shows them. When a finished answer commits while
-messages are waiting, those messages are saved and the turn continues without
-running `before_stop` on that answer. Otherwise `before_stop` runs, and
-messages published while it runs wait for the next request boundary or are
+messages are waiting, those messages are saved and the turn continues with
+another model request. Messages published after the final check may be
 discarded when the run ends. `wait` returns at once for waiting messages, no
 subagents, or only idle ones, otherwise on the next of those, the timeout of at
 most 600 seconds, or prompt cancellation; it registers for notification before
@@ -367,15 +324,13 @@ task, and then kills its shell processes and awaits their cleanup. When the
 main turn's result is known, normally or after cancellation, it closes its
 owner, cancels every subagent, awaits their tasks, and then kills the shell
 processes of every subagent started in the run, awaiting their cleanup and
-removing them from the active session's owner before its `after_run`; each
-cancelled turn still attempts to save its interrupted batch and runs its own
-`after_run`. Each subagent task also cancels its turn when the
-main prompt is cancelled. A dropped prompt future can only signal
+removing them from the active session's owner. Each cancelled turn still
+attempts to save its interrupted batch. Each subagent task also cancels its
+turn when the main prompt is cancelled. A dropped prompt future can only signal
 cancellation: dropping the owner closes it, discards its messages, cancels
 its subagents, and requests the kill of their shell processes, whose finished
 entries stay in the active session's owner until it shuts down. The subagent
-tasks may finish unwinding afterward while the runtime
-lives. They write only their child sessions, a save after the main session's
+tasks may finish unwinding afterward while the runtime lives. They write only their child sessions, a save after the main session's
 deletion fails without recreating it, and abrupt transport loss or process exit
 guarantees no save. Reloading a session starts no subagent.
 
@@ -394,52 +349,17 @@ operation before an ordinary model request. The `/compact` command acquires the
 same per-session operation guard and cancellation signal, reads the saved
 transcript, and commits a checkpoint without adding a turn start.
 
+### Model loop
+
 When a completion contains tool calls, the prompt run executes them in order and
 builds one assistant batch. The batch is committed before another model request
 begins. A successful final response follows the same commit boundary.
 
-Global hooks run in every main and subagent turn; the invoked skill's hooks
-run only in the main agent's turns. Each subagent turn has its own run ID and
-passes its child session ID as the hook's session ID, and its hooks see its own
-batches while other agents may change the workspace. Hooks run at fixed points
-in the turn:
-
-1. `before_run` runs once, after the turn start is saved
-   and announced and before the first model request. Compaction, request
-   retries, and hook continuations do not rerun it.
-2. `before_tool` runs before each tool call, including each
-   `shell_process` action, before the Ask mode permission request. A denial skips the permission request and execution and
-   gives the call a failed tool outcome that carries the reason. Later calls in
-   the batch proceed. A tool decision saves no hook feedback and cannot change
-   the call's arguments.
-3. `after_tools` runs once for each tool-bearing assistant batch, after the
-   batch commits and before the next model request.
-4. `before_stop` runs on each committed assistant message with a finished
-   OpenRouter stop. A `continue` decision saves the hook feedback and makes
-   another model request in the same prompt run if neither hook fails. The run
-   finishes when every applicable hook returns `stop`.
-5. `after_run` runs once on the prompt run's result.
-
-A `before_run`, `after_tools`, or `before_stop` message passes the same input
-admission as a turn start and is saved as hook feedback; `before_run` and
-`after_tools` may save nothing. A hook error ends the run with an error and saves
-nothing for that hook run. Refusal, token limit, request failure, and
-cancellation never run `before_stop`. Skill hooks end with their prompt run;
-global hooks remain available for later turns. A finished outcome carries the
-text of the committed answer accepted by every applicable `before_stop` hook,
-including an empty answer. Continuation carries no final answer. Cancellation,
-token limit, and refusal outcomes carry no answer; failures remain errors.
-The ACP boundary maps these outcomes to ACP stop reasons.
-
-`after_run` runs for every prompt run that saved its turn start, after any
-outstanding batch is saved and the result is known, while the operation guard
-is still held. Its input reports the outcome as `finished`, `cancelled`,
-`token_limit`, `refused`, or `failed`, derived from that result. It ignores
-prompt cancellation, because it may be reporting it, and its five-second
-deadline bounds it, including during connection shutdown. Its ACP updates are
-best effort, a failure is written to stderr, and it never changes the prompt
-run's result or the transcript. Input rejected by admission, or cancellation
-observed before the turn start is saved, saves nothing and runs no hook.
+A finished OpenRouter stop ends the prompt run after its assistant batch
+commits, unless agent messages published by then supersede the answer. The
+finished outcome carries the committed answer, including an empty answer.
+Cancellation, token limit, and refusal outcomes carry no answer; failures remain
+errors. The ACP boundary maps these outcomes to ACP stop reasons.
 
 ### Assistant-batch boundary
 
@@ -455,21 +375,13 @@ The step of the prompt run that processes one validated assistant message owns
 its uncommitted assistant batch, from the pending ACP updates through the save
 attempt. Every observed tool outcome enters the batch before a finished ACP
 update is sent or a later tool begins. Every exit from that step gives each call
-a final outcome and attempts the save before the step returns; usage updates,
-`after_tools`, and `before_stop` run only after the batch commits. The prompt
-run extends its transcript copy only after the database commit succeeds.
+a final outcome and attempts the save before the step returns. Usage updates
+follow a committed batch. The prompt run extends its transcript copy only after
+the database commit succeeds.
 
 If the turn stops after validation, every call without an observed outcome gets
 an explicit failed or cancelled tool outcome before the batch is saved. Ox does
-not infer success or claim that cancellation reversed effects. A `before_tool`
-error is the only hook error that stops a batch before it completes; the current
-call and every later call get a failed `Not started` outcome.
-
-`after_tools` runs only after the whole batch commits, so it sees the workspace
-after every call in the batch. Its input lists every call in call
-order with its saved outcome, including failed and denied calls. It does not run
-for a batch the turn stopped before completing. After an `after_tools` error,
-the committed batch stays saved and the hook's effects are not undone.
+not infer success or claim that cancellation reversed effects.
 
 ### Shell process lifetime
 
@@ -503,7 +415,7 @@ command, listing, reading a running command, writing input, and stopping
 complete their tool calls; the start result confirms only that the command
 started. A read of a finished command follows the ordinary shell conventions
 for its exit. Background output and command termination never append
-transcript entries, send ACP updates, run hooks, or start model requests.
+transcript entries, send ACP updates, or start model requests.
 Sequential tool calls, in one batch or later turns, can therefore interact
 with a command that keeps running between them.
 
@@ -539,11 +451,7 @@ visible reasoning may be sent before validation; this provisional output is
 absent from replay if the model request fails or is cancelled. Replay contains
 only saved, displayable transcript content and final tool states. A replayed
 shell tool call shows the observation its call saved; a live `list` or `read`
-is the authority for a shell process's current state. A hook run is
-shown as an ACP execute tool call with an Ox-generated ID. It is not a model
-tool call and never enters an assistant batch; replay rebuilds it from saved
-hook feedback as a completed tool call. Hook runs that saved nothing, tool
-decisions, and `after_run` appear only in live ACP updates.
+is the authority for a shell process's current state.
 
 A usage update reports context tokens, the model's context limit, and the
 session cost in US dollars. The session cost is the sum of every saved model
@@ -586,11 +494,10 @@ response sending. The SQLite mutex is separate and covers only a synchronous
 store operation; it is never held across an asynchronous wait.
 
 Prompt cancellation is latched and scoped to the active prompt. It prevents new
-model requests, tool work, and hook runs other than `after_run` but does not
-roll back a saved user message, observed tool effects, or committed transcript
-entries. Each running tool or hook owns the cleanup boundary for its resources:
-its whole process group is stopped, a hook's after a two-second SIGTERM grace
-period. Shell processes belong to their active session instead, so prompt
+model requests and tool work but does not roll back a saved user message,
+observed tool effects, or committed transcript entries. Each running tool owns
+the cleanup boundary for its resources: its whole process group is stopped.
+Shell processes belong to their active session instead, so prompt
 cancellation leaves the main agent's running and ends a subagent's with the
 subagent. Connection shutdown rejects new operations,
 cancels active prompts, signals every shell process, and waits for the
@@ -640,31 +547,10 @@ file that cannot be read, is not UTF-8, or exceeds 32 KiB fails session
 activation instead of being ignored. An invalid `SKILL.md` is skipped and
 reported instead, as described in Slash commands and skills.
 
-Hook commands run with `/bin/sh -c` and Ox's permissions, in the skill directory
-or, for global hooks, `~/.config/ox`. Invoking a skill approves its commands;
-configuring a global hook enables its commands in both Ask and Auto mode.
-Global hooks also run for ordinary messages and headless prompts. Hooks never
-run for `/compact`, replay, compaction requests, or directly around another
-hook's command.
-
-Each command receives the hook kind, optional skill name, arguments, session
-ID, session mode, run ID, workspace path, Ox executable path, model, and effort
-level as JSON on stdin, plus fields specific to its kind. Global commands
-receive `"skill": null` and empty arguments. Commands must print one response
-object for their kind within that kind's deadline and the output limit.
-
-Every hook command inherits `OX_IN_HOOK=1`. An Ox process with that variable
-present skips global hooks, so nested headless runs cannot recursively invoke
-them. The marker is inherited through descendants of the hook command.
-
-The example goal skill launches a nested headless Auto-mode agent in the same
-workspace with global hooks suppressed. Its prompt asks it not to change files;
-permissions do not enforce that restriction.
-
 Credentials come from `OPENROUTER_API_KEY` or the operating-system keyring and
 are not part of a session or transcript. The OpenRouter client is loaded lazily
 for ACP work and cached. Child shell processes, including background commands,
-do not inherit `OPENROUTER_API_KEY`. Hooks inherit it, so a hook can run a nested `ox run`.
+do not inherit `OPENROUTER_API_KEY`.
 
 ## Invariants
 
@@ -693,28 +579,21 @@ The implementation enforces these properties:
     assembled when the session became active before the transcript.
 14. Every shell call and shell process write uses the session mode captured
     at the prompt's turn boundary.
-15. Hooks run only at their defined points in a prompt run; a skill hook also
-    requires that run to invoke its skill. `before_stop` runs only on an
-    assistant message committed with a finished OpenRouter stop, `after_tools`
-    only after a committed assistant batch, and hook feedback is saved before
-    the next model request.
-16. Every shell process belongs to one agent of exactly one active session's
+15. Every shell process belongs to one agent of exactly one active session's
     owner, only that agent can reach it, and its whole process group is
     stopped when that session is deleted, the ACP connection shuts down, or its
     headless run ends.
-17. Only the main loop saves agent messages, only in the main transcript, and
-    never inside an assistant batch or its hook feedback; `before_stop` never
-    judges an answer that messages waiting at its commit superseded.
-18. A main prompt run that returns has stopped every subagent and awaited its
-    task, and every subagent's shell processes have ended, before `after_run`.
+16. Only the main loop saves agent messages, only in the main transcript, and
+    never inside an assistant batch. A finished answer is superseded by
+    messages waiting when it commits.
+17. A main prompt run that returns has stopped every subagent and awaited its
+    task, and every subagent's shell processes have ended.
 
 ## Deliberate constraints
 
 The implemented architecture has one OpenRouter provider, one concrete tool set
 with a main-agent and a subagent role, at most four subagents per prompt run,
-five fixed hook kinds with at most one global and one skill command each, one
-SQLite connection, sequential tool execution,
-whole-transcript reads, process-local operation guards, and process-local shell
+one SQLite connection, sequential tool execution, whole-transcript reads, process-local operation guards, and process-local shell
 processes with pipe input rather than terminal emulation. It has no provider
 fallback, prompt queue, durable provisional output, background continuation of
 a prompt run, cross-process coordination, or database migration path.

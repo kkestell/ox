@@ -18,7 +18,6 @@ use tokio::{sync::Notify, task::JoinHandle};
 use crate::{
     acp::prompt::{self, Presentation, PromptInput, PromptOutput},
     cancellation::PromptCancellation,
-    hooks::HookSource,
     openrouter,
     sessions::{AgentMessage, AgentMessageContent, SessionSettings, SessionStore, TurnInput},
     shell_processes::ShellProcesses,
@@ -42,8 +41,6 @@ pub struct Launch {
     pub settings: SessionSettings,
     /// The subagent system prompt derived from the main agent's.
     pub system_prompt: String,
-    /// Global hooks only; invoked skill hooks belong to the main agent.
-    pub global_hooks: Vec<HookSource>,
     /// The active session's shell processes. Each subagent reaches only the
     /// ones its child session ID started.
     pub shell_processes: ShellProcesses,
@@ -343,7 +340,6 @@ impl Shared {
             PromptInput {
                 session_id: id.clone(),
                 turn_input: TurnInput::UserMessage(text.into()),
-                hook_sources: launch.global_hooks.clone(),
                 selected_settings: launch.settings.clone(),
                 system_prompt: launch.system_prompt.clone(),
                 shell_processes: launch.shell_processes.clone(),
@@ -564,7 +560,6 @@ mod tests {
                 settings: SessionSettings::new(DEFAULT_MODEL, EffortLevel::Default)
                     .with_mode(SessionMode::Auto),
                 system_prompt: "You are a subagent.".to_owned(),
-                global_hooks: Vec::new(),
                 shell_processes: shell_processes.clone(),
                 connection: None,
                 cancellation: PromptCancellation::new(),

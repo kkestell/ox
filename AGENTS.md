@@ -35,17 +35,12 @@ THIS DOCUMENT MUST BE KEPT UP TO DATE
 - `src/settings.rs`: The home directory; the settings file format shared by
   `~/.config/ox/settings.json` and the workspace settings file
   `.ox/settings.json`, with one reader that checks the model against the model
-  catalog; the required default model and optional global hooks read from
-  `~/.config/ox/settings.json` at process startup, with global hook suppression
-  inside hook commands; and each workspace's effective settings, where each key
-  the workspace settings file sets replaces the same key from
-  `~/.config/ox/settings.json`, except `hooks`, which is an error there.
-- `src/hooks.rs`: Shared hook definitions, validation, and the protocol for
-  every hook kind: JSON input on stdin with the fields every hook shares, one
-  response object per kind on stdout, deadlines, limits, and hook errors.
-- `src/process.rs`: Child processes in a new process group with optional stdin,
-  bounded output tails, a deadline, cancellation, and group cleanup with an
-  optional, interruptible SIGTERM grace period. It owns reading and draining a
+  catalog; the required default model read from
+  `~/.config/ox/settings.json` at process startup; and each workspace's
+  effective settings, where the workspace model replaces the user default.
+- `src/process.rs`: Child processes in a new process group with bounded output
+  tails, a deadline, cancellation, and group cleanup with an optional,
+  interruptible SIGTERM grace period. It owns reading and draining a
   child's output pipes into a caller's sink and the rule that a late read error
   decides the outcome only after a natural exit. Shell process supervisors use
   that capture together with its process-group cleanup.
@@ -105,7 +100,7 @@ THIS DOCUMENT MUST BE KEPT UP TO DATE
   started in the prompt run, including ended ones; the queue of agent messages
   for the main agent; and the notification waits use. Each task runs the
   shared loop against its child session with the inherited settings, system
-  prompt, global hooks, and shell processes, publishes each final answer or
+  prompt and shell processes, publishes each final answer or
   failure with bounded text, then starts the next queued message or goes idle.
   A failure that ends a subagent kills its shell processes. Stopping, normal
   shutdown, and dropping the guard close admission, cancel subagents, and kill
@@ -113,7 +108,7 @@ THIS DOCUMENT MUST BE KEPT UP TO DATE
   removal of their shell processes.
 - `src/sessions.rs`: Transcript types, including turn starts that save each
   turn's input with its model, effort, and mode, ordered user message parts and
-  image attachments, skill invocations, hook kinds, hook feedback, assistant
+  image attachments, skill invocations, assistant
   batch entries with tool outcomes in call order, model usage, compaction
   checkpoints with their summarizer cost, agent messages saved only in main
   sessions, transcript cost, transcript entry encoding as stored JSON,
@@ -142,42 +137,29 @@ THIS DOCUMENT MUST BE KEPT UP TO DATE
   main agent's ACP updates, suppresses a subagent's or a headless run's, and
   sends Ask mode permission requests under the main session with tool call IDs
   scoped by an `AcpIdentity`. One turn: reject oversized input before saving,
-  save accepted input with captured settings as one turn start, announce it and
-  run `before_run` hooks, save and present published agent messages before
-  each model request and before `before_stop` on a finished answer, compact
-  before large model requests, retry explicit input overflow once, process each
-  assistant batch in the one step that owns it (run `before_tool` before each
-  tool call, request Ask mode permission for shell starts and shell process
+  save accepted input with captured settings as one turn start, announce it,
+  save and present published agent messages before each model request and after
+  a finished answer commits, compact before large model requests, retry
+  explicit input overflow once, process each assistant batch in the one step
+  that owns it (request Ask mode permission for shell starts and shell process
   writes, run tools with a `ToolContext`, and on every exit give each call an
   outcome and attempt the save), send a usage update after each committed batch
-  and after each automatic compaction, run `after_tools` after each batch and
-  `before_stop` on each finished answer, stop the main agent's subagents once
-  its result is known, run `after_run` on the result, and return an outcome
-  carrying the accepted answer only when finished. The main agent creates the
-  `Subagents` owner; a subagent runs only global hooks.
+  and automatic compaction, stop the main agent's subagents once its result is
+  known, and return an outcome carrying the answer only when finished.
 - `src/acp/convert.rs`: ACP text and image input conversion, session update
   construction including each tool call's kind, shell permission content for
   commands, background starts, and shell process input with a subagent's
-  scoped tool call ID and title, hook runs, agent messages shown as attributed
+  scoped tool call ID and title, agent messages shown as attributed
   tool calls both live and in replay, and usage updates whose cost includes
   child sessions, and transcript replay.
-- `examples/skills/goal/`: An example skill whose `before_stop` hook,
-  `scripts/judge.py`, asks a headless `ox run` to judge each answer, with its
-  test and a README describing the `before_stop` protocol and installation.
-- `examples/skills/careful/`: An example skill whose `before_run`,
-  `before_tool`, `after_tools`, and `after_run` hooks, all `scripts/careful.py`,
-  supply the Git status, deny destructive shell commands and shell process
-  input, check each patch batch, and log each run outcome, with its test and a
-  README describing every hook kind, batch timing, hook errors, and global
-  hooks.
 
 ## Validation
 
 For changes affecting behavior, interfaces, artifacts, or builds, run full
 validation: `cargo fmt --all -- --check`,
 `cargo test --all-targets --all-features`, `cargo build --all-features`,
-`cargo clippy --all-targets --all-features -- -D warnings`, and both example
-test commands in `eng/testing.md`. Report any skipped or failed check; do not
+`cargo clippy --all-targets --all-features -- -D warnings`. Report any
+skipped or failed check; do not
 call partial validation complete. For documentation-only, comment-only, and
 filename-only changes, use focused searches and diff inspection.
 

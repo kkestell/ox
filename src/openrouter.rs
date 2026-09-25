@@ -11,8 +11,8 @@ use serde_json::{Value, json};
 
 use crate::{
     sessions::{
-        AgentMessage, AssistantMessage, EffortLevel, HookFeedback, ImageAttachment, ModelUsage,
-        SkillInvocation, ToolCall, TranscriptEntry, TurnInput, UserMessage, UserMessagePart,
+        AgentMessage, AssistantMessage, EffortLevel, ImageAttachment, ModelUsage, SkillInvocation,
+        ToolCall, TranscriptEntry, TurnInput, UserMessage, UserMessagePart,
     },
     tools,
 };
@@ -451,15 +451,6 @@ pub(crate) fn skill_invocation_message(invocation: &SkillInvocation) -> UserMess
     }
 }
 
-/// The user-role text that gives the model a hook's feedback.
-pub(crate) fn hook_feedback_text(feedback: &HookFeedback) -> String {
-    format!(
-        "Feedback from the {}:\n{}",
-        feedback.label(),
-        feedback.message()
-    )
-}
-
 /// The user-role text that gives the main agent one subagent message.
 pub(crate) fn agent_message_text(message: &AgentMessage) -> String {
     format!("{}:\n{}", message.label(), message.text())
@@ -506,9 +497,6 @@ pub(crate) fn chat_messages(transcript: &[TranscriptEntry]) -> Vec<Value> {
                     user_message(&skill_invocation_message(invocation))
                 }
             },
-            TranscriptEntry::HookFeedback(feedback) => {
-                json!({ "role": "user", "content": hook_feedback_text(feedback) })
-            }
             TranscriptEntry::AgentMessages(agent_messages) => {
                 messages.extend(agent_messages.iter().map(
                     |message| json!({ "role": "user", "content": agent_message_text(message) }),
@@ -931,8 +919,7 @@ pub(crate) mod fixture {
         /// The reply, sent only once the gate opens, so its model request
         /// stays in flight until the test releases it.
         Gated(Gate, Box<Reply>),
-        /// A reply built from the request it answers, for a scripted model
-        /// that refers to IDs from earlier tool results.
+        /// A reply built from the request it answers.
         From(Box<dyn FnOnce(&Value) -> Reply + Send>),
     }
 

@@ -263,9 +263,8 @@ pub(super) async fn execute(
         stdout: OUTPUT_BODY_LIMIT,
         stderr: OUTPUT_BODY_LIMIT,
         deadline: Duration::from_secs(seconds),
-        grace: Duration::ZERO,
     };
-    match process::run(command, None, limits, cancelled).await {
+    match process::run(command, limits, cancelled).await {
         Ok(finished) => render(
             finished.observed,
             finished.stdout,
@@ -507,9 +506,7 @@ fn report(mut status: String, mut out: Capture, mut err: Capture, diagnostics: &
 mod tests {
     use super::*;
     use crate::{
-        hooks,
         process::{OUTPUT_DRAIN_TIMEOUT, kill_group},
-        sessions::{EffortLevel, SessionMode, StopDecision},
         tools::{self, fixture::Workspace},
     };
     use rustix::process::Pid;
@@ -1113,61 +1110,6 @@ mod tests {
                 matches!(&read, ToolOutcome::Completed(text) if text.contains("Exit code: 0")),
                 "a background command also lacks the key: {read:?}"
             );
-            // A hook inherits the key and reads its input from stdin.
-            let hooks = hooks::HookSource {
-                skill: Some("goal".to_owned()),
-                hooks: hooks::Hooks {
-                    before_stop: Some(hooks::HookCommand {
-                        command: r#"test "$OPENROUTER_API_KEY" = dummy-key && test "$OX_IN_HOOK" = 1 && cat > input.json && printf '{"decision":"stop","message":"Key present."}'"#.to_owned(),
-                    }),
-                    ..hooks::Hooks::default()
-                },
-                directory: workspace.0.clone(),
-            };
-            let context = hooks::Context {
-                skill: Some("goal".to_owned()),
-                arguments: "Check the key.".to_owned(),
-                session_id: "session-1".to_owned(),
-                mode: SessionMode::Ask,
-                run_id: "run-1".to_owned(),
-                workspace: "/workspace".into(),
-                model: "test/model".to_owned(),
-                effort: EffortLevel::Low,
-            };
-            let decision: hooks::StopResponse = hooks::run(
-                &hooks,
-                &context,
-                &hooks::Event::BeforeStop {
-                    answer: "The answer.".to_owned(),
-                },
-                std::future::pending(),
-            )
-            .await
-            .unwrap();
-            assert_eq!(
-                (decision.decision, decision.message.as_str()),
-                (StopDecision::Stop, "Key present.")
-            );
-            let input: serde_json::Value = serde_json::from_str(
-                &std::fs::read_to_string(workspace.0.join("input.json")).unwrap(),
-            )
-            .unwrap();
-            assert_eq!(
-                input,
-                json!({
-                    "kind": "before_stop",
-                    "skill": "goal",
-                    "arguments": "Check the key.",
-                    "session_id": "session-1",
-                    "mode": "ask",
-                    "run_id": "run-1",
-                    "workspace": "/workspace",
-                    "ox": std::env::current_exe().unwrap(),
-                    "model": "test/model",
-                    "effort": "low",
-                    "answer": "The answer.",
-                })
-            );
             return;
         }
         let status = Command::new(std::env::current_exe().unwrap())
@@ -1261,36 +1203,6 @@ mod tests {
         let result = execute(&workspace.0, r#"{"command":"touch wrong"}"#, async {}).await;
         assert!(matches!(result, ToolOutcome::Cancelled(_)));
         assert!(!workspace.0.join("wrong").exists());
-
-        // With a grace period, a group that exits on SIGTERM is not killed,
-        // and one that ignores SIGTERM is killed when the period ends.
-        let grace = Duration::from_millis(500);
-        for (trap, exits_on_term) in [("touch terminated; exit 0", true), ("", false)] {
-            std::fs::remove_file(workspace.0.join("ready")).unwrap();
-            let mut command = Command::new("/bin/sh");
-            command
-                .arg("-c")
-                .arg(format!("trap '{trap}' TERM; {CHILD}"))
-                .current_dir(&workspace.0);
-            let limits = Limits {
-                stdout: 64,
-                stderr: 64,
-                deadline: Duration::from_secs(5),
-                grace,
-            };
-            let start = Instant::now();
-            let finished =
-                process::run(command, None, limits, wait_file(&workspace.0.join("ready")))
-                    .await
-                    .unwrap();
-            assert!(matches!(finished.observed, Observed::Cancelled));
-            assert_eq!(start.elapsed() >= grace, !exits_on_term, "{trap}");
-            assert_eq!(
-                std::fs::remove_file(workspace.0.join("terminated")).is_ok(),
-                exits_on_term
-            );
-            assert_stopped(&workspace.0).await;
-        }
     }
 
     #[tokio::test]

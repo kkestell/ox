@@ -18,9 +18,8 @@ use crate::{
     compaction,
     openrouter::ModelRequestParameters,
     sessions::{
-        self, AgentMessage, AgentMessageContent, AssistantBatch, AssistantMessage, HookFeedback,
-        HookKind, ImageAttachment, ToolCall, ToolOutcome, TranscriptEntry, TurnInput, UserMessage,
-        UserMessagePart,
+        self, AgentMessage, AgentMessageContent, AssistantBatch, AssistantMessage, ImageAttachment,
+        ToolCall, ToolOutcome, TranscriptEntry, TurnInput, UserMessage, UserMessagePart,
     },
     tools,
 };
@@ -278,42 +277,6 @@ pub fn finished_tool_call_update(call: &ToolCall, outcome: &ToolOutcome) -> Sess
     ))
 }
 
-/// A new ACP tool call ID for one hook run. Hook runs are not model tool calls,
-/// so Ox generates their IDs.
-pub fn hook_run_id() -> String {
-    format!("hook-{}", uuid::Uuid::new_v4())
-}
-
-/// Announces a hook run as an execute tool call.
-pub fn pending_hook_run(call_id: &str, skill: Option<&str>, kind: HookKind) -> SessionUpdate {
-    SessionUpdate::ToolCall(
-        AcpToolCall::new(
-            ToolCallId::new(call_id.to_owned()),
-            crate::sessions::hook_label(skill, kind),
-        )
-        .kind(ToolKind::Execute)
-        .status(ToolCallStatus::Pending),
-    )
-}
-
-/// Finishes a hook run with a description of its output or its error.
-pub fn finished_hook_run_update(
-    call_id: &str,
-    result: std::result::Result<&str, &str>,
-) -> SessionUpdate {
-    let (status, text) = match result {
-        Ok(message) => (ToolCallStatus::Completed, message),
-        Err(error) => (ToolCallStatus::Failed, error),
-    };
-    SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
-        ToolCallId::new(call_id.to_owned()),
-        ToolCallUpdateFields::new()
-            .status(status)
-            .content(vec![text_content(text)])
-            .raw_output(Value::String(text.to_owned())),
-    ))
-}
-
 /// Shows each saved subagent message as a finished tool call attributed to
 /// its subagent, both live and in replay. They are not model tool calls, so
 /// Ox generates their IDs.
@@ -339,16 +302,6 @@ pub fn agent_message_updates(messages: &[AgentMessage]) -> Vec<SessionUpdate> {
         .collect()
 }
 
-fn replayed_hook_run(feedback: &HookFeedback) -> SessionUpdate {
-    SessionUpdate::ToolCall(
-        AcpToolCall::new(ToolCallId::new(hook_run_id()), feedback.label())
-            .kind(ToolKind::Execute)
-            .status(ToolCallStatus::Completed)
-            .content(vec![text_content(feedback.message())])
-            .raw_output(Value::String(feedback.message().to_owned())),
-    )
-}
-
 /// Sends the saved transcript as displayable content and final tool states.
 /// The model and continuation metadata are never shown.
 pub fn replay_transcript(
@@ -371,7 +324,6 @@ pub fn replay_transcript(
                     }
                 }
             },
-            TranscriptEntry::HookFeedback(feedback) => send_update(replayed_hook_run(feedback))?,
             TranscriptEntry::AgentMessages(messages) => {
                 for update in agent_message_updates(messages) {
                     send_update(update)?;
@@ -704,34 +656,5 @@ mod tests {
                     && update.fields.raw_output
                         == Some(Value::String("Cancelled before this tool was started.".to_owned()))
         ));
-
-        for (skill, label) in [
-            (None, "global after_tools hook"),
-            (Some("global"), "skill /global after_tools hook"),
-        ] {
-            let mut replay = Vec::new();
-            replay_transcript(
-                &[TranscriptEntry::HookFeedback(HookFeedback {
-                    skill: skill.map(str::to_owned),
-                    content: crate::sessions::HookFeedbackContent::AfterTools {
-                        message: "Two tests still fail.".to_owned(),
-                    },
-                })],
-                |update| {
-                    replay.push(update);
-                    Ok(())
-                },
-            )
-            .unwrap();
-            assert!(matches!(
-                &replay[..],
-                [SessionUpdate::ToolCall(call)]
-                    if call.tool_call_id.to_string().starts_with("hook-")
-                        && call.title == label
-                        && call.kind == ToolKind::Execute
-                        && call.status == ToolCallStatus::Completed
-                        && call.raw_output == Some(Value::String("Two tests still fail.".to_owned()))
-            ));
-        }
     }
 }

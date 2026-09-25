@@ -1,7 +1,6 @@
 //! Child processes in a new process group: bounded output tails, reading and
 //! draining a child's output pipes into a caller's sink, cleanup of the whole
-//! group, and a runner for one child with optional stdin, a deadline, and
-//! cancellation.
+//! group, and a runner for one child with a deadline and cancellation.
 
 use std::{
     collections::VecDeque,
@@ -12,7 +11,7 @@ use std::{
 
 use rustix::process::{Pid, Signal, kill_process_group, test_kill_process_group};
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
+    io::AsyncReadExt,
     process::{Child, ChildStderr, ChildStdout, Command},
     time::{Instant, sleep, sleep_until, timeout},
 };
@@ -215,9 +214,6 @@ pub struct Limits {
     pub stdout: usize,
     pub stderr: usize,
     pub deadline: Duration,
-    /// How long cleanup waits after SIGTERM for the group to exit before
-    /// sending SIGKILL. Zero sends SIGKILL at once.
-    pub grace: Duration,
 }
 
 /// What was observed about a child after its group was cleaned up.
@@ -294,23 +290,17 @@ impl Drop for ProcessGroup {
     }
 }
 
-/// Spawns `command` in a new process group, writes `stdin` if given, and
-/// captures output until the child exits, the deadline passes, cancellation
-/// arrives, or reading fails. The whole group is then stopped, even after a
+/// Spawns `command` in a new process group and captures output until the child
+/// exits, the deadline passes, cancellation arrives, or reading fails. The whole group is then stopped, even after a
 /// normal exit, because the child may leave background processes. Fails only
 /// when the child cannot start.
 pub async fn run(
     mut command: Command,
-    stdin: Option<Vec<u8>>,
     limits: Limits,
     cancelled: impl Future<Output = ()>,
 ) -> io::Result<Finished> {
     let mut child = command
-        .stdin(if stdin.is_some() {
-            Stdio::piped()
-        } else {
-            Stdio::null()
-        })
+        .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .process_group(0)
@@ -318,36 +308,23 @@ pub async fn run(
     tokio::pin!(cancelled);
     let deadline = Instant::now() + limits.deadline;
     let mut group = ProcessGroup::new(&child);
-    let pipe = child.stdin.take();
-    // A child may exit without reading its input, so a failed write is not
-    // itself a failure. Dropping the pipe closes it.
-    let mut write = Box::pin(async move {
-        if let (Some(mut pipe), Some(bytes)) = (pipe, stdin) {
-            let _ = pipe.write_all(&bytes).await;
-        }
-    });
-    let mut written = false;
     let mut out = Capture::new(limits.stdout);
     let mut err = Capture::new(limits.stderr);
     let mut pipes = OutputPipes::new(&mut child, |stream, bytes: &[u8]| match stream {
         Stream::Stdout => out.append(bytes),
         Stream::Stderr => err.append(bytes),
     });
-    let mut observed = loop {
-        tokio::select! {
-            biased;
-            status = child.wait() => break Observed::Exit(status.expect("reap owned child")),
-            () = sleep_until(deadline) => break Observed::Timeout(limits.deadline),
-            () = &mut cancelled => break Observed::Cancelled,
-            () = &mut write, if !written => written = true,
-            error = pipes.read_until_failure() => break Observed::Failed(error),
-        }
+    let mut observed = tokio::select! {
+        biased;
+        status = child.wait() => Observed::Exit(status.expect("reap owned child")),
+        () = sleep_until(deadline) => Observed::Timeout(limits.deadline),
+        () = &mut cancelled => Observed::Cancelled,
+        error = pipes.read_until_failure() => Observed::Failed(error),
     };
-    drop(write);
     let drained = pipes
         .drain_during(async {
             group
-                .terminate(limits.grace, &mut child, std::future::pending())
+                .terminate(Duration::ZERO, &mut child, std::future::pending())
                 .await;
             child
                 .wait()

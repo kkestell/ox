@@ -16,17 +16,6 @@ otherwise prints nothing to stdout and exits with a failure status. Set
 `OX_DATA_DIR` to a temporary directory to isolate that database, then inspect it
 to verify the saved session.
 
-Test the example goal skill's hook script with
-`python3 -m unittest discover -s examples/skills/goal/scripts`. It uses a fake
-`ox` executable and needs no OpenRouter key. To try the skill live, copy
-`examples/skills/goal` into a workspace's `.agents/skills/goal` and invoke
-`/goal <objective>` from an ACP client; headless runs never invoke skills.
-
-Test the example careful skill's hook script with
-`python3 -m unittest discover -s examples/skills/careful/scripts`. It uses a
-temporary Git repository and needs no OpenRouter key. Install and invoke it the
-same way as the goal skill.
-
 To try background commands live, connect an ACP client to a local build in
 Ask mode and run one session through these turns:
 

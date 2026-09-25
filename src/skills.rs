@@ -5,12 +5,12 @@ use std::{
     collections::HashSet,
     fs,
     io::{self, ErrorKind},
-    path::{Path, PathBuf},
+    path::Path,
 };
 
 use serde::Deserialize;
 
-use crate::{hooks::Hooks, text_file};
+use crate::text_file;
 
 const FILE_NAME: &str = "SKILL.md";
 
@@ -22,9 +22,6 @@ pub struct Skill {
     pub description: String,
     pub argument_hint: Option<String>,
     pub instructions: String,
-    /// The skill directory, where its hook commands run.
-    pub directory: PathBuf,
-    pub hooks: Hooks,
 }
 
 /// Other frontmatter keys belong to other agents and are ignored.
@@ -34,7 +31,6 @@ struct Frontmatter {
     description: String,
     #[serde(rename = "argument-hint")]
     argument_hint: Option<String>,
-    hooks: Option<Hooks>,
 }
 
 /// A loaded skill catalog with one message for each skipped definition or
@@ -79,7 +75,7 @@ pub fn load(home: &Path, workspace_path: &Path) -> Loaded {
             }
             let directory_name = entry.file_name().to_string_lossy().into_owned();
             let parsed = text_file::read_bounded(&directory.join(FILE_NAME))
-                .and_then(|text| parse(&directory_name, directory, &text));
+                .and_then(|text| parse(&directory_name, &text));
             let unclaimed = names.insert(directory_name.clone());
             match parsed {
                 Ok(skill) if unclaimed => skills.push(skill),
@@ -94,7 +90,7 @@ pub fn load(home: &Path, workspace_path: &Path) -> Loaded {
     Loaded { skills, skipped }
 }
 
-fn parse(directory_name: &str, directory: PathBuf, text: &str) -> io::Result<Skill> {
+fn parse(directory_name: &str, text: &str) -> io::Result<Skill> {
     let (yaml, body) = split_frontmatter(text)?;
     let frontmatter: Frontmatter =
         yaml_serde::from_str(yaml).map_err(|error| invalid(format!("frontmatter: {error}")))?;
@@ -123,15 +119,11 @@ fn parse(directory_name: &str, directory: PathBuf, text: &str) -> io::Result<Ski
     if instructions.is_empty() {
         return Err(invalid("instructions are blank"));
     }
-    let hooks = frontmatter.hooks.unwrap_or_default();
-    hooks.validate()?;
     Ok(Skill {
         name,
         description: frontmatter.description,
         argument_hint: frontmatter.argument_hint,
         instructions: instructions.to_owned(),
-        directory,
-        hooks,
     })
 }
 
@@ -214,26 +206,6 @@ mod tests {
                 "No frontmatter.\n",
                 "does not begin with --- delimited YAML",
             ),
-            (
-                "hooked",
-                "---\nname: hooked\ndescription: Hooked.\nhooks:\n  before_stop:\n    command: 'true'\n    extra: true\n---\nBody\n",
-                "unknown field `extra`",
-            ),
-            (
-                "incomplete",
-                "---\nname: incomplete\ndescription: Incomplete.\nhooks:\n  before_stop: {}\n---\nBody\n",
-                "missing field `command`",
-            ),
-            (
-                "unhooked",
-                "---\nname: unhooked\ndescription: Unhooked.\nhooks:\n  after_run:\n    command: \" \"\n---\nBody\n",
-                "after_run hook command is blank",
-            ),
-            (
-                "extra",
-                "---\nname: extra\ndescription: Extra.\nhooks:\n  before_tool:\n    command: 'true'\n    tools: [shell]\n---\nBody\n",
-                "unknown field `tools`",
-            ),
             ("missing", "", "No such file or directory"),
         ] {
             let home = Workspace::new();
@@ -269,9 +241,9 @@ mod tests {
             loaded
                 .skills
                 .iter()
-                .map(|skill| &skill.directory)
+                .map(|skill| skill.name.as_str())
                 .collect::<Vec<_>>(),
-            [&ox.join("goal")],
+            ["goal"],
             "a broken ~/.agents/skills/careful keeps the workspace careful out"
         );
         let mut skipped = loaded.skipped;

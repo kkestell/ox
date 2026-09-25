@@ -56,14 +56,12 @@ COMMIT;
 
 /// One entry in a session transcript. Every nonempty transcript opens with a
 /// turn start. Each assistant batch contains its message
-/// and one outcome per call, in call order. Hook feedback follows the turn
-/// start or assistant batch its hook ran after, allowing adjacent feedback of
-/// the same kind. Agent messages appear only in a main session's transcript.
+/// and one outcome per call, in call order. Agent messages appear only in a
+/// main session's transcript.
 #[derive(Debug, Clone, PartialEq)]
 pub enum TranscriptEntry {
     TurnStart(TurnStart),
     AssistantBatch(AssistantBatch),
-    HookFeedback(HookFeedback),
     CompactionCheckpoint(CompactionCheckpoint),
     AgentMessages(Vec<AgentMessage>),
 }
@@ -250,100 +248,6 @@ impl SkillInvocation {
             format!("/{} {}", self.name, self.arguments)
         }
     }
-}
-
-/// The point in a prompt run where a hook runs.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HookKind {
-    BeforeRun,
-    BeforeTool,
-    AfterTools,
-    BeforeStop,
-    AfterRun,
-}
-
-impl HookKind {
-    pub const ALL: [Self; 5] = [
-        Self::BeforeRun,
-        Self::BeforeTool,
-        Self::AfterTools,
-        Self::BeforeStop,
-        Self::AfterRun,
-    ];
-
-    pub fn id(self) -> &'static str {
-        match self {
-            Self::BeforeRun => "before_run",
-            Self::BeforeTool => "before_tool",
-            Self::AfterTools => "after_tools",
-            Self::BeforeStop => "before_stop",
-            Self::AfterRun => "after_run",
-        }
-    }
-}
-
-/// The same attribution in live updates, saved feedback, and errors.
-pub fn hook_label(skill: Option<&str>, kind: HookKind) -> String {
-    let source = match skill {
-        Some(name) => format!("skill /{name}"),
-        None => "global".to_owned(),
-    };
-    format!("{source} {} hook", kind.id())
-}
-
-/// A hook's saved message, which later model requests receive.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct HookFeedback {
-    pub skill: Option<String>,
-    pub content: HookFeedbackContent,
-}
-
-/// Each variant has its own place in the transcript.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum HookFeedbackContent {
-    /// Follows a user message or skill invocation.
-    BeforeRun { message: String },
-    /// Follows the last tool result of an assistant batch.
-    AfterTools { message: String },
-    /// Follows an assistant message without tool calls.
-    BeforeStop {
-        decision: StopDecision,
-        message: String,
-    },
-}
-
-impl HookFeedback {
-    pub fn label(&self) -> String {
-        hook_label(self.skill.as_deref(), self.kind())
-    }
-
-    pub fn kind(&self) -> HookKind {
-        match self.content {
-            HookFeedbackContent::BeforeRun { .. } => HookKind::BeforeRun,
-            HookFeedbackContent::AfterTools { .. } => HookKind::AfterTools,
-            HookFeedbackContent::BeforeStop { .. } => HookKind::BeforeStop,
-        }
-    }
-
-    pub fn message(&self) -> &str {
-        match &self.content {
-            HookFeedbackContent::BeforeRun { message }
-            | HookFeedbackContent::AfterTools { message }
-            | HookFeedbackContent::BeforeStop { message, .. } => message,
-        }
-    }
-}
-
-/// A `before_stop` decision. `Continue` makes another model request in the
-/// same prompt run; `Stop` ends the run. It is distinct from an OpenRouter
-/// stop.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum StopDecision {
-    Continue,
-    Stop,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -612,19 +516,9 @@ fn validate_transcript(entries: &[TranscriptEntry]) -> io::Result<()> {
         return Err(invalid_data("transcript does not open with a turn start"));
     }
     let mut previous_prefix = 0;
-    let mut current_skill: Option<&str> = None;
     for (index, entry) in entries.iter().enumerate() {
         match entry {
-            TranscriptEntry::TurnStart(turn_start) => {
-                current_skill = match &turn_start.input {
-                    TurnInput::UserMessage(_) => None,
-                    TurnInput::SkillInvocation(invocation) => Some(&invocation.name),
-                };
-            }
-            TranscriptEntry::HookFeedback(feedback) => {
-                check_hook_feedback_skill(feedback, current_skill)?;
-                check_hook_feedback_placement(entries, index, feedback)?;
-            }
+            TranscriptEntry::TurnStart(_) => {}
             TranscriptEntry::CompactionCheckpoint(checkpoint) => {
                 check_compaction_checkpoint(checkpoint, index, previous_prefix, entries)?;
                 previous_prefix = checkpoint.covered_prefix;
@@ -636,50 +530,6 @@ fn validate_transcript(entries: &[TranscriptEntry]) -> io::Result<()> {
                 }
             }
         }
-    }
-    Ok(())
-}
-
-fn check_hook_feedback_skill(
-    feedback: &HookFeedback,
-    current_skill: Option<&str>,
-) -> io::Result<()> {
-    if feedback.skill.is_some() && current_skill != feedback.skill.as_deref() {
-        return Err(invalid_data(
-            "hook feedback does not belong to the current skill invocation",
-        ));
-    }
-    Ok(())
-}
-
-fn check_hook_feedback_placement(
-    entries: &[TranscriptEntry],
-    index: usize,
-    feedback: &HookFeedback,
-) -> io::Result<()> {
-    let previous = entries[..index].iter().rev().find(|entry| {
-        !matches!(entry, TranscriptEntry::HookFeedback(prior) if prior.kind() == feedback.kind())
-    }).expect("a transcript begins with a turn start");
-    let (placed, place) = match feedback.content {
-        HookFeedbackContent::BeforeRun { .. } => (
-            matches!(previous, TranscriptEntry::TurnStart(_)),
-            "a user message or skill invocation",
-        ),
-        HookFeedbackContent::AfterTools { .. } => (
-            matches!(previous, TranscriptEntry::AssistantBatch(batch) if !batch.message.tool_calls.is_empty()),
-            "the tool results of an assistant batch",
-        ),
-        HookFeedbackContent::BeforeStop { .. } => (
-            matches!(previous,
-                TranscriptEntry::AssistantBatch(batch) if batch.message.tool_calls.is_empty()),
-            "an assistant message without tool calls",
-        ),
-    };
-    if !placed {
-        return Err(invalid_data(format!(
-            "{} hook feedback does not follow {place}",
-            feedback.kind().id()
-        )));
     }
     Ok(())
 }
@@ -898,12 +748,6 @@ impl SessionStore {
             .map(drop)
     }
 
-    /// Appends hook feedback and updates activity in one transaction.
-    pub fn append_hook_feedback(&self, id: &SessionId, feedback: &HookFeedback) -> io::Result<()> {
-        self.append(id, None, &[TranscriptEntry::HookFeedback(feedback.clone())])
-            .map(drop)
-    }
-
     /// Appends subagent messages to a main session and updates activity in
     /// one transaction.
     pub fn append_agent_messages(
@@ -1115,9 +959,6 @@ fn encode_entry(entry: &TranscriptEntry) -> (&'static str, String) {
     let (kind, data) = match entry {
         TranscriptEntry::TurnStart(turn_start) => ("turn_start", serde_json::to_string(turn_start)),
         TranscriptEntry::AssistantBatch(batch) => ("assistant_batch", serde_json::to_string(batch)),
-        TranscriptEntry::HookFeedback(feedback) => {
-            ("hook_feedback", serde_json::to_string(feedback))
-        }
         TranscriptEntry::CompactionCheckpoint(checkpoint) => {
             ("compaction_checkpoint", serde_json::to_string(checkpoint))
         }
@@ -1132,7 +973,6 @@ fn decode_entry(kind: &str, data: &str) -> io::Result<TranscriptEntry> {
     Ok(match kind {
         "turn_start" => TranscriptEntry::TurnStart(decode(kind, data)?),
         "assistant_batch" => TranscriptEntry::AssistantBatch(decode(kind, data)?),
-        "hook_feedback" => TranscriptEntry::HookFeedback(decode(kind, data)?),
         "compaction_checkpoint" => TranscriptEntry::CompactionCheckpoint(decode(kind, data)?),
         "agent_messages" => TranscriptEntry::AgentMessages(decode(kind, data)?),
         _ => {
@@ -1238,35 +1078,9 @@ mod tests {
         SkillInvocation {
             name: "goal".to_owned(),
             arguments: "Pass the tests.".to_owned(),
-            instructions: "Work until the hook stops you.".to_owned(),
+            instructions: "Complete the objective.".to_owned(),
             images: vec![],
         }
-    }
-
-    fn feedback(content: HookFeedbackContent) -> HookFeedback {
-        HookFeedback {
-            skill: Some("goal".to_owned()),
-            content,
-        }
-    }
-
-    fn before_run_feedback() -> HookFeedback {
-        feedback(HookFeedbackContent::BeforeRun {
-            message: "The parser lives in src/parse.rs.".to_owned(),
-        })
-    }
-
-    fn after_tools_feedback() -> HookFeedback {
-        feedback(HookFeedbackContent::AfterTools {
-            message: "Formatting is clean.".to_owned(),
-        })
-    }
-
-    fn stop_feedback() -> HookFeedback {
-        feedback(HookFeedbackContent::BeforeStop {
-            decision: StopDecision::Stop,
-            message: "Objective met.".to_owned(),
-        })
     }
 
     fn ids(summaries: &[SessionSummary]) -> Vec<String> {
@@ -1317,21 +1131,9 @@ mod tests {
             store.append_batch(&id, &batch).unwrap();
             store.append_checkpoint(&id, 2, &checkpoint).unwrap();
             store.append_turn_start(&id, &second).unwrap();
-            for skill in [None, Some("goal".to_owned())] {
-                store
-                    .append_hook_feedback(
-                        &id,
-                        &HookFeedback {
-                            skill,
-                            ..before_run_feedback()
-                        },
-                    )
-                    .unwrap();
-            }
             store
                 .append_batch(&id, &AssistantBatch::new(answered.clone(), vec![]).unwrap())
                 .unwrap();
-            store.append_hook_feedback(&id, &stop_feedback()).unwrap();
             id
         };
 
@@ -1352,16 +1154,10 @@ mod tests {
                 }),
                 TranscriptEntry::CompactionCheckpoint(checkpoint),
                 TranscriptEntry::TurnStart(second),
-                TranscriptEntry::HookFeedback(HookFeedback {
-                    skill: None,
-                    ..before_run_feedback()
-                }),
-                TranscriptEntry::HookFeedback(before_run_feedback()),
                 TranscriptEntry::AssistantBatch(AssistantBatch {
                     message: answered,
                     outcomes: vec![]
                 }),
-                TranscriptEntry::HookFeedback(stop_feedback()),
             ]
         );
         assert_eq!(
@@ -1377,7 +1173,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             replay.len(),
-            11,
+            8,
             "the checkpoint is hidden but the other entries replay"
         );
 
@@ -1516,115 +1312,6 @@ mod tests {
         ] {
             let error = read_error(&[(kind, data.to_string())]);
             assert!(error.contains(kind), "{case}: {error}");
-        }
-    }
-
-    #[test]
-    fn hook_feedback_follows_its_hook_point_within_its_skill_turn() {
-        let user = user_row();
-        let skill = row(&TranscriptEntry::turn(invocation()));
-        let answer = row(&TranscriptEntry::AssistantBatch(
-            AssistantBatch::new(message(vec![]), vec![]).unwrap(),
-        ));
-        let called = row(&TranscriptEntry::AssistantBatch(
-            AssistantBatch::new(
-                message(vec![call("call-1", "printf Chicago")]),
-                vec![completed()],
-            )
-            .unwrap(),
-        ));
-        let stopped = row(&TranscriptEntry::HookFeedback(stop_feedback()));
-        let global = |feedback: HookFeedback| HookFeedback {
-            skill: None,
-            ..feedback
-        };
-        let not_after_turn_start =
-            "before_run hook feedback does not follow a user message or skill invocation";
-        let not_after_tools =
-            "after_tools hook feedback does not follow the tool results of an assistant batch";
-        let not_after_answer =
-            "before_stop hook feedback does not follow an assistant message without tool calls";
-        let other_skill = "hook feedback does not belong to the current skill invocation";
-        for (case, feedback, preceding, expected) in [
-            (
-                "global before_run after an answer",
-                global(before_run_feedback()),
-                vec![user.clone(), answer.clone()],
-                not_after_turn_start,
-            ),
-            (
-                "global after_tools after a turn start",
-                global(after_tools_feedback()),
-                vec![user.clone()],
-                not_after_tools,
-            ),
-            (
-                "global before_stop after tool calls",
-                global(stop_feedback()),
-                vec![user.clone(), called.clone()],
-                not_after_answer,
-            ),
-            (
-                "global before_run after before_stop feedback",
-                global(before_run_feedback()),
-                vec![skill.clone(), answer.clone(), stopped.clone()],
-                not_after_turn_start,
-            ),
-            (
-                "skill before_run in a user turn",
-                before_run_feedback(),
-                vec![user.clone()],
-                other_skill,
-            ),
-            (
-                "skill before_run after an answer",
-                before_run_feedback(),
-                vec![skill.clone(), answer.clone()],
-                not_after_turn_start,
-            ),
-            (
-                "skill after_tools in a user turn after an answer",
-                after_tools_feedback(),
-                vec![user.clone(), answer.clone()],
-                other_skill,
-            ),
-            (
-                "skill after_tools after a turn start",
-                after_tools_feedback(),
-                vec![skill.clone()],
-                not_after_tools,
-            ),
-            (
-                "skill after_tools in a user turn after tool calls",
-                after_tools_feedback(),
-                vec![user.clone(), called.clone()],
-                other_skill,
-            ),
-            (
-                "skill before_stop in a user turn",
-                stop_feedback(),
-                vec![user.clone()],
-                other_skill,
-            ),
-            (
-                "skill before_stop in a user turn after tool calls",
-                stop_feedback(),
-                vec![user.clone(), called],
-                other_skill,
-            ),
-            (
-                "skill before_stop in a user turn after before_stop feedback",
-                stop_feedback(),
-                vec![user.clone(), answer.clone(), stopped],
-                other_skill,
-            ),
-        ] {
-            let rows: Vec<_> = preceding
-                .into_iter()
-                .chain([row(&TranscriptEntry::HookFeedback(feedback))])
-                .collect();
-            let error = read_error(&rows);
-            assert!(error.ends_with(expected), "{case}: {error}");
         }
     }
 

@@ -2,7 +2,6 @@ mod acp;
 mod auth;
 mod cancellation;
 mod compaction;
-mod hooks;
 mod openrouter;
 mod process;
 mod sessions;
@@ -180,8 +179,7 @@ async fn run() -> Result<(), Box<dyn Error>> {
             let settings = load_settings_and_catalog().await?.for_workspace(&dir)?;
             let model = resolve_model(model, settings.default_model)?;
             check_effort(&model, effort)?;
-            let answer =
-                acp::run_headless(&dir, model, effort, prompt, settings.global_hooks).await?;
+            let answer = acp::run_headless(&dir, model, effort, prompt).await?;
             println!("{answer}");
         }
         Command::Login => {
@@ -251,7 +249,6 @@ mod tests {
         assert_eq!(model, None);
         let settings = settings::Settings {
             default_model: openrouter::fixture::DEFAULT_MODEL.to_owned(),
-            global_hooks: None,
         };
         let workspace = Workspace::new();
         let workspace_model = || {
