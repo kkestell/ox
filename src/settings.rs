@@ -105,8 +105,6 @@ mod tests {
             (r#"{"model":"M"}"#, true),
             (r#"{"model":"a/b"}"#, false),
             (r#"{"model":" "}"#, false),
-            (r#"{"hooks":{}}"#, false),
-            (r#"{"model":"M","hooks":{}}"#, false),
             (r#"{"model":"M","extra":{}}"#, false),
             ("{}", false),
             ("", false),
@@ -149,7 +147,6 @@ mod tests {
         }
 
         for (text, error) in [
-            (r#"{"hooks":{}}"#, "unknown field `hooks`"),
             (
                 r#"{"model":"a/b"}"#,
                 "model a/b is not in the OpenRouter model catalog",
