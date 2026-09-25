@@ -44,7 +44,6 @@ CREATE INDEX IF NOT EXISTS sessions_by_parent ON sessions (parent_session_id);
 CREATE TABLE IF NOT EXISTS transcript_entries (
     id         INTEGER PRIMARY KEY,
     session_id TEXT NOT NULL REFERENCES sessions (id) ON DELETE CASCADE,
-    ts         TEXT NOT NULL,
     kind       TEXT NOT NULL,
     data       TEXT NOT NULL
 );
@@ -1076,7 +1075,7 @@ fn write_entries(
     let at = now();
     update_activity_and_adopt_session_title(tx, id, session_title, &at)?;
     for entry in entries {
-        insert_entry(tx, id, &at, entry)?;
+        insert_entry(tx, id, entry)?;
     }
     Ok(summary(tx, id)
         .map_err(io::Error::other)?
@@ -1101,17 +1100,12 @@ fn read_transcript(tx: &Transaction<'_>, id: &SessionId) -> io::Result<Vec<Trans
     .collect()
 }
 
-fn insert_entry(
-    tx: &Transaction<'_>,
-    id: &SessionId,
-    at: &str,
-    entry: &TranscriptEntry,
-) -> io::Result<()> {
+fn insert_entry(tx: &Transaction<'_>, id: &SessionId, entry: &TranscriptEntry) -> io::Result<()> {
     let (kind, data) = encode_entry(entry);
     tx.execute(
-        "INSERT INTO transcript_entries (session_id, ts, kind, data)
-         VALUES (?1, ?2, ?3, ?4)",
-        params![id.to_string(), at, kind, data],
+        "INSERT INTO transcript_entries (session_id, kind, data)
+         VALUES (?1, ?2, ?3)",
+        params![id.to_string(), kind, data],
     )
     .map_err(io::Error::other)?;
     Ok(())
@@ -1395,9 +1389,9 @@ mod tests {
         store.with_connection(|connection| {
             connection
                 .execute(
-                    "INSERT INTO transcript_entries (session_id, ts, kind, data)
-                     VALUES (?1, ?2, ?3, ?4)",
-                    params![id.to_string(), now(), kind, data],
+                    "INSERT INTO transcript_entries (session_id, kind, data)
+                     VALUES (?1, ?2, ?3)",
+                    params![id.to_string(), kind, data],
                 )
                 .unwrap()
         });

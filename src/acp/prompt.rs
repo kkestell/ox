@@ -66,12 +66,8 @@ pub struct Presentation {
 enum Target {
     /// Headless execution sends nothing and has no one to ask.
     None,
-    /// `updates` is false for a subagent, whose permission requests still use
-    /// the main session's connection.
-    Acp {
-        connection: ConnectionTo<Client>,
-        updates: bool,
-    },
+    /// A subagent's permission requests use the main session's connection.
+    Acp { connection: ConnectionTo<Client> },
     /// Tests observe updates here. The mutex lets the observer mutate
     /// through a shared reference.
     #[cfg(test)]
@@ -83,10 +79,7 @@ impl Presentation {
     pub fn acp(connection: ConnectionTo<Client>, session_id: SessionId) -> Self {
         Self {
             identity: AcpIdentity::main(session_id),
-            target: Target::Acp {
-                connection,
-                updates: true,
-            },
+            target: Target::Acp { connection },
         }
     }
 
@@ -112,10 +105,7 @@ impl Presentation {
                 subagent_id: Some(subagent_id),
             },
             target: match connection {
-                Some(connection) => Target::Acp {
-                    connection,
-                    updates: false,
-                },
+                Some(connection) => Target::Acp { connection },
                 None => Target::None,
             },
         }
@@ -155,7 +145,7 @@ impl Presentation {
     fn sends_updates(&self) -> bool {
         match &self.target {
             Target::None => false,
-            Target::Acp { updates, .. } => *updates,
+            Target::Acp { .. } => self.identity.subagent_id.is_none(),
             #[cfg(test)]
             Target::Observed(_) => true,
         }
@@ -165,14 +155,13 @@ impl Presentation {
     /// succeeds without being sent.
     fn send(&self, update: SessionUpdate) -> Result<()> {
         match &self.target {
-            Target::None | Target::Acp { updates: false, .. } => Ok(()),
-            Target::Acp {
-                connection,
-                updates: true,
-            } => connection.send_notification(SessionNotification::new(
-                self.identity.session_id.clone(),
-                update,
-            )),
+            Target::None => Ok(()),
+            Target::Acp { connection } if self.identity.subagent_id.is_none() => connection
+                .send_notification(SessionNotification::new(
+                    self.identity.session_id.clone(),
+                    update,
+                )),
+            Target::Acp { .. } => Ok(()),
             #[cfg(test)]
             Target::Observed(observe) => (observe.lock().expect("observer mutex poisoned"))(update),
         }
@@ -228,12 +217,12 @@ pub fn run(
     presentation: Presentation,
 ) -> Result<impl Future<Output = Result<PromptOutput>>> {
     let mut run = AgentTurn::open(store, openrouter, &input, cancellation, presentation)?;
-    let updates = run.save_turn_start(input.turn_input)?;
+    let update = run.save_turn_start(input.turn_input)?;
     Ok(async move {
-        let Some(updates) = updates else {
+        let Some(update) = update else {
             return Ok(PromptOutput::Cancelled);
         };
-        let outcome = match run.start(updates).await {
+        let outcome = match run.start(update).await {
             Ok(()) => run.run_model_loop().await,
             Err(outcome) => outcome,
         };
@@ -399,7 +388,7 @@ impl AgentTurn {
     /// mode before any model request, and returns the session update that
     /// announces it. `None` when cancellation was already observed, in which
     /// case nothing is written.
-    fn save_turn_start(&mut self, input: TurnInput) -> Result<Option<Vec<SessionUpdate>>> {
+    fn save_turn_start(&mut self, input: TurnInput) -> Result<Option<SessionUpdate>> {
         if self.cancellation.is_cancelled() {
             return Ok(None);
         }
@@ -425,27 +414,20 @@ impl AgentTurn {
             .append_turn_start(&self.summary.id, &turn_start)
             .map_err(Error::into_internal_error)?;
         self.transcript = prospective;
-        let mut updates = Vec::new();
         let mut info = SessionInfoUpdate::new().updated_at(updated.updated_at);
         if self.summary.session_title.is_none()
             && let Some(session_title) = updated.session_title
         {
             info = info.title(session_title);
         }
-        updates.push(SessionUpdate::SessionInfoUpdate(info));
-        Ok(Some(updates))
+        Ok(Some(SessionUpdate::SessionInfoUpdate(info)))
     }
 
     /// Announces the saved turn start and runs the `before_run` hooks.
-    async fn start(
-        &mut self,
-        updates: Vec<SessionUpdate>,
-    ) -> std::result::Result<(), PromptOutcome> {
-        for update in updates {
-            self.presentation
-                .send(update)
-                .map_err(PromptOutcome::AcpUpdate)?;
-        }
+    async fn start(&mut self, update: SessionUpdate) -> std::result::Result<(), PromptOutcome> {
+        self.presentation
+            .send(update)
+            .map_err(PromptOutcome::AcpUpdate)?;
         for source in self.sources_for(HookKind::BeforeRun) {
             self.run_hook(
                 &source,
