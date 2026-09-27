@@ -1,10 +1,17 @@
 # Ox architecture
 
-Ox is a local ACP agent. An ACP client sends it prompts and receives its
-updates. Ox sends model requests to OpenRouter, runs tools with the user's
-operating-system permissions, and saves sessions in a local SQLite database. One
-process serves one ACP connection. A headless entry point runs one prompt
-through the same parts and prints the answer.
+Ox is an interactive ACP client. It launches an ACP server for a workspace and
+shows its output in the terminal. The bundled `ox-acp` server sends model
+requests to OpenRouter, runs tools with the user's operating-system permissions,
+and saves sessions in a local SQLite database. One server process serves one ACP
+connection. A headless entry point runs one prompt through the same parts and
+prints the answer.
+
+## Client boundary
+
+The client launches one configured ACP server and creates one session. It owns
+terminal input, output, permission responses, and cancellation. The server owns
+saved sessions. The client can launch `ox-acp` or another compatible ACP server.
 
 ## Components
 
@@ -28,9 +35,9 @@ process execution support these components but take no part in running a turn.
 ## External boundaries
 
 The ACP client, OpenRouter, the workspace, settings and skill files, child
-processes, the keyring, and SQLite are outside Ox. Their input is untrusted and
-is validated or translated before it becomes Ox state. Credentials never enter a
-session or a child process.
+processes, the keyring, and SQLite are outside `ox-acp`. Their input is
+untrusted and is validated or translated before it becomes server state.
+Credentials never enter a session or a child process.
 
 ## Sources of authority
 

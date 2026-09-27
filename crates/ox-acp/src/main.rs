@@ -23,7 +23,7 @@ use std::{
 
 use sessions::EffortLevel;
 
-const USAGE: &str = "ox [run [--dir <workspace-path>] [--model <model-id>] \
+const USAGE: &str = "ox-acp [run [--dir <workspace-path>] [--model <model-id>] \
                      [--effort <default|none|minimal|low|medium|high|xhigh|max>] <prompt> \
                      | auth <login|logout>]";
 
@@ -160,7 +160,7 @@ async fn main() -> ExitCode {
     match run().await {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("ox: {error}");
+            eprintln!("ox-acp: {error}");
             ExitCode::FAILURE
         }
     }

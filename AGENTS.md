@@ -2,9 +2,11 @@ Keep this document accurate and short.
 
 ## Code
 
-- `src/` — the agent: the ACP boundary, the prompt run, tools, OpenRouter, and
-  the session store.
-- `src/prompts/` — the built-in system, subagent, and compaction prompts.
+- `crates/ox-acp/` — the ACP server, prompt run, tools, OpenRouter, and session
+  store.
+- `crates/ox/` — the interactive ACP client and its terminal tests.
+- `crates/ox-fake-server/` — the scripted server for client tests.
+- `crates/ox-acp/src/prompts/` — the built-in prompts.
 - `examples/` — the example settings file and skills.
 - `scripts/run.py` — runs one headless prompt in a temporary workspace.
 - `.github/workflows/` — the release build.
@@ -16,6 +18,8 @@ Keep this document accurate and short.
 - `make check` runs every check. Run it after changing code.
 - `make check-docs` checks the Markdown. Run it after changing only docs or
   comments.
+- `make e2e` runs the isolated tmux tests. Run it after changing terminal
+  behavior.
 - `make format` formats the code and the Markdown.
 
 Report any check that fails or is skipped.
@@ -33,7 +37,7 @@ a doc passage is wrong, correct or delete it without expanding it. Add a doc or
 a section only when asked.
 
 - `AGENTS.md`: instructions for agents and the top-level directory map.
-- `agents/architecture.md`: Ox's components, the boundaries between them, what
+- `agents/architecture.md`: the components, the boundaries between them, what
   each owns, and the decisions that shape them.
 - `agents/testing.md`: how to run the tests, where each kind of test goes, and
   test discipline.

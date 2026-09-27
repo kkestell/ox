@@ -84,7 +84,7 @@ def main():
         if repo:
             subprocess.run(["git", "clone", repo, workspace], check=True)
             subprocess.run(["git", "checkout", commit], cwd=workspace, check=True)
-        command = ["cargo", "run", "--", "run", "--dir", workspace]
+        command = ["cargo", "run", "-p", "ox-acp", "--", "run", "--dir", workspace]
         if args.model:
             command.extend(["--model", args.model])
         if args.effort:

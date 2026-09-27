@@ -12,7 +12,9 @@
 
 ## Terms
 
-- **ACP client**: The editor or application connected to Ox.
+- **Ox**: The interactive terminal ACP client.
+- **Ox ACP**: The bundled ACP server, also usable by other ACP clients.
+- **ACP client**: The editor or application connected to an ACP server.
 - **Main session**: A session an ACP client or a headless run created.
 - **Child session**: A subagent's session, owned by a main session and hidden
   from the ACP client.
@@ -36,8 +38,8 @@
 - **Replay**: Sending a loaded session's transcript back to the ACP client.
 - **Assistant batch**: One model message and the outcome of each of its tool
   calls, saved together.
-- **Tool outcome**: What Ox knows happened to a tool call: completed, failed, or
-  cancelled.
+- **Tool outcome**: What `ox-acp` knows happened to a tool call: completed,
+  failed, or cancelled.
 - **Provisional output**: Model output shown before it is validated. It is not
   saved if the request fails.
 - **Visible reasoning**: Reasoning text shown to the ACP client.
@@ -52,6 +54,6 @@
 - **Skill**: Instructions from a skills directory, invoked as a slash command.
 - **Workspace instructions**: The workspace's `AGENTS.md`, added to the system
   prompt.
-- **Model catalog**: The OpenRouter models Ox offers.
+- **Model catalog**: The OpenRouter models `ox-acp` offers.
 - **Session cost**: What a main session and its child sessions have spent on
   model requests.

@@ -194,7 +194,7 @@ impl ServerState {
 
     /// Credentials are read on first use, so the process serves listing,
     /// deletion, and terminal login before a key exists, and a key saved by
-    /// `ox auth login` is picked up by the next request without a restart.
+    /// `ox-acp auth login` is picked up by the next request without a restart.
     fn openrouter_client(&self) -> Result<openrouter::Client> {
         let mut slot = self
             .openrouter
@@ -816,7 +816,7 @@ pub async fn run_headless(
     let api_key = auth::api_key()?.ok_or_else(|| {
         io::Error::new(
             ErrorKind::PermissionDenied,
-            "OpenRouter authentication required; run `ox auth login`",
+            "OpenRouter authentication required; run `ox-acp auth login`",
         )
     })?;
     let system_prompt = system_prompt::for_workspace(workspace_path)?;
@@ -967,7 +967,7 @@ async fn serve(
 
     let agent = Agent
         .builder()
-        .name("ox")
+        .name("ox-acp")
         .on_close(async move |_connection| {
             close_state.begin_shutdown();
             close_state.operations.shutdown().await;
@@ -2827,7 +2827,7 @@ mod tests {
             )
             .await
             .unwrap();
-            assert_eq!(answer, "Finished answer.", "ox run prints this answer");
+            assert_eq!(answer, "Finished answer.", "ox-acp run prints this answer");
             assert_process_stopped(&path.join("finished-background"), true).await;
             let failed = store.create(path).unwrap();
             assert!(
@@ -2855,7 +2855,7 @@ mod tests {
             .await;
             assert!(
                 response.unwrap_err().to_string().contains("Cancelled"),
-                "ox run prints no answer"
+                "ox-acp run prints no answer"
             );
             let transcript = store.read(&session.id).unwrap().unwrap().transcript;
             assert_eq!(

@@ -50,12 +50,13 @@ jobs:
         with:
           key: ${{ matrix.target }}
       - name: Build the optimized binary
-        run: cargo build --release --locked
+        run: cargo build --release --locked -p ox -p ox-acp
       - name: Package the binary
         run: |
           mkdir dist
           cp target/release/ox dist/ox
-          tar -C dist -czf "ox-${GITHUB_REF_NAME#v}-${{ matrix.target }}.tar.gz" ox
+          cp target/release/ox-acp dist/ox-acp
+          tar -C dist -czf "ox-${GITHUB_REF_NAME#v}-${{ matrix.target }}.tar.gz" ox ox-acp
       - name: Upload the archive
         uses: actions/upload-artifact@v4
         with:
