@@ -54,8 +54,7 @@ file, as it does for invalid hooks:
 - unknown fields
 - a blank `id`, `name`, or effort mapping value
 - duplicate ids
-- a `context_limit` of 8,000 or less, which would underflow
-  `compaction::budget`
+- a `context_limit` of 8,000 or less, which would underflow `compaction::budget`
 
 `OX_IN_HOOK` suppresses only global hooks. Models always load, because a hook's
 nested `ox run`, such as the goal skill's judge, needs the model catalog.
@@ -65,8 +64,8 @@ nested `ox run`, such as the goal skill's judge, needs the model catalog.
 Keep the model catalog in a `static CATALOG: OnceLock<Vec<CatalogModel>>` in
 `src/openrouter.rs`. The process installs it once at startup. `catalog_model`
 keeps its signature, so compaction, usage updates, prompt runs, and request body
-builders do not change. Installing twice, or reading before installing, is a
-bug and panics.
+builders do not change. Installing twice, or reading before installing, is a bug
+and panics.
 
 Under `#[cfg(test)]`, `catalog()` returns a fixed catalog of the three current
 models, so tests never read or install settings.

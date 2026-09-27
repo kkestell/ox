@@ -41,10 +41,10 @@ Use [architecture](../architecture.md), [code style](../code-style.md),
 
 ## Decisions
 
-- The model moves into the turn start, which then holds the model, effort
-  level, and session mode captured for its turn. The model entry goes away. A
-  nonempty transcript opens with a turn start. This keeps all three settings
-  in one place, with one rule for how they are saved and restored.
+- The model moves into the turn start, which then holds the model, effort level,
+  and session mode captured for its turn. The model entry goes away. A nonempty
+  transcript opens with a turn start. This keeps all three settings in one
+  place, with one rule for how they are saved and restored.
 - A prompt run uses its settings snapshot for every model request in the turn,
   including automatic compaction. `PromptRun::open` no longer reads the model
   from the transcript.
@@ -59,10 +59,11 @@ Use [architecture](../architecture.md), [code style](../code-style.md),
   that does not accept images ("No endpoints found that support image input";
   confirmed in this session). So `save_turn_start` rejects the prompt before
   saving anything when the selected model does not accept images and the
-  projection of the prospective transcript contains an image. This replaces
-  the current check on the turn input alone, which the new check covers. Once a
+  projection of the prospective transcript contains an image. This replaces the
+  current check on the turn input alone, which the new check covers. Once a
   checkpoint covers the earlier images, the projection has none and the prompt
-  is accepted. The error is `the selected model does not accept images; choose
+  is accepted. The error is
+  `the selected model does not accept images; choose
   a model that accepts images`.
 - Switching to a model with a smaller context limit needs no new code. Input
   admission and automatic compaction already measure against the settings
@@ -72,8 +73,8 @@ Use [architecture](../architecture.md), [code style](../code-style.md),
   and every later selection comes from the catalog.
 - Changing the model sends no usage update. The next usage update reports the
   new model's context limit.
-- A turn start's model string is not checked against the model catalog when
-  the transcript is read, just as the model entry is not checked today. Only the
+- A turn start's model string is not checked against the model catalog when the
+  transcript is read, just as the model entry is not checked today. Only the
   latest turn start's model must be in the model catalog, and load checks that.
 
 ## Naming
@@ -92,10 +93,11 @@ Use [architecture](../architecture.md), [code style](../code-style.md),
 
 ## Test plan
 
-- `src/sessions.rs`: rename `a_transcript_opens_with_its_model_and_first_turn_start`
-  to `a_nonempty_transcript_opens_with_a_turn_start`. A transcript that opens
-  with an assistant batch is an error, and a row of the removed kind `model` is
-  an error.
+- `src/sessions.rs`: rename
+  `a_transcript_opens_with_its_model_and_first_turn_start` to
+  `a_nonempty_transcript_opens_with_a_turn_start`. A transcript that opens with
+  an assistant batch is an error, and a row of the removed kind `model` is an
+  error.
 - `src/sessions.rs`: rename
   `saved_settings_come_from_the_model_entry_and_latest_turn_start` to
   `saved_settings_come_from_the_latest_turn_start`. Two turn starts with
@@ -109,23 +111,27 @@ Use [architecture](../architecture.md), [code style](../code-style.md),
   `setting_changes_apply_to_the_next_turn_while_the_system_prompt_stays_captured`,
   change the model as well while the first turn runs. The second request uses
   the new model, and the second turn start saves it.
-- `src/acp.rs`: `manual_compact_command_uses_the_active_prompt_without_saving_a_message`
+- `src/acp.rs`:
+  `manual_compact_command_uses_the_active_prompt_without_saving_a_message`
   selects a model that differs from the one in the saved turn start, and the
   summarizer request uses the selected model.
-- `src/acp.rs`: `loading_a_session_with_a_model_outside_the_catalog_fails_before_replay`
-  saves an earlier turn start with a model outside the catalog and a latest one
-  with a catalog model, and that load succeeds, then keeps its current failing
-  case for a latest turn start outside the catalog.
+- `src/acp.rs`:
+  `loading_a_session_with_a_model_outside_the_catalog_fails_before_replay` saves
+  an earlier turn start with a model outside the catalog and a latest one with a
+  catalog model, and that load succeeds, then keeps its current failing case for
+  a latest turn start outside the catalog.
 - `src/acp/prompt.rs`: `a_text_answer_is_saved_in_the_transcript` no longer
   expects a `ConfigOptionUpdate`; the first updates are the session info and the
   answer text.
-- `src/acp/prompt.rs`: in `invalid_prompt_startup_sends_no_request_or_user_message`,
-  after the image-capable session finishes, a text prompt in that session with
-  a model that does not accept images is rejected with the new error, saves
-  nothing, and sends no request.
-- `src/compaction.rs`: add `images_leave_the_projection_once_a_checkpoint_covers_them`.
-  `has_images` is true for a transcript with an image in a turn start and false
-  after a checkpoint covers it, and true when the covered turn start is a skill
+- `src/acp/prompt.rs`: in
+  `invalid_prompt_startup_sends_no_request_or_user_message`, after the
+  image-capable session finishes, a text prompt in that session with a model
+  that does not accept images is rejected with the new error, saves nothing, and
+  sends no request.
+- `src/compaction.rs`: add
+  `images_leave_the_projection_once_a_checkpoint_covers_them`. `has_images` is
+  true for a transcript with an image in a turn start and false after a
+  checkpoint covers it, and true when the covered turn start is a skill
   invocation with an image repeated after the summary.
 - Every other test that builds a transcript drops the model entry and gives each
   turn start the test catalog's default model, through the existing
@@ -144,13 +150,13 @@ Use [architecture](../architecture.md), [code style](../code-style.md),
    the model-entry match arms. Add `compaction::has_images`, which looks for an
    `image_url` part in `projection`.
 3. `src/acp/prompt.rs`: `PromptRun::open` uses `input.selected_settings` as
-   given. `save_turn_start` saves the model in the turn start, drops the
-   model entry and the `ConfigOptionUpdate`, and checks images with
+   given. `save_turn_start` saves the model in the turn start, drops the model
+   entry and the `ConfigOptionUpdate`, and checks images with
    `compaction::has_images` on the prospective transcript.
 4. `src/acp.rs`: remove `model_locked` from `config_options`, `load_session`,
    and `set_config_option`, along with the store read and saved-settings check
-   in `set_config_option`. `compact_session` builds its model request
-   parameters from `active.selections`.
+   in `set_config_option`. `compact_session` builds its model request parameters
+   from `active.selections`.
 5. Update the tests above, then recreate the local session database.
 
 ## Documentation updates
@@ -161,15 +167,14 @@ Use [architecture](../architecture.md), [code style](../code-style.md),
     paragraph with one saying all three may change between turns, and that load
     restores them from the latest turn start.
   - Settings: replace "A session with turns keeps the model in its model entry"
-    with the rule that a loaded session starts from its saved settings. A
-    prompt is rejected before its turn start is saved when the selected model
-    does not accept images and the next model request would contain one. A
-    latest turn start whose model or effort level is outside the model catalog
-    fails load.
+    with the rule that a loaded session starts from its saved settings. A prompt
+    is rejected before its turn start is saved when the selected model does not
+    accept images and the next model request would contain one. A latest turn
+    start whose model or effort level is outside the model catalog fails load.
   - Process state: the transcript remains authoritative for the last saved
     model, effort level, and session mode.
-  - System prompt: compaction uses the prompt run's model, or for `/compact`
-    the model of the ACP selections.
+  - System prompt: compaction uses the prompt run's model, or for `/compact` the
+    model of the ACP selections.
   - Invariants 3 and 4: a nonempty transcript begins with a turn start, and
     every turn start stores the model, effort level, and session mode captured
     for its turn, which every model request in that turn uses.

@@ -6,8 +6,8 @@ Date: 2026-09-21 Reviewer: kreview (`naming`) Status: Resolved
 
 All 13 files under `src/**/*.rs`, checked against the naming rules and glossary
 in `AGENTS.md`. This verification also traced the session-settings design in
-`agents/plans/2026-09-21-001-session-settings.md` where it settles the distinction
-between a client selection and settings in force for a turn.
+`agents/plans/2026-09-21-001-session-settings.md` where it settles the
+distinction between a client selection and settings in force for a turn.
 
 ## Coverage gaps
 

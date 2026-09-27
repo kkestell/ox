@@ -3,10 +3,10 @@
 ## Goal
 
 `serve` in `src/acp.rs:642` is 183 lines. Almost all of it is request handler
-bodies written inline as closures in the builder chain; the prompt handler
-alone is about 100 lines. Move each nontrivial body into a `ServerState`
-method so `serve` only wires handlers to methods, with no change in behavior:
-the same responses, errors, ACP updates, their order, and the same shutdown.
+bodies written inline as closures in the builder chain; the prompt handler alone
+is about 100 lines. Move each nontrivial body into a `ServerState` method so
+`serve` only wires handlers to methods, with no change in behavior: the same
+responses, errors, ACP updates, their order, and the same shutdown.
 
 ## Related code
 
@@ -14,8 +14,8 @@ the same responses, errors, ACP updates, their order, and the same shutdown.
   `on_close` (drains session operations), and one closure per ACP request and
   the cancel notification.
 - `src/acp.rs:278`, `:365`, `:468` — `new_session`, `load_session`,
-  `delete_session`: the request logic the handlers already call. They keep
-  their signatures, since tests call them directly.
+  `delete_session`: the request logic the handlers already call. They keep their
+  signatures, since tests call them directly.
 - `src/acp.rs:226` — `compact_session`: the `/compact` work, which the prompt
   handler spawns. Keeps its signature.
 - `src/acp.rs:426` — `send_available_commands`: sent after the new and load
@@ -26,8 +26,8 @@ the same responses, errors, ACP updates, their order, and the same shutdown.
   user message from the prompt text.
 - `src/acp/prompt.rs:64` — `prompt::run`: builds the prompt run future before
   anything is spawned; its errors become the prompt response error.
-- `src/acp/operations.rs:32` — `OperationGuard`: moves into each spawned task
-  so the session stays busy until the response is sent.
+- `src/acp/operations.rs:32` — `OperationGuard`: moves into each spawned task so
+  the session stays busy until the response is sent.
 - `src/acp.rs:1641` — `clean_eof_cancels_the_prompt_and_drains_its_response`,
   `:1742` `shell_permissions_control_execution_and_save_results`, `:2172`
   `acp_shutdown_waits_for_shell_cleanup_saving_and_response`, `:2252`
@@ -46,10 +46,10 @@ the same responses, errors, ACP updates, their order, and the same shutdown.
 - **List, config, logout, initialize, and cancel stay inline.** Their closures
   are already one line.
 - **One sender for ACP updates.** The load, `/compact`, and prompt paths each
-  build the same closure that wraps an update in a `SessionNotification` for
-  one session. A free function returns that closure; the three copies call it.
-- **The prompt path splits at `dispatch`.** `start_prompt` keeps the checks
-  in their current order (prompt text, operation guard, active session), then
+  build the same closure that wraps an update in a `SessionNotification` for one
+  session. A free function returns that closure; the three copies call it.
+- **The prompt path splits at `dispatch`.** `start_prompt` keeps the checks in
+  their current order (prompt text, operation guard, active session), then
   matches on `dispatch`. The `/compact` arm calls `spawn_compaction`; the skill
   and user message arms produce the turn start and skill hook source and call
   `spawn_prompt_run`. The OpenRouter client is still fetched after dispatch, so
@@ -62,8 +62,8 @@ the same responses, errors, ACP updates, their order, and the same shutdown.
 - `respond_to_load_session` — `ServerState` method: takes the load operation
   guard, calls `load_session` with ACP updates for replay, responds, then sends
   available commands.
-- `respond_to_delete_session` — `ServerState` method: takes the delete
-  operation guard and replies with `delete_session`.
+- `respond_to_delete_session` — `ServerState` method: takes the delete operation
+  guard and replies with `delete_session`.
 - `start_prompt` — `ServerState` method for a prompt request: the checks,
   `dispatch`, and the call to one of the two spawn methods.
 - `spawn_compaction` — `ServerState` method: spawns `compact_session` for
@@ -103,24 +103,24 @@ session", "slash command", and "skill invocation" are as defined in
    and run it against the current code.
 3. In `src/acp.rs`, add `acp_update_sender` beside `reply`.
 4. Add `respond_to_new_session`, `respond_to_load_session`, and
-   `respond_to_delete_session` to `ServerState`, moving each closure body out
-   of `serve`.
+   `respond_to_delete_session` to `ServerState`, moving each closure body out of
+   `serve`.
 5. Add `start_prompt`, `spawn_compaction`, and `spawn_prompt_run` to
    `ServerState`, moving the prompt closure body out of `serve`. Use
    `acp_update_sender` in the load, `/compact`, and prompt paths.
-6. Reduce each moved closure in `serve` to one call. Run `cargo test acp`,
-   then the full validation required by `AGENTS.md`: `cargo fmt --all -- --check`,
+6. Reduce each moved closure in `serve` to one call. Run `cargo test acp`, then
+   the full validation required by `AGENTS.md`: `cargo fmt --all -- --check`,
    `cargo test --all-targets --all-features`, `cargo build --all-features`,
    `cargo clippy --all-targets --all-features -- -D warnings`,
    `python3 -m unittest discover -s examples/skills/goal/scripts`, and
-   `python3 -m unittest discover -s examples/skills/careful/scripts`. Report
-   any skipped or failed check.
+   `python3 -m unittest discover -s examples/skills/careful/scripts`. Report any
+   skipped or failed check.
 7. Run `rsloc --items` again and save its output as
    `agents/scratch/2026-09-23-007-final.txt`. Add a Results section to this plan
    in the same form as the one in
    `agents/plans/2026-09-23-006-search-run-and-transcript-validation-refactor.md`:
-   `serve` against `serve` and the seven new functions, and the Prod totals
-   of `src/acp.rs` and the crate.
+   `serve` against `serve` and the seven new functions, and the Prod totals of
+   `src/acp.rs` and the crate.
 8. Inspect the complete test diff and report the test-function and test-code
    delta. Mark the narrowed `serve` item in `agents/todo.md` done with a pointer
    to this plan. Connection setup and shutdown remain in `serve` as decided
@@ -128,24 +128,24 @@ session", "slash command", and "skill invocation" are as defined in
 
 ## Results
 
-Measured with `rsloc --items` before and after the change. The raw output is
-in `agents/scratch/2026-09-23-007-baseline.txt` and
+Measured with `rsloc --items` before and after the change. The raw output is in
+`agents/scratch/2026-09-23-007-baseline.txt` and
 `agents/scratch/2026-09-23-007-final.txt`.
 
-| Area | Prod before | Prod after | Highest Cog before | Highest Cog after |
-| --- | ---: | ---: | ---: | ---: |
-| `serve` → `serve` and its seven new functions | 183 | 230 | 20 | 4 |
+| Area                                          | Prod before | Prod after | Highest Cog before | Highest Cog after |
+| --------------------------------------------- | ----------: | ---------: | -----------------: | ----------------: |
+| `serve` → `serve` and its seven new functions |         183 |        230 |                 20 |                 4 |
 
 `serve` itself is now 75 lines with a cognitive score of 0; the largest new
 functions are `start_prompt` and `spawn_prompt_run`, 44 lines each.
 
-| File | Prod before | Prod after | Cog before | Cog after |
-| --- | ---: | ---: | ---: | ---: |
-| `src/acp.rs` | 758 | 805 | 53 | 43 |
-| Crate | 6342 | 6389 | — | — |
+| File         | Prod before | Prod after | Cog before | Cog after |
+| ------------ | ----------: | ---------: | ---------: | --------: |
+| `src/acp.rs` |         758 |        805 |         53 |        43 |
+| Crate        |        6342 |       6389 |          — |         — |
 
-The test suite has the same 96 test functions. Test code in `src/acp.rs` grew
-by 37 lines: `clean_eof_cancels_the_prompt_and_drains_its_response` now sends
+The test suite has the same 96 test functions. Test code in `src/acp.rs` grew by
+37 lines: `clean_eof_cancels_the_prompt_and_drains_its_response` now sends
 `session/new` and `session/load` through `serve` and pins the order of their
 responses, replayed updates, and available commands.
 

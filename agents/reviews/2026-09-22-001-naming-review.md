@@ -9,8 +9,8 @@ All 14 files under `src/**/*.rs`, including their test modules, checked against
 `AGENTS.md`. `agents/reviews/2026-09-21-001-naming-review.md` was read first so
 that its resolved findings and rejected claims are not raised again.
 
-The corpus is the whole codebase rather than one change, so findings are
-ordered by what they cost a reader, not by the commit that introduced them.
+The corpus is the whole codebase rather than one change, so findings are ordered
+by what they cost a reader, not by the commit that introduced them.
 
 ## Coverage gaps
 
@@ -18,13 +18,14 @@ This was a static vocabulary and call-site review. The fixes were validated with
 the full local test suite, Clippy, and `cargo fmt`, but no live model request
 was made. `Makefile`, `scripts/run.py`, `src/system_prompt.md`, and the
 engineering documents were read for vocabulary but were not themselves reviewed
-for naming. The dated plans under `agents/plans/` keep the old names because they
-record what was decided at the time.
+for naming. The dated plans under `agents/plans/` keep the old names because
+they record what was decided at the time.
 
 ## Checks run
 
 - Read all 14 files under `src/**/*.rs`, `agents/glossary.md`,
-  `agents/architecture.md`, `agents/code-style.md`, `agents/testing.md`, and `AGENTS.md`.
+  `agents/architecture.md`, `agents/code-style.md`, `agents/testing.md`, and
+  `AGENTS.md`.
 - Read `agents/reviews/2026-09-21-001-naming-review.md` in full and checked its
   seven resolutions and six rejections against the current source.
 - Searched `src/` for every disputed term and traced each occurrence to the
@@ -49,17 +50,19 @@ behavior, and each one is resolved in the current source.
 - Original issue: `src/acp.rs:96` names the field `settings` and documents it as
   "The latest client selections."
 - Contract: The glossary defines ACP selections as the latest session settings
-  selected for a future turn and states that they are process state, not
-  durable authority. Finding 4 of the previous review resolved this same
-  mismatch by renaming the map to `selections`.
-- Consequence: `b29cd18` replaced the `selections` map with `active:
-  HashMap<SessionId, ActiveSession>` and named the new field `settings`,
-  carrying the old comment with it. The `selected_settings` accessor was
-  removed at the same time, so `src/acp.rs:529` now reads `selected_settings:
-  Some(active.settings)` and translates between two names for one value at the
-  boundary. Inside `set_config_option`, `settings` at `src/acp.rs:155` is the
-  ACP selections while `stored_settings` at `src/acp.rs:151` is a different
-  value six lines above it.
+  selected for a future turn and states that they are process state, not durable
+  authority. Finding 4 of the previous review resolved this same mismatch by
+  renaming the map to `selections`.
+- Consequence: `b29cd18` replaced the `selections` map with
+  `active:
+  HashMap<SessionId, ActiveSession>` and named the new field
+  `settings`, carrying the old comment with it. The `selected_settings` accessor
+  was removed at the same time, so `src/acp.rs:529` now reads
+  `selected_settings:
+  Some(active.settings)` and translates between two names
+  for one value at the boundary. Inside `set_config_option`, `settings` at
+  `src/acp.rs:155` is the ACP selections while `stored_settings` at
+  `src/acp.rs:151` is a different value six lines above it.
 - Resolution: The field is `selections` again, and its comment now says ACP
   selections. `src/acp.rs` passes `selected_settings: Some(active.selections)`
   at both prompt call sites, so the boundary no longer translates between two
@@ -86,18 +89,19 @@ behavior, and each one is resolved in the current source.
 - Resolution: The method is `StoredSession::saved_settings`, and every caller
   binds `saved_settings`: `src/acp.rs` in both `set_config_option` and
   `load_session`, and `src/acp/prompt.rs` in `PromptRun::open`.
-  `agents/glossary.md` now defines saved settings as the session settings rebuilt
-  by folding a stored transcript, so a third name has a rule to fail against.
+  `agents/glossary.md` now defines saved settings as the session settings
+  rebuilt by folding a stored transcript, so a third name has a rule to fail
+  against.
 
 ### 3. [medium, resolved] `instructions::load` returned the system prompt
 
 - Original issue: `src/instructions.rs` is named for the workspace half of what
   it builds, and `load` (`src/instructions.rs:15`) returns the complete system
   prompt.
-- Contract: The glossary defines the system prompt as Ox's built-in
-  instructions followed by workspace instructions, and defines workspace
-  instructions as the `AGENTS.md` text alone. `AGENTS.md` says never to mix
-  definitions or overload terms.
+- Contract: The glossary defines the system prompt as Ox's built-in instructions
+  followed by workspace instructions, and defines workspace instructions as the
+  `AGENTS.md` text alone. `AGENTS.md` says never to mix definitions or overload
+  terms.
 - Consequence: `src/acp.rs:218` calls `instructions::load` inside
   `load_session`, next to `SessionOperations::try_load`, so `load` means both
   reading a file and starting a session operation within one function. The
@@ -118,10 +122,12 @@ behavior, and each one is resolved in the current source.
 
 ### 4. [medium, resolved] `effort` named the effort level and the OpenRouter string
 
-- Original issue: `src/openrouter.rs:147` reads `if let Some(effort) =
-  choice.effort(effort)`. The outer `effort` is the `EffortLevel` parameter at
-  `src/openrouter.rs:128`; the new binding is the OpenRouter effort string
-  written to `body["reasoning"]["effort"]` on the next line.
+- Original issue: `src/openrouter.rs:147` reads
+  `if let Some(effort) =
+  choice.effort(effort)`. The outer `effort` is the
+  `EffortLevel` parameter at `src/openrouter.rs:128`; the new binding is the
+  OpenRouter effort string written to `body["reasoning"]["effort"]` on the next
+  line.
 - Contract: The glossary separates the effort level, one of Ox's four reasoning
   levels, from the effort mapping, which "turns an effort level into an
   OpenRouter effort string, or into no reasoning parameter for Default". Its
@@ -132,9 +138,10 @@ behavior, and each one is resolved in the current source.
   method (`src/openrouter.rs:24`) repeat the collision. A reader has to use the
   type to tell which side is meant.
 - Resolution: The field is `openrouter_efforts` and the method is
-  `openrouter_effort`, so `src/openrouter.rs` reads `if let
-  Some(openrouter_effort) = catalog_model.openrouter_effort(effort)`. The
-  parameter stays `effort`, because it is the effort level.
+  `openrouter_effort`, so `src/openrouter.rs` reads
+  `if let
+  Some(openrouter_effort) = catalog_model.openrouter_effort(effort)`.
+  The parameter stays `effort`, because it is the effort level.
 
 ### 5. [low, resolved] `MODEL_CHOICES` contradicted the model catalog in the errors
 
@@ -145,10 +152,9 @@ behavior, and each one is resolved in the current source.
 - Consequence: Three messages in the code already use the glossary term —
   `src/acp.rs:49` and `src/acp/prompt.rs:175` report that a model "is not in the
   model catalog", and `src/acp.rs:59` expects that "a session model comes from
-  the model catalog" — so a reader is told one name and shown another.
-  "Choice" is also the configuration-option concept in the same area:
-  `src/acp.rs:170` rejects a value that "is not a choice of configuration
-  option". A
+  the model catalog" — so a reader is told one name and shown another. "Choice"
+  is also the configuration-option concept in the same area: `src/acp.rs:170`
+  rejects a value that "is not a choice of configuration option". A
   `ModelChoice` is a model with an id, a display name, and an effort mapping,
   which is why `src/acp.rs:61` already iterates it as `|model|`.
 - Resolution: The type is `CatalogModel`, the table is `MODEL_CATALOG`, and the
@@ -182,15 +188,15 @@ behavior, and each one is resolved in the current source.
   workspace. They apply deliberately different symbolic-link rules.
 - Contract: `agents/architecture.md` states both rules: `read_file` and `grep`
   "accept a directly named symbolic link to a file only when its target remains
-  inside the workspace", while "patch operations reject a symbolic link as
-  their target".
+  inside the workspace", while "patch operations reject a symbolic link as their
+  target".
 - Consequence: Neither name states that the path is constrained to the
   workspace, and nothing distinguishes the two rules. This is the check that
   keeps `read_file`, `grep`, `glob`, and `apply_patch` inside the workspace, so
-  a reader adding a tool cannot tell from the names which one is correct or
-  that picking the wrong one widens the boundary. This is not the workspace
-  path claim the previous review rejected: that claim was about the `root` and
-  `name` parameters, which remain correct.
+  a reader adding a tool cannot tell from the names which one is correct or that
+  picking the wrong one widens the boundary. This is not the workspace path
+  claim the previous review rejected: that claim was about the `root` and `name`
+  parameters, which remain correct.
 - Resolution: The checks are named for the rule each applies:
   `tools::workspace_path_allowing_link_target` and
   `patch::workspace_path_rejecting_links`. The first also gained a comment

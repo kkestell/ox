@@ -14,10 +14,10 @@ commands:
 Ask is the default for a new ACP session. Read, search, and patch tools remain
 automatic in both modes. Headless `ox run` remains automatic.
 
-The selected mode is a durable session setting. A prompt captures it at the
-turn boundary, so a change made while a turn is running applies to the next
-turn. Loading a session restores the last saved mode, including Auto, and the
-client shows that restored selection.
+The selected mode is a durable session setting. A prompt captures it at the turn
+boundary, so a change made while a turn is running applies to the next turn.
+Loading a session restores the last saved mode, including Auto, and the client
+shows that restored selection.
 
 This version adds only Ask and Auto. It does not add Plan mode, command
 classification, remembered per-command decisions, workspace defaults, or
@@ -25,13 +25,13 @@ per-user defaults.
 
 ## 2. ACP configuration surface
 
-Add a third select option to the list returned by `session/new`,
-`session/load`, and `session/set_config_option`:
+Add a third select option to the list returned by `session/new`, `session/load`,
+and `session/set_config_option`:
 
-| Option ID | Name | Category | Choice ID | Choice name | Description |
-| --------- | ---- | -------- | --------- | ----------- | ----------- |
-| `mode` | Mode | `mode` | `ask` | Ask | Ask before running each shell command. |
-| `mode` | Mode | `mode` | `auto` | Auto | Run shell commands without asking. |
+| Option ID | Name | Category | Choice ID | Choice name | Description                            |
+| --------- | ---- | -------- | --------- | ----------- | -------------------------------------- |
+| `mode`    | Mode | `mode`   | `ask`     | Ask         | Ask before running each shell command. |
+| `mode`    | Mode | `mode`   | `auto`    | Auto        | Run shell commands without asking.     |
 
 Use `SessionConfigOptionCategory::Mode`. Keep the option order Model, Effort,
 Mode so the existing option positions remain stable.
@@ -58,8 +58,7 @@ pub enum SessionMode {
 
 Give it the same small ID, display-name, and parsing helpers as `EffortLevel`.
 Extend `SessionSettings` and `SessionSettingsChange` with `mode` fields. The
-normal default settings become the default model, Default effort, and Ask
-mode.
+normal default settings become the default model, Default effort, and Ask mode.
 
 Add `TranscriptEntry::Mode(SessionMode)` and store it with kind `mode`. The
 transcript fold applies mode entries just as it applies effort entries. A
@@ -88,14 +87,13 @@ current effort-only adjacency rule with these rules:
 - An effort or mode entry must be followed by another setting entry or by the
   user message for that turn.
 - A settings block cannot contain the same setting kind twice.
-- A settings block cannot be interrupted by an assistant message or tool
-  result.
+- A settings block cannot be interrupted by an assistant message or tool result.
 - Model entries remain forbidden after the transcript opens.
 
 Use one fixed write order in `SessionStore::append_user`: model when needed,
 then effort when changed, then mode when changed, then the user message.
-Validation should accept the valid settings block as a block rather than rely
-on that storage order. This keeps the invariant about meaning, not a private
+Validation should accept the valid settings block as a block rather than rely on
+that storage order. This keeps the invariant about meaning, not a private
 serialization accident.
 
 Replay continues to omit model, effort, and mode entries. Model requests also
@@ -103,25 +101,22 @@ continue to omit those entries; the mode controls local execution only.
 
 ## 5. Turn boundary and active-session state
 
-Keep mode in the existing `ActiveSession.selections` value rather than adding
-a parallel map or lock. The lifecycle then matches effort:
+Keep mode in the existing `ActiveSession.selections` value rather than adding a
+parallel map or lock. The lifecycle then matches effort:
 
 1. `session/new` seeds Ask.
 2. `session/load` folds the transcript and seeds the last saved mode.
 3. `session/set_config_option` updates the active selection immediately.
-4. The prompt handler clones the complete selection before starting the
-   prompt.
+4. The prompt handler clones the complete selection before starting the prompt.
 5. The prompt run saves any changed setting entries with the user message and
    uses the captured mode for every tool call in that turn.
 
-A mode change during a running turn must not affect a permission request that
-is already pending or later shell calls from that same turn. It affects the
-next prompt because the active selection is copied only once at prompt
-startup.
+A mode change during a running turn must not affect a permission request that is
+already pending or later shell calls from that same turn. It affects the next
+prompt because the active selection is copied only once at prompt startup.
 
-The existing operation guard remains unchanged. Configuration requests may
-still complete while a prompt, load, or delete operation holds the session
-guard.
+The existing operation guard remains unchanged. Configuration requests may still
+complete while a prompt, load, or delete operation holds the session guard.
 
 ## 6. Shell authorization
 
@@ -143,14 +138,14 @@ without an ACP connection as an internal invariant violation rather than
 silently approving it.
 
 Do not change the ordering around tool updates. A shell call is still announced
-as pending first, becomes in progress immediately before execution, and gets
-one final result. In Auto mode the only omitted exchange is the permission
-request and response between pending and in progress.
+as pending first, becomes in progress immediately before execution, and gets one
+final result. In Auto mode the only omitted exchange is the permission request
+and response between pending and in progress.
 
-Denial in Ask mode remains a failed tool outcome whose text says the user
-denied permission. Auto mode has no synthetic approval outcome and adds no
-transcript entry per shell call; the saved mode entry and ordinary tool result
-are sufficient.
+Denial in Ask mode remains a failed tool outcome whose text says the user denied
+permission. Auto mode has no synthetic approval outcome and adds no transcript
+entry per shell call; the saved mode entry and ordinary tool result are
+sufficient.
 
 ## 7. Cancellation and failure behavior
 
@@ -162,24 +157,23 @@ Preserve all current cleanup and commit boundaries:
   shell process-group cleanup path as an approved Ask call.
 - An ACP update failure still stops new work and completes the uncommitted
   assistant batch with explicit outcomes.
-- Auto mode does not turn tool failure into success or bypass transcript
-  saving.
+- Auto mode does not turn tool failure into success or bypass transcript saving.
 
 Switching to Auto removes only the permission round trip. It grants no new
-operating-system permissions and adds no sandbox; the shell still runs with
-Ox's existing process permissions and environment filtering.
+operating-system permissions and adds no sandbox; the shell still runs with Ox's
+existing process permissions and environment filtering.
 
 ## 8. Implementation scope
 
-| File | Change |
-| ---- | ------ |
-| `src/sessions.rs` | Add `SessionMode`, add mode to settings and transcript entries, save and decode mode entries, fold saved mode, and validate pre-user settings blocks. |
-| `src/acp.rs` | Add the Mode selector and setter, seed Ask for ACP sessions and Auto for headless runs, and pass the ACP connection as permission-request transport rather than policy. |
-| `src/acp/prompt.rs` | Save mode changes at the turn boundary and make the captured mode select Ask or Auto behavior for shell calls. |
-| `src/acp/convert.rs` | Keep the existing permission request unchanged; adjust only if names or call signatures move during the prompt refactor. |
-| `agents/architecture.md` | Document mode as a durable setting, its turn snapshot, restored Auto behavior, and the mode-dependent ACP shell trust boundary. |
-| `agents/glossary.md` | Define session mode, Ask mode, and Auto mode; update session settings and transcript-entry definitions. |
-| `AGENTS.md` | Update the existing source-map descriptions for session settings, ACP selections, and prompt approval behavior. |
+| File                     | Change                                                                                                                                                                  |
+| ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/sessions.rs`        | Add `SessionMode`, add mode to settings and transcript entries, save and decode mode entries, fold saved mode, and validate pre-user settings blocks.                   |
+| `src/acp.rs`             | Add the Mode selector and setter, seed Ask for ACP sessions and Auto for headless runs, and pass the ACP connection as permission-request transport rather than policy. |
+| `src/acp/prompt.rs`      | Save mode changes at the turn boundary and make the captured mode select Ask or Auto behavior for shell calls.                                                          |
+| `src/acp/convert.rs`     | Keep the existing permission request unchanged; adjust only if names or call signatures move during the prompt refactor.                                                |
+| `agents/architecture.md` | Document mode as a durable setting, its turn snapshot, restored Auto behavior, and the mode-dependent ACP shell trust boundary.                                         |
+| `agents/glossary.md`     | Define session mode, Ask mode, and Auto mode; update session settings and transcript-entry definitions.                                                                 |
+| `AGENTS.md`              | Update the existing source-map descriptions for session settings, ACP selections, and prompt approval behavior.                                                         |
 
 No schema table, dependency, migration, command-line flag, or new source module
 is needed.

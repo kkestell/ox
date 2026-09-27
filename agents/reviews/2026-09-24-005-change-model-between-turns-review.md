@@ -9,8 +9,8 @@ This review covers every uncommitted change in the working tree against `HEAD`:
   in `src/sessions.rs`, `src/acp/prompt.rs`, `src/acp.rs`, `src/compaction.rs`,
   `src/openrouter.rs`, `src/acp/convert.rs`, and their tests.
 - The workspace settings follow-up: the `ox run` test in `src/main.rs`.
-- The documentation changes in `AGENTS.md`, `README.md`, `agents/architecture.md`,
-  and `agents/glossary.md`.
+- The documentation changes in `AGENTS.md`, `README.md`,
+  `agents/architecture.md`, and `agents/glossary.md`.
 
 Lenses: correctness, api-design, error-handling, testing, architecture,
 documentation, comments, and rust-idioms. The review traced each caller of
@@ -21,8 +21,8 @@ compaction, `/compact`, and the headless entry point.
 
 The review did not live-test an ACP client that switches models, because
 headless runs cannot change the model partway through a session. The live
-OpenRouter checks recorded in the plan cover sending continuation metadata to
-a different model, and a model without image input rejecting an earlier image.
+OpenRouter checks recorded in the plan cover sending continuation metadata to a
+different model, and a model without image input rejecting an earlier image.
 
 ## Findings
 
@@ -36,14 +36,14 @@ level and session mode:
   outside the model catalog.
 - `/compact` uses the model of the ACP selections.
 
-The image check runs only for a model without image input, before the turn
-start is saved, against the same projection the model request would send. A
-repeated skill invocation after a summary is therefore still counted.
+The image check runs only for a model without image input, before the turn start
+is saved, against the same projection the model request would send. A repeated
+skill invocation after a summary is therefore still counted.
 
-The change retires a concept. It removes the model entry and its validation,
-row kind, and match arms, the model lock and its configuration update, and the
-store read in `set_config_option`. Across the six files it touches, production
-code shrinks by 48 lines and test code by 121.
+The change retires a concept. It removes the model entry and its validation, row
+kind, and match arms, the model lock and its configuration update, and the store
+read in `set_config_option`. Across the six files it touches, production code
+shrinks by 48 lines and test code by 121.
 
 ### Low
 
@@ -65,13 +65,14 @@ code shrinks by 48 lines and test code by 121.
 - `cargo clippy --all-targets --all-features -- -D warnings`: passed.
 - `python3 -m unittest discover -s examples/skills/goal/scripts`: passed.
 - `python3 -m unittest discover -s examples/skills/careful/scripts`: passed.
-- A search of `src`, `agents/architecture.md`, `agents/glossary.md`, `AGENTS.md`, and
-  `README.md` found no remaining mention of the model entry or the model lock.
+- A search of `src`, `agents/architecture.md`, `agents/glossary.md`,
+  `AGENTS.md`, and `README.md` found no remaining mention of the model entry or
+  the model lock.
 - A line count with `rsloc` against `HEAD` for the six changed files: production
   code went from 4,060 to 4,012 lines, and test code from 6,584 to 6,463.
 
 ## Verdict
 
-Ready to commit. The only finding is two paragraphs to rewrap. Existing
-sessions in `ox.db` do not load after this change, so run `make install` or
-delete the session database before using a build that includes it.
+Ready to commit. The only finding is two paragraphs to rewrap. Existing sessions
+in `ox.db` do not load after this change, so run `make install` or delete the
+session database before using a build that includes it.

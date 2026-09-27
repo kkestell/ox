@@ -7,8 +7,8 @@ be simplified or deleted without changing observable behavior. Lenses:
 architecture, readability, rust-idioms, dependencies, comments, and testing.
 
 All non-test source was read in full. Test modules were reviewed by listing
-every test name in the large modules and reading the bodies of tests that
-looked like overlaps; the remaining test bodies (about 7,000 lines, mostly in
+every test name in the large modules and reading the bodies of tests that looked
+like overlaps; the remaining test bodies (about 7,000 lines, mostly in
 `src/acp.rs` and `src/acp/prompt.rs`) were not read line by line. The example
 skills under `examples/` and `Cargo.toml` were not reviewed.
 
@@ -18,16 +18,15 @@ skills under `examples/` and `Cargo.toml` were not reviewed.
 
 #### Architecture
 
-- **Two implementations of output capture and cleanup**
-  (`src/process.rs:44`, `src/process.rs:208`, `src/shell_processes.rs:341`):
-  `process::run`, used by ordinary shell calls and hooks, and
-  `shell_processes::supervise`, used by background commands, each have their
-  own copy of the same steps: read stdout and stderr fairly, stop on a read
-  error, clean up the process group, drain the pipes within a deadline, and
-  fold late read errors into either the final state or the diagnostics. The
-  two copies share only `Capture::append` and `ProcessGroup`. Evidence: both
-  build `"Reading {name} failed: {error}"` (`src/process.rs:222`,
-  `src/process.rs:252`, `src/shell_processes.rs:384`,
+- **Two implementations of output capture and cleanup** (`src/process.rs:44`,
+  `src/process.rs:208`, `src/shell_processes.rs:341`): `process::run`, used by
+  ordinary shell calls and hooks, and `shell_processes::supervise`, used by
+  background commands, each have their own copy of the same steps: read stdout
+  and stderr fairly, stop on a read error, clean up the process group, drain the
+  pipes within a deadline, and fold late read errors into either the final state
+  or the diagnostics. The two copies share only `Capture::append` and
+  `ProcessGroup`. Evidence: both build `"Reading {name} failed: {error}"`
+  (`src/process.rs:222`, `src/process.rs:252`, `src/shell_processes.rs:384`,
   `src/shell_processes.rs:478`); both write the same "Output capture stopped
   before EOF" diagnostic (`src/process.rs:248`, `src/shell_processes.rs:434`);
   both apply the rule that a read error decides the state only after a natural
@@ -39,14 +38,13 @@ skills under `examples/` and `Cargo.toml` were not reviewed.
   while `supervise` allows `OUTPUT_DRAIN_TIMEOUT` after cleanup finishes.
   Because `run`'s grace period is never interrupted, the two produce the same
   result, but a fix to one copy will not reach the other. `AGENTS.md` says
-  supervisors "share its output capture", which is only partly true.
-  Suggested fix: move one capture routine into `process.rs`. It should read
-  both pipes into a caller-supplied `append` sink until a caller-supplied
-  future completes, then drain after cleanup with the `supervise` deadline
-  rule, and return the read errors. Add one function that folds those errors
-  and the drain result into `(failure, diagnostics)`. `run` passes local
-  captures, `supervise` passes the shared `Output`, and `Capture` goes back to
-  holding bytes and `omitted`.
+  supervisors "share its output capture", which is only partly true. Suggested
+  fix: move one capture routine into `process.rs`. It should read both pipes
+  into a caller-supplied `append` sink until a caller-supplied future completes,
+  then drain after cleanup with the `supervise` deadline rule, and return the
+  read errors. Add one function that folds those errors and the drain result
+  into `(failure, diagnostics)`. `run` passes local captures, `supervise` passes
+  the shared `Output`, and `Capture` goes back to holding bytes and `omitted`.
 
 ### Low
 
@@ -67,32 +65,33 @@ skills under `examples/` and `Cargo.toml` were not reviewed.
 #### Readability
 
 - **A turn start's single update is returned as a list**
-  (`src/acp/prompt.rs:400`, `src/acp/prompt.rs:438`): `save_turn_start`
-  returns `Option<Vec<SessionUpdate>>`, but the vector always holds exactly one
-  `SessionInfoUpdate` (`src/acp/prompt.rs:426-434`), and `start` loops over
-  it. Return `Option<SessionUpdate>` and send it directly.
+  (`src/acp/prompt.rs:400`, `src/acp/prompt.rs:438`): `save_turn_start` returns
+  `Option<Vec<SessionUpdate>>`, but the vector always holds exactly one
+  `SessionInfoUpdate` (`src/acp/prompt.rs:426-434`), and `start` loops over it.
+  Return `Option<SessionUpdate>` and send it directly.
 
 - **`after_run` repeats the hook-run presentation**
   (`src/acp/prompt.rs:699-720`): `run_after_run` rebuilds the same pending,
   in-progress, and finished updates that `run_hook` sends
-  (`src/acp/prompt.rs:552-559`, `src/acp/prompt.rs:568-574`), differing only
-  in ignoring send errors. Extract one helper that announces a hook run and
-  returns its call ID, and use it in both places. `run_after_run` can keep
-  discarding the result.
+  (`src/acp/prompt.rs:552-559`, `src/acp/prompt.rs:568-574`), differing only in
+  ignoring send errors. Extract one helper that announces a hook run and returns
+  its call ID, and use it in both places. `run_after_run` can keep discarding
+  the result.
 
 - **Patch arguments are parsed outside the patch module**
   (`src/tools.rs:104-108`, `src/tools.rs:294-300`): every other tool module
   parses its own arguments, but `PatchArgs` and its `"arguments: …"` error live
   in `tools.rs`. Move them into `patch.rs` behind a
   `patch::execute(workspace, arguments) -> Result<String, String>` so that
-  `execute_other` dispatches the same way for every tool. Keep patch results
-  out of `bounded_result`, which asserts success output fits 16 KiB; a patch
+  `execute_other` dispatches the same way for every tool. Keep patch results out
+  of `bounded_result`, which asserts success output fits 16 KiB; a patch
   touching many files can produce a longer summary.
 
 - **Two copies of the "present value" deserializer** (`src/hooks.rs:197-202`,
   `src/tools/shell.rs:33-35`): `deserialize_present_string` and `present` both
   turn a present value into `Some` so that an explicit `null` is rejected. One
-  generic `fn present<'de, D, T: Deserialize<'de>>(d: D) -> Result<Option<T>, D::Error>`
+  generic
+  `fn present<'de, D, T: Deserialize<'de>>(d: D) -> Result<Option<T>, D::Error>`
   can serve both.
 
 - **The session store reads `HOME` itself** (`src/sessions.rs:1188-1189`):
@@ -106,11 +105,11 @@ skills under `examples/` and `Cargo.toml` were not reviewed.
 #### Comments
 
 - **`parse_catalog`'s documentation is attached to the wrong item**
-  (`src/openrouter.rs:76-86`): the `///` block that describes the catalog
-  filter is followed by `/// About six months.` and then `const RECENT_SECONDS`,
-  so rustdoc attaches the whole block to the constant and `parse_catalog` has
-  no documentation. Put `RECENT_SECONDS` above the block, with only its own
-  line, so the block documents `parse_catalog`.
+  (`src/openrouter.rs:76-86`): the `///` block that describes the catalog filter
+  is followed by `/// About six months.` and then `const RECENT_SECONDS`, so
+  rustdoc attaches the whole block to the constant and `parse_catalog` has no
+  documentation. Put `RECENT_SECONDS` above the block, with only its own line,
+  so the block documents `parse_catalog`.
 
 #### Testing
 
@@ -131,12 +130,13 @@ skills under `examples/` and `Cargo.toml` were not reviewed.
   `calls_reply` calls, or make them one-line wrappers over it.
 
 - **Skill-loading guarantees tested through session activation**
-  (`src/acp.rs:1472`, `src/acp.rs:1502`): `skills_directories_load_in_priority_order`
-  and `an_empty_or_foreign_hooks_map_declares_no_hooks` test `skills::load`
-  and frontmatter parsing, but build a `ServerState` and create or load
-  sessions to get there. That activation reads the catalog is already owned by
-  `activation_captures_the_system_prompt_and_skill_catalog_once_per_process`.
-  As cases in `src/skills.rs` next to its two existing tests, they need only
+  (`src/acp.rs:1472`, `src/acp.rs:1502`):
+  `skills_directories_load_in_priority_order` and
+  `an_empty_or_foreign_hooks_map_declares_no_hooks` test `skills::load` and
+  frontmatter parsing, but build a `ServerState` and create or load sessions to
+  get there. That activation reads the catalog is already owned by
+  `activation_captures_the_system_prompt_and_skill_catalog_once_per_process`. As
+  cases in `src/skills.rs` next to its two existing tests, they need only
   temporary directories.
 
 ## Unresolved questions
@@ -165,14 +165,13 @@ skills under `examples/` and `Cargo.toml` were not reviewed.
   `cargo test --all-targets --all-features` (172 passed, 0 failed), and
   `cargo clippy --all-targets --all-features -- -D warnings` (clean). The
   worktree was then removed.
-- This review changed no code in the repository, so full validation was not
-  run on `main`.
+- This review changed no code in the repository, so full validation was not run
+  on `main`.
 
 ## Verdict
 
-The codebase is mostly lean; no dead modules or unused public items were
-found. The one change worth planning is to merge the two output-capture
-implementations in `process.rs` and `shell_processes.rs`, which removes a
-parallel implementation in cleanup-sensitive code. The cancellation rewrite
-is verified and can be applied as is. The remaining items are small local
-cleanups.
+The codebase is mostly lean; no dead modules or unused public items were found.
+The one change worth planning is to merge the two output-capture implementations
+in `process.rs` and `shell_processes.rs`, which removes a parallel
+implementation in cleanup-sensitive code. The cancellation rewrite is verified
+and can be applied as is. The remaining items are small local cleanups.

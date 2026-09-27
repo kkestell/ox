@@ -20,16 +20,16 @@ Use [architecture](../architecture.md), [code style](../code-style.md),
 
 - `src/compaction.rs` — `material` turns the entries a cut covers into labeled
   text, `next_piece` fills one summarizer request from it, and `compact` drives
-  both. `summary_request_fits` serializes a complete summarizer body to test
-  its size.
+  both. `summary_request_fits` serializes a complete summarizer body to test its
+  size.
 - `src/openrouter.rs` — `summarizer_body` puts the previous summary and the
   piece into one user-role message string.
 - `src/sessions.rs` — `ToolOutcome`, whose status name is matched out in three
   places.
 - `src/hooks.rs` — `ToolReport::new`, one of those three matches.
 - `src/tools/read.rs` — `execute` pages numbered lines; `line` reads one line.
-- `src/tools/patch.rs` — `prepare` checks every operation and builds its
-  change before `apply_prepared` touches the disk.
+- `src/tools/patch.rs` — `prepare` checks every operation and builds its change
+  before `apply_prepared` touches the disk.
 
 ## Decisions
 
@@ -42,8 +42,8 @@ Use [architecture](../architecture.md), [code style](../code-style.md),
   to that body. The fit check compares that sum with the same token formula as
   before, so the pieces are identical to the current ones. Keep the halving
   search.
-- Add `ToolOutcome::status` returning `completed`, `failed`, or `cancelled`,
-  and use it in `compaction.rs`, `hooks.rs`, and the shell test that repeats the
+- Add `ToolOutcome::status` returning `completed`, `failed`, or `cancelled`, and
+  use it in `compaction.rs`, `hooks.rs`, and the shell test that repeats the
   match.
 - `read::execute` records why a page ended in a small enum instead of the
   `deferred` and `preview` flags. The closing lines are chosen from it.

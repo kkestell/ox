@@ -118,10 +118,10 @@ turn, even if the current prompt has not yet made its model request. Missing
 sessions and unknown saved models must still fail before saving a user message
 or requesting model output.
 
-Update section 6 of `agents/plans/2026-09-21-001-session-settings.md` to describe
-the optional snapshot and stored-settings fallback. The reduction applies when
-selections are absent; ordinary prompts after new-session or load already read
-once.
+Update section 6 of `agents/plans/2026-09-21-001-session-settings.md` to
+describe the optional snapshot and stored-settings fallback. The reduction
+applies when selections are absent; ordinary prompts after new-session or load
+already read once.
 
 Add focused coverage using the existing mock OpenRouter server:
 

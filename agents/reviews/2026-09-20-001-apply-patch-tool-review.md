@@ -104,9 +104,10 @@ the parsed destination so the error names the real problem at parse time.
 The source map gained `src/tools/patch.rs` but not `src/tools/patch-guide.txt`,
 which is a shipped artifact: it is `include_str!`'d as the whole `apply_patch`
 tool description in `src/tools.rs`, so editing it changes every model request.
-`agents/plans/2026-09-20-001-apply-patch-tool.md` section 6's module table omits it
-as well, and section 2 still shows only the one-sentence description. Given that
-`AGENTS.md` opens with "THIS DOCUMENT MUST BE KEPT UP TO DATE", add the line.
+`agents/plans/2026-09-20-001-apply-patch-tool.md` section 6's module table omits
+it as well, and section 2 still shows only the one-sentence description. Given
+that `AGENTS.md` opens with "THIS DOCUMENT MUST BE KEPT UP TO DATE", add the
+line.
 
 ### 5. The scenario-string integration test is hard to follow — `src/acp/prompt.rs:530`
 
@@ -199,8 +200,8 @@ every operation, and split the integration test.
 
 1. **Fixed.** `resolve` tracks whether the final path component was a symbolic
    link and rejects it with `path is a symbolic link`, for Add, Update, Delete,
-   and Move alike. `agents/plans/2026-09-20-001-apply-patch-tool.md` section 5 and
-   `src/tools/patch-guide.txt` carry the rule. The symlink test gained an
+   and Move alike. `agents/plans/2026-09-20-001-apply-patch-tool.md` section 5
+   and `src/tools/patch-guide.txt` carry the rule. The symlink test gained an
    in-workspace link and asserts its target survives all three operations.
 2. **Fixed.** The output line ending now comes from the file's first line
    ending. A mixed file is still normalized to one style, which the design

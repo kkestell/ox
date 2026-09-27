@@ -2,8 +2,8 @@
 
 Ox is a local ACP agent. An ACP client sends it prompts and receives its
 updates. Ox sends model requests to OpenRouter, runs tools with the user's
-operating-system permissions, and saves sessions in a local SQLite database.
-One process serves one ACP connection. A headless entry point runs one prompt
+operating-system permissions, and saves sessions in a local SQLite database. One
+process serves one ACP connection. A headless entry point runs one prompt
 through the same parts and prints the answer.
 
 ## Components
@@ -29,15 +29,15 @@ process execution support these components but take no part in running a turn.
 
 The ACP client, OpenRouter, the workspace, settings and skill files, child
 processes, the keyring, and SQLite are outside Ox. Their input is untrusted and
-is validated or translated before it becomes Ox state. Credentials never enter
-a session or a child process.
+is validated or translated before it becomes Ox state. Credentials never enter a
+session or a child process.
 
 ## Sources of authority
 
-- **The transcript is the only durable record of a conversation.** Replay to
-  the ACP client and future model requests are both derived from it. A
-  compaction summary changes what model requests contain but never replaces the
-  saved entries.
+- **The transcript is the only durable record of a conversation.** Replay to the
+  ACP client and future model requests are both derived from it. A compaction
+  summary changes what model requests contain but never replaces the saved
+  entries.
 - **Each turn records its own settings.** The model, effort, and mode are
   captured when a turn starts and saved with it, so a loaded session resumes
   from its transcript.
@@ -59,9 +59,9 @@ a session or a child process.
   and reports back to the main agent, which alone saves those reports. When the
   main turn ends, its subagents are stopped.
 - **Shell processes**: background commands that outlive a tool call. Each
-  belongs to the agent that started it, within one active session, and only
-  that agent can reach it. They end when the session is deleted, the connection
-  shuts down, or their subagent ends.
+  belongs to the agent that started it, within one active session, and only that
+  agent can reach it. They end when the session is deleted, the connection shuts
+  down, or their subagent ends.
 
 ## Concurrency and cancellation
 
@@ -73,14 +73,14 @@ sessions or end the connection.
 
 ## Trust
 
-File tools are confined to the session workspace. The shell runs with the
-user's permissions and can reach anything they can. In Ask mode, shell actions
-need the client's permission; in Auto mode they do not. The mode captured at the
-start of a turn governs the whole turn.
+File tools are confined to the session workspace. The shell runs with the user's
+permissions and can reach anything they can. In Ask mode, shell actions need the
+client's permission; in Auto mode they do not. The mode captured at the start of
+a turn governs the whole turn.
 
 ## Deliberate constraints
 
 One model provider, one tool set, one SQLite connection, sequential tool
-execution, and process-local coordination. There is no provider fallback,
-prompt queue, cross-process coordination, or database migration. Changing any
-of these means revisiting the boundaries that depend on it.
+execution, and process-local coordination. There is no provider fallback, prompt
+queue, cross-process coordination, or database migration. Changing any of these
+means revisiting the boundaries that depend on it.

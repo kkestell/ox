@@ -20,8 +20,8 @@ guarantee, and the suite changes as the guarantees change.
 - A change adds a test for each new guarantee and for each reproduced
   regression, at the closest stable boundary. It rewrites or deletes the tests
   for guarantees it changes or removes, in the same change.
-- Test a guarantee once. Unit, orchestration, ACP, and end-to-end tests repeat an
-  assertion only when those layers have distinct failure modes.
+- Test a guarantee once. Unit, orchestration, ACP, and end-to-end tests repeat
+  an assertion only when those layers have distinct failure modes.
 - Use table-driven cases for one behavior over varied inputs. Each case states
   its input and expected result, and a failure message identifies the case.
 - Keep setup proportional to the guarantee. Shared fixtures and helpers hold

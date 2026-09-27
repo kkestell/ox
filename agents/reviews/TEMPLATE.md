@@ -11,8 +11,8 @@ coverage.
 
 ## Findings
 
-For each finding, give the source location, what can happen, the evidence, and
-a suggested fix. If there are no confirmed findings, say so here.
+For each finding, give the source location, what can happen, the evidence, and a
+suggested fix. If there are no confirmed findings, say so here.
 
 ### High
 

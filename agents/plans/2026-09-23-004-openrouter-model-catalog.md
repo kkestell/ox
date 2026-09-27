@@ -53,11 +53,11 @@ OpenRouter response:
 
 The catalog is sorted by model name. `name` and `context_length` become the
 model's name and context limit. The response is external input: parse only the
-fields above plus `reasoning.supported_efforts` into a private
-`OpenRouterModel` without `deny_unknown_fields`. A missing or malformed required
-field, a failed request, or an empty filtered catalog fails startup with a clear
-error. The request needs no API key and has a 15-second total timeout so a
-stalled response cannot hold startup indefinitely.
+fields above plus `reasoning.supported_efforts` into a private `OpenRouterModel`
+without `deny_unknown_fields`. A missing or malformed required field, a failed
+request, or an empty filtered catalog fails startup with a clear error. The
+request needs no API key and has a 15-second total timeout so a stalled response
+cannot hold startup indefinitely.
 
 ### Effort levels
 
@@ -116,13 +116,13 @@ it through `openrouter_effort` and omits `reasoning` for `Default`.
 
 ## Naming
 
-- **Effort level**: Default or one of the OpenRouter efforts in `EffortLevel`.
-  A model's effort levels are Default plus the efforts OpenRouter lists for it.
+- **Effort level**: Default or one of the OpenRouter efforts in `EffortLevel`. A
+  model's effort levels are Default plus the efforts OpenRouter lists for it.
 - **Model catalog**: The OpenRouter models from `GET /api/v1/models` that pass
   the catalog filter, fetched once at startup. `catalog()` in code.
-- **Default model**: The model named by `model` in
-  `~/.config/ox/settings.json`, used for a new session and for `ox run` without
-  `--model`. `default_model()` in code.
+- **Default model**: The model named by `model` in `~/.config/ox/settings.json`,
+  used for a new session and for `ox run` without `--model`. `default_model()`
+  in code.
 - **Catalog filter**: The rules above that decide whether an OpenRouter model
   enters the model catalog. Used in this plan and in the `parse_catalog` doc
   comment.
@@ -142,11 +142,13 @@ it through `openrouter_effort` and omits `reasoning` for `Default`.
   without `low`. Rewrite `requests_map_each_effort_for_each_model` to send each
   model's own effort levels and check that each id is sent verbatim, with
   `reasoning` omitted for `Default`.
-- Extend `acp::tests::configuration_selections_validate_and_restore_saved_values`:
+- Extend
+  `acp::tests::configuration_selections_validate_and_restore_saved_values`:
   effort options match the selected model, selecting a model without the current
   effort level resets it to `Default`, and an effort level the model does not
   list is rejected.
-- In `acp::tests::setting_changes_apply_to_the_next_turn_while_the_system_prompt_stays_captured`,
+- In
+  `acp::tests::setting_changes_apply_to_the_next_turn_while_the_system_prompt_stays_captured`,
   select `max` instead of `high` and expect `EffortLevel::Max`.
 - In `settings::tests::loads_settings_and_suppresses_global_hooks_inside_hooks`,
   replace the model rows with rows for a valid `model`, a missing `model`, and a
@@ -161,8 +163,9 @@ it through `openrouter_effort` and omits `reasoning` for `Default`.
 2. In `src/openrouter.rs`:
    - Replace `EffortMapping` and `CatalogModel::validate` with `efforts`,
      `supports(effort)`, and `summary_effort`.
-   - Add `OpenRouterModel`, `parse_catalog(text) -> io::Result<Vec<CatalogModel>>`,
-     and `fetch_catalog() -> io::Result<Vec<CatalogModel>>`, which sends
+   - Add `OpenRouterModel`,
+     `parse_catalog(text) -> io::Result<Vec<CatalogModel>>`, and
+     `fetch_catalog() -> io::Result<Vec<CatalogModel>>`, which sends
      `GET {ENDPOINT}/models` with a new `reqwest::Client` and a 15-second total
      timeout.
    - Store the catalog and default model id together in `CATALOG`. Make

@@ -12,9 +12,9 @@ Selected lenses: correctness, concurrency, resources, error handling, security,
 testing, Rust ownership, Rust idioms, and documentation.
 
 No live OpenRouter or interactive ACP client testing was performed. The
-cancellation reproduction below isolates a ready tool batch; the separate
-mock HTTP test did not reproduce the race. No application code or committed
-tests were changed.
+cancellation reproduction below isolates a ready tool batch; the separate mock
+HTTP test did not reproduce the race. No application code or committed tests
+were changed.
 
 ## Findings
 
@@ -32,30 +32,30 @@ tests were changed.
   signal, so they do not prevent this.
 
   A controlled test in a temporary checkout passed a validated patch batch
-  through the production `AgentTurn::process_batch` executor as the ready
-  child future, cancelled the parent, and then polled `run_turns`. The patch
-  created `cancelled-write`, failing the assertion that cancellation prevents
-  new tool effects. Moving the parent-cancellation branch before `turn` made
-  the same test pass. Poll cancellation first, forward it to the child, and
-  retain the existing await that lets the interrupted turn save and clean up.
-  Add a regression covering cancellation with child work already ready.
+  through the production `AgentTurn::process_batch` executor as the ready child
+  future, cancelled the parent, and then polled `run_turns`. The patch created
+  `cancelled-write`, failing the assertion that cancellation prevents new tool
+  effects. Moving the parent-cancellation branch before `turn` made the same
+  test pass. Poll cancellation first, forward it to the child, and retain the
+  existing await that lets the interrupted turn save and clean up. Add a
+  regression covering cancellation with child work already ready.
 
 ### Low
 
 #### Documentation
 
 - **Keep the manual follow-up scenario within one user prompt**
-  (`agents/testing.md:44`): The instructions ask the user to receive a subagent's
-  question in one turn and answer that same subagent in a second turn. Once
-  the first prompt returns, `AgentTurn` awaits `Subagents::shutdown`, which
-  removes every subagent. The next prompt creates a new owner, so
+  (`agents/testing.md:44`): The instructions ask the user to receive a
+  subagent's question in one turn and answer that same subagent in a second
+  turn. Once the first prompt returns, `AgentTurn` awaits `Subagents::shutdown`,
+  which removes every subagent. The next prompt creates a new owner, so
   `send_message` cannot resolve the previous subagent's ID. The documented
   procedure cannot verify retained follow-up conversations as written.
 
-  Give Ox both file choices and the intended answer in one initial prompt,
-  and ask it to wait for the child's question, send the answer, and wait for
-  the result before finishing. Keep the cancellation scenario as a separate
-  user prompt.
+  Give Ox both file choices and the intended answer in one initial prompt, and
+  ask it to wait for the child's question, send the answer, and wait for the
+  result before finishing. Keep the cancellation scenario as a separate user
+  prompt.
 
 ## Checks run
 
@@ -67,21 +67,21 @@ tests were changed.
 - `python3 -m unittest discover -s examples/skills/careful/scripts`: 4 tests
   passed.
 - `git diff --check HEAD^ HEAD`: passed.
-- Temporary reproduction workspace:
-  `/private/tmp/ox-review-subagents-l7g4cn86`. Ran
+- Temporary reproduction workspace: `/private/tmp/ox-review-subagents-l7g4cn86`.
+  Ran
   `cargo test --offline --manifest-path <workspace>/Cargo.toml --target-dir
   /Users/kyle/projects/ox/target review_parent_cancellation_precedes --
-  --nocapture`. The ready-batch regression failed on the reviewed ordering;
-  the buffered HTTP response case passed. Both passed after reversing the
-  two selection branches in the temporary copy. That experimental change
-  was then reverted. Initial harness attempts needed a request-driving
-  correction and a type correction; a loopback bind denied by the sandbox
-  passed when rerun outside it.
+  --nocapture`.
+  The ready-batch regression failed on the reviewed ordering; the buffered HTTP
+  response case passed. Both passed after reversing the two selection branches
+  in the temporary copy. That experimental change was then reverted. Initial
+  harness attempts needed a request-driving correction and a type correction; a
+  loopback bind denied by the sandbox passed when rerun outside it.
 - Inspected the review document and final working-tree diff. Only this review
   document was added; production and test source files remain unchanged.
 
 ## Verdict
 
-Fix the cancellation ordering and correct the manual follow-up procedure.
-The existing full validation suite passes, but it does not catch the ready
+Fix the cancellation ordering and correct the manual follow-up procedure. The
+existing full validation suite passes, but it does not catch the ready
 child-work cancellation case.

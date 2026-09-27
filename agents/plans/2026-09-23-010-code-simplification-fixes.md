@@ -52,24 +52,24 @@ Use [architecture](../architecture.md), [code style](../code-style.md),
   cleanup and its error precedence ahead of `after_run` reporting.
 - Use a stable sort by request estimate alone for compaction candidates. The
   existing threshold booleans are monotonic in that estimate and cannot change
-  its order. Keep admission filtering, candidate retries, and the check that
-  the actual summary produces a smaller admitted request.
+  its order. Keep admission filtering, candidate retries, and the check that the
+  actual summary produces a smaller admitted request.
 
 ## Naming
 
-- **Assistant batch** — One assistant message plus exactly one final tool
-  result for each call in the message, saved in one transaction. Use
-  `AssistantBatch`, `TranscriptEntry::AssistantBatch`, and the stored kind
-  `assistant_batch` for this same unit.
+- **Assistant batch** — One assistant message plus exactly one final tool result
+  for each call in the message, saved in one transaction. Use `AssistantBatch`,
+  `TranscriptEntry::AssistantBatch`, and the stored kind `assistant_batch` for
+  this same unit.
 - **Uncommitted assistant batch** — A validated assistant message whose tool
   outcomes are incomplete or have not yet been saved. Keep
   `UncommittedAssistantBatch` for this state.
-- **Compaction checkpoint** — A saved transcript entry with a compaction
-  summary and the exclusive index of the completed prefix it covers. Keep
+- **Compaction checkpoint** — A saved transcript entry with a compaction summary
+  and the exclusive index of the completed prefix it covers. Keep
   `CompactionCheckpoint` and `covered_prefix`.
-- **Prompt outcome** — The internal reason a prompt run stopped, determining
-  how unfinished tool calls are completed and whether Ox returns an ACP stop
-  reason or an error. Keep `PromptOutcome`.
+- **Prompt outcome** — The internal reason a prompt run stopped, determining how
+  unfinished tool calls are completed and whether Ox returns an ACP stop reason
+  or an error. Keep `PromptOutcome`.
 - **Final answer** — The text of the assistant message committed with the
   finished OpenRouter stop that ended a prompt run. Carry it in the `Finished`
   variants, including an empty string when that is the accepted answer.
@@ -125,28 +125,28 @@ Adapt existing coverage in place; these changes need no new test function.
    directly; require `after_tools` feedback to follow a batch with tool calls
    and `before_stop` feedback to follow one without calls. Preserve consecutive
    feedback of the same kind and current-skill checks. Validate checkpoint
-   boundaries by inspecting the entry immediately before `covered_prefix`
-   after checking its bounds.
-3. Update `src/acp/prompt.rs` so `commit` pushes the saved batch intact.
-   Have `run_after_tools` build owned tool reports from the just-committed
-   batch's paired calls and results before running any hooks. Remove its calls
-   argument and transcript suffix arithmetic. Keep reports stable while hook
-   feedback is appended, and preserve incomplete-batch cleanup.
+   boundaries by inspecting the entry immediately before `covered_prefix` after
+   checking its bounds.
+3. Update `src/acp/prompt.rs` so `commit` pushes the saved batch intact. Have
+   `run_after_tools` build owned tool reports from the just-committed batch's
+   paired calls and results before running any hooks. Remove its calls argument
+   and transcript suffix arithmetic. Keep reports stable while hook feedback is
+   appended, and preserve incomplete-batch cleanup.
 4. Update `src/openrouter.rs` to expand batches directly into the existing
    assistant and tool wire messages. Update `src/acp/convert.rs` to replay the
    message followed by paired calls and results, removing the remembered calls
    slice and ID search. Read model usage through the batch in usage updates.
 5. Update `src/compaction.rs` to find candidate cuts immediately after batch
    entries. Extract answer text, call arguments, and result excerpts from each
-   batch in their existing order. Keep request estimates counting every
-   expanded wire message, and retain checkpoint projection and repeated skill
-   invocation behavior. Adapt affected fixtures across these modules and
-   `src/acp.rs` as part of the representation change.
+   batch in their existing order. Keep request estimates counting every expanded
+   wire message, and retain checkpoint projection and repeated skill invocation
+   behavior. Adapt affected fixtures across these modules and `src/acp.rs` as
+   part of the representation change.
 6. Update `src/acp/prompt.rs` to carry the accepted answer in
    `PromptOutcome::Finished(String)` and return the `PromptOutput` enum. Remove
    `PromptRun.answer`, its initialization, and final-answer filtering. Match
-   output variants exhaustively in `run_after_run`. In `src/acp.rs`, map them
-   to ACP responses and extract only `Finished(answer)` for headless success.
+   output variants exhaustively in `run_after_run`. In `src/acp.rs`, map them to
+   ACP responses and extract only `Finished(answer)` for headless success.
    Preserve existing error distinctions and update outcome assertions.
 7. In `src/compaction.rs`, remove `Budget.cut_target` and the `original`
    parameter from `ranked_cuts`; sort stably by `estimate`. Keep `original` in
@@ -159,7 +159,7 @@ Adapt existing coverage in place; these changes need no new test function.
   feedback placement after batches, and checkpoint boundaries at batch entries.
   Clarify that a finished prompt outcome carries the accepted final answer.
 - `agents/glossary.md` — Update transcript entry and assistant batch definitions
-  to reflect the stored unit; keep assistant message and tool result as parts
-  of that unit. Clarify the final answer's relationship to the finished outcome.
-- `AGENTS.md` — Update the `src/sessions.rs` and `src/acp/prompt.rs` descriptions
-  for batch entries and finished outcomes.
+  to reflect the stored unit; keep assistant message and tool result as parts of
+  that unit. Clarify the final answer's relationship to the finished outcome.
+- `AGENTS.md` — Update the `src/sessions.rs` and `src/acp/prompt.rs`
+  descriptions for batch entries and finished outcomes.

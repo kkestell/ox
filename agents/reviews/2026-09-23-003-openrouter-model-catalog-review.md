@@ -4,10 +4,10 @@
 
 Reviewed the current working tree diff for catalog loading, settings, model and
 effort selection, request encoding, related tests, and associated documentation.
-Read the draft plan as context. Used correctness, error handling, resources,
-API design, testing, documentation, and Rust idioms lenses. I checked the public
-OpenRouter model response and API documentation, but did not run a live Ox prompt
-or simulate a stalled OpenRouter connection.
+Read the draft plan as context. Used correctness, error handling, resources, API
+design, testing, documentation, and Rust idioms lenses. I checked the public
+OpenRouter model response and API documentation, but did not run a live Ox
+prompt or simulate a stalled OpenRouter connection.
 
 ## Findings
 
@@ -40,8 +40,9 @@ the behavior at review time.
 - Both example unittest commands from `agents/testing.md` — passed (1 goal test,
   4 careful tests).
 - `git diff --check` — passed.
-- Read OpenRouter's [current public model response](https://openrouter.ai/api/v1/models)
-  and [model list documentation](https://openrouter.ai/docs/api/api-reference/models/list-all-models-and-their-properties).
+- Read OpenRouter's
+  [current public model response](https://openrouter.ai/api/v1/models) and
+  [model list documentation](https://openrouter.ai/docs/api/api-reference/models/list-all-models-and-their-properties).
 
 ## Verdict
 

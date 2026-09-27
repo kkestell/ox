@@ -14,7 +14,9 @@ Keep this document accurate and short.
 ## Validation
 
 - `make check` runs every check. Run it after changing code.
-- `make format` formats the code.
+- `make check-docs` checks the Markdown. Run it after changing only docs or
+  comments.
+- `make format` formats the code and the Markdown.
 
 Report any check that fails or is skipped.
 

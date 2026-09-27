@@ -3,29 +3,29 @@
 ## Scope and coverage
 
 Reviewed the whole `src/` tree at `942f374`, looking for code that can be
-simplified or deleted without changing observable behavior. The working tree
-was clean when the review began; unrelated concurrent edits to `AGENTS.md`,
+simplified or deleted without changing observable behavior. The working tree was
+clean when the review began; unrelated concurrent edits to `AGENTS.md`,
 `README.md`, `src/cancellation.rs`, and the OpenRouter status-error text of
-`src/openrouter.rs` appeared while it ran, and every line number below refers
-to `942f374`.
+`src/openrouter.rs` appeared while it ran, and every line number below refers to
+`942f374`.
 
 Production code was read throughout `src/`: `main.rs`, `auth.rs`,
 `cancellation.rs`, `system_prompt.rs`, `text_file.rs`, `settings.rs`,
 `skills.rs`, `hooks.rs`, `process.rs`, `tools/workspace.rs`, and
-`acp/operations.rs` in full, and the remaining modules through their callers
-and the regions named below. Test code was read where it decides reachability
-(the default tool-call titles, malformed stored transcript rows, the compaction
-ranking test) and sampled elsewhere. The example skills, the Python scripts,
-and the build tooling were not reviewed, and no live OpenRouter or ACP client
-was exercised.
+`acp/operations.rs` in full, and the remaining modules through their callers and
+the regions named below. Test code was read where it decides reachability (the
+default tool-call titles, malformed stored transcript rows, the compaction
+ranking test) and sampled elsewhere. The example skills, the Python scripts, and
+the build tooling were not reviewed, and no live OpenRouter or ACP client was
+exercised.
 
-Lenses: architecture, API design, readability, correctness, performance,
-naming, testing, and Rust idioms. Severity below is simplification priority; no
-finding claims a demonstrated user-facing failure.
+Lenses: architecture, API design, readability, correctness, performance, naming,
+testing, and Rust idioms. Severity below is simplification priority; no finding
+claims a demonstrated user-facing failure.
 
 The duplicated output capture and process-group cleanup in `src/process.rs` and
-`src/shell_processes.rs` is already covered by concurrent work in this
-workspace (`agents/reviews/2026-09-24-008-simplification-review.md` and
+`src/shell_processes.rs` is already covered by concurrent work in this workspace
+(`agents/reviews/2026-09-24-008-simplification-review.md` and
 `agents/plans/2026-09-24-008-shared-output-capture.md`), so it is not repeated
 here.
 
@@ -43,8 +43,8 @@ here.
   nothing: `read_transcript` selects `kind, data` and orders by the rowid `id`,
   and no query, index, or document consumes `ts`. Its only effect is that
   `write_entries` threads a timestamp through `insert_entry` for that column
-  alone. Entry order is already the rowid, and session activity already lives
-  in `sessions.updated_at`. Fix: drop the column and the `at` parameter of
+  alone. Entry order is already the rowid, and session activity already lives in
+  `sessions.updated_at`. Fix: drop the column and the `at` parameter of
   `insert_entry` (updating the test-only insert at `src/sessions.rs:1394`);
   `write_entries` keeps `now()` for `update_activity_and_adopt_session_title`.
   The project recreates `ox.db` rather than migrating, so no migration is
@@ -83,21 +83,21 @@ here.
   (`workspace.regular_file(&relative).unwrap_or(false)`), and `read_file`
   already answers the same question by opening the target without following
   links and rejecting a non-regular file with `InvalidInput`. `statat` plus
-  `FileType::from_raw_mode` is a second implementation of that rule. Fix:
-  delete `regular_file` and test `workspace.read_file(&relative).is_ok()`, as
-  the grep branch already does with the same workspace path.
+  `FileType::from_raw_mode` is a second implementation of that rule. Fix: delete
+  `regular_file` and test `workspace.read_file(&relative).is_ok()`, as the grep
+  branch already does with the same workspace path.
 
-- **`Presentation` stores subagent suppression beside the identity that
-  implies it** (`src/acp/prompt.rs:71-74`, `src/acp/prompt.rs:86-89`,
+- **`Presentation` stores subagent suppression beside the identity that implies
+  it** (`src/acp/prompt.rs:71-74`, `src/acp/prompt.rs:86-89`,
   `src/acp/prompt.rs:114-118`, `src/acp/prompt.rs:155-162`).
 
   `Target::Acp { updates }` is set true only by `Presentation::acp`, which
   builds a main identity, and false only by `Presentation::subagent`, which
   always sets `identity.subagent_id`. No other site reads or writes the field,
   and `Presentation::observed` is main-only, so
-  `updates == identity.subagent_id.is_none()` holds for every constructed
-  value. Two fields therefore encode one fact and must be assigned together.
-  Fix: delete `updates` and decide in `sends_updates` and `send` by
+  `updates == identity.subagent_id.is_none()` holds for every constructed value.
+  Two fields therefore encode one fact and must be assigned together. Fix:
+  delete `updates` and decide in `sends_updates` and `send` by
   `self.identity.subagent_id.is_none()`, which is the rule the doc comment on
   `Target::Acp` states.
 
@@ -108,12 +108,12 @@ here.
 - **`Drop` and `shutdown` repeat the subagent close-out**
   (`src/subagents.rs:144-157`, `src/subagents.rs:290-299`).
 
-  Both set `open = false`, clear `messages`, and cancel every agent;
-  `shutdown` additionally collects each task to await and clears the agents
-  afterwards, while `Drop` drains them without awaiting. Fix: one `State`
-  method that closes admission, discards messages, and cancels each
-  agent, called by both paths, leaving `shutdown` to collect and await the
-  tasks and `Drop` to clear the list.
+  Both set `open = false`, clear `messages`, and cancel every agent; `shutdown`
+  additionally collects each task to await and clears the agents afterwards,
+  while `Drop` drains them without awaiting. Fix: one `State` method that closes
+  admission, discards messages, and cancels each agent, called by both paths,
+  leaving `shutdown` to collect and await the tasks and `Drop` to clear the
+  list.
 
 - **Compaction ranks cuts with a second request-size model**
   (`src/compaction.rs:185-229`, `src/compaction.rs:59-70`,
@@ -126,10 +126,10 @@ here.
   `ranked_cuts_follow_the_latest_checkpoint_smallest_request_first` exists to
   assert they agree. The incremental form is a deliberate performance choice
   (one serialization instead of one per candidate cut), so replacing it with
-  `projected_estimate` per cut would trade memory work for simplicity. Fix
-  that keeps the incremental path: express the per-message and per-body sizes
-  through one helper so the image allowance and separator rule exist once, and
-  let the existing test keep pinning the two views together.
+  `projected_estimate` per cut would trade memory work for simplicity. Fix that
+  keeps the incremental path: express the per-message and per-body sizes through
+  one helper so the image allowance and separator rule exist once, and let the
+  existing test keep pinning the two views together.
 
 #### Naming
 
@@ -137,11 +137,11 @@ here.
   (`src/acp/operations.rs:16-20`, `src/acp/operations.rs:49-55`,
   `src/acp/operations.rs:59-67`).
 
-  The only inspections of the value are `cancel` (`Prompt` vs
-  `Load | Delete`), `close` (`if let Prompt`), and `Drop`, which is
-  variant-independent; `OperationGuard` does not store the variant, so nothing
-  can ask whether a busy session is loading or deleting. Fix: one variant for
-  both, keeping `try_load` and `try_delete` as the two named entry points.
+  The only inspections of the value are `cancel` (`Prompt` vs `Load | Delete`),
+  `close` (`if let Prompt`), and `Drop`, which is variant-independent;
+  `OperationGuard` does not store the variant, so nothing can ask whether a busy
+  session is loading or deleting. Fix: one variant for both, keeping `try_load`
+  and `try_delete` as the two named entry points.
 
 #### Readability
 
@@ -149,10 +149,11 @@ here.
   `src/acp.rs:354-359`, `src/acp.rs:361-367`).
 
   The `model`, `effort`, and `mode` arms each wrap their lookup in the same
-  five-line closure producing `"{value} is not a choice of configuration
-  option {config_id}"`. Fix: one local closure built from `value` and
-  `request.config_id` and used by the three arms, so the message shape exists
-  once.
+  five-line closure producing
+  `"{value} is not a choice of configuration
+  option {config_id}"`. Fix: one
+  local closure built from `value` and `request.config_id` and used by the three
+  arms, so the message shape exists once.
 
 - **`shutdown_shell_processes` signals owners that are already signalled**
   (`src/acp.rs:531-539`, `src/shell_processes.rs:209-220`,
@@ -168,11 +169,10 @@ here.
 - **`before_run` and `after_tools` repeat one hook loop**
   (`src/acp/prompt.rs:447-461`, `src/acp/prompt.rs:662-672`).
 
-  The two loops differ only in the event and in the
-  `HookFeedbackContent` variant their closure builds; the other three hook
-  loops accumulate a result and genuinely differ. Fix: one loop taking the
-  event and the feedback constructor, so adding a feedback hook kind touches
-  one place.
+  The two loops differ only in the event and in the `HookFeedbackContent`
+  variant their closure builds; the other three hook loops accumulate a result
+  and genuinely differ. Fix: one loop taking the event and the feedback
+  constructor, so adding a feedback hook kind touches one place.
 
 #### API design
 
@@ -184,25 +184,24 @@ here.
   `subagent.rs` already has the wrapper
   (`fn parse<'a, T: Deserialize<'a>>(arguments: &'a str) -> Result<T, String>`)
   while the other modules inline the same `format!("arguments: {error}")`
-  mapping, which is the tool-error prefix every module must keep identical.
-  Fix: one crate-visible `parse_arguments` next to the shared tool helpers,
-  used by every module, deleting the inline copies and the local helper.
+  mapping, which is the tool-error prefix every module must keep identical. Fix:
+  one crate-visible `parse_arguments` next to the shared tool helpers, used by
+  every module, deleting the inline copies and the local helper.
 
 #### Correctness
 
-- **`children_cost` restates the cost rule in SQL**
-  (`src/sessions.rs:940-954`, `src/sessions.rs:723-734`).
+- **`children_cost` restates the cost rule in SQL** (`src/sessions.rs:940-954`,
+  `src/sessions.rs:723-734`).
 
-  The child-cost query hardcodes `$.message.usage.cost` and
-  `$.summarizer_cost` plus the two entry kinds, which is the rule
-  `transcript_cost` already implements for the main transcript. Renaming a
-  field or adding a cost-bearing entry kind would silently drop child cost from
-  the usage update while main-transcript cost keeps working, with only
+  The child-cost query hardcodes `$.message.usage.cost` and `$.summarizer_cost`
+  plus the two entry kinds, which is the rule `transcript_cost` already
+  implements for the main transcript. Renaming a field or adding a cost-bearing
+  entry kind would silently drop child cost from the usage update while
+  main-transcript cost keeps working, with only
   `children_cost_sums_the_saved_costs_of_every_child_session` connecting them.
   Fix: derive both from one function, or read the children's entries and sum
   them with `transcript_cost`; note that this moves the sum from SQL into Rust,
-  so the whole-child-transcript read per usage update is the trade-off to
-  weigh.
+  so the whole-child-transcript read per usage update is the trade-off to weigh.
 
 #### Testing
 
@@ -211,44 +210,44 @@ here.
   `src/openrouter.rs:1245-1265`).
 
   `shell_reply` and `tool_reply` each rebuild the same
-  `{"role":"assistant","tool_calls":[...]}` event with `Some("tool_calls")`
-  that `calls_reply` builds, fixing only the tool name and the argument object.
-  Fix: map each helper's arguments to the `(&str, &str, Value)` triples and
-  delegate to `calls_reply`, deleting about forty duplicated fixture lines
-  while the call sites stay short.
+  `{"role":"assistant","tool_calls":[...]}` event with `Some("tool_calls")` that
+  `calls_reply` builds, fixing only the tool name and the argument object. Fix:
+  map each helper's arguments to the `(&str, &str, Value)` triples and delegate
+  to `calls_reply`, deleting about forty duplicated fixture lines while the call
+  sites stay short.
 
 ## Unresolved questions
 
-- `TranscriptEntry` is the only stored transcript type without serde
-  attributes: `encode_entry`/`decode_entry` (`src/sessions.rs:1120-1154`) match
-  on kind strings while `TurnInput` (`src/sessions.rs:119-129`) already uses
-  the adjacent-tagged form. Reusing that form would delete `decode_entry` and
+- `TranscriptEntry` is the only stored transcript type without serde attributes:
+  `encode_entry`/`decode_entry` (`src/sessions.rs:1120-1154`) match on kind
+  strings while `TurnInput` (`src/sessions.rs:119-129`) already uses the
+  adjacent-tagged form. Reusing that form would delete `decode_entry` and
   `decode`, but the `kind` column is also used by the `children_cost` SQL, so
   the enum would still need a kind accessor, and the unknown-kind message in
   `a_nonempty_transcript_opens_with_a_turn_start` would change. Deciding this
   needs the cost rule above to be settled first; it was not counted as a
   reduction.
-- The `unreachable!("list returned above")` arm at `src/tools/shell.rs:298`
-  is dead, but removing it needs the second `match action` to stay exhaustive;
-  the alternatives duplicate the `list` call as another unreachable arm, which
-  is not a reduction. Confirming a clean restructure would need the exact
+- The `unreachable!("list returned above")` arm at `src/tools/shell.rs:298` is
+  dead, but removing it needs the second `match action` to stay exhaustive; the
+  alternatives duplicate the `list` call as another unreachable arm, which is
+  not a reduction. Confirming a clean restructure would need the exact
   replacement, so it is not reported as a finding.
 
 ## Checks run
 
 - `cargo test --all-targets --all-features`: passed, 172 tests in the main
   binary plus one test in each of two other targets.
-- `cargo clippy --all-targets --all-features --message-format short`: passed,
-  no warnings, which also rules out compiler-visible dead code.
+- `cargo clippy --all-targets --all-features --message-format short`: passed, no
+  warnings, which also rules out compiler-visible dead code.
 - `cargo fmt --all -- --check`: passed.
 - `cargo build --all-features`: passed.
 - Searches for the callers of every item named above (`regular_file`,
   `save_turn_start`, `insert_entry`, `children_cost`, `ranked_cuts`,
   `message_bytes`, `Operation::Load`/`Delete`, the fixture reply builders,
-  `self.data`, and `arguments: `) to confirm each claim of single or duplicate
+  `self.data`, and `arguments:`) to confirm each claim of single or duplicate
   use.
-- Read `agents/architecture.md`, `agents/code-style.md`, `agents/glossary.md`, and
-  `agents/testing.md`, plus earlier simplification reviews and plans for the
+- Read `agents/architecture.md`, `agents/code-style.md`, `agents/glossary.md`,
+  and `agents/testing.md`, plus earlier simplification reviews and plans for the
   intended design and already-retired concepts.
 - No source file was changed; only this document was added.
 

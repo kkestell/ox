@@ -4,8 +4,8 @@
 
 The main agent and its subagents share one list of shell processes. Any agent
 can list, read, write to, or stop a background command another agent started,
-and a subagent's background commands keep running after the subagent ends,
-where no agent can reach them.
+and a subagent's background commands keep running after the subagent ends, where
+no agent can reach them.
 
 After this change, each shell process belongs to the agent that started it.
 `list` shows only that agent's shell processes, and `read`, `write`, and `stop`
@@ -30,8 +30,8 @@ their current lifetime.
 - `src/subagents.rs` — `Launch.shell_processes`, `State.started`,
   `Subagents::shutdown`, `Subagents::stop`, `Drop for Subagents`, and
   `Shared::finish_turn` and `Shared::next_turn`, which remove ended subagents.
-  The stop test near line 790 asserts that a subagent's background command
-  keeps running after the subagent stops.
+  The stop test near line 790 asserts that a subagent's background command keeps
+  running after the subagent stops.
 - `src/tools/subagent.rs` — the `start_subagent` and `stop_subagent` schema
   descriptions, which say subagents share background commands and that stopping
   a subagent leaves them running.
@@ -42,9 +42,9 @@ their current lifetime.
 
 ## Decisions
 
-- **One registry per active session, with each shell process tagged by its
-  agent session ID.** The main agent's session ID is the main session ID; a
-  subagent's is its child session ID. The registry stays the active session's
+- **One registry per active session, with each shell process tagged by its agent
+  session ID.** The main agent's session ID is the main session ID; a subagent's
+  is its child session ID. The registry stays the active session's
   `ShellProcesses`, so session deletion, connection shutdown, and headless
   shutdown keep covering every shell process, including a subagent's, with no
   new owner to track. A subagent's processes are reachable only through its
@@ -55,8 +55,8 @@ their current lifetime.
 - **An ended subagent's shell processes are killed at once**, with SIGKILL to
   each process group, the same as owner shutdown. No agent can reach them after
   the subagent ends, so a grace period helps nothing. A kill is requested
-  synchronously wherever a subagent is removed; the prompt run awaits every
-  kill before `after_run`.
+  synchronously wherever a subagent is removed; the prompt run awaits every kill
+  before `after_run`.
 - **The prompt run removes its subagents' shell processes from the registry**
   after their groups are cleaned up, so ended subagents leave nothing behind for
   later prompt runs. A dropped prompt future only requests the kills; their
@@ -64,11 +64,11 @@ their current lifetime.
 - **`State.started` becomes the list of every subagent ID started in the prompt
   run**, including subagents that already ended. Shutdown and drop need the IDs
   of subagents that removed themselves after a failure or cancellation. It
-  replaces the existing boolean, which shutdown still uses to report whether
-  the cost may have changed.
+  replaces the existing boolean, which shutdown still uses to report whether the
+  cost may have changed.
 - **Tool descriptions describe ownership without roles.** The same `shell` and
-  `shell_process` schemas serve both roles, so they say "the background
-  commands you started" instead of "this session's". The subagent role in
+  `shell_process` schemas serve both roles, so they say "the background commands
+  you started" instead of "this session's". The subagent role in
   `subagent_prompt.md` says a subagent's background commands end when it ends.
 
 ## Naming
@@ -104,13 +104,13 @@ their current lifetime.
   ID message and leave the command running; under the starting ID, `read`
   succeeds.
 - `src/subagents.rs`: rewrite the test near line 790 so that after
-  `stop_subagent` the subagent's background command's state is `Stopped` and
-  it no longer appears in that child session ID's `list`.
+  `stop_subagent` the subagent's background command's state is `Stopped` and it
+  no longer appears in that child session ID's `list`.
 - `src/subagents.rs`: new test
   `ending_the_prompt_run_kills_every_subagents_shell_processes` — one subagent
   starts a background command and goes idle, another fails after starting one;
-  after `Subagents::shutdown`, both commands have ended and the main session ID's
-  shell processes are untouched.
+  after `Subagents::shutdown`, both commands have ended and the main session
+  ID's shell processes are untouched.
 - Update the live subagent steps in `agents/testing.md`: a subagent starts
   `python3 -m http.server 8765` in the background and goes idle; the main agent
   lists no shell processes; after the prompt ends, `curl` to the server fails.
@@ -150,12 +150,12 @@ their current lifetime.
 
 ## Documentation updates
 
-- `agents/architecture.md`: Shell process lifetime (ownership by agent session ID,
-  per-agent limit, ID resolution); Subagent lifetime (replace the sharing
+- `agents/architecture.md`: Shell process lifetime (ownership by agent session
+  ID, per-agent limit, ID resolution); Subagent lifetime (replace the sharing
   paragraph; `stop_subagent`, failure, and prompt-run end kill the subagent's
   shell processes, awaited before `after_run`); Process state; invariant 16 (a
-  shell process belongs to one agent of one active session); invariant 18
-  (every subagent's shell processes have ended before `after_run`).
+  shell process belongs to one agent of one active session); invariant 18 (every
+  subagent's shell processes have ended before `after_run`).
 - `agents/glossary.md`: Shell process, Shell process ID (identifies one shell
   process among one agent's), Tool context (adds the agent session ID).
 - `AGENTS.md`: the `src/shell_processes.rs`, `src/subagents.rs`, and

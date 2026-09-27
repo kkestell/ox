@@ -170,8 +170,8 @@ are visible. None is a defect against the design.
   binary with inherited stdout, so nested libtest lines such as `running 1 test`
   appear inside the outer run's output.
 - `arguments_schema_and_title` compiles the first fenced JSON block of
-  `agents/plans/2026-09-20-002-shell-tool.md` into the test binary. Adding a JSON
-  block above the schema in that document breaks the test with an
+  `agents/plans/2026-09-20-002-shell-tool.md` into the test binary. Adding a
+  JSON block above the schema in that document breaks the test with an
   unrelated-looking error.
 - `shell_result_survives_update_failure_or_late_cancellation` reads its shell
   result through the `patch_result` helper.

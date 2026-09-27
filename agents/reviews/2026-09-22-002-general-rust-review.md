@@ -29,16 +29,16 @@ outside file changed from `outside` to `changed`.
 The read and search tools have the same check/use gap. `src/tools.rs:106-123`
 canonicalizes and checks a path, but `src/tools/read.rs:30-40` later opens the
 path by name, while `src/tools/search.rs:59-78` passes the original path to
-`rg`. A path replaced after validation can therefore be read or searched
-outside the workspace. The patch write was reproduced; the read and search
-cases are established from their source paths and ordinary symbolic link
-following behavior.
+`rg`. A path replaced after validation can therefore be read or searched outside
+the workspace. The patch write was reproduced; the read and search cases are
+established from their source paths and ordinary symbolic link following
+behavior.
 
 If confinement must hold while a workspace changes concurrently, use opened
 directory or file handles for the operation and constrain symbolic link
 resolution at use time. Another pathname check does not close the race. If
-concurrent workspace mutation is outside the intended trust boundary, state
-that limit in the workspace confinement contract.
+concurrent workspace mutation is outside the intended trust boundary, state that
+limit in the workspace confinement contract.
 
 ## Unresolved suspicions
 

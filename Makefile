@@ -1,13 +1,19 @@
-.PHONY: check format install install-release release
+.PHONY: check check-docs format format-docs install install-release release
 
-check:
+check: check-docs
 	cargo fmt --all -- --check
 	cargo test --all-targets --all-features
 	cargo build --all-features
 	cargo clippy --all-targets --all-features -- -D warnings
 
-format:
+check-docs:
+	dprint check
+
+format: format-docs
 	cargo fmt --all
+
+format-docs:
+	dprint fmt
 
 PREFIX ?= $(HOME)/.local/bin
 CONFIG_DIR ?= $(HOME)/.config/ox
