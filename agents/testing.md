@@ -1,54 +1,14 @@
 # Testing
 
-Run `cargo test` for the in-module `#[cfg(test)]` suite and `cargo build` for a
-debug build.
+`make check` runs the tests and the other checks.
 
-For live end-to-end testing, prefer
-`scripts/run.py [--keep] [--repo <GitHub-commit-URL>] [--model <model-id>] [--effort <effort>] '<prompt>'`.
-It reads `OPENROUTER_API_KEY` from `.env` and creates a temporary workspace. To
-use an existing workspace, run
-`ox run [--dir <workspace-path>] [--model <model-id>] [--effort <effort>] '<prompt>'`
-directly. The model must be in the model catalog and the effort level must be
-one it lists; an unset model or effort uses
-the same defaults as a new ACP session. The headless run creates a new session
-in `ox.db`, prints the final answer to stdout when the prompt ends normally, and
-otherwise prints nothing to stdout and exits with a failure status. Set
-`OX_DATA_DIR` to a temporary directory to isolate that database, then inspect it
-to verify the saved session.
+## Where tests go
 
-To try background commands live, connect an ACP client to a local build in
-Ask mode and run one session through these turns:
-
-1. Ask Ox to start `python3 -m http.server 8765` in the background. Approve
-   the start, and note the process ID in its result.
-2. In a later turn, ask Ox to fetch `http://127.0.0.1:8765/` with `curl` and
-   read the server's output. The read shows the request in stderr.
-3. Ask Ox to read the server while waiting up to 30 seconds for it to end, and
-   cancel that prompt while it waits. The server keeps answering `curl`.
-4. Ask Ox to stop the server. Its state becomes stopped, and `curl` fails.
-
-Deleting the session or closing the ACP client instead stops the server at
-once.
-
-To try subagents live, connect an ACP client to a local build in Ask mode and
-run one session through these turns:
-
-1. Ask Ox to start a subagent that must ask which of two files to summarize
-   before reading either, and to wait for its question. The question arrives
-   as a subagent message.
-2. Ask Ox to answer that subagent with one file name and wait for its answer.
-   The follow-up continues the same conversation, and each shell command the
-   subagent runs asks for permission naming the subagent.
-3. Ask Ox to start a subagent that runs `sleep 60` and then wait for it, and
-   cancel that prompt while it waits. The prompt ends cancelled, and `ps` shows
-   the subagent's `sleep 60` has stopped.
-4. Ask Ox to start a subagent that starts `python3 -m http.server 8765` in the
-   background and then answers, and to list its own shell processes after the
-   answer arrives. The list shows no shell processes. After the prompt ends,
-   `curl http://127.0.0.1:8765/` fails.
-
-The session list shows only the main session, and its cost includes the
-subagents' requests.
+- **Automated tests**: in-module `#[cfg(test)]` tests. Model requests go to a
+  scripted OpenRouter test fixture, so tests need no API key or network.
+- **Live checks**: `scripts/run.py '<prompt>'` runs one headless prompt against
+  OpenRouter in a temporary workspace. For behavior only an ACP client shows,
+  connect a client to a local build.
 
 ## Test discipline
 

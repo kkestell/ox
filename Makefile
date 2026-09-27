@@ -1,4 +1,13 @@
-.PHONY: install install-release release
+.PHONY: check format install install-release release
+
+check:
+	cargo fmt --all -- --check
+	cargo test --all-targets --all-features
+	cargo build --all-features
+	cargo clippy --all-targets --all-features -- -D warnings
+
+format:
+	cargo fmt --all
 
 PREFIX ?= $(HOME)/.local/bin
 CONFIG_DIR ?= $(HOME)/.config/ox
