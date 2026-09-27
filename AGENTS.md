@@ -167,8 +167,8 @@ filename-only changes, use focused searches and diff inspection.
 
 Use `YYYY-MM-DD-NNN-slug.md` filenames for:
 
-- Plans in `eng/plans/`.
-- Code reviews in `eng/reviews/`.
+- Plans in `agents/plans/`.
+- Code reviews in `agents/reviews/`.
 
 Plan reviews stay in the conversation. Do not create review documents for plans.
 Include this rule explicitly when asking Claude or another agent to review a
@@ -176,10 +176,10 @@ plan.
 
 Read before planning and changing code:
 
-- `eng/architecture.md`
-- `eng/code-style.md`
-- `eng/glossary.md`
-- `eng/testing.md`
+- `agents/architecture.md`
+- `agents/code-style.md`
+- `agents/glossary.md`
+- `agents/testing.md`
 
 ## Backwards Compatibility
 
