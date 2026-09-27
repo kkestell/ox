@@ -687,26 +687,56 @@ impl Script {
         Ok(StopReason::EndTurn)
     }
 
-    /// Sends a thought, a completed `execute` tool call with its output, a
-    /// completed `read` tool call with its content, and a Markdown message
-    /// with bold text, a list, and inline code.
+    /// Streams reasoning and a reply with surrounding whitespace and words
+    /// split across chunks. Between them, it sends two tool calls with raw
+    /// names and JSON arguments, each updated to in progress and then to
+    /// completed with multiline content.
     fn render(&self) -> agent_client_protocol::Result<StopReason> {
-        self.update(SessionUpdate::AgentThoughtChunk(ContentChunk::new(
-            "weighing the tallies".into(),
-        )))?;
-        self.update(SessionUpdate::ToolCall(
-            ToolCall::new("run-1", "ls *.tally")
-                .kind(ToolKind::Execute)
-                .status(ToolCallStatus::Completed)
-                .content(vec![ToolCallContent::from("a.tally\nb.tally")]),
-        ))?;
-        self.update(SessionUpdate::ToolCall(
-            ToolCall::new("read-1", "read a.tally")
-                .kind(ToolKind::Read)
-                .status(ToolCallStatus::Completed)
-                .content(vec![ToolCallContent::from("one tally")]),
-        ))?;
-        self.message("**Two** tallies:\n\n- `a.tally`\n- `b.tally`\n")?;
+        for text in ["  \n weigh", "ing the ", "tallies  \n"] {
+            self.update(SessionUpdate::AgentThoughtChunk(ContentChunk::new(
+                text.into(),
+            )))?;
+        }
+        for (id, title, kind, name, input) in [
+            (
+                "run-1",
+                "ls",
+                ToolKind::Execute,
+                "shell",
+                serde_json::json!({"command": "ls"}),
+            ),
+            (
+                "read-1",
+                "read tallies/2026/september/a.tally",
+                ToolKind::Read,
+                "read_file",
+                serde_json::json!({"path": "tallies/2026/september/a.tally"}),
+            ),
+        ] {
+            self.update(SessionUpdate::ToolCall(
+                ToolCall::new(id, title)
+                    .name(name.to_string())
+                    .kind(kind)
+                    .raw_input(input),
+            ))?;
+            for fields in [
+                ToolCallUpdateFields::new().status(ToolCallStatus::InProgress),
+                ToolCallUpdateFields::new()
+                    .status(ToolCallStatus::Completed)
+                    .content(vec![ToolCallContent::from("a.tally\nb.tally")]),
+            ] {
+                self.update(SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
+                    id, fields,
+                )))?;
+            }
+        }
+        for text in [
+            "\n  Two tal",
+            "lies were counted in the workspace:\n\n",
+            "a.tally and b.tally  \n\n",
+        ] {
+            self.message(text)?;
+        }
         Ok(StopReason::EndTurn)
     }
 

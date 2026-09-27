@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-agent-client-protocol = "2.1.0"
+agent-client-protocol = { version = "2.1.0", features = ["unstable_tool_call_name"] }
 base64 = "0.22.1"
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
 futures = "0.3.31"

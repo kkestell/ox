@@ -153,6 +153,7 @@ pub fn pending_tool_call(call: &ToolCall) -> SessionUpdate {
             ToolCallId::new(call.call_id.clone()),
             tools::tool_call_title(call),
         )
+        .name(call.name.clone())
         .kind(tool_kind(call))
         .status(ToolCallStatus::Pending)
         .raw_input(raw_input(call)),
@@ -247,6 +248,7 @@ pub fn shell_permission_request(
             ToolCallId::new(tool_call_id),
             ToolCallUpdateFields::new()
                 .title(tool_call_title)
+                .name(call.name.clone())
                 .kind(tool_kind(call))
                 .status(ToolCallStatus::Pending)
                 .raw_input(input)
@@ -352,6 +354,7 @@ fn replayed_tool_call(call: &ToolCall, outcome: &ToolOutcome) -> SessionUpdate {
             ToolCallId::new(call.call_id.clone()),
             tools::tool_call_title(call),
         )
+        .name(call.name.clone())
         .kind(tool_kind(call))
         .status(status(outcome))
         .raw_input(raw_input(call))
@@ -551,6 +554,7 @@ mod tests {
                 "{}",
                 call.arguments
             );
+            assert_eq!(request["toolCall"]["name"], name);
             assert_eq!(request["toolCall"]["rawInput"], raw_input(&call));
             assert_eq!(request["toolCall"]["kind"], "execute");
         }
@@ -634,7 +638,7 @@ mod tests {
     }
 
     #[test]
-    fn tool_updates_carry_tool_call_titles_failed_statuses_and_unparsable_arguments() {
+    fn tool_updates_carry_tool_call_titles_names_failed_statuses_and_unparsable_arguments() {
         let call = ToolCall {
             call_id: "call-1".to_owned(),
             name: tools::SHELL.to_owned(),
@@ -645,10 +649,19 @@ mod tests {
             SessionUpdate::ToolCall(update)
                 if update.status == ToolCallStatus::Pending
                     && update.title == "Run shell command"
+                    && update.name.as_deref() == Some(tools::SHELL)
                     && update.raw_input == Some(Value::String("{\"comm".to_owned()))
         ));
         let cancelled =
             ToolOutcome::Cancelled("Cancelled before this tool was started.".to_owned());
+        assert!(matches!(
+            replayed_tool_call(&call, &cancelled),
+            SessionUpdate::ToolCall(update)
+                if update.status == ToolCallStatus::Failed
+                    && update.title == "Run shell command"
+                    && update.name.as_deref() == Some(tools::SHELL)
+                    && update.raw_input == Some(Value::String("{\"comm".to_owned()))
+        ));
         assert!(matches!(
             finished_tool_call_update(&call, &cancelled),
             SessionUpdate::ToolCallUpdate(update)

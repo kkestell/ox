@@ -85,6 +85,16 @@ impl Tmux {
         self.call(&["capture-pane", "-p", "-J", "-S", "-", "-t", "test:0.0"])
     }
 
+    /// The pane's physical rows, without joining wrapped lines.
+    fn rows(&self) -> String {
+        self.call(&["capture-pane", "-p", "-S", "-", "-t", "test:0.0"])
+    }
+
+    /// The pane's physical rows with their ANSI attributes.
+    fn styled_rows(&self) -> String {
+        self.call(&["capture-pane", "-p", "-e", "-S", "-", "-t", "test:0.0"])
+    }
+
     fn wait(&self, text: &str) {
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
@@ -165,13 +175,23 @@ fn terminal_keys_stream_paste_resize_cancel_and_restore_the_shell() {
     test.wait("Turn finished");
     test.prompt("tool");
     test.wait("Permission required");
+    let screen = test.capture();
+    assert!(
+        screen.contains(
+            "count the tallies\nevery *.tally file\nPermission required\n1. Go ahead\n2. Hold off\n"
+        ),
+        "{screen}"
+    );
+    assert_eq!(screen.matches("every *.tally file").count(), 1, "{screen}");
     test.keys(&["9", "Enter"]);
     test.wait("Enter one of the supplied option numbers");
     test.keys(&["1", "Enter"]);
     test.wait("selected go");
     test.prompt("running");
-    test.wait("running; waiting for cancellation");
+    // The last word waits for the message to end.
+    test.wait("running; waiting for");
     test.keys(&["C-c"]);
+    test.wait("running; waiting for cancellation\nCancelling…\n");
     test.wait("cancelled");
     test.call(&["resize-window", "-t", "test:0", "-x", "24", "-y", "12"]);
     test.call(&["set-buffer", "pasted界\nsecond line"]);
@@ -187,6 +207,44 @@ fn terminal_keys_stream_paste_resize_cancel_and_restore_the_shell() {
     test.wait("EXIT_0");
     test.prompt("echo SHELL_USABLE");
     test.wait("\nSHELL_USABLE\n");
+}
+
+#[test]
+#[ignore = "requires tmux; run make e2e"]
+fn narrow_transcript_wraps_messages_and_shows_one_line_per_tool_call() {
+    let test = Tmux::new();
+    test.call(&["resize-window", "-t", "test:0", "-x", "40", "-y", "24"]);
+    test.prompt("render");
+    test.wait("Turn finished");
+    let rows = test.rows();
+    let transcript = &rows[rows.find("> render").unwrap()..];
+    assert!(
+        transcript.starts_with(concat!(
+            "> render\n",
+            "\n",
+            "weighing the tallies\n",
+            "\n",
+            "shell            {\"command\":\"ls\"}\n",
+            "read_file        {\"path\":\"tallies/20...\n",
+            "\n",
+            "Two tallies were counted in the\n",
+            "workspace:\n",
+            "\n",
+            "a.tally and b.tally\n",
+            "Turn finished\n",
+        )),
+        "{transcript}"
+    );
+    let styled = test.styled_rows();
+    let reasoning = styled
+        .find("\x1b[38;5;8mweighing the tallies")
+        .unwrap_or_else(|| panic!("reasoning is not bright black:\n{styled}"));
+    // The foreground is reset before the tool call lines, and the response and
+    // input that follow stay in the default foreground.
+    let after = &styled[reasoning..];
+    let reset = after.find("\x1b[39m").unwrap();
+    assert!(reset < after.find("shell").unwrap(), "{styled}");
+    assert!(!after[reset..].contains("\x1b[38;5;8m"), "{styled}");
 }
 
 #[test]
