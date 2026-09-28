@@ -167,7 +167,7 @@ pub(super) fn process_schema() -> Value {
         "type": "function",
         "function": {
             "name": SHELL_PROCESS,
-            "description": "Inspect or control the background commands you started with shell and background true. list returns each process ID, command, and state. read returns the state and the retained tails of stdout and stderr, optionally waiting up to wait_seconds for the command to end; reads do not consume output, so repeated reads may repeat it. write sends text to stdin exactly as given, adding no newline, and close_stdin closes stdin afterward. stop sends SIGTERM to the command's process group, then SIGKILL after 2 seconds. Process IDs are not operating-system PIDs and are valid only for the background commands you started.",
+            "description": "Inspect or control the background commands you started with shell and background true. list returns each process ID, command, and state, including processes that have exited or been stopped. read returns the state and the retained tails of stdout and stderr, optionally waiting up to wait_seconds for the command to end; reads do not consume output, so repeated reads may repeat it. write sends text to stdin exactly as given, adding no newline, and close_stdin closes stdin afterward. stop sends SIGTERM to the command's process group, then SIGKILL after 2 seconds. Process IDs are not operating-system PIDs and are valid only for the background commands you started.",
             "parameters": {
                 "type": "object",
                 "properties": {
