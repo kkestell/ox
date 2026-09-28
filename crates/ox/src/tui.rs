@@ -328,9 +328,11 @@ fn picker_lines(picker: &SessionPicker, width: usize, height: usize) -> Vec<Line
         );
         let marker = if index == picker.selected { "›" } else { " " };
         let title = escape(session.title.as_deref().unwrap_or("Untitled session"));
-        let title_width = width.saturating_sub(date.width() + 3);
+        // Each row pads its content by two columns on the right and keeps two
+        // columns between the title and the date.
+        let title_width = width.saturating_sub(date.width() + 6);
         let title = transcript::clip(&title, title_width);
-        let padding = " ".repeat(width.saturating_sub(2 + title.width() + date.width()));
+        let padding = " ".repeat(width.saturating_sub(4 + title.width() + date.width()));
         lines.push(Line::raw(format!("{marker} {title}{padding}{date}")));
     }
     lines
@@ -1054,8 +1056,7 @@ mod tests {
             let mut display = screen(&view, &input, Instant::now());
             display.session_picker = Some(&picker);
             let (rows, _, layout) = render(&display, 40, 8);
-            assert!(rows[2].contains("newer"));
-            assert!(rows[2].contains("2026-09-27"));
+            assert_eq!(rows[2], format!("› {:<26}2026-09-27", "newer"));
             layout
         };
         picker.move_to(2, layout.height);
