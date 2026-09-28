@@ -4,7 +4,7 @@
 use agent_client_protocol::{
     Error, Result,
     schema::v1::{
-        ContentBlock, ContentChunk, Cost, PermissionOption, PermissionOptionKind,
+        ContentBlock, ContentChunk, Cost, Meta, PermissionOption, PermissionOptionKind,
         RequestPermissionRequest, SessionUpdate, TextContent, ToolCall as AcpToolCall,
         ToolCallContent, ToolCallId, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields,
         ToolKind, UsageUpdate,
@@ -232,15 +232,21 @@ pub fn shell_permission_request(
             )
         }
     };
-    let (tool_call_id, tool_call_title) = match &identity.subagent_id {
+    let (tool_call_id, tool_call_title, meta) = match &identity.subagent_id {
         Some(subagent_id) => {
             content = format!("Subagent: {subagent_id}\n\n{content}");
+            let mut meta = Meta::new();
+            meta.insert(
+                "subagent_id".to_owned(),
+                Value::String(subagent_id.to_string()),
+            );
             (
                 format!("{subagent_id}:{}", call.call_id),
                 format!("Subagent {subagent_id}: {tool_call_title}"),
+                Some(meta),
             )
         }
-        None => (call.call_id.clone(), tool_call_title),
+        None => (call.call_id.clone(), tool_call_title, None),
     };
     RequestPermissionRequest::new(
         identity.session_id.clone(),
@@ -255,10 +261,11 @@ pub fn shell_permission_request(
                 .content(vec![ToolCallContent::from(ContentBlock::Text(
                     TextContent::new(content),
                 ))]),
-        ),
+        )
+        .meta(meta),
         vec![
-            PermissionOption::new("approve", "Approve", PermissionOptionKind::AllowOnce),
-            PermissionOption::new("deny", "Deny", PermissionOptionKind::RejectOnce),
+            PermissionOption::new("approve", "Yes", PermissionOptionKind::AllowOnce),
+            PermissionOption::new("deny", "No", PermissionOptionKind::RejectOnce),
         ],
     )
 }
@@ -557,6 +564,7 @@ mod tests {
             assert_eq!(request["toolCall"]["name"], name);
             assert_eq!(request["toolCall"]["rawInput"], raw_input(&call));
             assert_eq!(request["toolCall"]["kind"], "execute");
+            assert!(request["toolCall"].get("_meta").is_none());
         }
     }
 
@@ -585,6 +593,7 @@ mod tests {
             "Subagent: child\n\nWorking directory: /workspace"
         );
         assert_eq!(request["toolCall"]["rawInput"]["command"], "touch first");
+        assert_eq!(request["toolCall"]["_meta"]["subagent_id"], "child");
     }
 
     #[test]

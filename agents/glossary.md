@@ -57,3 +57,8 @@
 - **Model catalog**: The OpenRouter models `ox-acp` offers.
 - **Session cost**: What a main session and its child sessions have spent on
   model requests.
+- **Transcript view**: The client's display of the session's transcript, the
+  region above the composer.
+- **Thinking**: The transcript view's label for visible reasoning.
+- **Composer**: The client's bottom region: the input rows between two rules and
+  the status line.

@@ -2548,6 +2548,7 @@ mod tests {
             assert_eq!(call["kind"], "execute");
             assert_eq!(call["rawInput"]["command"], format!("touch {file}"));
             assert_eq!(call["title"], format!("touch {file}"));
+            assert!(call.get("_meta").is_none());
             assert_eq!(
                 call["content"][0]["content"]["text"],
                 format!("Working directory: {}", run.workspace.0.display())
@@ -2555,8 +2556,8 @@ mod tests {
             assert_eq!(
                 request.params["options"],
                 serde_json::json!([
-                    {"optionId":"approve","name":"Approve","kind":"allow_once"},
-                    {"optionId":"deny","name":"Deny","kind":"reject_once"},
+                    {"optionId":"approve","name":"Yes","kind":"allow_once"},
+                    {"optionId":"deny","name":"No","kind":"reject_once"},
                 ])
             );
         }
@@ -2586,6 +2587,7 @@ mod tests {
                 assert_eq!(request.params["sessionId"], run.session_id.to_string());
                 let call = &request.params["toolCall"];
                 assert_eq!(call["toolCallId"], format!("{child}:shell-{index}"));
+                assert_eq!(call["_meta"]["subagent_id"], *child, "{decision}");
                 assert!(
                     call["content"][0]["content"]["text"]
                         .as_str()

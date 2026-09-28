@@ -1,22 +1,37 @@
-use std::collections::HashMap;
-use std::io::{Write, stdout};
+mod input;
+mod transcript;
+
+use std::io::{Stdout, Write, stdout};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 use agent_client_protocol::schema::v1::*;
 use crossterm::{
-    cursor::{Hide, MoveToColumn, Show},
+    cursor::Show,
     event::{
         DisableBracketedPaste, DisableFocusChange, EnableBracketedPaste, EnableFocusChange, Event,
-        EventStream, KeyCode, KeyEventKind, KeyModifiers,
+        EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, KeyboardEnhancementFlags,
+        PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
     },
-    execute, queue,
-    style::{Color, Print, ResetColor, SetForegroundColor},
-    terminal::{self, Clear, ClearType},
+    execute,
+    terminal::{self, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use futures::StreamExt;
+use ratatui::{
+    Frame,
+    backend::CrosstermBackend,
+    buffer::Buffer,
+    layout::Rect,
+    style::{Color, Style},
+    text::Line,
+};
+use serde_json::Value;
 use tokio::sync::mpsc::UnboundedReceiver;
-use unicode_width::UnicodeWidthChar;
+use unicode_width::UnicodeWidthStr;
 
 use crate::acp::{self, Session};
+use input::Input;
+use transcript::TranscriptView;
 
 pub fn escape(text: &str) -> String {
     text.chars()
@@ -30,127 +45,66 @@ pub fn escape(text: &str) -> String {
         .collect()
 }
 
-#[derive(Default)]
-struct Input(String);
-
-impl Input {
-    fn edit(&mut self, event: Event) -> Option<String> {
-        match event {
-            Event::Paste(text) => self
-                .0
-                .push_str(&text.replace("\r\n", "\n").replace('\r', "\n")),
-            Event::Key(key) if key.kind != KeyEventKind::Release => match key.code {
-                KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    self.0.clear()
-                }
-                KeyCode::Char(c)
-                    if !key
-                        .modifiers
-                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
-                {
-                    self.0.push(c)
-                }
-                KeyCode::Backspace => {
-                    self.0.pop();
-                }
-                KeyCode::Enter => return Some(std::mem::take(&mut self.0)),
-                _ => {}
-            },
-            _ => {}
-        }
-        None
-    }
-
-    fn visible(&self, columns: u16) -> String {
-        let text = escape(&self.0).replace('\n', "↵").replace('\t', "→");
-        let mut width = 0;
-        text.chars()
-            .rev()
-            .take_while(|c| {
-                width += c.width().unwrap_or(0);
-                width <= usize::from(columns)
-            })
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
-            .collect()
-    }
-}
-
-struct Terminal {
-    input_drawn: bool,
-    line_start: bool,
-    // Stays true in terminals that never report focus, so they get no bells or unseen results.
-    focused: bool,
-    title: String,
-}
+/// Whether the keyboard enhancement flags were pushed, so restoring pops them.
+static ENHANCED: AtomicBool = AtomicBool::new(false);
 
 fn restore() {
     // An empty title lets the tmux pane border show the pane's command again.
     let _ = write!(stdout(), "\x1b]2;\x1b\\");
+    if ENHANCED.load(Ordering::SeqCst) {
+        let _ = execute!(stdout(), PopKeyboardEnhancementFlags);
+    }
     let _ = execute!(
         stdout(),
-        ResetColor,
         DisableFocusChange,
         DisableBracketedPaste,
+        LeaveAlternateScreen,
         Show
     );
     let _ = terminal::disable_raw_mode();
 }
 
+struct Terminal {
+    inner: ratatui::Terminal<CrosstermBackend<Stdout>>,
+    // Stays true in terminals that never report focus, so they get no bells or unseen results.
+    focused: bool,
+    title: String,
+    /// The result of the last turn when it ended while the terminal was unfocused.
+    unseen: Option<&'static str>,
+}
+
 impl Terminal {
     fn enter() -> anyhow::Result<Self> {
         terminal::enable_raw_mode()?;
+        let inner = match ratatui::Terminal::new(CrosstermBackend::new(stdout())) {
+            Ok(inner) => inner,
+            Err(error) => {
+                restore();
+                return Err(error.into());
+            }
+        };
         let terminal = Self {
-            input_drawn: false,
-            line_start: true,
+            inner,
             focused: true,
             title: String::new(),
+            unseen: None,
         };
-        execute!(stdout(), EnableBracketedPaste, EnableFocusChange, Show)?;
+        // Queried before the event stream exists, since the answer arrives on stdin.
+        let enhanced = terminal::supports_keyboard_enhancement().unwrap_or(false);
+        execute!(
+            stdout(),
+            EnterAlternateScreen,
+            EnableBracketedPaste,
+            EnableFocusChange
+        )?;
+        if enhanced {
+            execute!(
+                stdout(),
+                PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+            )?;
+            ENHANCED.store(true, Ordering::SeqCst);
+        }
         Ok(terminal)
-    }
-
-    fn erase(&mut self) -> anyhow::Result<()> {
-        if self.input_drawn {
-            execute!(stdout(), MoveToColumn(0), Clear(ClearType::CurrentLine))?;
-            self.input_drawn = false;
-        }
-        Ok(())
-    }
-
-    fn write(&mut self, spans: &[Span]) -> anyhow::Result<()> {
-        self.erase()?;
-        for span in spans.iter().filter(|span| !span.text.is_empty()) {
-            let text = escape(&span.text).replace('\n', "\r\n");
-            if span.reasoning {
-                queue!(
-                    stdout(),
-                    SetForegroundColor(Color::DarkGrey),
-                    Print(text),
-                    ResetColor
-                )?;
-            } else {
-                write!(stdout(), "{text}")?;
-            }
-            self.line_start = span.text.ends_with('\n');
-        }
-        stdout().flush()?;
-        Ok(())
-    }
-
-    fn print(&mut self, text: &str) -> anyhow::Result<()> {
-        self.write(&[Span {
-            text: text.to_owned(),
-            reasoning: false,
-        }])
-    }
-
-    fn newline(&mut self) -> anyhow::Result<()> {
-        if !self.line_start {
-            self.print("\n")?;
-        }
-        Ok(())
     }
 
     fn status(&mut self, status: &str) -> anyhow::Result<()> {
@@ -170,391 +124,351 @@ impl Terminal {
         }
         Ok(())
     }
-
-    fn draw(&mut self, input: &Input, enabled: bool, permission: bool) -> anyhow::Result<()> {
-        self.erase()?;
-        if enabled {
-            self.newline()?;
-            let width = terminal::size()?.0;
-            // Leave the final column unused to prevent automatic line wrapping.
-            let prefix = if permission { "? " } else { "> " };
-            let prefix = &prefix[..usize::from(width.saturating_sub(1)).min(2)];
-            write!(
-                stdout(),
-                "{prefix}{}",
-                input.visible(width.saturating_sub(prefix.len() as u16 + 1))
-            )?;
-            execute!(stdout(), Show)?;
-            self.input_drawn = true;
-        } else {
-            execute!(stdout(), Hide)?;
-        }
-        stdout().flush()?;
-        Ok(())
-    }
 }
 
 impl Drop for Terminal {
     fn drop(&mut self) {
-        let _ = self.erase();
-        let _ = self.newline();
         restore();
     }
 }
 
-/// Transcript text written in one style.
-#[derive(Debug, PartialEq)]
-struct Span {
-    text: String,
-    reasoning: bool,
-}
-
-fn push(out: &mut Vec<Span>, reasoning: bool, text: &str) {
-    match out.last_mut() {
-        Some(span) if span.reasoning == reasoning => span.text.push_str(text),
-        _ => out.push(Span {
-            text: text.to_owned(),
-            reasoning,
-        }),
-    }
-}
-
-fn width(text: &str) -> usize {
-    text.chars().map(|c| c.width().unwrap_or(0)).sum()
-}
-
-/// Replaces tabs with spaces up to the next tab stop.
-fn expand(space: &str, mut column: usize) -> String {
-    let mut text = String::new();
-    for c in space.chars() {
-        if c == '\t' {
-            let spaces = 8 - column % 8;
-            text.push_str(&" ".repeat(spaces));
-            column += spaces;
-        } else {
-            text.push(c);
-            column += c.width().unwrap_or(0);
-        }
-    }
-    text
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum Kind {
-    User,
-    Reasoning,
-    Response,
-}
-
-/// A message being written. Whitespace and an unfinished word wait until later
-/// text shows whether they are interior or trailing.
-struct Message {
-    kind: Kind,
-    /// Whether a blank line precedes the first word.
-    blank: bool,
-    started: bool,
-    space: String,
-    word: String,
-    column: usize,
-}
-
-impl Message {
-    fn new(kind: Kind, blank: bool) -> Self {
-        Self {
-            kind,
-            blank,
-            started: false,
-            space: String::new(),
-            word: String::new(),
-            column: 0,
-        }
-    }
-
-    fn push(&mut self, text: &str, columns: u16, out: &mut Vec<Span>) {
-        // Escape first so widths match what the terminal shows.
-        for c in escape(text).chars() {
-            if !c.is_whitespace() {
-                self.word.push(c);
-                continue;
-            }
-            if !self.word.is_empty() {
-                self.place(columns, out);
-            }
-            if self.started {
-                self.space.push(c);
-            }
-        }
-    }
-
-    /// Writes the last word and discards trailing whitespace. Returns whether
-    /// the message wrote anything.
-    fn finish(mut self, columns: u16, out: &mut Vec<Span>) -> bool {
-        if !self.word.is_empty() {
-            self.place(columns, out);
-        }
-        if self.started {
-            push(out, false, "\n");
-        }
-        self.started
-    }
-
-    /// Writes the whitespace before the completed word and the word, wrapping
-    /// before the word when it does not fit and splitting a word wider than a
-    /// line.
-    fn place(&mut self, columns: u16, out: &mut Vec<Span>) {
-        // Leave the final column unused to prevent automatic line wrapping.
-        let limit = usize::from(columns).saturating_sub(1);
-        let indent = if self.kind == Kind::User { 2 } else { 0 };
-        let mut text = String::new();
-        if !self.started {
-            self.started = true;
-            if self.blank {
-                text.push('\n');
-            }
-            if self.kind == Kind::User {
-                text.push_str("> ");
-                self.column = indent;
-            }
-        }
-        let space = std::mem::take(&mut self.space);
-        let mut lines = space.split('\n');
-        let mut space = lines.next().unwrap_or_default();
-        for line in lines {
-            text.push('\n');
-            self.column = 0;
-            space = line;
-        }
-        if self.column == 0 {
-            text.push_str(&" ".repeat(indent));
-            self.column = indent;
-        }
-        let space = expand(space, self.column);
-        let word = std::mem::take(&mut self.word);
-        if self.column + width(&space) + width(&word) <= limit {
-            text.push_str(&space);
-            self.column += width(&space);
-        } else if self.column > indent {
-            text.push('\n');
-            text.push_str(&" ".repeat(indent));
-            self.column = indent;
-        }
-        for c in word.chars() {
-            let c_width = c.width().unwrap_or(0);
-            if self.column + c_width > limit && self.column > indent {
-                text.push('\n');
-                text.push_str(&" ".repeat(indent));
-                self.column = indent;
-            }
-            text.push(c);
-            self.column += c_width;
-        }
-        push(out, self.kind == Kind::Reasoning, &text);
-    }
-}
-
-/// Escapes control characters and clips the line with `...`, leaving the
-/// final column unused.
-fn clip(line: &str, columns: u16) -> String {
-    let line: String = line
-        .chars()
-        .map(|c| {
-            if c.is_control() {
-                c.escape_default().to_string()
-            } else {
-                c.to_string()
-            }
-        })
-        .collect();
-    let limit = usize::from(columns).saturating_sub(1);
-    if width(&line) <= limit {
-        return line;
-    }
-    let mut clipped = String::new();
-    let mut used = 0;
-    for c in line.chars() {
-        used += c.width().unwrap_or(0);
-        if used + 3 > limit {
-            break;
-        }
-        clipped.push(c);
-    }
-    clipped.push_str(&"..."[..limit.min(3)]);
-    clipped
-}
-
-struct Tool {
-    call: ToolCall,
-    /// Whether its transcript line has been written.
-    shown: bool,
+/// The transcript view's height and line count at the last draw, which paging
+/// uses.
+#[derive(Clone, Copy, Default)]
+pub struct Layout {
+    pub height: usize,
+    pub lines: usize,
 }
 
 #[derive(Default)]
-struct Output {
-    tools: HashMap<ToolCallId, Tool>,
-    message: Option<Message>,
-    /// Whether the last block written was a tool call line, which the next
-    /// one follows without a blank line.
-    after_tool: bool,
+struct Ui {
+    view: TranscriptView,
+    input: Input,
+    selected: usize,
+    show_thinking: bool,
+    layout: Layout,
 }
 
-impl Output {
-    fn merge(&mut self, update: ToolCallUpdate) -> &mut Tool {
-        let id = update.tool_call_id;
-        let tool = self.tools.entry(id.clone()).or_insert_with(|| Tool {
-            call: ToolCall::new(id, "Tool"),
-            shown: false,
-        });
-        tool.call.update(update.fields);
-        tool
-    }
+pub struct Approval<'a> {
+    pub request: &'a RequestPermissionRequest,
+    pub selected: usize,
+}
 
-    fn chunk(&mut self, kind: Kind, text: &str, columns: u16, out: &mut Vec<Span>) {
-        if self
-            .message
-            .as_ref()
-            .is_none_or(|message| message.kind != kind)
-        {
-            self.end(columns, out);
-            self.message = Some(Message::new(kind, kind != Kind::User));
-        }
-        self.message
-            .as_mut()
-            .expect("a message was just started")
-            .push(text, columns, out);
-    }
+pub struct Screen<'a> {
+    pub view: &'a TranscriptView,
+    pub input: &'a Input,
+    pub approval: Option<Approval<'a>>,
+    pub settings: &'a str,
+    pub usage: &'a str,
+    pub show_thinking: bool,
+    pub now: Instant,
+}
 
-    fn end(&mut self, columns: u16, out: &mut Vec<Span>) {
-        if let Some(message) = self.message.take()
-            && message.finish(columns, out)
-        {
-            self.after_tool = false;
-        }
-    }
+fn rule(width: usize) -> Line<'static> {
+    Line::raw("─".repeat(width))
+}
 
-    /// Finishes the current message before other output.
-    fn finish(&mut self, columns: u16) -> Vec<Span> {
-        let mut out = Vec::new();
-        self.end(columns, &mut out);
-        self.after_tool = false;
-        out
+fn put(buf: &mut Buffer, area: Rect, y: usize, line: &Line) {
+    if let Ok(y) = u16::try_from(y)
+        && y < area.height
+    {
+        buf.set_line(area.x, area.y + y, line, area.width);
     }
+}
 
-    fn user(&mut self, text: &str, columns: u16) -> Vec<Span> {
-        let mut out = Vec::new();
-        self.chunk(Kind::User, text, columns, &mut out);
-        self.end(columns, &mut out);
-        out
+pub fn draw(frame: &mut Frame, screen: &Screen) -> Layout {
+    let area = frame.area();
+    let width = usize::from(area.width);
+    let rows = screen.input.rows(area.width);
+    let approval = screen
+        .approval
+        .as_ref()
+        .map(|approval| approval_lines(screen.view, approval, width))
+        .unwrap_or_default();
+    let composer = rows.lines.len() + 3;
+    let height = usize::from(area.height).saturating_sub(approval.len() + composer);
+    let lines = screen.view.lines(width, screen.show_thinking, screen.now);
+    let first = screen.view.first_row(height, lines.len());
+    let buf = frame.buffer_mut();
+    for (y, line) in lines.iter().skip(first).take(height).enumerate() {
+        put(buf, area, y, line);
     }
+    if screen.view.new_activity && height > 0 {
+        let notice = "new activity";
+        let padding = " ".repeat(width.saturating_sub(notice.width()) / 2);
+        put(buf, area, height - 1, &Line::raw(" ".repeat(width)));
+        put(
+            buf,
+            area,
+            height - 1,
+            &Line::styled(
+                format!("{padding}{notice}"),
+                Style::new().fg(Color::LightYellow),
+            ),
+        );
+    }
+    let mut y = height;
+    for line in &approval {
+        put(buf, area, y, line);
+        y += 1;
+    }
+    put(buf, area, y, &rule(width));
+    y += 1;
+    let input_top = y;
+    for line in &rows.lines {
+        put(buf, area, y, &Line::raw(line.as_str()));
+        y += 1;
+    }
+    put(buf, area, y, &rule(width));
+    y += 1;
+    let right = width.saturating_sub(screen.usage.width());
+    put(
+        buf,
+        area,
+        y,
+        &Line::raw(transcript::clip(screen.settings, right.saturating_sub(1))),
+    );
+    if let Ok(y) = u16::try_from(y)
+        && y < area.height
+    {
+        buf.set_string(
+            area.x + right as u16,
+            area.y + y,
+            screen.usage,
+            Style::new(),
+        );
+    }
+    let (row, column) = rows.cursor;
+    let x = u16::try_from(column)
+        .unwrap_or(u16::MAX)
+        .min(area.width.saturating_sub(1));
+    let y = u16::try_from(input_top + row)
+        .unwrap_or(u16::MAX)
+        .min(area.height.saturating_sub(1));
+    frame.set_cursor_position((area.x + x, area.y + y));
+    Layout {
+        height,
+        lines: lines.len(),
+    }
+}
 
-    /// Writes a tool call's line the first time it is updated. A model tool
-    /// call shows its name and arguments; anything else shows its tool call
-    /// title. One that arrives finished, such as a subagent answer, also shows
-    /// its content.
-    fn show(&mut self, id: &ToolCallId, columns: u16, out: &mut Vec<Span>) {
-        let tool = self
-            .tools
-            .get_mut(id)
-            .expect("the tool call was just updated");
-        if tool.shown {
-            return;
-        }
-        tool.shown = true;
-        let call = &tool.call;
-        let (line, details) = match (&call.name, &call.raw_input) {
-            (Some(name), Some(input)) => {
-                let input = serde_json::to_string(input).expect("JSON values serialize");
-                let padding = " ".repeat(16usize.saturating_sub(width(name)));
-                (format!("{name}{padding} {input}"), String::new())
+fn approval_lines(view: &TranscriptView, approval: &Approval, width: usize) -> Vec<Line<'static>> {
+    let request = approval.request;
+    let id = &request.tool_call.tool_call_id;
+    let mut call = view
+        .tool(id)
+        .cloned()
+        .unwrap_or_else(|| ToolCall::new(id.clone(), ""));
+    call.update(request.tool_call.fields.clone());
+    let subagent = request
+        .tool_call
+        .meta
+        .as_ref()
+        .and_then(|meta| meta.get("subagent_id"))
+        .and_then(Value::as_str);
+    let heading = if call.name.as_deref() == Some("shell") {
+        match subagent {
+            Some(subagent) => {
+                format!("Subagent {subagent} would like to run the following command.")
             }
-            _ if matches!(
-                call.status,
-                ToolCallStatus::Completed | ToolCallStatus::Failed
-            ) =>
-            {
-                (call.title.clone(), tool_content(&call.content))
-            }
-            _ => (call.title.clone(), String::new()),
+            None => "Would you like to run the following command?".to_owned(),
+        }
+    } else {
+        "Would you like to allow the following?".to_owned()
+    };
+    let mut lines = vec![
+        rule(width),
+        Line::default(),
+        Line::raw(heading),
+        Line::default(),
+    ];
+    lines.extend(transcript::call_lines(&call, width));
+    lines.push(Line::default());
+    for (index, option) in request.options.iter().enumerate() {
+        let marker = if index == approval.selected {
+            "›"
+        } else {
+            " "
         };
-        self.end(columns, out);
-        if !self.after_tool {
-            push(out, false, "\n");
-        }
-        push(out, false, &format!("{}\n", clip(&line, columns)));
-        self.after_tool = true;
-        let mut message = Message::new(Kind::Response, false);
-        message.push(&details, columns, out);
-        if message.finish(columns, out) {
-            self.after_tool = false;
-        }
+        lines.push(Line::raw(format!(
+            "{marker} {}. {}",
+            index + 1,
+            option.name
+        )));
     }
-
-    fn update(&mut self, update: SessionUpdate, columns: u16) -> Vec<Span> {
-        let mut out = Vec::new();
-        match update {
-            SessionUpdate::AgentMessageChunk(chunk) => {
-                self.chunk(Kind::Response, &content(&chunk.content), columns, &mut out)
-            }
-            SessionUpdate::AgentThoughtChunk(chunk) => {
-                self.chunk(Kind::Reasoning, &content(&chunk.content), columns, &mut out)
-            }
-            SessionUpdate::ToolCall(call) => {
-                let id = call.tool_call_id.clone();
-                let shown = self.tools.get(&id).is_some_and(|tool| tool.shown);
-                self.tools.insert(id.clone(), Tool { call, shown });
-                self.show(&id, columns, &mut out);
-            }
-            SessionUpdate::ToolCallUpdate(update) => {
-                let id = update.tool_call_id.clone();
-                self.merge(update);
-                self.show(&id, columns, &mut out);
-            }
-            _ => {}
-        }
-        out
-    }
-
-    fn permission(&mut self, request: &RequestPermissionRequest, columns: u16) -> Vec<Span> {
-        let mut out = self.finish(columns);
-        let tool = &self.merge(request.tool_call.clone()).call;
-        let mut text = format!("\n{}\n{}", tool.title, tool_content(&tool.content));
-        text.push_str("Permission required\n");
-        for (index, option) in request.options.iter().enumerate() {
-            text.push_str(&format!("{}. {}\n", index + 1, option.name));
-        }
-        push(&mut out, false, &text);
-        out
-    }
+    lines.push(Line::default());
+    lines
 }
 
-fn content(block: &ContentBlock) -> String {
-    match block {
-        ContentBlock::Text(text) => text.text.clone(),
-        _ => "[non-text content]".into(),
-    }
-}
-
-fn tool_content(contents: &[ToolCallContent]) -> String {
-    let mut text = String::new();
-    for item in contents {
-        match item {
-            ToolCallContent::Content(item) => text.push_str(&content(&item.content)),
-            ToolCallContent::Diff(diff) => {
-                text.push_str(&format!("{}\n", diff.path.display()));
-                if let Some(old) = &diff.old_text {
-                    text.push_str(old);
-                    text.push('\n');
-                }
-                text.push_str(&diff.new_text);
+/// The status line's left side: the mode, model, and effort in use.
+pub fn settings(options: &[SessionConfigOption]) -> String {
+    use SessionConfigOptionCategory::*;
+    [Mode, Model, ThoughtLevel]
+        .iter()
+        .filter_map(|category| {
+            let option = options
+                .iter()
+                .find(|option| option.category.as_ref() == Some(category))?;
+            match &option.kind {
+                SessionConfigKind::Select(select) => Some(select.current_value.to_string()),
+                _ => None,
             }
-            _ => text.push_str("[non-text content]"),
-        }
-        text.push('\n');
-    }
-    text
+        })
+        .collect::<Vec<_>>()
+        .join(" • ")
 }
 
-fn columns() -> anyhow::Result<u16> {
-    Ok(terminal::size()?.0)
+/// The status line's right side: the context used and the session cost.
+pub fn usage(usage: Option<&UsageUpdate>) -> String {
+    let (percent, cost) = match usage {
+        Some(usage) => {
+            let percent = if usage.size == 0 {
+                0.0
+            } else {
+                (usage.used as f64 * 100.0 / usage.size as f64).round()
+            };
+            (percent, usage.cost.as_ref().map_or(0.0, |cost| cost.amount))
+        }
+        None => (0.0, 0.0),
+    };
+    format!("{percent}% • ${cost:.2}")
+}
+
+/// Handles one key and reports whether to quit.
+fn key(ui: &mut Ui, session: &mut Session, key: KeyEvent, now: Instant) -> anyhow::Result<bool> {
+    if key.kind == KeyEventKind::Release {
+        return Ok(false);
+    }
+    let control = key.modifiers.contains(KeyModifiers::CONTROL);
+    let options = session
+        .pending
+        .front()
+        .map(|(request, _)| request.options.len());
+    match key.code {
+        KeyCode::Char('c' | 'd') if control => {
+            session.cancel()?;
+            return Ok(true);
+        }
+        KeyCode::Char('t') if control => ui.show_thinking = !ui.show_thinking,
+        KeyCode::Char('u') if control => ui.input.clear(),
+        KeyCode::Char(c)
+            if !key
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+        {
+            ui.input.insert(c);
+        }
+        KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => ui.input.newline(),
+        KeyCode::Enter => {
+            if !ui.input.is_empty() {
+                send(ui, session, now)?;
+            } else if options.is_some() {
+                answer(ui, session, ui.selected)?;
+            }
+        }
+        KeyCode::Esc => {
+            if let Some((request, _)) = session.pending.front() {
+                let reject = request
+                    .options
+                    .iter()
+                    .position(|option| {
+                        matches!(
+                            option.kind,
+                            PermissionOptionKind::RejectOnce | PermissionOptionKind::RejectAlways
+                        )
+                    })
+                    .unwrap_or(request.options.len().saturating_sub(1));
+                answer(ui, session, reject)?;
+            } else if session.busy {
+                session.cancel()?;
+            }
+        }
+        KeyCode::Up => match options {
+            Some(_) => ui.selected = ui.selected.saturating_sub(1),
+            None => ui.input.up(),
+        },
+        KeyCode::Down => match options {
+            Some(count) => ui.selected = (ui.selected + 1).min(count.saturating_sub(1)),
+            None => ui.input.down(),
+        },
+        KeyCode::Left => ui.input.left(),
+        KeyCode::Right => ui.input.right(),
+        KeyCode::Home => ui.input.home(),
+        KeyCode::End => {
+            ui.input.end();
+            ui.view.end();
+        }
+        KeyCode::Backspace => ui.input.backspace(),
+        KeyCode::Delete => ui.input.delete(),
+        KeyCode::PageUp => ui.view.page_up(ui.layout.height, ui.layout.lines),
+        KeyCode::PageDown => ui.view.page_down(ui.layout.height, ui.layout.lines),
+        _ => {}
+    }
+    Ok(false)
+}
+
+/// Sends the input. During a turn the prompt is queued, and its `User` item
+/// waits until the turn finishes.
+fn send(ui: &mut Ui, session: &mut Session, now: Instant) -> anyhow::Result<()> {
+    let text = ui.input.take();
+    let busy = session.busy;
+    session.prompt(text.clone())?;
+    if !busy {
+        ui.view.user(text, now);
+    }
+    Ok(())
+}
+
+fn answer(ui: &mut Ui, session: &mut Session, index: usize) -> anyhow::Result<()> {
+    session.answer(index + 1)?;
+    ui.selected = 0;
+    if !session.pending.is_empty() {
+        ui.view.changed();
+    }
+    Ok(())
+}
+
+fn handle(
+    ui: &mut Ui,
+    session: &mut Session,
+    terminal: &mut Terminal,
+    event: acp::Event,
+    now: Instant,
+) -> anyhow::Result<()> {
+    match event {
+        acp::Event::Update(update) => {
+            session.update(&update);
+            ui.view.update(update, now);
+        }
+        acp::Event::Diagnostic(text) => ui.view.notice(text, Color::DarkGray, now),
+        acp::Event::Permission(request, responder) => {
+            let first = session.pending.is_empty();
+            session.permission(request, responder)?;
+            if first && !session.pending.is_empty() {
+                ui.selected = 0;
+                ui.view.changed();
+                terminal.bell()?;
+            }
+        }
+        acp::Event::Finished(result) => {
+            let queued = session.finished()?;
+            ui.view.end_turn(now);
+            terminal.unseen = (!terminal.focused).then_some(if result.is_err() {
+                "turn error"
+            } else {
+                "finished"
+            });
+            terminal.bell()?;
+            if let Err(error) = result {
+                ui.view
+                    .notice(format!("Turn error: {error}"), Color::Red, now);
+            }
+            if let Some(text) = queued {
+                ui.view.user(text, now);
+            }
+        }
+    }
+    Ok(())
 }
 
 pub async fn run(
@@ -568,96 +482,57 @@ pub async fn run(
     }));
     let mut terminal = Terminal::enter()?;
     let mut keys = EventStream::new();
-    let mut input = Input::default();
-    let mut output = Output::default();
-    // The result of the last turn when it ended while the terminal was unfocused.
-    let mut unseen = None;
-    terminal
-        .print("Enter: send · Ctrl-U: clear · Ctrl-C: cancel / clear / quit · Ctrl-D: quit\n")?;
+    let mut ui = Ui::default();
+    let mut tick = tokio::time::interval(Duration::from_secs(1));
     loop {
         terminal.status(if !session.pending.is_empty() {
             "needs permission"
         } else if session.busy {
             "working"
         } else {
-            unseen.unwrap_or("ready")
+            terminal.unseen.unwrap_or("ready")
         })?;
-        terminal.draw(
-            &input,
-            !session.busy || !session.pending.is_empty(),
-            !session.pending.is_empty(),
-        )?;
+        let settings = settings(&session.config_options);
+        let usage = usage(session.usage.as_ref());
+        let screen = Screen {
+            view: &ui.view,
+            input: &ui.input,
+            approval: session.pending.front().map(|(request, _)| Approval {
+                request,
+                selected: ui.selected,
+            }),
+            settings: &settings,
+            usage: &usage,
+            show_thinking: ui.show_thinking,
+            now: Instant::now(),
+        };
+        let mut layout = Layout::default();
+        terminal.inner.draw(|frame| layout = draw(frame, &screen))?;
+        ui.layout = layout;
         tokio::select! {
             biased;
             _ = session.closed() => anyhow::bail!("server closed the ACP connection"),
-            Some(event) = events.recv() => match event {
-                acp::Event::Update(update) => terminal.write(&output.update(update, columns()?))?,
-                acp::Event::Diagnostic(text) => {
-                    terminal.write(&output.finish(columns()?))?;
-                    terminal.newline()?;
-                    terminal.print(&format!("{text}\n"))?;
+            Some(event) = events.recv() => {
+                handle(&mut ui, &mut session, &mut terminal, event, Instant::now())?;
+                while let Ok(event) = events.try_recv() {
+                    handle(&mut ui, &mut session, &mut terminal, event, Instant::now())?;
                 }
-                acp::Event::Permission(request, responder) => {
-                    let first = session.pending.is_empty();
-                    session.permission(request, responder)?;
-                    if first && let Some((request, _)) = session.pending.front() {
-                        input.0.clear();
-                        terminal.write(&output.permission(request, columns()?))?;
-                        terminal.bell()?;
-                    }
-                }
-                acp::Event::Finished(result) => {
-                    session.finished()?;
-                    input.0.clear();
-                    terminal.write(&output.finish(columns()?))?;
-                    terminal.newline()?;
-                    unseen = (!terminal.focused).then_some(if result.is_err() { "turn error" } else { "finished" });
-                    terminal.bell()?;
-                    if let Err(error) = result { terminal.print(&format!("Turn error: {error}\n"))?; }
-                    else { terminal.print("Turn finished\n")?; }
-                }
-            },
+            }
+            _ = tick.tick() => {}
             event = keys.next() => {
                 let Some(event) = event else { session.cancel()?; return Ok(()) };
-                let event = event?;
-                match event {
-                    Event::FocusGained => { terminal.focused = true; unseen = None; continue; }
-                    Event::FocusLost => { terminal.focused = false; continue; }
+                match event? {
+                    Event::FocusGained => { terminal.focused = true; terminal.unseen = None; }
+                    Event::FocusLost => terminal.focused = false,
+                    Event::Paste(text) => ui.input.paste(&text),
+                    Event::Key(event) => {
+                        let quit = key(&mut ui, &mut session, event, Instant::now())?;
+                        if quit {
+                            return Ok(());
+                        }
+                    }
                     _ => {}
                 }
-                if let Event::Key(key) = event
-                    && key.kind != KeyEventKind::Release
-                    && key.modifiers.contains(KeyModifiers::CONTROL) {
-                        match key.code {
-                            KeyCode::Char('d') => { session.cancel()?; return Ok(()) }
-                            KeyCode::Char('c') => {
-                                if session.busy {
-                                    session.cancel()?;
-                                    input.0.clear();
-                                    terminal.write(&output.finish(columns()?))?;
-                                    terminal.newline()?;
-                                    terminal.print("Cancelling…\n")?;
-                                }
-                                else if input.0.is_empty() { return Ok(()) }
-                                else { input.0.clear(); }
-                                continue;
-                            }
-                            _ => {}
-                        }
-                    }
-                if (!session.busy || !session.pending.is_empty())
-                    && let Some(text) = input.edit(event) {
-                        if session.pending.is_empty() {
-                            if !text.is_empty() {
-                                terminal.write(&output.user(&text, columns()?))?;
-                                session.prompt(text)?;
-                            }
-                        } else if !session.answer(text.trim().parse().unwrap_or(0))? {
-                            terminal.print("Enter one of the supplied option numbers\n")?;
-                        } else if let Some((request, _)) = session.pending.front() {
-                            terminal.write(&output.permission(request, columns()?))?;
-                        }
-                    }
             }
         }
     }
@@ -666,9 +541,9 @@ pub async fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crossterm::event::KeyEvent;
-    use serde_json::Value;
-    use unicode_width::UnicodeWidthStr;
+    use crate::acp::Event as AcpEvent;
+    use crate::acp::tests::{turn, with_session};
+    use ratatui::backend::TestBackend;
 
     #[test]
     fn server_control_characters_are_printed_as_text() {
@@ -678,271 +553,267 @@ mod tests {
         );
     }
 
+    /// Draws the screen and returns its rows, the cursor, and the layout.
+    fn render(screen: &Screen, width: u16, height: u16) -> (Vec<String>, (u16, u16), Layout) {
+        let mut terminal = ratatui::Terminal::new(TestBackend::new(width, height)).unwrap();
+        let mut layout = Layout::default();
+        terminal.draw(|frame| layout = draw(frame, screen)).unwrap();
+        let cursor = terminal.get_cursor_position().unwrap();
+        let buffer = terminal.backend().buffer();
+        let rows = (0..height)
+            .map(|y| {
+                (0..width)
+                    .map(|x| buffer.cell((x, y)).unwrap().symbol())
+                    .collect::<String>()
+                    .trim_end()
+                    .to_owned()
+            })
+            .collect();
+        (rows, (cursor.x, cursor.y), layout)
+    }
+
+    fn shell_request(command: &str) -> RequestPermissionRequest {
+        RequestPermissionRequest::new(
+            "session",
+            ToolCallUpdate::new(
+                "shell-1",
+                ToolCallUpdateFields::new()
+                    .name("shell".to_owned())
+                    .status(ToolCallStatus::Pending)
+                    .raw_input(serde_json::json!({"command": command})),
+            ),
+            vec![
+                PermissionOption::new("approve", "Yes", PermissionOptionKind::AllowOnce),
+                PermissionOption::new("deny", "No", PermissionOptionKind::RejectOnce),
+            ],
+        )
+    }
+
+    fn screen<'a>(view: &'a TranscriptView, input: &'a Input, now: Instant) -> Screen<'a> {
+        Screen {
+            view,
+            input,
+            approval: None,
+            settings: "",
+            usage: "0% • $0.00",
+            show_thinking: false,
+            now,
+        }
+    }
+
     #[test]
-    fn paste_preserves_newlines_and_waits_for_enter() {
-        let mut input = Input::default();
-        assert!(input.edit(Event::Paste("first\nsecond".into())).is_none());
-        assert_eq!(input.visible(30), "first↵second");
-        assert_eq!(
-            input.edit(Event::Key(KeyEvent::new(
-                KeyCode::Enter,
-                KeyModifiers::NONE
-            ))),
-            Some("first\nsecond".into())
+    fn the_frame_places_the_transcript_view_the_approval_block_and_the_composer() {
+        let start = Instant::now();
+        let now = start + Duration::from_secs(20);
+        let mut view = TranscriptView::default();
+        view.user("Run the tests!".to_owned(), start);
+        view.update(
+            SessionUpdate::AgentThoughtChunk(ContentChunk::new("weighing".into())),
+            start,
         );
-    }
-
-    #[test]
-    fn unicode_width_and_resize_preserve_input() {
-        let mut input = Input("ab界🙂e\u{301}".into());
-        let original = input.0.clone();
-        for width in [0, 1, 2, 4, 10] {
-            assert!(input.edit(Event::Resize(width, 20)).is_none());
-            assert!(input.visible(width).width() <= usize::from(width));
-            assert_eq!(input.0, original);
-        }
-        assert_eq!(input.visible(5), "界🙂e\u{301}");
-    }
-
-    fn text(spans: &[Span]) -> String {
-        spans.iter().map(|span| span.text.as_str()).collect()
-    }
-
-    fn message(kind: Kind, chunks: &[&str], columns: u16) -> Vec<Span> {
-        let mut output = Output::default();
-        let mut out = Vec::new();
-        for chunk in chunks {
-            output.chunk(kind, chunk, columns, &mut out);
-        }
-        out.extend(output.finish(columns));
-        out
-    }
-
-    #[test]
-    fn messages_are_trimmed_and_wrapped_regardless_of_chunk_boundaries() {
-        use Kind::*;
-        for (case, kind, chunks, columns, expected) in [
-            (
-                "surrounding whitespace",
-                Response,
-                &["  \n\t hello world \n\n "][..],
-                40,
-                "\nhello world\n",
-            ),
-            ("whitespace only", Response, &[" \n\t ", "  "], 40, ""),
-            (
-                "interior blank lines",
-                Response,
-                &["one\n\n\ntwo\n"],
-                40,
-                "\none\n\n\ntwo\n",
-            ),
-            (
-                "split words and spaces",
-                Response,
-                &["hel", "lo  ", " wor", "ld "],
-                40,
-                "\nhello   world\n",
-            ),
-            (
-                "explicit newlines",
-                Response,
-                &["a\nb  \n c"],
-                40,
-                "\na\nb\n c\n",
-            ),
-            (
-                "tabs",
-                Response,
-                &["a\tb\t\tc"],
-                40,
-                "\na       b               c\n",
-            ),
-            (
-                "word wrap",
-                Response,
-                &["one two three four"],
-                10,
-                "\none two\nthree\nfour\n",
-            ),
-            (
-                "long word",
-                Response,
-                &["ab abcdefgh"],
-                6,
-                "\nab\nabcde\nfgh\n",
-            ),
-            (
-                "display width",
-                Response,
-                &["界界 界界界 界界界界"],
-                7,
-                "\n界界\n界界界\n界界界\n界\n",
-            ),
-            (
-                "escaped control characters",
-                Response,
-                &["a\rb \x1b"],
-                20,
-                "\na\\rb \\u{1b}\n",
-            ),
-            (
-                "reasoning",
-                Reasoning,
-                &["  weighing ", " it  "],
-                40,
-                "\nweighing  it\n",
-            ),
-            (
-                "user prefix",
-                User,
-                &["  first line of text\nsecond  "],
-                12,
-                "> first\n  line of\n  text\n  second\n",
-            ),
+        for (id, title, name) in [
+            ("read", "Read Makefile", "read_file"),
+            ("glob", "Find files matching *.rs", "glob"),
         ] {
-            let joined = chunks.concat();
-            let characters: Vec<String> = joined.chars().map(String::from).collect();
-            let characters: Vec<&str> = characters.iter().map(String::as_str).collect();
-            for chunks in [chunks, &[joined.as_str()], &characters] {
-                let spans = message(kind, chunks, columns);
-                assert_eq!(text(&spans), expected, "{case}: {chunks:?}");
-                for span in spans.iter().filter(|span| !span.text.trim().is_empty()) {
-                    assert_eq!(span.reasoning, kind == Reasoning, "{case}");
-                }
+            let call = ToolCall::new(id, title)
+                .name(name.to_owned())
+                .status(ToolCallStatus::Completed);
+            view.update(
+                SessionUpdate::ToolCall(call),
+                start + Duration::from_secs(12),
+            );
+        }
+        let shell = ToolCall::new("shell-0", "ls -la")
+            .name("shell".to_owned())
+            .status(ToolCallStatus::Completed)
+            .raw_input(serde_json::json!({"command": "ls -la"}));
+        view.update(SessionUpdate::ToolCall(shell), now);
+        view.update(
+            SessionUpdate::AgentMessageChunk(ContentChunk::new(
+                "Two tallies were counted in the workspace.".into(),
+            )),
+            now,
+        );
+        let mut input = Input::default();
+        input.paste("Also check the docs\nwhen you are done");
+        let request = shell_request("rg -n \\\n--glob '*.rs' \\\n'TODO|FIXME' src");
+        let screen = Screen {
+            approval: Some(Approval {
+                request: &request,
+                selected: 0,
+            }),
+            settings: "ask • deepseek/deepseek-v4-flash • high",
+            usage: "5% • $0.01",
+            ..screen(&view, &input, now)
+        };
+        let (rows, cursor, layout) = render(&screen, 72, 24);
+        let rule = "─".repeat(72);
+        assert_eq!(
+            rows,
+            [
+                "Thought for 12s",
+                "",
+                "• Read Makefile",
+                "• Find files matching *.rs",
+                "",
+                "$ ls -la",
+                "",
+                "Two tallies were counted in the workspace.",
+                &rule,
+                "",
+                "Would you like to run the following command?",
+                "",
+                "$ rg -n \\",
+                "  --glob '*.rs' \\",
+                "  'TODO|FIXME' src",
+                "",
+                "› 1. Yes",
+                "  2. No",
+                "",
+                &rule,
+                "❯ Also check the docs",
+                "  when you are done",
+                &rule,
+                &format!(
+                    "{:<62}5% • $0.01",
+                    "ask • deepseek/deepseek-v4-flash • high"
+                ),
+            ]
+        );
+        assert_eq!(cursor, (19, 21));
+        assert_eq!((layout.height, layout.lines), (8, 10));
+    }
+
+    #[test]
+    fn the_new_activity_notice_covers_the_last_row_only_while_auto_scroll_is_off() {
+        let now = Instant::now();
+        let mut view = TranscriptView::default();
+        for index in 0..20 {
+            view.user(format!("message {index}"), now);
+        }
+        let input = Input::default();
+        let (rows, _, layout) = render(&screen(&view, &input, now), 40, 10);
+        assert_eq!((layout.height, layout.lines), (6, 39));
+        assert_eq!(rows[5], "❯ message 19");
+        view.page_up(layout.height, layout.lines);
+        let (rows, _, _) = render(&screen(&view, &input, now), 40, 10);
+        assert_eq!(rows[4..6], ["❯ message 16", ""]);
+        view.user("message 20".to_owned(), now);
+        let (rows, _, _) = render(&screen(&view, &input, now), 40, 10);
+        assert_eq!(
+            rows[..5],
+            ["❯ message 14", "", "❯ message 15", "", "❯ message 16"]
+        );
+        assert_eq!(rows[5], "              new activity");
+        let mut terminal = ratatui::Terminal::new(TestBackend::new(40, 10)).unwrap();
+        terminal
+            .draw(|frame| {
+                draw(frame, &screen(&view, &input, now));
+            })
+            .unwrap();
+        let cell = terminal.backend().buffer().cell((14, 5)).unwrap();
+        assert_eq!(cell.fg, Color::LightYellow);
+        view.end();
+        let (rows, _, _) = render(&screen(&view, &input, now), 40, 10);
+        assert_eq!(rows[5], "❯ message 20");
+    }
+
+    #[test]
+    fn the_status_line_shows_settings_on_the_left_and_usage_on_the_right() {
+        let select = |id: &str, value: &str, category: Option<SessionConfigOptionCategory>| {
+            SessionConfigOption::select(
+                id.to_owned(),
+                id,
+                value.to_owned(),
+                vec![SessionConfigSelectOption::new(value.to_owned(), value)],
+            )
+            .category(category)
+        };
+        use SessionConfigOptionCategory::*;
+        let options = vec![
+            select("model", "deepseek", Some(Model)),
+            select("effort", "high", Some(ThoughtLevel)),
+            select("pace", "steady", None),
+            select("approval", "ask", Some(Mode)),
+        ];
+        assert_eq!(settings(&options), "ask • deepseek • high");
+        assert_eq!(settings(&options[..1]), "deepseek");
+        assert_eq!(settings(&options[2..3]), "");
+        assert_eq!(usage(None), "0% • $0.00");
+        let update = UsageUpdate::new(1200, 8000).cost(Cost::new(0.25, "USD"));
+        assert_eq!(usage(Some(&update)), "15% • $0.25");
+        assert_eq!(usage(Some(&UsageUpdate::new(2, 3))), "67% • $0.00");
+        let view = TranscriptView::default();
+        let input = Input::default();
+        let screen = Screen {
+            settings: "ask • deepseek • high",
+            usage: "15% • $0.25",
+            ..screen(&view, &input, Instant::now())
+        };
+        let (rows, cursor, _) = render(&screen, 40, 6);
+        assert_eq!(
+            rows[5],
+            format!("{:<29}15% • $0.25", "ask • deepseek • high")
+        );
+        assert_eq!(rows[3], "❯");
+        assert_eq!(cursor, (2, 3));
+    }
+
+    /// Collects the `tools` script's two permission requests.
+    async fn requests(session: &mut Session, events: &mut UnboundedReceiver<AcpEvent>) {
+        while session.pending.len() < 2 {
+            if let AcpEvent::Permission(request, responder) = events.recv().await.unwrap() {
+                session.permission(request, responder).unwrap();
             }
         }
     }
 
-    #[test]
-    fn model_tool_calls_show_one_clipped_line_of_name_and_compact_json() {
-        let call = |name: Option<&str>, input: Option<Value>| {
-            let mut call = ToolCall::new("one", "Search files").name(name.map(str::to_owned));
-            call.raw_input = input;
-            call
-        };
-        let json = |text: &str| Some(serde_json::from_str::<Value>(text).unwrap());
-        let answer = ToolCall::new("two", "Final answer from subagent child")
-            .status(ToolCallStatus::Completed)
-            .content(vec![ToolCallContent::from(ContentBlock::from("Fixed.\n"))]);
-        let message = r#"{"message":"Check the default server too","subagent_id":"child-1"}"#;
-        for (case, call, columns, expected) in [
-            (
-                "compact JSON",
-                call(Some("read_file"), json("{ \"path\" : \"src/config.rs\" }")),
-                80,
-                "read_file        {\"path\":\"src/config.rs\"}",
-            ),
-            (
-                "key order as received",
-                call(Some("grep"), json(r#"{"pattern":"X","path":"crates/ox"}"#)),
-                80,
-                r#"grep             {"pattern":"X","path":"crates/ox"}"#,
-            ),
-            (
-                "escaped newlines",
-                call(Some("apply_patch"), json(r#"{"patch":"a\nb"}"#)),
-                80,
-                r#"apply_patch      {"patch":"a\nb"}"#,
-            ),
-            (
-                "malformed arguments",
-                call(Some("shell"), Some(Value::String("{\"comm".into()))),
-                80,
-                r#"shell            "{\"comm""#,
-            ),
-            (
-                "truncated",
-                call(Some("send_message"), json(message)),
-                30,
-                r#"send_message     {"message..."#,
-            ),
-            (
-                "very narrow",
-                call(Some("send_message"), json(message)),
-                3,
-                "..",
-            ),
-            (
-                "no name",
-                call(None, json("{}"))
-                    .content(vec![ToolCallContent::from(ContentBlock::from("output"))]),
-                80,
-                "Search files",
-            ),
-            ("no arguments", call(Some("glob"), None), 80, "Search files"),
-            (
-                "subagent answer",
-                answer,
-                80,
-                "Final answer from subagent child\nFixed.",
-            ),
-        ] {
-            let mut output = Output::default();
-            let spans = output.update(SessionUpdate::ToolCall(call), columns);
-            assert_eq!(text(&spans), format!("\n{expected}\n"), "{case}");
-        }
-    }
-
-    #[test]
-    fn partial_tool_updates_retain_omitted_fields_without_new_lines() {
-        let mut output = Output::default();
-        output.update(
-            SessionUpdate::ToolCall(
-                ToolCall::new("one", "Count")
-                    .name("glob".to_owned())
-                    .raw_input(serde_json::json!({"pattern": "*"}))
-                    .content(vec![ToolCallContent::from(ContentBlock::from("details"))]),
-            ),
-            80,
-        );
-        for fields in [
-            ToolCallUpdateFields::new().status(ToolCallStatus::Completed),
-            ToolCallUpdateFields::new().raw_output(serde_json::json!("a\nb")),
-        ] {
-            let update = SessionUpdate::ToolCallUpdate(ToolCallUpdate::new("one", fields));
-            assert!(output.update(update, 80).is_empty());
-        }
-        let tool = &output.tools[&ToolCallId::from("one")].call;
-        assert_eq!(tool.status, ToolCallStatus::Completed);
-        assert_eq!(tool.name.as_deref(), Some("glob"));
-        assert_eq!(tool.content.len(), 1);
-    }
-
-    #[test]
-    fn pending_words_are_written_before_tool_calls_permissions_and_other_output() {
-        let tool = |id: &'static str| {
-            SessionUpdate::ToolCall(
-                ToolCall::new(id, "count")
-                    .name("glob".to_owned())
-                    .raw_input(serde_json::json!({"pattern": "*"}))
-                    .content(vec![ToolCallContent::from(ContentBlock::from(
-                        "every file",
-                    ))]),
-            )
-        };
-        let chunk = |text: &str| SessionUpdate::AgentMessageChunk(ContentChunk::new(text.into()));
-        let request = RequestPermissionRequest::new(
-            "session",
-            ToolCallUpdate::new("two", ToolCallUpdateFields::new()),
-            vec![PermissionOption::new(
-                "go",
-                "Go",
-                PermissionOptionKind::AllowOnce,
-            )],
-        );
-        let mut output = Output::default();
-        let mut spans = output.user("  check  ", 40);
-        spans.extend(output.update(chunk("Checking it  "), 40));
-        spans.extend(output.update(tool("one"), 40));
-        spans.extend(output.update(tool("two"), 40));
-        spans.extend(output.update(chunk("Found it"), 40));
-        spans.extend(output.permission(&request, 40));
-        spans.extend(output.update(chunk("done  "), 40));
-        spans.extend(output.finish(40));
-        assert_eq!(
-            text(&spans),
-            "> check\n\nChecking it\n\nglob             {\"pattern\":\"*\"}\nglob             {\"pattern\":\"*\"}\n\nFound it\n\ncount\nevery file\nPermission required\n1. Go\n\ndone\n"
-        );
+    #[tokio::test]
+    async fn approval_keys_move_the_selection_and_enter_answers_only_with_an_empty_input() {
+        with_session(async |mut session, mut events| {
+            let now = Instant::now();
+            let mut ui = Ui::default();
+            let press = |ui: &mut Ui, session: &mut Session, code| {
+                key(ui, session, KeyEvent::new(code, KeyModifiers::NONE), now)
+            };
+            session.prompt("tools".into())?;
+            requests(&mut session, &mut events).await;
+            press(&mut ui, &mut session, KeyCode::Down)?;
+            press(&mut ui, &mut session, KeyCode::Down)?;
+            assert_eq!(ui.selected, 1);
+            press(&mut ui, &mut session, KeyCode::Esc)?;
+            assert_eq!((session.pending.len(), ui.selected), (1, 0));
+            press(&mut ui, &mut session, KeyCode::Up)?;
+            press(&mut ui, &mut session, KeyCode::Down)?;
+            press(&mut ui, &mut session, KeyCode::Enter)?;
+            assert!(session.pending.is_empty());
+            let (text, ok) = turn(&mut session, &mut events, &[]).await;
+            assert!(ok);
+            assert_eq!(text, "tally-1: stop, tally-2: stop");
+            session.prompt("tools".into())?;
+            requests(&mut session, &mut events).await;
+            press(&mut ui, &mut session, KeyCode::Char('h'))?;
+            press(&mut ui, &mut session, KeyCode::Char('i'))?;
+            press(&mut ui, &mut session, KeyCode::Enter)?;
+            assert!(session.pending.is_empty());
+            assert_eq!(session.queued.as_deref(), Some("hi"));
+            assert!(ui.input.is_empty());
+            let queued = loop {
+                match events.recv().await.unwrap() {
+                    AcpEvent::Permission(request, responder) => {
+                        session.permission(request, responder)?;
+                    }
+                    AcpEvent::Finished(_) => break session.finished()?,
+                    _ => {}
+                }
+            };
+            assert_eq!(queued.as_deref(), Some("hi"));
+            assert_eq!(
+                turn(&mut session, &mut events, &[]).await,
+                ("you said: hi".into(), true)
+            );
+            Ok(())
+        })
+        .await;
     }
 }

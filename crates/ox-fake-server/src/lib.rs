@@ -14,11 +14,11 @@ use agent_client_protocol::schema::v1::{
     ListSessionsResponse, LoadSessionRequest, LoadSessionResponse, NewSessionRequest,
     NewSessionResponse, PermissionOption, PermissionOptionKind, PromptCapabilities, PromptRequest,
     PromptResponse, RequestPermissionOutcome, RequestPermissionRequest, SessionCapabilities,
-    SessionConfigOption, SessionConfigOptionValue, SessionConfigSelectOption,
-    SessionDeleteCapabilities, SessionId, SessionInfo, SessionInfoUpdate, SessionListCapabilities,
-    SessionNotification, SessionUpdate, SetSessionConfigOptionRequest,
-    SetSessionConfigOptionResponse, StopReason, ToolCall, ToolCallContent, ToolCallStatus,
-    ToolCallUpdate, ToolCallUpdateFields, ToolKind, UsageUpdate,
+    SessionConfigOption, SessionConfigOptionCategory, SessionConfigOptionValue,
+    SessionConfigSelectOption, SessionDeleteCapabilities, SessionId, SessionInfo,
+    SessionInfoUpdate, SessionListCapabilities, SessionNotification, SessionUpdate,
+    SetSessionConfigOptionRequest, SetSessionConfigOptionResponse, StopReason, ToolCall,
+    ToolCallContent, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, ToolKind, UsageUpdate,
 };
 use agent_client_protocol::{
     Agent, Client, ConnectTo, ConnectionTo, on_receive_notification, on_receive_request,
@@ -652,27 +652,43 @@ impl Script {
         Ok(StopReason::EndTurn)
     }
 
-    /// Sends several options with a long selected value for editor layout
-    /// checks. The second model is described as accepting images, as ox-acp
-    /// describes such models.
+    /// Sends the model, effort, and mode options, each with its category,
+    /// plus `pace` without one. The second model is described as accepting
+    /// images, as ox-acp describes such models.
     fn options(&self) -> agent_client_protocol::Result<StopReason> {
-        let mut options = vec![SessionConfigOption::select(
-            "model",
-            "Model",
-            "deepseek".to_string(),
-            vec![
-                SessionConfigSelectOption::new("deepseek", "DeepSeek: DeepSeek Reasoner"),
-                SessionConfigSelectOption::new("gemma", "Google: Gemma Vision")
-                    .description("Accepts images"),
-            ],
-        )];
+        let mut options = vec![
+            SessionConfigOption::select(
+                "model",
+                "Model",
+                "deepseek".to_string(),
+                vec![
+                    SessionConfigSelectOption::new("deepseek", "DeepSeek: DeepSeek Reasoner"),
+                    SessionConfigSelectOption::new("gemma", "Google: Gemma Vision")
+                        .description("Accepts images"),
+                ],
+            )
+            .category(SessionConfigOptionCategory::Model),
+            SessionConfigOption::select(
+                "effort",
+                "Effort",
+                "high".to_string(),
+                vec![
+                    SessionConfigSelectOption::new("low", "Low"),
+                    SessionConfigSelectOption::new("high", "High"),
+                ],
+            )
+            .category(SessionConfigOptionCategory::ThoughtLevel),
+        ];
         options.extend(config_options("steady"));
-        options.push(SessionConfigOption::select(
-            "approval",
-            "Approval",
-            "auto".to_string(),
-            vec![SessionConfigSelectOption::new("auto", "Auto")],
-        ));
+        options.push(
+            SessionConfigOption::select(
+                "approval",
+                "Approval",
+                "auto".to_string(),
+                vec![SessionConfigSelectOption::new("auto", "Auto")],
+            )
+            .category(SessionConfigOptionCategory::Mode),
+        );
         self.update(SessionUpdate::ConfigOptionUpdate(ConfigOptionUpdate::new(
             options,
         )))?;
@@ -688,9 +704,10 @@ impl Script {
     }
 
     /// Streams reasoning and a reply with surrounding whitespace and words
-    /// split across chunks. Between them, it sends two tool calls with raw
+    /// split across chunks. Between them, it sends three tool calls with raw
     /// names and JSON arguments, each updated to in progress and then to
-    /// completed with multiline content.
+    /// completed with multiline content, and one completed tool call without
+    /// a raw name, as a subagent's answer arrives.
     fn render(&self) -> agent_client_protocol::Result<StopReason> {
         for text in ["  \n weigh", "ing the ", "tallies  \n"] {
             self.update(SessionUpdate::AgentThoughtChunk(ContentChunk::new(
@@ -707,10 +724,17 @@ impl Script {
             ),
             (
                 "read-1",
-                "read tallies/2026/september/a.tally",
+                "Read tallies/2026/september/archive/a.tally",
                 ToolKind::Read,
                 "read_file",
-                serde_json::json!({"path": "tallies/2026/september/a.tally"}),
+                serde_json::json!({"path": "tallies/2026/september/archive/a.tally"}),
+            ),
+            (
+                "run-2",
+                "Background: npm run dev",
+                ToolKind::Execute,
+                "shell",
+                serde_json::json!({"command": "npm run dev", "background": true}),
             ),
         ] {
             self.update(SessionUpdate::ToolCall(
@@ -730,6 +754,12 @@ impl Script {
                 )))?;
             }
         }
+        self.update(SessionUpdate::ToolCall(
+            ToolCall::new("answer-1", "Final answer from subagent child-1")
+                .kind(ToolKind::Other)
+                .status(ToolCallStatus::Completed)
+                .content(vec![ToolCallContent::from("Fixed.")]),
+        ))?;
         for text in [
             "\n  Two tal",
             "lies were counted in the workspace:\n\n",

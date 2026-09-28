@@ -32,11 +32,20 @@ pub struct Session {
     )>,
     pub busy: bool,
     cancelling: bool,
+    pub config_options: Vec<SessionConfigOption>,
+    pub usage: Option<UsageUpdate>,
+    /// The prompt sent during a turn, held until the cancelled turn finishes.
+    pub queued: Option<String>,
 }
 
 impl Session {
+    /// Sends the prompt, or cancels the running turn and sends it when that
+    /// turn finishes.
     pub fn prompt(&mut self, text: String) -> anyhow::Result<()> {
-        anyhow::ensure!(!self.busy, "a turn is already running");
+        if self.busy {
+            self.queued = Some(text);
+            return self.cancel();
+        }
         self.busy = true;
         let connection = self.connection.clone();
         let events = self.events.clone();
@@ -99,7 +108,8 @@ impl Session {
         Ok(())
     }
 
-    pub fn finished(&mut self) -> anyhow::Result<()> {
+    /// Ends the turn and sends the queued prompt, returning its text.
+    pub fn finished(&mut self) -> anyhow::Result<Option<String>> {
         // A completed turn cannot leave an unanswered permission behind.
         while let Some((_, responder)) = self.pending.pop_front() {
             responder.respond(RequestPermissionResponse::new(
@@ -108,7 +118,22 @@ impl Session {
         }
         self.busy = false;
         self.cancelling = false;
-        Ok(())
+        let queued = self.queued.take();
+        if let Some(text) = &queued {
+            self.prompt(text.clone())?;
+        }
+        Ok(queued)
+    }
+
+    /// Records the session settings and usage an update carries.
+    pub fn update(&mut self, update: &SessionUpdate) {
+        match update {
+            SessionUpdate::ConfigOptionUpdate(update) => {
+                self.config_options = update.config_options.clone();
+            }
+            SessionUpdate::UsageUpdate(update) => self.usage = Some(update.clone()),
+            _ => {}
+        }
     }
 
     pub fn closed(&self) -> impl Future<Output = ()> + Send + use<> {
@@ -211,6 +236,9 @@ where
                     pending: VecDeque::new(),
                     busy: false,
                     cancelling: false,
+                    config_options: session.config_options.unwrap_or_default(),
+                    usage: None,
+                    queued: None,
                 },
                 receiver,
             )
@@ -221,11 +249,11 @@ where
 }
 
 #[cfg(test)]
-mod tests {
+pub mod tests {
     use super::*;
     use ox_fake_server::{Hold, SavedHistory, fake_server};
 
-    async fn with_session<F, Fut>(body: F)
+    pub async fn with_session<F, Fut>(body: F)
     where
         F: FnOnce(Session, UnboundedReceiver<Event>) -> Fut + Send,
         Fut: Future<Output = anyhow::Result<()>> + Send,
@@ -246,7 +274,7 @@ mod tests {
         .unwrap();
     }
 
-    async fn turn(
+    pub async fn turn(
         session: &mut Session,
         events: &mut UnboundedReceiver<Event>,
         choices: &[usize],
@@ -267,7 +295,7 @@ mod tests {
                     }
                 }
                 Event::Finished(result) => {
-                    session.finished().unwrap();
+                    assert!(session.finished().unwrap().is_none());
                     return (text, result.is_ok());
                 }
                 _ => {}
@@ -332,7 +360,6 @@ mod tests {
             }
             session.cancel()?;
             assert!(session.pending.is_empty());
-            assert!(session.prompt("too soon".into()).is_err());
             let (text, ok) = turn(&mut session, &mut events, &[]).await;
             assert!(ok);
             for id in ["tally-1", "tally-2", "tally-3"] {
@@ -354,10 +381,47 @@ mod tests {
                 Event::Update(SessionUpdate::AgentMessageChunk(_))
             ) {}
             session.cancel()?;
-            assert!(session.prompt("too soon".into()).is_err());
             assert_eq!(
                 turn(&mut session, &mut events, &[]).await,
                 ("cancelled".into(), true)
+            );
+            Ok(())
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn a_prompt_during_a_turn_cancels_it_and_is_sent_after_it_finishes() {
+        with_session(async |mut session, mut events| {
+            session.prompt("running".into())?;
+            while !matches!(
+                events.recv().await.unwrap(),
+                Event::Update(SessionUpdate::AgentMessageChunk(_))
+            ) {}
+            session.prompt("next".into())?;
+            assert_eq!(session.queued.as_deref(), Some("next"));
+            let mut text = String::new();
+            let queued = loop {
+                match events.recv().await.unwrap() {
+                    Event::Update(SessionUpdate::AgentMessageChunk(chunk)) => {
+                        if let ContentBlock::Text(chunk) = chunk.content {
+                            text.push_str(&chunk.text);
+                        }
+                    }
+                    Event::Finished(result) => {
+                        assert!(result.is_ok());
+                        break session.finished()?;
+                    }
+                    _ => {}
+                }
+            };
+            assert_eq!(text, "cancelled");
+            assert_eq!(queued.as_deref(), Some("next"));
+            assert!(session.busy);
+            assert!(session.queued.is_none());
+            assert_eq!(
+                turn(&mut session, &mut events, &[]).await,
+                ("you said: next".into(), true)
             );
             Ok(())
         })

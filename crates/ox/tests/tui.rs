@@ -41,7 +41,11 @@ impl Tmux {
             quote(script.to_str().unwrap())
         );
         let conf = test.root.path().join("tmux.conf");
-        std::fs::write(&conf, "set -g focus-events on\n").unwrap();
+        std::fs::write(
+            &conf,
+            "set -g focus-events on\nset -g extended-keys always\nset -g extended-keys-format csi-u\n",
+        )
+        .unwrap();
         test.call(&[
             "-f",
             conf.to_str().unwrap(),
@@ -55,7 +59,7 @@ impl Tmux {
             "24",
             &command,
         ]);
-        test.wait("Ctrl-D: quit");
+        test.wait("0% • $0.00");
         test
     }
 
@@ -81,28 +85,36 @@ impl Tmux {
         String::from_utf8(output.stdout).unwrap()
     }
 
-    fn capture(&self) -> String {
-        self.call(&["capture-pane", "-p", "-J", "-S", "-", "-t", "test:0.0"])
+    /// The pane's current screen, one line per row.
+    fn screen(&self) -> String {
+        self.call(&["capture-pane", "-p", "-t", "test:0.0"])
     }
 
-    /// The pane's physical rows, without joining wrapped lines.
-    fn rows(&self) -> String {
-        self.call(&["capture-pane", "-p", "-S", "-", "-t", "test:0.0"])
-    }
-
-    /// The pane's physical rows with their ANSI attributes.
-    fn styled_rows(&self) -> String {
-        self.call(&["capture-pane", "-p", "-e", "-S", "-", "-t", "test:0.0"])
+    /// The pane's current screen with its ANSI attributes.
+    fn styled_screen(&self) -> String {
+        self.call(&["capture-pane", "-p", "-e", "-t", "test:0.0"])
     }
 
     fn wait(&self, text: &str) {
+        self.wait_for(text, true);
+    }
+
+    fn wait_gone(&self, text: &str) {
+        self.wait_for(text, false);
+    }
+
+    fn wait_for(&self, text: &str, present: bool) {
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
-            let screen = self.capture();
-            if screen.contains(text) {
+            let screen = self.screen();
+            if screen.contains(text) == present {
                 return;
             }
-            assert!(Instant::now() < deadline, "missing {text:?}:\n{screen}");
+            assert!(
+                Instant::now() < deadline,
+                "{} {text:?}:\n{screen}",
+                if present { "missing" } else { "still showing" }
+            );
             std::thread::sleep(Duration::from_millis(30));
         }
     }
@@ -128,8 +140,12 @@ impl Tmux {
         self.call(&args);
     }
 
-    fn prompt(&self, text: &str) {
+    fn type_text(&self, text: &str) {
         self.call(&["send-keys", "-t", "test:0.0", "-l", text]);
+    }
+
+    fn prompt(&self, text: &str) {
+        self.type_text(text);
         self.keys(&["Enter"]);
     }
 
@@ -166,42 +182,70 @@ impl Drop for Tmux {
     }
 }
 
+const APPROVAL: &str = "Would you like to allow the following?";
+
 #[test]
 #[ignore = "requires tmux; run make e2e"]
-fn terminal_keys_stream_paste_resize_cancel_and_restore_the_shell() {
+fn terminal_keys_send_interrupt_approve_scroll_and_restore_the_shell() {
     let test = Tmux::new();
     test.prompt("stream");
     test.wait("stream arrives in order");
-    test.wait("Turn finished");
     test.prompt("tool");
-    test.wait("Permission required");
-    let screen = test.capture();
+    test.wait(APPROVAL);
+    let screen = test.screen();
     assert!(
-        screen.contains(
-            "count the tallies\nevery *.tally file\nPermission required\n1. Go ahead\n2. Hold off\n"
-        ),
+        screen.contains(concat!(
+            "Would you like to allow the following?\n",
+            "\n",
+            "• count the tallies\n",
+            "  every *.tally file\n",
+            "\n",
+            "› 1. Go ahead\n",
+            "  2. Hold off\n",
+        )),
         "{screen}"
     );
-    assert_eq!(screen.matches("every *.tally file").count(), 1, "{screen}");
-    test.keys(&["9", "Enter"]);
-    test.wait("Enter one of the supplied option numbers");
-    test.keys(&["1", "Enter"]);
+    test.keys(&["Down", "Enter"]);
+    test.wait("selected stop");
+    test.wait_gone(APPROVAL);
+    test.prompt("tool");
+    test.wait("› 1. Go ahead");
+    test.keys(&["Enter"]);
     test.wait("selected go");
     test.prompt("running");
-    // The last word waits for the message to end.
-    test.wait("running; waiting for");
-    test.keys(&["C-c"]);
-    test.wait("running; waiting for cancellation\nCancelling…\n");
+    test.wait("running; waiting for cancellation");
+    test.keys(&["Escape"]);
     test.wait("cancelled");
-    test.call(&["resize-window", "-t", "test:0", "-x", "24", "-y", "12"]);
-    test.call(&["set-buffer", "pasted界\nsecond line"]);
-    test.call(&["paste-buffer", "-p", "-t", "test:0.0"]);
-    test.wait("second line");
-    assert!(!test.capture().contains("you said: pasted"));
-    test.call(&["resize-window", "-t", "test:0", "-x", "80", "-y", "24"]);
+    test.prompt("running");
+    test.wait("running; waiting for cancellation");
+    test.prompt("interrupting");
+    test.wait("you said: interrupting");
+    let screen = test.screen();
+    assert!(
+        screen.contains("cancelled\n\n❯ interrupting\n\nyou said: interrupting"),
+        "{screen}"
+    );
+    test.type_text("first");
+    test.keys(&["S-Enter"]);
+    test.type_text("second");
+    test.wait("❯ first\n  second\n");
     test.keys(&["Enter"]);
-    test.wait("you said: pasted界");
-    test.wait("second line");
+    test.wait("you said: first\nsecond\n");
+    test.call(&["set-buffer", "pasted界\nthird line"]);
+    test.call(&["paste-buffer", "-p", "-t", "test:0.0"]);
+    test.wait("❯ pasted界\n  third line\n");
+    assert!(!test.screen().contains("you said: pasted"));
+    test.keys(&["Enter"]);
+    test.wait("you said: pasted界\nthird line\n");
+    test.prompt("running");
+    test.wait("running; waiting for cancellation");
+    test.keys(&["PageUp"]);
+    test.wait_gone("running; waiting for cancellation\n");
+    test.keys(&["Escape"]);
+    test.wait("new activity");
+    test.keys(&["End"]);
+    test.wait_gone("new activity");
+    test.wait("cancelled");
     test.keys(&["C-d"]);
     test.wait("TERMINAL_RESTORED");
     test.wait("EXIT_0");
@@ -211,40 +255,53 @@ fn terminal_keys_stream_paste_resize_cancel_and_restore_the_shell() {
 
 #[test]
 #[ignore = "requires tmux; run make e2e"]
-fn narrow_transcript_wraps_messages_and_shows_one_line_per_tool_call() {
+fn the_transcript_view_renders_thinking_tools_and_wrapped_replies() {
     let test = Tmux::new();
     test.call(&["resize-window", "-t", "test:0", "-x", "40", "-y", "24"]);
     test.prompt("render");
-    test.wait("Turn finished");
-    let rows = test.rows();
-    let transcript = &rows[rows.find("> render").unwrap()..];
+    test.wait("a.tally and b.tally");
+    let screen = test.screen();
     assert!(
-        transcript.starts_with(concat!(
-            "> render\n",
+        screen.starts_with(concat!(
+            "❯ render\n",
             "\n",
-            "weighing the tallies\n",
+            "Thought for 0s\n",
             "\n",
-            "shell            {\"command\":\"ls\"}\n",
-            "read_file        {\"path\":\"tallies/20...\n",
+            "$ ls\n",
+            "\n",
+            "• Read tallies/2026/september/archive/a…\n",
+            "\n",
+            "$ npm run dev &\n",
+            "\n",
+            "• Final answer from subagent child-1\n",
+            "  Fixed.\n",
             "\n",
             "Two tallies were counted in the\n",
             "workspace:\n",
             "\n",
             "a.tally and b.tally\n",
-            "Turn finished\n",
         )),
-        "{transcript}"
+        "{screen}"
     );
-    let styled = test.styled_rows();
-    let reasoning = styled
-        .find("\x1b[38;5;8mweighing the tallies")
-        .unwrap_or_else(|| panic!("reasoning is not bright black:\n{styled}"));
-    // The foreground is reset before the tool call lines, and the response and
-    // input that follow stay in the default foreground.
-    let after = &styled[reasoning..];
-    let reset = after.find("\x1b[39m").unwrap();
-    assert!(reset < after.find("shell").unwrap(), "{styled}");
-    assert!(!after[reset..].contains("\x1b[38;5;8m"), "{styled}");
+    let styled = test.styled_screen();
+    let gray = |text: &str| styled.contains(&format!("\x1b[38;5;8m{text}"));
+    assert!(gray("Thought for 0s"), "{styled}");
+    assert!(gray("  Fixed."), "{styled}");
+    assert!(!gray("Two tallies"), "{styled}");
+}
+
+#[test]
+#[ignore = "requires tmux; run make e2e"]
+fn the_status_line_shows_the_session_settings_and_usage() {
+    let test = Tmux::new();
+    test.prompt("options");
+    test.wait("auto • deepseek • high");
+    test.prompt("usage");
+    test.wait("15% • $0.25");
+    let last = test.screen();
+    let last = last.lines().last().unwrap();
+    assert!(last.starts_with("auto • deepseek • high"), "{last}");
+    assert!(last.ends_with("15% • $0.25"), "{last}");
 }
 
 #[test]
@@ -255,7 +312,7 @@ fn permission_survives_disconnect_and_server_failure_restores_the_shell() {
     test.prompt("before detach");
     test.wait("you said: before detach");
     test.prompt("tool");
-    test.wait("Permission required");
+    test.wait(APPROVAL);
     test.call(&["split-window", "-h", "-t", "test:0.0", "/bin/sh"]);
     test.call(&[
         "send-keys",
@@ -267,11 +324,11 @@ fn permission_survives_disconnect_and_server_failure_restores_the_shell() {
     test.detach(&mut client);
     assert!(test.call(&["list-clients"]).trim().is_empty());
     let mut client = test.attach();
-    test.keys(&["2", "Enter"]);
+    test.keys(&["Down", "Enter"]);
     test.wait("selected stop");
     test.prompt("after reconnect");
     test.wait("you said: after reconnect");
-    assert!(test.capture().contains("you said: before detach"));
+    assert!(test.screen().contains("you said: before detach"));
     assert!(
         test.call(&["capture-pane", "-p", "-t", "test:0.1"])
             .contains("\nADJACENT_SHELL\n")
@@ -293,18 +350,18 @@ fn pane_title_shows_status_and_keeps_unseen_results_until_focus() {
     test.wait_title("ox: ready");
     test.prompt("running");
     test.wait_title("ox: working");
-    test.keys(&["C-c"]);
+    test.keys(&["Escape"]);
     test.wait_title("ox: finished");
     test.prompt("tool");
     test.wait_title("ox: needs permission");
-    test.keys(&["2", "Enter"]);
+    test.keys(&["Down", "Enter"]);
     test.wait_title("ox: finished");
     test.prompt("fail");
     test.wait_title("ox: turn error");
     test.call(&["select-pane", "-t", "test:0.0"]);
     test.wait_title("ox: ready");
     test.prompt("stream");
-    test.wait("Turn finished");
+    test.wait("stream arrives in order");
     test.wait_title("ox: ready");
     test.keys(&["C-d"]);
     test.wait("EXIT_0");
