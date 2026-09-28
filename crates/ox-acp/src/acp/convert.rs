@@ -200,12 +200,11 @@ pub fn shell_permission_request(
                 Some(command) => ("Command", command),
                 None => ("Arguments", call.arguments.as_str()),
             };
-            let mut content = format!("Working directory: {}", workspace.display());
-            // The tool call title is one shortened line, so repeat the command
-            // only when the tool call title does not already show all of it.
-            if tool_call_title != text.trim() {
-                content.push_str(&format!("\n\n{label}:\n\n{}", indented(text)));
-            }
+            let mut content = format!(
+                "Working directory: {}\n\n{label}:\n\n{}",
+                workspace.display(),
+                indented(text)
+            );
             if *background {
                 content.push_str("\n\nRuns in the background after this call returns, until it exits, is stopped, the session is deleted, or Ox exits. Approving it does not approve later input.");
             }
@@ -490,7 +489,7 @@ mod tests {
     }
 
     #[test]
-    fn permission_content_shows_everything_the_tool_call_title_cannot_show_in_full() {
+    fn permission_content_shows_everything_being_approved() {
         let command = "printf '%s\\n' '```'\n  echo \"$HOME\"\n";
         let arguments = serde_json::json!({"command": command, "timeout_seconds": 5});
         let ordinary = tools::Permission::Command { background: false };
@@ -508,12 +507,11 @@ mod tests {
                 ordinary.clone(),
                 "Working directory: /workspace\n\nCommand:\n\n    printf '%s\\n' '```'\n      echo \"$HOME\"\n".to_owned(),
             ),
-            // A one-line command already appears in full as the tool call title.
             (
                 tools::SHELL,
-                serde_json::json!({"command": "echo hello  \n\n"}).to_string(),
+                serde_json::json!({"command": "echo hello"}).to_string(),
                 ordinary.clone(),
-                "Working directory: /workspace".to_owned(),
+                "Working directory: /workspace\n\nCommand:\n\n    echo hello".to_owned(),
             ),
             (
                 tools::SHELL,
@@ -590,7 +588,7 @@ mod tests {
         assert_eq!(request["toolCall"]["title"], "Subagent child: touch first");
         assert_eq!(
             request["toolCall"]["content"][0]["content"]["text"],
-            "Subagent: child\n\nWorking directory: /workspace"
+            "Subagent: child\n\nWorking directory: /workspace\n\nCommand:\n\n    touch first"
         );
         assert_eq!(request["toolCall"]["rawInput"]["command"], "touch first");
         assert_eq!(request["toolCall"]["_meta"]["subagent_id"], "child");

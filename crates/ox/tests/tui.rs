@@ -302,7 +302,7 @@ fn the_transcript_view_renders_thinking_tools_and_wrapped_replies() {
         screen.starts_with(concat!(
             "❯ render\n",
             "\n",
-            "Thought for 0s\n",
+            "  Thought for 0s\n",
             "\n",
             "$ ls\n",
             "\n",
@@ -322,7 +322,7 @@ fn the_transcript_view_renders_thinking_tools_and_wrapped_replies() {
     );
     let styled = test.styled_screen();
     let gray = |text: &str| styled.contains(&format!("\x1b[38;5;8m{text}"));
-    assert!(gray("Thought for 0s"), "{styled}");
+    assert!(gray("  Thought for 0s"), "{styled}");
     assert!(gray("  Fixed."), "{styled}");
     assert!(!gray("Two tallies"), "{styled}");
 }

@@ -210,9 +210,10 @@ fn item_lines(
             ended,
         } => {
             if show_thinking && !text.trim().is_empty() {
-                styled(wrap(text, width), gray())
+                prefixed(text, width, "  ", gray())
             } else {
-                vec![Line::styled(placeholder(*started, *ended, now), gray())]
+                let placeholder = placeholder(*started, *ended, now);
+                vec![Line::styled(format!("  {placeholder}"), gray())]
             }
         }
         Item::Response(text) => styled(wrap(text, width), Style::new()),
@@ -250,16 +251,15 @@ fn placeholder(started: Instant, ended: Option<Instant>, now: Instant) -> String
     }
 }
 
-/// The rows an approval shows for a request: its `$` block, or its `•` line
-/// and content.
-pub fn call_lines(call: &ToolCall, width: usize) -> Vec<Line<'static>> {
-    shell_lines(call, width).unwrap_or_else(|| described_lines(call, width))
+pub fn described_lines(call: &ToolCall, width: usize) -> Vec<Line<'static>> {
+    let mut lines = vec![tool_line(call, width)];
+    lines.extend(content_lines(call, width));
+    lines
 }
 
-fn described_lines(call: &ToolCall, width: usize) -> Vec<Line<'static>> {
-    let mut lines = vec![tool_line(call, width)];
-    lines.extend(prefixed(&tool_content(&call.content), width, "  ", gray()));
-    lines
+/// A call's content rows, indented under where its `•` line would be.
+pub fn content_lines(call: &ToolCall, width: usize) -> Vec<Line<'static>> {
+    prefixed(&tool_content(&call.content), width, "  ", gray())
 }
 
 fn icon(call: &ToolCall, symbol: &str) -> Span<'static> {
@@ -610,24 +610,24 @@ mod tests {
         view.update(thought("again"), at(4));
         assert_eq!(
             rows(&view, 40, true, at(5)),
-            ["weighing", "", "one two", "", "again"]
+            ["  weighing", "", "one two", "", "  again"]
         );
         assert_eq!(
             rows(&view, 40, false, at(5)),
-            ["Thought for 3s", "", "one two", "", "Thinking..."]
+            ["  Thought for 3s", "", "one two", "", "  Thinking..."]
         );
         view.end_turn(at(6));
         view.update(thought("next"), at(7));
         assert_eq!(
             rows(&view, 40, false, at(8)),
             [
-                "Thought for 3s",
+                "  Thought for 3s",
                 "",
                 "one two",
                 "",
-                "Thought for 2s",
+                "  Thought for 2s",
                 "",
-                "Thinking..."
+                "  Thinking..."
             ]
         );
     }
@@ -637,18 +637,18 @@ mod tests {
         let start = Instant::now();
         let at = |secs| start + Duration::from_secs(secs);
         let mut view = view(vec![thought("weighing it")], start);
-        assert_eq!(rows(&view, 40, false, at(3)), ["Thinking..."]);
-        assert_eq!(rows(&view, 40, false, at(12)), ["Thinking for 12s..."]);
-        assert_eq!(rows(&view, 40, true, at(12)), ["weighing it"]);
+        assert_eq!(rows(&view, 40, false, at(3)), ["  Thinking..."]);
+        assert_eq!(rows(&view, 40, false, at(12)), ["  Thinking for 12s..."]);
+        assert_eq!(rows(&view, 40, true, at(12)), ["  weighing it"]);
         view.end_turn(at(42));
-        assert_eq!(rows(&view, 40, false, at(60)), ["Thought for 42s"]);
-        assert_eq!(rows(&view, 40, true, at(60)), ["weighing it"]);
+        assert_eq!(rows(&view, 40, false, at(60)), ["  Thought for 42s"]);
+        assert_eq!(rows(&view, 40, true, at(60)), ["  weighing it"]);
         for show in [false, true] {
             let line = &view.lines(40, show, at(60))[0];
             assert_eq!(color(line), Some(Color::DarkGray), "{show}");
         }
         let empty = self::view(vec![thought("  ")], start);
-        assert_eq!(rows(&empty, 40, true, at(3)), ["Thinking..."]);
+        assert_eq!(rows(&empty, 40, true, at(3)), ["  Thinking..."]);
     }
 
     #[test]

@@ -2629,7 +2629,10 @@ mod tests {
             assert!(call.get("_meta").is_none());
             assert_eq!(
                 call["content"][0]["content"]["text"],
-                format!("Working directory: {}", run.workspace.0.display())
+                format!(
+                    "Working directory: {}\n\nCommand:\n\n    touch {file}",
+                    run.workspace.0.display()
+                )
             );
             assert_eq!(
                 request.params["options"],

@@ -26,7 +26,6 @@ use ratatui::{
     style::{Color, Style},
     text::Line,
 };
-use serde_json::Value;
 use tokio::sync::mpsc::UnboundedReceiver;
 use unicode_width::UnicodeWidthStr;
 
@@ -348,21 +347,20 @@ fn approval_lines(view: &TranscriptView, approval: &Approval, width: usize) -> V
         .cloned()
         .unwrap_or_else(|| ToolCall::new(id.clone(), ""));
     call.update(request.tool_call.fields.clone());
-    let subagent = request
-        .tool_call
-        .meta
-        .as_ref()
-        .and_then(|meta| meta.get("subagent_id"))
-        .and_then(Value::as_str);
-    let heading = if call.name.as_deref() == Some("shell") {
-        match subagent {
-            Some(subagent) => {
-                format!("Subagent {subagent} would like to run the following command.")
-            }
-            None => "Would you like to run the following command?".to_owned(),
-        }
-    } else {
-        "Would you like to allow the following?".to_owned()
+    // Shell content names the subagent, if any, and everything being approved.
+    let (heading, body) = match call.name.as_deref() {
+        Some("shell") => (
+            "Would you like to run the following command?",
+            transcript::content_lines(&call, width),
+        ),
+        Some("shell_process") => (
+            "Would you like to send the following input?",
+            transcript::content_lines(&call, width),
+        ),
+        _ => (
+            "Would you like to allow the following?",
+            transcript::described_lines(&call, width),
+        ),
     };
     let mut lines = vec![
         rule(width),
@@ -370,7 +368,7 @@ fn approval_lines(view: &TranscriptView, approval: &Approval, width: usize) -> V
         Line::raw(heading),
         Line::default(),
     ];
-    lines.extend(transcript::call_lines(&call, width));
+    lines.extend(body);
     lines.push(Line::default());
     for (index, option) in request.options.iter().enumerate() {
         let marker = if index == approval.selected {
@@ -802,15 +800,17 @@ mod tests {
         (rows, (cursor.x, cursor.y), layout)
     }
 
-    fn shell_request(command: &str) -> RequestPermissionRequest {
+    fn request(name: &str, content: &str) -> RequestPermissionRequest {
         RequestPermissionRequest::new(
             "session",
             ToolCallUpdate::new(
-                "shell-1",
+                "call-1",
                 ToolCallUpdateFields::new()
-                    .name("shell".to_owned())
+                    .name(name.to_owned())
                     .status(ToolCallStatus::Pending)
-                    .raw_input(serde_json::json!({"command": command})),
+                    .content(vec![ToolCallContent::from(ContentBlock::Text(
+                        TextContent::new(content),
+                    ))]),
             ),
             vec![
                 PermissionOption::new("approve", "Yes", PermissionOptionKind::AllowOnce),
@@ -867,7 +867,10 @@ mod tests {
         );
         let mut input = Input::default();
         input.paste("Also check the docs\nwhen you are done");
-        let request = shell_request("rg -n \\\n--glob '*.rs' \\\n'TODO|FIXME' src");
+        let request = request(
+            "shell",
+            "Working directory: /workspace\n\nCommand:\n\n    cargo test",
+        );
         let screen = Screen {
             approval: Some(Approval {
                 request: &request,
@@ -877,12 +880,12 @@ mod tests {
             usage: "5% • $0.01",
             ..screen(&view, &input, now)
         };
-        let (rows, cursor, layout) = render(&screen, 72, 24);
+        let (rows, cursor, layout) = render(&screen, 72, 26);
         let rule = "─".repeat(72);
         assert_eq!(
             rows,
             [
-                "Thought for 12s",
+                "  Thought for 12s",
                 "",
                 "• Read Makefile",
                 "• Find files matching *.rs",
@@ -894,9 +897,11 @@ mod tests {
                 "",
                 "Would you like to run the following command?",
                 "",
-                "$ rg -n \\",
-                "  --glob '*.rs' \\",
-                "  'TODO|FIXME' src",
+                "  Working directory: /workspace",
+                "",
+                "  Command:",
+                "",
+                "      cargo test",
                 "",
                 "› 1. Yes",
                 "  2. No",
@@ -911,8 +916,39 @@ mod tests {
                 ),
             ]
         );
-        assert_eq!(cursor, (19, 21));
+        assert_eq!(cursor, (19, 23));
         assert_eq!((layout.height, layout.lines), (8, 10));
+    }
+
+    #[test]
+    fn a_shell_process_approval_shows_its_content_without_the_tool_line() {
+        let view = TranscriptView::default();
+        let request = request("shell_process", "Shell process: p-1\n\nInput:\n\n    y");
+        let lines = approval_lines(
+            &view,
+            &Approval {
+                request: &request,
+                selected: 0,
+            },
+            40,
+        );
+        let rows: Vec<String> = lines.iter().map(ToString::to_string).collect();
+        assert_eq!(
+            rows[2..],
+            [
+                "Would you like to send the following input?",
+                "",
+                "  Shell process: p-1",
+                "  ",
+                "  Input:",
+                "  ",
+                "      y",
+                "",
+                "› 1. Yes",
+                "  2. No",
+                "",
+            ]
+        );
     }
 
     #[test]
