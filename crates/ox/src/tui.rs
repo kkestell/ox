@@ -335,7 +335,12 @@ pub fn usage(usage: Option<&UsageUpdate>) -> String {
 }
 
 /// Handles one key and reports whether to quit.
-fn key(ui: &mut Ui, session: &mut Session, key: KeyEvent, now: Instant) -> anyhow::Result<bool> {
+async fn key(
+    ui: &mut Ui,
+    session: &mut Session,
+    key: KeyEvent,
+    now: Instant,
+) -> anyhow::Result<bool> {
     if key.kind == KeyEventKind::Release {
         return Ok(false);
     }
@@ -345,6 +350,19 @@ fn key(ui: &mut Ui, session: &mut Session, key: KeyEvent, now: Instant) -> anyho
         .front()
         .map(|(request, _)| request.options.len());
     match key.code {
+        KeyCode::Tab | KeyCode::BackTab
+            if !key
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+        {
+            let forward = key.code == KeyCode::Tab && !key.modifiers.contains(KeyModifiers::SHIFT);
+            if let Some((id, value)) = next_mode(&session.config_options, forward)
+                && let Err(error) = session.set_config_option(id, value).await
+            {
+                ui.view
+                    .notice(format!("Mode change failed: {error}"), Color::Red, now);
+            }
+        }
         KeyCode::Char('c' | 'd') if control => {
             session.cancel()?;
             return Ok(true);
@@ -405,6 +423,39 @@ fn key(ui: &mut Ui, session: &mut Session, key: KeyEvent, now: Instant) -> anyho
         _ => {}
     }
     Ok(false)
+}
+
+fn next_mode(
+    options: &[SessionConfigOption],
+    forward: bool,
+) -> Option<(SessionConfigId, SessionConfigValueId)> {
+    let option = options
+        .iter()
+        .find(|option| option.category == Some(SessionConfigOptionCategory::Mode))?;
+    let SessionConfigKind::Select(select) = &option.kind else {
+        return None;
+    };
+    let choices: Vec<_> = match &select.options {
+        SessionConfigSelectOptions::Ungrouped(choices) => choices.iter().collect(),
+        SessionConfigSelectOptions::Grouped(groups) => groups
+            .iter()
+            .flat_map(|group| group.options.iter())
+            .collect(),
+        _ => return None,
+    };
+    let count = choices.len();
+    if count < 2 {
+        return None;
+    }
+    let current = choices
+        .iter()
+        .position(|choice| choice.value == select.current_value)?;
+    let next = if forward {
+        (current + 1) % count
+    } else {
+        (current + count - 1) % count
+    };
+    Some((option.id.clone(), choices[next].value.clone()))
 }
 
 /// Sends the input. During a turn the prompt is queued, and its `User` item
@@ -526,7 +577,7 @@ pub async fn run(
                     Event::FocusLost => terminal.focused = false,
                     Event::Paste(text) => ui.input.paste(&text),
                     Event::Key(event) => {
-                        let quit = key(&mut ui, &mut session, event, Instant::now())?;
+                        let quit = key(&mut ui, &mut session, event, Instant::now()).await?;
                         if quit {
                             return Ok(());
                         }
@@ -768,33 +819,66 @@ mod tests {
         }
     }
 
+    async fn press(
+        ui: &mut Ui,
+        session: &mut Session,
+        code: KeyCode,
+        now: Instant,
+    ) -> anyhow::Result<bool> {
+        key(ui, session, KeyEvent::new(code, KeyModifiers::NONE), now).await
+    }
+
+    #[tokio::test]
+    async fn tab_and_backtab_cycle_the_available_modes() {
+        with_session(async |mut session, _events| {
+            let mut ui = Ui::default();
+            let now = Instant::now();
+            assert_eq!(settings(&session.config_options), "ask");
+            for (code, expected) in [
+                (KeyCode::Tab, "auto"),
+                (KeyCode::Tab, "ask"),
+                (KeyCode::BackTab, "auto"),
+                (KeyCode::BackTab, "ask"),
+            ] {
+                key(
+                    &mut ui,
+                    &mut session,
+                    KeyEvent::new(code, KeyModifiers::NONE),
+                    now,
+                )
+                .await?;
+                assert_eq!(settings(&session.config_options), expected);
+            }
+            assert!(ui.input.is_empty());
+            Ok(())
+        })
+        .await;
+    }
+
     #[tokio::test]
     async fn approval_keys_move_the_selection_and_enter_answers_only_with_an_empty_input() {
         with_session(async |mut session, mut events| {
             let now = Instant::now();
             let mut ui = Ui::default();
-            let press = |ui: &mut Ui, session: &mut Session, code| {
-                key(ui, session, KeyEvent::new(code, KeyModifiers::NONE), now)
-            };
             session.prompt("tools".into())?;
             requests(&mut session, &mut events).await;
-            press(&mut ui, &mut session, KeyCode::Down)?;
-            press(&mut ui, &mut session, KeyCode::Down)?;
+            press(&mut ui, &mut session, KeyCode::Down, now).await?;
+            press(&mut ui, &mut session, KeyCode::Down, now).await?;
             assert_eq!(ui.selected, 1);
-            press(&mut ui, &mut session, KeyCode::Esc)?;
+            press(&mut ui, &mut session, KeyCode::Esc, now).await?;
             assert_eq!((session.pending.len(), ui.selected), (1, 0));
-            press(&mut ui, &mut session, KeyCode::Up)?;
-            press(&mut ui, &mut session, KeyCode::Down)?;
-            press(&mut ui, &mut session, KeyCode::Enter)?;
+            press(&mut ui, &mut session, KeyCode::Up, now).await?;
+            press(&mut ui, &mut session, KeyCode::Down, now).await?;
+            press(&mut ui, &mut session, KeyCode::Enter, now).await?;
             assert!(session.pending.is_empty());
             let (text, ok) = turn(&mut session, &mut events, &[]).await;
             assert!(ok);
             assert_eq!(text, "tally-1: stop, tally-2: stop");
             session.prompt("tools".into())?;
             requests(&mut session, &mut events).await;
-            press(&mut ui, &mut session, KeyCode::Char('h'))?;
-            press(&mut ui, &mut session, KeyCode::Char('i'))?;
-            press(&mut ui, &mut session, KeyCode::Enter)?;
+            press(&mut ui, &mut session, KeyCode::Char('h'), now).await?;
+            press(&mut ui, &mut session, KeyCode::Char('i'), now).await?;
+            press(&mut ui, &mut session, KeyCode::Enter, now).await?;
             assert!(session.pending.is_empty());
             assert_eq!(session.queued.as_deref(), Some("hi"));
             assert!(ui.input.is_empty());

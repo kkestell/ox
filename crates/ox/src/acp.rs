@@ -39,6 +39,24 @@ pub struct Session {
 }
 
 impl Session {
+    pub async fn set_config_option(
+        &mut self,
+        id: SessionConfigId,
+        value: SessionConfigValueId,
+    ) -> anyhow::Result<()> {
+        let response = self
+            .connection
+            .send_request(SetSessionConfigOptionRequest::new(
+                self.id.clone(),
+                id,
+                value,
+            ))
+            .block_task()
+            .await?;
+        self.config_options = response.config_options;
+        Ok(())
+    }
+
     /// Sends the prompt, or cancels the running turn and sends it when that
     /// turn finishes.
     pub fn prompt(&mut self, text: String) -> anyhow::Result<()> {

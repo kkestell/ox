@@ -105,23 +105,31 @@ struct SavedSession {
     unloadable: bool,
     /// The current value of the `pace` config option: `steady` or `brisk`.
     pace: String,
+    mode: String,
 }
 
 /// The values of the `pace` config option.
 const PACES: [(&str, &str); 2] = [("steady", "Steady"), ("brisk", "Brisk")];
 
-/// The fake server's one config option, `pace`, set to `pace`.
-fn config_options(pace: &str) -> Vec<SessionConfigOption> {
+/// The fake server's pace and mode options.
+fn config_options(pace: &str, mode: &str) -> Vec<SessionConfigOption> {
     let values: Vec<_> = PACES
         .iter()
         .map(|(value, name)| SessionConfigSelectOption::new(*value, *name))
         .collect();
-    vec![SessionConfigOption::select(
-        "pace",
-        "Pace",
-        pace.to_string(),
-        values,
-    )]
+    vec![
+        SessionConfigOption::select("pace", "Pace", pace.to_string(), values),
+        SessionConfigOption::select(
+            "mode",
+            "Mode",
+            mode.to_string(),
+            vec![
+                SessionConfigSelectOption::new("ask", "Ask"),
+                SessionConfigSelectOption::new("auto", "Auto"),
+            ],
+        )
+        .category(SessionConfigOptionCategory::Mode),
+    ]
 }
 
 impl Default for SavedHistory {
@@ -300,13 +308,14 @@ pub fn fake_server(hold: Hold, history: SavedHistory) -> impl ConnectTo<Client> 
                             updates: Vec::new(),
                             unloadable: false,
                             pace: "steady".to_string(),
+                            mode: "ask".to_string(),
                         });
                         session
                     });
                     loaded.lock().unwrap().insert(session.clone());
                     responder.respond(
                         NewSessionResponse::new(session.clone())
-                            .config_options(config_options("steady")),
+                            .config_options(config_options("steady", "ask")),
                     )?;
                     let command = AvailableCommand::new("tally", "count the tallies");
                     let update =
@@ -372,27 +381,33 @@ pub fn fake_server(hold: Hold, history: SavedHistory) -> impl ConnectTo<Client> 
                     }
                     let session = request.session_id;
                     let replay = history.with_session(&session, |saved| {
-                        (saved.unloadable, saved.updates.clone(), saved.pace.clone())
+                        (
+                            saved.unloadable,
+                            saved.updates.clone(),
+                            saved.pace.clone(),
+                            saved.mode.clone(),
+                        )
                     });
-                    let (updates, pace) = match replay {
+                    let (updates, pace, mode) = match replay {
                         None => {
                             return responder
                                 .respond_with_internal_error(format!("no session {session}"));
                         }
-                        Some((true, _, _)) => {
+                        Some((true, _, _, _)) => {
                             return responder.respond_with_internal_error(
                                 "the fake server cannot load this session",
                             );
                         }
-                        Some((false, updates, pace)) => (updates, pace),
+                        Some((false, updates, pace, mode)) => (updates, pace, mode),
                     };
                     for update in updates {
                         connection
                             .send_notification(SessionNotification::new(session.clone(), update))?;
                     }
                     loaded.lock().unwrap().insert(session);
-                    responder
-                        .respond(LoadSessionResponse::new().config_options(config_options(&pace)))
+                    responder.respond(
+                        LoadSessionResponse::new().config_options(config_options(&pace, &mode)),
+                    )
                 }
             },
             on_receive_request!(),
@@ -401,9 +416,14 @@ pub fn fake_server(hold: Hold, history: SavedHistory) -> impl ConnectTo<Client> 
             {
                 let history = history.clone();
                 async move |request: SetSessionConfigOptionRequest, responder, _connection| {
-                    let pace = match (&*request.config_id.0, &request.value) {
+                    let value = match (&*request.config_id.0, &request.value) {
                         ("pace", SessionConfigOptionValue::ValueId { value })
                             if PACES.iter().any(|(pace, _)| **pace == *value.0) =>
+                        {
+                            value.0.to_string()
+                        }
+                        ("mode", SessionConfigOptionValue::ValueId { value })
+                            if matches!(&*value.0, "ask" | "auto") =>
                         {
                             value.0.to_string()
                         }
@@ -414,15 +434,22 @@ pub fn fake_server(hold: Hold, history: SavedHistory) -> impl ConnectTo<Client> 
                         }
                     };
                     let set = history.with_session(&request.session_id, |saved| {
-                        saved.pace = pace.clone();
+                        if &*request.config_id.0 == "pace" {
+                            saved.pace = value;
+                        } else {
+                            saved.mode = value;
+                        }
+                        (saved.pace.clone(), saved.mode.clone())
                     });
-                    if set.is_none() {
+                    let Some((pace, mode)) = set else {
                         return responder.respond_with_internal_error(format!(
                             "no session {}",
                             request.session_id
                         ));
-                    }
-                    responder.respond(SetSessionConfigOptionResponse::new(config_options(&pace)))
+                    };
+                    responder.respond(SetSessionConfigOptionResponse::new(config_options(
+                        &pace, &mode,
+                    )))
                 }
             },
             on_receive_request!(),
@@ -644,10 +671,15 @@ impl Script {
 
     /// Sets `pace` to `brisk` with a `config_option_update`.
     fn pace(&self) -> agent_client_protocol::Result<StopReason> {
-        self.history
-            .with_session(&self.session, |saved| saved.pace = "brisk".to_string());
+        let mode = self
+            .history
+            .with_session(&self.session, |saved| {
+                saved.pace = "brisk".to_string();
+                saved.mode.clone()
+            })
+            .expect("session exists");
         self.update(SessionUpdate::ConfigOptionUpdate(ConfigOptionUpdate::new(
-            config_options("brisk"),
+            config_options("brisk", &mode),
         )))?;
         Ok(StopReason::EndTurn)
     }
@@ -679,7 +711,11 @@ impl Script {
             )
             .category(SessionConfigOptionCategory::ThoughtLevel),
         ];
-        options.extend(config_options("steady"));
+        options.extend(
+            config_options("steady", "ask")
+                .into_iter()
+                .filter(|option| option.category.is_none()),
+        );
         options.push(
             SessionConfigOption::select(
                 "approval",

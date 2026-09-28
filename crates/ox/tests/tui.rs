@@ -67,6 +67,7 @@ impl Tmux {
         let mut cmd = Command::new("tmux");
         cmd.args(["-S", self.socket.to_str().unwrap()])
             .env("HOME", self.root.path())
+            .env_remove("NO_COLOR")
             .env_remove("TMUX");
         cmd
     }
@@ -302,6 +303,17 @@ fn the_status_line_shows_the_session_settings_and_usage() {
     let last = last.lines().last().unwrap();
     assert!(last.starts_with("auto • deepseek • high"), "{last}");
     assert!(last.ends_with("15% • $0.25"), "{last}");
+}
+
+#[test]
+#[ignore = "requires tmux; run make e2e"]
+fn tab_and_shift_tab_cycle_modes_in_the_terminal() {
+    let test = Tmux::new();
+    test.wait("ask");
+    test.keys(&["Tab"]);
+    test.wait("auto");
+    test.keys(&["S-Tab"]);
+    test.wait("ask");
 }
 
 #[test]
