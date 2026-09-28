@@ -317,20 +317,31 @@ pub fn draw(frame: &mut Frame, screen: &Screen) -> Layout {
         .map(|approval| approval_lines(screen.view, approval, width))
         .unwrap_or_default();
     let composer = rows.lines.len() + 3;
-    let height = usize::from(area.height).saturating_sub(approval.len() + composer);
-    let lines = screen.view.lines(width, screen.show_thinking, screen.now);
+    let space = usize::from(area.height).saturating_sub(approval.len() + composer);
+    // The transcript view pads its content by two columns on each side and
+    // one row below.
+    let height = space.saturating_sub(1);
+    let view = Rect {
+        x: area.x + 2.min(area.width),
+        width: area.width.saturating_sub(4),
+        ..area
+    };
+    let view_width = usize::from(view.width);
+    let lines = screen
+        .view
+        .lines(view_width, screen.show_thinking, screen.now);
     let first = screen.view.first_row(height, lines.len());
     let buf = frame.buffer_mut();
     for (y, line) in lines.iter().skip(first).take(height).enumerate() {
-        put(buf, area, y, line);
+        put(buf, view, y, line);
     }
     if screen.view.new_activity && height > 0 {
         let notice = "new activity";
-        let padding = " ".repeat(width.saturating_sub(notice.width()) / 2);
-        put(buf, area, height - 1, &Line::raw(" ".repeat(width)));
+        let padding = " ".repeat(view_width.saturating_sub(notice.width()) / 2);
+        put(buf, view, height - 1, &Line::raw(" ".repeat(view_width)));
         put(
             buf,
-            area,
+            view,
             height - 1,
             &Line::styled(
                 format!("{padding}{notice}"),
@@ -338,7 +349,7 @@ pub fn draw(frame: &mut Frame, screen: &Screen) -> Layout {
             ),
         );
     }
-    let mut y = height;
+    let mut y = space;
     for line in &approval {
         put(buf, area, y, line);
         y += 1;
@@ -1111,14 +1122,14 @@ mod tests {
         assert_eq!(
             rows,
             [
+                "  ● Thought for 12s",
                 "",
-                "● Thought for 12s",
+                "  ● Read Makefile",
+                "  ● Find files matching *.rs",
+                "  ● Shell ls -la",
                 "",
-                "● Read Makefile",
-                "● Find files matching *.rs",
-                "● Shell ls -la",
+                "  ● Two tallies were counted in the workspace.",
                 "",
-                "● Two tallies were counted in the workspace.",
                 &rule,
                 "",
                 "  Would you like to run the following command?",
@@ -1143,7 +1154,7 @@ mod tests {
             ]
         );
         assert_eq!(cursor, (19, 23));
-        assert_eq!((layout.height, layout.lines), (8, 9));
+        assert_eq!((layout.height, layout.lines), (7, 9));
     }
 
     #[test]
@@ -1185,20 +1196,20 @@ mod tests {
             view.user(format!("message {index}"), now);
         }
         let input = Input::default();
-        let (rows, _, layout) = render(&screen(&view, &input, now), 40, 10);
+        let (rows, _, layout) = render(&screen(&view, &input, now), 40, 11);
         assert_eq!((layout.height, layout.lines), (6, 39));
-        assert_eq!(rows[5], "❯ message 19");
+        assert_eq!(rows[5], "  ❯ message 19");
         view.page_up(layout.height, layout.lines);
-        let (rows, _, _) = render(&screen(&view, &input, now), 40, 10);
-        assert_eq!(rows[4..6], ["❯ message 16", ""]);
+        let (rows, _, _) = render(&screen(&view, &input, now), 40, 11);
+        assert_eq!(rows[4..7], ["  ❯ message 16", "", ""]);
         view.user("message 20".to_owned(), now);
-        let (rows, _, _) = render(&screen(&view, &input, now), 40, 10);
+        let (rows, _, _) = render(&screen(&view, &input, now), 40, 11);
         assert_eq!(
             rows[..5],
-            ["❯ message 14", "", "❯ message 15", "", "❯ message 16"]
+            ["  ❯ message 14", "", "  ❯ message 15", "", "  ❯ message 16"]
         );
         assert_eq!(rows[5], "              new activity");
-        let mut terminal = ratatui::Terminal::new(TestBackend::new(40, 10)).unwrap();
+        let mut terminal = ratatui::Terminal::new(TestBackend::new(40, 11)).unwrap();
         terminal
             .draw(|frame| {
                 draw(frame, &screen(&view, &input, now));
@@ -1207,8 +1218,8 @@ mod tests {
         let cell = terminal.backend().buffer().cell((14, 5)).unwrap();
         assert_eq!(cell.fg, Color::LightYellow);
         view.end();
-        let (rows, _, _) = render(&screen(&view, &input, now), 40, 10);
-        assert_eq!(rows[5], "❯ message 20");
+        let (rows, _, _) = render(&screen(&view, &input, now), 40, 11);
+        assert_eq!(rows[5], "  ❯ message 20");
     }
 
     #[test]

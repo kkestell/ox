@@ -279,7 +279,7 @@ fn terminal_keys_send_interrupt_approve_scroll_and_restore_the_shell() {
     test.wait("you said: interrupting");
     let screen = test.screen();
     assert!(
-        screen.contains("cancelled\n\n❯ interrupting\n\n● you said: interrupting"),
+        screen.contains("cancelled\n\n  ❯ interrupting\n\n  ● you said: interrupting"),
         "{screen}"
     );
     test.type_text("first");
@@ -287,13 +287,13 @@ fn terminal_keys_send_interrupt_approve_scroll_and_restore_the_shell() {
     test.type_text("second");
     test.wait("❯ first\n  second\n");
     test.keys(&["Enter"]);
-    test.wait("● you said: first\n  second\n");
+    test.wait("  ● you said: first\n    second\n");
     test.call(&["set-buffer", "pasted界\nthird line"]);
     test.call(&["paste-buffer", "-p", "-t", "test:0.0"]);
     test.wait("❯ pasted界\n  third line\n");
     assert!(!test.screen().contains("you said: pasted"));
     test.keys(&["Enter"]);
-    test.wait("● you said: pasted界\n  third line\n");
+    test.wait("  ● you said: pasted界\n    third line\n");
     test.prompt("running");
     test.wait("running; waiting for cancellation");
     test.keys(&["PageUp"]);
@@ -320,21 +320,21 @@ fn the_transcript_view_renders_thinking_tools_and_wrapped_replies() {
     let screen = test.screen();
     assert!(
         screen.starts_with(concat!(
-            "❯ render\n",
+            "  ❯ render\n",
             "\n",
-            "● Thought for 0s\n",
+            "  ● Thought for 0s\n",
             "\n",
-            "● Shell ls\n",
-            "● Read tallies/2026/september/archive/a…\n",
-            "● Shell npm run dev &\n",
+            "  ● Shell ls\n",
+            "  ● Read tallies/2026/september/archi…\n",
+            "  ● Shell npm run dev &\n",
             "\n",
-            "● Final answer from subagent child-1\n",
-            "  Fixed.\n",
+            "  ● Final answer from subagent child-1\n",
+            "    Fixed.\n",
             "\n",
-            "● Two tallies were counted in the\n",
-            "  workspace:\n",
+            "  ● Two tallies were counted in the\n",
+            "    workspace:\n",
             "\n",
-            "  a.tally and b.tally\n",
+            "    a.tally and b.tally\n",
         )),
         "{screen}"
     );
