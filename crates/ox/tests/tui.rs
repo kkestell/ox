@@ -232,13 +232,13 @@ fn terminal_keys_send_interrupt_approve_scroll_and_restore_the_shell() {
     let screen = test.screen();
     assert!(
         screen.contains(concat!(
-            "Would you like to allow the following?\n",
+            "  Would you like to allow the following?\n",
             "\n",
-            "● count the tallies\n",
-            "  every *.tally file\n",
+            "  ● count the tallies\n",
+            "    every *.tally file\n",
             "\n",
-            "› 1. Go ahead\n",
-            "  2. Hold off\n",
+            "  › 1. Go ahead\n",
+            "    2. Hold off\n",
         )),
         "{screen}"
     );

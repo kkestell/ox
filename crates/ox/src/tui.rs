@@ -24,7 +24,7 @@ use ratatui::{
     buffer::Buffer,
     layout::Rect,
     style::{Color, Style},
-    text::Line,
+    text::{Line, Span},
 };
 use tokio::sync::mpsc::UnboundedReceiver;
 use unicode_width::UnicodeWidthStr;
@@ -347,27 +347,24 @@ fn approval_lines(view: &TranscriptView, approval: &Approval, width: usize) -> V
         .cloned()
         .unwrap_or_else(|| ToolCall::new(id.clone(), ""));
     call.update(request.tool_call.fields.clone());
+    // The dialog pads its content by two columns on each side.
+    let content_width = width.saturating_sub(4);
     // Shell content names the subagent, if any, and everything being approved.
     let (heading, body) = match call.name.as_deref() {
         Some("shell") => (
             "Would you like to run the following command?",
-            transcript::content_lines(&call, width),
+            transcript::content_lines(&call, content_width),
         ),
         Some("shell_process") => (
             "Would you like to send the following input?",
-            transcript::content_lines(&call, width),
+            transcript::content_lines(&call, content_width),
         ),
         _ => (
             "Would you like to allow the following?",
-            transcript::described_lines(&call, width),
+            transcript::described_lines(&call, content_width),
         ),
     };
-    let mut lines = vec![
-        rule(width),
-        Line::default(),
-        Line::raw(heading),
-        Line::default(),
-    ];
+    let mut lines = vec![Line::raw(heading), Line::default()];
     lines.extend(body);
     lines.push(Line::default());
     for (index, option) in request.options.iter().enumerate() {
@@ -382,6 +379,10 @@ fn approval_lines(view: &TranscriptView, approval: &Approval, width: usize) -> V
             option.name
         )));
     }
+    for line in &mut lines {
+        line.spans.insert(0, Span::raw("  "));
+    }
+    lines.splice(0..0, [rule(width), Line::default()]);
     lines.push(Line::default());
     lines
 }
@@ -895,16 +896,16 @@ mod tests {
                 "● Two tallies were counted in the workspace.",
                 &rule,
                 "",
-                "Would you like to run the following command?",
+                "  Would you like to run the following command?",
                 "",
-                "  Working directory: /workspace",
+                "    Working directory: /workspace",
                 "",
-                "  Command:",
+                "    Command:",
                 "",
-                "      cargo test",
+                "        cargo test",
                 "",
-                "› 1. Yes",
-                "  2. No",
+                "  › 1. Yes",
+                "    2. No",
                 "",
                 &rule,
                 "❯ Also check the docs",
@@ -936,16 +937,16 @@ mod tests {
         assert_eq!(
             rows[2..],
             [
-                "Would you like to send the following input?",
-                "",
-                "  Shell process: p-1",
+                "  Would you like to send the following input?",
                 "  ",
-                "  Input:",
+                "    Shell process: p-1",
+                "    ",
+                "    Input:",
+                "    ",
+                "        y",
                 "  ",
-                "      y",
-                "",
-                "› 1. Yes",
-                "  2. No",
+                "  › 1. Yes",
+                "    2. No",
                 "",
             ]
         );
