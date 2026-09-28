@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use agent_client_protocol::schema::v1::*;
+use chrono::DateTime;
 use crossterm::{
     cursor::Show,
     event::{
@@ -147,6 +148,40 @@ struct Ui {
     selected: usize,
     show_thinking: bool,
     layout: Layout,
+    session_picker: Option<SessionPicker>,
+    resume_after_turn: bool,
+}
+
+struct SessionPicker {
+    sessions: Vec<SessionInfo>,
+    selected: usize,
+    first: usize,
+    error: Option<String>,
+}
+
+impl SessionPicker {
+    fn move_to(&mut self, selected: usize, height: usize) {
+        self.selected = selected.min(self.sessions.len().saturating_sub(1));
+        let rows = height.saturating_sub(3).max(1);
+        if self.selected < self.first {
+            self.first = self.selected;
+        }
+        if self.selected >= self.first + rows {
+            self.first = self.selected + 1 - rows;
+        }
+    }
+}
+
+fn activity(session: &SessionInfo) -> Option<DateTime<chrono::FixedOffset>> {
+    session
+        .updated_at
+        .as_deref()
+        .and_then(|date| DateTime::parse_from_rfc3339(date).ok())
+}
+
+fn sorted_sessions(mut sessions: Vec<SessionInfo>) -> Vec<SessionInfo> {
+    sessions.sort_by_key(|session| std::cmp::Reverse(activity(session)));
+    sessions
 }
 
 pub struct Approval<'a> {
@@ -158,6 +193,7 @@ pub struct Screen<'a> {
     pub view: &'a TranscriptView,
     pub input: &'a Input,
     pub approval: Option<Approval<'a>>,
+    session_picker: Option<&'a SessionPicker>,
     pub settings: &'a str,
     pub usage: &'a str,
     pub show_thinking: bool,
@@ -181,19 +217,33 @@ pub fn draw(frame: &mut Frame, screen: &Screen) -> Layout {
     let width = usize::from(area.width);
     let rows = screen.input.rows(area.width);
     let approval = screen
-        .approval
-        .as_ref()
-        .map(|approval| approval_lines(screen.view, approval, width))
+        .session_picker
+        .is_none()
+        .then_some(())
+        .and(
+            screen
+                .approval
+                .as_ref()
+                .map(|approval| approval_lines(screen.view, approval, width)),
+        )
         .unwrap_or_default();
     let composer = rows.lines.len() + 3;
     let height = usize::from(area.height).saturating_sub(approval.len() + composer);
-    let lines = screen.view.lines(width, screen.show_thinking, screen.now);
-    let first = screen.view.first_row(height, lines.len());
+    let lines = if let Some(picker) = screen.session_picker {
+        picker_lines(picker, width, height)
+    } else {
+        screen.view.lines(width, screen.show_thinking, screen.now)
+    };
+    let first = if screen.session_picker.is_some() {
+        0
+    } else {
+        screen.view.first_row(height, lines.len())
+    };
     let buf = frame.buffer_mut();
     for (y, line) in lines.iter().skip(first).take(height).enumerate() {
         put(buf, area, y, line);
     }
-    if screen.view.new_activity && height > 0 {
+    if screen.session_picker.is_none() && screen.view.new_activity && height > 0 {
         let notice = "new activity";
         let padding = " ".repeat(width.saturating_sub(notice.width()) / 2);
         put(buf, area, height - 1, &Line::raw(" ".repeat(width)));
@@ -250,6 +300,44 @@ pub fn draw(frame: &mut Frame, screen: &Screen) -> Layout {
         height,
         lines: lines.len(),
     }
+}
+
+fn picker_lines(picker: &SessionPicker, width: usize, height: usize) -> Vec<Line<'static>> {
+    let mut lines = vec![Line::raw(transcript::clip(
+        "Resume a session  ↑/↓ move  Enter load  Esc cancel",
+        width,
+    ))];
+    if let Some(error) = &picker.error {
+        lines.push(Line::styled(
+            transcript::clip(error, width),
+            Style::new().fg(Color::Red),
+        ));
+    } else {
+        lines.push(Line::default());
+    }
+    if picker.sessions.is_empty() {
+        lines.push(Line::raw("No saved sessions"));
+        return lines;
+    }
+    for (index, session) in picker
+        .sessions
+        .iter()
+        .enumerate()
+        .skip(picker.first)
+        .take(height.saturating_sub(3))
+    {
+        let date = activity(session).map_or_else(
+            || "Unknown date".to_owned(),
+            |date| date.format("%Y-%m-%d").to_string(),
+        );
+        let marker = if index == picker.selected { "›" } else { " " };
+        let title = escape(session.title.as_deref().unwrap_or("Untitled session"));
+        let title_width = width.saturating_sub(date.width() + 3);
+        let title = transcript::clip(&title, title_width);
+        let padding = " ".repeat(width.saturating_sub(2 + title.width() + date.width()));
+        lines.push(Line::raw(format!("{marker} {title}{padding}{date}")));
+    }
+    lines
 }
 
 fn approval_lines(view: &TranscriptView, approval: &Approval, width: usize) -> Vec<Line<'static>> {
@@ -344,6 +432,46 @@ async fn key(
     if key.kind == KeyEventKind::Release {
         return Ok(false);
     }
+    if let Some(picker) = &mut ui.session_picker {
+        let page = ui.layout.height.saturating_sub(3).max(1);
+        match key.code {
+            KeyCode::Up => picker.move_to(picker.selected.saturating_sub(1), ui.layout.height),
+            KeyCode::Down => picker.move_to(picker.selected.saturating_add(1), ui.layout.height),
+            KeyCode::PageUp => {
+                picker.move_to(picker.selected.saturating_sub(page), ui.layout.height)
+            }
+            KeyCode::PageDown => {
+                picker.move_to(picker.selected.saturating_add(page), ui.layout.height)
+            }
+            KeyCode::Home => picker.move_to(0, ui.layout.height),
+            KeyCode::End => {
+                picker.move_to(picker.sessions.len().saturating_sub(1), ui.layout.height)
+            }
+            KeyCode::Esc if session.active() => ui.session_picker = None,
+            KeyCode::Enter if !picker.sessions.is_empty() => {
+                let id = picker.sessions[picker.selected].session_id.clone();
+                if session.active()
+                    && let Err(error) = session.close().await
+                {
+                    picker.error = Some(format!("Close failed: {error}"));
+                    return Ok(false);
+                }
+                ui.view = TranscriptView::default();
+                match session.load(id).await {
+                    Ok(()) => {
+                        ui.session_picker = None;
+                        ui.input.clear();
+                    }
+                    Err(error) => picker.error = Some(format!("Load failed: {error}")),
+                }
+            }
+            KeyCode::Char('c' | 'd') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                return Ok(true);
+            }
+            _ => {}
+        }
+        return Ok(false);
+    }
     let control = key.modifiers.contains(KeyModifiers::CONTROL);
     let options = session
         .pending
@@ -379,7 +507,21 @@ async fn key(
         KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => ui.input.newline(),
         KeyCode::Enter => {
             if !ui.input.is_empty() {
-                send(ui, session, now)?;
+                if ui.input.text() == "/resume" {
+                    ui.input.clear();
+                    if !session.can_resume() {
+                        ui.view
+                            .notice("Session resume is unavailable".into(), Color::Red, now);
+                    } else if session.busy {
+                        session.queued = None;
+                        ui.resume_after_turn = true;
+                        session.cancel()?;
+                    } else {
+                        open_picker(ui, session, now).await;
+                    }
+                } else {
+                    send(ui, session, now)?;
+                }
             } else if options.is_some() {
                 answer(ui, session, ui.selected)?;
             }
@@ -423,6 +565,22 @@ async fn key(
         _ => {}
     }
     Ok(false)
+}
+
+async fn open_picker(ui: &mut Ui, session: &mut Session, now: Instant) {
+    match session.list().await {
+        Ok(sessions) => {
+            ui.session_picker = Some(SessionPicker {
+                sessions: sorted_sessions(sessions),
+                selected: 0,
+                first: 0,
+                error: None,
+            })
+        }
+        Err(error) => ui
+            .view
+            .notice(format!("Session list failed: {error}"), Color::Red, now),
+    }
 }
 
 fn next_mode(
@@ -487,12 +645,20 @@ fn handle(
     now: Instant,
 ) -> anyhow::Result<()> {
     match event {
-        acp::Event::Update(update) => {
-            session.update(&update);
-            ui.view.update(update, now);
+        acp::Event::Update(id, update) => {
+            if session.accepts(&id) {
+                session.update(&update);
+                ui.view.update(update, now);
+            }
         }
         acp::Event::Diagnostic(text) => ui.view.notice(text, Color::DarkGray, now),
-        acp::Event::Permission(request, responder) => {
+        acp::Event::Permission(id, request, responder) => {
+            if !session.accepts(&id) {
+                responder.respond(RequestPermissionResponse::new(
+                    RequestPermissionOutcome::Cancelled,
+                ))?;
+                return Ok(());
+            }
             let first = session.pending.is_empty();
             session.permission(request, responder)?;
             if first && !session.pending.is_empty() {
@@ -501,7 +667,10 @@ fn handle(
                 terminal.bell()?;
             }
         }
-        acp::Event::Finished(result) => {
+        acp::Event::Finished(id, result) => {
+            if !session.accepts(&id) {
+                return Ok(());
+            }
             let queued = session.finished()?;
             ui.view.end_turn(now);
             terminal.unseen = (!terminal.focused).then_some(if result.is_err() {
@@ -536,7 +705,9 @@ pub async fn run(
     let mut ui = Ui::default();
     let mut tick = tokio::time::interval(Duration::from_secs(1));
     loop {
-        terminal.status(if !session.pending.is_empty() {
+        terminal.status(if ui.session_picker.is_some() {
+            "resume session"
+        } else if !session.pending.is_empty() {
             "needs permission"
         } else if session.busy {
             "working"
@@ -552,6 +723,7 @@ pub async fn run(
                 request,
                 selected: ui.selected,
             }),
+            session_picker: ui.session_picker.as_ref(),
             settings: &settings,
             usage: &usage,
             show_thinking: ui.show_thinking,
@@ -567,6 +739,10 @@ pub async fn run(
                 handle(&mut ui, &mut session, &mut terminal, event, Instant::now())?;
                 while let Ok(event) = events.try_recv() {
                     handle(&mut ui, &mut session, &mut terminal, event, Instant::now())?;
+                }
+                if ui.resume_after_turn && !session.busy {
+                    ui.resume_after_turn = false;
+                    open_picker(&mut ui, &mut session, Instant::now()).await;
                 }
             }
             _ = tick.tick() => {}
@@ -645,6 +821,7 @@ mod tests {
             view,
             input,
             approval: None,
+            session_picker: None,
             settings: "",
             usage: "0% • $0.00",
             show_thinking: false,
@@ -810,10 +987,77 @@ mod tests {
         assert_eq!(cursor, (2, 3));
     }
 
+    #[test]
+    fn session_picker_sorts_dates_and_keeps_selection_visible() {
+        let mut picker = SessionPicker {
+            sessions: sorted_sessions(vec![
+                SessionInfo::new("a", "/tmp")
+                    .title("older")
+                    .updated_at("2026-09-28T00:30:00+05:00"),
+                SessionInfo::new("b", "/tmp")
+                    .title("newer")
+                    .updated_at("2026-09-27T23:00:00Z"),
+                SessionInfo::new("c", "/tmp").title("undated"),
+            ]),
+            selected: 0,
+            first: 0,
+            error: None,
+        };
+        assert_eq!(
+            picker
+                .sessions
+                .iter()
+                .map(|item| item.session_id.to_string())
+                .collect::<Vec<_>>(),
+            ["b", "a", "c"]
+        );
+        let view = TranscriptView::default();
+        let input = Input::default();
+        let layout = {
+            let mut display = screen(&view, &input, Instant::now());
+            display.session_picker = Some(&picker);
+            let (rows, _, layout) = render(&display, 40, 8);
+            assert!(rows[2].contains("newer"));
+            assert!(rows[2].contains("2026-09-27"));
+            layout
+        };
+        picker.move_to(2, layout.height);
+        let mut screen = screen(&view, &input, Instant::now());
+        screen.session_picker = Some(&picker);
+        let (rows, _, _) = render(&screen, 40, 8);
+        assert!(
+            rows.iter()
+                .any(|row| row.contains("› undated") && row.contains("Unknown date"))
+        );
+    }
+
+    #[tokio::test]
+    async fn resume_keys_cancel_or_reload_the_current_session() {
+        with_session(async |mut session, _events| {
+            let old = session.id().clone();
+            let mut ui = Ui::default();
+            let now = Instant::now();
+            ui.input.paste("/resume");
+            press(&mut ui, &mut session, KeyCode::Enter, now).await?;
+            assert!(ui.session_picker.is_some());
+            press(&mut ui, &mut session, KeyCode::Esc, now).await?;
+            assert!(ui.session_picker.is_none());
+            assert_eq!(session.id(), &old);
+            ui.input.paste("/resume");
+            press(&mut ui, &mut session, KeyCode::Enter, now).await?;
+            press(&mut ui, &mut session, KeyCode::Enter, now).await?;
+            assert!(ui.session_picker.is_none());
+            assert_eq!(session.id(), &old);
+            assert!(session.active());
+            Ok(())
+        })
+        .await;
+    }
+
     /// Collects the `tools` script's two permission requests.
     async fn requests(session: &mut Session, events: &mut UnboundedReceiver<AcpEvent>) {
         while session.pending.len() < 2 {
-            if let AcpEvent::Permission(request, responder) = events.recv().await.unwrap() {
+            if let AcpEvent::Permission(_, request, responder) = events.recv().await.unwrap() {
                 session.permission(request, responder).unwrap();
             }
         }
@@ -884,10 +1128,10 @@ mod tests {
             assert!(ui.input.is_empty());
             let queued = loop {
                 match events.recv().await.unwrap() {
-                    AcpEvent::Permission(request, responder) => {
+                    AcpEvent::Permission(_, request, responder) => {
                         session.permission(request, responder)?;
                     }
-                    AcpEvent::Finished(_) => break session.finished()?,
+                    AcpEvent::Finished(..) => break session.finished()?,
                     _ => {}
                 }
             };

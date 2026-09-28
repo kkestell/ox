@@ -13,18 +13,23 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use crate::{config::ServerConfig, tui};
 
 pub enum Event {
-    Update(SessionUpdate),
+    Update(SessionId, SessionUpdate),
     Permission(
+        SessionId,
         RequestPermissionRequest,
         Responder<RequestPermissionResponse>,
     ),
-    Finished(agent_client_protocol::Result<PromptResponse>),
+    Finished(SessionId, agent_client_protocol::Result<PromptResponse>),
     Diagnostic(String),
 }
 
 pub struct Session {
     connection: ConnectionTo<Agent>,
     id: SessionId,
+    active: bool,
+    loading: Option<SessionId>,
+    directory: PathBuf,
+    can_resume: bool,
     events: UnboundedSender<Event>,
     pub pending: VecDeque<(
         RequestPermissionRequest,
@@ -39,6 +44,71 @@ pub struct Session {
 }
 
 impl Session {
+    #[cfg(test)]
+    pub fn id(&self) -> &SessionId {
+        &self.id
+    }
+    pub fn active(&self) -> bool {
+        self.active
+    }
+
+    pub fn accepts(&self, id: &SessionId) -> bool {
+        (self.active && self.id == *id) || self.loading.as_ref() == Some(id)
+    }
+
+    pub fn can_resume(&self) -> bool {
+        self.can_resume
+    }
+
+    pub async fn list(&mut self) -> anyhow::Result<Vec<SessionInfo>> {
+        let mut sessions = Vec::new();
+        let mut cursor = None;
+        loop {
+            let response = self
+                .connection
+                .send_request(
+                    ListSessionsRequest::new()
+                        .cwd(self.directory.clone())
+                        .cursor(cursor),
+                )
+                .block_task()
+                .await?;
+            sessions.extend(response.sessions);
+            cursor = response.next_cursor;
+            if cursor.is_none() {
+                return Ok(sessions);
+            }
+        }
+    }
+
+    pub async fn close(&mut self) -> anyhow::Result<()> {
+        self.connection
+            .send_request(CloseSessionRequest::new(self.id.clone()))
+            .block_task()
+            .await?;
+        self.active = false;
+        self.busy = false;
+        self.queued = None;
+        self.pending.clear();
+        self.config_options.clear();
+        self.usage = None;
+        Ok(())
+    }
+
+    pub async fn load(&mut self, id: SessionId) -> anyhow::Result<()> {
+        self.loading = Some(id.clone());
+        let response = self
+            .connection
+            .send_request(LoadSessionRequest::new(id.clone(), self.directory.clone()))
+            .block_task()
+            .await;
+        self.loading = None;
+        let response = response?;
+        self.id = id;
+        self.active = true;
+        self.config_options = response.config_options.unwrap_or_default();
+        Ok(())
+    }
     pub async fn set_config_option(
         &mut self,
         id: SessionConfigId,
@@ -68,9 +138,10 @@ impl Session {
         let connection = self.connection.clone();
         let events = self.events.clone();
         let request = PromptRequest::new(self.id.clone(), vec![text.into()]);
+        let id = self.id.clone();
         self.connection.spawn(async move {
             let response = connection.send_request(request).block_task().await;
-            let _ = events.send(Event::Finished(response));
+            let _ = events.send(Event::Finished(id, response));
             Ok(())
         })?;
         Ok(())
@@ -162,7 +233,7 @@ impl Session {
     }
 }
 
-pub async fn initialize(connection: &ConnectionTo<Agent>) -> anyhow::Result<()> {
+pub async fn initialize(connection: &ConnectionTo<Agent>) -> anyhow::Result<AgentCapabilities> {
     let response = connection
         .send_request(
             InitializeRequest::new(ProtocolVersion::V1)
@@ -175,7 +246,7 @@ pub async fn initialize(connection: &ConnectionTo<Agent>) -> anyhow::Result<()> 
         "the server uses ACP version {}; ox supports only version 1",
         response.protocol_version
     );
-    Ok(())
+    Ok(response.agent_capabilities)
 }
 
 pub async fn start(server: &ServerConfig, directory: PathBuf) -> anyhow::Result<()> {
@@ -214,7 +285,8 @@ where
             {
                 let events = events.clone();
                 async move |notification: SessionNotification, _connection| {
-                    let _ = events.send(Event::Update(notification.update));
+                    let _ =
+                        events.send(Event::Update(notification.session_id, notification.update));
                     Ok(())
                 }
             },
@@ -224,7 +296,11 @@ where
             {
                 let events = events.clone();
                 async move |request: RequestPermissionRequest, responder, _connection| {
-                    let _ = events.send(Event::Permission(request, responder));
+                    let _ = events.send(Event::Permission(
+                        request.session_id.clone(),
+                        request,
+                        responder,
+                    ));
                     Ok(())
                 }
             },
@@ -232,16 +308,17 @@ where
         )
         .connect_with(server, async move |connection: ConnectionTo<Agent>| {
             let started = tokio::time::timeout(Duration::from_secs(30), async {
-                initialize(&connection).await?;
-                Ok::<_, anyhow::Error>(
+                let capabilities = initialize(&connection).await?;
+                Ok::<_, anyhow::Error>((
+                    capabilities,
                     connection
-                        .send_request(NewSessionRequest::new(directory))
+                        .send_request(NewSessionRequest::new(directory.clone()))
                         .block_task()
                         .await?,
-                )
+                ))
             })
             .await;
-            let session = match started {
+            let (capabilities, session) = match started {
                 Ok(Ok(session)) => session,
                 Ok(Err(error)) => return Ok(Err(error)),
                 Err(_) => return Ok(Err(anyhow::anyhow!("server startup timed out"))),
@@ -250,6 +327,12 @@ where
                 Session {
                     connection,
                     id: session.session_id,
+                    active: true,
+                    loading: None,
+                    directory,
+                    can_resume: capabilities.load_session
+                        && capabilities.session_capabilities.list.is_some()
+                        && capabilities.session_capabilities.close.is_some(),
                     events,
                     pending: VecDeque::new(),
                     busy: false,
@@ -301,18 +384,18 @@ pub mod tests {
         let mut choices = choices.iter();
         loop {
             match events.recv().await.unwrap() {
-                Event::Update(SessionUpdate::AgentMessageChunk(chunk)) => {
+                Event::Update(_, SessionUpdate::AgentMessageChunk(chunk)) => {
                     if let ContentBlock::Text(chunk) = chunk.content {
                         text.push_str(&chunk.text);
                     }
                 }
-                Event::Permission(request, responder) => {
+                Event::Permission(_, request, responder) => {
                     session.permission(request, responder).unwrap();
                     if let Some(choice) = choices.next() {
                         assert!(session.answer(*choice).unwrap());
                     }
                 }
-                Event::Finished(result) => {
+                Event::Finished(_, result) => {
                     assert!(session.finished().unwrap().is_none());
                     return (text, result.is_ok());
                 }
@@ -344,11 +427,90 @@ pub mod tests {
     }
 
     #[tokio::test]
+    async fn resume_lists_every_page_and_loads_a_different_session_after_close() {
+        with_session(async |mut session, mut events| {
+            assert!(session.can_resume());
+            let old = session.id.clone();
+            session.prompt("title".into())?;
+            turn(&mut session, &mut events, &[]).await;
+            let newer = session
+                .connection
+                .send_request(NewSessionRequest::new(session.directory.clone()))
+                .block_task()
+                .await?
+                .session_id;
+            let listed = session.list().await?;
+            assert_eq!(listed.len(), 2);
+            assert_eq!(listed[0].session_id, old);
+            assert_eq!(listed[0].title.as_deref(), Some("tallies"));
+            assert!(listed.iter().all(|item| item.updated_at.is_some()));
+            session.set_config_option("mode".into(), "auto".into()).await?;
+            session.close().await?;
+            assert!(!session.active());
+            assert!(session.config_options.is_empty());
+            assert!(session.usage.is_none());
+            session.load(newer.clone()).await?;
+            assert!(session.active());
+            assert_eq!(session.id, newer);
+            assert_eq!(session.config_options.len(), 2);
+            let mode = session.config_options.iter().find(|option| option.id.0.as_ref() == "mode").unwrap();
+            assert!(matches!(&mode.kind, SessionConfigKind::Select(select) if select.current_value.0.as_ref() == "ask"));
+            session.prompt("after".into())?;
+            assert_eq!(
+                turn(&mut session, &mut events, &[]).await.0,
+                "you said: after"
+            );
+            Ok(())
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn failed_load_can_be_followed_by_another_selection() {
+        with_session(async |mut session, mut events| {
+            let old = session.id.clone();
+            session.prompt("unloadable".into())?;
+            turn(&mut session, &mut events, &[]).await;
+            let other = session
+                .connection
+                .send_request(NewSessionRequest::new(session.directory.clone()))
+                .block_task()
+                .await?
+                .session_id;
+            session.close().await?;
+            assert!(session.load(old).await.is_err());
+            assert!(!session.active());
+            session.load(other).await?;
+            assert!(session.active());
+            Ok(())
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn resume_requires_advertised_list_load_and_close_capabilities() {
+        let (events, receiver) = unbounded_channel();
+        run(
+            fake_server(Hold::default(), SavedHistory::unadvertised()),
+            std::env::current_dir().unwrap(),
+            events,
+            receiver,
+            async |session, _| {
+                assert!(!session.can_resume());
+                assert!(session.active());
+                Ok(())
+            },
+        )
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
     async fn simultaneous_permissions_keep_their_supplied_option_ids() {
         with_session(async |mut session, mut events| {
             session.prompt("tools".into())?;
             while session.pending.len() < 2 {
-                if let Event::Permission(request, responder) = events.recv().await.unwrap() {
+                if let Event::Permission(_, request, responder) = events.recv().await.unwrap() {
                     session.permission(request, responder)?;
                 }
             }
@@ -372,7 +534,7 @@ pub mod tests {
         with_session(async |mut session, mut events| {
             session.prompt("tools".into())?;
             while session.pending.len() < 2 {
-                if let Event::Permission(request, responder) = events.recv().await.unwrap() {
+                if let Event::Permission(_, request, responder) = events.recv().await.unwrap() {
                     session.permission(request, responder)?;
                 }
             }
@@ -396,7 +558,7 @@ pub mod tests {
             session.prompt("running".into())?;
             while !matches!(
                 events.recv().await.unwrap(),
-                Event::Update(SessionUpdate::AgentMessageChunk(_))
+                Event::Update(_, SessionUpdate::AgentMessageChunk(_))
             ) {}
             session.cancel()?;
             assert_eq!(
@@ -414,19 +576,19 @@ pub mod tests {
             session.prompt("running".into())?;
             while !matches!(
                 events.recv().await.unwrap(),
-                Event::Update(SessionUpdate::AgentMessageChunk(_))
+                Event::Update(_, SessionUpdate::AgentMessageChunk(_))
             ) {}
             session.prompt("next".into())?;
             assert_eq!(session.queued.as_deref(), Some("next"));
             let mut text = String::new();
             let queued = loop {
                 match events.recv().await.unwrap() {
-                    Event::Update(SessionUpdate::AgentMessageChunk(chunk)) => {
+                    Event::Update(_, SessionUpdate::AgentMessageChunk(chunk)) => {
                         if let ContentBlock::Text(chunk) = chunk.content {
                             text.push_str(&chunk.text);
                         }
                     }
-                    Event::Finished(result) => {
+                    Event::Finished(_, result) => {
                         assert!(result.is_ok());
                         break session.finished()?;
                     }
@@ -497,7 +659,8 @@ pub mod tests {
                 async |mut session, mut events| {
                     session.prompt("tools".into())?;
                     while session.pending.len() < 2 {
-                        if let Event::Permission(request, responder) = events.recv().await.unwrap()
+                        if let Event::Permission(_, request, responder) =
+                            events.recv().await.unwrap()
                         {
                             session.permission(request, responder)?;
                         }

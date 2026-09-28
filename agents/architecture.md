@@ -9,9 +9,10 @@ prints the answer.
 
 ## Client boundary
 
-The client launches one configured ACP server and creates one session. It owns
-terminal input, output, permission responses, and cancellation. The server owns
-saved sessions. The client can launch `ox-acp` or another compatible ACP server.
+The client launches one configured ACP server and creates one session, then can
+close it and load another saved session in the workspace. It owns terminal
+input, output, permission responses, and cancellation. The server owns saved
+sessions. The client can launch `ox-acp` or another compatible ACP server.
 
 ## Components
 
@@ -67,8 +68,8 @@ Credentials never enter a session or a child process.
   main turn ends, its subagents are stopped.
 - **Shell processes**: background commands that outlive a tool call. Each
   belongs to the agent that started it, within one active session, and only that
-  agent can reach it. They end when the session is deleted, the connection shuts
-  down, or their subagent ends.
+  agent can reach it. They end when the session is closed or deleted, the
+  connection shuts down, or their subagent ends.
 
 ## Concurrency and cancellation
 

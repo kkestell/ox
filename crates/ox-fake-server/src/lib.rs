@@ -9,16 +9,17 @@ use std::sync::{Arc, Mutex};
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::schema::v1::{
     AgentCapabilities, AvailableCommand, AvailableCommandsUpdate, CancelNotification,
-    ConfigOptionUpdate, ContentBlock, ContentChunk, Cost, DeleteSessionRequest,
-    DeleteSessionResponse, InitializeRequest, InitializeResponse, ListSessionsRequest,
-    ListSessionsResponse, LoadSessionRequest, LoadSessionResponse, NewSessionRequest,
-    NewSessionResponse, PermissionOption, PermissionOptionKind, PromptCapabilities, PromptRequest,
-    PromptResponse, RequestPermissionOutcome, RequestPermissionRequest, SessionCapabilities,
-    SessionConfigOption, SessionConfigOptionCategory, SessionConfigOptionValue,
-    SessionConfigSelectOption, SessionDeleteCapabilities, SessionId, SessionInfo,
-    SessionInfoUpdate, SessionListCapabilities, SessionNotification, SessionUpdate,
-    SetSessionConfigOptionRequest, SetSessionConfigOptionResponse, StopReason, ToolCall,
-    ToolCallContent, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, ToolKind, UsageUpdate,
+    CloseSessionRequest, CloseSessionResponse, ConfigOptionUpdate, ContentBlock, ContentChunk,
+    Cost, DeleteSessionRequest, DeleteSessionResponse, InitializeRequest, InitializeResponse,
+    ListSessionsRequest, ListSessionsResponse, LoadSessionRequest, LoadSessionResponse,
+    NewSessionRequest, NewSessionResponse, PermissionOption, PermissionOptionKind,
+    PromptCapabilities, PromptRequest, PromptResponse, RequestPermissionOutcome,
+    RequestPermissionRequest, SessionCapabilities, SessionCloseCapabilities, SessionConfigOption,
+    SessionConfigOptionCategory, SessionConfigOptionValue, SessionConfigSelectOption,
+    SessionDeleteCapabilities, SessionId, SessionInfo, SessionInfoUpdate, SessionListCapabilities,
+    SessionNotification, SessionUpdate, SetSessionConfigOptionRequest,
+    SetSessionConfigOptionResponse, StopReason, ToolCall, ToolCallContent, ToolCallStatus,
+    ToolCallUpdate, ToolCallUpdateFields, ToolKind, UsageUpdate,
 };
 use agent_client_protocol::{
     Agent, Client, ConnectTo, ConnectionTo, on_receive_notification, on_receive_request,
@@ -83,8 +84,7 @@ struct Saved {
     /// The file the saved history is written to after every change, if any.
     #[serde(skip)]
     file: Option<PathBuf>,
-    /// Whether the fake server advertises `loadSession`, `session/list`, and
-    /// `session/delete`.
+    /// Whether the fake server advertises saved-session operations.
     advertised: bool,
     image: bool,
     delete: bool,
@@ -98,6 +98,8 @@ struct SavedSession {
     id: SessionId,
     cwd: PathBuf,
     title: Option<String>,
+    #[serde(default)]
+    updated_at: Option<String>,
     /// Every update sent for the session, and a `user_message_chunk` for each
     /// prompt's text.
     updates: Vec<SessionUpdate>,
@@ -133,7 +135,7 @@ fn config_options(pace: &str, mode: &str) -> Vec<SessionConfigOption> {
 }
 
 impl Default for SavedHistory {
-    /// Saved history with `loadSession`, `session/list`, and `session/delete`
+    /// Saved history with load, list, close, and delete
     /// advertised.
     fn default() -> SavedHistory {
         SavedHistory::new(true)
@@ -141,8 +143,8 @@ impl Default for SavedHistory {
 }
 
 impl SavedHistory {
-    /// Saved history with none of `loadSession`, `session/list`, and
-    /// `session/delete` advertised. Those methods answer method not found.
+    /// Saved history without load, list, close, or delete. Those methods answer
+    /// method not found.
     pub fn unadvertised() -> SavedHistory {
         SavedHistory::new(false)
     }
@@ -239,8 +241,8 @@ impl SavedHistory {
 }
 
 /// The fake server. It advertises protocol version 1, image prompts, and,
-/// unless `history` is unadvertised, `loadSession`, `session/list`, and
-/// `session/delete`. It names sessions `fake-1`, `fake-2`, and so on, and
+/// unless `history` is unadvertised, load, list, close, and delete. It names
+/// sessions `fake-1`, `fake-2`, and so on, and
 /// sends an `available_commands_update` right after each `session/new`
 /// response. Every session has the select config option `pace`, which
 /// `session/new` and `session/load` return. `session/list` returns one session
@@ -274,8 +276,9 @@ pub fn fake_server(hold: Hold, history: SavedHistory) -> impl ConnectTo<Client> 
                     let mut capabilities = AgentCapabilities::new()
                         .prompt_capabilities(PromptCapabilities::new().image(history.image()));
                     if history.advertised() {
-                        let mut sessions =
-                            SessionCapabilities::new().list(SessionListCapabilities::new());
+                        let mut sessions = SessionCapabilities::new()
+                            .list(SessionListCapabilities::new())
+                            .close(SessionCloseCapabilities::new());
                         if history.can_delete() {
                             sessions = sessions.delete(SessionDeleteCapabilities::new());
                         }
@@ -305,6 +308,10 @@ pub fn fake_server(hold: Hold, history: SavedHistory) -> impl ConnectTo<Client> 
                             id: session.clone(),
                             cwd: request.cwd,
                             title: None,
+                            updated_at: Some(format!(
+                                "2026-09-{:02}T12:00:00Z",
+                                saved.created.min(28)
+                            )),
                             updates: Vec::new(),
                             unloadable: false,
                             pace: "steady".to_string(),
@@ -358,6 +365,7 @@ pub fn fake_server(hold: Hold, history: SavedHistory) -> impl ConnectTo<Client> 
                         .map(|session| {
                             SessionInfo::new(session.id.clone(), session.cwd.clone())
                                 .title(session.title.clone())
+                                .updated_at(session.updated_at.clone())
                         })
                         .into_iter()
                         .collect();
@@ -450,6 +458,26 @@ pub fn fake_server(hold: Hold, history: SavedHistory) -> impl ConnectTo<Client> 
                     responder.respond(SetSessionConfigOptionResponse::new(config_options(
                         &pace, &mode,
                     )))
+                }
+            },
+            on_receive_request!(),
+        )
+        .on_receive_request(
+            {
+                let history = history.clone();
+                let loaded = loaded.clone();
+                async move |request: CloseSessionRequest, responder, _connection| {
+                    if !history.advertised() {
+                        return responder
+                            .respond_with_error(agent_client_protocol::Error::method_not_found());
+                    }
+                    if !loaded.lock().unwrap().remove(&request.session_id) {
+                        return responder.respond_with_internal_error(format!(
+                            "session {} is not loaded",
+                            request.session_id
+                        ));
+                    }
+                    responder.respond(CloseSessionResponse::new())
                 }
             },
             on_receive_request!(),

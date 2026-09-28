@@ -18,7 +18,6 @@ pub struct Rows {
 }
 
 impl Input {
-    #[cfg(test)]
     pub fn text(&self) -> &str {
         &self.text
     }

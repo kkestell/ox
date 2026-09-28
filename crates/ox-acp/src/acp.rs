@@ -18,15 +18,16 @@ use agent_client_protocol::{
     schema::ProtocolVersion,
     schema::v1::{
         AgentAuthCapabilities, AgentCapabilities, AuthMethod, AuthMethodTerminal, AvailableCommand,
-        AvailableCommandInput, AvailableCommandsUpdate, CancelNotification, DeleteSessionRequest,
-        DeleteSessionResponse, InitializeRequest, InitializeResponse, ListSessionsRequest,
-        ListSessionsResponse, LoadSessionRequest, LoadSessionResponse, LogoutCapabilities,
-        LogoutRequest, LogoutResponse, NewSessionRequest, NewSessionResponse, PromptCapabilities,
-        PromptRequest, PromptResponse, SessionCapabilities, SessionConfigOption,
-        SessionConfigOptionCategory, SessionConfigOptionValue, SessionConfigSelectOption,
-        SessionDeleteCapabilities, SessionId, SessionInfo, SessionListCapabilities,
-        SessionNotification, SessionUpdate, SetSessionConfigOptionRequest,
-        SetSessionConfigOptionResponse, StopReason, UnstructuredCommandInput,
+        AvailableCommandInput, AvailableCommandsUpdate, CancelNotification, CloseSessionRequest,
+        CloseSessionResponse, DeleteSessionRequest, DeleteSessionResponse, InitializeRequest,
+        InitializeResponse, ListSessionsRequest, ListSessionsResponse, LoadSessionRequest,
+        LoadSessionResponse, LogoutCapabilities, LogoutRequest, LogoutResponse, NewSessionRequest,
+        NewSessionResponse, PromptCapabilities, PromptRequest, PromptResponse, SessionCapabilities,
+        SessionCloseCapabilities, SessionConfigOption, SessionConfigOptionCategory,
+        SessionConfigOptionValue, SessionConfigSelectOption, SessionDeleteCapabilities, SessionId,
+        SessionInfo, SessionListCapabilities, SessionNotification, SessionUpdate,
+        SetSessionConfigOptionRequest, SetSessionConfigOptionResponse, StopReason,
+        UnstructuredCommandInput,
     },
 };
 use futures::StreamExt;
@@ -175,7 +176,7 @@ struct ActiveSession {
     skills: Vec<Skill>,
     /// Background commands started by this session's agents. The main
     /// agent's outlive prompt runs and repeated loads; each subagent's end
-    /// with it. All stop when the session is deleted or the connection shuts
+    /// with it. All stop when the session is closed or deleted or the connection shuts
     /// down.
     shell_processes: ShellProcesses,
 }
@@ -501,6 +502,23 @@ impl ServerState {
         Ok(DeleteSessionResponse::new())
     }
 
+    async fn close_session(&self, request: &CloseSessionRequest) -> Result<CloseSessionResponse> {
+        let _guard = self
+            .operations
+            .begin_close(&request.session_id)
+            .await
+            .ok_or_else(|| self.unavailable())?;
+        let active = self
+            .active_session(&request.session_id)
+            .ok_or_else(|| inactive(&request.session_id))?;
+        active.shell_processes.shutdown().await;
+        self.active
+            .lock()
+            .expect("active sessions mutex poisoned")
+            .remove(&request.session_id);
+        Ok(CloseSessionResponse::new())
+    }
+
     fn all_shell_processes(&self) -> Vec<ShellProcesses> {
         self.active
             .lock()
@@ -769,6 +787,7 @@ fn initialize_response(initialize: &InitializeRequest) -> InitializeResponse {
             .session_capabilities(
                 SessionCapabilities::new()
                     .list(SessionListCapabilities::new())
+                    .close(SessionCloseCapabilities::new())
                     .delete(SessionDeleteCapabilities::new()),
             )
             .auth(AgentAuthCapabilities::new().logout(LogoutCapabilities::new())),
@@ -960,6 +979,7 @@ async fn serve(
     let load_state = state.clone();
     let list_state = state.clone();
     let delete_state = state.clone();
+    let close_session_state = state.clone();
     let config_state = state.clone();
     let logout_state = state.clone();
     let prompt_state = state.clone();
@@ -994,6 +1014,14 @@ async fn serve(
         .on_receive_request(
             async move |request: ListSessionsRequest, responder, _connection| {
                 reply(responder, list_state.list_sessions(&request))
+            },
+            agent_client_protocol::on_receive_request!(),
+        )
+        .on_receive_request(
+            async move |request: CloseSessionRequest, responder, connection| {
+                let state = close_session_state.clone();
+                connection
+                    .spawn(async move { reply(responder, state.close_session(&request).await) })
             },
             agent_client_protocol::on_receive_request!(),
         )
@@ -1195,6 +1223,56 @@ mod tests {
             .new_session(&NewSessionRequest::new(workspace_path))
             .unwrap()
             .session_id
+    }
+
+    #[tokio::test]
+    async fn closing_stops_shell_processes_and_keeps_the_saved_session_loadable() {
+        let workspace = Workspace::new();
+        let state = state();
+        let id = create_session(&state, &workspace.0);
+        start_shell_process(&state, &id, &workspace.0, "exec sleep 30");
+        assert_eq!(
+            state
+                .active_session(&id)
+                .unwrap()
+                .shell_processes
+                .list(&id)
+                .len(),
+            1
+        );
+        state
+            .close_session(&CloseSessionRequest::new(id.clone()))
+            .await
+            .unwrap();
+        assert!(state.active_session(&id).is_none());
+        assert!(state.store.read(&id).unwrap().is_some());
+        assert!(
+            state
+                .load_session(&LoadSessionRequest::new(id.clone(), &workspace.0), |_| Ok(
+                    ()
+                ))
+                .is_ok()
+        );
+        assert!(state.active_session(&id).is_some());
+    }
+
+    #[tokio::test]
+    async fn close_waits_for_a_cancelled_prompt_before_deactivating() {
+        use futures::FutureExt;
+
+        let workspace = Workspace::new();
+        let state = state();
+        let id = create_session(&state, &workspace.0);
+        let (prompt, cancellation) = state.operations.try_prompt(&id).unwrap();
+        let request = CloseSessionRequest::new(id.clone());
+        let mut close = Box::pin(state.close_session(&request));
+        assert!(close.as_mut().now_or_never().is_none());
+        assert!(cancellation.is_cancelled());
+        assert!(state.active_session(&id).is_some());
+        assert!(state.operations.try_load(&id).is_none());
+        drop(prompt);
+        close.await.unwrap();
+        assert!(state.active_session(&id).is_none());
     }
 
     #[test]

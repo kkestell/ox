@@ -187,6 +187,42 @@ const APPROVAL: &str = "Would you like to allow the following?";
 
 #[test]
 #[ignore = "requires tmux; run make e2e"]
+fn resume_picker_shows_saved_session_and_replays_on_enter() {
+    let test = Tmux::new();
+    test.prompt("title");
+    test.prompt("original transcript");
+    test.wait("you said: original transcript");
+    test.prompt("/resume");
+    test.wait("Resume a session");
+    test.wait("tallies");
+    test.wait("2026-09-01");
+    test.keys(&["Escape"]);
+    test.wait_gone("Resume a session");
+    test.wait("you said: original transcript");
+    test.prompt("/resume");
+    test.wait("Resume a session");
+    test.keys(&["Enter"]);
+    test.wait_gone("Resume a session");
+    test.wait("you said: original transcript");
+    test.prompt("after resume");
+    test.wait("you said: after resume");
+}
+
+#[test]
+#[ignore = "requires tmux; run make e2e"]
+fn resume_during_prompt_cancels_before_showing_the_picker() {
+    let test = Tmux::new();
+    test.prompt("running");
+    test.wait("running; waiting for cancellation");
+    test.prompt("/resume");
+    test.wait("Resume a session");
+    test.keys(&["Escape"]);
+    test.wait("cancelled");
+    assert!(!test.screen().contains("you said: /resume"));
+}
+
+#[test]
+#[ignore = "requires tmux; run make e2e"]
 fn terminal_keys_send_interrupt_approve_scroll_and_restore_the_shell() {
     let test = Tmux::new();
     test.prompt("stream");

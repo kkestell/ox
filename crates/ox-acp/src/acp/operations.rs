@@ -1,4 +1,4 @@
-//! Allows at most one prompt, load, or delete to run for a session at a time.
+//! Allows at most one prompt, load, close, or delete to run for a session at a time.
 //! `/compact` arrives as a prompt request and runs as a prompt operation. An
 //! operation starts only when it acquires a guard and ends when that guard is
 //! dropped. Once connection shutdown begins, no operation starts.
@@ -25,6 +25,7 @@ pub struct SessionOperations(Arc<Mutex<OperationsState>>);
 #[derive(Default)]
 struct OperationsState {
     active: HashMap<SessionId, Operation>,
+    closing: HashMap<SessionId, Option<oneshot::Sender<()>>>,
     drained: Option<oneshot::Sender<()>>,
     /// Set when connection shutdown begins.
     closed: bool,
@@ -32,6 +33,12 @@ struct OperationsState {
 
 /// Keeps one session busy. Dropping it makes the session available again.
 pub struct OperationGuard {
+    operations: SessionOperations,
+    session_id: SessionId,
+}
+
+/// Reserves a session while its active state is being released.
+pub struct CloseGuard {
     operations: SessionOperations,
     session_id: SessionId,
 }
@@ -52,6 +59,35 @@ impl SessionOperations {
 
     pub fn try_delete(&self, session_id: &SessionId) -> Option<OperationGuard> {
         self.acquire(session_id, Operation::Delete)
+    }
+
+    /// Cancels a prompt and waits for any operation to finish while refusing
+    /// new operations for this session.
+    pub async fn begin_close(&self, session_id: &SessionId) -> Option<CloseGuard> {
+        let wait = {
+            let mut state = self.lock();
+            if state.closed || state.closing.contains_key(session_id) {
+                return None;
+            }
+            if let Some(operation) = state.active.get(session_id) {
+                if let Operation::Prompt(cancellation) = operation {
+                    cancellation.cancel();
+                }
+                let (sender, receiver) = oneshot::channel();
+                state.closing.insert(session_id.clone(), Some(sender));
+                Some(receiver)
+            } else {
+                state.closing.insert(session_id.clone(), None);
+                None
+            }
+        };
+        if let Some(wait) = wait {
+            wait.await.expect("operation guard signals close");
+        }
+        Some(CloseGuard {
+            operations: self.clone(),
+            session_id: session_id.clone(),
+        })
     }
 
     /// Signals the active prompt, including a running `/compact`. Does nothing
@@ -103,7 +139,7 @@ impl SessionOperations {
 
     fn acquire(&self, session_id: &SessionId, operation: Operation) -> Option<OperationGuard> {
         let mut state = self.lock();
-        if state.closed {
+        if state.closed || state.closing.contains_key(session_id) {
             return None;
         }
         match state.active.entry(session_id.clone()) {
@@ -127,11 +163,20 @@ impl Drop for OperationGuard {
     fn drop(&mut self) {
         let mut state = self.operations.lock();
         state.active.remove(&self.session_id);
+        if let Some(Some(waiter)) = state.closing.get_mut(&self.session_id).map(Option::take) {
+            let _ = waiter.send(());
+        }
         if state.active.is_empty()
             && let Some(drained) = state.drained.take()
         {
             let _ = drained.send(());
         }
+    }
+}
+
+impl Drop for CloseGuard {
+    fn drop(&mut self) {
+        self.operations.lock().closing.remove(&self.session_id);
     }
 }
 
@@ -219,5 +264,22 @@ mod tests {
             !later.is_cancelled(),
             "a stale cancel does not reach a later prompt"
         );
+    }
+
+    #[test]
+    fn close_cancels_a_prompt_and_reserves_the_session_until_cleanup_finishes() {
+        let operations = SessionOperations::default();
+        let session = id("a");
+        let (guard, cancellation) = operations.try_prompt(&session).unwrap();
+        let mut closing = Box::pin(operations.begin_close(&session));
+        assert!(closing.as_mut().now_or_never().is_none());
+        assert!(cancellation.is_cancelled());
+        assert!(operations.try_load(&session).is_none());
+        assert!(operations.try_prompt(&id("b")).is_some());
+        drop(guard);
+        let close_guard = closing.now_or_never().unwrap().unwrap();
+        assert!(operations.try_prompt(&session).is_none());
+        drop(close_guard);
+        assert!(operations.try_load(&session).is_some());
     }
 }

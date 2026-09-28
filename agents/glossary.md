@@ -47,10 +47,11 @@
   never shown as reasoning.
 - **Compaction checkpoint**: A saved summary that replaces older transcript in
   later model requests, without deleting it.
-- **Session operation**: A prompt, load, or delete. At most one runs per session
-  at a time.
+- **Session operation**: A prompt, load, close, or delete. At most one runs per
+  session at a time.
 - **Shell process**: A background command that outlives the tool call that
-  started it, reachable only by the agent that started it.
+  started it, reachable only by the agent that started it. It ends when its
+  active session closes.
 - **Skill**: Instructions from a skills directory, invoked as a slash command.
 - **Workspace instructions**: The workspace's `AGENTS.md`, added to the system
   prompt.
