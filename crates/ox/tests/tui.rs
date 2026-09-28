@@ -222,6 +222,7 @@ fn model_picker_shows_prices_and_changes_the_model() {
         )),
         "{screen}"
     );
+    assert!(!screen.contains("0% • $0.00"), "{screen}");
     test.keys(&["Down", "Enter"]);
     test.wait_gone("Choose a model");
     test.wait("ask • gemma");

@@ -250,35 +250,34 @@ fn put(buf: &mut Buffer, area: Rect, y: usize, line: &Line) {
 pub fn draw(frame: &mut Frame, screen: &Screen) -> Layout {
     let area = frame.area();
     let width = usize::from(area.width);
+    // A picker fills the screen, hiding the approval dialog, the composer, and
+    // the cursor.
+    if let Some(picker) = screen.picker {
+        let height = usize::from(area.height);
+        let lines = picker_lines(picker, width, height);
+        for (y, line) in lines.iter().take(height).enumerate() {
+            put(frame.buffer_mut(), area, y, line);
+        }
+        return Layout {
+            height,
+            lines: lines.len(),
+        };
+    }
     let rows = screen.input.rows(area.width);
     let approval = screen
-        .picker
-        .is_none()
-        .then_some(())
-        .and(
-            screen
-                .approval
-                .as_ref()
-                .map(|approval| approval_lines(screen.view, approval, width)),
-        )
+        .approval
+        .as_ref()
+        .map(|approval| approval_lines(screen.view, approval, width))
         .unwrap_or_default();
     let composer = rows.lines.len() + 3;
     let height = usize::from(area.height).saturating_sub(approval.len() + composer);
-    let lines = if let Some(picker) = screen.picker {
-        picker_lines(picker, width, height)
-    } else {
-        screen.view.lines(width, screen.show_thinking, screen.now)
-    };
-    let first = if screen.picker.is_some() {
-        0
-    } else {
-        screen.view.first_row(height, lines.len())
-    };
+    let lines = screen.view.lines(width, screen.show_thinking, screen.now);
+    let first = screen.view.first_row(height, lines.len());
     let buf = frame.buffer_mut();
     for (y, line) in lines.iter().skip(first).take(height).enumerate() {
         put(buf, area, y, line);
     }
-    if screen.picker.is_none() && screen.view.new_activity && height > 0 {
+    if screen.view.new_activity && height > 0 {
         let notice = "new activity";
         let padding = " ".repeat(width.saturating_sub(notice.width()) / 2);
         put(buf, area, height - 1, &Line::raw(" ".repeat(width)));
@@ -1211,14 +1210,14 @@ mod tests {
         let layout = {
             let mut display = screen(&view, &input, Instant::now());
             display.picker = Some(&picker);
-            let (rows, _, layout) = render(&display, 40, 8);
+            let (rows, _, layout) = render(&display, 40, 4);
             assert_eq!(rows[2], format!("› {:<26}2026-09-27", "newer"));
             layout
         };
         picker.move_to(2, layout.height);
         let mut screen = screen(&view, &input, Instant::now());
         screen.picker = Some(&picker);
-        let (rows, _, _) = render(&screen, 40, 8);
+        let (rows, _, _) = render(&screen, 40, 4);
         assert!(
             rows.iter()
                 .any(|row| row.contains("› undated") && row.contains("Unknown date"))
@@ -1261,16 +1260,19 @@ mod tests {
             picker: Some(&picker),
             ..screen(&view, &input, Instant::now())
         };
-        let (rows, _, _) = render(&screen, 60, 10);
+        let (rows, _, _) = render(&screen, 60, 7);
         assert_eq!(
-            rows[..5],
+            rows,
             [
                 "Choose a model  ↑/↓ move  Enter choose  Esc cancel",
                 "",
                 "  DeepSeek: DeepSeek V4.1 Flash  $0.03   $0.60   1,048,576",
                 "› Anthropic: Claude Opus 5.5 w…  $4.00   $20.00    200,000",
                 "  Other server model",
-            ]
+                "",
+                "",
+            ],
+            "the picker hides the composer"
         );
     }
 
