@@ -59,10 +59,8 @@ enum ProcessAction {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Permission {
     NotRequired,
-    /// Run a shell command; `background` when it keeps running after the call.
-    Command {
-        background: bool,
-    },
+    /// Run a shell command.
+    Command,
     /// Send text to a shell process's stdin. `command` is the shell process's
     /// command, or nothing when the ID names no shell process the calling
     /// agent started.
@@ -72,13 +70,6 @@ pub enum Permission {
         text: String,
         close_stdin: bool,
     },
-}
-
-/// Every shell call needs permission, even one whose arguments are invalid.
-pub(super) fn command_permission(arguments: &str) -> Permission {
-    Permission::Command {
-        background: serde_json::from_str::<Args>(arguments).is_ok_and(|args| args.background),
-    }
 }
 
 /// Writes need permission. Other actions, and arguments that fail the
@@ -752,17 +743,6 @@ mod tests {
                 ),
                 _ => assert_eq!(permission, Permission::NotRequired, "{arguments}"),
             }
-        }
-        for (arguments, background) in [
-            (r#"{"command":"ls"}"#, false),
-            (r#"{"command":"npm run dev","background":true}"#, true),
-            (r#"{"comm"#, false),
-        ] {
-            assert_eq!(
-                command_permission(arguments),
-                Permission::Command { background },
-                "{arguments}"
-            );
         }
     }
 

@@ -645,7 +645,7 @@ impl AgentTurn {
         let permission = tools::permission(&self.tools, call);
         let denial = match &permission {
             tools::Permission::NotRequired => return Ok(None),
-            tools::Permission::Command { .. } => "User denied permission to run this command.",
+            tools::Permission::Command => "User denied permission to run this command.",
             tools::Permission::Input { .. } => "User denied permission to send this input.",
         };
         if self.mode == SessionMode::Auto {

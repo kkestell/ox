@@ -195,20 +195,16 @@ pub fn shell_permission_request(
         tools::Permission::NotRequired => {
             unreachable!("a call that needs no permission sends no permission request")
         }
-        tools::Permission::Command { background } => {
+        tools::Permission::Command => {
             let (label, text) = match input.get("command").and_then(Value::as_str) {
                 Some(command) => ("Command", command),
                 None => ("Arguments", call.arguments.as_str()),
             };
-            let mut content = format!(
+            format!(
                 "Working directory: {}\n\n{label}:\n\n{}",
                 workspace.display(),
                 indented(text)
-            );
-            if *background {
-                content.push_str("\n\nRuns in the background after this call returns, until it exits, is stopped, the session is deleted, or Ox exits. Approving it does not approve later input.");
-            }
-            content
+            )
         }
         tools::Permission::Input {
             process_id,
@@ -492,8 +488,6 @@ mod tests {
     fn permission_content_shows_everything_being_approved() {
         let command = "printf '%s\\n' '```'\n  echo \"$HOME\"\n";
         let arguments = serde_json::json!({"command": command, "timeout_seconds": 5});
-        let ordinary = tools::Permission::Command { background: false };
-        let background = "\n\nRuns in the background after this call returns, until it exits, is stopped, the session is deleted, or Ox exits. Approving it does not approve later input.";
         let input = |command: Option<&str>, text: &str, close_stdin| tools::Permission::Input {
             process_id: "p-1".to_owned(),
             command: command.map(str::to_owned),
@@ -504,26 +498,26 @@ mod tests {
             (
                 tools::SHELL,
                 arguments.to_string(),
-                ordinary.clone(),
+                tools::Permission::Command,
                 "Working directory: /workspace\n\nCommand:\n\n    printf '%s\\n' '```'\n      echo \"$HOME\"\n".to_owned(),
             ),
             (
                 tools::SHELL,
                 serde_json::json!({"command": "echo hello"}).to_string(),
-                ordinary.clone(),
+                tools::Permission::Command,
                 "Working directory: /workspace\n\nCommand:\n\n    echo hello".to_owned(),
             ),
             (
                 tools::SHELL,
                 "{bad json".to_owned(),
-                ordinary,
+                tools::Permission::Command,
                 "Working directory: /workspace\n\nArguments:\n\n    {bad json".to_owned(),
             ),
             (
                 tools::SHELL,
                 serde_json::json!({"command": "npm run dev", "background": true}).to_string(),
-                tools::Permission::Command { background: true },
-                format!("Working directory: /workspace\n\nCommand:\n\n    npm run dev{background}"),
+                tools::Permission::Command,
+                "Working directory: /workspace\n\nCommand:\n\n    npm run dev".to_owned(),
             ),
             (
                 tools::SHELL_PROCESS,
@@ -580,7 +574,7 @@ mod tests {
             },
             &call,
             std::path::Path::new("/workspace"),
-            &tools::Permission::Command { background: false },
+            &tools::Permission::Command,
         );
         let request = serde_json::to_value(request).unwrap();
         assert_eq!(request["sessionId"], "main");

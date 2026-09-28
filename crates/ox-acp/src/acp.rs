@@ -2805,7 +2805,7 @@ mod tests {
                 .unwrap()
                 .to_owned()
         };
-        assert!(content(0).ends_with("Approving it does not approve later input."));
+        assert!(content(0).ends_with("Command:\n\n    echo $$ > started; exec sleep 30"));
         assert_eq!(
             run.requests[0].params["toolCall"]["title"],
             "Background: echo $$ > started; exec sleep 30"

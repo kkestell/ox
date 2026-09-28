@@ -237,7 +237,8 @@ fn shorten(tool_call_title: &str) -> String {
 /// argument validation its execution uses.
 pub fn permission(context: &ToolContext, call: &ToolCall) -> Permission {
     match call.name.as_str() {
-        SHELL => shell::command_permission(&call.arguments),
+        // Every shell call needs permission, even one whose arguments are invalid.
+        SHELL => Permission::Command,
         SHELL_PROCESS => shell::process_permission(
             &call.arguments,
             &context.shell_processes,
