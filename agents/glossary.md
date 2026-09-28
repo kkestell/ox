@@ -39,7 +39,10 @@
 - **Assistant batch**: One model message and the outcome of each of its tool
   calls, saved together.
 - **Tool outcome**: What `ox-acp` knows happened to a tool call: completed,
-  failed, or cancelled.
+  failed, or cancelled, with the text the model reads.
+- **Tool call content**: What the ACP client shows under a finished tool call,
+  saved beside the outcome's text. Empty content means the client shows the
+  text.
 - **Provisional output**: Model output shown before it is validated. It is not
   saved if the request fails.
 - **Visible reasoning**: Reasoning text shown to the ACP client.

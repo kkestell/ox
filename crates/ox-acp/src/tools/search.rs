@@ -242,7 +242,7 @@ impl SearchOutput {
         } else if self.output.is_empty() {
             self.output.push_str("No matches found.");
         }
-        if !self.output.starts_with("No matches found.") {
+        if self.files > 0 {
             let mut summary = if grep {
                 format!("{} matches in {} files", self.matches, self.files)
             } else {
