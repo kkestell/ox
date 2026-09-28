@@ -2363,6 +2363,9 @@ mod tests {
                                 .to_owned(),
                         );
                     }
+                    // A stop before the sleeper saves its PID would leave
+                    // nothing to check.
+                    wait_for_file(&workspace.0.join("sleeper")).await;
                     vec![calls_reply(&[
                         (
                             "start",

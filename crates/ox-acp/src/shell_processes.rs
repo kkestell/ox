@@ -723,7 +723,11 @@ mod tests {
         let workspace = Workspace::new();
         let owner = ShellProcesses::default();
         let other = SessionId::new("other");
-        let removed = start(&owner, &workspace.0, &format!("trap '' TERM; {TREE}"));
+        let removed = start(
+            &owner,
+            &workspace.0,
+            &format!("trap '' TERM; {TREE}; printf ready; read line"),
+        );
         let kept = start_as(&owner, &other, &workspace.0, "exec sleep 30");
         printed(&removed, "ready").await;
         let start_time = Instant::now();
@@ -835,7 +839,10 @@ mod tests {
         owner.shutdown().await;
     }
 
-    const TREE: &str = "echo $$ > shell; sleep 30 & echo $! > child; printf ready; wait";
+    /// A shell that saves its PID and its descendant's. The command that
+    /// follows must not end when the descendant does, because signalling a
+    /// group can end the descendant before the shell receives the signal.
+    const TREE: &str = "echo $$ > shell; sleep 30 & echo $! > child";
 
     #[tokio::test]
     async fn stop_terminates_the_group_with_a_grace_period_and_reaps_it() {
@@ -845,7 +852,13 @@ mod tests {
             ("touch terminated; exit 0", false, ExitStatus::from_raw(0)),
             ("", true, ExitStatus::from_raw(9)),
         ] {
-            let process = start(&owner, &workspace.0, &format!("trap '{trap}' TERM; {TREE}"));
+            // A descendant started before the trap ends on SIGTERM even
+            // before it runs `sleep`.
+            let process = start(
+                &owner,
+                &workspace.0,
+                &format!("{TREE}; trap '{trap}' TERM; printf ready; read line"),
+            );
             printed(&process, "ready").await;
             let start_time = Instant::now();
             let output = process.stop().await;
@@ -962,7 +975,7 @@ mod tests {
         // Ignoring SIGTERM means only an immediate SIGKILL ends it quickly.
         let mut child = shell(
             &workspace.0,
-            "trap '' TERM; echo $$ > shell; sleep 30 & echo $! > child; touch ready; wait",
+            &format!("trap '' TERM; {TREE}; touch ready; exec sleep 30"),
         )
         .stdin(Stdio::null())
         .stdout(Stdio::null())
