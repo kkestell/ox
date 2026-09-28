@@ -22,6 +22,10 @@ pub struct CatalogModel {
     pub id: String,
     pub name: String,
     pub context_limit: usize,
+    /// USD per million input tokens.
+    pub input_price: f64,
+    /// USD per million output tokens.
+    pub output_price: f64,
     pub accepts_images: bool,
     /// `Default` followed by the efforts OpenRouter lists, in ascending order.
     pub efforts: Vec<EffortLevel>,
@@ -51,6 +55,7 @@ struct OpenRouterModel {
     /// Unix seconds when OpenRouter added the model.
     created: i64,
     architecture: Architecture,
+    pricing: Pricing,
     supported_parameters: Vec<String>,
     #[serde(default)]
     reasoning: Option<Reasoning>,
@@ -60,6 +65,23 @@ struct OpenRouterModel {
 struct Architecture {
     input_modalities: Vec<String>,
     output_modalities: Vec<String>,
+}
+
+/// USD per token, listed as decimal strings.
+#[derive(Deserialize)]
+struct Pricing {
+    #[serde(deserialize_with = "decimal")]
+    prompt: f64,
+    #[serde(deserialize_with = "decimal")]
+    completion: f64,
+}
+
+fn decimal<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<f64, D::Error> {
+    let text = String::deserialize(deserializer)?;
+    text.parse::<f64>()
+        .ok()
+        .filter(|value| value.is_finite())
+        .ok_or_else(|| serde::de::Error::custom(format!("price {text:?} is not a decimal number")))
 }
 
 #[derive(Deserialize)]
@@ -73,16 +95,16 @@ struct ModelsResponse {
     data: Vec<OpenRouterModel>,
 }
 
-/// Parses OpenRouter's `GET /models` response and applies the catalog filter:
-/// a model must not be a `:batch` variant, which the chat-completions endpoint
-/// does not serve, and must accept tools, take and produce text, have a context
-/// limit above
-/// the 8,000 tokens compaction reserves, and have been released within
-/// `RECENT_SECONDS` of `now`. Efforts Ox does not know are dropped. Models are
-/// sorted by name.
 /// About six months.
 const RECENT_SECONDS: i64 = 183 * 24 * 60 * 60;
 
+/// Parses OpenRouter's `GET /models` response and applies the catalog filter:
+/// a model must not be a `:batch` variant, which the chat-completions endpoint
+/// does not serve, and must accept tools, take and produce text, have a context
+/// limit above the 8,000 tokens compaction reserves, have no negative price,
+/// and have been released within `RECENT_SECONDS` of `now`. OpenRouter lists a
+/// router such as `openrouter/auto-beta` at a negative price. Efforts Ox does
+/// not know are dropped. Models are sorted by name.
 pub fn parse_catalog(text: &str, now: i64) -> io::Result<Vec<CatalogModel>> {
     let response: ModelsResponse = serde_json::from_str(text).map_err(|error| {
         io::Error::new(
@@ -100,6 +122,8 @@ pub fn parse_catalog(text: &str, now: i64) -> io::Result<Vec<CatalogModel>> {
                 && has(&model.architecture.input_modalities, "text")
                 && has(&model.architecture.output_modalities, "text")
                 && model.context_length > 8_000
+                && model.pricing.prompt >= 0.0
+                && model.pricing.completion >= 0.0
                 && model.created >= now - RECENT_SECONDS
         })
         .map(|model| {
@@ -115,6 +139,8 @@ pub fn parse_catalog(text: &str, now: i64) -> io::Result<Vec<CatalogModel>> {
                 id: model.id,
                 name: model.name,
                 context_limit: model.context_length,
+                input_price: model.pricing.prompt * 1_000_000.0,
+                output_price: model.pricing.completion * 1_000_000.0,
                 accepts_images: has(&model.architecture.input_modalities, "image"),
                 efforts,
             }
@@ -873,37 +899,50 @@ pub(crate) mod fixture {
     /// The time `CATALOG` is filtered at: 2026-09-23.
     pub const NOW: i64 = 1_790_121_600;
 
-    /// An OpenRouter `GET /models` response, out of name order. The last five
+    /// An OpenRouter `GET /models` response, out of name order. The last six
     /// models fail the catalog filter.
     pub const CATALOG: &str = r#"{"data": [
         {"id": "acme/plain", "name": "Plain", "context_length": 8001, "created": 1774310400,
+         "pricing": {"prompt": "0", "completion": "0"},
          "architecture": {"input_modalities": ["text"], "output_modalities": ["text"]},
          "supported_parameters": ["tools"], "reasoning": {"mandatory": false}},
         {"id": "z-ai/glm-5.3-flash", "name": "GLM 5.3 Flash", "context_length": 1310720, "created": 1788393600,
+         "pricing": {"prompt": "0.00000004", "completion": "0.00000014"},
          "architecture": {"input_modalities": ["text", "image"], "output_modalities": ["text"]},
          "supported_parameters": ["tools"],
          "reasoning": {"supported_efforts": ["future", "max", "xhigh", "high", "medium", "low"]}},
         {"id": "deepseek/deepseek-v4.1-flash", "name": "DeepSeek V4.1 Flash", "context_length": 1048576, "created": 1789689600,
+         "pricing": {"prompt": "0.00000003", "completion": "0.0000006"},
          "architecture": {"input_modalities": ["text"], "output_modalities": ["text"]},
          "supported_parameters": ["reasoning", "tools"],
          "reasoning": {"supported_efforts": ["max", "high", "medium", "low"], "default_effort": "high"}},
         {"id": "meta/muse-spark-1.3-contributor", "name": "Muse Spark 1.3 Contributor", "context_length": 1048576, "created": 1788998400,
+         "pricing": {"prompt": "0.000001", "completion": "0.000004"},
          "architecture": {"input_modalities": ["text"], "output_modalities": ["text"]},
          "supported_parameters": ["tools"],
          "reasoning": {"supported_efforts": ["xhigh", "high", "medium", "none"]}},
         {"id": "acme/no-tools", "name": "No Tools", "context_length": 1048576, "created": 1789689600,
+         "pricing": {"prompt": "0.000001", "completion": "0.000002"},
          "architecture": {"input_modalities": ["text"], "output_modalities": ["text"]},
          "supported_parameters": ["reasoning"]},
         {"id": "acme/image-out", "name": "Image Out", "context_length": 1048576, "created": 1789689600,
+         "pricing": {"prompt": "0.000001", "completion": "0.000002"},
          "architecture": {"input_modalities": ["text"], "output_modalities": ["image"]},
          "supported_parameters": ["tools"]},
         {"id": "acme/small", "name": "Small", "context_length": 8000, "created": 1789689600,
+         "pricing": {"prompt": "0.000001", "completion": "0.000002"},
          "architecture": {"input_modalities": ["text"], "output_modalities": ["text"]},
          "supported_parameters": ["tools"]},
         {"id": "deepseek/deepseek-v4.1-flash:batch", "name": "DeepSeek V4.1 Flash (batch)", "context_length": 1048576, "created": 1789689600,
+         "pricing": {"prompt": "0.000001", "completion": "0.000002"},
          "architecture": {"input_modalities": ["text"], "output_modalities": ["text"]},
          "supported_parameters": ["tools"]},
         {"id": "acme/old", "name": "Old", "context_length": 1048576, "created": 1774310399,
+         "pricing": {"prompt": "0.000001", "completion": "0.000002"},
+         "architecture": {"input_modalities": ["text"], "output_modalities": ["text"]},
+         "supported_parameters": ["tools"]},
+        {"id": "openrouter/auto-beta", "name": "Auto Beta", "context_length": 2000000, "created": 1789689600,
+         "pricing": {"prompt": "-1", "completion": "-1"},
          "architecture": {"input_modalities": ["text"], "output_modalities": ["text"]},
          "supported_parameters": ["tools"]}
     ]}"#;
@@ -1472,6 +1511,11 @@ mod tests {
                 "acme/plain",
             ]
         );
+        assert_eq!(
+            (models[0].input_price, models[0].output_price),
+            (0.03, 0.6),
+            "prices are USD per million tokens"
+        );
         assert_eq!(models[1].efforts, [Default, Low, Medium, High, XHigh, Max]);
         assert!(models[1].accepts_images);
         assert!(!models[0].accepts_images);
@@ -1480,6 +1524,16 @@ mod tests {
         assert_eq!(models[3].summarizer_effort(), Default);
         assert!(parse_catalog(r#"{"data": []}"#, fixture::NOW).is_err());
         assert!(parse_catalog(r#"{"data": [{"id": "a/b"}]}"#, fixture::NOW).is_err());
+        let unpriced = fixture::CATALOG.replace(r#""prompt": "0.00000003""#, r#""prompt": "free""#);
+        assert!(
+            parse_catalog(&unpriced, fixture::NOW)
+                .unwrap_err()
+                .to_string()
+                .starts_with(
+                    "malformed OpenRouter model catalog: price \"free\" is not a decimal number"
+                ),
+            "a price that is not a number makes the catalog malformed"
+        );
     }
 
     #[tokio::test]

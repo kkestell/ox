@@ -210,6 +210,25 @@ fn resume_picker_shows_saved_session_and_replays_on_enter() {
 
 #[test]
 #[ignore = "requires tmux; run make e2e"]
+fn model_picker_shows_prices_and_changes_the_model() {
+    let test = Tmux::new();
+    test.prompt("/model");
+    test.wait("Choose a model");
+    let screen = test.screen();
+    assert!(
+        screen.contains(&format!(
+            "› {:<55}$0.28  $0.42  131,072\n  {:<55}$0.04  $0.08   32,768\n",
+            "DeepSeek: DeepSeek Reasoner", "Google: Gemma Vision"
+        )),
+        "{screen}"
+    );
+    test.keys(&["Down", "Enter"]);
+    test.wait_gone("Choose a model");
+    test.wait("ask • gemma");
+}
+
+#[test]
+#[ignore = "requires tmux; run make e2e"]
 fn resume_during_prompt_cancels_before_showing_the_picker() {
     let test = Tmux::new();
     test.prompt("running");

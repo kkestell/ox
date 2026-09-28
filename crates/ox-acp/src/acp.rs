@@ -52,7 +52,13 @@ fn config_options(settings: &SessionSettings) -> Vec<SessionConfigOption> {
     let model = openrouter::catalog_model(&settings.model)
         .expect("a session model comes from the model catalog");
     let model_option = |model: &openrouter::CatalogModel| {
-        let option = SessionConfigSelectOption::new(model.id.clone(), model.name.clone());
+        let meta = serde_json::Map::from_iter([
+            ("inputPrice".to_owned(), model.input_price.into()),
+            ("outputPrice".to_owned(), model.output_price.into()),
+            ("contextLimit".to_owned(), model.context_limit.into()),
+        ]);
+        let option =
+            SessionConfigSelectOption::new(model.id.clone(), model.name.clone()).meta(meta);
         if model.accepts_images {
             option.description("Accepts images")
         } else {
@@ -1752,6 +1758,10 @@ mod tests {
             .find(|option| option["value"] == "z-ai/glm-5.3-flash")
             .unwrap();
         assert_eq!(image_option["description"], "Accepts images");
+        assert_eq!(
+            image_option["_meta"],
+            serde_json::json!({"inputPrice": 0.04, "outputPrice": 0.14, "contextLimit": 1310720})
+        );
         assert_eq!(new_options["configOptions"][2]["id"], "mode");
         assert_eq!(new_options["configOptions"][2]["category"], "mode");
         assert_eq!(new_options["configOptions"][2]["currentValue"], "ask");

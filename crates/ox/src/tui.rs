@@ -147,20 +147,56 @@ struct Ui {
     selected: usize,
     show_thinking: bool,
     layout: Layout,
-    session_picker: Option<SessionPicker>,
+    picker: Option<Picker>,
     resume_after_turn: bool,
 }
 
-struct SessionPicker {
-    sessions: Vec<SessionInfo>,
+struct Picker {
+    rows: PickerRows,
     selected: usize,
     first: usize,
     error: Option<String>,
 }
 
-impl SessionPicker {
+enum PickerRows {
+    Sessions(Vec<SessionInfo>),
+    Models(Vec<ModelChoice>),
+}
+
+struct ModelChoice {
+    value: SessionConfigValueId,
+    name: String,
+    /// USD per million input tokens.
+    input_price: Option<f64>,
+    /// USD per million output tokens.
+    output_price: Option<f64>,
+    context_limit: Option<u64>,
+}
+
+impl ModelChoice {
+    /// Reads the prices and context limit Ox ACP sends in the choice's `_meta`.
+    fn new(choice: &SessionConfigSelectOption) -> Self {
+        let meta = |key: &str| choice.meta.as_ref().and_then(|meta| meta.get(key));
+        Self {
+            value: choice.value.clone(),
+            name: escape(&choice.name),
+            input_price: meta("inputPrice").and_then(serde_json::Value::as_f64),
+            output_price: meta("outputPrice").and_then(serde_json::Value::as_f64),
+            context_limit: meta("contextLimit").and_then(serde_json::Value::as_u64),
+        }
+    }
+}
+
+impl Picker {
+    fn len(&self) -> usize {
+        match &self.rows {
+            PickerRows::Sessions(sessions) => sessions.len(),
+            PickerRows::Models(models) => models.len(),
+        }
+    }
+
     fn move_to(&mut self, selected: usize, height: usize) {
-        self.selected = selected.min(self.sessions.len().saturating_sub(1));
+        self.selected = selected.min(self.len().saturating_sub(1));
         let rows = height.saturating_sub(3).max(1);
         if self.selected < self.first {
             self.first = self.selected;
@@ -192,7 +228,7 @@ pub struct Screen<'a> {
     pub view: &'a TranscriptView,
     pub input: &'a Input,
     pub approval: Option<Approval<'a>>,
-    session_picker: Option<&'a SessionPicker>,
+    picker: Option<&'a Picker>,
     pub settings: &'a str,
     pub usage: &'a str,
     pub show_thinking: bool,
@@ -216,7 +252,7 @@ pub fn draw(frame: &mut Frame, screen: &Screen) -> Layout {
     let width = usize::from(area.width);
     let rows = screen.input.rows(area.width);
     let approval = screen
-        .session_picker
+        .picker
         .is_none()
         .then_some(())
         .and(
@@ -228,12 +264,12 @@ pub fn draw(frame: &mut Frame, screen: &Screen) -> Layout {
         .unwrap_or_default();
     let composer = rows.lines.len() + 3;
     let height = usize::from(area.height).saturating_sub(approval.len() + composer);
-    let lines = if let Some(picker) = screen.session_picker {
+    let lines = if let Some(picker) = screen.picker {
         picker_lines(picker, width, height)
     } else {
         screen.view.lines(width, screen.show_thinking, screen.now)
     };
-    let first = if screen.session_picker.is_some() {
+    let first = if screen.picker.is_some() {
         0
     } else {
         screen.view.first_row(height, lines.len())
@@ -242,7 +278,7 @@ pub fn draw(frame: &mut Frame, screen: &Screen) -> Layout {
     for (y, line) in lines.iter().skip(first).take(height).enumerate() {
         put(buf, area, y, line);
     }
-    if screen.session_picker.is_none() && screen.view.new_activity && height > 0 {
+    if screen.picker.is_none() && screen.view.new_activity && height > 0 {
         let notice = "new activity";
         let padding = " ".repeat(width.saturating_sub(notice.width()) / 2);
         put(buf, area, height - 1, &Line::raw(" ".repeat(width)));
@@ -298,11 +334,12 @@ pub fn draw(frame: &mut Frame, screen: &Screen) -> Layout {
     }
 }
 
-fn picker_lines(picker: &SessionPicker, width: usize, height: usize) -> Vec<Line<'static>> {
-    let mut lines = vec![Line::raw(transcript::clip(
-        "Resume a session  ↑/↓ move  Enter load  Esc cancel",
-        width,
-    ))];
+fn picker_lines(picker: &Picker, width: usize, height: usize) -> Vec<Line<'static>> {
+    let heading = match picker.rows {
+        PickerRows::Sessions(_) => "Resume a session  ↑/↓ move  Enter load  Esc cancel",
+        PickerRows::Models(_) => "Choose a model  ↑/↓ move  Enter choose  Esc cancel",
+    };
+    let mut lines = vec![Line::raw(transcript::clip(heading, width))];
     if let Some(error) = &picker.error {
         lines.push(Line::styled(
             transcript::clip(error, width),
@@ -311,31 +348,94 @@ fn picker_lines(picker: &SessionPicker, width: usize, height: usize) -> Vec<Line
     } else {
         lines.push(Line::default());
     }
-    if picker.sessions.is_empty() {
-        lines.push(Line::raw("No saved sessions"));
-        return lines;
-    }
-    for (index, session) in picker
-        .sessions
-        .iter()
+    // Each row's content follows its marker and a space.
+    let rows = match &picker.rows {
+        PickerRows::Sessions(sessions) if sessions.is_empty() => {
+            lines.push(Line::raw("No saved sessions"));
+            return lines;
+        }
+        PickerRows::Sessions(sessions) => session_rows(sessions, width.saturating_sub(2)),
+        PickerRows::Models(models) => model_rows(models, width.saturating_sub(2)),
+    };
+    for (index, row) in rows
+        .into_iter()
         .enumerate()
         .skip(picker.first)
         .take(height.saturating_sub(3))
     {
-        let date = activity(session).map_or_else(
-            || "Unknown date".to_owned(),
-            |date| date.format("%Y-%m-%d").to_string(),
-        );
         let marker = if index == picker.selected { "›" } else { " " };
-        let title = escape(session.title.as_deref().unwrap_or("Untitled session"));
-        // Each row pads its content by two columns on the right and keeps two
-        // columns between the title and the date.
-        let title_width = width.saturating_sub(date.width() + 6);
-        let title = transcript::clip(&title, title_width);
-        let padding = " ".repeat(width.saturating_sub(4 + title.width() + date.width()));
-        lines.push(Line::raw(format!("{marker} {title}{padding}{date}")));
+        lines.push(Line::raw(format!("{marker} {row}")));
     }
     lines
+}
+
+/// Each row pads its content by two columns on the right and keeps two columns
+/// between the title and the date.
+fn session_rows(sessions: &[SessionInfo], width: usize) -> Vec<String> {
+    sessions
+        .iter()
+        .map(|session| {
+            let date = activity(session).map_or_else(
+                || "Unknown date".to_owned(),
+                |date| date.format("%Y-%m-%d").to_string(),
+            );
+            let title = escape(session.title.as_deref().unwrap_or("Untitled session"));
+            let title = transcript::clip(&title, width.saturating_sub(date.width() + 4));
+            let padding = " ".repeat(width.saturating_sub(2 + title.width() + date.width()));
+            format!("{title}{padding}{date}")
+        })
+        .collect()
+}
+
+/// Each row pads its content by two columns on the right and keeps two columns
+/// between the name and the prices. Both price columns share the widest
+/// price's width plus two spaces.
+fn model_rows(models: &[ModelChoice], width: usize) -> Vec<String> {
+    let price = |price: Option<f64>| {
+        price
+            .map(|price| format!("${price:.2}"))
+            .unwrap_or_default()
+    };
+    let limit = |model: &ModelChoice| model.context_limit.map(thousands).unwrap_or_default();
+    let price_width = models
+        .iter()
+        .flat_map(|model| [price(model.input_price), price(model.output_price)])
+        .map(|price| price.width())
+        .max()
+        .unwrap_or(0)
+        + 2;
+    let limit_width = models
+        .iter()
+        .map(|model| limit(model).width())
+        .max()
+        .unwrap_or(0);
+    let columns = 2 * price_width + limit_width;
+    models
+        .iter()
+        .map(|model| {
+            let name = transcript::clip(&model.name, width.saturating_sub(columns + 4));
+            let padding = " ".repeat(width.saturating_sub(2 + name.width() + columns));
+            format!(
+                "{name}{padding}{:<price_width$}{:<price_width$}{:>limit_width$}",
+                price(model.input_price),
+                price(model.output_price),
+                limit(model),
+            )
+        })
+        .collect()
+}
+
+/// Formats a number with commas between thousands.
+fn thousands(value: u64) -> String {
+    let digits = value.to_string();
+    let mut text = String::new();
+    for (index, digit) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
+            text.push(',');
+        }
+        text.push(digit);
+    }
+    text
 }
 
 fn approval_lines(view: &TranscriptView, approval: &Approval, width: usize) -> Vec<Line<'static>> {
@@ -386,19 +486,39 @@ fn approval_lines(view: &TranscriptView, approval: &Approval, width: usize) -> V
     lines
 }
 
+/// The select option in the category, with its id.
+fn select_option(
+    options: &[SessionConfigOption],
+    category: SessionConfigOptionCategory,
+) -> Option<(&SessionConfigId, &SessionConfigSelect)> {
+    let option = options
+        .iter()
+        .find(|option| option.category.as_ref() == Some(&category))?;
+    match &option.kind {
+        SessionConfigKind::Select(select) => Some((&option.id, select)),
+        _ => None,
+    }
+}
+
+/// The choices of a select option, with any groups flattened.
+fn choices(select: &SessionConfigSelect) -> Vec<&SessionConfigSelectOption> {
+    match &select.options {
+        SessionConfigSelectOptions::Ungrouped(choices) => choices.iter().collect(),
+        SessionConfigSelectOptions::Grouped(groups) => groups
+            .iter()
+            .flat_map(|group| group.options.iter())
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
 /// The status line's left side: the mode, model, and effort in use.
 pub fn settings(options: &[SessionConfigOption]) -> String {
     use SessionConfigOptionCategory::*;
     [Mode, Model, ThoughtLevel]
-        .iter()
+        .into_iter()
         .filter_map(|category| {
-            let option = options
-                .iter()
-                .find(|option| option.category.as_ref() == Some(category))?;
-            match &option.kind {
-                SessionConfigKind::Select(select) => Some(select.current_value.to_string()),
-                _ => None,
-            }
+            select_option(options, category).map(|(_, select)| select.current_value.to_string())
         })
         .collect::<Vec<_>>()
         .join(" • ")
@@ -430,8 +550,10 @@ async fn key(
     if key.kind == KeyEventKind::Release {
         return Ok(false);
     }
-    if let Some(picker) = &mut ui.session_picker {
+    if let Some(picker) = &mut ui.picker {
         let page = ui.layout.height.saturating_sub(3).max(1);
+        // The session picker stays open until a session is active.
+        let closable = matches!(picker.rows, PickerRows::Models(_)) || session.active();
         match key.code {
             KeyCode::Up => picker.move_to(picker.selected.saturating_sub(1), ui.layout.height),
             KeyCode::Down => picker.move_to(picker.selected.saturating_add(1), ui.layout.height),
@@ -442,27 +564,41 @@ async fn key(
                 picker.move_to(picker.selected.saturating_add(page), ui.layout.height)
             }
             KeyCode::Home => picker.move_to(0, ui.layout.height),
-            KeyCode::End => {
-                picker.move_to(picker.sessions.len().saturating_sub(1), ui.layout.height)
-            }
-            KeyCode::Esc if session.active() => ui.session_picker = None,
-            KeyCode::Enter if !picker.sessions.is_empty() => {
-                let id = picker.sessions[picker.selected].session_id.clone();
-                if session.active()
-                    && let Err(error) = session.close().await
-                {
-                    picker.error = Some(format!("Close failed: {error}"));
-                    return Ok(false);
-                }
-                ui.view = TranscriptView::default();
-                match session.load(id).await {
-                    Ok(()) => {
-                        ui.session_picker = None;
-                        ui.input.clear();
+            KeyCode::End => picker.move_to(picker.len().saturating_sub(1), ui.layout.height),
+            KeyCode::Esc if closable => ui.picker = None,
+            KeyCode::Enter => match &picker.rows {
+                PickerRows::Sessions(sessions) if !sessions.is_empty() => {
+                    let id = sessions[picker.selected].session_id.clone();
+                    if session.active()
+                        && let Err(error) = session.close().await
+                    {
+                        picker.error = Some(format!("Close failed: {error}"));
+                        return Ok(false);
                     }
-                    Err(error) => picker.error = Some(format!("Load failed: {error}")),
+                    ui.view = TranscriptView::default();
+                    match session.load(id).await {
+                        Ok(()) => {
+                            ui.picker = None;
+                            ui.input.clear();
+                        }
+                        Err(error) => picker.error = Some(format!("Load failed: {error}")),
+                    }
                 }
-            }
+                PickerRows::Models(models) if !models.is_empty() => {
+                    let value = models[picker.selected].value.clone();
+                    let Some((id, _)) =
+                        select_option(&session.config_options, SessionConfigOptionCategory::Model)
+                    else {
+                        picker.error = Some("Model choice is unavailable".to_owned());
+                        return Ok(false);
+                    };
+                    match session.set_config_option(id.clone(), value).await {
+                        Ok(()) => ui.picker = None,
+                        Err(error) => picker.error = Some(format!("Model change failed: {error}")),
+                    }
+                }
+                _ => {}
+            },
             KeyCode::Char('c' | 'd') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 return Ok(true);
             }
@@ -518,8 +654,11 @@ async fn key(
                         ui.resume_after_turn = true;
                         session.cancel()?;
                     } else {
-                        open_picker(ui, session, now).await;
+                        open_session_picker(ui, session, now).await;
                     }
+                } else if ui.input.text() == "/model" {
+                    ui.input.clear();
+                    open_model_picker(ui, session, now);
                 } else {
                     send(ui, session, now)?;
                 }
@@ -568,11 +707,11 @@ async fn key(
     Ok(false)
 }
 
-async fn open_picker(ui: &mut Ui, session: &mut Session, now: Instant) {
+async fn open_session_picker(ui: &mut Ui, session: &mut Session, now: Instant) {
     match session.list().await {
         Ok(sessions) => {
-            ui.session_picker = Some(SessionPicker {
-                sessions: sorted_sessions(sessions),
+            ui.picker = Some(Picker {
+                rows: PickerRows::Sessions(sorted_sessions(sessions)),
                 selected: 0,
                 first: 0,
                 error: None,
@@ -584,24 +723,36 @@ async fn open_picker(ui: &mut Ui, session: &mut Session, now: Instant) {
     }
 }
 
+/// Opens the model picker with the current model selected.
+fn open_model_picker(ui: &mut Ui, session: &Session, now: Instant) {
+    let Some((_, select)) =
+        select_option(&session.config_options, SessionConfigOptionCategory::Model)
+    else {
+        ui.view
+            .notice("Model choice is unavailable".into(), Color::Red, now);
+        return;
+    };
+    let models: Vec<_> = choices(select).into_iter().map(ModelChoice::new).collect();
+    let current = models
+        .iter()
+        .position(|model| model.value == select.current_value)
+        .unwrap_or(0);
+    let mut picker = Picker {
+        rows: PickerRows::Models(models),
+        selected: 0,
+        first: 0,
+        error: None,
+    };
+    picker.move_to(current, ui.layout.height);
+    ui.picker = Some(picker);
+}
+
 fn next_mode(
     options: &[SessionConfigOption],
     forward: bool,
 ) -> Option<(SessionConfigId, SessionConfigValueId)> {
-    let option = options
-        .iter()
-        .find(|option| option.category == Some(SessionConfigOptionCategory::Mode))?;
-    let SessionConfigKind::Select(select) = &option.kind else {
-        return None;
-    };
-    let choices: Vec<_> = match &select.options {
-        SessionConfigSelectOptions::Ungrouped(choices) => choices.iter().collect(),
-        SessionConfigSelectOptions::Grouped(groups) => groups
-            .iter()
-            .flat_map(|group| group.options.iter())
-            .collect(),
-        _ => return None,
-    };
+    let (id, select) = select_option(options, SessionConfigOptionCategory::Mode)?;
+    let choices = choices(select);
     let count = choices.len();
     if count < 2 {
         return None;
@@ -614,7 +765,7 @@ fn next_mode(
     } else {
         (current + count - 1) % count
     };
-    Some((option.id.clone(), choices[next].value.clone()))
+    Some((id.clone(), choices[next].value.clone()))
 }
 
 /// Sends the input. During a turn the prompt is queued, and its `User` item
@@ -706,8 +857,11 @@ pub async fn run(
     let mut ui = Ui::default();
     let mut tick = tokio::time::interval(Duration::from_secs(1));
     loop {
-        terminal.status(if ui.session_picker.is_some() {
-            "resume session"
+        terminal.status(if let Some(picker) = &ui.picker {
+            match picker.rows {
+                PickerRows::Sessions(_) => "resume session",
+                PickerRows::Models(_) => "choose model",
+            }
         } else if !session.pending.is_empty() {
             "needs permission"
         } else if session.busy {
@@ -724,7 +878,7 @@ pub async fn run(
                 request,
                 selected: ui.selected,
             }),
-            session_picker: ui.session_picker.as_ref(),
+            picker: ui.picker.as_ref(),
             settings: &settings,
             usage: &usage,
             show_thinking: ui.show_thinking,
@@ -743,7 +897,7 @@ pub async fn run(
                 }
                 if ui.resume_after_turn && !session.busy {
                     ui.resume_after_turn = false;
-                    open_picker(&mut ui, &mut session, Instant::now()).await;
+                    open_session_picker(&mut ui, &mut session, Instant::now()).await;
                 }
             }
             _ = tick.tick() => {}
@@ -824,7 +978,7 @@ mod tests {
             view,
             input,
             approval: None,
-            session_picker: None,
+            picker: None,
             settings: "",
             usage: "0% • $0.00",
             show_thinking: false,
@@ -1028,8 +1182,8 @@ mod tests {
 
     #[test]
     fn session_picker_sorts_dates_and_keeps_selection_visible() {
-        let mut picker = SessionPicker {
-            sessions: sorted_sessions(vec![
+        let mut picker = Picker {
+            rows: PickerRows::Sessions(sorted_sessions(vec![
                 SessionInfo::new("a", "/tmp")
                     .title("older")
                     .updated_at("2026-09-28T00:30:00+05:00"),
@@ -1037,14 +1191,16 @@ mod tests {
                     .title("newer")
                     .updated_at("2026-09-27T23:00:00Z"),
                 SessionInfo::new("c", "/tmp").title("undated"),
-            ]),
+            ])),
             selected: 0,
             first: 0,
             error: None,
         };
+        let PickerRows::Sessions(sessions) = &picker.rows else {
+            unreachable!()
+        };
         assert_eq!(
-            picker
-                .sessions
+            sessions
                 .iter()
                 .map(|item| item.session_id.to_string())
                 .collect::<Vec<_>>(),
@@ -1054,19 +1210,96 @@ mod tests {
         let input = Input::default();
         let layout = {
             let mut display = screen(&view, &input, Instant::now());
-            display.session_picker = Some(&picker);
+            display.picker = Some(&picker);
             let (rows, _, layout) = render(&display, 40, 8);
             assert_eq!(rows[2], format!("› {:<26}2026-09-27", "newer"));
             layout
         };
         picker.move_to(2, layout.height);
         let mut screen = screen(&view, &input, Instant::now());
-        screen.session_picker = Some(&picker);
+        screen.picker = Some(&picker);
         let (rows, _, _) = render(&screen, 40, 8);
         assert!(
             rows.iter()
                 .any(|row| row.contains("› undated") && row.contains("Unknown date"))
         );
+    }
+
+    #[test]
+    fn model_picker_rows_share_price_columns_and_leave_missing_values_blank() {
+        let choice = |value: &str, name: &str, meta: serde_json::Value| {
+            let serde_json::Value::Object(meta) = meta else {
+                unreachable!()
+            };
+            ModelChoice::new(&SessionConfigSelectOption::new(value.to_owned(), name).meta(meta))
+        };
+        let picker = Picker {
+            rows: PickerRows::Models(vec![
+                choice(
+                    "flash",
+                    "DeepSeek: DeepSeek V4.1 Flash",
+                    serde_json::json!({"inputPrice": 0.03, "outputPrice": 0.6, "contextLimit": 1048576}),
+                ),
+                choice(
+                    "opus",
+                    "Anthropic: Claude Opus 5.5 with a much longer name",
+                    serde_json::json!({"inputPrice": 4, "outputPrice": 20, "contextLimit": 200000}),
+                ),
+                choice(
+                    "other",
+                    "Other server model",
+                    serde_json::json!({"inputPrice": "free", "contextLimit": 1.5}),
+                ),
+            ]),
+            selected: 1,
+            first: 0,
+            error: None,
+        };
+        let view = TranscriptView::default();
+        let input = Input::default();
+        let screen = Screen {
+            picker: Some(&picker),
+            ..screen(&view, &input, Instant::now())
+        };
+        let (rows, _, _) = render(&screen, 60, 10);
+        assert_eq!(
+            rows[..5],
+            [
+                "Choose a model  ↑/↓ move  Enter choose  Esc cancel",
+                "",
+                "  DeepSeek: DeepSeek V4.1 Flash  $0.03   $0.60   1,048,576",
+                "› Anthropic: Claude Opus 5.5 w…  $4.00   $20.00    200,000",
+                "  Other server model",
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn model_keys_choose_a_model_or_cancel() {
+        with_session(async |mut session, _events| {
+            let mut ui = Ui::default();
+            let now = Instant::now();
+            let selected = |ui: &Ui| ui.picker.as_ref().map(|picker| picker.selected);
+            ui.input.paste("/model");
+            press(&mut ui, &mut session, KeyCode::Enter, now).await?;
+            assert_eq!(selected(&ui), Some(0));
+            press(&mut ui, &mut session, KeyCode::Down, now).await?;
+            press(&mut ui, &mut session, KeyCode::Esc, now).await?;
+            assert!(ui.picker.is_none());
+            assert_eq!(settings(&session.config_options), "ask • deepseek");
+            ui.input.paste("/model");
+            press(&mut ui, &mut session, KeyCode::Enter, now).await?;
+            press(&mut ui, &mut session, KeyCode::Down, now).await?;
+            press(&mut ui, &mut session, KeyCode::Enter, now).await?;
+            assert!(ui.picker.is_none());
+            assert_eq!(settings(&session.config_options), "ask • gemma");
+            ui.input.paste("/model");
+            press(&mut ui, &mut session, KeyCode::Enter, now).await?;
+            assert_eq!(selected(&ui), Some(1), "the current model is selected");
+            assert!(ui.input.is_empty());
+            Ok(())
+        })
+        .await;
     }
 
     #[tokio::test]
@@ -1077,14 +1310,14 @@ mod tests {
             let now = Instant::now();
             ui.input.paste("/resume");
             press(&mut ui, &mut session, KeyCode::Enter, now).await?;
-            assert!(ui.session_picker.is_some());
+            assert!(ui.picker.is_some());
             press(&mut ui, &mut session, KeyCode::Esc, now).await?;
-            assert!(ui.session_picker.is_none());
+            assert!(ui.picker.is_none());
             assert_eq!(session.id(), &old);
             ui.input.paste("/resume");
             press(&mut ui, &mut session, KeyCode::Enter, now).await?;
             press(&mut ui, &mut session, KeyCode::Enter, now).await?;
-            assert!(ui.session_picker.is_none());
+            assert!(ui.picker.is_none());
             assert_eq!(session.id(), &old);
             assert!(session.active());
             Ok(())
@@ -1133,12 +1366,12 @@ mod tests {
         with_session(async |mut session, _events| {
             let mut ui = Ui::default();
             let now = Instant::now();
-            assert_eq!(settings(&session.config_options), "ask");
+            assert_eq!(settings(&session.config_options), "ask • deepseek");
             for (code, expected) in [
-                (KeyCode::Tab, "auto"),
-                (KeyCode::Tab, "ask"),
-                (KeyCode::BackTab, "auto"),
-                (KeyCode::BackTab, "ask"),
+                (KeyCode::Tab, "auto • deepseek"),
+                (KeyCode::Tab, "ask • deepseek"),
+                (KeyCode::BackTab, "auto • deepseek"),
+                (KeyCode::BackTab, "ask • deepseek"),
             ] {
                 key(
                     &mut ui,
