@@ -263,7 +263,7 @@ pub fn content_lines(call: &ToolCall, width: usize) -> Vec<Line<'static>> {
 
 fn icon(call: &ToolCall, symbol: &str) -> Span<'static> {
     let style = match call.status {
-        ToolCallStatus::Pending => Style::new().fg(Color::Indexed(208)),
+        ToolCallStatus::Pending => Style::new().fg(Color::Yellow),
         ToolCallStatus::Completed => Style::new().fg(Color::Green),
         ToolCallStatus::Failed => Style::new().fg(Color::Red),
         _ => Style::new(),
@@ -722,7 +722,7 @@ mod tests {
     fn the_tool_status_sets_the_icon_color() {
         let now = Instant::now();
         for (status, color) in [
-            (ToolCallStatus::Pending, Some(Color::Indexed(208))),
+            (ToolCallStatus::Pending, Some(Color::Yellow)),
             (ToolCallStatus::InProgress, None),
             (ToolCallStatus::Completed, Some(Color::Green)),
             (ToolCallStatus::Failed, Some(Color::Red)),
