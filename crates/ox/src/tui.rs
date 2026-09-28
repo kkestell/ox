@@ -1,4 +1,5 @@
 mod input;
+mod theme;
 mod transcript;
 
 use std::io::{Stdout, Write, stdout};
@@ -278,10 +279,6 @@ pub struct Screen<'a> {
     pub now: Instant,
 }
 
-fn rule(width: usize) -> Line<'static> {
-    Line::raw("─".repeat(width))
-}
-
 fn put(buf: &mut Buffer, area: Rect, y: usize, line: &Line) {
     if let Ok(y) = u16::try_from(y)
         && y < area.height
@@ -290,9 +287,28 @@ fn put(buf: &mut Buffer, area: Rect, y: usize, line: &Line) {
     }
 }
 
+/// Sets the background of `rows` rows from row `y`, clipped to the area.
+fn fill(buf: &mut Buffer, area: Rect, y: usize, rows: usize, color: Color) {
+    let height = usize::from(area.height);
+    let top = y.min(height);
+    let bottom = y.saturating_add(rows).min(height);
+    buf.set_style(
+        Rect {
+            y: area.y + top as u16,
+            height: (bottom - top) as u16,
+            ..area
+        },
+        Style::new().bg(color),
+    );
+}
+
 pub fn draw(frame: &mut Frame, screen: &Screen) -> Layout {
     let area = frame.area();
     let width = usize::from(area.width);
+    // Unstyled cells would show the terminal's own colors.
+    frame
+        .buffer_mut()
+        .set_style(area, Style::new().fg(theme::TEXT).bg(theme::BACKGROUND));
     // A picker fills the screen, hiding the approval dialog and the composer,
     // and the cursor sits in its search input.
     if let Some(picker) = screen.picker {
@@ -323,10 +339,10 @@ pub fn draw(frame: &mut Frame, screen: &Screen) -> Layout {
         .as_ref()
         .map(|approval| approval_lines(screen.view, approval, width))
         .unwrap_or_default();
-    let composer = rows.lines.len() + 3;
+    let composer = rows.lines.len() + 4;
     let space = usize::from(area.height).saturating_sub(approval.len() + composer);
-    // The transcript view leaves one blank row below.
-    let height = space.saturating_sub(1);
+    // The transcript view leaves one blank row above and below.
+    let height = space.saturating_sub(2);
     let view_width = usize::from(padded.width);
     let lines = screen
         .view
@@ -334,23 +350,24 @@ pub fn draw(frame: &mut Frame, screen: &Screen) -> Layout {
     let first = screen.view.first_row(height, lines.len());
     let buf = frame.buffer_mut();
     for (y, line) in lines.iter().skip(first).take(height).enumerate() {
-        put(buf, padded, y, line);
+        put(buf, padded, 1 + y, line);
     }
     if screen.view.new_activity && height > 0 {
         let notice = "new activity";
         let padding = " ".repeat(view_width.saturating_sub(notice.width()) / 2);
-        put(buf, padded, height - 1, &Line::raw(" ".repeat(view_width)));
+        put(buf, padded, height, &Line::raw(" ".repeat(view_width)));
         put(
             buf,
             padded,
-            height - 1,
+            height,
             &Line::styled(
                 format!("{padding}{notice}"),
-                Style::new().fg(Color::LightYellow),
+                Style::new().fg(theme::LIGHT_YELLOW),
             ),
         );
     }
     let mut y = space;
+    fill(buf, area, y, approval.len(), theme::APPROVAL);
     for line in &approval {
         put(buf, area, y, line);
         y += 1;
@@ -362,7 +379,8 @@ pub fn draw(frame: &mut Frame, screen: &Screen) -> Layout {
         put(buf, padded, input_top + row, &Line::raw(line.as_str()));
     }
     y = input_top + rows.lines.len() + 1;
-    // The status line pads its content by two columns on each side.
+    // The status line pads its content by two columns on each side and one
+    // blank row below.
     let right = width.saturating_sub(screen.usage.width() + 2);
     let settings = transcript::clip(screen.settings, right.saturating_sub(3));
     put(buf, area, y, &Line::raw(format!("  {settings}")));
@@ -376,17 +394,7 @@ pub fn draw(frame: &mut Frame, screen: &Screen) -> Layout {
             Style::new(),
         );
     }
-    let top = u16::try_from(composer_top)
-        .unwrap_or(u16::MAX)
-        .min(area.height);
-    buf.set_style(
-        Rect {
-            y: area.y + top,
-            height: area.height - top,
-            ..area
-        },
-        Style::new().bg(Color::DarkGray),
-    );
+    fill(buf, area, composer_top, usize::MAX, theme::COMPOSER);
     let (row, column) = rows.cursor;
     let x = u16::try_from(2 + column)
         .unwrap_or(u16::MAX)
@@ -409,11 +417,11 @@ fn picker_lines(picker: &Picker, width: usize, height: usize) -> Vec<Line<'stati
     let error = picker.error.as_ref().map_or_else(Line::default, |error| {
         Line::styled(
             transcript::clip(error, width.saturating_sub(2)),
-            Style::new().fg(Color::Red),
+            Style::new().fg(theme::RED),
         )
     });
     let search = if picker.query.is_empty() {
-        Line::styled("Search", Style::new().fg(Color::DarkGray))
+        Line::styled("Search", Style::new().fg(theme::DIM))
     } else {
         Line::raw(picker.query.clone())
     };
@@ -441,9 +449,9 @@ fn picker_lines(picker: &Picker, width: usize, height: usize) -> Vec<Line<'stati
         let marker = if index == picker.selected { "›" } else { " " };
         let row = format!("{marker} {}", rows[row]);
         let color = if index == picker.selected {
-            Color::White
+            theme::BRIGHT
         } else {
-            Color::Gray
+            theme::GRAY
         };
         lines.push(Line::styled(row, Style::new().fg(color)));
     }
@@ -535,15 +543,15 @@ fn approval_lines(view: &TranscriptView, approval: &Approval, width: usize) -> V
     let (heading, body) = match call.name.as_deref() {
         Some("shell") => (
             "Would you like to run the following command?",
-            transcript::content_lines(&call, content_width),
+            transcript::content_lines(&call, content_width, Style::new()),
         ),
         Some("shell_process") => (
             "Would you like to send the following input?",
-            transcript::content_lines(&call, content_width),
+            transcript::content_lines(&call, content_width, Style::new()),
         ),
         _ => (
             "Would you like to allow the following?",
-            transcript::described_lines(&call, content_width),
+            transcript::described_lines(&call, content_width, Style::new()),
         ),
     };
     let mut lines = vec![Line::raw(heading), Line::default()];
@@ -564,7 +572,7 @@ fn approval_lines(view: &TranscriptView, approval: &Approval, width: usize) -> V
     for line in &mut lines {
         line.spans.insert(0, Span::raw("  "));
     }
-    lines.splice(0..0, [rule(width), Line::default()]);
+    lines.insert(0, Line::default());
     lines.push(Line::default());
     lines
 }
@@ -719,7 +727,7 @@ async fn key(
                 && let Err(error) = session.set_config_option(id, value).await
             {
                 ui.view
-                    .notice(format!("Mode change failed: {error}"), Color::Red, now);
+                    .notice(format!("Mode change failed: {error}"), theme::RED, now);
             }
         }
         KeyCode::Char('c' | 'd') if control => {
@@ -745,7 +753,7 @@ async fn key(
                     ui.input.clear();
                     if !session.can_resume() {
                         ui.view
-                            .notice("Session resume is unavailable".into(), Color::Red, now);
+                            .notice("Session resume is unavailable".into(), theme::RED, now);
                     } else if session.busy {
                         session.queued = None;
                         ui.resume_after_turn = true;
@@ -811,7 +819,7 @@ async fn open_session_picker(ui: &mut Ui, session: &mut Session, now: Instant) {
         }
         Err(error) => ui
             .view
-            .notice(format!("Session list failed: {error}"), Color::Red, now),
+            .notice(format!("Session list failed: {error}"), theme::RED, now),
     }
 }
 
@@ -821,7 +829,7 @@ fn open_model_picker(ui: &mut Ui, session: &Session, now: Instant) {
         select_option(&session.config_options, SessionConfigOptionCategory::Model)
     else {
         ui.view
-            .notice("Model choice is unavailable".into(), Color::Red, now);
+            .notice("Model choice is unavailable".into(), theme::RED, now);
         return;
     };
     let models: Vec<_> = choices(select).into_iter().map(ModelChoice::new).collect();
@@ -890,7 +898,7 @@ fn handle(
                 ui.view.update(update, now);
             }
         }
-        acp::Event::Diagnostic(text) => ui.view.notice(text, Color::DarkGray, now),
+        acp::Event::Diagnostic(text) => ui.view.notice(text, theme::DIM, now),
         acp::Event::Permission(id, request, responder) => {
             if !session.accepts(&id) {
                 responder.respond(RequestPermissionResponse::new(
@@ -920,7 +928,7 @@ fn handle(
             terminal.bell()?;
             if let Err(error) = result {
                 ui.view
-                    .notice(format!("Turn error: {error}"), Color::Red, now);
+                    .notice(format!("Turn error: {error}"), theme::RED, now);
             }
             if let Some(text) = queued {
                 ui.view.user(text, now);
@@ -1127,11 +1135,11 @@ mod tests {
             usage: "5% • $0.01",
             ..screen(&view, &input, now)
         };
-        let (rows, cursor, layout) = render(&screen, 72, 26);
-        let rule = "─".repeat(72);
+        let (rows, cursor, layout) = render(&screen, 72, 27);
         assert_eq!(
             rows,
             [
+                "",
                 "  ● Thought for 12s",
                 "",
                 "  ● Read Makefile",
@@ -1140,7 +1148,6 @@ mod tests {
                 "",
                 "  ● Two tallies were counted in the workspace.",
                 "",
-                &rule,
                 "",
                 "  Would you like to run the following command?",
                 "",
@@ -1161,10 +1168,26 @@ mod tests {
                     "  {:<58}5% • $0.01",
                     "ask • deepseek/deepseek-v4-flash • high"
                 ),
+                "",
             ]
         );
         assert_eq!(cursor, (21, 23));
         assert_eq!((layout.height, layout.lines), (7, 9));
+        let mut terminal = ratatui::Terminal::new(TestBackend::new(72, 27)).unwrap();
+        terminal
+            .draw(|frame| {
+                draw(frame, &screen);
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let colors = |x, y| {
+            let cell = buffer.cell((x, y)).unwrap();
+            (cell.fg, cell.bg)
+        };
+        assert_eq!(colors(0, 8), (theme::TEXT, theme::BACKGROUND));
+        assert_eq!(colors(0, 9), (theme::TEXT, theme::APPROVAL));
+        assert_eq!(colors(8, 16), (theme::TEXT, theme::APPROVAL));
+        assert_eq!(colors(4, 22), (theme::TEXT, theme::COMPOSER));
     }
 
     #[test]
@@ -1181,7 +1204,7 @@ mod tests {
         );
         let rows: Vec<String> = lines.iter().map(ToString::to_string).collect();
         assert_eq!(
-            rows[2..],
+            rows[1..],
             [
                 "  Would you like to send the following input?",
                 "  ",
@@ -1206,30 +1229,37 @@ mod tests {
             view.user(format!("message {index}"), now);
         }
         let input = Input::default();
-        let (rows, _, layout) = render(&screen(&view, &input, now), 40, 11);
+        let (rows, _, layout) = render(&screen(&view, &input, now), 40, 13);
         assert_eq!((layout.height, layout.lines), (6, 39));
-        assert_eq!(rows[5], "  ❯ message 19");
+        assert_eq!(rows[6], "  ❯ message 19");
         view.page_up(layout.height, layout.lines);
-        let (rows, _, _) = render(&screen(&view, &input, now), 40, 11);
-        assert_eq!(rows[4..7], ["  ❯ message 16", "", ""]);
+        let (rows, _, _) = render(&screen(&view, &input, now), 40, 13);
+        assert_eq!(rows[5..8], ["  ❯ message 16", "", ""]);
         view.user("message 20".to_owned(), now);
-        let (rows, _, _) = render(&screen(&view, &input, now), 40, 11);
+        let (rows, _, _) = render(&screen(&view, &input, now), 40, 13);
         assert_eq!(
-            rows[..5],
-            ["  ❯ message 14", "", "  ❯ message 15", "", "  ❯ message 16"]
+            rows[..6],
+            [
+                "",
+                "  ❯ message 14",
+                "",
+                "  ❯ message 15",
+                "",
+                "  ❯ message 16"
+            ]
         );
-        assert_eq!(rows[5], "              new activity");
-        let mut terminal = ratatui::Terminal::new(TestBackend::new(40, 11)).unwrap();
+        assert_eq!(rows[6], "              new activity");
+        let mut terminal = ratatui::Terminal::new(TestBackend::new(40, 13)).unwrap();
         terminal
             .draw(|frame| {
                 draw(frame, &screen(&view, &input, now));
             })
             .unwrap();
-        let cell = terminal.backend().buffer().cell((14, 5)).unwrap();
-        assert_eq!(cell.fg, Color::LightYellow);
+        let cell = terminal.backend().buffer().cell((14, 6)).unwrap();
+        assert_eq!(cell.fg, theme::LIGHT_YELLOW);
         view.end();
-        let (rows, _, _) = render(&screen(&view, &input, now), 40, 11);
-        assert_eq!(rows[5], "  ❯ message 20");
+        let (rows, _, _) = render(&screen(&view, &input, now), 40, 13);
+        assert_eq!(rows[6], "  ❯ message 20");
     }
 
     #[test]
@@ -1264,11 +1294,12 @@ mod tests {
             usage: "15% • $0.25",
             ..screen(&view, &input, Instant::now())
         };
-        let (rows, cursor, _) = render(&screen, 40, 6);
+        let (rows, cursor, _) = render(&screen, 40, 7);
         assert_eq!(
             rows[5],
             format!("  {:<25}15% • $0.25", "ask • deepseek • high")
         );
+        assert_eq!(rows[6], "");
         assert_eq!(rows[3], "  ❯");
         assert_eq!(cursor, (4, 3));
     }
@@ -1385,8 +1416,8 @@ mod tests {
             })
             .unwrap();
         let buffer = terminal.backend().buffer();
-        assert_eq!(buffer.cell((0, 5)).unwrap().fg, Color::White);
-        assert_eq!(buffer.cell((0, 4)).unwrap().fg, Color::Gray);
+        assert_eq!(buffer.cell((0, 5)).unwrap().fg, theme::BRIGHT);
+        assert_eq!(buffer.cell((0, 4)).unwrap().fg, theme::GRAY);
     }
 
     #[tokio::test]

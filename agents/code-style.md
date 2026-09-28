@@ -36,6 +36,9 @@ is still moving.
   boundaries. Cohesion matters more than short files.
 - Hardcode local tuning values near their use until user-facing configuration is
   needed.
+- Take every terminal color from `crates/ox/src/tui/theme.rs`, so Ox looks the
+  same under every terminal color scheme. Never write a named ANSI color or a
+  color value anywhere else. Add a constant to the theme instead.
 - Prefer direct functions and data flow. Split a module when the boundary
   clarifies responsibility, not because the file is long.
 - Give each lifecycle one owner. New state for an entity goes into the structure

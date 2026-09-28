@@ -320,6 +320,7 @@ fn the_transcript_view_renders_thinking_tools_and_wrapped_replies() {
     let screen = test.screen();
     assert!(
         screen.starts_with(concat!(
+            "\n",
             "  ❯ render\n",
             "\n",
             "  ● Thought for 0s\n",
@@ -339,7 +340,7 @@ fn the_transcript_view_renders_thinking_tools_and_wrapped_replies() {
         "{screen}"
     );
     let styled = test.styled_screen();
-    let gray = |text: &str| styled.contains(&format!("\x1b[38;5;8m{text}"));
+    let gray = |text: &str| styled.contains(&format!("\x1b[38;2;112;112;112m{text}"));
     assert!(gray("● Thought for 0s"), "{styled}");
     assert!(gray("  Fixed."), "{styled}");
     assert!(!gray("● Two tallies"), "{styled}");
@@ -353,10 +354,14 @@ fn the_status_line_shows_the_session_settings_and_usage() {
     test.wait("auto • deepseek • high");
     test.prompt("usage");
     test.wait("15% • $0.25");
-    let last = test.screen();
-    let last = last.lines().last().unwrap();
-    assert!(last.starts_with("  auto • deepseek • high"), "{last}");
-    assert!(last.ends_with("15% • $0.25"), "{last}");
+    let screen = test.screen();
+    let lines: Vec<&str> = screen.lines().collect();
+    let [.., status, last] = lines[..] else {
+        panic!("{screen}")
+    };
+    assert!(status.starts_with("  auto • deepseek • high"), "{screen}");
+    assert!(status.ends_with("15% • $0.25"), "{screen}");
+    assert_eq!(last.trim(), "", "{screen}");
 }
 
 #[test]

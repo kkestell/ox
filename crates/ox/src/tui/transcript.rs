@@ -8,6 +8,7 @@ use serde_json::Value;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use super::escape;
+use super::theme;
 
 /// Seconds before the thinking placeholder starts counting.
 const COUNT_AFTER: u64 = 10;
@@ -192,7 +193,7 @@ fn page(height: usize) -> usize {
 }
 
 fn gray() -> Style {
-    Style::new().fg(Color::DarkGray)
+    Style::new().fg(theme::DIM)
 }
 
 /// An item's rows and whether they are one `●` line.
@@ -222,7 +223,7 @@ fn item_lines(
                 Some(line) => (vec![line], true),
                 None if call.name.is_some() => (vec![tool_line(call, &call.title, width)], true),
                 None => {
-                    let lines = described_lines(call, width);
+                    let lines = described_lines(call, width, gray());
                     let bullet = lines.len() == 1;
                     (lines, bullet)
                 }
@@ -250,22 +251,22 @@ fn placeholder(started: Instant, ended: Option<Instant>, now: Instant) -> String
     }
 }
 
-pub fn described_lines(call: &ToolCall, width: usize) -> Vec<Line<'static>> {
+pub fn described_lines(call: &ToolCall, width: usize, style: Style) -> Vec<Line<'static>> {
     let mut lines = vec![tool_line(call, &call.title, width)];
-    lines.extend(content_lines(call, width));
+    lines.extend(content_lines(call, width, style));
     lines
 }
 
 /// A call's content rows, indented under where its `●` line would be.
-pub fn content_lines(call: &ToolCall, width: usize) -> Vec<Line<'static>> {
-    prefixed(&tool_content(&call.content), width, "  ", gray())
+pub fn content_lines(call: &ToolCall, width: usize, style: Style) -> Vec<Line<'static>> {
+    prefixed(&tool_content(&call.content), width, "  ", style)
 }
 
 fn icon(call: &ToolCall, symbol: &str) -> Span<'static> {
     let style = match call.status {
-        ToolCallStatus::Pending => Style::new().fg(Color::Yellow),
-        ToolCallStatus::Completed => Style::new().fg(Color::Green),
-        ToolCallStatus::Failed => Style::new().fg(Color::Red),
+        ToolCallStatus::Pending => Style::new().fg(theme::YELLOW),
+        ToolCallStatus::Completed => Style::new().fg(theme::GREEN),
+        ToolCallStatus::Failed => Style::new().fg(theme::RED),
         _ => Style::new(),
     };
     Span::styled(symbol.to_owned(), style)
@@ -587,7 +588,7 @@ mod tests {
         assert_eq!(rows(&view, 40, true, at(60)), ["● weighing it"]);
         for show in [false, true] {
             let line = &view.lines(40, show, at(60))[0];
-            assert_eq!(color(line), Some(Color::DarkGray), "{show}");
+            assert_eq!(color(line), Some(theme::DIM), "{show}");
         }
         let empty = self::view(vec![thought("  ")], start);
         assert_eq!(rows(&empty, 40, true, at(3)), ["● Thinking..."]);
@@ -662,16 +663,16 @@ mod tests {
             );
         }
         let mut view = view(vec![answer("a", "Fixed.")], now);
-        view.notice("Turn error: bad".to_owned(), Color::Red, now);
-        view.notice("stderr line".to_owned(), Color::DarkGray, now);
+        view.notice("Turn error: bad".to_owned(), theme::RED, now);
+        view.notice("stderr line".to_owned(), theme::DIM, now);
         let lines = view.lines(40, false, now);
         assert_eq!(
             rows(&view, 40, false, now)[2..],
             ["", "Turn error: bad", "", "stderr line"]
         );
-        assert_eq!(color(&lines[1]), Some(Color::DarkGray));
-        assert_eq!(color(&lines[3]), Some(Color::Red));
-        assert_eq!(color(&lines[5]), Some(Color::DarkGray));
+        assert_eq!(color(&lines[1]), Some(theme::DIM));
+        assert_eq!(color(&lines[3]), Some(theme::RED));
+        assert_eq!(color(&lines[5]), Some(theme::DIM));
     }
 
     #[test]
@@ -714,7 +715,7 @@ mod tests {
         assert_eq!(rows(&failed, 40, false, now), ["● Shell rm -rf x"]);
         assert_eq!(
             failed.lines(40, false, now)[0].spans[0].style.fg,
-            Some(Color::Red)
+            Some(theme::RED)
         );
     }
 
@@ -722,10 +723,10 @@ mod tests {
     fn the_tool_status_sets_the_icon_color() {
         let now = Instant::now();
         for (status, color) in [
-            (ToolCallStatus::Pending, Some(Color::Yellow)),
+            (ToolCallStatus::Pending, Some(theme::YELLOW)),
             (ToolCallStatus::InProgress, None),
-            (ToolCallStatus::Completed, Some(Color::Green)),
-            (ToolCallStatus::Failed, Some(Color::Red)),
+            (ToolCallStatus::Completed, Some(theme::GREEN)),
+            (ToolCallStatus::Failed, Some(theme::RED)),
         ] {
             let call = ToolCall::new("a", "Read a")
                 .name("read_file".to_owned())
