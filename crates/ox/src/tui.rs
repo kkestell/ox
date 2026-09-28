@@ -506,6 +506,9 @@ async fn key(
         }
         KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => ui.input.newline(),
         KeyCode::Enter => {
+            if ui.resume_after_turn {
+                return Ok(false);
+            }
             if !ui.input.is_empty() {
                 if ui.input.text() == "/resume" {
                     ui.input.clear();
@@ -1049,6 +1052,24 @@ mod tests {
             assert!(ui.session_picker.is_none());
             assert_eq!(session.id(), &old);
             assert!(session.active());
+            Ok(())
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn resume_wait_does_not_queue_another_prompt() {
+        with_session(async |mut session, _events| {
+            let mut ui = Ui::default();
+            let now = Instant::now();
+            session.prompt("running".into())?;
+            ui.input.paste("/resume");
+            press(&mut ui, &mut session, KeyCode::Enter, now).await?;
+            assert!(ui.resume_after_turn);
+            ui.input.paste("later");
+            press(&mut ui, &mut session, KeyCode::Enter, now).await?;
+            assert_eq!(ui.input.text(), "later");
+            assert!(session.queued.is_none());
             Ok(())
         })
         .await;

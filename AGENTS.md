@@ -67,3 +67,10 @@ of adding migrations or versions. Their directory is `$OX_DATA_DIR`, else
 - Follow big idea up front and progressive disclosure
 - Never use jargon, invented terms, or shorthand
 - Never mix definitions or overload terms
+
+## Ox workflow
+
+Plans, work logs, reviews, and issues live in `agents/`. `/ox-plan` writes a
+plan, `/ox-work` implements it, and `/ox-review` records findings and fixes.
+Track open work in `agents/todo.md` and `agents/issues.csv`; append issue rows
+without reordering or deleting them because todo links use CSV line numbers.
