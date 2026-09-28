@@ -193,16 +193,16 @@ fn resume_picker_shows_saved_session_and_replays_on_enter() {
     test.prompt("original transcript");
     test.wait("you said: original transcript");
     test.prompt("/resume");
-    test.wait("Resume a session");
+    test.wait("Search");
     test.wait("tallies");
     test.wait("2026-09-01");
     test.keys(&["Escape"]);
-    test.wait_gone("Resume a session");
+    test.wait_gone("Search");
     test.wait("you said: original transcript");
     test.prompt("/resume");
-    test.wait("Resume a session");
+    test.wait("Search");
     test.keys(&["Enter"]);
-    test.wait_gone("Resume a session");
+    test.wait_gone("Search");
     test.wait("you said: original transcript");
     test.prompt("after resume");
     test.wait("you said: after resume");
@@ -213,19 +213,19 @@ fn resume_picker_shows_saved_session_and_replays_on_enter() {
 fn model_picker_shows_prices_and_changes_the_model() {
     let test = Tmux::new();
     test.prompt("/model");
-    test.wait("Choose a model");
+    test.wait("Search");
     let screen = test.screen();
     assert!(
         screen.contains(&format!(
-            "› {:<55}$0.28  $0.42  131,072\n  {:<55}$0.04  $0.08   32,768\n",
+            "    {:<51}$0.28  $0.42  131,072\n    {:<51}$0.04  $0.08   32,768\n",
             "DeepSeek: DeepSeek Reasoner", "Google: Gemma Vision"
         )),
         "{screen}"
     );
     assert!(!screen.contains("0% • $0.00"), "{screen}");
     test.keys(&["Down", "Enter"]);
-    test.wait_gone("Choose a model");
-    test.wait("ask • gemma");
+    test.wait_gone("Search");
+    test.wait("Ask • Google: Gemma Vision");
 }
 
 #[test]
@@ -235,7 +235,7 @@ fn resume_during_prompt_cancels_before_showing_the_picker() {
     test.prompt("running");
     test.wait("running; waiting for cancellation");
     test.prompt("/resume");
-    test.wait("Resume a session");
+    test.wait("Search");
     test.keys(&["Escape"]);
     test.wait("cancelled");
     assert!(!test.screen().contains("you said: /resume"));
@@ -351,7 +351,7 @@ fn the_transcript_view_renders_thinking_tools_and_wrapped_replies() {
 fn the_status_line_shows_the_session_settings_and_usage() {
     let test = Tmux::new();
     test.prompt("options");
-    test.wait("auto • deepseek • high");
+    test.wait("Auto • DeepSeek: DeepSeek Reasoner • High");
     test.prompt("usage");
     test.wait("15% • $0.25");
     let screen = test.screen();
@@ -359,7 +359,10 @@ fn the_status_line_shows_the_session_settings_and_usage() {
     let [.., status, last] = lines[..] else {
         panic!("{screen}")
     };
-    assert!(status.starts_with("  auto • deepseek • high"), "{screen}");
+    assert!(
+        status.starts_with("  Auto • DeepSeek: DeepSeek Reasoner • High"),
+        "{screen}"
+    );
     assert!(status.ends_with("15% • $0.25"), "{screen}");
     assert_eq!(last.trim(), "", "{screen}");
 }
@@ -368,11 +371,11 @@ fn the_status_line_shows_the_session_settings_and_usage() {
 #[ignore = "requires tmux; run make e2e"]
 fn tab_and_shift_tab_cycle_modes_in_the_terminal() {
     let test = Tmux::new();
-    test.wait("ask");
+    test.wait("Ask");
     test.keys(&["Tab"]);
-    test.wait("auto");
+    test.wait("Auto");
     test.keys(&["S-Tab"]);
-    test.wait("ask");
+    test.wait("Ask");
 }
 
 #[test]

@@ -25,7 +25,7 @@ use ratatui::{
     buffer::Buffer,
     layout::{Margin, Rect},
     style::Style,
-    text::{Line, Span},
+    text::Line,
 };
 use tokio::sync::mpsc::UnboundedReceiver;
 use unicode_width::UnicodeWidthStr;
@@ -163,9 +163,19 @@ struct Picker {
     error: Option<String>,
 }
 
-/// The heading, the error line, the search input, and a blank line come
+/// The search input and the error line, blank when there is no error, come
 /// before a picker's rows.
-const PICKER_TOP: usize = 4;
+const PICKER_TOP: usize = 2;
+
+/// The blank columns beside a picker and the blank rows above and below it.
+const PICKER_PADDING: Margin = Margin::new(4, 2);
+
+/// The rows a picker shows on a screen `height` rows tall.
+fn picker_rows(height: u16) -> usize {
+    usize::from(height)
+        .saturating_sub(usize::from(PICKER_PADDING.vertical) * 2)
+        .saturating_sub(PICKER_TOP)
+}
 
 enum PickerRows {
     Sessions(Vec<SessionInfo>),
@@ -320,12 +330,13 @@ pub fn draw(frame: &mut Frame, screen: &Screen) -> Layout {
     // A picker fills the screen, hiding the approval dialog and the composer,
     // and the cursor sits in its search input.
     if let Some(picker) = screen.picker {
-        let rows = height.saturating_sub(PICKER_TOP);
-        let lines = picker_lines(picker, usize::from(area.width), rows);
+        let padded = area.inner(PICKER_PADDING);
+        let rows = picker_rows(area.height);
+        let lines = picker_lines(picker, usize::from(padded.width), rows);
         for (y, line) in lines.iter().enumerate() {
-            put(buf, area, y, line);
+            put(buf, padded, y, line);
         }
-        cursor(frame, area, 2 + picker.query.width(), 2);
+        cursor(frame, padded, picker.query.width(), 0);
         return Layout {
             height: rows,
             lines: 0,
@@ -385,36 +396,22 @@ pub fn draw(frame: &mut Frame, screen: &Screen) -> Layout {
 }
 
 fn picker_lines(picker: &Picker, width: usize, rows: usize) -> Vec<Line<'static>> {
-    let heading = match picker.rows {
-        PickerRows::Sessions(_) => "Resume a session",
-        PickerRows::Models(_) => "Choose a model",
-    };
     let error = picker.error.as_ref().map_or_else(Line::default, |error| {
-        Line::styled(
-            transcript::clip(error, width.saturating_sub(2)),
-            Style::new().fg(theme::RED),
-        )
+        Line::styled(transcript::clip(error, width), Style::new().fg(theme::RED))
     });
     let search = if picker.query.is_empty() {
         Line::styled("Search", Style::new().fg(theme::DIM))
     } else {
         Line::raw(picker.query.clone())
     };
-    let mut lines = vec![Line::raw(heading), error, search, Line::default()];
-    // Everything above the rows lines up with each row's content, which
-    // follows its marker and a space.
-    for line in &mut lines {
-        line.spans.insert(0, Span::raw("  "));
-    }
-    // Each row follows its marker and a space and pads two columns on the
-    // right.
+    let mut lines = vec![search, error];
     let names = match &picker.rows {
         PickerRows::Sessions(sessions) if sessions.is_empty() => {
-            lines.push(Line::raw("  No saved sessions"));
+            lines.push(Line::raw("No saved sessions"));
             return lines;
         }
-        PickerRows::Sessions(sessions) => session_rows(sessions, width.saturating_sub(4)),
-        PickerRows::Models(models) => model_rows(models, width.saturating_sub(4)),
+        PickerRows::Sessions(sessions) => session_rows(sessions, width),
+        PickerRows::Models(models) => model_rows(models, width),
     };
     for (index, &row) in picker
         .matches
@@ -423,14 +420,12 @@ fn picker_lines(picker: &Picker, width: usize, rows: usize) -> Vec<Line<'static>
         .skip(picker.first)
         .take(rows)
     {
-        let marker = if index == picker.selected { "›" } else { " " };
-        let row = format!("{marker} {}", names[row]);
         let color = if index == picker.selected {
             theme::BRIGHT
         } else {
             theme::GRAY
         };
-        lines.push(Line::styled(row, Style::new().fg(color)));
+        lines.push(Line::styled(names[row].clone(), Style::new().fg(color)));
     }
     lines
 }
@@ -562,13 +557,22 @@ fn choices(select: &SessionConfigSelect) -> Vec<&SessionConfigSelectOption> {
     }
 }
 
-/// The status line's left side: the mode, model, and effort in use.
+/// The status line's left side: the names of the mode, model, and effort in
+/// use.
 pub fn settings(options: &[SessionConfigOption]) -> String {
     use SessionConfigOptionCategory::*;
     [Mode, Model, ThoughtLevel]
         .into_iter()
         .filter_map(|category| {
-            select_option(options, category).map(|(_, select)| select.current_value.to_string())
+            select_option(options, category).map(|(_, select)| {
+                choices(select)
+                    .into_iter()
+                    .find(|choice| choice.value == select.current_value)
+                    .map_or_else(
+                        || select.current_value.to_string(),
+                        |choice| choice.name.clone(),
+                    )
+            })
         })
         .collect::<Vec<_>>()
         .join(" • ")
@@ -791,7 +795,8 @@ fn open_model_picker(ui: &mut Ui, session: &Session, now: Instant) {
         .position(|model| model.value == select.current_value)
         .unwrap_or(0);
     let mut picker = Picker::new(PickerRows::Models(models));
-    picker.move_to(current, ui.layout.height);
+    // The next draw scrolls it into view.
+    picker.selected = current;
     ui.picker = Some(picker);
 }
 
@@ -917,6 +922,9 @@ pub async fn run(
         } else {
             terminal.unseen.unwrap_or("ready")
         })?;
+        if let Some(picker) = &mut ui.picker {
+            picker.move_to(picker.selected, picker_rows(terminal.inner.size()?.height));
+        }
         let settings = settings(&session.config_options);
         let usage = usage(session.usage.as_ref());
         let screen = Screen {
@@ -1273,17 +1281,17 @@ mod tests {
         let layout = {
             let mut display = screen(&view, &input, Instant::now());
             display.picker = Some(&picker);
-            let (rows, _, layout, _) = render(&display, 40, 5);
-            assert_eq!(rows[4], format!("› {:<26}2026-09-27", "newer"));
+            let (rows, _, layout, _) = render(&display, 40, 7);
+            assert_eq!(rows[4], format!("    {:<22}2026-09-27", "newer"));
             layout
         };
         picker.move_to(2, layout.height);
         let mut screen = screen(&view, &input, Instant::now());
         screen.picker = Some(&picker);
-        let (rows, _, _, _) = render(&screen, 40, 5);
+        let (rows, _, _, _) = render(&screen, 40, 7);
         assert!(
             rows.iter()
-                .any(|row| row.contains("› undated") && row.contains("Unknown date"))
+                .any(|row| row.contains("undated") && row.contains("Unknown date"))
         );
     }
 
@@ -1312,33 +1320,53 @@ mod tests {
                 serde_json::json!({"inputPrice": "free", "contextLimit": 1.5}),
             ),
         ]));
-        picker.move_to(1, 8);
+        picker.move_to(1, 4);
         let view = TranscriptView::default();
         let input = Input::default();
         let screen = Screen {
             picker: Some(&picker),
             ..screen(&view, &input, Instant::now())
         };
-        let (rows, cursor, _, _) = render(&screen, 60, 8);
+        let (rows, cursor, _, _) = render(&screen, 60, 12);
         assert_eq!(
             rows,
             [
-                "  Choose a model",
                 "",
-                "  Search",
                 "",
-                "  DeepSeek: DeepSeek V4.1 Flash  $0.03   $0.60   1,048,576",
-                "› Anthropic: Claude Opus 5.5 w…  $4.00   $20.00    200,000",
-                "  Other server model",
+                "    Search",
+                "",
+                "    DeepSeek: DeepSeek V4.1 …  $0.03   $0.60   1,048,576",
+                "    Anthropic: Claude Opus 5…  $4.00   $20.00    200,000",
+                "    Other server model",
+                "",
+                "",
+                "",
+                "",
                 "",
             ],
             "the picker hides the composer"
         );
         assert_eq!(
             cursor,
-            (2, 2),
+            (4, 2),
             "the cursor starts on the search placeholder"
         );
+    }
+
+    #[test]
+    fn picker_scrolls_a_preselected_row_into_view() {
+        let sessions = (0..10)
+            .map(|index| SessionInfo::new(index.to_string(), "/tmp").title(format!("s{index}")))
+            .collect();
+        let mut picker = Picker::new(PickerRows::Sessions(sessions));
+        picker.selected = 9;
+        let view = TranscriptView::default();
+        let input = Input::default();
+        picker.move_to(picker.selected, picker_rows(12));
+        let mut display = screen(&view, &input, Instant::now());
+        display.picker = Some(&picker);
+        let (rows, _, _, _) = render(&display, 40, 12);
+        assert!(rows.iter().any(|row| row.contains("s9")), "{rows:?}");
     }
 
     #[test]
@@ -1347,14 +1375,17 @@ mod tests {
             SessionInfo::new("a", "/tmp").title("older"),
             SessionInfo::new("b", "/tmp").title("newer"),
         ]));
-        picker.move_to(1, 6);
+        picker.move_to(1, 2);
         let view = TranscriptView::default();
         let input = Input::default();
         let mut display = screen(&view, &input, Instant::now());
         display.picker = Some(&picker);
-        let (_, _, _, buffer) = render(&display, 40, 6);
-        assert_eq!(buffer.cell((0, 5)).unwrap().fg, theme::BRIGHT);
-        assert_eq!(buffer.cell((0, 4)).unwrap().fg, theme::GRAY);
+        let (_, _, _, buffer) = render(&display, 40, 10);
+        assert_eq!(buffer.cell((4, 5)).unwrap().fg, theme::BRIGHT);
+        assert_eq!(buffer.cell((4, 4)).unwrap().fg, theme::GRAY);
+        for (x, y) in [(0, 0), (39, 9), (20, 9)] {
+            assert_eq!(buffer.cell((x, y)).unwrap().bg, theme::BACKGROUND);
+        }
     }
 
     #[tokio::test]
@@ -1380,7 +1411,10 @@ mod tests {
             }
             press(&mut ui, &mut session, KeyCode::Enter, now).await?;
             assert!(ui.picker.is_none());
-            assert_eq!(settings(&session.config_options), "ask • gemma");
+            assert_eq!(
+                settings(&session.config_options),
+                "Ask • Google: Gemma Vision"
+            );
             Ok(())
         })
         .await;
@@ -1398,13 +1432,19 @@ mod tests {
             press(&mut ui, &mut session, KeyCode::Down, now).await?;
             press(&mut ui, &mut session, KeyCode::Esc, now).await?;
             assert!(ui.picker.is_none());
-            assert_eq!(settings(&session.config_options), "ask • deepseek");
+            assert_eq!(
+                settings(&session.config_options),
+                "Ask • DeepSeek: DeepSeek Reasoner"
+            );
             ui.input.paste("/model");
             press(&mut ui, &mut session, KeyCode::Enter, now).await?;
             press(&mut ui, &mut session, KeyCode::Down, now).await?;
             press(&mut ui, &mut session, KeyCode::Enter, now).await?;
             assert!(ui.picker.is_none());
-            assert_eq!(settings(&session.config_options), "ask • gemma");
+            assert_eq!(
+                settings(&session.config_options),
+                "Ask • Google: Gemma Vision"
+            );
             ui.input.paste("/model");
             press(&mut ui, &mut session, KeyCode::Enter, now).await?;
             assert_eq!(selected(&ui), Some(1), "the current model is selected");
@@ -1478,12 +1518,15 @@ mod tests {
         with_session(async |mut session, _events| {
             let mut ui = Ui::default();
             let now = Instant::now();
-            assert_eq!(settings(&session.config_options), "ask • deepseek");
+            assert_eq!(
+                settings(&session.config_options),
+                "Ask • DeepSeek: DeepSeek Reasoner"
+            );
             for (code, expected) in [
-                (KeyCode::Tab, "auto • deepseek"),
-                (KeyCode::Tab, "ask • deepseek"),
-                (KeyCode::BackTab, "auto • deepseek"),
-                (KeyCode::BackTab, "ask • deepseek"),
+                (KeyCode::Tab, "Auto • DeepSeek: DeepSeek Reasoner"),
+                (KeyCode::Tab, "Ask • DeepSeek: DeepSeek Reasoner"),
+                (KeyCode::BackTab, "Auto • DeepSeek: DeepSeek Reasoner"),
+                (KeyCode::BackTab, "Ask • DeepSeek: DeepSeek Reasoner"),
             ] {
                 key(
                     &mut ui,
