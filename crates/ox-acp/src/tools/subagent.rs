@@ -193,10 +193,7 @@ fn send(subagents: &Subagents, arguments: &str) -> Result<String, String> {
 async fn stop(subagents: &Subagents, arguments: &str) -> Result<String, String> {
     let args: StopArgs = parse(arguments)?;
     subagents.stop(&args.subagent_id).await?;
-    Ok(format!(
-        "Stopped subagent {}. Its conversation remains saved.",
-        args.subagent_id
-    ))
+    Ok(format!("Stopped subagent {}.", args.subagent_id))
 }
 
 /// Nonpositive seconds wait not at all, and longer waits are capped.
