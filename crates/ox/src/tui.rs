@@ -310,7 +310,14 @@ pub fn draw(frame: &mut Frame, screen: &Screen) -> Layout {
             lines: lines.len(),
         };
     }
-    let rows = screen.input.rows(area.width);
+    // The transcript view and the input pad their content by two columns on
+    // each side.
+    let padded = Rect {
+        x: area.x + 2.min(area.width),
+        width: area.width.saturating_sub(4),
+        ..area
+    };
+    let rows = screen.input.rows(padded.width);
     let approval = screen
         .approval
         .as_ref()
@@ -318,30 +325,24 @@ pub fn draw(frame: &mut Frame, screen: &Screen) -> Layout {
         .unwrap_or_default();
     let composer = rows.lines.len() + 3;
     let space = usize::from(area.height).saturating_sub(approval.len() + composer);
-    // The transcript view pads its content by two columns on each side and
-    // one row below.
+    // The transcript view leaves one blank row below.
     let height = space.saturating_sub(1);
-    let view = Rect {
-        x: area.x + 2.min(area.width),
-        width: area.width.saturating_sub(4),
-        ..area
-    };
-    let view_width = usize::from(view.width);
+    let view_width = usize::from(padded.width);
     let lines = screen
         .view
         .lines(view_width, screen.show_thinking, screen.now);
     let first = screen.view.first_row(height, lines.len());
     let buf = frame.buffer_mut();
     for (y, line) in lines.iter().skip(first).take(height).enumerate() {
-        put(buf, view, y, line);
+        put(buf, padded, y, line);
     }
     if screen.view.new_activity && height > 0 {
         let notice = "new activity";
         let padding = " ".repeat(view_width.saturating_sub(notice.width()) / 2);
-        put(buf, view, height - 1, &Line::raw(" ".repeat(view_width)));
+        put(buf, padded, height - 1, &Line::raw(" ".repeat(view_width)));
         put(
             buf,
-            view,
+            padded,
             height - 1,
             &Line::styled(
                 format!("{padding}{notice}"),
@@ -354,15 +355,13 @@ pub fn draw(frame: &mut Frame, screen: &Screen) -> Layout {
         put(buf, area, y, line);
         y += 1;
     }
-    put(buf, area, y, &rule(width));
-    y += 1;
-    let input_top = y;
-    for line in &rows.lines {
-        put(buf, area, y, &Line::raw(line.as_str()));
-        y += 1;
+    // A blank row comes before and after the input.
+    let composer_top = y;
+    let input_top = y + 1;
+    for (row, line) in rows.lines.iter().enumerate() {
+        put(buf, padded, input_top + row, &Line::raw(line.as_str()));
     }
-    put(buf, area, y, &rule(width));
-    y += 1;
+    y = input_top + rows.lines.len() + 1;
     // The status line pads its content by two columns on each side.
     let right = width.saturating_sub(screen.usage.width() + 2);
     let settings = transcript::clip(screen.settings, right.saturating_sub(3));
@@ -377,8 +376,19 @@ pub fn draw(frame: &mut Frame, screen: &Screen) -> Layout {
             Style::new(),
         );
     }
+    let top = u16::try_from(composer_top)
+        .unwrap_or(u16::MAX)
+        .min(area.height);
+    buf.set_style(
+        Rect {
+            y: area.y + top,
+            height: area.height - top,
+            ..area
+        },
+        Style::new().bg(Color::DarkGray),
+    );
     let (row, column) = rows.cursor;
-    let x = u16::try_from(column)
+    let x = u16::try_from(2 + column)
         .unwrap_or(u16::MAX)
         .min(area.width.saturating_sub(1));
     let y = u16::try_from(input_top + row)
@@ -1143,17 +1153,17 @@ mod tests {
                 "  › 1. Yes",
                 "    2. No",
                 "",
-                &rule,
-                "❯ Also check the docs",
-                "  when you are done",
-                &rule,
+                "",
+                "  ❯ Also check the docs",
+                "    when you are done",
+                "",
                 &format!(
                     "  {:<58}5% • $0.01",
                     "ask • deepseek/deepseek-v4-flash • high"
                 ),
             ]
         );
-        assert_eq!(cursor, (19, 23));
+        assert_eq!(cursor, (21, 23));
         assert_eq!((layout.height, layout.lines), (7, 9));
     }
 
@@ -1259,8 +1269,8 @@ mod tests {
             rows[5],
             format!("  {:<25}15% • $0.25", "ask • deepseek • high")
         );
-        assert_eq!(rows[3], "❯");
-        assert_eq!(cursor, (2, 3));
+        assert_eq!(rows[3], "  ❯");
+        assert_eq!(cursor, (4, 3));
     }
 
     #[test]

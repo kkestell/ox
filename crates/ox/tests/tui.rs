@@ -285,12 +285,12 @@ fn terminal_keys_send_interrupt_approve_scroll_and_restore_the_shell() {
     test.type_text("first");
     test.keys(&["S-Enter"]);
     test.type_text("second");
-    test.wait("❯ first\n  second\n");
+    test.wait("  ❯ first\n    second\n");
     test.keys(&["Enter"]);
     test.wait("  ● you said: first\n    second\n");
     test.call(&["set-buffer", "pasted界\nthird line"]);
     test.call(&["paste-buffer", "-p", "-t", "test:0.0"]);
-    test.wait("❯ pasted界\n  third line\n");
+    test.wait("  ❯ pasted界\n    third line\n");
     assert!(!test.screen().contains("you said: pasted"));
     test.keys(&["Enter"]);
     test.wait("  ● you said: pasted界\n    third line\n");
