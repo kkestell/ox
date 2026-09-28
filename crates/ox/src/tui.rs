@@ -885,14 +885,14 @@ mod tests {
         assert_eq!(
             rows,
             [
-                "  Thought for 12s",
                 "",
-                "• Read Makefile",
-                "• Find files matching *.rs",
+                "● Thought for 12s",
                 "",
-                "$ ls -la",
+                "● Read Makefile",
+                "● Find files matching *.rs",
+                "● Shell ls -la",
                 "",
-                "Two tallies were counted in the workspace.",
+                "● Two tallies were counted in the workspace.",
                 &rule,
                 "",
                 "Would you like to run the following command?",
@@ -917,7 +917,7 @@ mod tests {
             ]
         );
         assert_eq!(cursor, (19, 23));
-        assert_eq!((layout.height, layout.lines), (8, 10));
+        assert_eq!((layout.height, layout.lines), (8, 9));
     }
 
     #[test]

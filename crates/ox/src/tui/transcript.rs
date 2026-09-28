@@ -195,7 +195,7 @@ fn gray() -> Style {
     Style::new().fg(Color::DarkGray)
 }
 
-/// An item's rows and whether they are one `•` line.
+/// An item's rows and whether they are one `●` line.
 fn item_lines(
     item: &Item,
     width: usize,
@@ -210,18 +210,17 @@ fn item_lines(
             ended,
         } => {
             if show_thinking && !text.trim().is_empty() {
-                prefixed(text, width, "  ", gray())
+                prefixed(text, width, "● ", gray())
             } else {
                 let placeholder = placeholder(*started, *ended, now);
-                vec![Line::styled(format!("  {placeholder}"), gray())]
+                vec![Line::styled(format!("● {placeholder}"), gray())]
             }
         }
-        Item::Response(text) => styled(wrap(text, width), Style::new()),
+        Item::Response(text) => prefixed(text, width, "● ", Style::new()),
         Item::Tool(call) => {
-            return match shell_lines(call, width) {
-                Some(_) if call.status == ToolCallStatus::Pending => (Vec::new(), false),
-                Some(lines) => (lines, false),
-                None if call.name.is_some() => (vec![tool_line(call, width)], true),
+            return match shell_line(call, width) {
+                Some(line) => (vec![line], true),
+                None if call.name.is_some() => (vec![tool_line(call, &call.title, width)], true),
                 None => {
                     let lines = described_lines(call, width);
                     let bullet = lines.len() == 1;
@@ -252,12 +251,12 @@ fn placeholder(started: Instant, ended: Option<Instant>, now: Instant) -> String
 }
 
 pub fn described_lines(call: &ToolCall, width: usize) -> Vec<Line<'static>> {
-    let mut lines = vec![tool_line(call, width)];
+    let mut lines = vec![tool_line(call, &call.title, width)];
     lines.extend(content_lines(call, width));
     lines
 }
 
-/// A call's content rows, indented under where its `•` line would be.
+/// A call's content rows, indented under where its `●` line would be.
 pub fn content_lines(call: &ToolCall, width: usize) -> Vec<Line<'static>> {
     prefixed(&tool_content(&call.content), width, "  ", gray())
 }
@@ -265,23 +264,24 @@ pub fn content_lines(call: &ToolCall, width: usize) -> Vec<Line<'static>> {
 fn icon(call: &ToolCall, symbol: &str) -> Span<'static> {
     let style = match call.status {
         ToolCallStatus::Pending => Style::new().fg(Color::Indexed(208)),
+        ToolCallStatus::Completed => Style::new().fg(Color::Green),
         ToolCallStatus::Failed => Style::new().fg(Color::Red),
         _ => Style::new(),
     };
     Span::styled(symbol.to_owned(), style)
 }
 
-fn tool_line(call: &ToolCall, width: usize) -> Line<'static> {
+fn tool_line(call: &ToolCall, title: &str, width: usize) -> Line<'static> {
     Line::from(vec![
-        icon(call, "•"),
+        icon(call, "●"),
         Span::raw(" "),
-        Span::raw(clip(&call.title, width.saturating_sub(2))),
+        Span::raw(clip(title, width.saturating_sub(2))),
     ])
 }
 
-/// The `$` block of a shell call, or nothing when the call is not a shell
-/// command.
-fn shell_lines(call: &ToolCall, width: usize) -> Option<Vec<Line<'static>>> {
+/// The one-row `● Shell` line of a shell call, or nothing when the call is not
+/// a shell command.
+fn shell_line(call: &ToolCall, width: usize) -> Option<Line<'static>> {
     if call.name.as_deref() != Some("shell") {
         return None;
     }
@@ -291,30 +291,14 @@ fn shell_lines(call: &ToolCall, width: usize) -> Option<Vec<Line<'static>>> {
         .get("background")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    let mut rows: Vec<String> = command
-        .trim()
-        .split('\n')
-        .map(|line| expand(&escape(line)))
-        .collect();
+    let mut title = format!(
+        "Shell {}",
+        command.split_whitespace().collect::<Vec<_>>().join(" ")
+    );
     if background {
-        rows.last_mut().expect("split yields a row").push_str(" &");
+        title.push_str(" &");
     }
-    let text_width = width.saturating_sub(2).max(1);
-    let mut lines = Vec::new();
-    for (index, row) in rows.iter().enumerate() {
-        for (piece, text) in hard_wrap(row, text_width).into_iter().enumerate() {
-            if index == 0 && piece == 0 {
-                lines.push(Line::from(vec![
-                    icon(call, "$"),
-                    Span::raw(" "),
-                    Span::raw(text),
-                ]));
-            } else {
-                lines.push(Line::from(format!("  {text}")));
-            }
-        }
-    }
-    Some(lines)
+    Some(tool_line(call, &title, width))
 }
 
 /// Wrapped rows with `prefix` before the first and two spaces before the rest.
@@ -368,24 +352,6 @@ fn expand(line: &str) -> String {
         }
     }
     text
-}
-
-/// Splits a row by display width without regard to words.
-fn hard_wrap(row: &str, width: usize) -> Vec<String> {
-    let mut rows = Vec::new();
-    let mut current = String::new();
-    let mut column = 0;
-    for c in row.chars() {
-        let c_width = c.width().unwrap_or(0);
-        if column + c_width > width && column > 0 {
-            rows.push(std::mem::take(&mut current));
-            column = 0;
-        }
-        current.push(c);
-        column += c_width;
-    }
-    rows.push(current);
-    rows
 }
 
 /// Word-wraps escaped text by display width. The whole text is trimmed,
@@ -522,80 +488,56 @@ mod tests {
     #[test]
     fn text_is_trimmed_and_wrapped_by_display_width() {
         let now = Instant::now();
-        for (case, user, text, width, expected) in [
+        for (case, text, width, expected) in [
             (
                 "surrounding whitespace",
-                false,
                 "  \n\t hello world \n\n ",
                 40,
                 vec!["hello world"],
             ),
-            ("whitespace only", false, " \n\t   ", 40, vec![]),
+            ("whitespace only", " \n\t   ", 40, vec![]),
             (
                 "interior blank lines",
-                false,
                 "one\n\n\ntwo\n",
                 40,
                 vec!["one", "", "", "two"],
             ),
-            (
-                "explicit newlines",
-                false,
-                "a\nb  \n c",
-                40,
-                vec!["a", "b", " c"],
-            ),
-            (
-                "tabs",
-                false,
-                "a\tb\t\tc",
-                40,
-                vec!["a       b               c"],
-            ),
+            ("explicit newlines", "a\nb  \n c", 40, vec!["a", "b", " c"]),
+            ("tabs", "a\tb\t\tc", 40, vec!["a       b               c"]),
             (
                 "word wrap",
-                false,
                 "one two three four",
                 10,
                 vec!["one two", "three four"],
             ),
-            (
-                "long word",
-                false,
-                "ab abcdefgh",
-                6,
-                vec!["ab", "abcdef", "gh"],
-            ),
+            ("long word", "ab abcdefgh", 6, vec!["ab", "abcdef", "gh"]),
             (
                 "display width",
-                false,
                 "界界 界界界 界界界界",
                 7,
                 vec!["界界", "界界界", "界界界", "界"],
             ),
             (
                 "escaped control characters",
-                false,
                 "a\rb \x1b",
                 20,
                 vec!["a\\rb \\u{1b}"],
             ),
-            (
-                "user prefix and indent",
-                true,
-                "  first line of text\nsecond  ",
-                12,
-                vec!["❯ first line", "  of text", "  second"],
-            ),
         ] {
-            let mut view = TranscriptView::default();
-            if user {
-                view.user(text.to_owned(), now);
-            } else {
-                view.update(message(text), now);
-            }
-            assert_eq!(rows(&view, width, false, now), expected, "{case}");
+            assert_eq!(wrap(text, width), expected, "{case}");
         }
+        let text = "  first line of text\nsecond  ";
+        let mut user = TranscriptView::default();
+        user.user(text.to_owned(), now);
+        assert_eq!(
+            rows(&user, 12, false, now),
+            ["❯ first line", "  of text", "  second"]
+        );
+        let response = view(vec![message(text)], now);
+        assert_eq!(
+            rows(&response, 12, false, now),
+            ["● first line", "  of text", "  second"]
+        );
     }
 
     #[test]
@@ -610,24 +552,24 @@ mod tests {
         view.update(thought("again"), at(4));
         assert_eq!(
             rows(&view, 40, true, at(5)),
-            ["  weighing", "", "one two", "", "  again"]
+            ["● weighing", "", "● one two", "", "● again"]
         );
         assert_eq!(
             rows(&view, 40, false, at(5)),
-            ["  Thought for 3s", "", "one two", "", "  Thinking..."]
+            ["● Thought for 3s", "", "● one two", "", "● Thinking..."]
         );
         view.end_turn(at(6));
         view.update(thought("next"), at(7));
         assert_eq!(
             rows(&view, 40, false, at(8)),
             [
-                "  Thought for 3s",
+                "● Thought for 3s",
                 "",
-                "one two",
+                "● one two",
                 "",
-                "  Thought for 2s",
+                "● Thought for 2s",
                 "",
-                "  Thinking..."
+                "● Thinking..."
             ]
         );
     }
@@ -637,18 +579,18 @@ mod tests {
         let start = Instant::now();
         let at = |secs| start + Duration::from_secs(secs);
         let mut view = view(vec![thought("weighing it")], start);
-        assert_eq!(rows(&view, 40, false, at(3)), ["  Thinking..."]);
-        assert_eq!(rows(&view, 40, false, at(12)), ["  Thinking for 12s..."]);
-        assert_eq!(rows(&view, 40, true, at(12)), ["  weighing it"]);
+        assert_eq!(rows(&view, 40, false, at(3)), ["● Thinking..."]);
+        assert_eq!(rows(&view, 40, false, at(12)), ["● Thinking for 12s..."]);
+        assert_eq!(rows(&view, 40, true, at(12)), ["● weighing it"]);
         view.end_turn(at(42));
-        assert_eq!(rows(&view, 40, false, at(60)), ["  Thought for 42s"]);
-        assert_eq!(rows(&view, 40, true, at(60)), ["  weighing it"]);
+        assert_eq!(rows(&view, 40, false, at(60)), ["● Thought for 42s"]);
+        assert_eq!(rows(&view, 40, true, at(60)), ["● weighing it"]);
         for show in [false, true] {
             let line = &view.lines(40, show, at(60))[0];
             assert_eq!(color(line), Some(Color::DarkGray), "{show}");
         }
         let empty = self::view(vec![thought("  ")], start);
-        assert_eq!(rows(&empty, 40, true, at(3)), ["  Thinking..."]);
+        assert_eq!(rows(&empty, 40, true, at(3)), ["● Thinking..."]);
     }
 
     #[test]
@@ -659,20 +601,20 @@ mod tests {
                 "one-line tool call",
                 vec![read("a", "Makefile")],
                 40,
-                vec!["• Read Makefile"],
+                vec!["● Read Makefile"],
             ),
             (
                 "clipped with an ellipsis",
                 vec![read("a", "tallies/2026/september/a.tally")],
                 20,
-                vec!["• Read tallies/2026…"],
+                vec!["● Read tallies/2026…"],
             ),
             (
                 "nameless tool call with wrapped content",
                 vec![answer("a", "Fixed the tallies today.")],
                 24,
                 vec![
-                    "• Final answer from sub…",
+                    "● Final answer from sub…",
                     "  Fixed the tallies",
                     "  today.",
                 ],
@@ -689,28 +631,28 @@ mod tests {
                 ],
                 40,
                 vec![
-                    "Checking",
+                    "● Checking",
                     "",
-                    "• Read a",
-                    "• Read b",
+                    "● Read a",
+                    "● Read b",
                     "",
-                    "• Final answer from subagent child-1",
+                    "● Final answer from subagent child-1",
                     "  Fixed.",
                     "",
-                    "• Read d",
+                    "● Read d",
                     "",
-                    "Found it",
+                    "● Found it",
                 ],
             ),
             (
-                "a shell block has blank rows around it",
+                "a shell line groups with other bullets",
                 vec![
                     read("a", "a"),
                     shell("s", "ls -la", false, ToolCallStatus::Completed),
                     read("b", "b"),
                 ],
                 40,
-                vec!["• Read a", "", "$ ls -la", "", "• Read b"],
+                vec!["● Read a", "● Shell ls -la", "● Read b"],
             ),
         ] {
             assert_eq!(
@@ -733,10 +675,10 @@ mod tests {
     }
 
     #[test]
-    fn shell_calls_stay_hidden_while_pending_and_render_as_command_blocks() {
+    fn shell_calls_render_as_one_clipped_row() {
         let now = Instant::now();
         let pending = view(vec![shell("s", "ls", false, ToolCallStatus::Pending)], now);
-        assert!(rows(&pending, 40, false, now).is_empty());
+        assert_eq!(rows(&pending, 40, false, now), ["● Shell ls"]);
         let running = view(
             vec![shell(
                 "s",
@@ -748,14 +690,14 @@ mod tests {
         );
         assert_eq!(
             rows(&running, 40, false, now),
-            ["$ rg -n \\", "    --glob '*.rs' \\", "    'TODO|FIXME' src"]
+            ["● Shell rg -n \\ --glob '*.rs' \\ 'TODO|F…"]
         );
         let background = view(
             vec![shell("s", "npm run dev", true, ToolCallStatus::Completed)],
             now,
         );
-        assert_eq!(rows(&background, 40, false, now), ["$ npm run dev &"]);
-        let wrapped = view(
+        assert_eq!(rows(&background, 40, false, now), ["● Shell npm run dev &"]);
+        let clipped = view(
             vec![shell(
                 "s",
                 "echo abcdefghij",
@@ -764,12 +706,12 @@ mod tests {
             )],
             now,
         );
-        assert_eq!(rows(&wrapped, 10, false, now), ["$ echo abc", "  defghij"]);
+        assert_eq!(rows(&clipped, 14, false, now), ["● Shell echo …"]);
         let failed = view(
             vec![shell("s", "rm -rf x", false, ToolCallStatus::Failed)],
             now,
         );
-        assert_eq!(rows(&failed, 40, false, now), ["$ rm -rf x"]);
+        assert_eq!(rows(&failed, 40, false, now), ["● Shell rm -rf x"]);
         assert_eq!(
             failed.lines(40, false, now)[0].spans[0].style.fg,
             Some(Color::Red)
@@ -782,7 +724,7 @@ mod tests {
         for (status, color) in [
             (ToolCallStatus::Pending, Some(Color::Indexed(208))),
             (ToolCallStatus::InProgress, None),
-            (ToolCallStatus::Completed, None),
+            (ToolCallStatus::Completed, Some(Color::Green)),
             (ToolCallStatus::Failed, Some(Color::Red)),
         ] {
             let call = ToolCall::new("a", "Read a")
@@ -790,7 +732,7 @@ mod tests {
                 .status(status);
             let view = view(vec![SessionUpdate::ToolCall(call)], now);
             let line = &view.lines(40, false, now)[0];
-            assert_eq!(line.spans[0].content, "•");
+            assert_eq!(line.spans[0].content, "●");
             assert_eq!(line.spans[0].style.fg, color, "{status:?}");
         }
     }

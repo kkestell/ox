@@ -234,7 +234,7 @@ fn terminal_keys_send_interrupt_approve_scroll_and_restore_the_shell() {
         screen.contains(concat!(
             "Would you like to allow the following?\n",
             "\n",
-            "• count the tallies\n",
+            "● count the tallies\n",
             "  every *.tally file\n",
             "\n",
             "› 1. Go ahead\n",
@@ -259,7 +259,7 @@ fn terminal_keys_send_interrupt_approve_scroll_and_restore_the_shell() {
     test.wait("you said: interrupting");
     let screen = test.screen();
     assert!(
-        screen.contains("cancelled\n\n❯ interrupting\n\nyou said: interrupting"),
+        screen.contains("cancelled\n\n❯ interrupting\n\n● you said: interrupting"),
         "{screen}"
     );
     test.type_text("first");
@@ -267,13 +267,13 @@ fn terminal_keys_send_interrupt_approve_scroll_and_restore_the_shell() {
     test.type_text("second");
     test.wait("❯ first\n  second\n");
     test.keys(&["Enter"]);
-    test.wait("you said: first\nsecond\n");
+    test.wait("● you said: first\n  second\n");
     test.call(&["set-buffer", "pasted界\nthird line"]);
     test.call(&["paste-buffer", "-p", "-t", "test:0.0"]);
     test.wait("❯ pasted界\n  third line\n");
     assert!(!test.screen().contains("you said: pasted"));
     test.keys(&["Enter"]);
-    test.wait("you said: pasted界\nthird line\n");
+    test.wait("● you said: pasted界\n  third line\n");
     test.prompt("running");
     test.wait("running; waiting for cancellation");
     test.keys(&["PageUp"]);
@@ -302,29 +302,27 @@ fn the_transcript_view_renders_thinking_tools_and_wrapped_replies() {
         screen.starts_with(concat!(
             "❯ render\n",
             "\n",
-            "  Thought for 0s\n",
+            "● Thought for 0s\n",
             "\n",
-            "$ ls\n",
+            "● Shell ls\n",
+            "● Read tallies/2026/september/archive/a…\n",
+            "● Shell npm run dev &\n",
             "\n",
-            "• Read tallies/2026/september/archive/a…\n",
-            "\n",
-            "$ npm run dev &\n",
-            "\n",
-            "• Final answer from subagent child-1\n",
+            "● Final answer from subagent child-1\n",
             "  Fixed.\n",
             "\n",
-            "Two tallies were counted in the\n",
-            "workspace:\n",
+            "● Two tallies were counted in the\n",
+            "  workspace:\n",
             "\n",
-            "a.tally and b.tally\n",
+            "  a.tally and b.tally\n",
         )),
         "{screen}"
     );
     let styled = test.styled_screen();
     let gray = |text: &str| styled.contains(&format!("\x1b[38;5;8m{text}"));
-    assert!(gray("  Thought for 0s"), "{styled}");
+    assert!(gray("● Thought for 0s"), "{styled}");
     assert!(gray("  Fixed."), "{styled}");
-    assert!(!gray("Two tallies"), "{styled}");
+    assert!(!gray("● Two tallies"), "{styled}");
 }
 
 #[test]
