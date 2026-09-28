@@ -147,6 +147,7 @@ struct Ui {
     input: Input,
     selected: usize,
     show_thinking: bool,
+    show_output: bool,
     layout: Layout,
     picker: Option<Picker>,
     resume_after_turn: bool,
@@ -286,6 +287,7 @@ pub struct Screen<'a> {
     pub settings: &'a str,
     pub usage: &'a str,
     pub show_thinking: bool,
+    pub show_output: bool,
     pub now: Instant,
 }
 
@@ -367,7 +369,9 @@ pub fn draw(frame: &mut Frame, screen: &Screen) -> Layout {
     buf.set_style(composer, Style::new().bg(theme::COMPOSER));
     let view = view.inner(MARGIN);
     let view_height = usize::from(view.height);
-    let lines = screen.view.lines(width, screen.show_thinking, screen.now);
+    let lines = screen
+        .view
+        .lines(width, screen.show_thinking, screen.show_output, screen.now);
     let first = screen.view.first_row(view_height, lines.len());
     for (y, line) in lines.iter().skip(first).take(view_height).enumerate() {
         put(buf, view, y, line);
@@ -502,11 +506,11 @@ fn approval_lines(view: &TranscriptView, approval: &Approval, width: usize) -> V
     let (heading, body) = match call.name.as_deref() {
         Some("shell") => (
             "Would you like to run the following command?",
-            transcript::content_lines(&call, width, Style::new()),
+            transcript::content_lines(&call, width, "  ", "  ", Style::new()),
         ),
         Some("shell_process") => (
             "Would you like to send the following input?",
-            transcript::content_lines(&call, width, Style::new()),
+            transcript::content_lines(&call, width, "  ", "  ", Style::new()),
         ),
         _ => (
             "Would you like to allow the following?",
@@ -692,6 +696,7 @@ async fn key(
             return Ok(true);
         }
         KeyCode::Char('t') if control => ui.show_thinking = !ui.show_thinking,
+        KeyCode::Char('o') if control => ui.show_output = !ui.show_output,
         KeyCode::Char('u') if control => ui.input.clear(),
         KeyCode::Char(c)
             if !key
@@ -938,6 +943,7 @@ pub async fn run(
             settings: &settings,
             usage: &usage,
             show_thinking: ui.show_thinking,
+            show_output: ui.show_output,
             now: Instant::now(),
         };
         let mut layout = Layout::default();
@@ -1049,6 +1055,7 @@ mod tests {
             settings: "",
             usage: "0% • $0.00",
             show_thinking: false,
+            show_output: false,
             now,
         }
     }
@@ -1106,10 +1113,10 @@ mod tests {
             rows,
             [
                 "",
-                "  ● Thought for 12s",
-                "",
                 "  ● Read Makefile",
+                "",
                 "  ● Find files matching *.rs",
+                "",
                 "  ● Shell ls -la",
                 "",
                 "  ● Two tallies were counted in the workspace.",
@@ -1138,7 +1145,7 @@ mod tests {
             ]
         );
         assert_eq!(cursor, (21, 23));
-        assert_eq!((layout.height, layout.lines), (7, 9));
+        assert_eq!((layout.height, layout.lines), (7, 11));
         let colors = |x, y| {
             let cell = buffer.cell((x, y)).unwrap();
             (cell.fg, cell.bg)
@@ -1511,6 +1518,31 @@ mod tests {
         now: Instant,
     ) -> anyhow::Result<bool> {
         key(ui, session, KeyEvent::new(code, KeyModifiers::NONE), now).await
+    }
+
+    #[tokio::test]
+    async fn control_t_and_control_o_toggle_thinking_and_tool_output() {
+        with_session(async |mut session, _events| {
+            let mut ui = Ui::default();
+            let now = Instant::now();
+            for (c, expected) in [
+                ('o', (false, true)),
+                ('t', (true, true)),
+                ('o', (true, false)),
+            ] {
+                key(
+                    &mut ui,
+                    &mut session,
+                    KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL),
+                    now,
+                )
+                .await?;
+                assert_eq!((ui.show_thinking, ui.show_output), expected, "Ctrl+{c}");
+            }
+            assert!(ui.input.is_empty());
+            Ok(())
+        })
+        .await;
     }
 
     #[tokio::test]

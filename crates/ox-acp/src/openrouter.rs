@@ -562,7 +562,7 @@ pub(crate) fn chat_messages(transcript: &[TranscriptEntry]) -> Vec<Value> {
                         json!({
                             "role": "tool",
                             "tool_call_id": call.call_id,
-                            "content": outcome.text(),
+                            "content": outcome.text,
                         })
                     },
                 ));
@@ -1386,8 +1386,8 @@ mod tests {
                     usage: None,
                 },
                 outcomes: vec![
-                    ToolOutcome::Completed("Sunny.".to_owned()),
-                    ToolOutcome::Failed("Unavailable.".to_owned()),
+                    ToolOutcome::completed("Sunny."),
+                    ToolOutcome::failed("Unavailable."),
                 ],
             }),
         ];

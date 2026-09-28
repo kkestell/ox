@@ -4,7 +4,7 @@
 use agent_client_protocol::{
     Error, Result,
     schema::v1::{
-        ContentBlock, ContentChunk, Cost, Meta, PermissionOption, PermissionOptionKind,
+        ContentBlock, ContentChunk, Cost, Diff, Meta, PermissionOption, PermissionOptionKind,
         RequestPermissionRequest, SessionUpdate, TextContent, ToolCall as AcpToolCall,
         ToolCallContent, ToolCallId, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields,
         ToolKind, UsageUpdate,
@@ -19,7 +19,8 @@ use crate::{
     openrouter::ModelRequestParameters,
     sessions::{
         self, AgentMessage, AgentMessageContent, AssistantBatch, AssistantMessage, ImageAttachment,
-        ToolCall, ToolOutcome, TranscriptEntry, TurnInput, UserMessage, UserMessagePart,
+        ToolCall, ToolContent, ToolOutcome, ToolStatus, TranscriptEntry, TurnInput, UserMessage,
+        UserMessagePart,
     },
     tools,
 };
@@ -276,7 +277,7 @@ pub fn finished_tool_call_update(call: &ToolCall, outcome: &ToolOutcome) -> Sess
         ToolCallId::new(call.call_id.clone()),
         ToolCallUpdateFields::new()
             .status(status(outcome))
-            .content(vec![output_content(outcome)])
+            .content(output_content(outcome))
             .raw_output(raw_output(outcome)),
     ))
 }
@@ -360,7 +361,7 @@ fn replayed_tool_call(call: &ToolCall, outcome: &ToolOutcome) -> SessionUpdate {
         .kind(tool_kind(call))
         .status(status(outcome))
         .raw_input(raw_input(call))
-        .content(vec![output_content(outcome)])
+        .content(output_content(outcome))
         .raw_output(raw_output(outcome)),
     )
 }
@@ -370,11 +371,26 @@ fn raw_input(call: &ToolCall) -> Value {
 }
 
 fn raw_output(outcome: &ToolOutcome) -> Value {
-    Value::String(outcome.text().to_owned())
+    Value::String(outcome.text.clone())
 }
 
-fn output_content(outcome: &ToolOutcome) -> ToolCallContent {
-    text_content(outcome.text())
+/// The outcome's content blocks, or its text when it has none.
+fn output_content(outcome: &ToolOutcome) -> Vec<ToolCallContent> {
+    if outcome.content.is_empty() {
+        return vec![text_content(&outcome.text)];
+    }
+    outcome
+        .content
+        .iter()
+        .map(|content| match content {
+            ToolContent::Text(text) => text_content(text),
+            ToolContent::Diff {
+                path,
+                old_text,
+                new_text,
+            } => ToolCallContent::from(Diff::new(path, new_text).old_text(old_text.clone())),
+        })
+        .collect()
 }
 
 fn text_content(text: &str) -> ToolCallContent {
@@ -382,9 +398,9 @@ fn text_content(text: &str) -> ToolCallContent {
 }
 
 fn status(outcome: &ToolOutcome) -> ToolCallStatus {
-    match outcome {
-        ToolOutcome::Completed(_) => ToolCallStatus::Completed,
-        ToolOutcome::Failed(_) | ToolOutcome::Cancelled(_) => ToolCallStatus::Failed,
+    match outcome.status {
+        ToolStatus::Completed => ToolCallStatus::Completed,
+        ToolStatus::Failed | ToolStatus::Cancelled => ToolCallStatus::Failed,
     }
 }
 
@@ -653,22 +669,79 @@ mod tests {
                     && update.name.as_deref() == Some(tools::SHELL)
                     && update.raw_input == Some(Value::String("{\"comm".to_owned()))
         ));
-        let cancelled =
-            ToolOutcome::Cancelled("Cancelled before this tool was started.".to_owned());
-        assert!(matches!(
-            replayed_tool_call(&call, &cancelled),
-            SessionUpdate::ToolCall(update)
-                if update.status == ToolCallStatus::Failed
-                    && update.title == "Run shell command"
-                    && update.name.as_deref() == Some(tools::SHELL)
-                    && update.raw_input == Some(Value::String("{\"comm".to_owned()))
-        ));
-        assert!(matches!(
-            finished_tool_call_update(&call, &cancelled),
-            SessionUpdate::ToolCallUpdate(update)
-                if update.fields.status == Some(ToolCallStatus::Failed)
-                    && update.fields.raw_output
-                        == Some(Value::String("Cancelled before this tool was started.".to_owned()))
-        ));
+        let cancelled = ToolOutcome::cancelled("Cancelled before this tool was started.");
+        let SessionUpdate::ToolCall(update) = replayed_tool_call(&call, &cancelled) else {
+            panic!("a replayed call is a tool call");
+        };
+        assert_eq!(update.status, ToolCallStatus::Failed);
+        assert_eq!(update.title, "Run shell command");
+        assert_eq!(update.name.as_deref(), Some(tools::SHELL));
+        assert_eq!(update.raw_input, Some(Value::String("{\"comm".to_owned())));
+        assert_eq!(
+            update.content,
+            vec![text_content("Cancelled before this tool was started.")],
+            "empty content sends the text"
+        );
+        let SessionUpdate::ToolCallUpdate(update) = finished_tool_call_update(&call, &cancelled)
+        else {
+            panic!("a finished call is a tool call update");
+        };
+        assert_eq!(update.fields.status, Some(ToolCallStatus::Failed));
+        assert_eq!(
+            update.fields.raw_output,
+            Some(Value::String(
+                "Cancelled before this tool was started.".to_owned()
+            ))
+        );
+        assert_eq!(
+            update.fields.content,
+            Some(vec![text_content(
+                "Cancelled before this tool was started."
+            )])
+        );
+    }
+
+    #[test]
+    fn tool_call_content_becomes_acp_blocks_and_raw_output_stays_the_text() {
+        let call = ToolCall {
+            call_id: "patch-1".to_owned(),
+            name: tools::APPLY_PATCH.to_owned(),
+            arguments: "{}".to_owned(),
+        };
+        let outcome = ToolOutcome::completed("Applied patch.\nAdded a").with_content(vec![
+            ToolContent::Text("Added a".to_owned()),
+            ToolContent::Diff {
+                path: "/workspace/a".into(),
+                old_text: None,
+                new_text: "one\n".to_owned(),
+            },
+            ToolContent::Diff {
+                path: "/workspace/b".into(),
+                old_text: Some("old\n".to_owned()),
+                new_text: "new\n".to_owned(),
+            },
+        ]);
+        let expected = vec![
+            text_content("Added a"),
+            ToolCallContent::from(Diff::new("/workspace/a", "one\n")),
+            ToolCallContent::from(Diff::new("/workspace/b", "new\n").old_text("old\n".to_owned())),
+        ];
+        let SessionUpdate::ToolCall(replayed) = replayed_tool_call(&call, &outcome) else {
+            panic!("a replayed call is a tool call");
+        };
+        assert_eq!(replayed.content, expected);
+        assert_eq!(
+            replayed.raw_output,
+            Some(Value::String("Applied patch.\nAdded a".to_owned()))
+        );
+        let SessionUpdate::ToolCallUpdate(finished) = finished_tool_call_update(&call, &outcome)
+        else {
+            panic!("a finished call is a tool call update");
+        };
+        assert_eq!(finished.fields.content, Some(expected));
+        assert_eq!(
+            finished.fields.raw_output,
+            Some(Value::String("Applied patch.\nAdded a".to_owned()))
+        );
     }
 }

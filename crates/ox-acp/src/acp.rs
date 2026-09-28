@@ -1081,7 +1081,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        sessions::{ToolOutcome, TranscriptEntry, TurnStart},
+        sessions::{ToolOutcome, ToolStatus, TranscriptEntry, TurnStart},
         tools::{self, fixture::Workspace},
     };
 
@@ -2599,10 +2599,10 @@ mod tests {
             for (index, (outcome, expected)) in saved.into_iter().zip(outcomes).enumerate() {
                 assert!(
                     match expected {
-                        "completed" => matches!(outcome, ToolOutcome::Completed(_)),
-                        "denied" => *outcome == ToolOutcome::Failed(denied.to_owned()),
-                        "failed" => matches!(outcome, ToolOutcome::Failed(_)),
-                        _ => matches!(outcome, ToolOutcome::Cancelled(_)),
+                        "completed" => outcome.status == ToolStatus::Completed,
+                        "denied" => *outcome == ToolOutcome::failed(denied),
+                        "failed" => outcome.status == ToolStatus::Failed,
+                        _ => outcome.status == ToolStatus::Cancelled,
                     },
                     "{decision}, outcome {index}: {outcome:?}"
                 );
@@ -2782,10 +2782,11 @@ mod tests {
             for (index, (outcome, expected)) in saved.into_iter().zip(outcomes).enumerate() {
                 assert!(
                     match expected {
-                        "completed" => matches!(outcome, ToolOutcome::Completed(_)),
+                        "completed" => outcome.status == ToolStatus::Completed,
                         "running" =>
-                            matches!(outcome, ToolOutcome::Completed(text) if text.contains("State: running")),
-                        denial => *outcome == ToolOutcome::Failed(denial.to_owned()),
+                            outcome.status == ToolStatus::Completed
+                                && outcome.text.contains("State: running"),
+                        denial => *outcome == ToolOutcome::failed(denial),
                     },
                     "{decision}, outcome {index}: {outcome:?}"
                 );
@@ -2856,7 +2857,7 @@ mod tests {
     #[tokio::test]
     async fn headless_signals_clean_up_and_save_even_when_repeated() {
         use crate::openrouter::fixture::{Reply, Server, calls_reply, text_reply};
-        use crate::sessions::{ToolOutcome, TranscriptEntry};
+        use crate::sessions::TranscriptEntry;
         use crate::tools::fixture::Workspace;
         use rustix::process::{Pid, Signal, kill_process, kill_process_group};
 
@@ -2971,7 +2972,7 @@ mod tests {
                         _ => None,
                     })
                     .flat_map(|batch| &batch.outcomes)
-                    .filter(|outcome| matches!(outcome, ToolOutcome::Cancelled(_)))
+                    .filter(|outcome| outcome.status == ToolStatus::Cancelled)
                     .count(),
                 2
             );
@@ -3013,13 +3014,13 @@ mod tests {
         assert!(!workspace.0.join("wrong").exists());
         let store = SessionStore::open(&workspace.0.join("ox.db")).unwrap();
         assert!(store.list(None).unwrap().iter().any(|session| store.read(&session.id).unwrap().unwrap().transcript.iter().any(|entry| matches!(entry,
-            TranscriptEntry::AssistantBatch(batch) if batch.outcomes.iter().any(|outcome| matches!(outcome, ToolOutcome::Cancelled(text) if text.contains("started") && text.contains("partial changes")))))));
+            TranscriptEntry::AssistantBatch(batch) if batch.outcomes.iter().any(|outcome| outcome.status == ToolStatus::Cancelled && outcome.text.contains("started") && outcome.text.contains("partial changes"))))));
     }
 
     #[tokio::test]
     async fn acp_shutdown_waits_for_shell_cleanup_saving_and_response() {
         use crate::openrouter::fixture::{Server, shell_reply};
-        use crate::sessions::{ToolOutcome, TranscriptEntry};
+        use crate::sessions::TranscriptEntry;
         use crate::tools::fixture::Workspace;
         use agent_client_protocol::Lines;
         use futures::{SinkExt, StreamExt, channel::mpsc};
@@ -3101,7 +3102,7 @@ mod tests {
                     _ => None,
                 })
                 .flat_map(|batch| &batch.outcomes)
-                .filter(|outcome| matches!(outcome, ToolOutcome::Cancelled(_)))
+                .filter(|outcome| outcome.status == ToolStatus::Cancelled)
                 .count(),
             2
         );
@@ -3255,8 +3256,9 @@ mod tests {
         let process = owner.list(&id).remove(0);
         let process_id = process.id().to_owned();
         assert!(
-            matches!(&outcomes[..], [ToolOutcome::Completed(text)]
-                if text.starts_with(&format!("Started shell process {process_id}."))),
+            matches!(&outcomes[..], [outcome]
+                if outcome.status == ToolStatus::Completed
+                    && outcome.text.starts_with(&format!("Started shell process {process_id}."))),
             "{outcomes:?}"
         );
         assert_eq!(
@@ -3292,8 +3294,9 @@ mod tests {
         )
         .await;
         assert!(
-            matches!(&outcomes[..], [ToolOutcome::Failed(text)]
-                if text.starts_with(&format!("No shell process {process_id} that you started."))),
+            matches!(&outcomes[..], [outcome]
+                if outcome.status == ToolStatus::Failed
+                    && outcome.text.starts_with(&format!("No shell process {process_id} that you started."))),
             "another session cannot reach it: {outcomes:?}"
         );
 
@@ -3316,8 +3319,11 @@ mod tests {
         .await;
         assert!(matches!(output, prompt::PromptOutput::Finished(_)));
         assert!(
-            matches!(&outcomes[..], [ToolOutcome::Completed(_), ToolOutcome::Completed(text)]
-                if text.contains("State: exited\nExit code: 0") && text.contains("stdout:\ngot:hi")),
+            matches!(&outcomes[..], [written, read]
+                if written.status == ToolStatus::Completed
+                    && read.status == ToolStatus::Completed
+                    && read.text.contains("State: exited\nExit code: 0")
+                    && read.text.contains("stdout:\ngot:hi")),
             "a later turn uses the command: {outcomes:?}"
         );
 

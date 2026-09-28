@@ -8,7 +8,7 @@ use tokio::process::Command;
 
 use crate::{
     process::{self, Capture, Limits, Observed},
-    sessions::ToolOutcome,
+    sessions::{ToolContent, ToolOutcome},
     shell_processes::{Interruption, Output, ShellProcesses, State, Written},
 };
 
@@ -233,14 +233,14 @@ pub(super) async fn execute(
     };
     tokio::pin!(cancelled);
     if cancelled.as_mut().now_or_never().is_some() {
-        return ToolOutcome::Cancelled("Cancelled before this tool was started.".into());
+        return ToolOutcome::cancelled("Cancelled before this tool was started.");
     }
     let command = shell_command(workspace, &args.command);
     let Some(seconds) = timeout_seconds else {
         // Once registered, the start is the observed outcome; later
         // cancellation does not undo it.
         return match shell_processes.start(session_id, command, &args.command, OUTPUT_BODY_LIMIT) {
-            Ok(process) => ToolOutcome::Completed(format!(
+            Ok(process) => ToolOutcome::completed(format!(
                 "Started shell process {}.\nThe command is running in the background. This confirms that it started, not that it finished or is ready. Use shell_process to read its output, write to its stdin, or stop it.",
                 process.id()
             )),
@@ -279,7 +279,7 @@ pub(super) async fn execute_process(
 ) -> ToolOutcome {
     let action = match process_action(arguments) {
         Ok(action) => action,
-        Err(error) => return super::bounded_result(Err(error)),
+        Err(error) => return super::bounded_text(Err(error)),
     };
     let process_id = match &action {
         ProcessAction::List {} => return list(shell_processes, session_id),
@@ -288,7 +288,7 @@ pub(super) async fn execute_process(
         | ProcessAction::Stop { process_id } => process_id,
     };
     let Some(process) = shell_processes.get(session_id, process_id) else {
-        return super::bounded_result(Err(format!(
+        return super::bounded_text(Err(format!(
             "No shell process {process_id} that you started. Call shell_process with action \"list\" to see the shell processes you started."
         )));
     };
@@ -299,7 +299,7 @@ pub(super) async fn execute_process(
                 .wait(Duration::from_secs(wait_seconds), cancelled)
                 .await
             {
-                return ToolOutcome::Cancelled(format!(
+                return ToolOutcome::cancelled(format!(
                     "Cancelled while waiting for shell process {}; it was not stopped.",
                     process.id()
                 ));
@@ -321,7 +321,7 @@ pub(super) async fn execute_process(
 fn list(shell_processes: &ShellProcesses, session_id: &SessionId) -> ToolOutcome {
     let processes = shell_processes.list(session_id);
     if processes.is_empty() {
-        return ToolOutcome::Completed("No shell processes that you started.".to_owned());
+        return ToolOutcome::completed("No shell processes that you started.");
     }
     let lines: Vec<_> = processes
         .iter()
@@ -339,15 +339,16 @@ fn list(shell_processes: &ShellProcesses, session_id: &SessionId) -> ToolOutcome
             )
         })
         .collect();
-    super::bounded_result(Ok(lines.join("\n")))
+    super::bounded_text(Ok(lines.join("\n")))
 }
 
 fn shortened_command(command: &str) -> String {
     super::shorten(&super::command_line(command).unwrap_or_default())
 }
 
-/// A read outcome follows the shell conventions for the observed exit. A stop
-/// call completes whatever the command's exit.
+/// A read outcome follows the shell conventions for the observed exit and
+/// shows its output blocks. A stop call completes whatever the command's
+/// exit.
 fn render_process(process_id: &str, command: &str, output: Output, stop: bool) -> ToolOutcome {
     let (state, succeeded) = match &output.state {
         State::Running => ("State: running".to_owned(), true),
@@ -368,11 +369,13 @@ fn render_process(process_id: &str, command: &str, output: Output, stop: bool) -
         "Process ID: {process_id}\nCommand: {}\n{state}",
         shortened_command(command)
     );
-    let text = report(status, output.stdout, output.stderr, &output.diagnostics);
-    if stop || succeeded {
-        ToolOutcome::Completed(text)
+    let (text, content) = report(status, output.stdout, output.stderr, &output.diagnostics);
+    if stop {
+        ToolOutcome::completed(text)
+    } else if succeeded {
+        ToolOutcome::completed(text).with_content(content)
     } else {
-        ToolOutcome::Failed(text)
+        ToolOutcome::failed(text)
     }
 }
 
@@ -383,7 +386,7 @@ fn render_written(process_id: &str, total: usize, written: Written) -> ToolOutco
         "stdin remains open"
     };
     let Some(interruption) = written.interruption else {
-        return ToolOutcome::Completed(format!(
+        return ToolOutcome::completed(format!(
             "Wrote {} bytes to shell process {process_id}; {stdin}.",
             written.bytes
         ));
@@ -403,8 +406,8 @@ fn render_written(process_id: &str, total: usize, written: Written) -> ToolOutco
         written.bytes
     );
     match interruption {
-        Interruption::Cancelled => ToolOutcome::Cancelled(text),
-        _ => ToolOutcome::Failed(text),
+        Interruption::Cancelled => ToolOutcome::cancelled(text),
+        _ => ToolOutcome::failed(text),
     }
 }
 
@@ -449,17 +452,25 @@ fn render(observed: Observed, out: Capture, err: Capture, diagnostics: String) -
         Observed::Cancelled => "Cancelled during execution; partial changes may remain.".into(),
         Observed::Failed(error) => error.clone(),
     };
-    let text = report(status, out, err, &diagnostics);
+    let (text, content) = report(status, out, err, &diagnostics);
     match observed {
-        Observed::Exit(exit) if exit.success() => ToolOutcome::Completed(text),
-        Observed::Cancelled => ToolOutcome::Cancelled(text),
-        _ => ToolOutcome::Failed(text),
+        Observed::Exit(exit) if exit.success() => {
+            ToolOutcome::completed(text).with_content(content)
+        }
+        Observed::Cancelled => ToolOutcome::cancelled(text),
+        _ => ToolOutcome::failed(text),
     }
 }
 
 /// `status` and `diagnostics` followed by the output tails, within the tool
-/// output limit.
-fn report(mut status: String, mut out: Capture, mut err: Capture, diagnostics: &str) -> String {
+/// output limit, and the client's blocks: the status, then each nonempty
+/// tail.
+fn report(
+    mut status: String,
+    mut out: Capture,
+    mut err: Capture,
+    diagnostics: &str,
+) -> (String, Vec<ToolContent>) {
     if !diagnostics.is_empty() {
         status.push('\n');
         status.push_str(diagnostics);
@@ -475,6 +486,7 @@ fn report(mut status: String, mut out: Capture, mut err: Capture, diagnostics: &
     let err_budget = OUTPUT_BODY_LIMIT - stdout.len().min(out_budget);
     out.omitted |= trim_front(&mut stdout, out_budget);
     err.omitted |= trim_front(&mut stderr, err_budget);
+    let mut content = vec![ToolContent::Text(status.clone())];
     for (name, text, omitted) in [
         ("stdout", stdout, out.omitted),
         ("stderr", stderr, err.omitted),
@@ -485,12 +497,15 @@ fn report(mut status: String, mut out: Capture, mut err: Capture, diagnostics: &
         }
         status.push('\n');
         status.push_str(if text.is_empty() { "(empty)" } else { &text });
+        if !text.is_empty() {
+            content.push(ToolContent::Text(text));
+        }
     }
     assert!(
         status.len() <= super::OUTPUT_LIMIT,
         "shell output exceeds its limit"
     );
-    status
+    (status, content)
 }
 
 #[cfg(test)]
@@ -498,6 +513,7 @@ mod tests {
     use super::*;
     use crate::{
         process::{OUTPUT_DRAIN_TIMEOUT, kill_group},
+        sessions::ToolStatus,
         tools::{self, fixture::Workspace},
     };
     use rustix::process::Pid;
@@ -590,25 +606,26 @@ mod tests {
             r#"{"command":"touch wrong","background":"yes"}"#,
             r#"{"command":"touch wrong","background":true,"timeout_seconds":120}"#,
         ] {
-            assert!(
-                matches!(
-                    execute(&workspace.0, args, std::future::pending()).await,
-                    ToolOutcome::Failed(_)
-                ),
+            assert_eq!(
+                execute(&workspace.0, args, std::future::pending())
+                    .await
+                    .status,
+                ToolStatus::Failed,
                 "{args}"
             );
         }
         assert!(!workspace.0.join("wrong").exists());
         for seconds in [1, 600] {
-            assert!(matches!(
+            assert_eq!(
                 execute(
                     &workspace.0,
                     &json!({"command":"", "timeout_seconds":seconds}).to_string(),
                     std::future::pending()
                 )
-                .await,
-                ToolOutcome::Completed(_)
-            ));
+                .await
+                .status,
+                ToolStatus::Completed
+            );
         }
         let schema = |name: &str| {
             tools::schemas(tools::Role::Main)
@@ -770,9 +787,8 @@ mod tests {
             std::future::pending(),
         )
         .await;
-        let ToolOutcome::Completed(text) = &started else {
-            panic!("{started:?}");
-        };
+        assert_eq!(started.status, ToolStatus::Completed, "{started:?}");
+        let text = &started.text;
         assert!(text.contains("confirms that it started, not that it finished"));
         assert!(!workspace.0.join("done").exists(), "the start did not wait");
         let id = owner.list(&agent())[0].id().to_owned();
@@ -780,7 +796,7 @@ mod tests {
 
         let running = process(json!({"action":"read","process_id":id})).await;
         assert!(
-            matches!(&running, ToolOutcome::Completed(text) if text.contains("State: running")),
+            running.status == ToolStatus::Completed && running.text.contains("State: running"),
             "{running:?}"
         );
         let cancelled = execute_process(
@@ -790,39 +806,53 @@ mod tests {
             async {},
         )
         .await;
-        assert!(
-            matches!(cancelled, ToolOutcome::Cancelled(text) if text.contains("was not stopped"))
-        );
+        assert_eq!(cancelled.status, ToolStatus::Cancelled);
+        assert!(cancelled.text.contains("was not stopped"));
         assert_eq!(
             process(json!({"action":"write","process_id":id,"text":"hi\n"})).await,
-            ToolOutcome::Completed(format!(
+            ToolOutcome::completed(format!(
                 "Wrote 3 bytes to shell process {id}; stdin remains open."
             ))
         );
         let finished = process(json!({"action":"read","process_id":id,"wait_seconds":5})).await;
         assert!(
-            matches!(&finished, ToolOutcome::Completed(text)
-                if text.starts_with(&format!("Process ID: {id}\nCommand: printf ready; read line;"))
-                    && text.contains("State: exited\nExit code: 0")
-                    && text.contains("stdout:\nreadygot:hi")),
+            finished.status == ToolStatus::Completed
+                && finished.text.starts_with(&format!(
+                    "Process ID: {id}\nCommand: printf ready; read line;"
+                ))
+                && finished.text.contains("State: exited\nExit code: 0")
+                && finished.text.contains("stdout:\nreadygot:hi"),
             "{finished:?}"
         );
-        assert!(
-            matches!(process(json!({"action":"list"})).await, ToolOutcome::Completed(text)
-                if text == format!("{id} exited (Exit code: 0): printf ready; read line; printf 'got:%s' \"$line\"; touch done"))
+        assert_eq!(
+            finished.content,
+            vec![
+                ToolContent::Text(format!(
+                    "Process ID: {id}\nCommand: printf ready; read line; printf 'got:%s' \"$line\"; touch done\nState: exited\nExit code: 0"
+                )),
+                ToolContent::Text("readygot:hi".to_owned()),
+            ],
+            "a read shows its status and nonempty streams"
         );
-        assert!(matches!(
-            process(json!({"action":"write","process_id":id,"text":"late"})).await,
-            ToolOutcome::Failed(text) if text.contains("because the command has finished")
-        ));
-        assert!(matches!(
-            process(json!({"action":"stop","process_id":id})).await,
-            ToolOutcome::Completed(text) if text.contains("State: exited")
-        ));
-        assert!(matches!(
+        assert_eq!(
+            process(json!({"action":"list"})).await,
+            ToolOutcome::completed(format!(
+                "{id} exited (Exit code: 0): printf ready; read line; printf 'got:%s' \"$line\"; touch done"
+            ))
+        );
+        let late = process(json!({"action":"write","process_id":id,"text":"late"})).await;
+        assert_eq!(late.status, ToolStatus::Failed);
+        assert!(late.text.contains("because the command has finished"));
+        let stopped = process(json!({"action":"stop","process_id":id})).await;
+        assert_eq!(stopped.status, ToolStatus::Completed);
+        assert!(stopped.text.contains("State: exited"));
+        assert!(stopped.content.is_empty(), "a stop keeps its text");
+        assert_eq!(
             process(json!({"action":"read","process_id":"missing"})).await,
-            ToolOutcome::Failed(text) if text == "No shell process missing that you started. Call shell_process with action \"list\" to see the shell processes you started."
-        ));
+            ToolOutcome::failed(
+                "No shell process missing that you started. Call shell_process with action \"list\" to see the shell processes you started."
+            )
+        );
         assert_eq!(
             execute_process(
                 &ShellProcesses::default(),
@@ -831,7 +861,7 @@ mod tests {
                 std::future::pending()
             )
             .await,
-            ToolOutcome::Completed("No shell processes that you started.".to_owned())
+            ToolOutcome::completed("No shell processes that you started.")
         );
         let closed = ShellProcesses::default();
         closed.begin_shutdown();
@@ -843,7 +873,8 @@ mod tests {
             std::future::pending(),
         )
         .await;
-        assert!(matches!(refused, ToolOutcome::Failed(text) if text.contains("shutting down")),);
+        assert_eq!(refused.status, ToolStatus::Failed);
+        assert!(refused.text.contains("shutting down"));
         assert!(!workspace.0.join("refused").exists());
     }
 
@@ -860,16 +891,16 @@ mod tests {
             std::future::pending(),
         )
         .await;
-        assert!(matches!(started, ToolOutcome::Completed(_)), "{started:?}");
+        assert_eq!(started.status, ToolStatus::Completed, "{started:?}");
         let process = owner.list(&agent()).remove(0);
         let id = process.id();
-        let unknown = ToolOutcome::Failed(format!(
+        let unknown = ToolOutcome::failed(format!(
             "No shell process {id} that you started. Call shell_process with action \"list\" to see the shell processes you started."
         ));
         for (arguments, expected) in [
             (
                 json!({"action":"list"}),
-                ToolOutcome::Completed("No shell processes that you started.".to_owned()),
+                ToolOutcome::completed("No shell processes that you started."),
             ),
             (json!({"action":"read","process_id":id}), unknown.clone()),
             (
@@ -899,7 +930,7 @@ mod tests {
         )
         .await;
         assert!(
-            matches!(&read, ToolOutcome::Completed(text) if text.contains("State: running")),
+            read.status == ToolStatus::Completed && read.text.contains("State: running"),
             "{read:?}"
         );
         owner.shutdown().await;
@@ -923,54 +954,60 @@ mod tests {
             error: "Reading stdout failed: broken".to_owned(),
             status: signal,
         };
+        use ToolStatus::{Completed, Failed};
         for (state, read, stop, text) in [
-            (State::Running, "completed", "completed", "State: running"),
+            (State::Running, Completed, Completed, "State: running"),
             (
                 State::Exited(success),
-                "completed",
-                "completed",
+                Completed,
+                Completed,
                 "State: exited\nExit code: 0",
             ),
             (
                 State::Exited(code),
-                "failed",
-                "completed",
+                Failed,
+                Completed,
                 "State: exited\nExit code: 7",
             ),
             (
                 State::Exited(signal),
-                "failed",
-                "completed",
+                Failed,
+                Completed,
                 "State: exited\nTerminated by signal: 15",
             ),
             (
                 State::Stopped(signal),
-                "failed",
-                "completed",
+                Failed,
+                Completed,
                 "State: stopped\nTerminated by signal: 15",
             ),
             (
                 State::Stopped(success),
-                "completed",
-                "completed",
+                Completed,
+                Completed,
                 "State: stopped\nExit code: 0",
             ),
             (
                 failed,
-                "failed",
-                "completed",
+                Failed,
+                Completed,
                 "State: failed\nReading stdout failed: broken\nTerminated by signal: 15",
             ),
         ] {
             for (stop_call, expected) in [(false, read), (true, stop)] {
                 let outcome =
                     render_process("p-1", "npm run dev", output(state.clone()), stop_call);
-                assert_eq!(outcome.status(), expected, "{state:?}, stop: {stop_call}");
+                assert_eq!(outcome.status, expected, "{state:?}, stop: {stop_call}");
                 assert_eq!(
-                    outcome.text(),
+                    outcome.text,
                     format!(
                         "Process ID: p-1\nCommand: npm run dev\n{text}\n\nstdout:\nout\n\nstderr:\n(empty)"
                     )
+                );
+                assert_eq!(
+                    outcome.content.is_empty(),
+                    stop_call || expected == Failed,
+                    "{state:?}, stop: {stop_call}: only a completed read shows blocks"
                 );
             }
         }
@@ -982,9 +1019,9 @@ mod tests {
             diagnostics: "雪".repeat(10000),
         };
         let outcome = render_process("p-1", &"雪".repeat(1000), flooded, false);
-        assert!(outcome.text().len() <= tools::OUTPUT_LIMIT);
-        assert!(outcome.text().contains("Diagnostic truncated."));
-        assert_eq!(outcome.text().matches("earlier output omitted").count(), 2);
+        assert!(outcome.text.len() <= tools::OUTPUT_LIMIT);
+        assert!(outcome.text.contains("Diagnostic truncated."));
+        assert_eq!(outcome.text.matches("earlier output omitted").count(), 2);
 
         for (written, expected) in [
             (
@@ -993,7 +1030,7 @@ mod tests {
                     stdin_closed: true,
                     interruption: None,
                 },
-                ToolOutcome::Completed("Wrote 2 bytes to shell process p-1; stdin is closed.".to_owned()),
+                ToolOutcome::completed("Wrote 2 bytes to shell process p-1; stdin is closed."),
             ),
             (
                 Written {
@@ -1001,7 +1038,9 @@ mod tests {
                     stdin_closed: false,
                     interruption: Some(Interruption::TimedOut(Duration::from_secs(5))),
                 },
-                ToolOutcome::Failed("Wrote 1 of 2 bytes to shell process p-1, then stopped because the command did not accept the input within 5 seconds; stdin remains open. The rest was not sent, and the command may not have processed what was.".to_owned()),
+                ToolOutcome::failed(
+                    "Wrote 1 of 2 bytes to shell process p-1, then stopped because the command did not accept the input within 5 seconds; stdin remains open. The rest was not sent, and the command may not have processed what was.",
+                ),
             ),
             (
                 Written {
@@ -1009,7 +1048,9 @@ mod tests {
                     stdin_closed: false,
                     interruption: Some(Interruption::Cancelled),
                 },
-                ToolOutcome::Cancelled("Wrote 0 of 2 bytes to shell process p-1, then stopped because the prompt was cancelled; stdin remains open. The rest was not sent, and the command may not have processed what was.".to_owned()),
+                ToolOutcome::cancelled(
+                    "Wrote 0 of 2 bytes to shell process p-1, then stopped because the prompt was cancelled; stdin remains open. The rest was not sent, and the command may not have processed what was.",
+                ),
             ),
             (
                 Written {
@@ -1017,7 +1058,9 @@ mod tests {
                     stdin_closed: true,
                     interruption: Some(Interruption::StdinClosed),
                 },
-                ToolOutcome::Failed("Wrote 0 of 2 bytes to shell process p-1, then stopped because stdin was already closed; stdin is closed. The rest was not sent, and the command may not have processed what was.".to_owned()),
+                ToolOutcome::failed(
+                    "Wrote 0 of 2 bytes to shell process p-1, then stopped because stdin was already closed; stdin is closed. The rest was not sent, and the command may not have processed what was.",
+                ),
             ),
         ] {
             assert_eq!(render_written("p-1", 2, written), expected);
@@ -1028,34 +1071,49 @@ mod tests {
     async fn shell_semantics_and_results() {
         let workspace = Workspace::new();
         let outcome = run(&workspace.0, "pwd; printf hello; printf problem >&2; read value; test $? -ne 0; test ! -t 0; test -c /dev/stdin").await;
-        assert!(matches!(outcome, ToolOutcome::Completed(_)), "{outcome:?}");
-        assert!(
-            outcome
-                .text()
-                .contains(workspace.0.file_name().unwrap().to_str().unwrap())
-        );
-        assert!(outcome.text().contains("hello\n\nstderr:\nproblem"));
+        assert_eq!(outcome.status, ToolStatus::Completed, "{outcome:?}");
+        let name = workspace.0.file_name().unwrap().to_str().unwrap();
+        assert!(outcome.text.contains(name));
+        assert!(outcome.text.contains("hello\n\nstderr:\nproblem"));
+        let [
+            ToolContent::Text(status),
+            ToolContent::Text(stdout),
+            ToolContent::Text(stderr),
+        ] = &outcome.content[..]
+        else {
+            panic!("{outcome:?}");
+        };
+        assert_eq!(status, "Exit code: 0");
+        assert!(stdout.ends_with("hello"), "{stdout}");
+        assert_eq!(stderr, "problem");
         assert_eq!(
-            run(&workspace.0, "").await.text(),
-            "Exit code: 0\n\nstdout:\n(empty)\n\nstderr:\n(empty)"
+            run(&workspace.0, "").await,
+            ToolOutcome::completed("Exit code: 0\n\nstdout:\n(empty)\n\nstderr:\n(empty)")
+                .with_content(vec![ToolContent::Text("Exit code: 0".to_owned())]),
+            "an empty stream sends no block"
         );
-        assert!(
-            matches!(run(&workspace.0, "printf bad >&2; exit 7").await, ToolOutcome::Failed(text) if text.contains("Exit code: 7") && text.ends_with("bad"))
+        let failed = run(&workspace.0, "printf bad >&2; exit 7").await;
+        assert_eq!(failed.status, ToolStatus::Failed);
+        assert!(failed.text.contains("Exit code: 7") && failed.text.ends_with("bad"));
+        assert!(failed.content.is_empty(), "a failure keeps its text");
+        let killed = run(&workspace.0, "kill -TERM $$").await;
+        assert_eq!(killed.status, ToolStatus::Failed);
+        assert!(killed.text.contains("signal: 15"));
+        let unstarted = run(&workspace.0.join("missing"), "true").await;
+        assert_eq!(unstarted.status, ToolStatus::Failed);
+        assert!(unstarted.text.contains("Could not start /bin/sh"));
+        assert_eq!(run(&workspace.0, "false; false | true; mkdir sub; cd sub; export OX_SHELL_LOCAL=changed; printf saved > ../file").await.status, ToolStatus::Completed);
+        let read = run(
+            &workspace.0,
+            "test -z \"${OX_SHELL_LOCAL+x}\" && test -f file && cat file",
+        )
+        .await;
+        assert_eq!(read.status, ToolStatus::Completed);
+        assert!(read.text.contains("saved"));
+        assert_eq!(
+            run(&workspace.0, "cd /; test -d /tmp").await.status,
+            ToolStatus::Completed
         );
-        assert!(
-            matches!(run(&workspace.0, "kill -TERM $$").await, ToolOutcome::Failed(text) if text.contains("signal: 15"))
-        );
-        assert!(
-            matches!(run(&workspace.0.join("missing"), "true").await, ToolOutcome::Failed(text) if text.contains("Could not start /bin/sh"))
-        );
-        assert!(matches!(run(&workspace.0, "false; false | true; mkdir sub; cd sub; export OX_SHELL_LOCAL=changed; printf saved > ../file").await, ToolOutcome::Completed(_)));
-        assert!(
-            matches!(run(&workspace.0, "test -z \"${OX_SHELL_LOCAL+x}\" && test -f file && cat file").await, ToolOutcome::Completed(text) if text.contains("saved"))
-        );
-        assert!(matches!(
-            run(&workspace.0, "cd /; test -d /tmp").await,
-            ToolOutcome::Completed(_)
-        ));
     }
 
     #[tokio::test]
@@ -1067,7 +1125,7 @@ mod tests {
             let check =
                 "test -z \"${OPENROUTER_API_KEY+x}\" && test \"$OX_SHELL_ENV_TEST\" = inherited";
             let outcome = run(&workspace.0, check).await;
-            assert!(matches!(outcome, ToolOutcome::Completed(_)), "{outcome:?}");
+            assert_eq!(outcome.status, ToolStatus::Completed, "{outcome:?}");
             let owner = ShellProcesses::default();
             let started = super::execute(
                 &workspace.0,
@@ -1077,7 +1135,7 @@ mod tests {
                 std::future::pending(),
             )
             .await;
-            assert!(matches!(started, ToolOutcome::Completed(_)), "{started:?}");
+            assert_eq!(started.status, ToolStatus::Completed, "{started:?}");
             let process = owner.list(&agent()).remove(0);
             let read = execute_process(
                 &owner,
@@ -1087,7 +1145,7 @@ mod tests {
             )
             .await;
             assert!(
-                matches!(&read, ToolOutcome::Completed(text) if text.contains("Exit code: 0")),
+                read.status == ToolStatus::Completed && read.text.contains("Exit code: 0"),
                 "a background command also lacks the key: {read:?}"
             );
             return;
@@ -1109,12 +1167,12 @@ mod tests {
     async fn large_output_keeps_tails_and_finishes_writing() {
         let workspace = Workspace::new();
         let outcome = run(&workspace.0, "i=0; while [ $i -lt 5000 ]; do printf 'stdout line\n'; printf 'stderr line\n' >&2; i=$((i+1)); done; printf OUT_END; printf ERR_END >&2; touch finished").await;
-        assert!(matches!(outcome, ToolOutcome::Completed(_)));
+        assert_eq!(outcome.status, ToolStatus::Completed);
         assert!(workspace.0.join("finished").exists());
-        assert!(outcome.text().len() <= tools::OUTPUT_LIMIT);
-        assert_eq!(outcome.text().matches("earlier output omitted").count(), 2);
-        assert!(outcome.text().contains("OUT_END"));
-        assert!(outcome.text().ends_with("ERR_END"));
+        assert!(outcome.text.len() <= tools::OUTPUT_LIMIT);
+        assert_eq!(outcome.text.matches("earlier output omitted").count(), 2);
+        assert!(outcome.text.contains("OUT_END"));
+        assert!(outcome.text.ends_with("ERR_END"));
     }
 
     #[test]
@@ -1129,8 +1187,8 @@ mod tests {
             let out = capture(vec![b'X'; out_len]);
             let err = capture(vec![b'Y'; err_len]);
             let result = render(Observed::Failed("error".into()), out, err, String::new());
-            assert_eq!(result.text().matches('X').count(), expected_out);
-            assert_eq!(result.text().matches('Y').count(), expected_err);
+            assert_eq!(result.text.matches('X').count(), expected_out);
+            assert_eq!(result.text.matches('Y').count(), expected_err);
         }
         let mut text = "a雪🙂z".to_owned();
         assert!(trim_front(&mut text, 5));
@@ -1142,8 +1200,8 @@ mod tests {
         ] {
             let invalid = || capture(vec![0xff; OUTPUT_BODY_LIMIT]);
             let result = render(observed, invalid(), invalid(), "雪".repeat(10000));
-            assert!(result.text().len() <= tools::OUTPUT_LIMIT);
-            assert_eq!(result.text().matches("earlier output omitted").count(), 2);
+            assert!(result.text.len() <= tools::OUTPUT_LIMIT);
+            assert_eq!(result.text.matches("earlier output omitted").count(), 2);
         }
     }
 
@@ -1161,8 +1219,12 @@ mod tests {
         let workspace = Workspace::new();
         let args = json!({"command":CHILD, "timeout_seconds":1}).to_string();
         let result = execute(&workspace.0, &args, std::future::pending()).await;
+        assert_eq!(result.status, ToolStatus::Failed, "{result:?}");
         assert!(
-            matches!(result, ToolOutcome::Failed(ref text) if text.contains("Timed out after 1 seconds") && text.contains("partial changes") && text.contains("started"))
+            result.text.contains("Timed out after 1 seconds")
+                && result.text.contains("partial changes")
+                && result.text.contains("started"),
+            "{result:?}"
         );
         assert_stopped(&workspace.0).await;
         std::fs::remove_file(workspace.0.join("ready")).unwrap();
@@ -1176,12 +1238,14 @@ mod tests {
         )
         .await
         .unwrap();
+        assert_eq!(result.status, ToolStatus::Cancelled, "{result:?}");
         assert!(
-            matches!(result, ToolOutcome::Cancelled(text) if text.contains("partial changes") && text.contains("started"))
+            result.text.contains("partial changes") && result.text.contains("started"),
+            "{result:?}"
         );
         assert_stopped(&workspace.0).await;
         let result = execute(&workspace.0, r#"{"command":"touch wrong"}"#, async {}).await;
-        assert!(matches!(result, ToolOutcome::Cancelled(_)));
+        assert_eq!(result.status, ToolStatus::Cancelled);
         assert!(!workspace.0.join("wrong").exists());
     }
 
@@ -1198,7 +1262,7 @@ mod tests {
             )
             .await
             .unwrap();
-            assert!(matches!(result, ToolOutcome::Completed(_)));
+            assert_eq!(result.status, ToolStatus::Completed);
             assert_stopped(&workspace.0).await;
         }
         let mut child = Command::new("/bin/sh")
@@ -1235,9 +1299,12 @@ mod tests {
         kill_group(Pid::from_raw(pid).unwrap());
         let result = result.unwrap();
         assert!(start.elapsed() >= OUTPUT_DRAIN_TIMEOUT);
+        assert_eq!(result.status, ToolStatus::Completed, "{result:?}");
         assert!(
-            matches!(result, ToolOutcome::Completed(ref text) if text.contains("done") && text.contains("Output capture stopped before EOF"))
+            result.text.contains("done")
+                && result.text.contains("Output capture stopped before EOF"),
+            "{result:?}"
         );
-        assert!(!result.text().contains("missing.\n\n\nstdout:"));
+        assert!(!result.text.contains("missing.\n\n\nstdout:"));
     }
 }

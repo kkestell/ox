@@ -14,6 +14,7 @@ ratatui.workspace = true
 unicode-width.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+similar.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]

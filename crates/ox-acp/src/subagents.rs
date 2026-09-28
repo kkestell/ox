@@ -529,7 +529,7 @@ mod tests {
     use crate::{
         openrouter::fixture::{DEFAULT_MODEL, Gate, Reply, Server, calls_reply, text_reply},
         sessions::{
-            AssistantBatch, AssistantMessage, EffortLevel, SessionMode, ToolOutcome,
+            AssistantBatch, AssistantMessage, EffortLevel, SessionMode, ToolStatus,
             TranscriptEntry, TurnStart,
         },
         tools::fixture::Workspace,
@@ -835,8 +835,12 @@ mod tests {
             panic!("the interrupted batch was saved");
         };
         assert!(
-            matches!(&batch.outcomes[..], [ToolOutcome::Completed(started), ToolOutcome::Cancelled(_)]
-            if started.starts_with("Started shell process"))
+            matches!(&batch.outcomes[..], [started, cancelled]
+            if started.status == ToolStatus::Completed
+                && started.text.starts_with("Started shell process")
+                && cancelled.status == ToolStatus::Cancelled),
+            "{:?}",
+            batch.outcomes
         );
         assert!(owner.subagents.take_messages().is_empty());
         assert!(matches!(

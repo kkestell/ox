@@ -314,7 +314,7 @@ fn terminal_keys_send_interrupt_approve_scroll_and_restore_the_shell() {
 #[ignore = "requires tmux; run make e2e"]
 fn the_transcript_view_renders_thinking_tools_and_wrapped_replies() {
     let test = Tmux::new();
-    test.call(&["resize-window", "-t", "test:0", "-x", "40", "-y", "24"]);
+    test.call(&["resize-window", "-t", "test:0", "-x", "40", "-y", "40"]);
     test.prompt("render");
     test.wait("a.tally and b.tally");
     let screen = test.screen();
@@ -326,11 +326,15 @@ fn the_transcript_view_renders_thinking_tools_and_wrapped_replies() {
             "  ● Thought for 0s\n",
             "\n",
             "  ● Shell ls\n",
+            "\n",
             "  ● Read tallies/2026/september/archi…\n",
+            "\n",
             "  ● Shell npm run dev &\n",
             "\n",
+            "  ● Apply patch to a.tally\n",
+            "\n",
             "  ● Final answer from subagent child-1\n",
-            "    Fixed.\n",
+            "    └ Fixed.\n",
             "\n",
             "  ● Two tallies were counted in the\n",
             "    workspace:\n",
@@ -342,8 +346,42 @@ fn the_transcript_view_renders_thinking_tools_and_wrapped_replies() {
     let styled = test.styled_screen();
     let gray = |text: &str| styled.contains(&format!("\x1b[38;2;112;112;112m{text}"));
     assert!(gray("● Thought for 0s"), "{styled}");
-    assert!(gray("  Fixed."), "{styled}");
+    assert!(gray("  └ Fixed."), "{styled}");
     assert!(!gray("● Two tallies"), "{styled}");
+    test.keys(&["C-o"]);
+    test.wait("Lines 1–2 of 2");
+    let screen = test.screen();
+    assert!(
+        screen.contains(concat!(
+            "  ● Shell ls\n",
+            "    └ a.tally\n",
+            "      b.tally\n",
+            "\n",
+            "  ● Read tallies/2026/september/archi…\n",
+            "    └ Lines 1–2 of 2\n",
+            "\n",
+            "  ● Shell npm run dev &\n",
+            "    └ a.tally\n",
+            "      b.tally\n",
+            "\n",
+            "  ● Apply patch to a.tally\n",
+            "    └ Modified a.tally\n",
+            "      @@ -1 +1 @@\n",
+            "      -one\n",
+            "      +two\n",
+            "\n",
+            "  ● Final answer from subagent child-1\n",
+            "    └ Fixed.\n",
+        )),
+        "{screen}"
+    );
+    let styled = test.styled_screen();
+    assert!(
+        styled.contains("\x1b[38;2;152;195;121m    +two"),
+        "{styled}"
+    );
+    test.keys(&["C-o"]);
+    test.wait_gone("Lines 1–2 of 2");
 }
 
 #[test]

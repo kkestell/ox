@@ -615,7 +615,7 @@ impl AgentTurn {
             }
             let denial = self.request_permission(call).await?;
             let outcome = if let Some(message) = denial {
-                ToolOutcome::Failed(message)
+                ToolOutcome::failed(message)
             } else {
                 self.presentation
                     .send(convert::in_progress_tool_call_update(&call.call_id))
@@ -691,12 +691,12 @@ impl AgentTurn {
     ) -> PromptOutcome {
         let placeholder = match &outcome {
             PromptOutcome::Cancelled => {
-                ToolOutcome::Cancelled("Cancelled before this tool was started.".to_owned())
+                ToolOutcome::cancelled("Cancelled before this tool was started.")
             }
-            PromptOutcome::AcpUpdate(_) => ToolOutcome::Failed(
-                "Not started: the client connection failed before this tool ran.".to_owned(),
+            PromptOutcome::AcpUpdate(_) => ToolOutcome::failed(
+                "Not started: the client connection failed before this tool ran.",
             ),
-            PromptOutcome::Permission(error) => ToolOutcome::Failed(format!(
+            PromptOutcome::Permission(error) => ToolOutcome::failed(format!(
                 "Not started: requesting shell permission failed: {error}"
             )),
             PromptOutcome::Finished(_)
@@ -744,6 +744,7 @@ impl PromptOutcome {
 mod tests {
     use std::{
         fs,
+        path::Path,
         sync::{Arc, Mutex},
     };
 
@@ -760,7 +761,7 @@ mod tests {
                 tool_reply, usage,
             },
         },
-        sessions::{EffortLevel, ModelUsage},
+        sessions::{EffortLevel, ModelUsage, ToolContent, ToolStatus},
         system_prompt,
         tools::fixture::Workspace,
     };
@@ -933,9 +934,13 @@ mod tests {
 
     /// The completed outcome of a shell call that printed `text`.
     fn printed(text: &str) -> ToolOutcome {
-        ToolOutcome::Completed(format!(
+        ToolOutcome::completed(format!(
             "Exit code: 0\n\nstdout:\n{text}\n\nstderr:\n(empty)"
         ))
+        .with_content(vec![
+            ToolContent::Text("Exit code: 0".to_owned()),
+            ToolContent::Text(text.to_owned()),
+        ])
     }
 
     fn finished_tool_call_update_for(update: &SessionUpdate, call_id: &str) -> bool {
@@ -1019,9 +1024,28 @@ mod tests {
         .unwrap();
         assert!(replay.iter().any(|update| matches!(update,
             SessionUpdate::ToolCall(call) if call.title == "Apply patch to 2 files"
-                && call.raw_output == Some(json!(outcome.text()))
+                && call.raw_output == Some(json!(outcome.text))
                 && call.status == status
         )));
+    }
+
+    /// The content of a completed patch adding `first` and `second`.
+    fn applied_content(workspace: &Path) -> Vec<ToolContent> {
+        let root = workspace.canonicalize().unwrap();
+        vec![
+            ToolContent::Text("Added first".to_owned()),
+            ToolContent::Diff {
+                path: root.join("first"),
+                old_text: None,
+                new_text: "one\n".to_owned(),
+            },
+            ToolContent::Text("Added second".to_owned()),
+            ToolContent::Diff {
+                path: root.join("second"),
+                old_text: None,
+                new_text: "two\n".to_owned(),
+            },
+        ]
     }
 
     #[tokio::test]
@@ -1040,7 +1064,10 @@ mod tests {
         );
 
         let outcome = patch_outcome(&transcript);
-        assert_eq!(*outcome, ToolOutcome::Completed(APPLIED.to_owned()));
+        assert_eq!(
+            *outcome,
+            ToolOutcome::completed(APPLIED).with_content(applied_content(&harness.workspace.0))
+        );
         assert_eq!(harness.stored(), transcript);
     }
 
@@ -1062,7 +1089,7 @@ mod tests {
         assert_eq!(response.unwrap(), PromptOutput::Cancelled);
         assert_eq!(fs::read_dir(&harness.workspace.0).unwrap().count(), 0);
         let outcome = patch_outcome(&transcript);
-        assert!(matches!(outcome, ToolOutcome::Cancelled(_)));
+        assert_eq!(outcome.status, ToolStatus::Cancelled);
         assert_eq!(harness.stored(), transcript);
         assert!(sent_patch_call(&harness));
         assert_replays_patch(&harness, outcome, ToolCallStatus::Failed);
@@ -1096,7 +1123,7 @@ mod tests {
             );
             assert_eq!(
                 *patch_outcome(&transcript),
-                ToolOutcome::Completed(APPLIED.to_owned())
+                ToolOutcome::completed(APPLIED).with_content(applied_content(&harness.workspace.0))
             );
             assert_eq!(harness.stored(), transcript);
         }
@@ -1617,7 +1644,7 @@ mod tests {
                 json!({
                     "role": "tool",
                     "tool_call_id": call_id,
-                    "content": printed(text).text(),
+                    "content": printed(text).text,
                 })
             );
         }
@@ -1625,9 +1652,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_background_start_saves_one_outcome_while_its_command_keeps_running() {
-        let not_started = ToolOutcome::Failed(
-            "Not started: the client connection failed before this tool ran.".to_owned(),
-        );
+        let not_started =
+            ToolOutcome::failed("Not started: the client connection failed before this tool ran.");
         for failing in [None, Some("start completed")] {
             let harness = Harness::new(vec![
                 calls_reply(&[
@@ -1660,7 +1686,7 @@ mod tests {
             let Some(TranscriptEntry::AssistantBatch(batch)) = transcript.get(1) else {
                 panic!("{failing:?}: the batch was saved");
             };
-            let started = ToolOutcome::Completed(format!(
+            let started = ToolOutcome::completed(format!(
                 "Started shell process {}.\nThe command is running in the background. This confirms that it started, not that it finished or is ready. Use shell_process to read its output, write to its stdin, or stop it.",
                 process.id()
             ));
@@ -1705,9 +1731,7 @@ mod tests {
                     &[("call-1", "printf Chicago"), ("call-2", "printf Denver")],
                     vec![
                         printed("Chicago"),
-                        ToolOutcome::Cancelled(
-                            "Cancelled before this tool was started.".to_owned()
-                        )
+                        ToolOutcome::cancelled("Cancelled before this tool was started.")
                     ]
                 ),
             ]
@@ -1778,9 +1802,7 @@ mod tests {
     #[tokio::test]
     async fn update_failures_during_a_batch_still_commit_it() {
         let not_started = || {
-            ToolOutcome::Failed(
-                "Not started: the client connection failed before this tool ran.".to_owned(),
-            )
+            ToolOutcome::failed("Not started: the client connection failed before this tool ran.")
         };
         for (failing, outcomes, sent) in [
             (
@@ -1860,7 +1882,7 @@ mod tests {
                 TranscriptEntry::AssistantBatch(batch) => batch
                     .outcomes
                     .iter()
-                    .find_map(|outcome| started_subagent(outcome.text())),
+                    .find_map(|outcome| started_subagent(&outcome.text)),
                 _ => None,
             })
             .expect("a subagent started")
@@ -1945,7 +1967,7 @@ mod tests {
         };
         assert_eq!(
             outcomes(2),
-            [ToolOutcome::Completed(format!(
+            [ToolOutcome::completed(format!(
                 "1 subagent message arrived; it follows this result.\n\n{id_a}: busy\n{id_b}: idle"
             ))]
         );
@@ -2119,7 +2141,7 @@ mod tests {
         .await
         .expect("the cancelled child saves its interrupted batch");
         assert!(matches!(&child[1], TranscriptEntry::AssistantBatch(batch)
-            if matches!(batch.outcomes[..], [ToolOutcome::Cancelled(_)])));
+            if matches!(batch.outcomes[..], [ToolOutcome { status: ToolStatus::Cancelled, .. }])));
         assert_eq!(harness.stored(), transcript);
     }
 }

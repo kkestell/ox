@@ -139,7 +139,7 @@ pub(super) async fn execute(
     cancelled: impl Future<Output = ()>,
 ) -> ToolOutcome {
     let Some(subagents) = subagents else {
-        return ToolOutcome::Failed(format!("{name} is available only to the main agent."));
+        return ToolOutcome::failed(format!("{name} is available only to the main agent."));
     };
     let result = match name {
         START_SUBAGENT => start(subagents, arguments),
@@ -148,7 +148,7 @@ pub(super) async fn execute(
         WAIT => return wait(subagents, arguments, cancelled).await,
         _ => unreachable!("{name} is not a coordination tool"),
     };
-    super::bounded_result(result)
+    super::bounded_text(result)
 }
 
 fn parse<'a, T: Deserialize<'a>>(arguments: &'a str) -> Result<T, String> {
@@ -207,11 +207,11 @@ async fn wait(
 ) -> ToolOutcome {
     let args: WaitArgs = match parse(arguments) {
         Ok(args) => args,
-        Err(error) => return super::bounded_result(Err(error)),
+        Err(error) => return super::bounded_text(Err(error)),
     };
     let limit = Duration::from_secs_f64(args.seconds.clamp(0.0, MAX_WAIT_SECONDS));
     let Some(waited) = subagents.wait(limit, cancelled).await else {
-        return ToolOutcome::Cancelled("Cancelled while waiting for subagents.".to_owned());
+        return ToolOutcome::cancelled("Cancelled while waiting for subagents.");
     };
     let reason = match waited.reason {
         WaitReason::Messages(1) => "1 subagent message arrived; it follows this result.".to_owned(),
@@ -222,5 +222,5 @@ async fn wait(
         WaitReason::AllIdle => "Every subagent is idle.".to_owned(),
         WaitReason::TimedOut => "The wait ended without a subagent message.".to_owned(),
     };
-    super::bounded_result(Ok(format!("{reason}\n\n{}", waited.states)))
+    super::bounded_text(Ok(format!("{reason}\n\n{}", waited.states)))
 }

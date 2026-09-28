@@ -8,6 +8,7 @@ use std::{
 use serde_json::{Value, json};
 
 use super::{APPLY_PATCH, workspace::Workspace};
+use crate::sessions::ToolContent;
 
 const DESCRIPTION: &str = r#"Apply a text patch to files in the session workspace. Paths are relative to the workspace. Supports Add File, Update File, Delete File, and Move to.
 
@@ -344,6 +345,21 @@ fn require_absent(path: &Path) -> Result<(), String> {
 struct Prepared {
     summary: String,
     change: Change,
+    /// The diff the client shows, when the change alters a file's contents.
+    diff: Option<ToolContent>,
+}
+
+fn diff(
+    workspace: &Workspace,
+    path: &Path,
+    old_text: Option<String>,
+    new_text: String,
+) -> ToolContent {
+    ToolContent::Diff {
+        path: workspace.root().join(path),
+        old_text,
+        new_text,
+    }
 }
 
 enum Change {
@@ -390,6 +406,7 @@ fn prepare_operation(
             require_absent(&workspace.root().join(&path))?;
             Ok(Prepared {
                 summary: format!("Added {name}"),
+                diff: Some(diff(workspace, &path, None, contents.clone())),
                 change: Change::Write {
                     path,
                     contents: contents.into_bytes(),
@@ -399,11 +416,15 @@ fn prepare_operation(
         }
         Operation::Delete => {
             // Opening the file checks that it is a regular file.
+            let mut contents = Vec::new();
             workspace
                 .read_file(&path)
+                .and_then(|mut file| file.read_to_end(&mut contents))
                 .map_err(|error| error.to_string())?;
+            let old_text = String::from_utf8_lossy(&contents).into_owned();
             Ok(Prepared {
                 summary: format!("Deleted {name}"),
+                diff: Some(diff(workspace, &path, Some(old_text), String::new())),
                 change: Change::Delete(path),
             })
         }
@@ -425,7 +446,8 @@ fn prepare_update(
     let mut source_file = workspace
         .read_file(&path)
         .map_err(|error| error.to_string())?;
-    let contents = if chunks.is_empty() {
+    // The source and updated text, when the chunks change the file.
+    let changed = if chunks.is_empty() {
         None
     } else {
         let mut source = String::new();
@@ -433,36 +455,46 @@ fn prepare_update(
             .read_to_string(&mut source)
             .map_err(|error| error.to_string())?;
         let contents = update(&source, chunks)?;
-        (contents != source).then(|| contents.into_bytes())
+        (contents != source).then_some((source, contents))
     };
-    let (summary, change) = if let Some(destination_name) = destination {
+    let (summary, change, diff) = if let Some(destination_name) = destination {
         let destination = target(workspace, &destination_name, seen)
             .and_then(|path| {
                 require_absent(&workspace.root().join(&path))?;
                 Ok(path)
             })
             .map_err(|error| format!("destination {destination_name}: {error}"))?;
+        let diff = changed
+            .as_ref()
+            .map(|(old, new)| diff(workspace, &destination, Some(old.clone()), new.clone()));
         (
             format!("Moved {name} -> {destination_name}"),
             Change::Move {
                 source: path,
                 destination,
-                contents,
+                contents: changed.map(|(_, contents)| contents.into_bytes()),
             },
+            diff,
         )
-    } else if let Some(contents) = contents {
+    } else if let Some((source, contents)) = changed {
+        let diff = diff(workspace, &path, Some(source), contents.clone());
         (
             format!("Modified {name}"),
             Change::Write {
                 path,
-                contents,
+                contents: contents.into_bytes(),
                 create: false,
             },
+            Some(diff),
         )
     } else {
-        (format!("Unchanged {name}"), Change::Unchanged)
+        (format!("Unchanged {name}"), Change::Unchanged, None)
     };
-    Ok(Prepared { summary, change })
+    Ok(Prepared {
+        summary,
+        change,
+        diff,
+    })
 }
 
 impl Change {
@@ -491,7 +523,12 @@ impl Change {
     }
 }
 
-fn apply_prepared(workspace: &Workspace, prepared: &[Prepared]) -> Result<String, String> {
+/// Applies the changes in order. Success returns the model's summary and,
+/// for the client, each operation's summary followed by its diff.
+fn apply_prepared(
+    workspace: &Workspace,
+    prepared: &[Prepared],
+) -> Result<(String, Vec<ToolContent>), String> {
     let mut completed = Vec::new();
     for (index, operation) in prepared.iter().enumerate() {
         if let Err(error) = operation.change.apply(workspace) {
@@ -521,7 +558,14 @@ fn apply_prepared(workspace: &Workspace, prepared: &[Prepared]) -> Result<String
         summary.push('\n');
         summary.push_str(line);
     }
-    Ok(summary)
+    let content = prepared
+        .iter()
+        .flat_map(|operation| {
+            std::iter::once(ToolContent::Text(operation.summary.clone()))
+                .chain(operation.diff.clone())
+        })
+        .collect();
+    Ok((summary, content))
 }
 
 /// The paths a patch names, for display. A patch that does not parse names
@@ -533,7 +577,7 @@ pub(super) fn changed_paths(input: &str) -> Vec<String> {
     }
 }
 
-pub(super) fn apply(workspace: &Path, input: &str) -> Result<String, String> {
+pub(super) fn apply(workspace: &Path, input: &str) -> Result<(String, Vec<ToolContent>), String> {
     let patch = Patch::parse(input)?;
     let (workspace, prepared) =
         prepare(workspace, patch).map_err(|error| format!("prepare: {error}"))?;
@@ -557,6 +601,11 @@ mod tests {
         update(source, chunks)
     }
 
+    /// The model's text from applying `input`, ignoring the content.
+    fn apply_text(workspace: &Path, input: &str) -> Result<String, String> {
+        apply(workspace, input).map(|(text, _)| text)
+    }
+
     #[test]
     fn creates_updates_moves_and_deletes_in_order() {
         let workspace = Workspace::new();
@@ -568,6 +617,8 @@ mod tests {
         .unwrap();
         fs::write(workspace.0.join("old-name.txt"), "Old text\n").unwrap();
         fs::write(workspace.0.join("obsolete.txt"), "obsolete").unwrap();
+        fs::write(workspace.0.join("same.txt"), "Same\n").unwrap();
+        fs::write(workspace.0.join("kept.txt"), "Kept\n").unwrap();
         let patch = "*** Begin Patch
 *** Add File: notes.txt
 +New notes.
@@ -582,11 +633,41 @@ mod tests {
 -Old text
 +New text
 *** Delete File: obsolete.txt
+*** Update File: same.txt
+*** Move to: moved.txt
+*** Update File: kept.txt
+@@
+ Kept
 *** End Patch
 ";
+        let root = workspace.0.canonicalize().unwrap();
+        let text = |text: &str| ToolContent::Text(text.to_owned());
+        let diff = |path: &str, old_text: Option<&str>, new_text: &str| ToolContent::Diff {
+            path: root.join(path),
+            old_text: old_text.map(str::to_owned),
+            new_text: new_text.to_owned(),
+        };
         assert_eq!(
             apply(&workspace.0, patch).unwrap(),
-            "Applied patch.\nAdded notes.txt\nModified src/greeting.rs\nMoved old-name.txt -> new-name.txt\nDeleted obsolete.txt"
+            (
+                "Applied patch.\nAdded notes.txt\nModified src/greeting.rs\nMoved old-name.txt -> new-name.txt\nDeleted obsolete.txt\nMoved same.txt -> moved.txt\nUnchanged kept.txt".to_owned(),
+                vec![
+                    text("Added notes.txt"),
+                    diff("notes.txt", None, "New notes.\n"),
+                    text("Modified src/greeting.rs"),
+                    diff(
+                        "src/greeting.rs",
+                        Some("fn greeting() -> &'static str {\n    \"Hello\"\n}\n"),
+                        "fn greeting() -> &'static str {\n    \"Hello, world\"\n}\n"
+                    ),
+                    text("Moved old-name.txt -> new-name.txt"),
+                    diff("new-name.txt", Some("Old text\n"), "New text\n"),
+                    text("Deleted obsolete.txt"),
+                    diff("obsolete.txt", Some("obsolete"), ""),
+                    text("Moved same.txt -> moved.txt"),
+                    text("Unchanged kept.txt"),
+                ]
+            )
         );
         assert_eq!(
             fs::read_to_string(workspace.0.join("notes.txt")).unwrap(),
@@ -602,12 +683,20 @@ mod tests {
         );
         assert!(!workspace.0.join("old-name.txt").exists());
         assert!(!workspace.0.join("obsolete.txt").exists());
+        assert_eq!(
+            fs::read_to_string(workspace.0.join("moved.txt")).unwrap(),
+            "Same\n"
+        );
+        assert!(!workspace.0.join("same.txt").exists());
     }
 
     #[test]
     fn empty_files_blank_lines_unchanged_updates_and_byte_preserving_moves() {
         let workspace = Workspace::new();
-        assert_eq!(apply(&workspace.0, &wrapped("")).unwrap(), "Applied patch.");
+        assert_eq!(
+            apply(&workspace.0, &wrapped("")).unwrap(),
+            ("Applied patch.".to_owned(), vec![])
+        );
         apply(
             &workspace.0,
             &wrapped("*** Add File: empty\n*** Add File: nested/blank\n+\n+*** End Patch\n"),
@@ -619,7 +708,7 @@ mod tests {
             b"\n*** End Patch\n"
         );
         assert_eq!(
-            apply(
+            apply_text(
                 &workspace.0,
                 &wrapped("*** Update File: nested/blank\n@@\n \n *** End Patch\n")
             )
@@ -628,7 +717,7 @@ mod tests {
         );
         fs::write(workspace.0.join("bytes"), b"\xff\r\n\x00").unwrap();
         assert_eq!(
-            apply(
+            apply_text(
                 &workspace.0,
                 &wrapped("*** Update File: bytes\n*** Move to: moved/bytes\n")
             )
@@ -735,7 +824,7 @@ mod tests {
             ),
         ] {
             assert_eq!(
-                apply(&workspace.0, input).unwrap_err(),
+                apply_text(&workspace.0, input).unwrap_err(),
                 format!("parse: {error}"),
                 "{input}"
             );
@@ -767,7 +856,7 @@ mod tests {
             "*** Update File: existing\n*** Move to: dest\n*** Add File: dest\n",
         ] {
             let input = wrapped(&format!("*** Add File: first\n+ok\n{body}"));
-            let error = apply(&workspace.0, &input).unwrap_err();
+            let error = apply_text(&workspace.0, &input).unwrap_err();
             assert!(error.starts_with("prepare:"), "{error}");
             assert!(!workspace.0.join("first").exists());
             assert_eq!(
@@ -802,7 +891,7 @@ mod tests {
             "*** Update File: inside-link\n*** Move to: moved\n",
         ] {
             assert!(
-                apply(&workspace.0, &wrapped(body))
+                apply_text(&workspace.0, &wrapped(body))
                     .unwrap_err()
                     .starts_with("prepare:")
             );
@@ -835,7 +924,7 @@ mod tests {
         let workspace = Workspace::new();
         // Each target is absent during preparation, but the first operation
         // creates a file where the second operation needs a parent directory.
-        let error = apply(&workspace.0, &wrapped("*** Add File: parent\n+file\n*** Add File: parent/child\n+child\n*** Add File: later\n+later\n")).unwrap_err();
+        let error = apply_text(&workspace.0, &wrapped("*** Add File: parent\n+file\n*** Add File: parent/child\n+child\n*** Add File: later\n+later\n")).unwrap_err();
         assert!(
             error.starts_with("apply: failed Added parent/child:"),
             "{error}"

@@ -5,6 +5,7 @@ use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, BufReader};
 
 use super::{BODY_LIMIT, READ_FILE, truncate, workspace::Workspace};
+use crate::sessions::ToolContent;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -46,8 +47,12 @@ pub(super) fn schema() -> Value {
 /// Returns up to `limit` numbered lines from `offset`, using at most
 /// `BODY_LIMIT` bytes for the lines. A line cut short to fit is followed by a
 /// notice that its rest cannot be read by line. When the file continues, the
-/// result ends with the offset to continue from.
-pub(super) async fn execute(root: &Path, arguments: &str) -> Result<String, String> {
+/// result ends with the offset to continue from. The content summarizes the
+/// lines read.
+pub(super) async fn execute(
+    root: &Path,
+    arguments: &str,
+) -> Result<(String, Vec<ToolContent>), String> {
     let args: Args = serde_json::from_str(arguments).map_err(|e| format!("arguments: {e}"))?;
     if args.offset == 0 || !(1..=1000).contains(&args.limit) {
         return Err("offset must be at least 1 and limit must be between 1 and 1000".to_owned());
@@ -60,7 +65,7 @@ pub(super) async fn execute(root: &Path, arguments: &str) -> Result<String, Stri
     let mut reader = BufReader::new(file);
     for _ in 1..args.offset {
         if line(&mut reader, 0).await?.is_none() {
-            return Ok("Offset is past end of file.".to_owned());
+            return Ok(("Offset is past end of file.".to_owned(), Vec::new()));
         }
     }
     let Page {
@@ -69,12 +74,12 @@ pub(super) async fn execute(root: &Path, arguments: &str) -> Result<String, Stri
         end,
     } = page(&mut reader, args.offset, args.limit).await?;
     if text.is_empty() {
-        return Ok(if args.offset == 1 {
+        let text = if args.offset == 1 {
             "File is empty."
         } else {
             "Offset is past end of file."
-        }
-        .to_owned());
+        };
+        return Ok((text.to_owned(), Vec::new()));
     }
     let more = match end {
         PageEnd::NextLineDeferred => true,
@@ -86,12 +91,16 @@ pub(super) async fn execute(root: &Path, arguments: &str) -> Result<String, Stri
         }
         PageEnd::LineLimitOrEndOfFile => has_more(&mut reader).await?,
     };
-    if more {
+    let last = next - 1;
+    let summary = if more {
         text.push_str(&format!(
             "More content remains. Continue with offset={next}.\n"
         ));
-    }
-    Ok(text)
+        format!("Lines {}–{last}, more remains", args.offset)
+    } else {
+        format!("Lines {}–{last} of {last}", args.offset)
+    };
+    Ok((text, vec![ToolContent::Text(summary)]))
 }
 
 /// The numbered lines of one `read_file` result.
@@ -231,7 +240,18 @@ mod tests {
     use crate::tools::{OUTPUT_LIMIT, fixture::Workspace};
     use serde_json::json;
 
+    /// The text of one read, ignoring its content.
     async fn read(workspace: &Workspace, offset: u64, limit: usize) -> Result<String, String> {
+        read_with_content(workspace, offset, limit)
+            .await
+            .map(|(text, _)| text)
+    }
+
+    async fn read_with_content(
+        workspace: &Workspace,
+        offset: u64,
+        limit: usize,
+    ) -> Result<(String, Vec<ToolContent>), String> {
         execute(
             &workspace.0,
             &json!({"path":"text", "offset":offset, "limit":limit}).to_string(),
@@ -244,16 +264,28 @@ mod tests {
         let workspace = Workspace::new();
         std::fs::write(workspace.0.join("text"), "one\r\n雪\nlast").unwrap();
         assert_eq!(
-            read(&workspace, 1, 2).await.unwrap(),
-            "1: one\n2: 雪\nMore content remains. Continue with offset=3.\n"
+            read_with_content(&workspace, 1, 2).await.unwrap(),
+            (
+                "1: one\n2: 雪\nMore content remains. Continue with offset=3.\n".to_owned(),
+                vec![ToolContent::Text("Lines 1–2, more remains".to_owned())]
+            )
         );
-        assert_eq!(read(&workspace, 3, 2).await.unwrap(), "3: last\n");
         assert_eq!(
-            read(&workspace, 4, 2).await.unwrap(),
-            "Offset is past end of file."
+            read_with_content(&workspace, 3, 2).await.unwrap(),
+            (
+                "3: last\n".to_owned(),
+                vec![ToolContent::Text("Lines 3–3 of 3".to_owned())]
+            )
+        );
+        assert_eq!(
+            read_with_content(&workspace, 4, 2).await.unwrap(),
+            ("Offset is past end of file.".to_owned(), vec![])
         );
         std::fs::write(workspace.0.join("text"), "").unwrap();
-        assert_eq!(read(&workspace, 1, 2).await.unwrap(), "File is empty.");
+        assert_eq!(
+            read_with_content(&workspace, 1, 2).await.unwrap(),
+            ("File is empty.".to_owned(), vec![])
+        );
         std::fs::write(workspace.0.join("text"), "\n").unwrap();
         assert_eq!(read(&workspace, 1, 2).await.unwrap(), "1: \n");
     }

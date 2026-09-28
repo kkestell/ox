@@ -452,29 +452,73 @@ pub struct ToolCall {
     pub arguments: String,
 }
 
-/// Every variant carries text describing what Ox knows about the call.
+/// What Ox knows happened to a tool call: `text` is what the model reads, and
+/// `content` is what the ACP client shows. Empty content means the client
+/// shows the text.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "status", content = "content", rename_all = "snake_case")]
-pub enum ToolOutcome {
-    Completed(String),
-    Failed(String),
-    Cancelled(String),
+#[serde(deny_unknown_fields)]
+pub struct ToolOutcome {
+    pub status: ToolStatus,
+    pub text: String,
+    pub content: Vec<ToolContent>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolStatus {
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+impl ToolStatus {
+    /// `completed`, `failed`, or `cancelled`.
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
+        }
+    }
+}
+
+/// One block of tool call content, in the shape of ACP's content blocks. A
+/// diff's `path` is absolute, and `old_text` is `None` for a new file.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", content = "content", rename_all = "snake_case")]
+pub enum ToolContent {
+    Text(String),
+    Diff {
+        path: PathBuf,
+        old_text: Option<String>,
+        new_text: String,
+    },
 }
 
 impl ToolOutcome {
-    pub fn text(&self) -> &str {
-        match self {
-            Self::Completed(text) | Self::Failed(text) | Self::Cancelled(text) => text,
+    pub fn completed(text: impl Into<String>) -> Self {
+        Self::new(ToolStatus::Completed, text)
+    }
+
+    pub fn failed(text: impl Into<String>) -> Self {
+        Self::new(ToolStatus::Failed, text)
+    }
+
+    pub fn cancelled(text: impl Into<String>) -> Self {
+        Self::new(ToolStatus::Cancelled, text)
+    }
+
+    fn new(status: ToolStatus, text: impl Into<String>) -> Self {
+        Self {
+            status,
+            text: text.into(),
+            content: Vec::new(),
         }
     }
 
-    /// `completed`, `failed`, or `cancelled`.
-    pub fn status(&self) -> &'static str {
-        match self {
-            Self::Completed(_) => "completed",
-            Self::Failed(_) => "failed",
-            Self::Cancelled(_) => "cancelled",
-        }
+    pub fn with_content(mut self, content: Vec<ToolContent>) -> Self {
+        self.content = content;
+        self
     }
 }
 
@@ -1047,7 +1091,7 @@ mod tests {
     }
 
     fn completed() -> ToolOutcome {
-        ToolOutcome::Completed("ok".to_owned())
+        ToolOutcome::completed("ok")
     }
 
     fn turn_with(effort: EffortLevel, mode: SessionMode, input: impl Into<TurnInput>) -> TurnStart {
@@ -1108,8 +1152,15 @@ mod tests {
             call("call-2", "printf Denver"),
         ]);
         let outcomes = vec![
-            ToolOutcome::Completed("Sunny in Chicago.".to_owned()),
-            ToolOutcome::Failed("Denver is unavailable.".to_owned()),
+            ToolOutcome::completed("Sunny in Chicago.").with_content(vec![
+                ToolContent::Text("Modified forecast.txt".to_owned()),
+                ToolContent::Diff {
+                    path: PathBuf::from("/Users/kyle/projects/ox/forecast.txt"),
+                    old_text: Some("Cloudy\n".to_owned()),
+                    new_text: "Sunny\n".to_owned(),
+                },
+            ]),
+            ToolOutcome::failed("Denver is unavailable."),
         ];
         let first = turn_with(
             EffortLevel::Default,

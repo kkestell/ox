@@ -8,7 +8,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::{
-    sessions::{ToolCall, ToolOutcome},
+    sessions::{ToolCall, ToolContent, ToolOutcome},
     shell_processes::ShellProcesses,
     subagents::Subagents,
 };
@@ -67,20 +67,27 @@ pub(crate) fn truncate(text: &mut String, limit: usize) {
     text.truncate(end);
 }
 
-fn bounded_result(result: Result<String, String>) -> ToolOutcome {
+/// The outcome of a tool that returns the model's text and the client's
+/// content, or an error.
+fn bounded_result(result: Result<(String, Vec<ToolContent>), String>) -> ToolOutcome {
     match result {
-        Ok(text) => {
+        Ok((text, content)) => {
             assert!(text.len() <= OUTPUT_LIMIT, "tool output exceeds its limit");
-            ToolOutcome::Completed(text)
+            ToolOutcome::completed(text).with_content(content)
         }
         Err(mut error) => {
             if error.len() > OUTPUT_LIMIT {
                 truncate(&mut error, BODY_LIMIT);
                 error.push_str("\nError truncated.");
             }
-            ToolOutcome::Failed(error)
+            ToolOutcome::failed(error)
         }
     }
+}
+
+/// The outcome of a tool that returns only the model's text, or an error.
+fn bounded_text(result: Result<String, String>) -> ToolOutcome {
+    bounded_result(result.map(|text| (text, Vec::new())))
 }
 
 /// Every tool definition sent to OpenRouter for an agent with `role`, each
@@ -294,8 +301,8 @@ pub async fn execute(
     tokio::select! {
         biased;
         outcome = execute_other(workspace_path, call) => outcome,
-        () = cancelled => ToolOutcome::Cancelled(
-            "Cancelled while this tool was running; no result was observed.".to_owned(),
+        () = cancelled => ToolOutcome::cancelled(
+            "Cancelled while this tool was running; no result was observed.",
         ),
     }
 }
@@ -307,13 +314,10 @@ async fn execute_other(workspace_path: &Path, call: &ToolCall) -> ToolOutcome {
             bounded_result(search::execute(workspace_path, &call.name, &call.arguments).await)
         }
         APPLY_PATCH => match serde_json::from_str::<PatchArgs>(&call.arguments) {
-            Ok(args) => match patch::apply(workspace_path, &args.patch) {
-                Ok(summary) => ToolOutcome::Completed(summary),
-                Err(error) => ToolOutcome::Failed(error),
-            },
-            Err(error) => ToolOutcome::Failed(format!("arguments: {error}")),
+            Ok(args) => bounded_result(patch::apply(workspace_path, &args.patch)),
+            Err(error) => ToolOutcome::failed(format!("arguments: {error}")),
         },
-        other => ToolOutcome::Failed(format!("Unknown tool: {other}")),
+        other => ToolOutcome::failed(format!("Unknown tool: {other}")),
     }
 }
 
@@ -343,6 +347,7 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+    use crate::sessions::ToolStatus;
 
     async fn execute(workspace: &Path, call: &ToolCall) -> ToolOutcome {
         let context = ToolContext {
@@ -373,10 +378,10 @@ mod tests {
                 r#"{"path":2,"pattern":2}"#,
                 r#"{"path":"file","pattern":"*","extra":true}"#,
             ] {
-                assert!(matches!(
-                    execute(&workspace.0, &call(name, args)).await,
-                    ToolOutcome::Failed(_)
-                ));
+                assert_eq!(
+                    execute(&workspace.0, &call(name, args)).await.status,
+                    ToolStatus::Failed
+                );
             }
             for path in ["../file", "/etc/passwd", "", "missing"] {
                 let args = if name == READ_FILE {
@@ -384,10 +389,12 @@ mod tests {
                 } else {
                     json!({"path":path,"pattern":"*"})
                 };
-                assert!(matches!(
-                    execute(&workspace.0, &call(name, &args.to_string())).await,
-                    ToolOutcome::Failed(_)
-                ));
+                assert_eq!(
+                    execute(&workspace.0, &call(name, &args.to_string()))
+                        .await
+                        .status,
+                    ToolStatus::Failed
+                );
             }
             let schema = schemas(Role::Subagent)
                 .into_iter()
@@ -405,23 +412,26 @@ mod tests {
             json!({"path":"file","offset":-1}),
             json!({"path":"."}),
         ] {
-            assert!(matches!(
-                execute(&workspace.0, &call(READ_FILE, &args.to_string())).await,
-                ToolOutcome::Failed(_)
-            ));
+            assert_eq!(
+                execute(&workspace.0, &call(READ_FILE, &args.to_string()))
+                    .await
+                    .status,
+                ToolStatus::Failed
+            );
         }
-        assert!(matches!(
+        assert_eq!(
             execute(
                 &workspace.0,
                 &call(GLOB, r#"{"path":"file","pattern":"*"}"#)
             )
-            .await,
-            ToolOutcome::Failed(_)
-        ));
+            .await
+            .status,
+            ToolStatus::Failed
+        );
         let args = json!({"path":"雪".repeat(OUTPUT_LIMIT)}).to_string();
         let result = execute(&workspace.0, &call(READ_FILE, &args)).await;
-        assert!(matches!(result, ToolOutcome::Failed(_)));
-        assert!(result.text().len() <= OUTPUT_LIMIT);
+        assert_eq!(result.status, ToolStatus::Failed);
+        assert!(result.text.len() <= OUTPUT_LIMIT);
     }
 
     #[cfg(unix)]
@@ -440,10 +450,12 @@ mod tests {
             } else {
                 json!({"path":"escape","pattern":"*"})
             };
-            assert!(matches!(
-                execute(&workspace.0, &call(name, &args.to_string())).await,
-                ToolOutcome::Failed(_)
-            ));
+            assert_eq!(
+                execute(&workspace.0, &call(name, &args.to_string()))
+                    .await
+                    .status,
+                ToolStatus::Failed
+            );
         }
         for name in [READ_FILE, GREP] {
             let args = if name == READ_FILE {
@@ -451,10 +463,12 @@ mod tests {
             } else {
                 json!({"path":"alias","pattern":"inside"})
             };
-            assert!(matches!(
-                execute(&workspace.0, &call(name, &args.to_string())).await,
-                ToolOutcome::Completed(_)
-            ));
+            assert_eq!(
+                execute(&workspace.0, &call(name, &args.to_string()))
+                    .await
+                    .status,
+                ToolStatus::Completed
+            );
         }
         for (name, pattern) in [(GLOB, "*"), (GREP, "inside|outside")] {
             let result = execute(
@@ -462,9 +476,9 @@ mod tests {
                 &call(name, &json!({"pattern":pattern}).to_string()),
             )
             .await;
-            assert!(matches!(result, ToolOutcome::Completed(_)));
-            assert!(!result.text().contains("escape"));
-            assert!(!result.text().contains("alias"));
+            assert_eq!(result.status, ToolStatus::Completed);
+            assert!(!result.text.contains("escape"));
+            assert!(!result.text.contains("alias"));
         }
 
         let pinned = workspace::Workspace::open(&workspace.0).unwrap();
@@ -524,9 +538,9 @@ mod tests {
         );
         for arguments in ["{", "{}", r#"{"patch": 1}"#, r#"{"patch": "", "cwd": "/"}"#] {
             let call = call(APPLY_PATCH, arguments);
-            assert!(
-                matches!(execute(Path::new("/unused"), &call).await, ToolOutcome::Failed(error) if error.starts_with("arguments:"))
-            );
+            let outcome = execute(Path::new("/unused"), &call).await;
+            assert_eq!(outcome.status, ToolStatus::Failed);
+            assert!(outcome.text.starts_with("arguments:"), "{}", outcome.text);
         }
     }
 
@@ -654,7 +668,7 @@ mod tests {
         ] {
             assert_eq!(
                 execute(Path::new("/workspace"), &call(name, &arguments.to_string())).await,
-                ToolOutcome::Failed(format!("{name} is available only to the main agent."))
+                ToolOutcome::failed(format!("{name} is available only to the main agent."))
             );
         }
     }
@@ -663,7 +677,7 @@ mod tests {
     async fn unknown_tools_fail_as_results_and_keep_their_name_as_tool_call_title() {
         assert_eq!(
             execute(Path::new("/workspace"), &call("launch", "{}")).await,
-            ToolOutcome::Failed("Unknown tool: launch".to_owned())
+            ToolOutcome::failed("Unknown tool: launch")
         );
         assert_eq!(tool_call_title(&call("launch", "{}")), "launch");
     }

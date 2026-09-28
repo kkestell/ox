@@ -10,7 +10,7 @@ use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::schema::v1::{
     AgentCapabilities, AvailableCommand, AvailableCommandsUpdate, CancelNotification,
     CloseSessionRequest, CloseSessionResponse, ConfigOptionUpdate, ContentBlock, ContentChunk,
-    Cost, DeleteSessionRequest, DeleteSessionResponse, InitializeRequest, InitializeResponse,
+    Cost, DeleteSessionRequest, DeleteSessionResponse, Diff, InitializeRequest, InitializeResponse,
     ListSessionsRequest, ListSessionsResponse, LoadSessionRequest, LoadSessionResponse,
     NewSessionRequest, NewSessionResponse, PermissionOption, PermissionOptionKind,
     PromptCapabilities, PromptRequest, PromptResponse, RequestPermissionOutcome,
@@ -797,23 +797,24 @@ impl Script {
     }
 
     /// Streams reasoning and a reply with surrounding whitespace and words
-    /// split across chunks. Between them, it sends three tool calls with raw
+    /// split across chunks. Between them, it sends four tool calls with raw
     /// names and JSON arguments, each updated to in progress and then to
-    /// completed with multiline content, and one completed tool call without
-    /// a raw name, as a subagent's answer arrives.
+    /// completed with content, the last with a diff block, and one completed
+    /// tool call without a raw name, as a subagent's answer arrives.
     fn render(&self) -> agent_client_protocol::Result<StopReason> {
         for text in ["  \n weigh", "ing the ", "tallies  \n"] {
             self.update(SessionUpdate::AgentThoughtChunk(ContentChunk::new(
                 text.into(),
             )))?;
         }
-        for (id, title, kind, name, input) in [
+        for (id, title, kind, name, input, content) in [
             (
                 "run-1",
                 "ls",
                 ToolKind::Execute,
                 "shell",
                 serde_json::json!({"command": "ls"}),
+                vec![ToolCallContent::from("a.tally\nb.tally")],
             ),
             (
                 "read-1",
@@ -821,6 +822,7 @@ impl Script {
                 ToolKind::Read,
                 "read_file",
                 serde_json::json!({"path": "tallies/2026/september/archive/a.tally"}),
+                vec![ToolCallContent::from("Lines 1–2 of 2")],
             ),
             (
                 "run-2",
@@ -828,6 +830,20 @@ impl Script {
                 ToolKind::Execute,
                 "shell",
                 serde_json::json!({"command": "npm run dev", "background": true}),
+                vec![ToolCallContent::from("a.tally\nb.tally")],
+            ),
+            (
+                "patch-1",
+                "Apply patch to a.tally",
+                ToolKind::Edit,
+                "apply_patch",
+                serde_json::json!({"patch": "*** Begin Patch\n*** Update File: a.tally\n@@\n-one\n+two\n*** End Patch\n"}),
+                vec![
+                    ToolCallContent::from("Modified a.tally"),
+                    ToolCallContent::from(
+                        Diff::new("/workspace/a.tally", "two\n").old_text("one\n".to_string()),
+                    ),
+                ],
             ),
         ] {
             self.update(SessionUpdate::ToolCall(
@@ -840,7 +856,7 @@ impl Script {
                 ToolCallUpdateFields::new().status(ToolCallStatus::InProgress),
                 ToolCallUpdateFields::new()
                     .status(ToolCallStatus::Completed)
-                    .content(vec![ToolCallContent::from("a.tally\nb.tally")]),
+                    .content(content),
             ] {
                 self.update(SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
                     id, fields,

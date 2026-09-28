@@ -325,10 +325,14 @@ fn push_batch(fields: &mut VecDeque<MaterialField>, source: &str, batch: &Assist
         }
     }
     for (call, outcome) in message.tool_calls.iter().zip(&batch.outcomes) {
-        if !outcome.text().is_empty() {
+        if !outcome.text.is_empty() {
             fields.push_back(MaterialField::new(
-                format!("{source} tool {} {} outcome", call.name, outcome.status()),
-                tool_result_excerpt(outcome.text()),
+                format!(
+                    "{source} tool {} {} outcome",
+                    call.name,
+                    outcome.status.id()
+                ),
+                tool_result_excerpt(&outcome.text),
             ));
         }
     }
@@ -504,7 +508,7 @@ mod tests {
                 continuation_metadata: vec![],
                 usage: None,
             },
-            vec![ToolOutcome::Completed(output.to_owned())],
+            vec![ToolOutcome::completed(output)],
         )
         .unwrap()
     }

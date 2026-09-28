@@ -14,6 +14,7 @@ use tokio::{
 };
 
 use super::{BODY_LIMIT, GLOB, GREP, truncate, workspace::Workspace};
+use crate::sessions::ToolContent;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -75,7 +76,11 @@ pub(super) fn grep_schema() -> Value {
     })
 }
 
-pub(super) async fn execute(root: &Path, name: &str, arguments: &str) -> Result<String, String> {
+pub(super) async fn execute(
+    root: &Path,
+    name: &str,
+    arguments: &str,
+) -> Result<(String, Vec<ToolContent>), String> {
     let workspace = Workspace::open(root).map_err(|e| e.to_string())?;
     let mut command = Command::new("rg");
     command.args(["--no-config", "--files", "--null"]);
@@ -125,7 +130,7 @@ async fn run(
     mut command: Command,
     workspace: &Workspace,
     matcher: Option<&Regex>,
-) -> Result<String, String> {
+) -> Result<(String, Vec<ToolContent>), String> {
     let mut child = command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -154,7 +159,7 @@ async fn run(
     };
     let ((output, status), errors) =
         tokio::try_join!(collect, drain_errors(stderr)).map_err(|e| e.to_string())?;
-    output.finish(status, !errors.is_empty())
+    output.finish(status, !errors.is_empty(), matcher.is_some())
 }
 
 #[derive(Default)]
@@ -162,6 +167,9 @@ struct SearchOutput {
     output: String,
     truncated: bool,
     local_errors: String,
+    /// The files listed, or the files with a match.
+    files: u64,
+    matches: u64,
 }
 
 impl SearchOutput {
@@ -173,6 +181,7 @@ impl SearchOutput {
             Some(matcher) => self.grep_file(workspace, &relative, path, matcher).await,
             None => {
                 if workspace.regular_file(&relative).unwrap_or(false) {
+                    self.files += 1;
                     self.truncated =
                         append_match(&mut self.output, &format!("{}\n", path.display()));
                 }
@@ -192,7 +201,13 @@ impl SearchOutput {
             Err(error) => Err(error),
         };
         match scanned {
-            Ok(truncated) => self.truncated = truncated,
+            Ok((matches, truncated)) => {
+                self.matches += matches;
+                if matches > 0 {
+                    self.files += 1;
+                }
+                self.truncated = truncated;
+            }
             Err(error) => self.record_error(path, &error),
         }
     }
@@ -204,12 +219,20 @@ impl SearchOutput {
         }
     }
 
-    fn finish(mut self, status: ExitStatus, enumeration_failed: bool) -> Result<String, String> {
+    /// The model's text and, when anything was found, a summary of the
+    /// counts for the client.
+    fn finish(
+        mut self,
+        status: ExitStatus,
+        enumeration_failed: bool,
+        grep: bool,
+    ) -> Result<(String, Vec<ToolContent>), String> {
         if !self.truncated && !matches!(status.code(), Some(0 | 1)) && self.output.is_empty() {
             return Err(format!(
                 "rg failed ({status}); check the glob or search path"
             ));
         }
+        let mut content = Vec::new();
         if self.truncated {
             if !self.output.ends_with('\n') {
                 self.output.push_str(" [partial line]\n");
@@ -219,10 +242,21 @@ impl SearchOutput {
         } else if self.output.is_empty() {
             self.output.push_str("No matches found.");
         }
+        if !self.output.starts_with("No matches found.") {
+            let mut summary = if grep {
+                format!("{} matches in {} files", self.matches, self.files)
+            } else {
+                format!("{} files", self.files)
+            };
+            if self.truncated {
+                summary.push_str(", truncated");
+            }
+            content.push(ToolContent::Text(summary));
+        }
         if enumeration_failed || !self.local_errors.is_empty() {
             append_diagnostics(&mut self.output, enumeration_failed, &self.local_errors);
         }
-        Ok(self.output)
+        Ok((self.output, content))
     }
 }
 
@@ -254,31 +288,35 @@ fn append_match(output: &mut String, line: &str) -> bool {
     }
 }
 
+/// Appends the file's matching lines and returns how many matched and
+/// whether the output was cut.
 async fn scan_file(
     file: std::fs::File,
     path: &Path,
     matcher: &Regex,
     output: &mut String,
-) -> std::io::Result<bool> {
+) -> std::io::Result<(u64, bool)> {
     let mut reader = BufReader::new(tokio::fs::File::from_std(file));
     let mut line = Vec::new();
     let mut number = 0_u64;
+    let mut matches = 0_u64;
     while reader.read_until(b'\n', &mut line).await? != 0 {
         number += 1;
         let searchable = line.strip_suffix(b"\n").unwrap_or(&line);
         if !searchable.contains(&0) && matcher.is_match(searchable) {
+            matches += 1;
             let content = String::from_utf8_lossy(&line);
             let separator = if line.ends_with(b"\n") { "" } else { "\n" };
             if append_match(
                 output,
                 &format!("{}:{number}:{content}{separator}", path.display()),
             ) {
-                return Ok(true);
+                return Ok((matches, true));
             }
         }
         line.clear();
     }
-    Ok(false)
+    Ok((matches, false))
 }
 
 // Keep diagnostics bounded while continuing to drain the pipe to avoid deadlock.
@@ -301,12 +339,27 @@ mod tests {
     use crate::tools::{GREP, OUTPUT_LIMIT, fixture::Workspace};
     use serde_json::json;
 
+    /// The text of one search, ignoring its content.
     async fn search(
         workspace: &Workspace,
         name: &str,
         args: serde_json::Value,
     ) -> Result<String, String> {
+        search_with_content(workspace, name, args)
+            .await
+            .map(|(text, _)| text)
+    }
+
+    async fn search_with_content(
+        workspace: &Workspace,
+        name: &str,
+        args: serde_json::Value,
+    ) -> Result<(String, Vec<ToolContent>), String> {
         execute(&workspace.0, name, &args.to_string()).await
+    }
+
+    fn summary(text: &str) -> Vec<ToolContent> {
+        vec![ToolContent::Text(text.to_owned())]
     }
 
     #[tokio::test]
@@ -324,24 +377,31 @@ mod tests {
         ] {
             std::fs::write(workspace.0.join(path), text).unwrap();
         }
-        let files = search(&workspace, GLOB, json!({"pattern":"*.rs", "path":"src"}))
+        let files = search_with_content(&workspace, GLOB, json!({"pattern":"*.rs", "path":"src"}))
             .await
             .unwrap();
-        assert_eq!(files, "./src/a.rs\n");
-        let matches = search(
+        assert_eq!(files, ("./src/a.rs\n".to_owned(), summary("1 files")));
+        let matches = search_with_content(
             &workspace,
             GREP,
             json!({"pattern":"(?i)hello", "glob":"*.rs"}),
         )
         .await
         .unwrap();
-        assert_eq!(matches, "./src/a.rs:1:Hello\n");
-        let matches = search(&workspace, GREP, json!({"pattern":"needle"}))
+        assert_eq!(
+            matches,
+            (
+                "./src/a.rs:1:Hello\n".to_owned(),
+                summary("1 matches in 1 files")
+            )
+        );
+        let (matches, content) = search_with_content(&workspace, GREP, json!({"pattern":"needle"}))
             .await
             .unwrap();
         assert!(!matches.contains("ignored"));
         assert!(!matches.contains(".hidden"));
         assert!(matches.contains("./src/b.txt:1:needle"));
+        assert_eq!(content, summary("3 matches in 3 files"));
         assert_eq!(
             search(
                 &workspace,
@@ -386,10 +446,10 @@ mod tests {
         );
         for name in [GLOB, GREP] {
             assert_eq!(
-                search(&workspace, name, json!({"pattern":"nothing-matches"}))
+                search_with_content(&workspace, name, json!({"pattern":"nothing-matches"}))
                     .await
                     .unwrap(),
-                "No matches found."
+                ("No matches found.".to_owned(), vec![])
             );
             assert!(
                 search(&workspace, name, json!({"pattern":"["}))
@@ -411,12 +471,18 @@ mod tests {
         }
         for name in [GLOB, GREP] {
             let pattern = if name == GLOB { "*" } else { "雪" };
-            let output = search(&workspace, name, json!({"pattern":pattern}))
-                .await
-                .unwrap();
+            let (output, content) =
+                search_with_content(&workspace, name, json!({"pattern":pattern}))
+                    .await
+                    .unwrap();
             assert!(output.len() <= OUTPUT_LIMIT);
             assert!(output.ends_with("Output truncated. Narrow the search path or pattern."));
             assert!(!output.contains('\u{fffd}'));
+            let [ToolContent::Text(summary)] = &content[..] else {
+                panic!("{name}: {content:?}");
+            };
+            assert!(summary.ends_with(" files, truncated"), "{name}: {summary}");
+            assert!(!summary.starts_with("0 "), "{name}: {summary}");
         }
     }
 
@@ -515,7 +581,7 @@ mod tests {
             command.args(["-c", "printf 'link/secret\\000'"]);
             assert_eq!(
                 run(command, &pinned, matcher.as_ref()).await.unwrap(),
-                "No matches found."
+                ("No matches found.".to_owned(), vec![])
             );
         }
     }
