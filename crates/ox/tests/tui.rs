@@ -335,7 +335,7 @@ fn the_status_line_shows_the_session_settings_and_usage() {
     test.wait("15% • $0.25");
     let last = test.screen();
     let last = last.lines().last().unwrap();
-    assert!(last.starts_with("auto • deepseek • high"), "{last}");
+    assert!(last.starts_with("  auto • deepseek • high"), "{last}");
     assert!(last.ends_with("15% • $0.25"), "{last}");
 }
 

@@ -270,13 +270,10 @@ pub fn draw(frame: &mut Frame, screen: &Screen) -> Layout {
     }
     put(buf, area, y, &rule(width));
     y += 1;
-    let right = width.saturating_sub(screen.usage.width());
-    put(
-        buf,
-        area,
-        y,
-        &Line::raw(transcript::clip(screen.settings, right.saturating_sub(1))),
-    );
+    // The status line pads its content by two columns on each side.
+    let right = width.saturating_sub(screen.usage.width() + 2);
+    let settings = transcript::clip(screen.settings, right.saturating_sub(3));
+    put(buf, area, y, &Line::raw(format!("  {settings}")));
     if let Ok(y) = u16::try_from(y)
         && y < area.height
     {
@@ -912,7 +909,7 @@ mod tests {
                 "  when you are done",
                 &rule,
                 &format!(
-                    "{:<62}5% • $0.01",
+                    "  {:<58}5% • $0.01",
                     "ask • deepseek/deepseek-v4-flash • high"
                 ),
             ]
@@ -1021,7 +1018,7 @@ mod tests {
         let (rows, cursor, _) = render(&screen, 40, 6);
         assert_eq!(
             rows[5],
-            format!("{:<29}15% • $0.25", "ask • deepseek • high")
+            format!("  {:<25}15% • $0.25", "ask • deepseek • high")
         );
         assert_eq!(rows[3], "❯");
         assert_eq!(cursor, (2, 3));
