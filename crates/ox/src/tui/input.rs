@@ -1,6 +1,5 @@
 use unicode_width::UnicodeWidthStr;
 
-const MIN_ROWS: usize = 1;
 const MAX_ROWS: usize = 8;
 
 /// The composer's editable text with a byte cursor.
@@ -136,10 +135,10 @@ impl Input {
         offset
     }
 
-    /// The rows to show at `width`, hard-wrapped by display width, clamped to
-    /// one through eight rows, and scrolled to keep the cursor row visible.
-    pub fn rows(&self, width: u16) -> Rows {
-        let text_width = usize::from(width).saturating_sub(2).max(1);
+    /// The rows to show at `width`, hard-wrapped by display width, at most
+    /// eight rows, and scrolled to keep the cursor row visible.
+    pub fn rows(&self, width: usize) -> Rows {
+        let text_width = width.saturating_sub(2).max(1);
         let mut rows = Vec::new();
         let mut current = String::new();
         let mut column = 0;
@@ -174,7 +173,7 @@ impl Input {
             }
         }
         rows.push(current);
-        let height = rows.len().clamp(MIN_ROWS, MAX_ROWS);
+        let height = rows.len().min(MAX_ROWS);
         let scroll = cursor.0.saturating_sub(height - 1).min(rows.len() - height);
         let lines = rows
             .into_iter()

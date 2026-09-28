@@ -23,8 +23,8 @@ use ratatui::{
     Frame,
     backend::CrosstermBackend,
     buffer::Buffer,
-    layout::Rect,
-    style::{Color, Style},
+    layout::{Margin, Rect},
+    style::Style,
     text::{Line, Span},
 };
 use tokio::sync::mpsc::UnboundedReceiver;
@@ -133,8 +133,8 @@ impl Drop for Terminal {
     }
 }
 
-/// The transcript view's height and line count at the last draw, which paging
-/// uses.
+/// The rows the last draw gave the transcript view or the picker, and the
+/// transcript view's line count, which paging uses.
 #[derive(Clone, Copy, Default)]
 pub struct Layout {
     pub height: usize,
@@ -235,9 +235,9 @@ impl Picker {
         self.first = 0;
     }
 
-    fn move_to(&mut self, selected: usize, height: usize) {
+    /// Selects a match and scrolls so it is among the `rows` shown.
+    fn move_to(&mut self, selected: usize, rows: usize) {
         self.selected = selected.min(self.matches.len().saturating_sub(1));
-        let rows = height.saturating_sub(PICKER_TOP).max(1);
         if self.selected < self.first {
             self.first = self.selected;
         }
@@ -279,6 +279,10 @@ pub struct Screen<'a> {
     pub now: Instant,
 }
 
+/// Every region pads its content by one row above and below and two columns
+/// on each side.
+const MARGIN: Margin = Margin::new(2, 1);
+
 fn put(buf: &mut Buffer, area: Rect, y: usize, line: &Line) {
     if let Ok(y) = u16::try_from(y)
         && y < area.height
@@ -287,129 +291,100 @@ fn put(buf: &mut Buffer, area: Rect, y: usize, line: &Line) {
     }
 }
 
-/// Sets the background of `rows` rows from row `y`, clipped to the area.
-fn fill(buf: &mut Buffer, area: Rect, y: usize, rows: usize, color: Color) {
-    let height = usize::from(area.height);
-    let top = y.min(height);
-    let bottom = y.saturating_add(rows).min(height);
-    buf.set_style(
-        Rect {
-            y: area.y + top as u16,
-            height: (bottom - top) as u16,
-            ..area
-        },
-        Style::new().bg(color),
-    );
+/// Places the cursor at column `x` of row `y` in the area, kept inside it.
+fn cursor(frame: &mut Frame, area: Rect, x: usize, y: usize) {
+    let x = u16::try_from(x)
+        .unwrap_or(u16::MAX)
+        .min(area.width.saturating_sub(1));
+    let y = u16::try_from(y)
+        .unwrap_or(u16::MAX)
+        .min(area.height.saturating_sub(1));
+    frame.set_cursor_position((area.x + x, area.y + y));
+}
+
+/// `left`, at least two spaces, and `right` ending at `width`, with `left`
+/// clipped to fit.
+fn justified(left: &str, right: &str, width: usize) -> String {
+    let left = transcript::clip(left, width.saturating_sub(right.width() + 2));
+    let padding = " ".repeat(width.saturating_sub(left.width() + right.width()));
+    format!("{left}{padding}{right}")
 }
 
 pub fn draw(frame: &mut Frame, screen: &Screen) -> Layout {
     let area = frame.area();
-    let width = usize::from(area.width);
+    let buf = frame.buffer_mut();
     // Unstyled cells would show the terminal's own colors.
-    frame
-        .buffer_mut()
-        .set_style(area, Style::new().fg(theme::TEXT).bg(theme::BACKGROUND));
+    buf.set_style(area, Style::new().fg(theme::TEXT).bg(theme::BACKGROUND));
+    let height = usize::from(area.height);
+    let width = usize::from(area.inner(MARGIN).width);
     // A picker fills the screen, hiding the approval dialog and the composer,
     // and the cursor sits in its search input.
     if let Some(picker) = screen.picker {
-        let height = usize::from(area.height);
-        let lines = picker_lines(picker, width, height);
-        for (y, line) in lines.iter().take(height).enumerate() {
-            put(frame.buffer_mut(), area, y, line);
+        let rows = height.saturating_sub(PICKER_TOP);
+        let lines = picker_lines(picker, usize::from(area.width), rows);
+        for (y, line) in lines.iter().enumerate() {
+            put(buf, area, y, line);
         }
-        let x = u16::try_from(2 + picker.query.width())
-            .unwrap_or(u16::MAX)
-            .min(area.width.saturating_sub(1));
-        frame.set_cursor_position((area.x + x, area.y + 2.min(area.height.saturating_sub(1))));
+        cursor(frame, area, 2 + picker.query.width(), 2);
         return Layout {
-            height,
-            lines: lines.len(),
+            height: rows,
+            lines: 0,
         };
     }
-    // The transcript view and the input pad their content by two columns on
-    // each side.
-    let padded = Rect {
-        x: area.x + 2.min(area.width),
-        width: area.width.saturating_sub(4),
-        ..area
-    };
-    let rows = screen.input.rows(padded.width);
+    let input = screen.input.rows(width);
     let approval = screen
         .approval
         .as_ref()
-        .map(|approval| approval_lines(screen.view, approval, width))
-        .unwrap_or_default();
-    let composer = rows.lines.len() + 4;
-    let space = usize::from(area.height).saturating_sub(approval.len() + composer);
-    // The transcript view leaves one blank row above and below.
-    let height = space.saturating_sub(2);
-    let view_width = usize::from(padded.width);
-    let lines = screen
-        .view
-        .lines(view_width, screen.show_thinking, screen.now);
-    let first = screen.view.first_row(height, lines.len());
-    let buf = frame.buffer_mut();
-    for (y, line) in lines.iter().skip(first).take(height).enumerate() {
-        put(buf, padded, 1 + y, line);
+        .map(|approval| approval_lines(screen.view, approval, width));
+    let dialog_height = approval.as_ref().map_or(0, |lines| lines.len() + 2);
+    // The composer holds the input, a blank row, and the status line.
+    let composer_height = input.lines.len() + 4;
+    let space = height.saturating_sub(dialog_height + composer_height);
+    // `rows` rows from row `y`, clipped to the screen.
+    let region = |y: usize, rows: usize| {
+        let top = y.min(height);
+        Rect {
+            y: area.y + top as u16,
+            height: rows.min(height - top) as u16,
+            ..area
+        }
+    };
+    let view = region(0, space);
+    let dialog = region(space, dialog_height);
+    let composer = region(space + dialog_height, composer_height);
+    buf.set_style(dialog, Style::new().bg(theme::APPROVAL));
+    buf.set_style(composer, Style::new().bg(theme::COMPOSER));
+    let view = view.inner(MARGIN);
+    let view_height = usize::from(view.height);
+    let lines = screen.view.lines(width, screen.show_thinking, screen.now);
+    let first = screen.view.first_row(view_height, lines.len());
+    for (y, line) in lines.iter().skip(first).take(view_height).enumerate() {
+        put(buf, view, y, line);
     }
-    if screen.view.new_activity && height > 0 {
-        let notice = "new activity";
-        let padding = " ".repeat(view_width.saturating_sub(notice.width()) / 2);
-        put(buf, padded, height, &Line::raw(" ".repeat(view_width)));
-        put(
-            buf,
-            padded,
-            height,
-            &Line::styled(
-                format!("{padding}{notice}"),
-                Style::new().fg(theme::LIGHT_YELLOW),
-            ),
-        );
+    if screen.view.new_activity && view_height > 0 {
+        let notice = format!("{:^width$}", "new activity");
+        let notice = Line::styled(notice, Style::new().fg(theme::LIGHT_YELLOW));
+        put(buf, view, view_height - 1, &notice);
     }
-    let mut y = space;
-    fill(buf, area, y, approval.len(), theme::APPROVAL);
-    for line in &approval {
-        put(buf, area, y, line);
-        y += 1;
+    let dialog = dialog.inner(MARGIN);
+    for (y, line) in approval.iter().flatten().enumerate() {
+        put(buf, dialog, y, line);
     }
-    // A blank row comes before and after the input.
-    let composer_top = y;
-    let input_top = y + 1;
-    for (row, line) in rows.lines.iter().enumerate() {
-        put(buf, padded, input_top + row, &Line::raw(line.as_str()));
+    let composer = composer.inner(MARGIN);
+    for (y, line) in input.lines.iter().enumerate() {
+        put(buf, composer, y, &Line::raw(line.as_str()));
     }
-    y = input_top + rows.lines.len() + 1;
-    // The status line pads its content by two columns on each side and one
-    // blank row below.
-    let right = width.saturating_sub(screen.usage.width() + 2);
-    let settings = transcript::clip(screen.settings, right.saturating_sub(3));
-    put(buf, area, y, &Line::raw(format!("  {settings}")));
-    if let Ok(y) = u16::try_from(y)
-        && y < area.height
-    {
-        buf.set_string(
-            area.x + right as u16,
-            area.y + y,
-            screen.usage,
-            Style::new(),
-        );
-    }
-    fill(buf, area, composer_top, usize::MAX, theme::COMPOSER);
-    let (row, column) = rows.cursor;
-    let x = u16::try_from(2 + column)
-        .unwrap_or(u16::MAX)
-        .min(area.width.saturating_sub(1));
-    let y = u16::try_from(input_top + row)
-        .unwrap_or(u16::MAX)
-        .min(area.height.saturating_sub(1));
-    frame.set_cursor_position((area.x + x, area.y + y));
+    let status = justified(screen.settings, screen.usage, width);
+    put(buf, composer, input.lines.len() + 1, &Line::raw(status));
+    let (row, column) = input.cursor;
+    cursor(frame, composer, column, row);
     Layout {
-        height,
+        height: view_height,
         lines: lines.len(),
     }
 }
 
-fn picker_lines(picker: &Picker, width: usize, height: usize) -> Vec<Line<'static>> {
+fn picker_lines(picker: &Picker, width: usize, rows: usize) -> Vec<Line<'static>> {
     let heading = match picker.rows {
         PickerRows::Sessions(_) => "Resume a session",
         PickerRows::Models(_) => "Choose a model",
@@ -431,23 +406,25 @@ fn picker_lines(picker: &Picker, width: usize, height: usize) -> Vec<Line<'stati
     for line in &mut lines {
         line.spans.insert(0, Span::raw("  "));
     }
-    let rows = match &picker.rows {
+    // Each row follows its marker and a space and pads two columns on the
+    // right.
+    let names = match &picker.rows {
         PickerRows::Sessions(sessions) if sessions.is_empty() => {
             lines.push(Line::raw("  No saved sessions"));
             return lines;
         }
-        PickerRows::Sessions(sessions) => session_rows(sessions, width.saturating_sub(2)),
-        PickerRows::Models(models) => model_rows(models, width.saturating_sub(2)),
+        PickerRows::Sessions(sessions) => session_rows(sessions, width.saturating_sub(4)),
+        PickerRows::Models(models) => model_rows(models, width.saturating_sub(4)),
     };
     for (index, &row) in picker
         .matches
         .iter()
         .enumerate()
         .skip(picker.first)
-        .take(height.saturating_sub(PICKER_TOP))
+        .take(rows)
     {
         let marker = if index == picker.selected { "›" } else { " " };
-        let row = format!("{marker} {}", rows[row]);
+        let row = format!("{marker} {}", names[row]);
         let color = if index == picker.selected {
             theme::BRIGHT
         } else {
@@ -458,8 +435,6 @@ fn picker_lines(picker: &Picker, width: usize, height: usize) -> Vec<Line<'stati
     lines
 }
 
-/// Each row pads its content by two columns on the right and keeps two columns
-/// between the title and the date.
 fn session_rows(sessions: &[SessionInfo], width: usize) -> Vec<String> {
     sessions
         .iter()
@@ -468,19 +443,12 @@ fn session_rows(sessions: &[SessionInfo], width: usize) -> Vec<String> {
                 || "Unknown date".to_owned(),
                 |date| date.format("%Y-%m-%d").to_string(),
             );
-            let title = transcript::clip(
-                &session_title(session),
-                width.saturating_sub(date.width() + 4),
-            );
-            let padding = " ".repeat(width.saturating_sub(2 + title.width() + date.width()));
-            format!("{title}{padding}{date}")
+            justified(&session_title(session), &date, width)
         })
         .collect()
 }
 
-/// Each row pads its content by two columns on the right and keeps two columns
-/// between the name and the prices. Both price columns share the widest
-/// price's width plus two spaces.
+/// Both price columns share the widest price's width plus two spaces.
 fn model_rows(models: &[ModelChoice], width: usize) -> Vec<String> {
     let price = |price: Option<f64>| {
         price
@@ -500,18 +468,16 @@ fn model_rows(models: &[ModelChoice], width: usize) -> Vec<String> {
         .map(|model| limit(model).width())
         .max()
         .unwrap_or(0);
-    let columns = 2 * price_width + limit_width;
     models
         .iter()
         .map(|model| {
-            let name = transcript::clip(&model.name, width.saturating_sub(columns + 4));
-            let padding = " ".repeat(width.saturating_sub(2 + name.width() + columns));
-            format!(
-                "{name}{padding}{:<price_width$}{:<price_width$}{:>limit_width$}",
+            let prices = format!(
+                "{:<price_width$}{:<price_width$}{:>limit_width$}",
                 price(model.input_price),
                 price(model.output_price),
                 limit(model),
-            )
+            );
+            justified(&model.name, &prices, width)
         })
         .collect()
 }
@@ -537,21 +503,19 @@ fn approval_lines(view: &TranscriptView, approval: &Approval, width: usize) -> V
         .cloned()
         .unwrap_or_else(|| ToolCall::new(id.clone(), ""));
     call.update(request.tool_call.fields.clone());
-    // The dialog pads its content by two columns on each side.
-    let content_width = width.saturating_sub(4);
     // Shell content names the subagent, if any, and everything being approved.
     let (heading, body) = match call.name.as_deref() {
         Some("shell") => (
             "Would you like to run the following command?",
-            transcript::content_lines(&call, content_width, Style::new()),
+            transcript::content_lines(&call, width, Style::new()),
         ),
         Some("shell_process") => (
             "Would you like to send the following input?",
-            transcript::content_lines(&call, content_width, Style::new()),
+            transcript::content_lines(&call, width, Style::new()),
         ),
         _ => (
             "Would you like to allow the following?",
-            transcript::described_lines(&call, content_width, Style::new()),
+            transcript::described_lines(&call, width, Style::new()),
         ),
     };
     let mut lines = vec![Line::raw(heading), Line::default()];
@@ -569,11 +533,6 @@ fn approval_lines(view: &TranscriptView, approval: &Approval, width: usize) -> V
             option.name
         )));
     }
-    for line in &mut lines {
-        line.spans.insert(0, Span::raw("  "));
-    }
-    lines.insert(0, Line::default());
-    lines.push(Line::default());
     lines
 }
 
@@ -642,22 +601,16 @@ async fn key(
         return Ok(false);
     }
     if let Some(picker) = &mut ui.picker {
-        let page = ui.layout.height.saturating_sub(PICKER_TOP).max(1);
+        let rows = ui.layout.height;
         // The session picker stays open until a session is active.
         let closable = matches!(picker.rows, PickerRows::Models(_)) || session.active();
         match key.code {
-            KeyCode::Up => picker.move_to(picker.selected.saturating_sub(1), ui.layout.height),
-            KeyCode::Down => picker.move_to(picker.selected.saturating_add(1), ui.layout.height),
-            KeyCode::PageUp => {
-                picker.move_to(picker.selected.saturating_sub(page), ui.layout.height)
-            }
-            KeyCode::PageDown => {
-                picker.move_to(picker.selected.saturating_add(page), ui.layout.height)
-            }
-            KeyCode::Home => picker.move_to(0, ui.layout.height),
-            KeyCode::End => {
-                picker.move_to(picker.matches.len().saturating_sub(1), ui.layout.height)
-            }
+            KeyCode::Up => picker.move_to(picker.selected.saturating_sub(1), rows),
+            KeyCode::Down => picker.move_to(picker.selected.saturating_add(1), rows),
+            KeyCode::PageUp => picker.move_to(picker.selected.saturating_sub(rows), rows),
+            KeyCode::PageDown => picker.move_to(picker.selected.saturating_add(rows), rows),
+            KeyCode::Home => picker.move_to(0, rows),
+            KeyCode::End => picker.move_to(picker.matches.len().saturating_sub(1), rows),
             KeyCode::Esc if closable => ui.picker = None,
             KeyCode::Enter => match (&picker.rows, picker.matches.get(picker.selected)) {
                 (_, None) => {}
@@ -1036,13 +989,18 @@ mod tests {
         );
     }
 
-    /// Draws the screen and returns its rows, the cursor, and the layout.
-    fn render(screen: &Screen, width: u16, height: u16) -> (Vec<String>, (u16, u16), Layout) {
+    /// Draws the screen and returns its rows, the cursor, the layout, and
+    /// the buffer.
+    fn render(
+        screen: &Screen,
+        width: u16,
+        height: u16,
+    ) -> (Vec<String>, (u16, u16), Layout, Buffer) {
         let mut terminal = ratatui::Terminal::new(TestBackend::new(width, height)).unwrap();
         let mut layout = Layout::default();
         terminal.draw(|frame| layout = draw(frame, screen)).unwrap();
         let cursor = terminal.get_cursor_position().unwrap();
-        let buffer = terminal.backend().buffer();
+        let buffer = terminal.backend().buffer().clone();
         let rows = (0..height)
             .map(|y| {
                 (0..width)
@@ -1052,7 +1010,7 @@ mod tests {
                     .to_owned()
             })
             .collect();
-        (rows, (cursor.x, cursor.y), layout)
+        (rows, (cursor.x, cursor.y), layout, buffer)
     }
 
     fn request(name: &str, content: &str) -> RequestPermissionRequest {
@@ -1135,7 +1093,7 @@ mod tests {
             usage: "5% • $0.01",
             ..screen(&view, &input, now)
         };
-        let (rows, cursor, layout) = render(&screen, 72, 27);
+        let (rows, cursor, layout, buffer) = render(&screen, 72, 27);
         assert_eq!(
             rows,
             [
@@ -1173,13 +1131,6 @@ mod tests {
         );
         assert_eq!(cursor, (21, 23));
         assert_eq!((layout.height, layout.lines), (7, 9));
-        let mut terminal = ratatui::Terminal::new(TestBackend::new(72, 27)).unwrap();
-        terminal
-            .draw(|frame| {
-                draw(frame, &screen);
-            })
-            .unwrap();
-        let buffer = terminal.backend().buffer();
         let colors = |x, y| {
             let cell = buffer.cell((x, y)).unwrap();
             (cell.fg, cell.bg)
@@ -1204,19 +1155,18 @@ mod tests {
         );
         let rows: Vec<String> = lines.iter().map(ToString::to_string).collect();
         assert_eq!(
-            rows[1..],
+            rows,
             [
-                "  Would you like to send the following input?",
-                "  ",
-                "    Shell process: p-1",
-                "    ",
-                "    Input:",
-                "    ",
-                "        y",
-                "  ",
-                "  › 1. Yes",
-                "    2. No",
+                "Would you like to send the following input?",
                 "",
+                "  Shell process: p-1",
+                "  ",
+                "  Input:",
+                "  ",
+                "      y",
+                "",
+                "› 1. Yes",
+                "  2. No",
             ]
         );
     }
@@ -1229,14 +1179,14 @@ mod tests {
             view.user(format!("message {index}"), now);
         }
         let input = Input::default();
-        let (rows, _, layout) = render(&screen(&view, &input, now), 40, 13);
+        let (rows, _, layout, _) = render(&screen(&view, &input, now), 40, 13);
         assert_eq!((layout.height, layout.lines), (6, 39));
         assert_eq!(rows[6], "  ❯ message 19");
         view.page_up(layout.height, layout.lines);
-        let (rows, _, _) = render(&screen(&view, &input, now), 40, 13);
+        let (rows, _, _, _) = render(&screen(&view, &input, now), 40, 13);
         assert_eq!(rows[5..8], ["  ❯ message 16", "", ""]);
         view.user("message 20".to_owned(), now);
-        let (rows, _, _) = render(&screen(&view, &input, now), 40, 13);
+        let (rows, _, _, buffer) = render(&screen(&view, &input, now), 40, 13);
         assert_eq!(
             rows[..6],
             [
@@ -1249,16 +1199,9 @@ mod tests {
             ]
         );
         assert_eq!(rows[6], "              new activity");
-        let mut terminal = ratatui::Terminal::new(TestBackend::new(40, 13)).unwrap();
-        terminal
-            .draw(|frame| {
-                draw(frame, &screen(&view, &input, now));
-            })
-            .unwrap();
-        let cell = terminal.backend().buffer().cell((14, 6)).unwrap();
-        assert_eq!(cell.fg, theme::LIGHT_YELLOW);
+        assert_eq!(buffer.cell((14, 6)).unwrap().fg, theme::LIGHT_YELLOW);
         view.end();
-        let (rows, _, _) = render(&screen(&view, &input, now), 40, 13);
+        let (rows, _, _, _) = render(&screen(&view, &input, now), 40, 13);
         assert_eq!(rows[6], "  ❯ message 20");
     }
 
@@ -1294,7 +1237,7 @@ mod tests {
             usage: "15% • $0.25",
             ..screen(&view, &input, Instant::now())
         };
-        let (rows, cursor, _) = render(&screen, 40, 7);
+        let (rows, cursor, _, _) = render(&screen, 40, 7);
         assert_eq!(
             rows[5],
             format!("  {:<25}15% • $0.25", "ask • deepseek • high")
@@ -1330,14 +1273,14 @@ mod tests {
         let layout = {
             let mut display = screen(&view, &input, Instant::now());
             display.picker = Some(&picker);
-            let (rows, _, layout) = render(&display, 40, 5);
+            let (rows, _, layout, _) = render(&display, 40, 5);
             assert_eq!(rows[4], format!("› {:<26}2026-09-27", "newer"));
             layout
         };
         picker.move_to(2, layout.height);
         let mut screen = screen(&view, &input, Instant::now());
         screen.picker = Some(&picker);
-        let (rows, _, _) = render(&screen, 40, 5);
+        let (rows, _, _, _) = render(&screen, 40, 5);
         assert!(
             rows.iter()
                 .any(|row| row.contains("› undated") && row.contains("Unknown date"))
@@ -1376,7 +1319,7 @@ mod tests {
             picker: Some(&picker),
             ..screen(&view, &input, Instant::now())
         };
-        let (rows, cursor, _) = render(&screen, 60, 8);
+        let (rows, cursor, _, _) = render(&screen, 60, 8);
         assert_eq!(
             rows,
             [
@@ -1409,13 +1352,7 @@ mod tests {
         let input = Input::default();
         let mut display = screen(&view, &input, Instant::now());
         display.picker = Some(&picker);
-        let mut terminal = ratatui::Terminal::new(TestBackend::new(40, 6)).unwrap();
-        terminal
-            .draw(|frame| {
-                draw(frame, &display);
-            })
-            .unwrap();
-        let buffer = terminal.backend().buffer();
+        let (_, _, _, buffer) = render(&display, 40, 6);
         assert_eq!(buffer.cell((0, 5)).unwrap().fg, theme::BRIGHT);
         assert_eq!(buffer.cell((0, 4)).unwrap().fg, theme::GRAY);
     }

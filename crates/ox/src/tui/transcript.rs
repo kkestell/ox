@@ -203,35 +203,33 @@ fn item_lines(
     show_thinking: bool,
     now: Instant,
 ) -> (Vec<Line<'static>>, bool) {
-    let lines = match item {
-        Item::User(text) => prefixed(text, width, "❯ ", Style::new()),
+    match item {
+        Item::User(text) => (prefixed(text, width, "❯ ", Style::new()), false),
         Item::Thinking {
             text,
             started,
             ended,
         } => {
-            if show_thinking && !text.trim().is_empty() {
+            let lines = if show_thinking && !text.trim().is_empty() {
                 prefixed(text, width, "● ", gray())
             } else {
                 let placeholder = placeholder(*started, *ended, now);
                 vec![Line::styled(format!("● {placeholder}"), gray())]
-            }
-        }
-        Item::Response(text) => prefixed(text, width, "● ", Style::new()),
-        Item::Tool(call) => {
-            return match shell_line(call, width) {
-                Some(line) => (vec![line], true),
-                None if call.name.is_some() => (vec![tool_line(call, &call.title, width)], true),
-                None => {
-                    let lines = described_lines(call, width, gray());
-                    let bullet = lines.len() == 1;
-                    (lines, bullet)
-                }
             };
+            (lines, false)
         }
-        Item::Notice { text, color } => styled(wrap(text, width), Style::new().fg(*color)),
-    };
-    (lines, false)
+        Item::Response(text) => (prefixed(text, width, "● ", Style::new()), false),
+        Item::Tool(call) => match shell_line(call, width) {
+            Some(line) => (vec![line], true),
+            None if call.name.is_some() => (vec![tool_line(call, &call.title, width)], true),
+            None => {
+                let lines = described_lines(call, width, gray());
+                let bullet = lines.len() == 1;
+                (lines, bullet)
+            }
+        },
+        Item::Notice { text, color } => (styled(wrap(text, width), Style::new().fg(*color)), false),
+    }
 }
 
 fn placeholder(started: Instant, ended: Option<Instant>, now: Instant) -> String {
