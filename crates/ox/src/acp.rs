@@ -98,6 +98,18 @@ impl Session {
         Ok(())
     }
 
+    pub async fn create(&mut self) -> anyhow::Result<()> {
+        let response = self
+            .connection
+            .send_request(NewSessionRequest::new(self.directory.clone()))
+            .block_task()
+            .await?;
+        self.id = response.session_id;
+        self.active = true;
+        self.config_options = response.config_options.unwrap_or_default();
+        Ok(())
+    }
+
     pub async fn load(&mut self, id: SessionId) -> anyhow::Result<()> {
         self.loading = Some(id.clone());
         let response = self
@@ -504,6 +516,20 @@ pub mod tests {
                 turn(&mut session, &mut events, &[]).await.0,
                 "you said: after"
             );
+            Ok(())
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn create_replaces_the_closed_session_with_a_new_one() {
+        with_session(async |mut session, _events| {
+            let old = session.id.clone();
+            session.close().await?;
+            session.create().await?;
+            assert!(session.active());
+            assert_ne!(session.id, old);
+            assert!(!session.config_options.is_empty());
             Ok(())
         })
         .await;

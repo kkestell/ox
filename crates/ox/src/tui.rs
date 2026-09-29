@@ -740,7 +740,7 @@ pub fn usage(usage: Option<&UsageUpdate>) -> String {
 /// session's available commands, sorted.
 fn commands(session: &Session) -> Vec<String> {
     let mut commands = session.commands.clone();
-    commands.extend(["model", "resume"].map(String::from));
+    commands.extend(["model", "new", "quit", "resume"].map(String::from));
     commands.sort();
     commands
 }
@@ -919,6 +919,15 @@ async fn key(
                     } else {
                         open_session_picker(ui, session, now).await;
                     }
+                } else if ui.input.text() == "/quit" {
+                    session.cancel()?;
+                    return Ok(true);
+                } else if ui.input.text() == "/new" {
+                    ui.input.clear();
+                    if let Err(error) = new_session(ui, session).await {
+                        ui.view
+                            .notice(format!("New session failed: {error}"), theme::RED, now);
+                    }
                 } else if ui.input.text() == "/model" {
                     ui.input.clear();
                     open_model_picker(ui, session, now);
@@ -994,6 +1003,14 @@ fn mouse(ui: &mut Ui, event: MouseEvent) {
         MouseEventKind::ScrollDown => ui.view.scroll_down(ui.layout.height, ui.layout.lines, 1),
         _ => {}
     }
+}
+
+async fn new_session(ui: &mut Ui, session: &mut Session) -> anyhow::Result<()> {
+    if session.active() {
+        session.close().await?;
+    }
+    ui.view = TranscriptView::default();
+    session.create().await
 }
 
 async fn open_session_picker(ui: &mut Ui, session: &mut Session, now: Instant) {
@@ -2058,6 +2075,24 @@ mod tests {
             assert!(ui.picker.is_none());
             assert_eq!(session.id(), &old);
             assert!(session.active());
+            Ok(())
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn new_command_replaces_the_session_and_quit_command_quits() {
+        with_session(async |mut session, _events| {
+            let old = session.id().clone();
+            let mut ui = Ui::default();
+            let now = Instant::now();
+            ui.input.paste("/new");
+            assert!(!press(&mut ui, &mut session, KeyCode::Enter, now).await?);
+            assert!(session.active());
+            assert_ne!(session.id(), &old);
+            assert!(ui.input.is_empty());
+            ui.input.paste("/quit");
+            assert!(press(&mut ui, &mut session, KeyCode::Enter, now).await?);
             Ok(())
         })
         .await;
